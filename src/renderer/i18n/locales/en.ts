@@ -6640,6 +6640,18 @@ export const en = {
   'a11y.agent.needsYou': '{tag} {agent} needs you',
   'a11y.agent.finished': '{tag} {agent} finished',
   'a11y.agent.error': '{tag} {agent} stopped with an error',
+  // Sidebar workspace groups (#3069)
+  'workspaceGroup.moveTo': "Move to group",
+  'workspaceGroup.new': "New group…",
+  'workspaceGroup.remove': "Remove from group",
+  'workspaceGroup.defaultName': "New group",
+  'workspaceGroup.name': "Group name",
+  'workspaceGroup.menu': "Group actions",
+  'workspaceGroup.rename': "Rename",
+  'workspaceGroup.collapse': "Collapse",
+  'workspaceGroup.expand': "Expand",
+  'workspaceGroup.delete': "Delete group",
+  'workspaceGroup.deleteConfirm': "Delete this group? Its workspaces ({count}) go back to the list and stay open.",
 } as const;
 
 export type TranslationKey = keyof typeof en;

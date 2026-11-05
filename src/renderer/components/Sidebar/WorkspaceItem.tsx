@@ -48,6 +48,7 @@ import { usePaneTaskSplit } from './SidebarTaskGroup';
 import { taskNeedsYou } from './sidebarTree';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 import { WORKSPACE_SNOOZE_PRESETS, workspaceSnoozeUntil } from '../../../shared/workspaceSettle';
+import type { WorkspaceGroup } from '../../../shared/workspaceGroups';
 import { sendWorkspaceSettleCommand } from '../../hooks/useWorkspaceSettleBridge';
 import { isOurHandoffDrag, takeHandoffDrop } from '../Git/handoffDrag';
 import { sanitizeDisplayText } from '../../../shared/phoneText';
@@ -109,6 +110,8 @@ interface WorkspaceItemProps {
 const ROW_QUESTION_MAX = 240;
 /** Stable empty result for the dismiss-question selector. */
 const NO_PTY_IDS: string[] = [];
+/** The group list while the row's menu is closed: nothing to subscribe to. */
+const NO_GROUPS: readonly WorkspaceGroup[] = [];
 
 /**
  * X1 — PR badge for the current branch. Color encodes state; the trailing
@@ -490,6 +493,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
   const [wdOpen, setWdOpen] = useState(false);
   const [owOpen, setOwOpen] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
+  // #3069 — the "Move to group" submenu (hover or click, like the color tag).
+  const [groupOpen, setGroupOpen] = useState(false);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
   // Keyboard path into the Snooze submenu: focus its first preset once it
   // mounts, and do not reopen it when Escape hands focus back to the trigger.
@@ -646,6 +651,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
   });
   const toggleSidebarPin = useRowStore((s) => s.toggleSidebarPin);
   const toggleSidebarBookmark = useRowStore((s) => s.toggleSidebarBookmark);
+  // #3069 — sidebar groups. The list is read only while the menu is open.
+  const workspaceGroups = useRowStore((s) => (menuPos ? s.workspaceGroups : NO_GROUPS));
   // Settle / snooze (main owns both; the menu only sends the verbs). Scalars,
   // so a push about another workspace does not re-render this row.
   const workspaceSettled = useRowStore((s) => !!s.workspaceSettle.states[workspaceId]?.settled);
@@ -1125,6 +1132,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
       // path at once rather than each menu item individually.
       setColorOpen(false);
       setSnoozeOpen(false);
+      setGroupOpen(false);
     };
   }, [menuPos]);
 
@@ -1783,6 +1791,104 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
           >
             {bookmarked ? t('sidebar.unbookmark') : t('sidebar.bookmark')}
           </button>
+          {/* #3069 — Move to group: where the row is listed, nothing else. A
+              task row rides with its owner, so it is never filed itself. */}
+          {!taskRow && (
+            <div
+              className="relative"
+              onMouseEnter={() => setGroupOpen(true)}
+              onMouseLeave={() => setGroupOpen(false)}
+              onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setGroupOpen(false); }}
+            >
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                style={{ color: 'var(--text-main)' }}
+                aria-haspopup="menu"
+                aria-expanded={groupOpen}
+                onClick={() => setGroupOpen(true)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && groupOpen) {
+                    // First Escape folds the submenu; the next one closes the menu.
+                    e.stopPropagation();
+                    setGroupOpen(false);
+                    return;
+                  }
+                  if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'ArrowRight') return;
+                  e.preventDefault();
+                  setGroupOpen(true);
+                }}
+                data-workspace-action="move-to-group"
+              >
+                <span>{t('workspaceGroup.moveTo')}</span>
+                <span className="text-[var(--text-muted)] ml-auto"><IconChevron /></span>
+              </button>
+              {groupOpen && (
+                <div
+                  ref={keepSubmenuInWindow}
+                  role="menu"
+                  aria-label={t('workspaceGroup.moveTo')}
+                  className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[160px] max-w-[240px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
+                  style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
+                  onKeyDown={(e) => {
+                    const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[data-workspace-group-option]')];
+                    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      const step = e.key === 'ArrowDown' ? 1 : -1;
+                      items[(at + step + items.length) % items.length]?.focus();
+                    } else if (e.key === 'Escape' || e.key === 'ArrowLeft') {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setGroupOpen(false);
+                    }
+                  }}
+                >
+                  {workspaceGroups.map((group) => (
+                    <button
+                      key={group.id}
+                      role="menuitemradio"
+                      aria-checked={workspace.groupId === group.id}
+                      className="w-full flex items-center gap-2 text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                      style={{ color: 'var(--text-main)' }}
+                      onClick={() => { setMenuPos(null); useStore.getState().moveWorkspaceToGroup(workspaceId, group.id); }}
+                      data-workspace-group-option={group.id}
+                    >
+                      <span className="w-3 flex-none text-center" aria-hidden="true">{workspace.groupId === group.id ? '✓' : ''}</span>
+                      <span className="min-w-0 truncate">{group.name}</span>
+                    </button>
+                  ))}
+                  <button
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                    style={{ color: 'var(--text-main)' }}
+                    onClick={() => {
+                      setMenuPos(null);
+                      const st = useStore.getState();
+                      // Made with a placeholder name, then named in place on its header.
+                      const id = st.createWorkspaceGroup(t('workspaceGroup.defaultName'), workspaceId);
+                      if (id) st.setWorkspaceGroupRenaming(id);
+                    }}
+                    data-workspace-group-option="new"
+                  >
+                    <span className="w-3 flex-none" aria-hidden="true" />
+                    <span>{t('workspaceGroup.new')}</span>
+                  </button>
+                  {workspace.groupId && (
+                    <button
+                      role="menuitem"
+                      className="w-full flex items-center gap-2 text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                      style={{ color: 'var(--text-main)' }}
+                      onClick={() => { setMenuPos(null); useStore.getState().moveWorkspaceToGroup(workspaceId, undefined); }}
+                      data-workspace-group-option="none"
+                    >
+                      <span className="w-3 flex-none" aria-hidden="true" />
+                      <span>{t('workspaceGroup.remove')}</span>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {/* Settle / snooze: visibility only — the workspace moves to the
               sidebar's Settled or Snoozed group, nothing is closed. A task row
               rides with its owner, so it has no verbs of its own. */}

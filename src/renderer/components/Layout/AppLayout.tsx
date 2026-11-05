@@ -479,6 +479,8 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     sidebarSortModeChosen: state.sidebarSortModeChosen,
     sidebarPinnedIds: state.sidebarPinnedIds,
     sidebarBookmarkedIds: state.sidebarBookmarkedIds,
+    // #3069 — the groups; each workspace's membership rides in `...ws` above.
+    workspaceGroups: state.workspaceGroups,
     sidebarWidth: state.sidebarWidth,
     fileTreeVisible: state.fileTreeVisible,
     fileTreeWidth: state.fileTreeWidth,

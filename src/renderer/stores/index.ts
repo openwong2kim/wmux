@@ -24,6 +24,7 @@ import { createSchedulesSlice, type SchedulesSlice } from './slices/schedulesSli
 import { createUsageLimitSlice, type UsageLimitSlice } from './slices/usageLimitSlice';
 import { createAgentAuthSlice, type AgentAuthSlice } from './slices/agentAuthSlice';
 import { createWorkspaceSettleSlice, type WorkspaceSettleSlice } from './slices/workspaceSettleSlice';
+import { createWorkspaceGroupSlice, type WorkspaceGroupSlice } from './slices/workspaceGroupSlice';
 import { createA2aRemoteSlice, type A2aRemoteSlice } from './slices/a2aRemoteSlice';
 import { createPcRailSlice, type PcRailSlice } from './slices/pcRailSlice';
 import { createRoomSlice, type RoomSlice } from './slices/roomSlice';
@@ -32,7 +33,7 @@ import { createExternalSessionsSlice, type ExternalSessionsSlice } from './slice
 import { createAgentMarkerSlice, type AgentMarkerSlice } from './slices/agentMarkerSlice';
 import { registerCloseTabConfirmInvariant } from './closeTabConfirm';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & BrowserHelpSlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & RemoteWorkspacesSlice & OrphanSessionsSlice & SchedulesSlice & UsageLimitSlice & AgentAuthSlice & WorkspaceSettleSlice & A2aRemoteSlice & PcRailSlice & RoomSlice & PtyLifecycleSlice & ExternalSessionsSlice & AgentMarkerSlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & BrowserHelpSlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & RemoteWorkspacesSlice & OrphanSessionsSlice & SchedulesSlice & UsageLimitSlice & AgentAuthSlice & WorkspaceSettleSlice & WorkspaceGroupSlice & A2aRemoteSlice & PcRailSlice & RoomSlice & PtyLifecycleSlice & ExternalSessionsSlice & AgentMarkerSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -60,6 +61,7 @@ export const useStore = create<StoreState>()(
     ...createUsageLimitSlice(...args),
     ...createAgentAuthSlice(...args),
     ...createWorkspaceSettleSlice(...args),
+    ...createWorkspaceGroupSlice(...args),
     ...createA2aRemoteSlice(...args),
     ...createPcRailSlice(...args),
     ...createRoomSlice(...args),

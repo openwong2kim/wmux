@@ -6595,4 +6595,16 @@ export const pl = {
   'a11y.agent.needsYou': '{tag} {agent} czeka na ciebie',
   'a11y.agent.finished': '{tag} {agent}: gotowe',
   'a11y.agent.error': '{tag} {agent}: zatrzymano z błędem',
+  // Sidebar workspace groups (#3069)
+  'workspaceGroup.moveTo': "Przenieś do grupy",
+  'workspaceGroup.new': "Nowa grupa…",
+  'workspaceGroup.remove': "Usuń z grupy",
+  'workspaceGroup.defaultName': "Nowa grupa",
+  'workspaceGroup.name': "Nazwa grupy",
+  'workspaceGroup.menu': "Działania grupy",
+  'workspaceGroup.rename': "Zmień nazwę",
+  'workspaceGroup.collapse': "Zwiń",
+  'workspaceGroup.expand': "Rozwiń",
+  'workspaceGroup.delete': "Usuń grupę",
+  'workspaceGroup.deleteConfirm': "Usunąć tę grupę? Jej obszary robocze ({count}) wrócą na listę i pozostaną otwarte.",
 } as const;

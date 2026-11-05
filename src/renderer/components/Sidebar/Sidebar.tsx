@@ -1,13 +1,15 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { Fragment, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore } from '../../stores';
+import { useStore, type StoreState } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { useGlanceBoardOrder } from './useGlanceBoardOrder';
 import { buildSidebarTree, ORPHAN_GROUP_KEY, type SidebarTreeNode } from './sidebarTree';
 import { selectBotTaskOwners, withoutBotTasks } from './botTasks';
 import { partitionWorkspaceSettle, workspaceSettleGroupOf } from './workspaceSettleGroups';
 import WorkspaceSettleGroup from './WorkspaceSettleGroup';
+import WorkspaceGroupSection from './WorkspaceGroupSection';
+import { partitionWorkspaceGroups } from './workspaceGroupRows';
 import SidebarTaskGroup, { ClosedPaneTaskGroup } from './SidebarTaskGroup';
 import SidebarResizeHandle from './SidebarResizeHandle';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
@@ -66,6 +68,14 @@ function disposeAllPtys(ws: Workspace) {
 
 /** No facts are read while no facet is on. */
 const NO_FACTS: Record<string, string> = {};
+
+/** #3069 — workspace id → its group id, for the grouped workspaces only.
+ *  Wrapped in useShallow, so the list re-renders only when membership moves. */
+function selectWorkspaceGroupIds(s: StoreState): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const w of s.workspaces) if (w.groupId) out[w.id] = w.groupId;
+  return out;
+}
 
 /**
  * `chrome="sheet"` (desktop): the sidebar inside the floating sheet. Its
@@ -179,17 +189,34 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     onFocusCapture: onListFocus,
     onBlurCapture: onListBlur,
   } = useGlanceBoardOrder(settleSplit.main, nestedOwnerOf);
-  const tree = useMemo(() => {
+  // #3069 — the user's groups split the main list after its order is set, so
+  // the sort applies inside a group too. Pinned rows lead, then the groups,
+  // then the rows in no group. Display-only: the stored order is untouched.
+  const workspaceGroups = useStore((s) => s.workspaceGroups);
+  const groupIdOf = useStore(useShallow(selectWorkspaceGroupIds));
+  const trees = useMemo(() => {
     const byId = new Map(workspaces.map((w) => [w.id, w]));
-    return buildSidebarTree(
-      orderedWorkspaces,
-      (id) => {
-        const ws = byId.get(id);
-        return ws ? resolveTaskLink(missionByPaneGroup[id], fanoutLineage[id], fanoutSpawnOwner[id]) : null;
-      },
-      new Set(workspaces.map((w) => w.id)),
-    );
-  }, [orderedWorkspaces, workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
+    const liveIds = new Set(workspaces.map((w) => w.id));
+    const linkOf = (id: string) => (byId.has(id)
+      ? resolveTaskLink(missionByPaneGroup[id], fanoutLineage[id], fanoutSpawnOwner[id])
+      : null);
+    const split = partitionWorkspaceGroups(orderedWorkspaces, {
+      groups: workspaceGroups,
+      groupOf: (id) => groupIdOf[id],
+      pinned: new Set(pinnedIds),
+      nestedOwnerOf,
+    });
+    return {
+      pinned: buildSidebarTree(split.pinned, linkOf, liveIds),
+      groups: split.groups.map(({ group, rows }) => ({ group, tree: buildSidebarTree(rows, linkOf, liveIds) })),
+      rest: buildSidebarTree(split.rest, linkOf, liveIds),
+    };
+  }, [orderedWorkspaces, workspaces, workspaceGroups, groupIdOf, pinnedIds, nestedOwnerOf, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
+  // Tasks whose owner is gone, from every part (they collect in one group).
+  const orphanTaskIds = useMemo(
+    () => [...trees.pinned.orphanTaskIds, ...trees.groups.flatMap((g) => g.tree.orphanTaskIds), ...trees.rest.orphanTaskIds],
+    [trees],
+  );
   // The groups keep the stored order and nest the same way, so a grouped
   // owner keeps its task group.
   const settleTrees = useMemo(() => {
@@ -330,7 +357,10 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // own Enter, → / ← and Shift+F10 (WorkspaceItem.tsx).
   const [keyRowId, setKeyRowId] = useState<string | null>(null);
   const activeRowId = activeRemoteKey ? null : activeWorkspaceId;
-  const firstRowId = tree.top[0]?.id ?? null;
+  const firstRowId = trees.pinned.top[0]?.id
+    ?? trees.groups.find((g) => !g.group.collapsed && g.tree.top.length > 0)?.tree.top[0]?.id
+    ?? trees.rest.top[0]?.id
+    ?? null;
   const tabStopId = keyRowId
     ?? (activeRowId && filteredWorkspaces.some((w) => w.id === activeRowId) ? activeRowId : firstRowId);
   const onTreeKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -398,8 +428,9 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   ), [tabStopId, shownActiveId, shownGridIds, multiviewGroupById, workspaces, numbered, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
 
   // One top-level node: a task row whose owner is filtered out, or a
-  // workspace row with its nested tasks. `inSettleGroup` rows sit out of
-  // stored order, so they draw no Ctrl+N hint.
+  // workspace row with its nested tasks. `inSettleGroup` rows (the Snoozed /
+  // Settled groups and the user's groups) sit out of stored order, so they
+  // draw no Ctrl+N hint.
   const renderNode = (node: SidebarTreeNode, taskIds: ReadonlySet<string>, inSettleGroup = false) => {
     const ws = workspaceById.get(node.id);
     if (!ws) return null;
@@ -609,15 +640,24 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           onBlur={onTreeBlur}
           data-sidebar-tree
         >
-        {tree.top.map((node) => renderNode(node, tree.taskIds))}
+        {trees.pinned.top.map((node) => renderNode(node, trees.pinned.taskIds))}
+        {/* #3069 — the user's groups. An empty group is drawn (it was just
+            made, or is waiting for rows) unless a filter is narrowing the
+            list, where it would only be noise. */}
+        {trees.groups.map(({ group, tree: groupTree }) => (narrowed && groupTree.top.length === 0 ? null : (
+          <WorkspaceGroupSection key={group.id} group={group} count={groupTree.top.length}>
+            {groupTree.top.map((node) => renderNode(node, groupTree.taskIds, true))}
+          </WorkspaceGroupSection>
+        )))}
+        {trees.rest.top.map((node) => renderNode(node, trees.rest.taskIds))}
         {/* Until the first lineage + ledger refresh lands, a task whose owner
             is not yet known to be gone is not called orphaned: it waits as a
             plain task row instead of flashing into the group. */}
-        {!fanoutSettled && tree.orphanTaskIds.map((id) => <Fragment key={id}>{renderTask(id)}</Fragment>)}
-        {fanoutSettled && tree.orphanTaskIds.length > 0 && (
+        {!fanoutSettled && orphanTaskIds.map((id) => <Fragment key={id}>{renderTask(id)}</Fragment>)}
+        {fanoutSettled && orphanTaskIds.length > 0 && (
           <SidebarTaskGroup
             groupKey={ORPHAN_GROUP_KEY}
-            taskIds={tree.orphanTaskIds}
+            taskIds={orphanTaskIds}
             // Open by default: these are the tasks nobody is watching.
             ownerActive
             label={t('sidebar.tasks.orphanGroup')}

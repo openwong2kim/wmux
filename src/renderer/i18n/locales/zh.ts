@@ -5391,4 +5391,16 @@ export const zh = {
   'schedules.reason.agent_error_retried_once': "重试一次后再次出现代理错误",
   'schedules.reason.agent_error_retry_blocked': "代理错误；无法发送重试",
   'schedules.reason.agent_error_retry_interrupted': "代理错误；wmux 已重启，未重试",
+  // Sidebar workspace groups (#3069)
+  'workspaceGroup.moveTo': "移到分组",
+  'workspaceGroup.new': "新建分组…",
+  'workspaceGroup.remove': "移出分组",
+  'workspaceGroup.defaultName': "新分组",
+  'workspaceGroup.name': "分组名称",
+  'workspaceGroup.menu': "分组操作",
+  'workspaceGroup.rename': "重命名",
+  'workspaceGroup.collapse': "折叠",
+  'workspaceGroup.expand': "展开",
+  'workspaceGroup.delete': "删除分组",
+  'workspaceGroup.deleteConfirm': "删除此分组？其中的工作区（{count}）会回到列表并保持打开。",
 } as const;
