@@ -68,6 +68,25 @@ function formatKeyCombo(ctrl: boolean, shift: boolean, alt: boolean, key: string
   return parts.join('+');
 }
 
+/**
+ * The custom keybinding a press runs, or undefined. A binding is stored as
+ * the key the layout typed, so the press is matched that way first: a
+ * binding recorded on this layout always wins. On a layout whose digit row
+ * needs Shift for the digit (French AZERTY), Control and the 8 key do not
+ * type `Ctrl+8`, so a digit binding such as the shipped macOS `Ctrl+8`
+ * default also matches the physical digit key (#3088).
+ */
+export function customKeybindingFor<T extends { key: string }>(
+  customKeybindings: readonly T[],
+  press: { ctrl: boolean; shift: boolean; alt: boolean; key: string; code: string },
+): T | undefined {
+  const typed = formatKeyCombo(press.ctrl, press.shift, press.alt, press.key);
+  const match = customKeybindings.find((kb) => kb.key === typed);
+  if (match || !/^Digit\d$/.test(press.code)) return match;
+  const physical = formatKeyCombo(press.ctrl, press.shift, press.alt, press.code.slice('Digit'.length));
+  return customKeybindings.find((kb) => kb.key === physical);
+}
+
 /** Prefix mode timeout duration in ms */
 const PREFIX_TIMEOUT_MS = 2000;
 /** How long to show "Unknown: [key]" error */
@@ -688,8 +707,7 @@ export function useKeyboard() {
         // identically on Windows / Linux / macOS.
         const { customKeybindings } = store.getState();
         if (customKeybindings.length === 0 || !onWorkspaces) return false;
-        const pressed = formatKeyCombo(literalCtrl, shift, alt, key);
-        const match = customKeybindings.find((kb) => kb.key === pressed);
+        const match = customKeybindingFor(customKeybindings, { ctrl: literalCtrl, shift, alt, key, code });
         if (!match) return false;
         // A chat-v2 pane hides its shell: a macro typed there would be input
         // the user cannot see, so the key is left to the chat.
