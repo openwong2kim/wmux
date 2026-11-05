@@ -89,9 +89,10 @@ function foldWindowsSpelling(normalized: string): string {
 const DEVICE_SPELLING = /^(?:\/\/[?.]\/(?!volume\{)|\/\?\?\/)/;
 
 /** A user's home inside a share or a volume: `/users/<name>` (an admin share
- *  such as `c$`, a share of the Users folder, or a volume root), and
- *  `/home/<name>` or `/root` in a WSL distro. */
-const HOME_IN_SHARE = /^(?:\/users\/[^/]+|\/home\/[^/]+|\/root)(?=\/|$)/;
+ *  such as `c$`, a share of the Users folder, or a volume root), and in a WSL
+ *  distro `/home/<name>`, `/root`, or a Windows home through its drive mount
+ *  (`/mnt/c/users/<name>`). */
+const HOME_IN_SHARE = /^(?:\/users\/[^/]+|\/home\/[^/]+|\/root|\/mnt\/[a-z]\/users\/[^/]+)(?=\/|$)/;
 
 /**
  * A share or volume path (`\\host\share\...`, `\\?\Volume{…}\...`): a WSL

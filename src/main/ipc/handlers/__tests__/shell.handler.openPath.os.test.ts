@@ -86,7 +86,7 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
     const handler = getHandler(IPC.SHELL_OPEN_PATH);
     const result = await handler(fakeEvent, '/etc/hosts');
     // What was checked is what opens: the real path (/private/etc on macOS).
-    expect(openPath).toHaveBeenCalledWith(fs.realpathSync('/etc/hosts'));
+    expect(openPath).toHaveBeenCalledWith(fs.realpathSync.native('/etc/hosts'));
     expect(result).toEqual({ ok: true, error: undefined });
     expect(showItemInFolder).not.toHaveBeenCalled();
   });
@@ -246,7 +246,8 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
         fs.writeFileSync(path.join(dir, 'notes.md'), 'x');
         fs.symlinkSync(path.join(dir, 'notes.md'), path.join(dir, 'link.md'));
         await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, path.join(dir, 'link.md'));
-        expect(openPath).toHaveBeenCalledWith(fs.realpathSync(path.join(dir, 'notes.md')));
+        // The native realpath, as the handler uses: on Windows it also expands 8.3 names.
+        expect(openPath).toHaveBeenCalledWith(fs.realpathSync.native(path.join(dir, 'notes.md')));
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }

@@ -216,6 +216,7 @@ describe('isSensitivePath — Windows path spellings', () => {
     '\\\\localhost\\c$\\Users\\me\\.netrc',
     '\\\\?\\UNC\\localhost\\c$\\users\\me\\.npmrc',
     '\\\\localhost\\Users\\me\\.ssh\\id_rsa',
+    '\\\\wsl$\\Ubuntu\\mnt\\c\\Users\\me\\.ssh\\id_rsa',
     '\\\\.\\PhysicalDrive0',
     '\\\\.\\GLOBALROOT\\Device\\HarddiskVolume3\\Users\\tester\\notes.md',
   ])('blocks %s', (p) => {
