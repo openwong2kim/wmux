@@ -112,6 +112,8 @@ export class FsJobQueue {
       await this.scan(src, 'removed'); // Refuse credential descendants before moving a tree.
       this.checkLocks([src, dest]);
       await this.clear(src, 'removed');
+      // Again just before: rename(2) would replace an entry that appeared since.
+      if (await exists(dest)) fail('exists');
       await fs.promises.rename(src, dest);
       return { ok: true, path: dest };
     } catch (e) { return { ok: false, reason: reasonOf(e) }; }
@@ -190,10 +192,15 @@ export class FsJobQueue {
             if (job.kind === 'move' && !(await exists(dest))) {
               try {
                 const from = await accessible(src);
+                const to = await accessible(dest, true);
                 await this.clear(from, 'removed');
-                await fs.promises.rename(from, await accessible(dest, true));
-                job.doneBytes += totals[i].bytes; job.doneItems += totals[i].items;
-                continue;
+                // Again just before: rename(2) would replace an entry that
+                // appeared since. One that did goes the copy way, under the conflict rule.
+                if (!(await exists(to))) {
+                  await fs.promises.rename(from, to);
+                  job.doneBytes += totals[i].bytes; job.doneItems += totals[i].items;
+                  continue;
+                }
               } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e; }
             }
             const complete = await this.copy(src, dest, conflict, r);
@@ -264,7 +271,11 @@ export class FsJobQueue {
         // link is exclusive, unlike rename on POSIX: a new destination never gets clobbered.
         if (s.isSymbolicLink()) await fs.promises.symlink(await fs.promises.readlink(temp), dest);
         else await linkOrRename(temp, dest);
-      } else await fs.promises.rename(temp, dest);
+      } else {
+        // An overwrite takes the entry that was there away: the same check as a trash of it.
+        await this.clear(dest, 'removed');
+        await fs.promises.rename(temp, dest);
+      }
       job.doneItems++;
       return true;
     } finally { await fs.promises.rm(temp, { force: true }); }
