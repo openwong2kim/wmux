@@ -74,15 +74,16 @@ function formatKeyCombo(ctrl: boolean, shift: boolean, alt: boolean, key: string
  * binding recorded on this layout always wins. On a layout whose digit row
  * needs Shift for the digit (French AZERTY), Control and the 8 key do not
  * type `Ctrl+8`, so a digit binding such as the shipped macOS `Ctrl+8`
- * default also matches the physical digit key (#3088).
+ * default also matches the physical digit key (#3088). Not with AltGr: that
+ * digit key types a character of its own, which a binding must not take.
  */
 export function customKeybindingFor<T extends { key: string }>(
   customKeybindings: readonly T[],
-  press: { ctrl: boolean; shift: boolean; alt: boolean; key: string; code: string },
+  press: { ctrl: boolean; shift: boolean; alt: boolean; key: string; code: string; altGraph?: boolean },
 ): T | undefined {
   const typed = formatKeyCombo(press.ctrl, press.shift, press.alt, press.key);
   const match = customKeybindings.find((kb) => kb.key === typed);
-  if (match || !/^Digit\d$/.test(press.code)) return match;
+  if (match || press.altGraph || !/^Digit\d$/.test(press.code)) return match;
   const physical = formatKeyCombo(press.ctrl, press.shift, press.alt, press.code.slice('Digit'.length));
   return customKeybindings.find((kb) => kb.key === physical);
 }
@@ -707,7 +708,9 @@ export function useKeyboard() {
         // identically on Windows / Linux / macOS.
         const { customKeybindings } = store.getState();
         if (customKeybindings.length === 0 || !onWorkspaces) return false;
-        const match = customKeybindingFor(customKeybindings, { ctrl: literalCtrl, shift, alt, key, code });
+        const match = customKeybindingFor(customKeybindings, {
+          ctrl: literalCtrl, shift, alt, key, code, altGraph: e.getModifierState('AltGraph'),
+        });
         if (!match) return false;
         // A chat-v2 pane hides its shell: a macro typed there would be input
         // the user cannot see, so the key is left to the chat.

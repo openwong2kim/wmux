@@ -32,6 +32,13 @@ describe('customKeybindingFor (#3088)', () => {
     expect(customKeybindingFor(bindings('Ctrl+8'), ctrl('_', 'Minus'))).toBeUndefined();
     expect(customKeybindingFor(bindings('Ctrl+A'), ctrl('q', 'KeyA'))).toBeUndefined();
   });
+
+  it('leaves an AltGr digit to the character it types', () => {
+    const altGr = { ctrl: true, shift: false, alt: true, key: '{', code: 'Digit7' };
+    expect(customKeybindingFor(bindings('Ctrl+Alt+7'), { ...altGr, altGraph: true })).toBeUndefined();
+    expect(customKeybindingFor(bindings('Ctrl+Alt+7'), altGr)?.key).toBe('Ctrl+Alt+7');
+    expect(customKeybindingFor(bindings('Ctrl+Alt+{'), { ...altGr, altGraph: true })?.key).toBe('Ctrl+Alt+{');
+  });
 });
 
 let container: HTMLDivElement;
@@ -49,7 +56,10 @@ beforeEach(() => {
       state.workspaces = [ws];
       state.activeWorkspaceId = ws.id;
       state.shortcutOverrides = {};
-      state.customKeybindings = [{ key: 'Ctrl+8', label: 'resume', command: 'claude --resume' }] as typeof state.customKeybindings;
+      state.customKeybindings = [
+        { key: 'Ctrl+8', label: 'resume', command: 'claude --resume' },
+        { key: 'Ctrl+Alt+8', label: 'other', command: 'echo other' },
+      ] as typeof state.customKeybindings;
       state.setPrefixMode(false);
     });
   });
@@ -72,5 +82,12 @@ describe('useKeyboard — a digit custom keybinding on an AZERTY layout (#3088)'
     const event = new KeyboardEvent('keydown', { key: '_', code: 'Digit8', ctrlKey: true, bubbles: true, cancelable: true });
     act(() => { window.dispatchEvent(event); });
     expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('leaves AltGr and the 8 key to the character they type', () => {
+    const event = new KeyboardEvent('keydown', { key: '[', code: 'Digit8', ctrlKey: true, altKey: true, modifierAltGraph: true, bubbles: true, cancelable: true } as KeyboardEventInit);
+    expect(event.getModifierState('AltGraph')).toBe(true);
+    act(() => { window.dispatchEvent(event); });
+    expect(event.defaultPrevented).toBe(false);
   });
 });
