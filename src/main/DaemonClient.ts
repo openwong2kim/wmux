@@ -1455,7 +1455,9 @@ export class DaemonClient extends EventEmitter {
     });
 
     socket.on('close', () => {
-      if (!this.connected) return; // guard against double emission
+      // A second emission, or a late close from a socket that a disconnect()
+      // and a new connect() already replaced: neither is this connection's.
+      if (!this.connected || this.controlPipe !== socket) return;
       this.connected = false;
       this.controlPipe = null;
       this.controlBuffer = '';
