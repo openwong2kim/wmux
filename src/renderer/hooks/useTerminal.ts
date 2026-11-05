@@ -4100,6 +4100,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
     }
     updateEnginePending();
+    // The swap's copies of the old screen are written (transplant) or handed
+    // to swapFinishRef (fallback) by now. Closures this mount keeps for its
+    // whole life share this scope, so a carry still holding them kept every
+    // swapped pane's old screen in memory for as long as the pane lived.
+    if (carry) { carry.fallback = null; carry.transplant = null; }
 
     // Phase 3 hydrate-before-read: MCP buffer reads (pane.search /
     // input.readScreen) must not scan a stale hidden pane. Dirty → full
