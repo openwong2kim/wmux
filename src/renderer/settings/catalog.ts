@@ -134,6 +134,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'splitcwd', tab: 'terminal', labelKey: 'settings.splitInheritsCwd', descKey: 'settings.splitInheritsCwdDesc', synonyms: 'cwd split inherit' },
   { id: 'openfilelinksin', tab: 'terminal', labelKey: 'settings.openFileLinksIn', descKey: 'settings.openFileLinksInDesc', synonyms: 'file path link click editor tab os opener system default app 파일 링크 편집기 열기' },
   { id: 'closeonexit', tab: 'terminal', labelKey: 'settings.closeTabOnShellExit', descKey: 'settings.closeTabOnShellExitDesc', synonyms: 'exit close tab shell ctrl+d' },
+  { id: 'a2a-terminal-names', tab: 'terminal', labelKey: 'settings.a2aTerminalNames', descKey: 'settings.a2aTerminalNamesDesc', synonyms: 'a2a name terminal title osc agent rename sender' },
   { id: 'plaindragselect', tab: 'terminal', labelKey: 'settings.plainDragSelect', descKey: 'settings.plainDragSelectDesc', synonyms: 'mouse drag select selection copy highlight codex tracking shift option alt 드래그 선택 마우스' },
   { id: 'ime', tab: 'terminal', labelKey: 'settings.imeResidueGuard', descKey: 'settings.imeResidueGuardDesc', synonyms: 'ime korean cjk hangul 한글 입력' },
   { id: 'retention', tab: 'terminal', labelKey: 'settings.hiddenPaneRetention', descKey: 'settings.hiddenPaneRetentionDesc', synonyms: 'hidden render cpu park' },

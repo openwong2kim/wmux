@@ -3700,6 +3700,8 @@ export const en = {
   'settings.splitInheritsCwdDesc': 'A pane created by splitting starts in the original pane\'s current directory.',
   'settings.closeTabOnShellExit': 'Close the tab when its shell exits cleanly',
   'settings.closeTabOnShellExitDesc': 'Typing exit or pressing Ctrl+D closes the tab. A shell that ends with an error, and a pane wmux restarts on its own, stay open.',
+  'settings.a2aTerminalNames': 'Use agent terminal names as A2A names',
+  'settings.a2aTerminalNamesDesc': 'An agent terminal\'s own title becomes its A2A name, after any name you set by renaming the tab. Any program or output in that terminal can change the title — a file or log line carrying an escape sequence sets it the same way the agent\'s rename does, and wmux cannot tell which program wrote it. A name you set by renaming the tab always wins.',
   'settings.openFileLinksIn': 'Open file links in',
   'settings.openFileLinksInDesc': 'Where a file path you click in a terminal opens.',
   'settings.openFileLinksInWmux': 'wmux editor',

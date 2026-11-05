@@ -359,6 +359,9 @@ function cloneStashedPanes(
             // title on the next OSC 0 — a small loss, but a silent one.
             titleLocked: s.titleLocked,
             autoTitle: s.autoTitle,
+            // The A2A party name the rename recorded; a salvage that drops it
+            // would silently change what other agents read for this terminal.
+            userName: s.userName,
             // #2398 — a dead pane's staged recovery (its source session, cwd
             // candidates, WSL target and resume binding) exists nowhere else.
             pendingRecovery: s.pendingRecovery,
@@ -444,6 +447,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalOpenFileLinksIn: state.terminalOpenFileLinksIn,
     terminalSharedWebgl: state.terminalSharedWebgl,
     terminalWongtty: state.terminalWongtty,
+    a2aTerminalNames: state.a2aTerminalNames,
     splitInheritsCwd: state.splitInheritsCwd,
     closeTabOnShellExit: state.closeTabOnShellExit,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,

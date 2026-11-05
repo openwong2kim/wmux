@@ -3479,6 +3479,8 @@ export const zh = {
   'settings.splitInheritsCwdDesc': '通过分割创建的面板会从原始面板的当前目录启动。',
   'settings.closeTabOnShellExit': 'Shell 正常退出时关闭标签页',
   'settings.closeTabOnShellExitDesc': '输入 exit 或按 Ctrl+D 会关闭标签页。以错误结束的 Shell，以及由 wmux 自动重启的面板，会保持打开。',
+  'settings.a2aTerminalNames': '将智能体终端名称用作 A2A 名称',
+  'settings.a2aTerminalNamesDesc': '智能体终端的自身标题会成为其 A2A 名称，仅次于通过重命名标签页设置的名称。该终端中的任何程序或输出都可以更改标题——带有转义序列的文件或日志行会像智能体的重命名一样设置标题，wmux 无法分辨是哪个程序写入的。通过重命名标签页设置的名称始终优先。',
   'settings.openFileLinksIn': '文件链接打开方式',
   'settings.openFileLinksInDesc': '在终端中点击文件路径时的打开位置。',
   'settings.openFileLinksInWmux': 'wmux 编辑器',

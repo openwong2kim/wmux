@@ -17,9 +17,9 @@ import type { Surface, Workspace } from '../../../../shared/types';
 
 let container: HTMLDivElement;
 let root: Root;
-const updateSurfaceTitle = vi.fn();
+const renameSurface = vi.fn();
 const resetSurfaceTitle = vi.fn();
-let realActions: { updateSurfaceTitle: unknown; resetSurfaceTitle: unknown };
+let realActions: { renameSurface: unknown; resetSurfaceTitle: unknown };
 
 function activeWs(): Workspace {
   return useStore
@@ -81,15 +81,15 @@ function menuItem(label: string): HTMLElement | undefined {
 describe('SurfaceTabs — tab rename entry points', () => {
   beforeEach(() => {
     const st = useStore.getState();
-    realActions = { updateSurfaceTitle: st.updateSurfaceTitle, resetSurfaceTitle: st.resetSurfaceTitle };
-    useStore.setState({ updateSurfaceTitle, resetSurfaceTitle } as never);
+    realActions = { renameSurface: st.renameSurface, resetSurfaceTitle: st.resetSurfaceTitle };
+    useStore.setState({ renameSurface, resetSurfaceTitle } as never);
   });
 
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
     useStore.setState(realActions as never);
-    updateSurfaceTitle.mockReset();
+    renameSurface.mockReset();
     resetSurfaceTitle.mockReset();
   });
 
@@ -118,7 +118,7 @@ describe('SurfaceTabs — tab rename entry points', () => {
     let input = tabInput('s1')!;
     typeInto(input, '  api-server ');
     key(input, 'Enter');
-    expect(updateSurfaceTitle).toHaveBeenCalledWith('s1', 'api-server');
+    expect(renameSurface).toHaveBeenCalledWith('s1', 'api-server');
 
     act(() => { document.dispatchEvent(new CustomEvent(RENAME_ACTIVE_TAB_EVENT)); });
     input = tabInput('s1')!;
@@ -143,7 +143,7 @@ describe('SurfaceTabs — tab rename entry points', () => {
 
     expect(tabInput('s1')).toBeNull();
     expect(resetSurfaceTitle).not.toHaveBeenCalled();
-    expect(updateSurfaceTitle).not.toHaveBeenCalled();
+    expect(renameSurface).not.toHaveBeenCalled();
   });
 
   it('the renameTab action opens the active tab of the focused pane only', () => {

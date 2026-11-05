@@ -91,8 +91,8 @@ describe('WorkTabs', () => {
   });
 
   it('double-click renames a work tab through the store', () => {
-    const updateSurfaceTitle = vi.fn();
-    act(() => { useStore.setState({ updateSurfaceTitle } as never); });
+    const renameSurface = vi.fn();
+    act(() => { useStore.setState({ renameSurface } as never); });
     render();
     const tab = document.querySelector<HTMLElement>('[data-work-tab-id="e1"]')!;
     act(() => { tab.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); });
@@ -103,7 +103,7 @@ describe('WorkTabs', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
-    expect(updateSurfaceTitle).toHaveBeenCalledWith('e1', 'config');
+    expect(renameSurface).toHaveBeenCalledWith('e1', 'config');
   });
 
   it('workTabTitle falls back to the browser label', () => {

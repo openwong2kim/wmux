@@ -1698,6 +1698,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (data.terminalCompactScrollback === true) state.terminalCompactScrollback = true;
       if (data.terminalSharedWebgl === true) state.terminalSharedWebgl = true;
       if (data.terminalWongtty === true) state.terminalWongtty = true;
+      if (data.a2aTerminalNames === true) state.a2aTerminalNames = true;
       if (data.splitInheritsCwd != null) state.splitInheritsCwd = data.splitInheritsCwd;
       if (data.closeTabOnShellExit != null) state.closeTabOnShellExit = data.closeTabOnShellExit;
       if (data.imeResidueGuardEnabled != null) state.imeResidueGuardEnabled = data.imeResidueGuardEnabled;

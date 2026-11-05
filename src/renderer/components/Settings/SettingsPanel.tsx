@@ -1780,6 +1780,8 @@ function TabTerminal() {
   const setSplitInheritsCwd = useStore((s) => s.setSplitInheritsCwd);
   const closeTabOnShellExit = useStore((s) => s.closeTabOnShellExit);
   const setCloseTabOnShellExit = useStore((s) => s.setCloseTabOnShellExit);
+  const a2aTerminalNames = useStore((s) => s.a2aTerminalNames);
+  const setA2aTerminalNames = useStore((s) => s.setA2aTerminalNames);
   const plainDragSelectEnabled = useStore((s) => s.plainDragSelectEnabled);
   const setPlainDragSelectEnabled = useStore((s) => s.setPlainDragSelectEnabled);
   const imeResidueGuardEnabled = useStore((s) => s.imeResidueGuardEnabled);
@@ -1928,6 +1930,13 @@ function TabTerminal() {
             checked={closeTabOnShellExit}
             onChange={setCloseTabOnShellExit}
             label={t('settings.closeTabOnShellExit')}
+          />
+        </SettingRow>
+        <SettingRow id="a2a-terminal-names" label={t('settings.a2aTerminalNames')} description={t('settings.a2aTerminalNamesDesc')}>
+          <Toggle
+            checked={a2aTerminalNames}
+            onChange={setA2aTerminalNames}
+            label={t('settings.a2aTerminalNames')}
           />
         </SettingRow>
       </SettingsSection>

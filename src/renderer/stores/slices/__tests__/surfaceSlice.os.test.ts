@@ -376,6 +376,51 @@ describe('surfaceSlice.resetSurfaceTitle', () => {
   });
 });
 
+describe('surfaceSlice.renameSurface', () => {
+  function harness() {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    return { slice, surfaceId: pane.surfaces[0].id, surface: pane.surfaces[0] };
+  }
+
+  it('sets the title, locks it and records the userName', () => {
+    const { slice, surfaceId, surface } = harness();
+    slice.renameSurface(surfaceId, 'api-server');
+
+    expect(surface.title).toBe('api-server');
+    expect(surface.titleLocked).toBe(true);
+    expect(surface.userName).toBe('api-server');
+  });
+
+  it('keeps a coordinate-shaped name as the title only, never as a userName', () => {
+    const { slice, surfaceId, surface } = harness();
+    slice.renameSurface(surfaceId, 'api-server');
+    slice.renameSurface(surfaceId, 'w10-2024 report');
+
+    expect(surface.title).toBe('w10-2024 report');
+    expect(surface.titleLocked).toBe(true);
+    expect(surface.userName).toBeUndefined();
+  });
+
+  it('never takes a coordinate-shaped userName, even with a hidden format character', () => {
+    const { slice, surfaceId, surface } = harness();
+    slice.renameSurface(surfaceId, 'w\u200b1-2');
+
+    expect(surface.userName).toBeUndefined();
+  });
+
+  it('is cleared by resetSurfaceTitle', () => {
+    const { slice, surfaceId, surface } = harness();
+    slice.renameSurface(surfaceId, 'api-server');
+    slice.resetSurfaceTitle(surfaceId);
+
+    expect(surface.userName).toBeUndefined();
+  });
+});
+
 describe('surfaceSlice.updateBrowserUrl', () => {
   function harnessWithBrowser() {
     const h = createHarness();

@@ -636,7 +636,7 @@ export default function SurfaceTabs({
   // it, so the user's name sticks. Mirrors the workspace double-click rename.
   // Also reachable from the header menu and the renameTab action. An empty
   // name gives the tab back to the shell (resetSurfaceTitle).
-  const updateSurfaceTitle = useStore((s) => s.updateSurfaceTitle);
+  const renameSurface = useStore((s) => s.renameSurface);
   const resetSurfaceTitle = useStore((s) => s.resetSurfaceTitle);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
@@ -668,7 +668,7 @@ export default function SurfaceTabs({
       return;
     }
     const trimmed = editName.trim();
-    if (trimmed) updateSurfaceTitle(surfaceId, trimmed);
+    if (trimmed) renameSurface(surfaceId, trimmed);
     else resetSurfaceTitle(surfaceId);
     setEditingId(null);
   };
