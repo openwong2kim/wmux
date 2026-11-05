@@ -19,6 +19,7 @@ import { EXTERNAL_SESSIONS_IPC, type ExternalSession, type ExternalSessionsApi }
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import { START_POLARITY_STORAGE_KEY, resolveStartPolarity, startPaintCss } from '../shared/windowStartPaint';
 import { startLocaleFromArgv } from '../shared/startLocale';
+import { localHostNameFromArgv } from '../shared/localHostName';
 import { IPC } from '../shared/constants';
 import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
 import type { A2aSpawnAskResult, A2aSpawnOutgoingList, A2aSpawnPolicySetResult, A2aSpawnPolicyV1, A2aSpawnRequestSummary, A2aSpawnUiAsk } from '../shared/a2aSpawn';
@@ -321,6 +322,9 @@ const electronAPI = {
   // The UI locale saved in session.json, or null: index.tsx loads its table
   // before the first render (shared/startLocale.ts).
   startLocale: startLocaleFromArgv(process.argv),
+  // This machine's host name, or null: a terminal `file://<host>/path` link
+  // naming it is local (shared/localHostName.ts).
+  localHostName: localHostNameFromArgv(process.argv),
   // The Windows build number (eg. 19045), or null off Windows / when it cannot
   // be read. xterm needs this SYNCHRONOUSLY at Terminal construction to pick
   // its ConPTY behaviour, so it is a static value here rather than an IPC call.
