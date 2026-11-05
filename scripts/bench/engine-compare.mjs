@@ -6,6 +6,8 @@
 //   node scripts/bench/engine-compare.mjs --cdp-port <port> --case throughput|memory|input
 //     [--engine xterm|wongtty|both] [--runs 5] [--file <100 MB text>] [--json out.json]
 //     [--claude-cmd '<shell command that starts Claude Code in a sandbox>']
+//     [--no-clipboard]   spot case: never copy or read the system clipboard
+//                        (also when BENCH_NO_CLIPBOARD=1), for a shared machine
 //
 // Every number is taken inside the renderer (performance.now), from probes this
 // script injects; CDP transport time is not in them. The probes only observe:
@@ -105,14 +107,10 @@ async function run(line) {
   await page.keyboard.press('Enter');
 }
 
-// wongtty renders the same xterm DOM classes, so the DOM cannot tell the
-// engines apart. The Labs switch says which engine is chosen; each pane logs
-// "[wmux:engine-swap] ptyId=<id> from=<a> to=<b>" when its swap lands.
-const swaps = [];
-page.on('console', (msg) => {
-  const m = /\[wmux:engine-swap\] ptyId=(\S+) from=(\w+) to=(\w+)/.exec(msg.text());
-  if (m) swaps.push({ ptyId: m[1], from: m[2], to: m[3] });
-});
+// wongtty (0.0.4 on) marks its terminal element data-engine="wongtty";
+// xterm.js sets no such attribute. A swap has landed when the count of
+// wongtty terminals matches the engine asked for.
+const wongttyTerminals = () => page.locator('[data-engine="wongtty"]').count();
 
 async function paneCount() {
   return page.locator('textarea[aria-label="Terminal input"]').count();
@@ -121,8 +119,19 @@ async function paneCount() {
 async function openLabsSwitch() {
   // Settings opens from the More menu; its keyboard shortcut is a native menu
   // accelerator, which keys sent over CDP do not reach.
-  await page.getByLabel('More', { exact: true }).click();
-  await page.getByRole('menuitem', { name: /^Settings/ }).click();
+  // Settings may still be open from an earlier step; the menu is then covered.
+  const title = page.locator('[data-testid="settings-page-title"]');
+  for (let attempt = 0; (await title.count()) === 0; attempt++) {
+    if (attempt === 3) throw new Error('settings did not open');
+    await page.keyboard.press('Escape');
+    await page.getByLabel('More', { exact: true }).click();
+    const item = page.getByRole('menuitem', { name: /^Settings/ });
+    try {
+      await item.waitFor({ timeout: 3000 });
+      await item.click();
+      await title.waitFor({ timeout: 5000 });
+    } catch { /* menu or page did not show: retry */ }
+  }
   await page.locator('[data-settings-tab="labs"]').click();
   // The row also holds an info button; the toggle is the switch.
   return page.locator('[data-setting-id="labs-wongtty"]').getByRole('switch');
@@ -145,13 +154,12 @@ async function setEngine(engine) {
     return;
   }
   const panes = await paneCount();
-  const from = swaps.length;
   await toggle.click();
   await closeSettings();
   const deadline = Date.now() + 30_000;
-  const landed = () => new Set(swaps.slice(from).filter((s) => s.to === engine).map((s) => s.ptyId)).size;
-  while (landed() < panes || (await page.evaluate(() => document.documentElement.dataset.terminalEnginePending ?? '0')) !== '0') {
-    if (Date.now() > deadline) throw new Error(`engine did not become ${engine}: ${landed()}/${panes} panes swapped`);
+  const landed = async () => (want ? await wongttyTerminals() : panes - (await wongttyTerminals()));
+  while ((await landed()) < panes || (await page.evaluate(() => document.documentElement.dataset.terminalEnginePending ?? '0')) !== '0') {
+    if (Date.now() > deadline) throw new Error(`engine did not become ${engine}: ${await landed()}/${panes} panes swapped`);
     await sleep(200);
   }
   await sleep(1000);
@@ -262,12 +270,12 @@ async function memory(engine, n) {
     await focusTerminal(i);
     await run(gen);
   }
-  // Done when every pane has printed its 10k lines (~44 UTF-16 units each;
+  // Done when every pane has printed its 10k lines (~40 UTF-16 units each, depending on the prompt;
   // onData hands over strings) and the output has been quiet for 3 s.
   const deadline = Date.now() + 600_000;
   for (;;) {
     const { bytes, quietMs } = await page.evaluate(() => ({ bytes: window.__bench.allBytes ?? 0, quietMs: performance.now() - (window.__bench.lastDataAt ?? 0) }));
-    if (bytes - startBytes > 10 * 10_000 * 40 && quietMs > 3000) break;
+    if (bytes - startBytes > 10 * 10_000 * 30 && quietMs > 3000) break;
     if (Date.now() > deadline) throw new Error(`pane output never settled (${bytes - startBytes} bytes)`);
     await sleep(500);
   }
@@ -308,7 +316,15 @@ async function inputLatency(engine, n) {
     await sleep(30);
   }
   await page.keyboard.press('Control+u');
-  if (args['claude-cmd'] && args.target === 'claude') { await page.keyboard.press('Control+c'); await page.keyboard.press('Control+c'); }
+  if (args['claude-cmd'] && args.target === 'claude') {
+    // Exit Claude Code and wait for the shell, so the next run's command is
+    // not typed into a closing Claude.
+    await page.keyboard.press('Control+c'); await sleep(300); await page.keyboard.press('Control+c');
+    await page.evaluate(() => { window.__bench.cap = ''; });
+    const until = Date.now() + 15_000;
+    while (!/\x1b\]133;A/.test(await page.evaluate(() => window.__bench.cap ?? '')) && Date.now() < until) await sleep(200);
+    await sleep(500);
+  }
   const q = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return +s[Math.min(s.length - 1, Math.floor(p * s.length))].toFixed(1); };
   const r = {
     keys: samples.length,
@@ -347,7 +363,8 @@ async function spot(engine) {
 
   // OSC 8 on the top row; hover it (never click: that opens a browser).
   await reset();
-  await run("printf '\\033]8;;https://example.com/osc8\\033\\\\OSC8-LINK\\033]8;;\\033\\\\ plain\\n'");
+  // `clear` in the same command line, so the link lands on the top row.
+  await run("clear; printf '\\033]8;;https://example.com/osc8\\033\\\\OSC8-LINK\\033]8;;\\033\\\\ plain\\n'");
   await sleep(800);
   const box = await screen.boundingBox();
   await page.mouse.move(box.x + 20, box.y + 8);
@@ -363,17 +380,24 @@ async function spot(engine) {
   await reset();
   await run("printf 'COPYME-12345 가나다 漢字\\n'");
   await sleep(800);
-  const saved = clip();
+  // The copy check writes the system clipboard (the copy key) and reads it
+  // back; on a shared machine it is skipped and only the selection is drawn.
+  const noClipboard = args['no-clipboard'] === 'true' || process.env.BENCH_NO_CLIPBOARD === '1';
+  const saved = noClipboard ? null : clip();
   await page.mouse.move(box.x + 2, box.y + 8);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2, box.y + 8, { steps: 8 });
   await page.mouse.move(box.x + box.width - 4, box.y + 8, { steps: 8 });
   await page.mouse.up();
   await shot('selection');
-  await page.keyboard.press(`${mod}+c`);
-  await sleep(500);
-  r.copied = clip().trim();
-  clip(saved);
+  if (noClipboard) {
+    r.copied = 'skipped (--no-clipboard)';
+  } else {
+    await page.keyboard.press(`${mod}+c`);
+    await sleep(500);
+    r.copied = clip().trim();
+    clip(saved);
+  }
   await page.mouse.click(box.x + box.width / 2, box.y + box.height - 5);
 
   await reset();
