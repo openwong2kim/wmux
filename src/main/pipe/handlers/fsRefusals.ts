@@ -180,7 +180,17 @@ async function refusedRoots(): Promise<string[]> {
 
 /** How long a read of the refused roots' identities is reused: a scan checks every entry. */
 const IDENTITY_TTL_MS = 2_000;
-let identities: { at: number; key: string; ids: Promise<Set<string>>; reals: Promise<string[]> } | null = null;
+interface IdentityCache {
+  at: number;
+  key: string;
+  ids: Promise<Set<string>>;
+  reals: Promise<RootPath[]>;
+  roots: Promise<string[]>;
+  /** Every link the refused roots' spellings go through, or null when one could
+   *  not be followed. Read only by a trash of a link, so made on first use. */
+  links?: Promise<Set<string> | null>;
+}
+let identities: IdentityCache | null = null;
 
 /** A path's identity as an entry of its folder: the folder's device and inode
  *  plus the lowercase name. It holds for a file that is replaced (a new inode)
@@ -194,12 +204,56 @@ function refusedIdentities(): Promise<Set<string>> {
   return identityCache().ids;
 }
 
-/** The refused roots as given and once symlinks resolve, normalized for a prefix compare. */
-function refusedRootPaths(): Promise<string[]> {
+/** A refused root as given or once symlinks resolve: `key` for a prefix compare, `path` to look it up. */
+interface RootPath { key: string; path: string }
+
+/** The refused roots as given and once symlinks resolve. */
+function refusedRootPaths(): Promise<RootPath[]> {
   return identityCache().reals;
 }
 
-function identityCache(): { ids: Promise<Set<string>>; reals: Promise<string[]> } {
+/** Whether `p` is there. Only ENOENT and ENOTDIR say it is not: any other
+ *  error (a privacy refusal, an unreadable mount) counts as there. */
+async function present(p: string): Promise<boolean> {
+  try {
+    await fs.promises.lstat(p);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code !== 'ENOENT' && code !== 'ENOTDIR';
+  }
+}
+
+/** How many links one resolution may follow before it counts as a loop (as ELOOP). */
+const MAX_LINK_HOPS = 40;
+
+/**
+ * Resolve the absolute `p` the way the kernel does, component by component:
+ * a link is followed before a `..` after it, so `..` is never collapsed as
+ * text. Adds each link it goes through to `out` (normalized). Returns the
+ * resolved path, or null when a part cannot be looked up or the links loop.
+ */
+async function resolveThroughLinks(p: string, out: Set<string>, hops = { left: MAX_LINK_HOPS }): Promise<string | null> {
+  const { root } = path.parse(p);
+  let cur = root;
+  for (const name of p.slice(root.length).split(/[\\/]+/).filter(Boolean)) {
+    // `cur` is resolved, so joining a `..` onto it steps up from where the links led.
+    const next = path.join(cur, name);
+    const st = await fs.promises.lstat(next).catch(() => null);
+    if (!st) return null;
+    if (!st.isSymbolicLink()) { cur = next; continue; }
+    if (--hops.left < 0) return null;
+    out.add(normalizedPath(next));
+    const target = await fs.promises.readlink(next).catch(() => null);
+    if (target === null) return null;
+    const real = await resolveThroughLinks(path.isAbsolute(target) ? target : `${cur}${path.sep}${target}`, out, hops);
+    if (real === null) return null;
+    cur = real;
+  }
+  return cur;
+}
+
+function identityCache(): IdentityCache {
   const now = Date.now();
   const env = process.env;
   const key = JSON.stringify([os.homedir(), env.XDG_CONFIG_HOME, env.APPDATA, env.GH_CONFIG_DIR, env.CLOUDSDK_CONFIG]);
@@ -215,31 +269,86 @@ function identityCache(): { ids: Promise<Set<string>>; reals: Promise<string[]> 
     }));
     return set;
   });
-  const reals = roots.then(async (list) => {
-    const out = new Set<string>();
-    await Promise.all(list.map(async (root) => {
-      out.add(normalizedPath(root));
-      const real = await fs.promises.realpath(root).catch(() => null);
-      if (real) out.add(normalizedPath(real));
-    }));
-    return [...out];
-  });
-  identities = { at: now, key, ids, reals };
+  identities = { at: now, key, ids, reals: roots.then(rootPathsOf), roots };
   return identities;
 }
 
-const normalizedPath = (p: string) => path.resolve(plainSpelling(p)).replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+/** The roots as given and once symlinks resolve. */
+async function rootPathsOf(list: string[]): Promise<RootPath[]> {
+  const out = new Map<string, RootPath>();
+  await Promise.all(list.map(async (root) => {
+    out.set(normalizedPath(root), { key: normalizedPath(root), path: root });
+    const real = await fs.promises.realpath(root).catch(() => null);
+    if (real) out.set(normalizedPath(real), { key: normalizedPath(real), path: real });
+  }));
+  return [...out.values()];
+}
+
+/** Every link the roots that are there go through, or null when one could not be followed. */
+async function linksOf(list: string[]): Promise<Set<string> | null> {
+  const out = new Set<string>();
+  const resolved = await Promise.all(list.map(async (root) =>
+    !await present(root) || await resolveThroughLinks(root, out) !== null));
+  return resolved.every(Boolean) ? out : null;
+}
+
+/** Every link the refused roots' spellings go through, or null when that
+ *  cannot be told: one could not be followed, or on Windows, where a junction
+ *  is reported as a link and the Recycle Bin's handling of one is not pinned
+ *  down. */
+async function linksThroughRoots(fresh: boolean): Promise<Set<string> | null> {
+  if (process.platform === 'win32') return null;
+  if (fresh) return linksOf(await refusedRoots());
+  const cache = identityCache();
+  cache.links ??= cache.roots.then(linksOf);
+  return cache.links;
+}
+
+// NFC: APFS and NTFS take the composed and decomposed spellings of a name as one entry.
+const normalizedPath = (p: string) => path.resolve(plainSpelling(p)).normalize('NFC').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+
+/**
+ * What an operation does to a link: `kept` (a copy recreates it and leaves it
+ * in place) or `removed` (a trash takes only the link, not where it points).
+ * A copy also checks each folder it reads as `kept`: nothing is taken from it.
+ */
+export type LinkFate = 'kept' | 'removed';
 
 /** Whether moving, renaming or trashing `p` would carry a refused folder or file
- *  with it: one lies at or below `p`, as spelled or once links resolve. A link
- *  or junction above a refused folder is never traversed by the preflight, so
- *  this is what keeps it from being renamed out of the way. */
-export async function holdsRefusedRoot(p: string): Promise<boolean> {
-  const spellings = [normalizedPath(p)];
-  const real = await fs.promises.realpath(p).catch(() => null);
-  if (real) spellings.push(normalizedPath(real));
-  const roots = await refusedRootPaths();
-  return spellings.some((s) => roots.some((r) => r === s || r.startsWith(`${s}/`)));
+ *  with it: one is there at or below `p`, as spelled or once links resolve. A
+ *  link or junction above a refused folder is never traversed by the
+ *  preflight, so this is what keeps it from being renamed out of the way.
+ *  A refused path that is not there has nothing to carry (#3030); it is looked
+ *  up on each call, so one that appears is seen at once. Nor may it take away
+ *  a link a refused root's own spelling goes through: without it the root
+ *  would no longer resolve, and the folder it reached would no longer be
+ *  refused by identity.
+ *
+ *  `link` says `p` is a link and what the operation does to it. Then where it
+ *  points does not count (#3030): a link to the home folder or a config
+ *  folder can be copied or trashed. A move or rename passes no `link`, so
+ *  where a link points counts.
+ *
+ *  `fresh` reads the refused roots and their links again instead of the copy
+ *  kept for IDENTITY_TTL_MS: for the check just before a change. */
+export async function holdsRefusedRoot(p: string, link?: LinkFate, fresh = false): Promise<boolean> {
+  const spelled = normalizedPath(p);
+  const atOrUnder = (key: string) => key === spelled || key.startsWith(`${spelled}/`);
+  const spellings = [spelled];
+  let followLink = link === undefined;
+  if (link !== 'kept') {
+    const through = await linksThroughRoots(fresh);
+    if (through === null) followLink = true; // The roots' links cannot be told: check where it points.
+    else if ([...through].some(atOrUnder)) return true;
+  }
+  if (followLink) {
+    const real = await fs.promises.realpath(p).catch(() => null);
+    if (real) spellings.push(normalizedPath(real));
+  }
+  const roots = fresh ? await rootPathsOf(await refusedRoots()) : await refusedRootPaths();
+  const under = roots.filter((r) => spellings.some((s) => r.key === s || r.key.startsWith(`${s}/`)));
+  for (const r of under) if (await present(r.path)) return true;
+  return false;
 }
 
 /** Whether `canonical` (a resolved path, or one about to be created) is a
