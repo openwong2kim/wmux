@@ -376,6 +376,43 @@ describe('surfaceSlice.resetSurfaceTitle', () => {
   });
 });
 
+describe('surfaceSlice.renameSurface', () => {
+  function harness() {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    return { slice, surfaceId: pane.surfaces[0].id, surface: pane.surfaces[0] };
+  }
+
+  it('sets the title, locks it and records the userName', () => {
+    const { slice, surfaceId, surface } = harness();
+    slice.renameSurface(surfaceId, 'api-server');
+
+    expect(surface.title).toBe('api-server');
+    expect(surface.titleLocked).toBe(true);
+    expect(surface.userName).toBe('api-server');
+  });
+
+  it('keeps a coordinate-shaped name as a title only, never a userName', () => {
+    const { slice, surfaceId, surface } = harness();
+    slice.renameSurface(surfaceId, 'w1-2');
+
+    expect(surface.title).toBe('w1-2');
+    expect(surface.titleLocked).toBe(true);
+    expect(surface.userName).toBeUndefined();
+  });
+
+  it('is cleared by resetSurfaceTitle', () => {
+    const { slice, surfaceId, surface } = harness();
+    slice.renameSurface(surfaceId, 'api-server');
+    slice.resetSurfaceTitle(surfaceId);
+
+    expect(surface.userName).toBeUndefined();
+  });
+});
+
 describe('surfaceSlice.updateBrowserUrl', () => {
   function harnessWithBrowser() {
     const h = createHarness();

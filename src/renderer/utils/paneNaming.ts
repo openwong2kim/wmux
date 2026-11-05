@@ -25,6 +25,15 @@ import { getWorkspaceLeafPanes, type WorkspacePaneOwner } from '../../shared/pan
 // state) and slug (surfaceAgent mirror) and pass them in.
 
 /**
+ * `w<ws>-<pane>`, optionally with the `(agent)` suffix — the auto coordinate
+ * every pane already has. A deliberate terminal name that starts with it would
+ * read as (or shadow) a real pane's tag, so the rename refuses it.
+ */
+export function isAutoNameShape(name: string): boolean {
+  return /^w\d+-\d+/i.test(name);
+}
+
+/**
  * Build a pane's auto display name from its workspace + pane coordinates.
  *
  * Examples: `(1, 2, 'claude')` → `"w1-2(claude)"`; `(3, 1)` → `"w3-1"`.

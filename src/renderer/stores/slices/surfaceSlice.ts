@@ -11,7 +11,7 @@ import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { publishPaneClosed } from '../../events/publisher';
 import { panePrincipalId } from '../../../shared/principals';
-import { computePaneAutoName } from '../../utils/paneNaming';
+import { computePaneAutoName, isAutoNameShape } from '../../utils/paneNaming';
 import { recomputeWorkspacePorts } from './workspacePorts';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
 import { findRemoteSurface } from '../shadowWorkspace';
@@ -61,8 +61,14 @@ export interface SurfaceSlice {
   prevSurface: (paneId: string) => void;
   updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string) => void;
   updateSurfaceTitle: (surfaceId: string, title: string) => void;
+  /** The user's own tab rename: like updateSurfaceTitle, but also records the
+   *  name as the surface's `userName` (the A2A party name's highest source).
+   *  A name shaped like an auto coordinate (`w1-2`, `w1-2(claude)`) stays a
+   *  title only, never a `userName`, so a rename cannot shadow a real pane. */
+  renameSurface: (surfaceId: string, name: string) => void;
   /** Undo a manual rename: unlock the title and put back `autoTitle` (the
-   *  title the rename replaced), falling back to the shell name. */
+   *  title the rename replaced), falling back to the shell name. Also clears
+   *  the `userName` the rename recorded. */
   resetSurfaceTitle: (surfaceId: string) => void;
   updateSurfaceTitleByPty: (ptyId: string, title: string) => void;
   /** Tie a usage-limit-held tab to the tab its work went on in, each naming the other. */
@@ -558,6 +564,25 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     }
   }),
 
+  renameSurface: (surfaceId, name) => set((state: StoreState) => {
+    for (const ws of state.workspaces) {
+      for (const pane of getWorkspaceLeafPanes(ws)) {
+        const surface = pane.surfaces.find((s) => s.id === surfaceId);
+        if (surface) {
+          // The first rename keeps the title it replaces, for resetSurfaceTitle.
+          if (!surface.titleLocked) surface.autoTitle = surface.title;
+          surface.title = name;
+          surface.titleLocked = true;
+          // A coordinate-shaped name stays a title only: as a userName it would
+          // shadow (or read as) a real pane's tag in the resolver.
+          if (isAutoNameShape(name)) delete surface.userName;
+          else surface.userName = name;
+          return;
+        }
+      }
+    }
+  }),
+
   linkContinuedSurfaces: (fromPtyId, toPtyId, handoff) => set((state: StoreState) => {
     if (!fromPtyId || !toPtyId) return;
     const surfaces = state.workspaces.flatMap((ws) => getWorkspaceLeafPanes(ws).flatMap((pane) => pane.surfaces));
@@ -589,6 +614,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
           surface.title = surface.autoTitle || surface.shell || surface.title;
           delete surface.titleLocked;
           delete surface.autoTitle;
+          delete surface.userName;
         }
         return;
       }

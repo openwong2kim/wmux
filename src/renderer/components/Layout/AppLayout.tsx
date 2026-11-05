@@ -443,6 +443,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalCompactScrollback: state.terminalCompactScrollback,
     terminalSharedWebgl: state.terminalSharedWebgl,
     terminalWongtty: state.terminalWongtty,
+    a2aTerminalNames: state.a2aTerminalNames,
     splitInheritsCwd: state.splitInheritsCwd,
     closeTabOnShellExit: state.closeTabOnShellExit,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,

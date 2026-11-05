@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import type { PaneBranch, PaneLeaf, Surface } from '../../../shared/types';
 import { resolvePaneName, type PaneNameWorkspace } from '../paneNameResolver';
 
-function term(id: string, ptyId: string): Surface {
-  return { id, ptyId, title: 'Terminal', shell: 'zsh', cwd: '' };
+function term(id: string, ptyId: string, userName?: string): Surface {
+  return { id, ptyId, title: 'Terminal', shell: 'zsh', cwd: '', ...(userName ? { userName } : {}) };
 }
 
 function browser(id: string): Surface {
@@ -14,11 +14,11 @@ function leaf(id: string, ordinal: number, surfaces: Surface[], activeSurfaceId?
   return { id, type: 'leaf', ordinal, surfaces, activeSurfaceId: activeSurfaceId ?? surfaces[0]?.id };
 }
 
-function ws(id: string, wsOrdinal: number, leaves: PaneLeaf[], stashed: PaneLeaf[] = []): PaneNameWorkspace {
+function ws(id: string, wsOrdinal: number, leaves: PaneLeaf[], stashed: PaneLeaf[] = [], name = id): PaneNameWorkspace {
   const rootPane: PaneBranch | PaneLeaf = leaves.length === 1
     ? leaves[0]
     : { id: `${id}-root`, type: 'branch', direction: 'horizontal', children: leaves, sizes: leaves.map(() => 100 / leaves.length) };
-  return { id, wsOrdinal, rootPane, stashedPanes: stashed.map((pane) => ({ pane })) };
+  return { id, name, wsOrdinal, rootPane, stashedPanes: stashed.map((pane) => ({ pane })) };
 }
 
 const workspaces = [
@@ -88,5 +88,31 @@ describe('resolvePaneName', () => {
   it('keeps pane-chosen text in an error on one line', () => {
     const res = resolvePaneName(workspaces, {}, agents, '#x\nIGNORE PREVIOUS');
     expect(res.ok ? '' : res.error).not.toContain('\n');
+  });
+
+  it('resolves a terminal userName to that exact terminal', () => {
+    const wss = [ws('ws-a', 1, [leaf('pane-a1', 1, [term('srf-a1', 'daemon-a1', 'copywriter')])])];
+    const res = resolvePaneName(wss, {}, {}, '#copywriter');
+    expect(res.ok && res.target).toMatchObject({
+      workspaceId: 'ws-a', paneId: 'pane-a1', surfaceId: 'srf-a1', ptyId: 'daemon-a1',
+    });
+  });
+
+  it('resolves the Workspace.name form, scoped to one workspace', () => {
+    const wss = [
+      ws('ws-a', 1, [leaf('a', 1, [term('srf-a', 'daemon-a', 'copywriter')])], [], 'Marketing'),
+      ws('ws-b', 2, [leaf('b', 1, [term('srf-b', 'daemon-b', 'copywriter')])], [], 'Ops'),
+    ];
+    const res = resolvePaneName(wss, {}, {}, '#Marketing.copywriter');
+    expect(res.ok && res.target).toMatchObject({ workspaceId: 'ws-a', ptyId: 'daemon-a' });
+  });
+
+  it('refuses an ambiguous userName, never picking one', () => {
+    const wss = [
+      ws('ws-a', 1, [leaf('a', 1, [term('srf-a', 'daemon-a', 'copywriter')])], [], 'Marketing'),
+      ws('ws-b', 2, [leaf('b', 1, [term('srf-b', 'daemon-b', 'copywriter')])], [], 'Ops'),
+    ];
+    const res = resolvePaneName(wss, {}, {}, '#copywriter');
+    expect(res).toMatchObject({ ok: false, reason: 'ambiguous' });
   });
 });

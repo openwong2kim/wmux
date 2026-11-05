@@ -61,7 +61,7 @@ beforeEach(() => {
   for (const pty of [PTY_A, PTY_B]) s.setSurfaceAgent(pty, 'Claude Code', 'waiting', 'claude');
   s.hydrateAgentAlive({ [PTY_A]: true, [PTY_B]: true });
   s.hydrateCommandRunning({});
-  useStore.setState({ workspaces: [WS], paneGate: 'ready' });
+  useStore.setState({ workspaces: [WS], paneGate: 'ready', paneLabel: {} });
 });
 
 afterEach(() => {
@@ -89,12 +89,15 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
   });
 
   it('stores the names the message showed on the task, and whoami answers the same name', async () => {
+    // Distinct labels so the sender and receiver read different names — the
+    // assertions would pass even with from/to swapped.
+    useStore.setState({ paneLabel: { 'pane-1573-a': 'Alpha', 'pane-1573-b': 'Beta' } });
     const sent = await sendAtoB('review the login fix');
     const meta = useStore.getState().a2aTasks[sent.taskId!].metadata;
-    expect(meta.from).toMatchObject({ name: 'Shared', displayName: 'Shared.w0-0(claude)' });
-    expect(meta.to).toMatchObject({ name: 'Shared', displayName: 'Shared.w0-0(claude)' });
+    expect(meta.from).toMatchObject({ name: 'Shared', displayName: 'Shared.Alpha' });
+    expect(meta.to).toMatchObject({ name: 'Shared', displayName: 'Shared.Beta' });
     const me = await handleRpcMethod('a2a.whoami', { workspaceId: WS.id, senderPtyId: PTY_A });
-    expect(me).toMatchObject({ name: 'Shared', a2aName: 'Shared.w0-0(claude)' });
+    expect(me).toMatchObject({ name: 'Shared', a2aName: 'Shared.Alpha' });
   });
 
   it('an untitled task nudges with the id and sender only — the body is never a stand-in title', async () => {

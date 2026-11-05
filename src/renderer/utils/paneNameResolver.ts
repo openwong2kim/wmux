@@ -15,6 +15,7 @@ import { activeAgentSlug, computePaneAutoName, paneNameFields } from './paneNami
 
 export interface PaneNameWorkspace {
   id: string;
+  name: string;
   wsOrdinal?: number;
   rootPane: Pane;
   stashedPanes?: ReadonlyArray<{ pane?: Pane } | null | undefined>;
@@ -53,10 +54,13 @@ function targetSurface(leaf: PaneLeaf): { surfaceId: string; ptyId: string } {
 
 /**
  * Resolve a pane name. Accepts an optional leading `#`, an auto name (`w1-2`,
- * with or without the `(agent)` suffix) or a user label (trimmed,
- * case-insensitive). A coordinate match beats any label. Zero matches →
+ * with or without the `(agent)` suffix), a user label, or a terminal's
+ * `userName` (trimmed, case-insensitive). A `Workspace.name` form — the same
+ * name an A2A message shows — also resolves, scoping the match to one
+ * workspace. A coordinate match beats any label or `userName`. Zero matches →
  * not_found; more than one (legacy duplicate labels, or anything defensive) →
- * ambiguous, listing the candidates by their always-unique tags.
+ * ambiguous, listing the candidates by their always-unique tags; it never
+ * picks one.
  */
 export function resolvePaneName(
   workspaces: ReadonlyArray<PaneNameWorkspace>,
@@ -68,26 +72,43 @@ export function resolvePaneName(
   const shown = sanitizePaneTitle(rawName);
   if (!token) return { ok: false, reason: 'invalid', error: 'pane name is empty' };
 
-  const coord = AUTO_NAME_RE.exec(token);
+  // `Workspace.name` — an optional workspace prefix, split on the first dot.
+  // (A workspace name that itself contains a dot is the known unresolved
+  // ambiguity of the `Workspace.<name>` form.)
+  const dot = token.indexOf('.');
+  const wsToken = dot >= 0 ? token.slice(0, dot).trim() : undefined;
+  const partyToken = dot >= 0 ? token.slice(dot + 1).trim() : token;
+  if (!partyToken) return { ok: false, reason: 'invalid', error: `pane name "${shown}" is empty` };
+
+  const coord = AUTO_NAME_RE.exec(partyToken);
   const wsOrdinal = coord ? Number(coord[1]) : NaN;
   const paneOrdinal = coord ? Number(coord[2]) : NaN;
-  const wantedLabel = normalizePaneLabel(token);
+  const wantedLabel = normalizePaneLabel(partyToken);
 
-  // The coordinate wins outright: it is the one name guaranteed unique, so a
-  // legacy label spelled `w1-2` (refused for new labels) must never make the
-  // real `#w1-2` ambiguous.
-  const coordMatches: Array<{ ws: PaneNameWorkspace; leaf: PaneLeaf }> = [];
-  const labelMatches: Array<{ ws: PaneNameWorkspace; leaf: PaneLeaf }> = [];
+  type Match = { ws: PaneNameWorkspace; leaf: PaneLeaf; surface?: PaneLeaf['surfaces'][number] };
+  const coordMatches: Match[] = [];
+  const labelMatches: Match[] = [];
+  const nameMatches: Match[] = [];
   for (const ws of workspaces) {
+    if (wsToken && ws.name.trim().toLowerCase() !== wsToken.toLowerCase()) continue;
     for (const leaf of getWorkspaceLeafPanes(ws)) {
+      // The coordinate wins outright: it is the one name guaranteed unique, so
+      // a legacy label spelled `w1-2` (refused for new labels) must never make
+      // the real `#w1-2` ambiguous.
       if (coord && ws.wsOrdinal === wsOrdinal && leaf.ordinal === paneOrdinal) coordMatches.push({ ws, leaf });
       const label = paneLabel?.[leaf.id] ?? leaf.metadata?.label;
       if (typeof label === 'string' && label.trim() !== '' && normalizePaneLabel(label) === wantedLabel) {
         labelMatches.push({ ws, leaf });
       }
+      for (const surface of leaf.surfaces) {
+        const userName = surface.userName?.trim();
+        if (userName && userName.toLowerCase() === partyToken.toLowerCase()) {
+          nameMatches.push({ ws, leaf, surface });
+        }
+      }
     }
   }
-  const matches = coordMatches.length > 0 ? coordMatches : labelMatches;
+  const matches = coordMatches.length > 0 ? coordMatches : [...labelMatches, ...nameMatches];
 
   if (matches.length === 0) {
     return {
@@ -109,13 +130,18 @@ export function resolvePaneName(
     };
   }
 
-  const { ws, leaf } = matches[0];
+  const { ws, leaf, surface } = matches[0];
+  // A `userName` match pins the exact terminal that was named; a label or
+  // coordinate match resolves to the leaf's target terminal as before.
+  const target = surface && surface.ptyId
+    ? { surfaceId: surface.id, ptyId: surface.ptyId }
+    : targetSurface(leaf);
   return {
     ok: true,
     target: {
       workspaceId: ws.id,
       paneId: leaf.id,
-      ...targetSurface(leaf),
+      ...target,
       ...paneNameFields(paneLabel, surfaceAgent, ws, leaf),
     },
   };

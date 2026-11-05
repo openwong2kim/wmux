@@ -3639,6 +3639,8 @@ export const pl = {
   'settings.splitInheritsCwdDesc': 'Panel utworzony przez podział startuje w bieżącym katalogu panelu źródłowego.',
   'settings.closeTabOnShellExit': 'Zamknij kartę, gdy powłoka zakończy się poprawnie',
   'settings.closeTabOnShellExitDesc': 'Wpisanie exit lub naciśnięcie Ctrl+D zamyka kartę. Powłoka zakończona błędem oraz panel, który wmux sam uruchamia ponownie, pozostają otwarte.',
+  'settings.a2aTerminalNames': 'Używaj nazw terminali agentów jako nazw A2A',
+  'settings.a2aTerminalNamesDesc': 'Własny tytuł terminala agenta staje się jego nazwą A2A, po nazwie ustawionej przez zmianę nazwy karty. Każdy program lub tekst wypisany w tym terminalu może zmienić tytuł — plik lub linia logu z sekwencją escape ustawia go tak samo jak zmiana nazwy agenta, a wmux nie rozróżni, który program go zapisał. Nazwa ustawiona przez zmianę nazwy karty zawsze wygrywa.',
   'settings.plainDragSelect': "Zaznaczaj tekst przeciąganiem, nawet gdy aplikacja używa myszy",
   'settings.plainDragSelectDesc': "Zwykłe przeciągnięcie zaznacza tekst także w aplikacjach używających myszy, takich jak Codex; kliknięcie nadal trafia do aplikacji. Przytrzymaj Shift (macOS) lub Alt (Windows, Linux) podczas przeciągania, aby wysłać je do aplikacji.",
   'settings.imeResidueGuard': 'Czyść pozostałości IME w bezczynności',

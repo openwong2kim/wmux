@@ -481,6 +481,12 @@ export interface UISlice {
    *  engine, saved in session.json; terminalEngine is the one in use. */
   terminalWongtty: boolean;
   setTerminalWongtty: (enabled: boolean) => void;
+  /** EXPERIMENTAL, default OFF: let an agent terminal's own title (OSC 0/2)
+   *  read as its A2A party name, after the `userName` set by a wmux rename.
+   *  Any program writing to that terminal can set the title, so this is the
+   *  operator's opt-in to that; while off, no OSC-derived name is used. */
+  a2aTerminalNames: boolean;
+  setA2aTerminalNames: (enabled: boolean) => void;
   /** The engine every useTerminal pane runs now. Not saved: it starts as
    *  'xterm' and only the engine controller (terminal/wongtty/engineController)
    *  writes it, once wongtty has loaded for an on request. */
@@ -1671,6 +1677,10 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     // A quit right after the toggle keeps the new value.
     saveSessionNow();
   },
+  a2aTerminalNames: false,
+  setA2aTerminalNames: (enabled) => set((state) => {
+    state.a2aTerminalNames = enabled;
+  }),
   terminalEngine: 'xterm',
   setTerminalEngine: (engine) => set((state) => {
     state.terminalEngine = engine;

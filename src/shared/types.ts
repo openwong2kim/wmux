@@ -120,6 +120,15 @@ export interface Surface {
    *  Not refreshed from OSC titles while locked — an agent retitles its tab
    *  many times a second, and each refresh would be a store write. */
   autoTitle?: string;
+  /**
+   * The name the user deliberately gave this terminal through wmux's own
+   * rename (the tab rename UI). Written only by that rename path — never by
+   * an OSC title, and never by the code paths that lock a title for their own
+   * reason (account login, GitHub connect). This is the A2A party name's
+   * highest-precedence source; a title (`title`) set by a program is the
+   * separate, setting-gated source.
+   */
+  userName?: string;
   /** "Continue in another agent": the tab this one's work went on in, and on
    *  that tab, the held one it came from. Each tab's tooltip names the other. */
   continuedIn?: string;
@@ -958,6 +967,8 @@ export interface SessionData {
   terminalSharedWebgl?: boolean;
   /** Experimental opt-in; absent means off. See uiSlice.terminalWongtty. */
   terminalWongtty?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.a2aTerminalNames. */
+  a2aTerminalNames?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting
