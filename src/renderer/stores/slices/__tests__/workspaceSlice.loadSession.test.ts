@@ -1069,6 +1069,35 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
     }
   });
 
+  it('leaves F8 to a built-in the user moved there, without a default that would never fire', () => {
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ customKeybindings: [], shortcutOverrides: { toggleSidebar: 'F8' } })
+    );
+    const kbs = store.getState().customKeybindings as { id: string; key: string }[];
+    expect(kbs.map((k) => k.id)).not.toContain('kb-default-f8');
+    expect(kbs.map((k) => k.id)).toContain('kb-default-f7');
+    expect((store.getState() as { shortcutOverrides?: unknown }).shortcutOverrides).toEqual({ toggleSidebar: 'F8' });
+  });
+
+  it('on macOS, a built-in moved to ⌘8 leaves Ctrl+8 to the default, and one moved to Ctrl+8 keeps it', () => {
+    const prevPlatform = (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform;
+    (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = 'darwin';
+    try {
+      const resumeKey = (combo: string) => {
+        const store = createTestStore();
+        store.getState().loadSession(
+          makeSession({ customKeybindings: [], shortcutOverrides: { toggleSidebar: combo } })
+        );
+        return (store.getState().customKeybindings as { id: string; key: string }[]).find((k) => k.id === 'kb-default-f8')?.key;
+      };
+      expect(resumeKey('Meta+8')).toBe('Ctrl+8');
+      expect(resumeKey('Ctrl+8')).toBeUndefined();
+    } finally {
+      (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = prevPlatform;
+    }
+  });
+
   it('upgrades an existing macOS user\'s untouched F7 default to Ctrl+7 on load', () => {
     // 기존 Mac 사용자(Ctrl+7 기본값 이전 설치)의 저장된 원본 F7을 로드 시 승격한다.
     // platform을 darwin으로 세팅해 시드/백필/승격의 macOS 분기를 실제로 태운다.
