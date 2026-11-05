@@ -28,4 +28,26 @@ describe('resolveEnvPolicy — fail-closed execution-context classification', ()
   it('알 수 없는 spawnKind 값도 gated(정확히 "user-shell" 리터럴만 passthrough)', () => {
     expect(resolveEnvPolicy({ spawnKind: 'nonsense' as never })).toBe('gated');
   });
+
+  describe('withholdFromAgents setting', () => {
+    it('default (unset or true) keeps agent and unstamped panes gated', () => {
+      expect(resolveEnvPolicy({ spawnKind: 'agent', withholdFromAgents: true })).toBe('gated');
+      expect(resolveEnvPolicy({ withholdFromAgents: true })).toBe('gated');
+      expect(resolveEnvPolicy({ spawnKind: 'agent' })).toBe('gated');
+    });
+
+    it('off passes credentials to interactive agent and unstamped panes', () => {
+      expect(resolveEnvPolicy({ spawnKind: 'agent', withholdFromAgents: false })).toBe('passthrough');
+      expect(resolveEnvPolicy({ withholdFromAgents: false })).toBe('passthrough');
+    });
+
+    it('off never opens exec, supervised or automation panes', () => {
+      expect(resolveEnvPolicy({ spawnKind: 'agent', hasExec: true, withholdFromAgents: false })).toBe('gated');
+      expect(resolveEnvPolicy({ hasSupervision: true, withholdFromAgents: false })).toBe('gated');
+      expect(resolveEnvPolicy({ spawnKind: 'agent', isAutomation: true, withholdFromAgents: false })).toBe('gated');
+      expect(resolveEnvPolicy({ spawnKind: 'exec', withholdFromAgents: false })).toBe('gated');
+      expect(resolveEnvPolicy({ spawnKind: 'exec', hasExec: true, withholdFromAgents: false })).toBe('gated');
+      expect(resolveEnvPolicy({ spawnKind: 'nonsense' as never, withholdFromAgents: false })).toBe('gated');
+    });
+  });
 });

@@ -1,6 +1,7 @@
 import { TerminalEngineSetting } from './TerminalEngineSetting';
 import { QuickCommandsSection } from './QuickCommandsSection';
 import { SecretHookSetting } from './SecretHookSetting';
+import { CredentialEnvSetting } from './CredentialEnvSetting';
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import type { LabsStatus } from '../../../shared/labsSettings';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
@@ -1708,6 +1709,7 @@ function TabGeneral() {
           <Toggle checked={secretGuardEnabled} onChange={setSecretGuardEnabled} label={t('settings.secretGuard')} />
         </SettingRow>
         <SecretHookSetting />
+        <CredentialEnvSetting />
       </SettingsSection>
 
       <SettingsSection title={t('settings.sectionSetupReset')}>

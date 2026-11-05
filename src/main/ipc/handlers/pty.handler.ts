@@ -36,6 +36,7 @@ import { isScreenReaderOn, launcherVersionsIn } from '../../screenReaderService'
 import { guardBotWorkerSessionText, guardCodexBotWorker } from '../../agents/codexWorkerGuard';
 import { workerFenceSupportFor } from '../../agents/botWorkerFence';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
+import { withholdCredentialsFromAgents } from '../../pty/credentialEnvPrefs';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getUserShellRecord, promoteRecoveredSession } from '../../pty/userShellRecord';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
@@ -822,6 +823,8 @@ export function registerPTYHandlers(
         spawnKind: options?.spawnKind,
         hasExec: execCommand !== undefined,
         hasSupervision: supervisionPolicy !== undefined,
+        isAutomation: !!botWorker || !!options?.fanoutTaskOf,
+        withholdFromAgents: withholdCredentialsFromAgents(),
       });
       // Multi-account (M0): resolve the workspace's bound-account env in MAIN
       // and layer it between baseline and profile. A manual profile
@@ -908,7 +911,14 @@ export function registerPTYHandlers(
       // which covers a recreated id that is no longer a user shell.
       const created = result as { cmd?: unknown; incarnationId?: unknown } | undefined;
       if (envPolicy === 'passthrough' && typeof created?.cmd === 'string' && typeof created.incarnationId === 'string') {
-        getUserShellRecord(app.getPath('userData')).set(sessionId, { cmd: created.cmd, incarnationId: created.incarnationId });
+        // #3050 — a pane that is passthrough only because the user turned off
+        // "Withhold credentials from agent panes" is marked, so a restart asks
+        // that setting again instead of restoring it as a user shell.
+        getUserShellRecord(app.getPath('userData')).set(sessionId, {
+          cmd: created.cmd,
+          incarnationId: created.incarnationId,
+          ...(options?.spawnKind !== 'user-shell' ? { viaSetting: true } : {}),
+        });
       } else {
         getUserShellRecord(app.getPath('userData')).remove(sessionId);
       }
@@ -1099,7 +1109,7 @@ export function registerPTYHandlers(
       const wslTaskGit = (botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd
         ? await resolveWslWorkerGit(safeCwd, wslArgs?.[1] ?? null).catch(() => null)
         : null;
-      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, wslAccountLoginEnvKey, ...(ignoreAccountBinding === true ? { ignoreAccountBinding: true } : {}), ...(wslTaskGit ? { wslTaskGit } : {}) });
+      const instance = await ptyManager.createAsync({ shell, ...(wslArgs ? { shellArgs: wslArgs } : {}), cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind, ...(botWorker || options?.fanoutTaskOf ? { automation: true } : {}), wslAccountLoginEnvKey, ...(ignoreAccountBinding === true ? { ignoreAccountBinding: true } : {}), ...(wslTaskGit ? { wslTaskGit } : {}) });
       logCwdResolution(instance.id, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
       if (botWorker) {
         const launchTask = botWorkerLaunchTask(botWorker);

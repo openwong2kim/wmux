@@ -207,9 +207,11 @@ export function EmptyLeafFunnel() {
             withRoleBinding(
               withWorkspaceProfile(
                 withDefaultShell(
-                  // 순수 빈 리프(사용자가 split으로 연 셸)만 user-shell로 스탬프해 env
-                  // 투과. project seed(seedCommand 존재 — initialCommand/exec 브랜치)는
-                  // 자동화라 미스탬프 → main이 fail-closed로 gated 처리.
+                  // Only a plain empty leaf (a shell the user opened with a split) is
+                  // stamped 'user-shell' and inherits the env. A project seed
+                  // (seedCommand set: the initialCommand or exec branch) is automation,
+                  // stamped 'exec' so main keeps it gated even with "Withhold
+                  // credentials from agent panes" off (#3050), company seats included.
                   {
                     workspaceId: wsId,
                     cwd: startupCwd,
@@ -217,7 +219,7 @@ export function EmptyLeafFunnel() {
                     // A WSL session's folder: a WSL shell in its distro.
                     ...(projectSeed?.wslDistro ? { shell: 'wsl.exe', wslDistro: projectSeed.wslDistro } : {}),
                     ...bootstrapOptions,
-                    ...(seedCommand === undefined ? { spawnKind: 'user-shell' as const } : {}),
+                    spawnKind: seedCommand === undefined ? 'user-shell' as const : 'exec' as const,
                   },
                   useStore.getState().defaultShell,
                 ),
