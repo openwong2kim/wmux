@@ -309,8 +309,9 @@ const normalizedPath = (p: string) => path.resolve(plainSpelling(p)).normalize('
 
 /**
  * What an operation does to a link: `kept` (a copy recreates it and leaves it
- * in place) or `removed` (a trash takes only the link, not where it points).
- * A copy also checks each folder it reads as `kept`: nothing is taken from it.
+ * in place) or `removed` from its path (a trash, move or rename takes only the
+ * link, not where it points). A copy also checks each folder it reads as
+ * `kept`: nothing is taken from it.
  */
 export type LinkFate = 'kept' | 'removed';
 
@@ -325,9 +326,9 @@ export type LinkFate = 'kept' | 'removed';
  *  refused by identity.
  *
  *  `link` says `p` is a link and what the operation does to it. Then where it
- *  points does not count (#3030): a link to the home folder or a config
- *  folder can be copied or trashed. A move or rename passes no `link`, so
- *  where a link points counts.
+ *  points does not count (#3030, #3095): a link to the home folder or a
+ *  config folder can be copied, trashed, moved or renamed. Without `link`,
+ *  where `p` points counts too.
  *
  *  `fresh` reads the refused roots and their links again instead of the copy
  *  kept for IDENTITY_TTL_MS: for the check just before a change. */

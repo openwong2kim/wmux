@@ -185,7 +185,7 @@ describe('filesystem write jobs', () => {
     expect(fs.readFileSync(other, 'utf8')).toBe('keep');
   });
   // #3030: a copy recreates a link and a trash removes only the link, so where it points is not checked for those.
-  it.runIf(process.platform !== 'win32')('copies and trashes a folder or link that points at the home folder, and still refuses moving it', async () => {
+  it.runIf(process.platform !== 'win32')('copies and trashes a folder or link that points at the home folder', async () => {
     fs.symlinkSync(home, path.join(src, 'home-link'));
     const copied = await finish(await queue.start('copy', { sources: [src], destDir: dest, conflict: 'fail' }));
     expect(copied.errors).toEqual([]);
@@ -193,8 +193,26 @@ describe('filesystem write jobs', () => {
     expect((await finish(await queue.start('trash', { paths: [src] }))).state).toBe('done');
     expect((await finish(await queue.start('trash', { paths: [path.join(src, 'home-link')] }))).state).toBe('done');
     expect(trash.mock.calls).toEqual([[src], [path.join(src, 'home-link')]]);
-    expect((await finish(await queue.start('move', { sources: [path.join(src, 'home-link')], destDir: dest, conflict: 'fail' }))).state).toBe('failed');
-    expect(await queue.rename({ path: path.join(src, 'home-link'), newName: 'moved' })).toMatchObject({ reason: 'unavailable' });
+  });
+  // #3095: a move or rename takes only the link too.
+  it.runIf(process.platform !== 'win32')('moves and renames a folder or link that points at the home folder', async () => {
+    fs.symlinkSync(home, path.join(src, 'home-link'));
+    expect(await queue.rename({ path: path.join(src, 'home-link'), newName: 'renamed-link' })).toMatchObject({ ok: true });
+    expect((await finish(await queue.start('move', { sources: [path.join(src, 'renamed-link')], destDir: dest, conflict: 'fail' }))).state).toBe('done');
+    expect(fs.readlinkSync(path.join(dest, 'renamed-link'))).toBe(home);
+    fs.symlinkSync(home, path.join(src, 'home-link'));
+    expect(await queue.rename({ path: src, newName: 'src2' })).toMatchObject({ ok: true });
+    expect(fs.readlinkSync(path.join(root, 'src2', 'home-link'))).toBe(home);
+    expect(fs.existsSync(path.join(home, '.ssh'))).toBe(true);
+  });
+  it.runIf(process.platform !== 'win32')('refuses moving or renaming a link a refused folder is reached through', async () => {
+    fs.mkdirSync(path.join(home, 'dotfiles', 'config', 'gh'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'dotfiles', 'config'), path.join(src, 'cfg-link'));
+    fs.symlinkSync(path.join(src, 'cfg-link'), path.join(home, '.config'));
+    expect(await queue.rename({ path: path.join(src, 'cfg-link'), newName: 'other' })).toMatchObject({ reason: 'unavailable' });
+    expect((await finish(await queue.start('move', { sources: [path.join(src, 'cfg-link')], destDir: dest, conflict: 'fail' }))).state).toBe('failed');
+    expect(await queue.rename({ path: src, newName: 'src2' })).toMatchObject({ reason: 'unavailable' });
+    expect(fs.readlinkSync(path.join(src, 'cfg-link'))).toBe(path.join(home, 'dotfiles', 'config'));
   });
   it('trashes and renames a config folder whose refused files do not exist', async () => {
     for (const dir of ['.config', '.claude']) fs.mkdirSync(path.join(home, dir, 'notes'), { recursive: true });
@@ -314,6 +332,51 @@ describe('filesystem write jobs', () => {
     fs.symlinkSync(path.join(src, composed), path.join(home, '.config'));
     expect((await finish(await queue.start('trash', { paths: [path.join(src, decomposed)] }))).state).toBe('failed');
     expect(trash).not.toHaveBeenCalled();
+  });
+  it.runIf(process.platform !== 'win32')('refuses overwriting a link a refused folder is reached through', async () => {
+    // ~/.config -> dest/cfg -> dotfiles/config, which holds gh: a copy or move
+    // that overwrites dest/cfg would take that link away.
+    fs.mkdirSync(path.join(home, 'dotfiles', 'config', 'gh'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'dotfiles', 'config'), path.join(dest, 'cfg'));
+    fs.symlinkSync(path.join(dest, 'cfg'), path.join(home, '.config'));
+    fs.writeFileSync(path.join(src, 'cfg'), 'file');
+    for (const kind of ['copy', 'move'] as const) {
+      const job = await finish(await queue.start(kind, { sources: [path.join(src, 'cfg')], destDir: dest, conflict: 'overwrite' }));
+      expect(job.state, kind).toBe('failed');
+      expect(fs.readlinkSync(path.join(dest, 'cfg')), kind).toBe(path.join(home, 'dotfiles', 'config'));
+    }
+    // A plain file there is overwritten as before.
+    fs.writeFileSync(path.join(dest, 'plain'), 'old'); fs.writeFileSync(path.join(src, 'plain'), 'new');
+    expect((await finish(await queue.start('copy', { sources: [path.join(src, 'plain')], destDir: dest, conflict: 'overwrite' }))).state).toBe('done');
+    expect(fs.readFileSync(path.join(dest, 'plain'), 'utf8')).toBe('new');
+  });
+  it('refuses a rename whose new name appeared after it was checked', async () => {
+    const from = path.join(src, 'a'); const to = path.join(src, 'b');
+    const lstat = fs.promises.lstat.bind(fs.promises);
+    let destLooks = 0;
+    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      if (String(p) === to) destLooks++;
+      // After the name was found free (accessible, then the exists check), it appears.
+      else if (String(p) === from && destLooks === 2 && !fs.existsSync(to)) fs.writeFileSync(to, 'appeared');
+      return (lstat as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.promises.lstat);
+    expect(await queue.rename({ path: from, newName: 'b' })).toMatchObject({ reason: 'exists' });
+    expect(fs.readFileSync(to, 'utf8')).toBe('appeared');
+  });
+  it('moves under the conflict rule when the destination appeared after it was checked', async () => {
+    const from = path.join(src, 'a'); const to = path.join(dest, 'a');
+    const lstat = fs.promises.lstat.bind(fs.promises);
+    let destLooks = 0;
+    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      if (String(p) === to) destLooks++;
+      // After the job found the name free (at start, then in the move), it appears.
+      else if (String(p) === from && destLooks === 2 && !fs.existsSync(to)) fs.writeFileSync(to, 'appeared');
+      return (lstat as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.promises.lstat);
+    const job = await finish(await queue.start('move', { sources: [from], destDir: dest, conflict: 'fail' }));
+    expect(job.errors).toEqual([{ path: from, reason: 'exists' }]);
+    expect(fs.readFileSync(to, 'utf8')).toBe('appeared');
+    expect(fs.existsSync(from)).toBe(true);
   });
   it('expires completed jobs after ten minutes', async () => {
     let now = 0; queue = new FsJobQueue(trash, () => now);
