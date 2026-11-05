@@ -128,7 +128,8 @@ export function parseCimProcessJson(stdout: string): WmuxProcessRow[] {
  * pruned at the daemon (its parent pid is the app), at ourselves and at any
  * concurrent Squirrel hook, so none of those, nor anything under them, is
  * killed. The prune applies whatever the image name: sparing a daemon-shaped
- * process is the safe direction.
+ * process is the safe direction. A same-image process anywhere under a daemon
+ * is never taken as an app instance either (#3018).
  */
 export function selectAppTreeKillPids(
   rows: readonly WmuxProcessRow[],
@@ -136,8 +137,25 @@ export function selectAppTreeKillPids(
   exeName: string,
 ): { appPids: number[]; descendantPids: number[] } {
   const image = exeName.toLowerCase();
+  const byPid = new Map<number, WmuxProcessRow>();
+  for (const row of rows) byPid.set(row.pid, row);
+  // The daemon's subtree is spared at the roots too (#3018): the daemon runs
+  // helpers of its own image with a plain command line (the shareReader is
+  // `wmux.exe -e <source>`), which classify as 'app' by command line alone.
+  const underDaemon = (row: WmuxProcessRow): boolean => {
+    const seen = new Set<number>([row.pid]);
+    let parent = row.parentPid ?? 0;
+    while (parent > 0 && !seen.has(parent)) {
+      seen.add(parent);
+      const up = byPid.get(parent);
+      if (!up) return false;
+      if (classifyWmuxProcess(up, ownPid) === 'daemon') return true;
+      parent = up.parentPid ?? 0;
+    }
+    return false;
+  };
   const appPids = selectAppInstancePids(
-    rows.filter((row) => (row.name ?? '').toLowerCase() === image),
+    rows.filter((row) => (row.name ?? '').toLowerCase() === image && !underDaemon(row)),
     ownPid,
   );
   const childrenOf = new Map<number, WmuxProcessRow[]>();

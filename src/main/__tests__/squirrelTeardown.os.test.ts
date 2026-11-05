@@ -168,6 +168,23 @@ describe('selectAppTreeKillPids (#3007: the app kill must not reach the daemon)'
     for (const spared of [2000, 2001, 2100, 2200, 9000, OWN_PID, 100]) expect(all).not.toContain(spared);
   });
 
+  it('never takes a same-image process under the daemon as an app instance (#3018)', () => {
+    // The daemon's shareReader runs the same exe with a plain command line, so
+    // the command line alone classifies it as 'app'.
+    const shareReader = `"${STAGED}\\wmux.exe" -e "'use strict'; const fs = require('fs');"`;
+    const rows = [
+      ...table,
+      proc(2300, 2000, 'wmux.exe', shareReader),
+      proc(2301, 2001, 'wmux.exe', `"${EXE}" -e "'use strict';"`),
+      proc(2400, 2300, 'cmd.exe', 'cmd.exe'), // a child of that helper
+      proc(2500, 2100, 'wmux.exe', `"${EXE}"`), // started from a daemon session's shell
+    ];
+    expect(classifyWmuxProcess(rows.find((r) => r.pid === 2300) as WmuxProcessRow, OWN_PID)).toBe('app');
+    const { appPids, descendantPids } = selectAppTreeKillPids(rows, OWN_PID, 'wmux.exe');
+    expect(appPids).toEqual([1234]);
+    expect([...descendantPids].sort((a, b) => a - b)).toEqual([1300, 1301, 1302, 1303, 1400]);
+  });
+
   it('matches the image name regardless of case and never roots at another image', () => {
     const rows = [proc(1, 0, 'WMUX.EXE', `"${EXE}"`), proc(2, 0, 'other.exe', 'other.exe')];
     expect(selectAppTreeKillPids(rows, OWN_PID, 'wmux.exe').appPids).toEqual([1]);
