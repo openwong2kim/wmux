@@ -60,6 +60,9 @@ export async function runProjectCommand(
               workspaceId,
               cwd: project.root,
               initialCommand: command.command,
+              // A command, not an agent: gated even with "Withhold credentials
+              // from agent panes" off (#3050).
+              spawnKind: 'exec',
             },
             state.defaultShell,
           ),
