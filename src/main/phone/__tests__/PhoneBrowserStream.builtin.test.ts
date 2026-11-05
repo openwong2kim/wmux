@@ -96,6 +96,16 @@ describe('phone browser stream (main): a builtin pane', () => {
   let pushes: Array<Record<string, unknown>>;
   let reply: (params: Record<string, unknown>) => Promise<unknown>;
   let streams: PhoneBrowserStreams;
+  /** The phone's viewport actions the stream took, with how many screencasts the pane had started by then. */
+  let viewports: Array<{ surfaceId: string; workspaceId: string; mode: string; screencasts: number }>;
+  /** Each guest's device preset, as browser.emulate leaves it: a new object per preset. */
+  let presets: Map<unknown, { mobile: boolean }>;
+  /** The viewport action refuses (the user holds the pane, or its page is not http). */
+  let viewportRefused: boolean;
+  /** Resets that fail before they reset anything, counted down. */
+  let resetFailures: number;
+  /** Held resets wait for this. */
+  let resetGate: Promise<void> | null;
 
   beforeEach(() => {
     vi.useFakeTimers({ now: 1_800_000_000_000 });
@@ -110,6 +120,11 @@ describe('phone browser stream (main): a builtin pane', () => {
     boundsGate = null;
     pushes = [];
     reply = async () => ({ ok: true, known: true });
+    viewports = [];
+    presets = new Map();
+    viewportRefused = false;
+    resetFailures = 0;
+    resetGate = null;
     const deps: PhoneBrowserStreamDeps = {
       push: (params) => { pushes.push(params); return reply(params); },
       backend: () => 'chrome',
@@ -119,6 +134,27 @@ describe('phone browser stream (main): a builtin pane', () => {
         visible: (surfaceId) => visible.get(surfaceId) ?? true,
         onVisibility: (listener) => { observers.add(listener); return () => { observers.delete(listener); }; },
         nativeBounds: async () => { if (boundsGate) await boundsGate; return native; },
+        viewport: async (surfaceId, workspaceId, mode) => {
+          if (viewportRefused) throw new Error('Browser viewport unavailable');
+          const guest = guests.find((x) => targets.some((t) => t.surfaceId === surfaceId && t.webContentsId === x.id));
+          if (!guest) throw new Error('Browser unavailable');
+          viewports.push({ surfaceId, workspaceId, mode, screencasts: guest.debugger.count('Page.startScreencast') });
+          // As PhoneBrowser.ts's viewport action does: a phone fitted to the pane, or no preset.
+          if (mode === 'mobile') presets.set(guest, { mobile: true });
+          else presets.delete(guest);
+          guest.debugger.layout = { ...guest.debugger.layout, clientWidth: mode === 'mobile' ? Math.min(390, native.width) : native.width, clientHeight: native.height };
+        },
+        preset: (contents) => presets.get(contents),
+        // Recorded as a `desktop` step: what the viewport action's desktop mode leaves.
+        reset: async (contents) => {
+          if (resetGate) await resetGate;
+          if (resetFailures > 0) { resetFailures -= 1; throw new Error('Browser unavailable'); }
+          const guest = contents as unknown as FakeGuest;
+          const target = targets.find((t) => t.webContentsId === guest.id);
+          viewports.push({ surfaceId: target?.surfaceId ?? '', workspaceId: target?.workspaceId ?? '', mode: 'desktop', screencasts: guest.debugger.count('Page.startScreencast') });
+          presets.delete(guest);
+          guest.debugger.layout = { ...guest.debugger.layout, clientWidth: native.width, clientHeight: native.height };
+        },
       },
       captureMs: 5_000,
     };
@@ -344,6 +380,123 @@ describe('phone browser stream (main): a builtin pane', () => {
     g().debugger.layout = { ...g().debugger.layout, clientWidth: 900, clientHeight: 668 };
     for (let n = 30; n < 60; n++) await next(n);
     expect(frames().at(-1)).toMatchObject({ geometry: { width: 900 } });
+  });
+
+  describe('viewport=mobile', () => {
+    const update = (mobile: boolean) => streams.handle('browser.streamUpdate', { workspaceId: 'ws-1', surfaceId: 'surf-a', streamId: 'st-surf-a', mobile });
+    const modes = () => viewports.map((v) => v.mode);
+
+    it('takes the phone\'s own viewport action before the screencast starts, and reverts it when the daemon turns it off', async () => {
+      await start({ mobile: true });
+      expect(viewports).toEqual([{ surfaceId: 'surf-a', workspaceId: 'ws-1', mode: 'mobile', screencasts: 0 }]);
+      await update(false);
+      await flush();
+      expect(modes()).toEqual(['mobile', 'desktop']);
+      await update(true);
+      await flush();
+      expect(modes()).toEqual(['mobile', 'desktop', 'mobile']);
+    });
+
+    it('a stop, and stopAll when the daemon goes away, revert what the stream set', async () => {
+      await start({ mobile: true });
+      await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'surf-a', streamId: 'st-surf-a' });
+      await flush();
+      expect(modes()).toEqual(['mobile', 'desktop']);
+      await start({ mobile: true });
+      streams.stopAll();
+      await flush();
+      expect(modes()).toEqual(['mobile', 'desktop', 'mobile', 'desktop']);
+    });
+
+    it('a phone preset already on the pane is not the stream\'s: it is kept as it is, and not reverted', async () => {
+      presets.set(g(), { mobile: true });
+      await start({ mobile: true });
+      await update(false);
+      streams.stopAll();
+      await flush();
+      expect(modes()).toEqual([]);
+      expect(presets.get(g())).toEqual({ mobile: true });
+    });
+
+    it('an agent\'s desktop preset is replaced by the phone\'s, and the stream reverts its own when the daemon turns it off', async () => {
+      presets.set(g(), { mobile: false });
+      await start({ mobile: true });
+      expect(presets.get(g())).toEqual({ mobile: true });
+      await update(false);
+      await flush();
+      expect(modes()).toEqual(['mobile', 'desktop']);
+      expect(presets.has(g())).toBe(false);
+    });
+
+    it('reverts on a pane whose viewport action refuses (the user holds it, or its page is not http)', async () => {
+      await start({ mobile: true });
+      viewportRefused = true;
+      await update(false);
+      await flush();
+      expect(modes()).toEqual(['mobile', 'desktop']);
+      expect(presets.has(g())).toBe(false);
+    });
+
+    it('a revert that failed is tried again, and the stream stays mobile until it succeeds', async () => {
+      await start({ mobile: true });
+      resetFailures = 1;
+      await update(false);
+      await flush();
+      expect(modes()).toEqual(['mobile']);
+      expect(presets.get(g())).toEqual({ mobile: true });
+      await vi.advanceTimersByTimeAsync(2_600);
+      expect(modes()).toEqual(['mobile', 'desktop']);
+      expect(presets.has(g())).toBe(false);
+    });
+
+    it('an apply that failed is tried again, though the daemon does not ask twice', async () => {
+      viewportRefused = true;
+      await start({ mobile: true });
+      expect(presets.has(g())).toBe(false);
+      viewportRefused = false;
+      await vi.advanceTimersByTimeAsync(2_600);
+      expect(modes()).toEqual(['mobile']);
+      expect(presets.get(g())).toEqual({ mobile: true });
+    });
+
+    it('a new stream on the tab waits for the old one\'s revert before its own apply', async () => {
+      await start({ mobile: true });
+      let open!: () => void;
+      resetGate = new Promise<void>((resolve) => { open = resolve; });
+      await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'surf-a', streamId: 'st-surf-a' });
+      const restarted = start({ mobile: true });
+      await flush();
+      open();
+      await restarted;
+      await flush();
+      expect(modes()).toEqual(['mobile', 'desktop', 'mobile']);
+      expect(presets.get(g())).toEqual({ mobile: true });
+    });
+
+    it('a viewport action or an agent\'s emulation after the stream\'s own is theirs: it is not reverted', async () => {
+      await start({ mobile: true });
+      // The phone's POST viewport, or an agent's browser.emulate: a preset of its own.
+      presets.set(g(), { mobile: true });
+      await update(false);
+      streams.stopAll();
+      await flush();
+      expect(modes()).toEqual(['mobile']);
+    });
+
+    it('while mobile the bounds are read every 2 s on a still page too, and geometry is left out once the page exceeds the pane', async () => {
+      await start({ mobile: true, maxFps: 15 });
+      g().debugger.frame(1, { deviceWidth: 390 });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(frames().at(-1)).toMatchObject({ geometry: { width: 390 } });
+      // The pane shrinks under the emulated viewport; the page paints nothing for a while.
+      native = { width: 300, height: 668 };
+      const reads = g().debugger.count('Page.getLayoutMetrics');
+      await vi.advanceTimersByTimeAsync(2_600);
+      expect(g().debugger.count('Page.getLayoutMetrics')).toBeGreaterThan(reads);
+      g().debugger.frame(2, { deviceWidth: 390 });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(frames().at(-1)).not.toHaveProperty('geometry');
+    });
   });
 
   it('the pane closing ends the stream once with browser-tab-gone, though its debugger let go first', async () => {

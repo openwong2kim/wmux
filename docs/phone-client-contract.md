@@ -3696,8 +3696,8 @@ exactly as above.
 `/api/config` carries `browserStream: true` when the server runs with
 `--allow-transcript` and the attached desktop announced `browser.stream`.
 OMITTED otherwise; the preview is then the 3 s capture poll above, and the
-stream route answers `404`. The desktop announces it only while it runs with
-`WMUX_PHONE_BROWSER_STREAM=1` (off by default for now). The stream covers
+stream route answers `404`. The desktop announces it by default;
+`WMUX_PHONE_BROWSER_STREAM=0` on the desktop turns it off. The stream covers
 builtin panes and dedicated-profile Chrome tabs (`chrome` rows); `hello`
 says which in `backend`. A builtin pane streams whatever the desktop's
 browser setting is, as its capture does.
@@ -3720,8 +3720,42 @@ route's workspace; http(s) pages only.
 | `maxFps` | 1..15 | 10 |
 | `viewport=mobile` | needs input consent (else `403 read-only:…`) | unset |
 
-`viewport=mobile` is accepted but not applied yet: the tab streams at its
-desktop size.
+`viewport=mobile` shows the tab as a phone while at least one subscriber
+of that tab asked for it; its other subscribers then get the phone layout
+too. It changes the tab on the desktop itself, as the `viewport` action
+does: the Mac's own view of that tab, and an agent driving it, see the
+phone layout as well.
+
+- **Chrome tab**: a phone's viewport, 390×844 CSS px at 2× (smaller when
+  the tab is), with touch, set on the stream's own connection to Chrome.
+  Frames then carry a `geometry.width` of at most 390, and a `scale` of
+  about 0.4 on a page without a viewport meta tag. Taps and scrolls map as
+  on any frame. `{action:"viewport"}` on a Chrome tab stays `501`:
+  reconnect the stream with or without `viewport=mobile` to switch.
+- **Builtin pane**: the same as `{action:"viewport",mode:"mobile"}`, fitted
+  to the pane; like that action it reloads the page, and going back
+  reloads it again. A phone preset already on the pane (from the
+  `viewport` action or an agent) is left as it is, and the stream never
+  reverts it. Any other preset (an agent's desktop emulation) is replaced by
+  the phone's, and going back leaves the pane with no preset. The stream
+  does not revert its own once the `viewport` action or an agent has
+  changed the preset since. Going back also works on a page that is not
+  http and while the user has paused the agent or taken over the pane; a
+  switch that fails is tried again about every 2 s. Frames stay the size of
+  the pane: the page fills the left part of each frame, as wide as the
+  phone's viewport, and the rest of the frame is empty. `geometry` keeps
+  the pane's width at scale 1, so taps and scrolls on the page map as on
+  any frame.
+- **Going back**: about 4 s after the last subscriber that asked for it
+  leaves. A subscriber asking for it within that time keeps the tab as it
+  is (no reload); a stream whose last subscriber left keeps running for
+  that time, so a reconnect gets its latest frame at once. The tab also
+  goes back when the desktop loses its connection to the server.
+- **Next to an agent's emulation** (Chrome): the tab has one device-size
+  override. Whichever of the stream and an agent set theirs last is the one
+  shown, and when the stream goes back (or ends) the tab returns to its
+  real size, removing an agent's override as well. A stream that never
+  showed the tab as a phone leaves an agent's override alone.
 
 **Before the stream** (plain JSON): `400` for a value that is not a whole
 number, a missing `surfaceId` or another `viewport`; `404 browser-tab-gone`;
@@ -3781,7 +3815,8 @@ the URL changed after that frame.
 After that, frames come when the page repaints, at most `maxFps`. Latest
 frame first: while the connection has not taken the last frame, newer ones
 replace the one waiting. One screencast per tab is shared by its
-subscribers and stops when the last one leaves.
+subscribers and stops when the last one leaves, or about 4 s later on a
+tab shown as a phone (`viewport=mobile`, above).
 
 **Closing from the server**, without `end`: at once when the device is
 revoked or its input grant is withdrawn; within 15 s when the consent the

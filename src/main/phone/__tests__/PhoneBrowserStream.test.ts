@@ -1,8 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ChromeStreamSession } from '../../browser-session/ChromeLauncher';
 import { ChromePageSessionError } from '../../browser-session/ChromeLauncher';
-import { createPhoneBrowserStreams, STREAM_LINE_LIMIT, type PhoneBrowserStreamDeps, type PhoneBrowserStreams } from '../PhoneBrowserStream';
+import { createPhoneBrowserStreams, phoneBrowserStreamEnabled, STREAM_LINE_LIMIT, type PhoneBrowserStreamDeps, type PhoneBrowserStreams } from '../PhoneBrowserStream';
 import { WATCH_FOCUS_EXPRESSION } from '../PhoneBrowserFocus';
+
+describe('phoneBrowserStreamEnabled', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('is on unless WMUX_PHONE_BROWSER_STREAM is 0', () => {
+    vi.stubEnv('WMUX_PHONE_BROWSER_STREAM', undefined);
+    expect(phoneBrowserStreamEnabled()).toBe(true);
+    vi.stubEnv('WMUX_PHONE_BROWSER_STREAM', '1');
+    expect(phoneBrowserStreamEnabled()).toBe(true);
+    vi.stubEnv('WMUX_PHONE_BROWSER_STREAM', '0');
+    expect(phoneBrowserStreamEnabled()).toBe(false);
+  });
+});
 
 /**
  * Main's side of the phone browser stream over a fake Chrome session, with
@@ -84,6 +97,9 @@ describe('phone browser stream (main)', () => {
   let pageFocus: Record<string, unknown> | null;
   /** Gates each new session's commands by method. */
   let gates: Map<string, Promise<void>>;
+  /** Each new session's visual viewport and browser zoom; null: the fake's own. */
+  let pageLayout: FakeSession['layout'] | null;
+  let pageZoom: number;
 
   beforeEach(() => {
     vi.useFakeTimers({ now: 1_800_000_000_000 });
@@ -93,13 +109,23 @@ describe('phone browser stream (main)', () => {
     tabURL = 'https://a.example.com/start';
     pageFocus = null;
     gates = new Map();
+    pageLayout = null;
+    pageZoom = 1;
     reply = async () => ({ ok: true, known: true });
     const deps: PhoneBrowserStreamDeps = {
       push: (params) => { pushes.push(params); return reply(params); },
       backend: () => 'chrome',
       chrome: {
-        tabs: async () => [{ surfaceId: 'chrome-a', url: tabURL }, { surfaceId: 'chrome-b', url: tabURL }],
-        streamSession: async () => { const s = new FakeSession(); s.focus = pageFocus; s.gates = gates; sessions.push(s); return s; },
+        tabs: async () => ['chrome-a', 'chrome-b', 'chrome-c', 'chrome-d'].map((surfaceId) => ({ surfaceId, url: tabURL })),
+        streamSession: async () => {
+          const s = new FakeSession();
+          s.focus = pageFocus;
+          s.gates = gates;
+          s.zoom = pageZoom;
+          if (pageLayout) s.layout = pageLayout;
+          sessions.push(s);
+          return s;
+        },
         owns: () => owned,
       },
       captureMs: 5_000,
@@ -445,6 +471,68 @@ describe('phone browser stream (main)', () => {
     expect(sessions).toHaveLength(5);
   });
 
+  describe('viewport=mobile', () => {
+    const OVERRIDE = { width: 390, height: 683, deviceScaleFactor: 2, mobile: true };
+    const emulation = (s: FakeSession) => s.sent.filter((x) => x.method.startsWith('Emulation.')).map((x) => [x.method, x.params]);
+    const update = (mobile: boolean) => streams.handle('browser.streamUpdate', { workspaceId: 'ws-1', surfaceId: 'chrome-a', streamId: 'st-chrome-a', mobile });
+
+    it('emulates a phone on the stream\'s own session at the real size or less, with touch, before the screencast starts', async () => {
+      await start({ mobile: true });
+      const s = sessions[0];
+      // The real tab is 1183×683 CSS px at zoom 1: as wide as a phone, as tall as the tab.
+      expect(emulation(s)).toEqual([
+        ['Emulation.setDeviceMetricsOverride', OVERRIDE],
+        ['Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }],
+      ]);
+      const methods = s.sent.map((x) => x.method);
+      expect(methods.indexOf('Emulation.setDeviceMetricsOverride')).toBeLessThan(methods.indexOf('Page.startScreencast'));
+    });
+
+    it('turned off and on by the daemon; a stop clears it by detaching, with no command of its own', async () => {
+      await start();
+      const s = sessions[0];
+      expect(emulation(s)).toEqual([]);
+      await update(true);
+      await flush();
+      expect(emulation(s)).toHaveLength(2);
+      await update(false);
+      await flush();
+      expect(emulation(s).slice(2)).toEqual([
+        ['Emulation.clearDeviceMetricsOverride', undefined],
+        ['Emulation.setTouchEmulationEnabled', { enabled: false }],
+      ]);
+      // Asked again while already off: nothing more.
+      await update(false);
+      await update(true);
+      await flush();
+      expect(emulation(s)).toHaveLength(6);
+      streams.stopAll();
+      await flush();
+      expect(s.detached).toBe(true);
+      expect(emulation(s)).toHaveLength(6);
+    });
+
+    it('a page swap applies it again on the new session before its screencast', async () => {
+      await start({ mobile: true });
+      sessions[0].close();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sessions).toHaveLength(2);
+      expect(emulation(sessions[1])).toEqual([
+        ['Emulation.setDeviceMetricsOverride', OVERRIDE],
+        ['Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }],
+      ]);
+      const methods = sessions[1].sent.map((x) => x.method);
+      expect(methods.indexOf('Emulation.setDeviceMetricsOverride')).toBeLessThan(methods.indexOf('Page.startScreencast'));
+    });
+
+    it('a narrower tab, or one at a browser zoom, is emulated at its own size in device-independent pixels', async () => {
+      pageLayout = { clientWidth: 300, clientHeight: 500, pageX: 0, pageY: 0, scale: 1 };
+      pageZoom = 1.25;
+      await start({ mobile: true });
+      expect(emulation(sessions[0])[0]).toEqual(['Emulation.setDeviceMetricsOverride', { width: 375, height: 625, deviceScaleFactor: 2, mobile: true }]);
+    });
+  });
+
   describe('focus (contract v1.6)', () => {
     const focus = () => pushes.filter((p) => p.kind === 'focus').map((p) => p.focus);
 
@@ -603,5 +691,56 @@ describe('phone browser stream (main)', () => {
       expect(gaps.length).toBeGreaterThanOrEqual(15);
       expect(Math.max(...gaps)).toBeLessThan(300);
     }
+  });
+
+  it('a tab of large frames is not starved by tabs of smaller ones: a refused tab is served before anyone after it', async () => {
+    const sent: Array<{ streamId: unknown; at: number }> = [];
+    reply = async (p) => { if (p.kind === 'frame') sent.push({ streamId: p.streamId, at: Date.now() }); return { ok: true, known: true }; };
+    for (const surfaceId of ['chrome-a', 'chrome-b', 'chrome-c', 'chrome-d']) await start({ maxFps: 15 }, surfaceId);
+    const startedAt = Date.now();
+    // Three tabs of ~300 KiB frames ask for about 13 MiB/s between them, past
+    // the 8 MiB/s budget; the fourth paints ~690 KiB frames.
+    for (let i = 1; i <= 60; i++) {
+      sessions[0].frame(i, {}, jpeg(1280, 720, 690));
+      for (const s of sessions.slice(1)) s.frame(i, {}, jpeg(1280, 720, 300));
+      await vi.advanceTimersByTimeAsync(66);
+    }
+    const large = sent.filter((s) => s.streamId === 'st-chrome-a' && s.at - startedAt >= 1_000).map((s) => s.at);
+    const gaps = large.slice(1).map((t, i) => t - large[i]);
+    // In turn with the others: about one round of all four tabs per ~200 ms.
+    expect(large.length).toBeGreaterThanOrEqual(10);
+    expect(Math.max(...gaps)).toBeLessThan(400);
+    // Each small tab keeps its turn too.
+    for (const streamId of ['st-chrome-b', 'st-chrome-c', 'st-chrome-d']) {
+      expect(sent.filter((s) => s.streamId === streamId && s.at - startedAt >= 1_000).length).toBeGreaterThanOrEqual(10);
+    }
+  });
+
+  it('a tab that stops while it waits in line for the budget leaves the line: the tab behind it goes on', async () => {
+    const sent: Array<{ streamId: unknown; at: number }> = [];
+    reply = async (p) => { if (p.kind === 'frame') sent.push({ streamId: p.streamId, at: Date.now() }); return { ok: true, known: true }; };
+    await start({ maxFps: 15 }, 'chrome-a');
+    await start({ maxFps: 15 }, 'chrome-b');
+    const of = (streamId: string) => sent.filter((s) => s.streamId === streamId).length;
+    // Large frames on A until one is refused: past its own frame interval, it waits for bytes.
+    let refused = false;
+    for (let i = 1; i <= 40 && !refused; i++) {
+      const before = of('st-chrome-a');
+      sessions[0].frame(i, {}, jpeg(1280, 720, 690));
+      await vi.advanceTimersByTimeAsync(1);
+      refused = of('st-chrome-a') === before;
+      sessions[1].frame(i, {}, jpeg(1280, 720, 300));
+      if (!refused) await vi.advanceTimersByTimeAsync(67);
+    }
+    expect(refused).toBe(true);
+    // B is now in line behind A; A stops.
+    await vi.advanceTimersByTimeAsync(1);
+    await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'chrome-a', streamId: 'st-chrome-a' });
+    const before = of('st-chrome-b');
+    for (let i = 100; i < 115; i++) {
+      sessions[1].frame(i, {}, jpeg(1280, 720, 300));
+      await vi.advanceTimersByTimeAsync(67);
+    }
+    expect(of('st-chrome-b') - before).toBeGreaterThanOrEqual(10);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  BrowserStreamRegistry, parseBrowserStreamQuery, type BrowserStreamDesktop, type BrowserStreamParams,
+  BROWSER_STREAM_MOBILE_GRACE_MS, BROWSER_STREAM_MOBILE_RETRY_MS, BrowserStreamRegistry, parseBrowserStreamQuery, type BrowserStreamDesktop, type BrowserStreamParams,
   type BrowserStreamRefusal, type BrowserStreamReservation, type BrowserStreamSink, type BrowserStreamWho,
 } from '../browserStream';
 
@@ -57,10 +57,22 @@ class FakeDesktop implements BrowserStreamDesktop {
   private lost: Array<() => void> = [];
   /** Starts answered only when the test says so. */
   defer = false;
+  /** `mobile` updates that fail (a timeout, a lost reply), counted down. */
+  failMobileUpdates = 0;
+  /** While set, `mobile` updates wait here until the test settles them. */
+  holdMobileUpdates = false;
+  heldMobile: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
   private parked: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
   startReply: (payload: Record<string, unknown>) => unknown = (p) => ({ backend: 'chrome', maxWidth: p.maxWidth, maxHeight: p.maxHeight, quality: p.quality });
   request(command: string, payload: Record<string, unknown>): Promise<unknown> {
     this.requests.push({ command, payload });
+    if (command === 'browser.streamUpdate' && 'mobile' in payload && this.failMobileUpdates > 0) {
+      this.failMobileUpdates -= 1;
+      return Promise.reject(new Error('desktop request timed out'));
+    }
+    if (command === 'browser.streamUpdate' && 'mobile' in payload && this.holdMobileUpdates) {
+      return new Promise((resolve, reject) => this.heldMobile.push({ resolve, reject }));
+    }
     if (command !== 'browser.streamStart') return Promise.resolve({ ok: true });
     if (!this.defer) return Promise.resolve(this.startReply(payload));
     return new Promise((resolve, reject) => this.parked.push({ resolve: (v) => resolve(v ?? this.startReply(payload)), reject }));
@@ -460,6 +472,136 @@ describe('BrowserStreamRegistry', () => {
     const late = await subscribe(device('d2'));
     await vi.advanceTimersByTimeAsync(100);
     expect(late.sink.named('focus')).toEqual([]);
+  });
+
+  describe('viewport=mobile', () => {
+    const updates = () => desktop.requests.filter((r) => r.command === 'browser.streamUpdate' && 'mobile' in r.payload).map((r) => r.payload.mobile);
+    const MOBILE = { mobile: true };
+
+    it('the start carries whether a subscriber asked for it; a later mobile subscriber turns it on once', async () => {
+      await subscribe(device('d1'));
+      expect(desktop.requests[0].payload.mobile).toBe(false);
+      await subscribe(device('d2'), MOBILE);
+      await subscribe(OPERATOR, MOBILE);
+      expect(updates()).toEqual([true]);
+      // One mobile subscriber on a new tab: the start itself asks.
+      await subscribe(device('d1'), MOBILE, () => true, 'chrome-b');
+      expect(desktop.requests.find((r) => r.command === 'browser.streamStart' && r.payload.surfaceId === 'chrome-b')?.payload.mobile).toBe(true);
+      expect(updates()).toEqual([true]);
+    });
+
+    it('mixed subscribers: the tab stays mobile while one asks; turned off a grace after the last one left, unless one comes back', async () => {
+      const phone = await subscribe(device('d1'), MOBILE);
+      await subscribe(device('d2'));
+      phone.reservation.cancel();
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS - 1);
+      expect(updates()).toEqual([]);
+      // Back within the grace: nothing changes on the desktop.
+      const back = await subscribe(device('d1'), MOBILE);
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS * 2);
+      expect(updates()).toEqual([]);
+      back.reservation.cancel();
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS);
+      expect(updates()).toEqual([false]);
+      expect(desktop.commands()).not.toContain('browser.streamStop');
+    });
+
+    it('a mobile change main did not take is sent again, on and off', async () => {
+      await subscribe(device('d1'));
+      desktop.failMobileUpdates = 1;
+      const phone = await subscribe(device('d2'), MOBILE);
+      expect(updates()).toEqual([true]);
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_RETRY_MS);
+      expect(updates()).toEqual([true, true]);
+      desktop.failMobileUpdates = 1;
+      phone.reservation.cancel();
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS);
+      expect(updates()).toEqual([true, true, false]);
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_RETRY_MS + BROWSER_STREAM_MOBILE_GRACE_MS);
+      expect(updates()).toEqual([true, true, false, false]);
+      // Taken: nothing more.
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS * 3);
+      expect(updates()).toEqual([true, true, false, false]);
+    });
+
+    it('a failed change answered after a newer one went out does not undo the newer one', async () => {
+      await subscribe(device('d1'));
+      desktop.holdMobileUpdates = true;
+      const phone = await subscribe(device('d2'), MOBILE);
+      desktop.holdMobileUpdates = false;
+      phone.reservation.cancel();
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS);
+      await subscribe(device('d3'), MOBILE);
+      expect(updates()).toEqual([true, false, true]);
+      // The first `true` fails only now: the last one sent stands.
+      desktop.heldMobile.splice(0).forEach((p) => p.reject(new Error('desktop request timed out')));
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_RETRY_MS * 3);
+      expect(updates()).toEqual([true, false, true]);
+    });
+
+    it('a mobile subscriber joining while the start is in flight is counted; one leaving before it opens turns it off after the grace', async () => {
+      desktop.defer = true;
+      const a = reserve(device('d1'));
+      const b = reserve(device('d2'), MOBILE);
+      const [pa, pb] = [a.start(), b.start()];
+      await flushMicrotasks();
+      // Asked for at the start already: b reserved before it went out.
+      expect(desktop.requests[0].payload.mobile).toBe(true);
+      desktop.finishStarts();
+      await Promise.all([pa, pb]);
+      expect(updates()).toEqual([]);
+      b.cancel();
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS);
+      expect(updates()).toEqual([false]);
+    });
+
+    it('the last subscriber of a mobile tab leaving keeps the screencast for the grace: a reconnect joins it as it was, then it stops', async () => {
+      const first = await subscribe(device('d1'), MOBILE);
+      registry.push('main', frame({ capturedAt: 7 }));
+      await flushMicrotasks();
+      first.reservation.cancel();
+      expect(first.sink.ended).toBe(true);
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS - 1);
+      expect(desktop.commands()).toEqual(['browser.streamStart']);
+      const again = await subscribe(device('d1'), MOBILE);
+      // The same screencast: no second start, and its latest frame at once.
+      expect(desktop.commands()).toEqual(['browser.streamStart']);
+      expect(again.sink.named('frame').map((e) => e.data?.capturedAt)).toEqual([7]);
+      again.reservation.cancel();
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS - 1);
+      expect(desktop.commands()).toEqual(['browser.streamStart']);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(desktop.commands()).toEqual(['browser.streamStart', 'browser.streamStop']);
+      expect(updates()).toEqual([]);
+      expect(registry.push('main', frame())).toEqual({ ok: false, known: false });
+    });
+
+    it('a non-mobile tab still stops at once, and a held tab gives its place to a new tab', async () => {
+      const plain = await subscribe(device('d1'));
+      plain.reservation.cancel();
+      expect(desktop.commands()).toEqual(['browser.streamStart', 'browser.streamStop']);
+      const held = await subscribe(OPERATOR, MOBILE, () => true, 'chrome-a');
+      for (const tab of ['chrome-b', 'chrome-c', 'chrome-d']) await subscribe(OPERATOR, {}, () => true, tab);
+      held.reservation.cancel();
+      const heldId = desktop.requests.filter((r) => r.command === 'browser.streamStart')[1].payload.streamId;
+      // A fifth tab: the held one stops now rather than after its grace.
+      expect('status' in registry.reserve(desktop, 'ws-1', 'chrome-e', OPERATOR, PARAMS)).toBe(false);
+      expect(desktop.requests.filter((r) => r.command === 'browser.streamStop').map((r) => r.payload.streamId)).toContain(heldId);
+    });
+
+    it('the server stopping and the owner leaving end a held tab at once', async () => {
+      const a = await subscribe(device('d1'), MOBILE);
+      a.reservation.cancel();
+      registry.stopAll();
+      expect(desktop.commands()).toEqual(['browser.streamStart', 'browser.streamStop']);
+      const b = await subscribe(device('d1'), MOBILE);
+      b.reservation.cancel();
+      desktop.loseOwner();
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS);
+      // Nobody to tell once the owner is gone: no stop, no update.
+      expect(desktop.commands()).toEqual(['browser.streamStart', 'browser.streamStop', 'browser.streamStart']);
+      expect(registry.size).toBe(0);
+    });
   });
 
   it('maps main\'s refusal at start to its status, and a failed start to 503', async () => {

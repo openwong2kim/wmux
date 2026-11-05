@@ -20,6 +20,13 @@
 //    closes the stream, as does an authorization that no longer holds;
 //  - `end browser-stream-expired` after 30 minutes.
 //
+// `viewport=mobile`: main emulates a phone on the tab while at least one
+// subscriber asked for it (`mobile` on browser.streamStart and
+// browser.streamUpdate). When the last one that asked leaves, main is told
+// after a grace, so a quick reconnect does not flip the page; a tab whose last
+// subscriber left while it was mobile is kept running for that grace too, and
+// a subscriber that comes back joins it as it was.
+//
 // docs/phone-client-contract.md "Live browser stream" is the client contract.
 
 import { randomUUID } from 'node:crypto';
@@ -46,6 +53,10 @@ export const BROWSER_STREAM_FRAME_DATA_LIMIT = 700 * 1024;
 export const BROWSER_STREAM_URL_LIMIT = 4096;
 /** The response queue a stream may build up (StreamResponseLimits). */
 export const BROWSER_STREAM_QUEUE_BYTES = 2 * 1024 * 1024;
+/** How long a tab stays mobile after the last subscriber that asked for it left. */
+export const BROWSER_STREAM_MOBILE_GRACE_MS = 4_000;
+/** A `mobile` change main did not take is sent again after this. */
+export const BROWSER_STREAM_MOBILE_RETRY_MS = 1_000;
 
 const RANGES = {
   maxWidth: { min: 320, max: 1920, fallback: 1280 },
@@ -54,7 +65,7 @@ const RANGES = {
   maxFps: { min: 1, max: 15, fallback: 10 },
 } as const;
 
-export interface BrowserStreamParams { maxWidth: number; maxHeight: number; quality: number; maxFps: number }
+export interface BrowserStreamParams { maxWidth: number; maxHeight: number; quality: number; maxFps: number; mobile?: boolean }
 
 /**
  * The query, clamped. A value that is not a whole number, or a `viewport`
@@ -125,6 +136,12 @@ interface Tab {
   gone: boolean;
   /** Why main or the owner ended it, for a subscriber still starting. */
   endCode: BrowserStreamEndCode | null;
+  /** Whether main was last told to emulate a phone on the tab. */
+  sentMobile: boolean;
+  /** Counts the `mobile` updates sent: a failed one is rolled back only while it is still the last. */
+  mobileSeq: number;
+  /** Running while no subscriber asks for mobile and main still emulates it: then main is told, or the tab stops. */
+  grace: ReturnType<typeof setTimeout> | null;
 }
 
 type Item = { kind: 'frame' | 'url' | 'state' | 'focus' | 'tabOpened'; body: string };
@@ -133,6 +150,8 @@ interface Subscriber {
   tab: Tab;
   who: BrowserStreamWho;
   maxFps: number;
+  /** It asked for `viewport=mobile`. */
+  mobile: boolean;
   sink: BrowserStreamSink | null;
   authorize: () => boolean;
   seq: number;
@@ -227,7 +246,8 @@ export class BrowserStreamRegistry {
 
   /**
    * A place on the tab's stream, or the refusal: at most four subscribers per
-   * tab, two per device per tab, and four tabs per desktop.
+   * tab, two per device per tab, and four tabs per desktop. A tab kept for its
+   * mobile grace with nobody on it gives its place to a new tab.
    */
   reserve(desktop: BrowserStreamDesktop, workspaceId: string, surfaceId: string, who: BrowserStreamWho, params: BrowserStreamParams): BrowserStreamReservation | BrowserStreamRefusal {
     const key = `${workspaceId}\n${surfaceId}`;
@@ -238,17 +258,22 @@ export class BrowserStreamRegistry {
       if (tab.subs.size >= BROWSER_STREAM_MAX_SUBSCRIBERS_PER_TAB) return busy;
       if (!who.operator && [...tab.subs].filter((s) => s.who.principalKey === who.principalKey).length >= BROWSER_STREAM_MAX_PER_PRINCIPAL_PER_TAB) return busy;
     } else {
-      if (this.tabs.size >= BROWSER_STREAM_MAX_TABS) return busy;
+      if (this.tabs.size >= BROWSER_STREAM_MAX_TABS) {
+        const held = [...this.tabs.values()].find((t) => t.subs.size === 0 && t.grace);
+        if (!held) return busy;
+        this.stopTab(held);
+      }
       this.watch(desktop);
       tab = {
         key, workspaceId, surfaceId, streamId: randomUUID(), owner: desktop.ownerId, desktop, subs: new Set(),
         starting: null, shared: null, sentMaxFps: params.maxFps, latest: null, urlAfterLatest: null, focus: null, lastPushAt: 0, hidden: false, gone: false, endCode: null,
+        sentMobile: false, mobileSeq: 0, grace: null,
       };
       this.tabs.set(key, tab);
       this.byStream.set(tab.streamId, tab);
     }
     const sub: Subscriber = {
-      tab, who, maxFps: params.maxFps, sink: null, authorize: () => false, seq: 0, lastFrameAt: 0, lastUrlAt: 0, lastFocusAt: 0, lastTabOpenedAt: 0, lastFocus: null,
+      tab, who, maxFps: params.maxFps, mobile: params.mobile === true, sink: null, authorize: () => false, seq: 0, lastFrameAt: 0, lastUrlAt: 0, lastFocusAt: 0, lastTabOpenedAt: 0, lastFocus: null,
       queue: [], flushTimer: null, tick: null, expiry: null, keepalivePending: false, closed: false,
     };
     tab.subs.add(sub);
@@ -337,6 +362,8 @@ export class BrowserStreamRegistry {
   stopAll(): void {
     for (const tab of [...this.tabs.values()]) {
       for (const sub of [...tab.subs]) this.close(sub);
+      // Kept for its mobile grace: nobody comes back to a server that stops.
+      if (tab.subs.size === 0 && tab.grace) this.stopTab(tab);
     }
   }
 
@@ -353,15 +380,17 @@ export class BrowserStreamRegistry {
   private start(tab: Tab, sub: Subscriber, params: BrowserStreamParams): Promise<Shared | BrowserStreamRefusal> {
     if (tab.shared) {
       this.raiseFps(tab, params.maxFps);
+      this.syncMobile(tab);
       return Promise.resolve(tab.shared);
     }
     if (!tab.starting) {
       tab.starting = (async (): Promise<Shared | BrowserStreamRefusal> => {
         let reply: unknown;
         try {
+          tab.sentMobile = [...tab.subs].some((s) => s.mobile);
           reply = await tab.desktop.request('browser.streamStart', {
             workspaceId: tab.workspaceId, surfaceId: tab.surfaceId, streamId: tab.streamId,
-            maxWidth: params.maxWidth, maxHeight: params.maxHeight, quality: params.quality, maxFps: params.maxFps,
+            maxWidth: params.maxWidth, maxHeight: params.maxHeight, quality: params.quality, maxFps: params.maxFps, mobile: tab.sentMobile,
           });
         } catch {
           return { status: 503, error: 'browser-preview-unavailable' };
@@ -384,6 +413,8 @@ export class BrowserStreamRegistry {
         tab.lastPushAt = Date.now();
         // Everyone left while it started: stop what was just started.
         if (tab.subs.size === 0 || this.tabs.get(tab.key) !== tab) this.stopTab(tab);
+        // Who asks for mobile may have changed while it started.
+        else this.syncMobile(tab);
         return outcome;
       });
     }
@@ -399,6 +430,40 @@ export class BrowserStreamRegistry {
     tab.sentMaxFps = maxFps;
     tab.desktop.request('browser.streamUpdate', { workspaceId: tab.workspaceId, surfaceId: tab.surfaceId, streamId: tab.streamId, maxFps })
       .catch(() => undefined);
+  }
+
+  /**
+   * Main emulates a phone on the tab while any subscriber asks for it. Once
+   * none does, it is told after the grace, and a tab nobody is left on stops
+   * then; a subscriber asking for it meanwhile keeps it as it is.
+   */
+  private syncMobile(tab: Tab): void {
+    if (!tab.shared || tab.starting || tab.gone) return;
+    const update = (mobile: boolean) => {
+      tab.sentMobile = mobile;
+      const seq = ++tab.mobileSeq;
+      tab.desktop.request('browser.streamUpdate', { workspaceId: tab.workspaceId, surfaceId: tab.surfaceId, streamId: tab.streamId, mobile })
+        .catch(() => {
+          // Main never took the change, and asks again only for its own: send it again shortly.
+          if (tab.gone || seq !== tab.mobileSeq) return;
+          tab.sentMobile = !mobile;
+          const retry = setTimeout(() => this.syncMobile(tab), BROWSER_STREAM_MOBILE_RETRY_MS);
+          retry.unref?.();
+        });
+    };
+    if ([...tab.subs].some((s) => s.mobile)) {
+      if (tab.grace) { clearTimeout(tab.grace); tab.grace = null; }
+      if (!tab.sentMobile) update(true);
+      return;
+    }
+    if (!tab.sentMobile || tab.grace) return;
+    tab.grace = setTimeout(() => {
+      tab.grace = null;
+      if (tab.gone) return;
+      if (tab.subs.size === 0) { this.stopTab(tab); return; }
+      if (![...tab.subs].some((s) => s.mobile)) update(false);
+    }, BROWSER_STREAM_MOBILE_GRACE_MS);
+    tab.grace.unref?.();
   }
 
   private open(sub: Subscriber, sink: BrowserStreamSink, authorize: () => boolean, begin: () => void): BrowserStreamRefusal | null {
@@ -522,6 +587,7 @@ export class BrowserStreamRegistry {
   private endTab(tab: Tab, code: BrowserStreamEndCode): void {
     tab.gone = true;
     tab.endCode = code;
+    if (tab.grace) { clearTimeout(tab.grace); tab.grace = null; }
     this.drop(tab);
     for (const sub of [...tab.subs]) {
       // A subscriber still starting hears the code from open().
@@ -542,7 +608,13 @@ export class BrowserStreamRegistry {
     }
     const tab = sub.tab;
     tab.subs.delete(sub);
-    if (tab.subs.size > 0 || tab.gone) return;
+    if (tab.gone) return;
+    // Others stay; or the last one left a tab main emulates a phone on, kept
+    // for the grace so a quick reconnect finds it as it was.
+    if (tab.subs.size > 0 || (tab.shared && !tab.starting && tab.sentMobile)) {
+      this.syncMobile(tab);
+      return;
+    }
     this.drop(tab);
     // Still starting: the start's own completion stops it.
     if (tab.shared && !tab.starting) this.stopTab(tab);
@@ -556,6 +628,7 @@ export class BrowserStreamRegistry {
   private stopTab(tab: Tab): void {
     if (tab.gone) return;
     tab.gone = true;
+    if (tab.grace) { clearTimeout(tab.grace); tab.grace = null; }
     this.drop(tab);
     tab.desktop.request('browser.streamStop', { workspaceId: tab.workspaceId, surfaceId: tab.surfaceId, streamId: tab.streamId })
       .catch(() => undefined);

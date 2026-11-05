@@ -135,7 +135,7 @@ import { IPC, getWmuxHomeDir, dataSuffix } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { sampleDaemonProcess } from '../shared/daemon/daemonProgress';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
-import { registerBrowserRpc, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
+import { activeDevicePreset, registerBrowserRpc, resetDevicePreset, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
 import { registerA2aChannelRpc } from './pipe/handlers/a2a.channel.rpc';
 import { registerEventsRpc } from './pipe/handlers/events.rpc';
@@ -2631,7 +2631,7 @@ app.on('ready', async () => {
           reportHostWindow(() => client, mainWindow);
           disposePhoneBridge?.();
           // The phone's live browser stream (phone/PhoneBrowserStream.ts), per
-          // daemon connection; off unless WMUX_PHONE_BROWSER_STREAM=1.
+          // daemon connection; on unless WMUX_PHONE_BROWSER_STREAM=0.
           const phoneStreams = phoneBrowserStreamEnabled() ? createPhoneBrowserStreams({
             push: (params) => client.rpc('daemon.phone.browserStream', params, { timeoutMs: 3_000 }),
             backend: () => browserBackendStore.get(),
@@ -2642,15 +2642,20 @@ app.on('ready', async () => {
               visible: surfaceId => webviewCdpManager.isVisible(surfaceId),
               onVisibility: listener => webviewCdpManager.onVisibility(listener),
               nativeBounds: wc => phoneBrowserNativeBounds(wc),
+              // viewport=mobile on a pane: the phone's own viewport action.
+              viewport: async (surfaceId, workspaceId, mode) => {
+                const reply = await handlePhoneBrowser('browser.viewport', { workspaceId, surfaceId, mode }, phoneBrowserDeps) as { applied?: unknown } | null;
+                if (reply?.applied !== true) throw new Error('Browser viewport unavailable');
+              },
+              preset: wc => activeDevicePreset(wc),
+              // As the `desktop` viewport action resets, without its page and agent-control checks.
+              reset: async wc => {
+                await resetDevicePreset(wc);
+                await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
+              },
             },
           }) : null;
-          disposePhoneBridge = installPhoneBridge(client,(command,payload) => command === AGENT_ENV_COMMAND
-            // A paired PC comparing agent environments: names, versions and hashes.
-            ? cachedAgentEnvSummary({ wmuxVersion: app.getVersion() })
-            : command === MOA_WAKE_COMMAND
-            // A failure main learns after the accept goes back on the receipt.
-            ? Promise.resolve(handlePhoneMoaWake(payload))
-            : command.startsWith('browser.') ? handlePhoneBrowser(command,payload,{
+          const phoneBrowserDeps: Parameters<typeof handlePhoneBrowser>[2] = {
             backend: () => browserBackendStore.get(),
             clearViewport: async id => {
               const wc = phoneWebContents.fromId(id);
@@ -2695,7 +2700,14 @@ app.on('ready', async () => {
             },
             page: id => { const wc = phoneWebContents.fromId(id); return wc && !wc.isDestroyed() ? {title:wc.getTitle(),url:wc.getURL()} : null; },
             invoke: (method,params) => rpcRouter.dispatch({id: `phone-browser-${phoneBrowserRequestId()}`,method:method as RpcMethod,params},{operator:true}),
-          }) : command.startsWith('workspaces.') ? handlePhoneWorkspaces(command,payload,() => mainWindow) : command.startsWith('prompts.') ? handlePhoneQuickCommands(command,payload) : handlePhoneAccounts(command,payload,{
+          };
+          disposePhoneBridge = installPhoneBridge(client,(command,payload) => command === AGENT_ENV_COMMAND
+            // A paired PC comparing agent environments: names, versions and hashes.
+            ? cachedAgentEnvSummary({ wmuxVersion: app.getVersion() })
+            : command === MOA_WAKE_COMMAND
+            // A failure main learns after the accept goes back on the receipt.
+            ? Promise.resolve(handlePhoneMoaWake(payload))
+            : command.startsWith('browser.') ? handlePhoneBrowser(command,payload,phoneBrowserDeps) : command.startsWith('workspaces.') ? handlePhoneWorkspaces(command,payload,() => mainWindow) : command.startsWith('prompts.') ? handlePhoneQuickCommands(command,payload) : handlePhoneAccounts(command,payload,{
             store:getAccountStore(),usage:accountUsageService,
           }), phoneStreams);
           // Keep the computer awake while a paired phone is attached. Installed in

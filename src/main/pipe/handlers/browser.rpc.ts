@@ -778,6 +778,111 @@ function touchPresetActive(wc: WebContents): boolean {
   return activePreset.get(wc)?.hasTouch === true;
 }
 
+// Read the page's own numbers rather than reporting back what was asked
+// for. Best-effort: a page that cannot be evaluated must not fail the
+// emulation this describes.
+async function probeDevice(
+  send: (method: string, p?: Record<string, unknown>) => Promise<unknown>,
+): Promise<
+  { w: number; h: number; dpr: number; touch: number } | undefined
+> {
+  try {
+    const res = (await send('Runtime.evaluate', {
+      expression: DEVICE_PROBE_EXPRESSION,
+      returnByValue: true,
+    })) as { result?: { value?: { w?: number; h?: number; dpr?: number; touch?: number } } };
+    const v = res?.result?.value;
+    return typeof v?.w === 'number' && typeof v.h === 'number'
+      ? { w: v.w, h: v.h, dpr: v.dpr ?? 0, touch: v.touch ?? 0 }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Takes the device preset off `wc`, as browser.emulate `deviceReset` does,
+ * and says what it did. No page or agent-control check: the phone browser
+ * stream undoes its own preset with it on any page, the caller's checks done.
+ */
+export async function resetDevicePreset(wc: WebContents): Promise<string[]> {
+  const send = (method: string, p?: Record<string, unknown>): Promise<unknown> =>
+    wc.debugger.sendCommand(method, p);
+  const applied: string[] = [];
+  // Actually undo the preset over CDP: drop the device metrics override and
+  // restore the real user agent. Without this, a packaged caller who switches
+  // to a phone preset and then resets stays on the mobile UA/metrics for every
+  // subsequent page. CDP has no "clear UA override" command, so re-apply the
+  // WebContents' own UA to shed the mobile one set by the preset above.
+  activePreset.delete(wc);
+  const remembered = prePresetViewport.get(wc);
+  prePresetViewport.delete(wc);
+  await send('Emulation.clearDeviceMetricsOverride');
+  // The touch points the preset installed outlive clearDeviceMetricsOverride,
+  // so a reset that skipped this left a desktop UA reporting a touchscreen.
+  let touchDisabled = true;
+  // No maxTouchPoints — CDP refuses 0 even when disabling, and the catch
+  // below turned that refusal into a silent no-op (#1357).
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false })
+    .catch(() => {
+      // Swallowing this was how a reset could report success while
+      // navigator.maxTouchPoints stayed at the preset's value (#1357).
+      // The metrics are still cleared; say what did not happen.
+      touchDisabled = false;
+    });
+  try {
+    const ua = typeof wc.getUserAgent === 'function' ? wc.getUserAgent() : undefined;
+    // Restore the metadata alongside the string: re-applying the real UA
+    // while the preset's Client Hints stayed in place would leave exactly
+    // the mismatch the preset path now avoids.
+    if (ua) {
+      await send(
+        'Emulation.setUserAgentOverride',
+        buildUserAgentOverride(ua) as unknown as Record<string, unknown>,
+      );
+    }
+  } catch {
+    /* getUserAgent / UA override unavailable on this transport; metrics still cleared */
+  }
+  // Restore the viewport the preset replaced. Clearing the override alone
+  // left the caller to guess the desktop size back, and a page still at the
+  // phone width keeps matching the preset's media queries (#1357).
+  let viewportNote: string;
+  if (remembered) {
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: remembered.width,
+      height: remembered.height,
+      deviceScaleFactor: 0,
+      mobile: false,
+    });
+    viewportNote = `viewport ${remembered.width}x${remembered.height} restored`;
+  } else {
+    viewportNote = 'viewport from surface bounds (no pre-preset viewport recorded)';
+  }
+  // The page's media queries and `ontouchstart` checks already ran under the
+  // preset, so their results cannot be trusted without a fresh evaluation.
+  let reloaded = true;
+  try {
+    wc.reload();
+  } catch {
+    reloaded = false;
+  }
+  applied.push(`device=reset (${viewportNote}, ${reloaded ? 'reloaded' : 'reload failed'})`);
+  if (!touchDisabled) applied.push('touch=could not be disabled');
+  const after = await probeDevice(send);
+  if (after) applied.push(`probe=${after.w}x${after.h} dpr=${after.dpr} maxTouchPoints=${after.touch}`);
+  return applied;
+}
+
+/**
+ * The device preset browser.emulate last set on `wc`, while it holds: a new
+ * object for each preset, and none once one is reset. The phone browser
+ * stream reverts its own mobile preset only while this is still the one it set.
+ */
+export function activeDevicePreset(wc: WebContents): { readonly mobile: boolean } | undefined {
+  return activePreset.get(wc);
+}
+
 /** The debugger, in the shape the shared touch dispatch asks for. */
 function touchSenderFor(wc: WebContents): TouchSender {
   return { send: (method: string, params?: unknown) => wc.debugger.sendCommand(method, params as Record<string, unknown>) };
@@ -4399,25 +4504,7 @@ export function registerBrowserRpc(
     const send = (method: string, p?: Record<string, unknown>): Promise<unknown> =>
       wc.debugger.sendCommand(method, p);
     const applied: string[] = [];
-    // Read the page's own numbers rather than reporting back what was asked
-    // for. Best-effort: a page that cannot be evaluated must not fail the
-    // emulation this describes.
-    const probe = async (): Promise<
-      { w: number; h: number; dpr: number; touch: number } | undefined
-    > => {
-      try {
-        const res = (await send('Runtime.evaluate', {
-          expression: DEVICE_PROBE_EXPRESSION,
-          returnByValue: true,
-        })) as { result?: { value?: { w?: number; h?: number; dpr?: number; touch?: number } } };
-        const v = res?.result?.value;
-        return typeof v?.w === 'number' && typeof v.h === 'number'
-          ? { w: v.w, h: v.h, dpr: v.dpr ?? 0, touch: v.touch ?? 0 }
-          : undefined;
-      } catch {
-        return undefined;
-      }
-    };
+    const probe = () => probeDevice(send);
 
     if (typeof params['offline'] === 'boolean') {
       await send('Network.enable');
@@ -4565,68 +4652,7 @@ export function registerBrowserRpc(
       const after = await probe();
       if (after) applied.push(`probe=${after.w}x${after.h} dpr=${after.dpr} maxTouchPoints=${after.touch}`);
     } else if (params['deviceReset'] === true) {
-      // Actually undo the preset over CDP: drop the device metrics override and
-      // restore the real user agent. Without this, a packaged caller who switches
-      // to a phone preset and then resets stays on the mobile UA/metrics for every
-      // subsequent page. CDP has no "clear UA override" command, so re-apply the
-      // WebContents' own UA to shed the mobile one set by the preset above.
-      activePreset.delete(wc);
-      const remembered = prePresetViewport.get(wc);
-      prePresetViewport.delete(wc);
-      await send('Emulation.clearDeviceMetricsOverride');
-      // The touch points the preset installed outlive clearDeviceMetricsOverride,
-      // so a reset that skipped this left a desktop UA reporting a touchscreen.
-      let touchDisabled = true;
-      // No maxTouchPoints — CDP refuses 0 even when disabling, and the catch
-      // below turned that refusal into a silent no-op (#1357).
-      await send('Emulation.setTouchEmulationEnabled', { enabled: false })
-        .catch(() => {
-          // Swallowing this was how a reset could report success while
-          // navigator.maxTouchPoints stayed at the preset's value (#1357).
-          // The metrics are still cleared; say what did not happen.
-          touchDisabled = false;
-        });
-      try {
-        const ua = typeof wc.getUserAgent === 'function' ? wc.getUserAgent() : undefined;
-        // Restore the metadata alongside the string: re-applying the real UA
-        // while the preset's Client Hints stayed in place would leave exactly
-        // the mismatch the preset path now avoids.
-        if (ua) {
-          await send(
-            'Emulation.setUserAgentOverride',
-            buildUserAgentOverride(ua) as unknown as Record<string, unknown>,
-          );
-        }
-      } catch {
-        /* getUserAgent / UA override unavailable on this transport; metrics still cleared */
-      }
-      // Restore the viewport the preset replaced. Clearing the override alone
-      // left the caller to guess the desktop size back, and a page still at the
-      // phone width keeps matching the preset's media queries (#1357).
-      let viewportNote: string;
-      if (remembered) {
-        await send('Emulation.setDeviceMetricsOverride', {
-          width: remembered.width,
-          height: remembered.height,
-          deviceScaleFactor: 0,
-          mobile: false,
-        });
-        viewportNote = `viewport ${remembered.width}x${remembered.height} restored`;
-      } else {
-        viewportNote = 'viewport from surface bounds (no pre-preset viewport recorded)';
-      }
-      // The page's media queries and `ontouchstart` checks already ran under the
-      // preset, so their results cannot be trusted without a fresh evaluation.
-      let reloaded = true;
-      try {
-        wc.reload();
-      } catch {
-        reloaded = false;
-      }
-      applied.push(`device=reset (${viewportNote}, ${reloaded ? 'reloaded' : 'reload failed'})`);
-      if (!touchDisabled) applied.push('touch=could not be disabled');
-      const after = await probe();
-      if (after) applied.push(`probe=${after.w}x${after.h} dpr=${after.dpr} maxTouchPoints=${after.touch}`);
+      applied.push(...await resetDevicePreset(wc));
     }
 
     return { applied };
