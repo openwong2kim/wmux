@@ -1031,9 +1031,14 @@ export class DaemonPipeServer {
     // check, not a local attacker.
     if (request.method.startsWith('a2a.') && !this.isFirstParty(clientId)) {
       if (!DaemonPipeServer.HEADLESS_CHANNEL_METHODS.has(request.method)) {
-        return { id: request.id, ok: false, error: `${NOT_FIRST_PARTY}: ${request.method} is accepted only from the app's own connection` };
+        return {
+          id: request.id,
+          ok: false,
+          error: `${NOT_FIRST_PARTY}: ${request.method} is accepted only from the app's own connection`,
+          code: NOT_FIRST_PARTY,
+        };
       }
-      if ('verifiedWorkspaceId' in params) {
+      if (Object.prototype.hasOwnProperty.call(params, 'verifiedWorkspaceId')) {
         params = { ...params };
         delete params['verifiedWorkspaceId'];
       }

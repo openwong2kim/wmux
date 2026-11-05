@@ -2,7 +2,7 @@
 // calls a pane's tools make headless (`wmux channel`), which take the caller's
 // workspace from the daemon's own session record. Exercised over a real pipe,
 // with a raw client and with main's DaemonClient.
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -19,7 +19,12 @@ function testPipeName(suffix: string): string {
   return path.join(os.tmpdir(), `wmux-test-${suffix}-${id}.sock`);
 }
 
-/** Every `a2a.*` method the daemon registers on its pipe, read from the sources. */
+/**
+ * Every `a2a.*` method name in the daemon's sources. A superset of what it
+ * registers on its pipe: it also takes names registered in a loop
+ * (a2a.channel.trash/restore/destroy) and names it only sends elsewhere,
+ * which the test server registers too.
+ */
 function daemonA2aMethods(): string[] {
   const root = path.join(__dirname, '..');
   const methods = new Set<string>();
@@ -29,13 +34,36 @@ function daemonA2aMethods(): string[] {
       if (entry.isDirectory()) {
         if (entry.name !== '__tests__') walk(full);
       } else if (entry.name.endsWith('.ts')) {
-        for (const m of fs.readFileSync(full, 'utf8').matchAll(/onRpc\(\s*'(a2a\.[^']+)'/g)) methods.add(m[1] ?? '');
+        for (const m of fs.readFileSync(full, 'utf8').matchAll(/'(a2a\.[a-zA-Z][a-zA-Z.]*)'/g)) methods.add(m[1] ?? '');
       }
     }
   };
   walk(root);
   return [...methods].sort();
 }
+
+/**
+ * What each headless channel handler reads from its caller (src/daemon/index.ts),
+ * besides `verifiedWorkspaceId` and `senderPtyId`, which channelCallerIdentity
+ * turns into the caller's workspace. ChannelService pins every caller-side
+ * field to that workspace: create's `createdBy`, join's `member` and leave's
+ * `workspaceId` are replaced by or matched against it, post refuses a `sender`
+ * from another workspace, and ack/unread/leave match `memberId` within it.
+ * `members`, `invitedMember` and the rest name targets or content.
+ */
+const HEADLESS_FIELDS: Record<string, Record<string, unknown>> = {
+  'a2a.channel.list': {},
+  'a2a.channel.get': { channelId: 'ch-1' },
+  'a2a.channel.getMessages': { channelId: 'ch-1', sinceSeq: 3, limit: 10 },
+  'a2a.channel.getMembers': { channelId: 'ch-1' },
+  'a2a.channel.ack': { channelId: 'ch-1', uptoSeq: 4, memberId: 'm-1' },
+  'a2a.channel.unread': { memberId: 'm-1' },
+  'a2a.channel.create': { name: 'dev', visibility: 'public', topic: 't', createdBy: { workspaceId: 'ws-a', memberId: 'm-1' }, members: [] },
+  'a2a.channel.join': { channelId: 'ch-1', member: { workspaceId: 'ws-a', memberId: 'm-1' }, includeHistory: true },
+  'a2a.channel.leave': { channelId: 'ch-1', workspaceId: 'ws-a', memberId: 'm-1' },
+  'a2a.channel.post': { channelId: 'ch-1', sender: { workspaceId: 'ws-a', memberId: 'm-1' }, text: 'hi', clientMsgId: 'c-1', data: {}, mentions: [] },
+  'a2a.channel.invite': { channelId: 'ch-1', invitedMember: { workspaceId: 'ws-b', memberId: 'm-2' }, includeHistory: false },
+};
 
 /** The channel calls `wmux channel` makes on the daemon pipe (src/cli/commands/channel.ts). */
 const CLI_CHANNEL_METHODS = ['a2a.channel.ack', 'a2a.channel.getMessages', 'a2a.channel.join', 'a2a.channel.list', 'a2a.channel.post', 'a2a.channel.unread'];
@@ -45,6 +73,7 @@ const sockets: net.Socket[] = [];
 const daemonClients: DaemonClient[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const c of daemonClients.splice(0)) await c.disconnect();
   for (const s of sockets.splice(0)) s.destroy();
   for (const s of servers.splice(0)) await s.stop();
@@ -116,7 +145,10 @@ describe('daemon A2A methods and the app\'s connection', () => {
 
   it('finds the daemon\'s A2A methods in its sources', () => {
     expect(methods.length).toBeGreaterThan(50);
-    expect(methods).toEqual(expect.arrayContaining(['a2a.task.update', 'a2a.task.cancel', 'a2a.principal.upsert', 'a2a.channel.post', ...CLI_CHANNEL_METHODS]));
+    expect(methods).toEqual(expect.arrayContaining([
+      'a2a.task.update', 'a2a.task.cancel', 'a2a.principal.upsert', 'a2a.remote.links.accept',
+      'a2a.channel.trash', 'a2a.channel.destroy', ...Object.keys(HEADLESS_FIELDS), ...CLI_CHANNEL_METHODS,
+    ]));
   });
 
   it('refuses every A2A method but the headless channel calls on a connection that did not identify', async () => {
@@ -147,6 +179,57 @@ describe('daemon A2A methods and the app\'s connection', () => {
     socket.write(line('echo', 'test.echo', token));
     await waitFor(() => client.replies.has('echo'));
     expect(client.replies.get('echo')?.ok).toBe(true);
+  });
+
+  it('hands each headless channel handler what its caller sent, less the workspace stamp', async () => {
+    const headless = Object.keys(HEADLESS_FIELDS);
+    const { pipe, token, ran } = await startServer('a2a-fields', headless);
+    const { socket, replies } = await connect(pipe);
+    for (const method of headless) {
+      socket.write(line(method, method, token, { ...HEADLESS_FIELDS[method], senderPtyId: 'pty-x', verifiedWorkspaceId: 'ws-other' }));
+      await waitFor(() => replies.has(method));
+      expect(replies.get(method), method).toMatchObject({ ok: true });
+      expect(ran.get(method), method).toEqual({ ...HEADLESS_FIELDS[method], senderPtyId: 'pty-x' });
+    }
+  });
+
+  it('answers params that are not an object without taking the daemon down', async () => {
+    const { pipe, token, ran } = await startServer('a2a-params', ['a2a.channel.post', 'a2a.task.update']);
+    const { socket, replies } = await connect(pipe);
+    const cases: Array<[string, unknown]> = [['x', 'x'], ['null', null], ['array', ['verifiedWorkspaceId']], ['number', 7]];
+    for (const [name, params] of cases) {
+      for (const method of ['a2a.channel.post', 'a2a.task.update']) {
+        const id = `${name}-${method}`;
+        socket.write(JSON.stringify({ id, method, params, token }) + '\n');
+        await waitFor(() => replies.has(id));
+      }
+    }
+    expect(replies.get('x-a2a.channel.post')).toMatchObject({ ok: false, error: expect.stringMatching(/params must be an object/) });
+    expect(replies.get('null-a2a.channel.post')).toMatchObject({ ok: false, error: expect.stringMatching(/params must be an object/) });
+    expect(replies.get('array-a2a.channel.post')).toMatchObject({ ok: true });
+    expect(ran.get('a2a.channel.post')).toEqual(['verifiedWorkspaceId']);
+    expect(replies.get('array-a2a.task.update')).toMatchObject({ ok: false, error: expect.stringMatching(new RegExp(`^${NOT_FIRST_PARTY}`)) });
+    expect(ran.has('a2a.task.update')).toBe(false);
+    socket.write(line('echo', 'test.echo', token));
+    await waitFor(() => replies.has('echo'));
+    expect(replies.get('echo')).toMatchObject({ ok: true });
+  });
+
+  it('does not carry the app\'s standing over to the next connection', async () => {
+    const { server, pipe, token, ran } = await startServer('a2a-reconnect', ['a2a.task.update']);
+    const app = await connect(pipe);
+    app.socket.write(line('id', 'daemon.client.identify', token, { role: 'main' }) + line('u1', 'a2a.task.update', token));
+    await waitFor(() => app.replies.has('u1'));
+    expect(app.replies.get('u1')).toMatchObject({ ok: true });
+    app.socket.destroy();
+    await waitFor(() => server.getConnectionCount() === 0);
+    ran.clear();
+
+    const next = await connect(pipe);
+    next.socket.write(line('u2', 'a2a.task.update', token));
+    await waitFor(() => next.replies.has('u2'));
+    expect(next.replies.get('u2')).toMatchObject({ ok: false, error: expect.stringMatching(new RegExp(`^${NOT_FIRST_PARTY}`)) });
+    expect(ran.has('a2a.task.update')).toBe(false);
   });
 
   it('takes no workspace stamp from a connection that is not the app', async () => {
@@ -198,12 +281,54 @@ describe('DaemonClient on the app\'s connection', () => {
     await waitFor(() => started.identify.calls === 1);
 
     // Still not marked: one retry, then the refusal stands.
-    await expect(client.rpc('a2a.task.cancel', { taskId: 't1' })).rejects.toThrow(NOT_FIRST_PARTY);
+    await expect(client.rpc('a2a.task.cancel', { taskId: 't1' })).rejects.toMatchObject({ code: NOT_FIRST_PARTY });
     expect(started.identify.calls).toBe(2);
     expect(started.ran.has('a2a.task.cancel')).toBe(false);
 
     started.identify.marks = true;
     expect(await client.rpc('a2a.task.cancel', { taskId: 't1' })).toEqual({ ok: true });
     expect(started.identify.calls).toBe(3);
+  });
+
+  it('calls refused together share one identify', async () => {
+    const started = await startServer('a2a-shared', ['a2a.task.cancel']);
+    started.identify.marks = false;
+    const client = new DaemonClient(started.pipe, started.token);
+    daemonClients.push(client);
+    expect(await client.connect()).toBe(true);
+    await waitFor(() => started.identify.calls === 1);
+
+    const results = await Promise.allSettled([1, 2, 3].map((n) => client.rpc('a2a.task.cancel', { taskId: `t${n}` })));
+    expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected', 'rejected']);
+    expect(started.identify.calls).toBe(2);
+  });
+
+  it('stops identifying after three failed recoveries on a connection, until it reconnects', async () => {
+    const started = await startServer('a2a-give-up', ['a2a.task.cancel']);
+    started.identify.marks = false;
+    const client = new DaemonClient(started.pipe, started.token);
+    daemonClients.push(client);
+    expect(await client.connect()).toBe(true);
+    await waitFor(() => started.identify.calls === 1);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    for (let n = 1; n <= 3; n++) {
+      await expect(client.rpc('a2a.task.cancel', { taskId: `t${n}` })).rejects.toMatchObject({ code: NOT_FIRST_PARTY });
+    }
+    expect(started.identify.calls).toBe(4);
+    expect(warn.mock.calls.filter(([m]) => String(m).includes('lost first-party'))).toHaveLength(1);
+
+    started.identify.marks = true;
+    await expect(client.rpc('a2a.task.cancel', { taskId: 't4' })).rejects.toMatchObject({ code: NOT_FIRST_PARTY });
+    expect(started.identify.calls).toBe(4);
+
+    // A new connection recovers again, even when its own identify is lost.
+    await client.disconnect();
+    started.identify.marks = false;
+    expect(await client.connect()).toBe(true);
+    await waitFor(() => started.identify.calls === 5);
+    started.identify.marks = true;
+    expect(await client.rpc('a2a.task.cancel', { taskId: 't5' })).toEqual({ ok: true });
+    expect(started.identify.calls).toBe(6);
   });
 });

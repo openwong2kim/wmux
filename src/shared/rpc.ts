@@ -373,7 +373,7 @@ export function hostedBindingOf(ctx?: RpcContext): string | undefined {
 
 export type RpcResponse =
   | { id: string; ok: true; result: unknown }
-  | { id: string; ok: false; error: string; rejection?: RpcRejection; retryable?: boolean };
+  | { id: string; ok: false; error: string; rejection?: RpcRejection; retryable?: boolean; code?: string };
 
 /**
  * Whether an RPC reply is a refusal answered as a result rather than thrown.

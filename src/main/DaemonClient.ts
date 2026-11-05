@@ -99,6 +99,11 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** A refusal the daemon gives an A2A call on a connection that is not the app's (shared/daemonFirstParty). */
+function isNotFirstParty(err: unknown): boolean {
+  return err instanceof Error && (err as Error & { code?: string }).code === NOT_FIRST_PARTY;
+}
+
 /**
  * Client for connecting to wmux-daemon from the Electron main process.
  * Communicates over Named Pipe (Windows) / Unix domain socket using JSON-RPC.
@@ -173,6 +178,7 @@ export class DaemonClient extends EventEmitter {
         // #2372 — a new connection may be a new daemon, and a list read left
         // in flight on the old socket must not hold up the ones queued behind it.
         this.connectionEpoch += 1;
+        this.firstPartyRefusals = 0;
         this.viewerVisibilityBatchRefused = false;
         for (const key of this.listSessionsQueue.keys()) {
           if (!this.listSessionsBusy(key)) setImmediate(() => this.flushListSessions(key));
@@ -437,13 +443,42 @@ export class DaemonClient extends EventEmitter {
     try {
       return await this.send(method, params, opts);
     } catch (err) {
-      if (!(err instanceof Error) || !err.message.startsWith(NOT_FIRST_PARTY)) throw err;
       // The daemon answers A2A calls only on a connection that identified as
       // the app, and this one's identify did not land (the connect-time one can
-      // bounce off the rate limit). Identify again and retry once.
-      await this.send('daemon.client.identify', { role: 'main' });
-      return this.send(method, params, opts);
+      // bounce off the rate limit). Identify again and retry once, unless
+      // recovery has already failed FIRST_PARTY_RECOVERY_MAX times on this
+      // connection. The daemon keeps a connection's standing until it closes,
+      // so a connection it keeps refusing will not recover by asking again.
+      if (!isNotFirstParty(err) || this.firstPartyRefusals >= DaemonClient.FIRST_PARTY_RECOVERY_MAX) throw err;
+      await this.identifyAgain();
+      try {
+        return await this.send(method, params, opts);
+      } catch (retryErr) {
+        if (isNotFirstParty(retryErr) && ++this.firstPartyRefusals === DaemonClient.FIRST_PARTY_RECOVERY_MAX) {
+          console.warn(`[lifecycle] DaemonClient lost first-party on the daemon pipe: ${DaemonClient.FIRST_PARTY_RECOVERY_MAX} identifies did not restore it; A2A calls fail until reconnect`);
+        }
+        throw retryErr;
+      }
     }
+  }
+
+  /** Recoveries on this connection that identified again and were still refused. */
+  private firstPartyRefusals = 0;
+  private static readonly FIRST_PARTY_RECOVERY_MAX = 3;
+  /** The identify in flight for this connection, shared by every call refused meanwhile. */
+  private reidentify: { epoch: number; done: Promise<void> } | null = null;
+
+  private identifyAgain(): Promise<void> {
+    const epoch = this.connectionEpoch;
+    if (this.reidentify?.epoch === epoch) return this.reidentify.done;
+    const done = this.send('daemon.client.identify', { role: 'main' }).then(
+      () => undefined,
+      () => undefined,
+    ).finally(() => {
+      if (this.reidentify?.done === done) this.reidentify = null;
+    });
+    this.reidentify = { epoch, done };
+    return done;
   }
 
   /**
@@ -1449,7 +1484,9 @@ export class DaemonClient extends EventEmitter {
       if (response.ok) {
         pending.resolve(response.result);
       } else {
-        pending.reject(new Error(response.error ?? 'Unknown RPC error'));
+        const err: Error & { code?: string } = new Error(response.error ?? 'Unknown RPC error');
+        if (response.code) err.code = response.code;
+        pending.reject(err);
       }
       return;
     }
