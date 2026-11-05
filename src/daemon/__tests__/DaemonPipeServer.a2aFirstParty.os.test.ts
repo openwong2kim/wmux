@@ -1,4 +1,4 @@
-// Daemon A2A methods answer only the app's own connection, except the channel
+// Daemon A2A and task-mission methods answer only the app's own connection, except the channel
 // calls a pane's tools make headless (`wmux channel`), which take the caller's
 // workspace from the daemon's own session record. Exercised over a real pipe,
 // with a raw client and with main's DaemonClient.
@@ -20,12 +20,12 @@ function testPipeName(suffix: string): string {
 }
 
 /**
- * Every `a2a.*` method name in the daemon's sources. A superset of what it
+ * Every app-only (`a2a.*` and `task.mission.*`) method name in the daemon's sources. A superset of what it
  * registers on its pipe: it also takes names registered in a loop
  * (a2a.channel.trash/restore/destroy) and names it only sends elsewhere,
  * which the test server registers too.
  */
-function daemonA2aMethods(): string[] {
+function daemonAppOnlyMethods(): string[] {
   const root = path.join(__dirname, '..');
   const methods = new Set<string>();
   const walk = (dir: string): void => {
@@ -34,7 +34,7 @@ function daemonA2aMethods(): string[] {
       if (entry.isDirectory()) {
         if (entry.name !== '__tests__') walk(full);
       } else if (entry.name.endsWith('.ts')) {
-        for (const m of fs.readFileSync(full, 'utf8').matchAll(/'(a2a\.[a-zA-Z][a-zA-Z.]*)'/g)) methods.add(m[1] ?? '');
+        for (const m of fs.readFileSync(full, 'utf8').matchAll(/'((?:a2a|task\.mission)\.[a-zA-Z][a-zA-Z.]*)'/g)) methods.add(m[1] ?? '');
       }
     }
   };
@@ -85,8 +85,8 @@ interface Started {
   token: string;
   /** The params each handler ran with, by method. */
   ran: Map<string, Record<string, unknown>>;
-  /** Whether identify marks the caller (false: it answers ok but the mark is lost). */
-  identify: { marks: boolean; calls: number };
+  /** Whether identify marks the caller (false: it answers ok but the mark is lost), and whether it refuses outright. */
+  identify: { marks: boolean; refuses: boolean; calls: number };
 }
 
 async function startServer(suffix: string, methods: string[], pipe = testPipeName(suffix), token = `t-${crypto.randomUUID()}`): Promise<Started> {
@@ -94,11 +94,11 @@ async function startServer(suffix: string, methods: string[], pipe = testPipeNam
   servers.push(server);
   server.setAuthToken(token);
   const ran = new Map<string, Record<string, unknown>>();
-  const identify = { marks: true, calls: 0 };
+  const identify = { marks: true, refuses: false, calls: 0 };
   // As in daemon/index.ts.
   server.onRpc('daemon.client.identify', async (params, ctx) => {
     identify.calls++;
-    if (params['role'] !== 'main') return { ok: false };
+    if (params['role'] !== 'main' || identify.refuses) return { ok: false };
     if (identify.marks) server.markFirstParty(ctx.clientId);
     return { ok: true };
   });
@@ -141,17 +141,18 @@ const line = (id: string, method: string, token: string, params: Record<string, 
   JSON.stringify({ id, method, params, token }) + '\n';
 
 describe('daemon A2A methods and the app\'s connection', () => {
-  const methods = daemonA2aMethods();
+  const methods = daemonAppOnlyMethods();
 
   it('finds the daemon\'s A2A methods in its sources', () => {
     expect(methods.length).toBeGreaterThan(50);
     expect(methods).toEqual(expect.arrayContaining([
       'a2a.task.update', 'a2a.task.cancel', 'a2a.principal.upsert', 'a2a.remote.links.accept',
       'a2a.channel.trash', 'a2a.channel.destroy', ...Object.keys(HEADLESS_FIELDS), ...CLI_CHANNEL_METHODS,
+      'task.mission.start', 'task.mission.update', 'task.mission.close', 'task.mission.list',
     ]));
   });
 
-  it('refuses every A2A method but the headless channel calls on a connection that did not identify', async () => {
+  it('refuses every app-only method but the headless channel calls on a connection that did not identify', async () => {
     const { pipe, token, ran } = await startServer('a2a-unidentified', methods);
     // A fresh connection every 40 calls, under the per-socket rate limit, so
     // the limit is never what answers.
@@ -291,6 +292,40 @@ describe('DaemonClient on the app\'s connection', () => {
     started.identify.marks = true;
     expect(await client.rpc('a2a.task.cancel', { taskId: 't1' })).toEqual({ ok: true });
     expect(started.identify.calls).toBe(3);
+  });
+
+  it('does not count an identify the daemon refused against the recovery limit', async () => {
+    const started = await startServer('a2a-identify-refused', ['task.mission.start']);
+    started.identify.marks = false;
+    const client = new DaemonClient(started.pipe, started.token);
+    daemonClients.push(client);
+    expect(await client.connect()).toBe(true);
+    await waitFor(() => started.identify.calls === 1);
+
+    // Refused identifies (a rate limit, say) leave recovery available...
+    started.identify.refuses = true;
+    for (let n = 1; n <= 4; n++) {
+      await expect(client.rpc('task.mission.start', { n })).rejects.toMatchObject({ code: NOT_FIRST_PARTY });
+    }
+    expect(started.identify.calls).toBe(5);
+    // ...so the first one that lands still restores the connection.
+    started.identify.refuses = false;
+    started.identify.marks = true;
+    expect(await client.rpc('task.mission.start', { n: 5 })).toEqual({ ok: true });
+  });
+
+  it('recovers a task-mission call the same way', async () => {
+    const started = await startServer('mission-reidentify', ['task.mission.list']);
+    started.identify.marks = false;
+    const client = new DaemonClient(started.pipe, started.token);
+    daemonClients.push(client);
+    expect(await client.connect()).toBe(true);
+    await waitFor(() => started.identify.calls === 1);
+
+    started.identify.marks = true;
+    expect(await client.rpc('task.mission.list', { verifiedWorkspaceId: 'ws-a' })).toEqual({ ok: true });
+    expect(started.identify.calls).toBe(2);
+    expect(started.ran.get('task.mission.list')).toEqual({ verifiedWorkspaceId: 'ws-a' });
   });
 
   it('calls refused together share one identify', async () => {
