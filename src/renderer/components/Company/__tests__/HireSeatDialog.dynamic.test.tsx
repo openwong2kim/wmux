@@ -172,7 +172,7 @@ describe('HireSeatDialog', () => {
   });
 
   it('splits beside the CEO when the company has no staff pane yet', async () => {
-    hireSeat.mockResolvedValue({ ok: true, label: 'dev-2', command: 'claude', cwd: null });
+    hireSeat.mockResolvedValue({ ok: true, label: 'dev-2', command: 'claude', cwd: null, launchEnv: { CLAUDE_CODE_SANDBOXED: '1' } });
     act(() => useStore.setState({ workspaces: [other, { ...company('p1'), rootPane: leaf('p1', 1, surface('s1', 'pty-1')) }] }));
     await render();
     await act(async () => { add()!.click(); });
@@ -182,8 +182,9 @@ describe('HireSeatDialog', () => {
     const top = ws.rootPane as { type: string; direction: string; children: Pane[] };
     expect(top.direction).toBe('horizontal');
     expect(top.children[0].id).toBe('p1');
-    // No folder of its own: the seed keeps the split's.
-    expect(useStore.getState().projectPaneSeed[top.children[1].id]).toEqual({ label: 'dev-2', command: 'claude' });
+    // No folder of its own: the seed keeps the split's. The first-run env is
+    // for the launch line only, never the pane's env.
+    expect(useStore.getState().projectPaneSeed[top.children[1].id]).toEqual({ label: 'dev-2', command: 'claude', launchEnv: { CLAUDE_CODE_SANDBOXED: '1' } });
   });
 
   it('keeps the form and says why when main refuses', async () => {

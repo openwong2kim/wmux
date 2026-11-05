@@ -76,7 +76,7 @@ describe('pty:create typed launch line', () => {
 
   it('the daemon create types the same flagged line (source lock: no daemon here)', () => {
     const src = readFileSync(path.resolve(process.cwd(), 'src/main/ipc/handlers/pty.handler.ts'), 'utf8');
-    expect(src).toContain('const cmd = typedStartupLine(line, shell, !!botWorker);');
+    expect(src).toContain('const cmd = typedStartupLine(line, shell, !!botWorker, options?.launchEnv);');
   });
 });
 

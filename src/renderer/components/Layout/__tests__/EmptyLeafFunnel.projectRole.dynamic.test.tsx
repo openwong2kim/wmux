@@ -147,3 +147,14 @@ describe('EmptyLeafFunnel — a project-seeded pane keeps its role', () => {
     expect(setRole).not.toHaveBeenCalled();
   });
 });
+
+describe('EmptyLeafFunnel — a company seat\'s launch env', () => {
+  it('goes with the launch line, never into the pane\'s env', () => {
+    seedWorkspace({ command: 'claude', cwd: '/wt/dev', launchEnv: { CLAUDE_CODE_SANDBOXED: '1' } });
+    mount();
+    const options = createdWith();
+    expect(options.initialCommand).toBe('claude');
+    expect(options.launchEnv).toEqual({ CLAUDE_CODE_SANDBOXED: '1' });
+    expect(options).not.toHaveProperty('env');
+  });
+});

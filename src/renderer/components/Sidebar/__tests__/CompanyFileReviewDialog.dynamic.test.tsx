@@ -91,6 +91,7 @@ beforeEach(() => {
     labels: ['ceo', 'web', 'api', 'notes'],
     commands: ['claude', 'claude', 'codex', null],
     cwds: [null, '/wt/web', '/wt/api', null],
+    launchEnvs: [null, null, null, null],
   });
   workerAgents.mockReset().mockResolvedValue([
     { agent: 'claude', label: 'Claude Code', installed: true },

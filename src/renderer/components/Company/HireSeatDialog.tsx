@@ -128,7 +128,7 @@ export default function HireSeatDialog({ workspaceId, onClose }: { workspaceId: 
       owns,
       command: res.command,
       ...(res.cwd ? { cwd: res.cwd } : {}),
-      ...(res.env ? { env: res.env } : {}),
+      ...(res.launchEnv ? { launchEnv: res.launchEnv } : {}),
     });
     if (!paneId) {
       setError(t('company.hireSeat.paneFailed'));
