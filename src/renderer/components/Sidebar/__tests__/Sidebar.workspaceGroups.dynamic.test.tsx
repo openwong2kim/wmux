@@ -174,6 +174,33 @@ describe('Sidebar workspace groups', () => {
     expect(section('g2')).toBeNull();
   });
 
+  it('while a filter holds a group open, the header flips the stored state', () => {
+    seed({ groups: [{ id: 'g1', name: 'Client A', collapsed: true }], members: { b: 'g1', c: 'g1' } });
+    act(() => root.render(<Sidebar />));
+    act(() => useStore.getState().setSidebarSearch('b'));
+    act(() => { head('g1')!.click(); });
+    // An open group stores no `collapsed` flag.
+    expect(useStore.getState().workspaceGroups[0].collapsed).toBeFalsy();
+    act(() => useStore.getState().setSidebarSearch(''));
+    expect(rowsIn(section('g1')!)).toEqual(['b', 'c']);
+  });
+
+  it('the delete confirm counts every member, including settled ones', () => {
+    seed({
+      groups: [{ id: 'g1', name: 'Client A' }],
+      members: { b: 'g1', c: 'g1' },
+      settle: { b: { settled: { at: 1, reason: 'manual' } }, c: { settled: { at: 1, reason: 'manual' } } },
+    });
+    act(() => root.render(<Sidebar />));
+    act(() => {
+      head('g1')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    });
+    act(() => { (document.querySelector('[data-workspace-group-action="delete"]') as HTMLButtonElement).click(); });
+    // No row is drawn under the header, but two workspaces are filed here: ask first.
+    expect(section('g1')).not.toBeNull();
+    expect(document.querySelector('[data-workspace-group-menu]')?.textContent).toContain('2');
+  });
+
   it('a folded group holding the open workspace says so on its header', () => {
     seed({ groups: [{ id: 'g1', name: 'Client A', collapsed: true }, { id: 'g2', name: 'Infra', collapsed: true }], members: { b: 'g1', c: 'g2' }, active: 'b' });
     act(() => root.render(<Sidebar />));

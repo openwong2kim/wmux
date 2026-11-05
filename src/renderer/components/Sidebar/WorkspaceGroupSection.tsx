@@ -31,6 +31,9 @@ export default function WorkspaceGroupSection({ group, count, forceOpen = false,
   const t = useT();
   const listId = useId();
   const renaming = useStore((s) => s.workspaceGroupRenamingId === group.id);
+  // Every workspace filed here, drawn or not (settled, snoozed, filtered out):
+  // deleting the group takes them all out of it.
+  const members = useStore((s) => s.workspaces.filter((w) => w.groupId === group.id).length);
   // The header's menu; `confirmDelete` swaps its items for the delete confirm.
   const [menu, setMenu] = useState<{ x: number; y: number; confirmDelete: boolean } | null>(null);
   const headRef = useRef<HTMLButtonElement>(null);
@@ -42,7 +45,9 @@ export default function WorkspaceGroupSection({ group, count, forceOpen = false,
     setMenu(null);
     headRef.current?.focus();
   }, []);
-  const toggle = () => useStore.getState().setWorkspaceGroupCollapsed(group.id, open);
+  // Flips the stored state: while a filter holds the group open, `open` says
+  // nothing about it.
+  const toggle = () => useStore.getState().setWorkspaceGroupCollapsed(group.id, !group.collapsed);
   const startRename = () => {
     setMenu(null);
     useStore.getState().setWorkspaceGroupRenaming(group.id);
@@ -118,7 +123,7 @@ export default function WorkspaceGroupSection({ group, count, forceOpen = false,
           {menu.confirmDelete ? (
             <div className="px-2 py-1.5 max-w-[240px]">
               <InlineConfirm
-                text={t('sidebar.groups.deleteConfirm', { count })}
+                text={t('sidebar.groups.deleteConfirm', { count: members })}
                 confirmLabel={t('sidebar.groups.delete')}
                 cancelLabel={t('common.cancel')}
                 busy={false}
@@ -133,7 +138,7 @@ export default function WorkspaceGroupSection({ group, count, forceOpen = false,
                 {t('sidebar.groups.rename')}
               </button>
               <button type="button" role="menuitem" data-workspace-group-action="toggle" className={FOLDER_MENU_ITEM} onClick={() => { closeMenu(); toggle(); }}>
-                {open ? t('sidebar.groups.collapse') : t('sidebar.groups.expand')}
+                {group.collapsed ? t('sidebar.groups.expand') : t('sidebar.groups.collapse')}
               </button>
               <button
                 type="button"
@@ -142,7 +147,7 @@ export default function WorkspaceGroupSection({ group, count, forceOpen = false,
                 className={FOLDER_MENU_ITEM}
                 // An empty group goes at once; one holding rows says first
                 // where they go (back to the list, still open).
-                onClick={() => (count > 0 ? setMenu({ ...menu, confirmDelete: true }) : remove())}
+                onClick={() => (members > 0 ? setMenu({ ...menu, confirmDelete: true }) : remove())}
               >
                 {t('sidebar.groups.delete')}
               </button>
