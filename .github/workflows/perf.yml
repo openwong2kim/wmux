@@ -26,7 +26,11 @@ on:
 concurrency:
   # A draft PR's run (skipped by the jobs' draft check) gets its own group, so a
   # late synchronize event from before `gh pr ready` cannot cancel the ready run.
-  group: perf-${{ github.ref }}${{ github.event.pull_request.draft && '-draft' || '' }}
+  # A push to main gets a group per commit, so a queued main run is not dropped
+  # when the next merge lands and every main commit keeps its result (#2095).
+  # Concurrent main runs are safe: the history publish fetches, appends and
+  # retries a rejected push.
+  group: perf-${{ github.event_name == 'pull_request' && github.ref || github.sha }}${{ github.event.pull_request.draft && '-draft' || '' }}
   # Cancel superseded PR runs, but never kill a main-push run mid-flight — the
   # history append happens at the END of the job, so cancelling main runs would
   # make the trend file routinely lossy under normal merge cadence.
@@ -46,6 +50,8 @@ jobs:
     # means "nothing to escalate".
     outputs:
       fresh-confirm-needed: ${{ steps.escalation.outputs.needed }}
+      # Whether this run produced the file artifact-contract asserts (#2095).
+      perf-current-produced: ${{ steps.produced.outputs.present }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,6 +136,14 @@ jobs:
           if (Test-Path perf-summary.md) {
             Get-Content perf-summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
           }
+
+      - name: Note whether the measurement was produced
+        id: produced
+        if: always()
+        shell: pwsh
+        run: |
+          $present = if (Test-Path out/perf-current.json) { 'true' } else { 'false' }
+          "present=$present" | Add-Content $env:GITHUB_OUTPUT
 
       - name: Upload artifacts
         if: always()
@@ -341,8 +355,10 @@ jobs:
   artifact-contract:
     needs: bench
     # always() so a red bench still proves the round trip; never on a draft,
-    # where bench was skipped and there is no artifact to download.
-    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    # where bench was skipped and there is no artifact to download. Nor when
+    # bench failed before it measured anything: that is bench's failure, and
+    # this job only repeated it (#2095).
+    if: always() && needs.bench.outputs.perf-current-produced == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: windows-latest
     timeout-minutes: 10
     steps:

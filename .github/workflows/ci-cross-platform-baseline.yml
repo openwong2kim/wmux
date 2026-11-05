@@ -27,10 +27,11 @@ on:
 concurrency:
   # A draft PR's run (skipped by the jobs' draft check) gets its own group, so a
   # late synchronize event from before `gh pr ready` cannot cancel the ready run.
-  group: baseline-${{ github.ref }}${{ github.event.pull_request.draft && '-draft' || '' }}
-  # Safe to cancel anywhere: this workflow is informational and writes nothing
-  # (unlike perf.yml, whose main runs append to the history file at the end).
-  cancel-in-progress: true
+  # A push to main gets a group per commit (as ci.yml does) and is never
+  # cancelled: with one group per branch, almost every main run was cancelled
+  # by the next merge, so a macOS-only regression showed up only on PRs (#2095).
+  group: baseline-${{ github.event_name == 'pull_request' && github.ref || github.sha }}${{ github.event.pull_request.draft && '-draft' || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   baseline:
