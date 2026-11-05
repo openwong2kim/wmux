@@ -363,6 +363,21 @@ describe('filesystem write jobs', () => {
     expect(await queue.rename({ path: from, newName: 'b' })).toMatchObject({ reason: 'exists' });
     expect(fs.readFileSync(to, 'utf8')).toBe('appeared');
   });
+  it('moves under the conflict rule when the destination appeared after it was checked', async () => {
+    const from = path.join(src, 'a'); const to = path.join(dest, 'a');
+    const lstat = fs.promises.lstat.bind(fs.promises);
+    let destLooks = 0;
+    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      if (String(p) === to) destLooks++;
+      // After the job found the name free (at start, then in the move), it appears.
+      else if (String(p) === from && destLooks === 2 && !fs.existsSync(to)) fs.writeFileSync(to, 'appeared');
+      return (lstat as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.promises.lstat);
+    const job = await finish(await queue.start('move', { sources: [from], destDir: dest, conflict: 'fail' }));
+    expect(job.errors).toEqual([{ path: from, reason: 'exists' }]);
+    expect(fs.readFileSync(to, 'utf8')).toBe('appeared');
+    expect(fs.existsSync(from)).toBe(true);
+  });
   it('expires completed jobs after ten minutes', async () => {
     let now = 0; queue = new FsJobQueue(trash, () => now);
     const job = await finish(await copy()); now = 600_000; expect(queue.status(job.id)).toMatchObject({ reason: 'unavailable' });
