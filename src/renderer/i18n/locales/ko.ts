@@ -1298,6 +1298,7 @@ export const ko = {
   'terminal.altWheelSelectionHintMac': '이 앱은 대화 기록을 직접 스크롤해서 스크롤하면 선택이 해제됩니다 — Option+드래그로 화면에 보이는 내용을 선택할 수 있습니다',
   'terminal.openPathBlocked': '실행 파일 차단됨 — 부모 폴더만 열림',
   'terminal.openPathFailed': '열 수 없음 — 폴더 위치 표시',
+  'terminal.openPathProtected': '자격 증명이 있는 보호된 위치라서 wmux가 열지 않습니다.',
   'terminal.bookmarkAdded': '북마크 추가됨',
   'terminal.imeInputRecovered': '한글 입력기에 키 입력이 갇혀 있어 자동으로 복구했습니다',
 
