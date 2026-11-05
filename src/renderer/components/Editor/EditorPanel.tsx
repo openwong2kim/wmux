@@ -7,6 +7,10 @@ interface EditorPanelProps {
   filePath: string;
   isActive: boolean;
   surfaceId: string;
+  /** 1-based line to scroll to (a terminal `path:line` link). */
+  line?: number;
+  /** Bumped when a link re-targets this open tab, so the same line is shown again. */
+  lineSeq?: number;
 }
 
 async function readFileContent(filePath: string): Promise<string | null> {
@@ -32,7 +36,7 @@ function shortenPath(p: string): string {
   return '...' + sep + parts.slice(-2).join(sep);
 }
 
-export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPanelProps) {
+export default function EditorPanel({ filePath, isActive, surfaceId, line, lineSeq }: EditorPanelProps) {
   const t = useT();
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,16 +44,23 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
   const [editing, setEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // The marked line (1-based) from a `path:line` link. It stays until the user
+  // clicks the text, edits, or leaves the tab.
+  const [markedLine, setMarkedLine] = useState<number | null>(null);
+  // A line request shows markdown as its source (the rendered view has no
+  // line-to-block map); stays until the user picks View again or the file changes.
+  const [forceSource, setForceSource] = useState(false);
 
   const isMarkdown = isMarkdownPath(filePath);
   // null when the file is not markdown or is too long for the renderer's
   // block budget: View then shows the raw text rather than a cut document.
   const markdownView = useMemo(
-    () => (isMarkdown && content !== null
+    () => (isMarkdown && !forceSource && content !== null
       ? renderBrainMarkdownWhole(content, { links: true, githubHtml: true, richCode: true })
       : null),
-    [isMarkdown, content],
+    [isMarkdown, forceSource, content],
   );
+  const bodyRef = useRef<HTMLDivElement>(null);
   // Scratch edits are never saved, so closing the tab with a changed buffer
   // loses them: tell the close-tab confirm.
   const dirty = editing && content !== null && editContent !== content;
@@ -73,7 +84,40 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
       }
       setLoading(false);
     });
+    setForceSource(false);
+    setMarkedLine(null);
   }, [filePath]);
+
+  // A (re-)target arrives: mark the line and, for markdown, show the source.
+  useEffect(() => {
+    if (line === undefined) return;
+    setMarkedLine(line);
+    setForceSource(true);
+  }, [line, lineSeq]);
+
+  // Leaving the tab drops the mark.
+  useEffect(() => {
+    if (!isActive) setMarkedLine(null);
+  }, [isActive]);
+
+  // Centre the marked line using its real position, not a proportional guess.
+  useEffect(() => {
+    if (markedLine === null || !isActive || loading || error || editing || markdownView || content === null) return;
+    const body = bodyRef.current;
+    const row = body?.querySelector<HTMLElement>('[data-editor-line-marked]');
+    if (!body || !row) return;
+    const delta = row.getBoundingClientRect().top - body.getBoundingClientRect().top;
+    body.scrollTop = Math.max(0, body.scrollTop + delta - (body.clientHeight - row.offsetHeight) / 2);
+  }, [markedLine, lineSeq, isActive, loading, error, editing, markdownView, content]);
+
+  // Rows for the raw view, built only while a line is marked. Each row keeps
+  // its trailing newline so the pre's text content is the file unchanged.
+  const rawRows = useMemo(() => {
+    if (markedLine === null || content === null) return null;
+    const rows = content.split('\n');
+    const target = Math.min(Math.max(markedLine, 1), rows.length);
+    return { rows, target };
+  }, [markedLine, content]);
 
   const handleToggleEdit = useCallback(() => {
     if (editing) {
@@ -81,6 +125,7 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
       setEditing(false);
     } else {
       // Switch to edit mode
+      setMarkedLine(null);
       setEditContent(content || '');
       setEditing(true);
       // Focus textarea after render
@@ -152,6 +197,7 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
             }
             onClick={() => {
               if (editing) setEditing(false);
+              else setForceSource(false);
             }}
             title={t('editor.switchToView')}
           >
@@ -188,7 +234,17 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-auto">
+      {/* A drag-select ends in a click too: keep the mark then, since redrawing
+          the rows would drop the selection the drag just made. */}
+      <div
+        ref={bodyRef}
+        className="flex-1 overflow-auto"
+        onClick={() => {
+          const sel = window.getSelection();
+          const dragged = sel !== null && !sel.isCollapsed && bodyRef.current?.contains(sel.anchorNode) === true;
+          if (!dragged) setMarkedLine(null);
+        }}
+      >
         {loading && (
           <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm">
             {t('editor.loading')}
@@ -209,7 +265,28 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
             </div>
           ) : (
             <pre className="p-3 text-[var(--text-main)] text-xs font-mono whitespace-pre-wrap break-words leading-relaxed select-text">
-              {content}
+              {rawRows
+                ? rawRows.rows.map((row, i) => {
+                    const n = i + 1;
+                    const marked = n === rawRows.target;
+                    const text = i < rawRows.rows.length - 1 ? row + '\n' : row;
+                    // The mark is a 2px accent left bar plus the neutral
+                    // selection fill (DESIGN.md: colour carries state, no wash).
+                    return (
+                      <span
+                        key={n}
+                        data-editor-line={n}
+                        data-editor-line-marked={marked ? '' : undefined}
+                        className="block"
+                        style={marked
+                          ? { background: 'var(--selection)', boxShadow: 'var(--select-ring)' }
+                          : undefined}
+                      >
+                        {text}
+                      </span>
+                    );
+                  })
+                : content}
             </pre>
           )
         )}

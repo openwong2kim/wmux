@@ -1764,6 +1764,8 @@ function TabTerminal() {
   const setTerminalFontSize = useStore((s) => s.setTerminalFontSize);
   const terminalCursorStyle = useStore((s) => s.terminalCursorStyle);
   const setTerminalCursorStyle = useStore((s) => s.setTerminalCursorStyle);
+  const terminalOpenFileLinksIn = useStore((s) => s.terminalOpenFileLinksIn);
+  const setTerminalOpenFileLinksIn = useStore((s) => s.setTerminalOpenFileLinksIn);
   const defaultShell = useStore((s) => s.defaultShell);
   const setDefaultShell = useStore((s) => s.setDefaultShell);
   const scrollbackLines = useStore((s) => s.scrollbackLines);
@@ -1906,6 +1908,17 @@ function TabTerminal() {
             checked={splitInheritsCwd}
             onChange={setSplitInheritsCwd}
             label={t('settings.splitInheritsCwd')}
+          />
+        </SettingRow>
+        <SettingRow id="openfilelinksin" label={t('settings.openFileLinksIn')} description={t('settings.openFileLinksInDesc')}>
+          <SettingSelect
+            label={t('settings.openFileLinksIn')}
+            value={terminalOpenFileLinksIn}
+            onChange={(v) => setTerminalOpenFileLinksIn(v === 'os' ? 'os' : 'wmux')}
+            options={[
+              { value: 'wmux', label: t('settings.openFileLinksInWmux') },
+              { value: 'os', label: t('settings.openFileLinksInOs') },
+            ]}
           />
         </SettingRow>
         <SettingRow id="closeonexit" label={t('settings.closeTabOnShellExit')} description={t('settings.closeTabOnShellExitDesc')}>

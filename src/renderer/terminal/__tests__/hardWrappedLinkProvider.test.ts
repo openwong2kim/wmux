@@ -223,7 +223,7 @@ describe('createHardWrappedLinkProvider', () => {
     const { links, handlers } = provide(term, 1, 'claude');
     const link = links?.[0];
     link?.activate({ button: 0 } as MouseEvent, link.text);
-    expect(handlers.openPath).toHaveBeenCalledWith('/Users/me/project/src/index.ts');
+    expect(handlers.openPath).toHaveBeenCalledWith('/Users/me/project/src/index.ts', { line: 12 });
   });
 
   it.each([
