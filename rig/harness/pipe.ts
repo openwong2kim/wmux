@@ -284,17 +284,38 @@ export class PipeClient {
       sock.once('error', onConnectErr);
       sock.once('connect', () => {
         sock.removeListener('error', onConnectErr);
-        this.sock = sock;
-        this.connecting = null;
         this.attach(sock);
         // The rig plays main (G6), and the daemon answers its A2A methods only
-        // on a connection that identified as the app. Written first, so the
-        // daemon handles it before any call this socket carries.
-        sock.write(JSON.stringify({ id: 'rig-identify', method: 'daemon.client.identify', params: { role: 'main' }, token: this.readToken() }) + '\n');
-        resolve(sock);
+        // on a connection that identified as the app. Callers wait on
+        // `connecting` until the daemon has answered the identify.
+        this.identify(sock).then(
+          () => {
+            this.sock = sock;
+            this.connecting = null;
+            resolve(sock);
+          },
+          (e: Error) => {
+            this.connecting = null;
+            sock.destroy();
+            reject(e);
+          },
+        );
       });
     });
     return this.connecting;
+  }
+
+  /** Identify as the app, retrying while the daemon's rate limit refuses it. */
+  private async identify(sock: net.Socket): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      const env = await this.request(sock, 'daemon.client.identify', { role: 'main' });
+      const result = env.result as { ok?: boolean } | undefined;
+      if (env.ok && result?.ok === true) return;
+      if (attempt >= 5 || !/^rate limited/.test(env.error ?? '')) {
+        throw new Error(`[rig/pipe] identify failed: ${env.error ?? JSON.stringify(env.result)}`);
+      }
+      await new Promise((r) => setTimeout(r, 250 * attempt));
+    }
   }
 
   /** 소켓에 data/close 핸들러를 붙인다(응답 프레이밍 + 연결 종료 정리). */
@@ -337,7 +358,11 @@ export class PipeClient {
 
   /** 지속 소켓 위로 RPC 1건을 보내고 id 매칭 응답을 기다린다. */
   private async transact(method: string, params: Record<string, unknown>): Promise<RpcEnvelope> {
-    const sock = await this.ensureSocket();
+    return this.request(await this.ensureSocket(), method, params);
+  }
+
+  /** One call on `sock`, correlated by id. */
+  private request(sock: net.Socket, method: string, params: Record<string, unknown>): Promise<RpcEnvelope> {
     const token = this.readToken();
     const id = randomUUID();
     return new Promise<RpcEnvelope>((resolve, reject) => {

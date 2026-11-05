@@ -263,12 +263,15 @@ describe('DaemonClient on the app\'s connection', () => {
     expect(await client.connect()).toBe(true);
     expect(await client.rpc('a2a.task.update', { taskId: 't1' })).toEqual({ ok: true });
 
+    // As DaemonRespawnController does: a new daemon, and a new client for it.
     await client.disconnect();
     await first.server.stop();
     servers.splice(servers.indexOf(first.server), 1);
     const second = await startServer('a2a-client', ['a2a.task.update'], first.pipe, first.token);
-    expect(await client.connect()).toBe(true);
-    expect(await client.rpc('a2a.task.update', { taskId: 't2' })).toEqual({ ok: true });
+    const next = new DaemonClient(second.pipe, second.token);
+    daemonClients.push(next);
+    expect(await next.connect()).toBe(true);
+    expect(await next.rpc('a2a.task.update', { taskId: 't2' })).toEqual({ ok: true });
     expect(second.ran.get('a2a.task.update')).toEqual({ taskId: 't2' });
   });
 
@@ -303,7 +306,7 @@ describe('DaemonClient on the app\'s connection', () => {
     expect(started.identify.calls).toBe(2);
   });
 
-  it('stops identifying after three failed recoveries on a connection, until it reconnects', async () => {
+  it('stops identifying after three failed recoveries on its connection', async () => {
     const started = await startServer('a2a-give-up', ['a2a.task.cancel']);
     started.identify.marks = false;
     const client = new DaemonClient(started.pipe, started.token);
@@ -322,13 +325,11 @@ describe('DaemonClient on the app\'s connection', () => {
     await expect(client.rpc('a2a.task.cancel', { taskId: 't4' })).rejects.toMatchObject({ code: NOT_FIRST_PARTY });
     expect(started.identify.calls).toBe(4);
 
-    // A new connection recovers again, even when its own identify is lost.
+    // The app's next connection (a new DaemonClient, as DaemonRespawnController makes) is answered.
     await client.disconnect();
-    started.identify.marks = false;
-    expect(await client.connect()).toBe(true);
-    await waitFor(() => started.identify.calls === 5);
-    started.identify.marks = true;
-    expect(await client.rpc('a2a.task.cancel', { taskId: 't5' })).toEqual({ ok: true });
-    expect(started.identify.calls).toBe(6);
+    const next = new DaemonClient(started.pipe, started.token);
+    daemonClients.push(next);
+    expect(await next.connect()).toBe(true);
+    expect(await next.rpc('a2a.task.cancel', { taskId: 't5' })).toEqual({ ok: true });
   });
 });

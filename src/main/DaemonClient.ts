@@ -178,7 +178,6 @@ export class DaemonClient extends EventEmitter {
         // #2372 — a new connection may be a new daemon, and a list read left
         // in flight on the old socket must not hold up the ones queued behind it.
         this.connectionEpoch += 1;
-        this.firstPartyRefusals = 0;
         this.viewerVisibilityBatchRefused = false;
         for (const key of this.listSessionsQueue.keys()) {
           if (!this.listSessionsBusy(key)) setImmediate(() => this.flushListSessions(key));
@@ -455,14 +454,18 @@ export class DaemonClient extends EventEmitter {
         return await this.send(method, params, opts);
       } catch (retryErr) {
         if (isNotFirstParty(retryErr) && ++this.firstPartyRefusals === DaemonClient.FIRST_PARTY_RECOVERY_MAX) {
-          console.warn(`[lifecycle] DaemonClient lost first-party on the daemon pipe: ${DaemonClient.FIRST_PARTY_RECOVERY_MAX} identifies did not restore it; A2A calls fail until reconnect`);
+          console.warn(`[lifecycle] DaemonClient lost first-party on the daemon pipe: ${DaemonClient.FIRST_PARTY_RECOVERY_MAX} identifies did not restore it; A2A calls fail until the next connection`);
         }
         throw retryErr;
       }
     }
   }
 
-  /** Recoveries on this connection that identified again and were still refused. */
+  /**
+   * Recoveries that identified again and were still refused. The app makes a
+   * new DaemonClient for every connection (DaemonRespawnController), so this
+   * counts for one connection.
+   */
   private firstPartyRefusals = 0;
   private static readonly FIRST_PARTY_RECOVERY_MAX = 3;
   /** The identify in flight for this connection, shared by every call refused meanwhile. */
