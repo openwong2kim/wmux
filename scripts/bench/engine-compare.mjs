@@ -6,8 +6,8 @@
 //   node scripts/bench/engine-compare.mjs --cdp-port <port> --case throughput|memory|input
 //     [--engine xterm|wongtty|both] [--runs 5] [--file <100 MB text>] [--json out.json]
 //     [--claude-cmd '<shell command that starts Claude Code in a sandbox>']
-//     [--no-clipboard]   spot case: never copy or read the system clipboard
-//                        (also when BENCH_NO_CLIPBOARD=1), for a shared machine
+//     [--no-clipboard]   spot case: skip the selection and copy check, which
+//                        write the system clipboard (also BENCH_NO_CLIPBOARD=1)
 //
 // Every number is taken inside the renderer (performance.now), from probes this
 // script injects; CDP transport time is not in them. The probes only observe:
@@ -376,29 +376,28 @@ async function spot(engine) {
   await shot('osc8-hover');
   await page.mouse.move(box.x + box.width / 2, box.y + box.height - 5);
 
-  // Select the whole top row by dragging and copy it.
-  await reset();
-  await run("printf 'COPYME-12345 가나다 漢字\\n'");
-  await sleep(800);
-  // The copy check writes the system clipboard (the copy key) and reads it
-  // back; on a shared machine it is skipped and only the selection is drawn.
-  const noClipboard = args['no-clipboard'] === 'true' || process.env.BENCH_NO_CLIPBOARD === '1';
-  const saved = noClipboard ? null : clip();
-  await page.mouse.move(box.x + 2, box.y + 8);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2, box.y + 8, { steps: 8 });
-  await page.mouse.move(box.x + box.width - 4, box.y + 8, { steps: 8 });
-  await page.mouse.up();
-  await shot('selection');
-  if (noClipboard) {
-    r.copied = 'skipped (--no-clipboard)';
+  // Select the whole top row by dragging and copy it. Both write the system
+  // clipboard (the app copies a selection as it is made), so on a shared
+  // machine the whole block is skipped.
+  if (args['no-clipboard'] === 'true' || process.env.BENCH_NO_CLIPBOARD === '1') {
+    r.selection = 'skipped (--no-clipboard)';
   } else {
+    await reset();
+    await run("printf 'COPYME-12345 가나다 漢字\\n'");
+    await sleep(800);
+    const saved = clip();
+    await page.mouse.move(box.x + 2, box.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + 8, { steps: 8 });
+    await page.mouse.move(box.x + box.width - 4, box.y + 8, { steps: 8 });
+    await page.mouse.up();
+    await shot('selection');
     await page.keyboard.press(`${mod}+c`);
     await sleep(500);
     r.copied = clip().trim();
     clip(saved);
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height - 5);
   }
-  await page.mouse.click(box.x + box.width / 2, box.y + box.height - 5);
 
   await reset();
   await run(`vim -u NONE -N '${args.sample}'`);
