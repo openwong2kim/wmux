@@ -98,6 +98,12 @@ describe('resolvePaneName', () => {
     });
   });
 
+  it('resolves a pane label and its only terminal\'s userName spelled alike to that terminal', () => {
+    const wss = [ws('ws-a', 1, [leaf('pane-a1', 1, [term('srf-a1', 'daemon-a1', 'api')])])];
+    const res = resolvePaneName(wss, { 'pane-a1': 'api' }, {}, '#api');
+    expect(res.ok && res.target).toMatchObject({ paneId: 'pane-a1', surfaceId: 'srf-a1', ptyId: 'daemon-a1' });
+  });
+
   it('resolves the Workspace.name form when the workspace name holds a dot', () => {
     const wss = [ws('ws-a', 1, [leaf('a', 1, [term('srf-a', 'daemon-a', 'copywriter')])], [], 'app.v2')];
     const res = resolvePaneName(wss, {}, {}, '#app.v2.copywriter');

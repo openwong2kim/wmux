@@ -146,13 +146,18 @@ function matchTag(
 }
 
 function dedup(matches: Match[]): Match[] {
-  const seen = new Set<string>();
+  // A pane-level match on a pane with one terminal names that terminal, so it
+  // and a match on that terminal (its label and its userName spelled alike)
+  // are one target; the terminal-level match is kept.
+  const byKey = new Map<string, number>();
   const out: Match[] = [];
   for (const m of matches) {
-    const key = `${m.ws.id}\u0000${m.leaf.id}\u0000${m.surface?.id ?? ''}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(m);
+    const terms = m.leaf.surfaces.filter(isTerm);
+    const surfaceId = m.surface?.id ?? (terms.length === 1 ? terms[0].id : '');
+    const key = `${m.ws.id}\u0000${m.leaf.id}\u0000${surfaceId}`;
+    const at = byKey.get(key);
+    if (at === undefined) { byKey.set(key, out.length); out.push(m); continue; }
+    if (!out[at].surface && m.surface) out[at] = m;
   }
   return out;
 }
