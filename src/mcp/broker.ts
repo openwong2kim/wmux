@@ -295,7 +295,7 @@ function main(): void {
   server.listen(pipeName, () => {
     console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid}`);
   });
-  void selfCheckPeerPid().then((verdict) => console.error(`[wmux-mcp-broker] peer-pid: ${verdict}`));
+  void selfCheckPeerPid().then((verdict) => { if (verdict) console.error(`[wmux-mcp-broker] peer-pid: ${verdict}`); });
 
   const shutdown = () => {
     server.close();

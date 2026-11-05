@@ -468,6 +468,7 @@ const config: ForgeConfig = {
       if (koffiPlatform !== 'win32') {
         const mcpBundleDir = path.join(resourcesDir, 'mcp-bundle');
         if (fs.existsSync(mcpBundleDir)) copyKoffiInto(path.join(mcpBundleDir, 'node_modules'));
+        else console.warn(`[postPackage] no mcp-bundle at ${mcpBundleDir}: the MCP broker's peer pid self-check will report unavailable`);
       }
 
       // 6. Remove .ps1 files from resources — NuGet 2.8 treats PowerShell files

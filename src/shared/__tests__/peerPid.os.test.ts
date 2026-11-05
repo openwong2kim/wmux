@@ -63,6 +63,8 @@ describe.runIf(supported)('peerPidOf on a unix socket', () => {
 describe.runIf(!supported)('peerPidOf where the platform has no answer yet', () => {
   it('reports the platform as unsupported', async () => {
     expect(peerPidOf(new net.Socket())).toMatchObject({ pid: null, reason: expect.stringMatching(/unsupported platform/) });
-    expect(await selfCheckPeerPid()).toMatch(/^unavailable \(unsupported platform/);
+    // Windows has nothing to check, so nothing to log; another platform says why.
+    if (process.platform === 'win32') expect(await selfCheckPeerPid()).toBeNull();
+    else expect(await selfCheckPeerPid()).toMatch(/^unavailable \(unsupported platform/);
   });
 });

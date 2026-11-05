@@ -3315,7 +3315,7 @@ app.on('ready', async () => {
     await mcpRegistrar.register(authToken);
   }
   pipeServer.start();
-  void selfCheckPeerPid().then((verdict) => console.log(`[peer-pid] main: ${verdict}`));
+  void selfCheckPeerPid().then((verdict) => { if (verdict) console.log(`[peer-pid] main: ${verdict}`); });
   void factoryHost.start();
   autoUpdater.start();
   markBoot('ready-end');

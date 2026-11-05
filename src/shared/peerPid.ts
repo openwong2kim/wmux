@@ -79,7 +79,9 @@ export function peerPidOf(socket: net.Socket): PeerPid {
  * and checks that the peer it reads is itself. A packaged build missing
  * koffi's binary shows here as unavailable.
  */
-export function selfCheckPeerPid(timeoutMs = 2000): Promise<string> {
+export function selfCheckPeerPid(timeoutMs = 2000): Promise<string | null> {
+  // Windows named pipes have no peer pid here: nothing to check or log.
+  if (process.platform === 'win32') return Promise.resolve(null);
   if (!OPTION[process.platform]) return Promise.resolve(`unavailable (unsupported platform ${process.platform})`);
   const socketPath = path.join(os.tmpdir(), `wmux-peer-${process.pid}-${crypto.randomBytes(4).toString('hex')}.sock`);
   return new Promise((resolve) => {

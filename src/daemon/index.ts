@@ -11470,7 +11470,7 @@ async function main(): Promise<void> {
 
   markDaemonBoot('ready');
   log('info', `Daemon ready — pipe: ${activePipeName}`);
-  void selfCheckPeerPid().then((verdict) => log('info', `[peer-pid] daemon: ${verdict}`));
+  void selfCheckPeerPid().then((verdict) => { if (verdict) log('info', `[peer-pid] daemon: ${verdict}`); });
   // Boot summary for postmortems. nodeTiming gives the Node/V8 startup split
   // for free (all values are ms relative to nodeTiming's own timeOrigin).
   try {
