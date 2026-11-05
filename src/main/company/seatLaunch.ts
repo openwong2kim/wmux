@@ -58,9 +58,10 @@ export interface SeatLaunchRequest {
 
 export type SeatLaunchResult =
   /** `cwds[i]`: seat i's own worktree, or null to start in the company folder.
-   *  `envs[i]`: what seat i's pane starts with so its agent skips the first-run
-   *  screens, as a hired seat's (null: none, a plain shell, or it is off). */
-  | { ok: true; labels: string[]; commands: (string | null)[]; cwds: (string | null)[]; envs: (Record<string, string> | null)[] }
+   *  `launchEnvs[i]`: what seat i's launch line runs its agent with, so it skips
+   *  the first-run screens, as a hired seat's (null: none, a plain shell, or it
+   *  is off). Never the pane's env: a later command in that shell has none. */
+  | { ok: true; labels: string[]; commands: (string | null)[]; cwds: (string | null)[]; launchEnvs: (Record<string, string> | null)[] }
   | { ok: false; error: string };
 
 /** One seat added to a company that already runs ("Add a seat on this PC…"). */
@@ -80,9 +81,10 @@ export interface HireSeatRequest {
 
 export type HireSeatResult =
   /** `cwd`: the seat's own worktree, else the company folder, else null (where panes start). */
-  /** `env`: what the seat's pane starts with so its agent skips the first-run
-   *  screens in a folder wmux made (absent when there is none, or it is off). */
-  | { ok: true; label: string; command: string; cwd: string | null; branch?: string; env?: Record<string, string> }
+  /** `launchEnv`: what the launch line runs the agent with so it skips the
+   *  first-run screens in a folder wmux made (absent when there is none, or it
+   *  is off). Never the pane's env. */
+  | { ok: true; label: string; command: string; cwd: string | null; branch?: string; launchEnv?: Record<string, string> }
   | { ok: false; error: string };
 
 export interface SeatLaunchDeps {
@@ -240,12 +242,12 @@ export async function seatLaunches(req: unknown, deps: SeatLaunchDeps = {}): Pro
     });
     // As a hired seat's: the agent was asked for here, so it does not stop on
     // the first-run screens (the folder-trust one) in a folder wmux just made.
-    const envs = seats.map((seat) => {
+    const launchEnvs = seats.map((seat) => {
       const row = seat.agent ? agentRow(seat.agent) : undefined;
       const env = row ? firstRunEnvForAgent(agentLauncherStem(row), deps.env) : {};
       return Object.keys(env).length > 0 ? env : null;
     });
-    return { ok: true, labels, commands, cwds: made.map((s) => s.worktree?.path ?? null), envs };
+    return { ok: true, labels, commands, cwds: made.map((s) => s.worktree?.path ?? null), launchEnvs };
   } catch (err) {
     return await fail(`could not make the seats: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -346,7 +348,7 @@ export async function hireSeat(req: unknown, deps: SeatLaunchDeps = {}): Promise
       command: buildInitialCommand(agentLauncherStem(row), file, deps.platform),
       cwd: made?.path ?? r.folder ?? null,
       ...(made ? { branch: made.branch } : {}),
-      ...(Object.keys(env).length > 0 ? { env } : {}),
+      ...(Object.keys(env).length > 0 ? { launchEnv: env } : {}),
     };
   } catch (err) {
     return await fail(`could not add the seat: ${err instanceof Error ? err.message : String(err)}`);

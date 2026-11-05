@@ -50,18 +50,19 @@ describe('workspaceSlice.addCompanyWorkspace', () => {
     ]);
   });
 
-  it('seeds a seat\'s first-run env with its launch line, and none on a plain shell', () => {
+  it('seeds a seat\'s first-run env on its launch line, never its pane env, and none on a plain shell', () => {
     const s = store();
     const env = { CLAUDE_CODE_SANDBOXED: '1' };
     expect(s.getState().addCompanyWorkspace({
       ...input,
-      seats: [{ ...input.seats[0], env }, input.seats[1], { ...input.seats[2], env }],
+      seats: [{ ...input.seats[0], launchEnv: env }, input.seats[1], { ...input.seats[2], launchEnv: env }],
     })).toBe(true);
     const ws = s.getState().workspaces.find((w) => w.id === 'ws-co');
     if (!ws) throw new Error('the company workspace was not made');
     const seeds = getWorkspaceLeafPanes(ws).map((l) => s.getState().projectPaneSeed[l.id]);
-    expect(seeds[0]).toMatchObject({ label: 'researcher', env });
-    expect(seeds[1]).not.toHaveProperty('env');
+    expect(seeds[0]).toMatchObject({ label: 'researcher', launchEnv: env });
+    expect(seeds[0]).not.toHaveProperty('env');
+    expect(seeds[1]).not.toHaveProperty('launchEnv');
     expect(seeds[2]).toEqual({ label: 'notes', cwd: '/repo/checkout' });
   });
 

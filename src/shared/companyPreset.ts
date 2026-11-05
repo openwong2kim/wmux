@@ -37,8 +37,8 @@ export interface CompanyWorkspaceInput {
   standingOrders?: string;
   ceo: number;
   /** `cwd`: the seat's own worktree; absent, the seat starts in `cwd` above.
-   *  `env`: what the seat's pane starts with (its agent's first-run env). */
-  seats: { label: string; owns: string; command: string | null; cwd?: string; env?: Record<string, string> }[];
+   *  `launchEnv`: what its launch line runs the agent with (its first-run env). */
+  seats: { label: string; owns: string; command: string | null; cwd?: string; launchEnv?: Record<string, string> }[];
 }
 
 /** Seats a preset may hold: the CEO and up to five more. */

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // The make step shared by the New company dialog and a folder's company review:
-// main's seats (names, launch lines, worktrees, first-run env) become the
+// main's seats (names, launch lines, worktrees, launch env) become the
 // workspace's pane seeds.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,13 +16,13 @@ beforeEach(() => {
     labels: ['ceo', 'web', 'notes'],
     commands: ['claude', 'claude', null],
     cwds: [null, '/wt/web', null],
-    envs: [{ CLAUDE_CODE_SANDBOXED: '1' }, { CLAUDE_CODE_SANDBOXED: '1' }, null],
+    launchEnvs: [{ CLAUDE_CODE_SANDBOXED: '1' }, { CLAUDE_CODE_SANDBOXED: '1' }, null],
   });
   (window as unknown as { electronAPI: unknown }).electronAPI = { company: { seatLaunches } };
 });
 
 describe('makeCompany', () => {
-  it('seeds each seat with the first-run env main made for it', async () => {
+  it('seeds each seat\'s launch line with the first-run env main made for it, never its pane env', async () => {
     const res = await makeCompany({
       name: 'shop',
       folder: '/dev/shop',
@@ -42,8 +42,9 @@ describe('makeCompany', () => {
     expect(ws).toBeDefined();
     const seeds = Object.values(state.projectPaneSeed).filter((seed) => ['ceo', 'web', 'notes'].includes(seed.label ?? ''));
     const byLabel = Object.fromEntries(seeds.map((seed) => [seed.label, seed]));
-    expect(byLabel.ceo).toMatchObject({ command: 'claude', env: { CLAUDE_CODE_SANDBOXED: '1' } });
-    expect(byLabel.web).toMatchObject({ command: 'claude', cwd: '/wt/web', env: { CLAUDE_CODE_SANDBOXED: '1' } });
-    expect(byLabel.notes).not.toHaveProperty('env');
+    expect(byLabel.ceo).toMatchObject({ command: 'claude', launchEnv: { CLAUDE_CODE_SANDBOXED: '1' } });
+    expect(byLabel.web).toMatchObject({ command: 'claude', cwd: '/wt/web', launchEnv: { CLAUDE_CODE_SANDBOXED: '1' } });
+    expect(byLabel.notes).not.toHaveProperty('launchEnv');
+    for (const seed of seeds) expect(seed).not.toHaveProperty('env');
   });
 });

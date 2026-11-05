@@ -41,6 +41,7 @@ import { getUserShellRecord, promoteRecoveredSession } from '../../pty/userShell
 import { getShellUtf8Locale } from '../../pty/shellLocale';
 import { forgetPtyShell, getPtyShell, recordPtyShell } from '../../pty/ptyShellRegistry';
 import { cmdLaunchPathRefusal, isCmdShellPath, promptFileArgumentForShell } from '../../../shared/promptFileArgument';
+import { withLaunchEnv } from '../../pty/launchEnv';
 import { resolveWslWorkerGit, withWslWorkerGit } from '../../agents/wslWorkerGit';
 import { withDaemonCreateRollback } from './daemonCreateRollback';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
@@ -169,6 +170,8 @@ type PtyCreateOptions = {
   surfaceId?: string;
   env?: Record<string, string>;
   initialCommand?: string;
+  /** Env for the typed launch line's command only, never the pane's (launchEnv.ts). */
+  launchEnv?: Record<string, string>;
   exec?: string;
   supervision?: PtyCreateSupervisionInput;
   /** 스폰 출처 (실행 컨텍스트 정책). 'user-shell'만 env 투과; exec/supervision이
@@ -325,10 +328,10 @@ async function openCreateGateway(botWorker: BotWorkerCreate | null, options: Pty
 }
 
 /** A startup line as it is typed: a screen reader's agent flag, read at the
- *  write (the line is scheduled before the shell's first output), then a bot
- *  worker's clear. Nothing stored for a resume carries the flag. */
-function typedStartupLine(line: string, shell: string, botWorker: boolean): string {
-  const flagged = withScreenReaderFlag(line, isScreenReaderOn(), launcherVersionsIn(shell));
+ *  write (the line is scheduled before the shell's first output), its launch
+ *  env, then a bot worker's clear. Nothing stored for a resume carries either. */
+function typedStartupLine(line: string, shell: string, botWorker: boolean, launchEnv: Record<string, string> | undefined): string {
+  const flagged = withLaunchEnv(withScreenReaderFlag(line, isScreenReaderOn(), launcherVersionsIn(shell)), launchEnv, shell);
   return (botWorker && !isWslShell(shell) ? clearedLaunchLine(flagged, shell) : undefined) ?? flagged;
 }
 
@@ -942,7 +945,7 @@ export function registerPTYHandlers(
         // where the startup line would land. No person waits on the line.
         beforeWrite: () => folderTrustLaunchHold(daemonClient, sessionId, 'startup line', { refuseUnknown: true, once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }),
         write: (line) => {
-          const cmd = typedStartupLine(line, shell, !!botWorker);
+          const cmd = typedStartupLine(line, shell, !!botWorker, options?.launchEnv);
           const delivered = writeLaunchLine(cmd);
           if (delivered && verifyTaskLine && !verifying) {
             verifying = true;
@@ -1128,7 +1131,7 @@ export function registerPTYHandlers(
               ptyManager.dispose(instance.id);
               return;
             }
-            ptyManager.write(instance.id, sanitizePtyText(typedStartupLine(line, shell, !!botWorker)) + '\r');
+            ptyManager.write(instance.id, sanitizePtyText(typedStartupLine(line, shell, !!botWorker, options?.launchEnv)) + '\r');
           },
         });
         const disposable = instance.process.onData(() => {
