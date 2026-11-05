@@ -3,6 +3,7 @@
 // The close-tab shortcut asks before it kills the tab: a declined prompt
 // leaves the tab and its PTY alone, an accepted one closes it as before. A
 // held Ctrl+W auto-repeats; the repeats must not raise the confirm again.
+import { setEditorDirty } from '../../components/Editor/dirtyEditors';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -164,6 +165,32 @@ describe('close-tab shortcut confirmation', () => {
     const text = dialog()?.textContent ?? '';
     expect(text).toContain('Anything running in it will be stopped.');
     expect(text).not.toContain('This ends its shell');
+  });
+
+  it('closes an editor or preview tab at once, without the dialog', () => {
+    addSurface({ id: 's-8', ptyId: '', title: 'notes.md', shell: '', cwd: '', surfaceType: 'editor', editorFilePath: '/tmp/notes.md' });
+    expect(confirmOpen()).toBe(false);
+    expect(surfaceIds()).not.toContain('s-8');
+    addSurface({ id: 's-9', ptyId: '', title: 'a.png', shell: '', cwd: '', surfaceType: 'preview', previewFilePath: '/tmp/a.png' });
+    expect(confirmOpen()).toBe(false);
+    expect(surfaceIds()).toEqual(['s-1', 's-2']);
+    expect(useStore.getState().closeTabConfirm).toBeNull();
+    expect(dispose).not.toHaveBeenCalled();
+  });
+
+  it('still asks before closing an editor tab with unsaved edits', () => {
+    act(() => setEditorDirty('s-10', true));
+    addSurface({ id: 's-10', ptyId: '', title: 'notes.md', shell: '', cwd: '', surfaceType: 'editor', editorFilePath: '/tmp/notes.md' });
+    expect(confirmOpen()).toBe(true);
+    expect(dialog()?.textContent).toContain('unsaved changes');
+    expect(surfaceIds()).toContain('s-10');
+    act(() => setEditorDirty('s-10', false));
+  });
+
+  it.each(['diff', 'board', 'review'] as const)('still asks before closing a %s tab', (surfaceType) => {
+    addSurface({ id: 's-7', ptyId: '', title: surfaceType, shell: '', cwd: '', surfaceType });
+    expect(confirmOpen()).toBe(true);
+    expect(surfaceIds()).toContain('s-7');
   });
 
   it('treats a remote terminal this desktop minted as a shell it ends', () => {

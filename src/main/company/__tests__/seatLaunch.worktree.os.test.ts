@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SEAT_STAMP_FILE, seatLaunches } from '../seatLaunch';
+import { SEAT_STAMP_FILE, seatLaunches, seatWorktreeCheck } from '../seatLaunch';
 import { TaskWorktreeManager } from '../../worktask/TaskWorktreeManager';
 
 const WS = 'ws-0123abcd-4567-89ab-cdef-0123456789ab';
@@ -109,5 +109,29 @@ describe('seatLaunches worktrees', () => {
     // The stamp of the worktree it took back went with it.
     const [hash] = fs.readdirSync(path.join(root, 'company-worktrees'));
     expect(fs.existsSync(path.join(root, 'company-worktrees', hash, '.meta', 'dev-1-456789ab'))).toBe(false);
+  });
+});
+
+// #3079 — the dialogs ask before a seat is made: on real git, read only.
+describe('seatWorktreeCheck', () => {
+  const worktreeRoot = () => path.join(root, 'company-worktrees');
+
+  it('says whether seats get worktrees, and why not, making nothing', async () => {
+    expect(await seatWorktreeCheck(repo, deps)).toEqual({ ok: true });
+    const plain = path.join(root, 'plain');
+    fs.mkdirSync(plain);
+    expect(await seatWorktreeCheck(plain, deps)).toEqual({ ok: false, reason: 'not-repo' });
+    fs.writeFileSync(path.join(repo, '.gitattributes'), '*.psd filter=lfs diff=lfs merge=lfs -text\n');
+    expect(await seatWorktreeCheck(repo, deps)).toEqual({ ok: false, reason: 'lfs' });
+    const bare = path.join(root, 'bare.git');
+    g(root, 'init', '-q', '--bare', bare);
+    expect(await seatWorktreeCheck(bare, deps)).toEqual({ ok: false, reason: 'bare' });
+    expect(fs.existsSync(worktreeRoot())).toBe(false);
+  });
+
+  it('refuses a folder that is not an absolute path within the cap', async () => {
+    for (const bad of [undefined, 42, 'relative/repo', `/${'a'.repeat(5000)}`]) {
+      expect(await seatWorktreeCheck(bad, deps)).toEqual({ ok: false, error: 'bad folder' });
+    }
   });
 });

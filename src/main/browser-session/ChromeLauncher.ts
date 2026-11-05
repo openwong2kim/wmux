@@ -6,10 +6,12 @@ import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurf
 import { CdpSocket } from './CdpSocket';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
+import { surfaceOpeners } from './SurfaceOpeners';
 import type { HostMatcher } from '../../shared/browserHostPolicy';
 import type { BlockedHost } from '../../shared/browserPolicy';
 import type { LiveTabOwner } from '../../shared/liveWriteScope';
 import type { LentLiveTab } from '../../shared/browserAgentControl';
+import { CHROME_START_CEILING_MS } from '../../shared/chromeStart';
 
 // ---------------------------------------------------------------------------
 // 'chrome' backend (Phase 2): launch the user's installed Chrome with a
@@ -42,6 +44,16 @@ import type { LentLiveTab } from '../../shared/browserAgentControl';
 // adoptExisting() reads is now actually written by the instance it recovers.
 // DevToolsActivePort appearance + /json/version readiness poll.
 const READY_TIMEOUT_MS = 10_000;
+/**
+ * How long a launch waits on a Chrome that is still running but not yet
+ * listening. Its first start after the install was replaced (an update, a
+ * fresh machine) reads ~450 MB from a cold disk before it says anything: on
+ * the GitHub Ubuntu image 20261101 that took 8-14 s, past READY_TIMEOUT_MS,
+ * where the same start with its files cached took under 2 s. A Chrome that
+ * exited fails at once, as before. RPCs that may start it wait longer
+ * (CHROME_START_RPC_TIMEOUT_MS).
+ */
+const READY_STARTING_MS = CHROME_START_CEILING_MS;
 const READY_POLL_MS = 250;
 /** How long a Chrome asked to quit through Browser.close gets before a signal. */
 export const QUIT_GRACE_MS = 3_000;
@@ -131,6 +143,38 @@ export interface LiveWriteScopeApi {
  */
 export interface ChromePageSession {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** An event on this session only, until the returned function is called. */
+  on?(method: string, handler: (params: Record<string, unknown>) => void): () => void;
+}
+
+/**
+ * A tab one of a launcher's tabs opened (target=_blank, window.open, a popup),
+ * now a surface of its own in its opener's workspace.
+ */
+export interface ChromeOpenedSurface {
+  /** The surface whose page opened it. */
+  openerSurfaceId: string;
+  surfaceId: string;
+  /** The opener's workspace; absent when the opener has none. */
+  workspaceId?: string;
+  /** Its URL when Chrome created it, usually empty until its first page commits. */
+  url: string;
+}
+
+/**
+ * A CDP session of its own on the page behind one wmux-opened tab, for a
+ * screencast: attached fresh (never shared or cached), with its own events.
+ * It ends when Chrome detaches it (the tab closed, or Chrome swapped the page
+ * behind the tab), when the browser socket goes away, or on `detach()`; each
+ * `on` handler is removed then, and `onClosed` listeners run once.
+ */
+export interface ChromeStreamSession {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** An event on this session only. */
+  on(method: string, handler: (params: Record<string, unknown>) => void): void;
+  onClosed(listener: () => void): void;
+  readonly closed: boolean;
+  detach(): Promise<void>;
 }
 
 /** Why a page session could not be had: the tab is not there, or no socket is. */
@@ -159,8 +203,12 @@ export interface ChromeBackendClient {
   pageSession?(surfaceId: string): Promise<ChromePageSession>;
   /** False when pageSession cannot work here: the tab watcher is off or failed. */
   canPageSession?(): boolean;
+  /** Dedicated instances only: an uncached session for a screencast (ChromeStreamSession). */
+  streamSession?(surfaceId: string): Promise<ChromeStreamSession>;
   /** Dedicated instances: the record behind a wmux-opened surface (its workspace). */
   recordFor?(surfaceId: string): ChromeSurfaceRecord | undefined;
+  /** Dedicated instances only: told each tab a wmux-opened tab opens; returns the unsubscribe. */
+  onSurfaceOpened?(listener: (opened: ChromeOpenedSurface) => void): () => void;
   /** Live attach only: the agent-window write policy. Absent = dedicated. */
   readonly writeScope?: LiveWriteScopeApi;
   dispose(): void | Promise<void>;
@@ -294,6 +342,25 @@ function newSurfaceId(): string {
   return `chrome-${randomUUID()}`;
 }
 
+/** Tabs one tab may open in a minute and still be adopted. */
+export const OPENED_PER_OPENER_PER_MINUTE = 20;
+/** Tabs one workspace's tabs may open in a minute and still be adopted. */
+export const OPENED_PER_WORKSPACE_PER_MINUTE = 40;
+/** Tabs all of one launcher's tabs may open in a minute and still be adopted: every unbound workspace shares a profile. */
+export const OPENED_PER_MINUTE = 120;
+/** Adopted tabs one tab's opened tabs may hold open at once. */
+export const OPENED_OPEN_PER_OPENER = 30;
+/** Adopted tabs one workspace may hold open at once. */
+export const OPENED_OPEN_PER_WORKSPACE = 50;
+const OPENED_WINDOW_MS = 60_000;
+/** The launcher-wide key of the adoption windows; the others start with `tab:` or `ws:`. */
+const ALL_OPENERS = '*';
+
+/** The adoption limits' key for a workspace (a tab with none shares the key of the others with none). */
+function workspaceKey(workspaceId: string | undefined): string {
+  return `ws:${workspaceId ?? ''}`;
+}
+
 function hasExited(child: ChildProcess): boolean {
   return child.exitCode != null || child.signalCode != null;
 }
@@ -332,6 +399,10 @@ interface WatchedTargetInfo {
   type?: string;
   url?: string;
   title?: string;
+  /** The page that opened this one, noopener included. */
+  openerId?: string;
+  /** Set on a page that is not a tab's, such as `prerender`. */
+  subtype?: string;
 }
 
 interface PageSessionEntry {
@@ -339,6 +410,14 @@ interface PageSessionEntry {
   sessionId: string;
   targetId: string;
   valid: boolean;
+}
+
+interface StreamSessionEntry {
+  socket: CdpSocket;
+  sessionId: string;
+  closed: boolean;
+  unsubscribe: Array<() => void>;
+  closers: Array<() => void>;
 }
 
 function watchedTargetInfo(params: Record<string, unknown>): WatchedTargetInfo | undefined {
@@ -385,6 +464,17 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly pageSessions = new Map<string, PageSessionEntry>();
   /** pageSession() attaches in flight, so concurrent callers share one. */
   private readonly attachingPages = new Map<string, Promise<PageSessionEntry>>();
+  /** streamSession()s alive on the watcher socket. */
+  private readonly streamSessions = new Set<StreamSessionEntry>();
+  /** The watcher socket whose discovery replay is over: only pages created after it are adopted. */
+  private adoptingOn: CdpSocket | null = null;
+  private readonly openedListeners = new Set<(opened: ChromeOpenedSurface) => void>();
+  /** Adoption times in the last minute, per opener (`tab:`), per workspace (`ws:`) and for all (ALL_OPENERS). */
+  private readonly adoptedAt = new Map<string, number[]>();
+  /** Adopted surfaces still open, by surfaceId: who opened them, and the workspace key. */
+  private readonly adopted = new Map<string, { opener: string; workspace: string }>();
+  /** Limits whose refusal has been logged since they last let a tab through. */
+  private readonly capLogged = new Set<string>();
 
   private readonly profileLabel: string | undefined;
   private readonly profileName: string;
@@ -485,6 +575,13 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (record.targetId) this.byTargetId.delete(record.targetId);
     if (record.tabTargetId) this.byTabTargetId.delete(record.tabTargetId);
     this.surfaces.delete(surfaceId);
+    this.adopted.delete(surfaceId);
+    this.adoptedAt.delete(`tab:${surfaceId}`);
+    this.capLogged.delete(`tab:${surfaceId}`);
+    this.capLogged.delete(`open:tab:${surfaceId}`);
+    // A surface Chrome closed is nobody's any more: its connection entry would
+    // only take a place in that registry from a live one.
+    surfaceOpeners.forget(surfaceId);
   }
 
   // ── Tab-target watcher ────────────────────────────────────────────────────
@@ -510,6 +607,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.watcherGeneration++;
     this.watcher?.close();
     this.watcher = null;
+    this.adoptingOn = null;
     this.browserWsEndpoint = null;
     this.tabSessions.clear();
     this.sessionTabs.clear();
@@ -517,6 +615,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.pageToTab.clear();
     for (const entry of this.pageSessions.values()) entry.valid = false;
     this.pageSessions.clear();
+    for (const entry of [...this.streamSessions]) this.endStreamSession(entry);
   }
 
   /** The watcher's connection went away (CdpSocket re-dials in place): every page session on it is dead. */
@@ -526,6 +625,30 @@ export class ChromeLauncher implements ChromeBackendClient {
       entry.valid = false;
       this.pageSessions.delete(surfaceId);
     }
+    for (const entry of [...this.streamSessions]) {
+      if (entry.socket === socket) this.endStreamSession(entry);
+    }
+  }
+
+  /** A stream session ends once: its handlers go, then its listeners hear it. */
+  private endStreamSession(entry: StreamSessionEntry): void {
+    if (entry.closed) return;
+    entry.closed = true;
+    this.streamSessions.delete(entry);
+    for (const off of entry.unsubscribe.splice(0)) off();
+    for (const listener of entry.closers.splice(0)) {
+      try { listener(); } catch (err) { console.warn('[ChromeLauncher] stream session close listener threw:', err); }
+    }
+  }
+
+  /** Chrome detached `sessionId`: a stream session on it is over. True when it was one. */
+  private dropStreamSession(sessionId: string): boolean {
+    for (const entry of this.streamSessions) {
+      if (entry.sessionId !== sessionId) continue;
+      this.endStreamSession(entry);
+      return true;
+    }
+    return false;
   }
 
   /** Chrome detached `sessionId`: a page session on it is dead. True when it was one. */
@@ -580,6 +703,69 @@ export class ChromeLauncher implements ChromeBackendClient {
           if (!entry.valid || this.watcher !== entry.socket) throw new ChromePageSessionError('gone', 'ChromeLauncher: page session ended');
           throw err;
         }
+      },
+      on: (method, handler) => entry.socket.on(method, (params, from) => {
+        if (from === entry.sessionId && entry.valid) handler(params);
+      }),
+    };
+  }
+
+  /**
+   * A session of its own on the page behind a wmux-opened tab, for a
+   * screencast (ChromeStreamSession): attached fresh over the watcher's
+   * browser socket, never cached, so its events and its detach touch nothing
+   * else. Never launches Chrome; the same `unavailable` / `gone` answers as
+   * pageSession. Ownership is the caller's check.
+   */
+  async streamSession(surfaceId: string): Promise<ChromeStreamSession> {
+    const record = this.surfaces.get(surfaceId);
+    if (!this.isRunning()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: Chrome is not running');
+    if (!record?.targetId) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this surface');
+    await this.ensureTargetWatcher();
+    const socket = this.watcher;
+    if (!socket?.isOpen()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: no browser CDP socket');
+    const targetId = record.targetId;
+    let sessionId: string | undefined;
+    try {
+      const res = (await socket.send('Target.attachToTarget', { targetId, flatten: true })) as { sessionId?: unknown };
+      sessionId = typeof res?.sessionId === 'string' ? res.sessionId : undefined;
+    } catch {
+      sessionId = undefined;
+    }
+    if (!sessionId) throw new ChromePageSessionError('gone', 'ChromeLauncher: the page could not be attached');
+    if (this.watcher !== socket || this.surfaces.get(surfaceId)?.targetId !== targetId) {
+      void socket.send('Target.detachFromTarget', { sessionId }).catch(() => undefined);
+      throw new ChromePageSessionError('gone', 'ChromeLauncher: the page changed while attaching');
+    }
+    const id = sessionId;
+    const entry: StreamSessionEntry = { socket, sessionId: id, closed: false, unsubscribe: [], closers: [] };
+    this.streamSessions.add(entry);
+    const ended = () => new ChromePageSessionError('gone', 'ChromeLauncher: stream session ended');
+    return {
+      send: async (method, params = {}) => {
+        if (entry.closed) throw ended();
+        try {
+          return await socket.send(method, params, id);
+        } catch (err) {
+          if (entry.closed) throw ended();
+          throw err;
+        }
+      },
+      on: (method, handler) => {
+        if (entry.closed) return;
+        entry.unsubscribe.push(socket.on(method, (params, from) => {
+          if (from === id && !entry.closed) handler(params);
+        }));
+      },
+      onClosed: (listener) => {
+        if (entry.closed) queueMicrotask(listener);
+        else entry.closers.push(listener);
+      },
+      get closed() { return entry.closed; },
+      detach: async () => {
+        if (entry.closed) return;
+        this.endStreamSession(entry);
+        await socket.send('Target.detachFromTarget', { sessionId: id }).catch(() => undefined);
       },
     };
   }
@@ -679,6 +865,9 @@ export class ChromeLauncher implements ChromeBackendClient {
       await socket.send('Target.setDiscoverTargets', { discover: true });
     }
     if (stale()) return;
+    // Chrome announces every existing target before it answers: from here on
+    // a created page is a new one.
+    this.adoptingOn = socket;
     await this.syncTabAnchors();
   }
 
@@ -686,6 +875,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     socket.on('Target.targetCreated', (params) => {
       const info = watchedTargetInfo(params);
       if (info?.type === 'tab' && info.targetId) void this.attachTab(info.targetId);
+      else if (info?.type === 'page' && this.adoptingOn === socket) this.adoptOpened(info);
     });
 
     // The succession signal. `sessionId` here is the PARENT session the event
@@ -703,6 +893,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       const gone = typeof params.sessionId === 'string' ? params.sessionId : undefined;
       if (!gone) return;
       if (this.dropPageSession(gone)) return;
+      if (this.dropStreamSession(gone)) return;
       const detachedTab = this.sessionTabs.get(gone);
       if (detachedTab) {
         // The tab session itself went away; syncTabAnchors re-attaches later.
@@ -755,6 +946,89 @@ export class ChromeLauncher implements ChromeBackendClient {
   private recordForTarget(targetId: string): ChromeSurfaceRecord | undefined {
     const surfaceId = this.byTargetId.get(targetId);
     return surfaceId ? this.surfaces.get(surfaceId) : undefined;
+  }
+
+  /**
+   * A page one of our tabs opened (target=_blank, window.open, a popup)
+   * becomes a surface of its own, in its opener's workspace, or in none when
+   * the opener has none. A page another tab opened stays nobody's, and the
+   * pages discovery replays when the watcher starts are never adopted.
+   */
+  private adoptOpened(info: WatchedTargetInfo): void {
+    const { targetId, openerId } = info;
+    // A prerendered (speculative) page is not a tab: a tab's page has no subtype.
+    if (!targetId || !openerId || info.subtype || this.byTargetId.has(targetId)) return;
+    const opener = this.recordForTarget(openerId);
+    if (!opener) return;
+    const now = Date.now();
+    const workspace = workspaceKey(opener.workspaceId);
+    if (!this.mayAdopt(opener.surfaceId, workspace, now)) return;
+    const record: ChromeSurfaceRecord = {
+      surfaceId: newSurfaceId(),
+      targetId,
+      ...(opener.workspaceId !== undefined && { workspaceId: opener.workspaceId }),
+      url: info.url ?? '',
+      createdAt: now,
+      lastSeenAt: now,
+    };
+    this.surfaces.set(record.surfaceId, record);
+    this.byTargetId.set(targetId, record.surfaceId);
+    this.adopted.set(record.surfaceId, { opener: opener.surfaceId, workspace });
+    surfaceOpeners.inherit(record.surfaceId, opener.surfaceId);
+    // The tab's own attach may have landed first; otherwise noteTabPage anchors it.
+    this.linkAnchor(record);
+    this.persist(true);
+    const opened: ChromeOpenedSurface = {
+      openerSurfaceId: opener.surfaceId,
+      surfaceId: record.surfaceId,
+      ...(record.workspaceId !== undefined && { workspaceId: record.workspaceId }),
+      url: record.url,
+    };
+    for (const listener of [...this.openedListeners]) {
+      try { listener(opened); } catch (err) { console.warn('[ChromeLauncher] opened-surface listener threw:', err); }
+    }
+  }
+
+  /**
+   * A page that loops window.open must not grow the surface list without
+   * bound. Past any limit below a new tab stays nobody's, as every opened
+   * tab did before adoption: tabs adopted in the last minute from one tab,
+   * from one workspace's tabs, and from the whole profile (which every
+   * unbound workspace shares), and adopted tabs still open per opener and
+   * per workspace. Each limit is logged once per run of refusals.
+   */
+  private mayAdopt(openerSurfaceId: string, workspace: string, now: number): boolean {
+    const tab = `tab:${openerSurfaceId}`;
+    const rates: Array<[string, number]> = [
+      [tab, OPENED_PER_OPENER_PER_MINUTE],
+      [workspace, OPENED_PER_WORKSPACE_PER_MINUTE],
+      [ALL_OPENERS, OPENED_PER_MINUTE],
+    ];
+    const recent = rates.map(([key]) => (this.adoptedAt.get(key) ?? []).filter((at) => now - at < OPENED_WINDOW_MS));
+    rates.forEach(([key], i) => this.adoptedAt.set(key, recent[i]));
+    const open = [...this.adopted.values()];
+    const limits: Array<{ key: string; full: boolean; what: string }> = [
+      ...rates.map(([key, cap], i) => ({ key, full: recent[i].length >= cap, what: `${cap} new tabs in a minute` })),
+      { key: `open:${tab}`, full: open.filter((a) => a.opener === openerSurfaceId).length >= OPENED_OPEN_PER_OPENER, what: `${OPENED_OPEN_PER_OPENER} open tabs from one tab` },
+      { key: `open:${workspace}`, full: open.filter((a) => a.workspace === workspace).length >= OPENED_OPEN_PER_WORKSPACE, what: `${OPENED_OPEN_PER_WORKSPACE} open tabs in one workspace` },
+    ];
+    const full = limits.find((limit) => limit.full);
+    if (full) {
+      if (!this.capLogged.has(full.key)) {
+        this.capLogged.add(full.key);
+        console.warn(`[ChromeLauncher] tabs a tab opens are not adopted past ${full.what}`);
+      }
+      return false;
+    }
+    recent.forEach((times) => times.push(now));
+    for (const limit of limits) this.capLogged.delete(limit.key);
+    return true;
+  }
+
+  /** Told each tab a wmux-opened tab opens, once it is a surface; returns the unsubscribe. */
+  onSurfaceOpened(listener: (opened: ChromeOpenedSurface) => void): () => void {
+    this.openedListeners.add(listener);
+    return () => { this.openedListeners.delete(listener); };
   }
 
   private unlinkTab(tabTargetId: string): void {
@@ -850,6 +1124,11 @@ export class ChromeLauncher implements ChromeBackendClient {
       delete record.missingSince;
       return;
     }
+    // Chrome swapped the page inside this tab, and the new page, announced
+    // with an opener, was adopted on its own before its tab was known: one
+    // page is one surface, this tab's.
+    const duplicate = this.recordForTarget(pageTargetId);
+    if (duplicate && duplicate !== record && !duplicate.tabTargetId) this.forget(duplicate.surfaceId);
     this.bind(record, pageTargetId);
     if (url) record.url = url;
     if (title !== undefined) record.title = title;
@@ -1646,8 +1925,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.child = child;
 
     // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
-    // poll /json/version until the endpoint answers.
-    const deadline = Date.now() + READY_TIMEOUT_MS;
+    // poll /json/version until the endpoint answers. Past READY_TIMEOUT_MS a
+    // Chrome that is still running is still starting: waited on, to a ceiling.
+    const startedAt = Date.now();
+    let toldStarting = false;
     for (;;) {
       if (gone) throw new Error('ChromeLauncher: Chrome exited during startup');
       let candidate = pinned;
@@ -1696,7 +1977,12 @@ export class ChromeLauncher implements ChromeBackendClient {
           this.cdpPort = 0;
         }
       }
-      if (Date.now() > deadline) {
+      const waited = Date.now() - startedAt;
+      if (waited > READY_TIMEOUT_MS && waited <= READY_STARTING_MS && !toldStarting) {
+        toldStarting = true;
+        console.warn(`[ChromeLauncher] Chrome is still starting after ${Math.round(waited / 1000)} s (a first start reads its install from disk); waiting up to ${READY_STARTING_MS / 1000} s`);
+      }
+      if (waited > READY_STARTING_MS) {
         // Kill the half-started child; a later demand may retry cleanly.
         try {
           child.kill();
@@ -1733,6 +2019,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     // a start that never happened. Deliberately NOT inside closeWatcher() —
     // startTargetWatcher() calls that itself and must not self-invalidate.
     this.watcherStarting = null;
+    // The tabs those limits counted died with this Chrome.
+    this.adopted.clear();
+    this.adoptedAt.clear();
+    this.capLogged.clear();
     this.persist(true);
   }
 

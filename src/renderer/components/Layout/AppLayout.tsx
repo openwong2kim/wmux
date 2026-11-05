@@ -22,6 +22,7 @@ import { hooksLaunchCheck, nextFirstBootSurface } from './firstBootSequence';
 import { markPrWakeNoticeSeen, prWakeNoticePending, showPrWakeNoticeOnce } from '../../hooks/prWakeNotice';
 import { openModalLayerCount, subscribeModalLayers } from '../ui/modalLayer';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
+import { ensureEngineController, settleStartupEngine } from '../../terminal/wongtty/engineController';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { sessionLayoutWithoutPrivate, stashedPanesWithoutPrivate } from '../../../shared/privateBrowser';
@@ -41,6 +42,7 @@ import PermissionApprovalDialogContainer from '../Approval/PermissionApprovalDia
 import CloseTabConfirm from '../Pane/CloseTabConfirm';
 import { isWorkSurfaceType } from '../Pane/surfaceKinds';
 import { forgetAutoResumeClaims } from '../Pane/Pane';
+import { hydrateWithRetry } from './resumeHydrateRetry';
 import { initAtlasWakeRecovery } from '../../terminal/atlasWakeRecovery';
 import { windowDisplayedStore } from '../../hooks/useWindowDisplayed';
 import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
@@ -441,6 +443,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalCompactScrollback: state.terminalCompactScrollback,
     terminalOpenFileLinksIn: state.terminalOpenFileLinksIn,
     terminalSharedWebgl: state.terminalSharedWebgl,
+    terminalWongtty: state.terminalWongtty,
     splitInheritsCwd: state.splitInheritsCwd,
     closeTabOnShellExit: state.closeTabOnShellExit,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
@@ -1544,6 +1547,10 @@ export default function AppLayout() {
   // 앱 시작 시 세션 복원 (Fix 0 — see state machine diagram at top of file)
   useEffect(() => {
     const gen = ++startupGenRef.current;
+    // Labs wongtty switch: the engine controller watches the saved request
+    // from here, so loadSession turning it on starts loading wongtty while the
+    // daemon wait and the reconcile run.
+    ensureEngineController();
     let abortCtl: AbortController | null = null;
     // Whether this startup attached to a daemon, whose sessions outlive a
     // failed reconcile (and a disconnect), unlike local ptys.
@@ -1692,6 +1699,10 @@ export default function AppLayout() {
           }) === 'kept';
         }
       } finally {
+        // Labs wongtty switch: let a saved on request finish loading first, so
+        // each pane is built once with its engine (returns at once when off;
+        // a slow load lets the panes start as xterm.js and swap later).
+        await settleStartupEngine({ timeoutMs: 5000 });
         // Always flip the gate, even on error — never leave the user
         // staring at a permanent "Restoring panes…" placeholder.
         setPaneGate('ready');
@@ -1985,9 +1996,11 @@ export default function AppLayout() {
   //     whole map from the authoritative session list so a reload / daemon
   //     respawn re-derives badges without waiting for the next event.
   useEffect(() => {
-    const hydrate = () => {
+    const hydrate = (current: () => boolean): Promise<void> => {
       const requestedAt = livenessSnapshotRequested();
-      void window.electronAPI.pty.list().then((sessions) => {
+      return window.electronAPI.pty.list().then((sessions) => {
+        // A list from a connection that has since gone is not this one's.
+        if (!current()) return;
         const snapshot: Record<string, { status: 'armed' | 'stopped'; restartCount: number }> = {};
         // X6 ②: resume hints for recovered interactive agent panes.
         const resumeSnapshot: Record<string, AgentSlug> = {};
@@ -2055,17 +2068,35 @@ export default function AppLayout() {
             void useStore.getState().principalRegisterPane(ptyId);
           }).catch(() => { /* best-effort — transient failure; retry allowed on the next connect */ });
         }
-      }).catch(() => { /* best-effort — a transient list failure self-heals on the next connect */ })
-        .finally(() => livenessSnapshotSettled(requestedAt));
+      }).finally(() => livenessSnapshotSettled(requestedAt));
     };
-    hydrate();
+    // One daemon connection's hydrate, tried again while that connection
+    // stands when its list fails (#3028): after a replaced daemon it is the
+    // only thing that brings the panes' resume offers back.
+    let connection = 0;
+    let cancelHydrate = (): void => undefined;
+    const hydrateNow = (): void => {
+      cancelHydrate();
+      const mine = connection;
+      cancelHydrate = hydrateWithRetry(hydrate, () => connection === mine);
+    };
+    hydrateNow();
     const offConnected = window.electronAPI.daemon.onConnected((info) => {
+      connection++;
       // A different daemon process recovered every pane: the old offers' claims are void.
       if (info?.replaced === true) {
         forgetAutoResumeClaims();
         useStore.getState().resetResumeOffers();
       }
-      hydrate();
+      hydrateNow();
+    });
+    // The panes' readiness was the old pipes'. An automatic resume waits for
+    // the reattached pipe's first data (markPtyReady) instead of typing into
+    // a session not live yet (#3028); a hydrate still pending is moot.
+    const offDisconnected = window.electronAPI.daemon.onDisconnected(() => {
+      connection++;
+      cancelHydrate();
+      useStore.getState().forgetPtyReady();
     });
     const offChanged = window.electronAPI.pty.onSupervisionChanged((payload) => {
       useStore.getState().setSupervision(payload.ptyId, payload.status, payload.restartCount);
@@ -2079,7 +2110,9 @@ export default function AppLayout() {
       clearSurfaceAgentOnProcessExit(payload.ptyId, payload.slug, Date.now());
     });
     return () => {
+      cancelHydrate();
       offConnected();
+      offDisconnected();
       offChanged();
       offRestarted();
       offAgentExit();

@@ -280,3 +280,72 @@ export function stripCredentialValues(
   }
   return out;
 }
+
+/**
+ * Whether a user shell may be handed `key` as a credential (#3049): a
+ * credential name that is neither wmux-internal nor in the WMUX_* namespace.
+ * WMUX_PUSH_RELAY_SECRET is named like a secret but is wmux's own, so the
+ * namespace is excluded whole. Case-insensitive.
+ */
+export function isPassableCredentialKey(key: string): boolean {
+  return isCredentialEnvKey(key) && !isInternalEnvKey(key) && !key.toUpperCase().startsWith('WMUX_');
+}
+
+/**
+ * The credential-named variables of `baseEnv` a user shell inherits: the set a
+ * new tab gets, which main hands the daemon when it starts a restored user
+ * shell (sessions.json never holds these values). No default env: the caller
+ * names whose environment this is, so the daemon never reads its own.
+ */
+export function pickCredentialEnv(baseEnv: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (value === undefined || !isPassableCredentialKey(key)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * `env` plus the passable credential values of `credentialEnv`, as a fresh
+ * object. A key `env` already carries is never overridden (compared
+ * case-insensitively, as Windows env names are). The result is a spawn env:
+ * the caller must not persist it. `env` is not modified.
+ */
+export function mergeCredentialEnv(
+  env: Record<string, string>,
+  credentialEnv: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = { ...env };
+  const present = new Set(Object.keys(out).map((k) => k.toUpperCase()));
+  for (const [key, value] of Object.entries(credentialEnv)) {
+    if (typeof value !== 'string' || !isPassableCredentialKey(key)) continue;
+    if (present.has(key.toUpperCase())) continue;
+    out[key] = value;
+    present.add(key.toUpperCase());
+  }
+  return out;
+}
+
+/** Bounds on a credential env passed over the daemon pipe (sanitizeCredentialEnv). */
+export const CREDENTIAL_ENV_LIMITS = { NAMES: 256, NAME_MAX: 256, VALUE_MAX: 32 * 1024 } as const;
+
+/**
+ * Clean a credential env received over the daemon pipe (#3049): only passable
+ * credential names (isPassableCredentialKey), string values within the size
+ * caps and without NUL. Entries that fail are dropped, so one oversized value
+ * does not cost the shell its other credentials. Null when `raw` is not a
+ * plain object or holds more names than the cap.
+ */
+export function sanitizeCredentialEnv(raw: unknown): Record<string, string> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > CREDENTIAL_ENV_LIMITS.NAMES) return null;
+  const out: Record<string, string> = {};
+  for (const [key, value] of entries) {
+    if (key.length > CREDENTIAL_ENV_LIMITS.NAME_MAX || !isPassableCredentialKey(key)) continue;
+    if (typeof value !== 'string' || value.length > CREDENTIAL_ENV_LIMITS.VALUE_MAX || value.includes('\0')) continue;
+    out[key] = value;
+  }
+  return out;
+}

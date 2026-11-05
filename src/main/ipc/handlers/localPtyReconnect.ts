@@ -5,10 +5,10 @@
  * pty that exited or a daemon session. While a daemon may still come back
  * (first launch in flight, respawn pending) the id may be a living daemon
  * session, so the answer is transient: the renderer keeps the binding and
- * retries. Once the fallback is final (the launch failed, or the respawn
- * budget ran out) nothing will ever own that id again in this run, and the
- * answer is the authoritative `session-dead` that lets the renderer clear the
- * binding (or hand an unconfirmed one to the reconcile) and create a local
+ * retries. Once the fallback is final (the respawn budget ran out; a failed
+ * first launch enters the respawn loop too) nothing will ever own that id
+ * again in this run, and the answer is the authoritative `session-dead` that
+ * lets the renderer clear the binding (or hand an unconfirmed one to the reconcile) and create a local
  * shell. Answering without `transient` kept such a pane on the dead id
  * forever: every retry, and every Retry press, read as transient.
  */

@@ -10,8 +10,13 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
+import { collectProcessTree } from '../scripts/perf-process-tree.mjs';
+import { normalizeProcessRows } from '../scripts/lib/e2e-first-run-lib.mjs';
+import { parseKillResults, windowsKillQuery } from '../scripts/lib/control-wmux-lib.mjs';
+
 const require = createRequire(import.meta.url);
 const { _electron } = require('playwright-core');
+const WIN = process.platform === 'win32';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const ARTIFACTS = process.env.WMUX_E2E_ARTIFACTS || path.join(ROOT, 'e2e', 'artifacts');
@@ -43,8 +48,12 @@ export function git(args, cwd) {
 export function makeSandbox(name) {
   // macOS: the per-user temp dir is long enough that HOME/.wmux-e2e/session-<uuid>.sock
   // passes the 104-byte Unix socket limit, and the daemon cannot listen.
-  const base = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(base, `wmux-e2e-${name}-`)));
+  // WMUX_E2E_SANDBOX_BASE puts the sandboxes elsewhere (a short enough path).
+  const base = process.env.WMUX_E2E_SANDBOX_BASE || (process.platform === 'darwin' ? '/tmp' : os.tmpdir());
+  fs.mkdirSync(base, { recursive: true });
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(base, `wmux-e2e-${name}-`)));
+  // Windows: the profile directories the app (and Electron) read from these.
+  if (WIN) for (const dir of ['AppData/Roaming', 'AppData/Local']) fs.mkdirSync(path.join(home, dir), { recursive: true });
   const bin = path.join(home, '.local', 'bin');
   fs.mkdirSync(bin, { recursive: true });
   for (const tool of ['claude', 'gh']) {
@@ -75,7 +84,7 @@ export function makeSandbox(name) {
   const project = path.join(home, 'project');
   git(['clone', '-q', remote, project], home);
   fs.rmSync(seed, { recursive: true, force: true });
-  return { home, bin, remote, project, runId: crypto.randomUUID() };
+  return { home, bin, remote, project, runId: crypto.randomUUID(), startedAt: Date.now() };
 }
 
 /** The pull requests the fake gh recorded, by number. */
@@ -96,16 +105,34 @@ export function setWorkerScript(sb, body) {
   fs.writeFileSync(path.join(sb.home, '.e2e-worker.sh'), `set -e\n${body}\n`);
 }
 
-export async function launchApp(sb) {
+/** `extraArgs` go to Electron after the harness's own (e.g. --force-device-scale-factor=2).
+ *  `appRoot` is the app directory Electron starts (default: this checkout). */
+export async function launchApp(sb, { extraArgs = [], appRoot = ROOT } = {}) {
   const env = {
     ...process.env,
     HOME: sb.home,
-    PATH: `${sb.bin}:${process.env.PATH}`,
+    PATH: `${sb.bin}${path.delimiter}${process.env.PATH}`,
     WMUX_DATA_SUFFIX: SUFFIX,
     WMUX_E2E_RUN: sb.runId,
   };
   delete env.WMUX_SOCKET_PATH;
   delete env.WMUX_AUTH_TOKEN;
+  if (WIN) {
+    // Node and Electron take the home and profile directories from these on
+    // Windows (os.homedir() reads USERPROFILE), and the registry PATH refresh
+    // would put the runner's own tools back ahead of the sandbox's.
+    // (The spread copied Windows's `Path` under its own spelling: one PATH only.)
+    for (const k of Object.keys(env)) {
+      const key = k.toUpperCase();
+      if ((key === 'PATH' && k !== 'PATH') || key === 'HOMEDRIVE' || key === 'HOMEPATH') delete env[k];
+    }
+    Object.assign(env, {
+      USERPROFILE: sb.home,
+      APPDATA: path.join(sb.home, 'AppData', 'Roaming'),
+      LOCALAPPDATA: path.join(sb.home, 'AppData', 'Local'),
+      WMUX_NO_PATH_REFRESH: '1',
+    });
+  }
   const app = await _electron.launch({
     executablePath: require('electron'),
     // On macOS Electron puts userData under the real ~/Library, not $HOME, so
@@ -113,7 +140,7 @@ export async function launchApp(sb) {
     // The sandbox HOME has no login keychain, so the first safeStorage call
     // (the secret store loads at startup) would ask macOS to create one and
     // block the main thread on that dialog; a mock keychain never asks.
-    args: [ROOT, '--no-sandbox', '--use-mock-keychain', `--user-data-dir=${path.join(sb.home, 'electron-user-data')}`],
+    args: [appRoot, '--no-sandbox', '--use-mock-keychain', `--user-data-dir=${path.join(sb.home, 'electron-user-data')}`, ...extraArgs],
     env,
     timeout: 90_000,
   });
@@ -129,15 +156,37 @@ export async function launchApp(sb) {
   return { app, win, logs };
 }
 
-/** Kill every process of this run: the app and its detached daemon and ptys
- *  (they carry WMUX_E2E_RUN in their environment). */
-export function killRun(sb) {
+/** Windows: every process (pid + creation time) this checkout or the sandbox
+ *  started since the run began, and all they started (the detached daemon
+ *  keeps the app's pid as its parent; the shells are the daemon's), never
+ *  this test process or its parents. Another process's environment cannot
+ *  be read here, so the run is told apart by command line and start time. */
+function windowsRunProcesses(sb) {
+  const ps = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CreationDate,CommandLine | ConvertTo-Json -Compress';
+  const rows = normalizeProcessRows(JSON.parse(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, windowsHide: true })), 'win32');
+  const byPid = new Map(rows.map((r) => [r.ProcessId, r]));
+  const ours = new Set();
+  for (let pid = process.pid; pid && byPid.has(pid) && !ours.has(pid); pid = byPid.get(pid).ParentProcessId) ours.add(pid);
+  const lower = (s) => (s ?? '').toLowerCase();
+  const roots = rows.filter((r) => !ours.has(r.ProcessId) && r.CreationDate != null && r.CreationDate >= sb.startedAt - 1000
+    && [ROOT, sb.home].some((dir) => lower(r.CommandLine).includes(lower(dir))));
+  const { pids } = collectProcessTree(rows, roots.map((r) => r.ProcessId));
+  return rows.filter((r) => pids.has(r.ProcessId) && !ours.has(r.ProcessId));
+}
+
+/** Every process of this run as { pid, command, createdAt }: the app and its
+ *  detached daemon and ptys (they carry WMUX_E2E_RUN or the sandbox HOME in
+ *  their environment; on Windows, see windowsRunProcesses). `command` is the
+ *  command line (on macOS followed by the environment). */
+export function runProcesses(sb) {
+  if (WIN) return windowsRunProcesses(sb).map((r) => ({ pid: r.ProcessId, command: r.CommandLine ?? '', createdAt: r.CreationDate }));
   const mine = [];
   if (fs.existsSync('/proc')) {
     for (const pid of fs.readdirSync('/proc').filter((p) => /^\d+$/.test(p))) {
       try {
         const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8');
-        if (env.includes(`WMUX_E2E_RUN=${sb.runId}`) || env.includes(`HOME=${sb.home}\0`)) mine.push(Number(pid));
+        if (!env.includes(`WMUX_E2E_RUN=${sb.runId}`) && !env.includes(`HOME=${sb.home}\0`)) continue;
+        mine.push({ pid: Number(pid), command: fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ') });
       } catch {
         /* gone or not ours */
       }
@@ -148,10 +197,22 @@ export function killRun(sb) {
     for (const line of ps.split('\n')) {
       if (!line.includes(`WMUX_E2E_RUN=${sb.runId}`) && !line.includes(`HOME=${sb.home} `)) continue;
       const pid = Number(line.trim().split(/\s+/)[0]);
-      if (pid && pid !== process.pid) mine.push(pid);
+      if (pid && pid !== process.pid) mine.push({ pid, command: line });
     }
   }
-  for (const pid of mine) {
+  return mine;
+}
+
+/** Kill every process of this run (runProcesses). */
+export function killRun(sb) {
+  const mine = runProcesses(sb);
+  if (WIN) {
+    const q = windowsKillQuery(mine.map(({ pid, createdAt }) => ({ pid, createdAt })));
+    if (!q) return 0;
+    const results = parseKillResults(execFileSync(q.file, q.args, { encoding: 'utf8', windowsHide: true }));
+    return Object.values(results).filter((r) => r === 'killed').length;
+  }
+  for (const { pid } of mine) {
     try {
       process.kill(pid, 'SIGKILL');
     } catch {
@@ -168,10 +229,26 @@ export async function shot(win, name) {
   return p;
 }
 
+/** The app's RPC pipe, as src/shared/constants.ts getPipeName names it. */
+export function pipePath(sb) {
+  return WIN ? `\\\\.\\pipe\\wmux${SUFFIX}-${os.userInfo().username || 'default'}` : path.join(sb.home, `.wmux${SUFFIX}.sock`);
+}
+
+/** Whether the app's RPC pipe is up: its auth token written, and a
+ *  connection accepted. */
+export function pipeReady(sb) {
+  if (!fs.existsSync(path.join(sb.home, `.wmux${SUFFIX}-auth-token`))) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const s = net.connect(pipePath(sb));
+    s.once('connect', () => { s.destroy(); resolve(true); });
+    s.once('error', () => resolve(false));
+  });
+}
+
 /** One pipe RPC, framed like src/mcp/wmux-client.ts. */
 export function rpc(sb, method, params, { commanderToken, timeout = 60_000 } = {}) {
   const auth = fs.readFileSync(path.join(sb.home, `.wmux${SUFFIX}-auth-token`), 'utf8').trim();
-  const sock = path.join(sb.home, `.wmux${SUFFIX}.sock`);
+  const sock = pipePath(sb);
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
     const envelope = { id, method, params: { ...params, ...(commanderToken ? { token: commanderToken } : {}) }, token: auth, clientName: 'wmux-e2e' };

@@ -48,3 +48,33 @@ describe('desktop phone listener lifetime', () => {
     dispose();
   });
 });
+describe('desktop phone listener with the browser stream', () => {
+  it('announces browser.stream, hands it the stream commands, and stops its screencasts on disconnect and dispose', async () => {
+    const client = Object.assign(new EventEmitter(), { rpc: vi.fn(async () => ({ ok: true })) });
+    const handle = vi.fn(async () => ({ pages: [] }));
+    const streams = { handle: vi.fn(async () => ({ backend: 'chrome' })), tab: vi.fn(() => null), stopAll: vi.fn() };
+    const dispose = installPhoneBridge(client as unknown as DaemonClient, handle, streams);
+    const register = client.rpc.mock.calls.find((c) => (c as unknown[])[0] === 'daemon.phone.register') as unknown as [string, { commands: string[] }];
+    expect(register[1].commands).toContain('browser.stream');
+    const request = (requestId: string, command: string) => ({ type: 'phone.request', data: { requestId, command, payload: { workspaceId: 'ws-1' }, expiresAt: Date.now() + 10000 } });
+    client.emit('event', request('r1', 'browser.streamStart'));
+    client.emit('event', request('r2', 'browser.capture'));
+    await Promise.resolve();
+    expect(streams.handle).toHaveBeenCalledWith('browser.streamStart', { workspaceId: 'ws-1' });
+    expect(handle).toHaveBeenCalledWith('browser.capture', { workspaceId: 'ws-1' });
+    expect(streams.handle).toHaveBeenCalledTimes(1);
+    client.emit('disconnected');
+    expect(streams.stopAll).toHaveBeenCalledTimes(1);
+    dispose();
+    expect(streams.stopAll).toHaveBeenCalledTimes(2);
+    expect(client.listenerCount('disconnected')).toBe(0);
+  });
+
+  it('without a stream manager announces nothing new and routes as before', () => {
+    const client = Object.assign(new EventEmitter(), { rpc: vi.fn(async () => ({ ok: true })) });
+    const dispose = installPhoneBridge(client as unknown as DaemonClient, vi.fn(async () => ({})));
+    const register = client.rpc.mock.calls.find((c) => (c as unknown[])[0] === 'daemon.phone.register') as unknown as [string, { commands: string[] }];
+    expect(register[1].commands).not.toContain('browser.stream');
+    dispose();
+  });
+});

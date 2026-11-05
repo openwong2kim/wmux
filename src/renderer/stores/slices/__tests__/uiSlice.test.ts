@@ -1000,3 +1000,32 @@ describe('UISlice — plain drag select (#1947)', () => {
     expect(store.getState().plainDragSelectEnabled).toBe(false);
   });
 });
+
+// Labs wongtty switch: the requested engine is saved at once; the engine in
+// use and its failure start as xterm / none and are set only by their setters.
+describe('UISlice — terminal engine (Labs wongtty switch)', () => {
+  it('defaults to xterm with no failure, and saves the session when the switch flips', async () => {
+    const { registerSessionSaver } = await import('../../../utils/sessionSaveBridge');
+    const saver = vi.fn();
+    registerSessionSaver(saver);
+    try {
+      const store = createTestStore();
+      expect(store.getState().terminalWongtty).toBe(false);
+      expect(store.getState().terminalEngine).toBe('xterm');
+      expect(store.getState().terminalEngineFailure).toBeNull();
+      store.getState().setTerminalWongtty(true);
+      expect(store.getState().terminalWongtty).toBe(true);
+      expect(saver).toHaveBeenCalledTimes(1);
+      // The engine in use is not the request: nothing but its setter moves it.
+      expect(store.getState().terminalEngine).toBe('xterm');
+      store.getState().setTerminalEngine('wongtty');
+      expect(store.getState().terminalEngine).toBe('wongtty');
+      store.getState().setTerminalEngineFailure({ message: 'no WebGL2' });
+      expect(store.getState().terminalEngineFailure).toEqual({ message: 'no WebGL2' });
+      store.getState().setTerminalEngineFailure(null);
+      expect(store.getState().terminalEngineFailure).toBeNull();
+    } finally {
+      registerSessionSaver(null);
+    }
+  });
+});

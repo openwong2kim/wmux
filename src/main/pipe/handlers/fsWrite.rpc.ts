@@ -5,11 +5,13 @@ import { randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { shell } from 'electron';
-import { holdsRefusedRoot, insideRefusedByIdentity, isPluginRefusedPath, resolvePluginPath } from './fsRefusals';
+import { holdsRefusedRoot, insideRefusedByIdentity, isPluginRefusedPath, resolvePluginPath, type LinkFate } from './fsRefusals';
 import { validatePathParam } from './fs.rpc';
 import type { RpcRouter } from '../RpcRouter';
 
 type Kind = 'copy' | 'move' | 'trash';
+/** What each job does to a link in its sources (see holdsRefusedRoot). */
+const LINK_FATE: Record<Kind, LinkFate> = { copy: 'kept', move: 'removed', trash: 'removed' };
 type Conflict = 'skip' | 'overwrite' | 'fail';
 export interface FsJob {
   id: string;
@@ -107,21 +109,33 @@ export class FsJobQueue {
       const dest = await accessible(path.join(path.dirname(src), params.newName as string), true);
       this.checkLocks([src, dest]);
       if (await exists(dest)) fail('exists');
-      await this.scan(src); // Refuse credential descendants before moving a tree.
+      await this.scan(src, 'removed'); // Refuse credential descendants before moving a tree.
       this.checkLocks([src, dest]);
+      await this.clear(src, 'removed');
+      // Again just before: rename(2) would replace an entry that appeared since.
+      if (await exists(dest)) fail('exists');
       await fs.promises.rename(src, dest);
       return { ok: true, path: dest };
     } catch (e) { return { ok: false, reason: reasonOf(e) }; }
   }
+  /** Refuse `p` when a refused root is there under it (see holdsRefusedRoot). A
+   *  move, rename or trash checks again just before it changes anything, with
+   *  `fresh` (`true` unless given): a refused file can appear after the
+   *  preflight read its folder. */
+  private async clear(p: string, fate: LinkFate | undefined, fresh = true): Promise<fs.Stats> {
+    const s = await fs.promises.lstat(p);
+    // A copy takes nothing away, link or folder; a trash or move takes a folder with all it holds.
+    if (await holdsRefusedRoot(p, fate === 'kept' || s.isSymbolicLink() ? fate : undefined, fresh)) fail('unavailable');
+    return s;
+  }
   /** Preflight every descendant; links are validated but never traversed. */
-  private async scan(p: string, signal?: AbortSignal): Promise<{ bytes: number; items: number }> {
+  private async scan(p: string, fate: LinkFate | undefined, signal?: AbortSignal): Promise<{ bytes: number; items: number }> {
     signal?.throwIfAborted();
     await accessible(p);
-    if (await holdsRefusedRoot(p)) fail('unavailable');
-    const s = await fs.promises.lstat(p);
+    const s = await this.clear(p, fate, false);
     const total = { bytes: s.isFile() ? s.size : 0, items: 1 };
     if (s.isDirectory()) for (const name of await fs.promises.readdir(p)) {
-      const sub = await this.scan(path.join(p, name), signal);
+      const sub = await this.scan(path.join(p, name), fate, signal);
       total.bytes += sub.bytes; total.items += sub.items;
     }
     return total;
@@ -162,27 +176,40 @@ export class FsJobQueue {
     try {
       // Complete security preflight before performing any mutation.
       const totals = [];
-      for (const src of sources) totals.push(await this.scan(src, controller.signal));
+      for (const src of sources) totals.push(await this.scan(src, LINK_FATE[job.kind], controller.signal));
       job.totalBytes = totals.reduce((n, t) => n + t.bytes, 0);
       job.totalItems = totals.reduce((n, t) => n + t.items, 0);
       for (const [i, src] of sources.entries()) {
         controller.signal.throwIfAborted(); job.current = src;
         try {
           if (job.kind === 'trash') {
-            await this.trashItem(await accessible(src));
+            const target = await accessible(src);
+            await this.clear(target, 'removed');
+            await this.trashItem(target);
             job.doneBytes += totals[i].bytes; job.doneItems += totals[i].items;
           } else {
             const dest = path.join(destDir ?? fail('invalid'), path.basename(src));
             if (job.kind === 'move' && !(await exists(dest))) {
               try {
-                await fs.promises.rename(await accessible(src), await accessible(dest, true));
-                job.doneBytes += totals[i].bytes; job.doneItems += totals[i].items;
-                continue;
+                const from = await accessible(src);
+                const to = await accessible(dest, true);
+                await this.clear(from, 'removed');
+                // Again just before: rename(2) would replace an entry that
+                // appeared since. One that did goes the copy way, under the conflict rule.
+                if (!(await exists(to))) {
+                  await fs.promises.rename(from, to);
+                  job.doneBytes += totals[i].bytes; job.doneItems += totals[i].items;
+                  continue;
+                }
               } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e; }
             }
             const complete = await this.copy(src, dest, conflict, r);
             controller.signal.throwIfAborted();
-            if (job.kind === 'move' && complete) await fs.promises.rm(await accessible(src), { recursive: true });
+            if (job.kind === 'move' && complete) {
+              const from = await accessible(src);
+              await this.clear(from, 'removed');
+              await fs.promises.rm(from, { recursive: true });
+            }
           }
         } catch (e) {
           if (controller.signal.aborted) throw e;
@@ -205,13 +232,15 @@ export class FsJobQueue {
     if (target) {
       if (conflict === 'fail') fail('exists');
       if (conflict === 'skip') {
-        const t = await this.scan(src, signal); job.doneBytes += t.bytes; job.doneItems += t.items;
+        const t = await this.scan(src, LINK_FATE[job.kind], signal); job.doneBytes += t.bytes; job.doneItems += t.items;
         return false;
       }
       // Rename replaces the entry itself; never stream through a destination link.
       if (s.isDirectory() !== target.isDirectory()) fail('exists');
     }
     if (s.isDirectory()) {
+      // Again for each folder as it is read: a refused one can appear during a long copy.
+      if (await holdsRefusedRoot(src, 'kept', true)) fail('unavailable');
       if (!target) await fs.promises.mkdir(dest);
       let complete = true;
       for (const name of await fs.promises.readdir(src)) {
@@ -225,7 +254,14 @@ export class FsJobQueue {
     try {
       if (s.isSymbolicLink()) await fs.promises.symlink(await fs.promises.readlink(src), temp);
       else if (s.isFile()) {
-        await pipeline(fs.createReadStream(src), new Transform({ transform(chunk: Buffer, _encoding, callback) {
+        // Read the file the checks saw: not a link put in its place since (O_NOFOLLOW, where there is one), nor another file.
+        const handle = await fs.promises.open(src, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+        const opened = await handle.stat().catch(() => null);
+        if (!opened || opened.dev !== s.dev || opened.ino !== s.ino) {
+          await handle.close();
+          fail('unavailable');
+        }
+        await pipeline(fs.createReadStream(src, { fd: handle }), new Transform({ transform(chunk: Buffer, _encoding, callback) {
           job.doneBytes += chunk.length; callback(null, chunk);
         } }), fs.createWriteStream(temp, { flags: 'wx', mode: s.mode & 0o777 }), { signal });
         await fs.promises.utimes(temp, s.atime, s.mtime);
@@ -235,7 +271,11 @@ export class FsJobQueue {
         // link is exclusive, unlike rename on POSIX: a new destination never gets clobbered.
         if (s.isSymbolicLink()) await fs.promises.symlink(await fs.promises.readlink(temp), dest);
         else await linkOrRename(temp, dest);
-      } else await fs.promises.rename(temp, dest);
+      } else {
+        // An overwrite takes the entry that was there away: the same check as a trash of it.
+        await this.clear(dest, 'removed');
+        await fs.promises.rename(temp, dest);
+      }
       job.doneItems++;
       return true;
     } finally { await fs.promises.rm(temp, { force: true }); }

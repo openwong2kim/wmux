@@ -27,10 +27,11 @@ on:
 concurrency:
   # A draft PR's run (skipped by the jobs' draft check) gets its own group, so a
   # late synchronize event from before `gh pr ready` cannot cancel the ready run.
-  group: baseline-${{ github.ref }}${{ github.event.pull_request.draft && '-draft' || '' }}
-  # Safe to cancel anywhere: this workflow is informational and writes nothing
-  # (unlike perf.yml, whose main runs append to the history file at the end).
-  cancel-in-progress: true
+  # A push to main gets a group per commit (as ci.yml does) and is never
+  # cancelled: with one group per branch, almost every main run was cancelled
+  # by the next merge, so a macOS-only regression showed up only on PRs (#2095).
+  group: baseline-${{ github.event_name == 'pull_request' && github.ref || github.sha }}${{ github.event.pull_request.draft && '-draft' || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   baseline:
@@ -145,6 +146,20 @@ jobs:
       # No lint here. Lint does not depend on the OS: ci.yml runs the strict
       # lint on the cross-platform files once. The repo-wide advisory lint that
       # ran on every leg was expected to fail (#1287) and gated nothing.
+
+      # The Ubuntu image ships Google Chrome's install (~450 MB) cold: on
+      # image 20261101 the first read of the chrome binary alone took 3-9 s and
+      # the rest of the install another 5 s, so the first real-Chrome test of
+      # the run started a Chrome that said nothing for 8-14 s. Read once here,
+      # the same start takes under 2 s. ChromeLauncher now also waits on a
+      # Chrome that is still starting (READY_STARTING_MS); this keeps the cold
+      # read out of the tests' own time.
+      - name: Read Google Chrome's install into the page cache (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          start=$(date +%s)
+          if [ -d /opt/google/chrome ]; then find /opt/google/chrome -type f -exec cat {} + > /dev/null; fi
+          echo "read in $(( $(date +%s) - start )) s"
 
       - name: Test (cross-platform)
         run: npm test

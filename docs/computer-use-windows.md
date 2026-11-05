@@ -138,7 +138,15 @@ monitors at negative coordinates work.
   children on the first query, the helper waits briefly and queries once
   more.
 - Staleness: an indexed action re-reads that element's RuntimeId and process
-  id; a mismatch is `element_stale`.
+  id; a mismatch is `element_stale`. Before a pattern call the element's
+  top-level window must also be the target window, or a window of the
+  target process that the target window owns (through up to 16 GW_OWNER
+  steps). A menu flyout lives in such a window: Notepad's File menu is a
+  `Microsoft.UI.Content.PopupWindowSiteBridge` owned by the Notepad window,
+  and UIA lists its items under the window's element, so they are indexed
+  and can be clicked. A menu is read only by a `getAppState` taken while it
+  is open; classic `#32768` menus and the menu's pixels (the screenshot
+  captures the target window alone) are not covered.
 - Screenshots: `PrintWindow` with `PW_RENDERFULLCONTENT` only. The helper
   never copies the screen, because a screen copy can include windows that
   cover the target (a blocked app or a password manager). When `PrintWindow`
@@ -481,6 +489,65 @@ section); that result says `delivery: "foreground"`. A posted one says
   main's `releaseInput` to a fresh helper (`HelperProcess.ts`) are the
   release path; because every batch is a single `SendInput` call, a kill
   practically never leaves anything down.
+
+## Agent overlay
+
+Every agent that drives an app gets its own marker, drawn in the colour main
+assigned to it (`src/shared/computer/agentMarker.ts`; main sends `marker
+{id, label, color}` with each input action). The layout and timing rules are
+in `Core/Markers.cs` and match the macOS helper's
+([computer-use-macos.md](computer-use-macos.md#agent-overlay)). The helper
+draws:
+
+- a 3 px ring around the agent's target window, and a name pill above the
+  window's top-left corner (`● #api-1 · Claude Code · typing`). A second agent
+  on the same window rings 3 px outside the first, and its pill sits beside
+  the first one's while they fit over the window, then on a new row above.
+  When the rows do not all fit above the window (below the top of the
+  monitor's work area), they all go inside the window's top-left corner
+  instead, 8 px in, stacked downward and wrapped to the window's width less
+  16 px;
+- for `click` and `scroll` (UIA Invoke included), the agent's own pointer: an
+  arrow in its colour with a name chip, which moves to the point and pulses on
+  a press;
+- for keyboard actions and `setValue`, a caret at the insertion point (the
+  target thread's Win32 caret when it is in that control, else the insertion
+  point UIA reports, else the element's leading edge) with the chip;
+- for real (foreground) input, the pill inverted (` · using your mouse` or
+  ` · using your keyboard`), and for pointer actions a ring where the real
+  pointer goes instead of the arrow;
+- while the agent waits for the foreground lease another agent holds
+  (`markerWait {marker, pid, windowId, waitingFor}`), its ring and pill
+  dimmed with ` · waiting for <agent>`.
+
+While any marker shows, a dark bar at the top of the primary monitor counts
+them and shows the stop chord. Pills, pointers and carets draw above every
+ring.
+
+Each marker fades 1.5 s after its own last action. `markerClear {id}` removes
+one at once; all of them go at once on `releaseInput` (what main sends on the
+stop key), on `configure { overlay: false }`, and when the helper exits. A
+waiting marker fades on its own 15 s after `markerWait`, unless that agent
+acts again or is cleared first. With Settings › Accessibility › Animation
+effects off (`SPI_GETCLIENTAREAANIMATION`), pointers jump instead of moving,
+there is no pulse and no fade.
+
+The overlay is one topmost, click-through, never-activating layered tool
+window per monitor (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW |
+WS_EX_NOACTIVATE | WS_EX_TOPMOST`), drawn with GDI+ into a premultiplied
+32-bit DIB and put on screen with `UpdateLayeredWindow`. `WS_EX_TRANSPARENT`
+keeps it out of `WindowFromPoint` (the helper's own pointer check) and out of
+the mouse; `WS_EX_TOOLWINDOW` keeps it out of `listWindows` and the taskbar.
+It is left out of screen captures (`WDA_EXCLUDEFROMCAPTURE`) unless
+`WMUX_OVERLAY_CAPTURABLE=1` is in the helper's environment, for dev
+screenshots. All drawing runs on its own thread, started on first use: a
+request only posts a command, so drawing never delays input and never runs
+between a request's last safety check and its first key.
+
+`configure { overlay }`, `markerWait` and `markerClear` are listed in
+`capabilities.actions`, and main sends them only to a helper that lists
+them. They send no input, so they work without the input desktop. The overlay
+is on until `configure` says otherwise.
 
 ## Performance targets
 

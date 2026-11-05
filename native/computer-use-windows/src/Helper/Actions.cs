@@ -150,14 +150,7 @@ internal static unsafe class Focus
         if (hit == HWND.Null || Win.OwnerPid(hit) != target.Pid) return false;
         var root = Win.Root(hit);
         if (root == target.Window || Win.ClassName(root) == "#32768") return true;
-        var owner = root;
-        for (int i = 0; i < 16; i++)
-        {
-            owner = PInvoke.GetWindow(owner, GET_WINDOW_CMD.GW_OWNER);
-            if (owner == HWND.Null) return false;
-            if (owner == target.Window) return true;
-        }
-        return false;
+        return Ownership.Owns((nint)target.Window.Value, (nint)root.Value, Win.OwnerOf);
     }
 
     /// <summary>The fast pointer check, run under the input lock immediately before SendInput.</summary>
@@ -211,8 +204,26 @@ internal static unsafe class Focus
         throw new HelperError("window_not_focused", "another window covers that point; nothing was clicked");
     }
 
-    /// <summary>The target window is the foreground window (its root; an owned popup in front does not count).</summary>
-    public static bool InFront(ControlTarget target) => Win.Root(PInvoke.GetForegroundWindow()) == target.Window;
+    /// <summary>
+    /// After UIA SetFocus on an element: whether keyboard focus reaches it.
+    /// SetFocus on an element of a window that is not in front activates the
+    /// window and returns before the app has moved its focus (Notepad's
+    /// editor got it about 20 ms later), so the focused element is read until
+    /// it is this one or Poll.FocusSettleMs passes. `activated`: the window
+    /// was not in front before SetFocus, so the app's own activation handling
+    /// may move focus once more; then focus must also stay on the element for
+    /// Poll.FocusSteadyMs.
+    /// </summary>
+    public static bool Lands(int[] runtimeId, bool activated) =>
+        Poll.UntilSteady(() => Uia.FocusedRuntimeId().AsSpan().SequenceEqual(runtimeId), Poll.FocusSettleMs,
+            activated ? Poll.FocusSteadyMs : 0, () => Environment.TickCount64, Sta.Sleep);
+
+    /// <summary>
+    /// The target window is the foreground window, or a window of the target
+    /// process it owns is (an open menu flyout or owned dialog: the app is the
+    /// active one, and nothing has to come forward).
+    /// </summary>
+    public static bool InFront(ControlTarget target) => Win.InTargetWindow(Win.Root(PInvoke.GetForegroundWindow()), target.Window, target.Pid);
 
     /// <summary>
     /// Before every UIA pattern call (Invoke, Toggle, SetValue, SetFocus…).
@@ -246,7 +257,8 @@ internal static unsafe class Focus
         {
             throw new HelperError("element_stale", "the element went away");
         }
-        if (pid != target.Pid || top != target.Window)
+        // A popup the target window owns (a menu flyout) counts as inside it.
+        if (pid != target.Pid || !Win.InTargetWindow(top, target.Window, target.Pid))
         {
             throw new HelperError("element_stale", "the element is no longer in the target window");
         }
@@ -271,7 +283,14 @@ internal static unsafe class Actions
     /// <summary>A posted action's result. Our own side effect (cursor or foreground moved) is said in the note.</summary>
     private static JsonObject Posted(BackgroundOutcome outcome) => outcome.SideEffect
         ? Result("synthetic", false, outcome.Delivery, "the target window came to the front or the pointer moved onto the target while the input was posted; check the app state")
-        : Result("synthetic", outcome.Verified, outcome.Delivery);
+        : WithObserved(Result("synthetic", outcome.Verified, outcome.Delivery), outcome.Verified ? null : outcome.Observed);
+
+    /// <summary>protocol ActionResult.observedValue: on an unverified result, what the field holds now (Verify.Observed).</summary>
+    private static JsonObject WithObserved(JsonObject result, string? observed)
+    {
+        if (observed != null) result["observedValue"] = observed;
+        return result;
+    }
 
 
     /// <summary>
@@ -525,7 +544,7 @@ internal static unsafe class Actions
         }
     }
 
-    public static JsonObject Click(Params p)
+    public static JsonObject Click(Params p, AgentMarker marker)
     {
         long sentAtStart = Input.Sent;
         bool refuse = RefuseForeground(p);
@@ -540,6 +559,8 @@ internal static unsafe class Actions
         int count = Math.Clamp(p.Int("clickCount") ?? 1, 1, 3);
         var mods = Modifiers(p);
         var (x, y, element) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
+        // The agent's pointer moves to the point (Overlay.cs: a posted command, no wait).
+        Overlay.Show(marker, MarkerVerb.Clicking, target, (x, y));
 
         // Whether a pattern call of the ladder brought the target to the front
         // and then certainly did not run, so the click goes on another way:
@@ -559,7 +580,11 @@ internal static unsafe class Actions
             {
                 throw SayIfCameToFront(e, target, frontBefore);
             }
-            if (note != null) return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
+            if (note != null)
+            {
+                Overlay.Press(marker.Id, x, y);
+                return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
+            }
             ladderRaised = !frontBefore && Focus.InFront(target);
         }
         try
@@ -569,6 +594,7 @@ internal static unsafe class Actions
             var posted = BackgroundInput.Click(target, x, y, button, count, mods.Count);
             if (AfterBackground("click", posted, refuse, sentAtStart) is { } result)
             {
+                Overlay.Press(marker.Id, x, y);
                 if (ladderRaised && result["delivery"]?.GetValue<string>() == "background")
                 {
                     result["delivery"] = "foreground";
@@ -576,8 +602,11 @@ internal static unsafe class Actions
                 }
                 return result;
             }
+            // Real input: a ring where the user's own pointer goes.
             var preflight = Focus.RequirePointer(target, x, y);
+            Overlay.Show(marker, MarkerVerb.Clicking, target, (x, y), realInput: true);
             Input.Click(x, y, button, count, mods, preflight);
+            Overlay.Press(marker.Id, x, y);
             return Result("synthetic", false, "foreground");
         }
         catch (HelperError e) when (ladderRaised)
@@ -599,7 +628,10 @@ internal static unsafe class Actions
         }
     }
 
-    public static JsonObject SetValue(Params p)
+    /// <summary>How long setValue's read-back waits for the value (longer only while it is still changing).</summary>
+    private const int SetValueSettleMs = 400;
+
+    public static JsonObject SetValue(Params p, AgentMarker marker)
     {
         // A UIA ValuePattern call brings a covered target to the front, so
         // under `refuse` it is made only for a target in front; otherwise
@@ -624,6 +656,8 @@ internal static unsafe class Actions
                 throw new HelperError(Uia.IsGone(e.HResult) ? "element_stale" : "value_not_settable", $"element {index}: {Uia.Describe(e)}");
             }
             if (readOnly) throw new HelperError("value_not_settable", $"element {index} is read-only");
+            // The caret lookup (UIA calls into the app) comes before the checks below.
+            Overlay.Show(marker, MarkerVerb.SettingValue, target, caret: Caret.For(target, el));
             // Read before the checks, as the click path does.
             bool frontBefore = Focus.InFront(target);
             Focus.RequireSemantic(target, el, refuse);
@@ -649,19 +683,26 @@ internal static unsafe class Actions
             {
                 Marshal.FreeBSTR(bstr);
             }
-            string? readBack;
-            try
+            // Read until it settles: an app may apply the value a moment later.
+            var readBack = Verify.Settle(() =>
             {
-                readBack = Uia.Take(pattern->CurrentValue);
-            }
-            catch (Exception e) when (e is not HelperError)
+                try
+                {
+                    return Uia.Take(pattern->CurrentValue);
+                }
+                catch (Exception e) when (e is not HelperError)
+                {
+                    return null;
+                }
+            }, now => Verify.SameValue(value, now), SetValueSettleMs, Verify.SettleExtraMs, () => Environment.TickCount64, Sta.Sleep);
+            if (readBack.Verified)
             {
-                readBack = null;
+                var caret = CaretToEnd(el, target, refuse);
+                return Result("accessibility", true, SemanticDelivery(target, frontBefore),
+                    caret == CaretMove.Failed ? "the value was set, but wmux could not put the caret at its end, so a type that follows may not land after it" : null);
             }
-            var delivery = SemanticDelivery(target, frontBefore);
-            return readBack == value
-                ? Result("accessibility", true, delivery)
-                : Result("accessibility", false, delivery, "the value read back differs from what was set");
+            return WithObserved(Result("accessibility", false, SemanticDelivery(target, frontBefore), "the value read back differs from what was set"),
+                    Verify.Observed(value, readBack.Last, Uia.IsSecretElement(el)));
         }
         finally
         {
@@ -688,7 +729,7 @@ internal static unsafe class Actions
         }
     }
 
-    public static JsonObject Type(Params p)
+    public static JsonObject Type(Params p, AgentMarker marker)
     {
         long sentAtStart = Input.Sent;
         bool refuse = RefuseForeground(p);
@@ -711,8 +752,17 @@ internal static unsafe class Actions
             {
                 fieldPoint = null;
             }
+            // The caret lookup (UIA calls into the app) comes before every
+            // check the background path makes before its first key.
+            Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target, el));
             var posted = BackgroundInput.Type(target, text, el, snap.RuntimeIds[index], index, fieldPoint);
-            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
+            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result)
+            {
+                // The caret moves on to where the text ended: read again only
+                // once the field shows the text (posted keys land later).
+                if (Verified(result)) Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target, el));
+                return result;
+            }
             // UIA SetFocus is a keyboard (Tab-like) focus, and a field may
             // select its whole text on such a focus (a WinForms TextBox does
             // on its first one), so the keys would replace the text. Focusing
@@ -738,6 +788,7 @@ internal static unsafe class Actions
                 }
             }
             bool kept = selection != null || edit != HWND.Null;
+            bool activated = !Focus.InFront(target);
             try
             {
                 try
@@ -749,8 +800,10 @@ internal static unsafe class Actions
                 {
                     if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
                 }
-                // Typing into whatever else has focus would put the text in the wrong field.
-                if (!Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
+                // Typing into whatever else has focus would put the text in the
+                // wrong field. A window behind others is activated by SetFocus
+                // asynchronously, so the focus is waited for, not read once.
+                if (!Focus.Lands(snap.RuntimeIds[index], activated))
                 {
                     throw new HelperError("action_not_supported", $"element {index} did not take keyboard focus; nothing was typed. Click it first");
                 }
@@ -776,13 +829,26 @@ internal static unsafe class Actions
         }
         else
         {
+            Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target));
             var posted = BackgroundInput.Type(target, text, null, null, -1, null);
-            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
+            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result)
+            {
+                if (Verified(result)) Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target));
+                return result;
+            }
         }
 
+        // The marker's caret lookup is UIA work, so it comes before the
+        // keyboard check below, which is the last thing before the first key;
+        // the marker says "using your keyboard" only once that check passed
+        // (showing it is a posted command, not UIA).
+        var realCaret = Caret.For(target);
         // Checked before anything is sent; FocusedValue below is the baseline for verification.
         Action? preflight = Focus.RequireKeyboard(target);
+        Overlay.Show(marker, MarkerVerb.Typing, target, caret: realCaret, realInput: true);
         var before = FocusedValue();
+        // The element the keys go into, for showing its value if they do not verify.
+        var typedInto = Uia.FocusedRuntimeId();
         var chunks = Chunks.Unicode(text);
         int total = chunks.Sum(c => c.GraphemeCount), typed = 0;
         foreach (var chunk in chunks)
@@ -805,9 +871,46 @@ internal static unsafe class Actions
             }
             typed += chunk.GraphemeCount;
         }
-        bool verified = WaitForEffect(text, before, total < 64 ? 300 : 1000);
-        return Result("synthetic", verified, "foreground");
+        var effect = Verify.SettleInserted(FocusedValue, before, text, total < 64 ? 300 : 1000, () => Environment.TickCount64, Sta.Sleep);
+        if (effect.Verified)
+        {
+            Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target), realInput: true);
+            return Result("synthetic", true, "foreground");
+        }
+        return WithObserved(Result("synthetic", false, "foreground"), ObservedFocused(before, typedInto));
     }
+
+    /// <summary>
+    /// What the field the keys went into holds now, for an unverified `type`
+    /// (Verify.Observed). The focused element is read once and used for
+    /// everything: it must still be the element the keys went into
+    /// (`typedInto`, read before the keys), its password check decides
+    /// `[redacted]`, and its own value is read. Focus that moved to another
+    /// field shows nothing, never that field's value; an element that cannot
+    /// be read shows nothing either.
+    /// </summary>
+    private static string? ObservedFocused(string? before, int[] typedInto)
+    {
+        if (typedInto.Length == 0) return null;
+        var el = Uia.Focused();
+        if (el == null) return null;
+        try
+        {
+            if (!Uia.CurrentRuntimeId(el).AsSpan().SequenceEqual(typedInto)) return null;
+            if (Uia.IsSecretElement(el)) return "[redacted]";
+            return Verify.Observed(before, Uia.CurrentString(el, Uia.ValueValueProperty), secret: false);
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return null;
+        }
+        finally
+        {
+            el->Release();
+        }
+    }
+
+    private static bool Verified(JsonObject result) => result["verification"]?.GetValue<string>() == "verified";
 
     /// <summary>
     /// The field's one selected range (a caret is an empty one) through UIA
@@ -862,6 +965,102 @@ internal static unsafe class Actions
         }
     }
 
+    /// <summary>What putting the caret at the end of a set value did.</summary>
+    private enum CaretMove { Done, NotATextField, Failed }
+
+    /// <summary>
+    /// After a verified setValue: the caret goes to the end of the new value,
+    /// so a `type` that follows appends to it. ValuePattern.SetValue leaves
+    /// the selection wherever the app puts it (Notepad: position 0), and a
+    /// later `type` with an index keeps the field's selection across its
+    /// focus, so the text used to land at the start. Through UIA TextPattern
+    /// (an empty range at the document's end, selected), then, if that is
+    /// not confirmed, EM_SETSEL at the text's length for a Win32 edit
+    /// control. Confirmed when the selection reads back as a caret with only
+    /// line breaks after it (a rich edit keeps the caret before its final
+    /// paragraph mark). A field with neither (a combo box, a slider) has no
+    /// caret: NotATextField. Select is a pattern call, so it is made only
+    /// while the helper is not stopping and the element still passes
+    /// Focus.RequireSemantic; otherwise Failed, never an error, because the
+    /// value was already set.
+    /// </summary>
+    private static CaretMove CaretToEnd(IUIAutomationElement* el, ControlTarget target, bool refuseForeground)
+    {
+        var text = (IUIAutomationTextPattern*)Pattern(el, Uia.TextPattern, IUIAutomationTextPattern.IID_Guid);
+        HWND edit;
+        try
+        {
+            edit = EditWindow(el, target, -1);
+        }
+        catch (HelperError)
+        {
+            edit = HWND.Null;
+        }
+        if (text == null && edit == HWND.Null) return CaretMove.NotATextField;
+        try
+        {
+            Input.ThrowIfStopping();
+            Focus.RequireSemantic(target, el, refuseForeground);
+        }
+        catch (HelperError)
+        {
+            if (text != null) text->Release();
+            return CaretMove.Failed;
+        }
+        if (text != null)
+        {
+            bool placed;
+            try
+            {
+                placed = SelectEnd(el, text);
+            }
+            finally
+            {
+                text->Release();
+            }
+            if (placed) return CaretMove.Done;
+        }
+        if (edit == HWND.Null) return CaretMove.Failed;
+        nuint length;
+        if (PInvoke.SendMessageTimeout(edit, WmGetTextLength, 0, 0, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &length) == 0) return CaretMove.Failed;
+        if (length > EditSelection.MaxPackedLength) return CaretMove.Failed;
+        return KeepEditSelection(edit, ((uint)length, (uint)length)) ? CaretMove.Done : CaretMove.Failed;
+    }
+
+    /// <summary>Selects an empty range at the document's end through `text`; true when the selection reads back as a caret with only line breaks after it.</summary>
+    private static bool SelectEnd(IUIAutomationElement* el, IUIAutomationTextPattern* text)
+    {
+        IUIAutomationTextRange* end = null;
+        IUIAutomationTextRange* now = null;
+        IUIAutomationTextRange* tail = null;
+        try
+        {
+            end = text->DocumentRange;
+            if (end == null) return false;
+            end->MoveEndpointByRange(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End);
+            Input.CountSemantic();
+            end->Select();
+            now = Selection(el);
+            if (now == null) return false;
+            if (SameRange(end, now)) return true;
+            if (now->CompareEndpoints(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, now, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End) != 0) return false;
+            // A caret short of the end: fine when only line breaks follow it.
+            tail = text->DocumentRange;
+            tail->MoveEndpointByRange(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, now, TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start);
+            return Verify.OnlyLineBreaks(Uia.Take(tail->GetText(64)));
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return false;
+        }
+        finally
+        {
+            if (tail != null) tail->Release();
+            if (now != null) now->Release();
+            if (end != null) end->Release();
+        }
+    }
+
     private const uint EmGetSel = 0x00B0;
     private const uint EmSetSel = 0x00B1;
     private const uint WmGetTextLength = 0x000E;
@@ -887,7 +1086,7 @@ internal static unsafe class Actions
             return HWND.Null;
         }
         if (hwnd == HWND.Null || !PInvoke.IsWindow(hwnd) || Win.RealClassName(hwnd) != "Edit") return HWND.Null;
-        if (Win.OwnerPid(hwnd) != target.Pid || Win.Root(hwnd) != target.Window)
+        if (Win.OwnerPid(hwnd) != target.Pid || !Win.InTargetWindow(Win.Root(hwnd), target.Window, target.Pid))
         {
             throw new HelperError("element_stale", $"element {index}'s edit window is no longer in the target window; nothing was typed");
         }
@@ -970,23 +1169,7 @@ internal static unsafe class Actions
         }
     }
 
-    /// <summary>
-    /// Verified only when the focused element's value is the value before
-    /// with exactly the typed text inserted at one position (Core Verify).
-    /// </summary>
-    private static bool WaitForEffect(string text, string? before, int timeoutMs)
-    {
-        if (before == null) return false;
-        long deadline = Environment.TickCount64 + timeoutMs;
-        while (true)
-        {
-            if (Verify.Inserted(before, FocusedValue(), text)) return true;
-            if (Environment.TickCount64 >= deadline) return false;
-            Sta.Sleep(15);
-        }
-    }
-
-    public static JsonObject PressKey(Params p)
+    public static JsonObject PressKey(Params p, AgentMarker marker)
     {
         long sentAtStart = Input.Sent;
         bool refuse = RefuseForeground(p);
@@ -995,6 +1178,9 @@ internal static unsafe class Actions
         var key = Key(keyName);
         int repeat = Math.Clamp(p.Int("repeat") ?? 1, 1, 50);
         Input.ThrowIfStopping();
+        // The caret lookup (UIA) comes before every check before the first key.
+        var caret = Caret.For(target);
+        Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret);
         var posted = BackgroundInput.Key(target, keyName, repeat, 0, "pressKey");
         if (AfterBackground("pressKey", posted, refuse, sentAtStart) is { } result) return result;
         for (int n = 0; n < repeat; n++)
@@ -1002,7 +1188,10 @@ internal static unsafe class Actions
             if (n > 0) Sta.Sleep(4);
             try
             {
-                Input.Tap(key, [], Focus.RequireKeyboard(target));
+                var preflight = Focus.RequireKeyboard(target);
+                // "using your keyboard" once the check passed; a posted command, not UIA.
+                if (n == 0) Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret, realInput: true);
+                Input.Tap(key, [], preflight);
             }
             catch (HelperError e) when (n > 0)
             {
@@ -1012,7 +1201,7 @@ internal static unsafe class Actions
         return Result("synthetic", false, "foreground");
     }
 
-    public static JsonObject Hotkey(Params p)
+    public static JsonObject Hotkey(Params p, AgentMarker marker)
     {
         long sentAtStart = Input.Sent;
         bool refuse = RefuseForeground(p);
@@ -1021,14 +1210,20 @@ internal static unsafe class Actions
         var key = Key(keyName);
         var mods = Modifiers(p);
         Input.ThrowIfStopping();
+        // The caret lookup (UIA) comes before every check before the key.
+        var caret = Caret.For(target);
+        Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret);
         // Posted keys carry no modifier state, so a chord is always real input.
         var posted = BackgroundInput.Key(target, keyName, 1, mods.Count, "hotkey");
         if (AfterBackground("hotkey", posted, refuse, sentAtStart) is { } result) return result;
-        Input.Tap(key, mods, Focus.RequireKeyboard(target));
+        var keyPreflight = Focus.RequireKeyboard(target);
+        // "using your keyboard" once the check passed; a posted command, not UIA.
+        Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret, realInput: true);
+        Input.Tap(key, mods, keyPreflight);
         return Result("synthetic", false, "foreground");
     }
 
-    public static JsonObject Scroll(Params p)
+    public static JsonObject Scroll(Params p, AgentMarker marker)
     {
         long sentAtStart = Input.Sent;
         bool refuse = RefuseForeground(p);
@@ -1048,6 +1243,7 @@ internal static unsafe class Actions
         // The preflight re-runs the hit-test before every notch: a window that
         // moves over the point mid-scroll must not receive the rest.
         var preflight = Focus.RequirePointer(target, x, y);
+        Overlay.Show(marker, MarkerVerb.Scrolling, target, (x, y), realInput: true);
         var back = new CursorReturn();
         for (int n = 0; n < amount; n++)
         {

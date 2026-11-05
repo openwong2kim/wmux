@@ -108,6 +108,66 @@ describe('ChromeLauncher', () => {
     expect(args).toContain('--restore-last-session');
   });
 
+  describe('a Chrome that is slow to start', () => {
+    /** Queue one spawn that "writes" its DevToolsActivePort only after `ms` (a cold first start), or never. */
+    function spawnSlow(child: FakeChild, ms: number | null): void {
+      spawnMock.mockImplementationOnce((_bin: string, args: string[]) => {
+        const dir = (args.find((a) => a.startsWith('--user-data-dir=')) ?? '').slice('--user-data-dir='.length).replace(/\\/g, '/');
+        if (ms !== null) setTimeout(() => { state.portFiles[dir] = `17555\n/devtools/browser/uuid-17555\n`; }, ms);
+        return child;
+      });
+    }
+    const settle = async <T,>(p: Promise<T>) => {
+      let out: { ok: true; v: T } | { ok: false; e: unknown } | null = null;
+      p.then((v) => { out = { ok: true, v }; }, (e) => { out = { ok: false, e }; });
+      return () => out as { ok: true; v: T } | { ok: false; e: unknown } | null;
+    };
+
+    beforeEach(() => {
+      fetchMock.mockResolvedValue(fetchOk({}));
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    });
+    afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+    it('a first start that reads its install from a cold disk for 14 s is waited on, not killed at 10 s', async () => {
+      const child = makeChild();
+      spawnSlow(child, 14_000);
+      const result = await settle(new ChromeLauncher('/tmp/cold-profile').ensureRunning());
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(result()).toBeNull();
+      expect(child.kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(result()).toEqual({ ok: true, v: 17555 });
+      expect(child.kill).not.toHaveBeenCalled();
+    });
+
+    it('one still running but never listening is given up on, and killed, past the ceiling', async () => {
+      const child = makeChild();
+      spawnSlow(child, null);
+      const result = await settle(new ChromeLauncher('/tmp/stuck-profile').ensureRunning());
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(result()).toBeNull();
+      await vi.advanceTimersByTimeAsync(2_000);
+      const out = result();
+      expect(out?.ok).toBe(false);
+      expect(String((out as { e: unknown }).e)).toContain('CDP endpoint did not become ready in time');
+      expect(child.kill).toHaveBeenCalled();
+    });
+
+    it('one that exits while starting fails at once, ceiling or not', async () => {
+      const child = makeChild();
+      spawnSlow(child, null);
+      const result = await settle(new ChromeLauncher('/tmp/exiting-profile').ensureRunning());
+      await vi.advanceTimersByTimeAsync(12_000);
+      child.emit('exit', 1, null);
+      await vi.advanceTimersByTimeAsync(500);
+      const out = result();
+      expect(out?.ok).toBe(false);
+      expect(String((out as { e: unknown }).e)).toContain('exited during startup');
+    });
+  });
+
   it('a real launch closes the tabs session restore brought back, keeping one blank tab', async () => {
     const restored = [
       { id: 'old-1', url: 'https://a.test/', title: 'A', type: 'page' },

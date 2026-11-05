@@ -373,7 +373,7 @@ export function hostedBindingOf(ctx?: RpcContext): string | undefined {
 
 export type RpcResponse =
   | { id: string; ok: true; result: unknown }
-  | { id: string; ok: false; error: string; rejection?: RpcRejection; retryable?: boolean };
+  | { id: string; ok: false; error: string; rejection?: RpcRejection; retryable?: boolean; code?: string };
 
 /**
  * Whether an RPC reply is a refusal answered as a result rather than thrown.
@@ -580,6 +580,8 @@ export type RpcMethod =
   | 'daemon.phone.complete'
   // Main → daemon: "Keep the computer awake" mode and whether the blocker is held.
   | 'daemon.phone.keepAwake'
+  // Main → daemon: one push of a phone browser stream (frame, state, url, end, ping).
+  | 'daemon.phone.browserStream'
   | 'daemon.workspaceFacts.set'
   // Main → daemon: the bot approval requests waiting on the owner, so the
   // daemon can push them to the phone (shared/botApprovalPush.ts).
@@ -954,6 +956,7 @@ export const ALL_RPC_METHODS = [
   'daemon.phone.register',
   'daemon.phone.complete',
   'daemon.phone.keepAwake',
+  'daemon.phone.browserStream',
   'daemon.workspaceFacts.set',
   'daemon.botApprovals.set',
   'daemon.botPrompts.set',

@@ -1270,11 +1270,17 @@ Settings › LAN keeps only the listener switches. Top to bottom:
     of explanation and Connect a PC… as the primary.
 - **Recent activity:** its own short list (paired, revoked, host added,
   connects seen while the page is open).
-- **Connect a PC dialog:** three tabs, and neither opening it nor showing a
-  tab has a side effect: both only read state. It opens on **Invite this PC**
-  only while the A2A listener is already up; otherwise on **Paste an
-  invite**. Focus starts on the tab's first field or primary (the paste
-  field, or Create invite), never on the close ×. Invite shows **Create
+- **Connect a PC dialog:** four tabs, and neither opening it nor showing a
+  tab has a side effect: both only read state (the A2A status and the local,
+  read-only Tailscale check; nothing goes over the network until Find PCs or
+  Make this PC discoverable is pressed). It opens on **Tailscale**, its first
+  tab, when that check (waited for at most 1.5 s) finds this PC on the
+  tailnet; otherwise Tailscale is the last tab and the dialog opens on
+  **Invite this PC** only while the A2A listener is already up, else on
+  **Paste an invite**. The tab order is fixed once the dialog paints, so a
+  check that lands late never moves a tab. Focus starts on the tab's first
+  field or primary (Find PCs, the paste field, or Create invite), never on
+  the close ×. Invite shows **Create
   invite** as the primary; with the listener off it reads **Turn on and
   create invite**, with one muted line above it naming what it turns on and
   the port it listens on, and pressing it is what turns the listener on (a
@@ -1300,6 +1306,32 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   address, port and PIN. While LAN messages are off or no network interface
   is picked it says so and opens Settings › LAN. A PIN window the tab opened
   survives switching tabs and is closed when the dialog closes.
+  **Tailscale** finds this user's wmux PCs on the tailnet and pairs by
+  matching codes. "PCs found on your tailnet" starts with **Find PCs**
+  (primary); the list (one hairline container: device as Tailscale names
+  it, then OS, wmux version and login) re-scans every 5 s for 2 minutes,
+  then offers Search again. The first connectable row's **Connect** is the
+  primary; a PC already joined reads "Connected", and one on another
+  protocol or no longer discoverable is greyed with why. Under a hairline,
+  "This PC" offers **Make this PC discoverable** (secondary; **Turn on and
+  make discoverable** with a muted line when A2A is off). While discoverable
+  the tab shows only a hairline band (neutral live dot, "This PC can be
+  found · m:ss left", the name tailnet devices see, Stop) and, when a
+  device asks, ONE card: a 1px `--attention-hairline` over
+  `--selection-subtle`, no wash, with the device as Tailscale identifies it
+  (name, account, OS, tailnet address), "Is it the same code as on the
+  requesting PC?" with the 6-digit code in two groups, and Deny, **Allow**
+  (the one primary). While another tab shows, a waiting card marks the
+  Tailscale tab with the attention dot; the dialog never switches tabs by
+  itself. After Allow, once the other PC confirms and pairing finishes, the
+  dialog turns into the exposure checklist, nothing ticked. While this PC's
+  own request is out, the dialog is retitled "Connect to <PC>", hides its
+  tabs and footer, and shows only the code, its countdown and Cancel; once
+  the other PC allows, the requester confirms the code too: the line says
+  so and **Codes match · Connect** joins Cancel as the one primary (Cancel
+  is off once the join starts). Joined, it offers Link a pane now.
+  Closing the dialog closes a window the tab opened and withdraws a
+  request it sent.
 - **Link dialog from this page:** picks the PC when there is one, picks the
   other PC's pane when there is one choice or one on the same repo, and
   offers this PC's pane with the focused one preselected.
@@ -1663,6 +1695,9 @@ leaves the page.
   side; Owns (optional); then a read-only **Works in** line, a muted label
   over `--text-sub`: the seat's own worktree of the company folder on a new
   branch when that folder is a git repository, else the company folder. A
+  repository that can't have a seat worktree (a bare one, one with
+  submodules, or one that uses Git LFS) names the folder itself, with the
+  reason (`…/repo itself: a bare repository can't have a seat worktree`). A
   seat that would share a folder that is not a repository with another
   staff agent gets a note saying so and cannot be added. A refusal keeps the
   form and says why, as the other-PC dialog does; at the pane cap the
@@ -1684,6 +1719,11 @@ leaves the page.
   each agent its seat** checkbox, on by default, and **Make company** the
   one primary. A bad or repeated seat name, or two agent seats besides the
   CEO with no folder, says why under the table and disables the primary.
+  A folder whose repository can't have seat worktrees (bare, with
+  submodules, or using Git LFS) gets one muted note under Name and Folder,
+  once an agent seat besides the CEO is there: the seats work in the folder
+  itself, and why; with two such seats it adds that two agents can't share
+  it and to choose another folder.
   Making it opens a new workspace with the CEO's pane on the left at half
   the width and the other seats stacked top to bottom on the right, each
   pane named after its seat (a name another pane answers to gets `-2`,

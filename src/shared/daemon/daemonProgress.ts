@@ -1,0 +1,237 @@
+// Whether a daemon that stopped answering pings is still running, read from
+// outside it. A daemon starved of memory (the system swapping) misses every
+// ping while it keeps working through its backlog; killing it then ends every
+// PTY it holds. Its CPU time still goes up. A wedged daemon's does not.
+//
+// A connect to its pipe is no such signal: the kernel accepts a connection on
+// a listening socket whether or not the process behind it ever runs again.
+import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import { tryProcessCpuMs, tryProcessCreatedAt } from '../../main/pty/winSnapshotNative';
+
+/** One look at the daemon's process. */
+export interface DaemonProcessSample {
+  /** The process exists. */
+  alive: boolean;
+  /** Its CPU time so far (user + system), in ms; null when it could not be read. */
+  cpuMs: number | null;
+  /**
+   * When the process started, as the OS reports it; null when it could not
+   * be read. A pid that comes back with another start time is another
+   * process: the daemon is gone and its pid was handed on.
+   */
+  startedAt: string | null;
+  /** The system is short of memory: the usual reason a live daemon gets this slow. */
+  underPressure: boolean;
+}
+
+/**
+ * - `progressing`: its CPU time went up within the budget; do not kill it.
+ * - `stalled`: no CPU time for the whole budget, or past the overall cap.
+ * - `gone`: the process is not there.
+ * - `unknown`: its CPU time could not be read yet (a read that failed, most
+ *   likely when the system is short of memory). Can't tell is not a kill:
+ *   it holds within the same budget, then is `stalled`. A read that fails
+ *   after earlier ones counts from the last rise seen, like a sample that
+ *   shows none.
+ */
+export type DaemonProgress = 'progressing' | 'stalled' | 'gone' | 'unknown';
+
+export interface DaemonProgressConfig {
+  /** No CPU time for this long: stalled. */
+  noProgressMs: number;
+  /** Under memory pressure the budget is this many times longer. */
+  pressureFactor: number;
+  /**
+   * However it progresses, a daemon that has not answered for this long is
+   * stalled: a loop that burns CPU without ever answering again looks like
+   * progress.
+   */
+  maxUnansweredMs: number;
+}
+
+export const DAEMON_PROGRESS_DEFAULTS: DaemonProgressConfig = {
+  noProgressMs: 30_000,
+  pressureFactor: 4,
+  maxUnansweredMs: 15 * 60_000,
+};
+
+/** Follows one daemon process across samples, from its first missed answer. */
+export class DaemonProgressTracker {
+  /** The daemon's identity: its pid and start time, as first seen or bound. */
+  private identity: { pid: number; startedAt: string | null } | null = null;
+  private pid: number | null = null;
+  private lastCpuMs: number | null = null;
+  private lastProgressAt = 0;
+  private firstAt = 0;
+  /** A CPU time was read since the first look. */
+  private read = false;
+
+  constructor(private readonly cfg: DaemonProgressConfig = DAEMON_PROGRESS_DEFAULTS) {}
+
+  /**
+   * The daemon behind a connection: a later sample of its pid with another
+   * start time is another process. What was seen so far stays: a bind that
+   * lands after the failures began must not start the budget over.
+   */
+  bind(pid: number, startedAt: string | null): void {
+    this.identity = { pid, startedAt };
+  }
+
+  /** The daemon answered: forget what was seen (its identity stays). */
+  reset(): void {
+    this.pid = null;
+    this.lastCpuMs = null;
+    this.read = false;
+  }
+
+  observe(pid: number, sample: DaemonProcessSample, now: number): DaemonProgress {
+    if (!sample.alive) return 'gone';
+    if (this.identity?.pid !== pid) this.identity = { pid, startedAt: sample.startedAt };
+    else if (this.identity.startedAt === null) this.identity.startedAt = sample.startedAt;
+    else if (sample.startedAt !== null && sample.startedAt !== this.identity.startedAt) return 'gone';
+    if (this.pid !== pid) {
+      // The first look gives the budget from now: it shows nothing yet.
+      this.pid = pid;
+      this.lastCpuMs = sample.cpuMs;
+      this.lastProgressAt = now;
+      this.firstAt = now;
+      this.read = sample.cpuMs !== null;
+      return this.read ? 'progressing' : 'unknown';
+    }
+    if (sample.cpuMs !== null) {
+      // The first CPU time read after failed ones is a baseline, not a rise.
+      if (this.lastCpuMs !== null && sample.cpuMs > this.lastCpuMs) this.lastProgressAt = now;
+      this.lastCpuMs = sample.cpuMs;
+      this.read = true;
+    }
+    if (now - this.firstAt >= this.cfg.maxUnansweredMs) return 'stalled';
+    const budget = this.cfg.noProgressMs * (sample.underPressure ? this.cfg.pressureFactor : 1);
+    if (now - this.lastProgressAt >= budget) return 'stalled';
+    return this.read ? 'progressing' : 'unknown';
+  }
+}
+
+const run = (file: string, args: string[], timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<string | null> =>
+  new Promise((resolve) => {
+    execFile(file, args, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true, ...(env ? { env } : {}) }, (err, stdout) => resolve(err ? null : stdout));
+  });
+
+/** `ps -o time=`: `[[dd-]hh:]mm:ss[.cc]`. */
+export function parsePsCpuTime(raw: string): number | null {
+  const text = raw.trim();
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)(?:\.(\d+))?$/.exec(text);
+  if (!m) return null;
+  const [, days, hours, minutes, seconds, fraction] = m;
+  const ms = (((Number(days ?? 0) * 24 + Number(hours ?? 0)) * 60 + Number(minutes)) * 60 + Number(seconds)) * 1000;
+  return ms + (fraction ? Math.round(Number(`0.${fraction}`) * 1000) : 0);
+}
+
+/** `/proc/<pid>/stat`: utime and stime, in clock ticks (fields 14 and 15, after the parenthesised name). */
+export function parseProcStatCpuMs(stat: string, ticksPerSecond = 100): number | null {
+  const tail = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+  const utime = Number(tail[11]);
+  const stime = Number(tail[12]);
+  return Number.isFinite(utime) && Number.isFinite(stime) ? ((utime + stime) * 1000) / ticksPerSecond : null;
+}
+
+/** `/proc/<pid>/stat` field 22: the start time, in clock ticks since boot. */
+export function parseProcStatStartTime(stat: string): string | null {
+  const value = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+  return value && /^\d+$/.test(value) ? value : null;
+}
+
+/** `ps -o lstart= -o time=`: the start time (a fixed-width date) and the CPU time, last. */
+export function parsePsStartAndCpu(raw: string): { startedAt: string | null; cpuMs: number | null } {
+  const text = raw.trim();
+  const at = text.lastIndexOf(' ');
+  if (at < 0) return { startedAt: null, cpuMs: null };
+  const startedAt = text.slice(0, at).trim().replace(/\s+/g, ' ');
+  return { startedAt: startedAt || null, cpuMs: parsePsCpuTime(text.slice(at + 1)) };
+}
+
+async function readCpuAndStart(pid: number): Promise<{ cpuMs: number | null; startedAt: string | null }> {
+  if (process.platform === 'linux') {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      return { cpuMs: parseProcStatCpuMs(stat), startedAt: parseProcStatStartTime(stat) };
+    } catch { return { cpuMs: null, startedAt: null }; }
+  }
+  // GetProcessTimes: no process to spawn on a machine short of memory.
+  if (process.platform === 'win32') return { cpuMs: tryProcessCpuMs(pid), startedAt: tryProcessCreatedAt(pid)?.toString() ?? null };
+  // lstart is wall-clock time in the zone and locale ps runs in: fixed, so a
+  // zone or DST change between two samples is not another start time.
+  const out = await run('/bin/ps', ['-o', 'lstart=', '-o', 'time=', '-p', String(pid)], 5_000, { ...process.env, TZ: 'UTC', LC_ALL: 'C' });
+  return out === null ? { cpuMs: null, startedAt: null } : parsePsStartAndCpu(out);
+}
+
+/** Memory pressure as the OS reports it; false when it cannot tell. */
+async function memoryPressure(): Promise<boolean> {
+  if (process.platform === 'darwin') {
+    // 1 normal, 2 warning, 4 critical.
+    const out = await run('/usr/sbin/sysctl', ['-n', 'kern.memorystatus_vm_pressure_level'], 3_000);
+    return out !== null && Number(out.trim()) >= 2;
+  }
+  if (process.platform === 'linux') {
+    try {
+      const info = fs.readFileSync('/proc/meminfo', 'utf8');
+      const total = Number(/MemTotal:\s+(\d+)/.exec(info)?.[1]);
+      const available = Number(/MemAvailable:\s+(\d+)/.exec(info)?.[1]);
+      return total > 0 && available / total < 0.1;
+    } catch { return false; }
+  }
+  return os.totalmem() > 0 && os.freemem() / os.totalmem() < 0.1;
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: it exists, owned by someone else.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** What a sample that failed outright says: the process may be there; nothing could be read. */
+export const UNREADABLE_SAMPLE: DaemonProcessSample = { alive: true, cpuMs: null, startedAt: null, underPressure: false };
+
+/** Samples a daemon process for DaemonProgressTracker. */
+export async function sampleDaemonProcess(pid: number): Promise<DaemonProcessSample> {
+  if (!isAlive(pid)) return { alive: false, cpuMs: null, startedAt: null, underPressure: false };
+  const [{ cpuMs, startedAt }, underPressure] = await Promise.all([readCpuAndStart(pid), memoryPressure()]);
+  return { alive: true, cpuMs, startedAt, underPressure };
+}
+
+/**
+ * The launcher's wait before it kills a verified daemon that did not answer:
+ * while its CPU time keeps rising, or cannot be read yet, it is pinged again
+ * every `intervalMs`, up to `ceilingMs`. Only `answered` keeps it; `gone`
+ * leaves its pid alone; `stalled` and `ceiling` are the kill it was headed
+ * for, now after a bounded wait instead of at once.
+ */
+export async function waitOutProgressingDaemon(deps: {
+  pid: number;
+  sample: (pid: number) => Promise<DaemonProcessSample>;
+  ping: () => Promise<boolean>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  intervalMs: number;
+  ceilingMs: number;
+  progress: DaemonProgressConfig;
+  onWaiting?: () => void;
+}): Promise<'answered' | 'stalled' | 'gone' | 'ceiling'> {
+  const tracker = new DaemonProgressTracker(deps.progress);
+  const start = deps.now();
+  let told = false;
+  for (;;) {
+    const sample = await deps.sample(deps.pid).catch(() => UNREADABLE_SAMPLE);
+    const verdict = tracker.observe(deps.pid, sample, deps.now());
+    if (verdict === 'stalled' || verdict === 'gone') return verdict;
+    if (deps.now() - start >= deps.ceilingMs) return 'ceiling';
+    if (!told) { told = true; deps.onWaiting?.(); }
+    await deps.sleep(deps.intervalMs);
+    if (await deps.ping().catch(() => false)) return 'answered';
+  }
+}

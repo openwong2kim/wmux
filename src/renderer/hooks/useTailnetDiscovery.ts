@@ -1,20 +1,37 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TailscaleCheckItem, TailscaleChecklist } from '../../shared/web';
 import type { ListenProblemReport } from '../../shared/netListen';
-import type { A2aDiscoverOpenResult, A2aDiscoverReceiveView, A2aDiscoverStatus } from '../../shared/rpc';
+import type {
+  A2aDiscoverConnectResult,
+  A2aDiscoverOpenResult,
+  A2aDiscoverOutgoingState,
+  A2aDiscoverOutgoingStatus,
+  A2aDiscoverPc,
+  A2aDiscoverReceiveView,
+  A2aDiscoverRequestView,
+  A2aDiscoverScanResult,
+  A2aDiscoverStatus,
+  A2aRemoteJoinError,
+} from '../../shared/rpc';
 import { blockingFailure } from '../components/Remote/tailnetCheck';
 import { refreshA2aRemote } from './useA2aRemoteBridge';
 
 // ─── Connect a PC › Tailscale: find PCs on the tailnet, pair by matching codes ─
 //
 // The daemon owns the discovery window (5 minutes, its caps, the card) and
-// pushes nothing, so this hook polls it about once a second while a window
-// this panel opened is open, and not at all otherwise. Nothing here runs on
-// show: the window opens only on Make discoverable. A window this panel
-// opened is closed again when the panel goes away (the dialog closed).
+// this PC's one outgoing request, and pushes nothing, so this hook polls
+// about once a second while a window this panel opened is open or a request
+// it sent is live, and not at all otherwise. Nothing here runs on show: the
+// tailnet is scanned only on Find PCs, and the window opens only on Make
+// discoverable. When the panel goes away (the dialog closed), a window it
+// opened is closed and a request it sent is withdrawn.
 
-/** How often an open window is read while it is shown. */
+/** How often an open window, or a live outgoing request, is read while it is shown. */
 export const DISCOVER_POLL_MS = 1_000;
+/** After Find PCs, the tailnet is scanned again this often… */
+export const DISCOVER_RESCAN_MS = 5_000;
+/** …for this long; then the list offers Search again. */
+export const DISCOVER_RESCAN_FOR_MS = 120_000;
 
 /** Tailscale is up on this PC: installed, signed in, and this PC on the tailnet. */
 export function tailscaleReady(list: TailscaleChecklist | null): boolean {
@@ -101,6 +118,90 @@ export function receiveViewOf(i: ReceiveInputs): A2aDiscoverReceiveView {
   return { kind: 'idle', a2aOff: i.a2aOff };
 }
 
+export type A2aDiscoverScanRefused = Extract<A2aDiscoverScanResult, { ok: false }>;
+export type A2aDiscoverConnectRefused = Extract<A2aDiscoverConnectResult, { ok: false }>;
+
+/** The outgoing states the request is still running in (polled, and withdrawn on close). */
+const OUTGOING_LIVE: ReadonlySet<A2aDiscoverOutgoingState> = new Set(['asking', 'waiting', 'confirm', 'joining']);
+
+/** `connect` failures worded like an invite join's (`settings.a2aRemoteJoinError.*`). */
+const CONNECT_AS_JOIN_ERROR: Partial<Record<A2aDiscoverConnectRefused['error'], A2aRemoteJoinError>> = {
+  'fingerprint-mismatch': 'fingerprint-mismatch',
+  timeout: 'timeout',
+  'connect-refused': 'connect-refused',
+  protocol: 'protocol',
+  'version-mismatch': 'protocol',
+  'rate-limited': 'rate-limited',
+};
+
+export interface RequestInputs {
+  tailscale: TailscaleChecklist | null;
+  /** A scan is in flight. */
+  scanning: boolean;
+  /** The last scan's answer. */
+  scan: { pcs: A2aDiscoverPc[]; checked: number } | null;
+  scanRefusal: A2aDiscoverScanRefused | null;
+  /** `connect` is in flight for this PC. */
+  asking: A2aDiscoverPc | null;
+  /** The last `connect` that did not reach the code. */
+  connectFail: { pc: A2aDiscoverPc; result: A2aDiscoverConnectRefused } | null;
+  /** The outgoing request as last read; null once withdrawn or before any. */
+  outgoing: A2aDiscoverOutgoingStatus | null;
+}
+
+/** What the Tailscale tab's "PCs found on your tailnet" section shows. */
+export function requestViewOf(i: RequestInputs): A2aDiscoverRequestView {
+  if (i.asking) return { kind: 'asking', pc: i.asking };
+  const o = i.outgoing;
+  if (o?.pc) {
+    const pc = o.pc;
+    switch (o.state) {
+      case 'asking':
+        return { kind: 'asking', pc };
+      case 'waiting':
+      case 'confirm':
+        if (o.code && o.expiresAt !== null) return { kind: o.state, pc, code: o.code, expiresAt: o.expiresAt };
+        return { kind: 'asking', pc };
+      case 'joining':
+        return { kind: 'joining', pc };
+      case 'joined':
+        if (o.host) return { kind: 'joined', host: o.host };
+        break;
+      case 'denied':
+        return { kind: 'denied', pc };
+      case 'expired':
+        return { kind: 'timed-out', pc };
+      case 'gone':
+        return { kind: 'gone', pc };
+      case 'failed':
+        return { kind: 'join-error', pc, error: o.error ?? 'failed', ...(o.detail ? { detail: o.detail } : {}) };
+      default:
+        // Withdrawn, or no request: back to the list.
+        break;
+    }
+  }
+  const f = i.connectFail;
+  if (f) {
+    const r = f.result;
+    if (r.error === 'busy') return { kind: 'busy', pc: f.pc, ...(r.retryAfterMs !== undefined ? { retryAfterMs: r.retryAfterMs } : {}) };
+    if (r.error === 'refused') return { kind: 'refused', pc: f.pc, reason: r.reason ?? 'unidentified' };
+    if (r.error === 'gone' || r.error === 'not-found') return { kind: 'gone', pc: f.pc };
+    return { kind: 'join-error', pc: f.pc, error: CONNECT_AS_JOIN_ERROR[r.error] ?? 'failed', ...(r.detail ? { detail: r.detail } : {}) };
+  }
+  const r = i.scanRefusal;
+  if (r) {
+    if (r.reason === 'tailscale-not-ready') return { kind: 'tailscale-not-ready', check: r.check };
+    if (r.reason === 'tailnet-range-on-lan') return { kind: 'unavailable', reason: r.reason };
+    return { kind: 'no-tailnet-ipv4' };
+  }
+  // A re-scan keeps the list it has, so the rows do not blink every 5 s.
+  if (i.scan) return i.scan.pcs.length > 0 ? { kind: 'results', pcs: i.scan.pcs, checked: i.scan.checked } : { kind: 'empty', checked: i.scan.checked };
+  if (i.scanning) return { kind: 'searching', pcs: [] };
+  const blocker = tailscaleBlocker(i.tailscale);
+  if (blocker) return { kind: 'tailscale-not-ready', check: blocker };
+  return { kind: 'idle' };
+}
+
 export interface TailnetDiscoveryOptions {
   /** The Tailscale check the dialog ran when it opened (read-only, never re-run here). */
   tailscale: TailscaleChecklist | null;
@@ -109,6 +210,8 @@ export interface TailnetDiscoveryOptions {
   onA2aChanged?: () => void;
   /** A PC paired through a window this panel opened. */
   onPaired?: (peer: { hostId: string; name: string }) => void;
+  /** This PC joined a PC it asked. */
+  onJoined?: (host: { hostId: string; name: string }) => void;
 }
 
 export interface TailnetDiscovery {
@@ -130,6 +233,19 @@ export interface TailnetDiscovery {
   moveToPort: (port: number) => void;
   /** Why the listener could not bind, as the daemon read it before turning A2A off again. */
   listenReport: ListenProblemReport | null;
+  request: A2aDiscoverRequestView;
+  /** The last scan's list, kept under a request's outcome line. */
+  scan: { pcs: A2aDiscoverPc[]; checked: number; offline: number } | null;
+  /** Find PCs was pressed under 2 minutes ago: the list still re-scans every 5 s. */
+  rescanning: boolean;
+  find: () => void;
+  connect: (pc: A2aDiscoverPc) => void;
+  /** Withdraw the outgoing request. */
+  cancel: () => void;
+  /** The other PC allowed and the codes match: pair. */
+  confirm: () => void;
+  /** Confirm is in flight. */
+  confirming: boolean;
 }
 
 export function useTailnetDiscovery(opts: TailnetDiscoveryOptions): TailnetDiscovery {
@@ -141,8 +257,21 @@ export function useTailnetDiscovery(opts: TailnetDiscoveryOptions): TailnetDisco
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [scan, setScan] = useState<{ pcs: A2aDiscoverPc[]; checked: number; offline: number } | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanRefusal, setScanRefusal] = useState<A2aDiscoverScanRefused | null>(null);
+  const [rescanUntil, setRescanUntil] = useState<number | null>(null);
+  const [asking, setAsking] = useState<A2aDiscoverPc | null>(null);
+  const [connectFail, setConnectFail] = useState<RequestInputs['connectFail']>(null);
+  const [outgoing, setOutgoing] = useState<A2aDiscoverOutgoingStatus | null>(null);
+  const [confirming, setConfirming] = useState(false);
   /** The window this panel opened and has not seen end. */
   const live = useRef(false);
+  /** A request this panel sent (or is sending) and has not seen end. */
+  const sent = useRef(false);
+  /** Bumped by Cancel: a `connect` that answers after it is withdrawn, not shown. */
+  const connectGen = useRef(0);
+  const scanInFlight = useRef(false);
   /** The panel went away (the dialog closed). */
   const disposed = useRef(false);
   const statusRef = useRef(status);
@@ -160,6 +289,10 @@ export function useTailnetDiscovery(opts: TailnetDiscoveryOptions): TailnetDisco
       if (live.current) {
         live.current = false;
         void window.electronAPI?.a2aRemote?.discoverClose?.().catch(() => undefined);
+      }
+      if (sent.current) {
+        sent.current = false;
+        void window.electronAPI?.a2aRemote?.discoverOutgoingCancel?.().catch(() => undefined);
       }
     };
   }, []);
@@ -192,6 +325,8 @@ export function useTailnetDiscovery(opts: TailnetDiscoveryOptions): TailnetDisco
 
   const makeDiscoverable = useCallback(async () => {
     if (!api?.discoverOpen) return;
+    // One role at a time: a PC being found stops looking for others.
+    setRescanUntil(null);
     setRefusal(null);
     setFailed(false);
     setStarting(true);
@@ -265,6 +400,157 @@ export function useTailnetDiscovery(opts: TailnetDiscoveryOptions): TailnetDisco
     await makeDiscoverable();
   }, [api, makeDiscoverable]);
 
+  // ── Requesting side ──
+
+  /**
+   * One scan. Find PCs (`pressed`) says when it fails; a timed re-scan that
+   * fails or is refused keeps the list it has and stops re-scanning quietly.
+   */
+  const runScan = useCallback(async (pressed: boolean) => {
+    if (!api?.discoverScan || scanInFlight.current) return;
+    scanInFlight.current = true;
+    setScanning(true);
+    let r: A2aDiscoverScanResult | null;
+    try {
+      r = await api.discoverScan();
+    } catch {
+      r = null;
+    }
+    scanInFlight.current = false;
+    if (disposed.current) return;
+    setScanning(false);
+    if (!r || !r.ok) {
+      setRescanUntil(null);
+      if (!pressed) return;
+      if (r) { setScanRefusal(r); setScan(null); } else setFailed(true);
+      return;
+    }
+    setScanRefusal(null);
+    setScan({ pcs: r.pcs, checked: r.checked, offline: r.skipped.offline });
+  }, [api]);
+
+  const find = useCallback(async () => {
+    setFailed(false);
+    setConnectFail(null);
+    setScanRefusal(null);
+    setOutgoing(null);
+    setRescanUntil(Date.now() + DISCOVER_RESCAN_FOR_MS);
+    await runScan(true);
+  }, [runScan]);
+
+  // Re-scan every 5 s for 2 minutes after Find PCs, then offer Search again.
+  // Never while a request is out or this PC is discoverable.
+  const requestLive = asking !== null || (outgoing !== null && OUTGOING_LIVE.has(outgoing.state));
+  const rescanning = rescanUntil !== null;
+  useEffect(() => {
+    if (rescanUntil === null || requestLive || polling) return;
+    const timer = window.setInterval(() => { void runScan(false); }, DISCOVER_RESCAN_MS);
+    return () => window.clearInterval(timer);
+  }, [rescanUntil, requestLive, polling, runScan]);
+  // Search again shows at the 2-minute mark itself, not at the next 5 s tick.
+  useEffect(() => {
+    if (rescanUntil === null) return;
+    const timer = window.setTimeout(() => setRescanUntil(null), Math.max(0, rescanUntil - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [rescanUntil]);
+
+  const applyOutgoing = useCallback((next: A2aDiscoverOutgoingStatus) => {
+    setNow(Date.now());
+    if (next.state === 'idle' || next.state === 'cancelled') {
+      sent.current = false;
+      setOutgoing(null);
+      return;
+    }
+    // A read without the PC (the daemon restarted) keeps the PC this panel asked.
+    // An allowance left unconfirmed runs out on two deadlines about 1.5 s apart
+    // (this PC's and the other's), ending `expired` or `gone`: both read as timed out.
+    setOutgoing((prev) => {
+      const ran = next.state === 'gone' && prev?.state === 'confirm' ? { ...next, state: 'expired' as const } : next;
+      return ran.pc || !prev?.pc ? ran : { ...ran, pc: prev.pc };
+    });
+    if (OUTGOING_LIVE.has(next.state)) return;
+    sent.current = false;
+    if (next.state === 'joined' && next.host) {
+      setRescanUntil(null);
+      void refreshA2aRemote();
+      optsRef.current.onJoined?.({ hostId: next.host.hostId, name: next.host.name });
+    }
+  }, []);
+
+  const outgoingPolling = outgoing !== null && OUTGOING_LIVE.has(outgoing.state);
+  useEffect(() => {
+    if (!outgoingPolling || !api?.discoverOutgoingStatus) return;
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+      void api.discoverOutgoingStatus().then(
+        (next) => { if (!disposed.current) applyOutgoing(next); },
+        () => { /* the daemon is away; the next tick tries again */ },
+      );
+    }, DISCOVER_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [outgoingPolling, api, applyOutgoing]);
+
+  const connect = useCallback(async (pc: A2aDiscoverPc) => {
+    if (!api?.discoverConnect) return;
+    const gen = ++connectGen.current;
+    setFailed(false);
+    setConnectFail(null);
+    setOutgoing(null);
+    setAsking(pc);
+    sent.current = true;
+    let r: A2aDiscoverConnectResult | null;
+    try {
+      // Only the address from the last scan: the daemon dials the port and pins the certificate its own scan saw.
+      r = await api.discoverConnect({ ip: pc.ip });
+    } catch {
+      r = null;
+    }
+    // Withdrawn (Cancel, or the dialog closed) while it was asking: nobody will compare this code.
+    if (disposed.current || gen !== connectGen.current) {
+      if (r?.ok) void api.discoverOutgoingCancel().catch(() => undefined);
+      return;
+    }
+    setAsking(null);
+    if (!r || !r.ok) {
+      sent.current = false;
+      if (r) setConnectFail({ pc, result: r });
+      else setFailed(true);
+      return;
+    }
+    setOutgoing({ state: 'waiting', sessionId: r.sessionId, pc, code: r.code, expiresAt: r.expiresAt });
+    setNow(Date.now());
+  }, [api]);
+
+  const cancel = useCallback(async () => {
+    if (!api?.discoverOutgoingCancel) return;
+    connectGen.current += 1;
+    sent.current = false;
+    setAsking(null);
+    try {
+      // What Cancel answers is not read: the request's state comes from the status read after it.
+      await api.discoverOutgoingCancel();
+      const next = await api.discoverOutgoingStatus();
+      if (!disposed.current) applyOutgoing(next);
+    } catch {
+      if (!disposed.current) setOutgoing(null);
+    }
+  }, [api, applyOutgoing]);
+
+  const confirm = useCallback(async () => {
+    if (!api?.discoverOutgoingConfirm) return;
+    setConfirming(true);
+    setFailed(false);
+    try {
+      // Only now does this PC pair: the other PC allowed, and its person checked the codes.
+      const next = await api.discoverOutgoingConfirm();
+      if (!disposed.current) applyOutgoing(next);
+    } catch {
+      if (!disposed.current) setFailed(true);
+    } finally {
+      if (!disposed.current) setConfirming(false);
+    }
+  }, [api, applyOutgoing]);
+
   return {
     receive: receiveViewOf({ tailscale: opts.tailscale, a2aOff: opts.a2aOff, starting, refusal, status, opened }),
     selfName: status?.name ?? '',
@@ -277,5 +563,13 @@ export function useTailnetDiscovery(opts: TailnetDiscoveryOptions): TailnetDisco
     decide: (allow) => void decide(allow),
     moveToPort: (port) => void moveToPort(port),
     listenReport: refusal?.reason === 'listen-failed' ? refusal.listen?.report ?? null : null,
+    request: requestViewOf({ tailscale: opts.tailscale, scanning, scan, scanRefusal, asking, connectFail, outgoing }),
+    scan,
+    rescanning,
+    find: () => void find(),
+    connect: (pc) => void connect(pc),
+    cancel: () => void cancel(),
+    confirm: () => void confirm(),
+    confirming,
   };
 }

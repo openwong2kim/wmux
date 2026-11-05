@@ -17,9 +17,10 @@ import { pendingPairFlow, uniqueDeviceName, webComputerLink } from '../StatusBar
 import { webComputerPairOrigin } from '../../../shared/web';
 import { maskPairInput, parseRemotePairInput } from '../../../shared/remotePairInput';
 import { HOST_UNREACHABLE_ERROR } from '../../../shared/remoteHosts';
-import type { A2aRemoteStatus } from '../../../shared/rpc';
+import type { A2aDiscoverPc, A2aRemoteStatus } from '../../../shared/rpc';
 import LanLinkPairPanel from './LanLinkPairPanel';
 import TailnetDiscoverPanel from './TailnetDiscoverPanel';
+import { osLabel } from './TailnetPcList';
 import { TailscaleFixButton } from './TailscaleChecklist';
 import { FirewallNoticeView, ListenProblemView, useFirewall, useListenProblem } from './FirewallNotice';
 import { readTailscale, tailnetPrecheck, tailnetTargetOf, withTailnetNote, type TailnetNotice } from './tailnetCheck';
@@ -177,6 +178,10 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
   const discoverRef = useRef<HTMLButtonElement>(null);
   // A request is on this PC's card: the Tailscale tab is marked while another tab shows.
   const [tsAsks, setTsAsks] = useState(false);
+  // A request this PC sent on the Tailscale tab: while it runs the dialog shows only it.
+  const [tsFocus, setTsFocus] = useState<A2aDiscoverPc | null>(null);
+  // The PC this PC joined from the Tailscale tab, for Link a pane now.
+  const [tsJoined, setTsJoined] = useState<{ hostId: string; name: string } | null>(null);
   const [paste, setPaste] = useState('');
   const [masked, setMasked] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -559,6 +564,7 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
   }, [paste, connectOne, t]);
 
   if (tab === null) return null;
+  const focusPc = tab === 'tailscale' ? tsFocus : null;
   const working = busy || invite.joinBusy;
   const remaining = invite.remainingSec;
   // Off (or never set up): the button says it turns the listener on, and the line above it says what that is.
@@ -587,7 +593,19 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
         tailscale={tsList}
         onA2aChanged={() => void rereadA2a()}
         onPaired={(peer) => { if (mounted.current) setJoined(peer); }}
-        onReceive={(kind) => { if (mounted.current) setTsAsks(kind === 'approval'); }}
+        onReceive={(kind) => {
+          if (!mounted.current) return;
+          setTsAsks(kind === 'approval');
+          // Making this PC discoverable: the last joined PC's Link a pane now goes away (one primary).
+          if (kind === 'starting') setTsJoined(null);
+        }}
+        onJoined={(host) => { if (mounted.current) setTsJoined(host); }}
+        onFocus={(pc) => {
+          if (!mounted.current) return;
+          setTsFocus(pc);
+          // Asking another PC: the last one's Link a pane now goes away.
+          if (pc) setTsJoined(null);
+        }}
         firstActionRef={discoverRef}
       />
     </div>
@@ -637,9 +655,18 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
       initialFocusRef={tab === 'paste' ? inputRef : tab === 'invite' ? createRef : tab === 'tailscale' ? discoverRef : undefined}
       data-testid="remote-connect"
     >
-      <DialogHeader title={t('remotePage.connect.title')} closeLabel={t('remotePage.connect.close')} />
+      {focusPc ? (
+        // A request is out: the dialog is about that PC until it is allowed, denied or withdrawn (closing withdraws it).
+        <DialogHeader
+          title={t('remotePage.discover.connectTitle', { name: focusPc.device })}
+          description={t('remotePage.discover.connectDesc', { os: osLabel(focusPc.os) })}
+          closeLabel={t('remotePage.connect.close')}
+        />
+      ) : (
+        <DialogHeader title={t('remotePage.connect.title')} closeLabel={t('remotePage.connect.close')} />
+      )}
       <DialogBody>
-        <SegmentedControl<ConnectTab>
+        {focusPc ? null : <SegmentedControl<ConnectTab>
           value={tab}
           onValueChange={(v) => {
             tabChosen.current = true;
@@ -651,7 +678,7 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
           ariaLabel={t('remotePage.connect.title')}
           options={tsFirst ? [tsOption, ...tabOptions] : [...tabOptions, tsOption]}
           data-testid="remote-connect-tabs"
-        />
+        />}
         {lanPanel}
         {tsPanel}
         {tab === 'lan' || tab === 'tailscale' ? null : tab === 'invite' ? (
@@ -815,7 +842,8 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
           </div>
         )}
       </DialogBody>
-      <DialogFooter>
+      {/* While a request is out, its own Cancel is the only action (the mockup's one button). */}
+      {focusPc ? null : <DialogFooter>
         {tab === 'invite' && invite.invite && (
           <span className="wmux-remote-connect-expiry" data-testid="remote-connect-expiry">
             {remaining != null && remaining > 0
@@ -854,7 +882,12 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
             {working ? t('remotePage.connect.connecting') : t('remotePage.connect.connect')}
           </Button>
         )}
-      </DialogFooter>
+        {tab === 'tailscale' && tsJoined && (
+          <Button variant="primary" size="md" onClick={() => onLinkPane(tsJoined.hostId)} data-testid="remote-connect-link-pane">
+            {t('remotePage.connect.linkPaneNow')}
+          </Button>
+        )}
+      </DialogFooter>}
     </Dialog>
   );
 }

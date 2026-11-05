@@ -296,8 +296,10 @@ const config: ForgeConfig = {
     // ./dist/daemon-web ships as a sibling of daemon-bundle so the detached
     // daemon resolves terminal.html at `__dirname/../daemon-web` (wmux web).
     // onnxruntime-web's .wasm is voice dictation's engine; main hands its
-    // bytes to the renderer (main/dictation/dictation.handler.ts).
-    extraResource: [...(shipsTerminalCore ? [TERMINAL_CORE_STAGE] : []), './node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', './dist/mcp-bundle', './dist/daemon-bundle', './dist/daemon-web', './dist/cli-bundle', './node_modules/@anthropic-ai/claude-agent-sdk', './examples/plugins/agent-state-page', './examples/plugins/office', './examples/plugins/commander', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './assets/trayTemplate.png', './assets/trayTemplate@2x.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks', ...(shipsComputerUseMac ? [COMPUTER_USE_MAC_STAGE] : []), ...(shipsComputerUseWin ? [COMPUTER_USE_WIN_STAGE] : []), ...(shipsServerManifest ? [SERVER_MANIFEST_STAGE] : [])],
+    // bytes to the renderer (main/dictation/dictation.handler.ts). wongtty's
+    // two are the Labs terminal switch's, handed over the same way, and only
+    // once the switch is on (main/ipc/handlers/labs.handler.ts).
+    extraResource: [...(shipsTerminalCore ? [TERMINAL_CORE_STAGE] : []), './node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', './node_modules/wongtty/dist/wongtty.wasm', './node_modules/wongtty/dist/xterm_web_bg.wasm', './dist/mcp-bundle', './dist/daemon-bundle', './dist/daemon-web', './dist/cli-bundle', './node_modules/@anthropic-ai/claude-agent-sdk', './examples/plugins/agent-state-page', './examples/plugins/office', './examples/plugins/commander', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './assets/trayTemplate.png', './assets/trayTemplate@2x.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks', ...(shipsComputerUseMac ? [COMPUTER_USE_MAC_STAGE] : []), ...(shipsComputerUseWin ? [COMPUTER_USE_WIN_STAGE] : []), ...(shipsServerManifest ? [SERVER_MANIFEST_STAGE] : [])],
     // macOS 서명/노타라이즈는 packagerConfig가 아니라 postPackage hook 끝에서
     // 수행한다(signMacAppIfConfigured 주석 참고). 여기서 서명하면 postPackage의
     // node-pty 복사가 서명을 깨뜨리기 때문이다.

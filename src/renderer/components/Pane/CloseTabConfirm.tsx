@@ -7,6 +7,7 @@ import { resolveActivePanePtyId } from '../../hooks/useActivePaneFocus';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import Dialog, { DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
+import { isEditorDirty } from '../Editor/dirtyEditors';
 
 /**
  * Close a tab the way its × does: end its PTY (and a remote session this
@@ -35,6 +36,11 @@ function refocusActiveTerminal(): void {
   });
 }
 
+/** File viewers (editor, preview): closing one loses nothing, so it closes at
+ *  once instead of asking. An editor tab with unsaved scratch edits still asks,
+ *  as do diff, board, git and review. */
+const NO_CONFIRM_TYPES: ReadonlySet<string> = new Set(['editor', 'preview']);
+
 /** The one close-tab confirm, raised by the tab × and the close-tab shortcut.
  *  Cancel holds the initial focus, so Enter keeps the tab; Escape cancels too. */
 export default function CloseTabConfirm() {
@@ -43,8 +49,11 @@ export default function CloseTabConfirm() {
   // What closing ends: a shell (a local PTY, or a remote session this desktop
   // minted), only a view of a remote session someone else owns, a local
   // placeholder slot (nothing runs in it), or none of these.
-  const closeKind = useStore((s): 'shell' | 'remoteView' | 'placeholder' | 'other' => {
+  const closeKind = useStore((s): 'shell' | 'remoteView' | 'placeholder' | 'static' | 'unsaved' | 'other' => {
     const surface = target ? resolveCloseTabTarget(s, target)?.surface : undefined;
+    if (surface && !surface.ptyId && NO_CONFIRM_TYPES.has(surface.surfaceType ?? '')
+      && !(surface.surfaceType === 'editor' && isEditorDirty(surface.id))) return 'static';
+    if (surface && !surface.ptyId && surface.surfaceType === 'editor') return 'unsaved';
     if (surface?.surfaceType === 'placeholder') return 'placeholder';
     if (surface?.surfaceType === 'remote-terminal') {
       // A duplicated workspace's clone has no session id, so it views nothing.
@@ -63,7 +72,13 @@ export default function CloseTabConfirm() {
     if (!target && shown.current) refocusActiveTerminal();
     shown.current = !!target;
   }, [target]);
-  if (!target) return null;
+  const closeWithoutAsking = !!target && closeKind === 'static';
+  useEffect(() => {
+    if (!target || !closeWithoutAsking) return;
+    dismiss();
+    closeTabNow(target);
+  }, [target, closeWithoutAsking, dismiss]);
+  if (!target || closeWithoutAsking) return null;
   const cancel = () => {
     dismiss();
   };
@@ -77,7 +92,7 @@ export default function CloseTabConfirm() {
         title={tabTitle ? t('surface.closeTabNamed', { name: tabTitle }) : t('surface.closeTab')}
         // Closing a shell tab ends the shell and the programs attached to it;
         // programs started apart from the terminal may outlive it (#2555).
-        description={closeKind === 'placeholder' ? undefined : t(closeKind === 'shell' ? 'surface.closeConfirmShell' : closeKind === 'remoteView' ? 'surface.closeConfirmRemoteView' : 'surface.closeConfirm')}
+        description={closeKind === 'placeholder' ? undefined : t(closeKind === 'shell' ? 'surface.closeConfirmShell' : closeKind === 'remoteView' ? 'surface.closeConfirmRemoteView' : closeKind === 'unsaved' ? 'surface.closeConfirmUnsaved' : 'surface.closeConfirm')}
       />
       <DialogFooter>
         <Button variant="secondary" size="sm" onClick={cancel} data-close-tab-cancel>

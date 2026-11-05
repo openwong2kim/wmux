@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import type { RpcRequest, RpcResponse } from '../shared/rpc';
 import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../shared/security';
 import { getDaemonAuthTokenPath } from '../shared/constants';
+import { NOT_FIRST_PARTY } from '../shared/daemonFirstParty';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -119,7 +120,28 @@ export class DaemonPipeServer {
   private globalRate = { count: 0, resetAt: 0 };
   // Aggregate budget for INTERACTIVE_METHODS across every socket.
   private interactiveGlobalRate = { count: 0, resetAt: 0 };
+  // Per-socket and aggregate budgets for STREAM_PUSH_METHODS.
+  private readonly streamPushRateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
+  private streamPushGlobalRate = { count: 0, resetAt: 0 };
+  // Stream pushes refused per socket since its last log line (noteStreamPushRefused).
+  private readonly streamPushRefusals = new Map<net.Socket, { refused: number; loggedAt: number; trailing: ReturnType<typeof setTimeout> | null }>();
   private connectionRate = { count: 0, resetAt: 0 };
+  // The channel calls a pane's own tools may make without the app (see
+  // `dispatch`): each stamps its caller from the daemon's session record.
+  // Every other `a2a.*` method answers only the app's own connection.
+  private static readonly HEADLESS_CHANNEL_METHODS: ReadonlySet<string> = new Set([
+    'a2a.channel.list',
+    'a2a.channel.get',
+    'a2a.channel.getMessages',
+    'a2a.channel.getMembers',
+    'a2a.channel.ack',
+    'a2a.channel.unread',
+    'a2a.channel.create',
+    'a2a.channel.join',
+    'a2a.channel.leave',
+    'a2a.channel.post',
+    'a2a.channel.invite',
+  ]);
 
   private static readonly MAX_CONNECTIONS = 20;
   private static readonly GLOBAL_RATE_LIMIT = 200;
@@ -160,6 +182,16 @@ export class DaemonPipeServer {
   ]);
   private static readonly INTERACTIVE_PER_SOCKET_RATE_LIMIT = 100;
   private static readonly INTERACTIVE_GLOBAL_RATE_LIMIT = 200;
+  // The phone browser stream's pushes from main (frames, state, pings). Main
+  // sends up to 60 frames a second on its one socket, which would use up the
+  // budgets above and refuse pane traffic. Only a first-party client gets
+  // this class; any other caller is counted like every other RPC.
+  private static readonly STREAM_PUSH_METHODS: ReadonlySet<string> = new Set([
+    'daemon.phone.browserStream',
+  ]);
+  private static readonly STREAM_PUSH_PER_SOCKET_RATE_LIMIT = 120;
+  private static readonly STREAM_PUSH_GLOBAL_RATE_LIMIT = 240;
+  private static readonly STREAM_PUSH_REFUSAL_LOG_MS = 10_000;
   private static readonly MAX_NEW_CONNECTIONS_PER_SEC = 20;
 
   private activePipeName: string;
@@ -379,6 +411,9 @@ export class DaemonPipeServer {
           this.preSubscribeBacklogs.delete(socket);
           this.rateLimits.delete(socket);
           this.interactiveRateLimits.delete(socket);
+          this.streamPushRateLimits.delete(socket);
+          this.flushStreamPushRefusals(socket);
+          this.streamPushRefusals.delete(socket);
           this.clientIds.delete(socket);
           this.socketsByClientId.delete(clientId);
           this.firstPartyClients.delete(clientId);
@@ -431,6 +466,9 @@ export class DaemonPipeServer {
   async stop(): Promise<void> {
     if (!this.server) return;
 
+    // Report what is pending while each socket's client id is still known.
+    for (const socket of [...this.streamPushRefusals.keys()]) this.flushStreamPushRefusals(socket);
+    this.streamPushRefusals.clear();
     for (const socket of this.connectedSockets) {
       socket.destroy();
     }
@@ -495,6 +533,9 @@ export class DaemonPipeServer {
     this.firstPartyClients.clear();
     this.rateLimits.clear();
     this.interactiveRateLimits.clear();
+    this.streamPushRateLimits.clear();
+    for (const note of this.streamPushRefusals.values()) if (note.trailing) clearTimeout(note.trailing);
+    this.streamPushRefusals.clear();
     // Forced drop-to-zero — keep idle-window accounting consistent.
     this.lastDisconnectAt = Date.now();
     return newToken;
@@ -583,34 +624,52 @@ export class DaemonPipeServer {
   }
 
   private handleConnection(socket: net.Socket): void {
-    let buffer = '';
+    // The unterminated tail, kept as chunks: a long line (a stream frame of
+    // up to 900 KiB arrives in many reads) is joined and split once, when the
+    // chunk that ends it arrives, rather than re-scanned on every read.
+    let pending: string[] = [];
+    let pendingLength = 0;
     socket.setEncoding('utf8');
 
     socket.on('data', (chunk: string) => {
-      buffer += chunk;
-
-      // Security: prevent OOM from clients that never send newlines
-      if (buffer.length > MAX_LINE_BUFFER) {
-        socket.destroy();
+      if (!chunk.includes('\n')) {
+        pendingLength += chunk.length;
+        // Security: prevent OOM from clients that never send newlines
+        if (pendingLength > MAX_LINE_BUFFER) {
+          socket.destroy();
+          return;
+        }
+        pending.push(chunk);
         return;
       }
 
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+      pending.push(chunk);
+      const lines = pending.join('').split('\n');
+      const rest = lines.pop() ?? '';
+      pending = rest ? [rest] : [];
+      pendingLength = rest.length;
 
       for (const line of lines) {
+        // The limit is per line: a read that ends one long line and starts
+        // the next is two lines, each held to it.
+        if (line.length > MAX_LINE_BUFFER) {
+          socket.destroy();
+          return;
+        }
         const trimmed = line.trim();
         if (!trimmed) continue;
         this.processLine(socket, trimmed);
       }
+      if (pendingLength > MAX_LINE_BUFFER) socket.destroy();
     });
 
     socket.on('end', () => {
-      const trimmed = buffer.trim();
+      const trimmed = pending.join('').trim();
       if (trimmed) {
         this.processLine(socket, trimmed);
       }
-      buffer = '';
+      pending = [];
+      pendingLength = 0;
     });
 
     socket.on('error', () => {
@@ -670,6 +729,32 @@ export class DaemonPipeServer {
       }
     }
 
+    if (DaemonPipeServer.STREAM_PUSH_METHODS.has(method) && this.isFirstParty(this.clientIds.get(socket) ?? '')) {
+      let push = this.streamPushRateLimits.get(socket);
+      if (!push || now > push.resetAt) {
+        push = { count: 0, resetAt: now + 1000 };
+        this.streamPushRateLimits.set(socket, push);
+      }
+      if (now > this.streamPushGlobalRate.resetAt) {
+        this.streamPushGlobalRate = { count: 0, resetAt: now + 1000 };
+      }
+      // As for the interactive class: both counters are charged only for a
+      // call that is dispatched.
+      if (
+        push.count >= DaemonPipeServer.STREAM_PUSH_PER_SOCKET_RATE_LIMIT ||
+        this.streamPushGlobalRate.count >= DaemonPipeServer.STREAM_PUSH_GLOBAL_RATE_LIMIT
+      ) {
+        const res = JSON.stringify({ id: request.id, ok: false, error: 'rate limited (stream)' });
+        socket.write(res + '\n');
+        this.noteStreamPushRefused(socket, now);
+        return;
+      }
+      push.count++;
+      this.streamPushGlobalRate.count++;
+      this.dispatchAndReply(socket, request);
+      return;
+    }
+
     if (DaemonPipeServer.INTERACTIVE_METHODS.has(method)) {
       let interactive = this.interactiveRateLimits.get(socket);
       if (!interactive || now > interactive.resetAt) {
@@ -722,6 +807,42 @@ export class DaemonPipeServer {
     }
 
     this.dispatchAndReply(socket, request);
+  }
+
+  /**
+   * A refused stream push is only a dropped frame to main, so it is not an
+   * error anywhere; this line is the one trace of it. At most one per socket
+   * every STREAM_PUSH_REFUSAL_LOG_MS, with the refusals counted since the last.
+   * What a burst refused after its first line is reported when the window
+   * ends, or when the socket closes, even if nothing is refused after it.
+   */
+  private noteStreamPushRefused(socket: net.Socket, now: number): void {
+    let note = this.streamPushRefusals.get(socket);
+    if (!note) {
+      note = { refused: 0, loggedAt: -Infinity, trailing: null };
+      this.streamPushRefusals.set(socket, note);
+    }
+    note.refused += 1;
+    const wait = note.loggedAt + DaemonPipeServer.STREAM_PUSH_REFUSAL_LOG_MS - now;
+    if (wait <= 0) { this.flushStreamPushRefusals(socket, now); return; }
+    if (!note.trailing) {
+      note.trailing = setTimeout(() => this.flushStreamPushRefusals(socket), wait);
+      note.trailing.unref?.();
+    }
+  }
+
+  /** Logs the refusals counted since the last line, if any. */
+  private flushStreamPushRefusals(socket: net.Socket, now = Date.now()): void {
+    const note = this.streamPushRefusals.get(socket);
+    if (!note) return;
+    if (note.trailing) { clearTimeout(note.trailing); note.trailing = null; }
+    if (note.refused === 0) return;
+    console.warn(
+      `[DaemonPipeServer] rate limited (stream): ${note.refused} browser stream push(es) refused `
+      + `from ${this.clientIds.get(socket) ?? 'unknown'} since the last report`,
+    );
+    note.refused = 0;
+    note.loggedAt = now;
   }
 
   private dispatchAndReply(socket: net.Socket, request: RpcRequest): void {
@@ -897,9 +1018,34 @@ export class DaemonPipeServer {
     if (!handler) {
       return { id: request.id, ok: false, error: `Unknown method: ${request.method}` };
     }
+    let params = request.params ?? {};
+    // A2A methods act for whichever workspace or pane the call names, and only
+    // main checks that name against the caller (src/main/pipe/handlers/
+    // a2aCaller.ts). So they answer only the app's own connection, except the
+    // channel calls a pane's own tools make headless (`wmux channel`): those
+    // take the caller's workspace from the daemon's session record for its
+    // senderPtyId (channels/channelCallerIdentity.ts), and a workspace stamp
+    // the call brings with it counts only from the app. As with
+    // markFirstParty, this is a classification over the shared token: it keeps
+    // a CLI or an agent tool that holds the token from going around main's
+    // check, not a local attacker.
+    if (request.method.startsWith('a2a.') && !this.isFirstParty(clientId)) {
+      if (!DaemonPipeServer.HEADLESS_CHANNEL_METHODS.has(request.method)) {
+        return {
+          id: request.id,
+          ok: false,
+          error: `${NOT_FIRST_PARTY}: ${request.method} is accepted only from the app's own connection`,
+          code: NOT_FIRST_PARTY,
+        };
+      }
+      if (Object.prototype.hasOwnProperty.call(params, 'verifiedWorkspaceId')) {
+        params = { ...params };
+        delete params['verifiedWorkspaceId'];
+      }
+    }
 
     try {
-      const result = await handler(request.params ?? {}, { clientId });
+      const result = await handler(params, { clientId });
       return { id: request.id, ok: true, result };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
