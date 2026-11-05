@@ -1,4 +1,4 @@
-import { PHONE_BROWSER_GEOMETRY, PhoneBrowserViewportChanged, phoneBrowserGeometry, phoneBrowserPoint, phoneBrowserScrollPoint, phoneBrowserStreamPoint, phoneBrowserViewportExceeds, type PhoneBrowserGeometry, type PhoneLiveViewport } from './PhoneBrowserGeometry';
+import { PHONE_BROWSER_GEOMETRY, PhoneBrowserViewportChanged, phoneBrowserGeometry, phoneFillScale, phoneBrowserPoint, phoneBrowserScrollPoint, phoneBrowserStreamPoint, phoneBrowserViewportExceeds, type PhoneBrowserGeometry, type PhoneLiveViewport } from './PhoneBrowserGeometry';
 import type { PhoneBrowserInputOptions } from './PhoneBrowserInput';
 import type { CdpTargetInfo } from '../browser-session/WebviewCdpManager';
 import type { RpcResponse } from '../../shared/rpc';
@@ -28,6 +28,12 @@ interface BrowserDeps {
   /** Page.getLayoutMetrics on a builtin pane: a streamed pane's input maps by its frames' geometry. Absent: by the probe, as before. */
   layoutMetrics?: (webContentsId: number) => Promise<unknown>;
   scroll: (webContentsId: number, event: {x:number;y:number;deltaX:number;deltaY:number}) => Promise<void>;
+  /**
+   * How much larger than its layout a builtin pane is drawn (a phone filling
+   * the pane, browser.rpc.ts activeDevicePreset): the scroll anchor goes in at
+   * the drawn view's pixels, and the widget bounds are checked as drawn. Absent: 1.
+   */
+  viewScale?: (webContentsId: number) => number;
   targets: () => CdpTargetInfo[];
   page: (webContentsId: number) => { title: string; url: string } | null;
   input: (webContentsId: number, operation: () => Promise<RpcResponse>, options?: PhoneBrowserInputOptions) => Promise<RpcResponse>;
@@ -68,7 +74,12 @@ export interface PhoneBrowserDriver {
   navigate(url: string): Promise<void>;
   /** The entry `direction` leads to, or null when there is none. `go` checks the desktop's navigation policy, then moves. */
   historyEntry(direction: 'back' | 'forward'): Promise<{ url: string; go(): Promise<void> } | null>;
-  viewport(mode: 'mobile' | 'desktop'): Promise<void>;
+  /**
+   * `fill`: a phone's width drawn larger to fill the pane (the stream's
+   * frames), not fitted in its left part; `refit` with it fits the phone
+   * already on the pane to the pane's new size, without the reset's reload.
+   */
+  viewport(mode: 'mobile' | 'desktop', options?: { fill?: boolean; refit?: boolean }): Promise<void>;
   focus(): Promise<void>;
   /** What the focused element takes, right after a tap; undefined when it could not be read in time. */
   readFocus?(): Promise<PhoneBrowserFocus | undefined>;
@@ -124,15 +135,18 @@ function webviewDriver(target: CdpTargetInfo, workspaceId: string, deps: Browser
     },
     // A streamed pane only (pointOn): the visual viewport as Chrome's is read,
     // still refused past the real widget, as geometry() refuses it.
+    // Both measured as drawn: a phone drawn larger than its layout takes that much more of the widget.
     ...(layoutMetrics ? { layout: async () => {
       const viewport = viewportOf(await layoutMetrics(target.webContentsId));
-      if (phoneBrowserViewportExceeds(viewport, await deps.nativeBounds(target.webContentsId))) throw new Error('Browser viewport exceeds visible input bounds; reset viewport');
+      const view = deps.viewScale?.(target.webContentsId) ?? 1;
+      if (phoneBrowserViewportExceeds({...viewport,scale:viewport.scale * view}, await deps.nativeBounds(target.webContentsId))) throw new Error('Browser viewport exceeds visible input bounds; reset viewport');
       return viewport;
     } } : {}),
     geometry: async () => {
       const page = phoneBrowserGeometry(await deps.invoke('browser.evaluate',{...scope,expression:PHONE_BROWSER_GEOMETRY}));
       const native = await deps.nativeBounds(target.webContentsId);
-      if (page.width > native.width + 1 || page.height > native.height + 1) throw new Error('Browser viewport exceeds visible input bounds; reset viewport');
+      const view = deps.viewScale?.(target.webContentsId) ?? 1;
+      if (page.width * view > native.width + 1 || page.height * view > native.height + 1) throw new Error('Browser viewport exceeds visible input bounds; reset viewport');
       return page;
     },
     shoot: async (quality, scale) => {
@@ -149,8 +163,13 @@ function webviewDriver(target: CdpTargetInfo, workspaceId: string, deps: Browser
         return {id:'phone-input',ok:true,result:{applied:true}};
       }, options));
     },
+    // CSS pixels: browser.click.cdp puts them in at the drawn view's.
     tap: async point => ok(await deps.invoke('browser.click.cdp',{...scope,...point})),
-    scroll: event => deps.scroll(target.webContentsId,event),
+    // The anchor goes in at the drawn view's pixels; wheel deltas stay in CSS pixels.
+    scroll: event => {
+      const view = deps.viewScale?.(target.webContentsId) ?? 1;
+      return deps.scroll(target.webContentsId,{...event,x:event.x * view,y:event.y * view});
+    },
     type: async text => ok(await deps.invoke('browser.type.cdp',{...scope,text})),
     key: async key => ok(await deps.invoke('browser.press.cdp',{...scope,key})),
     navigate: async url => ok(await deps.invoke('browser.navigate',{...scope,url})),
@@ -160,20 +179,30 @@ function webviewDriver(target: CdpTargetInfo, workspaceId: string, deps: Browser
       const entry = deps.historyEntry(target.webContentsId, direction === 'back' ? -1 : 1);
       return entry && { url: entry.url, go: async () => { await validate(entry.url); entry.go(); } };
     },
-    viewport: async mode => {
-      let result = await deps.invoke('browser.emulate', {...scope,deviceReset:true});
-      if (!result.ok) throw new Error('Browser viewport reset failed');
-      // Discard the RPC's remembered pre-preset dimensions: the native widget
-      // may have been resized since that snapshot.
-      await deps.clearViewport(target.webContentsId);
+    viewport: async (mode, options) => {
+      const fill = options?.fill === true;
+      let result: RpcResponse;
+      if (!(fill && options?.refit === true && mode === 'mobile')) {
+        result = await deps.invoke('browser.emulate', {...scope,deviceReset:true});
+        if (!result.ok) throw new Error('Browser viewport reset failed');
+        // Discard the RPC's remembered pre-preset dimensions: the native widget
+        // may have been resized since that snapshot.
+        await deps.clearViewport(target.webContentsId);
+      }
       if (mode === 'mobile') {
         // A viewport taller than the Electron guest can capture pixels outside
         // its input hit-test bounds. Fit the mobile viewport to the real guest.
         const available = await deps.nativeBounds(target.webContentsId);
+        // Fill: a pane wider than the phone shows the phone's 390 CSS px
+        // drawn that much larger, as tall as the pane, instead of in its left part.
+        const scale = fill ? phoneFillScale(available) : 1;
         const width = Math.min(390,Math.floor(available.width));
-        const height = Math.min(844,Math.floor(available.height));
+        const height = fill ? Math.floor(available.height / scale) : Math.min(844,Math.floor(available.height));
         result = await deps.invoke('browser.emulate', {...scope,deviceMetrics:{
           width,height,deviceScaleFactor:1,mobile:true,hasTouch:true,screenWidth:width,screenHeight:height,
+          ...(scale !== 1 ? {scale} : {}),
+          // Marks the preset as the stream's: it adopts no other.
+          ...(fill ? {fill:true} : {}),
         }});
         ok(result);
       }
@@ -313,7 +342,7 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
   }
   if (command === 'browser.viewport') {
     if (payload.mode !== 'mobile' && payload.mode !== 'desktop') throw new Error('Invalid viewport');
-    await driver.viewport(payload.mode);
+    await driver.viewport(payload.mode, { fill: payload.fill === true, refit: payload.refit === true });
     return { applied: true };
   }
   if (command === 'browser.navigate') {

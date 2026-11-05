@@ -65,6 +65,24 @@ export function phoneBrowserViewportExceeds(viewport: { width: number; height: n
   return viewport.width * scale > native.width + 1 || viewport.height * scale > native.height + 1;
 }
 
+/** A phone's layout width, in CSS pixels. */
+export const PHONE_WIDTH = 390;
+/** The shortest a phone drawn larger to fill a pane may be, in CSS pixels: a pane too short for it shows the phone at 1x. */
+export const PHONE_FILL_MIN_HEIGHT = 320;
+
+/** How much larger a phone's 390 CSS px is drawn to fill a pane that is wider; 1 when it is not, or too short for it. */
+export function phoneFillScale(pane: { width: number; height: number }): number {
+  if (pane.width <= PHONE_WIDTH) return 1;
+  const scale = pane.width / PHONE_WIDTH;
+  return pane.height / scale >= PHONE_FILL_MIN_HEIGHT ? scale : 1;
+}
+
+/** How much larger than its layout a device preset draws the page (its `scale`), or 1. */
+export function presetViewScale(preset: { readonly scale?: number } | undefined): number {
+  const scale = preset?.scale;
+  return scale !== undefined && Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
 /** The geometry a stream frame carried, from that frame's metadata (`scale` only under pinch zoom). */
 export interface PhoneStreamGeometry { width: number; height: number; scrollX: number; scrollY: number; scale?: number }
 

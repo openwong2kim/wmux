@@ -37,6 +37,31 @@ describe('workspace browser preview boundary', () => {
     await handlePhoneBrowser('browser.viewport', { workspaceId: 'ws-1', surfaceId: 'own', mode: 'desktop' }, deps);
     expect(deps.invoke).toHaveBeenLastCalledWith('browser.emulate', { workspaceId: 'ws-1', surfaceId: 'own', deviceReset: true });
   });
+  it('fill draws a phone larger to fill a wider pane, as tall as the pane; refit fits it again without the reset', async () => {
+    const deps = {...fixture(), nativeBounds: async () => ({width:1000,height:1000})};
+    await handlePhoneBrowser('browser.viewport', { workspaceId: 'ws-1', surfaceId: 'own', mode: 'mobile', fill: true }, deps);
+    const scale = 1000 / 390;
+    expect(deps.invoke.mock.calls.map(([method]) => method)).toEqual(['browser.emulate', 'browser.emulate']);
+    expect(deps.invoke).toHaveBeenLastCalledWith('browser.emulate', { workspaceId: 'ws-1', surfaceId: 'own', deviceMetrics: { width: 390, height: Math.floor(1000 / scale), deviceScaleFactor: 1, mobile: true, hasTouch: true, screenWidth: 390, screenHeight: Math.floor(1000 / scale), scale, fill: true } });
+    deps.invoke.mockClear();
+    deps.clearViewport.mockClear();
+    await handlePhoneBrowser('browser.viewport', { workspaceId: 'ws-1', surfaceId: 'own', mode: 'mobile', fill: true, refit: true }, deps);
+    // No deviceReset (it reloads the page), no cleared viewport: only the phone, fitted again.
+    expect((deps.invoke.mock.calls as unknown as Array<[string, Record<string, unknown>]>).map(([, params]) => Object.keys(params).sort())).toEqual([['deviceMetrics', 'surfaceId', 'workspaceId']]);
+    expect(deps.clearViewport).not.toHaveBeenCalled();
+    // refit without fill is the plain action: it resets first.
+    deps.invoke.mockClear();
+    await handlePhoneBrowser('browser.viewport', { workspaceId: 'ws-1', surfaceId: 'own', mode: 'mobile', refit: true }, deps);
+    expect(deps.invoke).toHaveBeenNthCalledWith(1, 'browser.emulate', { workspaceId: 'ws-1', surfaceId: 'own', deviceReset: true });
+  });
+
+  it('fill on a pane too short to draw a phone larger, or no wider than one: 1x, as tall as the pane', async () => {
+    for (const [pane, width] of [[{width:1000,height:728}, 390], [{width:380,height:1000}, 380]] as const) {
+      const deps = {...fixture(), nativeBounds: async () => pane};
+      await handlePhoneBrowser('browser.viewport', { workspaceId: 'ws-1', surfaceId: 'own', mode: 'mobile', fill: true }, deps);
+      expect(deps.invoke).toHaveBeenLastCalledWith('browser.emulate', { workspaceId: 'ws-1', surfaceId: 'own', deviceMetrics: { width, height: pane.height, deviceScaleFactor: 1, mobile: true, hasTouch: true, screenWidth: width, screenHeight: pane.height, fill: true } });
+    }
+  });
   it.each(['javascript:alert(1)', 'file:///private/file', 'https://user:password@example.com'])('refuses non-web or credential-bearing navigation %s', async url => {
     const deps = fixture();
     await expect(handlePhoneBrowser('browser.navigate', { workspaceId: 'ws-1', surfaceId: 'own', url }, deps)).rejects.toThrow();
@@ -330,6 +355,30 @@ describe('workspace browser preview: stream input (stream:true)', () => {
     expect(clicks(deps)).toHaveLength(1);
     // Without the gate (no stream view) the probe decides, as before.
     await expect(handlePhoneBrowser('browser.tap',{...pointed,geometry:frame},streamed)).rejects.toThrow('viewport changed');
+  });
+
+  it('a phone drawn larger to fill the pane: taps go to browser.click.cdp in CSS, scroll anchors at the drawn view\'s pixels, wheel deltas in CSS', async () => {
+    const deps = fixture();
+    const view = 1000 / 390;
+    const frame = {width:390,height:283.9,scrollX:0,scrollY:0};
+    const streamed = {...deps,
+      viewScale: () => view,
+      layoutMetrics: vi.fn(async () => ({cssVisualViewport:{clientWidth:390,clientHeight:283,pageX:0,pageY:0,scale:1,zoom:1}})),
+      streams: {tab: (surfaceId: string, workspaceId: string) => surfaceId === 'own' && workspaceId === 'ws-1' ? {url:'http://localhost:3000/',docUrls:new Set(['http://localhost:3000/']),geometry:frame} : null},
+    };
+    expect(await handlePhoneBrowser('browser.tap',{...pointed,geometry:frame,stream:true},streamed)).toEqual({applied:true});
+    const [, tap] = clicks(deps)[0] as unknown as [string, {x:number;y:number}];
+    expect(tap.x).toBeCloseTo(195, 6);
+    expect(tap.y).toBeCloseTo(70.975, 6);
+    expect(await handlePhoneBrowser('browser.scroll',{...pointed,geometry:frame,deltaX:0,deltaY:0.5,stream:true},streamed)).toEqual({applied:true});
+    const [, wheel] = deps.scroll.mock.calls[0] as unknown as [number, {x:number;y:number;deltaX:number;deltaY:number}];
+    expect(wheel.x).toBeCloseTo(500, 6);
+    expect(wheel.y).toBeCloseTo(70.975 * view, 6);
+    expect(wheel.deltaY).toBeCloseTo(141.95, 6);
+    // The pane shrank under the drawn phone: its 390 CSS px take 1000 drawn, past a 600 px widget.
+    streamed.nativeBounds = async () => ({width:600,height:728});
+    await expect(handlePhoneBrowser('browser.tap',{...pointed,geometry:frame,stream:true},streamed)).rejects.toThrow('exceeds visible input bounds');
+    expect(clicks(deps)).toHaveLength(1);
   });
 
   describe('history', () => {
