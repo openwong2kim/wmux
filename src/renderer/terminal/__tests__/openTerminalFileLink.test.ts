@@ -66,6 +66,13 @@ describe('openTerminalFileLink on Windows', () => {
     expect(state.addEditorSurface).toHaveBeenCalledWith('pane1', 'C:\\work\\a.txt', { workspaceId: 'ws1' });
   });
 
+  it('takes the distro from a `wsl.exe -d <name>` session', async () => {
+    list.mockResolvedValue([{ id: 'pty1', shell: 'wsl.exe', args: ['-d', 'Debian'] }]);
+    const d = deps();
+    await openTerminalFileLink('/home/me/a.txt', undefined, 'pty1', d);
+    expect(state.addEditorSurface).toHaveBeenCalledWith('pane1', '\\\\wsl$\\Debian\\home\\me\\a.txt', { workspaceId: 'ws1' });
+  });
+
   it('never hands a POSIX path from a non-WSL tab to the OS opener', async () => {
     list.mockResolvedValue([{ id: 'pty1', shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' }]);
     const d = deps();

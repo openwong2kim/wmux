@@ -60,8 +60,9 @@ export async function openTerminalFileLink(
   // Every OS-opener fallback below goes through here.
   const openWithOs = deps.viewerOnly ? () => deps.onFailure() : deps.openWithOs;
   const owner = locatePty(ptyId);
-  // The session decides; the tab label ('WSL' on a leaf's first tab) is only
-  // a fallback for when the session list cannot answer.
+  // Read from the session: most tabs' label is 'Terminal' whatever runs in
+  // them. A 'WSL' label (a leaf's first tab) also counts, which covers a
+  // session list that cannot answer.
   const session: { wsl: boolean; distro?: string } = owner !== null && ptyId && platform === 'win32'
     ? await paneWslSession(ptyId, window.electronAPI.pty)
     : { wsl: false };

@@ -8,8 +8,9 @@
  *   • openPath returning an error string triggers showItemInFolder fallback
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import * as os from 'os';
-import * as path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // ── Module mocks (hoisted; cannot reference outer test variables) ──────────
 
@@ -196,6 +197,23 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       expect(openPath).not.toHaveBeenCalled();
       expect(showItemInFolder).not.toHaveBeenCalled();
       expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+    });
+
+    it('refuses a symlink whose real path is sensitive', async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-home-'));
+      try {
+        vi.spyOn(os, 'homedir').mockReturnValue(home);
+        fs.mkdirSync(path.join(home, '.ssh'));
+        fs.writeFileSync(path.join(home, '.ssh', 'id_rsa'), 'secret');
+        const link = path.join(home, 'innocent.txt');
+        fs.symlinkSync(path.join(home, '.ssh', 'id_rsa'), link);
+        const result = await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, link);
+        expect(openPath).not.toHaveBeenCalled();
+        expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+      } finally {
+        vi.restoreAllMocks();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
     });
 
     // A share path is absolute only on Windows.

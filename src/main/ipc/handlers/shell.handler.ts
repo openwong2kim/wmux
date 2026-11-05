@@ -95,8 +95,10 @@ export function registerShellHandlers(): () => void {
       throw new Error('path must be absolute');
     }
     // A credential location the in-app viewer refuses is refused here too,
-    // without revealing its folder: a click must not hand it to the OS.
-    if (isSensitivePath(normalized)) {
+    // without revealing its folder: a click must not hand it to the OS. Its
+    // real path is checked as well, so a link into ~/.ssh is refused too.
+    const real = await fs.realpath(normalized).catch(() => normalized);
+    if (isSensitivePath(normalized) || isSensitivePath(real)) {
       return { ok: false, error: 'BLOCKED_SENSITIVE' };
     }
     // Block executable extensions — refuse the open and reveal the folder

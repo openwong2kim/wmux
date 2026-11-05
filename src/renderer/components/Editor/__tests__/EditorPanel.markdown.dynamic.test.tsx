@@ -110,6 +110,21 @@ describe('EditorPanel line target', () => {
     window.getSelection()!.removeAllRanges();
   });
 
+  it('drops the mark on a click while text outside the editor is selected', async () => {
+    await openAt('/p/notes.txt', 5);
+    const outside = document.createElement('p');
+    outside.textContent = 'elsewhere';
+    document.body.appendChild(outside);
+    const range = document.createRange();
+    range.selectNodeContents(outside);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    await act(async () => { container.querySelector<HTMLElement>('pre')!.click(); });
+    expect(marked()).toBeNull();
+    window.getSelection()!.removeAllRanges();
+    outside.remove();
+  });
+
   it('drops the mark when the user leaves the tab', async () => {
     await openAt('/p/notes.txt', 7);
     expect(marked()).not.toBeNull();

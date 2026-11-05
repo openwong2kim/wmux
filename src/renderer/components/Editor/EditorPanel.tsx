@@ -239,7 +239,11 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
       <div
         ref={bodyRef}
         className="flex-1 overflow-auto"
-        onClick={() => { if (window.getSelection()?.isCollapsed !== false) setMarkedLine(null); }}
+        onClick={() => {
+          const sel = window.getSelection();
+          const dragged = sel !== null && !sel.isCollapsed && bodyRef.current?.contains(sel.anchorNode) === true;
+          if (!dragged) setMarkedLine(null);
+        }}
       >
         {loading && (
           <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm">
