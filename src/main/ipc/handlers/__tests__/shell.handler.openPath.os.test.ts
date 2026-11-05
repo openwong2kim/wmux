@@ -85,8 +85,7 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
     if (process.platform === 'win32') return; // path.isAbsolute is OS-aware
     const handler = getHandler(IPC.SHELL_OPEN_PATH);
     const result = await handler(fakeEvent, '/etc/hosts');
-    // What was checked is what opens: the real path (/private/etc on macOS).
-    expect(openPath).toHaveBeenCalledWith(fs.realpathSync.native('/etc/hosts'));
+    expect(openPath).toHaveBeenCalledWith('/etc/hosts');
     expect(result).toEqual({ ok: true, error: undefined });
     expect(showItemInFolder).not.toHaveBeenCalled();
   });
@@ -240,14 +239,14 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       }
     });
 
-    it('opens the real path it checked, not the link it was given', async () => {
+    it('opens the spelling it was given, once its real path is checked', async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-real-'));
       try {
         fs.writeFileSync(path.join(dir, 'notes.md'), 'x');
         fs.symlinkSync(path.join(dir, 'notes.md'), path.join(dir, 'link.md'));
         await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, path.join(dir, 'link.md'));
-        // The native realpath, as the handler uses: on Windows it also expands 8.3 names.
-        expect(openPath).toHaveBeenCalledWith(fs.realpathSync.native(path.join(dir, 'notes.md')));
+        // A mapped drive must stay a drive letter for the app it opens in.
+        expect(openPath).toHaveBeenCalledWith(path.join(dir, 'link.md'));
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }

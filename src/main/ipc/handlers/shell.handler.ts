@@ -45,8 +45,8 @@ const BLOCKED_EXTENSIONS = new Set<string>([
  * path, so a link or an 8.3 short name into ~/.ssh is refused too. A path
  * that does not exist takes the real path of its nearest existing parent, or
  * a failed open would reveal that parent folder. Any other error resolving
- * it refuses (fails closed). `real` is the path to open, so what is opened is
- * what was checked; null when the target does not exist.
+ * it refuses (fails closed). `real` is the real path that was checked, null
+ * when the target does not exist.
  */
 async function checkOpenTarget(
   target: string,
@@ -71,6 +71,16 @@ async function checkOpenTarget(
     if (missing.length === 0) return { sensitive: isSensitivePath(real), real };
     return { sensitive: isSensitivePath(p.join(real, ...missing.reverse())), real: null };
   }
+}
+
+/**
+ * Opened by the spelling the user gave (a mapped drive stays `Z:\\proj`, not
+ * its UNC path), so it is resolved once more right before the open: a link
+ * swapped since the check gets a different real path and is refused.
+ */
+async function sameRealPath(target: string, checked: string | null): Promise<boolean> {
+  if (checked === null) return true;
+  return (await fs.realpath(target).catch(() => null)) === checked;
 }
 
 export function registerShellHandlers(): () => void {
@@ -134,9 +144,7 @@ export function registerShellHandlers(): () => void {
     if (target.sensitive) {
       return { ok: false, error: 'BLOCKED_SENSITIVE' };
     }
-    // Open what was checked: the real path, so a link swapped after the
-    // check cannot redirect the open.
-    const opened = target.real ?? normalized;
+    const opened = normalized;
     // Block executable extensions — refuse the open and reveal the folder
     // so the user still gets useful feedback without launching code from
     // untrusted PTY content. See BLOCKED_EXTENSIONS for the rationale. A
@@ -144,6 +152,9 @@ export function registerShellHandlers(): () => void {
     if ([normalized, opened].some((p) => BLOCKED_EXTENSIONS.has(path.extname(p).toLowerCase()))) {
       shell.showItemInFolder(opened);
       return { ok: false, error: 'BLOCKED_EXTENSION' };
+    }
+    if (!(await sameRealPath(opened, target.real))) {
+      return { ok: false, error: 'BLOCKED_SENSITIVE' };
     }
     const err = await shell.openPath(opened);
     if (err) {
@@ -243,7 +254,8 @@ export function registerShellHandlers(): () => void {
     if (appId === 'explorer') {
       const target = await checkOpenTarget(normalized, plat());
       if (target.sensitive) return blocked;
-      const opened = target.real ?? normalized;
+      const opened = normalized;
+      if (!(await sameRealPath(opened, target.real))) return blocked;
       const err = await shell.openPath(opened);
       if (err) shell.showItemInFolder(opened);
       return { ok: !err, error: err || undefined };
@@ -254,7 +266,8 @@ export function registerShellHandlers(): () => void {
     const target = await checkOpenTarget(normalized, plat());
     if (target.sensitive) return blocked;
 
-    return launchFolderApp(appEntry, target.real ?? normalized);
+    if (!(await sameRealPath(normalized, target.real))) return blocked;
+    return launchFolderApp(appEntry, normalized);
   }));
 
   return () => {
