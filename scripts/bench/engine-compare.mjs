@@ -42,7 +42,11 @@ if (!port || !args.case) {
 
 const { chromium } = await import('playwright-core');
 const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 15_000 });
-const page = browser.contexts().flatMap((c) => c.pages()).find((p) => p.url().includes('index.html'));
+// The main window: index.html in a packaged build, the Vite dev server's root
+// in a dev build. Never the quick-launch window (launcher.html).
+const pages = browser.contexts().flatMap((c) => c.pages());
+const page = pages.find((p) => p.url().includes('index.html'))
+  ?? pages.find((p) => /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(p.url()) && !p.url().includes('launcher'));
 if (!page) throw new Error('main window not found');
 const cdp = await page.context().newCDPSession(page);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
