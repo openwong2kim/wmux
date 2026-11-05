@@ -1064,12 +1064,11 @@ describe('a2a.resolve.identity — claims checked against the connection\'s peer
   const tree = new Map<number, number>([
     [39876, 49076], [60002, 49076], [49076, 1],
     [60001, 50000], [50000, 1],
-    [70001, 1], [11111, 1],
+    [70001, 1],
   ]);
   type PeerResult = ResolveResult & {
     workspaceToken?: string;
     threadClaim?: { ptyId: string };
-    hintedPane?: { live: boolean; workspaceToken?: string };
   };
 
   beforeEach(() => {
@@ -1093,13 +1092,12 @@ describe('a2a.resolve.identity — claims checked against the connection\'s peer
     try { fs.rmSync(dirRef.current, { recursive: true, force: true }); } catch { /* best-effort */ }
   });
 
-  function peerRouter(getDaemonClient?: () => DaemonClient | null): RpcRouter {
+  function peerRouter(): RpcRouter {
     const router = new RpcRouter();
     registerA2aRpc(router, () => fakeWindow, makeWorker(), {
       snapshot: async () => ({ ppidByPid: tree, listeners: [] }),
       createdAt: () => null,
       classifyCodexCaller: async () => 'shared-server',
-      ...(getDaemonClient && { getDaemonClient }),
     });
     return router;
   }
@@ -1129,17 +1127,26 @@ describe('a2a.resolve.identity — claims checked against the connection\'s peer
       expect(result.workspaceToken).toBeUndefined();
       // The client-side walk still gets the live entries.
       expect(result.entries.map((e) => e.ptyId).sort()).toEqual(['daemon-other', 'daemon-shell']);
-      expect(log).toHaveBeenCalledWith(expect.stringContaining('[peer-pid] callerPid refused'));
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('[peer-pid] callerPid 39876 refused pane "daemon-shell"'));
     } finally {
       log.mockRestore();
     }
   });
 
-  it('keeps today\'s answer when the peer is in no pane, or no peer was read', async () => {
-    const outside = await resolveAs(peerRouter(), { callerPid: 39876 }, 70001);
-    expect(outside.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
-    const none = await resolveAs(peerRouter(), { callerPid: 39876 });
-    expect(none.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+  it('keeps today\'s answer when the peer is in no pane, its table cannot be read, or no peer was read', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const outside = await resolveAs(peerRouter(), { callerPid: 39876 }, 70001);
+      expect(outside.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+      // 99999 is in no snapshot: the walk cannot run, which is logged apart.
+      const unread = await resolveAs(peerRouter(), { callerPid: 39876 }, 99999);
+      expect(unread.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('could not be walked in time'));
+      const none = await resolveAs(peerRouter(), { callerPid: 39876 });
+      expect(none.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('does not check a call relayed by the MCP broker', async () => {
@@ -1173,14 +1180,5 @@ describe('a2a.resolve.identity — claims checked against the connection\'s peer
       else process.env.CODEX_HOME = previous;
       fs.rmSync(home, { recursive: true, force: true });
     }
-  });
-
-  it('refuses a hinted pane other than the peer\'s', async () => {
-    const client = { rpc: vi.fn(async () => ({ live: true })) } as unknown as DaemonClient;
-    const params = { callerPid: 11111, hintedPtyId: 'daemon-shell' };
-    const kept = await resolveAs(peerRouter(() => client), params, 70001);
-    expect(kept.hintedPane).toMatchObject({ live: true, workspaceToken: expect.any(String) });
-    const refused = await resolveAs(peerRouter(() => client), params, 60001);
-    expect(refused.hintedPane).toEqual({ live: true });
   });
 });

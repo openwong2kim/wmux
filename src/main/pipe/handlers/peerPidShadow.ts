@@ -27,26 +27,36 @@ export function effectivePeerPid(ctx: RpcContext | undefined): number | null {
   return peer === undefined || peer === brokerPid() ? null : peer;
 }
 
-function logOnce(key: string, line: string, log: (line: string) => void): void {
-  if (logged.has(key) || logged.size >= MAX_LOGGED) return;
-  logged.add(key);
+function logOnce(seen: Set<string>, key: string, line: string, log: (line: string) => void): void {
+  if (seen.has(key) || seen.size >= MAX_LOGGED) return;
+  seen.add(key);
   log(line);
 }
 
+// Verdicts have their own cap, so the measurement lines cannot crowd them out.
+const verdictsLogged = new Set<string>();
+
 /**
  * A claim checked against the peer's pane: `refused` names another pane than
- * the peer's, `outside` was let through because the peer is in no pane.
+ * the peer's; `outside` and `unread` were kept, because the peer is in no pane
+ * or its process table could not be read in time.
  */
 export function notePeerPidVerdict(
   kind: string,
-  verdict: 'refused' | 'outside',
+  verdict: 'refused' | 'outside' | 'unread',
   ctx: RpcContext | undefined,
+  claimed: number | null,
+  ptyId: string,
   log: (line: string) => void = (line) => console.log(line),
 ): void {
   const client = JSON.stringify(ctx?.clientName ?? 'unnamed').slice(0, 80);
-  logOnce(`${kind}:${client}:${verdict}`, verdict === 'refused'
-    ? `[peer-pid] ${kind} refused: it names another pane than the connection's peer ${ctx?.peerPid} (client ${client})`
-    : `[peer-pid] ${kind} kept: the connection's peer ${ctx?.peerPid} is in no pane (client ${client})`, log);
+  const pane = JSON.stringify(ptyId).slice(0, 80);
+  const peer = ctx?.peerPid;
+  logOnce(verdictsLogged, `${kind}:${verdict}:${claimed}:${pane}:${client}`, verdict === 'refused'
+    ? `[peer-pid] ${kind} ${claimed} refused pane ${pane}: the connection's peer ${peer} is in another pane (client ${client})`
+    : verdict === 'outside'
+      ? `[peer-pid] ${kind} ${claimed} kept pane ${pane}: the connection's peer ${peer} is in no pane (client ${client})`
+      : `[peer-pid] ${kind} ${claimed} kept pane ${pane}: the connection's peer ${peer} could not be walked in time (client ${client})`, log);
 }
 
 export function notePeerPidClaim(
@@ -59,7 +69,7 @@ export function notePeerPidClaim(
   if (peer === undefined || claimed == null) return;
   const client = JSON.stringify(ctx?.clientName ?? 'unnamed').slice(0, 80);
   const outcome = claimed === peer ? 'same' : peer === brokerPid() ? 'via-broker' : 'differs';
-  logOnce(`${kind}:${client}:${outcome}`, outcome === 'same'
+  logOnce(logged, `${kind}:${client}:${outcome}`, outcome === 'same'
     ? `[peer-pid] ${kind} matches the connection's peer (client ${client})`
     : outcome === 'via-broker'
       ? `[peer-pid] ${kind} ${claimed} came through the MCP broker ${peer} (client ${client})`
@@ -69,5 +79,6 @@ export function notePeerPidClaim(
 /** Test seam: forget what was logged. */
 export function resetPeerPidClaimLog(): void {
   logged.clear();
+  verdictsLogged.clear();
   brokerPid = () => null;
 }

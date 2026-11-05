@@ -5,9 +5,9 @@
 // knows which process connected: macOS answers LOCAL_PEERPID and Linux
 // SO_PEERCRED for a unix socket. This reads that answer through koffi.
 //
-// Measurement only for now: callers log what it returns next to what the
-// call claimed, and nothing decides on it. Windows named pipes and the
-// loopback TCP fallback have no answer here yet (null).
+// Callers log what it returns next to what the call claimed, and
+// a2a.resolve.identity checks pane claims against it. Windows named pipes and
+// the loopback TCP fallback have no answer here yet (null).
 //
 // The pid is the one that connected; a process that inherits the socket, or a
 // pid reused after the peer exits, is not distinguished.
