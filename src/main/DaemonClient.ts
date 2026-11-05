@@ -1,4 +1,5 @@
 import net from 'node:net';
+import fs from 'node:fs';
 import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
 import { parseShellPromptChange, parseShellPromptList, type ShellPromptList } from '../shared/shellPrompt';
 import { EventEmitter } from 'node:events';
@@ -114,12 +115,12 @@ export class DaemonClient extends EventEmitter {
   // Keyed by sessionId, lifecycle-bound to the socket in sessionPipes: created
   // in setupSessionPipe, dropped on socket close/error/disconnect.
   private sessionScanners: Map<string, SessionPipeStreamScanner> = new Map();
-  private connected: boolean = false;
-  private requestId: number = 0;
+  private connected = false;
+  private requestId = 0;
   private pendingRequests: Map<string, PendingRequest> = new Map();
   /** Each pane's last refused tool call, as the daemon reported it (`agent.refusal`). */
   private readonly toolRefusals = new Map<string, ToolRefusal>();
-  private controlBuffer: string = '';
+  private controlBuffer = '';
 
   constructor(
     private pipeName: string,
@@ -582,6 +583,7 @@ export class DaemonClient extends EventEmitter {
         socket.write(this.authToken + '\n');
         this.sessionPipes.set(sessionId, socket);
         this.setupSessionPipe(sessionId, socket);
+        this.emit('session-pipe:open', sessionId);
         resolve();
       });
 
@@ -611,6 +613,29 @@ export class DaemonClient extends EventEmitter {
     const socket = this.sessionPipes.get(sessionId);
     if (!socket) return false;
     return !socket.destroyed && socket.writable;
+  }
+
+  /**
+   * Whether the session has a writable pipe, waiting up to `timeoutMs` for
+   * one to open. A pane's reattach replaces its pipe (daemon.attachSession,
+   * then a fresh connect, retried by the renderer when the new one is not
+   * writable yet), and a write in that gap has no pipe to go to (#3073).
+   */
+  async waitForSessionPipe(sessionId: string, timeoutMs: number): Promise<boolean> {
+    if (this.isSessionPipeWritable(sessionId)) return true;
+    return new Promise<boolean>((resolve) => {
+      const onOpen = (id: string): void => {
+        if (id !== sessionId || !this.isSessionPipeWritable(sessionId)) return;
+        finish(true);
+      };
+      const timer = setTimeout(() => finish(this.isSessionPipeWritable(sessionId)), timeoutMs);
+      const finish = (ok: boolean): void => {
+        clearTimeout(timer);
+        this.removeListener('session-pipe:open', onOpen);
+        resolve(ok);
+      };
+      this.on('session-pipe:open', onOpen);
+    });
   }
 
   /**
@@ -1779,7 +1804,6 @@ export function getDaemonPipeName(): string {
  * authenticates.
  */
 export function readDaemonAuthToken(): string {
-  const fs = require('fs');
   for (const tokenPath of [getDaemonAuthTokenPath(), getLegacyDaemonAuthTokenPath()]) {
     try {
       const token = fs.readFileSync(tokenPath, 'utf8').trim();

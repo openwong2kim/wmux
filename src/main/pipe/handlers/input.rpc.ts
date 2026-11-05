@@ -101,6 +101,14 @@ type GetWindow = () => BrowserWindow | null;
 const SUBMIT_ENTER_DELAY_MS = 20;
 
 /**
+ * How long a write waits for a daemon pane's session pipe when it has none
+ * (#3073): a reattach replaces the pipe, and when the new one is not writable
+ * yet the renderer tries again after RECONNECT_BACKOFFS_MS (400, then 900 ms).
+ * Past this the write fails as before.
+ */
+export const SESSION_PIPE_WAIT_MS = 3_000;
+
+/**
  * Longer than this, even a single-line body is pasted: Claude Code classifies a
  * large unbracketed read as a paste of its own and splits the text into a
  * placeholder plus typed characters (#1594). Same bar the renderer uses to
@@ -1692,28 +1700,41 @@ export function registerInputRpc(
     // part of it already, so it is not called unsubmitted.
     let chunksWritten = 0;
     let wroteLineBreak = false;
-    const writeChunk = (data: string, body = true): void => {
-      noteInterruptInput?.(ptyId, data);
+    /**
+     * False when the daemon session has no pipe to take it: nothing was
+     * written. A retry of the same bytes (`noted`) is not noted again.
+     */
+    const tryWriteChunk = (data: string, body: boolean, noted = false): boolean => {
+      if (!noted) noteInterruptInput?.(ptyId, data);
       const instance = ptyManager.get(ptyId);
       if (instance) {
         ptyManager.write(ptyId, data);
       } else {
         const dc = getDaemonClient?.();
-        if (dc?.isConnected) {
-          // #2398 — no pipe took it: never answered as written.
-          if (dc.writeToSession(ptyId, data) === false) {
-            throw new Error(chunksWritten > 0
-              ? `input.send: the session "${ptyId}" pipe closed after part of this write was delivered — the text may already be on its input line, ${wroteLineBreak ? 'and may have been partly submitted' : 'not submitted'}; read the pane before sending it again`
-              : `input.send: the session "${ptyId}" has no open pipe — the text was not delivered`);
-          }
-        } else {
-          throw new Error(`input.send: PTY not found — id="${ptyId}"`);
-        }
+        if (!dc?.isConnected) throw new Error(`input.send: PTY not found — id="${ptyId}"`);
+        if (dc.writeToSession(ptyId, data) === false) return false;
       }
       if (body) {
         chunksWritten++;
         if (/[\r\n]/.test(data)) wroteLineBreak = true;
       }
+      return true;
+    };
+    // #2398 — no pipe took it: never answered as written.
+    const noPipe = (): Error => new Error(chunksWritten > 0
+      ? `input.send: the session "${ptyId}" pipe closed after part of this write was delivered — the text may already be on its input line, ${wroteLineBreak ? 'and may have been partly submitted' : 'not submitted'}; read the pane before sending it again`
+      : `input.send: the session "${ptyId}" has no open pipe — the text was not delivered`);
+    const writeChunk = (data: string, body = true): void => {
+      if (!tryWriteChunk(data, body)) throw noPipe();
+    };
+    // #3073 — a pane being reattached has no pipe for a moment: the daemon
+    // replaces it, and the renderer tries again when the new one is not
+    // writable yet. A write in that gap waits for the new pipe, once.
+    const writePiped = async (data: string, body = true): Promise<void> => {
+      if (tryWriteChunk(data, body)) return;
+      const dc = getDaemonClient?.();
+      if (dc && (await dc.waitForSessionPipe(ptyId, SESSION_PIPE_WAIT_MS)) && tryWriteChunk(data, body, true)) return;
+      throw noPipe();
     };
 
     // submit=true commits the text with an Enter (carriage return — the
@@ -1820,7 +1841,7 @@ export function registerInputRpc(
       if (submitRequested) {
         const probe = makeSubmitProbe(getWindow, ptyId, receiptWs, deps.readTurnStartedAt);
 
-        if (bodyText) writeChunk(payload);
+        if (bodyText) await writePiped(payload);
         await delay(
           pasted
             ? pasteSubmitDelayMs(sendTarget?.agent ?? null, bodyText.length)
@@ -1838,7 +1859,7 @@ export function registerInputRpc(
         };
         // Again before the Enter, and before a retried Enter below.
         await refuseAtTrustNow();
-        writeChunk('\r');
+        await writePiped('\r');
         const enterAt = Date.now();
         // A collapsed paste shows a placeholder, not the text: watch that leave.
         const needle = submitNeedle(bodyText);
@@ -1854,7 +1875,7 @@ export function registerInputRpc(
             } catch (err) {
               throw new EnterRetryRefused(err instanceof Error ? err.message : String(err));
             }
-            writeChunk('\r');
+            await writePiped('\r');
           },
           { enterAt },
         );
@@ -1868,7 +1889,7 @@ export function registerInputRpc(
           pasteNote = PASTE_UNCONFIRMED_NOTE;
         }
       } else {
-        writeChunk(payload);
+        await writePiped(payload);
       }
 
       return {
@@ -1988,8 +2009,10 @@ export function registerInputRpc(
     } else {
       const dc = getDaemonClient?.();
       if (dc?.isConnected) {
-        // #2398 — no pipe took it: never answered as sent.
-        if (dc.writeToSession(ptyId, sequence) === false) {
+        // #2398 — no pipe took it: never answered as sent. #3073 — a pane
+        // being reattached has none for a moment: the key waits for it, once.
+        if (dc.writeToSession(ptyId, sequence) === false &&
+            !((await dc.waitForSessionPipe(ptyId, SESSION_PIPE_WAIT_MS)) && dc.writeToSession(ptyId, sequence) !== false)) {
           throw new Error(`input.sendKey: the session "${ptyId}" has no open pipe — the key was not delivered`);
         }
       } else {
