@@ -96,6 +96,20 @@ describe('EditorPanel line target', () => {
     expect(marked()?.getAttribute('data-editor-line')).toBe('30');
   });
 
+  it('keeps the mark, and the selection, when a click ends a drag-select', async () => {
+    await openAt('/p/notes.txt', 5);
+    const row = marked()!.firstChild!;
+    const range = document.createRange();
+    range.setStart(row, 0);
+    range.setEnd(row, 3);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    await act(async () => { container.querySelector<HTMLElement>('pre')!.click(); });
+    expect(marked()?.getAttribute('data-editor-line')).toBe('5');
+    expect(window.getSelection()!.toString()).toBe('row');
+    window.getSelection()!.removeAllRanges();
+  });
+
   it('drops the mark when the user leaves the tab', async () => {
     await openAt('/p/notes.txt', 7);
     expect(marked()).not.toBeNull();

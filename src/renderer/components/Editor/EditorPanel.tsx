@@ -234,7 +234,13 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
       </div>
 
       {/* Body */}
-      <div ref={bodyRef} className="flex-1 overflow-auto" onClick={() => setMarkedLine(null)}>
+      {/* A drag-select ends in a click too: keep the mark then, since redrawing
+          the rows would drop the selection the drag just made. */}
+      <div
+        ref={bodyRef}
+        className="flex-1 overflow-auto"
+        onClick={() => { if (window.getSelection()?.isCollapsed !== false) setMarkedLine(null); }}
+      >
         {loading && (
           <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm">
             {t('editor.loading')}
