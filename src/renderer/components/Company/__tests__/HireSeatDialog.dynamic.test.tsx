@@ -215,15 +215,19 @@ describe('HireSeatDialog', () => {
       repoCheck = { ok: false, reason };
       await render();
       expect(q('hire-seat-works-in')?.textContent).toContain(text);
-      // The seat would share the folder with the staff agent already there.
-      expect(q('hire-seat-shared')).not.toBeNull();
+      // The seat would share the folder with the staff agent already there, said with the reason.
+      expect(q('hire-seat-shared')?.textContent).toContain(text.slice('/repo itself: '.length).replace(" a seat worktree", ' a seat worktree, so the new seat would share its folder'));
+      expect(add()?.disabled).toBe(true);
       act(() => root.unmount());
       root = createRoot(el);
     }
-    // main could not tell (it decides again when it makes the seat): the company folder.
+    // main could not tell (it decides again when it makes the seat): the
+    // company folder, and nothing blocks Add on a check that may pass next time.
     repoCheck = { ok: false, reason: 'git-error' };
     await render();
     expect(q('hire-seat-works-in')?.textContent).toContain('/repo, the company folder');
+    expect(q('hire-seat-shared')).toBeNull();
+    expect(add()?.disabled).toBe(false);
   });
 
   it('adds nothing at the pane cap, and says so as a split would', async () => {

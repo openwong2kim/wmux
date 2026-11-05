@@ -101,7 +101,10 @@ export default function HireSeatDialog({ workspaceId, onClose }: { workspaceId: 
   const atCap = leaves.length >= MAX_PANES_PER_WORKSPACE;
   // Outside a repository the seat shares the folder, and two agents in one
   // checkout overwrite each other's changes (main refuses it too).
-  const shared = (!folder || (repo !== null && !repo.ok)) && staff.some((s) => s.agent);
+  // A check main could not complete (git-error, or a folder it refused) does
+  // not block: main runs the seat's preflight again when it makes the seat.
+  const noWorktree = repo !== null && !repo.ok && 'reason' in repo && repo.reason !== 'git-error';
+  const shared = (!folder || noWorktree) && staff.some((s) => s.agent);
   const canAdd = !!ceoLeaf && !!name && !nameError && !!agent && owns.length <= OWNS_MAX && !atCap && !shared && !busy;
   const edited = (): void => setError(null);
   const close = (): void => { if (!busy) onClose(); };
@@ -209,7 +212,7 @@ export default function HireSeatDialog({ workspaceId, onClose }: { workspaceId: 
               <span className="text-[11px] text-[var(--text-muted)]">{t('company.hireSeat.worksIn')}</span>
               <span className="truncate text-[var(--text-sub)]" title={folder}>{worksIn}</span>
             </div>
-            {shared && <p className="wmux-a2a-note" data-tone="danger" data-testid="hire-seat-shared">{t('company.hireSeat.shared')}</p>}
+            {shared && <p className="wmux-a2a-note" data-tone="danger" data-testid="hire-seat-shared">{t(refused ? `company.hireSeat.sharedRefused.${refused}` : 'company.hireSeat.shared')}</p>}
             {atCap && (
               <p className="wmux-a2a-note" data-tone="danger" data-testid="hire-seat-cap">
                 {stashed > 0
