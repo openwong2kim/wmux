@@ -74,6 +74,7 @@ export async function openTerminalFileLink(
     shellKind: inWsl ? 'wsl' : 'native',
     distro,
     cwd: owner?.cwd || undefined,
+    localHostName: window.electronAPI.localHostName ?? undefined,
   });
 
   if (!link) {
