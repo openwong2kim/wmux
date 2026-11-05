@@ -1,4 +1,5 @@
-// The workspace an `a2a.task.*` call acts as, taken from the server side.
+// The workspace an `a2a.task.*` call (or an `a2a.broadcast`) acts as, taken
+// from the server side.
 //
 // A task call names its caller's workspace in `params.workspaceId`, and the
 // task log decides what that workspace may do (send as it, read its tasks,
@@ -43,10 +44,12 @@ export async function a2aCallerWorkspace(
   if (isTrustedA2aLane(ctx)) return { ok: true, trusted: true };
   const named = text(params.workspaceId);
   let derived: string | null = null;
-  if (ctx?.commanderWorkspace) {
-    derived = ctx.commanderWorkspace;
-  } else if (isHostedCaller(ctx)) {
+  // The plugin host first: its binding is the whole of its identity, and a
+  // plugin host with no binding is refused whatever else its call carries.
+  if (isHostedCaller(ctx)) {
     derived = hostedBindingOf(ctx) ?? null;
+  } else if (ctx?.commanderWorkspace) {
+    derived = ctx.commanderWorkspace;
   } else if (ctx?.workspaceClaim?.kind === 'bound') {
     derived = ctx.workspaceClaim.workspaceId;
   } else if (ctx?.workspaceClaim?.kind === 'stale') {

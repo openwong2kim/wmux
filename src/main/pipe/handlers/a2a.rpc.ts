@@ -1310,7 +1310,9 @@ export function registerA2aRpc(
     const out = entries.length ? { ...res, agents: [...agents, ...entries] } : res;
     return remotePeers.length ? { ...out, remotePeers } : out;
   });
-  router.register('a2a.broadcast', async (params, ctx) =>
+  // A broadcast is delivered under its sender's workspace name, so its caller
+  // is taken from the server side too.
+  registerAsCaller('a2a.broadcast', async (params, ctx) =>
     refuseHandoffMarker('a2a.broadcast', params.message, ctx)
     ?? sendToRenderer(getWindow, 'a2a.broadcast', withOperatorOrigin(params, ctx), { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS }));
   router.register('meta.setSkills', (params) => sendToRenderer(getWindow, 'meta.setSkills', params));
@@ -1324,9 +1326,9 @@ export function registerA2aRpc(
   // 더 최신이면 status/updatedAt만 데몬 값으로 덮고, 렌더러 전용 증분(history·
   // artifacts)은 보존한다(§6.F — 증분 히스토리는 아직 데몬 비내구). 데몬-only
   // id(재시작 생존분)는 추가. 데몬 미가용이면 현행 렌더러-only와 동일.
-  /** A task method whose caller's workspace is taken from the server side (a2aCaller.ts). */
+  /** A method whose caller's workspace is taken from the server side (a2aCaller.ts). */
   function registerAsCaller(
-    method: 'a2a.task.query' | 'a2a.task.update' | 'a2a.task.send' | 'a2a.task.cancel',
+    method: 'a2a.task.query' | 'a2a.task.update' | 'a2a.task.send' | 'a2a.task.cancel' | 'a2a.broadcast',
     handler: (params: Record<string, unknown>, ctx: RpcContext | undefined) => Promise<unknown>,
   ): void {
     router.register(method, async (params, ctx) => {

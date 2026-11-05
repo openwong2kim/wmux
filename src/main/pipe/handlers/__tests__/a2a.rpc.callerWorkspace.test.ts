@@ -2,6 +2,8 @@
 // (a2aCaller.ts): each lane that reaches main's task handlers passes when it
 // names its own workspace and is refused when it names another.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../../RpcRouter';
 import type { RpcContext } from '../../../../shared/rpc';
@@ -83,6 +85,13 @@ describe('a2aCallerWorkspace', () => {
     expect(await caller({ workspaceId: 'ws-a', senderPtyId: 'pty-a' }, { ...wire, firstParty: true, hostedWorkspace: null })).toMatchObject({ ok: false });
   });
 
+  it('a plugin host call is held to its binding even with a commander workspace', async () => {
+    const both = (hostedWorkspace: string | null): RpcContext => ({ ...wire, firstParty: true, hostedWorkspace, commanderWorkspace: 'ws-b' });
+    expect(await caller({ workspaceId: 'ws-b' }, both(null))).toMatchObject({ ok: false });
+    expect(await caller({ workspaceId: 'ws-b' }, both('ws-a'))).toMatchObject({ ok: false });
+    expect(await caller({ workspaceId: 'ws-a' }, both('ws-a'))).toMatchObject({ ok: true, workspaceId: 'ws-a' });
+  });
+
   it('main itself still names the workspace: the operator lane and in-process first party', async () => {
     expect(await caller({ workspaceId: 'ws-human' }, { ...wire, operator: true, firstParty: true })).toEqual({ ok: true, trusted: true });
     expect(await caller({ workspaceId: 'ws-b' }, { ...wire, firstParty: true })).toEqual({ ok: true, trusted: true });
@@ -139,8 +148,34 @@ describe('the task handlers', () => {
     expect(daemonCalls.find((c) => c.method === 'a2a.task.cancel')?.params.workspaceId).toBe('ws-a');
   });
 
+  it('a2a.broadcast goes out under the pane\'s own workspace and refuses another', async () => {
+    const refused = await call('a2a.broadcast', { workspaceId: 'ws-b', message: 'hi' }, { ...wire, callerPtyId: 'pty-a' });
+    expect(refused).toMatchObject({ error: expect.stringMatching(STALE_IDENTITY) });
+    expect(sendToRendererMock.mock.calls.some((c) => c[1] === 'a2a.broadcast')).toBe(false);
+
+    await call('a2a.broadcast', { workspaceId: 'ws-a', message: 'hi' }, { ...wire, callerPtyId: 'pty-a' });
+    expect(sendToRendererMock.mock.calls.find((c) => c[1] === 'a2a.broadcast')?.[2]).toMatchObject({ workspaceId: 'ws-a' });
+  });
+
   it('the operator lane still acts as the workspace it names', async () => {
     await call('a2a.task.cancel', { taskId: 'task-1', workspaceId: 'ws-human' }, { ...wire, operator: true, firstParty: true });
     expect(daemonCalls.find((c) => c.method === 'a2a.task.cancel')?.params.workspaceId).toBe('ws-human');
+  });
+});
+
+describe('every A2A method that acts as a workspace is registered through the caller check', () => {
+  const dir = path.join(__dirname, '..');
+  const sources = fs.readdirSync(dir).filter((f) => f.endsWith('.ts')).map((f) => [f, fs.readFileSync(path.join(dir, f), 'utf8')] as const);
+
+  it('no a2a.task.* method or a2a.broadcast is registered around it', () => {
+    for (const [file, text] of sources) {
+      expect(text.match(/\.register\(\s*'a2a\.(?:task\.[a-z]+|broadcast)'/g) ?? [], file).toEqual([]);
+    }
+  });
+
+  it('the guarded methods are the task log\'s and the broadcast', () => {
+    const text = sources.find(([f]) => f === 'a2a.rpc.ts')?.[1] ?? '';
+    const guarded = [...text.matchAll(/registerAsCaller\(\s*'([^']+)'/g)].map((m) => m[1]).sort();
+    expect(guarded).toEqual(['a2a.broadcast', 'a2a.task.cancel', 'a2a.task.query', 'a2a.task.send', 'a2a.task.update']);
   });
 });
