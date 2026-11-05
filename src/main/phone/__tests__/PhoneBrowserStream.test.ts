@@ -100,6 +100,8 @@ describe('phone browser stream (main)', () => {
   /** Each new session's visual viewport and browser zoom; null: the fake's own. */
   let pageLayout: FakeSession['layout'] | null;
   let pageZoom: number;
+  /** Each new session's committed main-frame URL; null: the tab's listed URL. */
+  let pageURL: string | null;
   /** Each live onTabOpened subscription: the tab it listens on, and its listener. */
   let openers: Array<{ surfaceId: string; listener: (opened: { surfaceId: string; url: string }) => void }>;
 
@@ -113,6 +115,7 @@ describe('phone browser stream (main)', () => {
     gates = new Map();
     pageLayout = null;
     pageZoom = 1;
+    pageURL = null;
     openers = [];
     reply = async () => ({ ok: true, known: true });
     const deps: PhoneBrowserStreamDeps = {
@@ -125,6 +128,7 @@ describe('phone browser stream (main)', () => {
           s.focus = pageFocus;
           s.gates = gates;
           s.zoom = pageZoom;
+          s.url = pageURL ?? tabURL;
           if (pageLayout) s.layout = pageLayout;
           sessions.push(s);
           return s;
@@ -161,6 +165,31 @@ describe('phone browser stream (main)', () => {
     tabURL = 'file:///etc/hosts';
     await expect(start()).rejects.toThrow();
     expect(sessions).toHaveLength(0);
+  });
+
+  it('a tab whose first page has not committed yet streams from its commit on', async () => {
+    // Chrome lists a new tab by the URL it is loading while its frame tree still
+    // names the initial empty document, as an empty URL (":").
+    pageURL = ':';
+    expect(await start()).toMatchObject({ backend: 'chrome' });
+    const s = sessions[0];
+    expect(streams.tab('chrome-a', 'ws-1')).toMatchObject({ url: null, firstPagePending: true });
+    s.frame(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(frames()).toHaveLength(0);
+    expect(s.acks()).toContain(1);
+    s.emit('Page.frameNavigated', { frame: { id: 'main', url: 'https://a.example.com/start' } });
+    s.frame(2);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(pushes.filter((p) => p.kind === 'url')).toEqual([{ streamId: 'st-chrome-a', kind: 'url', pageURL: 'https://a.example.com/start' }]);
+    expect(frames()).toHaveLength(1);
+    expect(frames()[0].pageURL).toBe('https://a.example.com/start');
+    expect(streams.tab('chrome-a', 'ws-1')?.firstPagePending).toBe(false);
+  });
+
+  it('still refuses a tab whose committed page is not http(s) and not the initial blank one', async () => {
+    pageURL = 'chrome-error://chromewebdata/';
+    await expect(start()).rejects.toThrow('Only HTTP browser previews are supported');
   });
 
   it('pushes each frame with its URL and geometry, and acks it only once the daemon answered', async () => {

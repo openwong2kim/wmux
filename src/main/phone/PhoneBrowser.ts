@@ -357,6 +357,8 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
   const exactURL = command === 'browser.tap' || command === 'browser.history';
   const sameDocument = (page: { url: string }, expected: string) => {
     const view = streamed();
+    // Listed by the URL it is loading, the tab still holds its initial empty document.
+    if (view?.firstPagePending) throw new Error('Browser page changed; refresh before input');
     const live = view?.url ?? pageURL(page.url);
     if (expected === live) return;
     if (view?.url && view.docUrls.has(expected)) {
