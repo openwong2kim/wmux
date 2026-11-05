@@ -449,11 +449,13 @@ export class DaemonClient extends EventEmitter {
       // connection. The daemon keeps a connection's standing until it closes,
       // so a connection it keeps refusing will not recover by asking again.
       if (!isNotFirstParty(err) || this.firstPartyRefusals >= DaemonClient.FIRST_PARTY_RECOVERY_MAX) throw err;
-      await this.identifyAgain();
+      const identified = await this.identifyAgain();
       try {
         return await this.send(method, params, opts);
       } catch (retryErr) {
-        if (isNotFirstParty(retryErr) && ++this.firstPartyRefusals === DaemonClient.FIRST_PARTY_RECOVERY_MAX) {
+        // Only an identify the daemon accepted counts against the limit: one it
+        // refused (a rate limit, say) says nothing about this connection.
+        if (identified && isNotFirstParty(retryErr) && ++this.firstPartyRefusals === DaemonClient.FIRST_PARTY_RECOVERY_MAX) {
           console.warn(`[lifecycle] DaemonClient lost first-party on the daemon pipe: ${DaemonClient.FIRST_PARTY_RECOVERY_MAX} identifies did not restore it; A2A calls fail until the next connection`);
         }
         throw retryErr;
@@ -469,14 +471,15 @@ export class DaemonClient extends EventEmitter {
   private firstPartyRefusals = 0;
   private static readonly FIRST_PARTY_RECOVERY_MAX = 3;
   /** The identify in flight for this connection, shared by every call refused meanwhile. */
-  private reidentify: { epoch: number; done: Promise<void> } | null = null;
+  private reidentify: { epoch: number; done: Promise<boolean> } | null = null;
 
-  private identifyAgain(): Promise<void> {
+  /** Identify again; true when the daemon accepted it. */
+  private identifyAgain(): Promise<boolean> {
     const epoch = this.connectionEpoch;
     if (this.reidentify?.epoch === epoch) return this.reidentify.done;
     const done = this.send('daemon.client.identify', { role: 'main' }).then(
-      () => undefined,
-      () => undefined,
+      (result) => (result as { ok?: unknown } | null)?.ok === true,
+      () => false,
     ).finally(() => {
       if (this.reidentify?.done === done) this.reidentify = null;
     });

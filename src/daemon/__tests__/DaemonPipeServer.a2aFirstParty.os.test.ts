@@ -85,8 +85,8 @@ interface Started {
   token: string;
   /** The params each handler ran with, by method. */
   ran: Map<string, Record<string, unknown>>;
-  /** Whether identify marks the caller (false: it answers ok but the mark is lost). */
-  identify: { marks: boolean; calls: number };
+  /** Whether identify marks the caller (false: it answers ok but the mark is lost), and whether it refuses outright. */
+  identify: { marks: boolean; refuses: boolean; calls: number };
 }
 
 async function startServer(suffix: string, methods: string[], pipe = testPipeName(suffix), token = `t-${crypto.randomUUID()}`): Promise<Started> {
@@ -94,11 +94,11 @@ async function startServer(suffix: string, methods: string[], pipe = testPipeNam
   servers.push(server);
   server.setAuthToken(token);
   const ran = new Map<string, Record<string, unknown>>();
-  const identify = { marks: true, calls: 0 };
+  const identify = { marks: true, refuses: false, calls: 0 };
   // As in daemon/index.ts.
   server.onRpc('daemon.client.identify', async (params, ctx) => {
     identify.calls++;
-    if (params['role'] !== 'main') return { ok: false };
+    if (params['role'] !== 'main' || identify.refuses) return { ok: false };
     if (identify.marks) server.markFirstParty(ctx.clientId);
     return { ok: true };
   });
@@ -292,6 +292,26 @@ describe('DaemonClient on the app\'s connection', () => {
     started.identify.marks = true;
     expect(await client.rpc('a2a.task.cancel', { taskId: 't1' })).toEqual({ ok: true });
     expect(started.identify.calls).toBe(3);
+  });
+
+  it('does not count an identify the daemon refused against the recovery limit', async () => {
+    const started = await startServer('a2a-identify-refused', ['task.mission.start']);
+    started.identify.marks = false;
+    const client = new DaemonClient(started.pipe, started.token);
+    daemonClients.push(client);
+    expect(await client.connect()).toBe(true);
+    await waitFor(() => started.identify.calls === 1);
+
+    // Refused identifies (a rate limit, say) leave recovery available...
+    started.identify.refuses = true;
+    for (let n = 1; n <= 4; n++) {
+      await expect(client.rpc('task.mission.start', { n })).rejects.toMatchObject({ code: NOT_FIRST_PARTY });
+    }
+    expect(started.identify.calls).toBe(5);
+    // ...so the first one that lands still restores the connection.
+    started.identify.refuses = false;
+    started.identify.marks = true;
+    expect(await client.rpc('task.mission.start', { n: 5 })).toEqual({ ok: true });
   });
 
   it('recovers a task-mission call the same way', async () => {

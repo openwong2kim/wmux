@@ -173,8 +173,12 @@ export class DaemonPipeServer {
   // storm had every task.mission.start refused before any pane was asked for.
   // The per-socket cap bounds each client (100/s is 4x the attach peak seen
   // restoring ~94 panes); the aggregate cap bounds the class across all
-  // sockets, so it can never add more than that to the total.
+  // sockets, so it can never add more than that to the total. The app's
+  // identify is here too: app-only calls (task.mission.* among them) are
+  // refused until it lands, so a flood that used up the global budget must not
+  // hold it back while those calls go through.
   private static readonly INTERACTIVE_METHODS: ReadonlySet<string> = new Set([
+    'daemon.client.identify',
     'daemon.createSession',
     'daemon.attachSession',
     'task.mission.start',
