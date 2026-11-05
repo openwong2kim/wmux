@@ -328,8 +328,8 @@ const config: ForgeConfig = {
       // required from (app.asar for main, daemon-bundle for the daemon,
       // cli-bundle for the CLI, mcp-bundle for the MCP broker).
       // Windows: the port watcher (issue #1051) and the CLI console.
-      // macOS and Linux: the peer pid of a local socket (src/shared/peerPid.ts)
-      // in main, the daemon and the MCP broker.
+      // macOS and Linux: the peer pid of a local socket (src/shared/peerPid.ts),
+      // read in main; the daemon and the MCP broker run its startup self-check.
       const koffiPlatform = targetPlatform ?? process.platform;
       const koffiArch = targetArch ?? process.arch;
       const wantKoffi = koffiPlatform === 'win32' || koffiPlatform === 'darwin' || koffiPlatform === 'linux';
@@ -464,7 +464,7 @@ const config: ForgeConfig = {
         copyKoffiInto(path.join(cliBundleDir, 'node_modules'));
       }
 
-      // 5b. The MCP broker reads its shims' peer pids (src/shared/peerPid.ts).
+      // 5b. The MCP broker runs the peer pid self-check (src/shared/peerPid.ts).
       if (koffiPlatform !== 'win32') {
         const mcpBundleDir = path.join(resourcesDir, 'mcp-bundle');
         if (fs.existsSync(mcpBundleDir)) copyKoffiInto(path.join(mcpBundleDir, 'node_modules'));

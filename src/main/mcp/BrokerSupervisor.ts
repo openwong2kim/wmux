@@ -37,6 +37,11 @@ export class BrokerSupervisor {
   /** Exit-75 reclaim probe (W2): live only while standing down for another broker. */
   private reclaimTimer: NodeJS.Timeout | null = null;
 
+  /** The running broker's pid, for telling its relayed calls apart (peer pid measurement). */
+  get pid(): number | null {
+    return this.child?.pid ?? null;
+  }
+
   /** Resolve the broker script for the current build layout. */
   private getBrokerScriptPath(): string | null {
     if (app.isPackaged) {

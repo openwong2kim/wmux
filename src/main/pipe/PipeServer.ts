@@ -281,6 +281,8 @@ export class PipeServer {
    * nothing decides on it yet.
    */
   private notePeerPid(socket: net.Socket): void {
+    // Named pipes have no peer pid to read here.
+    if (process.platform === 'win32') return;
     const peer = peerPidOf(socket);
     if (peer.pid === null) {
       if (!this.peerPidMisses.has(peer.reason)) {
@@ -290,6 +292,7 @@ export class PipeServer {
       return;
     }
     this.peerPids.set(socket, peer.pid);
+    // Linux only: SO_PEERCRED carries the uid, macOS's LOCAL_PEERPID does not.
     const ownUid = process.getuid?.();
     if (peer.uid !== undefined && ownUid !== undefined && peer.uid !== ownUid && !this.peerPidMisses.has('uid')) {
       this.peerPidMisses.add('uid');

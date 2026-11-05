@@ -219,6 +219,7 @@ import { readDaemonPid } from './updater/installTeardown';
 import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
+import { setBrokerPidSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { claimCdpPort, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
@@ -826,6 +827,7 @@ const mcpRegistrar = new McpRegistrar();
 // be) listening when the first shim spawns — the shim retries connect with
 // backoff, so start order is a latency nicety, not a correctness gate.
 const mcpBrokerSupervisor = new BrokerSupervisor();
+setBrokerPidSource(() => mcpBrokerSupervisor.pid);
 const webviewCdpManager = new WebviewCdpManager(0);
 webviewCdpManager.setCdpFailureReason(cdpEnabled ? 'CDP ownership verification pending' : 'CDP disabled by configuration');
 // "Agent is driving" marker + Stop / Take over for in-app browser tabs. Activity

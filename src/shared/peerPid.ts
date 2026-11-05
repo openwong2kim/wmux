@@ -62,7 +62,12 @@ export function peerPidOf(socket: net.Socket): PeerPid {
   const value = Buffer.alloc(option.size);
   const length = Buffer.alloc(4);
   length.writeUInt32LE(option.size);
-  if (read(fd, option.level, option.name, value, length) !== 0) return { pid: null, reason: 'getsockopt failed' };
+  try {
+    if (read(fd, option.level, option.name, value, length) !== 0) return { pid: null, reason: 'getsockopt failed' };
+  } catch {
+    // Measurement never fails a connection.
+    return { pid: null, reason: 'getsockopt threw' };
+  }
   const pid = value.readInt32LE(0);
   // 0: a peer outside this pid namespace (Linux).
   if (pid <= 0) return { pid: null, reason: 'no peer pid' };
