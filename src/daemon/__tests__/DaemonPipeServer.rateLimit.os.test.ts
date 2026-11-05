@@ -71,6 +71,11 @@ describe('DaemonPipeServer interactive RPC budget (#2349)', () => {
     server.onRpc('daemon.attachSession', async () => ({ attached: true }));
     server.onRpc('daemon.destroySession', async () => ({ destroyed: true }));
     server.onRpc('task.mission.start', async () => ({ ok: true, taskId: 't1' }));
+    // The task-mission calls here are main's, which the daemon answers only
+    // on the app's identified connection. An identify call would count
+    // against the budgets these tests measure, so the socket is taken as the
+    // app's directly.
+    vi.spyOn(server, 'isFirstParty').mockReturnValue(true);
     await server.start();
   });
 

@@ -60,7 +60,7 @@ import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 import { AGENT_STATE_BATCH_MAX } from '../shared/agentStateBatch';
 import { VIEWER_VISIBILITY_BATCH_MAX } from '../shared/viewerVisibilityBatch';
 import { DAEMON_CONTROL_LINE_MAX_CHARS } from '../shared/daemonControlLine';
-import { NOT_FIRST_PARTY } from '../shared/daemonFirstParty';
+import { NOT_FIRST_PARTY, isAppOnlyDaemonMethod } from '../shared/daemonFirstParty';
 import { sanitizeTitle } from './pty/titleDetect';
 import {
   getDaemonAuthTokenPath,
@@ -438,11 +438,11 @@ export class DaemonClient extends EventEmitter {
     if (method === 'daemon.detachSession' && typeof params['id'] === 'string' && this.viewerVisibilityQueue?.has(params['id'])) {
       void this.flushViewerVisibility();
     }
-    if (!method.startsWith('a2a.')) return this.send(method, params, opts);
+    if (!isAppOnlyDaemonMethod(method)) return this.send(method, params, opts);
     try {
       return await this.send(method, params, opts);
     } catch (err) {
-      // The daemon answers A2A calls only on a connection that identified as
+      // The daemon answers app-only calls only on a connection that identified as
       // the app, and this one's identify did not land (the connect-time one can
       // bounce off the rate limit). Identify again and retry once, unless
       // recovery has already failed FIRST_PARTY_RECOVERY_MAX times on this

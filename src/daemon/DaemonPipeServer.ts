@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import type { RpcRequest, RpcResponse } from '../shared/rpc';
 import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../shared/security';
 import { getDaemonAuthTokenPath } from '../shared/constants';
-import { NOT_FIRST_PARTY } from '../shared/daemonFirstParty';
+import { NOT_FIRST_PARTY, isAppOnlyDaemonMethod } from '../shared/daemonFirstParty';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -128,7 +128,8 @@ export class DaemonPipeServer {
   private connectionRate = { count: 0, resetAt: 0 };
   // The channel calls a pane's own tools may make without the app (see
   // `dispatch`): each stamps its caller from the daemon's session record.
-  // Every other `a2a.*` method answers only the app's own connection.
+  // Every other app-only method (shared/daemonFirstParty) answers only the
+  // app's own connection.
   private static readonly HEADLESS_CHANNEL_METHODS: ReadonlySet<string> = new Set([
     'a2a.channel.list',
     'a2a.channel.get',
@@ -1019,9 +1020,10 @@ export class DaemonPipeServer {
       return { id: request.id, ok: false, error: `Unknown method: ${request.method}` };
     }
     let params = request.params ?? {};
-    // A2A methods act for whichever workspace or pane the call names, and only
-    // main checks that name against the caller (src/main/pipe/handlers/
-    // a2aCaller.ts). So they answer only the app's own connection, except the
+    // A2A and task-mission methods act for whichever workspace or pane the call
+    // names, and only main checks that name against the caller (src/main/pipe/
+    // handlers/a2aCaller.ts, a2a.channel.rpc.ts). So they answer only the app's
+    // own connection, except the
     // channel calls a pane's own tools make headless (`wmux channel`): those
     // take the caller's workspace from the daemon's session record for its
     // senderPtyId (channels/channelCallerIdentity.ts), and a workspace stamp
@@ -1029,7 +1031,7 @@ export class DaemonPipeServer {
     // markFirstParty, this is a classification over the shared token: it keeps
     // a CLI or an agent tool that holds the token from going around main's
     // check, not a local attacker.
-    if (request.method.startsWith('a2a.') && !this.isFirstParty(clientId)) {
+    if (isAppOnlyDaemonMethod(request.method) && !this.isFirstParty(clientId)) {
       if (!DaemonPipeServer.HEADLESS_CHANNEL_METHODS.has(request.method)) {
         return {
           id: request.id,
