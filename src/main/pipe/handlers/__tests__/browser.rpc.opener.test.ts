@@ -5,7 +5,7 @@ import { registerBrowserRpc } from '../browser.rpc';
 import { surfaceOpeners } from '../../../browser-session/SurfaceOpeners';
 import type { BrowserBackendStore } from '../../../browser-session/BrowserBackendStore';
 import { PRIVATE_BROWSER_PARTITION } from '../../../../shared/privateBrowser';
-import { dispatchAsClaimedCaller } from './claimedCaller';
+import { claimOn, dispatchAsClaimedCaller } from './claimedCaller';
 
 /**
  * Who opened a browser surface, and what main does with that.
@@ -385,6 +385,68 @@ describe('chrome backend openers', () => {
     // Closing retires the ownership with the tab.
     await dispatch(router, 'browser.tabs', { action: 'close', workspaceId: 'ws-1', surfaceId: a.surfaceId });
     expect(surfaceOpeners.get(a.surfaceId)).toBeUndefined();
+  });
+});
+
+// #3085 — the MCP client drops the connection when its RPC deadline passes,
+// and main still finished opening the tab: the caller never learned its id,
+// and its retry opened a second one. A tab opened after its caller left is
+// closed instead.
+describe('a chrome tab opened after its caller left', () => {
+  const calls: Array<[string, Record<string, unknown>]> = [
+    ['browser.open', { workspaceId: 'ws-1', url: 'https://a.test/' }],
+    ['browser.tabs', { action: 'new', workspaceId: 'ws-1', url: 'https://a.test/' }],
+    ['browser.navigate', { workspaceId: 'ws-1', url: 'https://a.test/' }],
+  ];
+
+  it.each(calls)('%s closes the tab it made once the caller is gone', async (method, params) => {
+    const { client, registry } = fakeChromeRegistry();
+    const router = registerChrome(registry);
+    const caller = new AbortController();
+    const open = client.openTab.getMockImplementation();
+    if (!open) throw new Error('the fake has an openTab');
+    // The caller's deadline passes while Chrome is still opening the tab (sent
+    // as PipeServer sends it: the external wire, with the connection's signal).
+    client.openTab.mockImplementationOnce(async (url: string, workspaceId?: string) => {
+      const tab = await open(url, workspaceId);
+      caller.abort();
+      return tab;
+    });
+    const res = await router.dispatch({ id: '1', method, params, ...claimOn('ws-1') } as never, { externalWire: true, signal: caller.signal });
+    // browser.tabs answers its failures in the result; the others throw.
+    const result = res.ok ? (res as { result?: { ok?: boolean } }).result : undefined;
+    expect(res.ok && result?.ok !== false).toBe(false);
+    expect(client.openTab).toHaveBeenCalledTimes(1);
+    expect(client.closeSurface).toHaveBeenCalledWith('chrome-1');
+    expect(await client.listTargets()).toEqual([]);
+  });
+
+  it.each(calls)('%s leaves a tab another caller adopted while it opened', async (method, params) => {
+    const { client, registry } = fakeChromeRegistry();
+    const router = registerChrome(registry);
+    const caller = new AbortController();
+    const open = client.openTab.getMockImplementation();
+    if (!open) throw new Error('the fake has an openTab');
+    client.openTab.mockImplementationOnce(async (url: string, workspaceId?: string) => {
+      const tab = await open(url, workspaceId);
+      // Listed while it opened, and claimed by another agent (browser.surface.adopt).
+      surfaceOpeners.note(tab.surfaceId, OPENER_B);
+      caller.abort();
+      return tab;
+    });
+    await router.dispatch({ id: '1', method, params, ...claimOn('ws-1') } as never, { externalWire: true, signal: caller.signal });
+    expect(client.closeSurface).not.toHaveBeenCalled();
+    expect(surfaceOpeners.get('chrome-1')).toBe(OPENER_B);
+    expect((await client.listTargets()).map((t) => t.surfaceId)).toEqual(['chrome-1']);
+  });
+
+  it.each(calls)('%s keeps the tab while the caller still waits', async (method, params) => {
+    const { client, registry } = fakeChromeRegistry();
+    const router = registerChrome(registry);
+    const res = await router.dispatch({ id: '1', method, params, ...claimOn('ws-1') } as never, { externalWire: true, signal: new AbortController().signal });
+    expect(res.ok).toBe(true);
+    expect(client.closeSurface).not.toHaveBeenCalled();
+    expect((await client.listTargets()).map((t) => t.surfaceId)).toEqual(['chrome-1']);
   });
 });
 

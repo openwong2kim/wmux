@@ -304,6 +304,29 @@ function navigationRefusal(reason: Exclude<NavigationVerdict, { allowed: true }>
   return "that host is not on this pane's allowed list";
 }
 
+/**
+ * A tab opened after its caller hung up (#3085). The MCP client drops the
+ * connection when its RPC deadline passes, so that caller never learns the
+ * tab's id, and a retry opens another. It is closed rather than left behind,
+ * and the call fails (to nobody). A tab another caller adopted while it was
+ * opening (browser.surface.adopt, which claims only an unclaimed tab, and
+ * this call notes its own opener only after this) is theirs, and stays.
+ */
+async function keepForCaller<T extends { surfaceId: string }>(
+  opened: T,
+  client: Pick<ChromeBackendClient, 'closeSurface'>,
+  ctx: RpcContext | undefined,
+  method: string,
+): Promise<T> {
+  if (!ctx?.signal?.aborted) return opened;
+  if (surfaceOpeners.get(opened.surfaceId) !== undefined) {
+    throw new Error(`${method}: the caller left before the tab opened; another caller adopted it`);
+  }
+  const closed = await client.closeSurface(opened.surfaceId).catch(() => false);
+  if (!closed) console.warn(`[browser.rpc] ${method}: could not close tab ${opened.surfaceId}, opened after its caller left`);
+  throw new Error(`${method}: the caller left before the tab opened, so it was ${closed ? 'closed' : 'left open'}`);
+}
+
 async function validateUrl(url: string, method: string, policy: NavigationPolicyOptions): Promise<void> {
   const result = await validateResolvedNavigationUrl(url, policy);
   if (!result.valid) {
@@ -1933,6 +1956,7 @@ export function registerBrowserRpc(
       params: Record<string, unknown>,
       scope: string | undefined,
       chrome: () => Promise<ChromeCaller>,
+      ctx?: RpcContext,
     ) => Promise<unknown>,
   ): void => {
     router.register(method, async (params, ctx) => {
@@ -1963,7 +1987,7 @@ export function registerBrowserRpc(
           throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
         }
         if (backend() === 'chrome') {
-          if (chromeFallback) return chromeFallback(params, scope, chrome);
+          if (chromeFallback) return chromeFallback(params, scope, chrome, ctx);
           throw new Error(CHROME_BACKEND_RPC_UNSUPPORTED_MESSAGE);
         }
         return handler(params, scope, ctx);
@@ -2790,7 +2814,7 @@ export function registerBrowserRpc(
           }
         }
         try {
-          const opened = await launcher.openTab(url ?? 'about:blank', workspaceId);
+          const opened = await keepForCaller(await launcher.openTab(url ?? 'about:blank', workspaceId), launcher, ctx, 'browser.tabs');
           // Before the descriptor is built, so the reply already reports this
           // caller as the opener of the tab it just asked for.
           if (caller.openerKey) surfaceOpeners.note(opened.surfaceId, caller.openerKey, chrome.callerPtyId);
@@ -3115,7 +3139,7 @@ export function registerBrowserRpc(
       // NEW tab, so there is no reuse question to answer on this backend.
       const { client: launcher, callerPtyId } = await resolveChromeClient('browser.open', ctx, workspaceId);
       if (url) await validateUrl(url, 'browser.open', navigationPolicy());
-      const opened = await launcher.openTab(url ?? 'about:blank', workspaceId);
+      const opened = await keepForCaller(await launcher.openTab(url ?? 'about:blank', workspaceId), launcher, ctx, 'browser.open');
       if (openerKey) surfaceOpeners.note(opened.surfaceId, openerKey, callerPtyId);
       // The launcher's stable surfaceId keeps the engine's auto-open→pin
       // contract AND survives Chrome swapping the target behind the tab.
@@ -3510,7 +3534,7 @@ export function registerBrowserRpc(
   // Chrome backend + no builtin surface: pinned-tab navigation rides the
   // engine's Playwright path and never lands here; a bare navigate opens a
   // tracked tab like browser.open does.
-  async (params, scope, chrome) => {
+  async (params, scope, chrome, ctx) => {
     // A pinned surfaceId reaching this fallback means the caller wanted to
     // navigate an EXISTING chrome tab through the RPC lane — opening a new
     // tab here would report success while the agent keeps reading the old
@@ -3526,7 +3550,8 @@ export function registerBrowserRpc(
     await validateUrl(navUrl, 'browser.navigate', navigationPolicy());
     // Owner = the caller-verified scope, never a body-supplied workspaceId
     // (#810 scope-coverage guard).
-    const opened = await (await chrome()).client.openTab(navUrl, scope);
+    const { client } = await chrome();
+    const opened = await keepForCaller(await client.openTab(navUrl, scope), client, ctx, 'browser.navigate');
     return { ok: true, backend: 'chrome', surfaceId: opened.surfaceId, url: opened.url };
   });
 
