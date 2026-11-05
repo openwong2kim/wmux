@@ -55,7 +55,9 @@ async function main() {
     bundle: true,
     platform: 'node',
     outfile: brokerFile,
-    external: ['electron', 'chromium-bidi', 'playwright-core'],
+    // koffi: a native binary resolved beside its package (copied into
+    // mcp-bundle/node_modules at package time; src/shared/peerPid.ts).
+    external: ['electron', 'chromium-bidi', 'playwright-core', 'koffi'],
     define: serverDefines,
     logLevel: 'error',
   });
