@@ -709,4 +709,18 @@ export const tr = {
   'schedules.reason.agent_error_retried_once': "bir yeniden denemeden sonra yine ajan hatası",
   'schedules.reason.agent_error_retry_blocked': "ajan hatası; yeniden deneme gönderilemedi",
   'schedules.reason.agent_error_retry_interrupted': "ajan hatası; yeniden denenmedi, wmux yeniden başladı",
+  // Sidebar workspace groups (#3069)
+  'sidebar.groups.moveTo': "Gruba taşı",
+  'sidebar.groups.new': "Yeni grup…",
+  'sidebar.groups.removeFrom': "Gruptan çıkar",
+  'sidebar.groups.defaultName': "Yeni grup",
+  'sidebar.groups.name': "Grup adı",
+  'sidebar.groups.menu': "Grup işlemleri",
+  'sidebar.groups.rename': "Yeniden adlandır",
+  'sidebar.groups.collapse': "Daralt",
+  'sidebar.groups.expand': "Genişlet",
+  'sidebar.groups.delete': "Grubu sil",
+  'sidebar.groups.deleteConfirm': "Bu grup silinsin mi? İçindeki çalışma alanları ({count}) listeye döner ve açık kalır.",
+  'sidebar.groups.holdsActive': "Açık çalışma alanını içeriyor",
+  'sidebar.groups.limit': "200 grup sınırına ulaştınız.",
 } as const;

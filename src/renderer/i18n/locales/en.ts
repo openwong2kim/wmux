@@ -6650,6 +6650,20 @@ export const en = {
   'a11y.agent.needsYou': '{tag} {agent} needs you',
   'a11y.agent.finished': '{tag} {agent} finished',
   'a11y.agent.error': '{tag} {agent} stopped with an error',
+  // Sidebar workspace groups (#3069)
+  'sidebar.groups.moveTo': "Move to group",
+  'sidebar.groups.new': "New group…",
+  'sidebar.groups.removeFrom': "Remove from group",
+  'sidebar.groups.defaultName': "New group",
+  'sidebar.groups.name': "Group name",
+  'sidebar.groups.menu': "Group actions",
+  'sidebar.groups.rename': "Rename",
+  'sidebar.groups.collapse': "Collapse",
+  'sidebar.groups.expand': "Expand",
+  'sidebar.groups.delete': "Delete group",
+  'sidebar.groups.deleteConfirm': "Delete this group? Its workspaces ({count}) go back to the list and stay open.",
+  'sidebar.groups.holdsActive': "Holds the open workspace",
+  'sidebar.groups.limit': "You have reached the limit of 200 groups.",
 } as const;
 
 export type TranslationKey = keyof typeof en;

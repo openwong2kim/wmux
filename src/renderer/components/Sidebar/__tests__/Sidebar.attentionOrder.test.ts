@@ -25,7 +25,10 @@ const itemSrc = readFileSync(resolve(SIDEBAR_DIR, 'WorkspaceItem.tsx'), 'utf8');
 describe('Sidebar — ordering wiring (#1481: manual / needs-you-first / recent)', () => {
 
   it('builds the rendered tree from the ordered list, not the filtered one', () => {
-    expect(sidebarSrc).toMatch(/buildSidebarTree\(\s*orderedWorkspaces,/);
+    // #3069 — the ordered list is first split into the user's groups; each
+    // part keeps that order and is built into its own tree.
+    expect(sidebarSrc).toMatch(/partitionWorkspaceGroups\(\s*orderedWorkspaces,/);
+    expect(sidebarSrc).toMatch(/buildSidebarTree\(\s*split\.rest,/);
     expect(sidebarSrc).not.toContain('filteredWorkspaces.map(');
   });
 

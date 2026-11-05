@@ -6605,4 +6605,18 @@ export const pl = {
   'a11y.agent.needsYou': '{tag} {agent} czeka na ciebie',
   'a11y.agent.finished': '{tag} {agent}: gotowe',
   'a11y.agent.error': '{tag} {agent}: zatrzymano z błędem',
+  // Sidebar workspace groups (#3069)
+  'sidebar.groups.moveTo': "Przenieś do grupy",
+  'sidebar.groups.new': "Nowa grupa…",
+  'sidebar.groups.removeFrom': "Usuń z grupy",
+  'sidebar.groups.defaultName': "Nowa grupa",
+  'sidebar.groups.name': "Nazwa grupy",
+  'sidebar.groups.menu': "Działania grupy",
+  'sidebar.groups.rename': "Zmień nazwę",
+  'sidebar.groups.collapse': "Zwiń",
+  'sidebar.groups.expand': "Rozwiń",
+  'sidebar.groups.delete': "Usuń grupę",
+  'sidebar.groups.deleteConfirm': "Usunąć tę grupę? Jej obszary robocze ({count}) wrócą na listę i pozostaną otwarte.",
+  'sidebar.groups.holdsActive': "Zawiera otwarty obszar roboczy",
+  'sidebar.groups.limit': "Osiągnięto limit 200 grup.",
 } as const;

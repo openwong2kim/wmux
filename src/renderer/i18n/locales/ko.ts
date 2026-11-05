@@ -6171,4 +6171,18 @@ export const ko = {
   'a11y.agent.needsYou': '{tag} {agent}: 확인이 필요합니다',
   'a11y.agent.finished': '{tag} {agent}: 끝났습니다',
   'a11y.agent.error': '{tag} {agent}: 오류로 멈췄습니다',
+  // Sidebar workspace groups (#3069)
+  'sidebar.groups.moveTo': "그룹으로 이동",
+  'sidebar.groups.new': "새 그룹…",
+  'sidebar.groups.removeFrom': "그룹에서 빼기",
+  'sidebar.groups.defaultName': "새 그룹",
+  'sidebar.groups.name': "그룹 이름",
+  'sidebar.groups.menu': "그룹 작업",
+  'sidebar.groups.rename': "이름 바꾸기",
+  'sidebar.groups.collapse': "접기",
+  'sidebar.groups.expand': "펼치기",
+  'sidebar.groups.delete': "그룹 삭제",
+  'sidebar.groups.deleteConfirm': "이 그룹을 삭제할까요? 안의 워크스페이스({count})는 목록으로 돌아가며 열린 채로 유지됩니다.",
+  'sidebar.groups.holdsActive': "열린 워크스페이스 포함",
+  'sidebar.groups.limit': "그룹은 최대 200개까지 만들 수 있습니다.",
 } as const;
