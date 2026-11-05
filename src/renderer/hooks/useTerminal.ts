@@ -216,16 +216,21 @@ export function createPtyDispatcher<T>(
 ): PtyEventDispatcher<T> {
   const handlers = new Map<string, Set<(payload: T) => void>>();
   let detach: (() => void) | null = null;
+  // Built here, not inside register(): the attached listener lives as long as
+  // the page, and a closure keeps its whole enclosing scope. Made inside
+  // register(), it kept the first registrant's handler, and the terminal that
+  // handler closes over, alive after that terminal was disposed.
+  const dispatch = (id: string, payload: T): void => {
+    const set = handlers.get(id);
+    if (!set) return;
+    for (const h of [...set]) h(payload);
+  };
   return {
     register(ptyId, handler) {
       if (!detach) {
         // Lazy attach: window.electronAPI is only touched at first use so the
         // module can be imported in non-preload test environments.
-        detach = attach((id, payload) => {
-          const set = handlers.get(id);
-          if (!set) return;
-          for (const h of [...set]) h(payload);
-        });
+        detach = attach(dispatch);
       }
       let set = handlers.get(ptyId);
       if (!set) { set = new Set(); handlers.set(ptyId, set); }
@@ -4095,6 +4100,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
     }
     updateEnginePending();
+    // The swap's copies of the old screen are written (transplant) or handed
+    // to swapFinishRef (fallback) by now. Closures this mount keeps for its
+    // whole life share this scope, so a carry still holding them kept every
+    // swapped pane's old screen in memory for as long as the pane lived.
+    if (carry) { carry.fallback = null; carry.transplant = null; }
 
     // Phase 3 hydrate-before-read: MCP buffer reads (pane.search /
     // input.readScreen) must not scan a stale hidden pane. Dirty → full
