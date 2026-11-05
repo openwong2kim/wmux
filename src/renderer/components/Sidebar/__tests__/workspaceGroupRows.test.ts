@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { partitionWorkspaceGroups } from '../workspaceGroupRows';
+import { partitionWorkspaceGroups, workspaceDropMovesRow, workspaceListPart } from '../workspaceGroupRows';
 import { ORPHAN_GROUP_KEY } from '../sidebarTree';
 import type { WorkspaceGroup } from '../../../../shared/workspaceGroups';
 
@@ -48,5 +48,32 @@ describe('partitionWorkspaceGroups', () => {
   it('treats a group id that names no group as no group', () => {
     const out = partition({ a: 'gone' });
     expect(ids(out.rest)).toEqual(['a', 'b', 'c', 'task1', 'd', 'e']);
+  });
+});
+
+describe('workspaceListPart', () => {
+  const opts = { pinned: ['p'], groupOf: (id: string) => ({ a: 'g1', b: 'g1', c: 'g2', p: 'g1', x: 'gone' } as Record<string, string>)[id], groups: GROUPS };
+  it('puts rows of one group together and apart from other parts', () => {
+    expect(workspaceListPart('a', opts)).toBe(workspaceListPart('b', opts));
+    expect(workspaceListPart('a', opts)).not.toBe(workspaceListPart('c', opts));
+    // Pinned wins over the group; an unknown group is the rest.
+    expect(workspaceListPart('p', opts)).toBe('pinned');
+    expect(workspaceListPart('x', opts)).toBe(workspaceListPart('z', opts));
+    expect(workspaceListPart('x', opts)).toBe('rest');
+  });
+});
+
+describe('workspaceDropMovesRow', () => {
+  it('offers drops inside a part and the pin rules, never into or out of a group', () => {
+    expect(workspaceDropMovesRow('group:g1', 'group:g1')).toBe(true);
+    expect(workspaceDropMovesRow('rest', 'rest')).toBe(true);
+    // Dropping on a pinned row pins; a pinned row dropped in the rest unpins.
+    expect(workspaceDropMovesRow('rest', 'pinned')).toBe(true);
+    expect(workspaceDropMovesRow('group:g1', 'pinned')).toBe(true);
+    expect(workspaceDropMovesRow('pinned', 'rest')).toBe(true);
+    expect(workspaceDropMovesRow('group:g1', 'group:g2')).toBe(false);
+    expect(workspaceDropMovesRow('group:g1', 'rest')).toBe(false);
+    expect(workspaceDropMovesRow('rest', 'group:g1')).toBe(false);
+    expect(workspaceDropMovesRow('pinned', 'group:g1')).toBe(false);
   });
 });

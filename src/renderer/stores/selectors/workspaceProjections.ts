@@ -62,6 +62,18 @@ export const selectWorkspaceIdName = makeCachedListProjection<WorkspaceIdName>(
   (a, b) => a.name === b.name,
 );
 
+/**
+ * #3069 — workspace id → its sidebar group id, for grouped workspaces only.
+ * Wrap in useShallow, so a subscriber re-renders only when membership moves.
+ * Prototype-less: ids come from a hand-editable session file, and a lookup of
+ * an id such as `constructor` must find nothing rather than Object's own.
+ */
+export function selectWorkspaceGroupIds(s: StoreState): Record<string, string> {
+  const out: Record<string, string> = Object.create(null);
+  for (const w of s.workspaces) if (w.groupId) out[w.id] = w.groupId;
+  return out;
+}
+
 /** id 순서 시그니처 — "목록 구조(추가/삭제/재정렬)"만 관심 있는 구독자용.
  *  개별 항목 내용 변경에는 반응하지 않는다(WorkspaceItem이 자기 내용을 구독). */
 export function selectWorkspaceIds(s: StoreState): string[] {

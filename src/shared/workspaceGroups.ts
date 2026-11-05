@@ -28,8 +28,12 @@ export const WORKSPACE_GROUPS_MAX = 200;
 /** The name as stored, or null when nothing usable is left. */
 export function normalizeWorkspaceGroupName(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
-  // One line: a pasted newline or tab would break the one-row header.
-  const name = raw.replace(/\s+/g, ' ').trim().slice(0, WORKSPACE_GROUP_NAME_MAX).trim();
+  // One line: a pasted newline or tab would break the one-row header. A huge
+  // hand-edited value is cut first, so folding never copies all of it; the
+  // margin leaves room for the whitespace that folding removes.
+  const name = raw.slice(0, WORKSPACE_GROUP_NAME_MAX * 4).replace(/\s+/g, ' ').trim()
+    // Trimmed again: the cut can end on the space a fold left.
+    .slice(0, WORKSPACE_GROUP_NAME_MAX).trim();
   return name.length > 0 ? name : null;
 }
 

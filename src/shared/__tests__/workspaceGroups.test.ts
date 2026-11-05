@@ -16,6 +16,10 @@ describe('normalizeWorkspaceGroupName', () => {
     expect(normalizeWorkspaceGroupName('x'.repeat(WORKSPACE_GROUP_NAME_MAX + 10))).toHaveLength(WORKSPACE_GROUP_NAME_MAX);
   });
 
+  it('handles a huge hand-edited name without keeping it', () => {
+    expect(normalizeWorkspaceGroupName(`  ${'ab '.repeat(500_000)}`)).toBe(`${'ab '.repeat(21)}a`);
+  });
+
   it('refuses what leaves nothing usable', () => {
     expect(normalizeWorkspaceGroupName('')).toBeNull();
     expect(normalizeWorkspaceGroupName('   ')).toBeNull();

@@ -1,8 +1,8 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { Fragment, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore, type StoreState } from '../../stores';
-import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
+import { useStore } from '../../stores';
+import { selectWorkspaceGroupIds, selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { useGlanceBoardOrder } from './useGlanceBoardOrder';
 import { buildSidebarTree, ORPHAN_GROUP_KEY, type SidebarTreeNode } from './sidebarTree';
 import { selectBotTaskOwners, withoutBotTasks } from './botTasks';
@@ -68,14 +68,6 @@ function disposeAllPtys(ws: Workspace) {
 
 /** No facts are read while no facet is on. */
 const NO_FACTS: Record<string, string> = {};
-
-/** #3069 — workspace id → its group id, for the grouped workspaces only.
- *  Wrapped in useShallow, so the list re-renders only when membership moves. */
-function selectWorkspaceGroupIds(s: StoreState): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const w of s.workspaces) if (w.groupId) out[w.id] = w.groupId;
-  return out;
-}
 
 /**
  * `chrome="sheet"` (desktop): the sidebar inside the floating sheet. Its
@@ -194,6 +186,9 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // then the rows in no group. Display-only: the stored order is untouched.
   const workspaceGroups = useStore((s) => s.workspaceGroups);
   const groupIdOf = useStore(useShallow(selectWorkspaceGroupIds));
+  // A group being named keeps its header even while a filter hides empty ones,
+  // so its name field is never unmounted mid-edit.
+  const renamingGroupId = useStore((s) => s.workspaceGroupRenamingId);
   const trees = useMemo(() => {
     const byId = new Map(workspaces.map((w) => [w.id, w]));
     const liveIds = new Set(workspaces.map((w) => w.id));
@@ -428,10 +423,10 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   ), [tabStopId, shownActiveId, shownGridIds, multiviewGroupById, workspaces, numbered, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
 
   // One top-level node: a task row whose owner is filtered out, or a
-  // workspace row with its nested tasks. `inSettleGroup` rows (the Snoozed /
-  // Settled groups and the user's groups) sit out of stored order, so they
-  // draw no Ctrl+N hint.
-  const renderNode = (node: SidebarTreeNode, taskIds: ReadonlySet<string>, inSettleGroup = false) => {
+  // workspace row with its nested tasks. `hideOrderHint` rows (the Snoozed /
+  // Settled groups and the user's groups) are drawn away from their place in
+  // the stored order, so a Ctrl+N hint there would not match the screen.
+  const renderNode = (node: SidebarTreeNode, taskIds: ReadonlySet<string>, hideOrderHint = false) => {
     const ws = workspaceById.get(node.id);
     if (!ws) return null;
     // A task whose owner is only hidden by the search filter still
@@ -454,7 +449,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           onCopyInfo={handleCopySessionInfo}
           onDuplicate={duplicateWorkspace}
           onReorder={reorderWorkspace}
-          shortcutHintHidden={inSettleGroup}
+          shortcutHintHidden={hideOrderHint}
           tabStop={ws.id === tabStopId}
           nestedTaskIds={node.taskIds.length > 0 ? node.taskIds : undefined}
           renderTask={node.taskIds.length > 0 ? renderTask : undefined}
@@ -644,8 +639,16 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
         {/* #3069 — the user's groups. An empty group is drawn (it was just
             made, or is waiting for rows) unless a filter is narrowing the
             list, where it would only be noise. */}
-        {trees.groups.map(({ group, tree: groupTree }) => (narrowed && groupTree.top.length === 0 ? null : (
-          <WorkspaceGroupSection key={group.id} group={group} count={groupTree.top.length}>
+        {trees.groups.map(({ group, tree: groupTree }) => (
+          narrowed && groupTree.top.length === 0 && group.id !== renamingGroupId ? null : (
+          <WorkspaceGroupSection
+            key={group.id}
+            group={group}
+            count={groupTree.top.length}
+            // A filter shows what it found: a folded group opens while it narrows.
+            forceOpen={narrowed}
+            containsActive={!!shownActiveId && groupTree.top.some((n) => n.id === shownActiveId || n.taskIds.includes(shownActiveId))}
+          >
             {groupTree.top.map((node) => renderNode(node, groupTree.taskIds, true))}
           </WorkspaceGroupSection>
         )))}

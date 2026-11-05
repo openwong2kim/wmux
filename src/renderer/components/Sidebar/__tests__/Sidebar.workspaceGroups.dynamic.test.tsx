@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import Sidebar from '../Sidebar';
+import { EMPTY_FILTER } from '../workspaceFilter';
 import { useStore } from '../../../stores';
 import type { Pane, Workspace } from '../../../../shared/types';
 import type { WorkspaceGroup } from '../../../../shared/workspaceGroups';
@@ -20,12 +21,15 @@ function ws(id: string, groupId?: string): Workspace {
   };
   return { id, name: id, rootPane, activePaneId: `${id}-p`, ...(groupId ? { groupId } : {}) };
 }
-function seed(opts: { groups: WorkspaceGroup[]; members?: Record<string, string>; pinned?: string[]; settle?: WorkspaceSettleMap }) {
+function seed(opts: { groups: WorkspaceGroup[]; members?: Record<string, string>; pinned?: string[]; settle?: WorkspaceSettleMap; active?: string }) {
   act(() => useStore.setState({
     workspaces: ['a', 'b', 'c', 'd'].map((id) => ws(id, opts.members?.[id])),
     workspaceGroups: opts.groups,
     workspaceGroupRenamingId: null,
-    activeWorkspaceId: '',
+    activeWorkspaceId: opts.active ?? '',
+    sidebarSearch: '',
+    sidebarFilter: EMPTY_FILTER,
+    activeRemoteKey: null,
     sidebarSortMode: 'manual',
     sidebarAttentionFirst: false,
     sidebarPinnedIds: opts.pinned ?? [],
@@ -133,7 +137,7 @@ describe('Sidebar workspace groups', () => {
     const [group] = useStore.getState().workspaceGroups;
     expect(group.name).toBe('New group');
     expect(rowsIn(section(group.id)!)).toEqual(['b']);
-    const input = document.querySelector('[data-workspace-group-input]') as HTMLInputElement;
+    const input = document.querySelector('[data-testid="workspace-group-input"]') as HTMLInputElement;
     expect(input).not.toBeNull();
     // Typing a name and pressing Enter renames the group in place.
     act(() => {
@@ -142,7 +146,7 @@ describe('Sidebar workspace groups', () => {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     expect(useStore.getState().workspaceGroups[0].name).toBe('Client B');
-    expect(document.querySelector('[data-workspace-group-input]')).toBeNull();
+    expect(document.querySelector('[data-testid="workspace-group-input"]')).toBeNull();
   });
 
   it('the header menu deletes a group after a confirm, its rows back in the list', () => {
@@ -158,5 +162,61 @@ describe('Sidebar workspace groups', () => {
     expect(section('g1')).toBeNull();
     expect(topRows()).toEqual(['a', 'b', 'c', 'd']);
     expect(useStore.getState().workspaces.map((w) => w.id)).toEqual(['a', 'b', 'c', 'd']);
+  });
+  it('a filter opens a folded group so its matches show, without changing the stored state', () => {
+    seed({ groups: [{ id: 'g1', name: 'Client A', collapsed: true }, { id: 'g2', name: 'Empty' }], members: { b: 'g1', c: 'g1' } });
+    act(() => root.render(<Sidebar />));
+    expect(rowsIn(section('g1')!)).toEqual([]);
+    act(() => useStore.getState().setSidebarSearch('b'));
+    expect(rowsIn(section('g1')!)).toEqual(['b']);
+    expect(useStore.getState().workspaceGroups[0].collapsed).toBe(true);
+    // An empty group is not drawn while the list is narrowed.
+    expect(section('g2')).toBeNull();
+  });
+
+  it('a folded group holding the open workspace says so on its header', () => {
+    seed({ groups: [{ id: 'g1', name: 'Client A', collapsed: true }, { id: 'g2', name: 'Infra', collapsed: true }], members: { b: 'g1', c: 'g2' }, active: 'b' });
+    act(() => root.render(<Sidebar />));
+    expect(head('g1')!.getAttribute('data-holds-active')).toBe('true');
+    expect(head('g1')!.getAttribute('aria-label')).toContain('Holds the open workspace');
+    expect(head('g2')!.getAttribute('data-holds-active')).toBeNull();
+    act(() => { head('g1')!.click(); });
+    expect(head('g1')!.getAttribute('data-holds-active')).toBeNull();
+  });
+
+  it('offers no "Move to group" on a pinned row', () => {
+    seed({ groups: [{ id: 'g1', name: 'Client A' }], pinned: ['a'] });
+    act(() => root.render(<Sidebar />));
+    const openMenu = (id: string) => act(() => {
+      row(id).dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    });
+    openMenu('a');
+    expect(document.querySelector('[data-workspace-action="move-to-group"]')).toBeNull();
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    openMenu('b');
+    expect(document.querySelector('[data-workspace-action="move-to-group"]')).not.toBeNull();
+  });
+
+  it('double-click renames in place; Escape keeps the old name', () => {
+    seed({ groups: [{ id: 'g1', name: 'Client A' }], members: { b: 'g1' } });
+    act(() => root.render(<Sidebar />));
+    act(() => { head('g1')!.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); });
+    const input = document.querySelector('[data-testid="workspace-group-input"]') as HTMLInputElement;
+    expect(input.value).toBe('Client A');
+    act(() => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setValue.call(input, 'Other');
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(useStore.getState().workspaceGroups[0].name).toBe('Client A');
+    expect(useStore.getState().workspaceGroupRenamingId).toBeNull();
+  });
+
+  it('Shift+F10 on a header opens its menu', () => {
+    seed({ groups: [{ id: 'g1', name: 'Client A' }] });
+    act(() => root.render(<Sidebar />));
+    act(() => { head('g1')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true })); });
+    expect(document.querySelector('[data-workspace-group-menu]')).not.toBeNull();
+    expect(document.querySelector('[data-workspace-group-action="rename"]')).not.toBeNull();
   });
 });

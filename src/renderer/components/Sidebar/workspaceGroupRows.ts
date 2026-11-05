@@ -49,3 +49,30 @@ export function partitionWorkspaceGroups<T extends { id: string }>(
   out.groups = opts.groups.map((group) => ({ group, rows: byGroup.get(group.id) ?? [] }));
   return out;
 }
+
+/**
+ * The part of the list a top-level row is drawn in: the pinned rows, one
+ * group, or the rest (see workspaceDropMovesRow).
+ */
+export function workspaceListPart(
+  id: string,
+  opts: { pinned: readonly string[]; groupOf: (id: string) => string | undefined; groups: readonly WorkspaceGroup[] },
+): string {
+  if (opts.pinned.includes(id)) return 'pinned';
+  const groupId = opts.groupOf(id);
+  return groupId !== undefined && opts.groups.some((g) => g.id === groupId) ? `group:${groupId}` : 'rest';
+}
+
+/**
+ * Whether a drag-reorder from one part of the list onto a row of another
+ * shows the row moving. Inside one part it does. A drop on a pinned row pins
+ * the dragged one, and a pinned row dropped among the rest is unpinned there:
+ * both are the pin's own drag rules, kept. Any other crossing (into or out of
+ * a group) would only change the stored order while the row stays where its
+ * group draws it, so the drop is not offered: filing is the menu's job.
+ */
+export function workspaceDropMovesRow(fromPart: string, toPart: string): boolean {
+  if (fromPart === toPart) return true;
+  if (toPart === 'pinned') return true;
+  return fromPart === 'pinned' && toPart === 'rest';
+}

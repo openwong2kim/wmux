@@ -1,6 +1,9 @@
 // The Bots list's folders (DESIGN.md › Bots › Folders): a folder's section
 // header, its inline name field and the context menus that file a bot or
-// manage a folder. The data and the calls live in BotsPage.tsx.
+// manage a folder. The data and the calls live in BotsPage.tsx. The name
+// field, the menu shell and the menu-key helper are shared with the
+// Sidebar's workspace groups (#3069), which follow the same pattern.
+// Their defaults are the Bots ones.
 import { useEffect, useLayoutEffect, useRef } from 'react';
 import { FOCUS_RING } from '../focusRing';
 import { IconChevron } from '../icons';
@@ -11,7 +14,7 @@ import type { useT } from '../../hooks/useT';
 
 type T = ReturnType<typeof useT>;
 
-const FOLDER_MENU_ITEM = `ui-section-row w-full text-left text-[13px] ${FOCUS_RING}`;
+export const FOLDER_MENU_ITEM = `ui-section-row w-full text-left text-[13px] ${FOCUS_RING}`;
 
 /** Shift+F10 / the Menu key on a row or header: cancels the key's default and
  *  returns where its context menu opens (under the element); null for any other
@@ -26,12 +29,25 @@ export function menuKeyPoint(e: React.KeyboardEvent<HTMLElement>): { x: number; 
 /** A one-line name field: Enter commits, Escape cancels, leaving the field
  *  commits (like renaming a workspace in the Sidebar). A name that is empty or
  *  unchanged cancels. */
-export function FolderNameInput({ initial, label, testId, onCommit, onCancel }: {
+export function FolderNameInput({
+  initial, label, testId, onCommit, onCancel,
+  normalize = normalizeFolderName,
+  maxLength = BOT_FOLDER_LIMITS.NAME_MAX,
+  className = 'wmux-bots-folder-input',
+  isolateKeys = false,
+}: {
   initial: string;
   label: string;
   testId: string;
   onCommit: (name: string) => void;
   onCancel: () => void;
+  /** The name as stored, or null when nothing usable is left. */
+  normalize?: (raw: string | undefined) => string | null;
+  maxLength?: number;
+  className?: string;
+  /** Keep typing from reaching the ancestors' key handlers (the Sidebar's
+   *  own shortcuts, such as Ctrl+F). */
+  isolateKeys?: boolean;
 }) {
   const ref = useRef<HTMLInputElement>(null);
   const done = useRef(false);
@@ -42,7 +58,7 @@ export function FolderNameInput({ initial, label, testId, onCommit, onCancel }: 
   const finish = (commit: boolean) => {
     if (done.current) return;
     done.current = true;
-    const name = normalizeFolderName(ref.current?.value);
+    const name = normalize(ref.current?.value);
     if (commit && name && name !== initial) onCommit(name);
     else onCancel();
   };
@@ -55,14 +71,15 @@ export function FolderNameInput({ initial, label, testId, onCommit, onCancel }: 
       aria-label={label}
       placeholder={label}
       defaultValue={initial}
-      maxLength={BOT_FOLDER_LIMITS.NAME_MAX}
+      maxLength={maxLength}
       onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
+        if (isolateKeys) e.stopPropagation();
         if (e.key === 'Enter') { e.preventDefault(); finish(true); }
         else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); }
       }}
       onBlur={() => finish(true)}
-      className={`wmux-bots-folder-input ${FOCUS_RING}`}
+      className={`${className} ${FOCUS_RING}`}
     />
   );
 }
@@ -147,13 +164,14 @@ export function FolderHeader({ folder, count, open, listId, renaming, renameLabe
 }
 
 /** A fixed menu at a point, kept inside the window; it closes on an outside
- *  press and on Escape. */
-function BotsContextMenu({ x, y, label, onClose, children }: {
+ *  press and on Escape. `marker` names the data attribute it carries. */
+export function FolderContextMenu({ x, y, label, onClose, children, marker = 'data-bots-menu' }: {
   x: number;
   y: number;
   label: string;
   onClose: () => void;
   children: React.ReactNode;
+  marker?: `data-${string}`;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -176,7 +194,7 @@ function BotsContextMenu({ x, y, label, onClose, children }: {
       ref={ref}
       role="menu"
       aria-label={label}
-      data-bots-menu
+      {...{ [marker]: '' }}
       className="fixed z-[var(--z-popover-top)] w-max min-w-[180px] max-w-[260px]"
       style={{ left: x, top: y }}
     >
@@ -200,7 +218,7 @@ export function BotFolderMenu({ t, x, y, folders, currentId, canRemove, onMove, 
   onClose: () => void;
 }) {
   return (
-    <BotsContextMenu x={x} y={y} label={t('botsPage.folders.move')} onClose={onClose}>
+    <FolderContextMenu x={x} y={y} label={t('botsPage.folders.move')} onClose={onClose}>
       <p className="wmux-bots-menu-label" aria-hidden="true">{t('botsPage.folders.move')}</p>
       {folders.map((f, i) => (
         <button
@@ -224,7 +242,7 @@ export function BotFolderMenu({ t, x, y, folders, currentId, canRemove, onMove, 
           {t('botsPage.folders.remove')}
         </button>
       )}
-    </BotsContextMenu>
+    </FolderContextMenu>
   );
 }
 
@@ -238,13 +256,13 @@ export function FolderActionsMenu({ t, x, y, onRename, onDelete, onClose }: {
   onClose: () => void;
 }) {
   return (
-    <BotsContextMenu x={x} y={y} label={t('botsPage.folders.menu')} onClose={onClose}>
+    <FolderContextMenu x={x} y={y} label={t('botsPage.folders.menu')} onClose={onClose}>
       <button type="button" role="menuitem" autoFocus data-bots-folder-rename className={FOLDER_MENU_ITEM} onClick={onRename}>
         {t('botsPage.folders.rename')}
       </button>
       <button type="button" role="menuitem" data-bots-folder-delete className={FOLDER_MENU_ITEM} onClick={onDelete}>
         {t('botsPage.folders.delete')}
       </button>
-    </BotsContextMenu>
+    </FolderContextMenu>
   );
 }
