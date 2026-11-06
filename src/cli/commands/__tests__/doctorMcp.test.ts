@@ -64,6 +64,13 @@ describe('doctor mcp section', () => {
     expect(section.verdict).toBe('WARN');
   });
 
+  it('reads the recorded verdict of one native copy once, however many agents point at it', async () => {
+    const recordedVerdict = vi.fn(() => 'pass' as const);
+    const native = `${HOME}/.wmux/mcp/wmux-native`;
+    await buildMcpSection(deps({ recordedVerdict, targets: () => [target('a', native), target('b', native), target('c', native)] }));
+    expect(recordedVerdict).toHaveBeenCalledTimes(1);
+  });
+
   it('reports the broker and the recent bundle sessions from the app', async () => {
     const section = await buildMcpSection(deps());
     const byLabel = Object.fromEntries(section.lines.map((l) => [l.label, l]));

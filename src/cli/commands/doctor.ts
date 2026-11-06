@@ -481,14 +481,14 @@ function launcherKind(registered: string): 'native' | 'node-shim' | 'bundle' | '
   return 'other node script';
 }
 
-function registeredLine(t: TargetRegStatus, deps: McpDoctorDeps): CheckLine {
+function registeredLine(t: TargetRegStatus, deps: McpDoctorDeps, verdictOf: (binary: string) => 'pass' | 'fail' | undefined): CheckLine {
   const label = `registered (${t.id})`;
   // An agent without wmux registered is a choice, not a fault.
   if (!t.wmux.registered || !t.wmux.path) return { label, value: 'not registered', verdict: 'OK' };
   const kind = launcherKind(t.wmux.path);
   const where = kind === 'other node script' ? null : homeRelative(t.wmux.path, deps.home);
   const value = `${kind}, ${t.wmux.profile ?? 'full'}${where ? ` (${where})` : ''}`;
-  if (kind === 'native' && deps.recordedVerdict(t.wmux.path) === 'fail') {
+  if (kind === 'native' && verdictOf(t.wmux.path) === 'fail') {
     return {
       label,
       value,
@@ -558,7 +558,13 @@ export async function buildMcpSection(
   appPipeReachable = true,
 ): Promise<{ verdict: Verdict; lines: CheckLine[] }> {
   const targets = deps.targets();
-  const lines = targets.map((t) => registeredLine(t, deps));
+  // Agents usually share one native copy: hash it once per run.
+  const verdicts = new Map<string, 'pass' | 'fail' | undefined>();
+  const verdictOf = (binary: string) => {
+    if (!verdicts.has(binary)) verdicts.set(binary, deps.recordedVerdict(binary));
+    return verdicts.get(binary);
+  };
+  const lines = targets.map((t) => registeredLine(t, deps, verdictOf));
   const kinds = new Set(targets.flatMap((t) => (t.wmux.registered && t.wmux.path ? [launcherKind(t.wmux.path)] : [])));
   let summary: McpSessionsSummary | null = null;
   let skipReason = 'the app is not running';
