@@ -56,7 +56,7 @@ export interface GuestDialogsDeps {
   defer?(fn: () => void, ms: number): void;
   /** The native box each dialog leaves, closed once it is answered (dialogSheets.ts). */
   sheets?: {
-    trackOpening(surfaceId: string, message: string): void;
+    trackOpening(surfaceId: string, message: string, type: string): void;
     closeIfStale(surfaceId: string): void;
     forget(surfaceId: string): void;
   };
@@ -99,8 +99,8 @@ export class GuestDialogs {
     const now = this.now();
     const raisedByInput = [...state.dispatches].some((dispatch) => dispatch.expires > now);
     state.open = { type, message: capped, capNoted: false, raisedByInput, openedAt: now };
-    // Every dialog, the person's included: its box is matched by its full text.
-    this.deps.sheets?.trackOpening(surfaceId, message);
+    // Every dialog, the person's included: its box is matched by its full text and shape.
+    this.deps.sheets?.trackOpening(surfaceId, message, type);
     // The lease can end just before a handler's deferred dialog opens. That dialog
     // is still the agent's, and otherwise the page would wait for its next call.
     if (driven || raisedByInput) this.settleWhenDue(surfaceId, state);

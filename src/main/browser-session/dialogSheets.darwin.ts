@@ -2,7 +2,7 @@
 // The only file that touches the FFI. dialogSheets.ts holds the rules.
 
 import { BrowserWindow, type WebContents } from 'electron';
-import type { SheetPort } from './dialogSheets';
+import type { SheetPort, SheetShape } from './dialogSheets';
 
 /** The few Objective-C messages the port sends. A fake stands in for it in tests. */
 export interface ObjcCall {
@@ -30,22 +30,25 @@ export function createObjcSheetPort(objc: ObjcCall): SheetPort<BrowserWindow, un
     for (let i = 0; i < n; i++) out.push(objc.objectAt(sheets, i));
     return out;
   };
-  const texts = (sheet: unknown): string[] => {
-    const out: string[] = [];
+  const shape = (sheet: unknown): SheetShape => {
+    const texts: string[] = [];
+    const buttons: string[] = [];
     const walk = (view: unknown, depth: number): void => {
       if (!view || depth > MAX_VIEW_DEPTH) return;
-      if (objc.utf8(objc.send(view, 'className')) === 'NSTextField') out.push(objc.utf8(objc.send(view, 'stringValue')));
+      const cls = objc.utf8(objc.send(view, 'className'));
+      if (cls === 'NSTextField') texts.push(objc.utf8(objc.send(view, 'stringValue')));
+      else if (cls === 'NSButton') buttons.push(objc.utf8(objc.send(view, 'title')));
       const subviews = objc.send(view, 'subviews');
       const n = objc.count(subviews, 'count');
       for (let i = 0; i < n; i++) walk(objc.objectAt(subviews, i), depth + 1);
     };
     walk(objc.send(sheet, 'contentView'), 0);
-    return out;
+    return { texts, buttons };
   };
   return {
     list,
-    texts,
-    same: (a, b) => objc.address(a) === objc.address(b),
+    key: (sheet) => objc.address(sheet),
+    shape,
     retain: (sheet) => { objc.send(sheet, 'retain'); },
     release: (sheet) => { objc.send(sheet, 'release'); },
     endLater: (host, sheet) => {

@@ -5,17 +5,19 @@
 // mouse until someone clicks it. So when a dialog closes, whoever answered it
 // (main, an attached Playwright page, the person), its sheet is ended too.
 //
-// Which sheet belongs to which dialog is decided when the dialog opens: the oldest
-// sheet on the tab's window that no dialog has claimed yet and whose text is
-// exactly the dialog's message. The text check matters: wmux's own message boxes
-// are sheets on the same window, and ending one would answer a question asked of
-// the person. Openings claim in the order they arrived, per window, so two tabs
-// showing the same message can't swap sheets: ending the other one would answer a
-// person's live dialog. After that, only the sheet's identity counts. At close it
-// is ended only if that same sheet is still showing.
+// Ending the wrong sheet answers someone else's question: a person's own dialog on
+// another tab, or one of wmux's boxes, whose text a page can copy. So a dialog
+// claims a sheet only when nothing else could be meant:
+// - the sheet is new: this is the first look at the window that sees it. A sheet
+//   seen before and left unclaimed never pairs later.
+// - its shape is a page dialog's: exactly the message, no detail, and the buttons
+//   of that dialog type.
+// - it is the only such new sheet, and no other dialog is opening on the window.
+// Anything else tracks nothing and the box stays as before: ambiguity costs a box,
+// never a person's answer. At close only the sheet's identity counts, and it is
+// ended only if that same sheet is still showing.
 //
-// Anything that goes wrong here costs the box closing, never the dialog's answer:
-// one warning, and every box stays as it did before.
+// Anything that goes wrong here costs the box closing, never the dialog's answer.
 
 import type { BrowserWindow, WebContents } from 'electron';
 import { createObjcSheetPort, hostWindowOf, loadObjc } from './dialogSheets.darwin';
@@ -23,10 +25,10 @@ import { createObjcSheetPort, hostWindowOf, loadObjc } from './dialogSheets.darw
 /** What GuestDialogs needs. Every call is safe to make on any platform. */
 export interface DialogSheets {
   /** `Page.javascriptDialogOpening` on this surface's guest. */
-  trackOpening(surfaceId: string, guest: WebContents | undefined, message: string): void;
+  trackOpening(surfaceId: string, guest: WebContents | undefined, message: string, type: string): void;
   /** `Page.javascriptDialogClosed`: end this surface's sheet if it is still showing. */
   closeIfStale(surfaceId: string): void;
-  /** The surface is gone; let go of anything tracked for it. */
+  /** The surface is gone or its page crashed: end the sheet it owns. */
   forget(surfaceId: string): void;
 }
 
@@ -36,12 +38,19 @@ export const NO_DIALOG_SHEETS: DialogSheets = {
   forget: () => undefined,
 };
 
+/** What a sheet shows: its text fields in order (empty ones included) and its button titles. */
+export interface SheetShape {
+  texts: string[];
+  buttons: string[];
+}
+
 /** Native access to a window's sheets. `S` is an opaque sheet handle. */
 export interface SheetPort<H, S> {
   /** The window's sheets, in queue order (the one showing first). */
   list(host: H): S[];
-  texts(sheet: S): string[];
-  same(a: S, b: S): boolean;
+  /** The sheet's identity: equal keys are the same sheet. */
+  key(sheet: S): unknown;
+  shape(sheet: S): SheetShape;
   retain(sheet: S): void;
   release(sheet: S): void;
   /** End the sheet from the run loop, never inside this call. */
@@ -49,159 +58,250 @@ export interface SheetPort<H, S> {
 }
 
 export interface SheetTrackerDeps<H, S> {
-  /** Resolved on first use. Throwing disables the tracker. */
+  /** Resolved on first use. Throwing turns the tracker off for the run. */
   port: () => SheetPort<H, S>;
   schedule: (fn: () => void, ms: number) => void;
+  now: () => number;
+  /** Failures, and each dialog's pair or no-pair decision. */
   warn: (message: string) => void;
 }
 
 export interface SheetTracker<H> {
-  trackOpening(surfaceId: string, host: H, message: string): void;
+  trackOpening(surfaceId: string, host: H, message: string, type: string): void;
   closeIfStale(surfaceId: string): void;
   forget(surfaceId: string): void;
   forgetHost(host: H): void;
 }
 
-/** How long an opening keeps looking for its sheet, which can appear a moment later. */
-export const SHEET_RETRY_MS = 60;
-export const SHEET_RETRIES = 6;
+/** How long an opening keeps looking for its sheet, which can be listed a moment later. */
+export const SHEET_RETRY_WINDOW_MS = 1_000;
+const SHEET_RETRY_STEP_MS = 100;
 
-interface Pending<H> {
+/** Electron's buttons on a page's alert and confirm (English titles, sorted). */
+const PAGE_DIALOG_BUTTONS: Readonly<Record<string, readonly string[]>> = {
+  alert: ['OK'],
+  confirm: ['Cancel', 'OK'],
+};
+
+interface Opening<H> {
   surfaceId: string;
   host: H;
   message: string;
-  tries: number;
+  type: string;
+  deadline: number;
   /** Closed before its sheet was found: end the sheet as soon as it is. */
   closed: boolean;
 }
 
-interface Tracked<H, S> {
+interface Owned<H, S> {
   host: H;
   sheet: S;
 }
 
+interface HostState {
+  /** Keys of every sheet an earlier look saw, pruned to what is still listed. */
+  known: Set<unknown>;
+  /** Keys being ended, kept until they leave the list. */
+  ending: Set<unknown>;
+  retryScheduled: boolean;
+}
+
+/** A native step failed. It ends that call only; the next dialog tries again. */
+class StepFailed extends Error {}
+
 export function createSheetTracker<H extends object, S>(deps: SheetTrackerDeps<H, S>): SheetTracker<H> {
   let port: SheetPort<H, S> | null = null;
   let disabled = false;
-  const tracked = new Map<string, Tracked<H, S>>();
-  const pending: Pending<H>[] = [];
+  const hosts = new Map<H, HostState>();
+  const owned = new Map<string, Owned<H, S>>();
+  const openings: Opening<H>[] = [];
 
-  /** Run `fn` against the port; any failure warns once and turns the tracker off. */
-  const guard = <T>(fn: (p: SheetPort<H, S>) => T): T | undefined => {
-    if (disabled) return undefined;
+  const stateOf = (host: H): HostState => {
+    let state = hosts.get(host);
+    if (!state) {
+      state = { known: new Set(), ending: new Set(), retryScheduled: false };
+      hosts.set(host, state);
+    }
+    return state;
+  };
+
+  const loaded = (): SheetPort<H, S> | null => {
+    if (disabled) return null;
+    if (port) return port;
     try {
-      port ??= deps.port();
-      return fn(port);
+      port = deps.port();
+      return port;
     } catch (err) {
       disabled = true;
-      deps.warn(`[dialog-sheets] off for this run, answered boxes stay open: ${err instanceof Error ? err.message : String(err)}`);
-      return undefined;
+      deps.warn(`[dialog-sheets] off for this run, answered boxes stay open: ${errorText(err)}`);
+      return null;
     }
   };
 
-  const release = (entry: Tracked<H, S>): void => {
-    guard((p) => p.release(entry.sheet));
+  /** One native step. A failure is logged and aborts the rest of the call. */
+  const step = <T>(what: string, fn: () => T): T => {
+    try {
+      return fn();
+    } catch (err) {
+      deps.warn(`[dialog-sheets] ${what} failed: ${errorText(err)}`);
+      throw new StepFailed(what);
+    }
   };
 
-  const endIfShowing = (entry: Tracked<H, S>): void => {
-    guard((p) => {
-      if (p.list(entry.host).some((sheet) => p.same(sheet, entry.sheet))) p.endLater(entry.host, entry.sheet);
-    });
+  const decide = (opening: Opening<H>, decision: string): void => {
+    deps.warn(`[dialog-sheets] ${opening.type} on ${opening.surfaceId}: ${decision}`);
   };
 
-  const scheduled = new Set<H>();
+  const drop = (opening: Opening<H>): void => {
+    const i = openings.indexOf(opening);
+    if (i >= 0) openings.splice(i, 1);
+  };
+
+  /** End an owned sheet if it is still showing. What was retained is always released. */
+  const end = (p: SheetPort<H, S>, entry: Owned<H, S>): void => {
+    try {
+      const key = p.key(entry.sheet);
+      const state = stateOf(entry.host);
+      if (state.ending.has(key)) return;
+      if (!step('list', () => p.list(entry.host)).some((s) => p.key(s) === key)) return;
+      state.ending.add(key);
+      step('endLater', () => p.endLater(entry.host, entry.sheet));
+    } catch (err) {
+      if (!(err instanceof StepFailed)) throw err;
+    } finally {
+      try {
+        p.release(entry.sheet);
+      } catch (err) {
+        deps.warn(`[dialog-sheets] release failed: ${errorText(err)}`);
+      }
+    }
+  };
+
+  const looksLike = (shape: SheetShape, opening: Opening<H>): boolean => {
+    const buttons = PAGE_DIALOG_BUTTONS[opening.type];
+    if (!buttons) return false;
+    const filled = shape.texts.filter((t) => t !== '');
+    return filled.length === 1 && filled[0] === opening.message
+      && [...shape.buttons].sort().join('\n') === buttons.join('\n');
+  };
 
   /**
-   * Pair this window's waiting openings with its unclaimed sheets, in the order
-   * the openings arrived: the oldest opening with a message gets the oldest free
-   * sheet with that text. A later opening never takes a sheet an earlier one with
-   * the same text is still waiting for.
+   * One look at the window. A sheet listed now that no earlier look saw is new,
+   * and only a new sheet can pair; afterwards every listed sheet is known.
    */
-  const scanHost = (host: H, retry: boolean): void => {
-    guard((p) => {
-      const waiting = pending.filter((o) => o.host === host);
-      if (waiting.length === 0) return;
-      const claimed = [...tracked.values()].filter((t) => t.host === host).map((t) => t.sheet);
-      const free = p.list(host).filter((s) => !claimed.some((c) => p.same(c, s)));
-      for (const opening of waiting) {
-        const index = free.findIndex((s) => p.texts(s).some((text) => text === opening.message));
-        if (index < 0) {
-          if (retry) opening.tries += 1;
-          if (opening.tries > SHEET_RETRIES) pending.splice(pending.indexOf(opening), 1);
-          continue;
+  const look = (host: H): void => {
+    const p = loaded();
+    if (!p) return;
+    const state = stateOf(host);
+    try {
+      const sheets = step('list', () => p.list(host));
+      const keys = sheets.map((s) => p.key(s));
+      const fresh = sheets.filter((_s, i) => !state.known.has(keys[i]) && !state.ending.has(keys[i]));
+      state.known = new Set(keys);
+      for (const key of [...state.ending]) if (!keys.includes(key)) state.ending.delete(key);
+
+      const waiting = openings.filter((o) => o.host === host);
+      if (waiting.length > 1) {
+        for (const o of waiting) {
+          decide(o, 'no pair: another dialog is opening on the same window');
+          drop(o);
         }
-        const [sheet] = free.splice(index, 1);
-        pending.splice(pending.indexOf(opening), 1);
-        p.retain(sheet);
-        const entry = { host, sheet };
-        if (opening.closed) {
-          endIfShowing(entry);
-          release(entry);
-        } else {
-          tracked.set(opening.surfaceId, entry);
-        }
+        return;
       }
-      if (pending.some((o) => o.host === host) && !scheduled.has(host)) {
-        scheduled.add(host);
+      const opening = waiting[0];
+      if (!opening) return;
+      // Each new sheet's shape is read once per look.
+      const candidates = fresh.filter((s) => looksLike(step('shape', () => p.shape(s)), opening));
+      if (candidates.length > 1) {
+        decide(opening, `no pair: ${candidates.length} new boxes look like it`);
+        drop(opening);
+        return;
+      }
+      if (candidates.length === 0) {
+        if (deps.now() >= opening.deadline) {
+          decide(opening, 'no pair: no box like it was listed in time');
+          drop(opening);
+        }
+        return;
+      }
+      const sheet = candidates[0];
+      step('retain', () => p.retain(sheet));
+      drop(opening);
+      decide(opening, 'paired');
+      const entry = { host, sheet };
+      if (opening.closed) end(p, entry);
+      else owned.set(opening.surfaceId, entry);
+    } catch (err) {
+      if (!(err instanceof StepFailed)) throw err;
+    } finally {
+      if (openings.some((o) => o.host === host) && !state.retryScheduled) {
+        state.retryScheduled = true;
         deps.schedule(() => {
-          scheduled.delete(host);
-          scanHost(host, true);
-        }, SHEET_RETRY_MS);
+          state.retryScheduled = false;
+          look(host);
+        }, SHEET_RETRY_STEP_MS);
       }
-    });
+    }
   };
 
-  const drop = (surfaceId: string): void => {
-    for (let i = pending.length - 1; i >= 0; i--) if (pending[i].surfaceId === surfaceId) pending.splice(i, 1);
-    const entry = tracked.get(surfaceId);
-    if (entry) {
-      tracked.delete(surfaceId);
-      release(entry);
-    }
+  /** End and forget the sheet this surface owns. */
+  const settle = (surfaceId: string): Owned<H, S> | undefined => {
+    const entry = owned.get(surfaceId);
+    if (!entry) return undefined;
+    owned.delete(surfaceId);
+    const p = loaded();
+    if (p) end(p, entry);
+    return entry;
   };
 
   return {
-    trackOpening(surfaceId, host, message) {
-      if (disabled || message === '') return;
-      // A page shows one dialog at a time, so anything still held is from before.
-      // An answered one still looking for its sheet keeps looking: a page that
-      // loops dialogs opens the next before the last one's sheet can be read.
-      for (let i = pending.length - 1; i >= 0; i--) {
-        if (pending[i].surfaceId === surfaceId && !pending[i].closed) pending.splice(i, 1);
-      }
-      const held = tracked.get(surfaceId);
-      if (held) {
-        tracked.delete(surfaceId);
-        release(held);
-      }
-      const opening: Pending<H> = { surfaceId, host, message, tries: 0, closed: false };
-      pending.push(opening);
-      scanHost(host, false);
+    trackOpening(surfaceId, host, text, type) {
+      if (!loaded()) return;
+      // A page shows one dialog at a time, so anything this surface still owns is
+      // from before. An answered opening still looking for its sheet keeps looking.
+      settle(surfaceId);
+      for (const o of openings.filter((x) => x.surfaceId === surfaceId && !x.closed)) drop(o);
+      const opening: Opening<H> = {
+        surfaceId, host, message: text, type, deadline: deps.now() + SHEET_RETRY_WINDOW_MS, closed: false,
+      };
+      if (text === '' || !PAGE_DIALOG_BUTTONS[type]) decide(opening, 'no pair: not an alert or confirm with a message');
+      else openings.push(opening);
+      // Its box is new to the window either way; this look makes it known.
+      look(host);
     },
     closeIfStale(surfaceId) {
-      const waiting = pending.find((p) => p.surfaceId === surfaceId && !p.closed);
+      const waiting = openings.find((o) => o.surfaceId === surfaceId && !o.closed);
       if (waiting) {
         waiting.closed = true;
+        look(waiting.host);
         return;
       }
-      const entry = tracked.get(surfaceId);
-      if (!entry) return;
-      tracked.delete(surfaceId);
-      endIfShowing(entry);
-      release(entry);
+      const entry = settle(surfaceId);
+      if (entry) look(entry.host);
     },
     forget(surfaceId) {
-      drop(surfaceId);
+      for (const o of openings.filter((x) => x.surfaceId === surfaceId)) drop(o);
+      settle(surfaceId);
     },
     forgetHost(host) {
-      for (let i = pending.length - 1; i >= 0; i--) if (pending[i].host === host) pending.splice(i, 1);
-      for (const [surfaceId, entry] of [...tracked]) {
+      for (const o of openings.filter((x) => x.host === host)) drop(o);
+      const p = loaded();
+      for (const [surfaceId, entry] of [...owned]) {
         if (entry.host !== host) continue;
-        tracked.delete(surfaceId);
-        release(entry);
+        owned.delete(surfaceId);
+        try {
+          p?.release(entry.sheet);
+        } catch (err) {
+          deps.warn(`[dialog-sheets] release failed: ${errorText(err)}`);
+        }
       }
+      hosts.delete(host);
     },
   };
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -217,11 +317,12 @@ export function createDialogSheets(): DialogSheets {
       return port;
     },
     schedule: (fn, ms) => { setTimeout(fn, ms).unref?.(); },
-    warn: (message) => console.warn(message),
+    now: () => Date.now(),
+    warn: (text) => console.warn(text),
   });
   const watched = new WeakSet<BrowserWindow>();
   return {
-    trackOpening(surfaceId, guest, message) {
+    trackOpening(surfaceId, guest, text, type) {
       let host: BrowserWindow | null = null;
       try {
         host = guest && !guest.isDestroyed() ? hostWindowOf(guest) : null;
@@ -234,7 +335,7 @@ export function createDialogSheets(): DialogSheets {
         const closing = host;
         closing.once('closed', () => tracker.forgetHost(closing));
       }
-      tracker.trackOpening(surfaceId, host, message);
+      tracker.trackOpening(surfaceId, host, text, type);
     },
     closeIfStale: (surfaceId) => tracker.closeIfStale(surfaceId),
     forget: (surfaceId) => tracker.forget(surfaceId),

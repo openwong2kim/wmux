@@ -8,7 +8,7 @@ import { createObjcSheetPort, type ObjcCall } from '../dialogSheets.darwin';
 // A tiny fake Objective-C world: objects are plain records, messages are looked
 // up by selector. What matters is which messages the port sends.
 
-interface Obj { cls?: string; value?: string; subviews?: Obj[]; contentView?: Obj; sheets?: Obj[]; addr: bigint }
+interface Obj { cls?: string; value?: string; title?: string; subviews?: Obj[]; contentView?: Obj; sheets?: Obj[]; addr: bigint }
 
 let next = 1n;
 const obj = (o: Omit<Obj, 'addr'>): Obj => ({ ...o, addr: next++ });
@@ -26,6 +26,7 @@ function fakeObjc(window: Obj) {
         case 'subviews': return { items: t.subviews ?? [] };
         case 'className': return { str: t.cls ?? 'NSView' };
         case 'stringValue': return { str: t.value ?? '' };
+        case 'title': return { str: t.title ?? '' };
         default: return undefined;
       }
     },
@@ -40,12 +41,17 @@ function fakeObjc(window: Obj) {
 }
 
 const alertSheet = (message: string) =>
-  obj({ contentView: obj({ subviews: [obj({ cls: 'NSImageView' }), obj({ cls: 'NSTextField', value: message }), obj({ cls: 'NSButton' })] }) });
+  obj({ contentView: obj({ subviews: [
+    obj({ cls: 'NSImageView' }),
+    obj({ cls: 'NSTextField', value: message }),
+    obj({ cls: 'NSTextField', value: '' }),
+    obj({ cls: 'NSButton', title: 'OK' }),
+  ] }) });
 
 describe('the macOS sheet port', () => {
   const host = {} as BrowserWindow;
 
-  it('lists the window\'s sheets in queue order and reads each one\'s text', () => {
+  it('lists the window\'s sheets in queue order and reads each one\'s shape', () => {
     const first = alertSheet('Delete it?');
     const second = alertSheet('Quit wmux?');
     const window = obj({ sheets: [first, second] });
@@ -54,9 +60,9 @@ describe('the macOS sheet port', () => {
     const sheets = port.list(host);
 
     expect(sheets).toEqual([first, second]);
-    expect(port.texts(first)).toEqual(['Delete it?']);
-    expect(port.same(first, sheets[0])).toBe(true);
-    expect(port.same(first, second)).toBe(false);
+    expect(port.shape(first)).toEqual({ texts: ['Delete it?', ''], buttons: ['OK'] });
+    expect(port.key(sheets[0])).toBe(port.key(first));
+    expect(port.key(first)).not.toBe(port.key(second));
   });
 
   it('ends a sheet only through performSelector afterDelay:0, never endSheet: directly', () => {

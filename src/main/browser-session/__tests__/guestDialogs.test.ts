@@ -239,7 +239,7 @@ describe('GuestDialogs and the boxes dialogs leave', () => {
       note: () => undefined,
       defer: (fn) => fn(),
       sheets: {
-        trackOpening: (surfaceId, message) => calls.push(`open ${surfaceId} ${message.length}`),
+        trackOpening: (surfaceId, message, type) => calls.push(`open ${surfaceId} ${type} ${message.length}`),
         closeIfStale: (surfaceId) => calls.push(`closed ${surfaceId}`),
         forget: (surfaceId) => calls.push(`forget ${surfaceId}`),
       },
@@ -253,6 +253,6 @@ describe('GuestDialogs and the boxes dialogs leave', () => {
     dialogs.forget('agent');
     await settled();
 
-    expect(calls).toEqual(['open person 5', 'open agent 300', 'closed agent', 'closed person', 'forget agent']);
+    expect(calls).toEqual(['open person confirm 5', 'open agent alert 300', 'closed agent', 'closed person', 'forget agent']);
   });
 });

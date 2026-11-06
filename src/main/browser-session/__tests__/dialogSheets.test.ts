@@ -1,216 +1,276 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createSheetTracker, SHEET_RETRIES, SHEET_RETRY_MS, type SheetPort } from '../dialogSheets';
+import { createSheetTracker, SHEET_RETRY_WINDOW_MS, type SheetPort } from '../dialogSheets';
 
-interface FakeSheet { id: string; text: string }
+// A fake window: sheets are records, listed in queue order. A page's alert box has
+// the message, an empty detail and [OK]; a confirm adds Cancel. wmux's own boxes
+// carry a detail and their own buttons.
+
+interface FakeSheet { id: string; text: string; detail?: string; buttons: string[] }
 interface FakeHost { name: string; sheets: FakeSheet[] }
 
-function rig() {
+const alertBox = (id: string, text: string): FakeSheet => ({ id, text, buttons: ['OK'] });
+const confirmBox = (id: string, text: string): FakeSheet => ({ id, text, buttons: ['Cancel', 'OK'] });
+
+function rig(options: { failOn?: (op: string) => boolean } = {}) {
   const ended: string[] = [];
   const retained: string[] = [];
   const released: string[] = [];
+  const logs: string[] = [];
   const timers: Array<() => void> = [];
-  const warn = vi.fn();
-  const port: SheetPort<FakeHost, FakeSheet> = {
-    list: (host) => [...host.sheets],
-    texts: (sheet) => [sheet.text],
+  const dying: Array<() => void> = [];
+  let clock = 0;
+  const fail = (op: string) => {
+    if (options.failOn?.(op)) throw new Error(`${op} failed`);
+  };
+  const port: SheetPort<FakeHost, FakeSheet> & { texts: (s: FakeSheet) => string[]; same: (a: FakeSheet, b: FakeSheet) => boolean } = {
+    list: (host) => { fail('list'); return [...host.sheets]; },
+    key: (sheet) => sheet.id,
+    shape: (sheet) => { fail('shape'); return { texts: [sheet.text, sheet.detail ?? ''], buttons: [...sheet.buttons] }; },
+    // The previous port's members, so the same tests also run against it.
+    texts: (sheet) => [sheet.text, ...(sheet.detail ? [sheet.detail] : [])],
     same: (a, b) => a === b,
-    retain: (sheet) => { retained.push(sheet.id); },
+    retain: (sheet) => { fail('retain'); retained.push(sheet.id); },
     release: (sheet) => { released.push(sheet.id); },
     endLater: (host, sheet) => {
+      fail('endLater');
       ended.push(sheet.id);
-      host.sheets = host.sheets.filter((s) => s !== sheet);
+      // Like performSelector afterDelay:0, the sheet leaves on the next turn.
+      dying.push(() => { host.sheets = host.sheets.filter((s) => s !== sheet); });
     },
   };
   const tracker = createSheetTracker<FakeHost, FakeSheet>({
     port: () => port,
-    schedule: (fn) => { timers.push(fn); },
-    warn,
+    schedule: (fn, ms) => { timers.push(() => { clock += ms; fn(); }); },
+    now: () => clock,
+    warn: (message) => logs.push(message),
   });
-  /** Run the retry timers that are due, as the event loop would. */
-  const tick = () => { for (const fn of timers.splice(0)) fn(); };
-  /** The same, with the later opening's retry running first. */
-  const tickLatestFirst = () => { for (const fn of timers.splice(0).reverse()) fn(); };
-  return { tracker, ended, retained, released, warn, tick, tickLatestFirst, port };
+  /** Run the retries that are due, as the event loop would. */
+  const tick = () => {
+    for (const fn of dying.splice(0)) fn();
+    for (const fn of timers.splice(0)) fn();
+  };
+  /** Let every retry run out. */
+  const expire = () => { for (let i = 0; i < 100 && timers.length; i++) tick(); };
+  return { tracker, ended, retained, released, logs, tick, expire };
 }
 
 const host = (name = 'win'): FakeHost => ({ name, sheets: [] });
 
 describe('dialog sheets: which box belongs to which dialog', () => {
-  it('claims the sheet whose text is the message, and ends it when the dialog closes', () => {
-    const { tracker, ended, retained, released } = rig();
+  it('pairs a box already listed when the opening arrives, and ends it when the dialog closes', () => {
+    const { tracker, ended, released, logs } = rig();
     const win = host();
-    const quit = { id: 'quit', text: 'Quit wmux?' };
-    const mine = { id: 'mine', text: 'Delete it?' };
-    win.sheets.push(quit, mine);
+    const box = confirmBox('mine', 'Delete it?');
+    win.sheets.push(box);
 
-    tracker.trackOpening('s1', win, 'Delete it?');
+    tracker.trackOpening('s1', win, 'Delete it?', 'confirm');
     tracker.closeIfStale('s1');
 
-    expect(retained).toEqual(['mine']);
     expect(ended).toEqual(['mine']);
     expect(released).toEqual(['mine']);
-    expect(win.sheets).toEqual([quit]);
+    expect(logs.filter((l) => l.includes('paired'))).toHaveLength(1);
   });
 
-  it('leaves the box alone when no sheet carries exactly that text', () => {
-    const { tracker, ended, retained, tick } = rig();
+  it('pairs a box that is listed only on a retry', () => {
+    const { tracker, ended, tick } = rig();
     const win = host();
-    win.sheets.push({ id: 'quit', text: 'Quit wmux?' }, { id: 'near', text: 'Delete it? ' });
 
-    tracker.trackOpening('s1', win, 'Delete it?');
-    for (let i = 0; i <= SHEET_RETRIES; i++) tick();
+    tracker.trackOpening('s1', win, 'Go on?', 'confirm');
+    win.sheets.push(confirmBox('late', 'Go on?'));
+    tick();
     tracker.closeIfStale('s1');
 
-    expect(retained).toEqual([]);
+    expect(ended).toEqual(['late']);
+  });
+
+  it('keeps looking for about a second', () => {
+    expect(SHEET_RETRY_WINDOW_MS).toBeGreaterThanOrEqual(900);
+    expect(SHEET_RETRY_WINDOW_MS).toBeLessThanOrEqual(1500);
+  });
+
+  it('ends the box as soon as it is found when the dialog closed first', () => {
+    const { tracker, ended, tick } = rig();
+    const win = host();
+
+    tracker.trackOpening('s1', win, 'Go on?', 'alert');
+    tracker.closeIfStale('s1');
+    win.sheets.push(alertBox('late', 'Go on?'));
+    tick();
+
+    expect(ended).toEqual(['late']);
+  });
+
+  it('P1-a: an expired agent opening, then a person\'s confirm, then the agent again: the person\'s box is never ended', () => {
+    const { tracker, ended, expire, tick } = rig();
+    const win = host();
+    // (1) The agent's alert('X') is answered before its box is listed; its
+    // opening runs out of retries, so the box is left unclaimed.
+    tracker.trackOpening('agent', win, 'X', 'alert');
+    tracker.closeIfStale('agent');
+    expire();
+    const agentStale = alertBox('agent-stale', 'X');
+    win.sheets.push(agentStale);
+    // (2) A person's confirm('X') on another tab.
+    const personLive = confirmBox('person-live', 'X');
+    win.sheets.push(personLive);
+    tracker.trackOpening('person', win, 'X', 'confirm');
+    tick();
+    // (3) The agent's page loops alert('X'); the agent answers it.
+    tracker.trackOpening('agent', win, 'X', 'alert');
+    win.sheets.push(alertBox('agent-2', 'X'));
+    tick();
+    tracker.closeIfStale('agent');
+    expire();
+
+    expect(ended).not.toContain('person-live');
+    expect(win.sheets).toContain(personLive);
+  });
+
+  it('a live box nobody paired, then a same-text agent dialog: the foreign box is never ended', () => {
+    const { tracker, ended, tick, expire } = rig();
+    const win = host();
+    const foreign = confirmBox('foreign', 'Sure?');
+    // Seen by an earlier scan (another dialog's), never paired.
+    win.sheets.push(foreign);
+    tracker.trackOpening('other', win, 'Different', 'alert');
+    expire();
+    tracker.trackOpening('agent', win, 'Sure?', 'confirm');
+    tracker.closeIfStale('agent');
+    tick();
+    expire();
+
+    expect(ended).not.toContain('foreign');
+  });
+
+  it('a foreign box and the agent\'s box first seen on the same scan: neither is claimed', () => {
+    const { tracker, ended, logs } = rig();
+    const win = host();
+    win.sheets.push(confirmBox('foreign', 'Sure?'), confirmBox('agent', 'Sure?'));
+
+    tracker.trackOpening('agent', win, 'Sure?', 'confirm');
+    tracker.closeIfStale('agent');
+
+    expect(ended).toEqual([]);
+    expect(logs.some((l) => l.includes('no pair'))).toBe(true);
+  });
+
+  it('a wmux box with the page\'s message is never claimed: it has a detail and its own buttons', () => {
+    const { tracker, ended, expire } = rig();
+    const win = host();
+    win.sheets.push(
+      { id: 'quit', text: 'Quit wmux and stop all sessions?', detail: 'Agent sessions running: 0.', buttons: ['Quit and Stop Sessions', 'Cancel'] },
+      { id: 'notice', text: 'Quit wmux and stop all sessions?', buttons: ['Quit and Stop Sessions', 'Cancel'] },
+      { id: 'detailed', text: 'Quit wmux and stop all sessions?', detail: 'More.', buttons: ['OK'] },
+    );
+
+    tracker.trackOpening('agent', win, 'Quit wmux and stop all sessions?', 'alert');
+    tracker.closeIfStale('agent');
+    expire();
+
     expect(ended).toEqual([]);
   });
 
-  it('finds a sheet that appears a moment after the opening', () => {
-    const { tracker, ended, tick } = rig();
+  it('two openings overlapping on one window track nothing, so nothing is ended wrongly', () => {
+    const { tracker, ended, tick, expire } = rig();
     const win = host();
 
-    tracker.trackOpening('s1', win, 'Go on?');
-    win.sheets.push({ id: 'late', text: 'Go on?' });
+    tracker.trackOpening('a', win, 'Same', 'alert');
+    tracker.trackOpening('b', win, 'Same', 'alert');
+    win.sheets.push(alertBox('first', 'Same'), alertBox('second', 'Same'));
     tick();
-    tracker.closeIfStale('s1');
+    tracker.closeIfStale('b');
+    tracker.closeIfStale('a');
+    expire();
 
-    expect(ended).toEqual(['late']);
-    expect(SHEET_RETRY_MS * SHEET_RETRIES).toBeGreaterThanOrEqual(300);
-  });
-
-  it('ends the sheet as soon as it is found when the dialog closed first', () => {
-    const { tracker, ended, released, tick } = rig();
-    const win = host();
-
-    tracker.trackOpening('s1', win, 'Go on?');
-    tracker.closeIfStale('s1');
-    win.sheets.push({ id: 'late', text: 'Go on?' });
-    tick();
-
-    expect(ended).toEqual(['late']);
-    expect(released).toEqual(['late']);
-  });
-
-  it('a page looping dialogs: the next opening keeps an answered one that is still looking for its sheet', () => {
-    // alert(1) is answered before its sheet can be read, and alert(2) opens at once.
-    const { tracker, ended, tick } = rig();
-    const win = host();
-
-    tracker.trackOpening('loop', win, 'loop 1');
-    tracker.closeIfStale('loop');
-    tracker.trackOpening('loop', win, 'loop 2');
-    win.sheets.push({ id: 'one', text: 'loop 1' }, { id: 'two', text: 'loop 2' });
-    tick();
-    tracker.closeIfStale('loop');
-
-    expect(ended).toEqual(['one', 'two']);
+    expect(ended).toEqual([]);
   });
 
   it('a person who already clicked the box leaves nothing to end', () => {
     const { tracker, ended, released } = rig();
     const win = host();
-    const box = { id: 'box', text: 'Sure?' };
-    win.sheets.push(box);
+    win.sheets.push(alertBox('box', 'Sure?'));
 
-    tracker.trackOpening('s1', win, 'Sure?');
-    win.sheets = []; // the person clicked it
+    tracker.trackOpening('s1', win, 'Sure?', 'alert');
+    win.sheets = [];
     tracker.closeIfStale('s1');
 
     expect(ended).toEqual([]);
     expect(released).toEqual(['box']);
   });
 
-  it('compares identity at close, so a new box with the same text at the same place is left alone', () => {
-    const { tracker, ended } = rig();
+  it('a box being ended is never claimed again while it is still listed', () => {
+    const { tracker, ended, tick, expire } = rig();
     const win = host();
-    const first = { id: 'first', text: 'Sure?' };
-    win.sheets.push(first);
+    const box = alertBox('box', 'Same');
+    win.sheets.push(box);
 
-    tracker.trackOpening('s1', win, 'Sure?');
-    win.sheets = [{ id: 'other', text: 'Sure?' }]; // someone else's box now sits where it was
+    tracker.trackOpening('s1', win, 'Same', 'alert');
     tracker.closeIfStale('s1');
+    // Ending runs on the next turn: the box is still listed when s2 opens.
+    tracker.trackOpening('s2', win, 'Same', 'alert');
+    tracker.closeIfStale('s2');
+    tick();
+    expire();
 
-    expect(ended).toEqual([]);
+    expect(ended).toEqual(['box']);
   });
 
-  it('pairs openings in order per window: two tabs with the same text never swap sheets', () => {
-    // A person's tab opens "Are you sure?" first, before its sheet can be read.
-    // An agent's tab then opens the same text, and its read runs while the
-    // person's retry is still pending. The sheet it finds is the person's.
-    const { tracker, ended, tick } = rig();
+  it('a crashed or unregistered tab: a box it owns is ended, not just let go', () => {
+    const { tracker, ended, released } = rig();
     const win = host();
-    const personSheet = { id: 'person', text: 'Are you sure?' };
-    const agentSheet = { id: 'agent', text: 'Are you sure?' };
+    win.sheets.push(alertBox('box', 'Hi'));
 
-    tracker.trackOpening('person-tab', win, 'Are you sure?');
-    win.sheets.push(personSheet);
-    tracker.trackOpening('agent-tab', win, 'Are you sure?');
-    win.sheets.push(agentSheet);
-    tick();
-    tick();
+    tracker.trackOpening('s1', win, 'Hi', 'alert');
+    tracker.forget('s1');
 
-    tracker.closeIfStale('agent-tab'); // the agent's dialog was answered
-    expect(ended).toEqual(['agent']);
-    expect(win.sheets).toEqual([personSheet]); // the person's box is still up
+    expect(ended).toEqual(['box']);
+    expect(released).toEqual(['box']);
   });
 
-  it('a later opening waits its turn instead of taking an earlier opening\'s sheet', () => {
-    const { tracker, ended, tick, tickLatestFirst } = rig();
+  it('a failing end still releases what was retained, and the next dialog still works', () => {
+    let failEnd = true;
+    const { tracker, ended, released, logs } = rig({ failOn: (op) => op === 'endLater' && failEnd });
     const win = host();
+    win.sheets.push(alertBox('one', 'A'));
 
-    tracker.trackOpening('a', win, 'Same');
-    tracker.trackOpening('b', win, 'Same');
-    win.sheets.push({ id: 'first', text: 'Same' });
-    tickLatestFirst(); // b reads before a does, and finds a's sheet
-    win.sheets.push({ id: 'second', text: 'Same' });
-    tick();
-    tick();
+    tracker.trackOpening('s1', win, 'A', 'alert');
+    tracker.closeIfStale('s1');
+    expect(released).toEqual(['one']);
+    expect(logs.some((l) => l.includes('endLater failed'))).toBe(true);
 
-    tracker.closeIfStale('b');
-    tracker.closeIfStale('a');
-    expect(ended).toEqual(['second', 'first']);
+    failEnd = false;
+    win.sheets.push(alertBox('two', 'B'));
+    tracker.trackOpening('s2', win, 'B', 'alert');
+    tracker.closeIfStale('s2');
+    expect(ended).toEqual(['two']);
   });
 
   it('keeps windows apart', () => {
     const { tracker, ended } = rig();
     const one = host('one');
     const two = host('two');
-    one.sheets.push({ id: 'on-one', text: 'Same' });
-    two.sheets.push({ id: 'on-two', text: 'Same' });
+    one.sheets.push(alertBox('on-one', 'Same'));
+    two.sheets.push(alertBox('on-two', 'Same'));
 
-    tracker.trackOpening('t2', two, 'Same');
+    tracker.trackOpening('t2', two, 'Same', 'alert');
     tracker.closeIfStale('t2');
 
     expect(ended).toEqual(['on-two']);
   });
 
-  it('forgetting a surface or its window releases what it held, without ending it', () => {
-    const { tracker, ended, released } = rig();
-    const win = host();
-    win.sheets.push({ id: 'x', text: 'A' }, { id: 'y', text: 'B' });
-
-    tracker.trackOpening('s1', win, 'A');
-    tracker.trackOpening('s2', win, 'B');
-    tracker.forget('s1');
-    tracker.forgetHost(win);
-    tracker.closeIfStale('s2');
-
-    expect(released).toEqual(['x', 'y']);
-    expect(ended).toEqual([]);
-  });
-
-  it('a failing port warns once, turns itself off and never throws into the dialog path', () => {
+  it('a port that cannot load warns once and never throws into the dialog path', () => {
     const warn = vi.fn();
     const tracker = createSheetTracker<FakeHost, FakeSheet>({
       port: () => { throw new Error('koffi missing'); },
       schedule: () => undefined,
+      now: () => 0,
       warn,
     });
     const win = host();
 
     expect(() => {
-      tracker.trackOpening('s1', win, 'A');
-      tracker.trackOpening('s2', win, 'B');
+      tracker.trackOpening('s1', win, 'A', 'alert');
+      tracker.trackOpening('s2', win, 'B', 'confirm');
       tracker.closeIfStale('s1');
       tracker.forget('s2');
     }).not.toThrow();

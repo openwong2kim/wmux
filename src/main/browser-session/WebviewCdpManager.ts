@@ -199,9 +199,9 @@ export class WebviewCdpManager {
   private guestSheets() {
     const sheets = createDialogSheets();
     return {
-      trackOpening: (surfaceId: string, message: string) => {
+      trackOpening: (surfaceId: string, message: string, type: string) => {
         const session = this.sessions.get(surfaceId);
-        sheets.trackOpening(surfaceId, session ? webContents.fromId(session.webContentsId) : undefined, message);
+        sheets.trackOpening(surfaceId, session ? webContents.fromId(session.webContentsId) : undefined, message, type);
       },
       closeIfStale: (surfaceId: string) => sheets.closeIfStale(surfaceId),
       forget: (surfaceId: string) => sheets.forget(surfaceId),
