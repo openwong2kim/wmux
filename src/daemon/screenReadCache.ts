@@ -32,9 +32,17 @@ interface Entry<T> {
 const entries = new WeakMap<object, Map<string, Entry<unknown>>>();
 const counters = new Map<string, ScreenReadCounters>();
 
+/**
+ * Kinds kept per session. A kind carries its read's depth (`text:300`), and
+ * callers pick depths freely, so the oldest kind is dropped past this.
+ */
+const KINDS_PER_SESSION = 4;
+
+/** Counted by the kind's family (`text`, `screen`, `pane`), a fixed set. */
 function count(kind: string): ScreenReadCounters {
-  let c = counters.get(kind);
-  if (!c) counters.set(kind, (c = { hits: 0, joins: 0, misses: 0 }));
+  const family = kind.split(':', 1)[0];
+  let c = counters.get(family);
+  if (!c) counters.set(family, (c = { hits: 0, joins: 0, misses: 0 }));
   return c;
 }
 
@@ -57,9 +65,12 @@ export function fencedRead<T>(
   if (!byKind) entries.set(owner, (byKind = new Map()));
   const known = byKind.get(kind) as Entry<T> | undefined;
   const c = count(kind);
-  if (known?.fence === fence) {
+  if (known?.fence === fence && (known.pending || 'value' in known)) {
+    byKind.delete(kind); // still in use: keep it the newest kind
+    byKind.set(kind, known as Entry<unknown>);
     if (known.pending) { c.joins++; return known.pending; }
-    if ('value' in known) { c.hits++; return Promise.resolve(known.value as T); }
+    c.hits++;
+    return Promise.resolve(known.value as T);
   }
   c.misses++;
   const entry: Entry<T> = { fence };
@@ -79,11 +90,16 @@ export function fencedRead<T>(
     },
   );
   entry.pending = pending;
+  byKind.delete(kind); // re-inserted last: the newest kind
   byKind.set(kind, entry as Entry<unknown>);
+  for (const oldest of byKind.keys()) {
+    if (byKind.size <= KINDS_PER_SESSION) break;
+    byKind.delete(oldest);
+  }
   return pending;
 }
 
-/** Copies of the counters by kind, for the daemon's diagnostics. */
+/** Copies of the counters by kind family, for the daemon's diagnostics. */
 export function screenReadCounters(): Record<string, ScreenReadCounters> {
   return Object.fromEntries([...counters].map(([kind, c]) => [kind, { ...c }]));
 }
