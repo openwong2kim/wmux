@@ -1,0 +1,74 @@
+{
+  "description": "Numbers are re-serialised the way V8 prints them.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"a\":1e21,\"b\":1.0,\"c\":-0,\"d\":12345678901234567890,\"e\":0.1,\"f\":1e-7,\"g\":123e-20,\"h\":5e-324,\"i\":1e400,\"j\":-1.5E+3,\"k\":100,\"l\":0.000001}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "a": 1e+21,
+                  "b": 1,
+                  "c": 0,
+                  "d": 12345678901234567000,
+                  "e": 0.1,
+                  "f": 1e-7,
+                  "g": 1.23e-18,
+                  "h": 5e-324,
+                  "i": null,
+                  "j": -1500,
+                  "k": 100,
+                  "l": 0.000001
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

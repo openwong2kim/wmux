@@ -1,0 +1,58 @@
+{
+  "description": "A payload cut at the cap no longer parses.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": {
+        "parts": [
+          "{\"session_id\":\"s1\",\"cwd\":\"/work/repo\",\"blob\":\"",
+          {
+            "repeat": "a",
+            "count": 1048600
+          },
+          "\"}"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "stdin-truncated",
+            "totalBytes": 1048576
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "malformed-stdin",
+            "error": "SyntaxError"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "description": "--gate with --permission-gate: the block reason goes to stderr, the verdict to stdout, exit 0.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1",
+    "CLAUDE_CODE_ENTRYPOINT": "cli"
+  },
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "r"
+            },
+            "permissionDecision": "allow"
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate",
+        "--permission-gate"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"cwd\":\"/work/repo\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"allow\"}}\n",
+        "stderr": "r\n",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "main"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "gate-blocked",
+            "target": "main"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "permission-gate",
+            "target": "main",
+            "verdict": "allow"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.awaiting_permission",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "ptyId": "pty-1",
+                "entrypoint": "cli",
+                "cwd": "/work/repo",
+                "payload": {
+                  "session_id": "s1",
+                  "cwd": "/work/repo"
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

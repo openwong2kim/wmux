@@ -1,0 +1,74 @@
+{
+  "description": "WMUX_TMUX_TARGET answers for tmux, and a WSL distro rides along.",
+  "env": {
+    "TMUX": "/tmp/tmux-1/default,1,0",
+    "WMUX_TMUX_TARGET": "work:sub:3",
+    "WSL_DISTRO_NAME": "Ubuntu"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "UserPromptSubmit"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"prompt\":\"x\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.user_prompt_submit",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "where": {
+                  "kind": "tmux",
+                  "session": "work:sub",
+                  "window": "3",
+                  "wslDistro": "Ubuntu"
+                },
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "prompt": "x"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

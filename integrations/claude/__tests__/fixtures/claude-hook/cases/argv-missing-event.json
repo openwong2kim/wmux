@@ -1,0 +1,32 @@
+{
+  "description": "No event at all is the same unknown-hook-name exit.",
+  "steps": [
+    {
+      "argv": [],
+      "stdin": {
+        "hold": true
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "?",
+            "outcome": "unknown-hook-name",
+            "argv": [
+              "<node>",
+              "<bridge>"
+            ]
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}
