@@ -3,6 +3,7 @@ import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import type { SnapshotRequest, TextSnapshotOutcome } from './HeadlessSnapshot';
 import { generateRustSnapshot } from './RustSnapshot';
 import { withSnapshotShadow } from './SnapshotShadow';
+import { countReason, refusalFamily, type SnapshotReasons } from './snapshotBackendReasons';
 
 type Reference = (req: SnapshotRequest) => Promise<TextSnapshotOutcome>;
 type Reason = 'native' | 'error' | 'budget' | 'live-drain' | 'limits' | 'circuit-open';
@@ -10,13 +11,15 @@ interface Diagnostics {
   native: number;
   fallbacks: number;
   skipped: number;
+  /** Each fallback and skip, by reason (a native refusal by its `unsupported-*` family). */
+  reasons: SnapshotReasons;
   last?: { backend: 'rust' | 'xterm'; reason: Reason };
 }
-const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0 };
+const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0, reasons: {} };
 let failedModule: { path: string | undefined } | undefined;
 
 export function getTextSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean } {
-  return { ...diagnostics, last: diagnostics.last && { ...diagnostics.last },
+  return { ...diagnostics, reasons: { ...diagnostics.reasons }, last: diagnostics.last && { ...diagnostics.last },
     circuitOpen: !!failedModule && failedModule.path === (process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE) };
 }
 
@@ -53,6 +56,7 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
   const skip = req.drainQueue ? 'live-drain' : !nativeSnapshotEligible(req) ? 'limits' : failedModule ? 'circuit-open' : undefined;
   if (skip) {
     diagnostics.skipped++;
+    countReason(diagnostics.reasons, skip);
     diagnostics.last = { backend: 'xterm', reason: skip };
     return reference(req);
   }
@@ -61,6 +65,7 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
   if (!Number.isFinite(budget) || budget < 0) return reference(req);
   if (budget === 0) return { ok: false, reason: 'budget' };
   let failure: 'error' | 'budget' = 'error';
+  let refusal: string | undefined;
   try {
     // Reserve half of the caller's total budget for fallback. Neither retry
     // restarts the original deadline; the shared snapshot queue stays held.
@@ -72,9 +77,11 @@ export async function selectTextSnapshot(req: SnapshotRequest, xterm: Reference)
       return { ...native, durationMs: performance.now() - started };
     }
     if (!native.ok && native.reason === 'budget') failure = 'budget';
+    if (!native.ok) refusal = native.detail;
   } catch { /* Module or disposal errors also use the intact xterm input. */ }
   if (failure === 'error') failedModule = { path: modulePath };
   diagnostics.fallbacks++;
+  countReason(diagnostics.reasons, failure === 'budget' ? failure : refusalFamily(refusal, failure));
   diagnostics.last = { backend: 'xterm', reason: failure };
   const remaining = budget - (performance.now() - started);
   if (remaining <= 0) return { ok: false, reason: 'budget' };

@@ -59,4 +59,27 @@ describe('memory diagnostics', () => {
     expect(text).toContain('not swap attribution');
     expect(text).toContain('Do not add them to RSS');
   });
+
+  it('shows native snapshot use with its fallback reasons, most frequent first', () => {
+    const counters = (native: number, fallbacks: number, reasons: Record<string, number>) =>
+      ({ native, fallbacks, skipped: 0, circuitOpen: false, reasons });
+    const daemon = {
+      pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [],
+      snapshots: { ansi: counters(40, 3, { 'unsupported-state': 1, 'unsupported-history-limit': 2 }), text: counters(9, 0, {}) },
+    };
+    const text = renderMemoryDiagnostics(undefined, daemon, { available: false, reason: 'n/a' });
+    expect(text).toContain('native ansi snapshots: 40 native, 3 not served natively, 0 skipped (unsupported-history-limit 2, unsupported-state 1)');
+    expect(text).toContain('native text snapshots: 9 native, 0 not served natively, 0 skipped\n');
+  });
+
+  it('rejects malformed snapshot counters from a mixed-version daemon, and accepts their absence', () => {
+    const base = { pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [] };
+    const ok = { native: 1, fallbacks: 0, skipped: 0, circuitOpen: false, reasons: { budget: 1 } };
+    expect(isDaemonMemoryDiagnostics(base)).toBe(true);
+    expect(isDaemonMemoryDiagnostics({ ...base, snapshots: { ansi: ok, text: ok } })).toBe(true);
+    for (const snapshots of [null, { ansi: null, text: ok }, { ansi: ok }, { ansi: ok, text: { ...ok, reasons: { budget: -1 } } },
+      { ansi: ok, text: { ...ok, circuitOpen: 'no' } }, { ansi: ok, text: ok, extra: {} }]) {
+      expect(isDaemonMemoryDiagnostics({ ...base, snapshots })).toBe(false);
+    }
+  });
 });

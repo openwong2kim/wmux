@@ -25,6 +25,21 @@ export interface DaemonMemoryDiagnostics {
    * (nothing moved), joined to one still running, or parsed. Absent from older daemons.
    */
   screenReads?: Record<string, { hits: number; joins: number; misses: number }>;
+  /**
+   * Native (Rust) snapshot use by backend: answered natively, fell back to
+   * xterm after trying, or skipped straight to xterm. `reasons` counts each
+   * fallback and skip. Absent from older daemons.
+   */
+  snapshots?: { ansi: SnapshotBackendCounters; text: SnapshotBackendCounters };
+}
+
+export interface SnapshotBackendCounters {
+  native: number;
+  fallbacks: number;
+  skipped: number;
+  /** The native module failed and is bypassed until it changes. */
+  circuitOpen: boolean;
+  reasons: Record<string, number>;
 }
 
 export interface AppMemoryDiagnostics {
@@ -40,13 +55,22 @@ function counters(value: Record<string, unknown>, keys: string[]): boolean {
   return keys.every((key) => typeof value[key] === 'number' && Number.isFinite(value[key]) && (value[key] as number) >= 0);
 }
 
+function snapshotBackendCounters(value: unknown): boolean {
+  return record(value) && counters(value, ['native', 'fallbacks', 'skipped']) &&
+    typeof value.circuitOpen === 'boolean' && record(value.reasons) &&
+    counters(value.reasons, Object.keys(value.reasons));
+}
+
 export function isDaemonMemoryDiagnostics(value: unknown): value is DaemonMemoryDiagnostics {
   return record(value) && counters(value, ['pid', 'rssBytes', 'heapUsedBytes', 'heapTotalBytes', 'externalBytes', 'arrayBuffersBytes']) &&
     Array.isArray(value.sessions) && value.sessions.every((session: unknown) =>
       record(session) && typeof session.id === 'string' && typeof session.state === 'string' &&
       counters(session, ['ringStoredBytes', 'ringAllocatedBytes', 'ringCapacityBytes', 'socketQueuedBytes', 'socketPeakQueuedBytes', 'resyncQueuedBytes'])) &&
     (value.hibernation === undefined || (record(value.hibernation) && counters(value.hibernation, ['sessions', 'freedBytes']) &&
-      (value.hibernation.wakeFailures === undefined || counters(value.hibernation, ['wakeFailures']))));
+      (value.hibernation.wakeFailures === undefined || counters(value.hibernation, ['wakeFailures'])))) &&
+    (value.snapshots === undefined || (record(value.snapshots) &&
+      snapshotBackendCounters(value.snapshots.ansi) && snapshotBackendCounters(value.snapshots.text) &&
+      Object.values(value.snapshots).every(snapshotBackendCounters)));
 }
 
 export function isAppMemoryDiagnostics(value: unknown): value is AppMemoryDiagnostics {
