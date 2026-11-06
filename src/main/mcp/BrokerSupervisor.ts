@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
 import { canConnectBrokerPipe } from './brokerProbe';
+import { parseBrokerConnectionsReport, type BrokerStatus } from '../../shared/mcpSessions';
 
 /**
  * Supervises the shared MCP broker process (Option A,
@@ -36,10 +37,30 @@ export class BrokerSupervisor {
   private scriptMissing = false;
   /** Exit-75 reclaim probe (W2): live only while standing down for another broker. */
   private reclaimTimer: NodeJS.Timeout | null = null;
+  /** When the current child was spawned; null while none runs. */
+  private childStartedAt: number | null = null;
+  /** Open connections, as the current child last reported them. */
+  private connections = 0;
+  private crashExits = 0;
+  private standDowns = 0;
 
   /** The running broker's pid, for telling its relayed calls apart (peer pid measurement). */
   get pid(): number | null {
     return this.child?.pid ?? null;
+  }
+
+  /** Counts for `wmux doctor` (mcp.sessions.summary). */
+  status(): BrokerStatus {
+    const pid = this.child?.pid ?? null;
+    return {
+      running: pid !== null,
+      pid,
+      uptimeS: this.child && this.childStartedAt !== null ? Math.floor((Date.now() - this.childStartedAt) / 1000) : null,
+      connections: this.child ? this.connections : 0,
+      crashExits: this.crashExits,
+      standDowns: this.standDowns,
+      standingDown: this.reclaimTimer !== null,
+    };
   }
 
   /** Resolve the broker script for the current build layout. */
@@ -77,11 +98,21 @@ export class BrokerSupervisor {
     const startedAt = Date.now();
     const child = spawn(process.execPath, [script], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-      stdio: ['ignore', 'ignore', 'pipe'],
+      // The IPC channel carries the broker's connection reports; stdout stays
+      // ignored, since a hosted server's stray console.log would land there.
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
       windowsHide: true,
     });
     this.child = child;
+    this.childStartedAt = startedAt;
+    this.connections = 0;
     console.log(`[BrokerSupervisor] broker started pid=${child.pid}`);
+
+    child.on('message', (message: unknown) => {
+      if (this.child !== child) return;
+      const open = parseBrokerConnectionsReport(message);
+      if (open !== null) this.connections = open;
+    });
 
     child.stderr?.on('data', (chunk: Buffer) => {
       const line = chunk.toString('utf8').trim();
@@ -94,8 +125,9 @@ export class BrokerSupervisor {
     const scheduleRestart = (reason: string) => {
       if (settled) return;
       settled = true;
-      this.child = null;
+      this.clearChild();
       if (this.stopped) return;
+      this.crashExits++;
       if (Date.now() - startedAt > STABLE_MS) this.restarts = 0;
       const delay = RESTART_BACKOFF_MS[Math.min(this.restarts, RESTART_BACKOFF_MS.length - 1)];
       this.restarts++;
@@ -117,7 +149,7 @@ export class BrokerSupervisor {
 
     child.on('exit', (code, signal) => {
       if (this.stopped) {
-        this.child = null;
+        this.clearChild();
         settled = true;
         return;
       }
@@ -126,14 +158,21 @@ export class BrokerSupervisor {
         // old instance). The pipe is served either way — do not fight it, but
         // keep probing: if that other broker later dies, nothing else would
         // reclaim the orphaned pipe and every shim would be stranded (W2).
-        this.child = null;
+        this.clearChild();
         settled = true;
+        this.standDowns++;
         console.log('[BrokerSupervisor] pipe already served by another broker; standing down');
         this.startReclaimProbe();
         return;
       }
       scheduleRestart(`broker exited code=${code} signal=${signal}`);
     });
+  }
+
+  private clearChild(): void {
+    this.child = null;
+    this.childStartedAt = null;
+    this.connections = 0;
   }
 
   /**
@@ -192,7 +231,7 @@ export class BrokerSupervisor {
     }
     if (this.child) {
       this.child.kill();
-      this.child = null;
+      this.clearChild();
     }
   }
 

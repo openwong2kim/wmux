@@ -123,3 +123,85 @@ describe('BrokerSupervisor exit-75 reclaim (W2)', () => {
     vi.useRealTimers();
   });
 });
+
+describe('BrokerSupervisor status', () => {
+  it('spawns the broker with an IPC channel and stdout still ignored', () => {
+    vi.mocked(spawn).mockReturnValue(makeChild() as never);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    const opts = vi.mocked(spawn).mock.calls[0][2] as { stdio: unknown[] };
+    expect(opts.stdio).toEqual(['ignore', 'ignore', 'pipe', 'ipc']);
+    sup.stop();
+  });
+
+  it('takes the connection count only from the exact report shape', () => {
+    const child = makeChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    child.emit('message', { wmuxBroker: 'connections', open: 3 });
+    expect(sup.status().connections).toBe(3);
+    for (const bad of [
+      { wmuxBroker: 'connections', open: -1 },
+      { wmuxBroker: 'connections', open: 1.5 },
+      { wmuxBroker: 'connections', open: '7' },
+      { wmuxBroker: 'connections', open: 7, extra: 1 },
+      { wmuxBroker: 'other', open: 7 },
+      [7],
+      'connections=7',
+      null,
+    ]) {
+      child.emit('message', bad);
+    }
+    expect(sup.status().connections).toBe(3);
+    sup.stop();
+  });
+
+  it('counts crash exits and stand-downs apart, and an exit drops the connections', () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    const second = makeChild();
+    vi.mocked(spawn).mockReturnValueOnce(first as never).mockReturnValueOnce(second as never);
+    vi.mocked(canConnectBrokerPipe).mockResolvedValue(true);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    expect(sup.status()).toMatchObject({ running: true, pid: 4321, crashExits: 0, standDowns: 0, standingDown: false });
+    first.emit('message', { wmuxBroker: 'connections', open: 2 });
+    first.emit('exit', 1, null);
+    expect(sup.status()).toMatchObject({ running: false, pid: null, connections: 0, crashExits: 1 });
+    vi.advanceTimersByTime(500); // backoff restart
+    second.emit('exit', 75, null);
+    expect(sup.status()).toMatchObject({ running: false, crashExits: 1, standDowns: 1, standingDown: true });
+    sup.stop();
+    vi.useRealTimers();
+  });
+
+  it('counts a failed spawn once, and an exit after stop() not at all', () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    const second = makeChild();
+    vi.mocked(spawn).mockReturnValueOnce(first as never).mockReturnValueOnce(second as never);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    first.emit('error', new Error('EPERM'));
+    first.emit('exit', null, null);
+    expect(sup.status().crashExits).toBe(1);
+    vi.advanceTimersByTime(500);
+    sup.stop();
+    second.emit('exit', null, 'SIGTERM');
+    expect(sup.status().crashExits).toBe(1);
+    vi.useRealTimers();
+  });
+
+  it('reports uptime from the current child start', () => {
+    vi.useFakeTimers();
+    vi.mocked(spawn).mockReturnValue(makeChild() as never);
+    const sup = new BrokerSupervisor();
+    expect(sup.status()).toMatchObject({ running: false, uptimeS: null });
+    sup.start();
+    vi.advanceTimersByTime(65_000);
+    expect(sup.status().uptimeS).toBe(65);
+    sup.stop();
+    vi.useRealTimers();
+  });
+});

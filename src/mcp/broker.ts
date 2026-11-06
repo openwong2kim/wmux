@@ -38,6 +38,7 @@ import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { selfCheckPeerPid } from '../shared/peerPid';
+import { createConnectionReporter, type ReportChannel } from './brokerConnectionReporter';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -86,6 +87,9 @@ function tokenMatches(presented: string | undefined, expected: string): boolean 
 }
 
 let connSeq = 0;
+
+/** Open hosted connections, reported to the supervisor for `wmux doctor`. */
+const connectionReporter = createConnectionReporter(process as unknown as ReportChannel);
 
 /** How long a connection may sit without completing the wmuxShim handshake. */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -182,6 +186,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   });
 
   socket.on('error', (err) => log(`socket error: ${err.message}`));
+  connectionReporter.opened();
 
   // A shim exit closes the socket but does not, on its own, fire the MCP
   // transport's onclose — so drive it explicitly. transport.close() invokes the
@@ -191,6 +196,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   const teardown = () => {
     if (torndown) return;
     torndown = true;
+    connectionReporter.closed();
     void transport?.close();
   };
   socket.on('close', teardown);
