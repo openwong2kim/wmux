@@ -532,6 +532,19 @@ fn a_differing_name_rides_on_the_runs_own_line() {
     );
 }
 
+#[test]
+fn without_a_bridge_beside_it_the_named_one_is_noted_with_none_used() {
+    let case = Case::new("named-no-bridge", None);
+    quiet(&case.run_argv(&["/elsewhere/wmux-bridge.mjs".into(), "Stop".into()], &[], true, "{}"));
+    assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
+    let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
+    assert!(
+        log.contains(r#""bridgeNamed":"/elsewhere/wmux-bridge.mjs","impl":"native"}"#),
+        "{log}"
+    );
+    assert!(!log.contains("bridgeUsed"), "{log}");
+}
+
 /// A main that answers every request with `{"id", "ok": true, "result"}`;
 /// the socket's path, under the system temp dir (sun_path is short).
 fn stub_main(tag: &str, result: &'static str) -> String {
