@@ -364,7 +364,7 @@ fn resolve_targets() -> Vec<Target> {
 }
 
 /// A v4 UUID from the OS generator, as crypto.randomUUID() formats it.
-fn random_uuid() -> String {
+pub fn random_uuid() -> String {
     let mut b = crate::os_random::bytes16();
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;

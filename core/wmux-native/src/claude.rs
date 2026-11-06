@@ -89,6 +89,7 @@ pub fn parse_stdin(bytes: &[u8]) -> Result<Option<Json>, ()> {
 /// takes the new value, as object spread does; `None` is `undefined`, which
 /// JSON.stringify leaves out. The object is stringified as V8 orders it
 /// (index-like keys first). `hook` is the event argument, `"?"` when absent.
+/// `"impl":"native"` closes every line, so a log tells the two bridges apart.
 pub fn log_line(ts_ms: u64, pid: u32, hook: Option<&[u16]>, outcome: &str, extra: Vec<(&str, Option<Json>)>) -> String {
     let mut fields: Vec<(&str, Option<Json>)> = vec![
         ("ts", Some(Json::Str(js::js(&iso_time(ts_ms))))),
@@ -106,6 +107,8 @@ pub fn log_line(ts_ms: u64, pid: u32, hook: Option<&[u16]>, outcome: &str, extra
             None => fields.push((key, value)),
         }
     }
+    // The native bridge marks its lines, after everything Node would write.
+    fields.push(("impl", Some(Json::Str(js::js("native")))));
     let object = Json::Obj(
         fields
             .into_iter()
@@ -245,7 +248,7 @@ mod tests {
         // argv-missing-event: no event is "?".
         assert_eq!(
             log_line(0, 7, None, "unknown-hook-name", vec![]),
-            r#"{"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":7,"hook":"?","outcome":"unknown-hook-name"}"#
+            r#"{"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":7,"hook":"?","outcome":"unknown-hook-name","impl":"native"}"#
         );
         // spool-user-prompt-submit: an undefined detail is left out.
         assert_eq!(
@@ -261,7 +264,7 @@ mod tests {
                     ("detail", None),
                 ]
             ),
-            r#"{"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":7,"hook":"Stop","outcome":"rpc-failed","target":"main","error":"timeout"}"#
+            r#"{"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":7,"hook":"Stop","outcome":"rpc-failed","target":"main","error":"timeout","impl":"native"}"#
         );
     }
 
@@ -276,7 +279,7 @@ mod tests {
             vec![("hook", Some(Json::Str(js("Stop"))))],
         );
         assert!(
-            line.contains(r#""pid":1,"hook":"Stop","outcome":"headless-skipped"}"#),
+            line.contains(r#""pid":1,"hook":"Stop","outcome":"headless-skipped","impl":"native"}"#),
             "{line}"
         );
         // An undefined value over a base key removes the key.
@@ -288,7 +291,7 @@ mod tests {
             Json::Str(js("/h/.wmux-auth-token")),
         ]);
         assert!(log_line(0, 1, None, "no-auth-token", vec![("paths", Some(paths))])
-            .ends_with(r#""outcome":"no-auth-token","paths":["/h/.wmux/daemon-auth-token","/h/.wmux-auth-token"]}"#));
+            .ends_with(r#""outcome":"no-auth-token","paths":["/h/.wmux/daemon-auth-token","/h/.wmux-auth-token"],"impl":"native"}"#));
     }
 
     #[test]
@@ -303,7 +306,7 @@ mod tests {
         );
         assert_eq!(
             line,
-            r#"{"1":1,"9":9,"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":1,"hook":"Stop","outcome":"x"}"#
+            r#"{"1":1,"9":9,"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":1,"hook":"Stop","outcome":"x","impl":"native"}"#
         );
     }
 
