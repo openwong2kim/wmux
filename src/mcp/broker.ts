@@ -53,6 +53,17 @@ interface ShimHandshake {
   coreMode?: boolean;
   /** Optional `--role=<Role>` value; absent from an older shim (full surface). */
   roleSurface?: string;
+  /** Additive: `1` asks for one broker line, `{"wmuxBroker":1,"ok":…}`, as
+   *  the first bytes on the connection: ok:true once the session's server is
+   *  created, ok:false when it is refused. Absent from shim.ts and older
+   *  shims, which get no such line. */
+  ack?: number;
+}
+
+/** The answer to a handshake that asked for one (`ack: 1`): always the first
+ *  bytes the shim reads. The native shim forwards no stdin until it arrives. */
+function brokerAckLine(ok: boolean, error?: string): string {
+  return JSON.stringify(ok ? { wmuxBroker: 1, ok } : { wmuxBroker: 1, ok, error }) + '\n';
 }
 
 function readAuthToken(): string | undefined {
@@ -121,6 +132,15 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
 
     // The remaining socket bytes are line-framed MCP JSON-RPC — exactly what
     // StdioServerTransport speaks; it accepts any Readable/Writable pair.
+    // The session's server exists: answer a shim that asked, before connect.
+    // The socket stays paused from the handshake read until the resume() after
+    // this function returns (transport.start() only adds a 'data' listener,
+    // which does not resume an explicitly paused stream), so bytes the shim
+    // sends on the ack wait in the socket until the scope wrappers below are in
+    // place. If connect then rejects, the caller destroys the socket: the shim,
+    // already pumping, exits 1.
+    if (handshake.ack === 1) socket.write(brokerAckLine(true));
+
     transport = new StdioServerTransport(socket, socket);
     await server.connect(transport);
 
@@ -230,9 +250,11 @@ function main(): void {
         socket.destroy();
         return;
       }
+      const wantsAck = handshake.ack === 1;
       if (!tokenMatches(handshake.authToken, expectedToken)) {
         console.error('[wmux-mcp-broker] auth failed, dropping connection');
-        socket.destroy();
+        if (wantsAck) socket.end(brokerAckLine(false, 'auth'), () => socket.destroy());
+        else socket.destroy();
         return;
       }
 

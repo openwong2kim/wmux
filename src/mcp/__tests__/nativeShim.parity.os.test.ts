@@ -5,10 +5,15 @@
 // line, then drops the connection. The test compares the line byte for byte
 // (callerPid masked: each shim reports its own pid), the parsed values and
 // their key order, and the exit code, stdout and stderr that follow. Cases with
-// no token or no broker compare the refusal instead (the unreachable message
-// is node's err.message for the connect). DIVERGENCES records where the native
-// shim differs on purpose: each runs both and asserts both outcomes, so the
-// difference stays recorded rather than ignored.
+// no token or no broker compare the refusal instead: shim.ts prints node's
+// err.message for the connect, the native shim its fallback reason (`no
+// broker`) and the places it looked for a full bundle (the binary under test
+// runs from a directory of its own, so there is none, and it then exits 1 as
+// shim.ts does). DIVERGENCES records where the native shim differs on purpose:
+// each runs both and asserts both outcomes, so the difference stays recorded
+// rather than ignored. The native handshake also ends with `"ack":1` (the
+// broker ack; everything before it is shim.ts's bytes), checked in place, and
+// the stub answers a handshake that asks for the ack, as the broker does.
 //
 // shim.ts is bundled from source with esbuild, so the test follows the source
 // rather than a stale build. The binary is WMUX_NATIVE_HOOKS_BIN, else the
@@ -90,6 +95,9 @@ const CASES: Case[] = [
 
 let home = '';
 let jsShim = '';
+/** A copy of the binary alone in a directory, so it finds no full bundle to
+ *  fall back to wherever the build under test sits. */
+let loneNative = '';
 let seq = 0;
 
 function pipeName(suffix: string): string {
@@ -125,6 +133,9 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
         const nl = buf.indexOf(0x0a);
         if (nl === -1 || line !== null) return;
         line = buf.subarray(0, nl + 1).toString('utf8');
+        // Answer a shim that asks for the ack, as the broker does once it has
+        // hosted the session (the native shim waits for it; shim.ts never asks).
+        if (JSON.parse(line).ack === 1) sock.write('{"wmuxBroker":1,"ok":true}\n');
         if (broker === 'hangup') { sock.destroy(); return; }
         if (broker === 'reset') {
           // Stop reading, then have the host send two lines the shim forwards
@@ -155,7 +166,7 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
   }
   const [cmd, ...args] = runtime === 'js'
     ? [process.execPath, jsShim, ...(c.args ?? [])]
-    : [NATIVE ?? EXE, 'mcp-shim', ...(c.args ?? [])];
+    : [loneNative, 'mcp-shim', ...(c.args ?? [])];
   const proc = spawn(cmd, args, { env: childEnv(suffix, c.env ?? {}), stdio: ['pipe', 'pipe', 'pipe'] });
   child = proc;
   let stdout = '';
@@ -220,12 +231,29 @@ function handshake(r: Run, who: string): string {
 
 const maskPid = (line: string) => line.replace(/"callerPid":\d+,/, '"callerPid":0,');
 
+/** The native handshake minus its additive last field, `"ack":1`. */
+function withoutAck(line: string): string {
+  expect(line, 'the native handshake ends with "ack":1').toMatch(/,"ack":1\}\n$/);
+  return line.replace(/,"ack":1\}\n$/, '}\n');
+}
+
+/** Native stderr with no broker: its one fallback-reason line in place of
+ *  shim.ts's connect error, then the missing-bundle line. A recorded
+ *  difference: the native shim falls back where shim.ts gives up. */
+function expectNoBrokerThenNoBundle(nativeStderr: string): void {
+  expect(nativeStderr).toMatch(/^\[wmux-mcp-shim\] no broker\n\[wmux-mcp-shim\] no full bundle to fall back to \(looked at .*index\.js\)\n$/);
+}
+
 describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshake parity', () => {
   beforeAll(() => {
     if (!NATIVE) throw new Error('WMUX_REQUIRE_NATIVE_HOOKS=1 but no wmux-native binary was found');
     // macOS caps sun_path at 104 bytes; a runner's TMPDIR is already long.
     home = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'nsp-'));
     jsShim = path.join(home, 'shim.cjs');
+    fs.mkdirSync(path.join(home, 'lone'));
+    loneNative = path.join(home, 'lone', EXE);
+    fs.copyFileSync(NATIVE, loneNative);
+    fs.chmodSync(loneNative, 0o755);
     buildSync({
       entryPoints: [path.join(REPO_ROOT, 'src', 'mcp', 'shim.ts')],
       bundle: true,
@@ -247,14 +275,14 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
       const jsLine = handshake(js, 'JS');
       const nativeLine = handshake(native, 'native');
       const j = JSON.parse(jsLine);
-      const n = JSON.parse(nativeLine);
+      const n = JSON.parse(withoutAck(nativeLine));
       expect(j.callerPid).toBe(js.pid);
       expect(n.callerPid).toBe(native.pid);
       expect(j.callerPpid).toBe(process.pid);
       expect(n.callerPpid).toBe(process.pid);
       expect(Object.keys(n)).toEqual(Object.keys(j));
       expect({ ...n, callerPid: 0 }).toEqual({ ...j, callerPid: 0 });
-      expect(maskPid(nativeLine)).toBe(maskPid(jsLine));
+      expect(maskPid(withoutAck(nativeLine))).toBe(maskPid(jsLine));
       // The broker hung up: both report it the same way.
       expect(native.code).toBe(js.code);
       expect(native.code).toBe(1);
@@ -277,16 +305,16 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
     expect(native.code).toBe(js.code);
     expect(native.code).toBe(1);
     expect(native.stdout).toBe(js.stdout);
-    expect(native.stderr).toBe(js.stderr);
-    expect(native.stderr).toMatch(/^\[wmux-mcp-shim\] cannot reach broker at (.+): connect ENOENT \1\n$/);
+    expectNoBrokerThenNoBundle(native.stderr);
+    expect(js.stderr).toMatch(/^\[wmux-mcp-shim\] cannot reach broker at (.+): connect ENOENT \1\n$/);
   }, 20_000);
 
   it.skipIf(isWin)('a stale socket: the same ECONNREFUSED refusal', async () => {
     const { js, native } = await both({ name: 'stale socket', tokenFile: 'tok', broker: 'none' }, plantStaleSocket);
     expect(native.code).toBe(1);
     expect(native.code).toBe(js.code);
-    expect(native.stderr).toBe(js.stderr);
-    expect(native.stderr).toMatch(/: connect ECONNREFUSED /);
+    expectNoBrokerThenNoBundle(native.stderr);
+    expect(js.stderr).toMatch(/: connect ECONNREFUSED /);
   }, 20_000);
 
   // A Unix socket closed with unread bytes resets its peer on Linux only;
