@@ -287,18 +287,9 @@ pub fn log_event(flavour: Option<&Flavour>, outcome: &str, extra: Vec<(&str, Opt
 
 fn append_log(flavour: Option<&Flavour>, line: &str) {
     let dir = paths::wmux_home_dir();
-    if !std::path::Path::new(&dir).exists() {
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        let _ = builder.create(&dir);
-    }
+    crate::fsx::ensure_dir(&dir, 0o700);
     let file = flavour.map_or("hooks-bridge.log", |f| f.log_file.as_str());
-    let path = paths::join(&[&dir, file]);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = std::io::Write::write_all(&mut f, line.as_bytes());
-    }
+    let _ = crate::fsx::append(&paths::join(&[&dir, file]), line.as_bytes());
 }
 
 /// `String(x).slice(0, n)` on UTF-16 units.
@@ -466,7 +457,7 @@ pub fn run_hook(flavour_id: Option<&[u16]>, argv_event: Option<&[u16]>) {
         line.push_str("}\n");
         line
     };
-    let (result, target) = rpc::send_to_targets(&targets, build_line, &js(&request_id), &kind);
+    let (result, target) = rpc::send_to_targets(&targets, build_line, &js(&request_id), &kind, &rpc::SHARED_POLICY);
     let outer_ok = result.get("ok") == Some(&Json::Bool(true));
     let inner = result.get("result");
     let inner_ok = outer_ok && inner.and_then(|r| r.get("ok")) == Some(&Json::Bool(true));

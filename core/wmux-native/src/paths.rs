@@ -76,9 +76,13 @@ pub fn daemon_auth_token_path() -> String {
 }
 
 pub fn pipe_name() -> String {
-    if let Some(v) = env_nonempty("WMUX_PIPE_NAME") {
-        return v;
-    }
+    env_nonempty("WMUX_PIPE_NAME").unwrap_or_else(main_pipe_name)
+}
+
+/// The main pipe's derived name, ignoring WMUX_PIPE_NAME (getPipeName in
+/// wmux-bridge.mjs, whose override is decided by the caller). On POSIX it
+/// lives under `os.homedir()`, not under USERPROFILE || HOME.
+pub fn main_pipe_name() -> String {
     if cfg!(windows) {
         return format!(r"\\.\pipe\wmux{}-{}", data_suffix(), username());
     }
@@ -112,7 +116,7 @@ pub fn read_token_file(path: &str) -> Option<String> {
 
 /// `os.userInfo().username || 'default'` on Windows.
 #[cfg(windows)]
-fn username() -> String {
+pub fn username() -> String {
     #[link(name = "advapi32")]
     extern "system" {
         fn GetUserNameW(buffer: *mut u16, size: *mut u32) -> i32;
@@ -134,7 +138,7 @@ fn username() -> String {
 }
 
 #[cfg(not(windows))]
-fn username() -> String {
+pub fn username() -> String {
     unreachable!("the username only names a Windows pipe")
 }
 

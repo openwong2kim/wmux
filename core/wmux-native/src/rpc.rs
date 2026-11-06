@@ -28,6 +28,25 @@ const TRANSIENT_CONNECT_CODES: [&str; 7] = [
 /// Re-delivery cannot corrupt these (the router dedups); a lost one stalls a pane.
 const IDEMPOTENT_KINDS: [&str; 2] = ["agent.stop", "agent.session_start"];
 
+/// How a walk over the targets spends its budget, and what it does with a
+/// request that was written but never answered. Each bridge has its own.
+pub struct WalkPolicy {
+    /// One deadline for the whole walk.
+    pub budget: Duration,
+    /// Split what is left evenly over the targets still to try, so a pipe that
+    /// accepts and then hangs cannot starve the fallback.
+    pub slice_per_target: bool,
+    /// Kinds sent on to the next target after a write that got no answer.
+    pub resend_after_write: &'static [&'static str],
+}
+
+/// wmux-hooks-bridge.mjs.
+pub const SHARED_POLICY: WalkPolicy = WalkPolicy {
+    budget: HOOK_TIMEOUT,
+    slice_per_target: true,
+    resend_after_write: &IDEMPOTENT_KINDS,
+};
+
 pub struct Target {
     pub name: &'static str,
     pub pipe: String,
@@ -184,27 +203,26 @@ fn send_rpc_with_retry(pipe: &str, line: &str, id: &[u16], deadline: Instant) ->
 }
 
 /// shouldTryNextTarget: advance when the request provably never reached a
-/// server, or when re-sending it is harmless.
-pub fn should_try_next_target(result: &Json, kind: &str) -> bool {
+/// server, or when the policy re-sends this kind after a lost answer.
+pub fn should_try_next_target(result: &Json, kind: &str, policy: &WalkPolicy) -> bool {
     if is_true(result.get("ok")) {
         return false;
     }
     if result.get("retryable") == Some(&Json::Bool(false)) {
-        return IDEMPOTENT_KINDS.contains(&kind);
+        return policy.resend_after_write.contains(&kind);
     }
     true
 }
 
-/// sendToTargets: one shared HOOK_TIMEOUT budget, sliced per remaining target
-/// so a pipe that accepts and then hangs cannot starve the fallback.
+/// sendToTargets: one budget for the whole walk, spent as `policy` says.
 pub fn send_to_targets<'t>(
     targets: &'t [Target],
     build_line: impl Fn(&Target) -> String,
     id: &[u16],
     kind: &str,
+    policy: &WalkPolicy,
 ) -> (Json, Option<&'t Target>) {
-    let start = Instant::now();
-    let deadline = start + HOOK_TIMEOUT;
+    let deadline = Instant::now() + policy.budget;
     let mut result = failure("no-target", None, None);
     let mut used = None;
     for (i, target) in targets.iter().enumerate() {
@@ -213,10 +231,14 @@ pub fn send_to_targets<'t>(
             break;
         }
         used = Some(target);
-        let slice_ms = ((remaining.as_millis() as u64) / (targets.len() - i) as u64).max(1);
-        let slice_deadline = Instant::now() + Duration::from_millis(slice_ms);
-        result = send_rpc_with_retry(&target.pipe, &build_line(target), id, slice_deadline);
-        if !should_try_next_target(&result, kind) {
+        let target_deadline = if policy.slice_per_target {
+            let slice_ms = ((remaining.as_millis() as u64) / (targets.len() - i) as u64).max(1);
+            Instant::now() + Duration::from_millis(slice_ms)
+        } else {
+            deadline
+        };
+        result = send_rpc_with_retry(&target.pipe, &build_line(target), id, target_deadline);
+        if !should_try_next_target(&result, kind, policy) {
             break;
         }
     }
@@ -459,30 +481,102 @@ mod tests {
         js::parse(&js::js(s)).unwrap()
     }
 
+    /// One target that reads the request and never answers, then one that
+    /// answers ok. Returns the targets, how many connections the second saw,
+    /// and the directory holding the sockets.
+    #[cfg(unix)]
+    fn hold_then_answer(tag: &str) -> (Vec<Target>, Arc<Mutex<usize>>, String) {
+        use std::os::unix::net::UnixListener;
+        let dir = format!("/tmp/wnw-{tag}-{}", std::process::id());
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (hold, answer) = (format!("{dir}/h.sock"), format!("{dir}/a.sock"));
+        let hold_listener = UnixListener::bind(&hold).unwrap();
+        std::thread::spawn(move || {
+            let mut kept = Vec::new();
+            for mut conn in hold_listener.incoming().flatten() {
+                let mut buf = [0u8; 1024];
+                let _ = conn.read(&mut buf);
+                kept.push(conn);
+            }
+        });
+        let answered = Arc::new(Mutex::new(0));
+        let seen = Arc::clone(&answered);
+        let answer_listener = UnixListener::bind(&answer).unwrap();
+        std::thread::spawn(move || {
+            for mut conn in answer_listener.incoming().flatten() {
+                *seen.lock().unwrap() += 1;
+                let mut buf = [0u8; 1024];
+                let _ = conn.read(&mut buf);
+                let _ = conn.write_all(b"{\"id\":\"r1\",\"ok\":true}\n");
+            }
+        });
+        let target = |name, pipe| Target {
+            name,
+            pipe,
+            token: "t".into(),
+            method: "m",
+        };
+        (vec![target("daemon", hold), target("main", answer)], answered, dir)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_walk_slices_and_resends_only_as_its_policy_says() {
+        let line = |_: &Target| "{\"id\":\"r1\"}\n".to_string();
+        let walk = |tag: &str, slice_per_target, resend_after_write: &'static [&'static str]| {
+            let (targets, answered, dir) = hold_then_answer(tag);
+            let policy = WalkPolicy {
+                budget: Duration::from_millis(600),
+                slice_per_target,
+                resend_after_write,
+            };
+            let (result, used) = send_to_targets(&targets, line, &js::js("r1"), "agent.stop", &policy);
+            let answered = *answered.lock().unwrap();
+            let _ = std::fs::remove_dir_all(dir);
+            (is_true(result.get("ok")), used.map(|t| t.name), answered)
+        };
+        // Sliced and re-sending: the hung target gets half, the next answers.
+        assert_eq!(walk("sr", true, &["agent.stop"]), (true, Some("main"), 1));
+        // One unsliced deadline: the hung target spends it all.
+        assert_eq!(walk("ur", false, &["agent.stop"]), (false, Some("daemon"), 0));
+        // Sliced, but a written request is never sent on (the Claude rule).
+        assert_eq!(walk("sn", true, &[]), (false, Some("daemon"), 0));
+    }
+
     #[test]
     fn next_target_rules_match_the_node_bridge() {
-        assert!(!should_try_next_target(&obj(r#"{"ok":true}"#), "agent.stop"));
+        assert!(!should_try_next_target(
+            &obj(r#"{"ok":true}"#),
+            "agent.stop",
+            &SHARED_POLICY
+        ));
         assert!(should_try_next_target(
             &obj(r#"{"ok":false,"retryable":true}"#),
-            "agent.user_prompt_submit"
+            "agent.user_prompt_submit",
+            &SHARED_POLICY
         ));
         // Delivered maybe: only an idempotent kind is re-sent.
         assert!(should_try_next_target(
             &obj(r#"{"ok":false,"retryable":false}"#),
-            "agent.stop"
+            "agent.stop",
+            &SHARED_POLICY
         ));
         assert!(should_try_next_target(
             &obj(r#"{"ok":false,"retryable":false}"#),
-            "agent.session_start"
+            "agent.session_start",
+            &SHARED_POLICY
         ));
         assert!(!should_try_next_target(
             &obj(r#"{"ok":false,"retryable":false}"#),
-            "agent.awaiting_input"
+            "agent.awaiting_input",
+            &SHARED_POLICY
         ));
         // A server's own rejection carries no `retryable`: Node moves on.
         assert!(should_try_next_target(
             &obj(r#"{"id":"x","ok":false,"error":"denied"}"#),
-            "agent.awaiting_input"
+            "agent.awaiting_input",
+            &SHARED_POLICY
         ));
     }
 }
