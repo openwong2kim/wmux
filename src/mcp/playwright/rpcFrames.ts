@@ -119,6 +119,27 @@ function header(f: RpcFrameInfo, index: number, topOrigin: string, indexById: Ma
 }
 
 const EMPTY: (nextRef: number) => ReadRpcFramesResult = (nextRef) => ({ text: '', refs: new Map(), nextRef });
+const docOf = (r: { frameId: string; loaderId: string }) => `${r.frameId}\u0000${r.loaderId}`;
+
+/**
+ * The earlier refs of every frame document still in the page that this
+ * snapshot did not list: a failed or unreachable read, a spent pool, the cap.
+ * They stay usable (main still checks the document before acting) and stay
+ * the prior for the next listing, so one missed read does not renumber the
+ * frame. A frame that went away mid-read is not carried.
+ */
+function carryUnlisted(
+  refs: Map<number, RpcFrameRef>,
+  prior: ReadonlyMap<number, RpcFrameRef> | undefined,
+  frames: readonly RpcFrameInfo[],
+  settled: ReadonlySet<string>,
+): void {
+  const present = new Set(frames.map(docOf));
+  for (const [ref, r] of prior ?? []) {
+    const doc = docOf(r);
+    if (present.has(doc) && !settled.has(doc) && !refs.has(ref)) refs.set(ref, r);
+  }
+}
 
 /** A listing line's own ref: interactive lines start with it; page text never starts a line. */
 const LINE_REF = /^\s*\[ref=(\d+)\]/;
@@ -144,7 +165,11 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   ));
   const lines: string[] = ['', '', SECTION_INTRO];
   let used = size(SECTION_INTRO) + 2;
-  if (used > pool) return EMPTY(opts.nextRef);
+  if (used > pool) {
+    const empty = EMPTY(opts.nextRef);
+    carryUnlisted(empty.refs, opts.prior, frames, new Set());
+    return empty;
+  }
   // Content and headers leave room for the closing notes; the notes may use it.
   const fits = (line: string, reserve = CLOSING_RESERVE) => used + size(line) + 1 + reserve <= pool;
   const push = (line: string) => {
@@ -156,6 +181,8 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   const read = frames.slice(0, RPC_FRAME_CAP);
   const priorDocs = priorByDocument(opts.prior);
   const indexById = new Map<string, number>();
+  /** Documents this snapshot listed, or saw go away: nothing to carry for them. */
+  const settled = new Set<string>();
   let unread = 0;
   for (let i = 0; i < read.length; i++) {
     const f = read[i];
@@ -171,6 +198,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
     } catch (err) {
       answer = /FRAME_(?:GONE|NAVIGATED)/.test(err instanceof Error ? err.message : String(err)) ? 'gone' : 'failed';
     }
+    if (answer === 'gone' || (answer !== 'failed' && 'value' in answer)) settled.add(docOf(f));
     if (answer === 'gone' || answer === 'failed' || 'unreachable' in answer) {
       const note = answer === 'gone' ? GONE_NOTE : answer === 'failed' ? FAILED_NOTE : UNREACHABLE_NOTE;
       const line = `${head} ${note}`;
@@ -206,5 +234,6 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
     frames.length > RPC_FRAME_CAP ? `(+${frames.length - RPC_FRAME_CAP} more frames not read: past the ${RPC_FRAME_CAP}-frame limit for one snapshot)` : '',
   ];
   for (const note of notes) if (note && fits(note, 0)) push(note);
+  carryUnlisted(result.refs, opts.prior, frames, settled);
   return { text: lines.join('\n'), ...result };
 }

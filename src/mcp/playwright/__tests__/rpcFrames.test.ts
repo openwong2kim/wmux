@@ -55,6 +55,42 @@ describe('readRpcFrames', () => {
     expect(out.refs.get(10)).toEqual({ frameId: 'F1', loaderId: 'L1', origin: 'https://top.test', role: 'button', name: 'Pay 0' });
   });
 
+  it('keeps the earlier refs of a frame it did not read this time, unless the frame went away', async () => {
+    const ref = (frameId: string, loaderId: string, name: string) => ({ frameId, loaderId, origin: 'https://top.test', role: 'button', name });
+    const prior = new Map([
+      [7, ref('F1', 'L1', 'Pay 0')],
+      [8, ref('F2', 'L2', 'Pay 0')],
+      [9, ref('F3', 'L3', 'Pay 0')],
+      [11, ref('F4', 'L4', 'Pay 0')],
+      // A document that frame has since left.
+      [12, ref('F2', 'OLD', 'Gone')],
+    ]);
+    const out = await readRpcFrames({
+      ...base,
+      topText: '',
+      prior,
+      listFrames: async () => [frame(1), frame(2), frame(3), frame(4)],
+      readFrame: async (f, seed, docPrior) => {
+        if (f.frameId === 'F2') throw new Error('Connection closed before response was received.');
+        if (f.frameId === 'F3') throw new Error('FRAME_NAVIGATED: the frame has loaded another document since the snapshot');
+        if (f.frameId === 'F4') return { unreachable: 'separate process' };
+        return buttons(1)(f, docPrior[0]?.ref ?? seed);
+      },
+    });
+    // F1 was read; F2 failed and F4 was unreachable, so their refs carry over for the next listing
+    // of the same document; F3 went away, and F2's older document is not carried.
+    expect([...out.refs.keys()].sort((a, b) => a - b)).toEqual([7, 8, 11]);
+    expect(out.refs.get(8)).toEqual(ref('F2', 'L2', 'Pay 0'));
+  });
+
+  it('keeps the earlier refs of frames the spent pool or the cap left unread', async () => {
+    const frames = Array.from({ length: RPC_FRAME_CAP + 1 }, (_, i) => frame(i + 1));
+    const last = frames[RPC_FRAME_CAP];
+    const prior = new Map([[5, { frameId: last.frameId, loaderId: last.loaderId, origin: 'https://top.test', role: 'button', name: 'Pay 0' }]]);
+    const out = await readRpcFrames({ ...base, topText: '', prior, listFrames: async () => frames, readFrame: buttons(1) });
+    expect(out.refs.get(5)).toMatchObject({ frameId: last.frameId });
+  });
+
   it('cleans a frame name, so it cannot end the header or start a line', async () => {
     const out = await readRpcFrames({
       ...base,

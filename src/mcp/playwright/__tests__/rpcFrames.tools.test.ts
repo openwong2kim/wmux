@@ -197,6 +197,24 @@ describe('in-process frames on the RPC lane', () => {
     expect(calls('browser.click.cdp').at(-1)).toMatchObject({ frameId: 'F1', loaderId: 'L1' });
   });
 
+  it('keeps a frame\'s refs and numbers through a snapshot that could not read it', async () => {
+    answer();
+    await tool('browser_snapshot')({});
+    answer({
+      'browser.evaluate': (p) => {
+        if (p.frameId === 'F1') throw new Error('Connection closed before response was received.');
+        return { value: TOP };
+      },
+    });
+    expect(textOf(await tool('browser_snapshot')({}))).toContain('could not be read this time');
+    await tool('browser_click')({ ref: '1' });
+    expect(calls('browser.click.cdp').at(-1)).toMatchObject({ frameId: 'F1', loaderId: 'L1' });
+    answer();
+    const third = textOf(await tool('browser_snapshot')({}));
+    expect(third).toContain('[ref=1] input name="cc"');
+    expect(third).not.toMatch(/\[ref=2\] input/);
+  });
+
   it('never hands a frame ref\'s number to the top document on the next snapshot', async () => {
     answer();
     await tool('browser_snapshot')({});
