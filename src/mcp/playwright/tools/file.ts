@@ -196,7 +196,7 @@ export function validateUploadPath(input: string): string {
     case 'aliased':
       throw new Error(
         `browser_file_upload blocked: "${input}" has a name (${JSON.stringify(checked.name)}) that Windows opens as a different file ` +
-        `(a trailing dot or space, or a device name), so it cannot be checked against the upload root.`,
+        `(a trailing dot or space, a device name, or a colon naming a stream), so it cannot be checked against the upload root.`,
       );
     case 'unresolvable':
       throw new Error(

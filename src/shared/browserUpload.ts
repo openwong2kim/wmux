@@ -50,6 +50,21 @@ export type UploadPathRefusal =
   | { ok: false; reason: 'not-a-file' }
   | { ok: false; reason: 'unresolvable' };
 
+/**
+ * The first name in a Windows path that holds a colon past the drive
+ * designator, or undefined. NTFS reads such a name as a stream or attribute of
+ * the file or directory before the colon (`f::$DATA`, `f:name`,
+ * `dir::$INDEX_ALLOCATION`), so Node and the browser can resolve the spelling
+ * to different things; it is refused like the other aliased names. The drive
+ * of a `\\?\` or `\\.\` path is a designator too, not a name.
+ */
+function win32StreamName(p: string): string | undefined {
+  return p
+    .replace(/^(?:[\\/]{2}[?.][\\/])?[A-Za-z]:/, '')
+    .split(/[\\/]/)
+    .find((s) => s.includes(':'));
+}
+
 /** Is `p` strictly inside `root`? Lexical: no filesystem access. */
 function isInside(root: string, p: string): boolean {
   const rel = path.relative(root, p);
@@ -76,7 +91,8 @@ function isInside(root: string, p: string): boolean {
  *    too: Node resolves it through the `\\?\` namespace, where
  *    `uploads\link.\f` does not exist, while Chrome opens it as
  *    `uploads\link\f` and follows the junction out of the root (measured on
- *    NTFS with Electron 41).
+ *    NTFS with Electron 41). So is a name holding a colon past the drive,
+ *    which NTFS reads as a stream or attribute name (win32StreamName).
  *  - Then the real path: a symlink or junction inside the root pointing out of
  *    it resolves to its target, which must be under the real root. A path that
  *    does not exist is refused — the browser opens a path only when the page
@@ -96,7 +112,7 @@ export function checkUploadPath(
   if (typeof hostPath !== 'string' || hostPath.length === 0) return { ok: false, reason: 'empty' };
   const abs = path.resolve(hostPath);
   if (process.platform === 'win32') {
-    const aliased = win32AliasedName(abs);
+    const aliased = win32AliasedName(abs) ?? win32StreamName(abs);
     if (aliased !== undefined) return { ok: false, reason: 'aliased', name: aliased };
   }
   if (!isInside(root.spelled, abs) && !isInside(root.real, abs)) return { ok: false, reason: 'outside' };
