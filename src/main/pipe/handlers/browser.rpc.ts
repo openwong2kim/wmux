@@ -153,6 +153,7 @@ import { randomBytes } from 'node:crypto';
 import { topWorld, type CdpSend } from '../../phone/PhoneBrowserFocus';
 import {
   DEFAULT_FILE_INPUT_SELECTOR,
+  UPLOAD_MAX_TIMEOUT_MS,
   checkUploadPath,
   uploadLookupExpression,
   uploadRootIn,
@@ -194,7 +195,6 @@ const UPLOAD_MAX_SELECTOR_CHARS = 2048;
 
 /** How long the page may take to take the files: the default, and the cap. */
 const UPLOAD_DEFAULT_TIMEOUT_MS = 120_000;
-const UPLOAD_MAX_TIMEOUT_MS = 120_000;
 
 /** The isolated world the file input is looked up in. */
 const UPLOAD_WORLD = 'wmux-upload';

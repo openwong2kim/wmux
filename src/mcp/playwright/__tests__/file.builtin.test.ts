@@ -115,6 +115,15 @@ describe('browser_file_upload on builtin goes through main', () => {
     expect(call?.[2]).toBe(9_000);
   });
 
+  it('caps its timeout at main\'s before sending, so the client never outwaits or underwaits main', async () => {
+    // 3e9 ms is past Node's 2^31 timer limit: unclamped, the client would give
+    // up after ~1 ms while main went on to set the files.
+    await run({ timeout: 3_000_000_000 });
+    const call = mockSendRpc.mock.calls.find((c) => c[0] === 'browser.upload.cdp');
+    expect(call?.[1]).toMatchObject({ timeoutMs: 120_000 });
+    expect(call?.[2]).toBe(125_000);
+  });
+
   it('refuses a missing file and a directory itself, before calling main', async () => {
     const missing = await run({ paths: [path.join(UPLOADS, 'later.mp4')] });
     expect(text(missing)).toContain('does not exist');

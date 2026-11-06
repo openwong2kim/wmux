@@ -13,6 +13,12 @@ import { win32AliasedName } from './wslPaths';
 export const DEFAULT_FILE_INPUT_SELECTOR = 'input[type="file"]';
 
 /**
+ * The longest main waits for a page to take an upload's files. The MCP tool
+ * clamps its own timeout to it too, so both sides wait for the same bound.
+ */
+export const UPLOAD_MAX_TIMEOUT_MS = 120_000;
+
+/**
  * The uploads root, two ways: as spelled (`<wmuxDir>/uploads`) and with its
  * links resolved. A path is first compared with both, without touching the
  * filesystem, and only one that names somewhere under the root is resolved.

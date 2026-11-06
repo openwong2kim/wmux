@@ -39,6 +39,7 @@ import { sendScopedBrowserRpc } from '../browserScope';
 import { sanitizeRef } from './interaction';
 import {
   DEFAULT_FILE_INPUT_SELECTOR,
+  UPLOAD_MAX_TIMEOUT_MS,
   checkUploadPath,
   findFileInputNearElement,
   uploadRootIn,
@@ -752,7 +753,10 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         let safePaths: string[];
         if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) !== 'chrome') {
           safePaths = paths.map(validateUploadPath);
-          page = await uploadThroughMain(engine, scope, effect, safePaths, selector, ref, timeout ?? REF_UPLOAD_TIMEOUT_MS);
+          // Clamped to main's own cap before it is sent: the same bound on
+          // both sides, and never a client timer past what Node can hold.
+          const mainTimeout = Math.min(timeout ?? REF_UPLOAD_TIMEOUT_MS, UPLOAD_MAX_TIMEOUT_MS);
+          page = await uploadThroughMain(engine, scope, effect, safePaths, selector, ref, mainTimeout);
         } else {
           page = await engine.getPageForScope(scope, { intent: 'write' });
           if (!page) {
