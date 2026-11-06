@@ -1557,10 +1557,11 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
   };
 
   // The form an install would write now: the copy where it passed and the
-  // runtime is native, else node. A hook in the other form is outdated.
+  // runtime is native, else node; an isolated instance writes node only. A
+  // hook in the other form is outdated.
   const nativeAvailable = claudeNativeAvailable(paths.bridgeDest, paths.bridgeSource);
   const runtime = readClaudeRuntime(path.dirname(paths.bridgeDest));
-  const form: HookCommandForm = nativeAvailable && runtime === 'native' ? 'native' : 'node';
+  const form: HookCommandForm = nativeAvailable && runtime === 'native' && dataSuffix() === '' ? 'native' : 'node';
   const hookRows = load.corrupted || pluginActive ? [] : hookSetStatus(load.settings, form).hooks;
 
   return {

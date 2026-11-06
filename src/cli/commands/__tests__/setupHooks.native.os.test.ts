@@ -33,6 +33,10 @@ function shipNative(line: string | null, delay = 0): void {
 const goodLine = () => claudeSelfTestLine(paths.bridgeSource) as string;
 
 beforeEach(() => {
+  // As the installed app: no data suffix (isolateDataDir sets one for every
+  // test; every path here is a temp one already). Cases that need a suffix
+  // stub their own.
+  vi.stubEnv('WMUX_DATA_SUFFIX', '');
   // A space in the home: every path in a command must stay quoted.
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux claude native-'));
   const resources = path.join(root, 'app', 'Resources');
@@ -50,6 +54,7 @@ beforeEach(() => {
   copy = claudeHookCopyPath(paths.bridgeDest);
 });
 afterEach(() => {
+  vi.unstubAllEnvs();
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -287,5 +292,23 @@ describe.skipIf(process.platform === 'win32')('claudeHookRuntimeReport: the stat
     expect(state({ hasNode: false })).toMatchObject({ state: 'node-missing', severity: 'warn' });
     expect(state({ hasNode: false }).detail).toMatch(/native-disabled/);
     expect(statusHooks(paths).hookRuntime.state).toMatch(/kill-switch|node-missing/);
+  });
+});
+
+// An isolated instance writes the node form; its status must expect that
+// form too, or its Update offer never clears.
+describe.skipIf(process.platform === 'win32')('status in an isolated instance', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('expects the node form it writes, even with a passing copy in place', async () => {
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    vi.stubEnv('WMUX_DATA_SUFFIX', '-iso');
+    await installHooksWithNative(paths);
+    for (const command of commands()) expect(command.startsWith('node "')).toBe(true);
+    expect(statusHooks(paths)).toMatchObject({ nativeAvailable: true, updateAvailable: false });
+    expect(statusHooks(paths).hooks.every((h) => h.state === 'ok')).toBe(true);
   });
 });
