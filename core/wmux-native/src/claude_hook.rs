@@ -222,21 +222,39 @@ fn ported_from(source: &[u8]) -> bool {
 fn decision_flag<'a>(hook: &str, flags: &'a [JsStr]) -> Option<&'a JsStr> {
     flags
         .iter()
-        .find(|f| **f == js("--gate") || (hook == "UserPromptSubmit" && **f == js("--context")))
+        .find(|f| hook == "UserPromptSubmit" && **f == js("--context"))
 }
 
 /// main()'s modes: any argv token after the event.
 #[derive(Clone, Copy, Default)]
 struct Modes {
+    /// `--gate`: the orchestrator's Stop gate, answered with exit 2.
+    gate: bool,
     /// `--permission-gate`: the PreToolUse permission gate, answered on stdout.
     permission_gate: bool,
 }
 
 impl Modes {
     fn of(flags: &[JsStr]) -> Modes {
+        let has = |flag: &str| flags.iter().any(|f| *f == js(flag));
         Modes {
-            permission_gate: flags.iter().any(|f| *f == js("--permission-gate")),
+            gate: has("--gate"),
+            permission_gate: has("--permission-gate"),
         }
+    }
+}
+
+/// What the gate writes when the answer was lost after the request reached
+/// main (mjs main()).
+const GATE_LOST_TEXT: &str = "wmux could not confirm this Stop with the orchestrator (the reply was lost in flight). \
+                              Do not end the turn on this attempt \u{2014} check the fleet and stop again.\n";
+
+/// Test-only, and absent from release builds: WMUX_CLAUDE_HOOK_PANIC_AFTER_VERDICT=1
+/// panics right after a verdict, to prove its exit code outlives a panic.
+fn panic_after_verdict_for_tests() {
+    #[cfg(debug_assertions)]
+    if paths::env("WMUX_CLAUDE_HOOK_PANIC_AFTER_VERDICT").as_deref() == Some("1") {
+        panic!("WMUX_CLAUDE_HOOK_PANIC_AFTER_VERDICT");
     }
 }
 
@@ -489,7 +507,8 @@ fn run(start: Start, log: Log) {
         return;
     }
 
-    let targets: Vec<Target> = claude::resolve_targets(false)
+    // The gate is main's alone: the daemon has no gate to consult.
+    let targets: Vec<Target> = claude::resolve_targets(modes.gate)
         .into_iter()
         .filter(|t| hook != "SessionEnd" || t.name == "daemon")
         .collect();
@@ -638,6 +657,42 @@ fn run(start: Start, log: Log) {
         );
     }
 
+    // The Stop gate: an explicit refusal, or an answer lost after the request
+    // provably reached main, ends in exit 2 with the reason on stderr; all
+    // else allows. The exit code is stored before anything is written.
+    let fields = || vec![("hook", hook_field()), ("target", target_field.clone())];
+    let block_reason = |r: Option<&Json>| {
+        r.and_then(|r| r.get("block"))
+            .filter(|b| js::truthy(Some(b)))
+            .and_then(|b| b.get("reason"))
+            .and_then(Json::as_str)
+            .filter(|reason| !reason.is_empty())
+            .cloned()
+    };
+    if modes.gate && inner_ok {
+        if let Some(reason) = block_reason(inner) {
+            let mut text = js::lossy(&reason);
+            text.push('\n');
+            set_exit_code(2);
+            let written = write_out(2, text.as_bytes());
+            log("gate-blocked", fields());
+            if !written {
+                log("stderr-lost", fields());
+            }
+            panic_after_verdict_for_tests();
+        }
+    } else if modes.gate && is_gate_answer_lost(&result) {
+        let mut line = fields();
+        line.push(("error", logged(result.get("error"))));
+        set_exit_code(2);
+        let written = write_out(2, GATE_LOST_TEXT.as_bytes());
+        log("gate-fail-closed", line);
+        if !written {
+            log("stderr-lost", fields());
+        }
+        panic_after_verdict_for_tests();
+    }
+
     let lifecycle = matches!(
         kind,
         "agent.session_start" | "agent.user_prompt_submit" | "agent.stop" | "agent.subagent_stop"
@@ -673,13 +728,13 @@ fn run(start: Start, log: Log) {
         };
         set_exit_code(0);
         let written = verdict == "no-opinion" || write_out(1, permission_decision_line(verdict).as_bytes());
-        let fields = || vec![("hook", hook_field()), ("target", target_field.clone())];
         let mut line = fields();
         line.push(("verdict", s(verdict)));
         log("permission-gate", line);
         if !written {
             log("stdout-lost", fields());
         }
+        panic_after_verdict_for_tests();
     }
 }
 
@@ -847,10 +902,9 @@ fn spool_resume_binding(wmux_home: &str, pty_id: &[u16], session_id: &[u16], rec
 
 /// isGateAnswerLost: a Stop gate's request that provably reached main and
 /// then lost its answer. True only for a timeout or a close after the write
-/// (retryable: false); a connect error, written or not, fails open. The
-/// Stop gate itself still runs on the Node bridge; this is its verdict, held
-/// to the transport's outcomes before the gate is ported.
-#[cfg_attr(not(test), allow(dead_code))]
+/// (retryable: false); a connect error, written or not, fails open. One such
+/// connect error is this transport's own: a poll(2) failure after the write
+/// (claude_rpc's `lost`) has no Node twin, and it fails open too.
 pub fn is_gate_answer_lost(result: &Json) -> bool {
     if result.get("ok") == Some(&Json::Bool(true)) || result.get("retryable") != Some(&Json::Bool(false)) {
         return false;
@@ -876,6 +930,22 @@ mod tests {
         let mut out = String::new();
         js::stringify(v, &mut out);
         out
+    }
+
+    #[test]
+    fn the_decision_texts_are_the_bridges() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../integrations/claude/bin/wmux-bridge.mjs"
+        );
+        let source = std::fs::read_to_string(path).unwrap();
+        let (first, second) = GATE_LOST_TEXT.split_at(GATE_LOST_TEXT.find("Do not").unwrap());
+        let second = second.strip_suffix('\n').unwrap();
+        assert!(
+            source.contains(&format!("'{first}'\n        + '{second}\\n'")),
+            "{GATE_LOST_TEXT}"
+        );
+        assert!(source.contains(&format!("'{DENY_REASON}'")));
     }
 
     #[test]
@@ -1026,10 +1096,9 @@ mod tests {
     fn only_nodes_decision_modes_hand_over() {
         let flags = |f: &[&str]| f.iter().map(|x| js(x)).collect::<Vec<_>>();
         // argv-flags-any-position, gate-with-permission-gate
-        assert_eq!(
-            decision_flag("Stop", &flags(&["--unknown", "--gate"])),
-            Some(&js("--gate"))
-        );
+        // The gate and the permission gate run here now.
+        assert_eq!(decision_flag("Stop", &flags(&["--unknown", "--gate"])), None);
+        assert!(Modes::of(&flags(&["--unknown", "--gate"])).gate);
         // The permission gate runs here now.
         assert_eq!(decision_flag("PreToolUse", &flags(&["--permission-gate"])), None);
         assert!(Modes::of(&flags(&["--x", "--permission-gate"])).permission_gate);

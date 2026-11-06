@@ -186,13 +186,14 @@ fn a_failed_exec_is_not_tried_again() {
     let mut changed = pinned();
     changed.extend_from_slice(b"// edited\n");
     let case = Case::new("exec-once", Some(&changed));
-    quiet(&case.run(&["Stop", "--gate"], &[("WMUX_HOOK_RUNTIME", "node")], false, "{}"));
+    let args = ["UserPromptSubmit", "--context"];
+    quiet(&case.run(&args, &[("WMUX_HOOK_RUNTIME", "node")], false, "{}"));
     assert_eq!(
         case.log(),
         [
             "impl-fallback node-missing",
             "impl-fallback bridge-sha-mismatch",
-            "decision-unported --gate",
+            "decision-unported --context",
             "no-auth-token"
         ]
     );
@@ -209,7 +210,7 @@ fn without_a_bridge_beside_it_the_run_stays_native() {
 #[test]
 fn decision_flags_run_on_node() {
     let case = Case::new("decision", Some(&pinned()));
-    for args in [vec!["Stop", "--gate"], vec!["UserPromptSubmit", "--context"]] {
+    for args in [vec!["UserPromptSubmit", "--context"]] {
         let _ = std::fs::remove_file(case.dir.join("node-args"));
         quiet(&case.run(&args, &[], true, ""));
         let expected: Vec<String> = std::iter::once(case.bridge())
@@ -226,15 +227,12 @@ fn a_decision_flag_with_no_bridge_or_no_node_fails_open() {
     // allows, the prompt runs, the tool goes through the session's own
     // permission flow). The run itself goes on as a plain one: the signal is
     // sent, and a lifecycle capture that did not land is spooled.
-    for (args, payload, kind, spooled) in [
-        (["Stop", "--gate"], r#"{"session_id":"s1"}"#, "agent.stop", true),
-        (
-            ["UserPromptSubmit", "--context"],
-            r#"{"session_id":"s1","prompt":"p"}"#,
-            "agent.user_prompt_submit",
-            true,
-        ),
-    ] {
+    for (args, payload, kind, spooled) in [(
+        ["UserPromptSubmit", "--context"],
+        r#"{"session_id":"s1","prompt":"p"}"#,
+        "agent.user_prompt_submit",
+        true,
+    )] {
         let case = Case::new(&format!("decision-{}", &args[1][2..]), None);
         let wmux_home = case.dir.join("home/.wmux-claude-hook-test");
         std::fs::create_dir_all(&wmux_home).unwrap();
@@ -262,12 +260,12 @@ fn a_decision_flag_with_no_bridge_or_no_node_fails_open() {
     }
 
     let no_node = Case::new("decision-no-node", Some(&pinned()));
-    quiet(&no_node.run(&["Stop", "--gate"], &[], false, "{}"));
+    quiet(&no_node.run(&["UserPromptSubmit", "--context"], &[], false, "{}"));
     assert_eq!(
         no_node.log(),
         [
             "impl-fallback node-missing",
-            "decision-unported --gate",
+            "decision-unported --context",
             "no-auth-token"
         ]
     );
@@ -512,5 +510,41 @@ fn the_permission_gate_answers_here() {
     child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
     assert_eq!(child.wait().unwrap().code(), Some(0));
     assert_eq!(case.log()[2..], ["ok", "permission-gate", "stdout-lost"]);
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[test]
+fn a_gate_block_is_exit_2_even_when_the_run_panics_or_stderr_is_gone() {
+    let case = with_token("gate-block");
+    let socket = stub_main("gate-block", r#"{"ok":true,"block":{"reason":"wait"}}"#);
+    // The gate is main's: main's token.
+    std::fs::write(case.dir.join("home/.wmux-claude-hook-test-auth-token"), "m").unwrap();
+    let env = [("WMUX_PIPE_NAME", socket.as_str())];
+    let out = case.run(&["Stop", "--gate"], &env, true, r#"{"session_id":"s1"}"#);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "wait\n");
+    assert!(out.stdout.is_empty());
+    assert_eq!(case.log(), ["ok", "gate-blocked"]);
+
+    // Test-only (debug builds): a panic right after the verdict.
+    let panics = [
+        ("WMUX_PIPE_NAME", socket.as_str()),
+        ("WMUX_CLAUDE_HOOK_PANIC_AFTER_VERDICT", "1"),
+    ];
+    let out = case.run(&["Stop", "--gate"], &panics, true, r#"{"session_id":"s1"}"#);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(case.log()[2..], ["ok", "gate-blocked", "uncaught"]);
+
+    let (stderr, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    drop(reader);
+    let out = case.run_with_stderr(
+        &["Stop", "--gate"],
+        &env,
+        true,
+        r#"{"session_id":"s1"}"#,
+        Stdio::from(std::os::fd::OwnedFd::from(stderr)),
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(case.log()[5..], ["ok", "gate-blocked", "stderr-lost"]);
     let _ = std::fs::remove_file(&socket);
 }
