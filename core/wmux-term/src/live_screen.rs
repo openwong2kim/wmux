@@ -160,6 +160,11 @@ impl Screen {
                 }
             }
         }
+        // A mark this screen can't take fails the read before anything is
+        // fed, so the screen stays where it was.
+        for &(_, cols, rows) in &range.marks {
+            check_size(cols, rows, self.history)?;
+        }
         let mut from = self.fed_to;
         for &(at, cols, rows) in &range.marks {
             if self.applied == Some((at, (cols, rows))) {
@@ -171,7 +176,11 @@ impl Screen {
                 panic!("forced panic for the poison test");
             }
             from = at;
-            self.resize(cols, rows, at)?;
+            // Checked above. A failure after bytes were fed must poison the
+            // screen (a panic does, through Guarded), not leave fed_to behind
+            // them to be fed again.
+            self.resize(cols, rows, at)
+                .expect("a mark checked before anything was fed");
         }
         self.feed_ring(ring, from, range.end);
         self.fed_to = range.end;
@@ -707,6 +716,21 @@ mod tests {
         let bytes = screen.allocated_bytes();
         println!("allocated at 120x40, depth 300: {bytes} bytes");
         assert!(bytes < 1_200_000, "{bytes}");
+    }
+
+    #[test]
+    fn a_mark_the_screen_refuses_feeds_nothing() {
+        let mut r = ring();
+        r.mark_geometry(10, 3).unwrap();
+        let mut screen = seeded(&r, 10, 3, 10);
+        r.write_bytes(b"abc").unwrap();
+        r.mark_geometry(1, 24).unwrap();
+        r.write_bytes(b"def").unwrap();
+        assert!(screen.read(&r).is_err());
+        assert_eq!(screen.fed_to(), 0);
+        assert!(texts(&screen).is_empty());
+        assert!(screen.read(&r).is_err());
+        assert!(texts(&screen).is_empty(), "nothing fed twice");
     }
 
     // ---- live == a fresh replay with the same seed, depth and geometry ----
