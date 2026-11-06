@@ -188,8 +188,11 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   try {
     frames = await opts.listFrames();
   } catch {
-    // An app that cannot list frames (an older main) leaves the listing as it was.
-    return EMPTY(seed);
+    // An app that cannot list frames (an older main, or a failed call) leaves
+    // the listing as it was: the earlier frame refs stay held.
+    const kept = EMPTY(seed);
+    for (const [ref, r] of prior) kept.refs.set(ref, r);
+    return kept;
   }
   if (frames.length === 0) return EMPTY(seed);
 

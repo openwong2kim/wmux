@@ -64,6 +64,8 @@ describe('assignStableRefs', () => {
     const out = assignStableRefs(prior, 1, [el('input', 'cc'), el('input', 'added')]);
     expect(out.refs).toEqual([5, 6]);
     expect(out.nextRef).toBe(7);
+    const edge = assignStableRefs([{ ref: Number.MAX_SAFE_INTEGER, role: 'input', name: 'x', kindIndex: 0 }], 1, [el('input', 'a'), el('input', 'b')]);
+    expect(edge.refs).toEqual([1, 2]);
   });
 });
 

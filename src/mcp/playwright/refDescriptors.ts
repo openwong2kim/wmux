@@ -127,8 +127,10 @@ export function assignStableRefs(
   // only ever handed out, never recycled: past every number `prior` holds too,
   // even when the caller's count is behind it.
   let next = nextRef;
+  // A number at the edge of the safe range is not followed: counting on from
+  // it could no longer tell two numbers apart.
   for (let q = 0; q < prior.length; q++) {
-    if (prior[q].ref + 1 > next) next = prior[q].ref + 1;
+    if (prior[q].ref + 1 > next && prior[q].ref < 9007199254740991) next = prior[q].ref + 1;
   }
   for (let f = 0; f < current.length; f++) {
     if (refs[f] === undefined) {

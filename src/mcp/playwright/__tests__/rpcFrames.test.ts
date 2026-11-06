@@ -318,7 +318,10 @@ describe('readRpcFrames', () => {
     expect(out.nextRef).toBe(43);
     const opts = { ...base, nextRef: 1, topText: '', prior, readFrames };
     expect((await readRpcFrames({ ...opts, listFrames: async () => [] })).nextRef).toBe(41);
-    expect((await readRpcFrames({ ...opts, listFrames: async () => { throw new Error('down'); } })).nextRef).toBe(41);
+    const failed = await readRpcFrames({ ...opts, listFrames: async () => { throw new Error('down'); } });
+    expect(failed.nextRef).toBe(41);
+    // A failed listing keeps the frame refs held, so the next listing still numbers past them.
+    expect([...failed.refs.keys()]).toEqual([40]);
     expect((await readRpcFrames({ ...opts, budget: { chars: 10, bytes: 10 }, listFrames: async () => [frame(1)] })).nextRef).toBe(41);
   });
 });
