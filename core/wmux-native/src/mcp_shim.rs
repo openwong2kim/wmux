@@ -1384,6 +1384,14 @@ mod tests {
         assert_eq!(read_step(Ok(0)), ReadStep::End(Outcome::BrokerClosed));
         assert_eq!(read_step(Ok(5)), ReadStep::Data(5));
         assert_eq!(read_step(Err(std::io::ErrorKind::Interrupted.into())), ReadStep::Retry);
+        // Mid-session nothing else is retried: a timeout or EAGAIN on the
+        // broker connection ends the session instead of spinning.
+        for kind in [std::io::ErrorKind::WouldBlock, std::io::ErrorKind::TimedOut] {
+            assert!(
+                matches!(read_step(Err(kind.into())), ReadStep::End(Outcome::BrokerError(_))),
+                "{kind:?}"
+            );
+        }
     }
 
     /// The first end claims the exit and later ones are dropped, so the
@@ -1428,6 +1436,7 @@ mod tests {
         );
         // An older broker: silence, a close, or MCP traffic first.
         assert_eq!(ack_from(&[]), Ack::Missing("no ack in 5 s"));
+        assert_eq!(ACK_DEADLINE, Duration::from_secs(5), "the reason line names 5 s");
         assert_eq!(ack_from(&[b"{\"wmuxBr"]), Ack::Missing("no ack in 5 s"));
         let closed = await_ack(|_| Ok(0));
         assert_eq!(closed, Ack::Missing("closed before ack"));
