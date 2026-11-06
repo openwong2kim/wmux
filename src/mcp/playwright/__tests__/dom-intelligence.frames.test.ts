@@ -197,9 +197,10 @@ describe('frame boundary lines', () => {
     document.body.innerHTML =
       '<div id="host"></div><div id="closed"></div>' +
       '<object data="https://obj.example/doc.pdf"></object><embed src="https://emb.example/v.swf"><fencedframe></fencedframe>';
-    document.getElementById('host')!.attachShadow({ mode: 'open' }).innerHTML =
+    const host = document.getElementById('host') as HTMLElement;
+    host.attachShadow({ mode: 'open' }).innerHTML =
       '<span><iframe title="In shadow" src="https://shadow.example/"></iframe></span>';
-    document.getElementById('closed')!.attachShadow({ mode: 'closed' }).innerHTML =
+    (document.getElementById('closed') as HTMLElement).attachShadow({ mode: 'closed' }).innerHTML =
       '<iframe title="Closed" src="https://closed.example/"></iframe>';
     expect(frameLines(run(buildDomSnapshotExpression()))).toEqual([
       `  iframe "In shadow" -> https://shadow.example ${FRAME_BOUNDARY_SUFFIX}`,
