@@ -278,6 +278,22 @@ describe('dialog sheets: which box belongs to which dialog', () => {
     expect(ended).toEqual(['two']);
   });
 
+  it('a window closed while a retry is pending is not looked at again', () => {
+    let closed = false;
+    let lists = 0;
+    // The closed window can't be listed: a look at it would warn.
+    const { tracker, logs, tick } = rig({ failOn: (op) => op === 'list' && (lists++, closed) });
+    const win = host();
+    tracker.trackOpening('s1', win, 'Sure?', 'alert');
+    tracker.forgetHost(win);
+    closed = true;
+    const before = lists;
+    tick();
+
+    expect(lists).toBe(before);
+    expect(logs).toEqual([]);
+  });
+
   it('keeps windows apart', () => {
     const { tracker, ended } = rig();
     const one = host('one');

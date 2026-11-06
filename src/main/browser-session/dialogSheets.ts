@@ -260,6 +260,8 @@ export function createSheetTracker<H extends object, S>(deps: SheetTrackerDeps<H
       if (openings.some((o) => o.host === host) && !state.retryScheduled) {
         state.retryScheduled = true;
         deps.schedule(() => {
+          // The window closed meanwhile (forgetHost): don't bring it back.
+          if (hosts.get(host) !== state) return;
           state.retryScheduled = false;
           look(host);
         }, SHEET_RETRY_STEP_MS);
