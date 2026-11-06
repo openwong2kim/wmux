@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, vi } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -122,9 +122,33 @@ async function nativeListeners(): Promise<Set<string>> {
   return new Set((await core!.portSnapshot!()).sockets.map((s) => `${s.pid}:${s.port}`));
 }
 
+/** The hosts the listener child binds, in the order it prints their ports:
+ *  IPv4, a v4-mapped IPv6 address, IPv6 loopback, and dual-stack any. */
+const HOSTS = ['127.0.0.1', '::ffff:127.0.0.1', '::1', '::'];
+
 describe.runIf(core && posix)('native process walk and listening sockets parity with ps and lsof', () => {
   let child: ChildProcess | undefined;
-  afterAll(() => { child?.kill(); });
+  const stopChild = (): void => {
+    child?.kill('SIGKILL');
+    child = undefined;
+  };
+  // A retried or failed test must never leave a listener behind: it would
+  // keep the fork worker (and vitest) from exiting.
+  afterEach(stopChild);
+
+  /** A child listening on HOSTS; resolves to its ports (0 where a bind failed).
+   *  It exits on its own after a minute whatever happens to the test. */
+  async function startListeners(): Promise<{ pid: number; ports: number[] }> {
+    stopChild();
+    child = spawn(process.execPath, ['-e', `
+      const net = require('node:net');
+      Promise.all(${JSON.stringify(HOSTS)}.map((h) => new Promise((ok) => {
+        const s = net.createServer().listen(0, h, () => ok(s.address().port)).on('error', () => ok(0));
+      }))).then((ports) => console.log(ports.join(' ')));
+      setTimeout(() => process.exit(0), 60000);`], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const ports = await new Promise<number[]>((resolve) => child!.stdout!.once('data', (d) => resolve(String(d).trim().split(' ').map(Number))));
+    return { pid: child.pid as number, ports };
+  }
 
   it('walks every process ps lists, with the same parent and name', async () => {
     const native = (await core!.portSnapshot!()).processes;
@@ -134,6 +158,13 @@ describe.runIf(core && posix)('native process walk and listening sockets parity 
       const other = ps.get(row.pid);
       if (!other) continue; // exited between the reads
       compared++;
+      // Linux kernel threads (kthreadd, pid 2, and its children) rename
+      // themselves at any moment (a kworker's name carries its current
+      // workqueue), so only their pid and parent are compared.
+      if (process.platform === 'linux' && (row.pid === 2 || row.ppid === 2)) {
+        expect({ pid: row.pid, ppid: row.ppid }).toEqual({ pid: row.pid, ppid: other.ppid });
+        continue;
+      }
       // ps pads ucomm, so a name's own trailing blank is lost there.
       expect({ pid: row.pid, ppid: row.ppid, name: row.name.trimEnd() }).toEqual({ pid: row.pid, ...other });
     }
@@ -144,33 +175,22 @@ describe.runIf(core && posix)('native process walk and listening sockets parity 
   });
 
   it.runIf(LSOF)('lists the listening sockets lsof lists, with the address it prints', async () => {
-    // IPv4, a v4-mapped IPv6 address, IPv6 loopback, and dual-stack any.
-    child = spawn(process.execPath, ['-e', `
-      const net = require('node:net');
-      const hosts = ['127.0.0.1', '::ffff:127.0.0.1', '::1', '::'];
-      Promise.all(hosts.map((h) => new Promise((ok) => {
-        const s = net.createServer().listen(0, h, () => ok(s.address().port)).on('error', () => ok(0));
-      }))).then((ports) => console.log(ports.join(' ')));
-      setTimeout(() => {}, 60000);`], { stdio: ['ignore', 'pipe', 'inherit'] });
-    const ports = await new Promise<number[]>((resolve) => child!.stdout!.once('data', (d) => resolve(String(d).trim().split(' ').map(Number))));
-    const pid = child.pid as number;
+    const { pid, ports } = await startListeners();
     const snap = await core!.portSnapshot!();
     const lsof = lsofListeners();
     const after = await nativeListeners();
     const mine = snap.sockets.filter((s) => s.pid === pid);
-    for (const port of ports.filter(Boolean)) {
+    ports.forEach((port, i) => {
+      if (!port) return; // this host could not be bound here (no IPv6)
       const row = mine.find((s) => s.port === port);
-      expect(row).toBeDefined();
       const printed = lsof.get(`${pid}:${port}`);
-      expect(printed).toBeDefined();
-      // lsof prints `*` for any; otherwise the same address.
-      expect(printed === '*' ? ['0.0.0.0', '::'].includes(row!.address) : row!.address === printed).toBe(true);
+      // lsof prints `*` for any; otherwise native reports the address lsof prints.
+      const want = printed === '*' && (row?.address === '0.0.0.0' || row?.address === '::') ? row.address : printed;
+      expect({ port, host: HOSTS[i], native: row?.address, lsof: printed }).toEqual({ port, host: HOSTS[i], native: want, lsof: printed });
       expect(row!.family).toBe(row!.address.includes(':') ? 6 : 4);
-    }
-    // A v4-mapped bind: macOS reports it as IPv4 with the dotted address lsof prints.
-    if (process.platform === 'darwin' && ports[1]) {
-      expect(mine.find((s) => s.port === ports[1])).toMatchObject({ address: '127.0.0.1', family: 4 });
-    }
+    });
+    // A v4-mapped bind is IPv4 with the dotted address lsof prints, on both systems.
+    if (ports[1]) expect(mine.find((s) => s.port === ports[1])).toMatchObject({ address: '127.0.0.1', family: 4 });
     // Every socket's pid is in the same snapshot's walk.
     expect(snap.sockets.every((s) => snap.processes.some((r) => r.pid === s.pid))).toBe(true);
     // A socket opened or closed between the reads is in one native read only.
@@ -181,14 +201,14 @@ describe.runIf(core && posix)('native process walk and listening sockets parity 
   }, 60_000);
 
   it('feeds PortWatcher the same snapshot as ps and lsof', async () => {
+    const { pid } = LSOF ? await startListeners() : { pid: undefined };
     const snap = await defaultSnapshot();
     const ps = psWalk();
-    for (const [pid, ppid] of snap.ppidByPid) if (ps.has(pid)) expect(ppid).toBe(ps.get(pid)!.ppid);
+    for (const [p, ppid] of snap.ppidByPid) if (ps.has(p)) expect(ppid).toBe(ps.get(p)!.ppid);
     if (LSOF) {
       const lsof = lsofListeners();
-      const pid = child?.pid;
-      expect(snap.listeners.some((l) => l.pid === pid)).toBe(pid !== undefined);
+      expect(snap.listeners.some((l) => l.pid === pid)).toBe(true);
       for (const l of snap.listeners.filter((x) => x.pid === pid)) expect(lsof.has(`${l.pid}:${l.port}`)).toBe(true);
     }
-  });
+  }, 60_000);
 });
