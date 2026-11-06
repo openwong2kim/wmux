@@ -121,24 +121,44 @@ function entryResidualArgs(entry: McpServerEntry | null): string[] {
  * wmux sharing the config (two installs, or a downgrade). The registration path
  * is not a place to have opinions about argv it does not own.
  */
+/**
+ * What a wmux entry launches: `node <script>` (the bundle or the node shim),
+ * or the native launcher `<binary> mcp-shim`. A bare string is a node script.
+ * Both shapes put the profile flags and residual tokens after the same slot
+ * (the script, or `mcp-shim`), so switching between them keeps them.
+ */
+export type WmuxLauncher = { kind: 'node'; script: string } | { kind: 'native'; binary: string };
+export type WmuxLauncherInput = WmuxLauncher | string;
+
+function asLauncher(launcher: WmuxLauncherInput): WmuxLauncher {
+  return typeof launcher === 'string' ? { kind: 'node', script: launcher } : launcher;
+}
+
+/** The `command` a launcher is written with. */
+export function launcherCommand(launcher: WmuxLauncherInput): string {
+  const l = asLauncher(launcher);
+  return l.kind === 'node' ? 'node' : l.binary;
+}
+
 export function wmuxEntryArgs(
-  scriptPath: string,
+  launcher: WmuxLauncherInput,
   profile?: WmuxMcpEntryProfile,
   existing?: McpServerEntry | null,
 ): string[] {
+  const l = asLauncher(launcher);
   const entry = existing ?? null;
   const existingFlags = entryProfileFlags(entry);
   const flags = profile
     ? profileFlags(profile)
     : (existingFlags.length > 0 ? existingFlags : profileFlags(DEFAULT_HOST_PROFILE));
-  return [scriptPath, ...flags, ...entryResidualArgs(entry)];
+  return [l.kind === 'node' ? l.script : 'mcp-shim', ...flags, ...entryResidualArgs(entry)];
 }
 
 export function wmuxMcpEntry(
-  scriptPath: string,
+  launcher: WmuxLauncherInput,
   profile: WmuxMcpEntryProfile = DEFAULT_HOST_PROFILE,
 ): McpServerEntry & { command: string } {
-  return { command: 'node', args: wmuxEntryArgs(scriptPath, profile) };
+  return { command: launcherCommand(launcher), args: wmuxEntryArgs(launcher, profile) };
 }
 
 /** The container key that holds MCP server definitions for a given format.
@@ -228,12 +248,12 @@ export function isWmuxOwnedEntry(entry: McpServerEntry | null): boolean {
 
 // ── JSON writers (object round-trip — lossless, JSON has no comments) ────────
 
-function upsertJson(text: string, key: string, args: string[]): string {
+function upsertJson(text: string, key: string, command: string, args: string[]): string {
   const config = parseConfig(text, 'json');
   const servers = (config.mcpServers && typeof config.mcpServers === 'object'
     ? config.mcpServers
     : (config.mcpServers = {})) as Record<string, unknown>;
-  servers[key] = { command: 'node', args };
+  servers[key] = { command, args };
   return JSON.stringify(config, null, 2) + '\n';
 }
 
@@ -346,7 +366,7 @@ function tomlKeySegment(key: string): string {
 }
 
 /** The canonical wmux block text (no leading/trailing blank lines). */
-function tomlBlock(key: string, args: string[], eol: string): string {
+function tomlBlock(key: string, command: string, args: string[], eol: string): string {
   // JSON.stringify yields a valid TOML basic string for the path (escapes \ and
   // " the same way TOML does), so Windows backslash paths round-trip correctly.
   // Both writers are handed the SAME resolved `args` by upsertMcpServer rather
@@ -354,7 +374,7 @@ function tomlBlock(key: string, args: string[], eol: string): string {
   // a JSON host end up on different surfaces.
   return [
     `[mcp_servers.${tomlKeySegment(key)}]`,
-    `command = ${JSON.stringify('node')}`,
+    `command = ${JSON.stringify(command)}`,
     `args = [${args.map((arg) => JSON.stringify(arg)).join(', ')}]`,
   ].join(eol);
 }
@@ -415,10 +435,10 @@ function tomlValueEndRow(lines: string[], row: number, col: number): number {
   return lines.length - 1;
 }
 
-function upsertToml(text: string, key: string, args: string[]): string {
+function upsertToml(text: string, key: string, command: string, args: string[]): string {
   const eol = detectEol(text);
   const lines = text.split(/\r?\n/);
-  const blockLines = tomlBlock(key, args, eol).split(eol);
+  const blockLines = tomlBlock(key, command, args, eol).split(eol);
   const start = lines.findIndex((line) => classifyTomlHeader(line, key) === 'exact');
   let result: string[];
   if (start !== -1) {
@@ -480,14 +500,15 @@ export function upsertMcpServer(
   text: string,
   format: McpConfigFormat,
   key: string,
-  scriptPath: string,
+  launcher: WmuxLauncherInput,
   profile?: WmuxMcpEntryProfile,
 ): string {
   // Validate parseability up-front so a malformed file aborts instead of being
   // clobbered (TOML append would otherwise blindly tack a block onto garbage).
   const parsed = parseConfig(text, format);
-  const args = wmuxEntryArgs(scriptPath, profile, getMcpServerEntry(parsed, format, key));
-  const out = format === 'json' ? upsertJson(text, key, args) : upsertToml(text, key, args);
+  const command = launcherCommand(launcher);
+  const args = wmuxEntryArgs(launcher, profile, getMcpServerEntry(parsed, format, key));
+  const out = format === 'json' ? upsertJson(text, key, command, args) : upsertToml(text, key, command, args);
   // Never RETURN invalid TOML: the line-based surgical editor can't target an
   // inline-table entry (`wmux = { ... }` under `[mcp_servers]`) and would append
   // a duplicate table. Validate the output and throw rather than hand a caller a

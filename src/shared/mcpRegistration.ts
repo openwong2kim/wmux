@@ -32,8 +32,10 @@ import {
   isWmuxOwnedEntry,
   upsertMcpServer,
   wmuxEntryArgs,
+  launcherCommand,
   entryProfileFlags,
   removeMcpServers,
+  type WmuxLauncherInput,
   isWmuxOwnedNotify,
   upsertNotifyToml,
   removeNotifyToml,
@@ -232,7 +234,8 @@ export interface RegisterTargetResult {
 }
 
 /**
- * Ensure the `wmux` MCP server points at `wmuxScript` in one target's config.
+ * Ensure the `wmux` MCP server runs `launcher` (a node script, or the native
+ * launcher) in one target's config.
  * `ownedKeys` (optional) tracks keys written this session so a key wmux already
  * owns is updated even if its on-disk shape looks foreign-adjacent.
  *
@@ -243,7 +246,7 @@ export interface RegisterTargetResult {
 export function registerTarget(
   target: McpTarget,
   home: string,
-  wmuxScript: string,
+  launcher: WmuxLauncherInput,
   ownedKeys?: Set<string>,
   profile?: WmuxMcpEntryProfile,
 ): RegisterTargetResult {
@@ -293,7 +296,8 @@ export function registerTarget(
         // "up to date" while an explicit `--profile core|full` sat unapplied.
         // With no explicit profile the desired args preserve the on-disk ones,
         // so this still short-circuits every unchanged boot re-registration.
-        arraysEqual(existing.args, wmuxEntryArgs(wmuxScript, profile, existing))
+        existing.command === launcherCommand(launcher)
+        && arraysEqual(existing.args, wmuxEntryArgs(launcher, profile, existing))
       ) {
         ownedKeys?.add(WMUX_SERVER_KEY); // already up to date
         skip = true;
@@ -304,12 +308,12 @@ export function registerTarget(
     if (!skip) {
       // upsert validates its INPUT and OUTPUT, so an inline-table entry the
       // line-based editor can't target (which would duplicate) throws here.
-      newText = upsertMcpServer(newText, target.format, WMUX_SERVER_KEY, wmuxScript, profile);
+      newText = upsertMcpServer(newText, target.format, WMUX_SERVER_KEY, launcher, profile);
       wrote.push(WMUX_SERVER_KEY);
       ownedKeys?.add(WMUX_SERVER_KEY);
       resultProfile = profileOf({
-        command: 'node',
-        args: wmuxEntryArgs(wmuxScript, profile, existing),
+        command: launcherCommand(launcher),
+        args: wmuxEntryArgs(launcher, profile, existing),
       });
     }
 
