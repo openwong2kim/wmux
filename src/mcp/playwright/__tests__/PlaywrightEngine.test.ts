@@ -1988,13 +1988,15 @@ describe('PlaywrightEngine live-Chrome attach (Phase 3)', () => {
     return { page, browser };
   }
 
-  function mockLiveCdpInfo(targets: unknown[] = []) {
+  function mockLiveCdpInfo(targets: unknown[] = [], live = true) {
     mockSendRpc.mockImplementation((method: string) => {
       if (method === 'browser.cdp.info') {
         return Promise.resolve({
           wsEndpoint: 'ws://127.0.0.1:9333/devtools/browser/abc',
           targetsScoped: true,
           workspaceBackend: 'chrome',
+          // Main sends it for Live Chrome only.
+          ...(live && { liveWriteScope: 'all' }),
           // Live seeds only wmux-opened tabs; the pinned tab pre-exists.
           targets,
         });
@@ -2012,6 +2014,16 @@ describe('PlaywrightEngine live-Chrome attach (Phase 3)', () => {
     const resolved = await engine.getPageForScope({ workspaceId: 'ws-A', surfaceId: 'live-tab-7' });
     expect(resolved).toBe(page);
     expect(mockConnectOverCDP).toHaveBeenCalledWith('ws://127.0.0.1:9333/devtools/browser/abc');
+  });
+
+  it('a dedicated Chrome on a debugging pipe (a wsEndpoint, no liveWriteScope) does not match a tab outside the registry', async () => {
+    const { page, browser } = liveHarness('other-ws-tab', 'https://mail.example/');
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockLiveCdpInfo([], false);
+
+    const engine = PlaywrightEngine.getInstance();
+    const resolved = await engine.getPageForScope({ workspaceId: 'ws-A', surfaceId: 'other-ws-tab' }).catch((err: unknown) => err);
+    expect(resolved).not.toBe(page);
   });
 
   // Unprotected pane: the engine arms the download guard the first time it

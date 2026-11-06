@@ -60,6 +60,19 @@ describe('memory diagnostics', () => {
     expect(text).toContain('Do not add them to RSS');
   });
 
+  it('shows the Chrome debugging pipe when one ran, and rejects malformed pipe counters', async () => {
+    const cdpPipe = { frames: 1200, bytes: 3 * 1024 * 1024, parseMsTotal: 2.5, parseMsMax: 0.84, largestFrameBytes: 1024 * 1024, dropped: { 'unknown-session': 2, 'root-event': 5 }, refused: 1 };
+    const memory = { mainPid: 1, processes: [{ pid: 1, type: 'Browser', workingSetBytes: 1024 }], cdpPipe };
+    const section = await fetchPerformanceSection(async () => ({ id: 'test', ok: true, result: { retention: { last: null, last5m: {}, sinceBoot: {} }, memory } }));
+    expect(section.memory?.cdpPipe).toEqual(cdpPipe);
+    const text = renderMemoryDiagnostics(memory, undefined, { available: false, reason: 'n/a' });
+    expect(text).toContain('Chrome debugging pipe: 1200 frames, 3.0 MiB; parse 2.5 ms in all, slowest frame 0.8 ms, largest 1.0 MiB; 7 dropped (root-event 5, unknown-session 2), 1 commands refused');
+    expect(renderMemoryDiagnostics({ mainPid: 1, processes: [] }, undefined, { available: false, reason: 'n/a' })).not.toContain('debugging pipe');
+    for (const bad of [{ ...cdpPipe, frames: -1 }, { ...cdpPipe, dropped: null }, { ...cdpPipe, dropped: { x: 'y' } }, { ...cdpPipe, refused: undefined }]) {
+      expect(isAppMemoryDiagnostics({ mainPid: 1, processes: [], cdpPipe: bad })).toBe(false);
+    }
+  });
+
   it('shows native snapshot use with its fallback reasons, most frequent first', () => {
     const counters = (native: number, fallbacks: number, reasons: Record<string, number>) =>
       ({ native, fallbacks, skipped: 0, circuitOpen: false, reasons });

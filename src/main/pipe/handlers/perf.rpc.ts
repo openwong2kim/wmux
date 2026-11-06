@@ -2,6 +2,7 @@ import type { RpcRouter } from '../RpcRouter';
 import { app } from 'electron';
 import type { AppMemoryDiagnostics } from '../../../shared/memoryDiagnostics';
 import { revealStatsAggregator } from '../../perf/revealStatsAggregator';
+import { cdpPipeCounters } from '../../browser-session/CdpPipeMux';
 
 export function registerPerfRpc(router: RpcRouter): void {
   /**
@@ -23,6 +24,7 @@ export function registerPerfRpc(router: RpcRouter): void {
    * only — never terminal content.
    */
   router.register('perf.status', (params) => {
+    const pipe = cdpPipeCounters();
     const memory: AppMemoryDiagnostics | undefined = params?.includeMemory === true ? {
       mainPid: process.pid,
       processes: app.getAppMetrics().map((metric) => ({
@@ -30,6 +32,8 @@ export function registerPerfRpc(router: RpcRouter): void {
         type: metric.type,
         workingSetBytes: metric.memory.workingSetSize * 1024,
       })),
+      // Only once a Chrome on a debugging pipe has said something.
+      ...(pipe.frames > 0 || pipe.refused > 0 || Object.keys(pipe.dropped).length > 0 ? { cdpPipe: pipe } : {}),
     } : undefined;
     return Promise.resolve({ retention: revealStatsAggregator.getStats(), ...(memory ? { memory } : {}) });
   });

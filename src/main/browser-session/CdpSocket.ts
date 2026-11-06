@@ -80,6 +80,22 @@ export interface CdpSocketOptions {
   onDisconnect?: () => void;
 }
 
+/**
+ * A browser-level CDP connection: what the dedicated launcher needs of one,
+ * whether it rides a WebSocket (CdpSocket) or a debugging pipe shared with
+ * other clients (CdpPipeMux). Commands go to the browser, or with `sessionId`
+ * to a session attached on this connection; events arrive the same way.
+ */
+export interface CdpConnection {
+  isOpen(): boolean;
+  /** Subscribe to a CDP event. Returns an unsubscribe function. */
+  on(method: string, handler: CdpEventHandler): () => void;
+  /** Send a CDP command. `sessionId` targets an attached session (flatten). */
+  send(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<unknown>;
+  /** Close and reject everything in flight. Handlers survive, so a later send() reconnects. */
+  close(): void;
+}
+
 interface CdpFrame {
   id?: number;
   result?: unknown;
@@ -89,7 +105,7 @@ interface CdpFrame {
   sessionId?: string;
 }
 
-export class CdpSocket {
+export class CdpSocket implements CdpConnection {
   private ws: WebSocket | null = null;
   private wsEndpoint: string | null = null;
   /** Dial in flight, shared by every concurrent send (singleflight). */
