@@ -1,7 +1,6 @@
 // The bundle's half of the live-session count for `wmux doctor`: a single-child
-// server stamps one per-process id on every envelope. A broker-hosted call
-// never does, since the broker reports its own connection count, and so does
-// a call the broker process makes outside any connection.
+// server stamps one per-process id on every envelope. The broker process never
+// does, hosted connection or not, since it reports its own connection count.
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as fs from 'fs';
@@ -59,20 +58,22 @@ describe.skipIf(process.platform === 'win32')('mcpSession on the envelope', () =
     fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  it('stamps one id per process on a single-child server, and none inside a connection scope', async () => {
+  // One mechanism: only broker mode clears the id. A connection scope does
+  // not, since only the broker creates scopes and it is in broker mode first.
+  it('stamps one id per process on a single-child server, scope or not', async () => {
     const id = getMcpSessionId();
     expect(id).toMatch(MCP_SESSION_ID_RE);
     await sendRpc('a2a.discover' as RpcMethod, {});
-    await sendRpc('pane.list' as RpcMethod, {});
     await runInConnectionScope(createConnectionScope(), () => sendRpc('pane.list' as RpcMethod, {}));
-    expect(envelopes.map((e) => e.mcpSession)).toEqual([id, id, undefined]);
-    expect('mcpSession' in envelopes[2]).toBe(false);
+    expect(envelopes.map((e) => e.mcpSession)).toEqual([id, id]);
   });
 
-  it('stamps nothing once the process is the broker, even outside a connection', async () => {
+  it('stamps nothing once the process is the broker, in a connection or not', async () => {
     setBrokerEnvelopeMode();
     expect(getMcpSessionId()).toBeUndefined();
     await sendRpc('pane.list' as RpcMethod, {});
-    expect('mcpSession' in envelopes[0]).toBe(false);
+    await runInConnectionScope(createConnectionScope(), () => sendRpc('pane.list' as RpcMethod, {}));
+    expect(envelopes.every((e) => !('mcpSession' in e))).toBe(true);
+    expect(envelopes).toHaveLength(2);
   });
 });
