@@ -102,6 +102,7 @@ export const LIVE_WRITE_RPC_METHODS: ReadonlySet<string> = new Set([
   'browser.click.cdp',
   'browser.type.cdp',
   'browser.press.cdp',
+  'browser.dialog.arm',
   'browser.hover.cdp',
   'browser.drag.cdp',
   'browser.evaluate',
