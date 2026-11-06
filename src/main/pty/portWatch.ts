@@ -1,7 +1,9 @@
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import { promisify } from 'node:util';
 import { tryNativeSnapshot } from './winSnapshotNative';
+import { loadNativeTerminalCore, reportNativeFallback, type NativeTerminalCore } from '../../shared/nativeTerminalCore';
 
 const execFileAsync = promisify(execFile);
 
@@ -92,11 +94,84 @@ function snapshotWindowsNative(): PortSnapshot {
   return { ppidByPid, listeners };
 }
 
-/** Unix: `ps` for the process table + `lsof` for listening sockets. */
+type NativePortReads = Required<Pick<NativeTerminalCore, 'processTable' | 'listeningSockets'>>;
+
+const MAX_NATIVE_FAILURES = 3;
+let nativeReads: NativePortReads | null | undefined;
+let nativeFailures = 0;
+
+/**
+ * macOS and Linux: the native core's process walk and listening-socket list
+ * (`process-table-v1` + `listen-sockets-v1`), resolved once. A missing module
+ * or capability, or MAX_NATIVE_FAILURES failed snapshots in a row, latches it
+ * off for the process's life; `WMUX_NATIVE_PROCESS_TABLE=off` never loads it.
+ * A single failed snapshot only sends that tick to `ps`/`lsof`.
+ */
+function nativePortReads(): NativePortReads | undefined {
+  if (nativeReads === undefined) {
+    if ((process.platform !== 'darwin' && process.platform !== 'linux') || process.env.WMUX_NATIVE_PROCESS_TABLE === 'off') {
+      nativeReads = null;
+    } else {
+      try {
+        const core = loadNativeTerminalCore('listen-sockets-v1');
+        if (!core.nativeCoreCapabilities().includes('process-table-v1') ||
+            typeof core.processTable !== 'function' || typeof core.listeningSockets !== 'function') {
+          throw new Error('Native terminal core lacks the process walk or socket list');
+        }
+        nativeReads = { processTable: core.processTable, listeningSockets: core.listeningSockets };
+      } catch {
+        nativeReads = null;
+        reportNativeFallback('port-watch');
+      }
+    }
+  }
+  return nativeReads ?? undefined;
+}
+
+async function snapshotNative(reads: NativePortReads): Promise<PortSnapshot> {
+  const [rows, sockets] = await Promise.all([reads.processTable(false), reads.listeningSockets()]);
+  return {
+    ppidByPid: new Map(rows.map((r) => [r.pid, r.ppid])),
+    listeners: sockets.map((s) => ({ port: s.port, pid: s.pid })),
+  };
+}
+
+/** Where `ps` and `lsof` live, by absolute path, so no spawn walks PATH
+ *  (each miss is a fork of its own). Resolved once; undefined when absent. */
+const TOOL_PATHS: Record<'ps' | 'lsof', Partial<Record<NodeJS.Platform, string[]>>> = {
+  ps: { darwin: ['/bin/ps'], linux: ['/bin/ps', '/usr/bin/ps'] },
+  lsof: { darwin: ['/usr/sbin/lsof'], linux: ['/usr/bin/lsof'] },
+};
+const toolPaths = new Map<string, string | undefined>();
+
+function toolPath(tool: 'ps' | 'lsof'): string | undefined {
+  if (!toolPaths.has(tool)) {
+    toolPaths.set(tool, (TOOL_PATHS[tool][process.platform] ?? []).find((p) => fs.existsSync(p)));
+  }
+  return toolPaths.get(tool);
+}
+
+/** Unix: the native walk and socket list, else `ps` for the process table +
+ *  `lsof` for listening sockets. */
 async function snapshotUnix(): Promise<PortSnapshot> {
+  const reads = nativePortReads();
+  if (reads) {
+    try {
+      const snap = await snapshotNative(reads);
+      nativeFailures = 0;
+      return snap;
+    } catch {
+      if (++nativeFailures >= MAX_NATIVE_FAILURES && nativeReads) {
+        nativeReads = null;
+        reportNativeFallback('port-watch');
+      }
+    }
+  }
   const ppidByPid = new Map<number, number>();
   try {
-    const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid='], {
+    const ps = toolPath('ps');
+    if (!ps) throw new Error('ps not found');
+    const { stdout } = await execFileAsync(ps, ['-axo', 'pid=,ppid='], {
       timeout: SNAPSHOT_TIMEOUT_MS,
       killSignal: 'SIGKILL',
       maxBuffer: 16 * 1024 * 1024,
@@ -109,8 +184,10 @@ async function snapshotUnix(): Promise<PortSnapshot> {
 
   const listeners: SessionPort[] = [];
   try {
+    const lsof = toolPath('lsof');
+    if (!lsof) throw new Error('lsof not found');
     // -F p n: machine-readable "p<pid>" / "n<addr>" lines.
-    const { stdout } = await execFileAsync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'], {
+    const { stdout } = await execFileAsync(lsof, ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'], {
       timeout: SNAPSHOT_TIMEOUT_MS,
       killSignal: 'SIGKILL',
       maxBuffer: 16 * 1024 * 1024,
