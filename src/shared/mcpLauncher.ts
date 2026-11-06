@@ -9,87 +9,42 @@
 //   node-shim  the broker is enabled and answers now: `node shim.js`.
 //   bundle     everything else: `node index.js`, the full server.
 
-import { execFile } from 'child_process';
-import { createHash, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { WmuxLauncher } from './configIO';
 import { nativeHooksBasename } from './hooks/hookFlavours';
+import { PROBE_RECORD, fileSha256, probeKey, recordProbe, recordedProbe, runProbe, type ProbeVerdict } from './probedNative';
 
 /** What `wmux-native mcp-shim --self-test` prints when it speaks the broker
  *  protocol this wmux expects (core/wmux-native/src/mcp_shim.rs). */
 export const NATIVE_SELF_TEST_LINE = 'wmux-mcp-shim protocol 1';
 export const NATIVE_SELF_TEST_TIMEOUT_MS = 5000;
 
-/** What a self-test proved: it runs, it does not, or nothing. Nothing is
- *  proved when it timed out (an antivirus scan, load) or could not be started
- *  at all (access denied, the file held or gone): neither says anything about
- *  the bytes, so neither is recorded. */
-export type SelfTestVerdict = 'pass' | 'fail' | 'timeout' | 'unstartable';
+/** What a self-test proved (see shared/probedNative.ts). */
+export type SelfTestVerdict = ProbeVerdict;
 
 /** Run the native launcher's self-test. Never throws. */
 export function runNativeSelfTest(binary: string, timeoutMs = NATIVE_SELF_TEST_TIMEOUT_MS): Promise<SelfTestVerdict> {
-  return new Promise((resolve) => {
-    try {
-      execFile(binary, ['mcp-shim', '--self-test'], { timeout: timeoutMs, windowsHide: true, encoding: 'utf8' }, (error, stdout) => {
-        if (error && (error as { killed?: boolean }).killed) return resolve('timeout');
-        // A string code is a spawn error (EACCES, EPERM, EBUSY, ENOENT); an
-        // exit status is a number.
-        if (error && typeof (error as { code?: unknown }).code === 'string') return resolve('unstartable');
-        resolve(!error && String(stdout).trim() === NATIVE_SELF_TEST_LINE ? 'pass' : 'fail');
-      });
-    } catch {
-      resolve('unstartable');
-    }
-  });
+  return runProbe(binary, ['mcp-shim', '--self-test'], NATIVE_SELF_TEST_LINE, timeoutMs);
 }
 
 /**
- * The verdicts the app recorded for launcher builds, by sha256 of the copy, in
- * the stable MCP directory. Only the app writes it (after a self-test); the
- * CLI reads it, so both offer the same copies. A timeout is never recorded.
+ * The verdicts the app recorded for launcher builds in the stable MCP
+ * directory, by sha256 of the copy and the self-test line. Only the app writes
+ * it (after a self-test); the CLI reads it, so both offer the same copies. A
+ * timeout is never recorded.
  */
-export const NATIVE_HEALTH_RECORD = '.wmux-native-health.json';
-const MAX_RECORDED_BUILDS = 8;
+export const NATIVE_HEALTH_RECORD = PROBE_RECORD;
 
-type HealthRecord = { version: 1; verdicts: Record<string, 'pass' | 'fail'> };
-
-function readHealthRecord(stableDir: string): HealthRecord {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(stableDir, NATIVE_HEALTH_RECORD), 'utf8')) as Partial<HealthRecord>;
-    if (parsed && parsed.version === 1 && parsed.verdicts && typeof parsed.verdicts === 'object') return parsed as HealthRecord;
-  } catch { /* missing or unreadable: nothing recorded */ }
-  return { version: 1, verdicts: {} };
-}
-
-export function fileSha256(file: string): string | null {
-  try {
-    return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-  } catch {
-    return null;
-  }
-}
+export { fileSha256 };
 
 export function recordedVerdict(stableDir: string, hash: string): 'pass' | 'fail' | undefined {
-  const verdict = readHealthRecord(stableDir).verdicts[hash];
-  return verdict === 'pass' || verdict === 'fail' ? verdict : undefined;
+  return recordedProbe(stableDir, probeKey(hash, NATIVE_SELF_TEST_LINE));
 }
 
 /** Record a verdict for a build; the newest few builds are kept. */
 export function recordVerdict(stableDir: string, hash: string, verdict: 'pass' | 'fail'): void {
-  const record = readHealthRecord(stableDir);
-  delete record.verdicts[hash];
-  record.verdicts[hash] = verdict;
-  const hashes = Object.keys(record.verdicts);
-  for (const old of hashes.slice(0, Math.max(0, hashes.length - MAX_RECORDED_BUILDS))) delete record.verdicts[old];
-  const file = path.join(stableDir, NATIVE_HEALTH_RECORD);
-  const temp = `${file}.${process.pid}-${randomBytes(4).toString('hex')}.tmp`;
-  try {
-    fs.writeFileSync(temp, `${JSON.stringify(record)}\n`, { mode: 0o600 });
-    fs.renameSync(temp, file);
-  } catch {
-    try { fs.unlinkSync(temp); } catch { /* never written */ }
-  }
+  recordProbe(stableDir, probeKey(hash, NATIVE_SELF_TEST_LINE), verdict);
 }
 
 /** Where the native launcher lives inside the stable MCP directory. */

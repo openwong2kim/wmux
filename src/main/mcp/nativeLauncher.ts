@@ -2,27 +2,16 @@
 // bundle it falls back to (core/wmux-native/src/mcp_shim/fallback.rs looks for
 // `index.js` next to itself first).
 //
-// A copy is offered only once its self-test passed, and that verdict is
-// recorded by the copy's sha256 (shared/mcpLauncher.ts), so a boot runs the
-// test only for bytes it has not judged yet. A copy that fails is replaced by
-// the one it replaced, or kept and recorded as failing: never deleted, since
-// an agent config may point at the path. A timeout, or a copy that could not
-// be started at all, proves nothing either way; nothing is offered or
-// recorded, and the next boot tests again.
-//
-// Calls are serialized: two registrations at once (boot, a re-register from
-// the UI) must not sweep the aside the other is about to restore.
+// Installed by shared/probedNative.ts: the new copy is staged and its
+// self-test run where it will live, and only a pass moves it into place. A
+// copy that fails never takes the place of one that works; that one stays,
+// and is still offered when its own bytes have a recorded pass. A timeout, or
+// a copy that could not be started at all, proves nothing either way: nothing
+// new is offered or recorded, and the next boot tests again.
 
-import { installLifecycleAsset, settleProbedAsset, sweepAsides } from '../../shared/lifecycleIntegrations';
 import { NATIVE_HOOKS_MARKER } from '../../shared/hooks/hookFlavours';
-import {
-  fileSha256,
-  nativeLauncherPath,
-  recordVerdict,
-  recordedVerdict,
-  type SelfTestVerdict,
-} from '../../shared/mcpLauncher';
-import * as fs from 'fs';
+import { NATIVE_SELF_TEST_LINE, nativeLauncherPath, type SelfTestVerdict } from '../../shared/mcpLauncher';
+import { prepareProbedNative } from '../../shared/probedNative';
 
 export interface NativeLauncherOptions {
   /** The binary this build ships, or null when it ships none. */
@@ -36,50 +25,22 @@ export interface NativeLauncherOptions {
 export interface NativeLauncherResult {
   /** The launcher to register, or null to register a node launcher. */
   binary: string | null;
-  /** True when a failing copy was replaced by the one it had replaced. */
+  /** Always false: a failing copy never replaces a working one, so none is
+   *  put back. Kept for callers that read it. */
   restored: boolean;
-  /** Why no launcher is offered; for the log. */
+  /** Why no new launcher is offered; for the log. */
   reason?: string;
 }
 
-let queue: Promise<unknown> = Promise.resolve();
-
-export function prepareNativeLauncher(opts: NativeLauncherOptions): Promise<NativeLauncherResult> {
-  const run = queue.then(() => prepareOnce(opts));
-  queue = run.catch(() => undefined);
-  return run;
-}
-
-async function prepareOnce(opts: NativeLauncherOptions): Promise<NativeLauncherResult> {
-  const destinationPath = nativeLauncherPath(opts.stableDir, opts.platform);
-  // Asides earlier refreshes left while their copy was still running.
-  sweepAsides(destinationPath);
-  if (!opts.sourcePath || !fs.existsSync(opts.sourcePath)) {
-    return { binary: null, restored: false, reason: 'not shipped with this build' };
-  }
-  const outcome = installLifecycleAsset({
+export async function prepareNativeLauncher(opts: NativeLauncherOptions): Promise<NativeLauncherResult> {
+  const result = await prepareProbedNative({
     sourcePath: opts.sourcePath,
-    destinationPath,
+    destinationPath: nativeLauncherPath(opts.stableDir, opts.platform),
+    recordDir: opts.stableDir,
+    line: NATIVE_SELF_TEST_LINE,
+    probe: opts.selfTest,
     ownershipMarkers: [NATIVE_HOOKS_MARKER],
-    // Runnable from the moment it appears: an agent may start it mid-refresh.
-    mode: 0o700,
-    // The old copy may be running (Windows cannot replace it then) and is put
-    // back if the new one does not pass.
-    replaceAside: true,
+    platform: opts.platform,
   });
-  if (outcome.state !== 'current') {
-    return { binary: null, restored: false, reason: outcome.error ?? `copy is ${outcome.state}` };
-  }
-  const hash = fileSha256(destinationPath);
-  const known = hash ? recordedVerdict(opts.stableDir, hash) : undefined;
-  const verdict: SelfTestVerdict = known ?? (await opts.selfTest(destinationPath));
-  if (hash && !known && (verdict === 'pass' || verdict === 'fail')) recordVerdict(opts.stableDir, hash, verdict);
-  const settled = settleProbedAsset(destinationPath, outcome.previousPath, verdict === 'pass', { keepFailing: true });
-  if (settled.runs) return { binary: destinationPath, restored: false };
-  const reason = verdict === 'timeout'
-    ? 'self-test timed out'
-    : verdict === 'unstartable'
-      ? 'self-test could not start'
-      : known === 'fail' ? 'recorded as failing' : 'self-test failed';
-  return { binary: null, restored: settled.restored, reason: settled.restored ? `${reason}; the previous copy was put back` : reason };
+  return { binary: result.binary, restored: false, ...(result.reason ? { reason: result.reason } : {}) };
 }

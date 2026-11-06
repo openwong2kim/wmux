@@ -93,35 +93,28 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'shim.js')] });
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: false });
     expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'index.js')] });
-    // Kept, never deleted: a config may already point at it.
-    expect(fs.existsSync(nativeCopy())).toBe(true);
+    // A copy that fails is never put in place.
+    expect(fs.existsSync(nativeCopy())).toBe(false);
   });
 
-  it('a downgrade whose launcher fails keeps a working one: the old copy is put back and node runs this boot', async () => {
+  it('a downgrade whose launcher fails keeps the working one in place, and it stays registered', async () => {
     ship('good v1');
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: false });
     expect(claudeEntry()?.command).toBe(nativeCopy());
     ship('broken v0');
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: true });
-    expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'shim.js')] });
+    expect(claudeEntry()?.command).toBe(nativeCopy());
     expect(fs.readFileSync(nativeCopy(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
   });
 
-  it('after a failed self-test whose restore also failed, the next boot registers node and keeps the copy', async () => {
+  it('a failing refresh over a copy with no recorded pass registers node and leaves that copy alone', async () => {
     ship('good v1');
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: false });
+    fs.rmSync(path.join(stableDir(), '.wmux-native-health.json'));
     ship('broken v2');
-    const loseTheAside = async (binary: string) => {
-      for (const f of fs.readdirSync(stableDir()).filter((n) => n.includes('.previous'))) fs.unlinkSync(path.join(stableDir(), f));
-      return runsIfGood(binary);
-    };
-    await new McpRegistrar({ nativeSelfTest: loseTheAside }).register('tok', { useShim: true });
-    expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'shim.js')] });
-    expect(fs.readFileSync(nativeCopy(), 'utf8')).toBe('broken v2 wmux-managed: native-hooks');
-    // Next boot: the copy matches the source, so only its self-test can tell.
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: true });
     expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'shim.js')] });
-    expect(fs.existsSync(nativeCopy())).toBe(true);
+    expect(fs.readFileSync(nativeCopy(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
   });
 
   it('runs the self-test once per build: later boots read the recorded pass', async () => {
@@ -149,6 +142,8 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     // agy is registered only on request, so a boot never rewrites it on its own.
     fs.mkdirSync(path.dirname(agyJson()), { recursive: true });
     fs.writeFileSync(agyJson(), JSON.stringify({ mcpServers: { wmux: { command: nativeCopy(), args: ['mcp-shim'] } } }));
+    // Nothing recorded for the copy in place, and the newer build proves nothing.
+    fs.rmSync(path.join(stableDir(), '.wmux-native-health.json'));
     ship('newer, but it will not run');
     await new McpRegistrar({ nativeSelfTest: async () => 'timeout' }).register('tok', { useShim: true });
     const shim = { command: 'node', args: [path.join(stableDir(), 'shim.js')] };
