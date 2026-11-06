@@ -55,8 +55,8 @@ export interface ReadRpcFramesOptions {
   topText: string;
   /** Origin of the top document, to say whether a frame shares it. */
   topOrigin: string;
-  /** The snapshot's character budget. */
-  budget: number;
+  /** The window the snapshot is served in (snapshotCursor windowBudget). */
+  budget: { chars: number; bytes: number };
   /** First ref number the top listing left unspent. */
   nextRef: number;
   /** The frame refs this connection's last snapshot of the surface recorded. */
@@ -133,15 +133,23 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   }
   if (frames.length === 0) return EMPTY(opts.nextRef);
 
-  const pool = Math.max(0, Math.min(Math.floor(opts.budget * RPC_FRAME_BUDGET_SHARE), opts.budget - opts.topText.length));
+  // Charged in UTF-8 bytes, which bound characters too, against what the top
+  // document left of the window it is served in: nothing a frame adds can be
+  // cut off into a continuation the agent may never fetch.
+  const size = (s: string) => Buffer.byteLength(s, 'utf8');
+  const pool = Math.max(0, Math.min(
+    Math.floor(opts.budget.chars * RPC_FRAME_BUDGET_SHARE),
+    opts.budget.chars - opts.topText.length,
+    opts.budget.bytes - size(opts.topText),
+  ));
   const lines: string[] = ['', '', SECTION_INTRO];
-  let used = SECTION_INTRO.length + 2;
+  let used = size(SECTION_INTRO) + 2;
   if (used > pool) return EMPTY(opts.nextRef);
   // Content and headers leave room for the closing notes; the notes may use it.
-  const fits = (line: string, reserve = CLOSING_RESERVE) => used + line.length + 1 + reserve <= pool;
+  const fits = (line: string, reserve = CLOSING_RESERVE) => used + size(line) + 1 + reserve <= pool;
   const push = (line: string) => {
     lines.push(line);
-    used += line.length + 1;
+    used += size(line) + 1;
   };
 
   const result = { refs: new Map<number, RpcFrameRef>(), nextRef: opts.nextRef };
@@ -183,7 +191,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
     for (let j = 0; j < content.length; j++) {
       const line = `  ${content[j]}`;
       const more = j < content.length - 1;
-      if (!fits(line, CLOSING_RESERVE + (more ? TRUNCATED_NOTE.length + 1 : 0))) {
+      if (!fits(line, CLOSING_RESERVE + (more ? size(TRUNCATED_NOTE) + 1 : 0))) {
         if (fits(TRUNCATED_NOTE)) push(TRUNCATED_NOTE);
         break;
       }

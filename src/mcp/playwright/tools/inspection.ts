@@ -26,7 +26,7 @@ import {
   capCaptureText,
   continueSnapshotCapture,
   cursorIgnoredNote,
-  DEFAULT_SNAPSHOT_WINDOW_CHARS,
+  windowBudget,
   windowSnapshotText,
 } from '../snapshotCursor';
 import { captureSnapshotListing } from '../snapshotListing';
@@ -651,7 +651,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           const frames = await readRpcFrames({
             topText: text,
             topOrigin: topListingOrigin(text),
-            budget: DEFAULT_SNAPSHOT_WINDOW_CHARS,
+            budget: windowBudget(),
             nextRef: nextRefFor(domKey, 0),
             prior: rpcFrameRefsFor(browserScopeKey(scope)),
             listFrames: async () =>

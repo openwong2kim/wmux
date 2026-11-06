@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { RPC_FRAME_CAP, RPC_FRAME_BUDGET_SHARE, readRpcFrames, type RpcFrameInfo } from '../rpcFrames';
 
-const BUDGET = 50_000;
+const BUDGET = { chars: 49_600, bytes: 49_600 };
 
 function frame(n: number, over: Partial<RpcFrameInfo> = {}): RpcFrameInfo {
   return { frameId: `F${n}`, loaderId: `L${n}`, parentId: 'MAIN', depth: 1, origin: 'https://top.test', name: '', ...over };
@@ -18,6 +18,7 @@ function buttons(count: number, label = 'Pay') {
 }
 
 const base = { topOrigin: 'https://top.test', budget: BUDGET, nextRef: 10 };
+const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
 
 describe('readRpcFrames', () => {
   it('lists each read frame under a header naming it, its origin and how it relates to the page', async () => {
@@ -69,7 +70,7 @@ describe('readRpcFrames', () => {
   it('never lets frames push the top document out: they share one pool of 40% of what the top left', async () => {
     const topText = 'x'.repeat(45_000);
     const out = await readRpcFrames({ ...base, topText, listFrames: async () => [frame(1)], readFrame: buttons(500) });
-    expect(topText.length + out.text.length).toBeLessThanOrEqual(BUDGET);
+    expect(topText.length + out.text.length).toBeLessThanOrEqual(BUDGET.chars);
     expect(out.text).toContain('(frame content truncated)');
     // Only the refs whose lines were shown are usable.
     const shown = [...out.text.matchAll(/\[ref=(\d+)\]/g)].map((m) => Number(m[1]));
@@ -78,7 +79,20 @@ describe('readRpcFrames', () => {
     expect(out.nextRef).toBe(10 + 500);
 
     const small = await readRpcFrames({ ...base, topText: '', listFrames: async () => [frame(1)], readFrame: buttons(5000) });
-    expect(small.text.length).toBeLessThanOrEqual(BUDGET * RPC_FRAME_BUDGET_SHARE);
+    expect(small.text.length).toBeLessThanOrEqual(BUDGET.chars * RPC_FRAME_BUDGET_SHARE);
+  });
+
+  it('fits the window the snapshot is served in, in bytes as well as characters, notes included', async () => {
+    const topText = 'x'.repeat(45_000);
+    const out = await readRpcFrames({
+      ...base,
+      topText,
+      listFrames: async () => [frame(1), frame(2)],
+      readFrame: buttons(500, '결제 버튼'),
+    });
+    expect(bytes(topText) + bytes(out.text)).toBeLessThanOrEqual(BUDGET.bytes);
+    expect(out.text).toContain('(frame content truncated)');
+    expect(out.text).toContain('(+1 more frames not read');
   });
 
   it('says which frames the spent pool left unread', async () => {
