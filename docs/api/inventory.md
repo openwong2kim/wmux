@@ -152,6 +152,8 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 | `browser.type.humanlike`, `browser.type.cdp`, `browser.click.cdp`, `browser.hover.cdp`, `browser.drag.cdp`, `browser.press.cdp` | various | experimental | |
 | `browser.cdp.target`, `browser.cdp.info` | various | experimental | |
 | `browser.screenshot`, `browser.evaluate` | various | experimental | |
+| `browser.frames.tree` | `{ surfaceId? }` | experimental | Read-only. The guest's in-process child frames to depth 5, in tree order: `{ frameId, loaderId, parentId, depth, origin, name }`. `origin` carries no path, query or credentials; `name` is the page's own text. |
+| `browser.evaluate` / `browser.click.cdp` with `frameId` | `{ …, frameId, loaderId? }` | experimental | Run in, or press inside, that in-process frame: the expression or selector is evaluated in an isolated world of the frame's own document, never the top one. With `loaderId`, a frame that has since navigated or gone is refused (`FRAME_NAVIGATED` / `FRAME_GONE`); a frame in another process answers `{ unreachable }`. A click checks with Chrome that the press point is on the target before pressing. Gating, consent and capability are those of the method without `frameId`. |
 
 ### Computer use surface
 
@@ -418,7 +420,7 @@ The capability column below summarises the table. Three sentinels:
 | `browser.type.humanlike` / `browser.type.cdp` / `browser.press.cdp` | `browser.type` | — | browser |
 | `browser.screenshot` | `browser.screenshot` | — | browser |
 | `browser.evaluate` | `browser.evaluate` | — | browser |
-| `browser.session.status` / `browser.session.list` / `browser.cdp.target` / `browser.cdp.info` | `browser.read` | — | browser |
+| `browser.session.status` / `browser.session.list` / `browser.cdp.target` / `browser.cdp.info` / `browser.frames.tree` | `browser.read` | — | browser |
 | `browser.session.start` / `browser.session.stop` | `browser.navigate` | — | browser |
 | `a2a.whoami` / `a2a.discover` / `a2a.resolve.identity` / `a2a.task.query` | `a2a.read` | — | a2a |
 | `a2a.task.send` / `a2a.task.update` / `a2a.broadcast` | `a2a.send` | `a2a.task.send` with `execute:true` requires `a2a.execute` | a2a |
