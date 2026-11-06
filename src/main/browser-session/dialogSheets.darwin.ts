@@ -68,7 +68,7 @@ interface Koffi {
 /** libobjc through the koffi the app already ships (as peerPid.ts loads it). Throws if unavailable. */
 export function loadObjc(): ObjcCall {
   // Runtime require, external to every bundle (its binary sits beside the package).
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const koffi = require('koffi') as Koffi;
   const lib = koffi.load('/usr/lib/libobjc.A.dylib');
   const selectorOf = lib.func('sel_registerName', 'void *', ['const char *']);
