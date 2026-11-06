@@ -172,6 +172,15 @@ describe('resolveWmuxLauncher / launcherForTarget', () => {
     expect(launcherForTarget(plan!, approved)).toEqual(plan?.launcher);
   });
 
+  it('from a packaged app\'s CLI (beside app.asar), offers the bundle when the native launcher is not approved, never the shim', async () => {
+    scriptConnect('connect');
+    existsSyncMock.mockImplementation((p: unknown) => /(shim|index|entry)\.js$|app\.asar$/.test(String(p)));
+    const plan = await resolveWmuxLauncher(home, approvesNothing);
+    expect(plan?.launcher.kind === 'node' && plan.launcher.script).toMatch(/index\.js$|entry\.js$/);
+    scriptConnect('connect');
+    expect((await resolveWmuxLauncher(home, approves))?.launcher).toEqual({ kind: 'native', binary: approved });
+  });
+
   it('with the app closed, keeps an entry already on the approved launcher and writes node elsewhere', async () => {
     scriptConnect('error');
     existsAll();

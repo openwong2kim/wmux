@@ -463,6 +463,9 @@ async function planCliLauncher(
   const approved = stableDir ? approvedNative(stableDir) : null;
   const brokerEnabled = process.env.WMUX_MCP_BROKER !== '0' && (await canConnectBrokerPipe(300));
   const choice = await chooseLauncher({
+    // Inside an installed app the CLI bundle sits in resources beside app.asar,
+    // which is what makes main's app.isPackaged true.
+    packaged: fs.existsSync(path.join(__dirname, '..', 'app.asar')),
     brokerEnabled,
     nativeBinary: approved,
     brokerReady: async () => brokerEnabled,

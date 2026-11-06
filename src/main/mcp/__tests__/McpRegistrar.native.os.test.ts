@@ -88,10 +88,10 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     expect(selfTest).not.toHaveBeenCalled();
   });
 
-  it('falls to the node shim when the broker answers and the launcher fails, else to the bundle', async () => {
+  it('falls to the bundle when the launcher fails, even with the broker ready: never the node shim', async () => {
     ship('broken');
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: true });
-    expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'shim.js')] });
+    expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'index.js')] });
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: false });
     expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'index.js')] });
     // A copy that fails is never put in place.
@@ -108,13 +108,13 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     expect(fs.readFileSync(nativeCopy(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
   });
 
-  it('a failing refresh over a copy with no recorded pass registers node and leaves that copy alone', async () => {
+  it('a failing refresh over a copy with no recorded pass registers the bundle and leaves that copy alone', async () => {
     ship('good v1');
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: false });
     fs.rmSync(path.join(stableDir(), '.wmux-native-health.json'));
     ship('broken v2');
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: true });
-    expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'shim.js')] });
+    expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'index.js')] });
     expect(fs.readFileSync(nativeCopy(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
   });
 
@@ -147,9 +147,9 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     fs.rmSync(path.join(stableDir(), '.wmux-native-health.json'));
     ship('newer, but it will not run');
     await new McpRegistrar({ nativeSelfTest: async () => 'timeout' }).register('tok', { useShim: true });
-    const shim = { command: 'node', args: [path.join(stableDir(), 'shim.js')] };
-    expect(claudeEntry()).toEqual(shim);
-    expect(JSON.parse(fs.readFileSync(agyJson(), 'utf8')).mcpServers.wmux).toEqual(shim);
+    const bundle = { command: 'node', args: [path.join(stableDir(), 'index.js')] };
+    expect(claudeEntry()).toEqual(bundle);
+    expect(JSON.parse(fs.readFileSync(agyJson(), 'utf8')).mcpServers.wmux).toEqual(bundle);
   });
 
   it('hashes the bundle once per registration', async () => {

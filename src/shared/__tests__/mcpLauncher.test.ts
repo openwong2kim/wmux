@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { chooseLauncher, type LauncherChoiceInputs } from '../mcpLauncher';
 
 const base: LauncherChoiceInputs = {
+  packaged: false,
   brokerEnabled: true,
   nativeBinary: '/h/.wmux/mcp/wmux-native',
   brokerReady: async () => true,
@@ -22,6 +23,15 @@ describe('chooseLauncher', () => {
     expect(await chooseLauncher({ ...base, nativeBinary: null })).toMatchObject({ lane: 'node-shim', launcher: { kind: 'node', script: base.shimScript } });
     expect(await chooseLauncher({ ...base, nativeBinary: null, brokerReady: async () => false })).toMatchObject({ lane: 'bundle' });
     expect(await chooseLauncher({ ...base, nativeBinary: null, shimScript: null })).toMatchObject({ lane: 'bundle' });
+  });
+
+  it('never takes the node shim in a packaged build: its native launcher, else the bundle', async () => {
+    const brokerReady = vi.fn(async () => true);
+    expect(await chooseLauncher({ ...base, packaged: true, nativeBinary: null, brokerReady })).toEqual({
+      launcher: { kind: 'node', script: base.bundleScript }, lane: 'bundle',
+    });
+    expect(brokerReady).not.toHaveBeenCalled();
+    expect(await chooseLauncher({ ...base, packaged: true })).toMatchObject({ lane: 'native' });
   });
 
   it('takes the bundle with the broker off, whatever else is there', async () => {

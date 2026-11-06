@@ -433,13 +433,14 @@ export class McpRegistrar {
     const memo: StabilizeMemo = new Map();
     const nativeBinary = brokerEnabled && app.isPackaged ? await this.prepareNative(memo) : null;
     return chooseLauncher({
+      packaged: app.isPackaged,
       // An explicit `useShim: true` still selects the shim with the flag off.
       brokerEnabled: brokerEnabled || useShim,
       nativeBinary,
       brokerReady: async () => useShim,
       // Resolved only when it can be chosen, as before: the shim is stabilized
       // and its absence logged only for a broker that answers.
-      shimScript: useShim && !nativeBinary ? this.getShimScriptPath(memo) : null,
+      shimScript: useShim && !nativeBinary && !app.isPackaged ? this.getShimScriptPath() : null,
       bundleScript: this.getMcpScriptPath(memo),
     });
   }
@@ -467,17 +468,10 @@ export class McpRegistrar {
     return result.binary;
   }
 
-  /** The node shim for the broker topology, or null when this build has none. */
-  private getShimScriptPath(memo: StabilizeMemo): string | null {
-    // Packaged shim lives in the versioned resourcesPath — stabilize it to
-    // ~/.wmux/mcp/ so the registered command survives app-* swaps.
-    if (app.isPackaged) {
-      const shim = path.join(process.resourcesPath, 'mcp-bundle', 'shim.js');
-      if (fs.existsSync(shim)) return this.stabilizePackaged(shim, memo);
-    } else {
-      const shim = path.join(app.getAppPath(), 'dist', 'mcp', 'mcp', 'shim.js');
-      if (fs.existsSync(shim)) return shim;
-    }
+  /** A dev build's node shim for the broker topology, or null when it has none. */
+  private getShimScriptPath(): string | null {
+    const shim = path.join(app.getAppPath(), 'dist', 'mcp', 'mcp', 'shim.js');
+    if (fs.existsSync(shim)) return shim;
     console.error('[McpRegistrar] WMUX_MCP_BROKER=1 but shim.js missing — falling back to full bundle');
     return null;
   }

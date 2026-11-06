@@ -6,7 +6,9 @@
 //              bundle passed its self-test. No readiness probe: the launcher
 //              falls back to that bundle by itself while the broker is down,
 //              so a slow boot does not flip the entry between launches.
-//   node-shim  the broker is enabled and answers now: `node shim.js`.
+//   node-shim  the broker is enabled and answers now: `node shim.js`. Dev
+//              builds only: a packaged build ships the native launcher, so its
+//              agents get that or the bundle.
 //   bundle     everything else: `node index.js`, the full server.
 
 import * as fs from 'fs';
@@ -50,6 +52,8 @@ export function approvedInstalledNative(stableDir: string): string | null {
 export type LauncherLane = 'native' | 'node-shim' | 'bundle';
 
 export interface LauncherChoiceInputs {
+  /** A packaged build: the node shim is never chosen. */
+  packaged: boolean;
   brokerEnabled: boolean;
   /** A native launcher that passed its self-test, or null. */
   nativeBinary: string | null;
@@ -68,7 +72,7 @@ export async function chooseLauncher(inputs: LauncherChoiceInputs): Promise<Laun
   if (inputs.brokerEnabled && inputs.nativeBinary) {
     return { launcher: { kind: 'native', binary: inputs.nativeBinary }, lane: 'native' };
   }
-  if (inputs.brokerEnabled && inputs.shimScript && (await inputs.brokerReady())) {
+  if (!inputs.packaged && inputs.brokerEnabled && inputs.shimScript && (await inputs.brokerReady())) {
     return { launcher: { kind: 'node', script: inputs.shimScript }, lane: 'node-shim' };
   }
   return inputs.bundleScript ? { launcher: { kind: 'node', script: inputs.bundleScript }, lane: 'bundle' } : null;
