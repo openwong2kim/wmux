@@ -2,8 +2,9 @@
  * The Claude hook bridge's contract, pinned.
  *
  * core/wmux-native/claude-hook.ported-from.sha256 holds the SHA-256 of
- * wmux-bridge.mjs with CRLF line ends read as LF, so the pin is the same on
- * a Windows checkout. It is the one place that says which bridge the
+ * wmux-bridge.mjs with every CRLF read as LF (a lone CR is kept), so the pin
+ * is the same on a Windows checkout, where core.autocrlf turns the index's LF
+ * into CRLF. It is the one place that says which bridge the
  * characterisation cases and the constants snapshot were recorded from (and,
  * later, which bridge a native port follows). Changing the bridge fails this
  * test until the change has been carried through:
@@ -35,9 +36,14 @@ describe('Claude hook bridge contract', () => {
     ).toBe(pinned);
   });
 
-  it('the pin does not depend on the checkout\'s line ends', () => {
-    const lf = readFileSync(BRIDGE, 'utf8').replaceAll('\r\n', '\n');
-    expect(lfSha256(lf.replaceAll('\n', '\r\n'))).toBe(lfSha256(lf));
+  it('lfSha256 reads only CRLF as LF: mixed files hash like LF, a lone CR is kept', () => {
+    // sha256("a\nb\nc\n") and sha256("a\rb\n"), computed independently.
+    const LF = '880553fca8fcea94e325ee2cfb48e5a985cc797f39a14cc6d3cedecfeb2ae4d2';
+    const LONE_CR = '367d1c77eadc1495a7db4200f46a8b90ea1fa926282722d308c05a65098a4112';
+    expect(lfSha256('a\r\nb\nc\r\n')).toBe(LF);
+    expect(lfSha256('a\nb\nc\n')).toBe(LF);
+    expect(lfSha256('a\rb\r\n')).toBe(LONE_CR);
+    expect(lfSha256('a\rb\r\n')).not.toBe(lfSha256('a\nb\n'));
   });
 
   it('the literal constants match the snapshot', () => {
@@ -49,11 +55,20 @@ describe('Claude hook bridge contract', () => {
     const source = [
       'const A = 2 * 1_024;',
       'const B = new Set([\'x\', \'y\']);',
-      'const C = Date.now();',
-      'const lower = 1;',
+      'const lower = Date.now();',
       'function f() { const A = -1; }',
     ].join('\n');
     expect(extractConstants(source)).toEqual({ A: 2048, B: { set: ['x', 'y'] }, 'f.A': -1 });
     expect(() => extractConstants('const A = 1;\n{ const A = 2; }')).toThrow(/declared twice/);
+  });
+
+  it('the extractor refuses an UPPER_CASE constant it cannot read, unless it is listed as skipped', () => {
+    expect(() => extractConstants('const NOW = Date.now();')).toThrow(/NOW/);
+    expect(extractConstants('const NOW = Date.now();', { NOW: 'a clock reading' })).toEqual({});
+  });
+
+  it('the extractor evaluates a RegExp built from joined regex sources', () => {
+    const source = "const RE = new RegExp([/^a\\s(\\d+)/.source, /b\\/c/.source].join('|'), 'i');";
+    expect(extractConstants(source)).toEqual({ RE: { regex: String(new RegExp([/^a\s(\d+)/.source, /b\/c/.source].join('|'), 'i')) } });
   });
 });

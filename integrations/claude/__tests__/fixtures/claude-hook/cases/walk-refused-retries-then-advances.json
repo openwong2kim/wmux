@@ -25,7 +25,8 @@
   "timing": [
     {
       "step": 0,
-      "minMs": 340
+      "minMs": 340,
+      "maxMs": 1500
     }
   ],
   "steps": [

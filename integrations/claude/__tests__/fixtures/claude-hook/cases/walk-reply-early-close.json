@@ -75,6 +75,14 @@
       }
     ]
   },
+  "strictForPort": {
+    "steps.0.log.0": {
+      "bridge": "0.8.1",
+      "hook": "Stop",
+      "outcome": "ok",
+      "target": "daemon"
+    }
+  },
   "steps": [
     {
       "argv": [

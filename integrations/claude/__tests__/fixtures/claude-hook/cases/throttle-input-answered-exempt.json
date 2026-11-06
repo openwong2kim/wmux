@@ -22,13 +22,19 @@
       "argv": [
         "PostToolUse"
       ],
-      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"AskUserQuestion\"}"
+      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"AskUserQuestion\"}",
+      "stampAges": {
+        "pty-1": 500
+      }
     },
     {
       "argv": [
         "PostToolUse"
       ],
-      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"AskUserQuestion\"}"
+      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"AskUserQuestion\"}",
+      "stampAges": {
+        "pty-1": 500
+      }
     }
   ],
   "expect": {
@@ -66,7 +72,10 @@
               "clientName": "wmux-hook-bridge"
             }
           ]
-        }
+        },
+        "stamps": [
+          "pty-1"
+        ]
       },
       {
         "exitCode": 0,
@@ -101,7 +110,10 @@
               "clientName": "wmux-hook-bridge"
             }
           ]
-        }
+        },
+        "stamps": [
+          "pty-1"
+        ]
       }
     ]
   }

@@ -1,29 +1,61 @@
 /**
- * Runs one characterisation fixture against wmux-bridge.mjs: a fresh sandbox
- * HOME, a random WMUX_DATA_SUFFIX (so even a derived pipe name is unique), stub
- * endpoints, a scrubbed env, then every step as a real `node wmux-bridge.mjs`
+ * Runs one characterisation fixture against a Claude hook implementation: a
+ * fresh sandbox home, a random WMUX_DATA_SUFFIX (so even a derived pipe name
+ * is unique), stub endpoints, a scrubbed env, then every step as a real
  * process. The result is normalised so it holds on every OS and every run:
  * sandbox paths, the suffix, request ids, timestamps and pids become fixed
  * tokens after they have been checked.
+ *
+ * The implementation is `node integrations/claude/bin/wmux-bridge.mjs` (the
+ * reference) unless WMUX_CLAUDE_HOOK_IMPL names another command, as
+ * `<exe> [prefix args…]` split on whitespace, or as a JSON array when a path
+ * has spaces. The fixture's argv follows the prefix. Every check below holds
+ * for any implementation: the log pid is the spawned process, and on macOS
+ * agentPid is this test process, so a wrapper has to exec, not fork.
+ *
+ * Two tiers of comparison, as the port is held to them:
+ *   - raw bytes: stdout, stderr and the WMUX_BRIDGE_DEBUG_ENVELOPE line, with
+ *     volatile values masked by substitution in the text itself;
+ *   - JSON round-trip: bridge.log lines and RPC requests (key order kept).
+ *
+ * `variants` lists the outcomes the reference may produce where node itself
+ * is racy. A port is held to `strictForPort` at the same path instead: the
+ * single outcome a full-duplex transport must reach.
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { startStubDaemon, type StubBehaviour, type StubConnection, type StubDaemon } from './stubDaemon';
 
 export const BRIDGE_PATH = path.resolve(process.cwd(), 'integrations/claude/bin/wmux-bridge.mjs');
 
+function implCommand(): string[] {
+  const raw = process.env.WMUX_CLAUDE_HOOK_IMPL?.trim();
+  if (!raw) return [process.execPath, BRIDGE_PATH];
+  return raw.startsWith('[') ? (JSON.parse(raw) as string[]) : raw.split(/\s+/);
+}
+
+export const IMPL = implCommand();
+/** True when the reference (node + the .mjs) runs, so `variants` apply. */
+export const IS_REFERENCE = !process.env.WMUX_CLAUDE_HOOK_IMPL?.trim();
+
 type StdinPart = string | { repeat: string; count: number } | { base64: string };
 type Endpoint = StubBehaviour | { mode: 'absent' } | { mode: 'refused' };
 type EndpointName = 'daemon' | 'main' | 'override';
+/** `data` is the sandbox home the tokens are in; `alt` is a second home holding decoy tokens. */
+type HomeChoice = 'data' | 'alt';
 
 export interface Step {
   argv: string[];
   env?: Record<string, string>;
   /** Text, parts joined as bytes, or `hold` (stdin left open: proves it is never read). */
   stdin?: string | { parts: StdinPart[] } | { hold: true };
+  /** Activity stamp name → its age in ms, set on the file just before the step. */
+  stampAges?: Record<string, number>;
 }
 
 export interface Fixture {
@@ -34,18 +66,24 @@ export interface Fixture {
   skipReason?: string;
   /** Token files; defaults to both. `{}` writes none. */
   tokens?: { daemon?: string; main?: string };
-  /** Extra files, relative to the sandbox home. */
+  /** Extra files, relative to the data home. */
   files?: Record<string, string>;
+  /** HOME and USERPROFILE; both `data` by default. USERPROFILE may also be '' or unset. */
+  homes?: { HOME?: HomeChoice; USERPROFILE?: HomeChoice | '' | 'unset' };
+  /** How the daemon-pipe hint file is written; `absent` leaves the derived name. */
+  daemonHint?: 'lf' | 'crlf' | 'blanks' | 'absent';
   endpoints?: Partial<Record<EndpointName, Endpoint>>;
   env?: Record<string, string>;
   steps: Step[];
   timing?: { step: number; minMs?: number; maxMs?: number }[];
-  /** Dotted path in the result → the values it may take (a race the bridge does not settle). */
+  /** Dotted path in the result → the values the reference may produce there. */
   variants?: Record<string, unknown[]>;
+  /** Dotted path → the one value a port must produce there. */
+  strictForPort?: Record<string, unknown>;
   expect?: { steps: unknown[] };
 }
 
-interface Sandbox {
+export interface Sandbox {
   root: string;
   home: string;
   cwd: string;
@@ -74,15 +112,28 @@ function fill(text: string, box: Sandbox): string {
     .replaceAll('<wmux>', `.wmux${box.suffix}`);
 }
 
-function endpointPath(name: EndpointName, box: Sandbox): string {
+function user(): string {
+  return userInfo().username || 'default';
+}
+
+/** Where each endpoint listens. `posixHome` is HOME: the main socket follows os.homedir(). */
+function endpointPath(name: EndpointName, box: Sandbox, posixHome: string, hint: Fixture['daemonHint']): string {
   if (process.platform === 'win32') {
-    // The main pipe name is derived, not configurable: this is the name the
-    // bridge computes, unique only through the random suffix.
-    if (name === 'main') return `\\\\.\\pipe\\wmux${box.suffix}-${userInfo().username || 'default'}`;
+    // Derived names are not configurable; they are unique only through the
+    // random suffix, which is what makes them safe to bind here.
+    if (name === 'main') return `\\\\.\\pipe\\wmux${box.suffix}-${user()}`;
+    if (name === 'daemon' && hint === 'absent') return `\\\\.\\pipe\\wmux-daemon${box.suffix}-${user()}`;
     return `\\\\.\\pipe\\wch-${name}-${randomBytes(4).toString('hex')}`;
   }
-  if (name === 'main') return path.join(box.home, `.wmux${box.suffix}.sock`);
+  if (name === 'main') return path.join(posixHome, `.wmux${box.suffix}.sock`);
+  if (name === 'daemon' && hint === 'absent') return path.join(box.wmuxHome, 'daemon.sock');
   return path.join(box.root, `${name}.sock`);
+}
+
+function writeHint(file: string, pipe: string, hint: Fixture['daemonHint']): void {
+  if (hint === 'absent') return;
+  const text = hint === 'crlf' ? `${pipe}\r\n` : hint === 'blanks' ? ` \t${pipe} \r\n\n` : `${pipe}\n`;
+  writeFileSync(file, text);
 }
 
 /** A unix socket file nobody listens on: a listener killed before it could unlink it. */
@@ -108,11 +159,24 @@ function stdinBytes(stdin: Step['stdin'], box: Sandbox): Buffer | 'hold' {
   }));
 }
 
+/** Pins the throttle without wall-clock: each stamp's mtime is set, not waited for. */
+function ageStamps(ages: Step['stampAges'], box: Sandbox): void {
+  const dir = path.join(box.wmuxHome, 'activity-stamps');
+  for (const [name, ageMs] of Object.entries(ages ?? {})) {
+    mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, name);
+    if (!existsSync(file)) writeFileSync(file, '');
+    const when = new Date(Date.now() - ageMs);
+    utimesSync(file, when, when);
+  }
+}
+
 interface RawRun { exitCode: number | null; stdout: string; stderr: string; ms: number; pid: number }
 
-function runBridge(step: Step, env: NodeJS.ProcessEnv, box: Sandbox): Promise<RawRun> {
+function runImpl(step: Step, env: NodeJS.ProcessEnv, box: Sandbox): Promise<RawRun> {
   const started = Date.now();
-  const child = spawn(process.execPath, [BRIDGE_PATH, ...step.argv], { cwd: box.cwd, env, stdio: 'pipe' });
+  const [exe, ...prefix] = IMPL;
+  const child = spawn(exe, [...prefix, ...step.argv], { cwd: box.cwd, env, stdio: 'pipe' });
   const out: Buffer[] = [];
   const err: Buffer[] = [];
   child.stdout.on('data', (c: Buffer) => out.push(c));
@@ -141,16 +205,37 @@ function runBridge(step: Step, env: NodeJS.ProcessEnv, box: Sandbox): Promise<Ra
 
 // ----- normalisation -------------------------------------------------------
 
-function normaliseString(value: string, box: Sandbox): string {
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// The rest of a path after the sandbox root: it ends at whitespace, a quote,
+// a colon or a delimiter, so text around the path is left byte for byte.
+const PATH_TAIL = String.raw`[^\s"'<>|*?,;:]*`;
+
+/**
+ * Masks the sandbox root (as written raw, with forward slashes, or escaped
+ * inside JSON text) and turns the separators of that one path into `/`; then
+ * the suffix and the implementation's own paths.
+ */
+export function normaliseString(value: string, box: Sandbox): string {
+  const forms = [
+    { text: box.root.replaceAll('\\', '\\\\'), sep: '\\\\' },
+    { text: box.root, sep: '\\' },
+    { text: box.root.replaceAll('\\', '/'), sep: '/' },
+  ];
   let text = value;
-  for (const form of [box.root, box.root.replaceAll('\\', '/')]) {
-    if (text.includes(form)) text = text.replaceAll(form, '<sandbox>');
+  const seen = new Set<string>();
+  for (const form of forms) {
+    if (seen.has(form.text)) continue;
+    seen.add(form.text);
+    text = text.replace(new RegExp(escapeRegExp(form.text) + `(${PATH_TAIL})`, 'g'), (_m, tail: string) => `<sandbox>${tail.split(form.sep).join('/')}`);
   }
-  if (text.includes('<sandbox>')) text = text.replaceAll('\\', '/');
-  return text
-    .replaceAll(box.suffix, '<sfx>')
-    .replaceAll(process.execPath, '<node>')
-    .replaceAll(BRIDGE_PATH, '<bridge>');
+  text = text.replaceAll(box.suffix, '<sfx>');
+  for (const [real, token] of [[BRIDGE_PATH, '<bridge>'], [process.execPath, '<node>'], [IMPL[0], '<impl>']]) {
+    text = text.replaceAll(real, token);
+  }
+  return text;
 }
 
 // Goldens stay readable: a long string or a deep subtree is stored as its size
@@ -182,7 +267,8 @@ function normaliseDeep(value: unknown, box: Sandbox, depth = 0): unknown {
 function normaliseEnvelope(envelope: Record<string, unknown>, problems: string[]): void {
   if (typeof envelope.ts === 'number') envelope.ts = '<ts>';
   else if ('ts' in envelope) problems.push(`envelope.ts is ${typeof envelope.ts}`);
-  // The hook's parent is sent on macOS only; here the parent is this process.
+  // The hook's parent is sent on macOS only; it is this process, which spawned
+  // the implementation directly.
   if (process.platform === 'darwin') {
     if (envelope.agentPid !== process.pid) problems.push(`agentPid ${String(envelope.agentPid)} is not the parent ${process.pid}`);
   } else if ('agentPid' in envelope) {
@@ -197,6 +283,7 @@ function normaliseConnection(conn: StubConnection, ids: Set<string>, problems: s
     return { answeredEarly: true, sawNewline: conn.answeredEarly.sawNewline };
   }
   if (conn.destroyedOverLong) return { destroyedOverLong: true };
+  if (conn.reset) return { reset: true };
   const request = conn.request as Record<string, unknown> | undefined;
   if (!request) return { request: 'none' };
   if (typeof request.id === 'string' && /^bridge-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(request.id)) {
@@ -226,12 +313,22 @@ function normaliseLog(line: string, pid: number, problems: string[]): unknown {
 
 const DEBUG_PREFIX = 'WMUX_BRIDGE_DEBUG_ENVELOPE=';
 
-function normaliseStderr(stderr: string, problems: string[]): string {
+/** The debug line is compared as raw bytes: volatile values are masked in the text. */
+export function normaliseStderr(stderr: string, problems: string[]): string {
   return stderr.split('\n').map((line) => {
     if (!line.startsWith(DEBUG_PREFIX)) return line;
-    const meta = JSON.parse(line.slice(DEBUG_PREFIX.length)) as Record<string, unknown>;
-    normaliseEnvelope(meta, problems);
-    return DEBUG_PREFIX + JSON.stringify(meta);
+    let text = line;
+    const ts = /"ts":(\d+)(?=[,}])/.exec(text);
+    if (ts) text = text.replace(ts[0], '"ts":"<ts>"');
+    else problems.push('debug line has no numeric ts');
+    const pid = /"agentPid":(\d+),/.exec(text);
+    if (process.platform === 'darwin') {
+      if (!pid || Number(pid[1]) !== process.pid) problems.push(`debug agentPid ${pid?.[1]} is not the parent ${process.pid}`);
+    } else if (text.includes('"agentPid"')) {
+      problems.push('debug agentPid sent off macOS');
+    }
+    if (pid) text = text.replace(pid[0], '');
+    return text;
   }).join('\n');
 }
 
@@ -255,16 +352,40 @@ function readSpool(dir: string, problems: string[]): Record<string, unknown> | u
   return out;
 }
 
-function applyVariants(result: { steps: unknown[] }, variants: Fixture['variants'], problems: string[]): void {
-  for (const [dotted, allowed] of Object.entries(variants ?? {})) {
-    const keys = dotted.split('.');
-    const last = keys.pop() as string;
-    let parent: unknown = result;
-    for (const key of keys) parent = (parent as Record<string, unknown> | undefined)?.[key];
-    const holder = parent as Record<string, unknown> | undefined;
+/** Every regular file under `dir`, relative and with `/` separators. Sockets
+ *  are left out: Windows has named pipes instead, and the stub that served a
+ *  request already shows where it listened. */
+function listFiles(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (at: string, rel: string): void => {
+    for (const name of readdirSync(at).sort()) {
+      const full = path.join(at, name);
+      const stat = statSync(full);
+      if (stat.isDirectory()) walk(full, `${rel}${name}/`);
+      else if (stat.isFile()) out.push(`${rel}${name}`);
+    }
+  };
+  walk(dir, '');
+  return out;
+}
+
+function holderAt(result: unknown, dotted: string): [Record<string, unknown> | undefined, string] {
+  const keys = dotted.split('.');
+  const last = keys.pop() as string;
+  let parent: unknown = result;
+  for (const key of keys) parent = (parent as Record<string, unknown> | undefined)?.[key];
+  return [parent as Record<string, unknown> | undefined, last];
+}
+
+function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems: string[]): void {
+  const paths = new Set([...Object.keys(fixture.variants ?? {}), ...Object.keys(fixture.strictForPort ?? {})]);
+  for (const dotted of paths) {
+    const [holder, last] = holderAt(result, dotted);
     const actual = JSON.stringify(holder?.[last]);
+    const strict = fixture.strictForPort?.[dotted];
+    const allowed = !IS_REFERENCE && strict !== undefined ? [strict] : fixture.variants?.[dotted] ?? [];
     if (holder && allowed.some((v) => JSON.stringify(v) === actual)) holder[last] = '<variant>';
-    else problems.push(`${dotted} = ${actual}, not one of the variants`);
+    else problems.push(`${dotted} = ${actual}, not one of ${JSON.stringify(allowed)}`);
   }
 }
 
@@ -288,13 +409,25 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
       writeFileSync(file, fill(content, box));
     }
 
+    // A second home with decoy tokens: an implementation that resolves the
+    // wrong variable authenticates with these, or writes its files here.
+    const alt = path.join(box.root, 'alt');
+    const homes = { HOME: 'data', USERPROFILE: 'data', ...fixture.homes };
+    const usesAlt = homes.HOME === 'alt' || homes.USERPROFILE === 'alt';
+    if (usesAlt) {
+      mkdirSync(path.join(alt, `.wmux${box.suffix}`), { recursive: true });
+      writeFileSync(path.join(alt, `.wmux${box.suffix}`, 'daemon-auth-token'), 'decoy-daemon-token');
+      writeFileSync(path.join(alt, `.wmux${box.suffix}-auth-token`), 'decoy-main-token');
+    }
+    const homeDir = (choice: HomeChoice): string => (choice === 'alt' ? alt : box.home);
+    const posixHome = homeDir(homes.HOME as HomeChoice);
+
     const paths: Record<EndpointName, string> = {
-      daemon: endpointPath('daemon', box),
-      main: endpointPath('main', box),
-      override: endpointPath('override', box),
+      daemon: endpointPath('daemon', box, posixHome, fixture.daemonHint),
+      main: endpointPath('main', box, posixHome, fixture.daemonHint),
+      override: endpointPath('override', box, posixHome, fixture.daemonHint),
     };
-    // The daemon is always found through its hint file, so no derived name is used.
-    writeFileSync(path.join(box.wmuxHome, 'daemon-pipe'), `${paths.daemon}\n`);
+    writeHint(path.join(box.wmuxHome, 'daemon-pipe'), paths.daemon, fixture.daemonHint);
     for (const [name, endpoint] of Object.entries(fixture.endpoints ?? {}) as [EndpointName, Endpoint][]) {
       if (endpoint.mode === 'absent') continue;
       if (endpoint.mode === 'refused') await leaveRefusedSocket(paths[name]);
@@ -303,14 +436,15 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
 
     const baseEnv: NodeJS.ProcessEnv = {
       PATH: process.env.PATH,
-      HOME: box.home,
-      USERPROFILE: box.home,
+      HOME: posixHome,
       WMUX_DATA_SUFFIX: box.suffix,
       ...(process.platform === 'win32'
         ? { SystemRoot: process.env.SystemRoot, TEMP: box.root, TMP: box.root }
         : {}),
       ...(fixture.endpoints?.override ? { WMUX_PIPE_NAME: paths.override } : {}),
     };
+    if (homes.USERPROFILE === '') baseEnv.USERPROFILE = '';
+    else if (homes.USERPROFILE !== 'unset') baseEnv.USERPROFILE = homeDir(homes.USERPROFILE as HomeChoice);
     for (const [key, value] of Object.entries(fixture.env ?? {})) baseEnv[key] = fill(value, box);
 
     const steps: unknown[] = [];
@@ -319,7 +453,8 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
     for (const [index, step] of fixture.steps.entries()) {
       const env = { ...baseEnv };
       for (const [key, value] of Object.entries(step.env ?? {})) env[key] = fill(value, box);
-      const run = await runBridge(step, env, box);
+      ageStamps(step.stampAges, box);
+      const run = await runImpl(step, env, box);
 
       const ids = new Set<string>();
       const requests: Record<string, unknown[]> = {};
@@ -336,15 +471,20 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
       logSeen = lines.length;
 
       const stampsDir = path.join(box.wmuxHome, 'activity-stamps');
-      steps.push(normaliseDeep({
-        exitCode: run.exitCode,
-        stdout: run.stdout,
-        stderr: normaliseStderr(run.stderr, problems),
+      const rest = normaliseDeep({
         log,
         requests,
         spool: readSpool(path.join(box.wmuxHome, 'resume-spool'), problems),
         stamps: existsSync(stampsDir) ? readdirSync(stampsDir).sort() : undefined,
-      }, box));
+        alt: usesAlt ? listFiles(alt) : undefined,
+      }, box) as Record<string, unknown>;
+      steps.push({
+        exitCode: run.exitCode,
+        // Raw bytes: masked in place, never parsed.
+        stdout: normaliseString(run.stdout, box),
+        stderr: normaliseString(normaliseStderr(run.stderr, problems), box),
+        ...rest,
+      });
 
       for (const bound of fixture.timing ?? []) {
         if (bound.step !== index) continue;
@@ -354,7 +494,7 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
     }
     // Round-trip: absent fields drop out exactly as they do in the stored golden.
     const result = JSON.parse(JSON.stringify({ steps })) as { steps: unknown[] };
-    applyVariants(result, fixture.variants, problems);
+    applyVariants(result, fixture, problems);
     return { result, problems };
   } finally {
     for (const stub of Object.values(stubs)) await stub.close();

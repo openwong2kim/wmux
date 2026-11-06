@@ -1,5 +1,8 @@
 {
   "ACTIVITY_STAMP_THROTTLE_MS": 2500,
+  "BACKGROUND_TASK_ID_RE": {
+    "regex": "/^\\s*Command running in background with ID:\\s*([\\w-]+)|^\\s*Command\\b[^\\n]*?moved to the background \\(ID:\\s*([\\w-]+)\\)|^\\s*Monitor started \\(task\\s+([\\w-]+)|^\\s*Async agent launched successfully[\\s\\S]*?agentId:\\s*([\\w-]+)/i"
+  },
   "BRIDGE_LOG_MAX_BYTES": 5242880,
   "BRIDGE_VERSION": "0.8.1",
   "CONNECT_RETRY_BACKOFFS_MS": [

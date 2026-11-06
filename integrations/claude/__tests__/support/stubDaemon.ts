@@ -14,6 +14,7 @@
  *   hold             read the whole line and never answer
  *   over-long        what both servers do with a line over 1 MiB: destroy the
  *                    socket once the unterminated tail passes the limit
+ *   reset            accept, then destroy the socket at once, reading nothing
  */
 import { createServer, type Server, type Socket } from 'node:net';
 
@@ -26,7 +27,8 @@ export type StubBehaviour =
   | { mode: 'reply-early' | 'reply-early-close'; lines: StubLine[] }
   | { mode: 'close-after-read' }
   | { mode: 'hold' }
-  | { mode: 'over-long' };
+  | { mode: 'over-long' }
+  | { mode: 'reset' };
 
 /** What one connection delivered. `request` is the parsed line, when whole. */
 export interface StubConnection {
@@ -35,6 +37,8 @@ export interface StubConnection {
   answeredEarly?: { id: string; sawNewline: boolean };
   /** over-long: the socket was destroyed past the limit. */
   destroyedOverLong?: boolean;
+  /** reset: accepted and destroyed unread. */
+  reset?: boolean;
 }
 
 export interface StubDaemon {
@@ -58,6 +62,11 @@ export function startStubDaemon(endpoint: string, behaviour: StubBehaviour): Pro
     socket.on('error', () => { /* the bridge destroys its end freely */ });
     const record: StubConnection = {};
     connections.push(record);
+    if (behaviour.mode === 'reset') {
+      record.reset = true;
+      socket.destroy();
+      return;
+    }
     let text = '';
     let done = false;
     socket.setEncoding('utf8');
