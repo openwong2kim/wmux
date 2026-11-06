@@ -62,10 +62,11 @@ describe('build-native-hooks', () => {
       'scripts/build-native-hooks.mjs', 'scripts/__tests__/buildNativeHooks.os.test.mjs',
       'scripts/__tests__/nativeHooksRelease.test.mjs', 'forge.config.ts', 'package.json', 'package-lock.json',
       '.github/workflows/native-hooks.yml', '.github/workflows/release.yml',
+      'integrations/claude/bin/wmux-bridge.mjs', 'integrations/claude/__tests__/fixtures/claude-hook/cases/gate-reset.json',
     ]) {
       expect(pattern.test(file), file).toBe(true);
     }
-    for (const file of ['src/renderer/App.tsx', 'docs/x.md', 'src/main/pipeline.ts', 'core/wmux-term/src/lib.rs']) {
+    for (const file of ['src/renderer/App.tsx', 'docs/x.md', 'src/main/pipeline.ts', 'core/wmux-term/src/lib.rs', 'integrations/claude/bin/wmux-bridge.mjs.bak']) {
       expect(pattern.test(file), file).toBe(false);
     }
   });
