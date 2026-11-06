@@ -34,6 +34,7 @@ import { createConnectionScope, runInConnectionScope } from '../../connectionSco
 import { clearRefDescriptors } from '../refDescriptors';
 import { resetProtectionMemoryForTests } from '../automationLease';
 import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
+import { __resetFrameRefsForTesting } from '../snapshot';
 
 type ToolResult = { content: Array<{ type: string; text?: string }>; isError?: boolean };
 type ToolHandler = (args: Record<string, unknown>) => Promise<ToolResult>;
@@ -79,6 +80,7 @@ beforeEach(() => {
   clearRefDescriptors();
   resetProtectionMemoryForTests();
   __resetSurfaceRoutingForTesting();
+  __resetFrameRefsForTesting();
 });
 
 describe('in-process frames on the RPC lane', () => {
@@ -210,6 +212,46 @@ describe('in-process frames on the RPC lane', () => {
     const third = textOf(await tool('browser_snapshot')({}));
     expect(third).toContain('[ref=1] input name="cc"');
     expect(third).not.toMatch(/\[ref=2\] input/);
+  });
+
+  it('numbers a new frame element past every kept frame ref after the listing\'s own numbering was dropped', async () => {
+    // A frame document modelled as main stamps it: an element a prior names
+    // keeps its number, any other takes the next one from the seed.
+    const stamps = new Map<string, number>();
+    let elements = ['cc'];
+    answer({
+      'browser.frames.read': (p) => {
+        const [f] = p.frames as Array<{ prior: Array<{ ref: number; name: string }> }>;
+        let next = p.seed as number;
+        const entries = elements.map((name) => {
+          const ref = f.prior.find((d) => d.name === name)?.ref ?? next++;
+          stamps.set(name, ref);
+          return { ref, role: 'input', name };
+        });
+        const nextRef = Math.max(next, ...entries.map((e) => e.ref + 1));
+        return { frames: [{ value: { text: entries.map((e) => `  [ref=${e.ref}] input name="${e.name}"`).join('\n'), entries } }], nextRef };
+      },
+      'browser.click.cdp': (p) => {
+        const ref = Number(/data-wmux-ref="(\d+)"/.exec(String(p.selector))?.[1]);
+        return { hit: [...stamps].filter(([, r]) => r === ref).map(([name]) => name) };
+      },
+    });
+    await tool('browser_snapshot')({});
+    expect(stamps.get('cc')).toBe(1);
+    // Seventeen other surfaces' listings push this one's numbering out of its store.
+    for (let i = 0; i < 17; i++) await tool('browser_snapshot')({ surfaceId: `other-${i}` });
+    elements = ['cc', 'added'];
+    const text = textOf(await tool('browser_snapshot')({}));
+    const numbers = [...text.matchAll(/\[ref=(\d+)\]/g)].map((m) => Number(m[1]));
+    expect(new Set(numbers).size).toBe(numbers.length);
+    expect(text).toContain('[ref=1] input name="cc"');
+    expect(stamps.get('added')).not.toBe(1);
+    mockSendRpc.mockClear();
+    await tool('browser_click')({ ref: '1' });
+    const [clicked] = calls('browser.click.cdp');
+    expect(clicked).toMatchObject({ selector: '[data-wmux-ref="1"]', frameId: 'F1', loaderId: 'L1' });
+    const at = mockSendRpc.mock.calls.findIndex(([m]) => m === 'browser.click.cdp');
+    expect(await mockSendRpc.mock.results[at]?.value).toEqual({ hit: ['cc'] });
   });
 
   it('never hands a frame ref\'s number to the top document on the next snapshot', async () => {

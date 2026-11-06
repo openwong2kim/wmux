@@ -977,6 +977,11 @@ function frameRefStore(): Map<string, ScopeFrameRefs> {
   return moduleFrameRefs;
 }
 
+/** Tests only: forget the frame refs recorded outside any connection scope. */
+export function __resetFrameRefsForTesting(): void {
+  moduleFrameRefs = undefined;
+}
+
 /**
  * Record what the snapshot just taken for `scopeKey` minted, so the RPC lane
  * can refuse a frame ref for THIS surface without touching any other.

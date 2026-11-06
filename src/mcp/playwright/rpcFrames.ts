@@ -183,6 +183,10 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   }
   if (frames.length === 0) return EMPTY(opts.nextRef);
   const prior = new Map([...(opts.prior ?? [])].filter(([ref]) => !opts.topRefs?.has(ref)));
+  // New numbers start past every frame ref kept: the listing's own count can
+  // have been dropped while those refs live on, and a reissued one would point
+  // two elements at the same number.
+  const seed = Math.max(opts.nextRef, ...[...prior.keys()].map((ref) => ref + 1));
 
   // Charged in UTF-8 bytes, which bound characters too, against what the top
   // document left of the window it is served in: nothing a frame adds can be
@@ -196,7 +200,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   const lines: string[] = ['', '', SECTION_INTRO];
   let used = size(SECTION_INTRO) + 2;
   if (used > pool) {
-    const empty = EMPTY(opts.nextRef);
+    const empty = EMPTY(seed);
     carryUnlisted(empty.refs, prior, frames, new Set());
     return empty;
   }
@@ -207,7 +211,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
     used += size(line) + 1;
   };
 
-  const result = { refs: new Map<number, RpcFrameRef>(), nextRef: opts.nextRef };
+  const result = { refs: new Map<number, RpcFrameRef>(), nextRef: seed };
   const read = frames.slice(0, RPC_FRAME_CAP);
   const priorDocs = priorByDocument(prior);
   // One round trip for every frame: a call per frame spent a connection each
@@ -216,7 +220,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   try {
     const batch = await opts.readFrames(
       read.map((frame) => ({ frame, prior: priorDocs.get(docOf(frame)) ?? [] })),
-      opts.nextRef,
+      seed,
       pool - used,
     );
     answers = Array.isArray(batch.frames) ? batch.frames : [];
