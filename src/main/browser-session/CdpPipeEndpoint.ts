@@ -34,10 +34,14 @@ function isLoopback(address: string | undefined): boolean {
 }
 
 function refuse(socket: Duplex, status: string): void {
+  // Destroyed once the answer is written out, not before it is.
+  socket.once('finish', () => socket.destroy());
+  socket.once('error', () => socket.destroy());
   try {
     socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-  } catch { /* already gone */ }
-  socket.destroy();
+  } catch {
+    socket.destroy();
+  }
 }
 
 export class CdpPipeEndpoint {
