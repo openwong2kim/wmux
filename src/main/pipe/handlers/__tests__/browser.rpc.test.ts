@@ -392,8 +392,8 @@ describe('registerBrowserRpc', () => {
   ): RpcRouter {
     const router = dispatchAsClaimedCaller(new RpcRouter());
     const webviewCdpManager = {
-      getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' })),
-      listTargets: vi.fn(() => [{ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' }]),
+      getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1' })),
+      listTargets: vi.fn(() => [{ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1' }]),
       getCdpPort: vi.fn(() => 18800),
       waitForTarget: vi.fn(),
       ensureAwake: vi.fn(async () => null),
@@ -1858,13 +1858,48 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
 
 // ── #529 — screenshot hang fallback ─────────────────────────────────────────
 
+describe('browser.cdp.info with no port up', () => {
+  function registerWith(cdp: { port: number; disabled: boolean }): RpcRouter {
+    const router = dispatchAsClaimedCaller(new RpcRouter());
+    registerBrowserRpc(router, () => null, {
+      getTarget: vi.fn(),
+      listTargets: vi.fn(() => [{ surfaceId: 'surface-1', targetId: 'target-1', workspaceId: 'ws-1' }]),
+      getCdpPort: vi.fn(() => cdp.port),
+      isCdpDisabled: vi.fn(() => cdp.disabled),
+      getCdpFailureReason: vi.fn(() => 'CDP disabled by configuration'),
+      waitForTarget: vi.fn(),
+      setCaptureCleanup: vi.fn(),
+      setCaptureAttach: vi.fn(),
+    } as never);
+    return router;
+  }
+  const info = (router: RpcRouter) => router.dispatch({
+    id: '1', method: 'browser.cdp.info', params: {}, clientName: [...FIRST_PARTY_CLIENT_NAMES][0], ...claimOn('ws-1'),
+  }, { externalWire: true });
+
+  it('answers with targets and no port while the port is not up, so callers use the RPC lane', async () => {
+    const response = await info(registerWith({ port: 0, disabled: false }));
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).not.toHaveProperty('cdpPort');
+      expect((response.result as { targets: unknown[] }).targets).toEqual([{ surfaceId: 'surface-1', targetId: 'target-1', workspaceId: 'ws-1' }]);
+    }
+  });
+
+  it("refuses when the user turned CDP off, whatever the port says", async () => {
+    const response = await info(registerWith({ port: 18800, disabled: true }));
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(String(response.error)).toContain('CDP disabled by configuration');
+  });
+});
+
 describe('browser.screenshot capture fallback (#529)', () => {
   // Local mirror of the register() helper above (it is scoped to the first
   // describe block).
   function register(): RpcRouter {
     const router = dispatchAsClaimedCaller(new RpcRouter());
     const webviewCdpManager = {
-      getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' })),
+      getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1' })),
       listTargets: vi.fn(() => []),
       getCdpPort: vi.fn(() => 18800),
       waitForTarget: vi.fn(),
@@ -1954,11 +1989,11 @@ describe('browser.screenshot capture fallback (#529)', () => {
 describe('registerBrowserRpc — scoped callers stay inside their workspace (#695)', () => {
   const OWN = {
     surfaceId: 'own-surface', webContentsId: 42,
-    targetId: 'target-own', wsUrl: 'ws://127.0.0.1/devtools/page/own', workspaceId: 'ws-a',
+    targetId: 'target-own', workspaceId: 'ws-a',
   };
   const FOREIGN = {
     surfaceId: 'foreign-surface', webContentsId: 43,
-    targetId: 'target-foreign', wsUrl: 'ws://127.0.0.1/devtools/page/foreign', workspaceId: 'ws-b',
+    targetId: 'target-foreign', workspaceId: 'ws-b',
   };
 
   function registerScoped() {
@@ -2113,11 +2148,11 @@ describe('registerBrowserRpc — scoped callers stay inside their workspace (#69
 describe('registerBrowserRpc — navigate fallback under a scope (#695)', () => {
   const OWN = {
     surfaceId: 'own-surface', webContentsId: 42,
-    targetId: 'target-own', wsUrl: 'ws://127.0.0.1/devtools/page/own', workspaceId: 'ws-a',
+    targetId: 'target-own', workspaceId: 'ws-a',
   };
   const FOREIGN = {
     surfaceId: 'foreign-surface', webContentsId: 43,
-    targetId: 'target-foreign', wsUrl: 'ws://127.0.0.1/devtools/page/foreign', workspaceId: 'ws-b',
+    targetId: 'target-foreign', workspaceId: 'ws-b',
   };
 
   function registerWith(sessions: Map<string, typeof OWN>) {

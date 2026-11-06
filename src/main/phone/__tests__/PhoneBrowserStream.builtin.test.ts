@@ -114,8 +114,8 @@ describe('phone browser stream (main): a builtin pane', () => {
     vi.useFakeTimers({ now: 1_800_000_000_000 });
     guests = [new FakeGuest(7), new FakeGuest(8)];
     targets = [
-      { surfaceId: 'surf-a', webContentsId: 7, targetId: 'wc-7', wsUrl: '', workspaceId: 'ws-1' },
-      { surfaceId: 'surf-b', webContentsId: 8, targetId: 'wc-8', wsUrl: '', workspaceId: 'ws-2' },
+      { surfaceId: 'surf-a', webContentsId: 7, targetId: 'wc-7', workspaceId: 'ws-1' },
+      { surfaceId: 'surf-b', webContentsId: 8, targetId: 'wc-8', workspaceId: 'ws-2' },
     ];
     visible = new Map();
     observers = new Set();
