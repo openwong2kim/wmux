@@ -154,7 +154,7 @@ import { topWorld, type CdpSend } from '../../phone/PhoneBrowserFocus';
 import {
   DEFAULT_FILE_INPUT_SELECTOR,
   checkUploadPath,
-  findFileInputNearElement,
+  uploadLookupExpression,
   uploadRootIn,
   type UploadPathRefusal,
 } from '../../../shared/browserUpload';
@@ -269,12 +269,7 @@ export async function setFilesInIsolatedWorld(
       contextId = undefined;
     }
     if (contextId === undefined) throw new Error('browser.upload.cdp: the page has no context to upload into');
-    const expression =
-      `(() => { const all = document.querySelectorAll(${JSON.stringify(selector)}); ` +
-      `if (all.length === 0) return 'none'; ` +
-      `if (!${near}) return all[0]; ` +
-      `if (all.length > 1) return 'many'; ` +
-      `return (${String(findFileInputNearElement)})(all[0]) || 'anchor'; })()`;
+    const expression = uploadLookupExpression(selector, near);
     try {
       const reply = (await send('Runtime.evaluate', { expression, contextId, objectGroup: group })) as {
         result?: { objectId?: string; subtype?: string; value?: unknown };

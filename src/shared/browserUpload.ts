@@ -192,3 +192,47 @@ export function findFileInputNearElement(anchor: unknown): unknown {
   }
   return null;
 }
+
+/**
+ * Every element matching `selector` in `root` and in the open shadow roots
+ * under it: the root's own matches first, then each shadow root's, depth-first
+ * in document order. One document only; frames are not entered. A styled
+ * uploader is often a web component, and Playwright's own selectors pierced
+ * open shadow roots, so a plain querySelectorAll would miss what used to work.
+ *
+ * Self-contained (no imports, no closure): main injects its source.
+ */
+export function queryOpenShadowRoots(root: unknown, selector: string): unknown[] {
+  interface QueryRoot {
+    querySelectorAll: (s: string) => ArrayLike<{ shadowRoot?: QueryRoot | null }>;
+  }
+  const found: unknown[] = [];
+  const visit = (r: QueryRoot): void => {
+    const matches = r.querySelectorAll(selector);
+    for (let i = 0; i < matches.length; i++) found.push(matches[i]);
+    const all = r.querySelectorAll('*');
+    for (let i = 0; i < all.length; i++) {
+      const inner = all[i].shadowRoot;
+      if (inner) visit(inner);
+    }
+  };
+  visit(root as QueryRoot);
+  return found;
+}
+
+/**
+ * The expression main evaluates in the page's isolated world to find what an
+ * upload sets: the element itself (a node), or why not — `'none'` (nothing
+ * matched), `'many'` (a ref's anchor matched more than once, counted across
+ * every open shadow root), `'anchor'` (no file input near the anchor).
+ * Without `near` the first match is the input.
+ */
+export function uploadLookupExpression(selector: string, near: boolean): string {
+  return (
+    `(() => { const all = (${String(queryOpenShadowRoots)})(document, ${JSON.stringify(selector)}); ` +
+    `if (all.length === 0) return 'none'; ` +
+    `if (!${near}) return all[0]; ` +
+    `if (all.length > 1) return 'many'; ` +
+    `return (${String(findFileInputNearElement)})(all[0]) || 'anchor'; })()`
+  );
+}

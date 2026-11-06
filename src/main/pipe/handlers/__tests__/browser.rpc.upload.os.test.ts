@@ -320,7 +320,8 @@ describe('setFilesInIsolatedWorld: the lookup it injects', () => {
     const asked: string[] = [];
     const doc = { querySelectorAll: (s: string) => (asked.push(s), [button]) };
     expect(await lookupWith(doc, '[data-wmux-ref="7"]', true)).toBe(input);
-    expect(asked).toEqual(['[data-wmux-ref="7"]']);
+    // `*` is the walk looking for shadow roots to enter.
+    expect(asked.filter((s) => s !== '*')).toEqual(['[data-wmux-ref="7"]']);
   });
 
   it('answers the first match without the search, and misses by name', async () => {
