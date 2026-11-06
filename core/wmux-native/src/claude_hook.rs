@@ -242,12 +242,10 @@ impl Modes {
     }
 }
 
-/// outputPromptContext's line.
-fn prompt_context_line(text: &JsStr) -> String {
-    let fields = vec![
-        (js("hookEventName"), Json::Str(js("UserPromptSubmit"))),
-        (js("additionalContext"), Json::Str(text.clone())),
-    ];
+/// A hook's JSON answer on stdout, as outputPromptContext and
+/// outputPermissionDecision write it: `{"hookSpecificOutput":{…}}` and a newline.
+fn hook_output_line(fields: Vec<(&str, Json)>) -> String {
+    let fields = fields.into_iter().map(|(k, v)| (js(k), v)).collect();
     let mut line = String::new();
     js::stringify(
         &Json::Obj(vec![(js("hookSpecificOutput"), Json::Obj(fields))]),
@@ -273,24 +271,6 @@ fn panic_after_verdict_for_tests() {
 
 /// The deny's reason, so the model reads who refused (mjs main()).
 const DENY_REASON: &str = "denied from the wmux remote approval";
-
-/// outputPermissionDecision's line: only a real verdict, `allow` or `deny`.
-fn permission_decision_line(decision: &str) -> String {
-    let mut fields = vec![
-        (js("hookEventName"), Json::Str(js("PreToolUse"))),
-        (js("permissionDecision"), Json::Str(js(decision))),
-    ];
-    if decision == "deny" {
-        fields.push((js("permissionDecisionReason"), Json::Str(js(DENY_REASON))));
-    }
-    let mut line = String::new();
-    js::stringify(
-        &Json::Obj(vec![(js("hookSpecificOutput"), Json::Obj(fields))]),
-        &mut line,
-    );
-    line.push('\n');
-    line
-}
 
 // ----- main() ----------------------------------------------------------------
 
@@ -670,62 +650,63 @@ fn run(start: Start, log: Log) {
     // provably reached main, ends in exit 2 with the reason on stderr; all
     // else allows. The exit code is stored before anything is written.
     let fields = || vec![("hook", hook_field()), ("target", target_field.clone())];
+    // A verdict's text goes out right before its log line, and its loss, when
+    // the reader went away, is logged after it; the exit code stays.
+    let answer = |fd: i32, text: &str, outcome: &str, extra: Vec<(&'static str, Option<Json>)>| {
+        let written = text.is_empty() || write_out(fd, text.as_bytes());
+        let mut line = fields();
+        line.extend(extra);
+        log(outcome, line);
+        if !written {
+            log(if fd == 1 { "stdout-lost" } else { "stderr-lost" }, fields());
+        }
+        panic_after_verdict_for_tests();
+    };
+    // A refusal: exit 2, stored before anything is written, and its reason
+    // on stderr.
+    let refuse = |outcome: &str, text: &str, extra: Vec<(&'static str, Option<Json>)>| {
+        set_exit_code(2);
+        answer(2, text, outcome, extra);
+    };
     let block_reason = |r: Option<&Json>| {
         r.and_then(|r| r.get("block"))
             .filter(|b| js::truthy(Some(b)))
             .and_then(|b| b.get("reason"))
             .and_then(Json::as_str)
             .filter(|reason| !reason.is_empty())
-            .cloned()
+            .map(|reason| js::lossy(reason) + "\n")
     };
+
+    // The Stop gate: an explicit refusal, or an answer lost after the request
+    // provably reached main, ends in exit 2 with the reason on stderr; all
+    // else allows.
     if modes.gate && inner_ok {
         if let Some(reason) = block_reason(inner) {
-            let mut text = js::lossy(&reason);
-            text.push('\n');
-            set_exit_code(2);
-            let written = write_out(2, text.as_bytes());
-            log("gate-blocked", fields());
-            if !written {
-                log("stderr-lost", fields());
-            }
-            panic_after_verdict_for_tests();
+            refuse("gate-blocked", &reason, vec![]);
         }
     } else if modes.gate && is_gate_answer_lost(&result) {
-        let mut line = fields();
-        line.push(("error", logged(result.get("error"))));
-        set_exit_code(2);
-        let written = write_out(2, GATE_LOST_TEXT.as_bytes());
-        log("gate-fail-closed", line);
-        if !written {
-            log("stderr-lost", fields());
-        }
-        panic_after_verdict_for_tests();
+        refuse(
+            "gate-fail-closed",
+            GATE_LOST_TEXT,
+            vec![("error", logged(result.get("error")))],
+        );
     }
 
     // The HQ brain's prompt: only an explicit refusal blocks it (a lost
     // answer lets it run); else main's additionalContext goes to stdout.
-    let additional_context = inner
-        .and_then(|r| r.get("additionalContext"))
-        .and_then(Json::as_str)
-        .filter(|t| !t.is_empty());
     if modes.context && inner_ok {
+        let context = inner
+            .and_then(|r| r.get("additionalContext"))
+            .and_then(Json::as_str)
+            .filter(|t| !t.is_empty());
         if let Some(reason) = block_reason(inner) {
-            let mut text = js::lossy(&reason);
-            text.push('\n');
-            set_exit_code(2);
-            let written = write_out(2, text.as_bytes());
-            log("prompt-blocked", fields());
-            if !written {
-                log("stderr-lost", fields());
-            }
-            panic_after_verdict_for_tests();
-        } else if let Some(context) = additional_context {
-            let written = write_out(1, prompt_context_line(context).as_bytes());
-            log("prompt-context", fields());
-            if !written {
-                log("stdout-lost", fields());
-            }
-            panic_after_verdict_for_tests();
+            refuse("prompt-blocked", &reason, vec![]);
+        } else if let Some(context) = context {
+            let line = hook_output_line(vec![
+                ("hookEventName", Json::Str(js("UserPromptSubmit"))),
+                ("additionalContext", Json::Str(context.clone())),
+            ]);
+            answer(1, &line, "prompt-context", vec![]);
         }
     }
 
@@ -763,14 +744,18 @@ fn run(start: Start, log: Log) {
             _ => "no-opinion",
         };
         set_exit_code(0);
-        let written = verdict == "no-opinion" || write_out(1, permission_decision_line(verdict).as_bytes());
-        let mut line = fields();
-        line.push(("verdict", s(verdict)));
-        log("permission-gate", line);
-        if !written {
-            log("stdout-lost", fields());
+        let mut line = String::new();
+        if verdict != "no-opinion" {
+            let mut fields = vec![
+                ("hookEventName", Json::Str(js("PreToolUse"))),
+                ("permissionDecision", Json::Str(js(verdict))),
+            ];
+            if verdict == "deny" {
+                fields.push(("permissionDecisionReason", Json::Str(js(DENY_REASON))));
+            }
+            line = hook_output_line(fields);
         }
-        panic_after_verdict_for_tests();
+        answer(1, &line, "permission-gate", vec![("verdict", s(verdict))]);
     }
 }
 
