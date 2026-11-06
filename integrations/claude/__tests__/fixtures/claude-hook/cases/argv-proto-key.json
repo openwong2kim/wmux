@@ -1,6 +1,6 @@
 {
   "description": "The plain-object lookup lets an inherited key through; the envelope then has no kind.",
-  "divergence": "native accepts only the hook names in HOOK_TO_KIND: an inherited key is unknown-hook-name and nothing is sent",
+  "divergence": "native accepts only the hook names in HOOK_TO_KIND: an inherited key is unknown-hook-name, logged with its own argv [<exe>, <prefix>, …], and nothing is sent",
   "endpoints": {
     "daemon": {
       "mode": "reply",

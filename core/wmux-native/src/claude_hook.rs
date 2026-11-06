@@ -27,7 +27,8 @@
 //! Where it differs from Node, on purpose (each is a characterisation case's
 //! strictForPort):
 //!   - argv-unknown-event, argv-missing-event: `unknown-hook-name` logs this
-//!     process's argv, `[<exe>, "claude-hook", …]`.
+//!     process's argv, `[<exe>, "claude-hook", …]`, or `[<exe>, <bridge>, …]`
+//!     in the form a settings entry carries.
 //!   - argv-proto-key: only the hook names of HOOK_TO_KIND are hooks. Node's
 //!     plain-object lookup also accepts inherited keys (`constructor`) and
 //!     sends an envelope without a kind; here that is `unknown-hook-name`.

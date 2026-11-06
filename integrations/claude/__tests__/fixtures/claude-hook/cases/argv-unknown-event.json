@@ -1,6 +1,6 @@
 {
   "description": "An event name that is not a hook is logged and exits 0 without reading stdin.",
-  "divergence": "native logs its own argv: [<exe>, \"claude-hook\", …]",
+  "divergence": "native logs its own argv: [<exe>, <prefix>, …], where <prefix> is \"claude-hook\" or, in the form a settings entry carries, the bridge path",
   "variants": {
     "steps.0.log.0.argv": [
       [
