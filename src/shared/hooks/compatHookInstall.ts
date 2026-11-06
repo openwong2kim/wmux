@@ -39,7 +39,6 @@ import {
   SHARED_HOOKS_BRIDGE_BASENAME,
   SHARED_HOOKS_BRIDGE_MARKER,
   compatHookExecArgs,
-  compatHookNativeExecArgs,
   nativeHooksBasename,
   type CompatHookFlavourId,
 } from './hookFlavours';
@@ -152,6 +151,9 @@ export function resolveCompatHookPaths(
         ownershipMarkers: [NATIVE_HOOKS_MARKER],
         // Runnable from the moment it appears: a hook may fire mid-refresh.
         mode: 0o700,
+        // The old copy may be running (Windows cannot replace it then) and is
+        // restored if the new one does not run.
+        replaceAside: true,
       }
       : null,
     bridge: {
@@ -205,7 +207,8 @@ export function buildOwnedHookFile(
     hooks[event] = [{
       type: 'command',
       exec: nativePath ?? 'node',
-      args: nativePath ? compatHookNativeExecArgs(flavourId, event) : compatHookExecArgs(bridgePath, flavourId, event),
+      // The same argv for both: an older wmux recognises its entries by it.
+      args: compatHookExecArgs(bridgePath, flavourId, event),
       timeoutSec: install.timeoutSec,
     }];
   }
@@ -219,14 +222,12 @@ function safeReviver(key: string, value: unknown): unknown {
 
 const basename = (p: string): string => path.basename(p.replace(/\\/g, '/'));
 
-/** One entry wmux wrote: `node <shared bridge> <flavour> …`, or
- *  `<wmux-native> hook <flavour> …`. */
+/** One entry wmux wrote: `<node | wmux-native> <shared bridge> <flavour> …`.
+ *  The same rule every shipped wmux applies, so they agree on ownership. */
 function isOwnedLeaf(leaf: unknown, flavourId: CompatHookFlavourId): boolean {
-  const { exec, args } = (leaf ?? {}) as { exec?: unknown; args?: unknown };
+  const args = (leaf as { args?: unknown } | null)?.args;
   if (!Array.isArray(args) || typeof args[0] !== 'string') return false;
-  if (basename(args[0]) === SHARED_HOOKS_BRIDGE_BASENAME) return args[1] === flavourId;
-  const native = typeof exec === 'string' && ['wmux-native', 'wmux-native.exe'].includes(basename(exec));
-  return native && args[0] === 'hook' && args[1] === flavourId;
+  return basename(args[0]) === SHARED_HOOKS_BRIDGE_BASENAME && args[1] === flavourId;
 }
 
 /**
@@ -343,14 +344,26 @@ export interface CompatHookInstallOutcome {
  * Copy the native bridge when this build ships one, and run the copy once.
  * A copy that does not run here (a noexec home, an application-control policy,
  * a foreign libc) would fail every hook event where `node <bridge>` works, so
- * it is removed and the entries stay on Node; so they do when the copy cannot
- * be installed at all (a foreign file in the way, a locked exe on Windows).
+ * it is removed (or the copy it replaced is put back) and the entries stay on
+ * Node; so they do when the copy cannot be installed at all (a foreign file in
+ * the way).
  */
 function installNativeHooks(spec: LifecycleAssetSpec | null): LifecycleAssetInstallOutcome | null {
   if (!spec) return null;
   const outcome = installLifecycleAsset(spec);
-  if (outcome.state !== 'current' || nativeHooksRuns(spec.destinationPath)) return outcome;
-  try { fs.unlinkSync(spec.destinationPath); } catch { /* status then reports it as stale */ }
+  if (outcome.state !== 'current') return outcome;
+  const { previousPath } = outcome;
+  if (nativeHooksRuns(spec.destinationPath)) {
+    if (previousPath) {
+      try { fs.unlinkSync(previousPath); } catch { /* still running: swept next time */ }
+    }
+    return outcome;
+  }
+  // The copy this run replaced did run: put it back rather than leave nothing.
+  try {
+    if (previousPath) fs.renameSync(previousPath, spec.destinationPath);
+    else fs.unlinkSync(spec.destinationPath);
+  } catch { /* status then reports the copy as stale */ }
   return { ...outcome, state: 'error', error: 'the native hook bridge does not run on this machine' };
 }
 

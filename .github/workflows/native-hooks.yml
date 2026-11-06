@@ -3,17 +3,12 @@ name: Native hooks
 # its unit tests, and hold `wmux-native hook` to the shared Node bridge with
 # the parity suite (envelope byte-for-byte, logs equivalent), which must run
 # here (not skip).
+#
+# It runs on every pull request so it can be a required check: the `changes`
+# job decides whether the pull request touches anything the native bridge
+# depends on (RELEVANT), and the platform jobs' steps run or no-op on that.
 on:
   pull_request:
-    paths:
-      - 'core/wmux-native/**'
-      - 'integrations/shared/**'
-      - 'src/shared/hooks/**'
-      - 'src/main/mcp/__tests__/hookBridge.lockstep.test.ts'
-      - 'scripts/build-native-hooks.mjs'
-      - 'scripts/__tests__/buildNativeHooks.os.test.mjs'
-      - 'forge.config.ts'
-      - '.github/workflows/native-hooks.yml'
   workflow_dispatch:
 
 concurrency:
@@ -24,7 +19,31 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - name: Does this change touch the native bridge?
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          RELEVANT: '^(core/wmux-native/|integrations/shared/|src/shared/hooks/|src/main/pipe/|src/shared/lifecycleIntegrations\.ts$|src/shared/rpc\.ts$|src/cli/commands/setupHooks\.ts$|src/daemon/DaemonPipeServer\.ts$|src/main/mcp/hookBridge\.ts$|src/main/mcp/__tests__/hookBridge\.lockstep\.test\.ts$|scripts/build-native-hooks\.mjs$|scripts/__tests__/(buildNativeHooks\.os\.test|nativeHooksRelease\.test)\.mjs$|forge\.config\.ts$|package(-lock)?\.json$|\.github/workflows/(native-hooks|release)\.yml$)'
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          files="$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')"
+          if grep -Eq "$RELEVANT" <<<"$files"; then echo "relevant=true"; else echo "relevant=false"; fi >> "$GITHUB_OUTPUT"
+
   native-hooks:
+    needs: changes
+    # Runs even when `changes` failed: without its answer, everything runs.
+    if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,30 +57,42 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: needs.changes.outputs.relevant != 'false'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: needs.changes.outputs.relevant != 'false'
         with:
           node-version: '>=24.21.0 <25'
           cache: npm
       - run: npm install -g npm@11
+        if: needs.changes.outputs.relevant != 'false'
       - run: npm ci
+        if: needs.changes.outputs.relevant != 'false'
       - name: Install Rust toolchain
+        if: needs.changes.outputs.relevant != 'false'
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
       - name: Format, lint and unit tests
+        if: needs.changes.outputs.relevant != 'false'
         working-directory: core/wmux-native
         run: |
           cargo fmt --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
       - name: Build and stage the binary
+        if: needs.changes.outputs.relevant != 'false'
         run: node scripts/build-native-hooks.mjs
       - name: Parity with the Node bridge, lockstep, installer
-        run: npx vitest run integrations/shared/__tests__/hooksBridgeNative.parity.os.test.ts integrations/shared/__tests__/hookFlavours.lockstep.test.ts integrations/shared/__tests__/hooksBridgeShells.os.test.ts src/shared/hooks/__tests__/compatHookInstall.os.test.ts src/main/mcp/__tests__/hookBridge.lockstep.test.ts scripts/__tests__/buildNativeHooks.os.test.mjs
+        if: needs.changes.outputs.relevant != 'false'
+        run: npx vitest run integrations/shared/__tests__/hooksBridgeNative.parity.os.test.ts integrations/shared/__tests__/hookFlavours.lockstep.test.ts integrations/shared/__tests__/hooksBridgeShells.os.test.ts src/shared/hooks/__tests__/compatHookInstall.os.test.ts src/main/mcp/__tests__/hookBridge.lockstep.test.ts scripts/__tests__/buildNativeHooks.os.test.mjs scripts/__tests__/nativeHooksRelease.test.mjs
         env:
           WMUX_REQUIRE_NATIVE_HOOKS: '1'
           WMUX_NATIVE_HOOKS_BIN: ${{ github.workspace }}/dist/native-hooks/${{ runner.os == 'Windows' && 'wmux-native.exe' || 'wmux-native' }}
       - name: Retain the staged binary
+        if: needs.changes.outputs.relevant != 'false'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wmux-native-${{ matrix.name }}
           path: dist/native-hooks/
           if-no-files-found: error
+      - name: Nothing the native bridge depends on changed
+        if: needs.changes.outputs.relevant == 'false'
+        run: echo "No native bridge change in this pull request; nothing to build."

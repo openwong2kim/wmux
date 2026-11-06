@@ -141,6 +141,25 @@ describe('installLifecycleAsset — atomic install with foreign preservation', (
     expect(fs.statSync(exe).mode & 0o777).toBe(0o700);
   });
 
+  // Windows cannot replace a running exe, only rename it. With replaceAside
+  // the old copy is renamed out of the way first and its path reported, so
+  // the caller can restore it or delete it; leftovers from earlier runs (still
+  // running then) are swept.
+  it('renames a stale destination aside when asked, and sweeps older ones', () => {
+    const dest = path.join(home, 'tool');
+    fs.writeFileSync(dest, `${CODEX_NOTIFY_MANAGED_MARKER} old`);
+    fs.writeFileSync(`${dest}.previous-1-aa`, 'left from a run that was still executing');
+    const outcome = installLifecycleAsset({ ...specWithSource(SOURCE_TEXT, dest), replaceAside: true });
+    expect(outcome).toMatchObject({ state: 'current', action: 'refreshed' });
+    expect(fs.readFileSync(dest, 'utf8')).toBe(SOURCE_TEXT);
+    expect(outcome.previousPath).toBeTruthy();
+    expect(fs.readFileSync(outcome.previousPath as string, 'utf8')).toBe(`${CODEX_NOTIFY_MANAGED_MARKER} old`);
+    expect(fs.existsSync(`${dest}.previous-1-aa`)).toBe(false);
+    // A fresh install has nothing to put aside.
+    const fresh = installLifecycleAsset({ ...specWithSource(SOURCE_TEXT, path.join(home, 'tool2')), replaceAside: true });
+    expect(fresh.previousPath).toBeUndefined();
+  });
+
   it('is a no-op (action=none) when already current', () => {
     const dest = path.join(home, 'dest.mjs');
     const spec = specWithSource(SOURCE_TEXT, dest);

@@ -64,9 +64,11 @@ describe('hook flavours — TS table ↔ bridge table', () => {
   // the Node bridge's timing, retry, idempotency or forwarding rules must be
   // made to the native one too.
   it('the native bridge hard-codes the same rules as the Node bridge', () => {
-    const mjs = fs.readFileSync(path.join(REPO_ROOT, 'integrations', 'shared', 'bin', 'wmux-hooks-bridge.mjs'), 'utf8');
+    // Line endings normalised: a Windows checkout may have CRLF.
+    const lf = (text: string): string => text.replace(/\r\n/g, '\n');
+    const mjs = lf(fs.readFileSync(path.join(REPO_ROOT, 'integrations', 'shared', 'bin', 'wmux-hooks-bridge.mjs'), 'utf8'));
     const rs = ['hook.rs', 'rpc.rs']
-      .map((f) => fs.readFileSync(path.join(REPO_ROOT, 'core', 'wmux-native', 'src', f), 'utf8'))
+      .map((f) => lf(fs.readFileSync(path.join(REPO_ROOT, 'core', 'wmux-native', 'src', f), 'utf8')))
       .join('\n');
     const pick = (src: string, re: RegExp): string => {
       const m = src.match(re);

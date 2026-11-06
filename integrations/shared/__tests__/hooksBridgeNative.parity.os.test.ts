@@ -201,7 +201,11 @@ function fixtures(): Fixture[] {
     { name: 'qwen odd payload: BOM, lone surrogate, duplicate key, bad id', argv: ['qwen'], stdin: weird },
     { name: 'qwen array payload', argv: ['qwen', 'Stop'], stdin: '[{"session_id":"x"}]' },
     { name: 'qwen deep nesting', argv: ['qwen', 'Stop'], stdin: `${'['.repeat(5000)}${']'.repeat(5000)}` },
-    { name: 'qwen oversized payload', argv: ['qwen', 'Stop'], stdin: JSON.stringify({ session_id: 's', blob: 'x'.repeat(300 * 1024) }) },
+    // Past the cap by more than one 64 KiB read, so Node truncates whatever
+    // sizes the pipe hands over (between the cap and cap + 64 KiB, Node's own
+    // cut depends on the pipe; native cuts on 64 KiB blocks, see read_capped).
+    { name: 'qwen oversized payload', argv: ['qwen', 'Stop'], stdin: JSON.stringify({ session_id: 's', blob: 'x'.repeat(400 * 1024) }) },
+    { name: 'qwen payload just under the cap', argv: ['qwen', 'Stop'], stdin: JSON.stringify({ session_id: 's', blob: 'x'.repeat(250 * 1024) }) },
     { name: 'qwen session id at the length cap', argv: ['qwen', 'Stop'], stdin: JSON.stringify({ session_id: `a${'b'.repeat(127)}` }) },
     { name: 'qwen session id over the cap', argv: ['qwen', 'Stop'], stdin: JSON.stringify({ session_id: `a${'b'.repeat(128)}` }) },
     { name: 'unknown flavour', argv: ['claude', 'Stop'], stdin: '{}' },
@@ -214,7 +218,8 @@ function fixtures(): Fixture[] {
 
 async function bothRuntimes(fx: Fixture): Promise<[RunResult, RunResult]> {
   const node = await run(process.execPath, [BRIDGE, ...fx.argv], fx);
-  const native = await run(NATIVE as string, ['hook', ...fx.argv], fx);
+  // The argv the installer writes: the bridge path in place of `hook`.
+  const native = await run(NATIVE as string, [BRIDGE, ...fx.argv], fx);
   return [node, native];
 }
 

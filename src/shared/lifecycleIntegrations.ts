@@ -38,6 +38,13 @@ export interface LifecycleAssetSpec {
   dependencies?: readonly LifecycleAssetSpec[];
   /** File mode of the installed copy, from the moment it appears. Default 0o600. */
   mode?: number;
+  /**
+   * Rename a stale destination aside before the new copy takes its name, and
+   * report where it went (`previousPath`). For an executable: Windows cannot
+   * replace a running exe, only rename it, and the caller may need the old
+   * copy back. Asides left by earlier runs are swept first.
+   */
+  replaceAside?: boolean;
 }
 
 export interface LifecycleAssetStatus {
@@ -49,6 +56,20 @@ export interface LifecycleAssetStatus {
 
 export interface LifecycleAssetInstallOutcome extends LifecycleAssetStatus {
   action: 'none' | 'installed' | 'refreshed';
+  /** With `replaceAside`: where the copy this run replaced now is. */
+  previousPath?: string;
+}
+
+/** Remove asides an earlier run left (still running then); best effort. */
+function sweepAsides(destinationPath: string): void {
+  const dir = path.dirname(destinationPath);
+  const prefix = `${path.basename(destinationPath)}.previous`;
+  let names: string[];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    try { fs.unlinkSync(path.join(dir, name)); } catch { /* still running: next time */ }
+  }
 }
 
 function isMissingError(error: unknown): boolean {
@@ -122,10 +143,24 @@ export function installLifecycleAsset(spec: LifecycleAssetSpec): LifecycleAssetI
     }
     const tempPath = `${spec.destinationPath}.${process.pid}-${randomBytes(6).toString('hex')}.tmp`;
     fs.writeFileSync(tempPath, source, { mode: spec.mode ?? 0o600 });
+    let previousPath: string | undefined;
+    if (spec.replaceAside && before.state === 'stale') {
+      sweepAsides(spec.destinationPath);
+      previousPath = `${spec.destinationPath}.previous-${process.pid}-${randomBytes(4).toString('hex')}`;
+      try {
+        fs.renameSync(spec.destinationPath, previousPath);
+      } catch (error) {
+        try { fs.unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
+        throw error;
+      }
+    }
     try {
       fs.renameSync(tempPath, spec.destinationPath);
     } catch (error) {
       try { fs.unlinkSync(tempPath); } catch { /* best-effort cleanup */ }
+      if (previousPath) {
+        try { fs.renameSync(previousPath, spec.destinationPath); } catch { /* left aside; reported below */ }
+      }
       throw error;
     }
     return {
@@ -134,6 +169,7 @@ export function installLifecycleAsset(spec: LifecycleAssetSpec): LifecycleAssetI
       state: 'current',
       error: null,
       action: before.state === 'missing' ? 'installed' : 'refreshed',
+      ...(previousPath ? { previousPath } : {}),
     };
   } catch (error) {
     return {

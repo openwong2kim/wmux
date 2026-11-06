@@ -124,11 +124,6 @@ const shipsComputerUseWin = process.platform === 'win32' && fs.existsSync(COMPUT
 const NATIVE_HOOKS_STAGE = './dist/native-hooks';
 const NATIVE_HOOKS_RESOURCE = `${path.sep}Contents${path.sep}Resources${path.sep}native-hooks${path.sep}`;
 const shipsNativeHooks = fs.existsSync(path.join(__dirname, NATIVE_HOOKS_STAGE, 'manifest.json'));
-if (shipsNativeHooks) {
-  // A stage left from other sources would ship a bridge no parity test ran against.
-  const problem = require('./scripts/build-native-hooks.mjs').nativeHooksStageProblem(__dirname, path.join(__dirname, NATIVE_HOOKS_STAGE));
-  if (problem) throw new Error(problem);
-}
 
 // Resolve the signing identity by its SHA-1 fingerprint, not by name.
 // `find-identity` searches every keychain in the default list — in CI that is
@@ -320,6 +315,13 @@ const config: ForgeConfig = {
     // node-pty 복사가 서명을 깨뜨리기 때문이다.
   },
   hooks: {
+    // A stage left from other sources would ship a bridge no parity test ran
+    // against. Checked when packaging starts, not when the config loads.
+    prePackage: async () => {
+      if (!shipsNativeHooks) return;
+      const problem = require('./scripts/build-native-hooks.mjs').nativeHooksStageProblem(__dirname, path.join(__dirname, NATIVE_HOOKS_STAGE));
+      if (problem) throw new Error(problem);
+    },
     postPackage: async (_config, packageResult) => {
       const asar = require('@electron/asar');
       const outputPath = packageResult.outputPaths[0];

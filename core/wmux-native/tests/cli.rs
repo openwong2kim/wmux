@@ -39,6 +39,39 @@ fn a_non_utf8_subcommand_exits_0() {
     assert!(out.stdout.is_empty());
 }
 
+// The installer writes `<wmux-native> <bridge path> <flavour> <Event>`, the
+// Node form's argv with the binary in front, so older wmux builds still
+// recognise the entry. That argv runs the hook subcommand.
+#[test]
+fn a_bridge_path_in_place_of_the_subcommand_runs_the_hook() {
+    let home = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("cli-bridge-path");
+    let _ = std::fs::create_dir_all(&home);
+    let log = home.join(".wmux-cli-test").join("qwen-hooks.log");
+    for bridge in [
+        "/home/u/.wmux/hooks/wmux-hooks-bridge.mjs",
+        r"C:\Users\u\.wmux\hooks\wmux-hooks-bridge.mjs",
+    ] {
+        let _ = std::fs::remove_file(&log);
+        let out = Command::new(env!("CARGO_BIN_EXE_wmux-native"))
+            .args([bridge, "qwen", "Stop"])
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
+            .env("WMUX_DATA_SUFFIX", "-cli-test")
+            .env("WMUX_PTY_ID", "pty-1")
+            .env_remove("WMUX_PIPE_NAME")
+            .stdin(Stdio::null())
+            .output()
+            .expect("spawn wmux-native");
+        assert_eq!(out.status.code(), Some(0), "{bridge}");
+        assert!(out.stdout.is_empty() && out.stderr.is_empty(), "{bridge}");
+        let line = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            line.contains(r#""flavour":"qwen""#) && line.contains(r#""runtime":"native""#),
+            "{bridge}: {line}"
+        );
+    }
+}
+
 #[test]
 fn version_and_help_print_to_stdout() {
     let version = run(&[std::ffi::OsStr::new("--version")]);

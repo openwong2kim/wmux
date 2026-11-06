@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   NATIVE_HOOKS_MARKER, NATIVE_HOOKS_TARGETS, nativeHooksBinary, nativeHooksSourceHash, nativeHooksStageProblem,
@@ -12,7 +13,8 @@ import {
 import { NATIVE_TERMINAL_TARGETS } from '../lib/native-terminal-targets.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
-const read = (...p) => fs.readFileSync(path.join(root, ...p), 'utf8');
+// Line endings normalised: a Windows checkout may have CRLF.
+const read = (...p) => fs.readFileSync(path.join(root, ...p), 'utf8').replace(/\r\n/g, '\n');
 
 describe('build-native-hooks', () => {
   // The installer recognises its copy of the binary by this text in its bytes.
@@ -34,6 +36,38 @@ describe('build-native-hooks', () => {
     expect(nativeHooksBinary('darwin')).toBe('wmux-native');
     expect(nativeHooksBinary('linux')).toBe('wmux-native');
     expect(read('src', 'shared', 'hooks', 'hookFlavours.ts')).toContain("platform === 'win32' ? 'wmux-native.exe' : 'wmux-native'");
+  });
+
+  // A required check must report on every pull request, so the workflow
+  // always runs and its own first job decides whether anything relevant
+  // changed; the steps then run or no-op.
+  it('always runs, and treats every path the native bridge depends on as relevant', () => {
+    const workflow = read('.github', 'workflows', 'native-hooks.yml');
+    expect(workflow).not.toMatch(/^\s+paths:/m);
+    // Every step runs unless `changes` said no, and one says why when it did.
+    const { jobs } = parseYaml(workflow);
+    expect(jobs['native-hooks'].needs).toBe('changes');
+    for (const step of jobs['native-hooks'].steps) {
+      const gate = step.name === 'Nothing the native bridge depends on changed'
+        ? "needs.changes.outputs.relevant == 'false'"
+        : "needs.changes.outputs.relevant != 'false'";
+      expect(step.if, step.name ?? step.uses ?? step.run).toBe(gate);
+    }
+    const pattern = new RegExp(workflow.match(/RELEVANT: '([^']+)'/)[1]);
+    for (const file of [
+      'core/wmux-native/src/rpc.rs', 'core/wmux-native/.cargo/config.toml', 'integrations/shared/bin/wmux-hooks-bridge.mjs',
+      'src/shared/hooks/compatHookInstall.ts', 'src/shared/lifecycleIntegrations.ts', 'src/cli/commands/setupHooks.ts',
+      'src/daemon/DaemonPipeServer.ts', 'src/main/pipe/PipeServer.ts', 'src/main/pipe/handlers/hooks.rpc.ts',
+      'src/shared/rpc.ts', 'src/main/mcp/hookBridge.ts', 'src/main/mcp/__tests__/hookBridge.lockstep.test.ts',
+      'scripts/build-native-hooks.mjs', 'scripts/__tests__/buildNativeHooks.os.test.mjs',
+      'scripts/__tests__/nativeHooksRelease.test.mjs', 'forge.config.ts', 'package.json', 'package-lock.json',
+      '.github/workflows/native-hooks.yml', '.github/workflows/release.yml',
+    ]) {
+      expect(pattern.test(file), file).toBe(true);
+    }
+    for (const file of ['src/renderer/App.tsx', 'docs/x.md', 'src/main/pipeline.ts', 'core/wmux-term/src/lib.rs']) {
+      expect(pattern.test(file), file).toBe(false);
+    }
   });
 
   it('is built and tested in CI on mac arm64, win x64, linux x64 and linux arm64', () => {
@@ -66,16 +100,18 @@ describe('native hooks stage freshness', () => {
     fs.writeFileSync(crate('flavours.json'), '{}');
     fs.writeFileSync(crate('Cargo.lock'), 'lock');
     fs.writeFileSync(crate('Cargo.toml'), '[package]');
+    fs.mkdirSync(crate('.cargo'), { recursive: true });
+    fs.writeFileSync(crate('.cargo', 'config.toml'), '[target]');
   });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-  it('hashes the crate sources, the flavour table and the lockfile', () => {
+  it('hashes the crate sources, the flavour table, the lockfile and the cargo config', () => {
     const before = nativeHooksSourceHash(root);
     expect(before).toMatch(/^[0-9a-f]{64}$/);
     // Build output is not a source.
     fs.writeFileSync(crate('target', 'release', 'wmux-native'), 'binary');
     expect(nativeHooksSourceHash(root)).toBe(before);
-    for (const file of [['src', 'nested', 'mod.rs'], ['flavours.json'], ['Cargo.lock'], ['Cargo.toml']]) {
+    for (const file of [['src', 'nested', 'mod.rs'], ['flavours.json'], ['Cargo.lock'], ['Cargo.toml'], ['.cargo', 'config.toml']]) {
       const original = fs.readFileSync(crate(...file));
       fs.writeFileSync(crate(...file), 'changed');
       expect(nativeHooksSourceHash(root), file.join('/')).not.toBe(before);
@@ -95,9 +131,13 @@ describe('native hooks stage freshness', () => {
     expect(nativeHooksStageProblem(root, stage())).toMatch(/build-native-hooks/);
   });
 
+  // In a package hook, not at config load: loading the config (to run any
+  // forge command, or a test) must not depend on the stage.
   it('is checked by the forge config before packaging', () => {
-    expect(read('forge.config.ts')).toMatch(
-      /const problem = require\('\.\/scripts\/build-native-hooks\.mjs'\)\.nativeHooksStageProblem\(__dirname, [^\n]+\);\n\s*if \(problem\) throw new Error\(problem\);/,
+    const forge = read('forge.config.ts');
+    expect(forge).toMatch(
+      /prePackage: async \(\) => \{\n\s*if \(!shipsNativeHooks\) return;\n\s*const problem = require\('\.\/scripts\/build-native-hooks\.mjs'\)\.nativeHooksStageProblem\(__dirname, [^\n]+\);\n\s*if \(problem\) throw new Error\(problem\);/,
     );
+    expect(forge).not.toMatch(/^if \(shipsNativeHooks\)/m);
   });
 });

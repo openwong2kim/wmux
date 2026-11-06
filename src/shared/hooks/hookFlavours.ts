@@ -286,8 +286,3 @@ export function compatHookShellCommand(bridgePath: string, flavour: CompatHookFl
 export function compatHookExecArgs(bridgePath: string, flavour: CompatHookFlavourId, event: string): string[] {
   return [bridgePath, flavour, event];
 }
-
-/** The exec-form argv for the native bridge: `<wmux-native> hook <flavour> <event>`. */
-export function compatHookNativeExecArgs(flavour: CompatHookFlavourId, event: string): string[] {
-  return ['hook', flavour, event];
-}

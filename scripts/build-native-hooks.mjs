@@ -36,8 +36,9 @@ export const NATIVE_HOOKS_MARKER = 'wmux-managed: native-hooks';
 
 /**
  * A hash of everything the binary is built from: the crate's src/ tree, its
- * flavour table, Cargo.toml and Cargo.lock. Paths are hashed with the bytes,
- * so a moved or added file changes it too.
+ * flavour table, Cargo.toml, Cargo.lock and .cargo/ (build flags such as the
+ * static CRT). Paths are hashed with the bytes, so a moved or added file
+ * changes it too.
  */
 export function nativeHooksSourceHash(root) {
   const crate = path.join(root, 'core', 'wmux-native');
@@ -50,6 +51,7 @@ export function nativeHooksSourceHash(root) {
     }
   };
   walk('src');
+  if (fs.existsSync(path.join(crate, '.cargo'))) walk('.cargo');
   const hash = createHash('sha256');
   for (const rel of files.sort()) {
     hash.update(`${rel}\0`).update(fs.readFileSync(path.join(crate, ...rel.split('/')))).update('\0');

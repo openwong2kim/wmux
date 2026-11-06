@@ -309,33 +309,49 @@ fn slice_units(s: &[u16], n: usize) -> JsStr {
 // ----- stdin -----------------------------------------------------------------
 
 /// readStdin: Ok(None) for an empty body, Err for one JSON.parse rejects.
-/// Accumulates while under the cap, then keeps draining, as the Node reader
-/// does chunk by chunk.
 fn read_stdin() -> Result<Option<Json>, ()> {
-    let mut stdin = std::io::stdin().lock();
-    let mut held: Vec<u8> = Vec::new();
-    let mut chunk = vec![0u8; 64 * 1024];
-    loop {
-        match stdin.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                if held.len() < MAX_STDIN_BYTES {
-                    held.extend_from_slice(&chunk[..n]);
-                }
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            // An inherited non-blocking stdin: wait for data as Node's reader does.
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(std::time::Duration::from_millis(2))
-            }
-            Err(_) => return Err(()),
-        }
-    }
+    let held = read_capped(std::io::stdin().lock())?;
     let text = js::decode_utf8_trimmed(&held);
     if text.is_empty() {
         return Ok(None);
     }
     js::parse(&text).map(Some)
+}
+
+/// The bytes the Node reader keeps. Node takes stdin in 64 KiB chunks and
+/// keeps whole chunks while it holds less than the cap, then drains to EOF, so
+/// the cut falls on a 64 KiB boundary. A pipe hands bytes over in whatever
+/// sizes it likes (smaller on Linux than on macOS), so blocks are filled to
+/// 64 KiB here before the cap is applied; otherwise the cut, and with it
+/// whether an over-cap payload parses, would depend on the pipe.
+fn read_capped(mut input: impl Read) -> Result<Vec<u8>, ()> {
+    const BLOCK: usize = 64 * 1024;
+    let mut held: Vec<u8> = Vec::new();
+    let mut block = vec![0u8; BLOCK];
+    let mut filled = 0;
+    loop {
+        match input.read(&mut block[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            // An inherited non-blocking stdin: wait for data as Node's reader does.
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                continue;
+            }
+            Err(_) => return Err(()),
+        }
+        if filled == BLOCK {
+            if held.len() < MAX_STDIN_BYTES {
+                held.extend_from_slice(&block);
+            }
+            filled = 0;
+        }
+    }
+    if held.len() < MAX_STDIN_BYTES {
+        held.extend_from_slice(&block[..filled]);
+    }
+    Ok(held)
 }
 
 // ----- Main ----------------------------------------------------------------
@@ -581,6 +597,46 @@ mod tests {
         assert!(!is_session_id(&js(&format!("a{}", "b".repeat(128)))));
         assert!(!is_session_id(&js("-a")));
         assert!(!is_session_id(&js("a/b")));
+    }
+
+    /// Hands out its bytes in the given chunk sizes, as a pipe can.
+    struct Chunked(Vec<u8>, Vec<usize>);
+
+    impl std::io::Read for Chunked {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let want = if self.1.is_empty() {
+                self.0.len()
+            } else {
+                self.1.remove(0)
+            };
+            let n = want.min(buf.len()).min(self.0.len());
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0.drain(..n);
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn the_stdin_cap_falls_on_64k_blocks_whatever_the_pipe_hands_over() {
+        // Node reads stdin in 64 KiB chunks and keeps whole chunks until the
+        // cap is reached: 307 200 bytes keep 4 x 64 KiB = the cap, the rest is
+        // dropped. A pipe that hands over 100 000 then 207 200 bytes must not
+        // let the whole payload through.
+        let payload = vec![b'x'; 307_200];
+        for chunks in [
+            vec![100_000, 207_200],
+            vec![65_536; 5],
+            vec![4096; 75],
+            vec![262_143, 1, 45_056],
+        ] {
+            let held = read_capped(Chunked(payload.clone(), chunks.clone())).unwrap();
+            assert_eq!(held.len(), MAX_STDIN_BYTES, "{chunks:?}");
+        }
+        // Under the cap, everything is kept.
+        assert_eq!(
+            read_capped(Chunked(vec![b'y'; 1000], vec![7, 993])).unwrap().len(),
+            1000
+        );
     }
 
     #[test]
