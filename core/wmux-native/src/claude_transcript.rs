@@ -2,7 +2,8 @@
 //! transcript's file name, token usage, the permission mode and the count of
 //! background work left running. Each reads the tail of the session's JSONL
 //! and is best-effort: a missing transcript is silently nothing, any other
-//! failure is logged and is nothing.
+//! failure is logged and is nothing. The file is read once per run (Node
+//! reads it once per reader); each reader takes its own last bytes of that.
 //!
 //! Lines are handled as Node handles them: the tail decoded as lossy UTF-8,
 //! split on `\n`, blank lines (by JS trim) dropped, and when the read started
@@ -41,34 +42,68 @@ pub fn session_id(transcript_path: Option<&[u16]>, fallback: Option<JsStr>) -> O
     fallback
 }
 
-/// The non-blank lines of the tail; None for a transcript that is not there.
-fn tail_lines(path: &str, max: u64) -> std::io::Result<Option<Vec<JsStr>>> {
-    let Some((buf, offset)) = fsx::read_tail(path, max)? else {
-        return Ok(None);
-    };
-    let tail = js::js(&String::from_utf8_lossy(&buf));
+/// A transcript's tail, read once for all the readers of one hook run.
+pub enum Tail {
+    /// Not there: every reader is silently nothing.
+    Missing,
+    /// The read failed: each reader logs it under its own outcome.
+    Failed(String),
+    Read {
+        buf: Vec<u8>,
+        offset: u64,
+    },
+}
+
+impl Tail {
+    /// The tail this hook's readers need: Stop's leftover count reads the
+    /// last 1 MiB, every other reader the last 64 KB. None for a hook that
+    /// reads no transcript.
+    pub fn for_hook(hook: &str, path: &str) -> Option<Tail> {
+        let max = match hook {
+            "Stop" => LEFTOVER_TAIL_BYTES,
+            "SubagentStop" | "SessionStart" => TAIL_BYTES,
+            _ => return None,
+        };
+        Some(match fsx::read_tail(path, max) {
+            Ok(None) => Tail::Missing,
+            Ok(Some((buf, offset))) => Tail::Read { buf, offset },
+            Err(e) => Tail::Failed(format!("Error: {e}")),
+        })
+    }
+
+    /// The non-blank lines of the last `max` bytes, as a read of only those
+    /// bytes gives them: cut as bytes, then decoded, with a partial first line
+    /// dropped when they start mid-file.
+    fn lines(&self, max: u64, outcome: &str, log: Log) -> Option<Vec<JsStr>> {
+        match self {
+            Tail::Missing => None,
+            Tail::Failed(error) => {
+                log(outcome, error.clone());
+                None
+            }
+            Tail::Read { buf, offset } => {
+                let len = buf.len().min(max as usize);
+                debug_assert!(*offset == 0 || len as u64 == max, "the tail holds less than asked");
+                let cut = buf.len() - len;
+                Some(split_lines(&buf[cut..], offset + cut as u64))
+            }
+        }
+    }
+}
+
+/// The non-blank lines of bytes read from `offset`.
+fn split_lines(bytes: &[u8], offset: u64) -> Vec<JsStr> {
+    let tail = js::js(&String::from_utf8_lossy(bytes));
     let start = if offset > 0 {
         tail.iter().position(|&c| c == 0x0A).map_or(0, |i| i + 1)
     } else {
         0
     };
-    Ok(Some(
-        tail[start..]
-            .split(|&c| c == 0x0A)
-            .filter(|l| !js::trim(l).is_empty())
-            .map(<[u16]>::to_vec)
-            .collect(),
-    ))
-}
-
-fn read(path: &str, max: u64, outcome: &str, log: Log) -> Option<Vec<JsStr>> {
-    match tail_lines(path, max) {
-        Ok(lines) => lines,
-        Err(e) => {
-            log(outcome, format!("Error: {e}"));
-            None
-        }
-    }
+    tail[start..]
+        .split(|&c| c == 0x0A)
+        .filter(|l| !js::trim(l).is_empty())
+        .map(<[u16]>::to_vec)
+        .collect()
 }
 
 fn num(v: Option<&Json>) -> f64 {
@@ -79,8 +114,8 @@ fn num(v: Option<&Json>) -> f64 {
 }
 
 /// extractUsageFromTranscript: the last assistant message's usage.
-pub fn usage(path: &str, log: Log) -> Option<Json> {
-    let lines = read(path, TAIL_BYTES, "transcript-read-error", log)?;
+pub fn usage(tail: &Tail, log: Log) -> Option<Json> {
+    let lines = tail.lines(TAIL_BYTES, "transcript-read-error", log)?;
     for line in lines.iter().rev() {
         let Ok(entry) = js::parse(line) else { continue };
         let message = entry.get("message");
@@ -110,8 +145,8 @@ fn valid_mode(v: Option<&Json>) -> Option<JsStr> {
 
 /// extractPermissionModeFromTranscript: the last user or permission-mode
 /// entry's valid permissionMode.
-fn transcript_permission_mode(path: &str, log: Log) -> Option<JsStr> {
-    let lines = read(path, TAIL_BYTES, "transcript-permission-read-error", log)?;
+fn transcript_permission_mode(tail: &Tail, log: Log) -> Option<JsStr> {
+    let lines = tail.lines(TAIL_BYTES, "transcript-permission-read-error", log)?;
     lines.iter().rev().find_map(|line| {
         let entry = js::parse(line).ok()?;
         let kind = entry.get("type");
@@ -122,7 +157,7 @@ fn transcript_permission_mode(path: &str, log: Log) -> Option<JsStr> {
 }
 
 /// permissionModeForHook.
-pub fn permission_mode(hook: &str, transcript_path: Option<&str>, payload: Option<&Json>, log: Log) -> Option<JsStr> {
+pub fn permission_mode(hook: &str, tail: Option<&Tail>, payload: Option<&Json>, log: Log) -> Option<JsStr> {
     let reported = matches!(hook, "SessionStart" | "Stop" | "UserPromptSubmit")
         .then(|| payload.and_then(|p| p.get("permission_mode")))
         .flatten();
@@ -133,9 +168,7 @@ pub fn permission_mode(hook: &str, transcript_path: Option<&str>, payload: Optio
     if !matches!(hook, "SessionStart" | "Stop" | "SubagentStop") {
         return None;
     }
-    transcript_path
-        .and_then(|p| transcript_permission_mode(p, log))
-        .or(from_payload)
+    tail.and_then(|t| transcript_permission_mode(t, log)).or(from_payload)
 }
 
 fn str_is(v: Option<&Json>, s: &str) -> bool {
@@ -146,8 +179,8 @@ fn str_is(v: Option<&Json>, s: &str) -> bool {
 
 /// countLeftoverBackgroundTasks: background work the lead turn started and
 /// neither saw finish nor stopped. 0 on any failure.
-pub fn leftover_work(path: &str, log: Log) -> usize {
-    let Some(lines) = read(path, LEFTOVER_TAIL_BYTES, "transcript-leftover-read-error", log) else {
+pub fn leftover_work(tail: &Tail, log: Log) -> usize {
+    let Some(lines) = tail.lines(LEFTOVER_TAIL_BYTES, "transcript-leftover-read-error", log) else {
         return 0;
     };
     // Node's Sets and Map; only the count comes out, so their order does not
@@ -411,6 +444,108 @@ mod tests {
         panic!("{outcome}: {error}");
     }
 
+    /// A transcript of about `size` bytes whose cut `TAIL_BYTES` from the end
+    /// falls inside a multi-byte character, so inside a line.
+    fn transcript_cut_mid_character(size: usize) -> String {
+        let mut body = String::new();
+        let mut n = 0;
+        while body.len() < size {
+            let entry = match n % 3 {
+                0 => format!(
+                    r#"{{"type":"assistant","message":{{"usage":{{"input_tokens":{n},"output_tokens":2}}}},"note":"{}"}}"#,
+                    "😀é".repeat(n % 40)
+                ),
+                1 => format!(
+                    r#"{{"type":"user","permissionMode":"{}","message":{{"content":"é{n}"}}}}"#,
+                    if n % 2 == 0 { "plan" } else { "acceptEdits" }
+                ),
+                _ => format!(r#"{{"type":"system","text":"{}"}}"#, "😀".repeat(n % 70)),
+            };
+            body.push_str(&entry);
+            body.push('\n');
+            n += 1;
+        }
+        // Spaces at the end (a blank line, dropped) move the cut back a byte
+        // each, until it lands on a continuation byte.
+        while body.len() > TAIL_BYTES as usize
+            && !(0x80..0xC0).contains(&body.as_bytes()[body.len() - TAIL_BYTES as usize])
+        {
+            body.push(' ');
+        }
+        body
+    }
+
+    #[test]
+    fn the_64_kb_readers_see_what_a_64_kb_read_of_their_own_gives() {
+        let _env = testenv::lock();
+        for size in [2_000, 300_000, 1_300_000] {
+            let path = transcript("cut", &transcript_cut_mid_character(size));
+            let once = Tail::for_hook("Stop", &path).unwrap();
+            // SubagentStop reads only its 64 KB, as Node's 64 KB readers do.
+            let own = Tail::for_hook("SubagentStop", &path).unwrap();
+            let direct = |max| {
+                let (buf, offset) = fsx::read_tail(&path, max).unwrap().unwrap();
+                split_lines(&buf, offset)
+            };
+            assert_eq!(
+                once.lines(TAIL_BYTES, "x", &unlogged),
+                Some(direct(TAIL_BYTES)),
+                "{size}"
+            );
+            assert_eq!(
+                own.lines(TAIL_BYTES, "x", &unlogged),
+                Some(direct(TAIL_BYTES)),
+                "{size}"
+            );
+            assert_eq!(
+                once.lines(LEFTOVER_TAIL_BYTES, "x", &unlogged),
+                Some(direct(LEFTOVER_TAIL_BYTES)),
+                "{size}"
+            );
+            assert!(usage(&once, &unlogged).is_some());
+            assert_eq!(usage(&once, &unlogged), usage(&own, &unlogged), "{size}");
+            let mode = |t: &Tail| permission_mode("Stop", Some(t), None, &unlogged);
+            assert!(mode(&once).is_some());
+            assert_eq!(mode(&once), mode(&own), "{size}");
+            remove(&path);
+        }
+    }
+
+    #[test]
+    fn a_tail_read_once_still_fails_once_per_reader() {
+        let _env = testenv::lock();
+        let path = transcript("dir", "");
+        let dir = std::path::Path::new(&path)
+            .parent()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let logged = std::cell::RefCell::new(Vec::new());
+        let log = |outcome: &str, error: String| logged.borrow_mut().push(format!("{outcome} {error}"));
+        let tail = Tail::for_hook("Stop", &dir).unwrap();
+        assert_eq!(usage(&tail, &log), None);
+        assert_eq!(leftover_work(&tail, &log), 0);
+        assert_eq!(permission_mode("Stop", Some(&tail), None, &log), None);
+        let logged = logged.into_inner();
+        let outcomes: Vec<&str> = logged.iter().map(|l| l.split(' ').next().unwrap()).collect();
+        assert_eq!(
+            outcomes,
+            [
+                "transcript-read-error",
+                "transcript-leftover-read-error",
+                "transcript-permission-read-error"
+            ]
+        );
+        assert!(logged
+            .iter()
+            .all(|l| l.ends_with(&logged[0][logged[0].find(' ').unwrap()..])));
+        // Missing: silently nothing.
+        let missing = Tail::for_hook("Stop", &format!("{dir}/absent.jsonl")).unwrap();
+        assert_eq!(usage(&missing, &unlogged), None);
+        assert_eq!(Tail::for_hook("PreToolUse", &path).map(|_| ()), None);
+        remove(&path);
+    }
+
     #[test]
     fn leftover_work_over_a_tail_of_many_dispatches_stays_fast() {
         let _env = testenv::lock();
@@ -434,7 +569,8 @@ mod tests {
         assert!(body.len() < LEFTOVER_TAIL_BYTES as usize);
         let path = transcript("many", &body);
         let started = Instant::now();
-        assert_eq!(leftover_work(&path, &unlogged), 4_000);
+        let tail = Tail::for_hook("Stop", &path).unwrap();
+        assert_eq!(leftover_work(&tail, &unlogged), 4_000);
         let took = started.elapsed();
         remove(&path);
         // Linear: about 0.1 s in a debug build here; the list scans it

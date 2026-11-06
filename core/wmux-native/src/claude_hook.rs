@@ -395,15 +395,18 @@ fn run(start: Start, log: Log) {
     let transcript_js = non_empty(payload, "transcript_path");
     let transcript_path = transcript_js.map(|p| js::lossy(p));
     let read_log = |outcome: &str, error: String| log(outcome, vec![("error", s(&error))]);
-    let usage = match (hook.as_str(), transcript_path.as_deref()) {
-        ("Stop" | "SubagentStop", Some(path)) => transcript::usage(path, &read_log),
+    let tail = transcript_path
+        .as_deref()
+        .and_then(|p| transcript::Tail::for_hook(&hook, p));
+    let usage = match (hook.as_str(), &tail) {
+        ("Stop" | "SubagentStop", Some(tail)) => transcript::usage(tail, &read_log),
         _ => None,
     };
-    let leftover_work = match (hook.as_str(), transcript_path.as_deref()) {
-        ("Stop", Some(path)) => transcript::leftover_work(path, &read_log),
+    let leftover_work = match (hook.as_str(), &tail) {
+        ("Stop", Some(tail)) => transcript::leftover_work(tail, &read_log),
         _ => 0,
     };
-    let permission_mode = transcript::permission_mode(&hook, transcript_path.as_deref(), payload, &read_log);
+    let permission_mode = transcript::permission_mode(&hook, tail.as_ref(), payload, &read_log);
 
     let workspace_id = env_set("WMUX_WORKSPACE_ID");
     let surface_id = env_set("WMUX_SURFACE_ID");
