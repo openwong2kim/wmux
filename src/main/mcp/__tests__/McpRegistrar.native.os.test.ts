@@ -1,3 +1,4 @@
+// @wmux-lane integration — the launcher installs through shared/probedNative.ts, which stages, links and renames real files in a temp dir.
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
