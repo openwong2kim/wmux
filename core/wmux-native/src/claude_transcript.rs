@@ -547,6 +547,24 @@ mod tests {
     }
 
     #[test]
+    fn a_dispatch_is_judged_by_its_first_result() {
+        let _env = testenv::lock();
+        // `if (!resultTexts.has(id))`: a later result for the same id is not
+        // the immediate one.
+        let body = [
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1"},{"type":"tool_use","id":"t2"}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Command running in background with ID: b1"}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Error: later"}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Error: rejected"}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Command running in background with ID: b2"}]}}"#,
+        ]
+        .join("\n");
+        let path = transcript("first", &body);
+        assert_eq!(leftover_work(&Tail::for_hook("Stop", &path).unwrap(), &unlogged), 1);
+        remove(&path);
+    }
+
+    #[test]
     fn leftover_work_over_a_tail_of_many_dispatches_stays_fast() {
         let _env = testenv::lock();
         // As many tool_use ids as a 1 MiB tail holds; the first 4 000 left a
