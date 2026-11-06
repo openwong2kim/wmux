@@ -227,15 +227,15 @@ fn nested(depth: usize) -> String {
 
 #[test]
 fn a_payload_at_the_depth_limit_goes_through_every_recursive_path() {
-    // PAYLOAD_DEPTH_MAX is 10 000: on the run's 64 MiB stack the payload is
+    // PAYLOAD_DEPTH_MAX is 1 500: on the run's 64 MiB stack the payload is
     // cloned (spread, and the unknown-entrypoint strip) and stringified (the
     // envelope); the debug envelope lists its keys.
     let case = Case::new("deep", Some(&pinned()));
     std::fs::create_dir_all(case.dir.join("home/.wmux-claude-hook-test")).unwrap();
     std::fs::write(case.dir.join("home/.wmux-claude-hook-test/daemon-auth-token"), "t").unwrap();
-    let in_object = format!(r#"{{"session_id":"s","x":{}}}"#, nested(9_999));
+    let in_object = format!(r#"{{"session_id":"s","x":{}}}"#, nested(1_499));
     for (env, payload) in [
-        (vec![], nested(10_000)),
+        (vec![], nested(1_500)),
         (vec![("CLAUDE_CODE_ENTRYPOINT", "desktop")], in_object.clone()),
         (vec![("WMUX_BRIDGE_DEBUG", "1")], in_object.clone()),
     ] {
@@ -244,7 +244,7 @@ fn a_payload_at_the_depth_limit_goes_through_every_recursive_path() {
         assert_eq!(case.log().last().unwrap(), "rpc-failed", "{env:?}");
     }
     // One level more is refused before anything is sent.
-    quiet(&case.run(&["Stop"], &[], true, &nested(10_001)));
+    quiet(&case.run(&["Stop"], &[], true, &nested(1_501)));
     let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
     assert!(
         log.lines()

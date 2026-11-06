@@ -31,12 +31,15 @@
 //!   - argv-proto-key: only the hook names of HOOK_TO_KIND are hooks. Node's
 //!     plain-object lookup also accepts inherited keys (`constructor`) and
 //!     sends an envelope without a kind; here that is `unknown-hook-name`.
-//!   - A payload nested deeper than PAYLOAD_DEPTH_MAX (10 000) levels is
+//!   - A payload nested deeper than PAYLOAD_DEPTH_MAX (1 500) levels is
 //!     refused at once, logged `uncaught` with V8's RangeError message, and
-//!     nothing is sent. Node fails earlier, at its own stack limit (about
-//!     5 000 to 8 000 levels, by node release), and then only once a socket
-//!     connects, where the exception ends the process with exit 1; between
-//!     the two limits this binary sends what Node cannot.
+//!     nothing is sent (exit 0): never a request the servers cannot parse.
+//!     Node sends far deeper payloads (6 622 levels on node 22) and only dies,
+//!     with exit 1, at its own stack limit. Between the servers' parse limit
+//!     and that, the server answers `Invalid JSON` with no id, so the Node
+//!     bridge waits out its deadline and a `--gate` Stop fails closed on
+//!     every retry. That stuck path stays wherever the Node bridge runs
+//!     (Windows, the kill switch, a stale pin).
 //!   - A verdict whose stdout or stderr reader went away keeps its exit code
 //!     (a block stays 2) and logs `stdout-lost` / `stderr-lost` after the
 //!     verdict's line; Node dies on the write error with exit 1.
@@ -72,9 +75,17 @@ const MAX_STDIN_BYTES: usize = 1024 * 1024;
 const ACTIVITY_STAMP_THROTTLE_MS: f64 = 2500.0;
 /// WMUX_CLIENT_NAME.
 const WMUX_CLIENT_NAME: &str = "wmux-hook-bridge";
-/// The deepest payload accepted, the outermost value being level 0: above
-/// Node's own limit, so every payload Node can forward goes through.
-const PAYLOAD_DEPTH_MAX: usize = 10_000;
+/// The deepest payload sent, the outermost value being level 0 (it sits at
+/// the envelope's `params.payload`, two levels down). The servers parse a
+/// request with a reviver, which recurses, so they cannot take what Node
+/// can stringify. Measured on the line as sent, in a socket callback as the
+/// servers parse it, 2026-11-06: main (Electron 45.1.0 main process, node
+/// 24.22.1) 3 499; the daemon (Electron 45.1.0 as node) 3 530; a headless
+/// daemon on system node 22.23.3 (`wmux daemon` runs it on the CLI's node)
+/// 1 823. node 18 and 20, which the engines range allows, were not measured.
+/// 1 500 stays under the lowest with a margin; claudeHookDepthServers.test.ts
+/// holds it to both servers' parse.
+const PAYLOAD_DEPTH_MAX: usize = 1_500;
 /// The run's own stack: room for PAYLOAD_DEPTH_MAX levels of the recursive
 /// clone and stringify, whatever the platform's main-thread default. A debug
 /// build measured here gets through 40 000 levels and overflows below 80 000.

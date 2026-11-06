@@ -1,0 +1,102 @@
+{
+  "description": "Stop --gate with a payload at the depth limit (1 500 levels below its outermost value): sent and answered as any other.",
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "wait"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate"
+      ],
+      "stdin": {
+        "parts": [
+          {
+            "repeat": "[",
+            "count": 1501
+          },
+          {
+            "repeat": "]",
+            "count": 1501
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 2,
+        "stdout": "",
+        "stderr": "wait\n",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "main"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "gate-blocked",
+            "target": "main"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "0": [
+                    [
+                      [
+                        [
+                          [
+                            [
+                              [
+                                [
+                                  [
+                                    [
+                                      "<json length=2980 sha256=b14f79d65b297e3f>"
+                                    ]
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
