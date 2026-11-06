@@ -927,6 +927,24 @@ function viewInput(wc: WebContents, method: string, params?: Record<string, unkn
   return params;
 }
 
+interface PixelRect { x: number; y: number; width: number; height: number }
+
+/**
+ * A rect in the page's CSS pixels, in the drawn view's pixels instead: the
+ * space webContents.capturePage crops in. Same scale as viewInput.
+ */
+function viewRect(wc: WebContents, rect: PixelRect): PixelRect {
+  const scale = activePreset.get(wc)?.scale ?? 1;
+  const x = Math.floor(rect.x * scale);
+  const y = Math.floor(rect.y * scale);
+  return {
+    x,
+    y,
+    width: Math.ceil((rect.x + rect.width) * scale) - x,
+    height: Math.ceil((rect.y + rect.height) * scale) - y,
+  };
+}
+
 /** Sends one CDP Input event, its points in CSS pixels (viewInput). */
 function sendInput(wc: WebContents, method: string, params: Record<string, unknown>): Promise<unknown> {
   return wc.debugger.sendCommand(method, viewInput(wc, method, params));
@@ -983,7 +1001,8 @@ async function movePointerTo(
   setPointerPosition(wc, webContentsId, { x, y });
 }
 // CDP event capture for browser_console / browser_network / browser_response_body
-// in packaged builds (#106). Lazy: enables domains on first drain call.
+// on the RPC lane, which serves whenever the engine holds no Playwright Page for
+// the guest (#106). Lazy: enables domains on first drain call.
 const captureManager = new BrowserCaptureManager();
 
 /**
@@ -1044,6 +1063,104 @@ const HELP_EVALUATE_TIMEOUT_MS = 2_000;
 const HELP_REVEAL_TIMEOUT_MS = 2_000;
 // Bound for the capturePage fallback — it can hang on exactly the same guests.
 const CAPTURE_PAGE_TIMEOUT_MS = 1_500;
+
+/** `work`'s value, or `null` once `ms` pass first. A rejection also reads as null. */
+async function settledWithin<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work.catch(() => null), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Where one element sits, measured after scrolling it into view. CSS px. */
+interface ElementCaptureBox {
+  /** In the viewport. */
+  rect: PixelRect;
+  /** The same box in document coordinates, which is what a CDP clip takes. */
+  page: PixelRect;
+  /** Whether the whole box is on screen, which capturePage needs. */
+  inViewport: boolean;
+}
+
+async function measureElementForCapture(wc: WebContents, selector: string): Promise<ElementCaptureBox> {
+  const res = await wc.debugger.sendCommand('Runtime.evaluate', {
+    expression: `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return { missing: true };
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) return { empty: true };
+      return { x: r.x, y: r.y, width: r.width, height: r.height,
+        scrollX: window.scrollX, scrollY: window.scrollY,
+        vw: window.innerWidth, vh: window.innerHeight };
+    })()`,
+    returnByValue: true,
+  }) as {
+    result?: { value?: { missing?: true; empty?: true; x?: number; y?: number; width?: number; height?: number;
+      scrollX?: number; scrollY?: number; vw?: number; vh?: number } };
+    exceptionDetails?: { exception?: { description?: string }; text?: string };
+  };
+  if (res.exceptionDetails) {
+    throw new Error(`browser.screenshot: invalid selector ${selector}: ${res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? 'error'}`);
+  }
+  const v = res.result?.value;
+  if (!v || v.missing) {
+    throw new Error(`browser.screenshot: no element matches ${selector} — the ref may be stale; take a new browser_snapshot.`);
+  }
+  if (v.empty) throw new Error(`browser.screenshot: the element ${selector} has no area to capture.`);
+  const rect = { x: v.x ?? 0, y: v.y ?? 0, width: v.width ?? 0, height: v.height ?? 0 };
+  return {
+    rect,
+    page: { ...rect, x: rect.x + (v.scrollX ?? 0), y: rect.y + (v.scrollY ?? 0) },
+    inViewport: rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= (v.vw ?? 0) && rect.y + rect.height <= (v.vh ?? 0),
+  };
+}
+
+/**
+ * One element's pixels, cropped to its box. Never the viewport: a crop that no
+ * capture path can produce is an error, not a wider picture.
+ */
+async function captureElement(
+  wc: WebContents,
+  selector: string,
+  encode: { jpeg: boolean; quality: number; scale: number },
+): Promise<{ data: string; mimeType?: string }> {
+  const box = await measureElementForCapture(wc, selector);
+  const shot = await settledWithin(
+    wc.debugger.sendCommand('Page.captureScreenshot', {
+      format: 'png',
+      clip: { ...box.page, scale: 1 },
+      // An element taller than the viewport is still captured whole.
+      captureBeyondViewport: true,
+    }) as Promise<{ data?: unknown }>,
+    CDP_SCREENSHOT_TIMEOUT_MS,
+  );
+  if (shot && typeof shot.data === 'string') {
+    return encode.jpeg ? reencodeCapture(Buffer.from(shot.data, 'base64'), encode.quality, encode.scale) : { data: shot.data };
+  }
+  // #529: the CDP capture hung or failed. capturePage reads back only what is
+  // on screen, so it can stand in only for a box that is entirely there.
+  if (!box.inViewport) {
+    throw new Error(
+      `browser.screenshot: the capture did not answer and ${selector} does not fit on screen, so it cannot be cropped from the visible area. ` +
+      'Bring the workspace to front and retry, or omit ref to capture the viewport.',
+    );
+  }
+  const image = await settledWithin(wc.capturePage(viewRect(wc, box.rect)), CAPTURE_PAGE_TIMEOUT_MS);
+  if (image && !image.isEmpty()) {
+    return encode.jpeg ? reencodeNativeImage(image, encode.quality, encode.scale) : { data: image.toPNG().toString('base64') };
+  }
+  throw new Error(
+    'browser.screenshot: the guest is not producing frames (its pane is likely in a hidden workspace — #529). ' +
+    'Bring the workspace to front (workspace.focus / pane_focus) and retry.',
+  );
+}
 /** Longest a browser.lease.renew may park on its lease (`waitMs`), well inside
  *  the lease TTL so the parked call is itself the renewal. */
 const LEASE_WATCH_MAX_MS = 8_000;
@@ -3964,12 +4081,19 @@ export function registerBrowserRpc(
 
   /**
    * browser.screenshot
-   * Capture a screenshot of the webview.
-   * params: { surfaceId?: string, fullPage?: boolean }
+   * Capture a screenshot of the webview, or of one element cropped to its box.
+   * params: { surfaceId?: string, fullPage?: boolean, selector?: string }
    */
   registerLeased('browser.screenshot', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const fullPage = params['fullPage'] === true;
+    const selector = params['selector'];
+    if (selector !== undefined && (typeof selector !== 'string' || selector.length === 0 || selector.length > 2048)) {
+      throw new Error('browser.screenshot: "selector" must be a non-empty CSS selector');
+    }
+    if (selector !== undefined && fullPage) {
+      throw new Error('browser.screenshot: "selector" and "fullPage" cannot be combined');
+    }
     // Re-encode knobs (browser_screenshot's downscale ladder). Pixels for this
     // lane exist only here, so the shrink has to happen in the main process;
     // the caller gets mimeType back and treats a missing/png answer as "this
@@ -3983,6 +4107,10 @@ export function registerBrowserRpc(
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.screenshot: WebContents unavailable');
+
+    if (typeof selector === 'string') {
+      return captureElement(wc, selector, { jpeg: wantsJpeg, quality, scale });
+    }
 
     // CDP first — it is the only path that supports captureBeyondViewport.
     // But its compositor-path capture is unreliable for <webview> guests
@@ -4087,8 +4215,8 @@ export function registerBrowserRpc(
 
   /**
    * browser.console.get
-   * Drain captured console messages for the webview (packaged-build fallback for
-   * the MCP browser_console tool, #106). Capture is enabled when the guest
+   * Drain captured console messages for the webview (the RPC lane of the MCP
+   * browser_console tool, #106). Capture is enabled when the guest
    * registers (#1081); ensure() here only covers a guest that registered before
    * the hook existed, or one whose debugger was stolen and dropped.
    * Also returns the collection window (since / missedBefore) so an empty
@@ -4442,10 +4570,12 @@ export function registerBrowserRpc(
     };
   });
 
-  // ── State handlers (packaged RPC fallback for browser_cookies / _resize /
-  //    _emulate, #111). On packaged builds playwright-core cannot hand the guest
-  //    <webview> back as a Playwright Page, so these tools fall through to CDP
-  //    over the page debugger — the same route browser.evaluate already uses.
+  // ── State handlers (RPC lane for browser_cookies / _resize / _emulate, #111).
+  //    playwright-core hands a guest <webview> back as a Page only when its
+  //    connection predates the guest (the target attaches as a page and turns
+  //    into a webview after); that is attach order, not dev versus packaged.
+  //    Usually there is none, so these tools fall through to CDP over the page
+  //    debugger — the same route browser.evaluate already uses.
   //    browser_storage needs no handler here: it routes through browser.evaluate.
 
   /**
@@ -4597,7 +4727,7 @@ export function registerBrowserRpc(
         // Overriding the coordinates is not enough on its own: navigator.geolocation
         // stays blocked unless the page also holds the geolocation permission. The
         // Playwright path grants it explicitly (context.grantPermissions); mirror
-        // that so the packaged fallback actually emulates location for the common
+        // that so the RPC fallback actually emulates location for the common
         // permission-gated flow. Browser.grantPermissions is a browser-target
         // command and may be unavailable on Electron's page-level debugger, so this
         // is best-effort — the coordinate override still applies if it throws.

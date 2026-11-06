@@ -271,8 +271,9 @@ function matchesGlob(url: string, pattern: string): boolean {
  * capture (BrowserCaptureManager) is enabled when a builtin guest attaches, so
  * it covers the whole page life; the engine-side Playwright buffer only exists
  * where main has no guest to watch — a chrome-backend tab. Preferring main's
- * for everything but 'chrome' is what makes a dev build and a packaged build
- * answer browser_console identically: before #1081 a dev build read the
+ * for everything but 'chrome' is what makes browser_console answer the same
+ * whether or not the engine happens to hold a Page for the guest (which depends
+ * on attach order, not on the build): before #1081 a Page meant reading the
  * Playwright buffer, which only started at the first read call.
  *
  * The RPC lane still falls back to the page lane if main cannot serve it (an
@@ -839,7 +840,32 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             return imageResult(fitted, refs ? `${basis}\n\n${await refsTable(page)}` : basis);
           }
         }
-        // Try Playwright for element-level screenshots (ref)
+        // Element (ref) captures. Builtin always goes over RPC: main crops the
+        // guest's own capture to the element, so the result never depends on
+        // whether the engine happens to hold a Page (that is attach order).
+        // The chrome backend has no browser.screenshot lane and keeps
+        // Playwright's element capture.
+        if (ref && (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) !== 'chrome') {
+          const selector = `[data-wmux-ref="${sanitizeRef(ref, scope)}"]`;
+          const result = await sendScopedBrowserRpc<{ data: string }>('browser.screenshot', scope, { selector });
+          const fitted = await fitScreenshot(
+            result.data,
+            { maxBytes: ceiling },
+            async (rung) => {
+              const shrunk = await sendScopedBrowserRpc<{ data: string; mimeType?: string }>(
+                'browser.screenshot',
+                scope,
+                { selector, format: 'jpeg', quality: rung.quality, scale: rung.scale },
+              );
+              return shrunk.mimeType === 'image/jpeg' ? shrunk.data : null;
+            },
+          );
+          const basis = coordinateBasis('element', null);
+          return imageResult(
+            fitted,
+            refs ? `${basis}\n\nrefs:true lists boxes for page captures only; omit ref.` : basis,
+          );
+        }
         if (ref) {
           const page = await engine.getPageForScope(scope);
           if (page) {
@@ -862,7 +888,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             );
           }
           // Falling through would answer with the whole viewport and report success.
-          throw new Error(`Could not capture ref="${ref}": element capture needs a Playwright page, and this surface has none right now. Omit ref to capture the viewport, or use the chrome backend.`);
+          throw new Error(`Could not capture ref="${ref}": the chrome backend did not provide a page for this tab right now. Omit ref to capture the viewport.`);
         }
 
         // Use RPC for fast, reliable screenshots (bypasses Playwright CDP discovery)
@@ -1238,7 +1264,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             },
           );
         } else {
-          // RPC fallback (packaged builds): resolve via the data-wmux-ref tag set
+          // RPC fallback (no Playwright page): resolve via the data-wmux-ref tag set
           // by browser_snapshot / browser_smart_snapshot and set the outline inline.
           const safeRef = sanitizeRef(ref, scope);
           const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
