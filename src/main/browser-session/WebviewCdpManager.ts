@@ -245,6 +245,12 @@ export class WebviewCdpManager {
     // Same-guest re-registration keeps the existing destroyed listener —
     // adding another would fire unregister twice.
     if (!sameGuestReregister) {
+      // Left alone, a page's beforeunload cancels the navigation with no prompt:
+      // the person is stuck on the page with no explanation, and an agent's
+      // navigation is silently undone. Asking would take a synchronous dialog
+      // (this event's answer can't wait), which freezes the main process and
+      // every terminal with it, on a page's say-so. So leaving always wins.
+      wc.on('will-prevent-unload', (event) => event.preventDefault());
       wc.on('destroyed', () => {
         // Stale-destroyed guard: a replacement guest may have re-registered
         // under the same surfaceId. Only unregister if WE are still current.
