@@ -10,6 +10,7 @@
 
 use crate::fsx;
 use crate::js::{self, is_space, JsStr, Json};
+use std::collections::{HashMap, HashSet};
 
 const TAIL_BYTES: u64 = 64 * 1024;
 const LEFTOVER_TAIL_BYTES: u64 = 1024 * 1024;
@@ -149,10 +150,12 @@ pub fn leftover_work(path: &str, log: Log) -> usize {
     let Some(lines) = read(path, LEFTOVER_TAIL_BYTES, "transcript-leftover-read-error", log) else {
         return 0;
     };
-    let mut started: Vec<JsStr> = Vec::new();
-    let mut result_texts: Vec<(JsStr, JsStr)> = Vec::new();
-    let mut settled: Vec<JsStr> = Vec::new();
-    let mut stopped: Vec<JsStr> = Vec::new();
+    // Node's Sets and Map; only the count comes out, so their order does not
+    // matter here.
+    let mut started: HashSet<JsStr> = HashSet::new();
+    let mut result_texts: HashMap<JsStr, JsStr> = HashMap::new();
+    let mut settled: HashSet<JsStr> = HashSet::new();
+    let mut stopped: HashSet<JsStr> = HashSet::new();
     for line in &lines {
         if !contains(line, "\"tool_use\"")
             && !contains(line, "<task-notification>")
@@ -192,9 +195,7 @@ pub fn leftover_work(path: &str, log: Log) -> usize {
             let id = block.get("id").and_then(Json::as_str);
             if str_is(block.get("type"), "tool_use") {
                 if let Some(id) = id {
-                    if !started.contains(id) {
-                        started.push(id.clone());
-                    }
+                    started.insert(id.clone());
                 }
                 let name = block.get("name").and_then(Json::as_str);
                 let input = block.get("input");
@@ -207,8 +208,8 @@ pub fn leftover_work(path: &str, log: Log) -> usize {
                         .find(|v| !matches!(v, None | Some(Json::Null)))
                         .flatten();
                     if let Some(Json::Str(t)) = task {
-                        if !t.is_empty() && !stopped.contains(t) {
-                            stopped.push(t.clone());
+                        if !t.is_empty() {
+                            stopped.insert(t.clone());
                         }
                     }
                 }
@@ -226,9 +227,7 @@ pub fn leftover_work(path: &str, log: Log) -> usize {
                             .collect(),
                         _ => Vec::new(),
                     };
-                    if !result_texts.iter().any(|(k, _)| k == id) {
-                        result_texts.push((id.clone(), text));
-                    }
+                    result_texts.entry(id.clone()).or_insert(text);
                 }
             }
         }
@@ -241,17 +240,15 @@ pub fn leftover_work(path: &str, log: Log) -> usize {
         };
         if let Some(body) = body.filter(|b| contains(b, "<task-notification>")) {
             if let Some(id) = tool_use_id(body) {
-                if !settled.contains(&id) {
-                    settled.push(id);
-                }
+                settled.insert(id);
             }
         }
     }
     started
         .iter()
-        .filter(|id| !settled.contains(id))
+        .filter(|&id| !settled.contains(id))
         .filter_map(|id| {
-            let text = result_texts.iter().find(|(k, _)| k == id).map_or(&[][..], |(_, t)| t);
+            let text = result_texts.get(id).map_or(&[][..], Vec::as_slice);
             background_task_id(text)
         })
         .filter(|task| !stopped.contains(task))
@@ -388,4 +385,60 @@ pub fn background_task_id(t: &[u16]) -> Option<JsStr> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testenv;
+    use std::time::{Duration, Instant};
+
+    /// A transcript in a fresh file; std::env::temp_dir reads TMPDIR, so hold
+    /// testenv::lock().
+    fn transcript(tag: &str, body: &str) -> String {
+        let dir = std::env::temp_dir().join(format!("wmux-transcript-{tag}-{}", crate::hook::random_uuid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        std::fs::write(&path, body).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    fn remove(path: &str) {
+        std::fs::remove_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
+    }
+
+    fn unlogged(outcome: &str, error: String) {
+        panic!("{outcome}: {error}");
+    }
+
+    #[test]
+    fn leftover_work_over_a_tail_of_many_dispatches_stays_fast() {
+        let _env = testenv::lock();
+        // As many tool_use ids as a 1 MiB tail holds; the first 4 000 left a
+        // background task running.
+        let uses: Vec<String> = (0..16_000)
+            .map(|n| format!(r#"{{"type":"tool_use","id":"t{n}"}}"#))
+            .collect();
+        let results: Vec<String> = (0..4_000)
+            .map(|n| {
+                format!(
+                    r#"{{"type":"tool_result","tool_use_id":"t{n}","content":"Command running in background with ID: b{n}"}}"#
+                )
+            })
+            .collect();
+        let body = format!(
+            "{}\n{}\n",
+            format_args!(r#"{{"type":"assistant","message":{{"content":[{}]}}}}"#, uses.join(",")),
+            format_args!(r#"{{"type":"user","message":{{"content":[{}]}}}}"#, results.join(","))
+        );
+        assert!(body.len() < LEFTOVER_TAIL_BYTES as usize);
+        let path = transcript("many", &body);
+        let started = Instant::now();
+        assert_eq!(leftover_work(&path, &unlogged), 4_000);
+        let took = started.elapsed();
+        remove(&path);
+        // Linear: about 0.1 s in a debug build here; the list scans it
+        // replaced took over 1 s.
+        assert!(took < Duration::from_millis(750), "{took:?}");
+    }
 }
