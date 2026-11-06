@@ -3,7 +3,7 @@ import type { OutputModeTracker } from './util/outputModeTracker';
 import { enqueueSnapshotJob, generateTextSnapshotUnqueued, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { snapshotRingTextUnqueued } from './nativeRingSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
-import { fencedRead, identityTag } from './screenReadCache';
+import { fencedRead, identityTag, noteScreenParse } from './screenReadCache';
 
 /** What a queued text read needs of a session (a ManagedSession). */
 export interface TextReadSession {
@@ -55,17 +55,22 @@ function queuedSessionRead(
   // Already gone: the answer the job would give at its turn, without the wait.
   if (!pinned) return Promise.resolve(null);
   let readAt: string | null = null;
-  const queued = () => enqueueSnapshotJob(async () => {
-    if (sessions.getSession(sessionId) !== pinned) return null;
-    // `read` copies the ring before its first await, so this names exactly
-    // the bytes and size the answer describes.
-    readAt = readFence(pinned);
-    const answer = read(pinned);
-    // A ring that failed to wake read only its pending bytes: answer, but
-    // don't keep it, or it would stand once the stored history reads again.
-    if (pinned.ringBuffer.isHibernated) readAt = null;
-    return answer;
-  }, `${kind}:${sessionId}#${sessionToken(pinned)}`);
+  const queued = () => {
+    const askedAt = performance.now();
+    return enqueueSnapshotJob(async () => {
+      if (sessions.getSession(sessionId) !== pinned) return null;
+      // `read` copies the ring before its first await, so this names exactly
+      // the bytes and size the answer describes.
+      readAt = readFence(pinned);
+      const answer = read(pinned);
+      // A ring that failed to wake read only its pending bytes: answer, but
+      // don't keep it, or it would stand once the stored history reads again.
+      if (pinned.ringBuffer.isHibernated) readAt = null;
+      const outcome = await answer;
+      noteScreenParse(kind, performance.now() - askedAt, outcome.ok ? outcome.bytesIn : 0);
+      return outcome;
+    }, `${kind}:${sessionId}#${sessionToken(pinned)}`);
+  };
   if (!reuse) return queued();
   return fencedRead(pinned, kind, readFence(pinned), queued, (outcome) => (outcome?.ok ? readAt : null));
 }

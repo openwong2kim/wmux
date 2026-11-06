@@ -17,6 +17,8 @@ export interface DaemonMemoryDiagnostics {
     resyncQueuedBytes: number;
     /** The ring sits in its `.buf` (idle hibernation); absent from older daemons. */
     ringHibernated?: boolean;
+    /** Output this pane has produced since it started; absent from older daemons. */
+    ringLifetimeBytes?: number;
   }>;
   /** Idle panes whose ring sits in its `.buf`, and the ring memory that freed. Absent from older daemons. */
   hibernation?: { sessions: number; freedBytes: number; wakeFailures?: number };
@@ -25,6 +27,16 @@ export interface DaemonMemoryDiagnostics {
    * (nothing moved), joined to one still running, or parsed. Absent from older daemons.
    */
   screenReads?: Record<string, { hits: number; joins: number; misses: number }>;
+  /**
+   * Parses of a ring by family and depth (`screen`, `pane`, `text<=300`, ...).
+   * `ms` runs from asking to the answer, so it includes the queue wait.
+   * Absent from older daemons.
+   */
+  screenParses?: Record<string, { parses: number; msTotal: number; msMax: number; bytes: number }>;
+  /** The concurrency-1 snapshot queue every whole-ring parse waits on. Absent from older daemons. */
+  snapshotQueue?: { jobs: number; waitMsTotal: number; waitMsMax: number; runMsTotal: number; runMsMax: number };
+  /** Main-thread busy and idle time since the daemon started. Absent from older daemons. */
+  eventLoop?: { activeMs: number; idleMs: number };
   /**
    * Native (Rust) snapshot use by backend: answered natively, fell back to
    * xterm after trying, or skipped straight to xterm. `reasons` counts each
@@ -55,6 +67,11 @@ function counters(value: Record<string, unknown>, keys: string[]): boolean {
   return keys.every((key) => typeof value[key] === 'number' && Number.isFinite(value[key]) && (value[key] as number) >= 0);
 }
 
+/** Absent, or a record whose every entry holds these counters. */
+function countersByKey(value: unknown, keys: string[]): boolean {
+  return value === undefined || (record(value) && Object.values(value).every((entry) => record(entry) && counters(entry, keys)));
+}
+
 function snapshotBackendCounters(value: unknown): boolean {
   return record(value) && counters(value, ['native', 'fallbacks', 'skipped']) &&
     typeof value.circuitOpen === 'boolean' && record(value.reasons) &&
@@ -70,7 +87,11 @@ export function isDaemonMemoryDiagnostics(value: unknown): value is DaemonMemory
       (value.hibernation.wakeFailures === undefined || counters(value.hibernation, ['wakeFailures'])))) &&
     (value.snapshots === undefined || (record(value.snapshots) &&
       snapshotBackendCounters(value.snapshots.ansi) && snapshotBackendCounters(value.snapshots.text) &&
-      Object.values(value.snapshots).every(snapshotBackendCounters)));
+      Object.values(value.snapshots).every(snapshotBackendCounters))) &&
+    countersByKey(value.screenReads, ['hits', 'joins', 'misses']) &&
+    countersByKey(value.screenParses, ['parses', 'msTotal', 'msMax', 'bytes']) &&
+    (value.snapshotQueue === undefined || (record(value.snapshotQueue) && counters(value.snapshotQueue, ['jobs', 'waitMsTotal', 'waitMsMax', 'runMsTotal', 'runMsMax']))) &&
+    (value.eventLoop === undefined || (record(value.eventLoop) && counters(value.eventLoop, ['activeMs', 'idleMs'])));
 }
 
 export function isAppMemoryDiagnostics(value: unknown): value is AppMemoryDiagnostics {

@@ -47,7 +47,7 @@
 import type { RingBuffer, ReplayGeometry } from './RingBuffer';
 import { UNKNOWN_CELL, readRingTailWithModesAndGeometry, readRingWithModesAndGeometry, withUnknownCells } from './sessionTextReplay';
 import { screenShowsActiveDialog, screenShowsPermissionDialog } from './transcript/chatScreenGate';
-import { fencedRead, identityTag } from './screenReadCache';
+import { fencedRead, identityTag, noteScreenParse } from './screenReadCache';
 import { isNativeDecision, type ApprovalRequest } from './approvals/types';
 
 /** Wait before the confirming second read of a dialog-free frame. */
@@ -432,14 +432,18 @@ async function renderFrame(
   // A ring that failed to wake read only its pending bytes: not a whole read.
   const wokeFully = pane.ringBuffer.isHibernated !== true;
   let read = withUnknownCells(whole, geometry);
+  let askedAt = performance.now();
   let outcome = await snapshot({ ...geometry, scrollback: 0, initial: read.replay, geometry: read.geometry });
+  noteScreenParse('pane', performance.now() - askedAt, read.replay.length);
   let fromWhole = wokeFully;
   if (!outcome.ok && outcome.reason === 'budget' && opts.tail !== false) {
     fromWhole = false;
     const tail = readRingTailWithModesAndGeometry(pane.ringBuffer, outputModes, AWAITING_RENDER_WINDOW_BYTES);
     if (tail.writtenAt !== mark) return { frame: null, whole: false };
     read = withUnknownCells(tail, geometry);
+    askedAt = performance.now();
     outcome = await snapshot({ ...geometry, scrollback: 0, initial: read.replay, geometry: read.geometry });
+    noteScreenParse('pane', performance.now() - askedAt, read.replay.length);
   }
   if (!outcome.ok) return { frame: null, whole: false };
   if (getPane() !== pane) return { frame: null, whole: false };
