@@ -112,6 +112,13 @@ export interface DomSnapshotExpressionOptions {
   stable?: { prior: readonly RefDescriptor[]; nextRef: number };
   /** Return `{ text, entries }` rather than the listing text alone. */
   withEntries?: boolean;
+  /**
+   * List one frame's document, read in place on the RPC lane: refs numbered
+   * on from `seed` (fresh, never matched against earlier listings, so a frame
+   * never takes a number the top document holds), and no page header or frame
+   * list of its own. The caller labels the section.
+   */
+  frame?: { seed: number };
 }
 
 /**
@@ -162,6 +169,7 @@ export function buildDomSnapshotExpression(
     const interactiveOnly = ${JSON.stringify(opts?.filter === 'interactive')};
     const withEntries = ${JSON.stringify(opts?.withEntries === true)};
     const assignStableRefs = (${STABLE_REF_ASSIGNMENT_JS});
+    const frameSeed = ${JSON.stringify(opts?.frame ? opts.frame.seed : null)};
     const prior = ${JSON.stringify(opts?.stable?.prior ?? [])};
     const seedNext = ${JSON.stringify(opts?.stable?.nextRef ?? 0)};
     ${PAGE_TEXT_JS}
@@ -190,17 +198,18 @@ export function buildDomSnapshotExpression(
     } catch (e) {
       hoverTriggers = new Set();
     }
-    const assigned = assignStableRefs(prior, seedNext, described);
-    const refs = assigned.refs;
+    const refs = frameSeed === null
+      ? assignStableRefs(prior, seedNext, described).refs
+      : described.map((_, i) => frameSeed + i);
     interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(refs[i])));
     const title = pageText(document.title);
     const url = location.href;
-    const lines = ['Page: ' + title, 'URL: ' + url, ''];
+    const lines = frameSeed === null ? ['Page: ' + title, 'URL: ' + url, ''] : [];
     if (rootSel) lines.push('Scope: ' + rootSel, '');
     if (!interactiveOnly) root.querySelectorAll('h1,h2,h3').forEach(h => {
       lines.push(h.tagName + ': ' + pageText(h.textContent, 80));
     });
-    lines.push('', 'Interactive elements (use ref number for click/fill/type):');
+    if (frameSeed === null) lines.push('', 'Interactive elements (use ref number for click/fill/type):');
     interactives.forEach((el, i) => {
       const tag = el.tagName.toLowerCase();
       const role = pageText(el.getAttribute('role'));
@@ -260,7 +269,7 @@ export function buildDomSnapshotExpression(
       if (root.shadowRoot) collectFrames(root.shadowRoot);
     }
     collectFrames(root);
-    if (frames.length > 0) {
+    if (frames.length > 0 && frameSeed === null) {
       const frameCap = ${JSON.stringify(FRAME_LINE_CAP)};
       lines.push('', 'Frames (separate documents):');
       frames.slice(0, frameCap).forEach((f) => {
