@@ -296,8 +296,19 @@ mod tests {
         t.file("b/node.exe");
         t.file("c/node.exe");
         t.file("b/node.cmd");
-        let path = std::env::join_paths([first.clone(), PathBuf::from("c"), second.clone(), t.0.join("c")]).unwrap();
-        // The relative `c` is skipped although ./c/node.exe may exist.
+        // A relative entry that does reach c/node.exe from the working
+        // directory (up to the root, then down again) is still skipped.
+        #[cfg(unix)]
+        let relative_c = {
+            let cwd = std::env::current_dir().unwrap();
+            let up: PathBuf = cwd.components().skip(1).map(|_| "..").collect();
+            let relative = t.0.join("c").components().skip(1).fold(up, |p, c| p.join(c));
+            assert!(relative.is_relative() && relative.join("node.exe").is_file());
+            relative
+        };
+        #[cfg(not(unix))]
+        let relative_c = PathBuf::from("c");
+        let path = std::env::join_paths([first.clone(), relative_c, second.clone(), t.0.join("c")]).unwrap();
         assert_eq!(node_on_path(Some(path)), Some(second.join("node.exe")));
         let only_cmd = std::env::join_paths([first]).unwrap();
         assert_eq!(node_on_path(Some(only_cmd)), None);
