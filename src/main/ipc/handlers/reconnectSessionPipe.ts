@@ -21,8 +21,8 @@
  * Terminal missed is replayed over it by the daemon's live re-flush.
  */
 import type { DaemonClient } from '../../DaemonClient';
-import { SNAPSHOT_MAX_SCROLLBACK } from '../../../shared/terminal/attachSnapshot';
 import type { SessionResync } from './sessionResync';
+import { attachScrollback } from '../../session/rendererScrollback';
 
 export type ReconnectPipeClient = Pick<DaemonClient, 'rpc' | 'connectSessionPipe' | 'isSessionPipeWritable' | 'sessionPipeFlushPending'>;
 
@@ -119,7 +119,7 @@ async function attachSessionPipe(
   // #2398 — the attach promotes only as `promote` says: a daemon that
   // restarted since the list holds a WSL session as a pending recovery
   // again, and a caller that may not start it leaves it pending (held).
-  const attached = await client.rpc('daemon.attachSession', { id, promote: opts.promote }) as { pending?: boolean } | undefined;
+  const attached = await client.rpc('daemon.attachSession', { id, promote: opts.promote, scrollback: attachScrollback() }) as { pending?: boolean } | undefined;
   if (attached?.pending) return { kind: 'pending' };
   await client.connectSessionPipe(id, { forceFresh: true });
   // The old socket is gone now (connectSessionPipe destroys it synchronously,
@@ -155,9 +155,9 @@ async function keepCreatePipe(
   // re-flush in progress also reads as a pending flush; it is joined below.)
   if (client.sessionPipeFlushPending(id) && !opts.resync.inFlight(id)) return { kind: 'kept', replay: 'initial-flush' };
   // The same live re-flush a reveal asks for, joined if one is running, at
-  // the attach flush's scrollback bound (it replaces that flush). The socket
-  // stays up, so input keeps flowing while the screen is replayed.
-  const res = await opts.resync(id, SNAPSHOT_MAX_SCROLLBACK);
+  // the attach flush's scrollback (it replaces that flush). The socket stays
+  // up, so input keeps flowing while the screen is replayed.
+  const res = await opts.resync(id, attachScrollback());
   if (res.success) return { kind: 'kept', replay: 'reflush' };
   // No live scanner on the pipe, no re-flush the daemon could give (it has no
   // flushed client on this pipe: stopped, its close not seen here yet), or no

@@ -94,9 +94,20 @@ export class SessionPipe {
      * older call sites) replays the ring as-is.
      */
     private readonly getOutputModes?: () => Pick<OutputModeTracker, 'preamble'> | null,
+    /**
+     * Rows of history the attach flush snapshots: the renderer's own
+     * scrollback, which main passes on attach. Absent (an older main, tests)
+     * is the lossless ceiling, MAX_SCROLLBACK.
+     */
+    attachScrollback?: number,
   ) {
     this.markers = createSessionPipeMarkers(authToken);
+    this.attachScrollback = typeof attachScrollback === 'number' && Number.isFinite(attachScrollback) && attachScrollback > 0
+      ? Math.min(MAX_SCROLLBACK, Math.floor(attachScrollback))
+      : MAX_SCROLLBACK;
   }
+
+  private readonly attachScrollback: number;
 
   /** Get the platform-specific pipe name for this session.
    * P7: Unix 소켓은 ~/.wmux{suffix}/ 하위 — shared 헬퍼가 클라이언트
@@ -315,12 +326,13 @@ export class SessionPipe {
         // shifted past the preamble by readRingWithModesAndGeometry.
         initial: replay,
         geometry,
-        // This layer has no renderer config, and the renderer's xterm scrollback
-        // is user-configurable (default 10k) above the snapshot DEFAULT (5k). A
-        // successful snapshot would otherwise truncate history the raw replay
-        // preserved, so request the lossless upper bound — the headless terminal
-        // is per-snapshot and disposed.
-        scrollback: MAX_SCROLLBACK,
+        // As many rows as the renderer keeps (main passes its setting on
+        // attach), else the lossless ceiling. A snapshot shorter than the
+        // renderer's scrollback would truncate history the raw replay kept.
+        // One no deeper than it lets the native snapshot serve the attach: a
+        // ceiling past the native grid's cap is refused and parsed again by
+        // @xterm/headless, about ten times slower.
+        scrollback: this.attachScrollback,
       });
       if (socket.destroyed || this.client !== socket) return; // client left mid-parse
       if (!outcome.ok && outcome.reason === 'budget') {
@@ -344,7 +356,7 @@ export class SessionPipe {
           rows: dims.rows,
           initial: tail.replay,
           geometry: tail.geometry,
-          scrollback: MAX_SCROLLBACK,
+          scrollback: this.attachScrollback,
           budgetMs: ATTACH_TAIL_SNAPSHOT_BUDGET_MS,
         });
         if (socket.destroyed || this.client !== socket) return;
