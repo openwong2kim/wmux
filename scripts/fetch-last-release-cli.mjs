@@ -7,21 +7,37 @@
 //
 //   node scripts/fetch-last-release-cli.mjs <out dir>
 //
+// The release is the newest `vX.Y.Z` tag in this checkout (no prerelease), so
+// the test follows each release without a step of its own; WMUX_LAST_RELEASE
+// (`4.14.0`) names another for a local run. No tag at all is an error: CI
+// fetches the tags for this job.
+//
 // Prints the path of the bundle's index.js (WMUX_LAST_RELEASE_CLI).
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { latestRelease } from './lib/last-release.mjs';
 
-/** The release the downgrade test runs against: bump it with each release. */
-export const LAST_RELEASE = '4.14.0';
 const REPO = 'openwong2kim/wmux';
-const ASSET = `wmux-server-${LAST_RELEASE}-linux-x64.tar.gz`;
-const BUNDLE = `${LAST_RELEASE}/resources/cli-bundle`;
 
-async function download(name) {
-  const url = `https://github.com/${REPO}/releases/download/v${LAST_RELEASE}/${name}`;
+function resolveRelease() {
+  const override = process.env.WMUX_LAST_RELEASE?.trim();
+  if (override) {
+    if (!/^\d+\.\d+\.\d+$/.test(override)) throw new Error(`WMUX_LAST_RELEASE must be X.Y.Z, not ${JSON.stringify(override)}`);
+    return override;
+  }
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const tags = execFileSync('git', ['tag', '--list', 'v*'], { cwd: root, encoding: 'utf8' }).split('\n');
+  const release = latestRelease(tags);
+  if (!release) throw new Error('no vX.Y.Z release tag in this checkout: fetch the tags first, or set WMUX_LAST_RELEASE');
+  return release;
+}
+
+async function download(release, name) {
+  const url = `https://github.com/${REPO}/releases/download/v${release}/${name}`;
   const response = await fetch(url, { redirect: 'follow' });
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
   return Buffer.from(await response.arrayBuffer());
@@ -30,22 +46,26 @@ async function download(name) {
 async function main() {
   const out = process.argv[2];
   if (!out) throw new Error('usage: node scripts/fetch-last-release-cli.mjs <out dir>');
+  const release = resolveRelease();
+  const asset = `wmux-server-${release}-linux-x64.tar.gz`;
+  const bundle = `${release}/resources/cli-bundle`;
   const downloads = path.join(out, 'download');
   const extracted = path.join(out, 'extracted');
   fs.mkdirSync(downloads, { recursive: true });
   fs.mkdirSync(extracted, { recursive: true });
 
-  const expected = (await download(`${ASSET}.sha256`)).toString('utf8').trim().split(/\s+/)[0];
-  if (!/^[0-9a-f]{64}$/.test(expected)) throw new Error(`${ASSET}.sha256 holds no SHA-256: ${JSON.stringify(expected)}`);
-  const tarball = await download(ASSET);
+  const expected = (await download(release, `${asset}.sha256`)).toString('utf8').trim().split(/\s+/)[0];
+  if (!/^[0-9a-f]{64}$/.test(expected)) throw new Error(`${asset}.sha256 holds no SHA-256: ${JSON.stringify(expected)}`);
+  const tarball = await download(release, asset);
   const actual = createHash('sha256').update(tarball).digest('hex');
-  if (actual !== expected) throw new Error(`${ASSET}: SHA-256 ${actual}, published ${expected}`);
-  const file = path.join(downloads, ASSET);
+  if (actual !== expected) throw new Error(`${asset}: SHA-256 ${actual}, published ${expected}`);
+  const file = path.join(downloads, asset);
   fs.writeFileSync(file, tarball);
 
-  execFileSync('tar', ['xzf', file, '-C', extracted, BUNDLE], { stdio: 'inherit' });
-  const cli = path.join(extracted, BUNDLE, 'index.js');
-  if (!fs.existsSync(cli)) throw new Error(`${ASSET} has no ${BUNDLE}/index.js`);
+  execFileSync('tar', ['xzf', file, '-C', extracted, bundle], { stdio: 'inherit' });
+  const cli = path.join(extracted, bundle, 'index.js');
+  if (!fs.existsSync(cli)) throw new Error(`${asset} has no ${bundle}/index.js`);
+  console.error(`last release: ${release}`);
   process.stdout.write(`${cli}\n`);
 }
 
