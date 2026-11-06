@@ -6,11 +6,18 @@
  *
  * For each browser found, in headless and headed mode:
  *   - spawn with the pipe and a fresh temporary profile, and time the first
- *     Browser.getVersion answer;
+ *     Browser.getVersion answer (the first spawn of each browser is marked
+ *     cold: its install may still be on a cold disk). Past the launcher's
+ *     start ceiling the run fails;
  *   - open about:blank (Target.createTarget) and a browser session
  *     (Target.attachToBrowserTarget);
  *   - write a persistent cookie, close the pipe, and time the exit;
- *   - check that no process still names the profile, and list lock files left;
+ *   - check that no process still names the profile: any that does is
+ *     recorded (image name, command line) and waited on for up to
+ *     LINGER_DEADLINE_MS; one still there then fails the run, with whether the
+ *     profile directory can be renamed (a process holding it open on Windows
+ *     prevents that);
+ *   - list lock files left;
  *   - start again on the same profile and read the cookie back.
  *
  * Usage: node scripts/probe-chrome-pipe.mjs [--browser chrome|edge|<path>]... [--headless-only] [--json out.json]
@@ -34,7 +41,13 @@ for (let i = 0; i < args.length; i++) {
 if (wanted.length === 0) wanted.push('chrome', 'edge');
 
 const STEP_TIMEOUT_MS = 30_000;
+/** CHROME_START_CEILING_MS in src/shared/chromeStart.ts: how long the launcher waits on a Chrome to start. */
+const LAUNCHER_START_CEILING_MS = 30_000;
+/** The first answer is waited on past that ceiling, so a slow start is measured rather than cut off. */
+const FIRST_ANSWER_TIMEOUT_MS = 60_000;
 const EXIT_TIMEOUT_MS = 5_000;
+/** How long a process left after the browser exited is waited on before it counts as left behind. */
+const LINGER_DEADLINE_MS = 30_000;
 
 function candidates(name) {
   if (name !== 'chrome' && name !== 'edge') return [name];
@@ -55,23 +68,60 @@ function candidates(name) {
 
 /**
  * Processes whose command line names `marker` (the temporary profile path), as
- * "pid name". The query's own process is left out: its command line holds the
- * marker too.
+ * { pid, ppid, name, commandLine }. The query's own process is left out: its
+ * command line holds the marker too. Null when the query itself failed.
  */
 function processesNaming(marker) {
   try {
     if (process.platform === 'win32') {
       const escaped = marker.replace(/'/g, "''");
       const out = execFileSync('powershell.exe', ['-NoProfile', '-Command',
-        `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains('${escaped}') } | ForEach-Object { "$($_.ProcessId) $($_.Name)" }`],
+        `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains('${escaped}') } | ForEach-Object { "$($_.ProcessId)\`t$($_.ParentProcessId)\`t$($_.Name)\`t$($_.CommandLine)" }`],
       { encoding: 'utf8' });
-      return out.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      return out.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
+        const [pid, ppid, name, ...rest] = line.split('\t');
+        return { pid: Number(pid), ppid: Number(ppid), name, commandLine: rest.join('\t').trim() };
+      });
     }
-    const out = execFileSync('ps', ['-axo', 'pid=,comm=,command='], { encoding: 'utf8' });
-    return out.split('\n').filter((line) => line.includes(marker)).map((line) => line.trim().split(/\s+/).slice(0, 2).join(' '));
+    // The image name is read off the command line: on macOS it holds spaces.
+    const out = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' });
+    return out.split('\n').filter((line) => line.includes(marker)).map((line) => {
+      const [, pid, ppid, commandLine] = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line) ?? [];
+      return { pid: Number(pid), ppid: Number(ppid), name: path.basename((commandLine ?? '').split(' -')[0]), commandLine };
+    });
   } catch {
     return null;
   }
+}
+
+/**
+ * Wait up to LINGER_DEADLINE_MS for every process naming the profile to exit.
+ * Returns what was there first, how long it took to go (null if it did not),
+ * and what is still there at the deadline.
+ */
+async function waitForProcessesToLeave(profile) {
+  const first = processesNaming(profile);
+  if (first === null || first.length === 0) return { atExit: first, goneAfterMs: first === null ? null : 0, left: first };
+  const started = Date.now();
+  let left = first;
+  while (Date.now() - started < LINGER_DEADLINE_MS) {
+    await new Promise((r) => setTimeout(r, 1_000));
+    left = processesNaming(profile);
+    if (left !== null && left.length === 0) return { atExit: first, goneAfterMs: Date.now() - started, left };
+  }
+  return { atExit: first, goneAfterMs: null, left };
+}
+
+/** Whether the profile directory can be renamed (and is put back): false when a process holds it open on Windows. */
+function profileRenamable(profile) {
+  const moved = `${profile}-moved`;
+  try {
+    fs.renameSync(profile, moved);
+  } catch (err) {
+    return { renamable: false, error: err.code ?? String(err) };
+  }
+  fs.renameSync(moved, profile);
+  return { renamable: true };
 }
 
 function lockFiles(profile) {
@@ -111,9 +161,9 @@ function launch(binary, profile, headless) {
     }
   });
   child.stdio[3].on('error', () => undefined);
-  const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+  const send = (method, params = {}, sessionId, timeoutMs = STEP_TIMEOUT_MS) => new Promise((resolve, reject) => {
     const id = ++nextId;
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`${method}: no answer in ${STEP_TIMEOUT_MS} ms`)); }, STEP_TIMEOUT_MS);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`${method}: no answer in ${timeoutMs} ms`)); }, timeoutMs);
     pending.set(id, { method, resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
     child.stdio[3].write(`${JSON.stringify({ id, method, params, ...(sessionId && { sessionId }) })}\0`);
   });
@@ -130,14 +180,15 @@ function launch(binary, profile, headless) {
 
 const COOKIE = { name: 'wmux_pipe_probe', value: 'kept', domain: 'probe.invalid', path: '/', expires: Math.floor(Date.now() / 1000) + 86_400 };
 
-async function probe(binary, headless) {
+async function probe(binary, headless, cold) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pipe-probe-'));
-  const result = { binary, headless, platform: `${process.platform}-${process.arch}`, ok: false };
+  const result = { binary, headless, cold, platform: `${process.platform}-${process.arch}`, ok: false };
   let browser = launch(binary, profile, headless);
   try {
     const started = Date.now();
-    const version = await browser.send('Browser.getVersion');
+    const version = await browser.send('Browser.getVersion', {}, undefined, FIRST_ANSWER_TIMEOUT_MS);
     result.firstAnswerMs = Date.now() - started;
+    result.withinLauncherCeiling = result.firstAnswerMs < LAUNCHER_START_CEILING_MS;
     result.product = version.product;
     result.target = Boolean((await browser.send('Target.createTarget', { url: 'about:blank' })).targetId);
     result.browserSession = Boolean((await browser.send('Target.attachToBrowserTarget')).sessionId);
@@ -145,16 +196,22 @@ async function probe(binary, headless) {
     result.eofExitMs = await browser.closePipe();
     result.exitCode = browser.exitCode() ?? null;
     if (result.eofExitMs === null) browser.kill();
-    // Give helpers a moment to follow the browser process out.
-    await new Promise((r) => setTimeout(r, 1_000));
-    result.processesLeft = processesNaming(profile);
+    const linger = await waitForProcessesToLeave(profile);
+    result.processesAtExit = linger.atExit;
+    result.processesGoneAfterMs = linger.goneAfterMs;
+    result.processesLeft = linger.left;
+    if (linger.left?.length) {
+      result.profileHeld = profileRenamable(profile);
+      // Recorded; now cleared so the runs after this one start clean.
+      for (const p of linger.left) try { process.kill(p.pid, 'SIGKILL'); } catch { /* gone */ }
+    }
     result.lockFilesLeft = lockFiles(profile);
     browser = launch(binary, profile, headless);
     const { cookies } = await browser.send('Storage.getCookies');
     result.cookieKept = cookies.some((c) => c.name === COOKIE.name && c.value === COOKIE.value);
     const second = await browser.closePipe();
     if (second === null) browser.kill();
-    result.ok = result.target && result.browserSession && result.eofExitMs !== null && result.processesLeft?.length === 0;
+    result.ok = result.withinLauncherCeiling && result.target && result.browserSession && result.eofExitMs !== null && result.processesLeft?.length === 0;
   } catch (err) {
     result.error = err instanceof Error ? err.message : String(err);
     browser.kill();
@@ -172,28 +229,31 @@ for (const name of wanted) {
     results.push({ browser: name, found: false });
     continue;
   }
+  let cold = true;
   for (const headless of headlessOnly ? [true] : [true, false]) {
     // A headed browser needs a display: skip it on a Linux runner without one.
     if (!headless && process.platform === 'linux' && !process.env.DISPLAY) {
       results.push({ browser: name, binary, headless, skipped: 'no DISPLAY' });
       continue;
     }
-    results.push({ browser: name, ...(await probe(binary, headless)) });
+    results.push({ browser: name, ...(await probe(binary, headless, cold)) });
+    cold = false;
   }
 }
 
 for (const r of results) console.log(JSON.stringify(r));
 if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify(results, null, 2));
 if (process.env.GITHUB_STEP_SUMMARY) {
+  const names = (list) => (list ? list.map((p) => `${p.pid} ${p.name}`).join(', ') || 'none' : 'query failed');
   const row = (r) => r.found === false
-    ? `| ${r.browser} | — | not installed | | | | | |`
+    ? `| ${r.browser} | — | not installed | | | | | | |`
     : r.skipped
-      ? `| ${r.browser} | headed | skipped: ${r.skipped} | | | | | |`
-      : `| ${r.browser} | ${r.headless ? 'headless' : 'headed'} | ${r.ok ? 'ok' : `FAIL${r.error ? `: ${r.error}` : ''}`} | ${r.product ?? ''} | ${r.firstAnswerMs ?? ''} | ${r.eofExitMs ?? 'no exit'} | ${JSON.stringify(r.processesLeft ?? null)} ${JSON.stringify(r.lockFilesLeft ?? [])} | ${r.cookieKept ?? ''} |`;
+      ? `| ${r.browser} | headed | skipped: ${r.skipped} | | | | | | |`
+      : `| ${r.browser} | ${r.headless ? 'headless' : 'headed'}${r.cold ? ' (cold)' : ''} | ${r.ok ? 'ok' : `FAIL${r.error ? `: ${r.error}` : ''}`} | ${r.product ?? ''} | ${r.firstAnswerMs ?? ''} | ${r.eofExitMs ?? 'no exit'} | ${names(r.processesAtExit)}${r.processesGoneAfterMs ? ` (gone after ${r.processesGoneAfterMs} ms)` : ''} | ${names(r.processesLeft)} ${JSON.stringify(r.lockFilesLeft ?? [])} | ${r.cookieKept ?? ''} |`;
   fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [
     `### Pipe probe (${process.platform}-${process.arch})`,
-    '| browser | mode | result | product | first answer ms | EOF exit ms | processes / lock files left | cookie kept |',
-    '|---|---|---|---|---|---|---|---|',
+    '| browser | mode | result | product | first answer ms | EOF exit ms | processes at exit | left after the deadline / lock files | cookie kept |',
+    '|---|---|---|---|---|---|---|---|---|',
     ...results.map(row),
     '',
   ].join('\n'));
