@@ -1,0 +1,49 @@
+{
+  "description": "Notification without an interactive entrypoint is skipped before stdin.",
+  "env": {
+    "CLAUDE_CODE_ENTRYPOINT": "mcp"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Notification"
+      ],
+      "stdin": {
+        "hold": true
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Notification",
+            "outcome": "notification-skipped",
+            "reason": "headless",
+            "entrypoint": "mcp"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

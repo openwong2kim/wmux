@@ -5,7 +5,6 @@ export interface CdpTargetInfo {
   surfaceId: string;
   webContentsId: number;
   targetId: string;
-  wsUrl: string;
   /**
    * Owning workspace id, reported by the renderer at register time (#554).
    * Exposed via browser.cdp.info so the read path (browser_snapshot /
@@ -225,22 +224,11 @@ export class WebviewCdpManager {
     }
 
     let targetId = `wc-${webContentsId}`;
-    let wsUrl = this.cdpPort > 0 ? `ws://127.0.0.1:${this.cdpPort}/devtools/page/${targetId}` : '';
-
-    if (this.cdpPort > 0) try {
-      const resp = await fetch(`http://127.0.0.1:${this.cdpPort}/json`);
-      const targets: Array<{ id: string; webSocketDebuggerUrl: string; url: string; title: string }> =
-        await resp.json();
-      const wcUrl = wc.getURL();
-      const match = targets.find(
-        (t) => t.url === wcUrl || t.title === wc.getTitle(),
-      );
-      if (match) {
-        targetId = match.id;
-        wsUrl = match.webSocketDebuggerUrl;
-      }
+    try {
+      const { targetInfo } = await wc.debugger.sendCommand('Target.getTargetInfo');
+      if (targetInfo?.targetId) targetId = targetInfo.targetId;
     } catch (err) {
-      console.warn(`[WebviewCdpManager] /json fetch failed, using fallback:`, err);
+      console.warn(`[WebviewCdpManager] Target.getTargetInfo failed, using fallback:`, err);
     }
 
     // Preserve a previously-known workspaceId across a same-guest re-register
@@ -250,7 +238,6 @@ export class WebviewCdpManager {
       surfaceId,
       webContentsId,
       targetId,
-      wsUrl,
       workspaceId: workspaceId ?? prev?.workspaceId,
     };
     this.sessions.set(surfaceId, info);
@@ -899,13 +886,16 @@ export class WebviewCdpManager {
   setCdpFailureReason(reason: string): void { this.cdpFailureReason = reason; }
   getCdpFailureReason(): string { return this.cdpFailureReason; }
 
-  async setCdpPort(port: number): Promise<void> {
+  setCdpPort(port: number): void {
     this.cdpPort = port;
     this.cdpFailureReason = '';
-    for (const info of [...this.sessions.values()]) {
-      await this.register(info.surfaceId, info.webContentsId, info.workspaceId);
-    }
   }
+
+  /** The user turned CDP off. No port alone doesn't mean that: it may still be verifying. */
+  private cdpDisabled = false;
+
+  setCdpDisabled(disabled: boolean): void { this.cdpDisabled = disabled; }
+  isCdpDisabled(): boolean { return this.cdpDisabled; }
 
   getCdpPort(): number {
     return this.cdpPort;

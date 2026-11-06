@@ -1,0 +1,64 @@
+{
+  "description": "A subagent with agent_type is sent.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "SubagentStop"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"agent_id\":\"a1\",\"agent_type\":\"general-purpose\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "SubagentStop",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.subagent_stop",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "agent_id": "a1",
+                  "agent_type": "general-purpose"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

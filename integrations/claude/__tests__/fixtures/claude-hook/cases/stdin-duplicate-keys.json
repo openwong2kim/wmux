@@ -1,0 +1,64 @@
+{
+  "description": "A duplicate key keeps its first position and its last value.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": "{\"a\":1,\"session_id\":\"s1\",\"b\":2,\"a\":3}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "a": 3,
+                  "session_id": "s1",
+                  "b": 2
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

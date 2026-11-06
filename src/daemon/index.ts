@@ -3128,7 +3128,7 @@ function registerRpcHandlers(
 
   // daemon.attachSession
   pipeServer.onRpc('daemon.attachSession', async (params) => {
-    const p = params as unknown as DaemonSessionIdParams & { promote?: boolean };
+    const p = params as unknown as DaemonSessionIdParams & { promote?: boolean; scrollback?: number };
     if (sessionManager.getPendingRecovery(p.id)) {
       // #2398 — `promote: false` (a pane not on screen) leaves a pending
       // recovery pending: nothing is spawned until the pane is shown.
@@ -3171,7 +3171,7 @@ function registerRpcHandlers(
           cols: live?.meta.cols ?? managed.meta.cols ?? 80,
           rows: live?.meta.rows ?? managed.meta.rows ?? 24,
         };
-      }, () => sessionManager.getSession(p.id)?.bridge.outputModes ?? managed.bridge.outputModes);
+      }, () => sessionManager.getSession(p.id)?.bridge.outputModes ?? managed.bridge.outputModes, p.scrollback);
       sessionPipes.set(p.id, pipe);
 
       // #557: demote a stuck-'attached' session to 'detached' if its authed

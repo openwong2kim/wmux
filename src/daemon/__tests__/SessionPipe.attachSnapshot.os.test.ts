@@ -142,8 +142,9 @@ async function startPipe(
   id: string,
   ring: RingBuffer,
   dims?: () => { cols: number; rows: number },
+  attachScrollback?: number,
 ): Promise<SessionPipe> {
-  const pipe = new SessionPipe(id, ring, TOKEN, dims);
+  const pipe = new SessionPipe(id, ring, TOKEN, dims, undefined, attachScrollback);
   if (socketDir) vi.spyOn(pipe, 'getPipeName').mockReturnValue(path.join(socketDir, `${id}.sock`));
   pipes.push(pipe);
   await pipe.start();
@@ -454,6 +455,31 @@ describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
     // Count surviving distinct markers to prove > 5000 lines round-tripped.
     const survived = lines.filter((l) => /^LINE-\d{6}/.test(l)).length;
     expect(survived).toBeGreaterThan(5000);
+  });
+
+  // Main passes the renderer's own scrollback on attach. Asking for no more
+  // than that loses nothing the renderer could keep, and keeps the request
+  // under the native snapshot's grid cap (a 100k ceiling past it was refused
+  // and parsed again by @xterm/headless, about ten times slower).
+  it('attach snapshot keeps the renderer\'s scrollback when main passes it', async () => {
+    const parts: Buffer[] = [];
+    for (let i = 0; i < 8000; i++) {
+      parts.push(Buffer.from(`LINE-${String(i).padStart(6, '0')} ${'x'.repeat(30)}\r\n`, 'utf8'));
+    }
+    const ring = new RingBuffer(16 * 1024 * 1024);
+    ring.write(Buffer.concat(parts));
+    const pipe = await startPipe(uniqueSessionId('renderer-sb'), ring, () => ({ cols: COLS, rows: ROWS }), 3000);
+
+    const client = await connectClient(pipe.getPipeName(), TOKEN);
+    clients.push(client);
+    await waitFor(() => client.wire().includes(FLUSH_DONE_MARKER), 20_000);
+
+    const lines = (await fullBufferText(replaySegment(client.wire())!, COLS, ROWS, 50_000))
+      .filter((l) => /^LINE-\d{6}/.test(l));
+    expect(lines.at(-1)).toMatch(/^LINE-007999/);
+    expect(lines.length).toBeGreaterThan(3000 - 1);
+    expect(lines.length).toBeLessThanOrEqual(3000 + ROWS);
+    expect(lines.join('\n')).not.toContain('LINE-000000');
   });
 
   it('live delta during a FAILED parse (margins) is not dropped', async () => {

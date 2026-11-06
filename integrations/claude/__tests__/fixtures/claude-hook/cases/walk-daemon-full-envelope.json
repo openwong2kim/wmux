@@ -1,0 +1,99 @@
+{
+  "description": "A Stop in a pane, with transcript usage, permission mode and leftover work.",
+  "files": {
+    "projects/sess-abc.jsonl": "{\"type\":\"user\",\"permissionMode\":\"plan\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"Bash\",\"input\":{\"command\":\"sleep 100\",\"run_in_background\":true}}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"cache_creation_input_tokens\":2,\"cache_read_input_tokens\":3}}}\n{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu1\",\"content\":\"Command running in background with ID: bash_1\"}]}}\n"
+  },
+  "env": {
+    "WMUX_PTY_ID": "pty-1",
+    "CLAUDE_CODE_ENTRYPOINT": "cli",
+    "WMUX_WORKSPACE_ID": "ws-1",
+    "WMUX_SURFACE_ID": "sf-1",
+    "WMUX_WSL_AGENT_PROC": "proc-1"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    },
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": "{\"session_id\":\"payload-id\",\"transcript_path\":\"<home>/projects/sess-abc.jsonl\",\"cwd\":\"/work/repo\",\"permission_mode\":\"default\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "agentSessionId": "sess-abc",
+                "workspaceId": "ws-1",
+                "surfaceId": "sf-1",
+                "ptyId": "pty-1",
+                "wslAgentProcess": "proc-1",
+                "entrypoint": "cli",
+                "cwd": "/work/repo",
+                "payload": {
+                  "session_id": "payload-id",
+                  "transcript_path": "<sandbox>/home/projects/sess-abc.jsonl",
+                  "cwd": "/work/repo",
+                  "permission_mode": "default",
+                  "usage": {
+                    "inputTokens": 15,
+                    "outputTokens": 5,
+                    "totalTokens": 20
+                  },
+                  "permissionMode": "plan",
+                  "wmux_leftover_work": 1
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

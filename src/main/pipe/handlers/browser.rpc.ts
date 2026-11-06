@@ -3723,9 +3723,10 @@ export function registerBrowserRpc(
         profile: status.profile,
         partition: null,
         persistent: null,
-        // A protected pane's CDP port is never shown to an agent: the port is
-        // an attach primitive that would skip every check the lane applies.
-        port: protectedDecisionOf(ctx) ? null : status.cdpPort,
+        // The port is an attach primitive that would skip every check the lane
+        // applies, so it follows browser.cdp.info's disclosure rule, and a
+        // protected pane never sees it.
+        port: protectedDecisionOf(ctx) || !canDiscloseBrowserAttachInfo(ctx) ? null : status.cdpPort,
         running: status.running,
         // Only the live profile sets liveAttach (running there = remote-debugging
         // reachable), so the agent reads running:false as "enable it at
@@ -3882,14 +3883,16 @@ export function registerBrowserRpc(
       };
     }
 
-    const cdpPort = webviewCdpManager.getCdpPort();
-    if (cdpPort <= 0) {
+    // The user's off switch, not a missing port: with no port up yet, targets
+    // are still real and callers work over the RPC lane.
+    if (webviewCdpManager.isCdpDisabled?.()) {
       throw new Error(
         'CDP remote debugging is unavailable: ' + (webviewCdpManager.getCdpFailureReason?.() ?? 'disabled') + '. ' +
           'Enable it via ~/.wmux/config.json (browser.cdp.enabled = true) and restart wmux, ' +
           'or unset the WMUX_DISABLE_CDP environment variable.',
       );
     }
+    const cdpPort = webviewCdpManager.getCdpPort();
     const discloseAttachInfo = canDiscloseBrowserAttachInfo(ctx);
 
     const listRelevantTargets = () => {
@@ -3936,7 +3939,7 @@ export function registerBrowserRpc(
     }
 
     return {
-      ...(discloseAttachInfo && { cdpPort }),
+      ...(discloseAttachInfo && cdpPort > 0 && { cdpPort }),
       ...(discloseAttachInfo && shellUrl && { shellUrl }),
       // Lets a scoped caller tell "I own no live targets" (empty + scoped) from
       // "legacy main that can't scope" (empty + unscoped). The engine gates its

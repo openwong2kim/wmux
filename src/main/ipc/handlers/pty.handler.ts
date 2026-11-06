@@ -99,6 +99,7 @@ import { pendingRemovalRefusal } from '../../worktask/pendingWorktreeRemovals';
 import { launchAllowedByChat } from './chatLaunchGuard';
 import { folderTrustLaunchHold, folderTrustLaunchRefusal, forgetFolderTrustPane } from '../../folderTrustCheck';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWording';
+import { attachScrollback } from '../../session/rendererScrollback';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -895,7 +896,7 @@ export function registerPTYHandlers(
         if (isWslShell(shell) && createdCwd) effectiveCwd = createdCwd;
 
         // Attach to the session (makes daemon start the SessionPipe server)
-        await daemonClient.rpc('daemon.attachSession', { id: sessionId });
+        await daemonClient.rpc('daemon.attachSession', { id: sessionId, scrollback: attachScrollback() });
 
         // Daemon sessions have no PTYInstance in this process, so the shell would
         // otherwise be unknowable to main — record it for the clipboard handler's

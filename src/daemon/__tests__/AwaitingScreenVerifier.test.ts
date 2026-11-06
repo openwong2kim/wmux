@@ -1,6 +1,7 @@
 // The awaiting-state screen verifier: a pane stuck at awaiting_input is
 // released once its dialog is gone from the screen on two reads in a row, and
 // never otherwise.
+import { resetScreenReadCounters, screenParseCounters } from '../screenReadCache';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IPty } from 'node-pty';
 import {
@@ -537,6 +538,17 @@ describe('renderPaneScreen', () => {
     expect(await renderPaneScreen(() => live, snapshot)).toMatchObject({ rows: ['x'], mark: 5, cols: 120 });
     await renderPaneScreen(() => recorded, snapshot);
     expect(seen).toEqual([{ cols: 120, rows: 40 }, { cols: 80, rows: 24 }]);
+  });
+
+  it('counts each parse of the ring, a reused frame not at all', async () => {
+    resetScreenReadCounters();
+    const pane = renderablePane();
+    const snapshot = async () => ({ ok: true as const, rows: [{ text: 'x' }] });
+    await renderPaneScreen(() => pane, snapshot);
+    expect(screenParseCounters().pane.parses).toBe(1);
+    await renderPaneScreen(() => pane, snapshot, { reuse: true, tail: false });
+    await renderPaneScreen(() => pane, snapshot, { reuse: true, tail: false });
+    expect(screenParseCounters().pane.parses).toBe(2);
   });
 
   it('is unreadable when the pane was resized while the render waited', async () => {

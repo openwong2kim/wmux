@@ -1,0 +1,72 @@
+{
+  "description": "An unknown entrypoint is sent without session id or transcript path.",
+  "env": {
+    "CLAUDE_CODE_ENTRYPOINT": "desktop-x"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"transcript_path\":\"/t/x.jsonl\",\"cwd\":\"/work/repo\",\"other\":1}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "unknown-entrypoint",
+            "entrypoint": "desktop-x"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "entrypoint": "desktop-x",
+                "cwd": "/work/repo",
+                "payload": {
+                  "cwd": "/work/repo",
+                  "other": 1
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

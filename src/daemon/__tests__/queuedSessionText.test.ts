@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { RingBuffer } from '../RingBuffer';
 import { enqueueSnapshotJob, type TextSnapshotOutcome } from '../HeadlessSnapshot';
 import { queuedScreenText, queuedTextSnapshot, type TextReadSession, type TextReadSessions } from '../queuedSessionText';
+import { resetScreenReadCounters, screenParseCounters, snapshotQueueCounters } from '../screenReadCache';
 
 function session(text: string): TextReadSession {
   const ringBuffer = new RingBuffer(64 * 1024);
@@ -123,6 +124,27 @@ describe('queued screen reads', () => {
     expect(await queuedScreenText(sessions, 'pane-a')).toBe(atTurn);
     pane.meta.cols = 80;
     expect(await queuedScreenText(sessions, 'pane-a')).not.toBe(atTurn);
+  });
+
+  it('counts one parse per read that replayed the ring: not a reused answer, not a joined waiter', async () => {
+    resetScreenReadCounters();
+    const table = sessionTable();
+    table.map.set('s1', session('hello'));
+    const { release, done } = holdQueue();
+    const waiting = [queuedScreenText(table, 's1'), queuedScreenText(table, 's1')];
+    release();
+    await Promise.all([done, ...waiting]);
+    await queuedScreenText(table, 's1');
+    await queuedTextSnapshot(table, 's1', 160);
+    const parses = screenParseCounters();
+    expect(parses.screen.parses).toBe(1);
+    expect(parses.screen.bytes).toBeGreaterThan(0);
+    expect(parses['text<=300'].parses).toBe(1);
+    // The holder and the two parses each took a turn on the queue.
+    const queue = snapshotQueueCounters();
+    expect(queue.jobs).toBe(3);
+    expect(queue.waitMsMax).toBeGreaterThanOrEqual(0);
+    expect(queue.runMsTotal).toBeGreaterThanOrEqual(0);
   });
 
   it('a session that took a closed pane\'s id never gets the closed pane\'s kept answer', async () => {

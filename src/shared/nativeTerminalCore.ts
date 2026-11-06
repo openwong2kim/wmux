@@ -1,5 +1,6 @@
 /** Native code is loaded for an explicit backend selection, a Settings availability probe,
- *  or the daemon's Windows process table (src/daemon/nativeProcessTable.ts). */
+ *  the daemon's Windows process table (src/daemon/nativeProcessTable.ts), or
+ *  PortWatcher's process walk and listening sockets on macOS and Linux (src/main/pty/portWatch.ts). */
 import path from 'node:path';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -41,8 +42,14 @@ export interface NativeTerminalCore {
   NativeOutputDecoder?: new () => { feed(bytes: Uint8Array, finish: boolean): NativeOutputChunk };
   NativeOutputInterpreter?: new () => NativeOutputInterpreter;
   NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string, parentWindow?: Uint8Array) => NativeTransport;
-  /** Windows only (`process-table-v1`). */
+  /** Windows, macOS and Linux (`process-table-v1`); macOS and Linux read the walk only (no created/cmdline). */
   processTable?(withCommandLines: boolean): Promise<Array<{ pid: number; ppid: number; name: string; created?: number | null; cmdline?: string | null }>>;
+  /** macOS and Linux (`listen-sockets-v1`): the process walk and every listening TCP socket this user can read
+   *  (one row per socket), from one walk. */
+  portSnapshot?(): Promise<{
+    processes: Array<{ pid: number; ppid: number; name: string }>;
+    sockets: Array<{ pid: number; port: number; address: string; family: number }>;
+  }>;
 }
 export interface NativeOscBatch { codes: Float64Array; data: string[] }
 export interface NativeOutputInterpreter {

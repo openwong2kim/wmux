@@ -119,7 +119,78 @@ export function screenReadCounters(): Record<string, ScreenReadCounters> {
   return Object.fromEntries([...counters].map(([kind, c]) => [kind, { ...c }]));
 }
 
+export interface ScreenParseCounters {
+  /** Reads that replayed the ring through a terminal parser. */
+  parses: number;
+  /** From asking to the answer, so the wait for the snapshot queue is in it. */
+  msTotal: number;
+  msMax: number;
+  /** Bytes replayed. */
+  bytes: number;
+}
+
+const parses = new Map<string, ScreenParseCounters>();
+
+/** A kind's family with its depth reduced to a fixed set of buckets. */
+function parseBucket(kind: string): string {
+  const [family, depth] = kind.split(':', 2);
+  if (family !== 'text') return family;
+  const rows = Number(depth);
+  if (rows <= 300) return 'text<=300';
+  return rows <= 2000 ? 'text<=2000' : 'text>2000';
+}
+
+/**
+ * One parse of a pane's ring, whether or not its answer may be reused. What a
+ * screen read costs, by depth, is what decides how a live screen per pane
+ * should be built and how deep it needs to be.
+ */
+export function noteScreenParse(kind: string, ms: number, bytes: number): void {
+  const bucket = parseBucket(kind);
+  let c = parses.get(bucket);
+  if (!c) parses.set(bucket, (c = { parses: 0, msTotal: 0, msMax: 0, bytes: 0 }));
+  c.parses++;
+  c.msTotal += ms;
+  c.msMax = Math.max(c.msMax, ms);
+  c.bytes += bytes || 0;
+}
+
+/** Copies of the parse counters by bucket, for the daemon's diagnostics. */
+export function screenParseCounters(): Record<string, ScreenParseCounters> {
+  return Object.fromEntries([...parses].map(([bucket, c]) => [bucket, { ...c }]));
+}
+
+export interface SnapshotQueueCounters {
+  /** Jobs that ran on the concurrency-1 snapshot queue. */
+  jobs: number;
+  /** Waiting for their turn. */
+  waitMsTotal: number;
+  waitMsMax: number;
+  /** Holding the queue. */
+  runMsTotal: number;
+  runMsMax: number;
+}
+
+const queue: SnapshotQueueCounters = { jobs: 0, waitMsTotal: 0, waitMsMax: 0, runMsTotal: 0, runMsMax: 0 };
+
+export function noteSnapshotJobStart(waitMs: number): void {
+  queue.jobs++;
+  queue.waitMsTotal += waitMs;
+  queue.waitMsMax = Math.max(queue.waitMsMax, waitMs);
+}
+
+export function noteSnapshotJobEnd(runMs: number): void {
+  queue.runMsTotal += runMs;
+  queue.runMsMax = Math.max(queue.runMsMax, runMs);
+}
+
+export function snapshotQueueCounters(): SnapshotQueueCounters {
+  return { ...queue };
+}
+
 /** Tests only. */
 export function resetScreenReadCounters(): void {
   counters.clear();
+  parses.clear();
+  Object.assign(queue, { jobs: 0, waitMsTotal: 0, waitMsMax: 0, runMsTotal: 0, runMsMax: 0 });
 }

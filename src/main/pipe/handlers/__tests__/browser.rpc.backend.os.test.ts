@@ -11,7 +11,8 @@ import {
   EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE,
 } from '../../../../shared/browserBackend';
 import type { BrowserBackendStore } from '../../../browser-session/BrowserBackendStore';
-import { dispatchAsClaimedCaller } from './claimedCaller';
+import { claimOn, dispatchAsClaimedCaller } from './claimedCaller';
+import { FIRST_PARTY_CLIENT_NAMES } from '../../../mcp/firstParty';
 
 /**
  * #517 backend fork — external mode contract.
@@ -80,7 +81,6 @@ const TARGET = {
   surfaceId: 'surface-1',
   webContentsId: 42,
   targetId: 'target-1',
-  wsUrl: 'ws://127.0.0.1/devtools/page/target-1',
   workspaceId: 'ws-1',
 };
 
@@ -658,14 +658,26 @@ describe('chrome backend browser.close', () => {
 });
 
 describe('browser.session.status backend reporting', () => {
-  it('reports chrome facts (backend, bound profile, CDP port) without touching the Electron session fields', async () => {
+  it('shows the Chrome port only to a caller browser.cdp.info would show it to', async () => {
+    const { router } = register({ backend: 'chrome', launcher: makeFakeRegistry() });
+    const params = { workspaceId: 'ws-1' };
+    const wire = await router.dispatch({
+      id: '1', method: 'browser.session.status', params, clientName: [...FIRST_PARTY_CLIENT_NAMES][0], ...claimOn('ws-1'),
+    } as never, { externalWire: true });
+    expect((wire as { result?: unknown }).result).toMatchObject({ port: 52931 });
+    const unnamed = await router.dispatch({
+      id: '2', method: 'browser.session.status', params, ...claimOn('ws-1'),
+    } as never, { externalWire: true });
+    expect((unnamed as { result?: unknown }).result).toMatchObject({ port: null });
+  });
+
+  it('reports chrome facts (backend, bound profile, running) without touching the Electron session fields', async () => {
     const registry = makeFakeRegistry();
     const { router } = register({ backend: 'chrome', launcher: registry });
     const { result } = await dispatch(router, 'browser.session.status', { workspaceId: 'ws-1' });
     expect(result).toMatchObject({
       backend: 'chrome',
       profile: 'default',
-      port: 52931,
       running: true,
       partition: null,
       persistent: null,

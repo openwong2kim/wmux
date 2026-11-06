@@ -1,0 +1,35 @@
+{
+  "description": "An event name that is not a hook is logged and exits 0 without reading stdin.",
+  "steps": [
+    {
+      "argv": [
+        "Bogus"
+      ],
+      "stdin": {
+        "hold": true
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Bogus",
+            "outcome": "unknown-hook-name",
+            "argv": [
+              "<node>",
+              "<bridge>",
+              "Bogus"
+            ]
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

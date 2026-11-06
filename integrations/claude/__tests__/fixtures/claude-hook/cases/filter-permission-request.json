@@ -1,0 +1,70 @@
+{
+  "description": "PermissionRequest from an interactive session is sent.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1",
+    "CLAUDE_CODE_ENTRYPOINT": "cli"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "PermissionRequest"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"Bash\",\"agent_id\":\"a1\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PermissionRequest",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.awaiting_input",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "ptyId": "pty-1",
+                "entrypoint": "cli",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "tool_name": "Bash",
+                  "agent_id": "a1"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

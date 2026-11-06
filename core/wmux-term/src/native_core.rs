@@ -34,12 +34,14 @@ pub fn native_core_capabilities() -> Vec<String> {
         "ansi-v2".into(),
         "ansi-v3".into(),
         "console-owner-v1".into(),
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         "process-table-v1".into(),
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        "listen-sockets-v1".into(),
     ]
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 #[napi(object)]
 pub struct NativeProcessRow {
     pub pid: u32,
@@ -49,11 +51,11 @@ pub struct NativeProcessRow {
     pub cmdline: Option<String>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub struct ProcessTableTask {
     with_command_lines: bool,
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 impl Task for ProcessTableTask {
     type Output = Vec<crate::process_table::ProcessRow>;
     type JsValue = Vec<NativeProcessRow>;
@@ -74,12 +76,74 @@ impl Task for ProcessTableTask {
     }
 }
 
-/// Windows process table off the JS thread. With `with_command_lines`, each
+/// The process table off the JS thread. With `with_command_lines`, each
 /// row also carries its creation time and command line where readable.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 #[napi]
 pub fn process_table(with_command_lines: bool) -> AsyncTask<ProcessTableTask> {
     AsyncTask::new(ProcessTableTask { with_command_lines })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[napi(object)]
+pub struct NativeListenSocket {
+    pub pid: u32,
+    pub port: u32,
+    pub address: String,
+    /// 4 or 6.
+    pub family: u32,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[napi(object)]
+pub struct NativePortSnapshot {
+    pub processes: Vec<NativeProcessRow>,
+    pub sockets: Vec<NativeListenSocket>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub struct PortSnapshotTask;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl Task for PortSnapshotTask {
+    type Output = crate::process_table::PortSnapshot;
+    type JsValue = NativePortSnapshot;
+    fn compute(&mut self) -> Result<Self::Output> {
+        crate::process_table::port_snapshot().map_err(Error::from_reason)
+    }
+    fn resolve(&mut self, _env: Env, snap: Self::Output) -> Result<Self::JsValue> {
+        Ok(NativePortSnapshot {
+            processes: snap
+                .processes
+                .into_iter()
+                .map(|r| NativeProcessRow {
+                    pid: r.pid,
+                    ppid: r.ppid,
+                    name: r.name,
+                    created: r.created,
+                    cmdline: r.cmdline,
+                })
+                .collect(),
+            sockets: snap
+                .sockets
+                .into_iter()
+                .map(|r| NativeListenSocket {
+                    pid: r.pid,
+                    port: r.port.into(),
+                    address: r.address,
+                    family: r.family.into(),
+                })
+                .collect(),
+        })
+    }
+}
+
+/// PortWatcher's snapshot off the JS thread: the process walk and every
+/// listening TCP socket this user can read, with the pid holding it, from
+/// one walk.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[napi]
+pub fn port_snapshot() -> AsyncTask<PortSnapshotTask> {
+    AsyncTask::new(PortSnapshotTask)
 }
 
 struct Size {

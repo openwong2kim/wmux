@@ -1,0 +1,68 @@
+{
+  "description": "A permission-prompt notification is sent as awaiting_input.",
+  "env": {
+    "CLAUDE_CODE_ENTRYPOINT": "cli"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Notification"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"notification_type\":\"permission_prompt\",\"message\":\"Claude needs your permission\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Notification",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.awaiting_input",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "entrypoint": "cli",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "notification_type": "permission_prompt",
+                  "message": "Claude needs your permission"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
