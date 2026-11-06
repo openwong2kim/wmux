@@ -501,3 +501,49 @@ describe('buildDoctorReport — claude hook runtime', () => {
     expect((await buildDoctorReport(makeDeps())).hooks).toBeUndefined();
   });
 });
+
+describe('buildDoctorReport — the claude hook self-test', () => {
+  const nativeReport = { state: 'native' as const, severity: 'ok' as const, detail: 'native: /h/wmux-claude-hook', copy: '/h/wmux-claude-hook' };
+  const run = async (result: Awaited<ReturnType<NonNullable<DoctorDeps['hookSelfTest']>>>, report: ReturnType<NonNullable<DoctorDeps['hooks']>> = nativeReport) => {
+    const hookSelfTest = vi.fn(async () => result);
+    const r = await buildDoctorReport(makeDeps({ hooks: () => report, hookSelfTest }));
+    return { r, hookSelfTest, line: r.hooks?.lines.find((l) => l.label === 'claude hook self-test') };
+  };
+
+  it('runs the copy native entries name, once, and passes on this build\'s line', async () => {
+    const { r, hookSelfTest, line } = await run({ outcome: 'pass' });
+    expect(hookSelfTest).toHaveBeenCalledTimes(1);
+    expect(hookSelfTest).toHaveBeenCalledWith('/h/wmux-claude-hook');
+    expect(line).toMatchObject({ value: 'passed', verdict: 'OK' });
+    expect(r.hooks?.verdict).toBe('OK');
+  });
+
+  it('a wrong line or a copy that cannot start: failed, what it said, and --reprobe', async () => {
+    const wrong = await run({ outcome: 'fail', printed: 'usage: wmux-native' });
+    expect(wrong.line).toMatchObject({ value: 'failed', verdict: 'FAIL' });
+    expect(wrong.line?.hint).toContain('"usage: wmux-native"');
+    expect(wrong.line?.hint).toContain('wmux setup-hooks --reprobe');
+    expect(wrong.r.overall).toBe('FAIL');
+    const unstartable = await run({ outcome: 'unstartable', error: 'EACCES: permission denied' });
+    expect(unstartable.line).toMatchObject({ value: 'failed', verdict: 'FAIL' });
+    expect(unstartable.line?.hint).toContain('EACCES: permission denied');
+    expect(unstartable.line?.hint).toContain('wmux setup-hooks --reprobe');
+  });
+
+  it('a timeout reads as no answer, not as failed', async () => {
+    const { line } = await run({ outcome: 'timeout' });
+    expect(line).toMatchObject({ value: 'no answer in 5 s', verdict: 'WARN' });
+    expect(line?.hint).not.toContain('--reprobe');
+  });
+
+  it('runs nothing when no entry is native, or the copy is gone', async () => {
+    for (const report of [
+      { state: 'node' as const, severity: 'ok' as const, detail: 'node' },
+      { ...nativeReport, state: 'copy-missing' as const, severity: 'fail' as const },
+    ]) {
+      const { hookSelfTest, line } = await run({ outcome: 'pass' }, report);
+      expect(hookSelfTest).not.toHaveBeenCalled();
+      expect(line).toBeUndefined();
+    }
+  });
+});

@@ -1634,6 +1634,8 @@ export interface ClaudeHookRuntimeReport {
   state: ClaudeHookRuntimeState;
   severity: 'ok' | 'warn' | 'fail';
   detail: string;
+  /** The copy the native entries name; absent when none is native. */
+  copy?: string;
 }
 
 /** True when `node` is an executable file on this PATH. */
@@ -1669,9 +1671,11 @@ export function claudeHookRuntimeReport(
       .flatMap((groups) => (groups as unknown[]).filter(isWmuxGroup))
       .flatMap((g) => ((g as HookGroup).hooks as unknown[]).filter(isWmuxLeaf))
     : [];
-  const report = (state: ClaudeHookRuntimeState, severity: ClaudeHookRuntimeReport['severity'], detail: string) => ({ state, severity, detail });
-  if (leaves.length === 0) return report('none', 'ok', 'no wmux hook entries in settings.json');
   const native = leaves.filter((leaf) => leafForm(leaf) === 'native');
+  const named = native.length > 0 ? nativeLeafCopy(native[0]) : null;
+  const report = (state: ClaudeHookRuntimeState, severity: ClaudeHookRuntimeReport['severity'], detail: string): ClaudeHookRuntimeReport =>
+    ({ state, severity, detail, ...(named ? { copy: named } : {}) });
+  if (leaves.length === 0) return report('none', 'ok', 'no wmux hook entries in settings.json');
   if (native.length > 0 && native.length < leaves.length) {
     return report('mixed', 'warn', `${native.length} of ${leaves.length} entries run the native copy, the rest node; \`wmux setup-hooks\` writes one form`);
   }
@@ -1684,7 +1688,7 @@ export function claudeHookRuntimeReport(
       ? report('node', 'ok', 'node; the native copy passed its self-test, so Update or `wmux setup-hooks` moves them to it')
       : report('node', 'ok', 'node');
   }
-  const copy = nativeLeafCopy(native[0]) as string;
+  const copy = named as string;
   const judged = judgeClaudeCopy(copy);
   if (judged === 'missing') return report('copy-missing', 'fail', `${copy} is gone, so every hook fails; run \`wmux setup-hooks\``);
   if (judged === 'fail') return report('copy-failed', 'fail', `${copy} is recorded as failing its self-test; run \`wmux setup-hooks\``);

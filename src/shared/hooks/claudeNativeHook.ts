@@ -11,6 +11,7 @@
 // Unix only: claude-hook does not exist in the Windows build, whose Claude
 // hooks stay on node.
 
+import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { writeFileAtomic } from '../mcpRegistration';
@@ -183,4 +184,36 @@ export function judgeClaudeCopy(copy: string): ClaudeCopyJudgement {
  *  `--self-test` passed for this build's bridge. */
 export function claudeNativeAvailable(bridgeDest: string, bridgeSource: string | null, platform: NodeJS.Platform = process.platform): boolean {
   return platform !== 'win32' && claudeCopyVerdict(bridgeDest, bridgeSource) === 'pass';
+}
+
+/** What a copy's `--self-test` answered, for `wmux doctor`. */
+export type ClaudeSelfTestResult =
+  | { outcome: 'pass' }
+  | { outcome: 'fail'; printed: string }
+  | { outcome: 'unstartable'; error: string }
+  | { outcome: 'timeout' };
+
+/**
+ * Run the copy's `--self-test` once, as `wmux doctor` does: the only place a
+ * recorded pass is checked again (a home turned noexec, a policy that now
+ * blocks it). It prints one line, reads no stdin and writes no log. A copy
+ * that does not answer within `timeoutMs` proves nothing (a slow antivirus
+ * scan). Never throws.
+ */
+export function selfTestClaudeCopy(copy: string, line: string, timeoutMs = SELF_TEST_TIMEOUT_MS): Promise<ClaudeSelfTestResult> {
+  return new Promise((resolve) => {
+    try {
+      execFile(copy, ['--self-test'], { timeout: timeoutMs, windowsHide: true, encoding: 'utf8' }, (error, stdout) => {
+        if (error && (error as { killed?: boolean }).killed) return resolve({ outcome: 'timeout' });
+        const code = (error as { code?: unknown } | null)?.code;
+        // A string code is a spawn error (EACCES, ENOENT); a number, the exit status.
+        if (typeof code === 'string') return resolve({ outcome: 'unstartable', error: `${code}: ${(error as Error).message}` });
+        const printed = String(stdout).trim();
+        if (!error && printed === line) return resolve({ outcome: 'pass' });
+        resolve({ outcome: 'fail', printed: printed ? printed.slice(0, 200) : `nothing (exit ${typeof code === 'number' ? code : 0})` });
+      });
+    } catch (error) {
+      resolve({ outcome: 'unstartable', error: String(error) });
+    }
+  });
 }

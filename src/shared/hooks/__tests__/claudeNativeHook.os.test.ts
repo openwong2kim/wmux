@@ -15,6 +15,7 @@ import {
   packagedClaudeNativeSource,
   prepareClaudeNative,
   readClaudeRuntime,
+  selfTestClaudeCopy,
   writeClaudeRuntime,
 } from '../claudeNativeHook';
 
@@ -137,5 +138,33 @@ describe.skipIf(process.platform === 'win32' || !REAL_NATIVE)('prepareClaudeNati
   it('passes for the bridge it was built from', async () => {
     const plan = await prepare({ nativeSource: REAL_NATIVE as string, bridgeSource: path.join(REPO_ROOT, 'integrations', 'claude', 'bin', 'wmux-bridge.mjs') });
     expect(plan).toEqual({ binary: claudeHookCopyPath(bridgeDest), reason: null });
+  });
+});
+
+// What `wmux doctor` runs: the one place a recorded pass is checked again.
+describe.skipIf(process.platform === 'win32')('selfTestClaudeCopy', () => {
+  const copyWith = (body: string, mode = 0o755) => {
+    const file = path.join(root, 'copy');
+    fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode });
+    fs.chmodSync(file, mode);
+    return file;
+  };
+
+  it('passes on exactly the expected line', async () => {
+    expect(await selfTestClaudeCopy(copyWith("echo 'line 1'"), 'line 1')).toEqual({ outcome: 'pass' });
+  });
+
+  it('fails on anything else, and says what it printed', async () => {
+    expect(await selfTestClaudeCopy(copyWith("echo 'usage: wmux-native'"), 'line 1')).toEqual({ outcome: 'fail', printed: 'usage: wmux-native' });
+    expect(await selfTestClaudeCopy(copyWith('exit 3'), 'line 1')).toEqual({ outcome: 'fail', printed: 'nothing (exit 3)' });
+  });
+
+  it('says why a copy could not start', async () => {
+    const result = await selfTestClaudeCopy(copyWith("echo 'line 1'", 0o600), 'line 1');
+    expect(result).toMatchObject({ outcome: 'unstartable', error: expect.stringMatching(/EACCES/) });
+  });
+
+  it('reads no answer within the cap as a timeout, not a failure', async () => {
+    expect(await selfTestClaudeCopy(copyWith("sleep 5; echo 'line 1'"), 'line 1', 300)).toEqual({ outcome: 'timeout' });
   });
 });

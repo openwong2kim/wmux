@@ -55,6 +55,7 @@ import { fileSha256, probeKey, recordedProbe } from '../../shared/probedNative';
 import { BROKER_TOOL_NAME_RE, type McpSessionsSummary } from '../../shared/mcpSessions';
 import { homeRelative } from '../../shared/homeRelative';
 import { claudeHookRuntimeReport, defaultPaths as defaultHooksPaths, type ClaudeHookRuntimeReport } from './setupHooks';
+import { claudeSelfTestLine, selfTestClaudeCopy, type ClaudeSelfTestResult } from '../../shared/hooks/claudeNativeHook';
 
 // --- public report model -----------------------------------------------------
 
@@ -163,6 +164,9 @@ export interface DoctorDeps {
   mcp?: McpDoctorDeps;
   /** How the Claude hook entries run (setupHooks' claudeHookRuntimeReport). */
   hooks?: () => ClaudeHookRuntimeReport;
+  /** Runs the copy native entries name once (`--self-test`) against this
+   *  build's line; null when that line cannot be read. Doctor alone runs it. */
+  hookSelfTest?: (copy: string) => Promise<ClaudeSelfTestResult | null>;
 }
 
 export interface McpDoctorDeps {
@@ -235,7 +239,7 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
   const avHint = buildAvHint(bootPhases);
   const logs = buildLogs(deps);
   const mcp = deps.mcp ? await buildMcpSection(deps.mcp, appPipeReachable) : undefined;
-  const hooks = deps.hooks ? buildHooksSection(deps.hooks()) : undefined;
+  const hooks = deps.hooks ? await buildHooksSection(deps.hooks(), deps.hookSelfTest) : undefined;
 
   const overall = worst([
     environment.verdict,
@@ -252,9 +256,28 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
 
 const HOOK_RUNTIME_VERDICT: Record<ClaudeHookRuntimeReport['severity'], Verdict> = { ok: 'OK', warn: 'WARN', fail: 'FAIL' };
 
-function buildHooksSection(report: ClaudeHookRuntimeReport): { verdict: Verdict; lines: CheckLine[] } {
-  const verdict = HOOK_RUNTIME_VERDICT[report.severity];
-  return { verdict, lines: [{ label: 'claude hook runtime', value: report.state, verdict, hint: report.detail }] };
+async function buildHooksSection(
+  report: ClaudeHookRuntimeReport,
+  selfTest?: (copy: string) => Promise<ClaudeSelfTestResult | null>,
+): Promise<{ verdict: Verdict; lines: CheckLine[] }> {
+  const lines: CheckLine[] = [{ label: 'claude hook runtime', value: report.state, verdict: HOOK_RUNTIME_VERDICT[report.severity], hint: report.detail }];
+  // A recorded pass says nothing about today (a home turned noexec): run the
+  // copy once, here and nowhere else.
+  if (selfTest && report.copy && report.state !== 'copy-missing') lines.push(selfTestLine(await selfTest(report.copy)));
+  return { verdict: worst(lines.map((l) => l.verdict)), lines };
+}
+
+const REPROBE = 'run `wmux setup-hooks --reprobe`';
+
+function selfTestLine(result: ClaudeSelfTestResult | null): CheckLine {
+  const label = 'claude hook self-test';
+  if (!result) return { label, value: 'not run', verdict: 'SKIP', hint: 'this build\'s bridge could not be read' };
+  switch (result.outcome) {
+    case 'pass': return { label, value: 'passed', verdict: 'OK' };
+    case 'fail': return { label, value: 'failed', verdict: 'FAIL', hint: `the copy printed ${JSON.stringify(result.printed)}, not this build's line; ${REPROBE}` };
+    case 'unstartable': return { label, value: 'failed', verdict: 'FAIL', hint: `the copy could not start (${result.error}); ${REPROBE}` };
+    case 'timeout': return { label, value: 'no answer in 5 s', verdict: 'WARN', hint: 'a slow antivirus scan is no evidence; run `wmux doctor` again' };
+  }
 }
 
 function buildEnvironment(
@@ -975,6 +998,10 @@ export async function handleDoctor(args: string[], jsonMode: boolean): Promise<v
       sessions: () => sendRequest('mcp.sessions.summary', {}),
     },
     hooks: () => claudeHookRuntimeReport(defaultHooksPaths()),
+    hookSelfTest: async (copy) => {
+      const line = claudeSelfTestLine(defaultHooksPaths().bridgeSource);
+      return line ? selfTestClaudeCopy(copy, line) : null;
+    },
   };
 
   const report = await buildDoctorReport(deps);
