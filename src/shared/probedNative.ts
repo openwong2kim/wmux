@@ -131,6 +131,8 @@ function alive(pid: number): boolean {
  * Take `<dir>/.wmux-native.lock` with O_EXCL, or null when another holder
  * keeps it past `waitMs`. A lock whose pid is gone, or older than `staleMs`,
  * is taken over. The release removes only a lock still carrying this owner.
+ * Any error other than an existing lock (a missing or read-only directory,
+ * access denied) is thrown.
  */
 export async function lockDir(dir: string, opts: LockOptions = {}): Promise<{ release(): void } | null> {
   const { waitMs = 10_000, staleMs = 30_000, pollMs = 100 } = opts;
@@ -149,7 +151,7 @@ export async function lockDir(dir: string, opts: LockOptions = {}): Promise<{ re
         },
       };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return null;
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
     takeOverIfStale(file, staleMs);
     // Every way round waits and keeps the deadline: a lock that cannot be
@@ -227,7 +229,14 @@ export function prepareProbedNative(opts: ProbedNativeOptions): Promise<ProbedNa
 
 async function prepareLocked(opts: ProbedNativeOptions): Promise<ProbedNativeResult> {
   if (!opts.sourcePath || !fs.existsSync(opts.sourcePath)) return { binary: null, reason: 'not shipped with this build' };
-  const lock = await lockDir(opts.recordDir, opts.lock);
+  let lock: { release(): void } | null;
+  try {
+    // A first install creates the directories, private to the user.
+    for (const dir of [path.dirname(opts.destinationPath), opts.recordDir]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    lock = await lockDir(opts.recordDir, opts.lock);
+  } catch (error) {
+    return keepInPlace(opts, `could not take the install lock: ${String(error)}`);
+  }
   if (!lock) return keepInPlace(opts, 'another install holds the lock');
   try {
     return await prepareOnce(opts, opts.sourcePath);

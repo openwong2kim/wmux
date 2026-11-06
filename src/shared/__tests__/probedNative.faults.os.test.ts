@@ -88,6 +88,24 @@ describe('prepareProbedNative — a Windows swap whose undo fails too', () => {
   });
 });
 
+describe('prepareProbedNative — a lock that cannot be created', () => {
+  it('reports the error itself, not another holder', async () => {
+    const source = path.join(dir, 'source');
+    realFs.writeFileSync(source, 'good wmux-managed: native-hooks');
+    vi.mocked(fs.openSync).mockImplementation(((...args: unknown[]) => {
+      if (String(args[0]) === lockFile()) throw Object.assign(new Error('EACCES: injected'), { code: 'EACCES' });
+      return (realFs.openSync as (...a: unknown[]) => unknown)(...args);
+    }) as never);
+    const result = await prepareProbedNative({
+      sourcePath: source, destinationPath: path.join(dir, 'wmux-native'), recordDir: dir, line: 'line 1',
+      probe: async () => 'pass', ownershipMarkers: ['wmux-managed: native-hooks'],
+    });
+    expect(result.binary).toBeNull();
+    expect(result.reason).toContain('EACCES: injected');
+    expect(result.reason).not.toContain('another install');
+  });
+});
+
 describe('lockDir — taking over a stale lock', () => {
   it('never removes the lock another waiter took over first: two waiters, one dead lock', async () => {
     // W1 already took the dead lock over and holds a fresh one; W2 still

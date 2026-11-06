@@ -80,6 +80,14 @@ describe('prepareProbedNative', () => {
     expect(fs.readdirSync(dir).filter((f) => f.includes('.staged-') || f.includes('.previous'))).toEqual([]);
   });
 
+  it('creates a missing directory for the copy and the record, private to the user', async () => {
+    ship('good v1');
+    const fresh = path.join(root, 'new', 'hooks');
+    const result = await prepare({ destinationPath: path.join(fresh, 'wmux-native'), recordDir: fresh });
+    expect(result).toEqual({ binary: path.join(fresh, 'wmux-native') });
+    if (process.platform !== 'win32') expect(fs.statSync(fresh).mode & 0o777).toBe(0o700);
+  });
+
   it('takes the windows path: the copy in place goes aside, the staged one takes its name', async () => {
     ship('good v1');
     await prepare({ platform: 'win32' });
