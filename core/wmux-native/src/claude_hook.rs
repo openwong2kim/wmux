@@ -141,10 +141,17 @@ fn finish(outcome: Result<(), String>, log: Log) -> i32 {
 }
 
 /// All of `bytes` to `fd` (stdout or stderr). An inherited non-blocking
-/// descriptor is waited on until it takes more, as Node's stream holds the
-/// process until it drains. False when the write failed (the reader went
-/// away); the caller logs the loss and keeps its exit code.
+/// descriptor is waited on until it takes more, with no deadline: a reader
+/// that never reads holds the run, as it holds Node's stream. False when the
+/// write failed or the wait cannot go on (the reader went away, poll fails or
+/// cannot watch the descriptor); the caller logs the loss and keeps its exit
+/// code.
 fn write_out(fd: i32, bytes: &[u8]) -> bool {
+    write_waiting(fd, bytes, |fd| crate::claude_rpc::poll_fd(fd, unix_sys::POLLOUT, -1))
+}
+
+/// write_out with its wait for writability given: the revents, or poll's error.
+fn write_waiting(fd: i32, bytes: &[u8], wait: impl Fn(i32) -> std::io::Result<i16>) -> bool {
     use std::os::fd::FromRawFd;
     // SAFETY: fd 1 and 2 stay open for the whole process, and ManuallyDrop
     // never closes them.
@@ -155,16 +162,10 @@ fn write_out(fd: i32, bytes: &[u8]) -> bool {
             Ok(0) => return false,
             Ok(n) => written += n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                let mut p = unix_sys::PollFd {
-                    fd,
-                    events: unix_sys::POLLOUT,
-                    revents: 0,
-                };
-                // SAFETY: one valid pollfd for the duration of the call. A
-                // reader that went away wakes it, and the next write fails.
-                unsafe { unix_sys::poll(&mut p, 1, -1) };
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => match wait(fd) {
+                Ok(revents) if revents & (unix_sys::POLLNVAL | unix_sys::POLLERR) == 0 => {}
+                _ => return false,
+            },
             Err(_) => return false,
         }
     }
@@ -1029,6 +1030,33 @@ mod tests {
         assert_eq!(*logged.lock().unwrap(), ["uncaught"]);
         set_exit_code(0);
         assert_eq!(finish(Ok(()), &log), 0);
+    }
+
+    #[test]
+    fn output_stops_when_the_wait_cannot_go_on() {
+        // A full non-blocking descriptor whose poll fails, or cannot watch it
+        // (POLLNVAL, as macOS poll(2) answers for some devices), or reports an
+        // error: the write ends after that one wait, it does not spin.
+        use std::os::fd::AsRawFd;
+        let (writer, _reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        let big = vec![b'x'; 4 * 1024 * 1024];
+        for answer in [
+            Ok(unix_sys::POLLNVAL),
+            Ok(unix_sys::POLLERR | unix_sys::POLLOUT),
+            Err(std::io::Error::from_raw_os_error(22)),
+        ] {
+            let waits = std::cell::Cell::new(0);
+            let wait = |_: i32| {
+                waits.set(waits.get() + 1);
+                match &answer {
+                    Ok(revents) => Ok(*revents),
+                    Err(e) => Err(std::io::Error::from_raw_os_error(e.raw_os_error().unwrap())),
+                }
+            };
+            assert!(!write_waiting(writer.as_raw_fd(), &big, wait), "{answer:?}");
+            assert_eq!(waits.get(), 1, "{answer:?}");
+        }
     }
 
     #[test]

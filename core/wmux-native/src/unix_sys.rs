@@ -57,7 +57,6 @@ pub const POLLIN: i16 = 0x1;
 pub const POLLOUT: i16 = 0x4;
 pub const POLLERR: i16 = 0x8;
 pub const POLLHUP: i16 = 0x10;
-#[cfg(test)]
 pub const POLLNVAL: i16 = 0x20;
 
 pub const EINTR: i32 = 4;

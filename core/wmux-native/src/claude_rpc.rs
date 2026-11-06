@@ -311,11 +311,13 @@ fn open(pipe: &str) -> std::io::Result<UnixStream> {
 /// poll(2) on one fd: always for reading, and for writing when asked.
 /// Returns the revents (0 on timeout or EINTR).
 fn poll_one(fd: i32, want_write: bool, timeout_ms: i32) -> std::io::Result<i16> {
-    let mut p = PollFd {
-        fd,
-        events: POLLIN | if want_write { POLLOUT } else { 0 },
-        revents: 0,
-    };
+    poll_fd(fd, POLLIN | if want_write { POLLOUT } else { 0 }, timeout_ms)
+}
+
+/// poll(2) on one fd for `events`. Returns the revents (0 on timeout or
+/// EINTR); a failed poll is the error.
+pub(crate) fn poll_fd(fd: i32, events: i16, timeout_ms: i32) -> std::io::Result<i16> {
+    let mut p = PollFd { fd, events, revents: 0 };
     // SAFETY: one valid pollfd for the duration of the call.
     let n = unsafe { unix_sys::poll(&mut p, 1, timeout_ms) };
     if n < 0 {
