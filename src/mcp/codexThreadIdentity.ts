@@ -136,22 +136,38 @@ export function isSharedServerArgv(argv: string[]): boolean {
 
 const isMcpEntry = (token: string | undefined) =>
   /(?:^|\/)(?:\.wmux\/mcp|mcp-bundle|dist\/mcp\/mcp)\/(?:index|shim|entry)\.js$/.test(exePath(token).toLowerCase());
+/**
+ * Directories wmux ships the native launcher (`wmux-native[.exe]`) from,
+ * matched against its lowercased, `/`-separated directory (trailing `/`).
+ * The packaging lane must keep the binary inside one of these, or the
+ * launcher stops being recognised as wmux's own.
+ */
+const NATIVE_LAUNCHER_ROOTS: readonly RegExp[] = [
+  /(?:^|\/)\.wmux\/(?:[^/]+\/)*$/, // the stable copy, at any depth (it may be content-addressed)
+  /(?:^|\/)resources\/(?:[^/]+\/)*$/, // an installed app, app.asar.unpacked included
+  /(?:^|\/)core\/[^/]+\/target\/(?:debug|release)\/$/, // a dev build
+];
+const isNativeLauncher = (token: string | undefined) => {
+  const exe = exePath(token).toLowerCase();
+  const dir = exe.slice(0, exe.lastIndexOf('/') + 1);
+  return /^wmux-native(?:\.exe)?$/.test(exe.slice(dir.length)) && NATIVE_LAUNCHER_ROOTS.some((root) => root.test(dir));
+};
 /** Flags wmux itself puts after the entry (MCP config args). */
 const isOwnFlag = (token: string) => token === '--core' || token === '--commander' || /^--role=[\w-]+$/.test(token);
 
 /**
  * A wrapper that re-runs this server's own entry and nothing else:
  * `node <entry> [wmux flags]`, the native launcher
- * `<dir>/wmux-native[.exe] mcp-shim [wmux flags]`, or either one behind
- * `cmd [/d] [/s] /c`. Strict on shape, so a script that merely passes the
- * entry path as an argument (`node evil.js …/index.js`), a differently named
- * binary, or a shell line is NOT skipped.
+ * `<root>/wmux-native[.exe] mcp-shim [wmux flags]` (NATIVE_LAUNCHER_ROOTS),
+ * or either one behind `cmd [/d] [/s] /c`. Strict on shape, so a script that
+ * merely passes the entry path as an argument (`node evil.js …/index.js`), a
+ * differently named or placed binary, or a shell line is NOT skipped.
  */
 function isOwnLauncher(argv: string[]): boolean {
   const isNode = (t: string | undefined) => /^node(?:\.exe)?$/.test(baseName(t));
   const entryWithFlags = (rest: string[]) => isMcpEntry(rest[0]) && rest.slice(1).every(isOwnFlag);
   const isNativeShim = (rest: string[]) =>
-    /^wmux-native(?:\.exe)?$/.test(baseName(rest[0])) && rest[1] === 'mcp-shim' && rest.slice(2).every(isOwnFlag);
+    isNativeLauncher(rest[0]) && rest[1] === 'mcp-shim' && rest.slice(2).every(isOwnFlag);
   if (isNode(argv[0])) return entryWithFlags(argv.slice(1));
   if (isNativeShim(argv)) return true;
   if (/^cmd(?:\.exe)?$/.test(baseName(argv[0]))) {
