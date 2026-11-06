@@ -504,6 +504,9 @@ export type RpcMethod =
   // Performance diagnostics (P0-5c) — aggregate reveal-mechanism counters
   // for `wmux doctor --performance`. Read-only, no terminal content.
   | 'perf.status'
+  // Live MCP counts for `wmux doctor`: broker state and connections, recent
+  // single-child sessions. Read-only, counts plus the broker's own pid.
+  | 'mcp.sessions.summary'
   // Desktop computer use (docs/computer-use-design.md). Off unless the user
   // turns it on in Settings › Computer use; `act` is the only input-injecting method.
   | 'computer.capabilities'
@@ -895,6 +898,7 @@ export const ALL_RPC_METHODS = [
   'codex.relay.close',
   'system.capabilities',
   'perf.status',
+  'mcp.sessions.summary',
   'computer.capabilities',
   'computer.listApps',
   'computer.listWindows',

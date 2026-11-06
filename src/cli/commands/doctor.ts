@@ -23,7 +23,7 @@
  */
 
 import { readFileSync, openSync, fstatSync, readSync, closeSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
 import * as os from 'os';
 import { sendRequest, sendDaemonRequest } from '../client';
 import {
@@ -49,6 +49,9 @@ import {
   type AppMemoryDiagnostics, type DaemonMemoryDiagnostics,
 } from '../../shared/memoryDiagnostics';
 import { collectProcessMemory, renderMemoryDiagnostics } from '../memoryDiagnostics';
+import { readAllTargetStatuses, type TargetRegStatus } from '../../shared/mcpRegistration';
+import { fileSha256, recordedVerdict } from '../../shared/mcpLauncher';
+import type { McpSessionsSummary } from '../../shared/mcpSessions';
 
 // --- public report model -----------------------------------------------------
 
@@ -95,6 +98,8 @@ export interface DoctorReport {
   };
   avHint: { verdict: Verdict; lines: CheckLine[] };
   logs: { verdict: Verdict; lines: CheckLine[] };
+  /** Present when the run was given MCP deps (the CLI always is). */
+  mcp?: { verdict: Verdict; lines: CheckLine[] };
 }
 
 // --- injected dependencies (the seam unit tests substitute) ------------------
@@ -149,6 +154,19 @@ export interface DoctorDeps {
   tailReadTextFile: (path: string, maxBytes: number) => string | null;
   /** Process env snapshot — only WMUX_DATA_SUFFIX is consulted today. */
   env: Record<string, string | undefined>;
+  /** The MCP section's inputs; the section is left out without them. */
+  mcp?: McpDoctorDeps;
+}
+
+export interface McpDoctorDeps {
+  /** The user's home, shown as `~` so pasted output names no account. */
+  home: string;
+  /** Registration state per agent config, read from disk (works with the app down). */
+  targets: () => TargetRegStatus[];
+  /** The app's recorded self-test verdict for a native launcher's bytes. */
+  recordedVerdict: (binary: string) => 'pass' | 'fail' | undefined;
+  /** The main pipe's `mcp.sessions.summary`. */
+  sessions: () => Promise<RpcResponse>;
 }
 
 // --- thresholds (single source so tests assert the exact boundary) -----------
@@ -209,6 +227,7 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
   const bootPhases = buildBootPhases(deps, ping);
   const avHint = buildAvHint(bootPhases);
   const logs = buildLogs(deps);
+  const mcp = deps.mcp ? await buildMcpSection(deps.mcp, appPipeReachable) : undefined;
 
   const overall = worst([
     environment.verdict,
@@ -216,9 +235,10 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
     bootPhases.verdict,
     avHint.verdict,
     logs.verdict,
+    ...(mcp ? [mcp.verdict] : []),
   ]);
 
-  return { overall, environment, daemon, bootPhases, avHint, logs };
+  return { overall, environment, daemon, bootPhases, avHint, logs, ...(mcp ? { mcp } : {}) };
 }
 
 function buildEnvironment(
@@ -447,6 +467,109 @@ function buildLogs(deps: DoctorDeps): DoctorReport['logs'] {
     });
   }
 
+  return { verdict: worst(lines.map((l) => l.verdict)), lines };
+}
+
+// --- mcp section ----------------------------------------------------------------
+
+/** `~/…` for a path under the home directory, else null. */
+function homeRelative(p: string, home: string): string | null {
+  if (!home) return null;
+  if (p === home) return '~';
+  for (const sep of ['/', '\\']) {
+    const prefix = home.endsWith(sep) ? home : home + sep;
+    if (p.startsWith(prefix)) return `~${sep}${p.slice(prefix.length)}`;
+  }
+  return null;
+}
+
+function launcherKind(registered: string): 'native' | 'node-shim' | 'bundle' | 'other node script' {
+  const base = registered.split(/[\\/]/).pop() ?? '';
+  if (/^wmux-native(?:\.exe)?$/.test(base)) return 'native';
+  if (base === 'shim.js') return 'node-shim';
+  if (base === 'index.js') return 'bundle';
+  return 'other node script';
+}
+
+function registeredLine(t: TargetRegStatus, deps: McpDoctorDeps): CheckLine {
+  const label = `registered (${t.id})`;
+  // An agent without wmux registered is a choice, not a fault.
+  if (!t.wmux.registered || !t.wmux.path) return { label, value: 'not registered', verdict: 'OK' };
+  const kind = launcherKind(t.wmux.path);
+  const where = kind === 'other node script' ? null : homeRelative(t.wmux.path, deps.home) ?? t.wmux.path;
+  const value = `${kind}, ${t.wmux.profile ?? 'full'}${where ? ` (${where})` : ''}`;
+  if (kind === 'native' && deps.recordedVerdict(t.wmux.path) === 'fail') {
+    return {
+      label,
+      value,
+      verdict: 'WARN',
+      hint: 'This copy is recorded as failing its self-test; the app registers the Node launcher on its next start.',
+    };
+  }
+  return { label, value, verdict: 'OK' };
+}
+
+function isSessionsSummary(v: unknown): v is McpSessionsSummary {
+  const o = v as { broker?: Record<string, unknown>; bundle?: Record<string, unknown> } | null;
+  const b = o?.broker;
+  const n = o?.bundle;
+  if (!b || typeof b !== 'object' || !n || typeof n !== 'object') return false;
+  const nums = (rec: Record<string, unknown>, keys: string[]) => keys.every((k) => typeof rec[k] === 'number');
+  return typeof b.enabled === 'boolean' && typeof b.running === 'boolean' && typeof b.standingDown === 'boolean'
+    && nums(b, ['connections', 'crashExits', 'standDowns'])
+    && (b.pid === null || typeof b.pid === 'number')
+    && (b.uptimeS === null || typeof b.uptimeS === 'number')
+    && typeof n.capped === 'boolean' && nums(n, ['recent', 'ttlS']);
+}
+
+function brokerLine(b: McpSessionsSummary['broker']): CheckLine {
+  if (!b.enabled) return { label: 'broker', value: 'off', verdict: 'OK' };
+  if (b.running) {
+    return {
+      label: 'broker',
+      value: `running pid ${b.pid}, up ${formatUptime(b.uptimeS ?? undefined)}, connections ${b.connections}, ` +
+        `crash exits ${b.crashExits}, stand-downs ${b.standDowns}`,
+      verdict: 'OK',
+    };
+  }
+  if (b.standingDown) {
+    return { label: 'broker', value: `served by another wmux instance's broker (stand-downs ${b.standDowns})`, verdict: 'OK' };
+  }
+  return {
+    label: 'broker',
+    value: `not running (crash exits ${b.crashExits})`,
+    verdict: 'WARN',
+    hint: 'The broker is on but down; agents started now get the full bundle until it restarts.',
+  };
+}
+
+export async function buildMcpSection(
+  deps: McpDoctorDeps,
+  appPipeReachable = true,
+): Promise<{ verdict: Verdict; lines: CheckLine[] }> {
+  const lines = deps.targets().map((t) => registeredLine(t, deps));
+  let summary: McpSessionsSummary | null = null;
+  let skipReason = 'the app is not running';
+  if (appPipeReachable) {
+    try {
+      const resp = await deps.sessions();
+      if (resp.ok && isSessionsSummary(resp.result)) summary = resp.result;
+      else skipReason = 'this app version does not report them';
+    } catch {
+      // Leave the default reason: the pipe went away between the probe and here.
+    }
+  }
+  if (summary) {
+    lines.push(brokerLine(summary.broker));
+    const minutes = Math.round(summary.bundle.ttlS / 60);
+    lines.push({
+      label: `bundle sessions (last ${minutes} min)`,
+      value: summary.bundle.capped ? `≥${summary.bundle.recent}` : String(summary.bundle.recent),
+      verdict: 'OK',
+    });
+  } else {
+    lines.push({ label: 'live sessions', value: `unavailable (${skipReason})`, verdict: 'SKIP' });
+  }
   return { verdict: worst(lines.map((l) => l.verdict)), lines };
 }
 
@@ -743,6 +866,7 @@ export function renderReport(report: DoctorReport): string {
   }
   out.push('');
 
+  if (report.mcp) section('mcp', report.mcp.verdict, report.mcp.lines);
   section('antivirus tax hint', report.avHint.verdict, report.avHint.lines);
   section('logs', report.logs.verdict, report.logs.lines);
 
@@ -781,6 +905,15 @@ export async function handleDoctor(args: string[], jsonMode: boolean): Promise<v
     readTextFile: readTextFileSafe,
     tailReadTextFile: tailReadTextFileSafe,
     env: process.env,
+    mcp: {
+      home: os.homedir(),
+      targets: () => readAllTargetStatuses(os.homedir()),
+      recordedVerdict: (binary) => {
+        const hash = fileSha256(binary);
+        return hash ? recordedVerdict(dirname(binary), hash) : undefined;
+      },
+      sessions: () => sendRequest('mcp.sessions.summary', {}),
+    },
   };
 
   const report = await buildDoctorReport(deps);
