@@ -1,0 +1,811 @@
+//! `wmux-native mcp-shim`: the per-agent MCP process under the broker
+//! topology, with the contract of src/mcp/shim.ts.
+//!
+//! It asserts who it is to the broker in one JSON handshake line (its pid and
+//! ppid, the pane env hints, the pipe auth token and the surface flags), then
+//! pumps raw bytes: stdin to the broker pipe, the broker pipe to stdout.
+//! stdout carries only broker bytes; diagnostics go to stderr.
+//!
+//! It runs as the host's direct child (no wrapper, no re-exec), so the broker's
+//! identity walk from `callerPid` sees the same ancestry as with the Node shim.
+//!
+//! Exit codes, as shim.ts: 0 when the host ends the session (stdin EOF or a
+//! read error, SIGTERM/SIGINT or a console control event, stdout gone); 1 when
+//! there is no token, the broker cannot be reached, or the connection drops
+//! mid-session. A dropped session is never resumed: MCP servers keep per-session
+//! state, so the host must see the server die and restart it.
+
+use crate::js::{decode_utf8_trimmed, stringify, JsStr, Json};
+use crate::paths::{env, env_js, os_to_js};
+use std::ffi::OsString;
+use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+/// The `wmuxShim` handshake version the broker checks for.
+pub const PROTOCOL_VERSION: u32 = 1;
+const CONNECT_RETRIES: u32 = 10;
+const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(300);
+const COMMANDER_MODE_ARG: &str = "--commander";
+const CORE_MODE_ARG: &str = "--core";
+const ROLE_MODE_ARG_PREFIX: &str = "--role=";
+const SELF_TEST_ARG: &str = "--self-test";
+const PREFIX: &str = "[wmux-mcp-shim]";
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Args {
+    pub commander: bool,
+    pub core: bool,
+    /// The last `--role=` value, unvalidated (the broker judges it).
+    pub role: Option<JsStr>,
+    pub self_test: bool,
+}
+
+/// `process.argv.includes(...)` and `roleArgValue`: exact flags, the last
+/// `--role=` wins, anything else is ignored.
+pub fn parse_args(args: &[OsString]) -> Args {
+    let prefix = crate::js::js(ROLE_MODE_ARG_PREFIX);
+    let mut out = Args::default();
+    for arg in args {
+        let a = os_to_js(arg);
+        if a == crate::js::js(COMMANDER_MODE_ARG) {
+            out.commander = true;
+        } else if a == crate::js::js(CORE_MODE_ARG) {
+            out.core = true;
+        } else if a == crate::js::js(SELF_TEST_ARG) {
+            out.self_test = true;
+        }
+        if a.starts_with(&prefix) {
+            out.role = Some(a[prefix.len()..].to_vec());
+        }
+    }
+    out
+}
+
+/// How a session ended, and the exit code each end maps to.
+#[derive(Debug)]
+pub enum Outcome {
+    StdinEnd,
+    StdinError,
+    Signal,
+    StdoutClosed,
+    NoToken,
+    Unreachable { pipe: String, error: String },
+    BrokerClosed,
+    BrokerError(String),
+}
+
+impl Outcome {
+    pub const fn code(&self) -> i32 {
+        match self {
+            Outcome::StdinEnd | Outcome::StdinError | Outcome::Signal | Outcome::StdoutClosed => 0,
+            Outcome::NoToken | Outcome::Unreachable { .. } | Outcome::BrokerClosed | Outcome::BrokerError(_) => 1,
+        }
+    }
+
+    /// The stderr line, as shim.ts words it; None for a quiet end.
+    pub fn message(&self) -> Option<String> {
+        match self {
+            Outcome::NoToken => Some(format!("{PREFIX} auth token not found. Is wmux running?")),
+            Outcome::Unreachable { pipe, error } => Some(format!("{PREFIX} cannot reach broker at {pipe}: {error}")),
+            Outcome::BrokerClosed => Some(format!("{PREFIX} broker connection closed")),
+            Outcome::BrokerError(e) => Some(format!("{PREFIX} broker connection error: {e}")),
+            _ => None,
+        }
+    }
+}
+
+// ----- token and endpoint ----------------------------------------------------
+
+fn data_suffix() -> String {
+    env("WMUX_DATA_SUFFIX").unwrap_or_default()
+}
+
+/// getAuthTokenPath: a template string, so an empty home yields `/.wmux…`.
+pub fn token_path_from(userprofile: Option<String>, home: Option<String>, suffix: &str) -> String {
+    let home = userprofile
+        .filter(|v| !v.is_empty())
+        .or(home.filter(|v| !v.is_empty()))
+        .unwrap_or_default();
+    format!("{home}/.wmux{suffix}-auth-token")
+}
+
+/// readAuthToken: the trimmed file if non-empty, else a non-empty
+/// WMUX_AUTH_TOKEN (not trimmed), else None.
+pub fn resolve_token(file: Option<&[u8]>, env_token: Option<JsStr>) -> Option<JsStr> {
+    if let Some(token) = file.map(decode_utf8_trimmed).filter(|t| !t.is_empty()) {
+        return Some(token);
+    }
+    env_token.filter(|t| !t.is_empty())
+}
+
+fn read_auth_token() -> Option<JsStr> {
+    let path = token_path_from(env("USERPROFILE"), env("HOME"), &data_suffix());
+    let file = std::fs::read(path).ok();
+    resolve_token(file.as_deref(), env_js("WMUX_AUTH_TOKEN"))
+}
+
+/// getMcpBrokerPipeName on Unix: `os.homedir() || '/tmp'`, where homedir is
+/// HOME whenever it is set (even empty) and the account database otherwise.
+#[cfg(any(unix, test))]
+pub fn unix_pipe_from(home_var: Option<String>, account: impl FnOnce() -> String, suffix: &str) -> String {
+    let home = home_var.unwrap_or_else(account);
+    let home = if home.is_empty() { "/tmp".to_string() } else { home };
+    format!("{home}/.wmux-mcpb{suffix}.sock")
+}
+
+/// getMcpBrokerPipeName on Windows.
+#[cfg(any(windows, test))]
+pub fn windows_pipe_from(username: &str, suffix: &str) -> String {
+    let user = if username.is_empty() { "default" } else { username };
+    format!(r"\\.\pipe\wmux-mcpb{suffix}-{user}")
+}
+
+#[cfg(unix)]
+fn broker_pipe_name() -> String {
+    unix_pipe_from(
+        env("HOME"),
+        || {
+            #[allow(deprecated)]
+            std::env::home_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        },
+        &data_suffix(),
+    )
+}
+
+#[cfg(windows)]
+fn broker_pipe_name() -> String {
+    windows_pipe_from(&sys::username(), &data_suffix())
+}
+
+// ----- handshake -------------------------------------------------------------
+
+pub struct Handshake {
+    pub token: JsStr,
+    pub pid: u32,
+    pub ppid: i64,
+    pub env_workspace_hint: JsStr,
+    pub env_pty_hint: JsStr,
+    /// WMUX_COMMANDER_TOKEN as set, "" included; None when unset.
+    pub commander_token: Option<JsStr>,
+    pub args: Args,
+}
+
+/// The handshake line, newline included, with shim.ts's key order. An
+/// undefined value (commanderToken, roleSurface) is left out, as
+/// JSON.stringify does.
+pub fn handshake_line(h: &Handshake) -> String {
+    let key = crate::js::js;
+    let mut entries: Vec<(JsStr, Json)> = vec![
+        (key("wmuxShim"), Json::Num(f64::from(PROTOCOL_VERSION))),
+        (key("authToken"), Json::Str(h.token.clone())),
+        (key("callerPid"), Json::Num(f64::from(h.pid))),
+        (key("callerPpid"), Json::Num(h.ppid as f64)),
+        (key("envWorkspaceHint"), Json::Str(h.env_workspace_hint.clone())),
+        (key("envPtyHint"), Json::Str(h.env_pty_hint.clone())),
+    ];
+    if let Some(t) = &h.commander_token {
+        entries.push((key("commanderToken"), Json::Str(t.clone())));
+    }
+    entries.push((key("commanderMode"), Json::Bool(h.args.commander)));
+    entries.push((key("coreMode"), Json::Bool(h.args.core)));
+    if let Some(role) = &h.args.role {
+        entries.push((key("roleSurface"), Json::Str(role.clone())));
+    }
+    let mut out = String::new();
+    stringify(&Json::Obj(entries), &mut out);
+    out.push('\n');
+    out
+}
+
+// ----- process ---------------------------------------------------------------
+
+static EXITING: AtomicBool = AtomicBool::new(false);
+
+/// First end wins: a stdin EOF racing a broker close must not report both.
+fn claim_exit() -> bool {
+    !EXITING.swap(true, Ordering::SeqCst)
+}
+
+fn exit_with(outcome: Outcome) -> ! {
+    if let Some(msg) = outcome.message() {
+        eprintln!("{msg}");
+    }
+    std::process::exit(outcome.code())
+}
+
+/// End the process with `outcome` unless another thread already is.
+fn finish(outcome: Outcome) -> ! {
+    if claim_exit() {
+        exit_with(outcome);
+    }
+    loop {
+        std::thread::park();
+    }
+}
+
+fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
+    let mut last = None;
+    for _ in 0..CONNECT_RETRIES {
+        match sys::connect(pipe) {
+            Ok(conn) => return Ok(conn),
+            Err(e) => {
+                last = Some(e);
+                std::thread::sleep(CONNECT_RETRY_DELAY);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("no attempt")))
+}
+
+/// Broker to stdout until either side ends.
+fn pump_to_stdout(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> ! {
+    let mut buf = vec![0u8; 64 * 1024];
+    let stdout = std::io::stdout();
+    loop {
+        let n = match read(&mut buf) {
+            Ok(0) => finish(Outcome::BrokerClosed),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => finish(Outcome::BrokerError(e.to_string())),
+        };
+        let mut out = stdout.lock();
+        // A write failure means the host stopped reading: its session is over.
+        if out.write_all(&buf[..n]).and_then(|_| out.flush()).is_err() {
+            finish(Outcome::StdoutClosed);
+        }
+    }
+}
+
+/// stdin to the broker; returns on stdin EOF, ends the process otherwise.
+fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut stdin = std::io::stdin().lock();
+    loop {
+        let n = match stdin.read(&mut buf) {
+            Ok(0) => return,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => finish(Outcome::StdinError),
+        };
+        if let Err(e) = write(&buf[..n]) {
+            finish(Outcome::BrokerError(e.to_string()));
+        }
+    }
+}
+
+pub fn run(args: &[OsString]) -> ! {
+    let args = parse_args(args);
+    if args.self_test {
+        println!("wmux-mcp-shim protocol {PROTOCOL_VERSION}");
+        std::process::exit(0);
+    }
+    sys::install_exit_handlers();
+    let Some(token) = read_auth_token() else {
+        exit_with(Outcome::NoToken);
+    };
+    let pipe = broker_pipe_name();
+    let conn = match connect_with_retry(&pipe) {
+        Ok(conn) => conn,
+        Err(e) => exit_with(Outcome::Unreachable {
+            pipe,
+            error: e.to_string(),
+        }),
+    };
+    let line = handshake_line(&Handshake {
+        token,
+        pid: std::process::id(),
+        ppid: sys::parent_pid(),
+        env_workspace_hint: env_js("WMUX_WORKSPACE_ID").unwrap_or_default(),
+        env_pty_hint: env_js("WMUX_PTY_ID").unwrap_or_default(),
+        commander_token: env_js("WMUX_COMMANDER_TOKEN"),
+        args,
+    });
+    sys::session(conn, line.as_bytes())
+}
+
+// ----- Unix transport --------------------------------------------------------
+
+#[cfg(unix)]
+mod sys {
+    use super::{finish, pump_from_stdin, pump_to_stdout, Outcome};
+    use std::io::{Read, Write};
+    use std::net::Shutdown;
+    use std::os::unix::net::UnixStream;
+
+    pub type Conn = UnixStream;
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn connect(pipe: &str) -> std::io::Result<UnixStream> {
+        UnixStream::connect(pipe)
+    }
+
+    /// macOS takes a sockaddr_un longer than its 104-byte `sun_path` when
+    /// `sun_len` says so, and libuv (so the Node shim and the broker that
+    /// bound the socket) relies on that. std refuses such a path, so build the
+    /// address by hand for the long case.
+    #[cfg(target_os = "macos")]
+    pub fn connect(pipe: &str) -> std::io::Result<UnixStream> {
+        use std::io::Error;
+        use std::os::fd::FromRawFd;
+        extern "C" {
+            fn socket(domain: i32, kind: i32, protocol: i32) -> i32;
+            fn connect(fd: i32, addr: *const u8, len: u32) -> i32;
+            fn close(fd: i32) -> i32;
+        }
+        const AF_UNIX: u8 = 1;
+        const SOCK_STREAM: i32 = 1;
+        const ENAMETOOLONG: i32 = 63;
+        let path = pipe.as_bytes();
+        if path.len() < 104 {
+            return UnixStream::connect(pipe);
+        }
+        // sun_len, sun_family, path, NUL; sun_len is one byte.
+        let len = 2 + path.len() + 1;
+        if len > 255 || path.contains(&0) {
+            return Err(Error::from_raw_os_error(ENAMETOOLONG));
+        }
+        let mut addr = vec![0u8; len];
+        addr[0] = len as u8;
+        addr[1] = AF_UNIX;
+        addr[2..2 + path.len()].copy_from_slice(path);
+        // SAFETY: plain socket calls; `addr` outlives connect, and the fd is
+        // closed on failure or owned by the returned stream.
+        unsafe {
+            let fd = socket(AF_UNIX as i32, SOCK_STREAM, 0);
+            if fd < 0 {
+                return Err(Error::last_os_error());
+            }
+            if connect(fd, addr.as_ptr(), len as u32) != 0 {
+                let e = Error::last_os_error();
+                close(fd);
+                return Err(e);
+            }
+            Ok(UnixStream::from_raw_fd(fd))
+        }
+    }
+
+    pub fn parent_pid() -> i64 {
+        i64::from(std::os::unix::process::parent_id())
+    }
+
+    extern "C" fn on_signal(_: i32) {
+        extern "C" {
+            fn _exit(code: i32) -> !;
+        }
+        // SAFETY: _exit is async-signal-safe; the kernel closes the socket.
+        unsafe { _exit(Outcome::Signal.code()) }
+    }
+
+    /// SIGTERM and SIGINT end the session cleanly (exit 0), as in shim.ts.
+    pub fn install_exit_handlers() {
+        extern "C" {
+            fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+        }
+        const SIGINT: i32 = 2;
+        const SIGTERM: i32 = 15;
+        // SAFETY: the handler only calls _exit.
+        unsafe {
+            signal(SIGTERM, on_signal);
+            signal(SIGINT, on_signal);
+        }
+    }
+
+    pub fn session(mut conn: UnixStream, handshake: &[u8]) -> ! {
+        if let Err(e) = conn.write_all(handshake) {
+            finish(Outcome::BrokerError(e.to_string()));
+        }
+        let mut reader = match conn.try_clone() {
+            Ok(r) => r,
+            Err(e) => finish(Outcome::BrokerError(e.to_string())),
+        };
+        std::thread::spawn(move || pump_to_stdout(|buf| reader.read(buf)));
+        pump_from_stdin(|bytes| (&conn).write_all(bytes));
+        // Host closed stdin: end of session. Half-close first, as
+        // socket.end() does, so the broker sees an orderly end.
+        if super::claim_exit() {
+            let _ = conn.shutdown(Shutdown::Write);
+            std::process::exit(Outcome::StdinEnd.code());
+        }
+        loop {
+            std::thread::park();
+        }
+    }
+}
+
+// ----- Windows transport -----------------------------------------------------
+
+#[cfg(windows)]
+mod sys {
+    use super::{finish, pump_from_stdin, pump_to_stdout, Outcome};
+    use crate::js::lossy;
+    use core::ffi::c_void;
+    use std::io::Error;
+    use std::sync::Arc;
+
+    type Handle = *mut c_void;
+    const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
+    const SECURITY_SQOS_PRESENT: u32 = 0x0010_0000;
+    const SECURITY_IDENTIFICATION: u32 = 1 << 16;
+    const FILE_TYPE_PIPE: u32 = 3;
+    const ERROR_INVALID_FUNCTION: i32 = 1;
+    const ERROR_BROKEN_PIPE: i32 = 109;
+    const ERROR_PIPE_BUSY: i32 = 231;
+    const ERROR_IO_PENDING: i32 = 997;
+    const PIPE_BUSY_WAIT_MS: u32 = 30_000;
+
+    #[repr(C)]
+    struct Overlapped {
+        internal: usize,
+        internal_high: usize,
+        offset: u32,
+        offset_high: u32,
+        event: Handle,
+    }
+
+    #[repr(C)]
+    struct ProcessBasicInformation {
+        exit_status: i32,
+        peb_base_address: *mut c_void,
+        affinity_mask: usize,
+        base_priority: i32,
+        unique_process_id: usize,
+        inherited_from_unique_process_id: usize,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *mut c_void,
+            disposition: u32,
+            flags: u32,
+            template: Handle,
+        ) -> Handle;
+        fn WaitNamedPipeW(name: *const u16, timeout_ms: u32) -> i32;
+        fn GetFileType(handle: Handle) -> u32;
+        fn CloseHandle(handle: Handle) -> i32;
+        fn CreateEventW(security: *mut c_void, manual_reset: i32, initial_state: i32, name: *const u16) -> Handle;
+        fn ReadFile(handle: Handle, buf: *mut u8, len: u32, read: *mut u32, ov: *mut Overlapped) -> i32;
+        fn WriteFile(handle: Handle, buf: *const u8, len: u32, written: *mut u32, ov: *mut Overlapped) -> i32;
+        fn GetOverlappedResult(handle: Handle, ov: *mut Overlapped, transferred: *mut u32, wait: i32) -> i32;
+        fn GetCurrentProcess() -> Handle;
+        fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtQueryInformationProcess(
+            process: Handle,
+            class: u32,
+            info: *mut c_void,
+            len: u32,
+            returned: *mut u32,
+        ) -> i32;
+    }
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn GetUserNameW(buffer: *mut u16, size: *mut u32) -> i32;
+    }
+
+    /// The pipe handle, opened for overlapped I/O so one thread's pending read
+    /// does not hold up the other's write (a synchronous handle serialises
+    /// them, and the session deadlocks).
+    pub struct Conn(Handle);
+    // SAFETY: a file HANDLE may be used from any thread; each operation brings
+    // its own OVERLAPPED and event.
+    unsafe impl Send for Conn {}
+    unsafe impl Sync for Conn {}
+
+    impl Drop for Conn {
+        fn drop(&mut self) {
+            // SAFETY: the handle is owned and closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    impl Conn {
+        /// One overlapped read or write, waited for on this call's own event.
+        fn io(&self, buf: *mut u8, len: usize, write: bool) -> std::io::Result<usize> {
+            let len = len.min(u32::MAX as usize) as u32;
+            // SAFETY: a fresh manual-reset event, closed below.
+            let event = unsafe { CreateEventW(std::ptr::null_mut(), 1, 0, std::ptr::null()) };
+            if event.is_null() {
+                return Err(Error::last_os_error());
+            }
+            let mut ov = Overlapped {
+                internal: 0,
+                internal_high: 0,
+                offset: 0,
+                offset_high: 0,
+                event,
+            };
+            let mut n = 0u32;
+            // SAFETY: `buf` is valid for `len` bytes and, with `ov`, outlives the
+            // operation: GetOverlappedResult waits for it to complete.
+            let result = unsafe {
+                let started = if write {
+                    WriteFile(self.0, buf, len, &mut n, &mut ov)
+                } else {
+                    ReadFile(self.0, buf, len, &mut n, &mut ov)
+                };
+                if started != 0 || Error::last_os_error().raw_os_error() == Some(ERROR_IO_PENDING) {
+                    if GetOverlappedResult(self.0, &mut ov, &mut n, 1) != 0 {
+                        Ok(n as usize)
+                    } else {
+                        Err(Error::last_os_error())
+                    }
+                } else {
+                    Err(Error::last_os_error())
+                }
+            };
+            // SAFETY: the event is ours and no longer referenced.
+            unsafe { CloseHandle(event) };
+            result
+        }
+
+        fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
+            match self.io(buf.as_mut_ptr(), buf.len(), false) {
+                // The server closed its end: end of stream.
+                Err(e) if e.raw_os_error() == Some(ERROR_BROKEN_PIPE) => Ok(0),
+                other => other,
+            }
+        }
+
+        fn write_all(&self, mut bytes: &[u8]) -> std::io::Result<()> {
+            while !bytes.is_empty() {
+                let n = self.io(bytes.as_ptr() as *mut u8, bytes.len(), true)?;
+                if n == 0 {
+                    return Err(Error::from(std::io::ErrorKind::WriteZero));
+                }
+                bytes = &bytes[n..];
+            }
+            Ok(())
+        }
+    }
+
+    fn open(wide: &[u16]) -> Handle {
+        // SAFETY: `wide` is NUL-terminated; the returned handle is checked.
+        unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                std::ptr::null_mut(),
+            )
+        }
+    }
+
+    /// Open the client end of the broker pipe. All instances busy is waited
+    /// out with WaitNamedPipeW and retried, as libuv does; a name that resolves
+    /// to anything but a pipe is refused before the token is written.
+    pub fn connect(pipe: &str) -> std::io::Result<Conn> {
+        let wide: Vec<u16> = pipe.encode_utf16().chain(Some(0)).collect();
+        let handle = loop {
+            let handle = open(&wide);
+            if handle != INVALID_HANDLE_VALUE {
+                break handle;
+            }
+            let e = Error::last_os_error();
+            if e.raw_os_error() != Some(ERROR_PIPE_BUSY) {
+                return Err(e);
+            }
+            // SAFETY: `wide` is NUL-terminated.
+            if unsafe { WaitNamedPipeW(wide.as_ptr(), PIPE_BUSY_WAIT_MS) } == 0 {
+                return Err(Error::last_os_error());
+            }
+        };
+        let conn = Conn(handle);
+        // SAFETY: the handle is valid and owned by `conn`.
+        if unsafe { GetFileType(conn.0) } != FILE_TYPE_PIPE {
+            return Err(Error::from_raw_os_error(ERROR_INVALID_FUNCTION));
+        }
+        Ok(conn)
+    }
+
+    /// `process.ppid`: libuv reads InheritedFromUniqueProcessId, -1 on failure.
+    pub fn parent_pid() -> i64 {
+        let mut info = std::mem::MaybeUninit::<ProcessBasicInformation>::zeroed();
+        // SAFETY: class 0 is ProcessBasicInformation, and `info` is its size.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                GetCurrentProcess(),
+                0,
+                info.as_mut_ptr().cast(),
+                std::mem::size_of::<ProcessBasicInformation>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        if status < 0 {
+            return -1;
+        }
+        // SAFETY: initialised by the successful call.
+        unsafe { info.assume_init() }.inherited_from_unique_process_id as i64
+    }
+
+    /// `os.userInfo().username` (empty on failure; the caller supplies the default).
+    pub fn username() -> String {
+        let mut buf = [0u16; 257];
+        let mut len = buf.len() as u32;
+        // SAFETY: buf is valid for `len` units; len receives the count incl. NUL.
+        let ok = unsafe { GetUserNameW(buf.as_mut_ptr(), &mut len) } != 0;
+        if ok && len > 0 {
+            lossy(&buf[..len as usize - 1])
+        } else {
+            String::new()
+        }
+    }
+
+    unsafe extern "system" fn on_ctrl(_: u32) -> i32 {
+        if super::claim_exit() {
+            std::process::exit(Outcome::Signal.code());
+        }
+        1
+    }
+
+    /// Ctrl+C, Ctrl+Break, console close, logoff and shutdown end the session
+    /// cleanly (exit 0), the Windows counterpart of SIGINT/SIGTERM.
+    pub fn install_exit_handlers() {
+        // SAFETY: registers a handler that only exits the process.
+        unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) };
+    }
+
+    pub fn session(conn: Conn, handshake: &[u8]) -> ! {
+        let conn = Arc::new(conn);
+        if let Err(e) = conn.write_all(handshake) {
+            finish(Outcome::BrokerError(e.to_string()));
+        }
+        let reader = Arc::clone(&conn);
+        std::thread::spawn(move || pump_to_stdout(|buf| reader.read(buf)));
+        pump_from_stdin(|bytes| conn.write_all(bytes));
+        // Host closed stdin: close the pipe and end the session.
+        if super::claim_exit() {
+            // SAFETY: the process exits next, so the handle is never used again.
+            unsafe { CloseHandle(conn.0) };
+            std::process::exit(Outcome::StdinEnd.code());
+        }
+        loop {
+            std::thread::park();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::js::js;
+
+    fn argv(a: &[&str]) -> Vec<OsString> {
+        a.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn flags_are_exact_and_the_last_role_wins() {
+        let a = parse_args(&argv(&[
+            "--commander",
+            "--core",
+            "--role=a",
+            "x",
+            "--role=b",
+            "--port",
+            "1",
+        ]));
+        assert!(a.commander && a.core && !a.self_test);
+        assert_eq!(a.role, Some(js("b")));
+        let b = parse_args(&argv(&["--commander=1", "--cored", "-core", "--role"]));
+        assert_eq!(b, Args::default());
+        assert_eq!(parse_args(&argv(&["--role="])).role, Some(js("")));
+        assert!(parse_args(&argv(&["--self-test"])).self_test);
+    }
+
+    #[test]
+    fn the_token_file_wins_over_the_env_and_blank_counts_as_absent() {
+        assert_eq!(
+            resolve_token(Some(b"\xEF\xBB\xBF file \n"), Some(js("env"))),
+            Some(js("file"))
+        );
+        assert_eq!(resolve_token(Some(b" \r\n\t"), Some(js("env"))), Some(js("env")));
+        assert_eq!(resolve_token(None, Some(js(" env "))), Some(js(" env ")));
+        assert_eq!(resolve_token(None, Some(js(""))), None);
+        assert_eq!(resolve_token(Some(b""), None), None);
+    }
+
+    #[test]
+    fn the_token_path_is_a_template_over_userprofile_then_home() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(token_path_from(s("C:\\U"), s("/h"), "-x"), "C:\\U/.wmux-x-auth-token");
+        assert_eq!(token_path_from(s(""), s("/h"), ""), "/h/.wmux-auth-token");
+        assert_eq!(token_path_from(None, s(""), "-x"), "/.wmux-x-auth-token");
+    }
+
+    #[test]
+    fn the_pipe_name_follows_homedir_and_the_suffix() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(unix_pipe_from(s("/h"), || "/acct".into(), "-x"), "/h/.wmux-mcpb-x.sock");
+        // Set but empty is kept (os.homedir), then `|| '/tmp'` applies.
+        assert_eq!(unix_pipe_from(s(""), || "/acct".into(), ""), "/tmp/.wmux-mcpb.sock");
+        assert_eq!(unix_pipe_from(None, || "/acct".into(), ""), "/acct/.wmux-mcpb.sock");
+        assert_eq!(unix_pipe_from(None, String::new, ""), "/tmp/.wmux-mcpb.sock");
+        assert_eq!(windows_pipe_from("u", "-x"), r"\\.\pipe\wmux-mcpb-x-u");
+        assert_eq!(windows_pipe_from("", ""), r"\\.\pipe\wmux-mcpb-default");
+    }
+
+    fn sample(commander_token: Option<&str>, args: Args) -> Handshake {
+        Handshake {
+            token: js("t\"k\u{1}"),
+            pid: 42,
+            ppid: 7,
+            env_workspace_hint: js("ws"),
+            env_pty_hint: js(""),
+            commander_token: commander_token.map(js),
+            args,
+        }
+    }
+
+    #[test]
+    fn the_handshake_has_shim_ts_key_order_and_leaves_undefined_out() {
+        assert_eq!(
+            handshake_line(&sample(None, Args::default())),
+            "{\"wmuxShim\":1,\"authToken\":\"t\\\"k\\u0001\",\"callerPid\":42,\"callerPpid\":7,\
+             \"envWorkspaceHint\":\"ws\",\"envPtyHint\":\"\",\"commanderMode\":false,\"coreMode\":false}\n"
+        );
+        let args = Args {
+            commander: true,
+            core: true,
+            role: Some(js("")),
+            self_test: false,
+        };
+        assert_eq!(
+            handshake_line(&sample(Some(""), args)),
+            "{\"wmuxShim\":1,\"authToken\":\"t\\\"k\\u0001\",\"callerPid\":42,\"callerPpid\":7,\
+             \"envWorkspaceHint\":\"ws\",\"envPtyHint\":\"\",\"commanderToken\":\"\",\
+             \"commanderMode\":true,\"coreMode\":true,\"roleSurface\":\"\"}\n"
+        );
+        let mut h = sample(Some("c"), Args::default());
+        h.ppid = -1;
+        assert!(handshake_line(&h).contains("\"callerPpid\":-1,"));
+        assert!(handshake_line(&h).contains("\"commanderToken\":\"c\","));
+    }
+
+    #[test]
+    fn host_ends_exit_0_and_broker_failures_exit_1() {
+        for o in [
+            Outcome::StdinEnd,
+            Outcome::StdinError,
+            Outcome::Signal,
+            Outcome::StdoutClosed,
+        ] {
+            assert_eq!(o.code(), 0, "{o:?}");
+            assert_eq!(o.message(), None, "{o:?}");
+        }
+        let unreachable = Outcome::Unreachable {
+            pipe: "/p".into(),
+            error: "e".into(),
+        };
+        for o in [
+            Outcome::NoToken,
+            unreachable,
+            Outcome::BrokerClosed,
+            Outcome::BrokerError("e".into()),
+        ] {
+            assert_eq!(o.code(), 1, "{o:?}");
+            assert!(o.message().unwrap().starts_with("[wmux-mcp-shim] "), "{o:?}");
+        }
+        assert_eq!(
+            Outcome::NoToken.message().unwrap(),
+            "[wmux-mcp-shim] auth token not found. Is wmux running?"
+        );
+    }
+}
