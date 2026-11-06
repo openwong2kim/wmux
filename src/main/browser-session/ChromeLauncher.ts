@@ -839,7 +839,10 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   private async startTargetWatcher(): Promise<void> {
     if (!this.isRunning()) return; // nothing running yet; a later demand retries
-    const endpoint = await this.reach().browserEndpoint();
+    // One transport for the read and the dial: an endpoint is only good on
+    // the transport that named it.
+    const transport = this.reach();
+    const endpoint = await transport.browserEndpoint();
     if (endpoint === null) {
       this.watcherDown('no browser webSocketDebuggerUrl on /json/version');
       return;
@@ -847,7 +850,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.closeWatcher();
     if (this.disposed) return;
     const generation = ++this.watcherGeneration;
-    const socket: CdpSocket = this.reach().connect(
+    const socket: CdpSocket = transport.connect(
       () => {
         const url = this.browserWsEndpoint;
         if (!url) throw new Error('ChromeLauncher: no browser CDP endpoint');
@@ -1564,12 +1567,13 @@ export class ChromeLauncher implements ChromeBackendClient {
    * until it holds still.
    */
   private async closeRestoredTabs(): Promise<boolean> {
+    const transport = this.reach();
     const deadline = Date.now() + RESTORE_SETTLE_MS;
     let pages: Array<{ id: string; url: string }> = [];
     let previous = '';
     for (;;) {
       try {
-        const list = await this.reach().listTargets(AbortSignal.timeout(RESTORE_SETTLE_MS));
+        const list = await transport.listTargets(AbortSignal.timeout(RESTORE_SETTLE_MS));
         if (!Array.isArray(list)) return false;
         pages = (list as Array<{ id: string; url: string; type: string }>).filter((t) => t.type === 'page');
       } catch {
@@ -1580,7 +1584,6 @@ export class ChromeLauncher implements ChromeBackendClient {
       previous = ids;
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
     }
-    const transport = this.reach();
     const { closed, complete } = await this.closeToStartupTab(transport, pages);
     return complete && (await this.waitTargetsGone(transport, closed));
   }
@@ -1714,8 +1717,9 @@ export class ChromeLauncher implements ChromeBackendClient {
   private async armDownloadGuardOnce(): Promise<void> {
     this.downloadGuard?.close();
     this.downloadGuard = null;
-    const url = await this.browserWsUrl();
-    const guard = this.reach().connect(() => url, {
+    const transport = this.reach();
+    const url = await this.browserWsUrl(transport);
+    const guard = transport.connect(() => url, {
       label: 'ChromeLauncher download guard',
       onDisconnect: () => {
         if (this.downloadGuard === guard) this.downloadGuard = null;
@@ -1755,11 +1759,11 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.downloadGuard = guard;
   }
 
-  /** This instance's browser-level CDP endpoint; not-ready when absent. */
-  private async browserWsUrl(): Promise<string> {
+  /** The browser-level CDP endpoint `transport` names; not-ready when absent. */
+  private async browserWsUrl(transport: ChromeTransport): Promise<string> {
     let endpoint: string | null;
     try {
-      endpoint = await this.reach().browserEndpoint();
+      endpoint = await transport.browserEndpoint();
     } catch {
       endpoint = null;
     }
@@ -1786,8 +1790,9 @@ export class ChromeLauncher implements ChromeBackendClient {
     const proxy = this.proxy;
     if (!proxy?.isRunning()) throw new Error(PROTECTION_NOT_READY);
     const probe = proxy.armProbe();
-    const url = await this.browserWsUrl();
-    const socket = this.reach().connect(() => url, { label: 'ChromeLauncher proxy probe', timeoutMs: Math.max(1, deadlineMs - Date.now()) });
+    const transport = this.reach();
+    const url = await this.browserWsUrl(transport);
+    const socket = transport.connect(() => url, { label: 'ChromeLauncher proxy probe', timeoutMs: Math.max(1, deadlineMs - Date.now()) });
     let targetId: string | undefined;
     let settle: ((why: ProbeOutcome) => void) | null = null;
     const outcome = new Promise<ProbeOutcome>((resolve) => { settle = resolve; });
