@@ -90,7 +90,9 @@ To go back to node:
 
 `--reprobe` runs the self-test again for a build already judged, and
 `--native-from <path>` copies another build (a checkout's
-`core/wmux-native/target/release/wmux-native`) instead of the shipped one.
+`core/wmux-native/target/release/wmux-native`) instead of the shipped one,
+until the next start of the installed app puts its own build back: the app
+keeps the copy in step with the bridge it ships.
 
 **Caveat — do not combine with the plugin.** If you install BOTH this
 plugin (Option A/B) and the `setup-hooks` settings entries, each turn

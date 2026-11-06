@@ -76,7 +76,8 @@ HOOK COMMAND (install only)
                an install: touch ~/.wmux/hooks/native-disabled.
   --native-from <path>
                Copy this wmux-native build instead of the shipped one (a
-               checkout's core/wmux-native/target/release/wmux-native).
+               checkout's core/wmux-native/target/release/wmux-native). The
+               installed app puts its own build back when it next starts.
   --reprobe    Run the copy's self-test again even for a build already judged.
 
 HOOK PROFILE (install only; mutually exclusive)
