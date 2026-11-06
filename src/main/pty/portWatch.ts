@@ -3,7 +3,8 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import { promisify } from 'node:util';
 import { tryNativeSnapshot } from './winSnapshotNative';
-import { loadNativeTerminalCore, reportNativeFallback, type NativeTerminalCore } from '../../shared/nativeTerminalCore';
+import type { NativeTerminalCore } from '../../shared/nativeTerminalCore';
+import { nativeRead } from '../../daemon/nativeProcessTable';
 
 const execFileAsync = promisify(execFile);
 
@@ -94,78 +95,62 @@ function snapshotWindowsNative(): PortSnapshot {
   return { ppidByPid, listeners };
 }
 
-type NativePortReads = Required<Pick<NativeTerminalCore, 'processTable' | 'listeningSockets'>>;
+type PortSnapshotRead = NonNullable<NativeTerminalCore['portSnapshot']>;
 
-const MAX_NATIVE_FAILURES = 3;
-let nativeReads: NativePortReads | null | undefined;
-let nativeFailures = 0;
+/** How long one native snapshot may take before its tick goes to ps/lsof.
+ *  A read stuck in the kernel (a D-state /proc read) never returns: the
+ *  timeout keeps the tick, and the 3-in-a-row latch, moving. */
+export const NATIVE_SNAPSHOT_TIMEOUT_MS = 5_000;
+
+/** macOS and Linux: the native core's walk and listening sockets in one call
+ *  (`listen-sockets-v1`), behind the shared latch (nativeRead). */
+const nativePorts = nativeRead<PortSnapshotRead>({
+  platforms: ['darwin', 'linux'],
+  capability: 'listen-sockets-v1',
+  component: 'port-watch',
+  pick: (core) => (typeof core.portSnapshot === 'function' ? core.portSnapshot : undefined),
+});
+
+/** Where ps and lsof are looked for first, then in PATH. */
+const TOOL_PATHS: Record<'ps' | 'lsof', string[]> = {
+  ps: ['/bin/ps', '/usr/bin/ps'],
+  lsof: ['/usr/sbin/lsof', '/usr/bin/lsof', '/sbin/lsof', '/bin/lsof'],
+};
+const toolPaths = new Map<string, string>();
 
 /**
- * macOS and Linux: the native core's process walk and listening-socket list
- * (`process-table-v1` + `listen-sockets-v1`), resolved once. A missing module
- * or capability, or MAX_NATIVE_FAILURES failed snapshots in a row, latches it
- * off for the process's life; `WMUX_NATIVE_PROCESS_TABLE=off` never loads it.
- * A single failed snapshot only sends that tick to `ps`/`lsof`.
+ * The tool's absolute path, found in-process: the usual locations, then each
+ * absolute PATH directory (NixOS, Guix), checked for execute access. Spawning
+ * by bare name makes libuv search PATH itself, and on macOS its posix_spawn
+ * path forks a process per PATH entry it tries before the one that holds the
+ * tool (Linux forks once and execvp walks PATH in the child). Only a hit is
+ * cached: after a miss the next tick looks again.
  */
-function nativePortReads(): NativePortReads | undefined {
-  if (nativeReads === undefined) {
-    if ((process.platform !== 'darwin' && process.platform !== 'linux') || process.env.WMUX_NATIVE_PROCESS_TABLE === 'off') {
-      nativeReads = null;
-    } else {
-      try {
-        const core = loadNativeTerminalCore('listen-sockets-v1');
-        if (!core.nativeCoreCapabilities().includes('process-table-v1') ||
-            typeof core.processTable !== 'function' || typeof core.listeningSockets !== 'function') {
-          throw new Error('Native terminal core lacks the process walk or socket list');
-        }
-        nativeReads = { processTable: core.processTable, listeningSockets: core.listeningSockets };
-      } catch {
-        nativeReads = null;
-        reportNativeFallback('port-watch');
-      }
-    }
-  }
-  return nativeReads ?? undefined;
-}
-
-async function snapshotNative(reads: NativePortReads): Promise<PortSnapshot> {
-  const [rows, sockets] = await Promise.all([reads.processTable(false), reads.listeningSockets()]);
-  return {
-    ppidByPid: new Map(rows.map((r) => [r.pid, r.ppid])),
-    listeners: sockets.map((s) => ({ port: s.port, pid: s.pid })),
-  };
-}
-
-/** Where `ps` and `lsof` live, by absolute path, so no spawn walks PATH
- *  (each miss is a fork of its own). Resolved once; undefined when absent. */
-const TOOL_PATHS: Record<'ps' | 'lsof', Partial<Record<NodeJS.Platform, string[]>>> = {
-  ps: { darwin: ['/bin/ps'], linux: ['/bin/ps', '/usr/bin/ps'] },
-  lsof: { darwin: ['/usr/sbin/lsof'], linux: ['/usr/bin/lsof'] },
-};
-const toolPaths = new Map<string, string | undefined>();
-
 function toolPath(tool: 'ps' | 'lsof'): string | undefined {
-  if (!toolPaths.has(tool)) {
-    toolPaths.set(tool, (TOOL_PATHS[tool][process.platform] ?? []).find((p) => fs.existsSync(p)));
-  }
-  return toolPaths.get(tool);
+  const known = toolPaths.get(tool);
+  if (known) return known;
+  const dirs = (process.env.PATH ?? '').split(':').filter((d) => d.startsWith('/'));
+  const found = [...TOOL_PATHS[tool], ...dirs.map((d) => `${d.replace(/\/+$/, '')}/${tool}`)].find((p) => {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return fs.statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (found) toolPaths.set(tool, found);
+  return found;
 }
 
 /** Unix: the native walk and socket list, else `ps` for the process table +
  *  `lsof` for listening sockets. */
 async function snapshotUnix(): Promise<PortSnapshot> {
-  const reads = nativePortReads();
-  if (reads) {
-    try {
-      const snap = await snapshotNative(reads);
-      nativeFailures = 0;
-      return snap;
-    } catch {
-      if (++nativeFailures >= MAX_NATIVE_FAILURES && nativeReads) {
-        nativeReads = null;
-        reportNativeFallback('port-watch');
-      }
-    }
+  const native = await nativePorts.call((read) => read(), NATIVE_SNAPSHOT_TIMEOUT_MS);
+  if (native) {
+    return {
+      ppidByPid: new Map(native.processes.map((r) => [r.pid, r.ppid])),
+      listeners: native.sockets.map((s) => ({ port: s.port, pid: s.pid })),
+    };
   }
   const ppidByPid = new Map<number, number>();
   try {

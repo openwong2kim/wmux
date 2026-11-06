@@ -102,23 +102,24 @@ function psWalk(): Map<number, { ppid: number; name: string }> {
 
 const LSOF = ['/usr/sbin/lsof', '/usr/bin/lsof'].find((p) => fs.existsSync(p));
 
-/** `pid:port` of every listening TCP socket lsof lists, parsed as PortWatcher does. */
-function lsofListeners(): Set<string> {
+/** Every listening TCP socket lsof lists, as `pid:port` (parsed as
+ *  PortWatcher does) → the address lsof prints (`*` for any). */
+function lsofListeners(): Map<string, string> {
   const stdout = execFileSync(LSOF as string, ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  const out = new Set<string>();
+  const out = new Map<string, string>();
   let pid: number | null = null;
   for (const line of stdout.split('\n')) {
     if (line.startsWith('p')) pid = Number(line.slice(1)) || null;
     else if (line.startsWith('n') && pid !== null) {
-      const m = line.match(/:(\d+)$/);
-      if (m) out.add(`${pid}:${m[1]}`);
+      const m = line.slice(1).match(/^\[?(.*?)\]?:(\d+)$/);
+      if (m) out.set(`${pid}:${m[2]}`, m[1]);
     }
   }
   return out;
 }
 
 async function nativeListeners(): Promise<Set<string>> {
-  return new Set((await core!.listeningSockets!()).map((s) => `${s.pid}:${s.port}`));
+  return new Set((await core!.portSnapshot!()).sockets.map((s) => `${s.pid}:${s.port}`));
 }
 
 describe.runIf(core && posix)('native process walk and listening sockets parity with ps and lsof', () => {
@@ -126,7 +127,7 @@ describe.runIf(core && posix)('native process walk and listening sockets parity 
   afterAll(() => { child?.kill(); });
 
   it('walks every process ps lists, with the same parent and name', async () => {
-    const native = await core!.processTable!(false);
+    const native = (await core!.portSnapshot!()).processes;
     const ps = psWalk();
     let compared = 0;
     for (const row of native) {
@@ -135,33 +136,48 @@ describe.runIf(core && posix)('native process walk and listening sockets parity 
       compared++;
       // ps pads ucomm, so a name's own trailing blank is lost there.
       expect({ pid: row.pid, ppid: row.ppid, name: row.name.trimEnd() }).toEqual({ pid: row.pid, ...other });
-      expect(row.created == null && row.cmdline == null).toBe(true);
     }
     expect(compared).toBeGreaterThan(native.length * 0.9);
     expect(native.some((r) => r.pid === process.pid && r.ppid === process.ppid)).toBe(true);
+    // processTable(false) is the same walk.
+    expect((await core!.processTable!(false)).some((r) => r.pid === process.pid && r.ppid === process.ppid)).toBe(true);
   });
 
-  it.runIf(LSOF)('lists the listening sockets lsof lists', async () => {
+  it.runIf(LSOF)('lists the listening sockets lsof lists, with the address it prints', async () => {
+    // IPv4, a v4-mapped IPv6 address, IPv6 loopback, and dual-stack any.
     child = spawn(process.execPath, ['-e', `
       const net = require('node:net');
-      const a = net.createServer().listen(0, '127.0.0.1', () => {
-        const b = net.createServer().listen(0, '::1', () => console.log(a.address().port, b.address().port));
-        b.on('error', () => console.log(a.address().port, 0));
-      });
+      const hosts = ['127.0.0.1', '::ffff:127.0.0.1', '::1', '::'];
+      Promise.all(hosts.map((h) => new Promise((ok) => {
+        const s = net.createServer().listen(0, h, () => ok(s.address().port)).on('error', () => ok(0));
+      }))).then((ports) => console.log(ports.join(' ')));
       setTimeout(() => {}, 60000);`], { stdio: ['ignore', 'pipe', 'inherit'] });
     const ports = await new Promise<number[]>((resolve) => child!.stdout!.once('data', (d) => resolve(String(d).trim().split(' ').map(Number))));
     const pid = child.pid as number;
-    const before = await nativeListeners();
+    const snap = await core!.portSnapshot!();
     const lsof = lsofListeners();
     const after = await nativeListeners();
+    const mine = snap.sockets.filter((s) => s.pid === pid);
     for (const port of ports.filter(Boolean)) {
-      expect(before.has(`${pid}:${port}`)).toBe(true);
-      expect(lsof.has(`${pid}:${port}`)).toBe(true);
+      const row = mine.find((s) => s.port === port);
+      expect(row).toBeDefined();
+      const printed = lsof.get(`${pid}:${port}`);
+      expect(printed).toBeDefined();
+      // lsof prints `*` for any; otherwise the same address.
+      expect(printed === '*' ? ['0.0.0.0', '::'].includes(row!.address) : row!.address === printed).toBe(true);
+      expect(row!.family).toBe(row!.address.includes(':') ? 6 : 4);
     }
+    // A v4-mapped bind: macOS reports it as IPv4 with the dotted address lsof prints.
+    if (process.platform === 'darwin' && ports[1]) {
+      expect(mine.find((s) => s.port === ports[1])).toMatchObject({ address: '127.0.0.1', family: 4 });
+    }
+    // Every socket's pid is in the same snapshot's walk.
+    expect(snap.sockets.every((s) => snap.processes.some((r) => r.pid === s.pid))).toBe(true);
     // A socket opened or closed between the reads is in one native read only.
+    const before = new Set(snap.sockets.map((s) => `${s.pid}:${s.port}`));
     const steady = [...before].filter((k) => after.has(k));
     expect(steady.filter((k) => !lsof.has(k))).toEqual([]);
-    expect([...lsof].filter((k) => !before.has(k) && !after.has(k))).toEqual([]);
+    expect([...lsof.keys()].filter((k) => !before.has(k) && !after.has(k))).toEqual([]);
   }, 60_000);
 
   it('feeds PortWatcher the same snapshot as ps and lsof', async () => {
