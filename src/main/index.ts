@@ -221,7 +221,7 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { setBrokerPidSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
-import { claimCdpPort, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
+import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { registerBrowserPrivateNetworkIpc } from './ipc/handlers/browserPrivateNetwork.handler';
@@ -612,6 +612,7 @@ if (cdpEnabled) {
   );
 
 } else {
+  dropDebuggingSwitches(app.commandLine);
   console.log('[WinMux] CDP disabled — browser automation will be unavailable (enable via ~/.wmux/config.json browser.cdp.enabled)');
 }
 

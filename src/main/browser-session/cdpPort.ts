@@ -63,6 +63,16 @@ function defaultIsAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Chromium opens a debugging endpoint for these switches whoever passed them,
+ * so turning CDP off has to remove them as well as not adding its own.
+ */
+export const DEBUGGING_SWITCHES = ['remote-debugging-port', 'remote-debugging-pipe'] as const;
+
+export function dropDebuggingSwitches(commandLine: { removeSwitch(name: string): void }): void {
+  for (const name of DEBUGGING_SWITCHES) commandLine.removeSwitch(name);
+}
+
 export interface ClaimCdpPortDeps {
   /** Directory for claim files. Defaults to the user-stable cache directory. */
   dir?: string;

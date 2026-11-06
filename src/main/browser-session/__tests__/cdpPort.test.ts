@@ -9,11 +9,20 @@ import {
   probeCdpEndpoint,
   probeCdpEndpointWithRetry,
   claimDir,
+  dropDebuggingSwitches,
 } from '../cdpPort';
 
 // #1331 — the port used to be a bare draw handed to --remote-debugging-port and
 // announced as enabled. A second wmux instance drawing the same number left
 // Chromium with no listening CDP port at all, and the log still said "enabled".
+
+describe('dropDebuggingSwitches', () => {
+  it('removes both ways of opening a debugging endpoint', () => {
+    const removeSwitch = vi.fn();
+    dropDebuggingSwitches({ removeSwitch });
+    expect(removeSwitch.mock.calls.map(([name]) => name)).toEqual(['remote-debugging-port', 'remote-debugging-pipe']);
+  });
+});
 
 describe('claimCdpPort', () => {
   let dir: string;
