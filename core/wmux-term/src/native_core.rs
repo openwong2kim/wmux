@@ -546,10 +546,20 @@ impl XtermFeed {
                 self.track(sequence);
                 // A live screen can't stop a synchronized update on a read
                 // without touching the parser, so its parser never enters one.
-                if let Some(replacement) = without_sync(sequence).filter(|_| self.live) {
-                    parser.advance(term, &data[from..at]);
-                    parser.advance(term, &replacement);
-                    from = at + len;
+                // Checked first: replay feeds don't allocate on every `ESC [ ?`.
+                if self.live {
+                    if let Some(replacement) = without_sync(sequence) {
+                        parser.advance(term, &data[from..at]);
+                        from = at;
+                        // An update the strip missed (a form its scan can't
+                        // read) holds bytes back until the app ends it, so
+                        // the app's reset goes through as it is.
+                        let missed = parser.sync_timeout().pending_timeout();
+                        if !(missed && sequence.last() == Some(&b'l')) {
+                            parser.advance(term, &replacement);
+                            from = at + len;
+                        }
+                    }
                 }
                 next = Some(at + len);
             }
@@ -1980,5 +1990,21 @@ mod tests {
         assert_eq!(r.range(5, None).unwrap().evicted, Some("marks-dropped"));
         assert_eq!(r.range(299, None).unwrap().evicted, None);
         assert_eq!(r.range(299, None).unwrap().size, Some((11, 3)));
+    }
+
+    #[test]
+    fn a_sync_the_strip_missed_still_ends_on_the_apps_reset() {
+        // ESC, CR, [: the parser reads a CSI that the feed's scan doesn't.
+        let (_, parser, _) = live_with(&["a\x1b\r[?2026hb"]);
+        assert!(parser.sync_timeout().pending_timeout());
+        for chunks in [
+            &["a\x1b\r[?2026hb", "\x1b[?2026lc"][..],
+            &["a\x1b\r[?2026hb\x1b[?2026lc"],
+        ] {
+            let (term, parser, _) = live_with(chunks);
+            assert!(!parser.sync_timeout().pending_timeout(), "{chunks:?}");
+            // The CR inside the sequence executes: b overwrites a.
+            assert_eq!(row(&term, 0), "bc", "{chunks:?}");
+        }
     }
 }
