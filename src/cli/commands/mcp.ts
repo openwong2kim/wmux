@@ -15,7 +15,8 @@ import {
   unregisterTarget,
   type TargetRegStatus,
 } from '../../shared/mcpRegistration';
-import type { WmuxMcpEntryProfile } from '../../shared/configIO';
+import type { WmuxLauncher, WmuxMcpEntryProfile } from '../../shared/configIO';
+import { chooseLauncher, runNativeSelfTest, usableInstalledNative } from '../../shared/mcpLauncher';
 
 /**
  * `wmux mcp …` — inspect / manage MCP registration across the installed agent
@@ -420,11 +421,33 @@ export function canConnectBrokerPipe(timeoutMs = 300): Promise<boolean> {
  * (fail-open, mirroring McpRegistrar).
  */
 export async function resolveWmuxScript(): Promise<string | null> {
-  if (process.env.WMUX_MCP_BROKER !== '0' && (await canConnectBrokerPipe(300))) {
-    const shim = findScriptUp(SHIM_CANDIDATES);
-    if (shim) return shim;
-  }
-  return findScriptUp(FULL_BUNDLE_CANDIDATES);
+  const launcher = await chooseCliLauncher(null);
+  return launcher?.kind === 'node' ? launcher.script : null;
+}
+
+/**
+ * The launcher `wmux mcp register` writes, through the same choice the app
+ * makes (shared/mcpLauncher.ts): the native launcher the app installed in
+ * `~/.wmux/mcp` when a broker answers and the launcher passes its self-test,
+ * else what resolveWmuxScript picks. So an explicit re-register keeps a
+ * working native entry instead of rewriting it to node. The CLI never
+ * installs the launcher itself.
+ */
+export async function resolveWmuxLauncher(home: string, selfTest = runNativeSelfTest): Promise<WmuxLauncher | null> {
+  return chooseCliLauncher(path.join(home, '.wmux', 'mcp'), selfTest);
+}
+
+async function chooseCliLauncher(stableDir: string | null, selfTest = runNativeSelfTest): Promise<WmuxLauncher | null> {
+  const brokerEnabled = process.env.WMUX_MCP_BROKER !== '0' && (await canConnectBrokerPipe(300));
+  const nativeBinary = brokerEnabled && stableDir ? await usableInstalledNative(stableDir, selfTest) : null;
+  const choice = await chooseLauncher({
+    brokerEnabled,
+    nativeBinary,
+    brokerReady: async () => brokerEnabled,
+    shimScript: brokerEnabled ? findScriptUp(SHIM_CANDIDATES) : null,
+    bundleScript: findScriptUp(FULL_BUNDLE_CANDIDATES),
+  });
+  return choice?.launcher ?? null;
 }
 
 export async function handleMcp(args: string[], jsonMode: boolean): Promise<void> {
@@ -475,9 +498,9 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
       // who must see this, and stderr never pollutes the stdout JSON.
       const registerNotice = isolatedInstanceNotice('register');
       if (registerNotice) console.error(registerNotice);
-      const wmuxScript = await resolveWmuxScript();
+      const wmuxLauncher = await resolveWmuxLauncher(home);
       // The wmux MCP script is required; bail if the bundle can't be found.
-      if (!wmuxScript) {
+      if (!wmuxLauncher) {
         const warning =
           'Could not locate the wmux MCP bundle next to this CLI. Open the wmux app once and use Settings → General → MCP → Re-register, or reinstall wmux.';
         if (jsonMode) console.log(JSON.stringify({ error: warning }, null, 2));
@@ -489,9 +512,10 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
       // issues are 'malformed'); capture them per-target so one failure neither
       // aborts the rest nor is silently swallowed.
       const results = targets.map((t) => {
-        try { return { target: t, result: registerTarget(t, home, wmuxScript, undefined, profile), error: null as string | null }; }
+        try { return { target: t, result: registerTarget(t, home, wmuxLauncher, undefined, profile), error: null as string | null }; }
         catch (e) { return { target: t, result: null, error: e instanceof Error ? e.message : String(e) }; }
       });
+      const wmuxScript = wmuxLauncher.kind === 'node' ? wmuxLauncher.script : wmuxLauncher.binary;
       if (jsonMode) {
         console.log(JSON.stringify({ scripts: { wmux: wmuxScript }, results: results.map((r) => ({ id: r.target.id, error: r.error, ...(r.result ?? {}) })) }, null, 2));
         if (results.some((r) => r.error)) process.exit(1);

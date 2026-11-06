@@ -24,6 +24,7 @@ import * as fs from 'fs';
 import {
   canConnectBrokerPipe,
   isolatedInstanceNotice,
+  resolveWmuxLauncher,
   resolveWmuxScript,
   selectedProfile,
   selectedTargets,
@@ -142,6 +143,46 @@ describe('resolveWmuxScript', () => {
     existsFor([]); // nothing exists
 
     expect(await resolveWmuxScript()).toBeNull();
+  });
+});
+
+describe('resolveWmuxLauncher', () => {
+  const home = '/home/u';
+  const native = (p: string) => p.endsWith('wmux-native') || p.endsWith('wmux-native.exe');
+  function existsWithNative(nativeThere: boolean) {
+    existsSyncMock.mockImplementation((p: unknown) => {
+      const s = String(p);
+      if (native(s)) return nativeThere;
+      return s.endsWith('shim.js') || s.endsWith('index.js') || s.endsWith('entry.js');
+    });
+  }
+
+  it('keeps the installed native launcher when a broker answers and it passes its self-test', async () => {
+    scriptConnect('connect');
+    existsWithNative(true);
+    const selfTest = vi.fn(async () => true);
+    const launcher = await resolveWmuxLauncher(home, selfTest);
+    expect(launcher?.kind).toBe('native');
+    expect(launcher?.kind === 'native' && launcher.binary).toMatch(/[\\/]\.wmux[\\/]mcp[\\/]wmux-native(\.exe)?$/);
+    expect(selfTest).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the node shim when the native launcher fails its self-test', async () => {
+    scriptConnect('connect');
+    existsWithNative(true);
+    const launcher = await resolveWmuxLauncher(home, async () => false);
+    expect(launcher).toMatchObject({ kind: 'node' });
+    expect(launcher?.kind === 'node' && launcher.script).toMatch(/shim\.js$/);
+  });
+
+  it('never runs the native launcher when no broker answers, or with WMUX_MCP_BROKER=0', async () => {
+    const selfTest = vi.fn(async () => true);
+    scriptConnect('error');
+    existsWithNative(true);
+    expect(await resolveWmuxLauncher(home, selfTest)).toMatchObject({ kind: 'node' });
+    process.env.WMUX_MCP_BROKER = '0';
+    expect(await resolveWmuxLauncher(home, selfTest)).toMatchObject({ kind: 'node' });
+    expect(selfTest).not.toHaveBeenCalled();
   });
 });
 

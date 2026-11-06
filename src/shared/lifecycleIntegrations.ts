@@ -61,7 +61,7 @@ export interface LifecycleAssetInstallOutcome extends LifecycleAssetStatus {
 }
 
 /** Remove asides an earlier run left (still running then); best effort. */
-function sweepAsides(destinationPath: string): void {
+export function sweepAsides(destinationPath: string): void {
   const dir = path.dirname(destinationPath);
   const prefix = `${path.basename(destinationPath)}.previous`;
   let names: string[];
