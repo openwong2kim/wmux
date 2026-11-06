@@ -273,13 +273,7 @@ function reasonOf(verdict: ProbeVerdict, known: 'pass' | 'fail' | undefined): st
  *  whose undo failed), an aside is the only good copy: it is left alone. */
 function sweep(destinationPath: string, platform: NodeJS.Platform): void {
   if (fs.existsSync(destinationPath)) sweepAsides(destinationPath);
-  const dir = path.dirname(destinationPath);
-  const { prefix } = stagedName(destinationPath, platform);
-  let names: string[];
-  try { names = fs.readdirSync(dir); } catch { return; }
-  for (const name of names) {
-    if (name.startsWith(prefix)) try { fs.unlinkSync(path.join(dir, name)); } catch { /* next time */ }
-  }
+  sweepAsides(destinationPath, stagedName(destinationPath, platform).prefix);
 }
 
 /** The staged copy's name: `<base>.staged-<id>`, and on Windows the real
@@ -317,7 +311,7 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
     if (!known && (verdict === 'pass' || verdict === 'fail')) recordProbe(opts.recordDir, key, verdict, key);
     return verdict === 'pass' ? { binary: dest } : { binary: null, reason: reasonOf(verdict, known) };
   }
-  if (current && !opts.ownershipMarkers.some((marker) => current.toString('utf8').includes(marker))) {
+  if (current && !opts.ownershipMarkers.some((marker) => current.includes(Buffer.from(marker)))) {
     return { binary: null, reason: 'copy is foreign' };
   }
   const currentKey = current ? probeKey(sha256Of(current), opts.line) : undefined;

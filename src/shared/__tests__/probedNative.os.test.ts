@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { buildSync } from 'esbuild';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { sweepAsides } from '../lifecycleIntegrations';
 import {
   PROBE_LOCK,
   lockDir,
@@ -123,6 +124,27 @@ describe('prepareProbedNative', () => {
       expect(fs.readFileSync(dest(), 'utf8')).toBe('someone else\'s program');
       expect(fs.readdirSync(dir).filter((f) => f.includes('.staged-') || f.includes('.previous'))).toEqual([]);
     }
+  });
+
+  it('judges ownership on the bytes, never decoding the copy', async () => {
+    ship('good v1');
+    await prepare();
+    const inPlace = fs.readFileSync(dest());
+    ship('good v2');
+    const toString = vi.spyOn(Buffer.prototype, 'toString');
+    try {
+      await prepare({ probe: async () => 'pass' });
+      expect(toString.mock.contexts.some((buffer) => Buffer.isBuffer(buffer) && buffer.equals(inPlace))).toBe(false);
+    } finally {
+      toString.mockRestore();
+    }
+  });
+
+  it('sweeps by the prefix it is given', () => {
+    fs.writeFileSync(dest(), 'in place');
+    for (const name of ['wmux-native.staged-1-aa', 'wmux-native.previous-1-aa', 'other.staged-1-aa']) fs.writeFileSync(path.join(dir, name), 'x');
+    sweepAsides(dest(), 'wmux-native.staged-');
+    expect(fs.readdirSync(dir).sort()).toEqual(['other.staged-1-aa', 'wmux-native', 'wmux-native.previous-1-aa']);
   });
 
   it('keys a verdict by the bytes and the expected line: another line is probed again', async () => {
