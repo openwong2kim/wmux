@@ -12,7 +12,7 @@ const { _electron } = require('playwright-core');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const suffix = `-a2a-state-dogfood-${process.pid}`;
 const dataDir = path.join(os.homedir(), `.wmux${suffix}`);
-const env = { ...process.env, WMUX_DATA_SUFFIX: suffix, WMUX_NO_DIALOG: '1' };
+const env = { ...process.env, WMUX_DATA_SUFFIX: suffix, WMUX_NO_DIALOG: '1', WMUX_TEST_CDP_PORT: '1' };
 for (const key of ['WMUX_SOCKET_PATH', 'WMUX_AUTH_TOKEN', 'WMUX_WORKSPACE_ID', 'WMUX_PTY_ID', 'WMUX_SURFACE_ID', 'ELECTRON_RUN_AS_NODE']) delete env[key];
 let app;
 const logs = [];
