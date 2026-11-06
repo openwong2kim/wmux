@@ -280,11 +280,13 @@ function activeNativeHooksPath(spec: LifecycleAssetSpec | null, native: Lifecycl
 
 /** One line on which command the entries run, and why; for `setup-hooks`. */
 function describeNativeHooks(
+  flavourId: CompatHookFlavourId,
   shipped: boolean,
   native: LifecycleAssetStatus | LifecycleAssetInstallOutcome | null,
   active: string | null,
 ): string {
   const node = 'hooks run `node <bridge>`';
+  const install = `wmux setup-hooks --agent ${flavourId}`;
   if (!shipped || !native) return `native hook bridge: not shipped with this build; ${node}`;
   const action = 'action' in native ? native.action : 'none';
   if (active && native.state === 'current') {
@@ -296,13 +298,16 @@ function describeNativeHooks(
     // The copy in place runs; the shipped one did not replace it.
     return native.error
       ? `native hook bridge: ${active} kept (${native.error}); hooks run it`
-      : `native hook bridge: ${active} is stale but runs (re-run \`wmux setup-hooks\`); hooks run it`;
+      : `native hook bridge: ${active} is stale but runs (re-run \`${install}\`, with --reprobe if the new build failed its check); hooks run it`;
   }
   switch (native.state) {
+    case 'current':
+      // The shipped bytes, recorded as not running here.
+      return `native hook bridge: not used (${native.destinationPath} did not run here when checked; \`${install} --reprobe\` checks again); ${node}`;
     case 'missing':
       return `native hook bridge: not installed (${native.destinationPath}); ${node}`;
     case 'stale':
-      return `native hook bridge: ${native.destinationPath} is stale (re-run \`wmux setup-hooks\`); ${node}`;
+      return `native hook bridge: ${native.destinationPath} is stale (re-run \`${install}\`); ${node}`;
     case 'foreign':
       return `native hook bridge: not used (${native.destinationPath} is not wmux-owned; left untouched); ${node}`;
     default:
@@ -427,7 +432,7 @@ export async function installCompatHooks(
   const installed = await installNativeHooks(paths.nativeHooks, opts);
   const native = installed?.outcome ?? null;
   const nativePath = installed?.active ?? null;
-  const nativeSummary = describeNativeHooks(!!paths.nativeHooks, native, nativePath);
+  const nativeSummary = describeNativeHooks(flavourId, !!paths.nativeHooks, native, nativePath);
   const base = { flavour: flavourId, configPath, native, nativeSummary, bridge };
   const { state: before } = inspectCompatHookConfig(flavourId, paths, bridgeDest, nativePath);
   if (before === 'current') return { ...base, ok: true, before, action: 'none', error: null };
@@ -494,7 +499,7 @@ export function statusCompatHooks(flavourId: CompatHookFlavourId, paths: CompatH
     verified: COMPAT_HOOK_FLAVOURS[flavourId].verified,
     bridge: inspectLifecycleAsset(paths.bridge),
     native,
-    nativeSummary: describeNativeHooks(!!paths.nativeHooks, native, active),
+    nativeSummary: describeNativeHooks(flavourId, !!paths.nativeHooks, native, active),
     configPath,
     configDirSource: paths.configDirs[flavourId]?.source ?? null,
     config: state,

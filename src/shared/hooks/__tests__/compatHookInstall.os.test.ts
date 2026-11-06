@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { expectationKey, PROBE_LOCK, PROBE_RECORD, probeKey, recordedProbe, sha256Of } from '../../probedNative';
+import { expectationKey, PROBE_LOCK, PROBE_RECORD, probeKey, recordedProbe, recordProbe, sha256Of } from '../../probedNative';
 import {
   buildOwnedHookFile,
   compatHookConfigPath,
@@ -424,7 +424,18 @@ describe.skipIf(!NATIVE_BYTES)('native bridge command form', () => {
     expect(fs.readdirSync(path.dirname(dest)).filter((f) => f.includes('.previous') || f.includes('.staged-'))).toEqual([]);
     expect(readConfig().hooks.Stop[0].exec).toBe(dest);
     expect(statusCompatHooks('copilot', withNative)).toMatchObject({ config: 'current', native: { state: 'stale' } });
-    expect(statusCompatHooks('copilot', withNative).nativeSummary).toBe(`native hook bridge: ${dest} is stale but runs (re-run \`wmux setup-hooks\`); hooks run it`);
+    expect(statusCompatHooks('copilot', withNative).nativeSummary).toBe(
+      `native hook bridge: ${dest} is stale but runs (re-run \`wmux setup-hooks --agent copilot\`, with --reprobe if the new build failed its check); hooks run it`,
+    );
+  });
+
+  it('says a copy recorded as not running is not used, and how to check it again', async () => {
+    await installCompatHooks('copilot', withNative);
+    const dest = path.join(home, '.wmux', 'hooks', exe);
+    recordProbe(path.dirname(dest), probeKey(sha256Of(fs.readFileSync(dest)), expectationKey({ contains: 'wmux-managed: native-hooks' })), 'fail');
+    expect(statusCompatHooks('copilot', withNative).nativeSummary).toBe(
+      `native hook bridge: not used (${dest} did not run here when checked; \`wmux setup-hooks --agent copilot --reprobe\` checks again); hooks run \`node <bridge>\``,
+    );
   });
 
   it('records the verdict by the bytes and the marker it looked for, so the next install runs nothing', async () => {
