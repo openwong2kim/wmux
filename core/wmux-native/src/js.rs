@@ -2,11 +2,21 @@
 //!
 //! The Node bridge reads stdin with `Buffer#toString('utf8')`, `String#trim`
 //! and `JSON.parse`, and writes with `JSON.stringify`. Matching its envelope
-//! byte for byte (and its logs in substance) means matching those, including where they differ from serde-style JSON:
-//! strings are UTF-16 (a lone surrogate parses and is re-escaped as `\udXXX`),
-//! `trim` has its own whitespace set, duplicate keys keep the first position
-//! with the last value, and nesting depth is unbounded. So strings here are
-//! UTF-16 code units and the parser is iterative.
+//! byte for byte (and its logs in substance) means matching those, including
+//! where they differ from serde-style JSON: strings are UTF-16 (a lone
+//! surrogate parses and is re-escaped as `\udXXX`), `trim` has its own
+//! whitespace set, duplicate keys keep the first position with the last value,
+//! an object lists its array-index keys first, in ascending order, and nesting
+//! depth is unbounded. So strings here are UTF-16 code units and the parser is
+//! iterative.
+//!
+//! Where this differs from V8, on purpose:
+//! - `stringify` and `Clone` recurse. A caller logging a value nested deeper
+//!   than 1000 levels refuses it first and reports V8's RangeError message
+//!   (hook.rs), where V8's own limit depends on its stack size, so a value
+//!   between 1000 levels and that limit is logged by Node and not here.
+//! - `number` formats only what `JSON.stringify` writes: finite numbers, and
+//!   `null` for the rest.
 
 /// A JavaScript string: UTF-16 code units, lone surrogates allowed.
 pub type JsStr = Vec<u16>;
@@ -374,6 +384,35 @@ pub fn number(n: f64) -> String {
     }
 }
 
+/// A canonical array index ("0", or digits without a leading zero, at most
+/// 2^32 - 2), which V8 keeps apart from the other keys of an object.
+fn array_index(key: &[u16]) -> Option<u32> {
+    if key.is_empty() || key.len() > 10 || (key.len() > 1 && key[0] == 0x30) {
+        return None;
+    }
+    let mut value: u64 = 0;
+    for &c in key {
+        if !(0x30..=0x39).contains(&c) {
+            return None;
+        }
+        value = value * 10 + u64::from(c - 0x30);
+    }
+    (value <= 4_294_967_294).then_some(value as u32)
+}
+
+/// The order V8 lists an object's own keys in: array indices ascending, then
+/// every other key in insertion order.
+fn v8_key_order(entries: &[(JsStr, Json)]) -> Vec<&(JsStr, Json)> {
+    let mut indexed: Vec<(u32, &(JsStr, Json))> = entries
+        .iter()
+        .filter_map(|e| array_index(&e.0).map(|i| (i, e)))
+        .collect();
+    indexed.sort_by_key(|(i, _)| *i);
+    let mut order: Vec<&(JsStr, Json)> = indexed.into_iter().map(|(_, e)| e).collect();
+    order.extend(entries.iter().filter(|e| array_index(&e.0).is_none()));
+    order
+}
+
 pub fn stringify(v: &Json, out: &mut String) {
     match v {
         Json::Null => out.push_str("null"),
@@ -392,7 +431,7 @@ pub fn stringify(v: &Json, out: &mut String) {
         }
         Json::Obj(entries) => {
             out.push('{');
-            for (i, (k, item)) in entries.iter().enumerate() {
+            for (i, (k, item)) in v8_key_order(entries).into_iter().enumerate() {
                 if i > 0 {
                     out.push(',');
                 }
@@ -454,6 +493,20 @@ mod tests {
         ] {
             assert!(p(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn stringify_lists_array_index_keys_first_as_v8_does() {
+        // node -e 'JSON.stringify(JSON.parse(input))'
+        assert_eq!(
+            roundtrip(r#"{"b":1,"2":2,"a":3,"1":4,"01":5,"4294967294":6,"4294967295":7,"0":8,"-1":9,"1.5":10}"#),
+            r#"{"0":8,"1":4,"2":2,"4294967294":6,"b":1,"a":3,"01":5,"4294967295":7,"-1":9,"1.5":10}"#
+        );
+        // Nested objects too; arrays keep their order.
+        assert_eq!(
+            roundtrip(r#"[{"z":{"9":0,"y":1,"10":2}}]"#),
+            r#"[{"z":{"9":0,"10":2,"y":1}}]"#
+        );
     }
 
     #[test]

@@ -6,11 +6,11 @@
 // line the pipes receive (method, envelope, token, clientName; only the random
 // request-id suffix and the envelope timestamp are masked), the log entries
 // each run writes as parsed JSON, stdout (always empty) and the exit code
-// (always 0). Log lines are not byte-for-byte: native adds `runtime`, keeps a
-// reply object's integer-like keys in arrival order (JS lists them first), and
+// (always 0). Log lines are not byte-for-byte: native adds `runtime`, and
 // gives up on a reply value nested past 1000 levels where V8's own limit
 // differs; some error `detail` strings differ too (an OS message where libuv
-// has a code name).
+// has a code name). A logged reply object keeps V8's key order (array indices
+// first), checked byte-for-byte below.
 //
 // The binary is WMUX_NATIVE_HOOKS_BIN, else the newest of the staged
 // dist/native-hooks copy and the cargo builds under core/wmux-native/target.
@@ -53,7 +53,7 @@ const SUFFIX = '-native-parity';
 const MAIN_TOKEN = 'main-token-π';
 const DAEMON_TOKEN = 'daemon-token';
 
-type Reply = 'ok' | 'rejected' | 'refused' | 'hangup' | 'stall' | 'deep';
+type Reply = 'ok' | 'rejected' | 'refused' | 'hangup' | 'stall' | 'deep' | 'keys';
 
 /** A fake wmux pipe that records each request line as raw bytes. */
 class FakePipe {
@@ -85,6 +85,11 @@ class FakePipe {
         // A broadcast frame first: replies are matched by id, not position.
         sock.write(JSON.stringify({ type: 'session.output', sessionId: 'x' }) + '\n');
         if (this.reply === 'hangup') { sock.destroy(); return; }
+        if (this.reply === 'keys') {
+          // Written by hand to fix the key order on the wire.
+          sock.end(`{"id":${JSON.stringify(id)},"ok":true,"result":{"ok":false,"reason":{"b":1,"2":2,"a":3,"1":4,"01":5}}}\n`);
+          return;
+        }
         if (this.reply === 'deep') {
           // Nested past any stack (written by hand: JSON.stringify cannot):
           // logging it must end in `uncaught`, not a crash.
@@ -296,6 +301,27 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native hook ↔ wmux-hooks-bridge.mj
     const fx: Fixture = { name, argv: ['copilot', 'Stop'], stdin: '{"session_id":"s-1"}', env };
     const [node, native] = await bothRuntimes(fx);
     expectParity(fx, node, native);
+  });
+
+  // A reply value is logged as JSON.stringify writes it: array-index keys
+  // first in ascending order, then the rest in insertion order.
+  it('logs a reply object with V8 key order, byte-for-byte', async () => {
+    useEndpoints({ daemonToken: true, mainToken: false });
+    daemon.reply = 'keys';
+    const fx: Fixture = { name: 'key order', argv: ['qwen', 'PermissionRequest'], stdin: '{}' };
+    const reasons: string[] = [];
+    for (const [cmd, args] of [[process.execPath, [BRIDGE]], [NATIVE as string, ['hook']]] as const) {
+      daemon.lines.length = 0;
+      const child = spawn(cmd, [...args, ...fx.argv], { cwd, env: baseEnv(), stdio: ['pipe', 'ignore', 'ignore'] });
+      child.stdin.end(fx.stdin);
+      await new Promise((resolve) => child.on('exit', resolve));
+      const log = fs.readFileSync(path.join(wmuxDir, 'qwen-hooks.log'), 'utf8');
+      fs.unlinkSync(path.join(wmuxDir, 'qwen-hooks.log'));
+      reasons.push((log.match(/"reason":(\{[^}]*\})/) ?? [])[1]);
+    }
+    daemon.reply = 'ok';
+    expect(reasons[0]).toBe('{"1":4,"2":2,"b":1,"a":3,"01":5}');
+    expect(reasons[1]).toBe(reasons[0]);
   });
 
   // The request carries the token: a pipe name that is a plain file must be
