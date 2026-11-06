@@ -48,6 +48,16 @@ describe('GuestDialogs', () => {
     expect(answers).toHaveLength(1);
   });
 
+  it("answers at once a dialog raised just after an input, when the input's lease has already ended", async () => {
+    dialogs.arm('s', true);
+    dialogs.beginDispatch('s')();
+    clock += 100;
+    dialogs.opening('s', 'confirm', 'deferred by the handler', false);
+    await settled();
+    expect(answers).toEqual([{ surfaceId: 's', accept: true }]);
+    expect(notes[0]).toMatchObject({ answer: 'accepted (pre-armed)' });
+  });
+
   it('never touches beforeunload', () => {
     dialogs.opening('s', 'beforeunload', '', true);
     dialogs.leaseStarted('s');

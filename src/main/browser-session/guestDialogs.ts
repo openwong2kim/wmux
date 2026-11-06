@@ -10,11 +10,12 @@
 // old enough if it has only just opened (see below).
 //
 // Answering over CDP doesn't close Electron's box: it stays until someone clicks
-// it, harmlessly, and each answered dialog leaves its own. On macOS it's a sheet
-// on the main window, so answers are capped across all tabs: without that, pages
-// looping alert() would stack boxes without limit, where a page that isn't answered
-// can only ever show one. Past the cap a page waits on its box like any other, and
-// the agent is told why.
+// it, and each answered dialog leaves its own. On macOS it's a sheet on the main
+// window, which takes no keyboard or mouse input until the sheet is dismissed. So
+// answers are capped across all tabs: without that, pages looping alert() would
+// stack boxes without limit, where a page that isn't answered can only ever show
+// one. Past the cap a page waits on its box like any other, and the agent is told
+// why.
 //
 // A Playwright page attached to the guest answers its own dialogs, including armed
 // answers, within a few hundred ms, and main can't see that it's there. So a dialog
@@ -91,7 +92,9 @@ export class GuestDialogs {
     const now = this.now();
     const raisedByInput = [...state.dispatches].some((dispatch) => dispatch.expires > now);
     state.open = { type, message: capped, capNoted: false, raisedByInput, openedAt: now };
-    if (driven) this.settleWhenDue(surfaceId, state);
+    // The lease can end just before a handler's deferred dialog opens. That dialog
+    // is still the agent's, and otherwise the page would wait for its next call.
+    if (driven || raisedByInput) this.settleWhenDue(surfaceId, state);
   }
 
   /** Settle now if the open dialog is ours or has had its delay; otherwise when it has. */
