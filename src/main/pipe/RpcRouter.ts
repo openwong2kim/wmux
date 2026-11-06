@@ -11,7 +11,6 @@ import { hostedBindingOf, isHostedCaller, sanitizeClientDisplayName } from '../.
 import { check as enforcerCheck } from '../mcp/PermissionEnforcer';
 import { METHOD_CAPABILITY, isAlwaysEnforcedMethod, type RequiredCapability } from '../mcp/methodCapabilityMap';
 import { isLocalExternalWireContext } from '../mcp/rpcProvenance';
-import { mcpSessionTracker } from '../mcp/mcpSessionTracker';
 import { noteCommanderTokenUse, resolveCommanderToken } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
 import { GUEST_SAFE_RPC, GUEST_TURN_SURFACE_REFUSAL, botSurfaceRefusal, type BotRefusal } from '../../shared/botSurface';
@@ -158,6 +157,7 @@ export class RpcRouter {
   private legacyTrafficCounter: LegacyTrafficCounter | undefined;
   private trustLookup: TrustLookup | undefined;
   private shadowSink: ShadowRejectionSink | undefined;
+  private mcpSessionSink: { touch(id: unknown): void } | undefined;
   private hostedScopeSink: HostedScopeSink | undefined;
   private readonly botRefusalListeners = new Set<BotRefusalListener>();
   private fencedWorkerPty: ((ptyId: string) => boolean) | undefined;
@@ -237,6 +237,15 @@ export class RpcRouter {
    */
   setShadowRejectionSink(sink: ShadowRejectionSink | undefined): void {
     this.shadowSink = sink;
+  }
+
+  /**
+   * Live bundle-session count for `wmux doctor`. main/index.ts injects the
+   * same tracker the `mcp.sessions.summary` RPC reads; tests pass their own.
+   * Unset, nothing is counted.
+   */
+  setMcpSessionSink(sink: { touch(id: unknown): void } | undefined): void {
+    this.mcpSessionSink = sink;
   }
 
   /**
@@ -330,7 +339,7 @@ export class RpcRouter {
     const firstParty = operator || inProcessFirstParty;
     // Live bundle-session count for `wmux doctor`. Only PipeServer dispatches
     // on the external wire, and only after the request passed auth.
-    if (externalWire) mcpSessionTracker.touch(request.mcpSession);
+    if (externalWire) this.mcpSessionSink?.touch(request.mcpSession);
 
     // Host-derived workspace (#922). Accepted ONLY from the in-process plugin
     // host lane. A non-firstParty caller that supplies it is the same class of

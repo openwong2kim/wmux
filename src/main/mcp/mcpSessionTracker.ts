@@ -52,5 +52,3 @@ export class McpSessionTracker {
     }
   }
 }
-
-export const mcpSessionTracker = new McpSessionTracker();

@@ -105,7 +105,7 @@ import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerCodexRpc } from './pipe/handlers/codex.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
 import { registerMcpSessionsRpc } from './pipe/handlers/mcpSessions.rpc';
-import { mcpSessionTracker } from './mcp/mcpSessionTracker';
+import { McpSessionTracker } from './mcp/mcpSessionTracker';
 import { registerComputerRpc } from './pipe/handlers/computer.rpc';
 import { resolvePtyOwnerWorkspace } from './workspace/ptyOwnership';
 import { createFanoutCallerSubmit } from './deck/fanoutCallerSubmit';
@@ -1243,6 +1243,9 @@ registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerCodexRpc(rpcRouter, () => mainWindow, () => daemonClient);
 registerPerfRpc(rpcRouter);
+// One tracker: the router counts into it, the summary RPC reads it.
+const mcpSessionTracker = new McpSessionTracker();
+rpcRouter.setMcpSessionSink(mcpSessionTracker);
 registerMcpSessionsRpc(rpcRouter, {
   brokerEnabled: isMcpBrokerEnabled,
   brokerStatus: () => mcpBrokerSupervisor.status(),
