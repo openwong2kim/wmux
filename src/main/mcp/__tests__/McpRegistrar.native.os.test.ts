@@ -186,9 +186,12 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'index.js')] });
   });
 
-  it('moves every entry off the node shim an older build registered, an explicitly registered target included', async () => {
+  it.each([
+    ['its stable copy', () => path.join(stableDir(), 'shim.js')],
+    ['a versioned copy inside an app', () => path.join(tmpHome, 'app-1.0.0', 'resources', 'mcp-bundle', 'shim.js')],
+  ])('moves every entry off the node shim an older build registered (%s), an explicitly registered target included', async (_label, shimAt) => {
     ship('broken');
-    const shim = path.join(stableDir(), 'shim.js');
+    const shim = shimAt();
     fs.writeFileSync(path.join(tmpHome, '.claude.json'), JSON.stringify({ mcpServers: { wmux: { command: 'node', args: [shim] } } }));
     fs.mkdirSync(path.dirname(agyJson()), { recursive: true });
     fs.writeFileSync(agyJson(), JSON.stringify({ mcpServers: { wmux: { command: 'node', args: [shim] } } }));

@@ -456,6 +456,15 @@ export function launcherForTarget(plan: CliLauncherPlan, registeredPath: string 
     : plan.launcher;
 }
 
+/** Whether two files hold the same bytes; false when either cannot be read. */
+function sameBytes(a: string, b: string): boolean {
+  try {
+    return fs.readFileSync(a).equals(fs.readFileSync(b));
+  } catch {
+    return false;
+  }
+}
+
 async function planCliLauncher(
   stableDir: string | null,
   approvedNative: (stableDir: string) => string | null,
@@ -466,15 +475,19 @@ async function planCliLauncher(
   // which is what makes main's app.isPackaged true.
   const packaged = fs.existsSync(path.join(__dirname, '..', 'app.asar'));
   // An installed app registers the stable copy of the bundle, which outlives
-  // the versioned one beside this CLI; register the same.
-  const stableBundle = packaged && stableDir ? path.join(stableDir, 'index.js') : null;
+  // the versioned one beside this CLI; register the same while it holds this
+  // build's bundle.
+  const versionedBundle = findScriptUp(FULL_BUNDLE_CANDIDATES);
+  const stableBundle = packaged && stableDir && versionedBundle && sameBytes(path.join(stableDir, 'index.js'), versionedBundle)
+    ? path.join(stableDir, 'index.js')
+    : null;
   const choice = await chooseLauncher({
     packaged,
     brokerEnabled,
     nativeBinary: approved,
     brokerReady: async () => brokerEnabled,
     shimScript: brokerEnabled && !packaged ? findScriptUp(SHIM_CANDIDATES) : null,
-    bundleScript: stableBundle && fs.existsSync(stableBundle) ? stableBundle : findScriptUp(FULL_BUNDLE_CANDIDATES),
+    bundleScript: stableBundle ?? versionedBundle,
   });
   return choice ? { launcher: choice.launcher, approvedNative: approved } : null;
 }

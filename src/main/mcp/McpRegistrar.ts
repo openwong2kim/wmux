@@ -180,7 +180,8 @@ export class McpRegistrar {
 
   /**
    * Resolve whether registration should point agents at the thin shim (broker
-   * topology) or the full bundle (legacy single-child). An explicit
+   * topology) or the full bundle (legacy single-child). Always false in a
+   * packaged build, which never registers the shim. In a dev build an explicit
    * `opts.useShim` wins; otherwise, when the broker flag is on, probe the pipe
    * so EVERY call site (boot, renderer re-register IPC, first-run onboarding) is
    * self-correcting — a caller that omits opts never has to know the broker's
@@ -199,9 +200,9 @@ export class McpRegistrar {
    * Write auth token to file and register the MCP servers in every installed
    * target. Must be called after PipeServer.start().
    *
-   * `opts.useShim` forces the topology (boot passes the readiness-gate result);
-   * omitting it lets register() probe the broker itself so re-register call
-   * sites stay self-correcting.
+   * In a dev build `opts.useShim` forces the topology (boot passes the
+   * readiness-gate result); omitting it lets register() probe the broker itself
+   * so re-register call sites stay self-correcting. A packaged build ignores it.
    *
    * When `opts.explicit` is true:
    *   - If `opts.targets` is provided, registers only those targets.
@@ -347,13 +348,15 @@ export class McpRegistrar {
       // it is not offered this time (its copy is kept but may not run here).
       if (app.isPackaged) {
         const stableDir = path.join(this.home, '.wmux', 'mcp');
-        const retired = new Map([[path.join(stableDir, 'shim.js'), 'the node shim']]);
-        if (choice.lane !== 'native') retired.set(nativeLauncherPath(stableDir), 'the native launcher');
+        const native = choice.lane !== 'native' ? nativeLauncherPath(stableDir) : null;
+        // The shim's stable copy, or a versioned one inside some app's bundle.
+        const isShim = (at: string) =>
+          path.basename(at) === 'shim.js' && (path.dirname(at) === stableDir || path.basename(path.dirname(at)) === 'mcp-bundle');
         for (const target of MCP_TARGETS) {
           let what: string | undefined;
           try {
             const at = readTargetStatus(target, this.home).wmux.path;
-            what = at ? retired.get(at) : undefined;
+            what = !at ? undefined : isShim(at) ? 'the node shim' : at === native ? 'the native launcher' : undefined;
             if (!what) continue;
             const moved = registerTarget(target, this.home, choice.launcher, this.ownedFor(target.id));
             if (moved.wrote.length > 0) console.log(`[McpRegistrar] ${target.displayName}: moved off ${what} → ${moved.configPath}`);
@@ -451,7 +454,7 @@ export class McpRegistrar {
       brokerReady: async () => useShim,
       // Resolved only when it can be chosen, as before: the shim is stabilized
       // and its absence logged only for a broker that answers.
-      shimScript: useShim && !nativeBinary && !app.isPackaged ? this.getShimScriptPath() : null,
+      shimScript: useShim && !nativeBinary ? this.getShimScriptPath() : null,
       bundleScript: this.getMcpScriptPath(memo),
     });
   }
