@@ -13,6 +13,8 @@ const BOX = { x: 10, y: 20, width: 30, height: 40, scrollX: 0, scrollY: 500, vw:
 
 let box: Record<string, unknown> | null = BOX;
 let capture: () => Promise<unknown> = async () => ({ data: 'clip-png' });
+let measure: (() => Promise<unknown>) | null = null;
+let zoom = 1;
 const sent: Array<{ method: string; params: Record<string, unknown> }> = [];
 
 const mockWebContents = {
@@ -22,11 +24,12 @@ const mockWebContents = {
   off: vi.fn(),
   once: vi.fn(),
   capturePage: vi.fn(),
+  getZoomFactor: vi.fn(() => zoom),
   debugger: {
     sendCommand: vi.fn(async (method: string, params?: Record<string, unknown>) => {
       sent.push({ method, params: params ?? {} });
       if (method === 'Runtime.evaluate') {
-        if (String(params?.expression ?? '').includes('getBoundingClientRect')) return { result: { value: box } };
+        if (String(params?.expression ?? '').includes('getBoundingClientRect')) return measure ? measure() : { result: { value: box } };
         // The preset's before/after probes.
         return { result: { value: { w: 390, h: 426, dpr: 1, touch: 0 } } };
       }
@@ -90,6 +93,8 @@ describe('browser.screenshot with a selector (element capture over RPC)', () => 
     vi.clearAllMocks();
     box = BOX;
     capture = async () => ({ data: 'clip-png' });
+    measure = null;
+    zoom = 1;
     mockWebContents.capturePage.mockReset();
   });
   afterEach(() => vi.useRealTimers());
@@ -100,11 +105,26 @@ describe('browser.screenshot with a selector (element capture over RPC)', () => 
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.result).toEqual({ data: 'clip-png' });
     const shot = sent.find((s) => s.method === 'Page.captureScreenshot');
-    expect(shot?.params).toMatchObject({
-      clip: { x: 10, y: 520, width: 30, height: 40, scale: 1 },
-      captureBeyondViewport: true,
-    });
+    expect(shot?.params).toMatchObject({ clip: { x: 10, y: 520, width: 30, height: 40, scale: 1 } });
     expect(mockWebContents.capturePage).not.toHaveBeenCalled();
+  });
+
+  it('leaves the viewport alone for an element already on screen', async () => {
+    // captureBeyondViewport resizes the viewport to the document: a fixed or
+    // sticky element would then be cropped at the wrong place.
+    await shoot(register(), { selector: '[data-wmux-ref="3"]' });
+
+    const shot = sent.find((s) => s.method === 'Page.captureScreenshot');
+    expect(shot?.params['captureBeyondViewport']).toBeFalsy();
+  });
+
+  it('captures beyond the viewport only for an element that does not fit in it', async () => {
+    box = { ...BOX, y: 20, height: 900 };
+
+    await shoot(register(), { selector: '[data-wmux-ref="3"]' });
+
+    const shot = sent.find((s) => s.method === 'Page.captureScreenshot');
+    expect(shot?.params['captureBeyondViewport']).toBe(true);
   });
 
   it('a hung CDP capture falls back to capturePage cropped to the element, never the viewport', async () => {
@@ -161,6 +181,53 @@ describe('browser.screenshot with a selector (element capture over RPC)', () => 
 
     expect(res.ok).toBe(true);
     expect(mockWebContents.capturePage).toHaveBeenCalledWith({ x: 20, y: 40, width: 60, height: 80 });
+  });
+
+  it('scales the fallback crop by the guest zoom (Cmd +/-), times any preset', async () => {
+    const router = register();
+    const emulate = async (scale: number) => {
+      const emulated = router.dispatch({
+        id: 'emu',
+        method: 'browser.emulate' as RpcMethod,
+        params: { workspaceId: 'ws-a', deviceMetrics: { width: 390, height: 426, deviceScaleFactor: 1, mobile: true, scale } },
+      });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect((await emulated).ok).toBe(true);
+    };
+    zoom = 1.5;
+    capture = hangs;
+    mockWebContents.capturePage.mockImplementation(async () => image('zoomed'));
+
+    await emulate(1); // no preset scale
+    expect((await shoot(router, { selector: '[data-wmux-ref="3"]' })).ok).toBe(true);
+    expect(mockWebContents.capturePage).toHaveBeenLastCalledWith({ x: 15, y: 30, width: 45, height: 60 });
+
+    await emulate(2);
+    expect((await shoot(router, { selector: '[data-wmux-ref="3"]' })).ok).toBe(true);
+    expect(mockWebContents.capturePage).toHaveBeenLastCalledWith({ x: 30, y: 60, width: 90, height: 120 });
+  });
+
+  it('judges whether the fallback fits in the zoomed, drawn space', async () => {
+    zoom = 1.5;
+    capture = hangs;
+    box = { ...BOX, x: 790.4, width: 9.6 }; // flush with the right edge
+    mockWebContents.capturePage.mockImplementation(async () => image('edge'));
+
+    const res = await shoot(register(), { selector: '[data-wmux-ref="3"]' });
+
+    expect(res.ok).toBe(true);
+    expect(mockWebContents.capturePage).toHaveBeenCalledTimes(1);
+  });
+
+  it('a page that never answers the measurement fails with a reason and captures nothing', async () => {
+    measure = hangs;
+
+    const res = await shoot(register(), { selector: '[data-wmux-ref="3"]' });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(String(res.error)).toContain('did not answer');
+    expect(sent.some((s) => s.method === 'Page.captureScreenshot')).toBe(false);
+    expect(mockWebContents.capturePage).not.toHaveBeenCalled();
   });
 
   it('an unresolvable ref errors and captures nothing', async () => {

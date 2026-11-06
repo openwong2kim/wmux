@@ -148,6 +148,7 @@ import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
 import type { BrowserAgentControl } from '../../browser-session/BrowserAgentControl';
 import { heldBrowserSurfaceRefusal } from './surface.rpc';
 import { agentControlRefusal } from '../../../shared/browserAgentControl';
+import { withDeadline } from '../../pty/portWatch';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -931,10 +932,12 @@ interface PixelRect { x: number; y: number; width: number; height: number }
 
 /**
  * A rect in the page's CSS pixels, in the drawn view's pixels instead: the
- * space webContents.capturePage crops in. Same scale as viewInput.
+ * space webContents.capturePage crops in. The page zoom (Cmd +/-) and a
+ * preset's scale both stretch CSS pixels on screen.
  */
 function viewRect(wc: WebContents, rect: PixelRect): PixelRect {
-  const scale = activePreset.get(wc)?.scale ?? 1;
+  const zoom = wc.getZoomFactor?.();
+  const scale = (typeof zoom === 'number' && zoom > 0 ? zoom : 1) * (activePreset.get(wc)?.scale ?? 1);
   const x = Math.floor(rect.x * scale);
   const y = Math.floor(rect.y * scale);
   return {
@@ -1064,19 +1067,8 @@ const HELP_REVEAL_TIMEOUT_MS = 2_000;
 // Bound for the capturePage fallback — it can hang on exactly the same guests.
 const CAPTURE_PAGE_TIMEOUT_MS = 1_500;
 
-/** `work`'s value, or `null` once `ms` pass first. A rejection also reads as null. */
-async function settledWithin<T>(work: Promise<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), ms);
-    timer.unref?.();
-  });
-  try {
-    return await Promise.race([work.catch(() => null), timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
+// Bound for measuring the element: an open dialog or a long task blocks it.
+const ELEMENT_MEASURE_TIMEOUT_MS = 2_000;
 
 /** Where one element sits, measured after scrolling it into view. CSS px. */
 interface ElementCaptureBox {
@@ -1084,28 +1076,47 @@ interface ElementCaptureBox {
   rect: PixelRect;
   /** The same box in document coordinates, which is what a CDP clip takes. */
   page: PixelRect;
-  /** Whether the whole box is on screen, which capturePage needs. */
+  /** The viewport, CSS px. */
+  viewport: PixelRect;
+  /** Whether the whole box is in the viewport. */
   inViewport: boolean;
 }
 
+function contains(outer: PixelRect, inner: PixelRect): boolean {
+  return inner.x >= outer.x && inner.y >= outer.y
+    && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
+}
+
 async function measureElementForCapture(wc: WebContents, selector: string): Promise<ElementCaptureBox> {
-  const res = await wc.debugger.sendCommand('Runtime.evaluate', {
-    expression: `(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) return { missing: true };
-      el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
-      const r = el.getBoundingClientRect();
-      if (!(r.width > 0 && r.height > 0)) return { empty: true };
-      return { x: r.x, y: r.y, width: r.width, height: r.height,
-        scrollX: window.scrollX, scrollY: window.scrollY,
-        vw: window.innerWidth, vh: window.innerHeight };
-    })()`,
-    returnByValue: true,
-  }) as {
-    result?: { value?: { missing?: true; empty?: true; x?: number; y?: number; width?: number; height?: number;
-      scrollX?: number; scrollY?: number; vw?: number; vh?: number } };
-    exceptionDetails?: { exception?: { description?: string }; text?: string };
-  };
+  const answer = await withDeadline(
+    (wc.debugger.sendCommand('Runtime.evaluate', {
+      expression: `(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return { missing: true };
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+        const r = el.getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0)) return { empty: true };
+        return { x: r.x, y: r.y, width: r.width, height: r.height,
+          scrollX: window.scrollX, scrollY: window.scrollY,
+          vw: window.innerWidth, vh: window.innerHeight };
+      })()`,
+      returnByValue: true,
+    }) as Promise<{
+      result?: { value?: { missing?: true; empty?: true; x?: number; y?: number; width?: number; height?: number;
+        scrollX?: number; scrollY?: number; vw?: number; vh?: number } };
+      exceptionDetails?: { exception?: { description?: string }; text?: string };
+    }>).then((res) => ({ res }), (error: unknown) => ({ error })),
+    ELEMENT_MEASURE_TIMEOUT_MS,
+    null,
+  );
+  if (!answer) {
+    throw new Error(
+      `browser.screenshot: the page did not answer while ${selector} was measured (an open dialog or a busy page blocks it). ` +
+      'Retry once the page is idle, or omit ref to capture the viewport.',
+    );
+  }
+  if ('error' in answer) throw answer.error;
+  const res = answer.res;
   if (res.exceptionDetails) {
     throw new Error(`browser.screenshot: invalid selector ${selector}: ${res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? 'error'}`);
   }
@@ -1115,10 +1126,12 @@ async function measureElementForCapture(wc: WebContents, selector: string): Prom
   }
   if (v.empty) throw new Error(`browser.screenshot: the element ${selector} has no area to capture.`);
   const rect = { x: v.x ?? 0, y: v.y ?? 0, width: v.width ?? 0, height: v.height ?? 0 };
+  const viewport = { x: 0, y: 0, width: v.vw ?? 0, height: v.vh ?? 0 };
   return {
     rect,
     page: { ...rect, x: rect.x + (v.scrollX ?? 0), y: rect.y + (v.scrollY ?? 0) },
-    inViewport: rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= (v.vw ?? 0) && rect.y + rect.height <= (v.vh ?? 0),
+    viewport,
+    inViewport: contains(viewport, rect),
   };
 }
 
@@ -1132,27 +1145,32 @@ async function captureElement(
   encode: { jpeg: boolean; quality: number; scale: number },
 ): Promise<{ data: string; mimeType?: string }> {
   const box = await measureElementForCapture(wc, selector);
-  const shot = await settledWithin(
+  const shot = await withDeadline(
     wc.debugger.sendCommand('Page.captureScreenshot', {
       format: 'png',
       clip: { ...box.page, scale: 1 },
-      // An element taller than the viewport is still captured whole.
-      captureBeyondViewport: true,
+      // Only for an element that doesn't fit: it resizes the viewport to the
+      // document, which moves fixed and sticky elements and reflows 100vh.
+      ...(!box.inViewport && { captureBeyondViewport: true }),
     }) as Promise<{ data?: unknown }>,
     CDP_SCREENSHOT_TIMEOUT_MS,
+    null,
   );
   if (shot && typeof shot.data === 'string') {
     return encode.jpeg ? reencodeCapture(Buffer.from(shot.data, 'base64'), encode.quality, encode.scale) : { data: shot.data };
   }
   // #529: the CDP capture hung or failed. capturePage reads back only what is
-  // on screen, so it can stand in only for a box that is entirely there.
-  if (!box.inViewport) {
+  // on screen, so it can stand in only for a box that is entirely there,
+  // judged in the drawn pixels it crops in.
+  const drawn = viewRect(wc, box.rect);
+  const drawnViewport = viewRect(wc, box.viewport);
+  if (!contains(drawnViewport, drawn)) {
     throw new Error(
       `browser.screenshot: the capture did not answer and ${selector} does not fit on screen, so it cannot be cropped from the visible area. ` +
       'Bring the workspace to front and retry, or omit ref to capture the viewport.',
     );
   }
-  const image = await settledWithin(wc.capturePage(viewRect(wc, box.rect)), CAPTURE_PAGE_TIMEOUT_MS);
+  const image = await withDeadline(wc.capturePage(drawn), CAPTURE_PAGE_TIMEOUT_MS, null);
   if (image && !image.isEmpty()) {
     return encode.jpeg ? reencodeNativeImage(image, encode.quality, encode.scale) : { data: image.toPNG().toString('base64') };
   }
