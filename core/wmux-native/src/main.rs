@@ -52,10 +52,6 @@ pub const MARKER: &str = "wmux-managed: native-hooks";
 /// The Node bridge's file name (SHARED_HOOKS_BRIDGE_BASENAME in hookFlavours.ts).
 const BRIDGE_BASENAME: &str = "wmux-hooks-bridge.mjs";
 
-/// The Claude Node bridge's file name (WMUX_BRIDGE_MARKER in setupHooks.ts).
-#[cfg(unix)]
-const CLAUDE_BRIDGE_BASENAME: &str = "wmux-bridge.mjs";
-
 const USAGE: &str = "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native claude-hook <Event> [flags…]\n       wmux-native mcp-shim [--commander] [--core] [--role=R] [--bot*] | --self-test\n       wmux-native --version | --help | --self-test\n";
 
 fn main() {
@@ -73,7 +69,7 @@ fn main() {
         .as_deref()
         .map(std::path::Path::new)
         .and_then(std::path::Path::file_name)
-        == Some(std::ffi::OsStr::new(CLAUDE_BRIDGE_BASENAME));
+        == Some(std::ffi::OsStr::new(claude_hook::BRIDGE_BASENAME));
     match sub.as_ref().and_then(|s| s.to_str()) {
         #[cfg(unix)]
         _ if names_claude_bridge => claude_hook::run_process(args.collect(), sub.map(std::path::PathBuf::from)),

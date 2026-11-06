@@ -67,7 +67,7 @@ use std::sync::{Mutex, PoisonError};
 
 /// The bridge this port follows (claudeHookContract.test.ts pins the same file).
 const PORTED_FROM_SHA256: &str = include_str!("../claude-hook.ported-from.sha256");
-const BRIDGE_BASENAME: &str = "wmux-bridge.mjs";
+pub(crate) const BRIDGE_BASENAME: &str = "wmux-bridge.mjs";
 const KILL_SWITCH_FILE: &str = "native-disabled";
 
 /// MAX_STDIN_BYTES.
