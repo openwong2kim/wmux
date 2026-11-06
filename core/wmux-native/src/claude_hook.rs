@@ -383,16 +383,15 @@ fn hand_over(
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf));
     let beside = exe_dir.as_ref().map(|d| d.join(BRIDGE_BASENAME));
-    if let Some(named) = named_bridge {
-        note_named_bridge(named, beside.as_deref(), log);
-    }
-    let bridge = beside.filter(|b| b.is_file());
     let mut handover = Handover {
-        bridge,
+        bridge: beside.clone().filter(|b| b.is_file()),
         node_missing: false,
     };
     if kill_switch(exe_dir.as_deref()) {
         handover.exec(args, log);
+    }
+    if let Some(named) = named_bridge {
+        note_named_bridge(named, beside.as_deref(), log);
     }
     match handover.bridge.as_ref().map(std::fs::read) {
         Some(Ok(source)) if ported_from(&source) => {}

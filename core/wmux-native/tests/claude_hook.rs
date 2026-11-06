@@ -166,6 +166,17 @@ fn the_kill_switch_env_hands_the_run_to_node_before_anything_else() {
 }
 
 #[test]
+fn the_named_form_hands_over_to_node_before_anything_else() {
+    // Even a named bridge that is not the one beside the binary: nothing is
+    // compared, logged or created before the hand-over.
+    let case = Case::new("env-switch-named", Some(&pinned()));
+    let args = ["/elsewhere/wmux-bridge.mjs".into(), "Stop".into(), "--x".into()];
+    quiet(&case.run_argv(&args, &[("WMUX_HOOK_RUNTIME", "node")], true, "{}"));
+    assert_eq!(case.node_args(), Some(vec![case.bridge(), "Stop".into(), "--x".into()]));
+    assert!(!case.dir.join("home/.wmux-claude-hook-test").exists());
+}
+
+#[test]
 fn the_kill_switch_file_hands_the_run_to_node() {
     let case = Case::new("file-switch", Some(&pinned()));
     std::fs::write(case.dir.join("bin/native-disabled"), b"").unwrap();
@@ -290,9 +301,9 @@ fn a_named_bridge_in_a_non_utf8_directory_still_dispatches_and_is_noted() {
     // Not UTF-8, and not the bridge beside the binary: the basename still
     // dispatches, the run uses the bridge beside it, and the difference is noted.
     let named = OsString::from_vec(b"/nonexistent/\xff\xfe/wmux-bridge.mjs".to_vec());
-    quiet(&case.run_argv(&[named, "Stop".into()], &[("WMUX_HOOK_RUNTIME", "node")], true, "{}"));
-    assert_eq!(case.node_args(), Some(vec![case.bridge(), "Stop".into()]));
-    assert_eq!(case.log(), ["bridge-path-differs"]);
+    quiet(&case.run_argv(&[named, "Stop".into()], &[], true, "{}"));
+    assert_eq!(case.node_args(), None);
+    assert_eq!(case.log(), ["bridge-path-differs", "no-auth-token"]);
     let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
     assert!(
         log.contains(r#""named":"/nonexistent/"#)
