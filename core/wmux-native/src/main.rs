@@ -26,7 +26,7 @@ pub const MARKER: &str = "wmux-managed: native-hooks";
 /// The Node bridge's file name (SHARED_HOOKS_BRIDGE_BASENAME in hookFlavours.ts).
 const BRIDGE_BASENAME: &str = "wmux-hooks-bridge.mjs";
 
-const USAGE: &str = "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native mcp-shim [--commander] [--core] [--role=R] | --self-test\n       wmux-native --version | --help\n";
+const USAGE: &str = "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native mcp-shim [--commander] [--core] [--role=R] [--bot*] | --self-test\n       wmux-native --version | --help\n";
 
 fn main() {
     // A panic must not print: hook output is read by the agent.

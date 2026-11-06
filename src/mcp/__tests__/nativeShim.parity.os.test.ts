@@ -11,8 +11,10 @@
 // difference stays recorded rather than ignored. Two additive differences are
 // checked in place: the native handshake ends with `"ack":1` (the broker ack;
 // everything before it is shim.ts's bytes), and with no broker the native shim
-// adds one line naming the full bundle it would fall back to (none sits beside
-// the binary under test, so it then exits 1 as shim.ts does).
+// adds one line naming the places it looked for a full bundle to fall back to
+// (the binary under test runs from a directory of its own, so there is none,
+// and it then exits 1 as shim.ts does). The stub answers a handshake that asks
+// for the ack, as the broker does.
 //
 // shim.ts is bundled from source with esbuild, so the test follows the source
 // rather than a stale build. The binary is WMUX_NATIVE_HOOKS_BIN, else the
@@ -94,6 +96,9 @@ const CASES: Case[] = [
 
 let home = '';
 let jsShim = '';
+/** A copy of the binary alone in a directory, so it finds no full bundle to
+ *  fall back to wherever the build under test sits. */
+let loneNative = '';
 let seq = 0;
 
 function pipeName(suffix: string): string {
@@ -129,6 +134,9 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
         const nl = buf.indexOf(0x0a);
         if (nl === -1 || line !== null) return;
         line = buf.subarray(0, nl + 1).toString('utf8');
+        // Answer a shim that asks for the ack, as the broker does once it has
+        // hosted the session (the native shim waits for it; shim.ts never asks).
+        if (JSON.parse(line).ack === 1) sock.write('{"wmuxBroker":1,"ok":true}\n');
         if (broker === 'hangup') { sock.destroy(); return; }
         if (broker === 'reset') {
           // Stop reading, then have the host send two lines the shim forwards
@@ -159,7 +167,7 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
   }
   const [cmd, ...args] = runtime === 'js'
     ? [process.execPath, jsShim, ...(c.args ?? [])]
-    : [NATIVE ?? EXE, 'mcp-shim', ...(c.args ?? [])];
+    : [loneNative, 'mcp-shim', ...(c.args ?? [])];
   const proc = spawn(cmd, args, { env: childEnv(suffix, c.env ?? {}), stdio: ['pipe', 'pipe', 'pipe'] });
   child = proc;
   let stdout = '';
@@ -233,7 +241,7 @@ function withoutAck(line: string): string {
 /** Native stderr with no broker: shim.ts's line, then the missing-bundle line. */
 function expectRefusalPlusNoBundle(nativeStderr: string, jsStderr: string): void {
   expect(nativeStderr.startsWith(jsStderr), nativeStderr).toBe(true);
-  expect(nativeStderr.slice(jsStderr.length)).toMatch(/^\[wmux-mcp-shim\] no full bundle at .*index\.js to fall back to\n$/);
+  expect(nativeStderr.slice(jsStderr.length)).toMatch(/^\[wmux-mcp-shim\] no full bundle to fall back to \(looked at .*index\.js\)\n$/);
 }
 
 describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshake parity', () => {
@@ -242,6 +250,10 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
     // macOS caps sun_path at 104 bytes; a runner's TMPDIR is already long.
     home = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'nsp-'));
     jsShim = path.join(home, 'shim.cjs');
+    fs.mkdirSync(path.join(home, 'lone'));
+    loneNative = path.join(home, 'lone', EXE);
+    fs.copyFileSync(NATIVE, loneNative);
+    fs.chmodSync(loneNative, 0o755);
     buildSync({
       entryPoints: [path.join(REPO_ROOT, 'src', 'mcp', 'shim.ts')],
       bundle: true,

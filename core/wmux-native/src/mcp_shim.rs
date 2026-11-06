@@ -9,13 +9,17 @@
 //! It runs as the host's direct child (no wrapper, no re-exec), so the broker's
 //! identity walk from `callerPid` sees the same ancestry as with the Node shim.
 //!
-//! Exit codes, as shim.ts: 0 when the host ends the session (stdin EOF or a
-//! read error, SIGTERM/SIGINT, Ctrl+C on Windows); 1 when there is no token,
-//! the broker cannot be reached, or the connection drops mid-session. A dropped
-//! session is never resumed: MCP servers keep per-session state, so the host
-//! must see the server die and restart it. As in shim.ts, the signal handlers
-//! are installed once the handshake is written; before that a signal kills the
-//! process by its default disposition.
+//! Exit codes: 0 when the host ends the session (stdin EOF or a read error,
+//! SIGTERM/SIGINT, Ctrl+C on Windows); 1 when there is no token, the broker
+//! refuses the session, or the connection drops mid-session. A broker that is
+//! unreachable, or that does not acknowledge the session, hands the session to
+//! the full bundle instead; that path exits 1 only when there is no bundle to
+//! run or node cannot be started (on Windows, also when no job object can
+//! contain it). A dropped session is never resumed: MCP servers keep
+//! per-session state, so the host must see the server die and restart it. The
+//! signal handlers are installed once the session is acknowledged; before that
+//! a signal kills the process by its default disposition, as it does the Node
+//! shim before its handlers.
 //!
 //! One intentional divergence from shim.ts: a failed stdout write exits 0.
 //! The host stopped reading, which is a normal shutdown, and node's exit 1
@@ -24,17 +28,20 @@
 //! EAGAIN on an inherited non-blocking stdin or stdout is waited out, not
 //! taken as the end of the session.
 //!
-//! Fallback (fallback.rs): when the broker is unreachable at startup, and
-//! always for `--bot*` arguments (the broker hosts no bot surface), the shim
-//! hands the session to the full bundle, `node <sibling index.js> <same
-//! args>`, before it has read a byte of stdin. Once the handshake is written
-//! there is no fallback: a dropped session still exits 1.
+//! Startup gate: the shim adds `ack: 1` to the handshake (additive; shim.ts
+//! sends none, and the broker answers it only when asked). The broker answers
+//! with one line, `{"wmuxBroker":1,"ok":…}`, once it has hosted the session,
+//! and writes nothing before it. The shim reads no stdin until that line:
+//! ok:true starts the pumps; ok:false exits 1 (a refusal is an answer, not an
+//! outage); no answer within ACK_DEADLINE, a close, or a first line that is not
+//! the ack (an older broker) drops the connection and falls back.
 //!
-//! Handshake ack: the shim adds `ack: 1` to the handshake (additive; an older
-//! broker ignores the field). A broker that knows it answers with one line,
-//! `{"wmuxBroker":1,"ok":…}`, as the first bytes of the connection; the shim
-//! consumes that line and never forwards it. See `classify_head` for how it is
-//! told apart from MCP traffic without waiting on an older broker.
+//! Fallback (fallback.rs): when the broker is unreachable or does not take the
+//! session, and always for `--bot*` arguments (the broker hosts no bot
+//! surface), the shim hands the session to the full bundle with its own
+//! arguments. No stdin has been read by then, so the bundle gets the host's
+//! bytes from the first one. Once the session is acknowledged there is no
+//! fallback: a dropped session still exits 1.
 
 use crate::js::{decode_utf8_trimmed, stringify, JsStr, Json};
 use crate::paths::{env, env_js, os_to_js};
@@ -138,7 +145,7 @@ impl Outcome {
             Outcome::BrokerClosed => Some(format!("{PREFIX} broker connection closed")),
             Outcome::BrokerError(e) => Some(format!("{PREFIX} broker connection error: {e}")),
             Outcome::BrokerRefused(e) => Some(format!("{PREFIX} broker refused the session: {e}")),
-            Outcome::NoBundle(path) => Some(format!("{PREFIX} no full bundle at {path} to fall back to")),
+            Outcome::NoBundle(looked) => Some(format!("{PREFIX} no full bundle to fall back to (looked at {looked})")),
             Outcome::BundleFailed(e) => Some(format!("{PREFIX} cannot start the full bundle: {e}")),
             _ => None,
         }
@@ -496,67 +503,87 @@ fn read_step(r: std::io::Result<usize>) -> ReadStep {
     match r {
         Ok(0) => ReadStep::End(Outcome::BrokerClosed),
         Ok(n) => ReadStep::Data(n),
-        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => ReadStep::Retry,
+        // WouldBlock only if the ack wait's read timeout outlived it.
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) =>
+        {
+            ReadStep::Retry
+        }
         Err(e) => ReadStep::End(Outcome::BrokerError(socket_error("read", &e))),
     }
 }
 
-/// The first bytes of a broker ack line. JSON-RPC messages are objects whose
-/// keys are jsonrpc/id/method/params/result/error, so none starts with this.
-const ACK_PREFIX: &[u8] = b"{\"wmuxBroker\":";
-/// An ack line is about 40 bytes; a longer unterminated one is not an ack.
+/// How long the shim waits for the broker's ack before it falls back.
+const ACK_DEADLINE: Duration = Duration::from_secs(2);
+/// An ack line is about 40 bytes; a longer first line is not one.
 const MAX_ACK_LINE: usize = 8 * 1024;
 
-/// What the head of the broker's stream (the bytes received so far, before
-/// anything was forwarded) turned out to be.
+/// The broker's answer to the handshake.
 #[derive(Debug, PartialEq)]
-pub enum Head {
-    /// Still a prefix of an ack line: read more.
-    Pending,
-    /// MCP traffic (an older broker): forward the head as it is.
-    Traffic,
-    /// The ack line, `len` bytes with its newline; the rest is traffic.
-    Ack {
-        ok: bool,
-        error: Option<String>,
-        len: usize,
-    },
-    /// An ack prefix that never became a valid ack line.
-    Malformed,
+pub enum Ack {
+    /// The session is hosted; `rest` is whatever followed the ack line.
+    Hosted { rest: Vec<u8> },
+    /// The broker answered ok:false, with its reason.
+    Refused(String),
+    /// No ack: why, for the fallback notice.
+    Missing(String),
 }
 
-/// Tell an ack line from MCP traffic. The decision is made by bytes, never by
-/// time: the first byte that differs from ACK_PREFIX makes the head traffic,
-/// so an older broker's reply is held back only while it still matches the
-/// prefix (no MCP message does past `{"`), and never waits on a timer. A head
-/// that matches the whole prefix is the ack, read to its newline.
-pub fn classify_head(head: &[u8]) -> Head {
-    let n = head.len().min(ACK_PREFIX.len());
-    if head[..n] != ACK_PREFIX[..n] {
-        return Head::Traffic;
-    }
-    let Some(nl) = head.iter().position(|&b| b == b'\n') else {
-        return if head.len() > MAX_ACK_LINE {
-            Head::Malformed
-        } else {
-            Head::Pending
+/// Read the broker's first line through `read`, which must fail with
+/// WouldBlock or TimedOut once ACK_DEADLINE has passed.
+pub fn await_ack(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> Ack {
+    let mut head = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        let n = match read(&mut buf) {
+            Ok(0) => return Ack::Missing("it closed the connection".into()),
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                return Ack::Missing(format!("no answer within {} s", ACK_DEADLINE.as_secs()))
+            }
+            Err(e) => return Ack::Missing(socket_error("read", &e)),
         };
-    };
-    let line = crate::js::js(&String::from_utf8_lossy(&head[..nl]));
-    match crate::js::parse(&line) {
-        Ok(v @ Json::Obj(_)) => Head::Ack {
-            ok: v.get("ok") == Some(&Json::Bool(true)),
-            error: v.get("error").and_then(Json::as_str).map(|e| crate::js::lossy(e)),
-            len: nl + 1,
-        },
-        _ => Head::Malformed,
+        head.extend_from_slice(&buf[..n]);
+        if let Some(nl) = head.iter().position(|&b| b == b'\n') {
+            let line = crate::js::js(&String::from_utf8_lossy(&head[..nl]));
+            return match crate::js::parse(&line) {
+                Ok(v) if v.get("wmuxBroker") == Some(&Json::Num(1.0)) => {
+                    if v.get("ok") == Some(&Json::Bool(true)) {
+                        Ack::Hosted {
+                            rest: head[nl + 1..].to_vec(),
+                        }
+                    } else {
+                        Ack::Refused(
+                            v.get("error")
+                                .and_then(Json::as_str)
+                                .map_or_else(|| "no reason given".into(), |e| crate::js::lossy(e)),
+                        )
+                    }
+                }
+                _ => Ack::Missing("its first line is not an ack".into()),
+            };
+        }
+        if head.len() > MAX_ACK_LINE {
+            return Ack::Missing("its first line is not an ack".into());
+        }
     }
 }
 
-/// Broker to stdout until either side ends. The head of the stream is held
-/// until classify_head decides it; held bytes are forwarded first and in
-/// order, so nothing is lost or reordered when no ack comes.
-fn pump_to_stdout(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> ! {
+/// The broker did not take the session. Nothing was forwarded yet, so the
+/// full bundle gets the session from the host's first byte. The caller has
+/// dropped the connection.
+fn no_session(why: &str, raw: &[OsString]) -> ! {
+    say(&format!("{PREFIX} no session from the broker: {why}"));
+    fallback::run_full_bundle(raw, true)
+}
+
+/// Broker to stdout until either side ends, starting with `first` (what came
+/// after the ack line).
+fn pump_to_stdout(first: Vec<u8>, mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> ! {
     let mut buf = vec![0u8; 64 * 1024];
     let stdout = std::io::stdout();
     // A write failure means the host stopped reading: its session is over
@@ -566,34 +593,14 @@ fn pump_to_stdout(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> 
             finish(Outcome::StdoutClosed);
         }
     };
-    let mut head: Option<Vec<u8>> = Some(Vec::new());
+    emit(&first);
     loop {
         let n = match read_step(read(&mut buf)) {
             ReadStep::Data(n) => n,
             ReadStep::Retry => continue,
-            ReadStep::End(outcome) => {
-                if outcome == Outcome::BrokerClosed {
-                    if let Some(held) = head.take() {
-                        emit(&held);
-                    }
-                }
-                finish(outcome)
-            }
+            ReadStep::End(outcome) => finish(outcome),
         };
-        let Some(held) = head.as_mut() else {
-            emit(&buf[..n]);
-            continue;
-        };
-        held.extend_from_slice(&buf[..n]);
-        match classify_head(held) {
-            Head::Pending => {}
-            Head::Traffic => emit(&head.take().unwrap_or_default()),
-            Head::Ack { ok: true, len, .. } => emit(&head.take().unwrap_or_default()[len..]),
-            Head::Ack { ok: false, error, .. } => finish(Outcome::BrokerRefused(
-                error.unwrap_or_else(|| "no reason given".into()),
-            )),
-            Head::Malformed => finish(Outcome::BrokerError("malformed broker ack line".into())),
-        }
+        emit(&buf[..n]);
     }
 }
 
@@ -650,17 +657,19 @@ pub fn run(raw: &[OsString]) -> ! {
         commander_token: env_js("WMUX_COMMANDER_TOKEN"),
         args,
     });
-    sys::session(conn, line.as_bytes())
+    sys::session(conn, line.as_bytes(), raw)
 }
 
 // ----- Unix transport --------------------------------------------------------
 
 #[cfg(unix)]
 mod sys {
-    use super::{finish, pump_from_stdin, pump_to_stdout, Outcome};
+    use super::{await_ack, exit_with, finish, no_session, pump_from_stdin, pump_to_stdout, Ack, Outcome};
+    use std::ffi::OsString;
     use std::io::{Read, Write};
     use std::net::Shutdown;
     use std::os::unix::net::UnixStream;
+    use std::time::Instant;
 
     pub type Conn = UnixStream;
 
@@ -796,16 +805,37 @@ mod sys {
         }
     }
 
-    pub fn session(mut conn: UnixStream, handshake: &[u8]) -> ! {
+    pub fn session(mut conn: UnixStream, handshake: &[u8], raw: &[OsString]) -> ! {
         if let Err(e) = conn.write_all(handshake) {
-            finish(Outcome::BrokerError(super::socket_error("write", &e)));
+            drop(conn);
+            no_session(&super::socket_error("write", &e), raw);
         }
+        let deadline = Instant::now() + super::ACK_DEADLINE;
+        let ack = await_ack(|buf| {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            }
+            conn.set_read_timeout(Some(left))?;
+            conn.read(buf)
+        });
+        let first = match ack {
+            Ack::Hosted { rest } => rest,
+            Ack::Refused(why) => exit_with(Outcome::BrokerRefused(why)),
+            Ack::Missing(why) => {
+                drop(conn);
+                no_session(&why, raw)
+            }
+        };
+        // macOS refuses this (EINVAL) once the broker has closed its end;
+        // the reader's next read then reports the close itself.
+        let _ = conn.set_read_timeout(None);
         install_exit_handlers();
         let mut reader = match conn.try_clone() {
             Ok(r) => r,
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
         };
-        std::thread::spawn(move || pump_to_stdout(|buf| reader.read(buf)));
+        std::thread::spawn(move || pump_to_stdout(first, |buf| reader.read(buf)));
         pump_from_stdin(|bytes| (&conn).write_all(bytes));
         // Host closed stdin: end of session. Half-close first, as
         // socket.end() does, so the broker sees an orderly end.
@@ -823,11 +853,13 @@ mod sys {
 
 #[cfg(windows)]
 mod sys {
-    use super::{finish, pump_from_stdin, pump_to_stdout, Outcome};
+    use super::{await_ack, exit_with, finish, no_session, pump_from_stdin, pump_to_stdout, Ack, Outcome};
     use crate::js::lossy;
     use core::ffi::c_void;
+    use std::ffi::OsString;
     use std::io::Error;
     use std::sync::Arc;
+    use std::time::Instant;
 
     type Handle = *mut c_void;
     const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
@@ -843,6 +875,8 @@ mod sys {
     const ERROR_PIPE_BUSY: i32 = 231;
     const ERROR_IO_PENDING: i32 = 997;
     const PIPE_BUSY_WAIT_MS: u32 = 30_000;
+    const INFINITE: u32 = 0xFFFF_FFFF;
+    const WAIT_TIMEOUT: u32 = 258;
 
     #[repr(C)]
     struct Overlapped {
@@ -882,6 +916,8 @@ mod sys {
         fn ReadFile(handle: Handle, buf: *mut u8, len: u32, read: *mut u32, ov: *mut Overlapped) -> i32;
         fn WriteFile(handle: Handle, buf: *const u8, len: u32, written: *mut u32, ov: *mut Overlapped) -> i32;
         fn GetOverlappedResult(handle: Handle, ov: *mut Overlapped, transferred: *mut u32, wait: i32) -> i32;
+        fn WaitForSingleObject(handle: Handle, millis: u32) -> u32;
+        fn CancelIoEx(handle: Handle, ov: *mut Overlapped) -> i32;
         fn GetCurrentProcess() -> Handle;
         fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
     }
@@ -942,6 +978,20 @@ mod sys {
     impl Conn {
         /// One overlapped read or write, waited for on the calling thread's event.
         fn io(&self, event: &Event, buf: *mut u8, len: usize, write: bool) -> std::io::Result<usize> {
+            self.io_within(event, buf, len, write, INFINITE)
+        }
+
+        /// As `io`, but gives up after `millis`: the operation is cancelled and
+        /// waited for (so `buf` and the OVERLAPPED are free again), and the
+        /// result is a TimedOut error.
+        fn io_within(
+            &self,
+            event: &Event,
+            buf: *mut u8,
+            len: usize,
+            write: bool,
+            millis: u32,
+        ) -> std::io::Result<usize> {
             let len = len.min(u32::MAX as usize) as u32;
             let mut ov = Overlapped {
                 internal: 0,
@@ -964,6 +1014,11 @@ mod sys {
                 if started == 0 && Error::last_os_error().raw_os_error() != Some(ERROR_IO_PENDING) {
                     return Err(Error::last_os_error());
                 }
+                if WaitForSingleObject(event.0, millis) == WAIT_TIMEOUT {
+                    CancelIoEx(self.0, &mut ov);
+                    let _ = GetOverlappedResult(self.0, &mut ov, &mut n, 1);
+                    return Err(std::io::ErrorKind::TimedOut.into());
+                }
                 if GetOverlappedResult(self.0, &mut ov, &mut n, 1) == 0 {
                     return Err(Error::last_os_error());
                 }
@@ -977,6 +1032,22 @@ mod sys {
         fn read(&self, event: &Event, buf: &mut [u8]) -> std::io::Result<usize> {
             loop {
                 match self.io(event, buf.as_mut_ptr(), buf.len(), false) {
+                    Ok(0) => continue,
+                    Err(e) if e.raw_os_error() == Some(ERROR_BROKEN_PIPE) => return Ok(0),
+                    other => return other,
+                }
+            }
+        }
+
+        /// `read` that gives up at `deadline` with a TimedOut error.
+        fn read_until(&self, event: &Event, buf: &mut [u8], deadline: Instant) -> std::io::Result<usize> {
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now()).as_millis();
+                if left == 0 {
+                    return Err(std::io::ErrorKind::TimedOut.into());
+                }
+                let millis = left.min(u128::from(INFINITE - 1)) as u32;
+                match self.io_within(event, buf.as_mut_ptr(), buf.len(), false, millis) {
                     Ok(0) => continue,
                     Err(e) if e.raw_os_error() == Some(ERROR_BROKEN_PIPE) => return Ok(0),
                     other => return other,
@@ -1098,15 +1169,25 @@ mod sys {
         unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) };
     }
 
-    pub fn session(conn: Conn, handshake: &[u8]) -> ! {
-        let conn = Arc::new(conn);
+    pub fn session(conn: Conn, handshake: &[u8], raw: &[OsString]) -> ! {
         let writer_event = match Event::new() {
             Ok(e) => e,
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
         };
         if let Err(e) = conn.write_all(&writer_event, handshake) {
-            finish(Outcome::BrokerError(super::socket_error("write", &e)));
+            drop(conn);
+            no_session(&super::socket_error("write", &e), raw);
         }
+        let deadline = Instant::now() + super::ACK_DEADLINE;
+        let first = match await_ack(|buf| conn.read_until(&writer_event, buf, deadline)) {
+            Ack::Hosted { rest } => rest,
+            Ack::Refused(why) => exit_with(Outcome::BrokerRefused(why)),
+            Ack::Missing(why) => {
+                drop(conn);
+                no_session(&why, raw)
+            }
+        };
+        let conn = Arc::new(conn);
         install_exit_handlers();
         let reader = Arc::clone(&conn);
         std::thread::spawn(move || {
@@ -1114,7 +1195,7 @@ mod sys {
                 Ok(e) => e,
                 Err(e) => finish(Outcome::BrokerError(e.to_string())),
             };
-            pump_to_stdout(|buf| reader.read(&event, buf))
+            pump_to_stdout(first, |buf| reader.read(&event, buf))
         });
         pump_from_stdin(|bytes| conn.write_all(&writer_event, bytes));
         // Host closed stdin: end the session. The handle is not closed here:
@@ -1311,40 +1392,47 @@ mod tests {
         assert!(!claim.claim());
     }
 
-    #[test]
-    fn the_ack_line_is_told_from_mcp_traffic_by_its_bytes() {
-        // MCP traffic is decided at the first byte that leaves the prefix.
-        assert_eq!(classify_head(b"{\"jsonrpc\":\"2.0\""), Head::Traffic);
-        assert_eq!(classify_head(b"{\"result\":{}}\n"), Head::Traffic);
-        assert_eq!(classify_head(b"\xfe"), Head::Traffic);
-        assert_eq!(classify_head(b"{\"w"), Head::Pending);
-        assert_eq!(classify_head(b"{\"wmuxBroker\":1,\"ok\":tr"), Head::Pending);
-        let ok = b"{\"wmuxBroker\":1,\"ok\":true}\n{\"jsonrpc\"";
-        assert_eq!(
-            classify_head(ok),
-            Head::Ack {
-                ok: true,
-                error: None,
-                len: 27
+    /// Feed `chunks` to await_ack one read at a time; then the deadline.
+    fn ack_from(chunks: &[&[u8]]) -> Ack {
+        let mut chunks = chunks.iter();
+        await_ack(|buf| match chunks.next() {
+            Some(c) => {
+                buf[..c.len()].copy_from_slice(c);
+                Ok(c.len())
             }
+            None => Err(std::io::ErrorKind::WouldBlock.into()),
+        })
+    }
+
+    #[test]
+    fn the_ack_gates_the_session() {
+        let ok = b"{\"wmuxBroker\":1,\"ok\":true}\n";
+        assert_eq!(ack_from(&[ok]), Ack::Hosted { rest: vec![] });
+        // Split across reads, with bytes after it.
+        assert_eq!(
+            ack_from(&[b"{\"wmuxBr", b"oker\":1,\"ok\":true}\nab"]),
+            Ack::Hosted { rest: b"ab".to_vec() }
         );
         assert_eq!(
-            classify_head(b"{\"wmuxBroker\":1,\"ok\":false,\"error\":\"auth\"}\n"),
-            Head::Ack {
-                ok: false,
-                error: Some("auth".into()),
-                len: 43
-            }
+            ack_from(&[b"{\"wmuxBroker\":1,\"ok\":false,\"error\":\"auth\"}\n"]),
+            Ack::Refused("auth".into())
         );
         // ok must be exactly true.
-        assert!(matches!(
-            classify_head(b"{\"wmuxBroker\":1,\"ok\":1}\n"),
-            Head::Ack { ok: false, .. }
-        ));
-        assert_eq!(classify_head(b"{\"wmuxBroker\":1,oops}\n"), Head::Malformed);
-        let mut long = ACK_PREFIX.to_vec();
-        long.resize(MAX_ACK_LINE + 1, b' ');
-        assert_eq!(classify_head(&long), Head::Malformed);
+        assert_eq!(
+            ack_from(&[b"{\"wmuxBroker\":1,\"ok\":1}\n"]),
+            Ack::Refused("no reason given".into())
+        );
+        // An older broker: silence, a close, or MCP traffic first.
+        assert_eq!(ack_from(&[]), Ack::Missing("no answer within 2 s".into()));
+        assert_eq!(ack_from(&[b"{\"wmuxBr"]), Ack::Missing("no answer within 2 s".into()));
+        let closed = await_ack(|_| Ok(0));
+        assert_eq!(closed, Ack::Missing("it closed the connection".into()));
+        let not_ack = Ack::Missing("its first line is not an ack".into());
+        assert_eq!(ack_from(&[b"{\"jsonrpc\":\"2.0\",\"id\":1}\n"]), not_ack);
+        assert_eq!(ack_from(&[b"{\"wmuxBroker\":2,\"ok\":true}\n"]), not_ack);
+        let spaces = [b' '; 1024];
+        let long: Vec<&[u8]> = (0..=MAX_ACK_LINE / 1024).map(|_| &spaces[..]).collect();
+        assert_eq!(ack_from(&long), not_ack);
     }
 
     #[test]

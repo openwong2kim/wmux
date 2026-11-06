@@ -26,7 +26,6 @@
 import '../shared/exeSearchGuard';
 import * as net from 'net';
 import * as fs from 'fs';
-// eslint-disable-next-line import/no-unresolved -- the SDK's exports map, which esbuild resolves (src/mcp/index.ts has the same exemption in .eslintrc.json)
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { getMcpBrokerPipeName, getAuthTokenPath } from '../shared/constants';
 import { createWmuxServer } from './index';
@@ -55,14 +54,14 @@ interface ShimHandshake {
   /** Optional `--role=<Role>` value; absent from an older shim (full surface). */
   roleSurface?: string;
   /** Additive: `1` asks for one broker line, `{"wmuxBroker":1,"ok":…}`, as
-   *  the first bytes on the connection, before any MCP traffic. Absent from
-   *  shim.ts and older shims, which get no such line. */
+   *  the first bytes on the connection: ok:true once the session is hosted,
+   *  ok:false when it is refused. Absent from shim.ts and older shims, which
+   *  get no such line. */
   ack?: number;
 }
 
-/** The answer to a handshake that asked for one (`ack: 1`). Always the first
- *  bytes the shim reads, so the shim tells it from MCP traffic by its prefix
- *  (`{"wmuxBroker":`), which no JSON-RPC message starts with. */
+/** The answer to a handshake that asked for one (`ack: 1`): always the first
+ *  bytes the shim reads. The native shim forwards no stdin until it arrives. */
 function brokerAckLine(ok: boolean, error?: string): string {
   return JSON.stringify(ok ? { wmuxBroker: 1, ok } : { wmuxBroker: 1, ok, error }) + '\n';
 }
@@ -135,6 +134,9 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
     // StdioServerTransport speaks; it accepts any Readable/Writable pair.
     transport = new StdioServerTransport(socket, socket);
     await server.connect(transport);
+    // The session is hosted: answer a shim that asked. The socket is still
+    // paused here, so no request has been read and no reply written yet.
+    if (handshake.ack === 1) socket.write(brokerAckLine(true));
 
     // server.connect wired transport.onmessage/onclose/onerror. Re-wrap them
     // so every later dispatch (they fire from socket events, OUTSIDE this
@@ -249,8 +251,6 @@ function main(): void {
         else socket.destroy();
         return;
       }
-      // Before hosting, so the ack precedes every byte the server may write.
-      if (wantsAck) socket.write(brokerAckLine(true));
 
       const rest = buffer.subarray(nl + 1);
       hostConnection(socket, handshake)

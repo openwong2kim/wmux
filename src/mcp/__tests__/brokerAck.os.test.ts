@@ -3,8 +3,9 @@
 // test follows the source rather than a stale dist/ build.
 //
 // A shim that sends `ack: 1` reads one `{"wmuxBroker":1,"ok":…}` line as the
-// first bytes of the connection, before any MCP traffic; a shim that does not
-// (shim.ts, older native shims) gets the stream exactly as before.
+// first bytes of the connection: ok:true once the session is hosted, before any
+// MCP traffic; ok:false on a refusal. A shim that does not ask (shim.ts) gets
+// the stream exactly as before.
 //
 // Isolation: a throwaway home, a data suffix, and the token from
 // WMUX_AUTH_TOKEN (no token file), so nothing here can reach a live wmux.
@@ -140,6 +141,14 @@ describe('broker handshake ack', () => {
     s.socket.write(INITIALIZE + '\n');
     const [, reply] = await s.lines(2);
     expect(JSON.parse(reply)).toMatchObject({ jsonrpc: '2.0', id: 1, result: { serverInfo: { name: 'wmux' } } });
+    s.socket.destroy();
+  });
+
+  it('writes no MCP bytes before the ack, even for a request sent with the handshake', async () => {
+    const s = await open(handshake({ ack: 1 }) + INITIALIZE + '\n');
+    const [first, reply] = await s.lines(2);
+    expect(first).toBe('{"wmuxBroker":1,"ok":true}');
+    expect(JSON.parse(reply)).toMatchObject({ id: 1, result: { serverInfo: { name: 'wmux' } } });
     s.socket.destroy();
   });
 

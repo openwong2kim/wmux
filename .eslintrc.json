@@ -147,14 +147,15 @@
     },
     {
       "files": [
-        "src/mcp/index.ts"
+        "src/mcp/index.ts",
+        "src/mcp/broker.ts"
       ],
       "rules": {
         "import/no-unresolved": [
           "error",
           {
             "ignore": [
-              "^@modelcontextprotocol/sdk/server/mcp\\.js$"
+              "^@modelcontextprotocol/sdk/server/(?:mcp|stdio)\\.js$"
             ]
           }
         ]
