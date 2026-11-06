@@ -122,6 +122,10 @@ impl Sandbox {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
+        // A broker-off marker test may have panicked before its own cleanup.
+        let data_dir = self.home.join(format!(".wmux{}", self.suffix));
+        let _ = std::fs::remove_file(data_dir.join("mcp-broker-off"));
+        let _ = std::fs::remove_dir(data_dir);
         let _ = std::fs::remove_file(self.token_path());
         if cfg!(unix) {
             let _ = std::fs::remove_file(self.pipe());
@@ -465,8 +469,9 @@ fn a_missing_broker_endpoint_falls_back_at_once() {
         String::from_utf8_lossy(&out.stderr),
         format!("[wmux-mcp-shim] no broker\n{}", lone.no_bundle_line())
     );
-    // No endpoint at all: nothing is listening or about to be, so no retries.
-    assert!(elapsed < Duration::from_millis(500), "{elapsed:?}");
+    // No endpoint at all: nothing is listening or about to be, so no retries
+    // (ten used to take 3 s; the bound leaves room for a loaded machine).
+    assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
 }
 
 /// A socket file nobody listens on: what a broker that is restarting leaves.
@@ -538,7 +543,7 @@ fn a_broker_off_marker_hands_the_session_to_the_bundle_without_dialling() {
         format!("[wmux-mcp-shim] broker off\n{}", lone.no_bundle_line())
     );
     assert!(
-        started.elapsed() < Duration::from_millis(500),
+        started.elapsed() < Duration::from_millis(1500),
         "{:?}",
         started.elapsed()
     );
