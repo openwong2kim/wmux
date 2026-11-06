@@ -38,6 +38,13 @@ mod native_serialize;
     feature = "bindings",
     not(target_arch = "wasm32")
 ))]
+mod live_screen;
+
+#[cfg(all(
+    feature = "native-core",
+    feature = "bindings",
+    not(target_arch = "wasm32")
+))]
 mod native_transport;
 
 #[cfg(all(

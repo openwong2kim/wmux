@@ -34,6 +34,7 @@ pub fn native_core_capabilities() -> Vec<String> {
         "ansi-v2".into(),
         "ansi-v3".into(),
         "console-owner-v1".into(),
+        "live-screen-v1".into(),
         #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         "process-table-v1".into(),
         #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -146,9 +147,9 @@ pub fn port_snapshot() -> AsyncTask<PortSnapshotTask> {
     AsyncTask::new(PortSnapshotTask)
 }
 
-struct Size {
-    cols: usize,
-    rows: usize,
+pub(crate) struct Size {
+    pub cols: usize,
+    pub rows: usize,
 }
 impl Dimensions for Size {
     fn total_lines(&self) -> usize {
@@ -209,7 +210,7 @@ const MAX_TAIL_UNITS: usize = 4096;
 /// and the pending input tail follow util/ansiStreamScan.ts, which the xterm
 /// path runs over the same bytes, so both payloads restore the same state.
 #[derive(Default)]
-struct XtermFeed {
+pub(crate) struct XtermFeed {
     /// An unfinished escape sequence awaiting its next bytes.
     held: Vec<u8>,
     /// The stream ends inside a string (OSC, DCS, SOS, PM, APC): `tail`
@@ -346,6 +347,21 @@ impl XtermFeed {
         });
     }
 
+    /// Count the next byte fed as lifetime offset `offset` (after a lead
+    /// that isn't part of the ring).
+    pub(crate) fn rebase(&mut self, offset: u64) {
+        self.offset = offset;
+    }
+
+    pub(crate) fn taint(&self) -> Option<Taint> {
+        self.taint
+    }
+
+    /// The unfinished sequence waiting for its next bytes (at most MAX_HELD).
+    pub(crate) fn held_len(&self) -> usize {
+        self.held.len()
+    }
+
     fn push_tail(&mut self, bytes: &[u8]) {
         for &b in bytes {
             if self.tail_overflow {
@@ -454,7 +470,12 @@ impl XtermFeed {
 
     /// Feed `bytes`, giving ED 1 and ED 2 xterm's semantics. An unfinished
     /// sequence at the end waits in `held` for the bytes that complete it.
-    fn feed(&mut self, parser: &mut Processor, term: &mut Term<VoidListener>, bytes: &[u8]) {
+    pub(crate) fn feed(
+        &mut self,
+        parser: &mut Processor,
+        term: &mut Term<VoidListener>,
+        bytes: &[u8],
+    ) {
         let mut data = std::mem::take(&mut self.held);
         // Held bytes were counted when they first came.
         let start = self.offset - data.len() as u64;
@@ -582,9 +603,79 @@ fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: 
     }
 }
 
+/// The active screen's rows as xterm's text read gives them: the newest
+/// `max_history` history rows, then the screen, trailing empty rows dropped.
+/// The first row returned is never marked wrapped, as in xterm's read (i > 0).
+/// Also returns how many rows follow the cursor's.
+pub(crate) fn text_rows(
+    term: &Term<VoidListener>,
+    max_history: usize,
+    undimmed: bool,
+) -> (Vec<NativeTextRow>, u32) {
+    let grid = term.grid();
+    let history = grid.history_size().min(max_history) as i32;
+    let mut rows = Vec::with_capacity(history as usize + grid.screen_lines());
+    let mut wrapped = false;
+    for y in -history..grid.screen_lines() as i32 {
+        let line = &grid[Line(y)];
+        let mut text = String::new();
+        let mut plain = String::new();
+        for x in 0..grid.columns() {
+            let cell = &line[Column(x)];
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                continue;
+            }
+            text.push(cell.c);
+            if let Some(chars) = cell.zerowidth() {
+                text.extend(chars);
+            }
+            if undimmed {
+                if cell.flags.contains(Flags::DIM) {
+                    plain.push(' ');
+                    if cell.flags.contains(Flags::WIDE_CHAR) {
+                        plain.push(' ');
+                    }
+                } else {
+                    plain.push(cell.c);
+                    if let Some(chars) = cell.zerowidth() {
+                        plain.extend(chars);
+                    }
+                }
+            }
+        }
+        rows.push(NativeTextRow {
+            // xterm trims blank grid cells, not arbitrary Unicode whitespace.
+            text: text.trim_end_matches(' ').to_owned(),
+            wrapped,
+            undimmed: undimmed.then(|| plain.trim_end().to_owned()),
+        });
+        wrapped = line[Column(grid.columns() - 1)]
+            .flags
+            .contains(Flags::WRAPLINE);
+    }
+    while rows.last().is_some_and(|r| r.text.is_empty()) {
+        rows.pop();
+    }
+    let cursor_row = history + grid.cursor.point.line.0;
+    let rows_below_cursor = (rows.len() as i32 - 1 - cursor_row).max(0) as u32;
+    (rows, rows_below_cursor)
+}
+
+pub(crate) fn buffer_type(term: &Term<VoidListener>) -> &'static str {
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        "alternate"
+    } else {
+        "normal"
+    }
+}
+
 /// Resize as xterm would see it; returns whether the resize scrolled rows
 /// xterm keeps on screen (then the grid can't match xterm's).
-fn resize_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, size: Size) -> bool {
+pub(crate) fn resize_like_xterm(
+    parser: &mut Processor,
+    term: &mut Term<VoidListener>,
+    size: Size,
+) -> bool {
     // Rows a narrower reflow adds above the cursor go into Alacritty's
     // history even with room below; xterm moves the cursor down instead.
     let before = |term: &Term<VoidListener>| {
@@ -717,61 +808,11 @@ impl NativeTerminal {
         // A text read must include bytes in an unfinished synchronized update.
         // This finalizes the batch; this API does not promise ANSI replay state.
         self.parser.stop_sync(term);
-        let grid = term.grid();
-        let history = grid.history_size() as i32;
-        let mut rows = Vec::with_capacity(grid.total_lines());
-        let mut wrapped = false;
-        for y in -history..grid.screen_lines() as i32 {
-            let line = &grid[Line(y)];
-            let mut text = String::new();
-            let mut plain = String::new();
-            for x in 0..grid.columns() {
-                let cell = &line[Column(x)];
-                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    continue;
-                }
-                text.push(cell.c);
-                if let Some(chars) = cell.zerowidth() {
-                    text.extend(chars);
-                }
-                if undimmed {
-                    if cell.flags.contains(Flags::DIM) {
-                        plain.push(' ');
-                        if cell.flags.contains(Flags::WIDE_CHAR) {
-                            plain.push(' ');
-                        }
-                    } else {
-                        plain.push(cell.c);
-                        if let Some(chars) = cell.zerowidth() {
-                            plain.extend(chars);
-                        }
-                    }
-                }
-            }
-            rows.push(NativeTextRow {
-                // xterm trims blank grid cells, not arbitrary Unicode whitespace.
-                text: text.trim_end_matches(' ').to_owned(),
-                wrapped,
-                undimmed: undimmed.then(|| plain.trim_end().to_owned()),
-            });
-            wrapped = line[Column(grid.columns() - 1)]
-                .flags
-                .contains(Flags::WRAPLINE);
-        }
-        while rows.last().is_some_and(|r| r.text.is_empty()) {
-            rows.pop();
-        }
-        let cursor_row = history + grid.cursor.point.line.0;
-        let rows_below_cursor = (rows.len() as i32 - 1 - cursor_row).max(0) as u32;
+        let (rows, rows_below_cursor) = text_rows(term, usize::MAX, undimmed);
         Ok(NativeTextSnapshot {
             rows,
             rows_below_cursor,
-            buffer_type: if term.mode().contains(TermMode::ALT_SCREEN) {
-                "alternate"
-            } else {
-                "normal"
-            }
-            .into(),
+            buffer_type: buffer_type(term).into(),
         })
     }
 
@@ -1342,6 +1383,11 @@ impl NativeRing {
 }
 
 impl NativeRing {
+    /// Lifetime offset of the ring's oldest byte.
+    pub(crate) fn start(&self) -> u64 {
+        self.total_written - self.length as u64
+    }
+
     pub(crate) fn create(capacity: u32) -> std::result::Result<Self, &'static str> {
         if capacity == 0 || capacity > 256 * 1024 * 1024 {
             return Err("Ring capacity must be 1..256MiB");
