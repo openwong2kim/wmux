@@ -8,6 +8,7 @@ import { dataSuffix } from '../../shared/constants';
 import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
 import { NATIVE_HOOKS_MARKER } from '../../shared/hooks/hookFlavours';
 import {
+  CLAUDE_KILL_SWITCH_FILE,
   claudeCopyVerdict,
   claudeHookCopyPath,
   claudeNativeAvailable,
@@ -1318,6 +1319,8 @@ export interface StatusOutcome {
   nativeAvailable: boolean;
   /** ~/.wmux/hooks/claude-runtime: `node` keeps the entries on node. */
   runtime: ClaudeHookRuntime;
+  /** How the entries run now (see claudeHookRuntimeReport). */
+  hookRuntime: ClaudeHookRuntimeReport;
 }
 
 /**
@@ -1576,7 +1579,94 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     features,
     nativeAvailable,
     runtime,
+    hookRuntime: claudeHookRuntimeReport(paths),
   };
+}
+
+/**
+ * How the Claude hook entries run, for `wmux doctor` and `setup-hooks --status`:
+ *   native        the copy, which passed its self-test for the bridge beside it
+ *   node          `node <bridge>` (the copy, when it passes, is an Update away)
+ *   runtime-node  node, as ~/.wmux/hooks/claude-runtime says
+ *   windows       node: Windows has no native Claude hook
+ *   mixed         some entries one form, some the other
+ *   copy-missing  native entries name a copy that is gone: every hook fails
+ *   copy-failed   native entries name a copy recorded as failing its self-test
+ *   pin-mismatch  the bridge beside the copy is not the one it pins: each run
+ *                 hands over to node
+ *   kill-switch   native-disabled beside the copy: each run hands over to node
+ *   node-missing  a hand-over (a pin mismatch, the kill switch) with no node
+ *                 on PATH: the runs stay native
+ *   none          no wmux entries in settings.json
+ * Runs nothing.
+ */
+export type ClaudeHookRuntimeState =
+  | 'native' | 'node' | 'runtime-node' | 'windows' | 'mixed' | 'copy-missing'
+  | 'copy-failed' | 'pin-mismatch' | 'kill-switch' | 'node-missing' | 'none';
+
+export interface ClaudeHookRuntimeReport {
+  state: ClaudeHookRuntimeState;
+  severity: 'ok' | 'warn' | 'fail';
+  detail: string;
+}
+
+/** True when `node` is an executable file on this PATH. */
+export function nodeOnPath(env: NodeJS.ProcessEnv = process.env): boolean {
+  const names = process.platform === 'win32' ? ['node.exe'] : ['node'];
+  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
+    for (const name of names) {
+      try {
+        fs.accessSync(path.join(dir, name), fs.constants.X_OK);
+        return true;
+      } catch { /* next */ }
+    }
+  }
+  return false;
+}
+
+export function claudeHookRuntimeReport(
+  paths: SetupHooksPaths,
+  opts: { platform?: NodeJS.Platform; hasNode?: () => boolean } = {},
+): ClaudeHookRuntimeReport {
+  const platform = opts.platform ?? process.platform;
+  const load = loadSettings(paths.settingsPath);
+  const hooks = load.settings.hooks;
+  const leaves = hooks && typeof hooks === 'object' && !Array.isArray(hooks)
+    ? Object.values(hooks as Record<string, unknown>)
+      .filter(Array.isArray)
+      .flatMap((groups) => (groups as unknown[]).filter(isWmuxGroup))
+      .flatMap((g) => ((g as HookGroup).hooks as unknown[]).filter(isWmuxLeaf))
+    : [];
+  const report = (state: ClaudeHookRuntimeState, severity: ClaudeHookRuntimeReport['severity'], detail: string) => ({ state, severity, detail });
+  if (leaves.length === 0) return report('none', 'ok', 'no wmux hook entries in settings.json');
+  const native = leaves.filter((leaf) => leafForm(leaf) === 'native');
+  if (native.length > 0 && native.length < leaves.length) {
+    return report('mixed', 'warn', `${native.length} of ${leaves.length} entries run the native copy, the rest node; \`wmux setup-hooks\` writes one form`);
+  }
+  if (native.length === 0) {
+    if (platform === 'win32') return report('windows', 'ok', 'node: Windows runs the Claude hooks on node');
+    if (readClaudeRuntime(path.dirname(paths.bridgeDest)) === 'node') {
+      return report('runtime-node', 'ok', 'node, as ~/.wmux/hooks/claude-runtime says (`wmux setup-hooks --runtime native` turns it back)');
+    }
+    return claudeNativeAvailable(paths.bridgeDest, paths.bridgeSource, platform)
+      ? report('node', 'ok', 'node; the native copy passed its self-test, so Update or `wmux setup-hooks` moves them to it')
+      : report('node', 'ok', 'node');
+  }
+  const copy = /^"([^"]*)"/.exec(((native[0] as HookLeaf).command).trim())?.[1] as string;
+  const beside = path.join(path.dirname(copy), 'wmux-bridge.mjs');
+  const verdict = claudeCopyVerdict(beside, beside);
+  if (verdict === 'missing') return report('copy-missing', 'fail', `${copy} is gone, so every hook fails; run \`wmux setup-hooks\``);
+  if (verdict === 'fail') return report('copy-failed', 'fail', `${copy} is recorded as failing its self-test; run \`wmux setup-hooks\``);
+  const hasNode = (opts.hasNode ?? nodeOnPath)();
+  if (fs.existsSync(path.join(path.dirname(copy), CLAUDE_KILL_SWITCH_FILE))) {
+    return hasNode
+      ? report('kill-switch', 'ok', `native-disabled is set beside ${copy}: each run hands over to node`)
+      : report('node-missing', 'warn', `native-disabled is set beside ${copy}, but there is no node on PATH: the runs stay native`);
+  }
+  if (verdict === 'pass') return report('native', 'ok', `native: ${copy}`);
+  return hasNode
+    ? report('pin-mismatch', 'warn', `the bridge beside ${copy} is not the one it was made from: each run hands over to node; \`wmux setup-hooks\` brings them in step`)
+    : report('node-missing', 'warn', `the bridge beside ${copy} is not the one it was made from and there is no node on PATH: the runs stay native against it`);
 }
 
 /**
@@ -1713,6 +1803,8 @@ function printStatus(outcome: StatusOutcome, jsonMode: boolean): void {
     const tag = f.state === 'ok' ? 'OK ' : f.state === 'stale' ? 'STALE' : 'OFF';
     console.log(`${label.padEnd(18)} ${tag}  ${f.detail}`);
   }
+  const runtimeTag = { ok: 'OK ', warn: 'WARN', fail: 'FAIL' }[outcome.hookRuntime.severity];
+  console.log(`${'hook runtime'.padEnd(18)} ${runtimeTag}  ${outcome.hookRuntime.detail}`);
 
   // #2404 — the hook set itself, one line per hook this build expects, so a
   // hook a newer build added reads as missing instead of hiding behind a

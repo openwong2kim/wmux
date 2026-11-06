@@ -6,6 +6,7 @@ import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyRuntimeFlag,
+  claudeHookRuntimeReport,
   installHooks,
   installHooksWithNative,
   isPermissionGateInstalled,
@@ -238,5 +239,53 @@ describe.skipIf(process.platform === 'win32')('refreshClaudeNativeAtBoot', () =>
     vi.stubEnv('WMUX_DATA_SUFFIX', '-dogfood');
     expect(await refreshClaudeNativeAtBoot(paths)).toBe('isolated');
     expect(fs.readFileSync(copy).equals(working)).toBe(true);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('claudeHookRuntimeReport: the states doctor and --status show', () => {
+  const state = (opts: { hasNode?: boolean; platform?: NodeJS.Platform } = {}) =>
+    claudeHookRuntimeReport(paths, { hasNode: () => opts.hasNode ?? true, platform: opts.platform });
+  const installNative = async () => {
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+  };
+
+  it('native, node, runtime node, Windows and none', async () => {
+    expect(state()).toMatchObject({ state: 'none', severity: 'ok' });
+    installHooks(paths);
+    expect(state()).toMatchObject({ state: 'node', severity: 'ok', detail: 'node' });
+    expect(state({ platform: 'win32' })).toMatchObject({ state: 'windows', severity: 'ok' });
+    writeClaudeRuntime(path.dirname(paths.bridgeDest), 'node');
+    expect(state()).toMatchObject({ state: 'runtime-node', severity: 'ok' });
+    writeClaudeRuntime(path.dirname(paths.bridgeDest), 'native');
+    await installNative();
+    expect(state()).toMatchObject({ state: 'native', severity: 'ok', detail: `native: ${copy}` });
+  });
+
+  it('mixed, a missing copy and a failed one', async () => {
+    await installNative();
+    const raw = settings();
+    raw.hooks.Stop[0].hooks[0].command = `node "${paths.bridgeDest}" Stop`;
+    fs.writeFileSync(paths.settingsPath, JSON.stringify(raw));
+    expect(state()).toMatchObject({ state: 'mixed', severity: 'warn' });
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    recordProbe(path.dirname(copy), probeKey(sha256Of(fs.readFileSync(copy)), goodLine()), 'fail');
+    expect(state()).toMatchObject({ state: 'copy-failed', severity: 'fail' });
+    fs.unlinkSync(copy);
+    expect(state()).toMatchObject({ state: 'copy-missing', severity: 'fail' });
+  });
+
+  it('a bridge the copy does not pin, and the kill switch: a hand-over to node, or native runs with no node', async () => {
+    await installNative();
+    fs.writeFileSync(paths.bridgeDest, '// an older bridge\n');
+    expect(state()).toMatchObject({ state: 'pin-mismatch', severity: 'warn' });
+    expect(state({ hasNode: false })).toMatchObject({ state: 'node-missing', severity: 'warn' });
+    expect(state({ hasNode: false }).detail).toMatch(/not the one it was made from/);
+    fs.copyFileSync(paths.bridgeSource as string, paths.bridgeDest);
+    fs.writeFileSync(path.join(path.dirname(copy), 'native-disabled'), '');
+    expect(state()).toMatchObject({ state: 'kill-switch', severity: 'ok' });
+    expect(state({ hasNode: false })).toMatchObject({ state: 'node-missing', severity: 'warn' });
+    expect(state({ hasNode: false }).detail).toMatch(/native-disabled/);
+    expect(statusHooks(paths).hookRuntime.state).toMatch(/kill-switch|node-missing/);
   });
 });

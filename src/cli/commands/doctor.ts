@@ -54,6 +54,7 @@ import { NATIVE_SELF_TEST_LINE } from '../../shared/mcpLauncher';
 import { fileSha256, probeKey, recordedProbe } from '../../shared/probedNative';
 import { BROKER_TOOL_NAME_RE, type McpSessionsSummary } from '../../shared/mcpSessions';
 import { homeRelative } from '../../shared/homeRelative';
+import { claudeHookRuntimeReport, defaultPaths as defaultHooksPaths, type ClaudeHookRuntimeReport } from './setupHooks';
 
 // --- public report model -----------------------------------------------------
 
@@ -102,6 +103,8 @@ export interface DoctorReport {
   logs: { verdict: Verdict; lines: CheckLine[] };
   /** Present when the run was given MCP deps (the CLI always is). */
   mcp?: { verdict: Verdict; lines: CheckLine[] };
+  /** How the Claude hook entries run; present when the run was given it. */
+  hooks?: { verdict: Verdict; lines: CheckLine[] };
 }
 
 // --- injected dependencies (the seam unit tests substitute) ------------------
@@ -158,6 +161,8 @@ export interface DoctorDeps {
   env: Record<string, string | undefined>;
   /** The MCP section's inputs; the section is left out without them. */
   mcp?: McpDoctorDeps;
+  /** How the Claude hook entries run (setupHooks' claudeHookRuntimeReport). */
+  hooks?: () => ClaudeHookRuntimeReport;
 }
 
 export interface McpDoctorDeps {
@@ -230,6 +235,7 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
   const avHint = buildAvHint(bootPhases);
   const logs = buildLogs(deps);
   const mcp = deps.mcp ? await buildMcpSection(deps.mcp, appPipeReachable) : undefined;
+  const hooks = deps.hooks ? buildHooksSection(deps.hooks()) : undefined;
 
   const overall = worst([
     environment.verdict,
@@ -238,9 +244,17 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
     avHint.verdict,
     logs.verdict,
     ...(mcp ? [mcp.verdict] : []),
+    ...(hooks ? [hooks.verdict] : []),
   ]);
 
-  return { overall, environment, daemon, bootPhases, avHint, logs, ...(mcp ? { mcp } : {}) };
+  return { overall, environment, daemon, bootPhases, avHint, logs, ...(mcp ? { mcp } : {}), ...(hooks ? { hooks } : {}) };
+}
+
+const HOOK_RUNTIME_VERDICT: Record<ClaudeHookRuntimeReport['severity'], Verdict> = { ok: 'OK', warn: 'WARN', fail: 'FAIL' };
+
+function buildHooksSection(report: ClaudeHookRuntimeReport): { verdict: Verdict; lines: CheckLine[] } {
+  const verdict = HOOK_RUNTIME_VERDICT[report.severity];
+  return { verdict, lines: [{ label: 'claude hook runtime', value: report.state, verdict, hint: report.detail }] };
 }
 
 function buildEnvironment(
@@ -915,6 +929,7 @@ export function renderReport(report: DoctorReport): string {
   out.push('');
 
   if (report.mcp) section('mcp', report.mcp.verdict, report.mcp.lines);
+  if (report.hooks) section('hooks', report.hooks.verdict, report.hooks.lines);
   section('antivirus tax hint', report.avHint.verdict, report.avHint.lines);
   section('logs', report.logs.verdict, report.logs.lines);
 
@@ -959,6 +974,7 @@ export async function handleDoctor(args: string[], jsonMode: boolean): Promise<v
       recordedVerdict: recordedNativeVerdict,
       sessions: () => sendRequest('mcp.sessions.summary', {}),
     },
+    hooks: () => claudeHookRuntimeReport(defaultHooksPaths()),
   };
 
   const report = await buildDoctorReport(deps);

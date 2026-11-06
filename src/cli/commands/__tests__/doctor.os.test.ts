@@ -483,3 +483,21 @@ describe('overall verdict + rendering', () => {
     expect(text).toContain('[FAIL]');
   });
 });
+
+describe('buildDoctorReport — claude hook runtime', () => {
+  it('shows the state, with its detail, at the severity setup-hooks gives it', async () => {
+    const cases = [
+      [{ state: 'native', severity: 'ok', detail: 'native: ~/.wmux/hooks/wmux-claude-hook' }, 'OK'],
+      [{ state: 'pin-mismatch', severity: 'warn', detail: 'each run hands over to node' }, 'WARN'],
+      [{ state: 'node-missing', severity: 'warn', detail: 'no node on PATH' }, 'WARN'],
+      [{ state: 'copy-missing', severity: 'fail', detail: 'every hook fails' }, 'FAIL'],
+    ] as const;
+    for (const [hooks, verdict] of cases) {
+      const r = await buildDoctorReport(makeDeps({ hooks: () => ({ ...hooks }) }));
+      expect(r.hooks).toEqual({ verdict, lines: [{ label: 'claude hook runtime', value: hooks.state, verdict, hint: hooks.detail }] });
+      expect(renderReport(r)).toContain(`claude hook runtime: ${hooks.state}`);
+      if (verdict === 'FAIL') expect(r.overall).toBe('FAIL');
+    }
+    expect((await buildDoctorReport(makeDeps())).hooks).toBeUndefined();
+  });
+});
