@@ -1,7 +1,8 @@
 //! Linux backend: one stat line per `/proc/<pid>` directory, for pid, parent
-//! and name. A process that exits between the listing and its read is left
-//! out; any other failed read fails the walk, since a table cut short would
-//! read every missing pid as gone.
+//! and name. A process that exits between the listing and its read, or whose
+//! stat this user may not read (hidepid, an LSM), is left out; any other
+//! failed read fails the walk, since a table cut short would read every
+//! missing pid as gone.
 
 use super::ProcessRow;
 use std::io;
@@ -26,15 +27,17 @@ pub(super) fn parse_stat(stat: &[u8]) -> Option<(String, u32)> {
     Some((name, ppid))
 }
 
-/// Whether a failed read under `/proc/<pid>` means the process exited.
-pub(super) fn exited(error: &io::Error) -> bool {
-    const ESRCH: i32 = 3;
-    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(ESRCH)
+/// Whether a failed read under `/proc/<pid>` only means this process cannot
+/// be read now (see unreadable_process).
+pub(super) fn unreadable(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound
+        || error.raw_os_error().is_some_and(super::unreadable_process)
 }
 
-/// One row per pid, its stat line read with `read_stat`. A pid that exited
-/// (or whose stat came back empty while it was being reaped) is skipped;
-/// any other failure, or a stat line that does not parse, is an error.
+/// One row per pid, its stat line read with `read_stat`. A pid that exited,
+/// whose stat this user may not read, or whose stat came back empty while it
+/// was being reaped, is skipped; any other failure, or a stat line that does
+/// not parse, is an error.
 pub(super) fn walk(
     pids: impl IntoIterator<Item = u32>,
     mut read_stat: impl FnMut(u32) -> io::Result<Vec<u8>>,
@@ -44,7 +47,7 @@ pub(super) fn walk(
         let stat = match read_stat(pid) {
             Ok(stat) if stat.is_empty() => continue,
             Ok(stat) => stat,
-            Err(e) if exited(&e) => continue,
+            Err(e) if unreadable(&e) => continue,
             Err(e) => return Err(format!("read /proc/{pid}/stat failed ({e})")),
         };
         let (name, ppid) =
@@ -78,9 +81,12 @@ pub(super) fn proc_pids() -> Result<Vec<u32>, String> {
 /// shared signature.
 #[cfg(target_os = "linux")]
 pub fn snapshot(_with_details: bool) -> Result<Vec<ProcessRow>, String> {
-    walk(proc_pids()?, |pid| {
-        std::fs::read(format!("/proc/{pid}/stat"))
-    })
+    walk(proc_pids()?, stat_of)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn stat_of(pid: u32) -> io::Result<Vec<u8>> {
+    std::fs::read(format!("/proc/{pid}/stat"))
 }
 
 #[cfg(test)]
@@ -100,28 +106,30 @@ mod tests {
     }
 
     #[test]
-    fn only_an_exited_process_is_skipped() {
+    fn an_exited_or_unreadable_process_is_skipped() {
         let read = |pid: u32| match pid {
             1 => Ok(stat("init", 0)),
             2 => Err(io::Error::from(io::ErrorKind::NotFound)),
             3 => Err(io::Error::from_raw_os_error(3)), // ESRCH
             4 => Ok(Vec::new()),                       // reaped mid-read
+            5 => Err(io::Error::from_raw_os_error(13)), // EACCES: hidepid
+            6 => Err(io::Error::from_raw_os_error(1)), // EPERM: an LSM
             _ => Ok(stat("zsh", 1)),
         };
-        let rows = walk([1, 2, 3, 4, 5], read).expect("walk");
+        let rows = walk([1, 2, 3, 4, 5, 6, 7], read).expect("walk");
         assert_eq!(
             rows.iter()
                 .map(|r| (r.pid, r.ppid, r.name.as_str()))
                 .collect::<Vec<_>>(),
-            vec![(1, 0, "init"), (5, 1, "zsh")]
+            vec![(1, 0, "init"), (7, 1, "zsh")]
         );
     }
 
     #[test]
     fn any_other_failure_fails_the_walk() {
-        // EMFILE, ENFILE, EACCES, EIO: the process may well be alive, so a
-        // table without it would read it as dead.
-        for errno in [24, 23, 13, 5] {
+        // EMFILE, ENFILE, EIO: the process may well be alive, so a table
+        // without it would read it as dead.
+        for errno in [24, 23, 5] {
             let read = |pid: u32| {
                 if pid == 2 {
                     Err(io::Error::from_raw_os_error(errno))

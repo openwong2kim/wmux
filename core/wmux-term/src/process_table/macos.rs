@@ -11,32 +11,36 @@ const KINFO_PID: usize = 40;
 const KINFO_COMM: usize = 243;
 const KINFO_COMM_LEN: usize = 17;
 const KINFO_PPID: usize = 560;
+/// kp_eproc.e_ucred.cr_uid: the effective uid.
+const KINFO_UID: usize = 420;
 
 fn read_i32(buf: &[u8], at: usize) -> i32 {
     i32::from_ne_bytes(buf[at..at + 4].try_into().unwrap())
 }
 
-/// The rows of a `KERN_PROC_*` read. A partial trailing record is ignored.
-pub(super) fn parse_kinfo(buf: &[u8]) -> Vec<ProcessRow> {
+/// The rows of a `KERN_PROC_*` read, each with its effective uid. A
+/// partial trailing record is ignored.
+pub(super) fn parse_kinfo(buf: &[u8]) -> Vec<(ProcessRow, u32)> {
     buf.as_chunks::<KINFO_SIZE>()
         .0
         .iter()
         .map(|r| {
             let comm = &r[KINFO_COMM..KINFO_COMM + KINFO_COMM_LEN];
             let len = comm.iter().position(|&b| b == 0).unwrap_or(comm.len());
-            ProcessRow {
+            let row = ProcessRow {
                 pid: read_i32(r, KINFO_PID) as u32,
                 ppid: read_i32(r, KINFO_PPID) as u32,
                 name: String::from_utf8_lossy(&comm[..len]).into_owned(),
                 created: None,
                 cmdline: None,
-            }
+            };
+            (row, read_i32(r, KINFO_UID) as u32)
         })
         .collect()
 }
 
 #[cfg(target_os = "macos")]
-pub use sys::snapshot;
+pub use sys::{snapshot, walk};
 
 #[cfg(target_os = "macos")]
 mod sys {
@@ -64,13 +68,18 @@ mod sys {
         std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
     }
 
-    /// Walk the process table with one `KERN_PROC_ALL` read: pid, parent and
-    /// name. macOS reads no details (creation time, command line);
-    /// `_with_details` is accepted for the shared signature. The table can
-    /// grow between the size query and the read (ENOMEM); that read is
-    /// retried rather than returned short, since a cut table reads pids as
-    /// gone.
+    /// Walk the process table: pid, parent and name. macOS reads no details
+    /// (creation time, command line); `_with_details` is accepted for the
+    /// shared signature.
     pub fn snapshot(_with_details: bool) -> Result<Vec<ProcessRow>, String> {
+        Ok(walk()?.into_iter().map(|(row, _)| row).collect())
+    }
+
+    /// Every process with its effective uid, from one `KERN_PROC_ALL` read.
+    /// The table can grow between the size query and the read (ENOMEM); that
+    /// read is retried rather than returned short, since a cut table reads
+    /// pids as gone.
+    pub fn walk() -> Result<Vec<(ProcessRow, u32)>, String> {
         let mut mib = [CTL_KERN, KERN_PROC, KERN_PROC_ALL];
         for _ in 0..4 {
             let mut len = 0usize;
@@ -123,6 +132,7 @@ mod tests {
 
     fn record(pid: i32, ppid: i32, comm: &[u8]) -> Vec<u8> {
         let mut r = vec![0u8; KINFO_SIZE];
+        r[KINFO_UID..KINFO_UID + 4].copy_from_slice(&(500 + pid).to_ne_bytes());
         r[KINFO_PID..KINFO_PID + 4].copy_from_slice(&pid.to_ne_bytes());
         r[KINFO_PPID..KINFO_PPID + 4].copy_from_slice(&ppid.to_ne_bytes());
         r[KINFO_COMM..KINFO_COMM + comm.len()].copy_from_slice(comm);
@@ -138,15 +148,18 @@ mod tests {
         let rows = parse_kinfo(&buf);
         assert_eq!(
             rows.iter()
-                .map(|r| (r.pid, r.ppid, r.name.as_str()))
+                .map(|(r, uid)| (r.pid, r.ppid, r.name.as_str(), *uid))
                 .collect::<Vec<_>>(),
-            vec![(1, 0, "launchd"), (4242, 1, "0123456789abcdef")]
+            vec![(1, 0, "launchd", 501), (4242, 1, "0123456789abcdef", 4742)]
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
     fn snapshot_reads_own_row_and_other_users() {
+        extern "C" {
+            fn geteuid() -> u32;
+        }
         let rows = snapshot(false).expect("snapshot");
         let me = std::process::id();
         let own = rows.iter().find(|r| r.pid == me).expect("own row");
@@ -160,5 +173,11 @@ mod tests {
         assert!(rows
             .iter()
             .all(|r| r.created.is_none() && r.cmdline.is_none()));
+        // The walk's uid is the effective uid.
+        let walked = walk().expect("walk");
+        let uid_of = |pid| walked.iter().find(|(r, _)| r.pid == pid).map(|(_, u)| *u);
+        // SAFETY: geteuid has no preconditions.
+        assert_eq!(uid_of(me), Some(unsafe { geteuid() }));
+        assert_eq!(uid_of(1), Some(0));
     }
 }

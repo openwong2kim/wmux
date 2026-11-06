@@ -32,7 +32,19 @@ pub use linux::snapshot;
 mod listen_sockets;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[cfg_attr(not(feature = "native-core"), allow(unused_imports))]
-pub use listen_sockets::{listening, ListenSocket};
+pub use listen_sockets::{port_snapshot, PortSnapshot};
+
+/// Whether a failed per-process read (errno) only means this process cannot
+/// be read now: it exited (ENOENT, ESRCH) or belongs to someone else
+/// (EACCES, EPERM). Its row is skipped; any other errno fails the whole read.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+pub(crate) fn unreadable_process(errno: i32) -> bool {
+    const EPERM: i32 = 1;
+    const ENOENT: i32 = 2;
+    const ESRCH: i32 = 3;
+    const EACCES: i32 = 13;
+    matches!(errno, EPERM | ENOENT | ESRCH | EACCES)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcessRow {

@@ -95,33 +95,55 @@ pub struct NativeListenSocket {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub struct ListenSocketsTask;
+#[napi(object)]
+pub struct NativePortSnapshot {
+    pub processes: Vec<NativeProcessRow>,
+    pub sockets: Vec<NativeListenSocket>,
+}
+
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-impl Task for ListenSocketsTask {
-    type Output = Vec<crate::process_table::ListenSocket>;
-    type JsValue = Vec<NativeListenSocket>;
+pub struct PortSnapshotTask;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl Task for PortSnapshotTask {
+    type Output = crate::process_table::PortSnapshot;
+    type JsValue = NativePortSnapshot;
     fn compute(&mut self) -> Result<Self::Output> {
-        crate::process_table::listening().map_err(Error::from_reason)
+        crate::process_table::port_snapshot().map_err(Error::from_reason)
     }
-    fn resolve(&mut self, _env: Env, rows: Self::Output) -> Result<Self::JsValue> {
-        Ok(rows
-            .into_iter()
-            .map(|r| NativeListenSocket {
-                pid: r.pid,
-                port: r.port.into(),
-                address: r.address,
-                family: r.family.into(),
-            })
-            .collect())
+    fn resolve(&mut self, _env: Env, snap: Self::Output) -> Result<Self::JsValue> {
+        Ok(NativePortSnapshot {
+            processes: snap
+                .processes
+                .into_iter()
+                .map(|r| NativeProcessRow {
+                    pid: r.pid,
+                    ppid: r.ppid,
+                    name: r.name,
+                    created: r.created,
+                    cmdline: r.cmdline,
+                })
+                .collect(),
+            sockets: snap
+                .sockets
+                .into_iter()
+                .map(|r| NativeListenSocket {
+                    pid: r.pid,
+                    port: r.port.into(),
+                    address: r.address,
+                    family: r.family.into(),
+                })
+                .collect(),
+        })
     }
 }
 
-/// Every listening TCP socket this user can read, with the pid holding it,
-/// off the JS thread.
+/// PortWatcher's snapshot off the JS thread: the process walk and every
+/// listening TCP socket this user can read, with the pid holding it, from
+/// one walk.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[napi]
-pub fn listening_sockets() -> AsyncTask<ListenSocketsTask> {
-    AsyncTask::new(ListenSocketsTask)
+pub fn port_snapshot() -> AsyncTask<PortSnapshotTask> {
+    AsyncTask::new(PortSnapshotTask)
 }
 
 struct Size {
