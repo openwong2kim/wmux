@@ -75,7 +75,7 @@ impl Drop for Worker {
         ACTIVE_WORKERS.fetch_sub(1, Ordering::AcqRel);
     }
 }
-#[napi]
+#[napi(catch_unwind)]
 pub fn native_transport_worker_count() -> u32 {
     ACTIVE_WORKERS.load(Ordering::Acquire)
 }
@@ -161,7 +161,7 @@ pub struct NativeTransport {
 
 #[napi]
 impl NativeTransport {
-    #[napi(constructor)]
+    #[napi(constructor, catch_unwind)]
     pub fn new(
         command: String,
         args: Vec<String>,
@@ -509,12 +509,12 @@ impl NativeTransport {
         Ok(result)
     }
 
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn pid(&self) -> u32 {
         self.pid
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read(&mut self, paused: Option<bool>) -> TransportRead {
         let result = self.drain(paused);
         TransportRead {
@@ -528,7 +528,7 @@ impl NativeTransport {
         }
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_chunk(&mut self, paused: Option<bool>) -> TransportChunkRead {
         let result = self.drain(paused);
         let bytes_read = result.data.len() as u32;
@@ -544,7 +544,7 @@ impl NativeTransport {
         }
     }
 
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn pending_input_bytes(&self) -> u32 {
         self.state
             .input
@@ -553,7 +553,7 @@ impl NativeTransport {
             .bytes as u32
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn write(&self, data: Uint8Array) -> Result<()> {
         let mut input = self.state.input.lock().map_err(error)?;
         if input.closed {
@@ -570,7 +570,7 @@ impl NativeTransport {
         Ok(())
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn resize(&self, cols: u32, rows: u32) -> Result<()> {
         self.master
             .as_ref()
@@ -579,7 +579,7 @@ impl NativeTransport {
             .map_err(error)
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn clear(&self) {
         if let Some(master) = &self.master {
             master.clear();
@@ -592,7 +592,7 @@ impl NativeTransport {
     /// byte order, as BrowserWindow.getNativeWindowHandle() returns it. Returns whether
     /// the request reached ConPTY, which applies it asynchronously; false for a handle
     /// of the wrong size or a NULL one, a closed PTY, or a ConPTY without the call.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_parent_window(&self, handle: Uint8Array) -> bool {
         let Some(hwnd) = native_window_handle(&handle[..]) else {
             return false;
@@ -602,7 +602,7 @@ impl NativeTransport {
             .is_some_and(|master| master.set_parent_window(hwnd))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn kill(&self, signal: Option<u32>) -> Result<()> {
         let exited = self.state.exited.lock().map_err(error)?;
         if exited.is_some() || self.pid == 0 {
@@ -645,7 +645,7 @@ impl NativeTransport {
         }
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn close(&mut self) {
         if self.state.closed.swap(true, Ordering::AcqRel) {
             return;

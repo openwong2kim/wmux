@@ -359,6 +359,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // keystroke or page script can do.
   'browser.upload.cdp':        { capability: 'browser.upload', riskClass: 'browser' },
   'browser.press.cdp':         { capability: 'browser.type',  riskClass: 'browser' },
+  'browser.dialog.arm':        { capability: 'browser.click', riskClass: 'browser' },
   // State tools (#111 packaged RPC fallback). resize stays under
   // `browser.evaluate`: a caller that can already run arbitrary JS can resize the
   // viewport through the page, so it grants nothing beyond what browser.evaluate

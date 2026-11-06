@@ -18,7 +18,8 @@
 //   agent.stop               → done / idle (turn end)
 //
 // Lockstep: the runtime half of every row (agent, events, field paths) is
-// mirrored by FLAVOURS in the bridge, which cannot import from src/.
+// mirrored by FLAVOURS in the bridge, which cannot import from src/, and by
+// core/wmux-native/flavours.json, the table of its native twin.
 // hookFlavours.lockstep.test.ts fails on any drift, and on an installer that
 // would register an event the bridge drops (a process spawn for nothing).
 //
@@ -109,6 +110,16 @@ export const SHARED_HOOKS_BRIDGE_BASENAME = 'wmux-hooks-bridge.mjs';
 
 /** First-line marker of the shared bridge source. */
 export const SHARED_HOOKS_BRIDGE_MARKER = 'wmux-managed: shared-hooks-bridge';
+
+/** File name of the native bridge (core/wmux-native), staged by
+ *  scripts/build-native-hooks.mjs and shipped as resources/native-hooks/. */
+export function nativeHooksBasename(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? 'wmux-native.exe' : 'wmux-native';
+}
+
+/** Text the native binary carries (core/wmux-native/src/main.rs MARKER), so an
+ *  installed copy is recognised as wmux's own. */
+export const NATIVE_HOOKS_MARKER = 'wmux-managed: native-hooks';
 
 export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHookFlavour>> = {
   kiro: {

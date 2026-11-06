@@ -324,8 +324,17 @@ const PROTECTED_DENIED_METHODS: ReadonlyMap<string, string> = new Map([
   ['browser.evaluate', 'running page scripts needs a consent grant on a protected pane'],
   ['browser.cookies', 'cookies of a protected pane are reachable only through browser_cookies, limited to its allowed hosts'],
   ['browser.cdp.target', 'a protected pane has no builtin browser target'],
+  ['browser.dialog.arm', 'a protected pane has no builtin browser target'],
   ['browser.siteGuides.match', 'site guides are off on a protected pane'],
   ['browser.upload.cdp', 'a protected pane has no builtin browser target'],
+]);
+
+/** Agent input that can raise a page dialog on the RPC lane. */
+const DIALOG_RAISING_METHODS: ReadonlySet<string> = new Set([
+  'browser.click.cdp',
+  'browser.type.cdp',
+  'browser.press.cdp',
+  'browser.drag.cdp',
 ]);
 
 /**
@@ -2031,6 +2040,7 @@ export function registerBrowserRpc(
   // already in the buffer by the time it asks. ensure() is idempotent, so the
   // dom-ready re-registration is a no-op. Fire-and-forget: registration must
   // not wait on (or fail with) the CDP domain enable.
+  webviewCdpManager.setDialogNoteSink?.((webContentsId, note) => captureManager.noteDialog(webContentsId, note));
   webviewCdpManager.setCaptureAttach((webContentsId) => {
     void captureManager.ensure(webContentsId).catch(() => {
       // A guest that cannot be captured still automates fine; the drain
@@ -2127,7 +2137,17 @@ export function registerBrowserRpc(
         }
         return handler(params, scope, ctx);
       }
-      return webviewCdpManager.withAutomationLease(resolved, () => handler(params, scope, ctx));
+      return webviewCdpManager.withAutomationLease(resolved, async () => {
+        // A dialog this input raises may use the answer the agent armed for it.
+        const endDispatch = DIALOG_RAISING_METHODS.has(method)
+          ? webviewCdpManager.beginDialogDispatch?.(resolved)
+          : undefined;
+        try {
+          return await handler(params, scope, ctx);
+        } finally {
+          endDispatch?.();
+        }
+      });
     });
   };
 
@@ -4542,6 +4562,20 @@ export function registerBrowserRpc(
     setPointerPosition(wc, target.webContentsId, to);
 
     return { ok: true, from, to, dispatch: 'mouse' };
+  });
+
+  /**
+   * browser.dialog.arm
+   * The answer for the next dialog an input of the agent's raises on this tab.
+   * params: { accept: boolean, text?: string, surfaceId?: string }
+   */
+  registerLeased('browser.dialog.arm', async (params, scope) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.dialog.arm', surfaceId, scope);
+    const text = typeof params['text'] === 'string' ? params['text'] : undefined;
+    webviewCdpManager.armDialog(target.surfaceId, params['accept'] === true, text);
+    return { armed: true };
   });
 
   /**

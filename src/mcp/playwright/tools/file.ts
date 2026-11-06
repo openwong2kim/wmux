@@ -21,7 +21,12 @@ import {
   BROWSER_CONSENT_DOWNLOAD_START_MAX_MS,
   browserPolicyRefusalCode,
 } from '../../../shared/browserPolicy';
-import type { BrowserTargetScope, BrowserToolDeps } from '../browserScope';
+import {
+  allowScopedRpcFallback,
+  sendScopedBrowserRpc,
+  type BrowserTargetScope,
+  type BrowserToolDeps,
+} from '../browserScope';
 import { resolveRef } from '../snapshot';
 import { describeToolError } from '../toolError';
 import { recordAction } from '../../browser-replay/actionRing';
@@ -35,7 +40,6 @@ import {
 import { getWmuxDir } from '../../../daemon/config';
 import { fromAgentPath, toAgentPath, wslMountRoot } from '../../wslPaths';
 import { randomBytes } from 'node:crypto';
-import { sendScopedBrowserRpc } from '../browserScope';
 import { sanitizeRef } from './interaction';
 import {
   DEFAULT_FILE_INPUT_SELECTOR,
@@ -1102,18 +1106,21 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
     async ({ accept, text, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         // Answering a dialog (accept/dismiss, and prompt text) acts on the page.
-        const page = await engine.getPageForScope(scope, { intent: 'write' });
-        if (!page) {
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
+        if (page) {
+          armDialogAnswer(
+            page,
+            modalScopeKey(scope.workspaceId, scope.surfaceId),
+            await resolveDialogOwner(page, scope.workspaceId),
+            accept,
+            text,
+          );
+        } else if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'builtin') {
+          // No Playwright page on this tab: main answers its dialogs.
+          await sendScopedBrowserRpc('browser.dialog.arm', scope, { accept, ...(text !== undefined && { text }) });
+        } else {
           throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
-
-        armDialogAnswer(
-          page,
-          modalScopeKey(scope.workspaceId, scope.surfaceId),
-          await resolveDialogOwner(page, scope.workspaceId),
-          accept,
-          text,
-        );
         // Nothing is sent to the page here — what this tool mutates is the
         // handler armed on it, and that registration is what `committed`
         // reports. The dialog it answers has not happened yet.
