@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import type { Readable, Writable } from 'node:stream';
 import type { CdpConnection, CdpEventHandler } from './CdpSocket';
+import type { CdpPipeDiagnostics } from '../../shared/memoryDiagnostics';
 
 // ---------------------------------------------------------------------------
 // One debugging pipe (`--remote-debugging-pipe`: the browser reads fd 3 and
@@ -94,18 +95,8 @@ export type ClientCommandFilter = (client: { kind: 'internal' | 'external'; labe
  */
 export type TargetGrant = (client: { kind: 'internal' | 'external'; label: string }, targetId: string) => boolean;
 
-export interface CdpPipeCounters {
-  frames: number;
-  bytes: number;
-  parseMsTotal: number;
-  /** The slowest single frame parse, the stall that matters. */
-  parseMsMax: number;
-  largestFrameBytes: number;
-  /** Frames from the browser that had no owner, by why. */
-  dropped: Record<string, number>;
-  /** Client commands refused (a session the client does not own, a malformed command). */
-  refused: number;
-}
+/** Shown by `wmux doctor --performance` (perf.status). */
+export type CdpPipeCounters = CdpPipeDiagnostics;
 
 const totals: CdpPipeCounters = { frames: 0, bytes: 0, parseMsTotal: 0, parseMsMax: 0, largestFrameBytes: 0, dropped: {}, refused: 0 };
 
