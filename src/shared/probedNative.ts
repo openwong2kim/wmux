@@ -338,6 +338,12 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
     try { fs.unlinkSync(staged); } catch { /* swept next time */ }
     return keep(reasonOf(verdict, known));
   }
+  // The probe took time: what is at the name now must still be what was
+  // judged wmux's own (or still nothing), or it is not replaced.
+  if (!sameAsBefore(dest, current)) {
+    try { fs.unlinkSync(staged); } catch { /* swept next time */ }
+    return { binary: null, reason: 'copy is foreign' };
+  }
   try {
     swapIn(staged, dest, current !== null, platform);
   } catch (error) {
@@ -345,6 +351,16 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
     return keep(`could not replace the copy: ${String(error)}`);
   }
   return { binary: dest };
+}
+
+/** True when `file` still holds `before`'s bytes, or is still missing. */
+function sameAsBefore(file: string, before: Buffer | null): boolean {
+  try {
+    const now = fs.readFileSync(file);
+    return before !== null && now.equals(before);
+  } catch (error) {
+    return before === null && (error as NodeJS.ErrnoException).code === 'ENOENT';
+  }
 }
 
 function writeSynced(file: string, bytes: Buffer, mode: number): void {

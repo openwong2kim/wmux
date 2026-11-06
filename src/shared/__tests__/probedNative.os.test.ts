@@ -106,6 +106,25 @@ describe('prepareProbedNative', () => {
     expect(fs.readdirSync(dir).filter((f) => f.includes('.staged-'))).toEqual([]);
   });
 
+  it('never replaces a foreign file that took the name while the probe ran', async () => {
+    for (const before of [null, 'good v1']) {
+      fs.rmSync(dest(), { force: true });
+      if (before) {
+        ship(before);
+        await prepare();
+      }
+      // New bytes each round: a recorded pass would skip the probe.
+      ship(`good v2 after ${before}`);
+      const probe = async (binary: string): Promise<ProbeVerdict> => {
+        fs.writeFileSync(dest(), 'someone else\'s program');
+        return passIfGood(binary);
+      };
+      expect(await prepare({ probe })).toEqual({ binary: null, reason: 'copy is foreign' });
+      expect(fs.readFileSync(dest(), 'utf8')).toBe('someone else\'s program');
+      expect(fs.readdirSync(dir).filter((f) => f.includes('.staged-') || f.includes('.previous'))).toEqual([]);
+    }
+  });
+
   it('keys a verdict by the bytes and the expected line: another line is probed again', async () => {
     ship('good v1');
     await prepare();
