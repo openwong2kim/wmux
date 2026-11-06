@@ -78,6 +78,14 @@ export const INTERACTIVE_SELECTOR =
  * the a11y path (issue #1066: the param used to be dropped silently here).
  * The `Page:`/`URL:` header always stays: the auto-diff URL guard in
  * inspection.ts parses the `URL: …` line out of this text.
+ *
+ * Frames: each `<iframe>`/`<frame>` under the root is listed after the
+ * interactive elements as one boundary line (role, name or title, where it
+ * points, "contents not in this snapshot"). It is read from the element, so a
+ * cross-site frame is listed like any other. The location keeps scheme, host
+ * and path only: credentials, query and fragment can carry tokens. Kept under
+ * `filter: 'interactive'` too, since a frame may hold the control the caller
+ * is after. At most FRAME_LINE_CAP lines, then one line counting the rest.
  */
 export interface DomSnapshotEntry {
   ref: number;
@@ -114,6 +122,12 @@ export function readDomSnapshotPayload(raw: unknown): DomSnapshotPayload {
     entries: Array.isArray(payload?.entries) ? payload.entries : [],
   };
 }
+
+/** Frame boundary lines per listing; the rest are counted on one line. */
+export const FRAME_LINE_CAP = 50;
+
+/** Ends every frame boundary line. */
+export const FRAME_BOUNDARY_SUFFIX = '(contents not in this snapshot)';
 
 export function buildDomSnapshotExpression(
   rootSelector?: string,
@@ -184,6 +198,33 @@ export function buildDomSnapshotExpression(
       if (hoverTriggers.has(el)) desc += ${JSON.stringify(HAS_SUBMENU_DOM_MARKER)};
       lines.push(desc);
     });
+    // Where a frame points, without what could be a secret: srcdoc wins over
+    // src (as it does in the browser), and only http(s)/file keep a path.
+    const frameLocation = (f) => {
+      if (f.hasAttribute('srcdoc')) return 'about:srcdoc';
+      const raw = (f.getAttribute('src') || '').trim();
+      if (!raw) return 'about:blank';
+      let u;
+      try { u = new URL(raw, document.baseURI); } catch (e) { return '(invalid src)'; }
+      if (u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'file:') {
+        return u.protocol + '//' + u.host + u.pathname;
+      }
+      if (u.protocol === 'about:') return 'about:' + u.pathname;
+      return u.protocol;
+    };
+    const frames = [...root.querySelectorAll('iframe,frame')];
+    if (frames.length > 0) {
+      const frameCap = ${JSON.stringify(FRAME_LINE_CAP)};
+      lines.push('', 'Frames (separate documents):');
+      frames.slice(0, frameCap).forEach((f) => {
+        const role = f.getAttribute('role') || f.tagName.toLowerCase();
+        const name = (f.getAttribute('aria-label') || f.getAttribute('title') || f.getAttribute('name') || '')
+          .replace(/\\s+/g, ' ').trim().substring(0, 80);
+        lines.push('  ' + role + (name ? ' "' + name + '"' : '') + ' -> ' + frameLocation(f).substring(0, 160)
+          + ' ' + ${JSON.stringify(FRAME_BOUNDARY_SUFFIX)});
+      });
+      if (frames.length > frameCap) lines.push('  (+' + (frames.length - frameCap) + ' more frames not listed)');
+    }
     const text = lines.join('\\n');
     if (!withEntries) return text;
     return {
