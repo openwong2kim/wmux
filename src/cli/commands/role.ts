@@ -108,7 +108,7 @@ export function resolveRole(
     freshContext: bindingEnforcesFreshContext(binding),
     argv,
     flags: argv.slice(1),
-    ...mcpFor(role, agent, binding.tools, agent === 'codex' ? codexLauncher(mcpEntry) : mcpEntry, codexRegistered),
+    ...mcpFor(role, agent, binding.tools, mcpEntry, codexRegistered, codexLauncher),
   };
 }
 
@@ -118,14 +118,20 @@ function mcpFor(
   role: string,
   agent: string | undefined,
   tools: WmuxTools | undefined,
-  entry: WmuxServerLauncher,
+  mcpEntry: string,
   codexRegistered: () => boolean,
+  codexLauncher: (entry: string) => WmuxServerLauncher,
 ): Pick<ResolvedRole, 'mcp' | 'mcpUnavailable'> {
   if (!agent || !tools) return {};
-  // codex refuses to start on a -c mcp_servers.wmux override when its config
-  // registers no wmux server (same rule as main's launch splice).
-  if (agent === 'codex' && !codexRegistered()) {
-    return { mcpUnavailable: 'codex has no wmux MCP server registered; codex would refuse a -c mcp_servers.wmux override' };
+  let entry: WmuxServerLauncher = mcpEntry;
+  if (agent === 'codex') {
+    // codex refuses to start on a -c mcp_servers.wmux override when its config
+    // registers no wmux server (same rule as main's launch splice).
+    if (!codexRegistered()) {
+      return { mcpUnavailable: 'codex has no wmux MCP server registered; codex would refuse a -c mcp_servers.wmux override' };
+    }
+    // The override replaces only the args: they must be the registered launcher's.
+    entry = codexLauncher(mcpEntry);
   }
   const known = resolveRoleName(role);
   if (tools === 'role' && known.kind !== 'role') return {};

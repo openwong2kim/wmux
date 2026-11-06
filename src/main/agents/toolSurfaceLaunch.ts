@@ -131,9 +131,7 @@ export function applyWmuxToolsToCommand(fullCommand: string, hint: WmuxToolsHint
   const role = known.kind === 'role' ? known.role : undefined;
   if (hint.tools === 'role' && !role) return command;
   const configFile = path.join(mcpDir, `surface-${hint.tools}${role ? `-${role.toLowerCase()}` : ''}.json`);
-  const launcher = stem === 'codex' ? (deps.codexLauncher ?? ((e: string) => codexWmuxLauncher(codexConfigPath(), e)))(entry) : entry;
-  const flags = toolSurfaceShellFlags(stem, hint.tools, launcher, role, configFile);
-  if (!flags) return command;
+  let launcher: WmuxServerLauncher = entry;
   if (stem === 'codex') {
     const hasServer = deps.codexHasWmuxServer ?? (() => codexHasWmuxServer(codexConfigPath()));
     if (!hasServer()) {
@@ -141,7 +139,11 @@ export function applyWmuxToolsToCommand(fullCommand: string, hint: WmuxToolsHint
       log(`[pty:create] wmux tool level '${hint.tools}' not applied: codex has no wmux MCP server registered, and codex refuses to start on a -c mcp_servers.wmux override without one`);
       return command;
     }
+    // The override replaces only the args: they must be the registered launcher's.
+    launcher = (deps.codexLauncher ?? ((e: string) => codexWmuxLauncher(codexConfigPath(), e)))(entry);
   }
+  const flags = toolSurfaceShellFlags(stem, hint.tools, launcher, role, configFile);
+  if (!flags) return command;
   if (stem === 'claude') {
     try {
       writeFile(configFile, JSON.stringify({ mcpServers: { wmux: { command: 'node', args: wmuxServerArgs(entry, hint.tools, role) } } }, null, 2));
