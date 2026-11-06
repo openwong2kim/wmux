@@ -25,7 +25,7 @@ export interface DialogNote {
   /** Page-controlled text, capped. */
   readonly message: string;
   readonly at: number;
-  readonly answer: 'dismissed' | 'accepted (pre-armed)' | 'dismissed (pre-armed)';
+  readonly answer: 'dismissed' | 'accepted (pre-armed)' | 'dismissed (pre-armed)' | 'left open for a person (too many in a row)';
 }
 
 interface PageRecord {
