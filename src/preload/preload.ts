@@ -474,9 +474,11 @@ const electronAPI = {
     // TASK-9 cold-park — plain-text grid snapshot of a session from the daemon
     // ring (ANSI stripped, rows + wrap flags). Backs the search / readScreen
     // fallback for cold-parked panes that have no renderer xterm buffer.
-    readText: (id: string, opts?: { scrollback?: number }) =>
+    // `tail`: a display-only read the daemon may answer from the ring's newest
+    // bytes; `via` then says whether it did ('tail') or read it all ('full').
+    readText: (id: string, opts?: { scrollback?: number; tail?: boolean }) =>
       ipcRenderer.invoke(IPC.PTY_READ_TEXT, id, opts) as Promise<
-        | { success: true; rows: Array<{ text: string; wrapped: boolean }>; bufferType?: 'normal' | 'alternate'; rowsBelowCursor?: number; truncated?: boolean }
+        | { success: true; rows: Array<{ text: string; wrapped: boolean }>; bufferType?: 'normal' | 'alternate'; rowsBelowCursor?: number; truncated?: boolean; via?: 'tail' | 'full' }
         | { success: false; code: string; reason?: string }
       >,
     onData: (callback: (id: string, data: string, replay: boolean) => void) => {

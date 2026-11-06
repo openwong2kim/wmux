@@ -70,17 +70,7 @@ export function readRingTailWithModesAndGeometry(
   maxBytes: number,
 ): { raw: Buffer; replay: Buffer; geometry: ReplayGeometry | undefined; writtenAt: number } {
   const { data, geometry, writtenAt } = ring.readAllWithGeometry();
-  let cut = Math.max(0, data.length - maxBytes);
-  if (cut > 0) {
-    // Start on a line: a cut mid-sequence or mid-character would parse its
-    // remains as text. A TUI that repaints by cursor addressing alone writes
-    // no line feeds, and cutting past all of its output would leave a blank
-    // screen, so it starts at an escape sequence instead (ESC is ASCII: never
-    // inside a UTF-8 character).
-    const nl = data.indexOf(0x0a, cut);
-    const esc = nl === -1 ? data.indexOf(0x1b, cut) : -1;
-    cut = nl !== -1 ? nl + 1 : esc !== -1 ? esc : data.length;
-  }
+  const cut = tailCut(data, maxBytes);
   const raw = data.subarray(cut);
   const preamble = outputModes?.preamble(writtenAt - raw.length) ?? '';
   const lead = Buffer.from(preamble, 'utf8');
@@ -100,6 +90,26 @@ export function readRingTailWithModesAndGeometry(
     geometry: tailGeometry,
     writtenAt,
   };
+}
+
+/**
+ * Where a replay of the newest `maxBytes` of `data` starts: 0 when all of it
+ * fits, else the next line start after the byte budget's edge, or the next
+ * escape sequence when no line starts within `lineWithin` bytes of the edge.
+ */
+export function tailCut(data: Buffer, maxBytes: number, lineWithin = Number.POSITIVE_INFINITY): number {
+  const cut = Math.max(0, data.length - maxBytes);
+  if (cut === 0) return 0;
+  // Start on a line: a cut mid-sequence or mid-character would parse its
+  // remains as text. A TUI that repaints by cursor addressing alone writes
+  // no line feeds, and cutting past all of its output would leave a blank
+  // screen, so it starts at an escape sequence instead (ESC is ASCII: never
+  // inside a UTF-8 character).
+  const nl = data.indexOf(0x0a, cut);
+  if (nl !== -1 && nl - cut <= lineWithin) return nl + 1;
+  const esc = data.indexOf(0x1b, cut);
+  if (esc !== -1 && (nl === -1 || esc < nl)) return esc;
+  return nl !== -1 ? nl + 1 : data.length;
 }
 
 /** A cell no byte of a replay wrote (see withUnknownCells). Private use: no TUI draws it. */

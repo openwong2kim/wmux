@@ -42,6 +42,7 @@ describe('daemon memory diagnostics', () => {
     expect(result.sessions[0].ringLifetimeBytes).toBe(100_000);
     expect(result.snapshotQueue).toEqual(expect.objectContaining({ jobs: expect.any(Number), waitMsMax: expect.any(Number) }));
     expect(result.screenParses).toEqual(expect.any(Object));
+    expect(result.tailReads).toEqual(expect.any(Object));
     expect(result.eventLoop!.activeMs + result.eventLoop!.idleMs).toBeGreaterThan(0);
     for (const backend of [result.snapshots!.ansi, result.snapshots!.text]) {
       expect(backend).toEqual({ native: expect.any(Number), fallbacks: expect.any(Number), skipped: expect.any(Number),

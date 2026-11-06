@@ -102,6 +102,25 @@ describe('memory diagnostics', () => {
     }
   });
 
+  it('shows tail reads by site: served, fallbacks by reason, what they cost and what the check found', () => {
+    const fleet = {
+      reads: 10, served: 6, whole: 1, fallbacks: { 'unknown-visible': 2, margins: 1 },
+      tailMsTotal: 30, tailMsMax: 8, fallbackMsTotal: 270, fallbackMsMax: 100,
+      ringCopyMsTotal: 12, ringCopyMsMax: 3, scanMsTotal: 4, scanMsMax: 2, scanBytes: 4096,
+      checks: 2, mismatches: { viewport: 1, 'running:full-only': 1, any: 1 },
+    };
+    const daemon = { pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [], tailReads: { fleet } };
+    expect(isDaemonMemoryDiagnostics(daemon)).toBe(true);
+    const text = renderMemoryDiagnostics(undefined, daemon, { available: false, reason: 'n/a' });
+    expect(text).toContain('fleet tail reads: 6 served, 1 whole ring fit, 3 fell back (unknown-visible 2, margins 1); ' +
+      'tail avg 3.0 ms (ring copy 1.2 ms, scan 0.4 ms), fallback avg 90 ms (max 100 ms)');
+    expect(text).toContain('checked against the whole ring: 2, 1 differed (viewport 1, running:full-only 1)');
+    for (const tailReads of [null, { fleet: null }, { fleet: { ...fleet, served: -1 } }, { fleet: { ...fleet, fallbacks: { margins: 'x' } } },
+      { fleet: { ...fleet, mismatches: null } }]) {
+      expect(isDaemonMemoryDiagnostics({ ...daemon, tailReads })).toBe(false);
+    }
+  });
+
   it('rejects malformed snapshot counters from a mixed-version daemon, and accepts their absence', () => {
     const base = { pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [] };
     const ok = { native: 1, fallbacks: 0, skipped: 0, circuitOpen: false, reasons: { budget: 1 } };

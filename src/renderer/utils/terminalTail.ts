@@ -189,15 +189,21 @@ export function tailForPty(ptyId: string, n = 3): string[] {
  * Fleet's detail saying "No terminal output available." for most rows.
  * Wrapped rows are joined into their logical line. Never throws; [] when
  * neither source has text.
+ *
+ * The daemon read is display-only, so it asks for `tail`: the daemon answers
+ * from the ring's newest bytes when that gives the same rows. `onVia` hears
+ * whether it did ('tail') or had to read the whole ring ('full'); it is not
+ * called for the renderer's buffer or by a daemon that predates it.
  */
-export async function tailForPtyOrDaemon(ptyId: string, n: number): Promise<string[]> {
+export async function tailForPtyOrDaemon(ptyId: string, n: number, onVia?: (via: 'tail' | 'full') => void): Promise<string[]> {
   const local = tailForPty(ptyId, n);
   if (local.length > 0 || !ptyId) return local;
   const api = window.electronAPI?.pty;
   if (typeof api?.readText !== 'function') return [];
   try {
-    const res = await api.readText(ptyId, { scrollback: n * 4 });
+    const res = await api.readText(ptyId, { scrollback: n * 4, tail: true });
     if (!res?.success) return [];
+    if (res.via) onVia?.(res.via);
     const lines: string[] = [];
     for (const row of res.rows) {
       if (row.wrapped && lines.length > 0) lines[lines.length - 1] += row.text;
@@ -208,4 +214,35 @@ export async function tailForPtyOrDaemon(ptyId: string, n: number): Promise<stri
   } catch {
     return [];
   }
+}
+
+export const TAIL_POLL_MS = 750;
+/** While the daemon answers from the whole ring (~90 ms of its main thread per read of a busy 8 MiB pane). */
+export const TAIL_POLL_FULL_MS = 3000;
+
+/**
+ * Fleet's preview poll of one pane's tail (`read`, a tailForPtyOrDaemon call):
+ * every 750 ms, backing off to every 3 s while the last answer came from a
+ * whole-ring read, and back to 750 ms on the first tail answer. `refresh`
+ * reads now (a pane just mounted); nothing is delivered after `stop`.
+ */
+export function pollTail(
+  read: (onVia: (via: 'tail' | 'full') => void) => Promise<string[]>,
+  onTail: (lines: string[]) => void,
+): { refresh: () => void; stop: () => void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let generation = 0;
+  let stopped = false;
+  const tick = () => {
+    clearTimeout(timer);
+    const mine = ++generation;
+    let via: 'tail' | 'full' | undefined;
+    void read((v) => { via = v; }).then((lines) => {
+      if (stopped || mine !== generation) return;
+      onTail(lines);
+      timer = setTimeout(tick, via === 'full' ? TAIL_POLL_FULL_MS : TAIL_POLL_MS);
+    });
+  };
+  tick();
+  return { refresh: () => { if (!stopped) tick(); }, stop: () => { stopped = true; clearTimeout(timer); } };
 }
