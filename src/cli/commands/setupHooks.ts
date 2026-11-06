@@ -9,10 +9,10 @@ import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
 import { NATIVE_HOOKS_MARKER } from '../../shared/hooks/hookFlavours';
 import {
   CLAUDE_KILL_SWITCH_FILE,
-  claudeCopyVerdict,
   claudeHookCopyPath,
   claudeNativeAvailable,
   isPackagedBridge,
+  judgeClaudeCopy,
   packagedClaudeNativeSource,
   prepareClaudeNative,
   readClaudeRuntime,
@@ -382,8 +382,15 @@ type HookCommandForm = 'node' | 'native';
 const NATIVE_LEAF = /^"[^"]*[\\/]wmux-claude-hook" /;
 
 function leafForm(leaf: unknown): HookCommandForm {
+  return nativeLeafCopy(leaf) ? 'native' : 'node';
+}
+
+/** The wmux-claude-hook copy a native leaf runs (its quoted first token), or
+ *  null for a node leaf. */
+function nativeLeafCopy(leaf: unknown): string | null {
   const command = (leaf as HookLeaf | null)?.command;
-  return typeof command === 'string' && NATIVE_LEAF.test(command.trim()) ? 'native' : 'node';
+  if (typeof command !== 'string' || !NATIVE_LEAF.test(command.trim())) return null;
+  return /^"([^"]*)"/.exec(command.trim())?.[1] ?? null;
 }
 
 /** A single hook command leaf, e.g. { type: 'command', command: '…' }. */
@@ -1597,7 +1604,7 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     features,
     nativeAvailable,
     runtime,
-    hookRuntime: claudeHookRuntimeReport(paths),
+    hookRuntime: claudeHookRuntimeReport(paths, { settings: load.corrupted ? {} : load.settings, nativeAvailable, runtime }),
   };
 }
 
@@ -1644,11 +1651,17 @@ export function nodeOnPath(env: NodeJS.ProcessEnv = process.env): boolean {
 
 export function claudeHookRuntimeReport(
   paths: SetupHooksPaths,
-  opts: { platform?: NodeJS.Platform; hasNode?: () => boolean } = {},
+  opts: {
+    platform?: NodeJS.Platform;
+    hasNode?: () => boolean;
+    /** What statusHooks already read, so nothing is read or hashed twice. */
+    settings?: Record<string, unknown>;
+    nativeAvailable?: boolean;
+    runtime?: ClaudeHookRuntime;
+  } = {},
 ): ClaudeHookRuntimeReport {
   const platform = opts.platform ?? process.platform;
-  const load = loadSettings(paths.settingsPath);
-  const hooks = load.settings.hooks;
+  const hooks = (opts.settings ?? loadSettings(paths.settingsPath).settings).hooks;
   const leaves = hooks && typeof hooks === 'object' && !Array.isArray(hooks)
     ? Object.values(hooks as Record<string, unknown>)
       .filter(Array.isArray)
@@ -1663,25 +1676,27 @@ export function claudeHookRuntimeReport(
   }
   if (native.length === 0) {
     if (platform === 'win32') return report('windows', 'ok', 'node: Windows runs the Claude hooks on node');
-    if (readClaudeRuntime(path.dirname(paths.bridgeDest)) === 'node') {
+    if ((opts.runtime ?? readClaudeRuntime(path.dirname(paths.bridgeDest))) === 'node') {
       return report('runtime-node', 'ok', 'node, as ~/.wmux/hooks/claude-runtime says (`wmux setup-hooks --runtime native` turns it back)');
     }
-    return claudeNativeAvailable(paths.bridgeDest, paths.bridgeSource, platform)
+    return (opts.nativeAvailable ?? claudeNativeAvailable(paths.bridgeDest, paths.bridgeSource, platform))
       ? report('node', 'ok', 'node; the native copy passed its self-test, so Update or `wmux setup-hooks` moves them to it')
       : report('node', 'ok', 'node');
   }
-  const copy = /^"([^"]*)"/.exec(((native[0] as HookLeaf).command).trim())?.[1] as string;
-  const beside = path.join(path.dirname(copy), 'wmux-bridge.mjs');
-  const verdict = claudeCopyVerdict(beside, beside);
-  if (verdict === 'missing') return report('copy-missing', 'fail', `${copy} is gone, so every hook fails; run \`wmux setup-hooks\``);
-  if (verdict === 'fail') return report('copy-failed', 'fail', `${copy} is recorded as failing its self-test; run \`wmux setup-hooks\``);
+  const copy = nativeLeafCopy(native[0]) as string;
+  const judged = judgeClaudeCopy(copy);
+  if (judged === 'missing') return report('copy-missing', 'fail', `${copy} is gone, so every hook fails; run \`wmux setup-hooks\``);
+  if (judged === 'fail') return report('copy-failed', 'fail', `${copy} is recorded as failing its self-test; run \`wmux setup-hooks\``);
   const hasNode = (opts.hasNode ?? nodeOnPath)();
   if (fs.existsSync(path.join(path.dirname(copy), CLAUDE_KILL_SWITCH_FILE))) {
-    return hasNode
-      ? report('kill-switch', 'ok', `native-disabled is set beside ${copy}: each run hands over to node`)
-      : report('node-missing', 'warn', `native-disabled is set beside ${copy}, but there is no node on PATH: the runs stay native`);
+    if (judged !== 'no-bridge' && hasNode) return report('kill-switch', 'ok', `native-disabled is set beside ${copy}: each run hands over to node`);
+    const why = judged === 'no-bridge' ? 'there is no bridge beside it' : 'there is no node on PATH';
+    return report('node-missing', 'warn', `native-disabled is set beside ${copy}, but ${why}: the runs stay native`);
   }
-  if (verdict === 'pass') return report('native', 'ok', `native: ${copy}`);
+  if (judged === 'pass') return report('native', 'ok', `native: ${copy}`);
+  if (judged === 'no-bridge') {
+    return report('native', 'warn', `native: ${copy}, with no bridge beside it: nothing can hand the runs over to node; \`wmux setup-hooks\` puts it back`);
+  }
   return hasNode
     ? report('pin-mismatch', 'warn', `the bridge beside ${copy} is not the one it was made from: each run hands over to node; \`wmux setup-hooks\` brings them in step`)
     : report('node-missing', 'warn', `the bridge beside ${copy} is not the one it was made from and there is no node on PATH: the runs stay native against it`);
@@ -1724,17 +1739,15 @@ export function isPermissionGateInstalled(settingsPath: string = defaultSettings
   // A native leaf whose copy is gone, or recorded as failing its self-test for
   // the bridge beside it, raises nothing. One hash of the copy per call: this
   // runs once, as `wmux web` starts.
-  return leaves.some((leaf) => leafForm(leaf) === 'node' || nativeLeafRuns((leaf as HookLeaf).command));
+  return leaves.some((leaf) => leafForm(leaf) === 'node' || nativeLeafRuns(leaf));
 }
 
-/** The copy a native leaf names exists and is not recorded as failing for
- *  the bridge beside it. Runs nothing. */
-function nativeLeafRuns(command: string): boolean {
-  const copy = /^"([^"]*)"/.exec(command.trim())?.[1];
-  if (!copy) return false;
-  const bridgeDest = path.join(path.dirname(copy), 'wmux-bridge.mjs');
-  const verdict = claudeCopyVerdict(bridgeDest, bridgeDest);
-  return verdict !== 'missing' && verdict !== 'fail';
+/** The copy a native leaf names exists and has not only failed its
+ *  self-test: it runs the hook, or hands it over to node. Runs nothing. */
+function nativeLeafRuns(leaf: unknown): boolean {
+  const copy = nativeLeafCopy(leaf);
+  const judged = copy ? judgeClaudeCopy(copy) : 'missing';
+  return judged !== 'missing' && judged !== 'fail';
 }
 
 // ----- Printing -----------------------------------------------------------

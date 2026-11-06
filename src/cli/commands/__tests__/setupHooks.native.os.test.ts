@@ -281,6 +281,28 @@ describe.skipIf(process.platform === 'win32')('claudeHookRuntimeReport: the stat
     expect(state()).toMatchObject({ state: 'copy-missing', severity: 'fail' });
   });
 
+  // A failure recorded for the bridge beside the copy, by bytes that passed
+  // for another bridge, is a pin mismatch: each run hands over to node, where
+  // the hooks and the gate still work.
+  it('a failure for this bridge after a pass for another reads as a pin mismatch, and the gate stays installed', async () => {
+    await installNative();
+    fs.writeFileSync(paths.bridgeDest, '// a newer bridge\n');
+    const besideLine = claudeSelfTestLine(paths.bridgeDest) as string;
+    recordProbe(path.dirname(copy), probeKey(sha256Of(fs.readFileSync(copy)), besideLine), 'fail');
+    expect(state()).toMatchObject({ state: 'pin-mismatch', severity: 'warn' });
+    expect(isPermissionGateInstalled(paths.settingsPath)).toBe(true);
+  });
+
+  it('no bridge beside a copy that passed: the runs stay native, and nothing can hand them over', async () => {
+    await installNative();
+    fs.unlinkSync(paths.bridgeDest);
+    const report = state();
+    expect(report).toMatchObject({ state: 'native', severity: 'warn' });
+    expect(report.detail).toMatch(/no bridge beside it/);
+    fs.writeFileSync(path.join(path.dirname(copy), 'native-disabled'), '');
+    expect(state()).toMatchObject({ state: 'node-missing', severity: 'warn' });
+  });
+
   it('a bridge the copy does not pin, and the kill switch: a hand-over to node, or native runs with no node', async () => {
     await installNative();
     fs.writeFileSync(paths.bridgeDest, '// an older bridge\n');

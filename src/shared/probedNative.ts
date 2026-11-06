@@ -105,6 +105,18 @@ export function recordedVerdictOf(file: string, recordDir: string, line: string)
   return hash ? recordedProbe(recordDir, probeKey(hash, line)) : undefined;
 }
 
+/** Every verdict recorded on the bytes now at `file`, by expectation key;
+ *  empty when the file cannot be read. Runs nothing. */
+export function recordedVerdictsOf(file: string, recordDir: string): Map<string, 'pass' | 'fail'> {
+  const out = new Map<string, 'pass' | 'fail'>();
+  const hash = fileSha256(file);
+  if (!hash) return out;
+  for (const [key, verdict] of Object.entries(readRecord(recordDir).verdicts)) {
+    if (key.startsWith(`${hash} `) && (verdict === 'pass' || verdict === 'fail')) out.set(key.slice(hash.length + 1), verdict);
+  }
+  return out;
+}
+
 /** The sha256 of every file in `dir` (each copy in place, the record's
  *  neighbours). Best effort: an unreadable file is left out. */
 function hashesInPlace(dir: string): Set<string> {

@@ -17,6 +17,7 @@ import { randomBytes } from 'crypto';
 import {
   prepareProbedNative,
   recordedVerdictOf,
+  recordedVerdictsOf,
   runProbe,
   sha256Of,
 } from '../probedNative';
@@ -167,6 +168,30 @@ export function claudeCopyVerdict(bridgeDest: string, bridge: string | null): 'm
   if (!fs.existsSync(copy)) return 'missing';
   const line = claudeSelfTestLine(bridge);
   return line ? recordedVerdictOf(copy, path.dirname(bridgeDest), line) : undefined;
+}
+
+const SELF_TEST_PREFIX = 'wmux-claude-hook protocol 1 pin ';
+
+/**
+ * How a copy the entries name runs, from its recorded self-tests and the
+ * bridge beside it (which is the one it hands over to). Runs nothing.
+ *   missing       no copy: every hook fails
+ *   pass          passed for the bridge beside it
+ *   pin-mismatch  passed for another bridge: each run hands over to node
+ *   no-bridge     passed, and no bridge is beside it: the runs stay native
+ *   fail          never passed: it does not run here
+ *   unchecked     nothing recorded for these bytes
+ */
+export type ClaudeCopyJudgement = 'missing' | 'pass' | 'pin-mismatch' | 'no-bridge' | 'fail' | 'unchecked';
+
+export function judgeClaudeCopy(copy: string): ClaudeCopyJudgement {
+  if (!fs.existsSync(copy)) return 'missing';
+  const dir = path.dirname(copy);
+  const verdicts = [...recordedVerdictsOf(copy, dir)].filter(([line]) => line.startsWith(SELF_TEST_PREFIX));
+  const line = claudeSelfTestLine(path.join(dir, 'wmux-bridge.mjs'));
+  if (line && verdicts.some(([l, v]) => l === line && v === 'pass')) return 'pass';
+  if (verdicts.some(([, v]) => v === 'pass')) return line ? 'pin-mismatch' : 'no-bridge';
+  return verdicts.length > 0 ? 'fail' : 'unchecked';
 }
 
 /** True when the entries can run the copy: not Windows, and its recorded
