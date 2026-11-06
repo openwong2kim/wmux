@@ -17,8 +17,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { ipcMain } from 'electron';
-import { IPC } from '../../../shared/constants';
+import { app, ipcMain } from 'electron';
+import { IPC, dataSuffix } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import {
   defaultPaths,
@@ -124,6 +124,22 @@ export function computeInstalled(s: StatusOutcome): boolean {
   return s.installedEvents.length > 0 && s.bridgeExists && !s.settingsCorrupted;
 }
 
+/**
+ * Why this instance must not write Claude Code's settings, or null when it may.
+ * ~/.claude/settings.json (and account copies of it) and the bridge under
+ * ~/.wmux/hooks are shared with the installed wmux (#2104), so an isolated
+ * instance (WMUX_DATA_SUFFIX set) or a development build writing them would
+ * change what the installed wmux runs. The boot refresh skips there for the
+ * same reason; the deliberate path is the CLI, which warns and proceeds.
+ */
+export function claudeSettingsWriteRefusal(): string | null {
+  const suffix = dataSuffix();
+  if (suffix === '' && app.isPackaged) return null;
+  const instance = suffix !== '' ? `an isolated instance (WMUX_DATA_SUFFIX=${suffix})` : 'a development build';
+  return `This wmux is ${instance}. Claude Code settings are shared with your installed wmux, so it does not ` +
+    'change them. Make this change from your installed wmux, or run wmux setup-hooks in a terminal.';
+}
+
 export function registerHooksBridgeHandlers(): void {
   ipcMain.removeHandler(IPC.HOOKS_BRIDGE_STATUS);
   ipcMain.handle(
@@ -142,7 +158,24 @@ export function registerHooksBridgeHandlers(): void {
   ipcMain.handle(
     IPC.HOOKS_BRIDGE_INSTALL,
     wrapHandler(IPC.HOOKS_BRIDGE_INSTALL, async (): Promise<InstallOutcome> => {
-      return installHooks(defaultPaths());
+      const paths = defaultPaths();
+      const refusal = claudeSettingsWriteRefusal();
+      if (refusal) {
+        return {
+          ok: false,
+          settingsPath: paths.settingsPath,
+          bridgeDest: paths.bridgeDest,
+          bridgeSource: paths.bridgeSource,
+          events: [],
+          profile: 'full',
+          bridgeCopied: false,
+          pluginDetected: false,
+          removedForPlugin: 0,
+          warning: null,
+          error: refusal,
+        };
+      }
+      return installHooks(paths);
     }),
   );
 
@@ -150,7 +183,10 @@ export function registerHooksBridgeHandlers(): void {
   ipcMain.handle(
     IPC.HOOKS_BRIDGE_UPDATE,
     wrapHandler(IPC.HOOKS_BRIDGE_UPDATE, async (): Promise<UpdateOutcome> => {
-      return updateHooks(defaultPaths());
+      const paths = defaultPaths();
+      const refusal = claudeSettingsWriteRefusal();
+      if (refusal) return { ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: refusal };
+      return updateHooks(paths);
     }),
   );
 
@@ -173,6 +209,8 @@ export function registerHooksBridgeHandlers(): void {
       // An Update, never an install: only a folder the status lists (a wmux
       // install there already) is written.
       if (!computeInstalled(statusHooks(paths))) throw new Error('HOOKS_BRIDGE_UPDATE_ACCOUNT: no wmux hooks in that account to update');
+      const refusal = claudeSettingsWriteRefusal();
+      if (refusal) return { ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: refusal };
       return updateHooks(paths);
     }),
   );
@@ -184,7 +222,10 @@ export function registerHooksBridgeHandlers(): void {
   ipcMain.handle(
     IPC.HOOKS_BRIDGE_ALLOW_WORKER_TOOLS,
     wrapHandler(IPC.HOOKS_BRIDGE_ALLOW_WORKER_TOOLS, async (): Promise<AllowWorkerToolsOutcome> => {
-      return allowFanoutWorkerTools(defaultPaths());
+      const paths = defaultPaths();
+      const refusal = claudeSettingsWriteRefusal();
+      if (refusal) return { ok: false, settingsPath: paths.settingsPath, added: [], error: refusal };
+      return allowFanoutWorkerTools(paths);
     }),
   );
 
