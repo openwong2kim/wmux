@@ -20,10 +20,11 @@
  *   - list lock files left;
  *   - start again on the same profile and read the cookie back.
  *
- * Usage: node scripts/probe-chrome-pipe.mjs [--browser chrome|edge|chromium|<path>]... [--headless-only] [--json out.json]
+ * Usage: node scripts/probe-chrome-pipe.mjs [--browser chrome|edge|chromium|<path>]... [--require <name>]... [--headless-only] [--json out.json]
  * `chromium` is Playwright's build, installed by `playwright-core install
  * chromium` into PLAYWRIGHT_BROWSERS_PATH.
- * Exits non-zero when a browser that was found fails a step. Pages are
+ * Exits non-zero when a browser that was found fails a step, or a --require'd
+ * one is not found. Pages are
  * about:blank only; nothing is fetched from the network.
  */
 import { execFileSync, spawn } from 'node:child_process';
@@ -33,10 +34,13 @@ import path from 'node:path';
 
 const args = process.argv.slice(2);
 const wanted = [];
+/** Browsers that must be found: a missing one fails the run. */
+const required = new Set();
 let jsonOut = null;
 let headlessOnly = false;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--browser') wanted.push(args[++i]);
+  else if (args[i] === '--require') required.add(args[++i]);
   else if (args[i] === '--headless-only') headlessOnly = true;
   else if (args[i] === '--json') jsonOut = args[++i];
 }
@@ -221,15 +225,21 @@ async function probe(binary, headless, cold) {
     browser = launch(binary, profile, headless);
     const { cookies } = await browser.send('Storage.getCookies');
     result.cookieKept = cookies.some((c) => c.name === COOKIE.name && c.value === COOKIE.value);
-    const second = await browser.closePipe();
-    if (second === null) browser.kill();
-    result.ok = result.withinLauncherCeiling && result.target && result.browserSession && result.eofExitMs !== null && result.processesLeft?.length === 0;
+    result.secondExitMs = await browser.closePipe();
+    if (result.secondExitMs === null) browser.kill();
+    result.ok = result.withinLauncherCeiling && result.target && result.browserSession && result.eofExitMs !== null &&
+      result.processesLeft?.length === 0 && result.cookieKept === true && result.secondExitMs !== null;
   } catch (err) {
     result.error = err instanceof Error ? err.message : String(err);
     browser.kill();
   } finally {
     await new Promise((r) => setTimeout(r, 500));
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+    // Recorded, not thrown: the results still print.
+    try {
+      fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+    } catch (err) {
+      result.profileNotRemoved = err instanceof Error ? err.message : String(err);
+    }
   }
   return result;
 }
@@ -238,7 +248,7 @@ const results = [];
 for (const name of wanted) {
   const binary = candidates(name).find((p) => fs.existsSync(p));
   if (!binary) {
-    results.push({ browser: name, found: false });
+    results.push({ browser: name, found: false, ...(required.has(name) && { required: true }) });
     continue;
   }
   let cold = true;
@@ -258,7 +268,7 @@ if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify(results, null, 2));
 if (process.env.GITHUB_STEP_SUMMARY) {
   const names = (list) => (list ? list.map((p) => `${p.pid} ${p.name}`).join(', ') || 'none' : 'query failed');
   const row = (r) => r.found === false
-    ? `| ${r.browser} | — | not installed | | | | | | |`
+    ? `| ${r.browser} | — | ${r.required ? 'FAIL: required, not installed' : 'not installed'} | | | | | | |`
     : r.skipped
       ? `| ${r.browser} | headed | skipped: ${r.skipped} | | | | | | |`
       : `| ${r.browser} | ${r.headless ? 'headless' : 'headed'}${r.cold ? ' (cold)' : ''} | ${r.ok ? 'ok' : `FAIL${r.error ? `: ${r.error}` : ''}`} | ${r.product ?? ''} | ${r.firstAnswerMs ?? ''} | ${r.eofExitMs ?? 'no exit'} | ${names(r.processesAtExit)}${r.processesGoneAfterMs ? ` (gone after ${r.processesGoneAfterMs} ms)` : ''} | ${names(r.processesLeft)} ${JSON.stringify(r.lockFilesLeft ?? [])} | ${r.cookieKept ?? ''} |`;
@@ -270,4 +280,5 @@ if (process.env.GITHUB_STEP_SUMMARY) {
     '',
   ].join('\n'));
 }
-process.exitCode = results.some((r) => r.found !== false && !r.skipped && !r.ok) ? 1 : 0;
+for (const name of required) if (!wanted.includes(name)) results.push({ browser: name, found: false, required: true });
+process.exitCode = results.some((r) => (r.found === false ? r.required : !r.skipped && !r.ok)) ? 1 : 0;

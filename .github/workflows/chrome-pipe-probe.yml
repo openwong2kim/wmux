@@ -56,14 +56,14 @@ jobs:
         if: runner.os != 'Linux'
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw
-        run: node scripts/probe-chrome-pipe.mjs --json pipe-probe.json
+        run: node scripts/probe-chrome-pipe.mjs --require chromium --json pipe-probe.json
 
       # Headed mode needs a display: a virtual one.
       - name: Probe (Linux)
         if: runner.os == 'Linux'
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw
-        run: xvfb-run -a node scripts/probe-chrome-pipe.mjs --json pipe-probe.json
+        run: xvfb-run -a node scripts/probe-chrome-pipe.mjs --require chromium --json pipe-probe.json
 
       - name: Upload results
         if: ${{ !cancelled() }}
