@@ -376,23 +376,24 @@ export async function renderPaneTail(
  * snapshot queue (the frame then describes a grid the pane no longer has).
  * `tail: false`: a whole ring that does not parse in time is null too, not
  * read from its tail.
- * Readers poll this (every keystroke at a prompt, every 100 ms while an
- * answer lands), so a frame read from the whole ring is reused while the
- * ring's bytes and the pane's size have not moved (screenReadCache): the
- * ring is then neither copied nor parsed again. A frame read from the tail
- * is not reused, since a later read may parse the whole ring in time.
+ * `reuse`, for a caller passing the same `snapshot` every time: readers poll
+ * this (every keystroke at a prompt, every 100 ms while an answer lands), so
+ * a frame read from the whole ring is reused while the ring's bytes and the
+ * pane's size have not moved (screenReadCache), and the ring is then neither
+ * copied nor parsed again. A frame read from the tail is not reused, since a
+ * later read may parse the whole ring in time.
  */
 export async function renderPaneScreen(
   getPane: () => RenderablePane | undefined,
   snapshot: TextSnapshot,
-  opts: { tail?: boolean } = {},
+  opts: { tail?: boolean; reuse?: boolean } = {},
 ): Promise<AwaitingFrame | null> {
   const pane = getPane();
   if (!pane || pane.bridge.isMuted) return null;
   const geometry = liveGeometry(pane);
   if (!geometry) return null;
   const written = pane.ringBuffer.totalBytesWritten;
-  if (typeof written !== 'number') return (await renderFrame(getPane, pane, geometry, snapshot, opts)).frame;
+  if (!opts.reuse || typeof written !== 'number') return (await renderFrame(getPane, pane, geometry, snapshot, opts)).frame;
   const fence = `${written}:${geometry.cols}x${geometry.rows}`;
   // renderFrame copies the ring before its first await, in this same step.
   const read = await fencedRead(pane, `pane:${snapshotId(snapshot)}:${opts.tail === false ? 'whole' : 'tail'}`, fence,

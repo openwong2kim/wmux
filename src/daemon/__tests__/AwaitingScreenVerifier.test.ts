@@ -700,15 +700,21 @@ describe('renderPaneScreen reuse', () => {
     const { ring, pane, copies } = countingPane();
     let parses = 0;
     const snapshot = async () => { parses++; return { ok: true as const, rows: [{ text: `frame ${parses}` }] }; };
-    const first = await renderPaneScreen(() => pane, snapshot);
-    expect(await renderPaneScreen(() => pane, snapshot)).toBe(first);
+    const first = await renderPaneScreen(() => pane, snapshot, { reuse: true });
+    expect(await renderPaneScreen(() => pane, snapshot, { reuse: true })).toBe(first);
     expect([copies(), parses]).toEqual([1, 1]);
 
     ring.write(Buffer.from('!'));
-    expect((await renderPaneScreen(() => pane, snapshot))?.rows).toEqual(['frame 2']);
+    expect((await renderPaneScreen(() => pane, snapshot, { reuse: true }))?.rows).toEqual(['frame 2']);
     pane.ptyProcess.cols = 100;
-    expect((await renderPaneScreen(() => pane, snapshot))?.rows).toEqual(['frame 3']);
+    expect((await renderPaneScreen(() => pane, snapshot, { reuse: true }))?.rows).toEqual(['frame 3']);
     expect([copies(), parses]).toEqual([3, 3]);
+  });
+
+  it('parses every time for a caller that does not opt in (a fresh snapshot closure per call)', async () => {
+    const { pane, copies } = countingPane();
+    for (let i = 0; i < 3; i++) await renderPaneScreen(() => pane, async () => ({ ok: true as const, rows: [{ text: 'x' }] }));
+    expect(copies()).toBe(3);
   });
 
   it('does not reuse a frame read from the tail after the whole ring ran out of budget', async () => {
@@ -717,8 +723,8 @@ describe('renderPaneScreen reuse', () => {
     const snapshot = async () => (++calls % 2 === 1
       ? { ok: false as const, reason: 'budget' }
       : { ok: true as const, rows: [{ text: 'tail' }] });
-    expect((await renderPaneScreen(() => pane, snapshot))?.rows).toEqual(['tail']);
-    await renderPaneScreen(() => pane, snapshot);
+    expect((await renderPaneScreen(() => pane, snapshot, { reuse: true }))?.rows).toEqual(['tail']);
+    await renderPaneScreen(() => pane, snapshot, { reuse: true });
     expect(calls).toBe(4);
   });
 });

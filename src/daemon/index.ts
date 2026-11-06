@@ -860,7 +860,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       const keyInputRevision = managed.bridge.getKeyInputRevision();
       const incarnation = managed.meta.incarnationId ?? null;
       const cols = managed.ptyProcess.cols ?? managed.meta.cols;
-      const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot);
+      const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot, { reuse: true });
       if (!frame) return null;
       return {
         rows: frame.rows,
@@ -3424,7 +3424,7 @@ function registerRpcHandlers(
     }
     const inFlight = sightingReads.get(id);
     if (inFlight || recoveredSighting.get(id)?.at === managed.ringBuffer.totalBytesWritten) return inFlight;
-    const read = renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot)
+    const read = renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot, { reuse: true })
       .then((frame) => {
         if (frame && sessionManager.getSession(id) === managed && recoveredAgentShellIds.has(id)) {
           recoveredSighting.set(id, { at: frame.mark, onScreen: screenShowsLiveAgent(frame.rows, slug) });
@@ -7800,7 +7800,7 @@ function wireEvents(
       if (ptyId !== id || sessionManager.getSession(id) !== managed) return null;
       const cols = managed.ptyProcess.cols;
       const rows = managed.ptyProcess.rows;
-      const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot);
+      const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot, { reuse: true });
       if (!frame) return null;
       const isCurrent = (): boolean => sessionManager.getSession(id) === managed
         && !managed.bridge.isMuted && managed.ringBuffer.totalBytesWritten === frame.mark
@@ -7814,7 +7814,7 @@ function wireEvents(
     isAwaiting: (id) => sessionManager.getSession(id)?.bridge.isAwaitingHuman() === true,
     eligible: (id) => isClaudeFamilyAgent(paneAgentSlug(id)),
     outputMark: (id) => sessionManager.getSession(id)?.ringBuffer.totalBytesWritten ?? null,
-    render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot),
+    render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot, { reuse: true }),
     clear: (id) => { sessionManager.getSession(id)?.bridge.clearAwaiting('screen-cleared'); },
     holdsPrompt: (id) => approvalRegistry?.list().pending
       // An agent-held (native) decision is not a dialog on this screen.
@@ -7847,7 +7847,7 @@ function wireEvents(
   // after it. A grid narrower than the dialog's footer wraps it beyond what
   // either test can see (#1901), so it is not judged.
   dialogOnScreen = async (sessionId) => {
-    const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot);
+    const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot, { reuse: true });
     if (!frame || frame.rows.every((row) => row.trim().length === 0)) return null;
     if (typeof frame.cols === 'number' && frame.cols < AWAITING_NARROW_DIALOG_COLS) return null;
     return screenShowsActiveDialog(frame.rows) || screenShowsPermissionDialog(frame.rows);
@@ -10181,7 +10181,7 @@ async function main(): Promise<void> {
     // person waits on a nudge, so the read may take longer.
     folderTrustVerdict: (id) => folderTrustState({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, id),
     screenShowsApproval: async (id) => {
-      const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot);
+      const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot, { reuse: true });
       if (!frame || frame.rows.every((row) => !row.trim())) return null;
       return screenShowsAgentDialog(frame.rows);
     },
