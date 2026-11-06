@@ -40,6 +40,11 @@
 //!   - A verdict whose stdout or stderr reader went away keeps its exit code
 //!     (a block stays 2) and logs `stdout-lost` / `stderr-lost` after the
 //!     verdict's line; Node dies on the write error with exit 1.
+//!   - A panic after a verdict exits with that verdict's code (a block stays
+//!     2); Node's catch exits 0 after any exception. With `--gate
+//!     --permission-gate`, a panic between the gate's block and the
+//!     permission verdict exits 2 with no permission answer on stdout, where
+//!     the permission gate would have exited 0.
 
 use crate::claude::{self, CLAUDE_POLICY, PERMISSION_GATE_POLICY};
 use crate::claude_rpc;
