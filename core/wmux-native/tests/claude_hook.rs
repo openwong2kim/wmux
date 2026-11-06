@@ -271,3 +271,41 @@ fn a_payload_deeper_than_the_limit_is_refused_and_exits_0() {
         "{log}"
     );
 }
+
+#[test]
+fn after_a_failed_hand_over_a_closed_daemon_socket_is_logged_not_fatal() {
+    // A failed exec must leave SIGPIPE ignored: the native run that follows
+    // writes to a daemon that closes without reading.
+    let case = Case::new("sigpipe", Some(&pinned()));
+    let wmux_home = case.dir.join("home/.wmux-claude-hook-test");
+    std::fs::create_dir_all(&wmux_home).unwrap();
+    std::fs::write(wmux_home.join("daemon-auth-token"), "t").unwrap();
+    // sun_path is short: the socket goes under the system temp dir.
+    let socket = std::env::temp_dir().join(format!("wmux-sigpipe-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    // It reads part of the request and then closes, so the bridge is still
+    // writing when the other end goes away.
+    std::thread::spawn(move || {
+        use std::io::Read;
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut chunk = [0u8; 64 * 1024];
+            let _ = stream.read_exact(&mut chunk);
+        }
+    });
+    let stdin = format!(r#"{{"session_id":"s","pad":"{}"}}"#, "x".repeat(900_000));
+    let socket_text = socket.display().to_string();
+    for round in 0..20 {
+        let out = case.run(
+            &["Stop"],
+            &[("WMUX_HOOK_RUNTIME", "node"), ("WMUX_PIPE_NAME", &socket_text)],
+            false,
+            &stdin,
+        );
+        assert_eq!(out.status.code(), Some(0), "round {round}: {out:?}");
+        assert_eq!(case.log().last().unwrap(), "rpc-failed", "round {round}");
+    }
+    let _ = std::fs::remove_file(&socket);
+    assert_eq!(&case.log()[..2], ["impl-fallback node-missing", "rpc-failed"]);
+}

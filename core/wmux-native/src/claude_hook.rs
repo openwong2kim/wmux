@@ -130,6 +130,7 @@ impl Handover {
         };
         use std::os::unix::process::CommandExt;
         let _ = std::process::Command::new("node").arg(bridge).args(args).exec();
+        crate::unix_sys::ignore_sigpipe();
         self.node_missing = true;
         log("impl-fallback", vec![("reason", Some(Json::Str(js("node-missing"))))]);
     }

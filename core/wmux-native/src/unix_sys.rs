@@ -26,6 +26,21 @@ extern "C" {
     pub fn poll(fds: *mut PollFd, nfds: NFds, timeout: i32) -> i32;
     #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
     pub fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    fn signal(signum: i32, handler: usize) -> usize;
+}
+
+const SIGPIPE: i32 = 13;
+const SIG_IGN: usize = 1;
+
+/// SIGPIPE ignored again, as Rust's runtime leaves it. A failed
+/// `Command::exec` has already put it back to the default (it resets it
+/// for the new program and does not restore it), and a write to a closed
+/// socket would then end the process.
+pub fn ignore_sigpipe() {
+    // SAFETY: setting a signal's disposition to SIG_IGN installs no handler.
+    unsafe {
+        signal(SIGPIPE, SIG_IGN);
+    }
 }
 
 pub const AF_UNIX: i32 = 1;
