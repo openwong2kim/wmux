@@ -6,10 +6,10 @@
   },
   "endpoints": {
     "daemon": {
-      "mode": "refused"
+      "mode": "absent"
     },
     "main": {
-      "mode": "refused"
+      "mode": "absent"
     }
   },
   "steps": [
@@ -34,7 +34,7 @@
             "outcome": "rpc-failed",
             "target": "main",
             "error": "connect-error",
-            "detail": "ECONNREFUSED"
+            "detail": "ENOENT"
           },
           {
             "bridge": "0.8.1",
