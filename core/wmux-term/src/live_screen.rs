@@ -252,6 +252,9 @@ impl Screen {
                 let raw: Vec<String> = rows.iter().map(|r| r.text.clone()).collect();
                 for row in &mut rows {
                     row.text = row.text.replace(c, " ").trim_end_matches(' ').to_owned();
+                    if let Some(plain) = &mut row.undimmed {
+                        *plain = plain.replace(c, " ").trim_end().to_owned();
+                    }
                 }
                 raw
             });
@@ -804,6 +807,19 @@ mod tests {
             assert!(texts(&screen).is_empty(), "{lead:?}: nothing fed");
             assert!(screen.read(&r).is_err(), "{lead:?}: not seeded");
         }
+    }
+
+    #[test]
+    fn unknown_cells_read_blank_in_the_undimmed_text_too() {
+        let mut r = ring();
+        r.mark_geometry(5, 2).unwrap();
+        r.write_bytes(b"ab").unwrap();
+        let unknown = '\u{e000}';
+        let mut screen = Screen::new(5, 2, 10).unwrap();
+        let lead = format!("\x1b[1;1H{}\x1b[H", unknown.to_string().repeat(5));
+        screen.seed(&r, lead.as_bytes()).unwrap();
+        let text = screen.text(10, true, Some(unknown));
+        assert_eq!(text.rows[0].undimmed.as_deref(), Some("ab"));
     }
 
     // ---- live == a fresh replay with the same seed, depth and geometry ----
