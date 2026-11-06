@@ -2,7 +2,7 @@ import { performance } from 'node:perf_hooks';
 import type { TailReadCounters } from '../shared/memoryDiagnostics';
 import type { TextSnapshotOutcome, TextSnapshotRow } from './HeadlessSnapshot';
 import type { RingBuffer } from './RingBuffer';
-import { UNKNOWN_CELL, tailCut, withUnknownCells } from './sessionTextReplay';
+import { UNKNOWN_CELL, readRingWithModes, tailCut, withUnknownCells } from './sessionTextReplay';
 import { TailHazardScan, type TailHazard } from './tailHazards';
 import type { OutputModeTracker } from './util/outputModeTracker';
 
@@ -24,8 +24,10 @@ import type { OutputModeTracker } from './util/outputModeTracker';
  */
 
 export const TAIL_BYTES = 256 * 1024;
-/** The real-data check compares a served answer with the whole ring's at most this often per pane. */
+/** The real-data check compares a served answer with the whole ring's at most this often per pane, */
 export const TAIL_CHECK_INTERVAL_MS = 10 * 60_000;
+/** and at most this often across panes, so a daemon start doesn't stack one extra whole-ring parse per pane. */
+export const TAIL_CHECK_SPACING_MS = 10_000;
 
 export type TailSite = 'fleet' | 'stallwatch';
 export type TailFallbackReason = TailHazard | 'no-modes' | 'unknown-visible' | 'tail-failed';
@@ -49,6 +51,7 @@ export interface GuardedTailOptions {
 
 const scans = new WeakMap<GuardedTailSession, TailHazardScan>();
 const lastCheck = new WeakMap<GuardedTailSession, number>();
+let lastAnyCheck = Number.NEGATIVE_INFINITY;
 const counters = new Map<TailSite, TailReadCounters>();
 
 function siteCounters(site: TailSite): TailReadCounters {
@@ -77,14 +80,15 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   const c = siteCounters(options.site);
   c.reads++;
   const started = performance.now();
-  const data = session.ringBuffer.readAll();
+  const modes = session.bridge.outputModes;
+  // The whole-ring read's own bytes and preamble, so a fallback is its answer.
+  const { raw: data, replay: full } = readRingWithModes(session.ringBuffer, modes);
   const writtenAt = session.ringBuffer.totalBytesWritten;
   const ringStart = writtenAt - data.length;
   time(c, 'ringCopyMs', performance.now() - started);
-  const modes = session.bridge.outputModes;
-  // Both preambles now, while the mode state still describes these bytes.
-  const fullLead = modes?.preamble(ringStart) ?? '';
-  const full = fullLead ? Buffer.concat([Buffer.from(fullLead, 'utf8'), data]) : data;
+  // Dims backstop as the whole-ring reads have: a recovered session may not have real dims yet.
+  const cols = session.meta.cols ?? 80;
+  const rows = session.meta.rows ?? 24;
 
   const fallback = async (reason: TailFallbackReason): Promise<TailOutcome> => {
     bump(c.fallbacks, reason);
@@ -108,10 +112,9 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   const scanStarted = performance.now();
   let scan = scans.get(session);
   if (!scan) scans.set(session, (scan = new TailHazardScan()));
-  c.scanBytes += scan.advance(data, writtenAt);
+  const { hazard, scanned } = scan.check(data, writtenAt, ringStart + cut, rows);
+  c.scanBytes += scanned;
   time(c, 'scanMs', performance.now() - scanStarted);
-  const { cols, rows } = session.meta;
-  const hazard = scan.hazardAt(ringStart + cut, rows);
   if (hazard) return fallback(hazard);
 
   const raw = data.subarray(cut);
@@ -128,8 +131,9 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
 
   const now = Date.now();
   const checkedAt = lastCheck.get(session);
-  if (checkedAt === undefined || now - checkedAt >= TAIL_CHECK_INTERVAL_MS) {
+  if ((checkedAt === undefined || now - checkedAt >= TAIL_CHECK_INTERVAL_MS) && now - lastAnyCheck >= TAIL_CHECK_SPACING_MS) {
     lastCheck.set(session, now);
+    lastAnyCheck = now;
     c.checks++;
     // The check never changes the answer: a failure is counted, not thrown.
     try { compare(c, tail, await options.parse(full), rows, options.inputs); } catch { bump(c.mismatches, 'check-failed'); }
@@ -183,4 +187,5 @@ export function tailReadCounters(): Record<string, TailReadCounters> {
 /** Tests only. */
 export function resetTailReadCounters(): void {
   counters.clear();
+  lastAnyCheck = Number.NEGATIVE_INFINITY;
 }

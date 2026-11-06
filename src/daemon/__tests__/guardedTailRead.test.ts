@@ -8,7 +8,7 @@ import { OutputModeTracker } from '../util/outputModeTracker';
 import { generateTextSnapshotUnqueued, type TextSnapshotOutcome } from '../HeadlessSnapshot';
 import { UNKNOWN_CELL, tailCut, withUnknownCells } from '../sessionTextReplay';
 import {
-  TAIL_BYTES, TAIL_CHECK_INTERVAL_MS, guardedTailRead, resetTailReadCounters, tailReadCounters, type GuardedTailSession,
+  TAIL_BYTES, TAIL_CHECK_INTERVAL_MS, TAIL_CHECK_SPACING_MS, guardedTailRead, resetTailReadCounters, tailReadCounters, type GuardedTailSession,
 } from '../guardedTailRead';
 import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail, type TextReadSession } from '../queuedSessionText';
 
@@ -68,6 +68,11 @@ const hazards: Array<{ name: string; chunks: string[]; reason: string; xtermOnly
   { name: 'tab stops cleared before the cut', reason: 'tabs', chunks: pages('\x1b[3g', () => '\x1b[1;1Ha\tb') },
   { name: 'insert mode set before the cut', reason: 'insert', chunks: pages('\x1b[4h', () => '\x1b[1;1Hxxxx\x1b[1;1Hab') },
   { name: 'new-line mode set before the cut', reason: 'newline', chunks: pages('\x1b[20h', () => '\x1b[1;5Habc\ndef'), xtermOnly: true },
+  // Autowrap off at the cut and turned back on inside the tail: the preamble leaves ?7 to the tail, which starts it on.
+  { name: 'autowrap turned off before the cut and on inside the tail', reason: 'autowrap',
+    chunks: pages('\x1b[?7l', () => `\x1b[1;1H${'w'.repeat(100)}`, '\x1b[?7h') },
+  { name: 'a cursor saved before the cut and restored inside the tail', reason: 'saved-cursor',
+    chunks: pages('\x1b[20;1H\x1b7', (i) => `\x1b8status ${i}`) },
   ...[['1049', '\x1b[?1049l'], ['47', '\x1b[?47l'], ['1047', '\x1b[?1047l'], ['1049', '\x1b[?25;1049l']].map(([mode, exit]) => ({
     name: `a screen switch inside the tail (${JSON.stringify(exit)})`, reason: 'screen-switch',
     chunks: pages(`${shell}\x1b[?${mode}h`, (i) => `\x1b[1;1Happ ${i}`, exit),
@@ -149,6 +154,16 @@ describe('guarded tail: served', () => {
     expect(tailReadCounters().stallwatch).toMatchObject({ whole: 1, served: 0 });
   });
 
+  it('a recovered pane with no size yet still marks unknown cells (read at 80x24, as the whole-ring reads)', async () => {
+    const ticks = Array.from({ length: 30_000 }, (_, t) => `\x1b[1;60H${String(t).padStart(8, '0')}`);
+    const s = session(['\x1b[?1049h\x1b[2J', ...Array.from({ length: ROWS }, (_, r) => `\x1b[${r + 1};1Hrow ${r}`), ...ticks]);
+    (s as { meta: unknown }).meta = {};
+    const guarded = await queuedScreenTail(table(s), 'pane', 'stallwatch');
+    expect(guarded?.via).toBe('full');
+    expect(texts(guarded)).toEqual(texts(await queuedScreenText(table(s), 'pane')));
+    expect(tailReadCounters().stallwatch.fallbacks).toEqual({ 'unknown-visible': 1 });
+  });
+
   it('a pane whose visible cells the tail never wrote falls back as unknown-visible', async () => {
     // Painted once, then only a clock ticks: the tail can't see the rest of the screen.
     const ticks = Array.from({ length: 30_000 }, (_, t) => `\x1b[1;60H${String(t).padStart(8, '0')}`);
@@ -208,7 +223,7 @@ describe('guarded tail: cost and the real-data check', () => {
     expect(JSON.stringify(tailReadCounters())).not.toContain(canary);
   });
 
-  it('counts a check\'s mismatch by part and direction, and a failing check never changes the answer', async () => {
+  it('counts a check\'s mismatch by part and direction', async () => {
     const s = session(pages('', (i) => `\x1b[1;1Hrow ${i}`));
     let n = 0;
     const tailAnswer = await guardedTailRead(s, {
@@ -222,7 +237,9 @@ describe('guarded tail: cost and the real-data check', () => {
     });
     expect(tailAnswer.via).toBe('tail');
     expect(tailReadCounters().fleet.mismatches).toEqual({ viewport: 1, 'running:tail-only': 1, any: 1 });
+  });
 
+  it('a failing check never changes the answer', async () => {
     const t = session(pages('', (i) => `\x1b[1;1Hrow ${i}`));
     let m = 0;
     const answer = await guardedTailRead(t, {
@@ -232,5 +249,17 @@ describe('guarded tail: cost and the real-data check', () => {
     expect(answer.via).toBe('tail');
     expect(answer.ok).toBe(true);
     expect(tailReadCounters().stallwatch.mismatches).toEqual({ 'check-failed': 1 });
+  });
+
+  it('checks at most one pane per 10 seconds, so a daemon start does not stack them', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-07T00:00:00Z'));
+    const panes = [0, 1].map(() => session(pages('', (i) => `\x1b[1;1Hrow ${i}`)));
+    const parse = (initial: Buffer) => generateTextSnapshotUnqueued({ cols: COLS, rows: ROWS, scrollback: 0, initial });
+    for (const pane of panes) await guardedTailRead(pane, { site: 'stallwatch', parse });
+    expect(tailReadCounters().stallwatch.checks).toBe(1);
+    vi.setSystemTime(Date.now() + TAIL_CHECK_SPACING_MS);
+    for (const pane of panes) await guardedTailRead(pane, { site: 'stallwatch', parse });
+    expect(tailReadCounters().stallwatch).toMatchObject({ served: 4, checks: 2 });
   });
 });
