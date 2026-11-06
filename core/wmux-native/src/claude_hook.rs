@@ -39,7 +39,7 @@
 //!     connects, where the exception ends the process with exit 1; between
 //!     the two limits this binary sends what Node cannot.
 
-use crate::claude::{self, CLAUDE_POLICY};
+use crate::claude::{self, CLAUDE_POLICY, PERMISSION_GATE_POLICY};
 use crate::claude_rpc;
 use crate::claude_transcript as transcript;
 use crate::claude_where::{self, WhereEnv};
@@ -120,7 +120,6 @@ pub fn run_process(args: Vec<OsString>) -> ! {
 /// included, so a block stays a block.
 static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn set_exit_code(code: i32) {
     EXIT_CODE.store(code, Ordering::SeqCst);
 }
@@ -138,7 +137,6 @@ fn finish(outcome: Result<(), String>, log: Log) -> i32 {
 /// descriptor is waited on until it takes more, as Node's stream holds the
 /// process until it drains. False when the write failed (the reader went
 /// away); the caller logs the loss and keeps its exit code.
-#[cfg_attr(not(test), allow(dead_code))]
 fn write_out(fd: i32, bytes: &[u8]) -> bool {
     use std::os::fd::FromRawFd;
     // SAFETY: fd 1 and 2 stay open for the whole process, and ManuallyDrop
@@ -219,11 +217,48 @@ fn ported_from(source: &[u8]) -> bool {
     sha256::lf_hex(source) == PORTED_FROM_SHA256.trim()
 }
 
-/// The decision flag that hands this run to Node, if any: Node's own modes.
+/// The decision flag that hands this run to Node, if any: the modes not
+/// ported yet.
 fn decision_flag<'a>(hook: &str, flags: &'a [JsStr]) -> Option<&'a JsStr> {
-    flags.iter().find(|f| {
-        **f == js("--gate") || **f == js("--permission-gate") || (hook == "UserPromptSubmit" && **f == js("--context"))
-    })
+    flags
+        .iter()
+        .find(|f| **f == js("--gate") || (hook == "UserPromptSubmit" && **f == js("--context")))
+}
+
+/// main()'s modes: any argv token after the event.
+#[derive(Clone, Copy, Default)]
+struct Modes {
+    /// `--permission-gate`: the PreToolUse permission gate, answered on stdout.
+    permission_gate: bool,
+}
+
+impl Modes {
+    fn of(flags: &[JsStr]) -> Modes {
+        Modes {
+            permission_gate: flags.iter().any(|f| *f == js("--permission-gate")),
+        }
+    }
+}
+
+/// The deny's reason, so the model reads who refused (mjs main()).
+const DENY_REASON: &str = "denied from the wmux remote approval";
+
+/// outputPermissionDecision's line: only a real verdict, `allow` or `deny`.
+fn permission_decision_line(decision: &str) -> String {
+    let mut fields = vec![
+        (js("hookEventName"), Json::Str(js("PreToolUse"))),
+        (js("permissionDecision"), Json::Str(js(decision))),
+    ];
+    if decision == "deny" {
+        fields.push((js("permissionDecisionReason"), Json::Str(js(DENY_REASON))));
+    }
+    let mut line = String::new();
+    js::stringify(
+        &Json::Obj(vec![(js("hookSpecificOutput"), Json::Obj(fields))]),
+        &mut line,
+    );
+    line.push('\n');
+    line
 }
 
 // ----- main() ----------------------------------------------------------------
@@ -280,6 +315,7 @@ fn post_tool_use_kind(payload: Option<&Json>) -> &'static str {
 struct Start {
     hook: String,
     kind: &'static str,
+    modes: Modes,
 }
 
 /// Everything before stdin: hands the process to Node when it should (and
@@ -329,15 +365,32 @@ fn hand_over(
         // Only the decision fails open; the run goes on as a plain one.
         log("decision-unported", vec![("flag", Some(Json::Str(flag.clone())))]);
     }
-    Some(Start { hook, kind })
+    let modes = Modes::of(&flags);
+    Some(Start { hook, kind, modes })
 }
 
 fn run(start: Start, log: Log) {
-    let Start { hook, kind } = start;
+    let Start { hook, kind, modes } = start;
     let hook_field = || s(&hook);
 
     let raw_entrypoint = paths::env_js("CLAUDE_CODE_ENTRYPOINT");
     let interactive = |e: Option<&JsStr>| e.is_some_and(|e| INTERACTIVE_ENTRYPOINTS.iter().any(|i| *e == js(i)));
+    // The permission gate's fast ways out, before stdin: no opinion, so an
+    // empty stdout.
+    if modes.permission_gate {
+        if paths::env("WMUX_GATE").as_deref() == Some("0") {
+            log("permission-gate-skipped", vec![("reason", s("gate-disabled"))]);
+            return;
+        }
+        if env_set("WMUX_PTY_ID").is_none() || !interactive(raw_entrypoint.as_ref()) {
+            let shown = raw_entrypoint.map_or(Json::Null, Json::Str);
+            log(
+                "permission-gate-skipped",
+                vec![("reason", s("headless-or-outside-wmux")), ("entrypoint", Some(shown))],
+            );
+            return;
+        }
+    }
     if (hook == "PermissionRequest" || hook == "Notification") && !interactive(raw_entrypoint.as_ref()) {
         let outcome = if hook == "Notification" {
             "notification-skipped"
@@ -390,7 +443,8 @@ fn run(start: Start, log: Log) {
     let payload = payload.as_ref();
 
     // Claude Code's own forked agents: an agent_id without an agent_type.
-    if hook != "PermissionRequest"
+    if !modes.permission_gate
+        && hook != "PermissionRequest"
         && js::truthy(payload)
         && non_empty(payload, "agent_id").is_some()
         && non_empty(payload, "agent_type").is_none()
@@ -398,7 +452,7 @@ fn run(start: Start, log: Log) {
         log("skip-internal-fork", vec![("hook", hook_field())]);
         return;
     }
-    if hook == "PreToolUse" && !str_is(payload, "tool_name", "AskUserQuestion") {
+    if hook == "PreToolUse" && !modes.permission_gate && !str_is(payload, "tool_name", "AskUserQuestion") {
         // `payload && payload.tool_name`
         let tool = if js::truthy(payload) {
             logged(payload.and_then(|p| p.get("tool_name")))
@@ -408,7 +462,8 @@ fn run(start: Start, log: Log) {
         log("skip-pretooluse", vec![("tool", tool)]);
         return;
     }
-    if hook == "PreToolUse" && paths::env("WMUX_MOA_DELEGATE_WORKER").as_deref() == Some("1") {
+    if hook == "PreToolUse" && !modes.permission_gate && paths::env("WMUX_MOA_DELEGATE_WORKER").as_deref() == Some("1")
+    {
         log(
             "skip-pretooluse",
             vec![("tool", s("AskUserQuestion")), ("reason", s("moa-delegate-worker"))],
@@ -473,7 +528,9 @@ fn run(start: Start, log: Log) {
         None
     };
 
-    let kind = if hook == "PostToolUse" {
+    let kind = if modes.permission_gate {
+        "agent.awaiting_permission"
+    } else if hook == "PostToolUse" {
         post_tool_use_kind(payload)
     } else {
         kind
@@ -545,7 +602,13 @@ fn run(start: Start, log: Log) {
         line.push_str("}\n");
         line
     };
-    let (result, target) = claude_rpc::send_to_targets(&targets, build_line, &js(&request_id), kind, &CLAUDE_POLICY);
+    // The permission gate waits for the phone's answer.
+    let policy = if modes.permission_gate {
+        &PERMISSION_GATE_POLICY
+    } else {
+        &CLAUDE_POLICY
+    };
+    let (result, target) = claude_rpc::send_to_targets(&targets, build_line, &js(&request_id), kind, policy);
     let target_field = target.map(|t| Json::Str(js(t.name)));
     let outer_ok = result.get("ok") == Some(&Json::Bool(true));
     let inner = result.get("result");
@@ -553,13 +616,13 @@ fn run(start: Start, log: Log) {
     // `x ?? 'unknown'`
     let or_unknown = |v: Option<&Json>| logged(v.filter(|v| **v != Json::Null)).or_else(|| s("unknown"));
     if inner_ok {
-        log("ok", vec![("hook", hook_field()), ("target", target_field)]);
+        log("ok", vec![("hook", hook_field()), ("target", target_field.clone())]);
     } else if outer_ok {
         log(
             "rpc-rejected",
             vec![
                 ("hook", hook_field()),
-                ("target", target_field),
+                ("target", target_field.clone()),
                 ("reason", or_unknown(inner.and_then(|r| r.get("reason")))),
             ],
         );
@@ -568,7 +631,7 @@ fn run(start: Start, log: Log) {
             "rpc-failed",
             vec![
                 ("hook", hook_field()),
-                ("target", target_field),
+                ("target", target_field.clone()),
                 ("error", or_unknown(result.get("error"))),
                 ("detail", logged(result.get("detail"))),
             ],
@@ -596,6 +659,27 @@ fn run(start: Start, log: Log) {
             ("ts", Some(Json::Num(ts as f64))),
         ]);
         spool_resume_binding(&paths::wmux_home_dir(), pty, session, &record, ts as f64, log);
+    }
+
+    // The permission gate's verdict: only `allow` or `deny` is written, right
+    // before its log line; anything else is no opinion. Always exit 0, over
+    // any other mode's code.
+    if modes.permission_gate {
+        let decision = inner.and_then(|r| r.get("permissionDecision")).filter(|_| inner_ok);
+        let verdict = match decision {
+            Some(Json::Str(d)) if *d == js("allow") => "allow",
+            Some(Json::Str(d)) if *d == js("deny") => "deny",
+            _ => "no-opinion",
+        };
+        set_exit_code(0);
+        let written = verdict == "no-opinion" || write_out(1, permission_decision_line(verdict).as_bytes());
+        let fields = || vec![("hook", hook_field()), ("target", target_field.clone())];
+        let mut line = fields();
+        line.push(("verdict", s(verdict)));
+        log("permission-gate", line);
+        if !written {
+            log("stdout-lost", fields());
+        }
     }
 }
 
