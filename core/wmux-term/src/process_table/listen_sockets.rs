@@ -204,7 +204,8 @@ pub(super) fn collect_macos(
 
 /// The listening sockets of `/proc/net/tcp` or `tcp6` (state 0A), as
 /// (inode, port, address, family). Each address word is printed in host
-/// byte order.
+/// byte order. A tcp6 socket bound to a v4-mapped address is IPv4, with the
+/// dotted address lsof prints for it (as on macOS).
 #[cfg(any(target_os = "linux", test))]
 pub(super) fn parse_net_tcp(text: &str, family: u8) -> Vec<(u64, u16, String, u8)> {
     let mut out = Vec::new();
@@ -227,9 +228,18 @@ pub(super) fn parse_net_tcp(text: &str, family: u8) -> Vec<(u64, u16, String, u8
             continue;
         };
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
-        let address = match (family, bytes.len()) {
-            (4, 4) => std::net::Ipv4Addr::from(<[u8; 4]>::try_from(bytes).unwrap()).to_string(),
-            (6, 16) => std::net::Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap()).to_string(),
+        let (address, family) = match (family, bytes.len()) {
+            (4, 4) => {
+                let v4 = std::net::Ipv4Addr::from(<[u8; 4]>::try_from(bytes).unwrap());
+                (v4.to_string(), 4)
+            }
+            (6, 16) => {
+                let v6 = std::net::Ipv6Addr::from(<[u8; 16]>::try_from(bytes).unwrap());
+                match v6.to_ipv4_mapped() {
+                    Some(v4) => (v4.to_string(), 4),
+                    None => (v6.to_string(), 6),
+                }
+            }
             _ => continue,
         };
         if inode != 0 {
@@ -640,6 +650,32 @@ mod tests {
         loopback[15] = 1;
         assert_eq!(parse_net_tcp(&tcp6(loopback), 6)[0].2, "::1");
         assert!(parse_net_tcp("header only\n", 4).is_empty());
+    }
+
+    /// The lines Linux (x86_64, aarch64: little-endian) writes for listeners
+    /// bound to 127.0.0.1, ::ffff:127.0.0.1, ::1 and :: (dual-stack).
+    #[cfg(target_endian = "little")]
+    #[test]
+    fn proc_net_tcp_lines_as_linux_writes_them() {
+        let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+           0: 0100007F:A1B2 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 31001 1 0000000000000000 100 0 0 10 0\n";
+        let tcp6 = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+           0: 0000000000000000FFFF00000100007F:A1B3 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 31002 1 0000000000000000 100 0 0 10 0\n\
+           1: 00000000000000000000000001000000:A1B4 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 31003 1 0000000000000000 100 0 0 10 0\n\
+           2: 00000000000000000000000000000000:A1B5 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 31004 1 0000000000000000 100 0 0 10 0\n";
+        assert_eq!(
+            parse_net_tcp(tcp, 4),
+            vec![(31001, 0xA1B2, "127.0.0.1".into(), 4)]
+        );
+        assert_eq!(
+            parse_net_tcp(tcp6, 6),
+            vec![
+                // lsof prints a v4-mapped address dotted, without brackets.
+                (31002, 0xA1B3, "127.0.0.1".into(), 4),
+                (31003, 0xA1B4, "::1".into(), 6),
+                (31004, 0xA1B5, "::".into(), 6),
+            ]
+        );
     }
 
     #[test]
