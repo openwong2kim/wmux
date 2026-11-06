@@ -74,12 +74,16 @@ export function portTransport(port: number): ChromeTransport {
       await fetchJson('/json/version', 'GET', signal);
     },
     answers: async () => {
+      let res: Response;
       try {
-        await fetch(`${base}/json/version`);
-        return true;
+        res = await fetch(`${base}/json/version`);
       } catch {
         return false;
       }
+      // Only the answer matters: the body is dropped so a poll of an endpoint
+      // that keeps answering leaves no unread body or held socket behind.
+      await res.body?.cancel().catch(() => undefined);
+      return true;
     },
     listTargets: (signal) => fetchJson('/json/list', 'GET', signal),
     // Chrome 111+ requires PUT for /json/new.

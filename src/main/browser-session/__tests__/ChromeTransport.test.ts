@@ -116,6 +116,18 @@ describe('portTransport liveness and connections', () => {
     ]);
   });
 
+  it('drains the liveness answer, so a poll leaves no body or socket behind', async () => {
+    const cancel = vi.fn(async () => undefined);
+    fetchMock.mockResolvedValueOnce({ ...answer(200, '{}'), body: { cancel } });
+    expect(await portTransport(9222).answers()).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('still counts the endpoint alive when draining its answer fails', async () => {
+    fetchMock.mockResolvedValueOnce({ ...answer(200, '{}'), body: { cancel: async () => { throw new Error('locked'); } } });
+    expect(await portTransport(9222).answers()).toBe(true);
+  });
+
   it('opens a CdpSocket on the endpoint it is given, with the options passed through', () => {
     const endpoint = () => 'ws://e';
     const opts = { label: 'L', timeoutMs: 3_000 };
