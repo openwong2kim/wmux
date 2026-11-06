@@ -1162,33 +1162,62 @@ pub struct NativeRing {
     write_pos: usize,
     total_written: u64,
     geometry: Vec<GeometryMark>,
+    /// clear() keeps total_written, so a reader at the end can't see it.
+    clears: u32,
+    /// The 256-mark cap dropped marks: a range before the oldest kept mark
+    /// can't know its size.
+    marks_capped: bool,
+}
+
+/// A size mark at its lifetime offset.
+#[napi(object)]
+pub struct NativeRingMark {
+    pub at: f64,
+    pub cols: u32,
+    pub rows: u32,
+}
+
+/// The ring's bytes from a lifetime offset, with the size marks over them.
+#[napi(object)]
+pub struct NativeRingRange {
+    /// Why the bytes from `from` can't be read in order ("evicted",
+    /// "cleared", "marks-dropped"): the reader rebuilds from the ring's start.
+    pub evicted: Option<String>,
+    pub data: Buffer,
+    /// Lifetime offset after the last byte.
+    pub end: f64,
+    /// The size in effect at `from`, when the ring has marks.
+    pub size: Option<NativeGeometrySize>,
+    /// Marks at or after `from`, in order: the bytes from each are at its
+    /// size. A mark at `from` itself may be one the reader already applied.
+    pub marks: Vec<NativeRingMark>,
+    pub clears: u32,
+}
+
+/// What a reader at lifetime offset `from` needs (see NativeRingRange).
+pub(crate) struct RingRange {
+    pub evicted: Option<&'static str>,
+    pub end: u64,
+    pub size: Option<(u32, u32)>,
+    pub marks: Vec<(u64, u32, u32)>,
+    pub clears: u32,
 }
 
 #[napi]
 impl NativeRing {
     #[napi(constructor, catch_unwind)]
     pub fn new(capacity: u32) -> Result<Self> {
-        if capacity == 0 || capacity > 256 * 1024 * 1024 {
-            return Err(Error::from_reason("Ring capacity must be 1..256MiB"));
-        }
-        Ok(Self {
-            bytes: vec![0; (capacity as usize).min(64 * 1024)],
-            capacity: capacity as usize,
-            length: 0,
-            write_pos: 0,
-            total_written: 0,
-            geometry: Vec::new(),
-        })
+        Self::create(capacity).map_err(Error::from_reason)
     }
 
     #[napi(catch_unwind)]
     pub fn write(&mut self, bytes: Uint8Array) -> Result<()> {
-        self.write_bytes(&bytes)
+        self.write_bytes(&bytes).map_err(Error::from_reason)
     }
 
     #[napi(catch_unwind)]
     pub fn write_chunk(&mut self, chunk: &NativeOutputChunk) -> Result<()> {
-        self.write_bytes(&chunk.bytes)
+        self.write_bytes(&chunk.bytes).map_err(Error::from_reason)
     }
 
     #[napi(catch_unwind)]
@@ -1222,38 +1251,51 @@ impl NativeRing {
 
     #[napi(catch_unwind)]
     pub fn clear(&mut self) -> Result<()> {
-        if self.capacity == 0 {
-            return Err(Error::from_reason("Ring disposed"));
+        self.clear_bytes().map_err(Error::from_reason)
+    }
+
+    /// The bytes from lifetime offset `from` to the end, and the size marks
+    /// over them. `clears` is the count a reader saw before: a clear since
+    /// then, like bytes the ring has dropped, means it can't continue.
+    #[napi(catch_unwind)]
+    pub fn read_range(&self, from: f64, clears: Option<u32>) -> Result<NativeRingRange> {
+        if !from.is_finite() || from < 0.0 || from.fract() != 0.0 || from > 9_007_199_254_740_991.0
+        {
+            return Err(Error::from_reason("Invalid ring stream offset"));
         }
-        self.bytes.fill(0);
-        self.length = 0;
-        self.write_pos = 0;
-        Ok(())
+        let range = self
+            .range(from as u64, clears)
+            .map_err(Error::from_reason)?;
+        let data = match range.evicted {
+            Some(_) => Vec::new(),
+            None => {
+                let [a, b] = self.slices(from as u64, range.end);
+                [a, b].concat()
+            }
+        };
+        Ok(NativeRingRange {
+            evicted: range.evicted.map(Into::into),
+            data: data.into(),
+            end: range.end as f64,
+            size: range
+                .size
+                .map(|(cols, rows)| NativeGeometrySize { cols, rows }),
+            marks: range
+                .marks
+                .iter()
+                .map(|&(at, cols, rows)| NativeRingMark {
+                    at: at as f64,
+                    cols,
+                    rows,
+                })
+                .collect(),
+            clears: range.clears,
+        })
     }
 
     #[napi(catch_unwind)]
     pub fn note_geometry(&mut self, cols: u32, rows: u32) -> Result<()> {
-        if self.capacity == 0 {
-            return Err(Error::from_reason("Ring disposed"));
-        }
-        if cols == 0 || rows == 0 {
-            return Ok(());
-        }
-        if let Some(last) = self.geometry.last() {
-            if last.cols == cols && last.rows == rows {
-                return Ok(());
-            }
-            if last.at == self.total_written {
-                self.geometry.pop();
-            }
-        }
-        self.geometry.push(GeometryMark {
-            at: self.total_written,
-            cols,
-            rows,
-        });
-        self.prune_geometry();
-        Ok(())
+        self.mark_geometry(cols, rows).map_err(Error::from_reason)
     }
 
     #[napi(getter, catch_unwind)]
@@ -1300,9 +1342,118 @@ impl NativeRing {
 }
 
 impl NativeRing {
-    fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+    pub(crate) fn create(capacity: u32) -> std::result::Result<Self, &'static str> {
+        if capacity == 0 || capacity > 256 * 1024 * 1024 {
+            return Err("Ring capacity must be 1..256MiB");
+        }
+        Ok(Self {
+            bytes: vec![0; (capacity as usize).min(64 * 1024)],
+            capacity: capacity as usize,
+            length: 0,
+            write_pos: 0,
+            total_written: 0,
+            geometry: Vec::new(),
+            clears: 0,
+            marks_capped: false,
+        })
+    }
+
+    pub(crate) fn clear_bytes(&mut self) -> std::result::Result<(), &'static str> {
         if self.capacity == 0 {
-            return Err(Error::from_reason("Ring disposed"));
+            return Err("Ring disposed");
+        }
+        self.bytes.fill(0);
+        self.length = 0;
+        self.write_pos = 0;
+        self.clears = self.clears.wrapping_add(1);
+        Ok(())
+    }
+
+    pub(crate) fn mark_geometry(
+        &mut self,
+        cols: u32,
+        rows: u32,
+    ) -> std::result::Result<(), &'static str> {
+        if self.capacity == 0 {
+            return Err("Ring disposed");
+        }
+        if cols == 0 || rows == 0 {
+            return Ok(());
+        }
+        if let Some(last) = self.geometry.last() {
+            if last.cols == cols && last.rows == rows {
+                return Ok(());
+            }
+            if last.at == self.total_written {
+                self.geometry.pop();
+            }
+        }
+        self.geometry.push(GeometryMark {
+            at: self.total_written,
+            cols,
+            rows,
+        });
+        self.prune_geometry();
+        Ok(())
+    }
+
+    /// See read_range. Reads no bytes: slices() hands them out in place.
+    pub(crate) fn range(
+        &self,
+        from: u64,
+        clears: Option<u32>,
+    ) -> std::result::Result<RingRange, &'static str> {
+        if self.capacity == 0 {
+            return Err("Ring disposed");
+        }
+        let start = self.total_written - self.length as u64;
+        let governing = self.geometry.iter().rposition(|m| m.at <= from);
+        let evicted = if clears.is_some_and(|seen| seen != self.clears) {
+            Some("cleared")
+        } else if from < start || from > self.total_written {
+            Some("evicted")
+        } else if governing.is_none() && self.marks_capped {
+            Some("marks-dropped")
+        } else {
+            None
+        };
+        Ok(RingRange {
+            evicted,
+            end: self.total_written,
+            size: governing.map(|i| (self.geometry[i].cols, self.geometry[i].rows)),
+            marks: self
+                .geometry
+                .iter()
+                .filter(|m| m.at >= from)
+                .map(|m| (m.at, m.cols, m.rows))
+                .collect(),
+            clears: self.clears,
+        })
+    }
+
+    /// The bytes between lifetime offsets `from` and `to`, in order, as at
+    /// most two slices of the ring. Both must be inside the ring.
+    pub(crate) fn slices(&self, from: u64, to: u64) -> [&[u8]; 2] {
+        let start = self.total_written - self.length as u64;
+        debug_assert!(start <= from && from <= to && to <= self.total_written);
+        if from >= to {
+            return [&[], &[]];
+        }
+        let first = if self.length < self.bytes.len() {
+            0
+        } else {
+            self.write_pos
+        };
+        let size = self.bytes.len();
+        let a = (first + (from - start) as usize) % size;
+        let len = (to - from) as usize;
+        let tail = len.min(size - a);
+        [&self.bytes[a..a + tail], &self.bytes[..len - tail]]
+    }
+
+    pub(crate) fn write_bytes(&mut self, bytes: &[u8]) -> std::result::Result<(), String> {
+        if self.capacity == 0 {
+            return Err("Ring disposed".into());
         }
         if bytes.is_empty() {
             return Ok(());
@@ -1311,7 +1462,7 @@ impl NativeRing {
             .total_written
             .checked_add(bytes.len() as u64)
             .filter(|n| *n <= 9_007_199_254_740_991)
-            .ok_or_else(|| Error::from_reason("Ring byte offset exceeds JS safe integer range"))?;
+            .ok_or("Ring byte offset exceeds JS safe integer range")?;
         let input = if bytes.len() > self.capacity {
             &bytes[bytes.len() - self.capacity..]
         } else {
@@ -1326,7 +1477,7 @@ impl NativeRing {
             }
             self.bytes
                 .try_reserve_exact(next - self.bytes.len())
-                .map_err(|e| Error::from_reason(e.to_string()))?;
+                .map_err(|e| e.to_string())?;
             self.bytes.resize(next, 0);
             self.write_pos = self.length;
         }
@@ -1367,13 +1518,14 @@ impl NativeRing {
         }
         if self.geometry.len() > 256 {
             self.geometry.drain(..self.geometry.len() - 256);
+            self.marks_capped = true;
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{resize_like_xterm, Size, Taint, XtermFeed};
+    use super::{resize_like_xterm, NativeRing, Size, Taint, XtermFeed};
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
@@ -1661,5 +1813,88 @@ mod tests {
             &mut term,
             Size { cols: 12, rows: 3 }
         ));
+    }
+
+    fn ring(capacity: u32) -> NativeRing {
+        NativeRing::create(capacity).unwrap()
+    }
+
+    fn bytes_of(ring: &NativeRing, from: u64) -> String {
+        let end = ring.range(from, None).unwrap().end;
+        String::from_utf8(ring.slices(from, end).concat()).unwrap()
+    }
+
+    #[test]
+    fn a_range_reads_from_a_lifetime_offset_across_the_wrap() {
+        let mut r = ring(8);
+        r.write_bytes(b"abcdef").unwrap();
+        r.write_bytes(b"ghij").unwrap();
+        assert_eq!(r.range(2, None).unwrap().evicted, None);
+        assert_eq!(bytes_of(&r, 2), "cdefghij");
+        assert_eq!(bytes_of(&r, 5), "fghij");
+        assert_eq!(bytes_of(&r, 10), "");
+        assert_eq!(r.range(10, None).unwrap().end, 10);
+    }
+
+    #[test]
+    fn a_range_past_the_ring_says_so() {
+        let mut r = ring(8);
+        r.write_bytes(b"abcdefghij").unwrap();
+        assert_eq!(r.range(1, None).unwrap().evicted, Some("evicted"));
+        assert_eq!(r.range(11, None).unwrap().evicted, Some("evicted"));
+    }
+
+    #[test]
+    fn a_range_carries_the_marks_over_it() {
+        let mut r = ring(64);
+        r.mark_geometry(10, 3).unwrap();
+        r.write_bytes(b"01234").unwrap();
+        r.mark_geometry(20, 4).unwrap();
+        r.write_bytes(b"56789").unwrap();
+        let read = r.range(3, None).unwrap();
+        assert_eq!(read.size, Some((10, 3)));
+        assert_eq!(read.marks, vec![(5, 20, 4)]);
+        // A mark at `from` is the size there, and is listed too.
+        let read = r.range(5, None).unwrap();
+        assert_eq!(read.size, Some((20, 4)));
+        assert_eq!(read.marks, vec![(5, 20, 4)]);
+        let read = r.range(7, None).unwrap();
+        assert_eq!((read.size, read.marks), (Some((20, 4)), vec![]));
+        assert_eq!(bytes_of(&r, 3), "3456789");
+    }
+
+    #[test]
+    fn a_resize_that_replaces_the_last_mark_shows_at_the_same_offset() {
+        let mut r = ring(64);
+        r.mark_geometry(10, 3).unwrap();
+        r.write_bytes(b"ab").unwrap();
+        r.mark_geometry(20, 4).unwrap();
+        assert_eq!(r.range(2, None).unwrap().marks, vec![(2, 20, 4)]);
+        r.mark_geometry(30, 5).unwrap();
+        assert_eq!(r.range(2, None).unwrap().marks, vec![(2, 30, 5)]);
+    }
+
+    #[test]
+    fn a_clear_since_the_last_read_says_so() {
+        let mut r = ring(64);
+        r.write_bytes(b"abc").unwrap();
+        let seen = r.range(3, None).unwrap().clears;
+        assert_eq!(r.range(3, Some(seen)).unwrap().evicted, None);
+        r.clear_bytes().unwrap();
+        assert_eq!(r.range(3, Some(seen)).unwrap().evicted, Some("cleared"));
+        let now = r.range(3, None).unwrap().clears;
+        assert_eq!(r.range(3, Some(now)).unwrap().evicted, None);
+    }
+
+    #[test]
+    fn a_range_before_the_marks_the_cap_kept_says_so() {
+        let mut r = ring(1 << 20);
+        for i in 0..300u32 {
+            r.mark_geometry(10 + i % 2, 3).unwrap();
+            r.write_bytes(b"x").unwrap();
+        }
+        assert_eq!(r.range(5, None).unwrap().evicted, Some("marks-dropped"));
+        assert_eq!(r.range(299, None).unwrap().evicted, None);
+        assert_eq!(r.range(299, None).unwrap().size, Some((11, 3)));
     }
 }
