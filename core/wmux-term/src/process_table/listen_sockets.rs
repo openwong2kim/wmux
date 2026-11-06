@@ -284,7 +284,8 @@ pub(super) fn collect_linux(
                         });
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                // ENOENT, by its Linux errno (see linux::unreadable).
+                Err(e) if e.raw_os_error() == Some(2) => {}
                 Err(e) if unreadable(&e) => {
                     out.truncate(kept);
                     break;
@@ -684,6 +685,12 @@ mod tests {
             assert!(collect_linux([1], &listening, |_| Err(errno(n))).is_err());
             assert!(collect_linux([1], &listening, |_| Ok(vec![Err(errno(n))])).is_err());
         }
+        // Judged by the Linux errno alone, never by ErrorKind: an error that
+        // only says NotFound (Windows maps raw 3, ESRCH on Linux, to it)
+        // proves no closed descriptor.
+        let kind_only = || std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert!(collect_linux([1], &listening, |_| Ok(vec![Err(kind_only())])).is_err());
+        assert!(collect_linux([1], &listening, |_| Err(kind_only())).is_err());
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

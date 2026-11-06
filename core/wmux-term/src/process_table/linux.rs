@@ -28,10 +28,11 @@ pub(super) fn parse_stat(stat: &[u8]) -> Option<(String, u32)> {
 }
 
 /// Whether a failed read under `/proc/<pid>` only means this process cannot
-/// be read now (see unreadable_process).
+/// be read now (see unreadable_process). Judged by the errno alone: these are
+/// Linux errno values, and on another OS (where the parsing tests also run)
+/// the same raw numbers map to other ErrorKinds.
 pub(super) fn unreadable(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::NotFound
-        || error.raw_os_error().is_some_and(super::unreadable_process)
+    error.raw_os_error().is_some_and(super::unreadable_process)
 }
 
 /// One row per pid, its stat line read with `read_stat`. A pid that exited,
@@ -109,7 +110,7 @@ mod tests {
     fn an_exited_or_unreadable_process_is_skipped() {
         let read = |pid: u32| match pid {
             1 => Ok(stat("init", 0)),
-            2 => Err(io::Error::from(io::ErrorKind::NotFound)),
+            2 => Err(io::Error::from_raw_os_error(2)), // ENOENT
             3 => Err(io::Error::from_raw_os_error(3)), // ESRCH
             4 => Ok(Vec::new()),                       // reaped mid-read
             5 => Err(io::Error::from_raw_os_error(13)), // EACCES: hidepid
@@ -140,6 +141,8 @@ mod tests {
             assert!(walk([1, 2, 3], read).is_err(), "errno {errno}");
         }
         assert!(walk([1], |_| Ok(b"garbage".to_vec())).is_err());
+        // Judged by the Linux errno alone, never by ErrorKind.
+        assert!(walk([1], |_| Err(io::Error::from(io::ErrorKind::NotFound))).is_err());
     }
 
     #[cfg(target_os = "linux")]
