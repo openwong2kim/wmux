@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import WebSocket from 'ws';
 import { FakeBrowser, type Command } from './fakePipeBrowser';
 
 // WMUX_CHROME_TRANSPORT=pipe: the dedicated Chrome is spawned with a debugging
@@ -122,6 +123,31 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(launcher.isRunning()).toBe(true);
     await launcher.dispose({ immediate: true });
+  });
+
+  it('hands external clients a loopback endpoint on the pipe, which goes with the Chrome', async () => {
+    const { chrome } = spawnPipeChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    const { wsEndpoint, cdpPort } = await launcher.endpoint();
+    expect(cdpPort).toBeUndefined();
+    expect(wsEndpoint).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[0-9a-f]{64}$/);
+    // The same endpoint on every call while that Chrome lives.
+    expect((await launcher.endpoint()).wsEndpoint).toBe(wsEndpoint);
+    const ws = new WebSocket(wsEndpoint as string);
+    const answer = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      ws.once('error', reject);
+      ws.once('open', () => ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' })));
+      ws.on('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+    });
+    expect(answer).toEqual({ id: 1, result: { echo: 'Browser.getVersion' } });
+    const closed = new Promise((resolve) => ws.once('close', resolve));
+    chrome.exit();
+    await closed;
+    await expect(new Promise((resolve, reject) => {
+      const again = new WebSocket(wsEndpoint as string);
+      again.once('open', resolve);
+      again.once('error', reject);
+    })).rejects.toThrow();
   });
 
   it('opens and lists tabs on the pipe', async () => {

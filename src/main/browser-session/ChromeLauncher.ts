@@ -7,6 +7,7 @@ import type { CdpConnection } from './CdpSocket';
 import type { Readable, Writable } from 'node:stream';
 import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTransport';
 import { CdpPipeMux } from './CdpPipeMux';
+import { CdpPipeEndpoint } from './CdpPipeEndpoint';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
 import { surfaceOpeners } from './SurfaceOpeners';
@@ -452,6 +453,12 @@ export class ChromeLauncher implements ChromeBackendClient {
    * writers.
    */
   private bound: { readonly transport: ChromeTransport; ready: boolean } | null = null;
+  /**
+   * Pipe mode: the current Chrome's multiplexer, and the loopback endpoint
+   * external clients dial for it, opened on the first endpoint() call. Both
+   * go with the Chrome (onChildGone).
+   */
+  private piped: { readonly mux: CdpPipeMux; endpoint: Promise<CdpPipeEndpoint> | null } | null = null;
   private launching: Promise<number> | null = null;
   private disposed = false;
   private readonly portEnvVar: string | null;
@@ -1208,11 +1215,27 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (changed) this.persist(true);
   }
 
-  /** Dedicated instances expose the HTTP CDP port (launching on demand). */
+  /**
+   * Dedicated instances expose the HTTP CDP port (launching on demand); on a
+   * debugging pipe there is no port, and external clients get the loopback
+   * endpoint served on the pipe instead.
+   */
   async endpoint(): Promise<ChromeBackendEndpoint> {
     const cdpPort = await this.ensureRunning();
     this.assertOpen(); // a quit may land between ensureRunning's gate and here
+    if (this.piped) return { wsEndpoint: (await this.pipeEndpoint(this.piped)).url };
     return { cdpPort };
+  }
+
+  /** The loopback endpoint for `piped`, opened once; closed at once if that Chrome went meanwhile. */
+  private async pipeEndpoint(piped: NonNullable<ChromeLauncher['piped']>): Promise<CdpPipeEndpoint> {
+    piped.endpoint ??= CdpPipeEndpoint.open(piped.mux);
+    const endpoint = await piped.endpoint;
+    if (this.piped !== piped) {
+      await endpoint.close();
+      throw new Error('ChromeLauncher: Chrome exited');
+    }
+    return endpoint;
   }
 
   /** Registry-scoped tabs seed page selection for dedicated instances. */
@@ -1977,16 +2000,18 @@ export class ChromeLauncher implements ChromeBackendClient {
 
     this.child = child;
     // The pipe ends with the process; one that breaks first ends it too.
-    const piped = pipe
-      ? pipeTransport(new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable, {
+    const mux = pipe
+      ? new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable, {
         onClose: () => {
           if (this.child !== child) return;
           try {
             child.kill();
           } catch { /* already gone */ }
         },
-      }))
+      })
       : null;
+    this.piped = mux ? { mux, endpoint: null } : null;
+    const piped = mux ? pipeTransport(mux) : null;
 
     // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
     // poll /json/version until the endpoint answers. Past READY_TIMEOUT_MS a
@@ -2063,6 +2088,9 @@ export class ChromeLauncher implements ChromeBackendClient {
   private onChildGone(): void {
     this.child = null;
     this.unbindEndpoint();
+    // Its clients go with it.
+    void this.piped?.endpoint?.then((endpoint) => endpoint.close(), () => undefined);
+    this.piped = null;
     this.launchedProtected = false;
     this.enforcementReady = false;
     this.downloadGuard?.close();
