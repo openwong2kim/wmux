@@ -52,8 +52,6 @@ export const IS_REFERENCE = !process.env.WMUX_CLAUDE_HOOK_IMPL?.trim();
  * reference's.
  */
 const SIBLING_BRIDGE = IS_REFERENCE ? BRIDGE_PATH : path.join(path.dirname(IMPL[0]), 'wmux-bridge.mjs');
-/** The implementation's prefix arguments, masked as its log shows them. */
-const PREFIX_SHOWN = IMPL.slice(1).map((arg) => (arg === BRIDGE_PATH || arg === SIBLING_BRIDGE ? '<bridge>' : arg));
 
 type StdinPart = string | { repeat: string; count: number } | { base64: string };
 type Endpoint = StubBehaviour | { mode: 'absent' } | { mode: 'refused' };
@@ -452,16 +450,21 @@ function holderAt(result: unknown, dotted: string): [Record<string, unknown> | u
   return [parent as Record<string, unknown> | undefined, last];
 }
 
-/** `value` with each `"<prefix>"` array element replaced by PREFIX_SHOWN. */
-function withPrefix(value: unknown): unknown {
-  if (Array.isArray(value)) return value.flatMap((v) => (v === '<prefix>' ? PREFIX_SHOWN : [withPrefix(v)]));
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, withPrefix(v)]));
-  }
-  return value;
+/**
+ * `value` with each `"<prefix>"` array element replaced by the prefix
+ * arguments, each masked by normaliseString as the log they are compared with.
+ */
+export function withPrefix(value: unknown, prefix: readonly string[], box: Sandbox): unknown {
+  const shown = prefix.map((arg) => normaliseString(arg, box));
+  const expand = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.flatMap((item) => (item === '<prefix>' ? shown : [expand(item)]));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([key, item]) => [key, expand(item)]));
+    return v;
+  };
+  return expand(value);
 }
 
-function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems: string[]): void {
+function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems: string[], box: Sandbox): void {
   const paths = new Set([
     ...Object.keys(fixture.variants ?? {}),
     ...Object.keys(fixture.strictForPort ?? {}),
@@ -473,7 +476,7 @@ function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems:
     const strict = fixture.strictForPort?.[dotted];
     const forPort = fixture.portVariants?.[dotted];
     const allowed = !IS_REFERENCE && strict !== undefined
-      ? [withPrefix(strict)]
+      ? [withPrefix(strict, IMPL.slice(1), box)]
       : !IS_REFERENCE && forPort !== undefined
         ? forPort
         : [...fixture.variants?.[dotted] ?? [], ...fixture.platformVariants?.[process.platform]?.[dotted] ?? []];
@@ -613,7 +616,7 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
     }
     // Round-trip: absent fields drop out exactly as they do in the stored golden.
     const result = JSON.parse(JSON.stringify({ steps })) as { steps: unknown[] };
-    applyVariants(result, fixture, problems);
+    applyVariants(result, fixture, problems, box);
     return { result, problems };
   } finally {
     if (parentProfile) {
