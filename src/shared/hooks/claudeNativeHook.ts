@@ -134,7 +134,13 @@ export async function prepareClaudeNative(opts: PrepareClaudeNativeOptions): Pro
   if (opts.suffixed) return { binary: null, reason: 'an isolated instance writes the node form' };
   const hooksDir = path.dirname(opts.bridgeDest);
   if (readClaudeRuntime(hooksDir) === 'node') return { binary: null, reason: 'runtime set to node (`wmux setup-hooks --runtime native` turns it back)' };
-  if (!opts.nativeSource) return { binary: null, reason: 'not shipped with this build' };
+  // Nothing to install: a copy already in place still counts when it passed
+  // for this build's bridge, as status counts it.
+  if (!opts.nativeSource) {
+    return claudeNativeAvailable(opts.bridgeDest, opts.bridgeSource, platform)
+      ? { binary: claudeHookCopyPath(opts.bridgeDest), reason: null }
+      : { binary: null, reason: 'not shipped with this build' };
+  }
   const line = claudeSelfTestLine(opts.bridgeSource);
   if (!line) return { binary: null, reason: 'the bridge this build ships could not be read' };
   const result = await prepareProbedNative({

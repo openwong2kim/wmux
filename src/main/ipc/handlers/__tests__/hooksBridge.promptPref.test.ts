@@ -35,6 +35,7 @@ vi.mock('../../../../cli/commands/setupHooks', () => ({
   defaultPaths: () => ({}),
   statusHooks: () => ({ installedEvents: [], bridgeExists: false, settingsCorrupted: false }),
   installHooks: () => ({ ok: true }),
+  installHooksWithNative: async () => ({ ok: true }),
 }));
 
 type IpcInvokeHandler = (event: unknown, ...args: unknown[]) => unknown;
