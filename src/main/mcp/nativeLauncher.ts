@@ -6,8 +6,9 @@
 // recorded by the copy's sha256 (shared/mcpLauncher.ts), so a boot runs the
 // test only for bytes it has not judged yet. A copy that fails is replaced by
 // the one it replaced, or kept and recorded as failing: never deleted, since
-// an agent config may point at the path. A timeout proves nothing either way;
-// nothing is offered or recorded, and the next boot tests again.
+// an agent config may point at the path. A timeout, or a copy that could not
+// be started at all, proves nothing either way; nothing is offered or
+// recorded, and the next boot tests again.
 //
 // Calls are serialized: two registrations at once (boot, a re-register from
 // the UI) must not sweep the aside the other is about to restore.
@@ -72,9 +73,13 @@ async function prepareOnce(opts: NativeLauncherOptions): Promise<NativeLauncherR
   const hash = fileSha256(destinationPath);
   const known = hash ? recordedVerdict(opts.stableDir, hash) : undefined;
   const verdict: SelfTestVerdict = known ?? (await opts.selfTest(destinationPath));
-  if (hash && !known && verdict !== 'timeout') recordVerdict(opts.stableDir, hash, verdict);
+  if (hash && !known && (verdict === 'pass' || verdict === 'fail')) recordVerdict(opts.stableDir, hash, verdict);
   const settled = settleProbedAsset(destinationPath, outcome.previousPath, verdict === 'pass', { keepFailing: true });
   if (settled.runs) return { binary: destinationPath, restored: false };
-  const reason = verdict === 'timeout' ? 'self-test timed out' : known === 'fail' ? 'recorded as failing' : 'self-test failed';
+  const reason = verdict === 'timeout'
+    ? 'self-test timed out'
+    : verdict === 'unstartable'
+      ? 'self-test could not start'
+      : known === 'fail' ? 'recorded as failing' : 'self-test failed';
   return { binary: null, restored: settled.restored, reason: settled.restored ? `${reason}; the previous copy was put back` : reason };
 }

@@ -21,9 +21,11 @@ import { nativeHooksBasename } from './hooks/hookFlavours';
 export const NATIVE_SELF_TEST_LINE = 'wmux-mcp-shim protocol 1';
 export const NATIVE_SELF_TEST_TIMEOUT_MS = 5000;
 
-/** What a self-test proved: it runs, it does not, or nothing (it timed out,
- *  as it can under an antivirus scan or load). */
-export type SelfTestVerdict = 'pass' | 'fail' | 'timeout';
+/** What a self-test proved: it runs, it does not, or nothing. Nothing is
+ *  proved when it timed out (an antivirus scan, load) or could not be started
+ *  at all (access denied, the file held or gone): neither says anything about
+ *  the bytes, so neither is recorded. */
+export type SelfTestVerdict = 'pass' | 'fail' | 'timeout' | 'unstartable';
 
 /** Run the native launcher's self-test. Never throws. */
 export function runNativeSelfTest(binary: string, timeoutMs = NATIVE_SELF_TEST_TIMEOUT_MS): Promise<SelfTestVerdict> {
@@ -31,10 +33,13 @@ export function runNativeSelfTest(binary: string, timeoutMs = NATIVE_SELF_TEST_T
     try {
       execFile(binary, ['mcp-shim', '--self-test'], { timeout: timeoutMs, windowsHide: true, encoding: 'utf8' }, (error, stdout) => {
         if (error && (error as { killed?: boolean }).killed) return resolve('timeout');
+        // A string code is a spawn error (EACCES, EPERM, EBUSY, ENOENT); an
+        // exit status is a number.
+        if (error && typeof (error as { code?: unknown }).code === 'string') return resolve('unstartable');
         resolve(!error && String(stdout).trim() === NATIVE_SELF_TEST_LINE ? 'pass' : 'fail');
       });
     } catch {
-      resolve('fail');
+      resolve('unstartable');
     }
   });
 }

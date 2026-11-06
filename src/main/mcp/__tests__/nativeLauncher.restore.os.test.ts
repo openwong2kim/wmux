@@ -71,6 +71,14 @@ describe('prepareNativeLauncher', () => {
     expect(runs).toBe(1);
   });
 
+  it('treats a copy that could not be started as unknown too: nothing recorded, tested again next boot', async () => {
+    ship('good v1');
+    expect(await prepare(async () => 'unstartable')).toMatchObject({ binary: null, reason: 'self-test could not start' });
+    expect(approvedInstalledNative(stableDir)).toBeNull();
+    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(runs).toBe(1);
+  });
+
   it('puts the working copy back when a refresh fails, and offers nothing this time', async () => {
     ship('good v1');
     await prepare();

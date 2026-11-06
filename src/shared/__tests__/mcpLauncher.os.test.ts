@@ -37,11 +37,19 @@ describe.skipIf(process.platform === 'win32')('runNativeSelfTest (stand-in scrip
     expect(await runNativeSelfTest(script('fails', `echo '${NATIVE_SELF_TEST_LINE}'; exit 3`))).toBe('fail');
   });
 
-  it('reports a hung binary as a timeout, not a failure, and a missing one as a failure', async () => {
+  it('reports a hung binary as a timeout, not a failure', async () => {
     const started = Date.now();
     expect(await runNativeSelfTest(script('hangs', 'sleep 5'), 300)).toBe('timeout');
     expect(Date.now() - started).toBeLessThan(3000);
-    expect(await runNativeSelfTest(path.join(dir, 'missing'))).toBe('fail');
+  });
+
+  // A spawn error (access denied, a scanner holding the file, the file gone)
+  // says nothing about the bytes, so it must not become a recorded failure.
+  it('reports a copy that cannot be started as unstartable, not a failure', async () => {
+    expect(await runNativeSelfTest(path.join(dir, 'missing'))).toBe('unstartable');
+    const notExecutable = script('not-executable', `echo '${NATIVE_SELF_TEST_LINE}'`);
+    fs.chmodSync(notExecutable, 0o644);
+    expect(await runNativeSelfTest(notExecutable)).toBe('unstartable');
   });
 });
 
