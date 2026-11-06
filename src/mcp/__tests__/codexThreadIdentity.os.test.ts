@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import {
   classifyMcpParent,
   codexHomeFromParentChain,
@@ -11,6 +12,7 @@ import {
   isSharedServerArgv,
   matchOwnerToLiveAnchor,
   readCodexThreadOwner,
+  readParentChain,
   splitPsArgs,
   tokenizeCommandLine,
 } from '../codexThreadIdentity';
@@ -104,6 +106,34 @@ describe('classifyMcpParent — who may vouch for a threadId', () => {
   it('parses the Windows command line of the real daemon', () => {
     const argv = tokenizeCommandLine('"C:\\Program Files\\codex\\codex.exe" app-server --listen unix:// --managed-daemon');
     expect(isSharedServerArgv(argv)).toBe(true);
+  });
+  it('skips the native launcher: wmux-native mcp-shim with wmux flags, direct or behind cmd /c', () => {
+    expect(classifyMcpParent([['/Users/u/.wmux/bin/wmux-native', 'mcp-shim'], SHARED_SERVER])).toBe('shared-server');
+    expect(classifyMcpParent([['/Users/u/.wmux/bin/wmux-native', 'mcp-shim', '--core', '--role=Reviewer', '--commander'], SHARED_SERVER])).toBe('shared-server');
+    expect(classifyMcpParent([['C:\\Users\\u\\.wmux\\bin\\wmux-native.exe', 'mcp-shim', '--core'], SHARED_SERVER])).toBe('shared-server');
+    expect(classifyMcpParent([['cmd.exe', '/d', '/s', '/c', 'C:\\Users\\u\\.wmux\\bin\\wmux-native.exe', 'mcp-shim'], SHARED_SERVER])).toBe('shared-server');
+    const wmi = tokenizeCommandLine('"C:\\Program Files\\wmux\\wmux-native.exe" mcp-shim --role=Reviewer');
+    expect(classifyMcpParent([wmi, SHARED_SERVER])).toBe('shared-server');
+    // The launcher alone proves nothing about who started it.
+    expect(classifyMcpParent([['/Users/u/.wmux/bin/wmux-native', 'mcp-shim']])).toBe('unknown');
+    const home = ['/tmp/cx/packages/app-server-daemon/releases/0.160.0/bin/codex', 'app-server', '--managed-daemon'];
+    expect(codexHomeFromParentChain([['/Users/u/.wmux/bin/wmux-native', 'mcp-shim'], home])).toBe('/tmp/cx');
+  });
+  it('does not skip a look-alike of the native launcher', () => {
+    const otherOf = (argv: string[]) => classifyMcpParent([argv, SHARED_SERVER]);
+    expect(otherOf(['/tmp/wmux-native-evil', 'mcp-shim'])).toBe('other');
+    expect(otherOf(['/tmp/evil-wmux-native', 'mcp-shim'])).toBe('other');
+    expect(otherOf(['/tmp/wmux-native.exe.bak', 'mcp-shim'])).toBe('other');
+    expect(otherOf(['/usr/bin/python3', 'mcp-shim'])).toBe('other');
+    expect(otherOf(['node', 'mcp-shim'])).toBe('other');
+    expect(otherOf(['node', '/Users/u/.wmux/bin/wmux-native', 'mcp-shim'])).toBe('other');
+    // mcp-shim must be the first argument, followed by wmux flags only.
+    expect(otherOf(['/Users/u/.wmux/bin/wmux-native'])).toBe('other');
+    expect(otherOf(['/Users/u/.wmux/bin/wmux-native', '--core', 'mcp-shim'])).toBe('other');
+    expect(otherOf(['/Users/u/.wmux/bin/wmux-native', 'mcp-shim-x'])).toBe('other');
+    expect(otherOf(['/Users/u/.wmux/bin/wmux-native', 'mcp-shim', '--core', 'evil'])).toBe('other');
+    expect(otherOf(['/Users/u/.wmux/bin/wmux-native', 'hook', 'mcp-shim'])).toBe('other');
+    expect(otherOf(['cmd.exe', '/c', 'C:\\tmp\\wmux-native-evil.exe', 'mcp-shim'])).toBe('other');
   });
 });
 
@@ -261,4 +291,56 @@ describe('splitPsArgs — executable paths with spaces (POSIX ps)', () => {
     expect(splitPsArgs('codex app-server', '')).toEqual([]);
     expect(classifyMcpParent([MCP_ENTRY, splitPsArgs('garbled', exe)])).toBe('unknown');
   });
+});
+
+// The chain main reads for a native launcher: a real process named
+// `wmux-native` started as `mcp-shim --core` by a real process named `codex`
+// running `app-server --managed-daemon`. Both are node, symlinked under those
+// names; node runs the extensionless `app-server` / `mcp-shim` scripts from
+// the cwd, so each argv reads exactly like the real one.
+describe.skipIf(process.platform === 'win32')('readParentChain — a live native launcher under a shared server', () => {
+  async function chainUnderServer(launcher: string): Promise<string[][]> {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-native-shim-')));
+    for (const name of ['codex', launcher]) fs.symlinkSync(process.execPath, path.join(dir, name));
+    fs.writeFileSync(path.join(dir, 'app-server'), [
+      "const { spawn } = require('node:child_process');",
+      "const shim = spawn(process.env.SHIM_EXE, ['mcp-shim', '--core'], { cwd: __dirname, stdio: ['pipe', 'inherit', 'ignore'] });",
+      "process.stdin.on('end', () => { shim.kill(); process.exit(0); }).resume();",
+      'setTimeout(() => process.exit(0), 30000);',
+    ].join('\n'));
+    fs.writeFileSync(path.join(dir, 'mcp-shim'), [
+      'console.log(process.pid);',
+      "process.stdin.on('end', () => process.exit(0)).resume();",
+      'setTimeout(() => process.exit(0), 30000);',
+    ].join('\n'));
+    const server = spawn(path.join(dir, 'codex'), ['app-server', '--managed-daemon'], {
+      cwd: dir, env: { ...process.env, SHIM_EXE: path.join(dir, launcher) }, stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    let shimPid = 0;
+    try {
+      shimPid = await new Promise<number>((resolve, reject) => {
+        server.stdout.once('data', (chunk: Buffer) => resolve(Number(String(chunk).trim())));
+        server.once('exit', () => reject(new Error('fake server exited before its launcher started')));
+      });
+      return await readParentChain(shimPid);
+    } finally {
+      server.stdin.end();
+      if (shimPid > 0) { try { process.kill(shimPid); } catch { /* already gone */ } }
+      server.kill();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('skips the launcher and lets the shared server vouch', async () => {
+    const chain = await chainUnderServer('wmux-native');
+    expect(chain[0]?.slice(1)).toEqual(['mcp-shim', '--core']);
+    expect(path.basename(chain[0]?.[0] ?? '')).toBe('wmux-native');
+    expect(classifyMcpParent(chain)).toBe('shared-server');
+  }, 20000);
+
+  it('does not skip a look-alike binary started the same way', async () => {
+    const chain = await chainUnderServer('wmux-native-evil');
+    expect(chain[0]?.slice(1)).toEqual(['mcp-shim', '--core']);
+    expect(classifyMcpParent(chain)).toBe('other');
+  }, 20000);
 });

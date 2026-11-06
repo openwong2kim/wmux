@@ -141,18 +141,26 @@ const isOwnFlag = (token: string) => token === '--core' || token === '--commande
 
 /**
  * A wrapper that re-runs this server's own entry and nothing else:
- * `node <entry> [wmux flags]` or `cmd [/d] [/s] /c node <entry> [wmux flags]`.
- * Strict on shape, so a script that merely passes the entry path as an
- * argument (`node evil.js …/index.js`) or a shell line is NOT skipped.
+ * `node <entry> [wmux flags]`, the native launcher
+ * `<dir>/wmux-native[.exe] mcp-shim [wmux flags]`, or either one behind
+ * `cmd [/d] [/s] /c`. Strict on shape, so a script that merely passes the
+ * entry path as an argument (`node evil.js …/index.js`), a differently named
+ * binary, or a shell line is NOT skipped.
  */
 function isOwnLauncher(argv: string[]): boolean {
   const isNode = (t: string | undefined) => /^node(?:\.exe)?$/.test(baseName(t));
   const entryWithFlags = (rest: string[]) => isMcpEntry(rest[0]) && rest.slice(1).every(isOwnFlag);
+  const isNativeShim = (rest: string[]) =>
+    /^wmux-native(?:\.exe)?$/.test(baseName(rest[0])) && rest[1] === 'mcp-shim' && rest.slice(2).every(isOwnFlag);
   if (isNode(argv[0])) return entryWithFlags(argv.slice(1));
+  if (isNativeShim(argv)) return true;
   if (/^cmd(?:\.exe)?$/.test(baseName(argv[0]))) {
     let i = 1;
     while (/^\/[ds]$/i.test(argv[i] ?? '')) i++;
-    if (/^\/c$/i.test(argv[i] ?? '') && isNode(argv[i + 1])) return entryWithFlags(argv.slice(i + 2));
+    if (/^\/c$/i.test(argv[i] ?? '')) {
+      if (isNode(argv[i + 1])) return entryWithFlags(argv.slice(i + 2));
+      return isNativeShim(argv.slice(i + 1));
+    }
   }
   return false;
 }
