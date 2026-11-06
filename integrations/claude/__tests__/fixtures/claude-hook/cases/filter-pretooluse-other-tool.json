@@ -1,0 +1,43 @@
+{
+  "description": "PreToolUse for any tool but AskUserQuestion is dropped.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "PreToolUse"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"Bash\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PreToolUse",
+            "outcome": "skip-pretooluse",
+            "tool": "Bash"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "ACTIVITY_STAMP_THROTTLE_MS": 2500,
+  "BRIDGE_LOG_MAX_BYTES": 5242880,
+  "BRIDGE_VERSION": "0.8.1",
+  "CONNECT_RETRY_BACKOFFS_MS": [
+    100,
+    250
+  ],
+  "GATE_PERMISSION_TIMEOUT_MS": 130000,
+  "HOOK_TIMEOUT_MS": 2000,
+  "HOOK_TO_KIND": {
+    "PreToolUse": "agent.awaiting_input",
+    "PostToolUse": "agent.activity",
+    "Stop": "agent.stop",
+    "SubagentStop": "agent.subagent_stop",
+    "SessionStart": "agent.session_start",
+    "SessionEnd": "agent.session_end",
+    "UserPromptSubmit": "agent.user_prompt_submit",
+    "StopFailure": "agent.stop_failure",
+    "PermissionRequest": "agent.awaiting_input",
+    "Notification": "agent.awaiting_input"
+  },
+  "MAX_STDIN_BYTES": 1048576,
+  "TASK_STOP_LINE_RE": {
+    "regex": "/\"name\"\\s*:\\s*\"(?:TaskStop|KillShell|KillBash)\"/"
+  },
+  "TASK_STOP_TOOLS": {
+    "set": [
+      "TaskStop",
+      "KillShell",
+      "KillBash"
+    ]
+  },
+  "TMUX_QUERY_TIMEOUT_MS": 150,
+  "TRANSIENT_CONNECT_CODES": {
+    "set": [
+      "EPERM",
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "EPIPE",
+      "ETIMEDOUT",
+      "EBUSY",
+      "EAGAIN"
+    ]
+  },
+  "VALID_PERMISSION_MODES": {
+    "set": [
+      "bypassPermissions",
+      "acceptEdits",
+      "plan",
+      "auto",
+      "default"
+    ]
+  },
+  "WHERE_FIELD_MAX": 64,
+  "WMUX_CLIENT_NAME": "wmux-hook-bridge",
+  "countLeftoverBackgroundTasks.TAIL_BYTES": 1048576,
+  "extractPermissionModeFromTranscript.TAIL_BYTES": 65536,
+  "extractUsageFromTranscript.TAIL_BYTES": 65536,
+  "main.INTERACTIVE_ENTRYPOINTS": {
+    "set": [
+      "cli",
+      "vscode",
+      "jetbrains"
+    ]
+  }
+}

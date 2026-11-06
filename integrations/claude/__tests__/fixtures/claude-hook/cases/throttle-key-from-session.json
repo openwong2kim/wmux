@@ -1,0 +1,66 @@
+{
+  "description": "Outside a pane the stamp is keyed by the sanitised session id.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "PostToolUse"
+      ],
+      "stdin": "{\"session_id\":\"a/b:c.d\",\"tool_name\":\"Read\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PostToolUse",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.activity",
+                "agent": "claude",
+                "agentSessionId": "a/b:c.d",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "a/b:c.d",
+                  "tool_name": "Read"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        },
+        "stamps": [
+          "a_b_c_d"
+        ]
+      }
+    ]
+  }
+}

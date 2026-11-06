@@ -1,0 +1,59 @@
+{
+  "description": "No token for either endpoint: nothing is sent.",
+  "tokens": {},
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    },
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"cwd\":\"/work/repo\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "no-auth-token",
+            "paths": [
+              "<sandbox>/home/.wmux<sfx>/daemon-auth-token",
+              "<sandbox>/home/.wmux<sfx>-auth-token"
+            ]
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

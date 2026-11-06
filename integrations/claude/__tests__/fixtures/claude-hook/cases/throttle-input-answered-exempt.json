@@ -1,0 +1,108 @@
+{
+  "description": "A PostToolUse AskUserQuestion is input_answered and never throttled.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "PostToolUse"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"AskUserQuestion\"}"
+    },
+    {
+      "argv": [
+        "PostToolUse"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"AskUserQuestion\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PostToolUse",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.input_answered",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "ptyId": "pty-1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "tool_name": "AskUserQuestion"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      },
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PostToolUse",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.input_answered",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "ptyId": "pty-1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "tool_name": "AskUserQuestion"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

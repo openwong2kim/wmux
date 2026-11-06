@@ -1,0 +1,46 @@
+{
+  "description": "A notification that is not a permission prompt is dropped.",
+  "env": {
+    "CLAUDE_CODE_ENTRYPOINT": "cli"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Notification"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"notification_type\":\"idle_prompt\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Notification",
+            "outcome": "skip-notification",
+            "type": "idle_prompt"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "description": "A fork (agent_id without agent_type) is not sent.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "PostToolUse"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"agent_id\":\"a1\",\"agent_type\":\"\",\"tool_name\":\"Read\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PostToolUse",
+            "outcome": "skip-internal-fork"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

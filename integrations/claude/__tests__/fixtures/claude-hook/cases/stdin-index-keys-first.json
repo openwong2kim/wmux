@@ -1,0 +1,70 @@
+{
+  "description": "Array-index keys come first in ascending order; other keys keep insertion order.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"b\":1,\"2\":\"two\",\"a\":0,\"1\":\"one\",\"4294967295\":\"not-an-index\",\"4294967294\":\"index\",\"-1\":\"neg\",\"01\":\"lead\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "1": "one",
+                  "2": "two",
+                  "4294967294": "index",
+                  "session_id": "s1",
+                  "b": 1,
+                  "a": 0,
+                  "4294967295": "not-an-index",
+                  "-1": "neg",
+                  "01": "lead"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

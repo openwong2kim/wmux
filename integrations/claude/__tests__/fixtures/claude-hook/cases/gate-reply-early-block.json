@@ -1,0 +1,69 @@
+{
+  "description": "A block that arrives before the server read the whole request still blocks.",
+  "endpoints": {
+    "main": {
+      "mode": "reply-early",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "wait"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate"
+      ],
+      "stdin": {
+        "parts": [
+          "{\"session_id\":\"s1\",\"cwd\":\"/work/repo\",\"blob\":\"",
+          {
+            "repeat": "a",
+            "count": 900000
+          },
+          "\"}"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 2,
+        "stdout": "",
+        "stderr": "wait\n",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "main"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "gate-blocked",
+            "target": "main"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "answeredEarly": true,
+              "sawNewline": false
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
