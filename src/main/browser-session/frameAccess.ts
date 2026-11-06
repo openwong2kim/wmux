@@ -122,6 +122,11 @@ export class FrameWorlds {
   constructor(private readonly send: CdpSend) {}
 
   async contextFor(frameId: string, expectLoaderId?: string): Promise<FrameContext> {
+    // A world cached for the very document the caller names is used without
+    // re-reading the tree: Chrome destroys a document's worlds when it goes,
+    // so a stale one fails its next call, and inWorld then re-checks here.
+    const known = expectLoaderId !== undefined ? this.cache.get(`${frameId}\u0000${expectLoaderId}`) : undefined;
+    if (known !== undefined) return { contextId: known };
     const loaderId = await currentLoader(this.send, frameId, expectLoaderId);
     const key = `${frameId}\u0000${loaderId}`;
     const cached = this.cache.get(key);
@@ -174,7 +179,7 @@ async function inWorld<T>(
     try {
       return await fn(ctx.contextId);
     } catch (err) {
-      const stale = /Cannot find context|context with specified id|Execution context was destroyed/i
+      const stale = /Cannot find context|context with specified id|Execution context was destroyed|Cannot find object/i
         .test(err instanceof Error ? err.message : String(err));
       if (!stale || attempt > 0) throw err;
       worlds.forget(ctx.contextId);

@@ -99,6 +99,8 @@ for (const mode of MODES) {
         const send = await sessionOf(page);
         const worlds = new FrameWorlds(send);
         const inner = (await listChildFrames(send)).find((f) => f.name === 'checkout')!;
+        // Read once first, so the navigated frame's world is a cached one.
+        expect(await evaluateInFrame(send, worlds, inner.frameId, '1', inner.loaderId)).toEqual({ value: 1 });
         await page.evaluate(() => { (document.getElementById('inner') as HTMLIFrameElement).src = '/leaf.html'; });
         await page.frameLocator('#inner').locator('#leaf').waitFor({ state: 'attached' });
         await expect(evaluateInFrame(send, worlds, inner.frameId, '1', inner.loaderId)).rejects.toThrow(/^FRAME_NAVIGATED/);
