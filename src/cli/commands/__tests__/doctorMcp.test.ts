@@ -143,6 +143,19 @@ describe('doctor mcp section', () => {
     }
   });
 
+  it('tells an older app from one that did not answer', async () => {
+    const value = async (sessions: McpDoctorDeps['sessions']) =>
+      (await buildMcpSection(deps({ sessions }))).lines.at(-1)?.value;
+    expect(await value(() => Promise.resolve({ id: '1', ok: false, error: 'Unknown method: mcp.sessions.summary' })))
+      .toBe('unavailable (this app version does not report them)');
+    expect(await value(() => Promise.resolve({ id: '1', ok: false, error: 'permission denied' })))
+      .toBe('unavailable (the app did not answer: permission denied)');
+    expect(await value(() => Promise.reject(new Error('RPC timeout: mcp.sessions.summary (5000ms)'))))
+      .toBe('unavailable (the app did not answer: RPC timeout: mcp.sessions.summary (5000ms))');
+    expect(await value(() => Promise.resolve({ id: '1', ok: true, result: { broker: 'nope' } })))
+      .toBe('unavailable (the app answered in a shape this doctor does not read)');
+  });
+
   it('does not ask a main process the probe already found down', async () => {
     const sessions = vi.fn(() => Promise.resolve({ id: '1', ok: true as const, result: summary }));
     const s = await buildMcpSection(deps({ sessions }), false);

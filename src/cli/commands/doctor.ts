@@ -562,13 +562,21 @@ export async function buildMcpSection(
   const kinds = new Set(targets.flatMap((t) => (t.wmux.registered && t.wmux.path ? [launcherKind(t.wmux.path)] : [])));
   let summary: McpSessionsSummary | null = null;
   let skipReason = 'the app is not running';
+  // The probe reached the app, so a failure here is the app's answer, or its
+  // silence, not its absence. Only an unknown method means an older app.
+  const notAnswered = (why: string) => `the app did not answer: ${why.replace(/\s+/g, ' ').slice(0, 120)}`;
   if (appPipeReachable) {
     try {
       const resp = await deps.sessions();
-      if (resp.ok && isSessionsSummary(resp.result)) summary = resp.result;
-      else skipReason = 'this app version does not report them';
-    } catch {
-      // Leave the default reason: the pipe went away between the probe and here.
+      if (!resp.ok) {
+        skipReason = /^Unknown method\b/.test(resp.error) ? 'this app version does not report them' : notAnswered(resp.error);
+      } else if (isSessionsSummary(resp.result)) {
+        summary = resp.result;
+      } else {
+        skipReason = 'the app answered in a shape this doctor does not read';
+      }
+    } catch (err) {
+      skipReason = notAnswered(err instanceof Error ? err.message : String(err));
     }
   }
   if (summary) {
