@@ -9,11 +9,42 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc::{channel, Receiver};
+use std::sync::{PoisonError, RwLock, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_wmux-native");
+
+/// Parallel tests write executables and spawn processes. A fork inherits any
+/// write descriptor another test still has open until the child execs, and
+/// exec of a file open for writing fails with ETXTBSY ("Text file busy"). So
+/// creating, writing or copying an executable holds the write lock, and every
+/// spawn holds the read lock until the child has exec'd (`Command::spawn`
+/// returns only after that). Each test file is its own process, so this lock
+/// is per file, like the one in tests/claude_hook.rs.
+static EXECUTABLES: RwLock<()> = RwLock::new(());
+
+fn writing_executables() -> RwLockWriteGuard<'static, ()> {
+    EXECUTABLES.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn spawn(command: &mut Command) -> std::io::Result<Child> {
+    let _no_executable_being_written = EXECUTABLES.read().unwrap_or_else(PoisonError::into_inner);
+    command.spawn()
+}
+
+/// `Command::output` through `spawn`, with its stdio: stdin null, stdout and
+/// stderr captured. The lock is released before the wait.
+fn output(command: &mut Command) -> std::io::Result<Output> {
+    spawn(
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )?
+    .wait_with_output()
+}
 const WAIT: Duration = Duration::from_secs(15);
 
 fn unique() -> String {
@@ -332,13 +363,13 @@ fn the_handshake_then_raw_bytes_both_ways_and_stdin_eof_exits_0() {
     // JS trim: the BOM and the line end go, the inner text stays.
     sb.write_token(" \u{feff}tok-π\r\n");
     let listener = stub::bind(&sb.pipe());
-    let mut child = sb
-        .shim(&["--core", "--role=a", "--port", "1", "--role=b"])
-        .env("WMUX_WORKSPACE_ID", "ws-1")
-        .env("WMUX_PTY_ID", "")
-        .env("WMUX_AUTH_TOKEN", "not-this-one")
-        .spawn()
-        .expect("spawn shim");
+    let mut child = spawn(
+        sb.shim(&["--core", "--role=a", "--port", "1", "--role=b"])
+            .env("WMUX_WORKSPACE_ID", "ws-1")
+            .env("WMUX_PTY_ID", "")
+            .env("WMUX_AUTH_TOKEN", "not-this-one"),
+    )
+    .expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
     let out = spawn_reader(child.stdout.take().unwrap());
     let mut conn = listener.accept(WAIT);
@@ -376,13 +407,13 @@ fn a_set_commander_token_is_sent_even_empty_and_the_env_token_backs_a_blank_file
     let sb = Sandbox::new();
     sb.write_token(" \n\t");
     let listener = stub::bind(&sb.pipe());
-    let mut child = sb
-        .shim(&["--commander", "--role="])
-        .env("WMUX_AUTH_TOKEN", " env\"tok\u{1} ")
-        .env("WMUX_COMMANDER_TOKEN", "")
-        .env("WMUX_PTY_ID", "pty-9")
-        .spawn()
-        .expect("spawn shim");
+    let mut child = spawn(
+        sb.shim(&["--commander", "--role="])
+            .env("WMUX_AUTH_TOKEN", " env\"tok\u{1} ")
+            .env("WMUX_COMMANDER_TOKEN", "")
+            .env("WMUX_PTY_ID", "pty-9"),
+    )
+    .expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
     let mut conn = listener.accept(WAIT);
     assert_eq!(
@@ -408,7 +439,7 @@ fn a_set_commander_token_is_sent_even_empty_and_the_env_token_backs_a_blank_file
 fn no_token_exits_1_without_dialling() {
     let sb = Sandbox::new();
     let started = Instant::now();
-    let out = sb.shim(&[]).stdin(Stdio::null()).output().expect("run shim");
+    let out = output(sb.shim(&[]).stdin(Stdio::null())).expect("run shim");
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty());
     assert_eq!(
@@ -424,7 +455,7 @@ fn an_unreachable_broker_exits_1_after_ten_tries() {
     sb.write_token("tok");
     let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
     let started = Instant::now();
-    let out = lone.shim(&sb, &[]).stdin(Stdio::null()).output().expect("run shim");
+    let out = output(lone.shim(&sb, &[]).stdin(Stdio::null())).expect("run shim");
     let elapsed = started.elapsed();
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty());
@@ -443,7 +474,7 @@ fn an_unreachable_broker_exits_1_after_ten_tries() {
 fn a_broker_that_comes_up_during_the_retries_is_reached() {
     let sb = Sandbox::new();
     sb.write_token("tok");
-    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
     std::thread::sleep(Duration::from_millis(1000));
     let mut conn = stub::bind(&sb.pipe()).accept(WAIT);
     assert!(read_line(&mut conn).starts_with("{\"wmuxShim\":1,\"authToken\":\"tok\","));
@@ -457,7 +488,7 @@ fn a_host_that_stops_reading_stdout_ends_the_session_with_0() {
     let sb = Sandbox::new();
     sb.write_token("tok");
     let listener = stub::bind(&sb.pipe());
-    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
     drop(child.stdout.take());
     let mut conn = listener.accept(WAIT);
@@ -485,7 +516,7 @@ fn sigterm_and_sigint_exit_0() {
         let sb = Sandbox::new();
         sb.write_token("tok");
         let listener = stub::bind(&sb.pipe());
-        let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+        let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
         let mut conn = listener.accept(WAIT);
         read_line(&mut conn);
         ack(&mut conn);
@@ -510,7 +541,7 @@ fn a_signal_while_the_ack_is_awaited_exits_0() {
         let sb = Sandbox::new();
         sb.write_token("tok");
         let listener = stub::bind(&sb.pipe());
-        let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+        let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
         let mut conn = listener.accept(WAIT);
         read_line(&mut conn);
         // SAFETY: signals a child this test spawned and still owns.
@@ -524,7 +555,7 @@ fn a_broken_stderr_still_ends_a_dropped_session_with_1() {
     let sb = Sandbox::new();
     sb.write_token("tok");
     let listener = stub::bind(&sb.pipe());
-    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
     // The diagnostic write fails with EPIPE; the exit must not depend on it.
     drop(child.stderr.take());
     let mut conn = listener.accept(WAIT);
@@ -545,7 +576,7 @@ fn a_signal_during_the_connect_retries_kills_by_the_signal() {
     }
     let sb = Sandbox::new();
     sb.write_token("tok");
-    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
     std::thread::sleep(Duration::from_millis(500));
     // SAFETY: signals a child this test spawned and still owns.
     assert_eq!(unsafe { kill(child.id() as i32, 15) }, 0);
@@ -567,12 +598,12 @@ fn a_non_blocking_stdin_and_stdout_are_waited_on() {
     let (mut host_out, shim_out) = UnixStream::pair().unwrap();
     shim_in.set_nonblocking(true).unwrap();
     shim_out.set_nonblocking(true).unwrap();
-    let mut child = sb
-        .shim(&[])
-        .stdin(Stdio::from(OwnedFd::from(shim_in)))
-        .stdout(Stdio::from(OwnedFd::from(shim_out)))
-        .spawn()
-        .expect("spawn shim");
+    let mut child = spawn(
+        sb.shim(&[])
+            .stdin(Stdio::from(OwnedFd::from(shim_in)))
+            .stdout(Stdio::from(OwnedFd::from(shim_out))),
+    )
+    .expect("spawn shim");
     let mut conn = listener.accept(WAIT);
     read_line(&mut conn);
     ack(&mut conn);
@@ -609,7 +640,7 @@ fn a_zero_length_message_from_the_broker_is_not_the_end_of_the_stream() {
     let sb = Sandbox::new();
     sb.write_token("tok");
     let listener = stub::bind(&sb.pipe());
-    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
     let out = spawn_reader(child.stdout.take().unwrap());
     let mut conn = listener.accept(WAIT);
     read_line(&mut conn);
@@ -678,12 +709,12 @@ fn a_waiting_non_blocking_stdio_does_not_spin() {
     shim_out.set_nonblocking(true).unwrap();
     // Reaped by wait4 in reap_counting_wakeups, which also reads its usage.
     #[allow(clippy::zombie_processes)]
-    let child = sb
-        .shim(&[])
-        .stdin(Stdio::from(OwnedFd::from(shim_in)))
-        .stdout(Stdio::from(OwnedFd::from(shim_out)))
-        .spawn()
-        .expect("spawn shim");
+    let child = spawn(
+        sb.shim(&[])
+            .stdin(Stdio::from(OwnedFd::from(shim_in)))
+            .stdout(Stdio::from(OwnedFd::from(shim_out))),
+    )
+    .expect("spawn shim");
     let mut conn = listener.accept(WAIT);
     read_line(&mut conn);
     ack(&mut conn);
@@ -708,11 +739,7 @@ fn a_waiting_non_blocking_stdio_does_not_spin() {
 #[test]
 fn self_test_prints_the_protocol_version_without_a_network() {
     let sb = Sandbox::new();
-    let out = sb
-        .shim(&["--self-test"])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run shim");
+    let out = output(sb.shim(&["--self-test"]).stdin(Stdio::null())).expect("run shim");
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "wmux-mcp-shim protocol 1\n");
     assert!(out.stderr.is_empty());
@@ -770,7 +797,7 @@ fn broker_bundle() -> Result<PathBuf, String> {
     if !path.is_file() {
         return Err(format!("{} is not built (npm run build:mcp)", path.display()));
     }
-    match Command::new("node").arg("--version").output() {
+    match output(Command::new("node").arg("--version")) {
         Ok(o) if o.status.success() => Ok(path),
         _ => Err("node is not on PATH".into()),
     }
@@ -791,17 +818,12 @@ fn against_the_real_broker_initialize_list_call_then_a_broker_kill_exits_1() {
     let mut node = Command::new("node");
     node.arg(&bundle);
     sb.env(&mut node);
-    let mut broker = Owned(
-        node.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn broker"),
-    );
+    let mut broker =
+        Owned(spawn(node.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())).expect("spawn broker"));
     let broker_log = lines(broker.0.stderr.take().unwrap());
     recv_line_with(&broker_log, "listening on");
 
-    let mut shim = sb.shim(&[]).spawn().expect("spawn shim");
+    let mut shim = spawn(&mut sb.shim(&[])).expect("spawn shim");
     let err = collect(shim.stderr.take().unwrap());
     let out = lines(shim.stdout.take().unwrap());
     let mut stdin = shim.stdin.take().unwrap();
@@ -843,7 +865,7 @@ fn the_ack_line_is_consumed_and_never_forwarded() {
     let sb = Sandbox::new();
     sb.write_token("tok");
     let listener = stub::bind(&sb.pipe());
-    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
     let out = spawn_reader(child.stdout.take().unwrap());
     let mut conn = listener.accept(WAIT);
@@ -868,7 +890,7 @@ fn a_broker_without_the_ack_gets_no_session() {
     sb.write_token("tok");
     let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
     let listener = stub::bind(&sb.pipe());
-    let mut child = lone.shim(&sb, &[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut lone.shim(&sb, &[])).expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
     let mut conn = listener.accept(WAIT);
     read_line(&mut conn);
@@ -892,7 +914,7 @@ fn a_refusal_wins_over_a_host_that_keeps_writing() {
         let sb = Sandbox::new();
         sb.write_token("tok");
         let listener = stub::bind(&sb.pipe());
-        let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+        let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
         let err = collect(child.stderr.take().unwrap());
         let mut stdin = child.stdin.take().unwrap();
         let writer = std::thread::spawn(move || {
@@ -921,7 +943,7 @@ fn a_refusing_ack_exits_1_with_its_reason() {
     let sb = Sandbox::new();
     sb.write_token("tok");
     let listener = stub::bind(&sb.pipe());
-    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
     let mut conn = listener.accept(WAIT);
     read_line(&mut conn);
@@ -997,6 +1019,7 @@ impl Install {
         } else {
             "wmux-native"
         });
+        let writing = writing_executables();
         std::fs::copy(BIN, &exe).expect("copy the binary");
         let mut files = vec![exe.clone()];
         if let (Some(source), Some(bundle_dir)) = (source, bundle_dir) {
@@ -1014,6 +1037,7 @@ impl Install {
                 files.push(marker);
             }
         }
+        drop(writing);
         Some(Install { exe, files, dirs })
     }
 
@@ -1053,10 +1077,7 @@ impl Drop for Install {
 /// The command line of `pid`, as `ps` shows it.
 #[cfg(unix)]
 fn ps_command(pid: u32) -> String {
-    let ps = Command::new("ps")
-        .args(["-o", "command=", "-p", &pid.to_string()])
-        .output()
-        .expect("ps");
+    let ps = output(Command::new("ps").args(["-o", "command=", "-p", &pid.to_string()])).expect("ps");
     String::from_utf8_lossy(&ps.stdout).trim().to_string()
 }
 
@@ -1093,7 +1114,7 @@ fn with_the_broker_down_the_full_bundle_serves_the_session() {
     let Some(install) = Install::new(&sb, Layout::Marked) else {
         return;
     };
-    let mut child = install.shim(&sb, &["--core"]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut install.shim(&sb, &["--core"])).expect("spawn shim");
     let err = lines(child.stderr.take().unwrap());
     let out = lines(child.stdout.take().unwrap());
     let mut stdin = child.stdin.take().unwrap();
@@ -1124,7 +1145,7 @@ fn a_silent_broker_gets_the_fallback_within_the_deadline() {
     };
     let listener = stub::bind(&sb.pipe());
     let started = Instant::now();
-    let mut child = install.shim(&sb, &[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut install.shim(&sb, &[])).expect("spawn shim");
     let err = lines(child.stderr.take().unwrap());
     let out = lines(child.stdout.take().unwrap());
     let mut stdin = child.stdin.take().unwrap();
@@ -1149,7 +1170,7 @@ fn a_refusal_starts_no_fallback() {
         return;
     };
     let listener = stub::bind(&sb.pipe());
-    let mut child = install.shim(&sb, &[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut install.shim(&sb, &[])).expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
     let mut stdin = child.stdin.take().unwrap();
     writeln!(stdin, "{INITIALIZE}").unwrap();
@@ -1174,7 +1195,7 @@ fn a_refusal_starts_no_fallback() {
 /// A close before the ack falls back; each layout finds its bundle.
 fn falls_back_on_an_early_close(install: &Install, sb: &Sandbox, want: &str) {
     let listener = stub::bind(&sb.pipe());
-    let mut child = install.shim(sb, &[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut install.shim(sb, &[])).expect("spawn shim");
     let err = lines(child.stderr.take().unwrap());
     let out = lines(child.stdout.take().unwrap());
     let mut stdin = child.stdin.take().unwrap();
@@ -1227,7 +1248,7 @@ fn a_development_build_falls_back_to_the_repository_entry_script() {
     let sb = Sandbox::new();
     sb.write_token("tok");
     let listener = stub::bind(&sb.pipe());
-    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
     let err = lines(child.stderr.take().unwrap());
     let out = lines(child.stdout.take().unwrap());
     let mut stdin = child.stdin.take().unwrap();
@@ -1257,7 +1278,7 @@ fn an_unmarked_index_beside_the_binary_is_not_used() {
         return;
     };
     let listener = stub::bind(&sb.pipe());
-    let mut child = install.shim(&sb, &[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut install.shim(&sb, &[])).expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
     let mut conn = listener.accept(WAIT);
     read_line(&mut conn);
@@ -1279,7 +1300,7 @@ fn bot_arguments_always_take_the_full_bundle() {
         return;
     };
     let listener = stub::bind(&sb.pipe());
-    let mut child = install.shim(&sb, &["--bot=nobody"]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut install.shim(&sb, &["--bot=nobody"])).expect("spawn shim");
     let out = lines(child.stdout.take().unwrap());
     let mut stdin = child.stdin.take().unwrap();
     serves(&mut stdin, &out, false);
@@ -1301,7 +1322,7 @@ fn a_drop_after_the_ack_exits_1_without_falling_back() {
         return;
     };
     let listener = stub::bind(&sb.pipe());
-    let mut child = install.shim(&sb, &[]).spawn().expect("spawn shim");
+    let mut child = spawn(&mut install.shim(&sb, &[])).expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
     let mut conn = listener.accept(WAIT);
     read_line(&mut conn);
@@ -1324,7 +1345,7 @@ fn a_refusal_longer_than_one_read_survives_the_close() {
         sb.write_token("tok");
         let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
         let listener = stub::bind(&sb.pipe());
-        let mut child = lone.shim(&sb, &[]).spawn().expect("spawn shim");
+        let mut child = spawn(&mut lone.shim(&sb, &[])).expect("spawn shim");
         let err = collect(child.stderr.take().unwrap());
         let mut conn = listener.accept(WAIT);
         read_line(&mut conn);
@@ -1363,17 +1384,20 @@ fn node_comes_from_an_absolute_path_entry_only() {
     let mark = sb.home.join("fake-node-ran");
     let fake = format!("#!/bin/sh\ntouch '{}'\nexit 7\n", mark.display());
     std::fs::create_dir_all(cwd.join("rel")).unwrap();
+    let writing = writing_executables();
     for node in [cwd.join("node"), cwd.join("rel").join("node")] {
         std::fs::write(&node, &fake).unwrap();
         std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    drop(writing);
     let path = format!(":.::rel:{}:", real.parent().unwrap().display());
-    let mut child = install
-        .shim(&sb, &["--bot=nobody"])
-        .current_dir(&cwd)
-        .env("PATH", &path)
-        .spawn()
-        .expect("spawn shim");
+    let mut child = spawn(
+        install
+            .shim(&sb, &["--bot=nobody"])
+            .current_dir(&cwd)
+            .env("PATH", &path),
+    )
+    .expect("spawn shim");
     let out = lines(child.stdout.take().unwrap());
     let mut stdin = child.stdin.take().unwrap();
     serves(&mut stdin, &out, false);
@@ -1384,13 +1408,14 @@ fn node_comes_from_an_absolute_path_entry_only() {
 
     // With no absolute entry holding node there is none, whatever the
     // working directory holds.
-    let out = install
-        .shim(&sb, &["--bot=nobody"])
-        .current_dir(&cwd)
-        .env("PATH", ":.::rel:")
-        .stdin(Stdio::null())
-        .output()
-        .expect("run shim");
+    let out = output(
+        install
+            .shim(&sb, &["--bot=nobody"])
+            .current_dir(&cwd)
+            .env("PATH", ":.::rel:")
+            .stdin(Stdio::null()),
+    )
+    .expect("run shim");
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
