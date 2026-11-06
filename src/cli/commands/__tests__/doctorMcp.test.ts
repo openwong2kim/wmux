@@ -51,6 +51,11 @@ describe('doctor mcp section', () => {
     expect(JSON.stringify(section)).not.toContain(HOME);
   });
 
+  it('does not relativize against a root home', async () => {
+    const section = await buildMcpSection(deps({ home: '/', targets: () => [target('cursor', '/opt/wmux/.wmux/mcp/shim.js')] }));
+    expect(section.lines[0].value).toBe('node-shim, full (/opt/wmux/.wmux/mcp/shim.js)');
+  });
+
   it('warns when the registered native copy is recorded as failing its self-test', async () => {
     const recordedVerdict = vi.fn(() => 'fail' as const);
     const section = await buildMcpSection(deps({ recordedVerdict }));

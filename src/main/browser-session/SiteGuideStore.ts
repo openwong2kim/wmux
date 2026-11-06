@@ -16,6 +16,7 @@ import {
   type SiteGuideFrontmatter,
   type SiteGuideMatch,
 } from '../../shared/browserGuides/siteGuides';
+import { homeRelative } from '../../shared/homeRelative';
 
 // ---------------------------------------------------------------------------
 // Read side of site guide pointers: `<wmuxDir>/site-guides/*.md`.
@@ -39,12 +40,6 @@ export function getSiteGuidesDir(dir: string = getWmuxDir()): string {
 
 /** Listing and per-file resolution TTL. Short: a note written mid-session should surface soon. */
 export const SITE_GUIDE_LISTING_TTL_MS = 2_000;
-
-function homeRelative(file: string, realHome: string): string {
-  const rel = path.relative(realHome, file);
-  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return file;
-  return `~/${rel.split(path.sep).join('/')}`;
-}
 
 function resolveHome(home: string): string {
   try {

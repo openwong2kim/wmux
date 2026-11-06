@@ -52,6 +52,7 @@ import { collectProcessMemory, renderMemoryDiagnostics } from '../memoryDiagnost
 import { readAllTargetStatuses, type TargetRegStatus } from '../../shared/mcpRegistration';
 import { fileSha256, recordedVerdict } from '../../shared/mcpLauncher';
 import type { McpSessionsSummary } from '../../shared/mcpSessions';
+import { homeRelative } from '../../shared/homeRelative';
 
 // --- public report model -----------------------------------------------------
 
@@ -472,17 +473,6 @@ function buildLogs(deps: DoctorDeps): DoctorReport['logs'] {
 
 // --- mcp section ----------------------------------------------------------------
 
-/** `~/…` for a path under the home directory, else null. */
-function homeRelative(p: string, home: string): string | null {
-  if (!home) return null;
-  if (p === home) return '~';
-  for (const sep of ['/', '\\']) {
-    const prefix = home.endsWith(sep) ? home : home + sep;
-    if (p.startsWith(prefix)) return `~${sep}${p.slice(prefix.length)}`;
-  }
-  return null;
-}
-
 function launcherKind(registered: string): 'native' | 'node-shim' | 'bundle' | 'other node script' {
   const base = registered.split(/[\\/]/).pop() ?? '';
   if (/^wmux-native(?:\.exe)?$/.test(base)) return 'native';
@@ -496,7 +486,7 @@ function registeredLine(t: TargetRegStatus, deps: McpDoctorDeps): CheckLine {
   // An agent without wmux registered is a choice, not a fault.
   if (!t.wmux.registered || !t.wmux.path) return { label, value: 'not registered', verdict: 'OK' };
   const kind = launcherKind(t.wmux.path);
-  const where = kind === 'other node script' ? null : homeRelative(t.wmux.path, deps.home) ?? t.wmux.path;
+  const where = kind === 'other node script' ? null : homeRelative(t.wmux.path, deps.home);
   const value = `${kind}, ${t.wmux.profile ?? 'full'}${where ? ` (${where})` : ''}`;
   if (kind === 'native' && deps.recordedVerdict(t.wmux.path) === 'fail') {
     return {
