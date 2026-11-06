@@ -1,6 +1,7 @@
 import { webContents } from 'electron';
 import { randomUUID } from 'crypto';
 import { GuestDialogs, type GuestDialogNote } from './guestDialogs';
+import { createDialogSheets } from './dialogSheets';
 
 export interface CdpTargetInfo {
   surfaceId: string;
@@ -192,7 +193,20 @@ export class WebviewCdpManager {
       const session = this.sessions.get(surfaceId);
       if (session) this.dialogNoteSink?.(session.webContentsId, note);
     },
+    sheets: this.guestSheets(),
   });
+
+  private guestSheets() {
+    const sheets = createDialogSheets();
+    return {
+      trackOpening: (surfaceId: string, message: string) => {
+        const session = this.sessions.get(surfaceId);
+        sheets.trackOpening(surfaceId, session ? webContents.fromId(session.webContentsId) : undefined, message);
+      },
+      closeIfStale: (surfaceId: string) => sheets.closeIfStale(surfaceId),
+      forget: (surfaceId: string) => sheets.forget(surfaceId),
+    };
+  }
 
   private readonly dialogHookedGuests = new WeakSet<object>();
 
@@ -319,6 +333,10 @@ export class WebviewCdpManager {
         if (this.sessions.get(surfaceId)?.webContentsId === webContentsId) {
           this.unregister(surfaceId);
         }
+      });
+      // A crashed page's dialog never reports closing: let go of its box.
+      wc.on('render-process-gone', () => {
+        if (this.sessions.get(surfaceId)?.webContentsId === webContentsId) this.dialogs.forget(surfaceId);
       });
     }
 
