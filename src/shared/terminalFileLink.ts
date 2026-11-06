@@ -81,6 +81,18 @@ function joinSegments(base: string[], rel: string, sep: RegExp): string[] | null
   return out;
 }
 
+/**
+ * Whether a URL host names this machine. One side may be the short name and
+ * the other the full one (`devbox` and `devbox.local`), so a short name also
+ * matches the other side's first label. Two different full names do not match.
+ */
+function isOwnHost(host: string, localHostName: string): boolean {
+  const own = localHostName.toLowerCase();
+  if (host === own) return true;
+  const shortOnOneSide = !host.includes('.') || !own.includes('.');
+  return shortOnOneSide && host.split('.')[0] === own.split('.')[0];
+}
+
 function fromFileUrl(raw: string, localHostName: string | undefined): { path: string; line?: number } | null {
   let url: URL;
   try {
@@ -103,7 +115,7 @@ function fromFileUrl(raw: string, localHostName: string | undefined): { path: st
   // are accepted, and the host is dropped: the path below is all that is used.
   // WSL shares are reached through plain POSIX paths instead. `ls --hyperlink`
   // names this machine; inside WSL the distro is named after it by default.
-  const local = host === '' || host === 'localhost' || (!!localHostName && host === localHostName.toLowerCase());
+  const local = host === '' || host === 'localhost' || (!!localHostName && isOwnHost(host, localHostName));
   if (!local) return null;
   // file:///C:/x -> C:/x
   if (/^\/[A-Za-z]:[\\/]/.test(pathname)) return { path: pathname.slice(1), line };
