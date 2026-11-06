@@ -66,8 +66,9 @@ OTHER AGENTS (opt-in; touches only that CLI's hook config)
                    when COPILOT_HOME is set; run it with the same COPILOT_HOME
                    Copilot uses) and never edits your settings.
   --reprobe        With --agent, on install: run the native hook bridge's
-                   check again even for a build already judged (after fixing
-                   what made it fail, such as a noexec home).
+                   check again for a build already recorded as failing it (or
+                   passing it). A check that timed out or could not start the
+                   copy is never recorded, so a plain re-run already retries it.
 
 WSL (opt-in; touches only that distribution's Claude settings)
   --wsl [<distro>] [--uninstall]
