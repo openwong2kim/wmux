@@ -21,7 +21,11 @@
 //!   - `wrote` is true once connected (Node writes in its `connect` handler)
 //!   - a line whose `id` matches    → that line, parsed (broadcasts, other ids
 //!     and unparsable lines are skipped; a partial last line is never parsed)
-//!   - EOF                          → closed-without-response, retryable: false
+//!   - EOF                          → closed-without-response, retryable: false;
+//!     but EOF with request bytes still unwritten is connect-error/EPIPE,
+//!     retryable: false: an incomplete line never reaches the server's
+//!     processLine, so no waiter can exist and a Stop gate must not fail
+//!     closed on it (both outcomes are among Node's, per #3134's variants)
 //!   - a read error                 → connect-error, retryable: false
 //!   - the deadline                 → timeout, retryable: !wrote
 //!   - errors are reported by the first one's code, as Node settles on its
@@ -34,6 +38,9 @@
 //! retryable: false. It never waits for EOF: a peer that keeps the socket
 //! open would otherwise turn the error into a timeout, which a Stop gate
 //! reads as a lost answer and fails closed where Node fails open.
+//! Only Linux shows this case: a write after the peer's shutdown(SHUT_RD)
+//! fails with EPIPE while the peer keeps the socket open. macOS accepts such
+//! writes, so the test for it is Linux-only.
 //!
 //! Two decisions where Node itself is not deterministic, recorded by the
 //! #3134 characterisation cases:
@@ -79,12 +86,11 @@ pub fn send_rpc(pipe: &str, line: &str, id: &[u16], deadline: Instant) -> Json {
 /// What the socket showed, in the order it showed it.
 pub enum Event<'a> {
     Data(&'a [u8]),
+    /// The last request byte went out.
+    AllWritten,
     Eof,
     ReadError(Error),
     WriteError(Error),
-    /// The non-blocking drain after a write error found nothing more.
-    Drained,
-    Deadline,
 }
 
 /// The outcome of one connected exchange, decided from its events alone.
@@ -92,6 +98,7 @@ pub struct Session<'a> {
     id: &'a [u16],
     lines: LineBuffer,
     first_error: Option<Error>,
+    all_written: bool,
 }
 
 impl<'a> Session<'a> {
@@ -100,6 +107,7 @@ impl<'a> Session<'a> {
             id,
             lines: LineBuffer::default(),
             first_error: None,
+            all_written: false,
         }
     }
 
@@ -107,8 +115,15 @@ impl<'a> Session<'a> {
     pub fn on(&mut self, event: Event) -> Option<Json> {
         match event {
             Event::Data(bytes) => self.lines.push(bytes).iter().find_map(|l| matching_reply(l, self.id)),
+            Event::AllWritten => {
+                self.all_written = true;
+                None
+            }
             Event::Eof => Some(match self.first_error.take() {
                 Some(e) => lost(&e),
+                // The server closed before taking the whole line: it never
+                // reached processLine, so nothing can be waiting on it.
+                None if !self.all_written => lost(&Error::from_raw_os_error(EPIPE)),
                 None => failure("closed-without-response", None, Some(false)),
             }),
             Event::ReadError(e) => Some(lost(self.first_error.as_ref().unwrap_or(&e))),
@@ -116,11 +131,28 @@ impl<'a> Session<'a> {
                 self.first_error.get_or_insert(e);
                 None
             }
-            Event::Drained => self.first_error.take().map(|e| lost(&e)),
-            Event::Deadline => Some(failure("timeout", None, Some(false))),
         }
     }
+
+    /// The drain after a write error found nothing more: the write error.
+    /// (Only a write error leads here; without one the outcome is still the
+    /// connection lost, never a timeout.)
+    pub fn drained(&mut self) -> Json {
+        lost(
+            &self
+                .first_error
+                .take()
+                .unwrap_or_else(|| Error::from_raw_os_error(EPIPE)),
+        )
+    }
+
+    /// The deadline passed after the connect: the request counts as written.
+    pub fn deadline(&self) -> Json {
+        failure("timeout", None, Some(false))
+    }
 }
+
+const EPIPE: i32 = 32;
 
 /// A socket error once connected: Node's `error` event after the write, so
 /// the request may have been delivered and is never sent again.
@@ -139,9 +171,7 @@ fn exchange(mut stream: UnixStream, out: &[u8], id: &[u16], deadline: Instant) -
     loop {
         let want_write = written < out.len();
         let Some(timeout_ms) = remaining_ms(deadline) else {
-            return session
-                .on(Event::Deadline)
-                .unwrap_or_else(|| failure("timeout", None, Some(false)));
+            return session.deadline();
         };
         let revents = match poll_one(stream.as_raw_fd(), want_write, timeout_ms) {
             Ok(r) => r,
@@ -152,32 +182,37 @@ fn exchange(mut stream: UnixStream, out: &[u8], id: &[u16], deadline: Instant) -
             Err(e) => return lost(&e),
         };
         if ready.read {
-            if let Some(outcome) = drain(&mut stream, &mut chunk, &mut session) {
+            if let Some(outcome) = drain(&mut stream, &mut chunk, &mut session, deadline) {
                 return outcome;
             }
         }
         if want_write && ready.write {
             match write_some(&mut stream, &out[written..]) {
-                Ok(n) => written += n,
+                Ok(n) => {
+                    written += n;
+                    if written == out.len() {
+                        session.on(Event::AllWritten);
+                    }
+                }
                 Err(e) => {
-                    if let Some(outcome) = session.on(Event::WriteError(e)) {
+                    session.on(Event::WriteError(e));
+                    if let Some(outcome) = drain(&mut stream, &mut chunk, &mut session, deadline) {
                         return outcome;
                     }
-                    if let Some(outcome) = drain(&mut stream, &mut chunk, &mut session) {
-                        return outcome;
-                    }
-                    return session
-                        .on(Event::Drained)
-                        .unwrap_or_else(|| failure("timeout", None, Some(false)));
+                    return session.drained();
                 }
             }
         }
     }
 }
 
-/// Read until the socket would block, feeding the session.
-fn drain(stream: &mut UnixStream, chunk: &mut [u8], session: &mut Session) -> Option<Json> {
+/// Read until the socket would block, feeding the session; a peer that
+/// never stops sending still ends at the deadline.
+fn drain(stream: &mut UnixStream, chunk: &mut [u8], session: &mut Session, deadline: Instant) -> Option<Json> {
     loop {
+        if Instant::now() >= deadline {
+            return Some(session.deadline());
+        }
         let event = match stream.read(chunk) {
             Ok(0) => Event::Eof,
             Ok(n) => Event::Data(&chunk[..n]),
@@ -477,10 +512,22 @@ mod tests {
         send_rpc(pipe, line, &js::js(ID), Instant::now() + Duration::from_millis(ms))
     }
 
-    fn with_retry(pipe: &str, line: &str, ms: u64) -> (Json, Duration) {
+    thread_local! {
+        /// Connect attempts on this test's thread (each test has its own).
+        static ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn counted(pipe: &str, line: &str, id: &[u16], deadline: Instant) -> Json {
+        ATTEMPTS.with(|a| a.set(a.get() + 1));
+        send_rpc(pipe, line, id, deadline)
+    }
+
+    /// With the connect retry: the outcome, the time taken and the attempts.
+    fn with_retry(pipe: &str, line: &str, ms: u64) -> (Json, Duration, usize) {
+        ATTEMPTS.with(|a| a.set(0));
         let start = Instant::now();
-        let result = send_rpc_with_retry(send_rpc, pipe, line, &js::js(ID), start + Duration::from_millis(ms));
-        (result, start.elapsed())
+        let result = send_rpc_with_retry(counted, pipe, line, &js::js(ID), start + Duration::from_millis(ms));
+        (result, start.elapsed(), ATTEMPTS.with(std::cell::Cell::get))
     }
 
     fn text(v: &Json) -> String {
@@ -552,12 +599,19 @@ mod tests {
         assert_eq!(text(&result), r#"{"ok":false,"error":"timeout","retryable":false}"#);
     }
 
-    fn lost_after_write(v: &Json) -> bool {
+    /// After a write, a lost answer a Stop gate fails CLOSED on.
+    fn fails_closed(v: &Json) -> bool {
         let t = text(v);
         t == r#"{"ok":false,"error":"closed-without-response","retryable":false}"#
-            || ["EPIPE", "ECONNRESET", "ENOTCONN"]
-                .iter()
-                .any(|c| t == format!(r#"{{"ok":false,"error":"connect-error","detail":"{c}","retryable":false}}"#))
+            || t == r#"{"ok":false,"error":"timeout","retryable":false}"#
+    }
+
+    /// After a write, a socket error a Stop gate fails OPEN on.
+    fn fails_open(v: &Json) -> bool {
+        let t = text(v);
+        ["EPIPE", "ECONNRESET", "ENOTCONN"]
+            .iter()
+            .any(|c| t == format!(r#"{{"ok":false,"error":"connect-error","detail":"{c}","retryable":false}}"#))
     }
 
     // ----- the outcome, from event sequences alone -------------------------
@@ -574,9 +628,15 @@ mod tests {
 
     /// Feed events until one settles; None when none did.
     fn outcome(events: Vec<Event>) -> Option<String> {
+        outcome_then(events, |_| None)
+    }
+
+    /// The same, then `end` when nothing settled (a drain, the deadline).
+    fn outcome_then(events: Vec<Event>, end: fn(&mut Session) -> Option<Json>) -> Option<String> {
         let id = js::js(ID);
         let mut session = Session::new(&id);
-        events.into_iter().find_map(|e| session.on(e)).map(|o| text(&o))
+        let settled = events.into_iter().find_map(|e| session.on(e));
+        settled.or_else(|| end(&mut session)).map(|o| text(&o))
     }
 
     fn connect_error(code: &str) -> Option<String> {
@@ -594,7 +654,7 @@ mod tests {
         );
         // Nothing readable after it: settled at once, never a wait for EOF.
         assert_eq!(
-            outcome(vec![Event::WriteError(errno("EPIPE")), Event::Drained]),
+            outcome_then(vec![Event::WriteError(errno("EPIPE"))], |s| Some(s.drained())),
             connect_error("EPIPE")
         );
         // Then a read error: the first error's code, as Node's first `error` event.
@@ -617,33 +677,44 @@ mod tests {
             Some(ok_reply())
         );
         assert_eq!(
-            outcome(vec![
-                Event::WriteError(errno("EPIPE")),
-                Event::Data(reply.as_bytes()),
-                Event::Drained
-            ]),
+            outcome_then(
+                vec![Event::WriteError(errno("EPIPE")), Event::Data(reply.as_bytes())],
+                |s| Some(s.drained())
+            ),
             Some(ok_reply())
+        );
+    }
+
+    #[test]
+    fn eof_before_the_whole_request_went_out_is_epipe() {
+        // walk-over-long-request, walk-reset-after-accept-no-retry: the server
+        // closed on a partial line, which no handler ever saw. Fail open.
+        assert_eq!(outcome(vec![Event::Eof]), connect_error("EPIPE"));
+        assert_eq!(
+            outcome(vec![Event::Data(b"{\"type\":\"x\"}\n"), Event::Eof]),
+            connect_error("EPIPE")
+        );
+        // The whole line went out, then EOF: the answer was lost. Fail closed.
+        assert_eq!(
+            outcome(vec![Event::AllWritten, Event::Eof]).as_deref(),
+            Some(r#"{"ok":false,"error":"closed-without-response","retryable":false}"#)
         );
     }
 
     #[test]
     fn the_other_events_map_as_node_does() {
         assert_eq!(
-            outcome(vec![Event::Eof]).as_deref(),
-            Some(r#"{"ok":false,"error":"closed-without-response","retryable":false}"#)
-        );
-        assert_eq!(
             outcome(vec![Event::ReadError(errno("ECONNRESET"))]),
             connect_error("ECONNRESET")
         );
         assert_eq!(
-            outcome(vec![Event::Deadline]).as_deref(),
+            outcome_then(vec![Event::AllWritten], |s| Some(s.deadline())).as_deref(),
             Some(r#"{"ok":false,"error":"timeout","retryable":false}"#)
         );
         // Foreign lines and a partial last line settle nothing; EOF does.
         let partial = format!("{{\"id\":\"other\"}}\nnot json\n{}", ok_reply());
         assert_eq!(
-            outcome(vec![Event::Data(partial.as_bytes()), Event::Eof]).as_deref(),
+            outcome(vec![Event::AllWritten, Event::Data(partial.as_bytes()), Event::Eof]).as_deref(),
             Some(r#"{"ok":false,"error":"closed-without-response","retryable":false}"#)
         );
     }
@@ -709,25 +780,39 @@ mod tests {
         assert_eq!(name(9999), "Unknown system error -9999");
     }
 
-    /// A server that stops reading for good but keeps the socket open: Linux
-    /// fails the client's writes with EPIPE. The outcome comes at once, not
-    /// at the deadline (a Stop gate would read a timeout as a lost answer).
+    /// A server that has stopped reading for good but keeps the socket open.
+    /// On Linux a write issued AFTER the peer's shutdown(SHUT_RD) fails with
+    /// EPIPE at once (unix_stream_sendmsg checks the writer's SEND_SHUTDOWN,
+    /// which the peer's shutdown sets), and the outcome must come then, not at
+    /// the deadline (a Stop gate would read a timeout as a lost answer).
+    ///
+    /// The order is forced: connect, wait for the server's shutdown, then
+    /// write. Writes that land before the shutdown fill the buffer of a peer
+    /// that never reads; the socket then never turns writable again (Linux
+    /// unix_writable counts only the sender's queued bytes), no later write is
+    /// ever issued, and Node and this transport both time out, correctly.
+    /// macOS does not fail such writes at all, so this is Linux only.
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
-    fn a_write_error_with_the_socket_still_open_settles_at_once() {
+    fn a_write_after_the_peer_stopped_reading_settles_at_once() {
         let d = dir("shut-read");
         let path = format!("{d}/s.sock");
         let listener = UnixListener::bind(&path).unwrap();
+        let (shut, after_shut) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let mut kept = Vec::new();
-            for conn in listener.incoming().flatten() {
-                let _ = conn.shutdown(std::net::Shutdown::Read);
-                kept.push(conn);
-            }
+            let (conn, _) = listener.accept().unwrap();
+            conn.shutdown(std::net::Shutdown::Read).unwrap();
+            shut.send(()).unwrap();
+            std::thread::sleep(Duration::from_secs(10));
+            drop(conn);
         });
+        let stream = open(&path).unwrap();
+        after_shut.recv_timeout(Duration::from_secs(2)).unwrap();
         let start = Instant::now();
-        let result = send(&path, &request(900_000), 3000);
-        assert!(start.elapsed() < Duration::from_millis(1000), "{:?}", start.elapsed());
+        let id = js::js(ID);
+        let result = exchange(stream, request(10).as_bytes(), &id, start + Duration::from_secs(20));
+        // "At once" against a 20 s deadline: a generous ceiling.
+        assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
         assert_eq!(Some(text(&result)), connect_error("EPIPE"));
         let _ = std::fs::remove_dir_all(d);
     }
@@ -748,9 +833,13 @@ mod tests {
     #[test]
     fn accept_then_reset_is_one_attempt() {
         // walk-reset-after-accept-no-retry: written on connect, so no retry.
+        // The small request may or may not have gone out before the reset:
+        // all of it then EOF fails closed, a part of it fails open. Either
+        // way, one attempt and no retry.
         let s = stub("reset", Mode::Reset);
-        let (result, _) = with_retry(&s.path, &request(10), 2000);
-        assert!(lost_after_write(&result), "{}", text(&result));
+        let (result, _, attempts) = with_retry(&s.path, &request(10), 2000);
+        assert!(fails_closed(&result) || fails_open(&result), "{}", text(&result));
+        assert_eq!(attempts, 1);
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(s.accepted.load(Ordering::SeqCst), 1);
     }
@@ -758,9 +847,11 @@ mod tests {
     #[test]
     fn an_over_long_line_is_dropped_after_the_write() {
         // walk-over-long-request
+        // The server drops the line before the client finished it: fail open.
         let s = stub("long", Mode::OverLong);
-        let (result, _) = with_retry(&s.path, &request(1_200_000), 2000);
-        assert!(lost_after_write(&result), "{}", text(&result));
+        let (result, _, attempts) = with_retry(&s.path, &request(1_200_000), 2000);
+        assert!(fails_open(&result), "{}", text(&result));
+        assert_eq!(attempts, 1);
         assert_eq!(s.accepted.load(Ordering::SeqCst), 1);
     }
 
@@ -768,12 +859,13 @@ mod tests {
     fn a_missing_pipe_fails_at_once_and_is_not_retried() {
         // walk-daemon-absent-advances, gate-no-main, perm-unreachable-is-silent
         let d = dir("absent");
-        let (result, took) = with_retry(&format!("{d}/none.sock"), &request(10), 2000);
+        let (result, took, attempts) = with_retry(&format!("{d}/none.sock"), &request(10), 2000);
         assert_eq!(
             text(&result),
             r#"{"ok":false,"error":"connect-error","detail":"ENOENT","retryable":true}"#
         );
-        assert!(took < Duration::from_millis(100), "{took:?}");
+        assert_eq!(attempts, 1);
+        assert!(took < Duration::from_millis(1500), "{took:?}");
         let _ = std::fs::remove_dir_all(d);
     }
 
@@ -793,21 +885,18 @@ mod tests {
             text(&send(&path, &request(10), 2000)),
             r#"{"ok":false,"error":"connect-error","detail":"ECONNREFUSED","retryable":true}"#
         );
-        let (result, took) = with_retry(&path, &request(10), 2000);
+        let (result, took, attempts) = with_retry(&path, &request(10), 2000);
         assert_eq!(
             text(&result),
             r#"{"ok":false,"error":"connect-error","detail":"ECONNREFUSED","retryable":true}"#
         );
-        assert!(
-            took >= Duration::from_millis(350) && took < Duration::from_millis(1000),
-            "{took:?}"
-        );
+        // Three attempts with 100 and 250 ms slept between them.
+        assert_eq!(attempts, 3);
+        assert!(took >= Duration::from_millis(350), "{took:?}");
         // A backoff that would cross the deadline is not slept: one retry only.
-        let (_, took) = with_retry(&path, &request(10), 200);
-        assert!(
-            took >= Duration::from_millis(100) && took < Duration::from_millis(200),
-            "{took:?}"
-        );
+        let (_, took, attempts) = with_retry(&path, &request(10), 200);
+        assert_eq!(attempts, 2);
+        assert!(took >= Duration::from_millis(100), "{took:?}");
         let _ = std::fs::remove_dir_all(d);
     }
 
