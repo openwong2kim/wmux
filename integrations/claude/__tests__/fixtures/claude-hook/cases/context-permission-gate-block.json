@@ -1,0 +1,88 @@
+{
+  "description": "UserPromptSubmit --context --permission-gate with a block: the permission gate's exit 0 wins over the block's 2.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1",
+    "CLAUDE_CODE_ENTRYPOINT": "cli"
+  },
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "r"
+            },
+            "permissionDecision": "deny"
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "UserPromptSubmit",
+        "--context",
+        "--permission-gate"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"prompt\":\"p\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"denied from the wmux remote approval\"}}\n",
+        "stderr": "r\n",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "ok",
+            "target": "main"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "prompt-blocked",
+            "target": "main"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "permission-gate",
+            "target": "main",
+            "verdict": "deny"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.awaiting_permission",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "ptyId": "pty-1",
+                "entrypoint": "cli",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "prompt": "p"
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

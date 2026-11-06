@@ -108,6 +108,7 @@ Total: **318** methods (`ALL_RPC_METHODS` in
 | `mcp.claimWorkspace` | `workspace.claim` | `workspace` |
 | `mcp.identify` | `null` |  |
 | `mcp.declarePermissions` | `null` |  |
+| `mcp.sessions.summary` | `wmux.internal` |  |
 
 ### `system`
 

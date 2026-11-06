@@ -112,15 +112,15 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-async function connect(opts: { envPtyHint?: string; envWorkspaceHint?: string; clientName?: string } = {}): Promise<Client> {
+async function connect(opts: { envPtyHint?: string; envWorkspaceHint?: string; clientName?: string; callerPid?: number; callerPpid?: number } = {}): Promise<Client> {
   const server = createWmuxServer({
     envWorkspaceHint: opts.envWorkspaceHint ?? 'ws-s',
     envPtyHint: opts.envPtyHint ?? 'pty-s',
     commanderToken: undefined,
     commanderMode: false,
     coreMode: false,
-    callerPid: process.pid,
-    callerPpid: 4242,
+    callerPid: opts.callerPid ?? process.pid,
+    callerPpid: opts.callerPpid ?? 4242,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: opts.clientName ?? 'codex-mcp-client', version: '1.0.0' }, { capabilities: {} });
@@ -136,6 +136,36 @@ async function call(client: Client, name: string, args: Record<string, unknown>,
 
 const whoamiParams = () =>
   mockSendRpc.mock.calls.filter((c) => c[0] === 'a2a.whoami').map((c) => c[1] as Record<string, unknown>);
+
+// Where this server's classification starts: the parent its caller reported
+// (callerPpid). In the broker lane the caller is the launcher, so that parent
+// is the host itself; when the launcher runs the bundle as its own child (its
+// fallback) the chain starts at the launcher, which is skipped. Both pids are
+// reported by the caller: this pins which chain is read, nothing more.
+describe('where the parent classification starts', () => {
+  it('reads the chain from the caller-reported parent: the broker lane starts at the host', async () => {
+    recordOwner(T1, 'pty-a', 'ws-1');
+    parentChain.mockResolvedValue([SHARED_SERVER]);
+    const client = await connect({ callerPid: 777, callerPpid: 4243 });
+    expect((await call(client, 'a2a_whoami', {}, T1)).isError).toBeFalsy();
+    const res = await call(client, 'a2a_whoami', {});
+    await client.close();
+    // Read from the reported parent and from nothing else (not the caller itself).
+    expect(parentChain.mock.calls.length).toBeGreaterThan(0);
+    expect(parentChain.mock.calls.every((c) => c[0] === 4243)).toBe(true);
+    expect(res.isError).toBe(true);
+    expect(whoamiParams().map((p) => `${p.workspaceId}/${p.senderPtyId}`)).toEqual(['ws-1/pty-a']);
+  });
+
+  it('skips the native launcher when it sits between this server and the host', async () => {
+    recordOwner(T1, 'pty-a', 'ws-1');
+    parentChain.mockResolvedValue([['/Users/u/.wmux/mcp/wmux-native', 'mcp-shim'], SHARED_SERVER]);
+    const client = await connect();
+    expect((await call(client, 'a2a_whoami', {}, T1)).isError).toBeFalsy();
+    expect((await call(client, 'a2a_whoami', {})).isError).toBe(true);
+    await client.close();
+  });
+});
 
 describe('shared Codex app-server, owner index available (pane relay, non-Windows)', () => {
   it('gives two concurrent threads their own pane and workspace', async () => {

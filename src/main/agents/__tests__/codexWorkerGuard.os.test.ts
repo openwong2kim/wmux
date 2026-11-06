@@ -296,6 +296,16 @@ describe('a codex worker\'s MCP servers', () => {
     expect(without).toBe(plain!.initialCommand);
   });
 
+  posixOnly('a role level follows the launcher the worker\'s codex config registers', async () => {
+    const h = path.join(root, 'codex-home-native');
+    fs.mkdirSync(h, { recursive: true });
+    fs.writeFileSync(path.join(h, 'config.toml'), '[mcp_servers.wmux]\ncommand = "/u/.wmux/mcp/wmux-native"\nargs = ["mcp-shim"]\n');
+    const withLevel = `codex ${codexTrustOverride(wt, 'darwin')} -a never -s workspace-write -c "mcp_servers.wmux.args=['/x.js','--role=Builder']" ${PROMPT}`;
+    const out = await guardCodexBotWorker({ initialCommand: withLevel, cwd: wt, env: { CODEX_HOME: h } }, strict, { ...deps, dir: path.join(root, 'data'), mcpEntry: () => '/app/mcp/index.js' });
+    expect(out!.initialCommand).toContain(`-c "mcp_servers.wmux.args=['mcp-shim','--role=Builder']"`);
+    expect(out!.initialCommand).not.toContain('/app/mcp/index.js');
+  });
+
   posixOnly('refuses a connection named like an owner or system server, an SSE one, and a config it cannot read; turns system servers off', async () => {
     const h = home();
     const env = { CODEX_HOME: h };

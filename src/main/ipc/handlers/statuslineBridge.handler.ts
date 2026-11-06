@@ -16,6 +16,7 @@
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { claudeSettingsWriteRefusal } from './hooksBridge.handler';
 import {
   defaultPaths,
   statusStatusline,
@@ -58,7 +59,13 @@ export function registerStatuslineBridgeHandlers(): void {
         _event: Electron.IpcMainInvokeEvent,
         payload?: { force?: boolean },
       ): Promise<StatuslineOutcome> => {
-        return installStatusline(defaultPaths(), { force: payload?.force === true });
+        const paths = defaultPaths();
+        // The status line goes into the same shared Claude settings files.
+        const refusal = claudeSettingsWriteRefusal('wmux setup-statusline');
+        if (refusal) {
+          return { ok: false, scriptDest: paths.scriptDest, scriptSource: paths.scriptSource, scriptCopied: false, targets: [], error: refusal };
+        }
+        return installStatusline(paths, { force: payload?.force === true });
       },
     ),
   );

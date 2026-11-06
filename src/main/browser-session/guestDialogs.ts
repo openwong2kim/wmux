@@ -9,13 +9,14 @@
 // result. A dialog already open when a lease starts is answered then, or once it's
 // old enough if it has only just opened (see below).
 //
-// Answering over CDP doesn't close Electron's box: it stays until someone clicks
-// it, and each answered dialog leaves its own. On macOS it's a sheet on the main
-// window, which takes no keyboard or mouse input until the sheet is dismissed. So
-// answers are capped across all tabs: without that, pages looping alert() would
-// stack boxes without limit, where a page that isn't answered can only ever show
-// one. Past the cap a page waits on its box like any other, and the agent is told
-// why.
+// Answering over CDP doesn't close Electron's box by itself. On macOS the box is a
+// sheet on the tab's window, which takes no keyboard or mouse input until the
+// sheet is dismissed, so once a dialog closes its sheet is ended too, whoever
+// answered (dialogSheets.ts). Answers are still capped across all tabs: opening a
+// sheet costs main ~280 ms, and a box that can't be matched to its dialog stays
+// until someone clicks it, so pages looping alert() must not stack them without
+// limit, where a page that isn't answered can only ever show one. Past the cap a
+// page waits on its box like any other, and the agent is told why.
 //
 // A Playwright page attached to the guest answers its own dialogs, including armed
 // answers, within a few hundred ms, and main can't see that it's there. So a dialog
@@ -53,6 +54,12 @@ export interface GuestDialogsDeps {
   now?(): number;
   /** Test seam; defaults to an unref'd timer. */
   defer?(fn: () => void, ms: number): void;
+  /** The native box each dialog leaves, closed once it is answered (dialogSheets.ts). */
+  sheets?: {
+    trackOpening(surfaceId: string, message: string, type: string): void;
+    closeIfStale(surfaceId: string): void;
+    forget(surfaceId: string): void;
+  };
 }
 
 interface SurfaceDialogs {
@@ -92,6 +99,8 @@ export class GuestDialogs {
     const now = this.now();
     const raisedByInput = [...state.dispatches].some((dispatch) => dispatch.expires > now);
     state.open = { type, message: capped, capNoted: false, raisedByInput, openedAt: now };
+    // Every dialog, the person's included: its box is matched by its full text and shape.
+    this.deps.sheets?.trackOpening(surfaceId, message, type);
     // The lease can end just before a handler's deferred dialog opens. That dialog
     // is still the agent's, and otherwise the page would wait for its next call.
     if (driven || raisedByInput) this.settleWhenDue(surfaceId, state);
@@ -120,6 +129,8 @@ export class GuestDialogs {
   closed(surfaceId: string): void {
     const state = this.surfaces.get(surfaceId);
     if (state) state.open = undefined;
+    // Whoever answered, the box it leaves is no longer asking anything.
+    this.deps.sheets?.closeIfStale(surfaceId);
   }
 
   /** A lease just started on this surface. */
@@ -150,6 +161,7 @@ export class GuestDialogs {
 
   forget(surfaceId: string): void {
     this.surfaces.delete(surfaceId);
+    this.deps.sheets?.forget(surfaceId);
   }
 
   private settle(surfaceId: string, state: SurfaceDialogs): void {

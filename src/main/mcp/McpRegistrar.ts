@@ -9,7 +9,10 @@ import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import { MCP_TARGETS, externalRegistrationSkipReason } from '../../shared/mcpTargets';
 import { isMcpBrokerEnabled } from './BrokerSupervisor';
 import { canConnectBrokerPipe } from './brokerProbe';
-import { stabilizeMcpBundle } from './stabilizeBundle';
+import { stabilizeMcpBundle, type StabilizeResult } from './stabilizeBundle';
+import { prepareNativeLauncher } from './nativeLauncher';
+import { chooseLauncher, nativeLauncherPath, runNativeSelfTest, type LauncherChoice, type SelfTestVerdict } from '../../shared/mcpLauncher';
+import { nativeHooksBasename } from '../../shared/hooks/hookFlavours';
 import { CODEX_NOTIFY_BASENAME } from '../../shared/configIO';
 import {
   OPENCODE_PLUGIN_BUNDLE_BASENAME,
@@ -18,6 +21,7 @@ import {
 } from '../../shared/lifecycleIntegrations';
 import {
   readAllTargetStatuses,
+  readTargetStatus,
   registerTarget,
   unregisterTarget,
   registerCodexNotify,
@@ -44,6 +48,14 @@ export interface McpTargetResult {
   id: string;
   success: boolean;
   error?: string;
+}
+
+/** Per-registration stabilize results, by source directory. */
+type StabilizeMemo = Map<string, StabilizeResult>;
+
+export interface McpRegistrarDeps {
+  /** The native launcher's self-test; the real one runs the binary. */
+  nativeSelfTest?: (binary: string) => Promise<SelfTestVerdict>;
 }
 
 export interface RegisterOptions {
@@ -90,10 +102,12 @@ export class McpRegistrar {
   private registered = false;
   /** Per-target sets of keys wmux wrote this session (so we update/own them). */
   private readonly ownedKeys = new Map<string, Set<string>>();
+  private readonly nativeSelfTest: (binary: string) => Promise<SelfTestVerdict>;
 
-  constructor() {
+  constructor(deps: McpRegistrarDeps = {}) {
     this.home = app.getPath('home');
     this.authTokenPath = getAuthTokenPath();
+    this.nativeSelfTest = deps.nativeSelfTest ?? runNativeSelfTest;
   }
 
   /** Absolute path to the Claude Code user config file (back-compat accessor). */
@@ -234,8 +248,11 @@ export class McpRegistrar {
         return results;
       }
 
-      const mcpScript = this.getMcpScriptPath(useShim);
-      if (!mcpScript) {
+      // Only past the skip above: the stable directory ignores the data
+      // suffix, so an isolated instance must never install or run a launcher
+      // there that production agents would then start.
+      const choice = await this.resolveLauncher(useShim);
+      if (!choice) {
         console.warn('[McpRegistrar] Could not determine MCP script path — skipping registration.');
         if (opts?.targets) {
           return opts.targets.map((id) => ({
@@ -273,7 +290,7 @@ export class McpRegistrar {
           // path refresh), and it must never overrule a profile the user chose
           // with `wmux mcp register --profile`: omitting it preserves whatever
           // the config already carries. Only that CLI flag sets one explicitly.
-          const result = registerTarget(target, this.home, mcpScript, this.ownedFor(target.id));
+          const result = registerTarget(target, this.home, choice.launcher, this.ownedFor(target.id));
           if (result.wrote.length > 0) {
             console.log(`[McpRegistrar] ${target.displayName}: wrote ${result.wrote.join(', ')} → ${result.configPath}`);
           }
@@ -321,6 +338,22 @@ export class McpRegistrar {
         }
       }
 
+      // Without the launcher this time, no entry may stay on it, including
+      // targets this call did not cover (a target registered only on request):
+      // its copy is kept but not offered, and may not run here.
+      if (choice.lane !== 'native' && app.isPackaged) {
+        const native = nativeLauncherPath(path.join(this.home, '.wmux', 'mcp'));
+        for (const target of MCP_TARGETS) {
+          try {
+            if (readTargetStatus(target, this.home).wmux.path !== native) continue;
+            const moved = registerTarget(target, this.home, choice.launcher, this.ownedFor(target.id));
+            if (moved.wrote.length > 0) console.log(`[McpRegistrar] ${target.displayName}: moved off the native launcher → ${moved.configPath}`);
+          } catch (err) {
+            console.error(`[McpRegistrar] ${target.displayName}: could not move off the native launcher:`, err);
+          }
+        }
+      }
+
       // Official lifecycle integrations are isolated so one agent's config or
       // filesystem failure never aborts MCP registration or another bridge.
       // A per-target Register touches only its target: the Codex notify bridge goes with Codex,
@@ -341,7 +374,8 @@ export class McpRegistrar {
       }
 
       this.registered = true;
-      console.log(`[McpRegistrar] Registered wmux MCP → ${mcpScript}`);
+      const registered = choice.launcher.kind === 'node' ? choice.launcher.script : `${choice.launcher.binary} mcp-shim`;
+      console.log(`[McpRegistrar] Registered wmux MCP (${choice.lane}) → ${registered}`);
     } catch (err) {
       console.error('[McpRegistrar] Failed to register:', err);
       // macOS Time Machine restore / sudo-written configs surface
@@ -387,28 +421,68 @@ export class McpRegistrar {
     this.ownedKeys.clear();
   }
 
-  private getMcpScriptPath(useShim: boolean): string | null {
-    // Broker topology: agents spawn the thin shim instead of the full bundle;
-    // the resident broker (BrokerSupervisor) hosts the actual server. Registered
-    // server name stays "wmux" — only the script path changes, which hosts
-    // tolerate without a restart (design doc §81: a NEW name would trip host
-    // schema caches). `useShim` is decided by the caller (readiness gate or an
-    // internal probe) so registration falls back to the full bundle whenever the
-    // broker isn't reachable. Fail-open: if the shim file is missing (stale
-    // build), fall through to the full bundle so agents keep working.
-    if (useShim) {
-      if (app.isPackaged) {
-        // Packaged shim lives in the versioned resourcesPath — stabilize it to
-        // ~/.wmux/mcp/ so the registered command survives app-* swaps.
-        const shim = path.join(process.resourcesPath, 'mcp-bundle', 'shim.js');
-        if (fs.existsSync(shim)) return this.stabilizePackaged(shim);
-      } else {
-        const shim = path.join(app.getAppPath(), 'dist', 'mcp', 'mcp', 'shim.js');
-        if (fs.existsSync(shim)) return shim;
-      }
-      console.error('[McpRegistrar] WMUX_MCP_BROKER=1 but shim.js missing — falling back to full bundle');
-    }
+  /**
+   * The launcher to register: the native launcher when the broker is enabled
+   * and it is healthy (no readiness probe, see shared/mcpLauncher.ts), else
+   * the node shim when the broker answers (`useShim`), else the full bundle.
+   */
+  private async resolveLauncher(useShim: boolean): Promise<LauncherChoice | null> {
+    const brokerEnabled = isMcpBrokerEnabled();
+    // One stabilize (one hash of the bundle) per registration, shared by
+    // every script resolved from the same directory below.
+    const memo: StabilizeMemo = new Map();
+    const nativeBinary = brokerEnabled && app.isPackaged ? await this.prepareNative(memo) : null;
+    return chooseLauncher({
+      // An explicit `useShim: true` still selects the shim with the flag off.
+      brokerEnabled: brokerEnabled || useShim,
+      nativeBinary,
+      brokerReady: async () => useShim,
+      // Resolved only when it can be chosen, as before: the shim is stabilized
+      // and its absence logged only for a broker that answers.
+      shimScript: useShim && !nativeBinary ? this.getShimScriptPath(memo) : null,
+      bundleScript: this.getMcpScriptPath(memo),
+    });
+  }
 
+  /**
+   * Copy the shipped native launcher beside the stable bundle and self-test
+   * it. Only when that bundle stabilized: the launcher falls back to the
+   * `index.js` next to it, so without one it would have nothing to run.
+   */
+  private async prepareNative(memo: StabilizeMemo): Promise<string | null> {
+    const bundle = path.join(process.resourcesPath, 'mcp-bundle', 'index.js');
+    if (!fs.existsSync(bundle)) return null;
+    const stableDir = path.join(this.home, '.wmux', 'mcp');
+    const stable = this.stabilizeOnce(bundle, memo);
+    if (!stable.stabilized) {
+      console.warn(`[McpRegistrar] native MCP launcher not used: the stable bundle is unavailable (${stable.reason})`);
+      return null;
+    }
+    const result = await prepareNativeLauncher({
+      sourcePath: path.join(process.resourcesPath, 'native-hooks', nativeHooksBasename()),
+      stableDir,
+      selfTest: this.nativeSelfTest,
+    });
+    if (!result.binary) console.warn(`[McpRegistrar] native MCP launcher not used: ${result.reason}`);
+    return result.binary;
+  }
+
+  /** The node shim for the broker topology, or null when this build has none. */
+  private getShimScriptPath(memo: StabilizeMemo): string | null {
+    // Packaged shim lives in the versioned resourcesPath — stabilize it to
+    // ~/.wmux/mcp/ so the registered command survives app-* swaps.
+    if (app.isPackaged) {
+      const shim = path.join(process.resourcesPath, 'mcp-bundle', 'shim.js');
+      if (fs.existsSync(shim)) return this.stabilizePackaged(shim, memo);
+    } else {
+      const shim = path.join(app.getAppPath(), 'dist', 'mcp', 'mcp', 'shim.js');
+      if (fs.existsSync(shim)) return shim;
+    }
+    console.error('[McpRegistrar] WMUX_MCP_BROKER=1 but shim.js missing — falling back to full bundle');
+    return null;
+  }
+
+  private getMcpScriptPath(memo: StabilizeMemo): string | null {
     if (app.isPackaged) {
       // Production: bundled single-file in resources/mcp-bundle/. Register a
       // STABLE copy under ~/.wmux/mcp/ instead of this versioned resourcesPath
@@ -416,10 +490,10 @@ export class McpRegistrar {
       // app-{version} dir (or a dogfood worktree/out/) is later removed — see
       // stabilizeMcpBundle. Fail-open returns the versioned path.
       const bundlePath = path.join(process.resourcesPath, 'mcp-bundle', 'index.js');
-      if (fs.existsSync(bundlePath)) return this.stabilizePackaged(bundlePath);
+      if (fs.existsSync(bundlePath)) return this.stabilizePackaged(bundlePath, memo);
       // Fallback: old layout (resources/mcp/mcp/index.js)
       const legacyPath = path.join(process.resourcesPath, 'mcp', 'mcp', 'index.js');
-      if (fs.existsSync(legacyPath)) return this.stabilizePackaged(legacyPath);
+      if (fs.existsSync(legacyPath)) return this.stabilizePackaged(legacyPath, memo);
       return null;
     }
 
@@ -455,9 +529,21 @@ export class McpRegistrar {
    * any copy failure it fails open to the versioned source so MCP still works
    * this session (see stabilizeMcpBundle).
    */
-  private stabilizePackaged(source: string): string {
-    const stableDir = path.join(this.home, '.wmux', 'mcp');
-    const result = stabilizeMcpBundle(source, stableDir, app.getVersion());
+  /** stabilizeMcpBundle once per source directory and registration: the
+   *  copy is the whole directory, so every script in it shares the result. */
+  private stabilizeOnce(source: string, memo: StabilizeMemo): StabilizeResult {
+    const dir = path.dirname(source);
+    let result = memo.get(dir);
+    if (!result) {
+      result = stabilizeMcpBundle(source, path.join(this.home, '.wmux', 'mcp'), app.getVersion());
+      memo.set(dir, result);
+    }
+    if (!result.stabilized) return { ...result, scriptPath: source };
+    return { ...result, scriptPath: path.join(path.dirname(result.scriptPath), path.basename(source)) };
+  }
+
+  private stabilizePackaged(source: string, memo: StabilizeMemo): string {
+    const result = this.stabilizeOnce(source, memo);
     if (result.stabilized) {
       if (result.synced) {
         console.log(`[McpRegistrar] MCP bundle synced to stable path → ${result.scriptPath}`);

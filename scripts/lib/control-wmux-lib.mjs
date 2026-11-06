@@ -116,6 +116,8 @@ export function scrubEnv(env, suffix) {
     out[k] = v;
   }
   out.WMUX_DATA_SUFFIX = suffix;
+  // The test harness opt-in (src/main/browser-session/cdpTestOptIn.ts).
+  out.WMUX_TEST_CDP_PORT = '1';
   return out;
 }
 

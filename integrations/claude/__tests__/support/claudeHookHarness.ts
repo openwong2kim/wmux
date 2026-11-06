@@ -20,7 +20,11 @@
  *
  * `variants` lists the outcomes the reference may produce where node itself
  * is racy. A port is held to `strictForPort` at the same path instead: the
- * single outcome a full-duplex transport must reach.
+ * single outcome a full-duplex transport must reach; or, where only the
+ * kernel's errno differs between runs or platforms, to `portVariants`. In a
+ * `strictForPort` value, an array element `"<prefix>"` stands for the
+ * implementation's prefix arguments as its log shows them: `claude-hook`, or
+ * `<bridge>` for the argv a Claude settings entry carries.
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -43,8 +47,9 @@ export const IMPL = implCommand();
 /** True when the reference (node + the .mjs) runs, so `variants` apply. */
 export const IS_REFERENCE = !process.env.WMUX_CLAUDE_HOOK_IMPL?.trim();
 /**
- * The Node bridge a native implementation hands decision modes to: the copy
- * beside its binary. Its path is masked like the reference's.
+ * The Node bridge beside a native implementation's binary (what its kill
+ * switch and a stale pin hand runs to). Its path is masked like the
+ * reference's.
  */
 const SIBLING_BRIDGE = IS_REFERENCE ? BRIDGE_PATH : path.join(path.dirname(IMPL[0]), 'wmux-bridge.mjs');
 
@@ -61,6 +66,8 @@ export interface Step {
   stdin?: string | { parts: StdinPart[] } | { hold: true };
   /** Activity stamp name → its age in ms, set on the file just before the step. */
   stampAges?: Record<string, number>;
+  /** Streams whose reader is gone before the implementation writes: closed right after spawn. */
+  closed?: ('stdout' | 'stderr')[];
 }
 
 export interface Fixture {
@@ -93,6 +100,8 @@ export interface Fixture {
   platformVariants?: Partial<Record<NodeJS.Platform, Record<string, unknown[]>>>;
   /** Dotted path → the one value a port must produce there. */
   strictForPort?: Record<string, unknown>;
+  /** Dotted path → the values a port may produce there, in place of `variants`. */
+  portVariants?: Record<string, unknown[]>;
   expect?: { steps: unknown[] };
 }
 
@@ -194,6 +203,7 @@ function runImpl(step: Step, env: NodeJS.ProcessEnv, box: Sandbox): Promise<RawR
   const err: Buffer[] = [];
   child.stdout.on('data', (c: Buffer) => out.push(c));
   child.stderr.on('data', (c: Buffer) => err.push(c));
+  for (const name of step.closed ?? []) child[name].destroy();
   // The bridge stops reading at its cap and destroys stdin; the rest of a large
   // write then fails here, which is expected.
   child.stdin.on('error', () => { /* expected after the cap */ });
@@ -260,13 +270,44 @@ function digest(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
 }
 
+/**
+ * JSON.stringify of a parsed JSON value, without recursion: a request the port
+ * forwards can nest deeper than this process's stack lets JSON.stringify go.
+ */
+function stringifyDeep(value: unknown): string {
+  const out: string[] = [];
+  const todo: ({ text: string } | { value: unknown })[] = [{ value }];
+  while (todo.length > 0) {
+    const task = todo.pop() as { text: string } | { value: unknown };
+    if ('text' in task) {
+      out.push(task.text);
+      continue;
+    }
+    const v = task.value;
+    if (!v || typeof v !== 'object') {
+      out.push(JSON.stringify(v));
+      continue;
+    }
+    const entries = Array.isArray(v) ? v.map((item) => ['', item] as const) : Object.entries(v);
+    const later: ({ text: string } | { value: unknown })[] = [{ text: Array.isArray(v) ? '[' : '{' }];
+    entries.forEach(([key, item], i) => {
+      if (i > 0) later.push({ text: ',' });
+      if (!Array.isArray(v)) later.push({ text: `${JSON.stringify(key)}:` });
+      later.push({ value: item });
+    });
+    later.push({ text: Array.isArray(v) ? ']' : '}' });
+    for (let i = later.length - 1; i >= 0; i--) todo.push(later[i]);
+  }
+  return out.join('');
+}
+
 function normaliseDeep(value: unknown, box: Sandbox, depth = 0): unknown {
   if (typeof value === 'string') {
     const text = normaliseString(value, box);
     return text.length > LONG_STRING ? `<string length=${text.length} sha256=${digest(text)}>` : text;
   }
   if (value && typeof value === 'object' && depth >= DEEP_LEVEL) {
-    const text = JSON.stringify(value);
+    const text = stringifyDeep(value);
     return `<json length=${text.length} sha256=${digest(text)}>`;
   }
   if (Array.isArray(value)) return value.map((v) => normaliseDeep(v, box, depth + 1));
@@ -317,12 +358,13 @@ function normaliseLog(line: string, pid: number, problems: string[]): unknown {
   if (entry.pid !== pid) problems.push(`log pid ${String(entry.pid)} is not ${pid}`);
   delete entry.ts;
   delete entry.pid;
-  // A native implementation marks its own lines; the lines it leaves to the
-  // Node bridge (decision modes) carry no mark. The reference never marks.
-  if ('impl' in entry) {
-    if (IS_REFERENCE || entry.impl !== 'native') problems.push(`log impl ${JSON.stringify(entry.impl)}`);
-    delete entry.impl;
+  // A native implementation marks every line it writes, and no fixture hands
+  // a native run to Node, so an unmarked line from a port is a run that went
+  // to Node anyway. The reference never marks.
+  if (IS_REFERENCE ? 'impl' in entry : entry.impl !== 'native') {
+    problems.push(`log impl ${JSON.stringify(entry.impl)}`);
   }
+  delete entry.impl;
   // The message is V8's and changes between node releases; the class is the contract.
   if (entry.outcome === 'malformed-stdin' && typeof entry.error === 'string') {
     entry.error = entry.error.split(':')[0];
@@ -332,9 +374,21 @@ function normaliseLog(line: string, pid: number, problems: string[]): unknown {
 
 const DEBUG_PREFIX = 'WMUX_BRIDGE_DEBUG_ENVELOPE=';
 
-/** The debug line is compared as raw bytes: volatile values are masked in the text. */
+/**
+ * The debug line is compared as raw bytes: volatile values are masked in the
+ * text. An uncaught exception's trace keeps the bridge's own frames; node's
+ * internal frames (a run of them is one line) and its version change with the
+ * node release, so they are masked.
+ */
 export function normaliseStderr(stderr: string, problems: string[]): string {
-  return stderr.split('\n').map((line) => {
+  const lines: string[] = [];
+  for (const line of stderr.split('\n')) {
+    // `at fn (node:…)`, `at fn [as x] (node:…)`, `at node:…`, `at async node:…`
+    const internal = /^\s+at (?:.*\(node:[^)]*\)|(?:async )?node:\S+)$/.test(line);
+    if (internal && lines.at(-1) === '    at <node internals>') continue;
+    lines.push(internal ? '    at <node internals>' : line.replace(/^Node\.js v\d+\.\d+\.\d+$/, 'Node.js <version>'));
+  }
+  return lines.map((line) => {
     if (!line.startsWith(DEBUG_PREFIX)) return line;
     let text = line;
     const ts = /"ts":(\d+)(?=[,}])/.exec(text);
@@ -396,15 +450,36 @@ function holderAt(result: unknown, dotted: string): [Record<string, unknown> | u
   return [parent as Record<string, unknown> | undefined, last];
 }
 
-function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems: string[]): void {
-  const paths = new Set([...Object.keys(fixture.variants ?? {}), ...Object.keys(fixture.strictForPort ?? {})]);
+/**
+ * `value` with each `"<prefix>"` array element replaced by the prefix
+ * arguments, each masked by normaliseString as the log they are compared with.
+ */
+export function withPrefix(value: unknown, prefix: readonly string[], box: Sandbox): unknown {
+  const shown = prefix.map((arg) => normaliseString(arg, box));
+  const expand = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.flatMap((item) => (item === '<prefix>' ? shown : [expand(item)]));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([key, item]) => [key, expand(item)]));
+    return v;
+  };
+  return expand(value);
+}
+
+function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems: string[], box: Sandbox): void {
+  const paths = new Set([
+    ...Object.keys(fixture.variants ?? {}),
+    ...Object.keys(fixture.strictForPort ?? {}),
+    ...Object.keys(fixture.portVariants ?? {}),
+  ]);
   for (const dotted of paths) {
     const [holder, last] = holderAt(result, dotted);
     const actual = JSON.stringify(holder?.[last]);
     const strict = fixture.strictForPort?.[dotted];
+    const forPort = fixture.portVariants?.[dotted];
     const allowed = !IS_REFERENCE && strict !== undefined
-      ? [strict]
-      : [...fixture.variants?.[dotted] ?? [], ...fixture.platformVariants?.[process.platform]?.[dotted] ?? []];
+      ? [withPrefix(strict, IMPL.slice(1), box)]
+      : !IS_REFERENCE && forPort !== undefined
+        ? forPort
+        : [...fixture.variants?.[dotted] ?? [], ...fixture.platformVariants?.[process.platform]?.[dotted] ?? []];
     if (holder && allowed.some((v) => JSON.stringify(v) === actual)) holder[last] = '<variant>';
     else problems.push(`${dotted} = ${actual}, not one of ${JSON.stringify(allowed)}`);
   }
@@ -541,7 +616,7 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
     }
     // Round-trip: absent fields drop out exactly as they do in the stored golden.
     const result = JSON.parse(JSON.stringify({ steps })) as { steps: unknown[] };
-    applyVariants(result, fixture, problems);
+    applyVariants(result, fixture, problems, box);
     return { result, problems };
   } finally {
     if (parentProfile) {

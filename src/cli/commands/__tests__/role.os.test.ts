@@ -213,6 +213,12 @@ describe('wmux role resolve', () => {
     expect(JSON.parse((await run(['resolve', 'Tester'], true, () => session)).out[0]).freshContext).toBe(false);
   });
 
+  it('a codex role level follows the launcher the codex config registers', () => {
+    const native = { kind: 'native' as const, binary: '/u/.wmux/mcp/wmux-native' };
+    const r = resolveRole('Reviewer', { agent: 'codex', tools: 'role' }, '/e/index.js', () => true, [], () => native);
+    expect(r.mcp?.argv).toEqual(['-c', 'mcp_servers.wmux.args=["mcp-shim","--role=Reviewer"]']);
+  });
+
   it('resolveRole reports fields without an agent', () => {
     expect(resolveRole('R', { model: 'm' })).toMatchObject({ role: 'R', model: 'm', argv: [], flags: [] });
   });

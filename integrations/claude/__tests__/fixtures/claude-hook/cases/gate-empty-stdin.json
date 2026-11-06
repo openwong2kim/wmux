@@ -1,0 +1,46 @@
+{
+  "description": "Stop --gate with empty stdin: logged, nothing sent, exit 0.",
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "r"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate"
+      ],
+      "stdin": ""
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "empty-stdin"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

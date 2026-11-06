@@ -62,13 +62,13 @@ describe('fencedRead', () => {
     const owner = {};
     let reads = 0;
     const read = async () => ++reads;
-    for (const depth of [1, 2, 3, 4]) await fencedRead(owner, `text:${depth}`, 'f', read, keep('f'));
+    for (const depth of [1, 2, 3, 4, 5, 6]) await fencedRead(owner, `text:${depth}`, 'f', read, keep('f'));
     await fencedRead(owner, 'text:1', 'f', read, keep('f')); // a hit: text:1 is the newest again
-    await fencedRead(owner, 'text:5', 'f', read, keep('f')); // drops text:2, the least recently used
-    expect(reads).toBe(5);
+    await fencedRead(owner, 'text:7', 'f', read, keep('f')); // drops text:2, the least recently used
+    expect(reads).toBe(7);
     await fencedRead(owner, 'text:1', 'f', read, keep('f'));
-    expect(reads).toBe(5);
+    expect(reads).toBe(7);
     await fencedRead(owner, 'text:2', 'f', read, keep('f'));
-    expect(reads).toBe(6);
+    expect(reads).toBe(8);
   });
 });

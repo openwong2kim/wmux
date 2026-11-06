@@ -14,6 +14,7 @@ import {
   unregisterCodexHooks,
   readCodexHooksStatus,
   codexWmuxApprovedTools,
+  codexWmuxLauncher,
 } from '../mcpRegistration';
 import { upsertCodexHooksToml } from '../configIO';
 import { getWmuxHomeDir } from '../constants';
@@ -50,6 +51,28 @@ describe('registerTarget — Claude (json, createIfMissing)', () => {
     const r = registerTarget(claudeTarget, home, WMUX_SCRIPT);
     expect(r.wrote).toContain('wmux');
     expect(readTargetStatus(claudeTarget, home).wmux.path).toBe(WMUX_SCRIPT);
+  });
+
+  it('switches between node and the native launcher, and is idempotent on each', () => {
+    const native = { kind: 'native' as const, binary: 'C:\\Users\\u\\.wmux\\mcp\\wmux-native.exe' };
+    registerTarget(claudeTarget, home, WMUX_SCRIPT, undefined, 'core');
+    const toNative = registerTarget(claudeTarget, home, native);
+    expect(toNative.wrote).toEqual(['wmux']);
+    expect(toNative.profile).toBe('core');
+    expect(readTargetStatus(claudeTarget, home).wmux).toEqual({ registered: true, path: native.binary, profile: 'core' });
+    expect(registerTarget(claudeTarget, home, native).wrote).toEqual([]);
+    const back = registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(back.wrote).toEqual(['wmux']);
+    expect(readTargetStatus(claudeTarget, home).wmux).toEqual({ registered: true, path: WMUX_SCRIPT, profile: 'core' });
+  });
+
+  it('rewrites an entry whose args match but whose command differs', () => {
+    const p = claudeTarget.configPath(home);
+    const binary = '/Users/u/.wmux/mcp/wmux-native';
+    // Same args as a native entry would have, but launched with node.
+    fs.writeFileSync(p, JSON.stringify({ mcpServers: { wmux: { command: 'node', args: ['mcp-shim'] } } }), 'utf8');
+    expect(registerTarget(claudeTarget, home, { kind: 'native', binary }).wrote).toEqual(['wmux']);
+    expect(JSON.parse(fs.readFileSync(p, 'utf8')).mcpServers.wmux).toEqual({ command: binary, args: ['mcp-shim'] });
   });
 
   it('leaves a FOREIGN (non-node) wmux entry untouched', () => {
@@ -691,5 +714,16 @@ describe('registerCodexHooks — the hooks lane (#1107)', () => {
     // The operator re-pastes the block by hand (README flow: no stamp write).
     writeCodex(upsertCodexHooksToml('model = "x"\n', BRIDGE));
     expect(readCodexHooksStatus(home, BRIDGE).state).toBe('written');
+  });
+});
+
+describe('codexWmuxLauncher', () => {
+  it('answers with the launcher the codex config registered, else node with the given entry', () => {
+    const configPath = path.join(home, 'config.toml');
+    expect(codexWmuxLauncher(configPath, '/e/index.js')).toEqual({ kind: 'node', script: '/e/index.js' });
+    fs.writeFileSync(configPath, '[mcp_servers.wmux]\ncommand = "node"\nargs = ["/old/index.js"]\n');
+    expect(codexWmuxLauncher(configPath, '/e/index.js')).toEqual({ kind: 'node', script: '/e/index.js' });
+    fs.writeFileSync(configPath, '[mcp_servers.wmux]\ncommand = "/Users/u/.wmux/mcp/wmux-native"\nargs = ["mcp-shim"]\n');
+    expect(codexWmuxLauncher(configPath, '/e/index.js')).toEqual({ kind: 'native', binary: '/Users/u/.wmux/mcp/wmux-native' });
   });
 });

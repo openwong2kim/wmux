@@ -122,6 +122,8 @@ describe('WMUX_CLI_METHODS source invariant', () => {
       // Launcher-only; main requires its own live pane claim, no target argument.
       'codex.relay.prepare',
       'codex.relay.close',
+      // `wmux doctor`: read-only counts plus the broker's own pid.
+      'mcp.sessions.summary',
     ]);
     const leaked = reserved
       .filter((m) => WMUX_CLI_METHODS.has(m))

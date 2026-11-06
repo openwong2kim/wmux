@@ -24,6 +24,8 @@ import * as fs from 'fs';
 import {
   canConnectBrokerPipe,
   isolatedInstanceNotice,
+  launcherForTarget,
+  resolveWmuxLauncher,
   resolveWmuxScript,
   selectedProfile,
   selectedTargets,
@@ -142,6 +144,42 @@ describe('resolveWmuxScript', () => {
     existsFor([]); // nothing exists
 
     expect(await resolveWmuxScript()).toBeNull();
+  });
+});
+
+describe('resolveWmuxLauncher / launcherForTarget', () => {
+  const home = '/home/u';
+  const approved = '/home/u/.wmux/mcp/wmux-native';
+  const approves = () => approved;
+  const approvesNothing = () => null;
+  function existsAll() {
+    existsSyncMock.mockImplementation((p: unknown) => /(shim|index|entry)\.js$/.test(String(p)));
+  }
+
+  it('offers the native launcher the app approved when a broker answers, running nothing', async () => {
+    scriptConnect('connect');
+    existsAll();
+    const plan = await resolveWmuxLauncher(home, approves);
+    expect(plan?.launcher).toEqual({ kind: 'native', binary: approved });
+  });
+
+  it('offers native only for a build the app approved', async () => {
+    scriptConnect('connect');
+    existsAll();
+    const plan = await resolveWmuxLauncher(home, approvesNothing);
+    expect(plan?.launcher.kind === 'node' && plan.launcher.script).toMatch(/shim\.js$/);
+    expect(plan?.approvedNative).toBeNull();
+    expect(launcherForTarget(plan!, approved)).toEqual(plan?.launcher);
+  });
+
+  it('with the app closed, keeps an entry already on the approved launcher and writes node elsewhere', async () => {
+    scriptConnect('error');
+    existsAll();
+    const plan = await resolveWmuxLauncher(home, approves);
+    expect(plan?.launcher.kind).toBe('node');
+    expect(launcherForTarget(plan!, approved)).toEqual({ kind: 'native', binary: approved });
+    expect(launcherForTarget(plan!, '/home/u/.wmux/mcp/index.js')).toEqual(plan?.launcher);
+    expect(launcherForTarget(plan!, null)).toEqual(plan?.launcher);
   });
 });
 

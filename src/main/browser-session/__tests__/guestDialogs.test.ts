@@ -230,3 +230,29 @@ describe('GuestDialogs', () => {
     expect(answers).toEqual([]);
   });
 });
+
+describe('GuestDialogs and the boxes dialogs leave', () => {
+  it('ties every dialog to its box when it opens, and ends the box when it closes, whoever answered', async () => {
+    const calls: string[] = [];
+    const dialogs = new GuestDialogs({
+      answer: async () => undefined,
+      note: () => undefined,
+      defer: (fn) => fn(),
+      sheets: {
+        trackOpening: (surfaceId, message, type) => calls.push(`open ${surfaceId} ${type} ${message.length}`),
+        closeIfStale: (surfaceId) => calls.push(`closed ${surfaceId}`),
+        forget: (surfaceId) => calls.push(`forget ${surfaceId}`),
+      },
+    });
+
+    dialogs.opening('person', 'confirm', 'sure?', false); // nobody driving: still tracked
+    dialogs.opening('agent', 'alert', 'y'.repeat(300), true); // the full text, not the note's copy
+    dialogs.opening('agent', 'beforeunload', '', true); // Electron settles these itself
+    dialogs.closed('agent');
+    dialogs.closed('person');
+    dialogs.forget('agent');
+    await settled();
+
+    expect(calls).toEqual(['open person confirm 5', 'open agent alert 300', 'closed agent', 'closed person', 'forget agent']);
+  });
+});

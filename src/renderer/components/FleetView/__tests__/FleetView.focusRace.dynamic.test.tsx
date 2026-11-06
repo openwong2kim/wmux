@@ -242,7 +242,7 @@ describe('FleetView — task triage', () => {
     await flushRaf();
     key(document.activeElement!, 'ArrowDown');
     await flushRaf();
-    expect(read).toHaveBeenCalledWith('pty-2', 20);
+    expect(read).toHaveBeenCalledWith('pty-2', 20, expect.any(Function));
     expect(container.querySelector('#fleet-output-preview')?.textContent).toBe('real terminal output');
     // Rows never carry terminal text; only the detail area does.
     expect(rows().some((row) => row.textContent?.includes('real terminal output'))).toBe(false);

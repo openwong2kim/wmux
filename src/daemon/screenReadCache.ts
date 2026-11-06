@@ -34,9 +34,11 @@ const counters = new Map<string, ScreenReadCounters>();
 
 /**
  * Kinds kept per session. A kind carries its read's depth (`text:300`), and
- * callers pick depths freely, so the oldest kind is dropped past this.
+ * callers pick depths freely, so the oldest kind is dropped past this. A busy
+ * agent pane is read as screen, undimmed screen, the verifier's pane frame and
+ * a text depth, plus StallWatch's and Fleet's tail kinds.
  */
-const KINDS_PER_SESSION = 4;
+const KINDS_PER_SESSION = 6;
 
 /** Counted by the kind's family (`text`, `screen`, `pane`), a fixed set. */
 function count(kind: string): ScreenReadCounters {

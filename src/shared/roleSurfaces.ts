@@ -55,11 +55,31 @@ export const ROLE_TOOL_SURFACES: Readonly<Record<OrchRole, readonly string[]>> =
   ],
 };
 
+/** What runs the `wmux` server: a node script (a bare string) or the native
+ *  launcher, whose args start with `mcp-shim` where a script's start with the
+ *  script. */
+export type WmuxServerLauncher = string | { kind: 'node'; script: string } | { kind: 'native'; binary: string };
+
+function launcherHead(launcher: WmuxServerLauncher): string {
+  if (typeof launcher === 'string') return launcher;
+  return launcher.kind === 'node' ? launcher.script : 'mcp-shim';
+}
+
+function launcherCommand(launcher: WmuxServerLauncher): string {
+  return typeof launcher !== 'string' && launcher.kind === 'native' ? launcher.binary : 'node';
+}
+
+function launcherPath(launcher: WmuxServerLauncher): string {
+  if (typeof launcher === 'string') return launcher;
+  return launcher.kind === 'node' ? launcher.script : launcher.binary;
+}
+
 /** Arguments for the `wmux` stdio server at a tool level. */
-export function wmuxServerArgs(entry: string, tools: WmuxTools, role?: OrchRole): string[] {
-  if (tools === 'core') return [entry, '--core'];
-  if (tools === 'role' && role) return [entry, `${ROLE_MODE_ARG_PREFIX}${role}`];
-  return [entry];
+export function wmuxServerArgs(entry: WmuxServerLauncher, tools: WmuxTools, role?: OrchRole): string[] {
+  const head = launcherHead(entry);
+  if (tools === 'core') return [head, '--core'];
+  if (tools === 'role' && role) return [head, `${ROLE_MODE_ARG_PREFIX}${role}`];
+  return [head];
 }
 
 function surfaceIsEmpty(tools: WmuxTools, role?: OrchRole): boolean {
@@ -76,16 +96,18 @@ function surfaceIsEmpty(tools: WmuxTools, role?: OrchRole): boolean {
  *   - codex 0.159.2: `-c mcp_servers.wmux.args=[...]` overrides the args
  *     (`codex mcp get wmux`), `-c mcp_servers.wmux.enabled=false` disables it.
  *   - agy: no MCP servers are registered, nothing to narrow.
- * `entry` is the stdio bundle the CLI configs already use (~/.wmux/mcp/index.js).
+ * `entry` is what the CLI configs already run: the stdio bundle
+ * (~/.wmux/mcp/index.js), or the native launcher where that is registered
+ * (for codex it must match the registered command; see codexWmuxLauncher).
  * Returns null for agents with no verified grammar.
  */
-export function roleMcpArgv(agent: string, role: OrchRole, entry: string, tools: WmuxTools = 'role'): string[] | null {
+export function roleMcpArgv(agent: string, role: OrchRole, entry: WmuxServerLauncher, tools: WmuxTools = 'role'): string[] | null {
   const serverArgs = wmuxServerArgs(entry, tools, role);
   switch (agent) {
     case 'claude':
       // One `=` token: --mcp-config is variadic, so a separate value would let it
       // swallow a positional prompt that follows.
-      return [`--mcp-config=${JSON.stringify({ mcpServers: { wmux: { command: 'node', args: serverArgs } } })}`];
+      return [`--mcp-config=${JSON.stringify({ mcpServers: { wmux: { command: launcherCommand(entry), args: serverArgs } } })}`];
     case 'codex':
       // JSON string escaping is valid TOML basic-string escaping.
       return surfaceIsEmpty(tools, role)
@@ -109,11 +131,11 @@ export function roleMcpArgv(agent: string, role: OrchRole, entry: string, tools:
 export function toolSurfaceShellFlags(
   agent: string,
   tools: WmuxTools,
-  entry: string,
+  entry: WmuxServerLauncher,
   role: OrchRole | undefined,
   claudeConfigFile: string,
 ): string | null {
-  if (/['"`$]/.test(entry) || /['"`$]/.test(claudeConfigFile)) return null;
+  if (/['"`$]/.test(launcherPath(entry)) || /['"`$]/.test(claudeConfigFile)) return null;
   switch (agent) {
     case 'claude':
       // The `=` form: --mcp-config is variadic, and the flags land right after

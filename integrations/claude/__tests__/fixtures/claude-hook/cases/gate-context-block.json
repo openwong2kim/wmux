@@ -1,0 +1,80 @@
+{
+  "description": "UserPromptSubmit --gate --context with a block: the reason is written twice, gate-blocked then prompt-blocked, exit 2.",
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "r"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "UserPromptSubmit",
+        "--gate",
+        "--context"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"prompt\":\"p\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 2,
+        "stdout": "",
+        "stderr": "r\nr\n",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "ok",
+            "target": "main"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "gate-blocked",
+            "target": "main"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "prompt-blocked",
+            "target": "main"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.user_prompt_submit",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "prompt": "p"
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
