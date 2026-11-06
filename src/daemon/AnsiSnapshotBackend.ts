@@ -9,7 +9,7 @@ interface Diagnostics {
   native: number;
   fallbacks: number;
   skipped: number;
-  last?: { backend: 'rust' | 'xterm'; reason: Reason };
+  last?: { backend: 'rust' | 'xterm'; reason: Reason; detail?: string };
 }
 const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0 };
 let failedModule: { path: string | undefined } | undefined;
@@ -74,6 +74,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
     return chunks;
   });
   let failure: Reason = 'error';
+  let failureDetail: string | undefined; // BASELINE TRACE
   try {
     // Half of the caller's total budget stays reserved for the fallback.
     const native = await generateRustSnapshot({ ...input, drainQueue: record, budgetMs: budget / 2 }, 'ansi');
@@ -96,11 +97,12 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
       // module is sound.
       else if (native.detail?.startsWith('unsupported-state')) failure = 'state';
       else if (native.detail?.startsWith('unsupported-')) failure = 'unsupported';
+      failureDetail = native.detail;
     }
   } catch { /* Module or disposal errors also use the intact xterm input. */ }
   if (failure === 'error') failedModule = { path: modulePath };
   diagnostics.fallbacks++;
-  diagnostics.last = { backend: 'xterm', reason: failure };
+  diagnostics.last = { backend: 'xterm', reason: failure, detail: failureDetail };
   const remaining = budget - (performance.now() - started);
   if (remaining <= 0) return overBudget();
   let replayed = false;
