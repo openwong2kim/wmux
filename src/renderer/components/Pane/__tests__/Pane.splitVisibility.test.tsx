@@ -110,6 +110,19 @@ describe('pickSplitShownSurfaces — the work side remembers what it last showed
   });
 });
 
+describe('pickSplitShownSurfaces — the terminal side remembers what it last showed', () => {
+  it('a file opened from the second terminal tab keeps that tab beside the editor', () => {
+    const r = pickSplitShownSurfaces([T('term-1'), T('term-2')], [T('edit-1')], 'edit-1', undefined, 'term-2');
+    expect(r.shownTerminalId).toBe('term-2');
+    expect(r.shownWorkId).toBe('edit-1');
+  });
+
+  it('a remembered terminal tab that was closed falls back to the first', () => {
+    const r = pickSplitShownSurfaces([T('term-1')], [T('edit-1')], 'edit-1', undefined, 'gone');
+    expect(r.shownTerminalId).toBe('term-1');
+  });
+});
+
 describe('resolveRemoteAttachPaneId — #1140 split-into-a-pane vs the #1100 tab', () => {
   it('null direction (the #1100 tab flow): always the pane the ⋮ menu opened on, regardless of splitResult', () => {
     // splitPane is never even called on this path — the caller passes the

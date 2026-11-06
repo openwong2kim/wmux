@@ -8,7 +8,7 @@
 // multiview grid, or the one the Bots page hosts in its worker panel), and the
 // surface is the one its pane draws — the active tab of a stacked pane, or the
 // terminal column's tab of a terminal/work split whatever side holds the
-// focus. The split's terminal column counts even while the work area is
+// focus (the tab the pane last drew there, `splitTerminalByLeaf`). The split's terminal column counts even while the work area is
 // expanded over it: it is a background tab of a pane the user is looking at.
 // The window's own state (minimized, behind another app) never counts, so a
 // start-minimized app keeps its active workspace hot.
@@ -21,7 +21,8 @@ import { selectWorkerPanelHost } from '../slices/roomSlice';
 import { isTerminalKindSurfaceType, isTerminalSurfaceType, isWorkSurfaceType, pickSplitShownSurfaces } from '../../components/Pane/surfaceKinds';
 import { surfacePtyLifecycle } from '../slices/ptyLifecycleSlice';
 
-type ShownState = Pick<StoreState, 'workspaces' | 'activeWorkspaceId' | 'multiviewIds' | 'appRoute' | 'botsWorkerPanel'>;
+type ShownState = Pick<StoreState, 'workspaces' | 'activeWorkspaceId' | 'multiviewIds' | 'appRoute' | 'botsWorkerPanel'>
+  & Partial<Pick<StoreState, 'splitTerminalByLeaf'>>;
 
 /** Agents whose recovered panes are resumed automatically on start. */
 export const AUTO_RESUME_AGENTS: ReadonlySet<string> = new Set(['claude', 'codex']);
@@ -36,12 +37,16 @@ export function isWorkspaceShown(state: ShownState, workspaceId: string): boolea
   return selectWorkerPanelHost(state) === workspaceId;
 }
 
-/** The surface its leaf draws: the active tab, or the split's terminal column. */
-export function isSurfaceDrawnInLeaf(leaf: PaneLeaf, surfaceId: string): boolean {
+/**
+ * The surface its leaf draws: the active tab, or the split's terminal column
+ * (`lastTerminalId`: the terminal tab the pane last drew, as Pane picks it).
+ */
+export function isSurfaceDrawnInLeaf(leaf: PaneLeaf, surfaceId: string, lastTerminalId?: string): boolean {
   if (leaf.activeSurfaceId === surfaceId) return true;
   const terminals = leaf.surfaces.filter((s) => isTerminalKindSurfaceType(s.surfaceType));
   const split = terminals.length > 0 && leaf.surfaces.some((s) => isWorkSurfaceType(s.surfaceType));
-  return split && pickSplitShownSurfaces(terminals, [], leaf.activeSurfaceId).shownTerminalId === surfaceId;
+  return split
+    && pickSplitShownSurfaces(terminals, [], leaf.activeSurfaceId, undefined, lastTerminalId).shownTerminalId === surfaceId;
 }
 
 /**
@@ -52,7 +57,7 @@ export function isSurfaceShown(state: ShownState, workspaceId: string, surfaceId
   if (!isWorkspaceShown(state, workspaceId)) return false;
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   const leaf = ws ? findLeafBySurfaceId(ws.rootPane, surfaceId) : null;
-  return !!leaf && isSurfaceDrawnInLeaf(leaf, surfaceId);
+  return !!leaf && isSurfaceDrawnInLeaf(leaf, surfaceId, state.splitTerminalByLeaf?.[leaf.id]);
 }
 
 /** What a pane knows of the agent conversation it would resume. */

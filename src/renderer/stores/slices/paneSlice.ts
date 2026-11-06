@@ -101,6 +101,16 @@ export interface PaneSlice {
   stashPulse: { workspaceId: string; paneId: string; at: number } | null;
   clearStashPulse: () => void;
   /**
+   * Per leaf id: the terminal tab the leaf last drew. In a terminal/work
+   * split the terminal column keeps showing it while the work side holds the
+   * focus, so a file opened from the second tab stays beside that tab. The
+   * pane writes it; the pane and the shown-surface selector both read it, so
+   * they agree on which tab is on screen. Transient view state, never
+   * persisted; an entry outlives its leaf only as an id nothing looks up.
+   */
+  splitTerminalByLeaf: Record<string, string>;
+  setSplitTerminal: (leafId: string, surfaceId: string) => void;
+  /**
    * Issue #645 — move a leaf next to another leaf, tmux `join-pane` style.
    *
    * `workspaceId` is EXPLICIT and never inferred: a multiview drag can start in
@@ -694,6 +704,11 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   paneNotificationRing: {},
 
   stashPulse: null,
+
+  splitTerminalByLeaf: {},
+  setSplitTerminal: (leafId, surfaceId) => set((state: StoreState) => {
+    if (state.splitTerminalByLeaf[leafId] !== surfaceId) state.splitTerminalByLeaf[leafId] = surfaceId;
+  }),
 
   clearStashPulse: () => set((state: StoreState) => {
     state.stashPulse = null;

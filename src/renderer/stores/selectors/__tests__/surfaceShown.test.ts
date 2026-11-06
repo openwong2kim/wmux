@@ -46,6 +46,14 @@ describe('isSurfaceDrawnInLeaf', () => {
     expect(isSurfaceDrawnInLeaf(l, 't1')).toBe(true);
     expect(isSurfaceDrawnInLeaf(l, 't2')).toBe(false);
   });
+
+  it('a split draws the terminal tab the pane last drew, as the pane picks it', () => {
+    const l = leaf('p', [{ id: 't1' }, { id: 't2' }, { id: 'edit', surfaceType: 'editor' }], 'edit');
+    expect(isSurfaceDrawnInLeaf(l, 't2', 't2')).toBe(true);
+    expect(isSurfaceDrawnInLeaf(l, 't1', 't2')).toBe(false);
+    // A remembered tab that was closed: the first one, as in the pane.
+    expect(isSurfaceDrawnInLeaf(l, 't1', 'gone')).toBe(true);
+  });
 });
 
 describe('isSurfaceShown', () => {
@@ -56,6 +64,13 @@ describe('isSurfaceShown', () => {
     expect(isSurfaceShown(s, A.id, 's-a')).toBe(true);
     expect(isSurfaceShown(s, B.id, 's-b')).toBe(false);
     expect(isSurfaceShown(s, A.id, 's-stashed')).toBe(false);
+  });
+
+  it("reads the split's last drawn terminal tab from the store", () => {
+    const split = ws('ws-a', leaf('pane-a', [{ id: 't1' }, { id: 't2' }, { id: 'edit', surfaceType: 'editor' }], 'edit'));
+    const s = state({ workspaces: [split, B], splitTerminalByLeaf: { 'pane-a': 't2' } });
+    expect(isSurfaceShown(s, A.id, 't2')).toBe(true);
+    expect(isSurfaceShown(s, A.id, 't1')).toBe(false);
   });
 });
 
