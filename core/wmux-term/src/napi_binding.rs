@@ -22,7 +22,7 @@ pub struct WmuxTerm {
 
 #[napi]
 impl WmuxTerm {
-    #[napi(constructor)]
+    #[napi(constructor, catch_unwind)]
     pub fn new(cols: u32, rows: u32) -> Self {
         WmuxTerm {
             inner: Grid::new(cols, rows),
@@ -31,7 +31,7 @@ impl WmuxTerm {
 
     /// 바이트를 feed하고 dirty 집계 반환.
     /// JS에서 Uint8Array/Buffer로 전달 → 네이티브 슬라이스 왕복.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn feed(&mut self, bytes: Uint8Array) -> FeedResult {
         let r = self.inner.feed(&bytes);
         FeedResult {
@@ -40,22 +40,22 @@ impl WmuxTerm {
         }
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn snapshot_row(&self, y: u32) -> String {
         self.inner.snapshot_row(y)
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn reset(&mut self) {
         self.inner.reset();
     }
 
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn cols(&self) -> u32 {
         self.inner.cols()
     }
 
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn rows(&self) -> u32 {
         self.inner.rows()
     }
