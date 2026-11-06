@@ -16,10 +16,10 @@ const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-fn compress(state: &mut [u32; 8], block: &[u8]) {
+fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
-    for (i, word) in block.chunks_exact(4).enumerate() {
-        w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+    for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+        w[i] = u32::from_be_bytes(*word);
     }
     for i in 16..64 {
         let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -30,7 +30,11 @@ fn compress(state: &mut [u32; 8], block: &[u8]) {
     for i in 0..64 {
         let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
         let ch = (e & f) ^ (!e & g);
-        let t1 = h.wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
+        let t1 = h
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K[i])
+            .wrapping_add(w[i]);
         let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
         let maj = (a & b) ^ (a & c) ^ (b & c);
         let t2 = s0.wrapping_add(maj);
@@ -51,18 +55,17 @@ fn compress(state: &mut [u32; 8], block: &[u8]) {
 /// The digest of `data`, as lowercase hex.
 pub fn hex(data: &[u8]) -> String {
     let mut state = H0;
-    let mut blocks = data.chunks_exact(64);
-    for block in blocks.by_ref() {
+    let (blocks, rest) = data.as_chunks::<64>();
+    for block in blocks {
         compress(&mut state, block);
     }
-    let rest = blocks.remainder();
     let mut tail = rest.to_vec();
     tail.push(0x80);
     while tail.len() % 64 != 56 {
         tail.push(0);
     }
     tail.extend_from_slice(&((data.len() as u64).wrapping_mul(8)).to_be_bytes());
-    for block in tail.chunks_exact(64) {
+    for block in tail.as_chunks::<64>().0 {
         compress(&mut state, block);
     }
     state.iter().map(|v| format!("{v:08x}")).collect()
@@ -90,8 +93,14 @@ mod tests {
 
     #[test]
     fn fips_180_4_vectors() {
-        assert_eq!(hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-        assert_eq!(hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
         assert_eq!(
             hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"

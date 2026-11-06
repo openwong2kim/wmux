@@ -21,21 +21,28 @@ pub type NFds = std::os::raw::c_ulong;
 extern "C" {
     pub fn socket(domain: i32, kind: i32, protocol: i32) -> i32;
     pub fn connect(fd: i32, addr: *const u8, len: u32) -> i32;
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn close(fd: i32) -> i32;
     pub fn poll(fds: *mut PollFd, nfds: NFds, timeout: i32) -> i32;
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
     pub fn fcntl(fd: i32, cmd: i32, ...) -> i32;
 }
 
 pub const AF_UNIX: i32 = 1;
 pub const SOCK_STREAM: i32 = 1;
+#[cfg(test)]
 pub const F_GETFD: i32 = 1;
+// macOS sets close-on-exec with fcntl after socket().
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const F_SETFD: i32 = 2;
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub const FD_CLOEXEC: i32 = 1;
 
 pub const POLLIN: i16 = 0x1;
 pub const POLLOUT: i16 = 0x4;
 pub const POLLERR: i16 = 0x8;
 pub const POLLHUP: i16 = 0x10;
+#[cfg(test)]
 pub const POLLNVAL: i16 = 0x20;
 
 pub const EINTR: i32 = 4;

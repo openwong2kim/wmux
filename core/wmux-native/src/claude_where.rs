@@ -15,7 +15,11 @@ const TMUX_QUERY_TIMEOUT: Duration = Duration::from_millis(150);
 /// UTF-16 units (a surrogate pair may be split, as `slice` splits it),
 /// trimmed again; None when nothing is left.
 pub fn where_text(value: Option<&[u16]>) -> Option<JsStr> {
-    let clean: JsStr = value?.iter().copied().filter(|&c| !(c <= 0x1f || (0x7f..=0x9f).contains(&c))).collect();
+    let clean: JsStr = value?
+        .iter()
+        .copied()
+        .filter(|&c| !(c <= 0x1f || (0x7f..=0x9f).contains(&c)))
+        .collect();
     let trimmed = js::trim(&clean);
     let cut = js::trim(&trimmed[..trimmed.len().min(WHERE_FIELD_MAX)]);
     (!cut.is_empty()).then(|| cut.to_vec())
@@ -38,7 +42,10 @@ pub fn query_tmux(tmux_pane: Option<&std::ffi::OsStr>) -> Option<(JsStr, JsStr)>
     if let Some(pane) = tmux_pane.filter(|p| !p.is_empty()) {
         cmd.arg("-t").arg(pane);
     }
-    cmd.arg("#S:#I").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.arg("#S:#I")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
     let mut child = cmd.spawn().ok()?;
     let deadline = Instant::now() + TMUX_QUERY_TIMEOUT;
     let status = loop {
@@ -110,11 +117,17 @@ pub fn where_from_env(env: &WhereEnv, query: Option<&dyn Fn() -> Option<(JsStr, 
     } else if set(&env.sty) {
         // `<pid>.<name>`; the name may itself contain dots.
         let sty = env.sty.as_deref().unwrap_or_default();
-        let name = sty.iter().position(|&c| c == u16::from(b'.')).map_or(sty, |i| &sty[i + 1..]);
-        [field("kind", Some(js::js("screen"))), field("session", where_text(Some(name)))]
-            .into_iter()
-            .flatten()
-            .collect()
+        let name = sty
+            .iter()
+            .position(|&c| c == u16::from(b'.'))
+            .map_or(sty, |i| &sty[i + 1..]);
+        [
+            field("kind", Some(js::js("screen"))),
+            field("session", where_text(Some(name))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     } else if set(&env.zellij_session_name) || set(&env.zellij) {
         [
             field("kind", Some(js::js("zellij"))),
@@ -127,10 +140,13 @@ pub fn where_from_env(env: &WhereEnv, query: Option<&dyn Fn() -> Option<(JsStr, 
         // `<client ip> <client port> <server ip> <server port>`
         let conn = js::trim(env.ssh_connection.as_deref().unwrap_or_default());
         let first = conn.split(|&c| js::is_space(c)).next().unwrap_or_default();
-        [field("kind", Some(js::js("ssh"))), field("label", where_text(Some(first)))]
-            .into_iter()
-            .flatten()
-            .collect()
+        [
+            field("kind", Some(js::js("ssh"))),
+            field("label", where_text(Some(first))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     } else if set(&env.term_program) {
         [
             field("kind", Some(js::js("terminal"))),
@@ -216,7 +232,10 @@ mod tests {
     fn the_other_kinds_follow_the_bridge_order() {
         let mut e = env();
         e.sty = Some(js("1234.my.session"));
-        assert_eq!(text(where_from_env(&e, None)), r#"{"kind":"screen","session":"my.session"}"#);
+        assert_eq!(
+            text(where_from_env(&e, None)),
+            r#"{"kind":"screen","session":"my.session"}"#
+        );
         let mut e = env();
         e.zellij = Some(js("0"));
         e.zellij_session_name = Some(js("zz"));
@@ -227,10 +246,16 @@ mod tests {
         assert_eq!(text(where_from_env(&e, None)), r#"{"kind":"ssh","label":"10.0.0.1"}"#);
         let mut e = env();
         e.term_program = Some(js("iTerm.app"));
-        assert_eq!(text(where_from_env(&e, None)), r#"{"kind":"terminal","label":"iTerm.app"}"#);
+        assert_eq!(
+            text(where_from_env(&e, None)),
+            r#"{"kind":"terminal","label":"iTerm.app"}"#
+        );
         let mut e = env();
         e.wsl_distro_name = Some(js("Debian"));
-        assert_eq!(text(where_from_env(&e, None)), r#"{"kind":"unknown","wslDistro":"Debian"}"#);
+        assert_eq!(
+            text(where_from_env(&e, None)),
+            r#"{"kind":"unknown","wslDistro":"Debian"}"#
+        );
         assert!(where_from_env(&env(), None).is_none());
         // Empty values are unset.
         let mut e = env();

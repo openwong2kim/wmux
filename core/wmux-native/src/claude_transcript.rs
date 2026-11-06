@@ -23,7 +23,10 @@ pub type Log<'a> = &'a dyn Fn(&str, String);
 /// (any case), else the fallback.
 pub fn session_id(transcript_path: Option<&[u16]>, fallback: Option<JsStr>) -> Option<JsStr> {
     if let Some(path) = transcript_path.filter(|p| !p.is_empty()) {
-        let base = path.rsplit(|&c| c == u16::from(b'/') || c == u16::from(b'\\')).next().unwrap_or(&[]);
+        let base = path
+            .rsplit(|&c| c == u16::from(b'/') || c == u16::from(b'\\'))
+            .next()
+            .unwrap_or(&[]);
         let suffix = js::js(".jsonl");
         let id = if base.len() >= suffix.len() && ends_with_ci(base, ".jsonl") {
             &base[..base.len() - suffix.len()]
@@ -98,7 +101,10 @@ pub fn usage(path: &str, log: Log) -> Option<Json> {
 
 fn valid_mode(v: Option<&Json>) -> Option<JsStr> {
     let s = v?.as_str()?;
-    VALID_PERMISSION_MODES.iter().any(|m| *s == js::js(m)).then(|| s.clone())
+    VALID_PERMISSION_MODES
+        .iter()
+        .any(|m| *s == js::js(m))
+        .then(|| s.clone())
 }
 
 /// extractPermissionModeFromTranscript: the last user or permission-mode
@@ -172,7 +178,10 @@ pub fn leftover_work(path: &str, log: Log) -> usize {
             && !(js::truthy(entry.get("origin"))
                 && str_is(entry.get("origin").and_then(|o| o.get("kind")), "task-notification"))
             && (matches!(message.and_then(|m| m.get("content")), Some(Json::Str(_)))
-                || content.is_some_and(|c| !c.iter().any(|b| js::truthy(Some(b)) && str_is(b.get("type"), "tool_result"))))
+                || content.is_some_and(|c| {
+                    !c.iter()
+                        .any(|b| js::truthy(Some(b)) && str_is(b.get("type"), "tool_result"))
+                }))
         {
             started.clear();
         }
@@ -242,7 +251,7 @@ pub fn leftover_work(path: &str, log: Log) -> usize {
         .iter()
         .filter(|id| !settled.contains(id))
         .filter_map(|id| {
-            let text = result_texts.iter().find(|(k, _)| k == *id).map_or(&[][..], |(_, t)| t);
+            let text = result_texts.iter().find(|(k, _)| k == id).map_or(&[][..], |(_, t)| t);
             background_task_id(text)
         })
         .filter(|task| !stopped.contains(task))
@@ -285,7 +294,11 @@ fn is_word(c: u16) -> bool {
 
 /// `([\w-]+)` at `at`: the end of the run, when it is not empty.
 fn id_run(t: &[u16], at: usize) -> Option<usize> {
-    let end = at + t[at..].iter().take_while(|&&c| is_word(c) || c == u16::from(b'-')).count();
+    let end = at
+        + t[at..]
+            .iter()
+            .take_while(|&&c| is_word(c) || c == u16::from(b'-'))
+            .count();
     (end > at).then_some(end)
 }
 
@@ -301,7 +314,9 @@ fn task_stop_line(line: &[u16]) -> bool {
             return false;
         }
         i = skip_space(line, i + 1);
-        TASK_STOP_TOOLS.iter().any(|name| line[i..].starts_with(&js::js(&format!("\"{name}\""))))
+        TASK_STOP_TOOLS
+            .iter()
+            .any(|name| line[i..].starts_with(&js::js(&format!("\"{name}\""))))
     })
 }
 

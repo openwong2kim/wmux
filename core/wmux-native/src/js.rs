@@ -418,11 +418,13 @@ fn v8_key_order(entries: &[(JsStr, Json)]) -> Vec<&(JsStr, Json)> {
 }
 
 /// `Object.keys(o)`, in V8's order.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn object_keys(entries: &[(JsStr, Json)]) -> Vec<JsStr> {
     v8_key_order(entries).into_iter().map(|(k, _)| k.clone()).collect()
 }
 
 /// `o[key] = value` on an object's entries: an existing key keeps its place.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn assign(entries: &mut Vec<(JsStr, Json)>, key: JsStr, value: Json) {
     match entries.iter_mut().find(|(k, _)| *k == key) {
         Some(slot) => slot.1 = value,
@@ -432,16 +434,26 @@ pub fn assign(entries: &mut Vec<(JsStr, Json)>, key: JsStr, value: Json) {
 
 /// `{...v}`: an object's own entries; an array's elements under their
 /// indices; a string's UTF-16 units under theirs; nothing for anything else.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn spread(v: &Json) -> Vec<(JsStr, Json)> {
     match v {
         Json::Obj(entries) => entries.clone(),
-        Json::Arr(items) => items.iter().enumerate().map(|(i, x)| (js(&i.to_string()), x.clone())).collect(),
-        Json::Str(s) => s.iter().enumerate().map(|(i, u)| (js(&i.to_string()), Json::Str(vec![*u]))).collect(),
+        Json::Arr(items) => items
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (js(&i.to_string()), x.clone()))
+            .collect(),
+        Json::Str(s) => s
+            .iter()
+            .enumerate()
+            .map(|(i, u)| (js(&i.to_string()), Json::Str(vec![*u])))
+            .collect(),
         _ => Vec::new(),
     }
 }
 
 /// JavaScript truthiness of an optional value (absent is `undefined`).
+#[cfg_attr(windows, allow(dead_code))]
 pub fn truthy(v: Option<&Json>) -> bool {
     match v {
         None | Some(Json::Null) | Some(Json::Bool(false)) => false,
