@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createConnectionReporter, type ReportChannel } from '../brokerConnectionReporter';
+import { createConnectionReporter, trackConnection, type ReportChannel } from '../brokerConnectionReporter';
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -52,5 +52,37 @@ describe('broker connection reporter', () => {
     const cb = asyncErr.send.mock.calls[0][1] as (err: Error | null) => void;
     expect(typeof cb).toBe('function');
     expect(() => cb(new Error('Channel closed'))).not.toThrow();
+  });
+});
+
+describe('trackConnection', () => {
+  function fakeSocket(destroyed = false) {
+    const handlers: Array<() => void> = [];
+    return {
+      destroyed,
+      once: (_event: 'close', fn: () => void) => { handlers.push(fn); },
+      close() { this.destroyed = true; for (const fn of handlers.splice(0)) fn(); },
+    };
+  }
+
+  it('counts a connection open until its socket closes, once', async () => {
+    const ch = channel();
+    const r = createConnectionReporter(ch);
+    const socket = fakeSocket();
+    trackConnection(socket, r);
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 1 });
+    socket.close();
+    socket.close();
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 0 });
+  });
+
+  it('does not leave a socket that closed before tracking counted as open', async () => {
+    const ch = channel();
+    const r = createConnectionReporter(ch);
+    trackConnection(fakeSocket(true), r);
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 0 });
   });
 });

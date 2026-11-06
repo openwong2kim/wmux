@@ -38,7 +38,7 @@ import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { selfCheckPeerPid } from '../shared/peerPid';
-import { createConnectionReporter, type ReportChannel } from './brokerConnectionReporter';
+import { createConnectionReporter, trackConnection, type ReportChannel } from './brokerConnectionReporter';
 import { setBrokerEnvelopeMode } from './wmux-client';
 
 interface ShimHandshake {
@@ -100,6 +100,8 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   const scope: ConnectionScope = createConnectionScope();
 
   const log = (msg: string) => console.error(`[wmux-mcp-broker] #${connId} ${msg}`);
+  // Before the await below: a socket that closes during it is counted closed.
+  trackConnection(socket, connectionReporter);
   log(
     `shim connected pid=${handshake.callerPid} ` +
       `commander=${handshake.commanderMode ? 'yes' : 'no'} ` +
@@ -187,7 +189,6 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   });
 
   socket.on('error', (err) => log(`socket error: ${err.message}`));
-  connectionReporter.opened();
 
   // A shim exit closes the socket but does not, on its own, fire the MCP
   // transport's onclose — so drive it explicitly. transport.close() invokes the
@@ -197,11 +198,12 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   const teardown = () => {
     if (torndown) return;
     torndown = true;
-    connectionReporter.closed();
     void transport?.close();
   };
   socket.on('close', teardown);
   socket.on('end', teardown);
+  // Closed while the session was being set up: no close event is coming.
+  if (socket.destroyed) teardown();
 }
 
 function main(): void {

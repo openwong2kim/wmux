@@ -43,3 +43,23 @@ export function createConnectionReporter(channel: ReportChannel): { opened(): vo
     },
   };
 }
+
+/**
+ * Count `socket` as open until it closes. Called before any await, so a socket
+ * that closes while its session is still being set up is counted closed too;
+ * one already closed is never left counted.
+ */
+export function trackConnection(
+  socket: { destroyed: boolean; once(event: 'close', listener: () => void): unknown },
+  reporter: { opened(): void; closed(): void },
+): void {
+  reporter.opened();
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    reporter.closed();
+  };
+  if (socket.destroyed) close();
+  else socket.once('close', close);
+}
