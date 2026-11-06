@@ -91,6 +91,21 @@ describe('dialog sheets: which box belongs to which dialog', () => {
     expect(released).toEqual(['late']);
   });
 
+  it('a page looping dialogs: the next opening keeps an answered one that is still looking for its sheet', () => {
+    // alert(1) is answered before its sheet can be read, and alert(2) opens at once.
+    const { tracker, ended, tick } = rig();
+    const win = host();
+
+    tracker.trackOpening('loop', win, 'loop 1');
+    tracker.closeIfStale('loop');
+    tracker.trackOpening('loop', win, 'loop 2');
+    win.sheets.push({ id: 'one', text: 'loop 1' }, { id: 'two', text: 'loop 2' });
+    tick();
+    tracker.closeIfStale('loop');
+
+    expect(ended).toEqual(['one', 'two']);
+  });
+
   it('a person who already clicked the box leaves nothing to end', () => {
     const { tracker, ended, released } = rig();
     const win = host();

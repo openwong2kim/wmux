@@ -164,13 +164,22 @@ export function createSheetTracker<H extends object, S>(deps: SheetTrackerDeps<H
     trackOpening(surfaceId, host, message) {
       if (disabled || message === '') return;
       // A page shows one dialog at a time, so anything still held is from before.
-      drop(surfaceId);
+      // An answered one still looking for its sheet keeps looking: a page that
+      // loops dialogs opens the next before the last one's sheet can be read.
+      for (let i = pending.length - 1; i >= 0; i--) {
+        if (pending[i].surfaceId === surfaceId && !pending[i].closed) pending.splice(i, 1);
+      }
+      const held = tracked.get(surfaceId);
+      if (held) {
+        tracked.delete(surfaceId);
+        release(held);
+      }
       const opening: Pending<H> = { surfaceId, host, message, tries: 0, closed: false };
       pending.push(opening);
       scanHost(host, false);
     },
     closeIfStale(surfaceId) {
-      const waiting = pending.find((p) => p.surfaceId === surfaceId);
+      const waiting = pending.find((p) => p.surfaceId === surfaceId && !p.closed);
       if (waiting) {
         waiting.closed = true;
         return;
