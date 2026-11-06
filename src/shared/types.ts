@@ -176,6 +176,14 @@ export interface PaneLeaf {
    * so it persists via the `...pane` spread. undefined === false.
    */
   notificationsMuted?: boolean;
+  /**
+   * The terminal-kind tab that last gave up the focus in this leaf. While a
+   * work tab (editor, browser…) holds the focus, the split's terminal column
+   * keeps drawing this tab, so a file opened from the second tab stays beside
+   * it. Layout state like `ordinal`; read only through `splitShownTerminal`,
+   * which ignores it unless it names a terminal-kind tab still in this leaf.
+   */
+  splitTerminalId?: string;
 }
 
 // === Pane Metadata: optional descriptive labels for external tooling ===

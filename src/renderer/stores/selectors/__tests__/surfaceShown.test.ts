@@ -46,6 +46,12 @@ describe('isSurfaceDrawnInLeaf', () => {
     expect(isSurfaceDrawnInLeaf(l, 't1')).toBe(true);
     expect(isSurfaceDrawnInLeaf(l, 't2')).toBe(false);
   });
+
+  it('a split draws the terminal that last had the focus, as the pane does', () => {
+    const l = { ...leaf('p', [{ id: 't1' }, { id: 't2' }, { id: 'edit', surfaceType: 'editor' }], 'edit'), splitTerminalId: 't2' };
+    expect(isSurfaceDrawnInLeaf(l, 't2')).toBe(true);
+    expect(isSurfaceDrawnInLeaf(l, 't1')).toBe(false);
+  });
 });
 
 describe('isSurfaceShown', () => {

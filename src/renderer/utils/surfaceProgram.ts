@@ -1,4 +1,5 @@
 import type { PaneLeaf, Surface } from '../../shared/types';
+import { splitShownTerminal } from '../components/Pane/surfaceKinds';
 
 export type SurfaceAgentNames = Readonly<Record<string, { name: string } | undefined>>;
 
@@ -19,13 +20,11 @@ export function surfaceForegroundProgram(
   return surfaceAgent[surface.ptyId]?.name || null;
 }
 
-/** Prefer the active terminal; other tab types describe the leaf's first terminal. */
+/** The program in the terminal the pane draws (`splitShownTerminal`), whatever tab has the focus. */
 export function paneForegroundProgram(
   pane: PaneLeaf,
   surfaceAgent: SurfaceAgentNames,
   liveness: SurfaceProgramLiveness = {},
 ): string | null {
-  const terminals = pane.surfaces.filter((s) => (s.surfaceType ?? 'terminal') === 'terminal');
-  const surface = terminals.find((s) => s.id === pane.activeSurfaceId) ?? terminals[0];
-  return surfaceForegroundProgram(surface, surfaceAgent, liveness);
+  return surfaceForegroundProgram(splitShownTerminal(pane), surfaceAgent, liveness);
 }

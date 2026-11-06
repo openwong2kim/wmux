@@ -34,9 +34,10 @@ export function isWorkSurfaceType(surfaceType: string | undefined): boolean {
  * split. Both sides stay visible, but a pane has a single `activeSurfaceId`, so
  * visibility (what renders on each side) must be decoupled from focus (which
  * side `activeSurfaceId` points at). Each side shows its active surface when
- * the active surface is on that side; otherwise the terminal side shows its
- * first surface and the work side the one last shown there (`lastWorkId`), so
- * focusing a terminal never swaps the page or file beside it.
+ * the active surface is on that side; otherwise each side shows the one last
+ * shown there (`lastTerminalId`, `lastWorkId`), else its first. Focusing a
+ * terminal never swaps the page or file beside it, and opening a file from a
+ * terminal tab keeps that tab beside the file.
  * (Bug: each surface gated `display` on `surface.id === activeSurfaceId`, so
  * focusing one side display:none'd the other.)
  *
@@ -47,11 +48,44 @@ export function pickSplitShownSurfaces(
   works: ReadonlyArray<{ id: string }>,
   activeSurfaceId: string,
   lastWorkId?: string,
+  lastTerminalId?: string,
 ): { shownTerminalId: string | undefined; shownWorkId: string | undefined } {
   return {
-    shownTerminalId: terminals.find((s) => s.id === activeSurfaceId)?.id ?? terminals[0]?.id,
+    shownTerminalId: terminals.find((s) => s.id === activeSurfaceId)?.id
+      ?? terminals.find((s) => s.id === lastTerminalId)?.id
+      ?? terminals[0]?.id,
     shownWorkId: works.find((s) => s.id === activeSurfaceId)?.id
       ?? works.find((s) => s.id === lastWorkId)?.id
       ?? works[0]?.id,
   };
+}
+
+/**
+ * The terminal-column tab a leaf draws: its active tab when that is
+ * terminal-kind, else the terminal that last gave up the focus
+ * (`splitTerminalId`, only while it is a terminal-kind tab of this leaf), else
+ * its first terminal. Pane, the shown-surface selector, Fleet, the foreground
+ * program and the browser hand-off all use it, so they name the same tab.
+ */
+export function splitShownTerminal<S extends { id: string; surfaceType?: string }>(
+  leaf: { surfaces: ReadonlyArray<S>; activeSurfaceId: string; splitTerminalId?: string },
+): S | undefined {
+  const terminals = leaf.surfaces.filter((s) => isTerminalKindSurfaceType(s.surfaceType));
+  const id = pickSplitShownSurfaces(terminals, [], leaf.activeSurfaceId, undefined, leaf.splitTerminalId).shownTerminalId;
+  return terminals.find((s) => s.id === id);
+}
+
+/**
+ * Give `surfaceId` the leaf's focus (inside a store producer). A terminal-kind
+ * tab giving it up is remembered as the one the split keeps drawing.
+ */
+export function activateSurface(
+  leaf: { surfaces: ReadonlyArray<{ id: string; surfaceType?: string }>; activeSurfaceId: string; splitTerminalId?: string },
+  surfaceId: string,
+): void {
+  const leaving = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+  if (leaving && leaving.id !== surfaceId && isTerminalKindSurfaceType(leaving.surfaceType)) {
+    leaf.splitTerminalId = leaving.id;
+  }
+  leaf.activeSurfaceId = surfaceId;
 }

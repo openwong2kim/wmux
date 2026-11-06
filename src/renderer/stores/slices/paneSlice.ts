@@ -34,6 +34,7 @@ import { panePrincipalId } from '../../../shared/principals';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { recomputeWorkspacePorts } from './workspacePorts';
+import { activateSurface } from '../../components/Pane/surfaceKinds';
 import type { ShellPromptSignal } from '../../../shared/shellPrompt';
 
 // Per-workspace leaf cap. xterm.js + node-pty memory scales linearly with
@@ -1690,7 +1691,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // active surface (the two-write race the dedicated action exists to avoid).
       ws.activePaneId = target.id;
       if (surfaceId && target.surfaces.some((s) => s.id === surfaceId)) {
-        target.activeSurfaceId = surfaceId;
+        activateSurface(target, surfaceId);
       }
 
       ok = true;

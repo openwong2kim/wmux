@@ -806,7 +806,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   }, [splitMode]);
   const lastWorkIdRef = useRef<string | undefined>(undefined);
   const { shownTerminalId, shownWorkId } = pickSplitShownSurfaces(
-    splitTerminals, splitWorks, pane.activeSurfaceId, lastWorkIdRef.current,
+    splitTerminals, splitWorks, pane.activeSurfaceId, lastWorkIdRef.current, pane.splitTerminalId,
   );
   useEffect(() => { lastWorkIdRef.current = shownWorkId; }, [shownWorkId]);
   const workFocused = splitWorks.some((s) => s.id === pane.activeSurfaceId);
