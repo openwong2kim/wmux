@@ -298,16 +298,31 @@ fn an_unknown_event_logs_this_process_argv_and_reads_no_stdin() {
     assert_eq!(case.node_args(), None);
 }
 
+/// `depth` levels below the outermost array: `[` × (depth + 1).
+fn nested(depth: usize) -> String {
+    format!("{}{}", "[".repeat(depth + 1), "]".repeat(depth + 1))
+}
+
 #[test]
-fn a_payload_deeper_than_the_limit_is_refused_and_exits_0() {
+fn a_payload_at_the_depth_limit_goes_through_every_recursive_path() {
+    // PAYLOAD_DEPTH_MAX is 10 000: on the run's 64 MiB stack the payload is
+    // cloned (spread, and the unknown-entrypoint strip) and stringified (the
+    // envelope); the debug envelope lists its keys.
     let case = Case::new("deep", Some(&pinned()));
     std::fs::create_dir_all(case.dir.join("home/.wmux-claude-hook-test")).unwrap();
     std::fs::write(case.dir.join("home/.wmux-claude-hook-test/daemon-auth-token"), "t").unwrap();
-    let ok = format!("{}{}", "[".repeat(5000), "]".repeat(5000));
-    quiet(&case.run(&["Stop"], &[], true, &ok));
-    assert_eq!(case.log().last().unwrap(), "rpc-failed");
-    let deep = format!("{}{}", "[".repeat(200_000), "]".repeat(200_000));
-    quiet(&case.run(&["Stop"], &[], true, &deep));
+    let in_object = format!(r#"{{"session_id":"s","x":{}}}"#, nested(9_999));
+    for (env, payload) in [
+        (vec![], nested(10_000)),
+        (vec![("CLAUDE_CODE_ENTRYPOINT", "desktop")], in_object.clone()),
+        (vec![("WMUX_BRIDGE_DEBUG", "1")], in_object.clone()),
+    ] {
+        let out = case.run(&["Stop"], &env, true, &payload);
+        quiet(&out);
+        assert_eq!(case.log().last().unwrap(), "rpc-failed", "{env:?}");
+    }
+    // One level more is refused before anything is sent.
+    quiet(&case.run(&["Stop"], &[], true, &nested(10_001)));
     let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
     assert!(
         log.lines()
@@ -316,6 +331,8 @@ fn a_payload_deeper_than_the_limit_is_refused_and_exits_0() {
             .contains(r#""outcome":"uncaught","error":"RangeError: Maximum call stack size exceeded""#),
         "{log}"
     );
+    quiet(&case.run(&["Stop"], &[], true, &nested(200_000)));
+    assert_eq!(case.log().last().unwrap(), "uncaught");
 }
 
 #[test]

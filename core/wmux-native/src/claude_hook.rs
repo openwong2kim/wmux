@@ -32,11 +32,12 @@
 //!   - argv-proto-key: only the hook names of HOOK_TO_KIND are hooks. Node's
 //!     plain-object lookup also accepts inherited keys (`constructor`) and
 //!     sends an envelope without a kind; here that is `unknown-hook-name`.
-//!   - A payload nested deeper than PAYLOAD_DEPTH_MAX levels is refused at
-//!     once, logged `uncaught` with V8's RangeError message, and nothing is
-//!     sent. Node fails at its own stack limit (about 5 000 to 8 000 levels,
-//!     by node release) and then only once a socket connects, where the
-//!     exception ends the process with exit 1.
+//!   - A payload nested deeper than PAYLOAD_DEPTH_MAX (10 000) levels is
+//!     refused at once, logged `uncaught` with V8's RangeError message, and
+//!     nothing is sent. Node fails earlier, at its own stack limit (about
+//!     5 000 to 8 000 levels, by node release), and then only once a socket
+//!     connects, where the exception ends the process with exit 1; between
+//!     the two limits this binary sends what Node cannot.
 
 use crate::claude::{self, CLAUDE_POLICY};
 use crate::claude_rpc;
@@ -63,10 +64,12 @@ const MAX_STDIN_BYTES: usize = 1024 * 1024;
 const ACTIVITY_STAMP_THROTTLE_MS: f64 = 2500.0;
 /// WMUX_CLIENT_NAME.
 const WMUX_CLIENT_NAME: &str = "wmux-hook-bridge";
-/// The deepest payload accepted (Node 22 forwards 5 000 levels).
-const PAYLOAD_DEPTH_MAX: usize = 5000;
+/// The deepest payload accepted, the outermost value being level 0: above
+/// Node's own limit, so every payload Node can forward goes through.
+const PAYLOAD_DEPTH_MAX: usize = 10_000;
 /// The run's own stack: room for PAYLOAD_DEPTH_MAX levels of the recursive
-/// clone and stringify, whatever the platform's main-thread default.
+/// clone and stringify, whatever the platform's main-thread default. A debug
+/// build measured here gets through 40 000 levels and overflows below 80 000.
 const STACK_BYTES: usize = 64 * 1024 * 1024;
 const RANGE_ERROR: &str = "RangeError: Maximum call stack size exceeded";
 
