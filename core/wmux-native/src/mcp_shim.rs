@@ -25,9 +25,13 @@
 //! handler runs first). During the connect retries a signal kills the process
 //! by its default disposition.
 //!
-//! One intentional divergence from shim.ts: a failed stdout write exits 0.
-//! The host stopped reading, which is a normal shutdown, and node's exit 1
-//! there is an unhandled-error accident, not a contract.
+//! Intentional divergences from shim.ts:
+//! - A failed stdout write exits 0. The host stopped reading, which is a
+//!   normal shutdown, and node's exit 1 there is an unhandled-error accident,
+//!   not a contract.
+//! - The broker-off marker is checked before dialling, a missing endpoint
+//!   falls back at once, and any other connect failure is tried 3 times
+//!   (shim.ts tries 10 and has no fallback to fall back to).
 //!
 //! EAGAIN on an inherited non-blocking stdin or stdout is waited out, not
 //! taken as the end of the session.
@@ -173,11 +177,15 @@ fn data_suffix() -> String {
 
 /// getAuthTokenPath: a template string, so an empty home yields `/.wmux…`.
 pub fn token_path_from(userprofile: Option<String>, home: Option<String>, suffix: &str) -> String {
-    let home = userprofile
+    format!("{}/.wmux{suffix}-auth-token", wmux_home_from(userprofile, home))
+}
+
+/// `USERPROFILE || HOME || ''`, the home getAuthTokenPath and getWmuxHomeDir use.
+fn wmux_home_from(userprofile: Option<String>, home: Option<String>) -> String {
+    userprofile
         .filter(|v| !v.is_empty())
         .or(home.filter(|v| !v.is_empty()))
-        .unwrap_or_default();
-    format!("{home}/.wmux{suffix}-auth-token")
+        .unwrap_or_default()
 }
 
 /// readAuthToken: the trimmed file if non-empty, else a non-empty
@@ -192,11 +200,7 @@ pub fn resolve_token(file: Option<&[u8]>, env_token: Option<JsStr>) -> Option<Js
 /// `<getWmuxHomeDir()>/mcp-broker-off`: the marker main writes while the
 /// broker is off, under the same home and suffix as the auth token.
 pub fn broker_off_marker_from(userprofile: Option<String>, home: Option<String>, suffix: &str) -> String {
-    let home = userprofile
-        .filter(|v| !v.is_empty())
-        .or(home.filter(|v| !v.is_empty()))
-        .unwrap_or_default();
-    format!("{home}/.wmux{suffix}/mcp-broker-off")
+    format!("{}/.wmux{suffix}/mcp-broker-off", wmux_home_from(userprofile, home))
 }
 
 fn broker_is_off() -> bool {

@@ -64,21 +64,34 @@ fn unique() -> String {
 struct Sandbox {
     home: PathBuf,
     suffix: String,
+    /// Data dirs a broker-off marker was written into, removed on drop.
+    marker_dirs: std::cell::RefCell<Vec<PathBuf>>,
 }
 
 impl Sandbox {
     fn new() -> Self {
+        let tag = unique();
+        Self::at(&tag, format!("-t{tag}"))
+    }
+
+    /// A sandbox whose shim runs with `suffix` (an empty one included).
+    #[cfg(unix)]
+    fn with_suffix(suffix: String) -> Self {
+        Self::at(&unique(), suffix)
+    }
+
+    fn at(tag: &str, suffix: String) -> Self {
         let base = if cfg!(windows) {
             std::env::temp_dir()
         } else {
             PathBuf::from("/tmp")
         };
-        let tag = unique();
         let home = base.join(format!("wmsh-{tag}"));
         std::fs::create_dir(&home).expect("create sandbox home");
         Sandbox {
             home,
-            suffix: format!("-t{tag}"),
+            suffix,
+            marker_dirs: Default::default(),
         }
     }
 
@@ -122,10 +135,11 @@ impl Sandbox {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
-        // A broker-off marker test may have panicked before its own cleanup.
-        let data_dir = self.home.join(format!(".wmux{}", self.suffix));
-        let _ = std::fs::remove_file(data_dir.join("mcp-broker-off"));
-        let _ = std::fs::remove_dir(data_dir);
+        // Removed here rather than in the tests, so a failed assert leaves none.
+        for dir in self.marker_dirs.borrow().iter() {
+            let _ = std::fs::remove_file(dir.join("mcp-broker-off"));
+            let _ = std::fs::remove_dir(dir);
+        }
         let _ = std::fs::remove_file(self.token_path());
         if cfg!(unix) {
             let _ = std::fs::remove_file(self.pipe());
@@ -507,9 +521,13 @@ fn a_broker_that_comes_up_during_the_retries_is_reached() {
     sb.write_token("tok");
     stale_socket(&sb);
     let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
-    std::thread::sleep(Duration::from_millis(150));
-    std::fs::remove_file(sb.pipe()).expect("remove the stale socket");
-    let mut conn = stub::bind(&sb.pipe()).accept(WAIT);
+    std::thread::sleep(Duration::from_millis(100));
+    // Bound beside it and renamed over it: the endpoint never goes missing,
+    // as it does not for a broker that comes back.
+    let fresh = format!("{}.new", sb.pipe());
+    let listener = stub::bind(&fresh);
+    std::fs::rename(&fresh, sb.pipe()).expect("replace the stale socket");
+    let mut conn = listener.accept(WAIT);
     assert!(read_line(&mut conn).starts_with("{\"wmuxShim\":1,\"authToken\":\"tok\","));
     ack(&mut conn);
     drop(child.stdin.take());
@@ -519,12 +537,11 @@ fn a_broker_that_comes_up_during_the_retries_is_reached() {
 impl Sandbox {
     /// `<home>/.wmux<suffix>/mcp-broker-off`, the marker main writes when the
     /// broker is off; `suffix` None means this sandbox's own.
-    fn broker_off(&self, suffix: Option<&str>) -> PathBuf {
+    fn broker_off(&self, suffix: Option<&str>) {
         let dir = self.home.join(format!(".wmux{}", suffix.unwrap_or(&self.suffix)));
         std::fs::create_dir_all(&dir).expect("data dir");
-        let marker = dir.join("mcp-broker-off");
-        std::fs::write(&marker, "").expect("write the marker");
-        marker
+        std::fs::write(dir.join("mcp-broker-off"), "").expect("write the marker");
+        self.marker_dirs.borrow_mut().push(dir);
     }
 }
 
@@ -532,7 +549,7 @@ impl Sandbox {
 fn a_broker_off_marker_hands_the_session_to_the_bundle_without_dialling() {
     let sb = Sandbox::new();
     sb.write_token("tok");
-    let marker = sb.broker_off(None);
+    sb.broker_off(None);
     let listener = stub::bind(&sb.pipe());
     let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
     let started = Instant::now();
@@ -547,46 +564,40 @@ fn a_broker_off_marker_hands_the_session_to_the_bundle_without_dialling() {
         "{:?}",
         started.elapsed()
     );
+    #[cfg(unix)]
     assert!(!listener.has_pending(), "the shim dialled a broker that is off");
-    let _ = std::fs::remove_file(&marker);
-    let _ = std::fs::remove_dir(marker.parent().unwrap());
+    #[cfg(windows)]
+    let _ = &listener;
 }
 
 #[test]
-fn a_broker_off_marker_holds_only_for_its_own_data_suffix() {
-    // The unsuffixed instance's marker does not stop a suffixed shim...
+fn an_unsuffixed_marker_does_not_stop_a_suffixed_shim() {
     let sb = Sandbox::new();
     sb.write_token("tok");
-    let plain = sb.broker_off(Some(""));
+    sb.broker_off(Some(""));
     let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
     let mut conn = stub::bind(&sb.pipe()).accept(WAIT);
     assert!(read_line(&mut conn).starts_with("{\"wmuxShim\":1,"));
     ack(&mut conn);
     drop(child.stdin.take());
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
-    let _ = std::fs::remove_file(&plain);
-    let _ = std::fs::remove_dir(plain.parent().unwrap());
+}
 
-    // ...and a suffixed instance's marker does not stop the unsuffixed shim.
-    let sb = Sandbox::new();
-    let own = sb.broker_off(None);
-    let unsuffixed = Sandbox {
-        home: sb.home.clone(),
-        suffix: String::new(),
-    };
-    unsuffixed.write_token("tok");
-    let mut child = spawn(&mut unsuffixed.shim(&[])).expect("spawn shim");
-    let mut conn = stub::bind(&unsuffixed.pipe()).accept(WAIT);
+/// Unix only: an unsuffixed shim on Windows dials the unsuffixed broker pipe,
+/// which is the live instance's name, while on Unix the socket sits in the
+/// sandbox home.
+#[cfg(unix)]
+#[test]
+fn a_suffixed_marker_does_not_stop_the_unsuffixed_shim() {
+    let sb = Sandbox::with_suffix(String::new());
+    sb.write_token("tok");
+    sb.broker_off(Some("-other"));
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
+    let mut conn = stub::bind(&sb.pipe()).accept(WAIT);
     assert!(read_line(&mut conn).starts_with("{\"wmuxShim\":1,"));
     ack(&mut conn);
     drop(child.stdin.take());
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
-    let _ = std::fs::remove_file(&own);
-    let _ = std::fs::remove_dir(own.parent().unwrap());
-    // It shares `sb`'s home: clear its files and let `sb` remove the directory.
-    let _ = std::fs::remove_file(unsuffixed.token_path());
-    let _ = std::fs::remove_file(unsuffixed.pipe());
-    std::mem::forget(unsuffixed);
 }
 
 #[test]
@@ -684,7 +695,8 @@ fn a_signal_during_the_connect_retries_kills_by_the_signal() {
     sb.write_token("tok");
     stale_socket(&sb);
     let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
-    std::thread::sleep(Duration::from_millis(200));
+    // Well inside the three tries' 600 ms.
+    std::thread::sleep(Duration::from_millis(100));
     // SAFETY: signals a child this test spawned and still owns.
     assert_eq!(unsafe { kill(child.id() as i32, 15) }, 0);
     let status = wait_within(&mut child, WAIT);
