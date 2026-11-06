@@ -8,6 +8,7 @@ import {
   priorRefDescriptors,
   recordRefGeneration,
   recoveredRefNote,
+  reserveRefs,
   uniqueDescriptorMatch,
 } from '../refDescriptors';
 
@@ -108,6 +109,17 @@ describe('per-surface history', () => {
       expect(describeRetiredRef('s', g)?.name).toBe(`Gen ${g}`);
     }
     expect(priorRefDescriptors('s', 0)).toHaveLength(DESCRIPTOR_GENERATIONS);
+  });
+
+  // Frame refs on the RPC lane: spent, but never offered for stable reuse, so
+  // the top document can never take a number a frame element had.
+  it('spends numbers without remembering them as descriptors', () => {
+    recordRefGeneration('s', 0, [{ ref: 3, role: 'button', name: 'Pay' }]);
+    reserveRefs('s', 0, 40);
+    expect(nextRefFor('s', 0)).toBe(40);
+    expect(priorRefDescriptors('s', 0).map((d) => d.ref)).toEqual([3]);
+    reserveRefs('s', 0, 10);
+    expect(nextRefFor('s', 0)).toBe(40);
   });
 
   it('answers with the newest generation that carried a ref', () => {

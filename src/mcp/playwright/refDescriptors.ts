@@ -272,6 +272,16 @@ export function recordRefGeneration(
 }
 
 /**
+ * Mark every number below `upTo` as spent on this surface without recording
+ * what it meant. The RPC lane's frame refs use it: a later listing never
+ * hands those numbers out again, and no descriptor can match them back.
+ */
+export function reserveRefs(surfaceKey: string, base: number, upTo: number): void {
+  const history = historyFor(surfaceKey, base);
+  if (upTo > history.nextRef) history.nextRef = upTo;
+}
+
+/**
  * What a ref meant, in the most recent generation that carried it.
  *
  * Returns null for a number this surface never minted — which is a different

@@ -1,5 +1,6 @@
 import type { Page, Frame, Locator, ElementHandle } from 'playwright-core';
 import { buildDomSnapshotExpression, readDomSnapshotPayload } from './dom-intelligence';
+import type { RpcFrameRef } from './rpcFrames';
 import {
   describeRetiredRef,
   nextRefFor,
@@ -959,14 +960,16 @@ export function browserScopeKey(scope: {
  * shared map refuses the second agent's perfectly good DOM ref.
  */
 const FRAME_REF_SCOPE_CAP = 64;
-let moduleFrameRefs: Map<string, Set<number>> | undefined;
+/** ref → the RPC lane frame it names, or null for an a11y-lane frame ref (no RPC target). */
+type ScopeFrameRefs = Map<number, RpcFrameRef | null>;
+let moduleFrameRefs: Map<string, ScopeFrameRefs> | undefined;
 
-function frameRefStore(): Map<string, Set<number>> {
+function frameRefStore(): Map<string, ScopeFrameRefs> {
   const scope = getConnectionScope();
   if (scope) {
-    const existing = scope.frameRefs as Map<string, Set<number>> | undefined;
+    const existing = scope.frameRefs as Map<string, ScopeFrameRefs> | undefined;
     if (existing) return existing;
-    const fresh = new Map<string, Set<number>>();
+    const fresh = new Map<string, ScopeFrameRefs>();
     scope.frameRefs = fresh;
     return fresh;
   }
@@ -978,16 +981,23 @@ function frameRefStore(): Map<string, Set<number>> {
  * Record what the snapshot just taken for `scopeKey` minted, so the RPC lane
  * can refuse a frame ref for THIS surface without touching any other.
  *
- * Called by the snapshot tool for both routes: the a11y route registers what it
- * minted, and the DOM route registers nothing, which clears the scope — its
- * data-wmux-ref tags ARE the current truth and must stay resolvable.
+ * Called by the snapshot tool for every route: the a11y route registers what
+ * it minted; the RPC DOM route registers the refs it read inside frames, each
+ * with the frame and document it names (`rpcFrameRefs`); a route that read no
+ * frame clears the scope — its data-wmux-ref tags ARE the current truth and
+ * must stay resolvable.
  */
-export function noteFrameRefsForScope(scopeKey: string, page: Page | null): void {
+export function noteFrameRefsForScope(
+  scopeKey: string,
+  page: Page | null,
+  rpcFrameRefs?: ReadonlyMap<number, RpcFrameRef>,
+): void {
   const store = frameRefStore();
-  const numbers = new Set<number>();
+  const numbers: ScopeFrameRefs = new Map();
   for (const entry of (page && pageRefMaps.get(page)) || []) {
-    if (entry.frameKey !== MAIN_FRAME.key) numbers.add(entry.ref);
+    if (entry.frameKey !== MAIN_FRAME.key) numbers.set(entry.ref, null);
   }
+  for (const [ref, target] of rpcFrameRefs ?? []) numbers.set(ref, target);
   store.delete(scopeKey);
   if (numbers.size === 0) return;
   store.set(scopeKey, numbers);
@@ -1044,6 +1054,17 @@ export function isOutstandingFrameRef(scopeKey: string, ref: string): boolean {
   const wanted = refNumber(ref);
   if (wanted === null) return false;
   return frameRefStore().get(scopeKey)?.has(wanted) === true;
+}
+
+/**
+ * The RPC lane frame this surface's last snapshot minted `ref` in, or null.
+ * Per connection, like the rest of the store: one agent's frame refs are
+ * nothing on another agent's connection.
+ */
+export function rpcFrameRefOf(scopeKey: string, ref: string): RpcFrameRef | null {
+  const wanted = refNumber(ref);
+  if (wanted === null) return null;
+  return frameRefStore().get(scopeKey)?.get(wanted) ?? null;
 }
 
 /** The message both guards raise, so the agent reads one explanation. */

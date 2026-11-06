@@ -7,6 +7,7 @@ import {
   browserScopeKey,
   frameRefFallbackMessage,
   isOutstandingFrameRef,
+  rpcFrameRefOf,
   resolveRef,
 } from '../snapshot';
 import {
@@ -469,11 +470,46 @@ export async function mouseDragThrough(
 // These resolve elements via data-wmux-ref attributes set by browser_snapshot.
 // ---------------------------------------------------------------------------
 
-async function rpcEval(expression: string, scope: BrowserTargetScope): Promise<string> {
-  const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {
+async function rpcEval(expression: string, scope: BrowserTargetScope, about?: string): Promise<string> {
+  const result = await sendForSelector<{ value: string } | { unreachable: string }>('browser.evaluate', scope, about, {
     expression,
   });
+  if ('unreachable' in result) {
+    throw taggedFailure('element_not_interactable', `The frame this element is in cannot be reached (${result.unreachable}).`);
+  }
   return result.value;
+}
+
+const REF_SELECTOR = /^\[data-wmux-ref="(\d+)"\]$/;
+
+/**
+ * Send an RPC about the element `selector` names, in the frame its ref was
+ * minted in when it is an RPC lane frame ref (by this connection's last
+ * snapshot of the surface); in the top document otherwise. Main refuses a
+ * frame that navigated or went away, which is reported as a stale ref.
+ */
+async function sendForSelector<T>(
+  method: Parameters<typeof sendScopedBrowserRpc>[0],
+  scope: BrowserTargetScope,
+  selector: string | undefined,
+  params: Record<string, unknown>,
+): Promise<T> {
+  const ref = selector ? REF_SELECTOR.exec(selector)?.[1] : undefined;
+  const key = browserScopeKey(scope);
+  const frame = ref && isOutstandingFrameRef(key, ref) ? rpcFrameRefOf(key, ref) : null;
+  if (!frame) return sendScopedBrowserRpc<T>(method, scope, params);
+  try {
+    return await sendScopedBrowserRpc<T>(method, scope, { ...params, frameId: frame.frameId, loaderId: frame.loaderId });
+  } catch (err) {
+    if (/FRAME_(?:GONE|NAVIGATED)/.test(err instanceof Error ? err.message : String(err))) {
+      throw taggedFailure(
+        'ref_not_found',
+        `ref=${ref} belonged to a frame that has navigated or gone since the snapshot. ` +
+          'Run browser_snapshot to get current refs.',
+      );
+    }
+    throw err;
+  }
 }
 
 /**
@@ -481,7 +517,7 @@ async function rpcEval(expression: string, scope: BrowserTargetScope): Promise<s
  * Exported so other tool modules that interpolate a ref into injected JS
  * (e.g. browser_highlight in inspection.ts) reuse the same guard.
  */
-export function sanitizeRef(ref: string, scope: BrowserTargetScope): string {
+export function sanitizeRef(ref: string, scope: BrowserTargetScope, opts?: { frames?: 'allow' }): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw badArgs(`Invalid ref: "${ref}"`);
   // Every `[data-wmux-ref]` resolution in the tool layer — RPC click, fill,
   // hover, drag, select, scroll, scroll-into-view, the password probe, and
@@ -494,7 +530,20 @@ export function sanitizeRef(ref: string, scope: BrowserTargetScope): string {
   // Asked per surface, not globally: another surface's frame refs say nothing
   // about this one's numbering, and refusing on them would block a good DOM
   // ref here for as long as some unrelated page held that number.
+  //
+  // The one exception: a ref the RPC lane minted inside an in-process frame
+  // knows its frame, and the tools that act there (click, type, fill) pass
+  // `frames: 'allow'` and route it into that frame (sendForSelector).
   if (isOutstandingFrameRef(browserScopeKey(scope), ref)) {
+    const frame = rpcFrameRefOf(browserScopeKey(scope), ref);
+    if (frame && opts?.frames === 'allow') return ref;
+    if (frame) {
+      throw taggedFailure(
+        'not_supported',
+        `ref=${ref} is inside a frame (${frame.origin}); this tool cannot reach into frames on this transport. ` +
+          'browser_click, browser_type and browser_fill can.',
+      );
+    }
     throw taggedFailure('ref_not_found', frameRefFallbackMessage(ref));
   }
   return ref;
@@ -653,13 +702,12 @@ async function rpcClick(
   _double?: boolean,
 ): Promise<'touch' | 'mouse'> {
   // Use CDP click: first get element coordinates via JS, then dispatch mouse events
-  const safeRef = sanitizeRef(ref, scope);
+  const safeRef = sanitizeRef(ref, scope, { frames: 'allow' });
   // The handler decides between a tap and a press — it is the side that knows
   // whether a device preset with a touchscreen is on this WebContents — and
   // names which one it sent.
-  const res = await sendScopedBrowserRpc<{ dispatch?: string }>('browser.click.cdp', scope, {
-    selector: `[data-wmux-ref="${safeRef}"]`,
-  });
+  const selector = `[data-wmux-ref="${safeRef}"]`;
+  const res = await sendForSelector<{ dispatch?: string }>('browser.click.cdp', scope, selector, { selector });
   return res?.dispatch === 'touch' ? 'touch' : 'mouse';
 }
 
@@ -673,7 +721,7 @@ async function rpcClick(
  */
 async function rpcFill(selector: string, value: string, scope: BrowserTargetScope): Promise<void> {
   // Click on the element first to focus it
-  await sendScopedBrowserRpc('browser.click.cdp', scope, { selector });
+  await sendForSelector('browser.click.cdp', scope, selector, { selector });
   // Small delay for focus
   await new Promise(r => setTimeout(r, 100));
   // Both steps below act on whatever the DOCUMENT has focused, not on the
@@ -691,8 +739,8 @@ async function rpcFill(selector: string, value: string, scope: BrowserTargetScop
         'meant to focus it did reach the page. Name a focusable field.',
     );
   }
-  // Select all existing text
-  await sendScopedBrowserRpc('browser.evaluate', scope, {
+  // Select all existing text, in the document that holds the field
+  await sendForSelector('browser.evaluate', scope, selector, {
     expression: `document.execCommand('selectAll')`,
   });
   // Type the new value via CDP Input.insertText (handles CJK, React controlled inputs)
@@ -865,7 +913,7 @@ function rpcSelectorFor(addr: RefAddress, scope: BrowserTargetScope): string {
         'against. Use a ref from browser_snapshot, or a CSS selector.',
     );
   }
-  return `[data-wmux-ref="${sanitizeRef(addr.ref, scope)}"]`;
+  return `[data-wmux-ref="${sanitizeRef(addr.ref, scope, { frames: 'allow' })}"]`;
 }
 
 /** How many elements a selector matches on the RPC lane. */
@@ -873,6 +921,7 @@ async function rpcMatchCount(selector: string, scope: BrowserTargetScope): Promi
   const value = await rpcEval(
     `String(document.querySelectorAll(${jsStringLiteral(selector)}).length)`,
     scope,
+    selector,
   );
   const count = Number(value);
   // A transport that cannot answer must not block the action — the ambiguity
@@ -1033,7 +1082,7 @@ async function rpcCaretState(selector: string, scope: BrowserTargetScope): Promi
       if (!el) return '${CARET_LOST}';
       const active = document.activeElement;
       return active && (active === el || el.contains(active)) ? '${CARET_HELD}' : '${CARET_LOST}';
-    })()`, scope);
+    })()`, scope, selector);
     if (value === CARET_LOST) return 'lost';
     return value === CARET_HELD ? 'held' : 'unknown';
   } catch {
@@ -1120,7 +1169,7 @@ async function rpcIsPasswordElement(selector: string, scope: BrowserTargetScope)
     const val = await rpcEval(`(() => {
       const isPasswordField = ${PASSWORD_FIELD_PREDICATE_JS};
       return isPasswordField(document.querySelector(${jsStringLiteral(selector)})) ? 'yes' : 'no';
-    })()`, scope);
+    })()`, scope, selector);
     return val === 'yes';
   } catch {
     return false;
