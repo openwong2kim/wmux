@@ -16,6 +16,10 @@
 // lifecycle. Until then only the tests use most of it.
 #[allow(dead_code)]
 mod claude;
+// The Claude transport is unix only: Windows Claude hooks stay on Node.
+#[cfg(unix)]
+#[allow(dead_code)]
+mod claude_rpc;
 #[allow(dead_code)]
 mod fsx;
 mod hook;
@@ -26,6 +30,9 @@ mod rpc;
 mod targets;
 #[cfg(test)]
 mod testenv;
+#[cfg(unix)]
+#[allow(dead_code)]
+mod unix_sys;
 
 /// Ownership marker: the hook installer recognises a wmux-written copy of this
 /// binary by this text, as it does the bridge script by its first line.
