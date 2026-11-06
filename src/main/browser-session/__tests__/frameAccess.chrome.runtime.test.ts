@@ -111,6 +111,26 @@ for (const mode of MODES) {
       }
     });
 
+    it('stops a frame read at its timeout, and still answers one that finishes in time', async (ctx) => {
+      if (h.skipUnless(ctx)) return;
+      const page = (await h.browser().newPage()) as Page;
+      try {
+        await page.goto(h.origin(), { waitUntil: 'load' });
+        await loaded(page);
+        const send = await sessionOf(page);
+        const worlds = new FrameWorlds(send);
+        const inner = (await listChildFrames(send)).find((f) => f.name === 'checkout')!;
+        expect(await evaluateInFrame(send, worlds, inner.frameId, '1 + 1', inner.loaderId, 2000)).toEqual({ value: 2 });
+        const started = Date.now();
+        await expect(evaluateInFrame(send, worlds, inner.frameId, 'for (;;) {}', inner.loaderId, 300)).rejects.toThrow();
+        expect(Date.now() - started).toBeLessThan(3000);
+        // Chrome stopped the loop: the frame answers the next read.
+        expect(await evaluateInFrame(send, worlds, inner.frameId, '3', inner.loaderId, 2000)).toEqual({ value: 3 });
+      } finally {
+        await page.close();
+      }
+    });
+
     it('presses where the element is through borders, padding, scroll, a transform and nesting, and checks the hit', async (ctx) => {
       if (h.skipUnless(ctx)) return;
       const page = (await h.browser().newPage()) as Page;

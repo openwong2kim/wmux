@@ -1127,15 +1127,21 @@ async function readFrameListings(
       frames.push({ unread: 'time' });
       continue;
     }
+    // Bounded by the deadline: Chrome stops the script then, the wait ends
+    // then, and a listing that only starts after it touches nothing.
     const expression = buildDomSnapshotExpression(undefined, {
       ...(req.filter ? { filter: req.filter } : {}),
-      frame: { seed, prior: f.prior },
+      frame: { seed, prior: f.prior, notAfter: deadline },
       withEntries: true,
     });
     try {
-      const answer = await evaluateInFrame(send, worlds, f.frameId, expression, f.loaderId);
+      const answer = await evaluateInFrame(send, worlds, f.frameId, expression, f.loaderId, deadline - Date.now());
       if ('unreachable' in answer) {
         frames.push({ unreachable: true });
+        continue;
+      }
+      if (answer.value === null) {
+        frames.push({ unread: 'time' });
         continue;
       }
       const payload = readDomSnapshotPayload(answer.value);
@@ -1143,7 +1149,7 @@ async function readFrameListings(
       spent += Buffer.byteLength(payload.text, 'utf8');
       frames.push({ value: answer.value });
     } catch (err) {
-      frames.push(isFrameGoneError(err) ? { gone: true } : { failed: true });
+      frames.push(isFrameGoneError(err) ? { gone: true } : Date.now() >= deadline ? { unread: 'time' } : { failed: true });
     }
   }
   return { frames, nextRef: seed };

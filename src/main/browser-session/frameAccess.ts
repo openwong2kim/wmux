@@ -192,24 +192,44 @@ async function inWorld<T>(
   }
 }
 
-/** An expression's value in the frame's world, or why the frame cannot be read. */
+/** The error a frame read that ran past its `timeoutMs` rejects with. */
+export const FRAME_READ_TIMEOUT = 'FRAME_READ_TIMEOUT';
+
+/**
+ * An expression's value in the frame's world, or why the frame cannot be read.
+ * With `timeoutMs`, Chrome is asked to stop the script then, and the call
+ * rejects with FRAME_READ_TIMEOUT when no answer has come by then either (a
+ * renderer that does not answer at all).
+ */
 export async function evaluateInFrame(
   send: CdpSend,
   worlds: FrameWorlds,
   frameId: string,
   expression: string,
   expectLoaderId?: string,
+  timeoutMs?: number,
 ): Promise<{ value: unknown } | { unreachable: string }> {
-  return inWorld(worlds, frameId, expectLoaderId, async (contextId) => {
+  const read = inWorld(worlds, frameId, expectLoaderId, async (contextId) => {
     const reply = (await send('Runtime.evaluate', {
       expression,
       contextId,
       returnByValue: true,
       awaitPromise: true,
+      ...(timeoutMs !== undefined ? { timeout: Math.max(1, Math.floor(timeoutMs)) } : {}),
     })) as EvalReply;
     if (reply.exceptionDetails) throw evalError(reply);
     return { value: reply.result?.value ?? null };
   });
+  if (timeoutMs === undefined) return read;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${FRAME_READ_TIMEOUT}: no answer within ${timeoutMs} ms`)), timeoutMs);
+  });
+  try {
+    return await Promise.race([read, late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export interface Point {

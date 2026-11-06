@@ -39,6 +39,15 @@ describe('frame mode', () => {
     expect(document.querySelector('a')?.getAttribute('data-wmux-ref')).toBe('9');
   });
 
+  it('touches nothing when it runs after its notAfter time, so a late read stamps no refs', () => {
+    document.body.innerHTML = '<button data-wmux-ref="7">Pay</button>';
+    const late = (0, eval)(buildDomSnapshotExpression(undefined, { frame: { seed: 9, notAfter: Date.now() - 1 }, withEntries: true }));
+    expect(late).toBeNull();
+    expect(document.querySelector('button')?.getAttribute('data-wmux-ref')).toBe('7');
+    const onTime = run(buildDomSnapshotExpression(undefined, { frame: { seed: 9, notAfter: Date.now() + 60_000 }, withEntries: true }));
+    expect(onTime.entries.map((e) => e.ref)).toEqual([9]);
+  });
+
   it('honours the interactive filter', () => {
     document.body.innerHTML = '<h1>Title</h1><button>Go</button>';
     const { text } = run(buildDomSnapshotExpression(undefined, { frame: { seed: 0 }, filter: 'interactive', withEntries: true }));

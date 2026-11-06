@@ -369,6 +369,35 @@ describe('browser.frames.read — every frame listing in one call', () => {
     expect(res).toMatchObject({ ok: true, result: { frames: [{ value: expect.any(Object) }, { value: expect.any(Object) }, { unread: 'time' }] } });
   });
 
+  it('bounds a read that does not answer by the deadline, and tells the page not to act after it', async () => {
+    vi.useFakeTimers();
+    try {
+      const evaluated: Array<Record<string, unknown>> = [];
+      let world = 60;
+      mockWebContents.debugger.sendCommand.mockImplementation((async (method: string, params: Record<string, unknown> = {}) => {
+        if (method === 'Page.getFrameTree') return TWO;
+        if (method === 'Page.createIsolatedWorld') return { executionContextId: ++world };
+        if (method === 'Runtime.evaluate') {
+          evaluated.push(params);
+          return new Promise(() => { /* a renderer that never answers */ });
+        }
+        return {};
+      }) as never);
+      const started = Date.now();
+      const pending = register().dispatch({ id: 'h', method: 'browser.frames.read', params: { frames, seed: 1 } });
+      await vi.advanceTimersByTimeAsync(FRAMES_READ_DEADLINE_MS + 50);
+      const res = await pending;
+      expect(res).toMatchObject({ ok: true, result: { frames: [{ unread: 'time' }, { unread: 'time' }], nextRef: 1 } });
+      expect(evaluated).toHaveLength(1);
+      // Chrome is told to stop the script at the deadline, and the listing checks the clock before it touches the page.
+      expect(evaluated[0].timeout).toBeLessThanOrEqual(FRAMES_READ_DEADLINE_MS);
+      const notAfter = Number(/const frameNotAfter = (\d+);/.exec(String(evaluated[0].expression))?.[1]);
+      expect(notAfter).toBe(started + FRAMES_READ_DEADLINE_MS);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('stops when the caller has hung up, so an abandoned snapshot stamps nothing more', async () => {
     const evaluated = guestListing(1);
     const hangUp = new AbortController();

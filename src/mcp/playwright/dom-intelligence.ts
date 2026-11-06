@@ -120,7 +120,12 @@ export interface DomSnapshotExpressionOptions {
    * every number the surface has handed out. The top document's history is
    * never offered here, so a frame cannot take a number the top holds.
    */
-  frame?: { seed: number; prior?: readonly RefDescriptor[] };
+  frame?: {
+    seed: number;
+    prior?: readonly RefDescriptor[];
+    /** Epoch ms after which the listing returns null without touching the page. */
+    notAfter?: number;
+  };
 }
 
 /**
@@ -173,11 +178,15 @@ export function buildDomSnapshotExpression(
     const assignStableRefs = (${STABLE_REF_ASSIGNMENT_JS});
     const frameSeed = ${JSON.stringify(opts?.frame ? opts.frame.seed : null)};
     const framePrior = ${JSON.stringify(opts?.frame?.prior ?? [])};
+    const frameNotAfter = ${JSON.stringify(opts?.frame?.notAfter ?? null)};
     const prior = ${JSON.stringify(opts?.stable?.prior ?? [])};
     const seedNext = ${JSON.stringify(opts?.stable?.nextRef ?? 0)};
     ${PAGE_TEXT_JS}
     const root = rootSel ? document.querySelector(rootSel) : document;
     if (!root) return withEntries ? { text: ${miss}, entries: [] } : ${miss};
+    // A read that runs after the caller stopped waiting must not stamp refs
+    // nobody will be told about.
+    if (frameNotAfter !== null && Date.now() > frameNotAfter) return null;
     document.querySelectorAll('[data-wmux-ref]').forEach(el => el.removeAttribute('data-wmux-ref'));
     const interactives = [...root.querySelectorAll(sel)].slice(0, 100);
     // The descriptor this lane identifies an element by. Only ever compared
