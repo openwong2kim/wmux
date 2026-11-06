@@ -87,7 +87,7 @@ describe('openTerminalFileLink on Windows', () => {
     const d = deps();
     await openTerminalFileLink('/tmp/x.txt:4', undefined, 'pty1', d);
     expect(d.openWithOs).not.toHaveBeenCalled();
-    expect(d.onFailure).toHaveBeenCalledTimes(1);
+    expect(d.onFailure).toHaveBeenCalledWith('not-found');
     expect(state.addEditorSurface).not.toHaveBeenCalled();
   });
 
@@ -97,5 +97,24 @@ describe('openTerminalFileLink on Windows', () => {
     const d = deps();
     await openTerminalFileLink('C:\\work\\a.txt', undefined, 'pty1', d);
     expect(d.openWithOs).toHaveBeenCalledWith('C:\\work\\a.txt');
+  });
+});
+
+describe('openTerminalFileLink: why nothing opened', () => {
+  it('a file: URL naming another computer is refused, not reported missing', async () => {
+    list.mockResolvedValue([{ id: 'pty1', shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' }]);
+    const d = { ...deps(), viewerOnly: true };
+    await openTerminalFileLink('file://otherhost/share/x.txt', undefined, 'pty1', d);
+    expect(d.openWithOs).not.toHaveBeenCalled();
+    expect(d.onFailure).toHaveBeenCalledWith('refused');
+  });
+
+  it('an OSC 8 link the viewer cannot show is refused rather than handed to the OS', async () => {
+    list.mockResolvedValue([{ id: 'pty1', shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' }]);
+    readFile.mockResolvedValue(null);
+    const d = { ...deps(), viewerOnly: true };
+    await openTerminalFileLink('file:///C:/work/missing.txt', undefined, 'pty1', d);
+    expect(d.openWithOs).not.toHaveBeenCalled();
+    expect(d.onFailure).toHaveBeenCalledWith('refused');
   });
 });

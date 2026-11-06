@@ -1452,6 +1452,8 @@ export const pl = {
   'terminal.openPathBlocked': 'Plik wykonywalny zablokowany — otwarto folder nadrzędny',
   'terminal.openPathFailed': 'Nie udało się otworzyć — pokazuję folder',
   'terminal.openPathProtected': 'To chronione miejsce z danymi logowania, więc wmux go nie otworzy.',
+  'terminal.openPathNotFound': 'Nie znaleziono — nic nie otwarto',
+  'terminal.openPathRefused': 'Nie otwarto linku — z linków wmux otwiera tylko pliki tego komputera',
   'terminal.bookmarkAdded': 'Dodano zakładkę',
   'terminal.scrollToBottom': 'Przewiń na dół',
   'terminal.imeInputRecovered': 'Wejście klawiatury utknęło w IME i zostało automatycznie odzyskane',

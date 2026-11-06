@@ -1495,6 +1495,8 @@ export const en = {
   'terminal.openPathBlocked': 'Executable blocked — opened parent folder',
   'terminal.openPathFailed': "Couldn't open — showing folder",
   'terminal.openPathProtected': "This is a protected credential location, so wmux won't open it.",
+  'terminal.openPathNotFound': 'Not found — nothing opened',
+  'terminal.openPathRefused': "Link not opened — wmux opens only this computer's files from links",
   'terminal.bookmarkAdded': 'Bookmark added',
   'terminal.scrollToBottom': 'Scroll to bottom',
   'terminal.imeInputRecovered': 'Keyboard input was stuck in the IME and has been recovered automatically',

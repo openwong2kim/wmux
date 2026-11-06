@@ -158,10 +158,12 @@ export function registerShellHandlers(): () => void {
     }
     const err = await shell.openPath(opened);
     if (err) {
-      // openPath returns an error string when the file is missing, has no
-      // associated handler, or the OS refused the open. Reveal the parent
-      // folder so the user still gets useful feedback instead of a silent
-      // no-op.
+      // Nothing there (the check found no real path): say so and reveal no
+      // folder, since a missing path's parent is not what the user clicked.
+      if (target.real === null) return { ok: false, error: 'NOT_FOUND' };
+      // openPath returns an error string when the file has no associated
+      // handler or the OS refused the open. Reveal the parent folder so the
+      // user still gets useful feedback instead of a silent no-op.
       shell.showItemInFolder(opened);
     }
     return { ok: !err, error: err || undefined };

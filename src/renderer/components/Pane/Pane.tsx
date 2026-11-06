@@ -805,10 +805,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     });
   }, [splitMode]);
   const lastWorkIdRef = useRef<string | undefined>(undefined);
+  const lastTerminalIdRef = useRef<string | undefined>(undefined);
   const { shownTerminalId, shownWorkId } = pickSplitShownSurfaces(
-    splitTerminals, splitWorks, pane.activeSurfaceId, lastWorkIdRef.current,
+    splitTerminals, splitWorks, pane.activeSurfaceId, lastWorkIdRef.current, lastTerminalIdRef.current,
   );
   useEffect(() => { lastWorkIdRef.current = shownWorkId; }, [shownWorkId]);
+  useEffect(() => { lastTerminalIdRef.current = shownTerminalId; }, [shownTerminalId]);
   const workFocused = splitWorks.some((s) => s.id === pane.activeSurfaceId);
   const [workExpandRequested, setWorkExpandRequested] = useState(false);
   const workExpanded = isSplitWorkExpanded(workExpandRequested, splitTerminals, splitWorks, pane.activeSurfaceId);

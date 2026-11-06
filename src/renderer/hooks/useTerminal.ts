@@ -857,7 +857,7 @@ export function showCopyToastText(text: string) {
 // associated app). Shares no DOM with the copy toasts so they can briefly
 // overlap if a user copies-then-clicks in quick succession.
 let openPathToastTimer: ReturnType<typeof setTimeout> | null = null;
-function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.openPathFailed' | 'terminal.openPathProtected') {
+function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.openPathFailed' | 'terminal.openPathProtected' | 'terminal.openPathNotFound' | 'terminal.openPathRefused') {
   let el = document.getElementById('wmux-openpath-toast');
   if (!el) {
     el = document.createElement('div');
@@ -865,7 +865,7 @@ function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.op
     el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);color:var(--bg-base);font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
     document.body.appendChild(el);
   }
-  el.style.background = messageKey !== 'terminal.openPathFailed'
+  el.style.background = messageKey !== 'terminal.openPathFailed' && messageKey !== 'terminal.openPathNotFound'
     ? 'var(--accent-yellow)'
     : 'var(--accent-red)';
   el.textContent = t(messageKey);
@@ -1891,6 +1891,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         //   • error='BLOCKED_EXTENSION' → security gate refused (.exe etc.)
         //   • error='BLOCKED_SENSITIVE' → a credential location the viewer
         //     refuses too; nothing was opened or revealed
+        //   • error='NOT_FOUND' → the path does not exist; nothing revealed
         //   • error=<message> → openPath failed (file gone, no handler);
         //     main already revealed the parent folder via showItemInFolder
         // The toast tells the user *why* their click landed on a folder
@@ -1901,7 +1902,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             ? 'terminal.openPathBlocked'
             : result.error === 'BLOCKED_SENSITIVE'
               ? 'terminal.openPathProtected'
-              : 'terminal.openPathFailed',
+              : result.error === 'NOT_FOUND'
+                ? 'terminal.openPathNotFound'
+                : 'terminal.openPathFailed',
         );
       }).catch((err: unknown) => {
         // IPC-level rejection (validation throw: non-string, NUL byte,
@@ -1915,7 +1918,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const openTerminalPath = (filePath: string, location?: PathLocation, viewerOnly = false): void => {
       void openTerminalFileLink(filePath, location, ptyIdRef.current || undefined, {
         openWithOs,
-        onFailure: () => showOpenPathToast('terminal.openPathFailed'),
+        onFailure: (reason) => showOpenPathToast(reason === 'refused' ? 'terminal.openPathRefused' : 'terminal.openPathNotFound'),
         viewerOnly,
       }).catch((err: unknown) => {
         console.warn('[useTerminal] open file link failed:', err);

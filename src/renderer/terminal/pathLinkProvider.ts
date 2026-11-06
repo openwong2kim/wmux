@@ -2,10 +2,10 @@
  * Path link provider — Ctrl+click (mac: Cmd+click) an absolute filesystem path in the
  * terminal to open it in Explorer / Finder / xdg-open.
  *
- * Layered with xterm's existing WebLinksAddon (URLs). Path detection runs
- * line-by-line against `IBufferLine.translateToString(false)`, then is
- * narrowed by `findPathMatches` (pure, unit-tested) so the xterm-coupled
- * surface stays thin.
+ * Layered with xterm's existing WebLinksAddon (URLs). Path detection runs per
+ * logical line (the rows a soft wrap joins), then is narrowed by
+ * `findPathMatches` (pure, unit-tested) so the xterm-coupled surface stays
+ * thin.
  *
  * Design notes:
  *   • Absolute paths and `file://` URLs always match. Relative paths match
@@ -219,6 +219,9 @@ export function locationOf(match: PathMatch): PathLocation | undefined {
  * `process.platform` when available, otherwise 'linux' — which still
  * detects Windows drive paths, just without UNC support.
  */
+/** Rows of one soft-wrapped line read for a link, at most. */
+const MAX_WRAPPED_ROWS = 32;
+
 export function createPathLinkProvider(
   terminal: Terminal,
   openPath: (filePath: string, location?: PathLocation) => void,
@@ -227,23 +230,38 @@ export function createPathLinkProvider(
   return {
     provideLinks(bufferLineNumber, callback) {
       // xterm passes 1-based line numbers; getLine wants 0-based.
-      const line = terminal.buffer.active.getLine(bufferLineNumber - 1);
-      if (!line) {
+      const buffer = terminal.buffer.active;
+      const row = bufferLineNumber - 1;
+      if (!buffer.getLine(row)) {
         callback(undefined);
         return;
       }
-      // Soft-wrapped continuation rows are skipped: xterm's link range is
-      // single-row, so a path split across rows can't be highlighted as
-      // one link. The origin row's matcher only sees its own slice in
-      // that case; users who hit this can right-click → copy → paste.
-      // The cost of skipping wrap continuation rows is preventing false
-      // matches when row N's prefix is the suffix of row N-1's path.
-      if (line.isWrapped) {
-        callback(undefined);
-        return;
+      // A narrow pane soft-wraps a long path over several rows: read the
+      // whole logical line (its first row and the wrapped rows after it), so
+      // the path matches whole on any of its rows and a click opens all of it.
+      let first = row;
+      while (first > 0 && row - first < MAX_WRAPPED_ROWS && buffer.getLine(first)?.isWrapped) first--;
+      let last = row;
+      while (last - first < MAX_WRAPPED_ROWS && buffer.getLine(last + 1)?.isWrapped) last++;
+      // Offset in `text` where each row starts; a row that wraps on keeps its
+      // trailing cells (they are part of the line), the last one is trimmed.
+      const rowStarts: number[] = [];
+      let text = '';
+      for (let y = first; y <= last; y++) {
+        rowStarts.push(text.length);
+        text += buffer.getLine(y)?.translateToString(y === last) ?? '';
       }
-      const text = line.translateToString(true);
-      const matches = findPathMatches(text, platform);
+      // 1-based cell of a text offset (one cell per character, as before).
+      const cellAt = (offset: number): { x: number; y: number } => {
+        let i = rowStarts.length - 1;
+        while (i > 0 && rowStarts[i] > offset) i--;
+        return { x: offset - rowStarts[i] + 1, y: first + i + 1 };
+      };
+      const matches = findPathMatches(text, platform).filter((match) => {
+        const start = cellAt(match.start).y;
+        const end = cellAt(match.end - 1).y;
+        return start <= bufferLineNumber && bufferLineNumber <= end;
+      });
       if (matches.length === 0) {
         callback(undefined);
         return;
@@ -252,8 +270,8 @@ export function createPathLinkProvider(
         // xterm coordinates are 1-based; range.end is inclusive (the last
         // cell containing the link, not one past it).
         range: {
-          start: { x: match.start + 1, y: bufferLineNumber },
-          end: { x: match.end, y: bufferLineNumber },
+          start: cellAt(match.start),
+          end: cellAt(match.end - 1),
         },
         text: match.text,
         // #2901: xterm activates on mouseup of any button; only a left click opens.

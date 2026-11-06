@@ -287,14 +287,37 @@ describe('createPathLinkProvider', () => {
     expect(links[0].text).toBe('/etc/hosts');
   });
 
-  it('skips wrapped continuation lines so paths do not double-match', () => {
+  it('reads a soft-wrapped path whole, from either of its rows', () => {
+    // A narrow pane wrapped the path after "AppData/L".
     const terminal = makeTerminal([
-      { text: '/etc/hosts continuation row body', wrapped: true },
+      { text: 'see /mnt/c/Users/me/AppData/L' },
+      { text: 'ocal/x.txt', wrapped: true },
+    ]);
+    const openPath = vi.fn();
+    const provider = createPathLinkProvider(terminal, openPath, 'linux');
+    for (const row of [1, 2]) {
+      const cb = vi.fn();
+      provider.provideLinks(row, cb);
+      const links = cb.mock.calls[0][0];
+      expect(links).toHaveLength(1);
+      expect(links[0].text).toBe('/mnt/c/Users/me/AppData/Local/x.txt');
+      expect(links[0].range).toEqual({ start: { x: 5, y: 1 }, end: { x: 10, y: 2 } });
+    }
+    const cb = vi.fn();
+    provider.provideLinks(2, cb);
+    cb.mock.calls[0][0][0].activate({ button: 0 } as MouseEvent);
+    expect(openPath).toHaveBeenCalledWith('/mnt/c/Users/me/AppData/Local/x.txt');
+  });
+
+  it('does not match the tail of a wrapped path as a path of its own', () => {
+    const terminal = makeTerminal([
+      { text: 'x /var/lo' },
+      { text: 'g/system.log /etc/hosts', wrapped: true },
     ]);
     const provider = createPathLinkProvider(terminal, vi.fn(), 'linux');
     const cb = vi.fn();
-    provider.provideLinks(1, cb);
-    expect(cb).toHaveBeenCalledWith(undefined);
+    provider.provideLinks(2, cb);
+    expect(cb.mock.calls[0][0].map((l: { text: string }) => l.text)).toEqual(['/var/log/system.log', '/etc/hosts']);
   });
 
   it('passes undefined when the line is empty', () => {

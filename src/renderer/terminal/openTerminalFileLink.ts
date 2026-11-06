@@ -18,8 +18,12 @@ import type { PathLocation } from './pathLinkProvider';
 export interface OpenTerminalFileLinkDeps {
   /** OS opener (Electron shell.openPath, validated in main). */
   openWithOs: (filePath: string) => void;
-  /** Raised when nothing could be opened at all (e.g. an unresolvable relative path). */
-  onFailure: () => void;
+  /**
+   * Raised when nothing was opened: `refused` for a link wmux will not open
+   * (a `file:` URL naming another computer, or an OSC 8 link the in-app
+   * viewer cannot show), `not-found` for a path that resolves to nothing.
+   */
+  onFailure: (reason: 'refused' | 'not-found') => void;
   /**
    * The link came from an OSC 8 hyperlink, whose destination the program
    * controls and the user never saw. It may only open in the in-app viewer:
@@ -58,7 +62,7 @@ export async function openTerminalFileLink(
 ): Promise<void> {
   const platform = window.electronAPI.platform;
   // Every OS-opener fallback below goes through here.
-  const openWithOs = deps.viewerOnly ? () => deps.onFailure() : deps.openWithOs;
+  const openWithOs = deps.viewerOnly ? () => deps.onFailure('refused') : deps.openWithOs;
   const owner = locatePty(ptyId);
   // Read from the session: most tabs' label is 'Terminal' whatever runs in
   // them. A 'WSL' label (a leaf's first tab) also counts, which covers a
@@ -85,7 +89,9 @@ export async function openTerminalFileLink(
     if (ABSOLUTE.test(raw) && !(platform === 'win32' && raw.startsWith('/'))) {
       openWithOs(raw.replace(/:\d+(?::\d+)?$/, ''));
     } else {
-      deps.onFailure();
+      // A `file:` URL that did not resolve names another computer (or is
+      // malformed): refused, not missing.
+      deps.onFailure(/^file:/i.test(raw.trim()) ? 'refused' : 'not-found');
     }
     return;
   }

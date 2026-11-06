@@ -138,13 +138,28 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
     expect(openPath).toHaveBeenCalledWith(expected);
   });
 
-  it('falls back to showItemInFolder when openPath returns an error', async () => {
+  it('falls back to showItemInFolder when openPath fails on a path that exists', async () => {
+    openPath.mockResolvedValueOnce('Failed to open path');
+    const handler = getHandler(IPC.SHELL_OPEN_PATH);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-open-'));
+    const input = path.join(dir, 'notes.txt');
+    fs.writeFileSync(input, 'x');
+    try {
+      const result = await handler(fakeEvent, input);
+      expect(showItemInFolder).toHaveBeenCalledWith(input);
+      expect(result).toEqual({ ok: false, error: 'Failed to open path' });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('says NOT_FOUND for a path that does not exist, and reveals no folder', async () => {
     openPath.mockResolvedValueOnce('Failed to open path');
     const handler = getHandler(IPC.SHELL_OPEN_PATH);
     const input = process.platform === 'win32' ? 'C:\\does-not-exist' : '/does-not-exist';
     const result = await handler(fakeEvent, input);
-    expect(showItemInFolder).toHaveBeenCalledWith(input);
-    expect(result).toEqual({ ok: false, error: 'Failed to open path' });
+    expect(showItemInFolder).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: false, error: 'NOT_FOUND' });
   });
 
   describe('executable extension blocklist', () => {
