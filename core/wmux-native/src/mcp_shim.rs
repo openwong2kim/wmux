@@ -635,6 +635,7 @@ mod sys {
         fn GetFileType(handle: Handle) -> u32;
         fn CloseHandle(handle: Handle) -> i32;
         fn CreateEventW(security: *mut c_void, manual_reset: i32, initial_state: i32, name: *const u16) -> Handle;
+        fn ResetEvent(event: Handle) -> i32;
         fn ReadFile(handle: Handle, buf: *mut u8, len: u32, read: *mut u32, ov: *mut Overlapped) -> i32;
         fn WriteFile(handle: Handle, buf: *const u8, len: u32, written: *mut u32, ov: *mut Overlapped) -> i32;
         fn GetOverlappedResult(handle: Handle, ov: *mut Overlapped, transferred: *mut u32, wait: i32) -> i32;
@@ -658,12 +659,33 @@ mod sys {
         fn GetUserNameW(buffer: *mut u16, size: *mut u32) -> i32;
     }
 
+    /// One manual-reset event per pump thread, reset before each operation.
+    pub struct Event(Handle);
+
+    impl Event {
+        pub fn new() -> std::io::Result<Event> {
+            // SAFETY: a fresh unnamed manual-reset event, owned by the result.
+            let h = unsafe { CreateEventW(std::ptr::null_mut(), 1, 0, std::ptr::null()) };
+            if h.is_null() {
+                return Err(Error::last_os_error());
+            }
+            Ok(Event(h))
+        }
+    }
+
+    impl Drop for Event {
+        fn drop(&mut self) {
+            // SAFETY: the event is owned and closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
     /// The pipe handle, opened for overlapped I/O so one thread's pending read
     /// does not hold up the other's write (a synchronous handle serialises
     /// them, and the session deadlocks).
     pub struct Conn(Handle);
     // SAFETY: a file HANDLE may be used from any thread; each operation brings
-    // its own OVERLAPPED and event.
+    // its own OVERLAPPED, and each thread its own event.
     unsafe impl Send for Conn {}
     unsafe impl Sync for Conn {}
 
@@ -675,56 +697,53 @@ mod sys {
     }
 
     impl Conn {
-        /// One overlapped read or write, waited for on this call's own event.
-        fn io(&self, buf: *mut u8, len: usize, write: bool) -> std::io::Result<usize> {
+        /// One overlapped read or write, waited for on the calling thread's event.
+        fn io(&self, event: &Event, buf: *mut u8, len: usize, write: bool) -> std::io::Result<usize> {
             let len = len.min(u32::MAX as usize) as u32;
-            // SAFETY: a fresh manual-reset event, closed below.
-            let event = unsafe { CreateEventW(std::ptr::null_mut(), 1, 0, std::ptr::null()) };
-            if event.is_null() {
-                return Err(Error::last_os_error());
-            }
             let mut ov = Overlapped {
                 internal: 0,
                 internal_high: 0,
                 offset: 0,
                 offset_high: 0,
-                event,
+                event: event.0,
             };
             let mut n = 0u32;
             // SAFETY: `buf` is valid for `len` bytes and, with `ov`, outlives the
-            // operation: GetOverlappedResult waits for it to complete.
-            let result = unsafe {
+            // operation: GetOverlappedResult waits for it to complete. The event
+            // belongs to this thread, so no other operation waits on it.
+            unsafe {
+                ResetEvent(event.0);
                 let started = if write {
                     WriteFile(self.0, buf, len, &mut n, &mut ov)
                 } else {
                     ReadFile(self.0, buf, len, &mut n, &mut ov)
                 };
-                if started != 0 || Error::last_os_error().raw_os_error() == Some(ERROR_IO_PENDING) {
-                    if GetOverlappedResult(self.0, &mut ov, &mut n, 1) != 0 {
-                        Ok(n as usize)
-                    } else {
-                        Err(Error::last_os_error())
-                    }
-                } else {
-                    Err(Error::last_os_error())
+                if started == 0 && Error::last_os_error().raw_os_error() != Some(ERROR_IO_PENDING) {
+                    return Err(Error::last_os_error());
                 }
-            };
-            // SAFETY: the event is ours and no longer referenced.
-            unsafe { CloseHandle(event) };
-            result
+                if GetOverlappedResult(self.0, &mut ov, &mut n, 1) == 0 {
+                    return Err(Error::last_os_error());
+                }
+            }
+            Ok(n as usize)
         }
 
-        fn read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
-            match self.io(buf.as_mut_ptr(), buf.len(), false) {
-                // The server closed its end: end of stream.
-                Err(e) if e.raw_os_error() == Some(ERROR_BROKEN_PIPE) => Ok(0),
-                other => other,
+        /// Ok(0) only at the end of the stream. libuv takes ERROR_BROKEN_PIPE
+        /// as the end; a read that succeeds with 0 bytes (the server wrote a
+        /// zero-length message) is not, so it reads again.
+        fn read(&self, event: &Event, buf: &mut [u8]) -> std::io::Result<usize> {
+            loop {
+                match self.io(event, buf.as_mut_ptr(), buf.len(), false) {
+                    Ok(0) => continue,
+                    Err(e) if e.raw_os_error() == Some(ERROR_BROKEN_PIPE) => return Ok(0),
+                    other => return other,
+                }
             }
         }
 
-        fn write_all(&self, mut bytes: &[u8]) -> std::io::Result<()> {
+        fn write_all(&self, event: &Event, mut bytes: &[u8]) -> std::io::Result<()> {
             while !bytes.is_empty() {
-                let n = self.io(bytes.as_ptr() as *mut u8, bytes.len(), true)?;
+                let n = self.io(event, bytes.as_ptr() as *mut u8, bytes.len(), true)?;
                 if n == 0 {
                     return Err(Error::from(std::io::ErrorKind::WriteZero));
                 }
@@ -831,13 +850,23 @@ mod sys {
 
     pub fn session(conn: Conn, handshake: &[u8]) -> ! {
         let conn = Arc::new(conn);
-        if let Err(e) = conn.write_all(handshake) {
+        let writer_event = match Event::new() {
+            Ok(e) => e,
+            Err(e) => finish(Outcome::BrokerError(e.to_string())),
+        };
+        if let Err(e) = conn.write_all(&writer_event, handshake) {
             finish(Outcome::BrokerError(e.to_string()));
         }
         install_exit_handlers();
         let reader = Arc::clone(&conn);
-        std::thread::spawn(move || pump_to_stdout(|buf| reader.read(buf)));
-        pump_from_stdin(|bytes| conn.write_all(bytes));
+        std::thread::spawn(move || {
+            let event = match Event::new() {
+                Ok(e) => e,
+                Err(e) => finish(Outcome::BrokerError(e.to_string())),
+            };
+            pump_to_stdout(|buf| reader.read(&event, buf))
+        });
+        pump_from_stdin(|bytes| conn.write_all(&writer_event, bytes));
         // Host closed stdin: close the pipe and end the session.
         if super::claim_exit() {
             // SAFETY: the process exits next, so the handle is never used again.

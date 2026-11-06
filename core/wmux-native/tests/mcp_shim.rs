@@ -156,6 +156,7 @@ mod stub {
             security: *mut c_void,
         ) -> *mut c_void;
         fn ConnectNamedPipe(pipe: *mut c_void, overlapped: *mut c_void) -> i32;
+        fn WriteFile(file: *mut c_void, buf: *const u8, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
     }
     #[link(name = "advapi32")]
     extern "system" {
@@ -206,6 +207,15 @@ mod stub {
             // SAFETY: the handle is owned from here on by the File.
             unsafe { File::from_raw_handle(h as *mut c_void) }
         }
+    }
+
+    /// A zero-length message on the byte-mode pipe (File::write might skip it).
+    pub fn write_zero(conn: &Conn) {
+        use std::os::windows::io::AsRawHandle;
+        let mut n = 0u32;
+        // SAFETY: a zero-length write on a live, synchronous pipe handle.
+        let ok = unsafe { WriteFile(conn.as_raw_handle(), [0u8; 1].as_ptr(), 0, &mut n, std::ptr::null_mut()) };
+        assert!(ok != 0, "zero-length write: {}", std::io::Error::last_os_error());
     }
 
     pub fn username() -> String {
@@ -540,6 +550,30 @@ fn a_non_blocking_stdin_and_stdout_are_waited_on() {
     feeder.join().unwrap().unwrap();
 
     drop(host_in);
+    assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
+}
+
+/// On Windows a read that succeeds with 0 bytes is a zero-length message, not
+/// the end of the stream (only ERROR_BROKEN_PIPE is).
+#[cfg(windows)]
+#[test]
+fn a_zero_length_message_from_the_broker_is_not_the_end_of_the_stream() {
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    let listener = stub::bind(&sb.pipe());
+    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    let out = spawn_reader(child.stdout.take().unwrap());
+    let mut conn = listener.accept(WAIT);
+    read_line(&mut conn);
+    stub::write_zero(&conn);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "a zero-length read ended the session"
+    );
+    conn.write_all(b"after\n").unwrap();
+    assert_eq!(recv_exact(&out, 6), b"after\n");
+    drop(child.stdin.take());
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
 }
 
