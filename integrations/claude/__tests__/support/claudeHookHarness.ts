@@ -377,7 +377,8 @@ const DEBUG_PREFIX = 'WMUX_BRIDGE_DEBUG_ENVELOPE=';
 export function normaliseStderr(stderr: string, problems: string[]): string {
   const lines: string[] = [];
   for (const line of stderr.split('\n')) {
-    const internal = /^\s+at .*\(node:[^)]*\)$/.test(line);
+    // `at fn (node:…)`, `at fn [as x] (node:…)`, `at node:…`, `at async node:…`
+    const internal = /^\s+at (?:.*\(node:[^)]*\)|(?:async )?node:\S+)$/.test(line);
     if (internal && lines.at(-1) === '    at <node internals>') continue;
     lines.push(internal ? '    at <node internals>' : line.replace(/^Node\.js v\d+\.\d+\.\d+$/, 'Node.js <version>'));
   }
