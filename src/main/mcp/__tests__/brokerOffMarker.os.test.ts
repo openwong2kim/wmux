@@ -18,10 +18,13 @@ afterEach(() => {
 });
 
 describe('broker-off effects', () => {
-  it('writes the marker, creating its directory, and clears it', () => {
+  it('marks the broker off on a trip only when nothing answers on its pipe, and clears it', async () => {
     const marker = path.join(tempDir(), '.wmux-x', 'mcp-broker-off');
-    const off = brokerOffEffects(() => marker);
-    off.mark();
+    // Another instance's broker serves the pipe: no marker.
+    await brokerOffEffects(() => marker, async () => true).tripped();
+    expect(fs.existsSync(marker)).toBe(false);
+    const off = brokerOffEffects(() => marker, async () => false);
+    await off.tripped();
     expect(fs.existsSync(marker)).toBe(true);
     off.clear();
     expect(fs.existsSync(marker)).toBe(false);
@@ -29,17 +32,9 @@ describe('broker-off effects', () => {
     expect(() => off.clear()).not.toThrow();
     const blocked = path.join(tempDir(), 'file');
     fs.writeFileSync(blocked, '');
-    expect(() => brokerOffEffects(() => path.join(blocked, 'mcp-broker-off')).mark()).not.toThrow();
-  });
-
-  it.skipIf(process.platform === 'win32')('removes the socket file only when nothing answers on it', async () => {
-    const sock = path.join(tempDir(), 'b.sock');
-    fs.writeFileSync(sock, '');
-    await brokerOffEffects(undefined, () => sock, async () => true).unlinkStaleSocket();
-    expect(fs.existsSync(sock)).toBe(true);
-    await brokerOffEffects(undefined, () => sock, async () => false).unlinkStaleSocket();
-    expect(fs.existsSync(sock)).toBe(false);
-    // Already gone: still no throw.
-    await expect(brokerOffEffects(undefined, () => sock, async () => false).unlinkStaleSocket()).resolves.toBeUndefined();
+    await expect(brokerOffEffects(() => path.join(blocked, 'mcp-broker-off'), async () => false).tripped()).resolves.toBeUndefined();
+    // A probe that throws is not a reason to mark.
+    await brokerOffEffects(() => marker, async () => { throw new Error('probe'); }).tripped();
+    expect(fs.existsSync(marker)).toBe(false);
   });
 });

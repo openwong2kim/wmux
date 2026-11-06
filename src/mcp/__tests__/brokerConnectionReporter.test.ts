@@ -105,6 +105,35 @@ describe('tool calls in flight', () => {
     expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 1 });
   });
 
+  it('reports a change of tool names at once, and nothing when the names stay the same', () => {
+    const ch = channel();
+    const r = createConnectionReporter(ch);
+    r.toolStarted('browser_click');
+    expect(ch.send).toHaveBeenCalledTimes(1);
+    expect(ch.send.mock.calls[0][0]).toEqual({ wmuxBroker: 'connections', open: 0, inflight: ['browser_click'] });
+    r.toolStarted('browser_click');
+    r.toolEnded('browser_click');
+    expect(ch.send).toHaveBeenCalledTimes(1);
+    r.toolEnded('browser_click');
+    expect(ch.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('ends a call the client cancelled, and does not count a reused id twice', async () => {
+    const ch = channel();
+    const r = createConnectionReporter(ch);
+    const transport = { onmessage: vi.fn() as ((message: unknown) => void) | undefined, send: vi.fn(async (_message: unknown) => undefined) };
+    trackToolCalls(transport, r);
+    transport.onmessage?.({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'browser_click' } });
+    transport.onmessage?.({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 7 } });
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 0 });
+    transport.onmessage?.({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'browser_type' } });
+    transport.onmessage?.({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'browser_type' } });
+    await transport.send({ jsonrpc: '2.0', id: 8, result: {} });
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 0 });
+  });
+
   it('follows tools/call requests to their responses on a transport, and ends what is left on dispose', async () => {
     const ch = channel();
     const r = createConnectionReporter(ch);

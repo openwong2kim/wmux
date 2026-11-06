@@ -63,7 +63,6 @@ export class BrokerSupervisor {
   /** Tool calls in flight, as the current child last reported them. */
   private inflight: string[] = [];
   private lastCrashTools: string[] = [];
-  private startedOnce = false;
   private readonly brokerOff: BrokerOffEffects;
 
   constructor(opts: { brokerOff?: BrokerOffEffects } = {}) {
@@ -116,12 +115,6 @@ export class BrokerSupervisor {
 
   start(): void {
     if (this.stopped || this.child || this.tripped) return;
-    // A new app run gives the broker a fresh chance: the marker an earlier
-    // run's breaker left goes, once.
-    if (!this.startedOnce) {
-      this.startedOnce = true;
-      this.brokerOff.clear();
-    }
     const script = this.getBrokerScriptPath();
     if (!script) {
       this.scriptMissing = true;
@@ -129,6 +122,9 @@ export class BrokerSupervisor {
       return;
     }
     this.scriptMissing = false;
+    // A broker is starting here, so none is meant to be off: a marker an
+    // earlier run's breaker, or another instance's, left goes.
+    this.brokerOff.clear();
 
     // Defensive: if a reclaim probe is somehow still armed as we spawn our own
     // child, tear it down — otherwise every 15s tick would see our live broker
@@ -173,7 +169,8 @@ export class BrokerSupervisor {
     const scheduleRestart = (reason: string, kind: 'crash' | 'spawn') => {
       if (settled) return;
       settled = true;
-      if (kind === 'crash') this.lastCrashTools = this.inflight;
+      // A failed spawn ran no tools: an older crash's names would mislead.
+      this.lastCrashTools = kind === 'crash' ? this.inflight : [];
       this.clearChild();
       if (this.stopped) return;
       if (kind === 'spawn') this.spawnFailures++;
@@ -233,8 +230,8 @@ export class BrokerSupervisor {
 
   /**
    * Record a failure; true when it trips the breaker. A tripped breaker stops
-   * the restarts, writes the broker-off marker and clears a socket file that
-   * nothing answers on, so native launchers go straight to their own server.
+   * the restarts and marks the broker off (unless another instance's broker
+   * serves the pipe), so native launchers go straight to their own server.
    * The agents' registrations are left alone.
    */
   private noteFailure(): boolean {
@@ -250,8 +247,7 @@ export class BrokerSupervisor {
       `[BrokerSupervisor] ${this.failureTimes.length} broker failures; ` +
         'not restarting it until wmux restarts (agents use their own MCP server)',
     );
-    this.brokerOff.mark();
-    void this.brokerOff.unlinkStaleSocket().catch(() => undefined);
+    void this.brokerOff.tripped().catch(() => undefined);
     return true;
   }
 

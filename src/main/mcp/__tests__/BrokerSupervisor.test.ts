@@ -280,7 +280,7 @@ describe('BrokerSupervisor after an aborted teardown', () => {
 
 describe('BrokerSupervisor crash-loop breaker', () => {
   function effects() {
-    return { mark: vi.fn(), clear: vi.fn(), unlinkStaleSocket: vi.fn(async () => undefined) };
+    return { clear: vi.fn(), tripped: vi.fn(async () => undefined) };
   }
 
   /** Each spawn returns a fresh child; `children` holds them in order. */
@@ -294,7 +294,7 @@ describe('BrokerSupervisor crash-loop breaker', () => {
     return children;
   }
 
-  it('stops restarting after 5 failures in 60 s, marks the broker off and clears a stale socket', async () => {
+  it('stops restarting after 5 failures in 60 s and reports the trip once', async () => {
     vi.useFakeTimers();
     const children = spawning();
     const off = effects();
@@ -305,13 +305,12 @@ describe('BrokerSupervisor crash-loop breaker', () => {
       await vi.advanceTimersByTimeAsync(10_000);
     }
     expect(children).toHaveLength(5);
-    expect(off.mark).not.toHaveBeenCalled();
+    expect(off.tripped).not.toHaveBeenCalled();
     children.at(-1)!.emit('exit', 1, null);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(children).toHaveLength(5);
     expect(sup.status()).toMatchObject({ running: false, crashExits: 5, downReason: 'crash-loop' });
-    expect(off.mark).toHaveBeenCalledTimes(1);
-    expect(off.unlinkStaleSocket).toHaveBeenCalledTimes(1);
+    expect(off.tripped).toHaveBeenCalledTimes(1);
     sup.stop();
     vi.useRealTimers();
   });
@@ -327,14 +326,14 @@ describe('BrokerSupervisor crash-loop breaker', () => {
       children.at(-1)!.emit('exit', 1, null);
       await vi.advanceTimersByTimeAsync(1_000);
     }
-    expect(off.mark).not.toHaveBeenCalled();
+    expect(off.tripped).not.toHaveBeenCalled();
     expect(children).toHaveLength(8);
     await vi.advanceTimersByTimeAsync(40_000);
     children.at(-1)!.emit('exit', 1, null);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(children).toHaveLength(8);
     expect(sup.status().downReason).toBe('crash-loop');
-    expect(off.mark).toHaveBeenCalledTimes(1);
+    expect(off.tripped).toHaveBeenCalledTimes(1);
     sup.stop();
     vi.useRealTimers();
   });
@@ -355,9 +354,10 @@ describe('BrokerSupervisor crash-loop breaker', () => {
     vi.useRealTimers();
   });
 
-  it('clears the marker on its first start only, and never on a restart', async () => {
+  it('clears the marker whenever it starts a broker, a reclaim included', async () => {
     vi.useFakeTimers();
     const children = spawning();
+    vi.mocked(canConnectBrokerPipe).mockResolvedValue(false);
     const off = effects();
     const sup = new BrokerSupervisor({ brokerOff: off });
     sup.start();
@@ -365,7 +365,12 @@ describe('BrokerSupervisor crash-loop breaker', () => {
     children.at(-1)!.emit('exit', 1, null);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(children).toHaveLength(2);
-    expect(off.clear).toHaveBeenCalledTimes(1);
+    expect(off.clear).toHaveBeenCalledTimes(2);
+    // Another instance's broker owned the pipe, then went: the reclaim starts one here.
+    children.at(-1)!.emit('exit', 75, null);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(children).toHaveLength(3);
+    expect(off.clear).toHaveBeenCalledTimes(3);
     sup.stop();
     vi.useRealTimers();
   });
@@ -386,6 +391,14 @@ describe('BrokerSupervisor crash-loop breaker', () => {
     }
     expect(sup.status().connections).toBe(0);
     children[1].emit('exit', 1, null);
+    expect(sup.status().lastCrashTools).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    // A failed spawn ran no tools: an older crash's names are not shown for it.
+    children[2].emit('message', { wmuxBroker: 'connections', open: 1, inflight: ['browser_type'] });
+    children[2].emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(sup.status().lastCrashTools).toEqual(['browser_type']);
+    children[3].emit('error', new Error('EPERM'));
     expect(sup.status().lastCrashTools).toEqual([]);
     sup.stop();
     vi.useRealTimers();

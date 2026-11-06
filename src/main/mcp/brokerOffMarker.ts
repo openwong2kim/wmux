@@ -1,20 +1,20 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { getMcpBrokerOffMarkerPath, getMcpBrokerPipeName } from '../../shared/constants';
+import { getMcpBrokerOffMarkerPath } from '../../shared/constants';
 import { canConnectBrokerPipe } from './brokerProbe';
 
 /**
- * What the broker supervisor does to the filesystem when its breaker trips
- * or it first starts. Every step is best effort: a failure is logged and
- * never thrown into the main process.
+ * What the broker supervisor does to the filesystem. Every step is best
+ * effort: a failure is logged and never thrown into the main process.
  */
 export interface BrokerOffEffects {
-  /** Write the marker that sends native launchers to their own server. */
-  mark(): void;
-  /** Remove the marker. */
+  /** A broker is starting here: no instance means it to be off any more. */
   clear(): void;
-  /** Remove the broker's socket file when nothing answers on it (Unix only). */
-  unlinkStaleSocket(): Promise<void>;
+  /**
+   * The breaker tripped: mark the broker off, so native launchers go straight
+   * to their own server, unless another instance's broker answers on the pipe.
+   */
+  tripped(): Promise<void>;
 }
 
 function bestEffort(what: string, fn: () => void): void {
@@ -28,26 +28,23 @@ function bestEffort(what: string, fn: () => void): void {
 
 export function brokerOffEffects(
   markerPath: () => string = getMcpBrokerOffMarkerPath,
-  pipeName: () => string = getMcpBrokerPipeName,
   pipeAnswers: () => Promise<boolean> = () => canConnectBrokerPipe(200),
 ): BrokerOffEffects {
   return {
-    mark: () =>
+    clear: () => bestEffort('removing the broker-off marker', () => fs.unlinkSync(markerPath())),
+    tripped: async () => {
+      let served: boolean;
+      try {
+        served = await pipeAnswers();
+      } catch {
+        return;
+      }
+      if (served) return;
       bestEffort('writing the broker-off marker', () => {
         const marker = markerPath();
         fs.mkdirSync(path.dirname(marker), { recursive: true });
         fs.writeFileSync(marker, '');
-      }),
-    clear: () => bestEffort('removing the broker-off marker', () => fs.unlinkSync(markerPath())),
-    unlinkStaleSocket: async () => {
-      // A named pipe goes away with its owner; only a socket file can be left.
-      if (process.platform === 'win32') return;
-      try {
-        if (await pipeAnswers()) return;
-      } catch {
-        return;
-      }
-      bestEffort('removing the stale broker socket', () => fs.unlinkSync(pipeName()));
+      });
     },
   };
 }
