@@ -1,0 +1,49 @@
+{
+  "description": "An sdk-* entrypoint sends nothing and never reads stdin.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1",
+    "CLAUDE_CODE_ENTRYPOINT": "sdk-cli"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": {
+        "hold": true
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "headless-skipped",
+            "entrypoint": "sdk-cli"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

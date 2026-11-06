@@ -1,0 +1,70 @@
+{
+  "description": "Written then no answer within 2 s fails closed.",
+  "endpoints": {
+    "main": {
+      "mode": "hold"
+    }
+  },
+  "timing": [
+    {
+      "step": 0,
+      "minMs": 1900,
+      "maxMs": 8000
+    }
+  ],
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"cwd\":\"/work/repo\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 2,
+        "stdout": "",
+        "stderr": "wmux could not confirm this Stop with the orchestrator (the reply was lost in flight). Do not end the turn on this attempt — check the fleet and stop again.\n",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "rpc-failed",
+            "target": "main",
+            "error": "timeout"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "gate-fail-closed",
+            "target": "main",
+            "error": "timeout"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "/work/repo",
+                "payload": {
+                  "session_id": "s1",
+                  "cwd": "/work/repo"
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

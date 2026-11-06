@@ -1,0 +1,56 @@
+{
+  "description": "A lost answer lets the prompt run.",
+  "endpoints": {
+    "main": {
+      "mode": "close-after-read"
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "UserPromptSubmit",
+        "--context"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"prompt\":\"hi\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "rpc-failed",
+            "target": "main",
+            "error": "closed-without-response"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.user_prompt_submit",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "prompt": "hi"
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

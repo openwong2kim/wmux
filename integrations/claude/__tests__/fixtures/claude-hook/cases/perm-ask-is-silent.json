@@ -1,0 +1,78 @@
+{
+  "description": "ask is no opinion: empty stdout.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1",
+    "CLAUDE_CODE_ENTRYPOINT": "cli"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "permissionDecision": "ask"
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "PreToolUse",
+        "--permission-gate"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"Bash\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PreToolUse",
+            "outcome": "ok",
+            "target": "daemon"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "PreToolUse",
+            "outcome": "permission-gate",
+            "target": "daemon",
+            "verdict": "no-opinion"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.awaiting_permission",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "ptyId": "pty-1",
+                "entrypoint": "cli",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "tool_name": "Bash"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
