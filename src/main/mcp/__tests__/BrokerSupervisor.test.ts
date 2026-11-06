@@ -245,3 +245,35 @@ describe('BrokerSupervisor down reason', () => {
     vi.useRealTimers();
   });
 });
+
+describe('BrokerSupervisor after an aborted teardown', () => {
+  // stop() then resume() spawns a replacement before the old child has exited.
+  // The old child's late exit or error must not touch the replacement.
+  it.each([
+    ['a crash exit', (old: FakeChild) => old.emit('exit', 1, null)],
+    ['a stand-down exit', (old: FakeChild) => old.emit('exit', 75, null)],
+    ['a spawn error', (old: FakeChild) => old.emit('error', new Error('EPERM'))],
+  ])('ignores the old child\'s %s', async (_label, late) => {
+    vi.useFakeTimers();
+    const old = makeChild();
+    const replacement = makeChild();
+    replacement.pid = 5555;
+    vi.mocked(spawn).mockReturnValueOnce(old as never).mockReturnValueOnce(replacement as never);
+    vi.mocked(canConnectBrokerPipe).mockResolvedValue(false);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    sup.stop();
+    sup.resume();
+    replacement.emit('message', { wmuxBroker: 'connections', open: 2 });
+    const before = sup.status();
+    expect(before).toMatchObject({ running: true, pid: 5555, connections: 2 });
+
+    late(old);
+    expect(sup.status()).toEqual(before);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(spawn).toHaveBeenCalledTimes(2); // no restart scheduled
+    expect(canConnectBrokerPipe).not.toHaveBeenCalled(); // no reclaim probe
+    sup.stop();
+    vi.useRealTimers();
+  });
+});

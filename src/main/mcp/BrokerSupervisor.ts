@@ -156,12 +156,16 @@ export class BrokerSupervisor {
     // throws in the main process and can take down the whole app for an optional
     // feature — treat it like a crash exit: log, clear the handle, fail open via
     // the same backoff restart.
+    // A child that is no longer the current one (stop() then resume() spawned a
+    // replacement before it exited) must not touch the replacement's state.
     child.on('error', (err) => {
+      if (this.child !== child) return;
       console.error(`[BrokerSupervisor] broker spawn error: ${err.message}`);
       scheduleRestart('broker spawn error', 'spawn');
     });
 
     child.on('exit', (code, signal) => {
+      if (this.child !== child) return;
       if (this.stopped) {
         this.clearChild();
         settled = true;
