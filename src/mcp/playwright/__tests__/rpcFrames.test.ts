@@ -106,6 +106,23 @@ describe('readRpcFrames', () => {
     expect(lines).toContain('    [ref=10] button "Pay 0"');
   });
 
+  it('tells a frame that went away from one whose read failed for another reason', async () => {
+    const out = await readRpcFrames({
+      ...base,
+      topText: '',
+      listFrames: async () => [frame(1), frame(2)],
+      readFrame: async (f) => {
+        if (f.frameId === 'F1') throw new Error('TypeError: page patched Array.prototype.map');
+        throw new Error('BROWSER_USER_IN_CONTROL: the user has taken over this tab');
+      },
+    });
+    const lines = out.text.split('\n');
+    expect(lines).toContain('Frame 1 -> https://top.test (page content, same origin) (could not be read this time; contents not in this snapshot)');
+    expect(lines).toContain('Frame 2 -> https://top.test (page content, same origin) (could not be read this time; contents not in this snapshot)');
+    // Nothing the page wrote reaches the listing through an error message.
+    expect(out.text).not.toContain('Array.prototype');
+  });
+
   it('adds nothing when there are no frames, or the app cannot list them', async () => {
     expect((await readRpcFrames({ ...base, topText: '', listFrames: async () => [], readFrame: buttons(1) })).text).toBe('');
     const old = await readRpcFrames({

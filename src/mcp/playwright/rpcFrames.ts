@@ -22,6 +22,8 @@ const TRUNCATED_NOTE = '    (frame content truncated)';
 const EMPTY_NOTE = '(read, no content in it)';
 const UNREACHABLE_NOTE = '(separate document — could not be read here, contents not in this snapshot)';
 const GONE_NOTE = '(navigated or went away while it was read)';
+/** Any other failed read: the reason is not shown, since an error can carry page text. */
+const FAILED_NOTE = '(could not be read this time; contents not in this snapshot)';
 /** Held back from frame content for the closing notes (two at most, each under 100). */
 const CLOSING_RESERVE = 200;
 
@@ -123,14 +125,15 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
       break;
     }
     indexById.set(f.frameId, i + 1);
-    let answer: { value: unknown } | { unreachable: string } | 'gone';
+    let answer: { value: unknown } | { unreachable: string } | 'gone' | 'failed';
     try {
       answer = await opts.readFrame(f, result.nextRef);
-    } catch {
-      answer = 'gone';
+    } catch (err) {
+      answer = /FRAME_(?:GONE|NAVIGATED)/.test(err instanceof Error ? err.message : String(err)) ? 'gone' : 'failed';
     }
-    if (answer === 'gone' || 'unreachable' in answer) {
-      const line = `${head} ${answer === 'gone' ? GONE_NOTE : UNREACHABLE_NOTE}`;
+    if (answer === 'gone' || answer === 'failed' || 'unreachable' in answer) {
+      const note = answer === 'gone' ? GONE_NOTE : answer === 'failed' ? FAILED_NOTE : UNREACHABLE_NOTE;
+      const line = `${head} ${note}`;
       push(fits(line) ? line : head);
       continue;
     }
