@@ -149,6 +149,8 @@ const waitingByKey = new Map<string, Promise<unknown>>();
 import { AsyncLocalStorage as TraceStorage } from 'node:async_hooks';
 import { appendFileSync as traceAppend } from 'node:fs';
 import { snapshotTraceTags } from './snapshotTraceTags';
+import { getAnsiSnapshotBackendDiagnostics as traceAnsiDiag } from './AnsiSnapshotBackend';
+import { getTextSnapshotBackendDiagnostics as traceTextDiag } from './TextSnapshotBackend';
 type TraceCtx = { caller: string; queuedAt: number; startedAt?: number; lane: string };
 const traceStore = new TraceStorage<TraceCtx>();
 const TRACE_FILE = process.env.WMUX_SNAPSHOT_TRACE;
@@ -180,6 +182,8 @@ async function traceInner<T extends { ok: boolean }>(kind: string, req: Snapshot
       // Fence: ring identity + lifetime bytes written at the read, and the shape.
       ring: tag?.ring, at: tag?.at, cols: req.cols, rows: req.rows, undimmed: req.undimmed === true,
       geo: req.geometry ? `${req.geometry.start.cols}x${req.geometry.start.rows}` : undefined,
+      // Which engine answered this read, and why (the backend's last verdict).
+      engine: (kind === 'ansi' ? traceAnsiDiag() : traceTextDiag()).last,
     }) + '\n');
   } catch { /* trace only */ }
   return out;
