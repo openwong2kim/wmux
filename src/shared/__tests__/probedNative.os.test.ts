@@ -176,6 +176,22 @@ describe('prepareProbedNative — the lock across processes', () => {
     expect(fs.readFileSync(lockFile(), 'utf8')).toBe(held);
   });
 
+  it('without the lock, still offers the copy in place when its bytes have a recorded pass, and writes nothing', async () => {
+    ship('good v1');
+    await prepare();
+    ship('good v2');
+    const record = path.join(dir, PROBE_RECORD);
+    const before = fs.statSync(record).mtimeMs;
+    fs.writeFileSync(lockFile(), `${liveProcess().pid as number} ${Date.now()} other`);
+    const result = await prepare({ lock: { waitMs: 200 } });
+    expect(result.binary).toBe(dest());
+    expect(result.reason).toContain('another install holds the lock');
+    expect(fs.readFileSync(dest(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
+    expect(fs.statSync(record).mtimeMs).toBe(before);
+    expect(probed).toHaveLength(1);
+    expect(fs.readdirSync(dir).filter((f) => f.includes('.staged-'))).toEqual([]);
+  });
+
   it('holds an empty or unreadable lock (a holder between its open and its write) until its mtime is stale', async () => {
     for (const content of ['', 'not a lock']) {
       fs.writeFileSync(lockFile(), content);

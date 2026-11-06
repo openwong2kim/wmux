@@ -228,12 +228,29 @@ export function prepareProbedNative(opts: ProbedNativeOptions): Promise<ProbedNa
 async function prepareLocked(opts: ProbedNativeOptions): Promise<ProbedNativeResult> {
   if (!opts.sourcePath || !fs.existsSync(opts.sourcePath)) return { binary: null, reason: 'not shipped with this build' };
   const lock = await lockDir(opts.recordDir, opts.lock);
-  if (!lock) return { binary: null, reason: 'another install holds the lock' };
+  if (!lock) return keepInPlace(opts, 'another install holds the lock');
   try {
     return await prepareOnce(opts, opts.sourcePath);
   } finally {
     lock.release();
   }
+}
+
+/**
+ * Without the lock nothing may be written, but the copy in place is still
+ * offered when its bytes have a recorded pass: otherwise every agent config
+ * would move to node for this start.
+ */
+function keepInPlace(opts: ProbedNativeOptions, reason: string): ProbedNativeResult {
+  let current: Buffer;
+  try {
+    current = fs.readFileSync(opts.destinationPath);
+  } catch {
+    return { binary: null, reason };
+  }
+  return recordedProbe(opts.recordDir, probeKey(sha256Of(current), opts.line)) === 'pass'
+    ? { binary: opts.destinationPath, reason: `${reason}; the installed copy stays` }
+    : { binary: null, reason };
 }
 
 function reasonOf(verdict: ProbeVerdict, known: 'pass' | 'fail' | undefined): string {
@@ -285,10 +302,7 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
   }
   const currentKey = current ? probeKey(sha256Of(current), opts.line) : undefined;
   // What a refresh that does not happen still offers: the copy in place.
-  const keep = (reason: string): ProbedNativeResult =>
-    currentKey && recordedProbe(opts.recordDir, currentKey) === 'pass' && fs.existsSync(dest)
-      ? { binary: dest, reason: `${reason}; the installed copy stays` }
-      : { binary: null, reason };
+  const keep = (reason: string): ProbedNativeResult => keepInPlace(opts, reason);
   if (known === 'fail') return keep(reasonOf('fail', known));
 
   const staged = `${dest}.staged-${process.pid}-${randomBytes(4).toString('hex')}`;
