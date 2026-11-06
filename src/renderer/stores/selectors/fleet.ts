@@ -4,7 +4,7 @@ import { stashedPaneLiveness } from '../../../shared/paneStash';
 import { isBrainPtyId } from '../../../shared/constants';
 import { remoteAgentKey } from '../../../shared/remoteHosts';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
-import { isTerminalKindSurfaceType, isWorkSurfaceType } from '../../components/Pane/surfaceKinds';
+import { isWorkSurfaceType, splitShownTerminal } from '../../components/Pane/surfaceKinds';
 import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
 import { flattenAgentText } from '../../../shared/assistantPreview';
@@ -543,7 +543,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       const active = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
       const surf = stashed
         ? pickStashedRepresentativeSurface(leaf, state.surfaceAgent ?? {})
-        : (isWorkSurfaceType(active?.surfaceType) && leaf.surfaces.find((s) => isTerminalKindSurfaceType(s.surfaceType))) || active;
+        : (isWorkSurfaceType(active?.surfaceType) && splitShownTerminal(leaf)) || active;
       const ptyId = surf?.ptyId ?? '';
       // #1343 — a remote-terminal surface has ptyId '' by contract and is
       // invisible to every local PTY-keyed map below, so without this it lands

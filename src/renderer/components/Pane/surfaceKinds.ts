@@ -59,3 +59,33 @@ export function pickSplitShownSurfaces(
       ?? works[0]?.id,
   };
 }
+
+/**
+ * The terminal-column tab a leaf draws: its active tab when that is
+ * terminal-kind, else the terminal that last gave up the focus
+ * (`splitTerminalId`, only while it is a terminal-kind tab of this leaf), else
+ * its first terminal. Pane, the shown-surface selector, Fleet, the foreground
+ * program and the browser hand-off all use it, so they name the same tab.
+ */
+export function splitShownTerminal<S extends { id: string; surfaceType?: string }>(
+  leaf: { surfaces: ReadonlyArray<S>; activeSurfaceId: string; splitTerminalId?: string },
+): S | undefined {
+  const terminals = leaf.surfaces.filter((s) => isTerminalKindSurfaceType(s.surfaceType));
+  const id = pickSplitShownSurfaces(terminals, [], leaf.activeSurfaceId, undefined, leaf.splitTerminalId).shownTerminalId;
+  return terminals.find((s) => s.id === id);
+}
+
+/**
+ * Give `surfaceId` the leaf's focus (inside a store producer). A terminal-kind
+ * tab giving it up is remembered as the one the split keeps drawing.
+ */
+export function activateSurface(
+  leaf: { surfaces: ReadonlyArray<{ id: string; surfaceType?: string }>; activeSurfaceId: string; splitTerminalId?: string },
+  surfaceId: string,
+): void {
+  const leaving = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+  if (leaving && leaving.id !== surfaceId && isTerminalKindSurfaceType(leaving.surfaceType)) {
+    leaf.splitTerminalId = leaving.id;
+  }
+  leaf.activeSurfaceId = surfaceId;
+}

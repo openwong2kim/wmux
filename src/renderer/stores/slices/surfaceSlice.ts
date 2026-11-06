@@ -17,6 +17,7 @@ import { recomputeWorkspacePorts } from './workspacePorts';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
 import { normalizeHostPath } from '../../../shared/terminalFileLink';
 import { findRemoteSurface } from '../shadowWorkspace';
+import { activateSurface } from '../../components/Pane/surfaceKinds';
 
 export interface SurfaceSlice {
   setSurfaceViewMode: (surfaceId: string, mode: 'terminal' | 'chat') => void;
@@ -188,7 +189,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       if (!pane) return;
       const surface = createSurface(ptyId, shell, cwd);
       pane.surfaces.push(surface);
-      pane.activeSurfaceId = surface.id;
+      activateSurface(pane, surface.id);
     });
     persistBindingNow(get);
   },
@@ -210,7 +211,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       browserPartition: partition || 'persist:wmux-default',
     };
     pane.surfaces.push(surface);
-    pane.activeSurfaceId = surface.id;
+    activateSurface(pane, surface.id);
   }),
 
   addRemoteSurface: (paneId, hostId, sessionId, shell, cwd, workspaceId, owned, remoteWorkspaceId) => set((state: StoreState) => {
@@ -225,7 +226,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (!pane) return;
     const surface = createRemoteSurface(hostId, sessionId, shell || '', cwd || '', owned === true, remoteWorkspaceId);
     pane.surfaces.push(surface);
-    pane.activeSurfaceId = surface.id;
+    activateSurface(pane, surface.id);
   }),
 
   addEditorSurface: (paneId, rawFilePath, opts) => set((state: StoreState) => {
@@ -242,7 +243,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     const existing = pane.surfaces.find((s) => s.surfaceType === 'editor'
       && s.editorFilePath !== undefined && normalizeHostPath(s.editorFilePath) === filePath);
     if (existing) {
-      pane.activeSurfaceId = existing.id;
+      activateSurface(pane, existing.id);
       if (line !== undefined) {
         existing.editorLine = line;
         // Bumped on every request so a repeat click on the same line still
@@ -263,7 +264,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       ...(line !== undefined && { editorLine: line }),
     };
     pane.surfaces.push(surface);
-    pane.activeSurfaceId = surface.id;
+    activateSurface(pane, surface.id);
   }),
 
   addPreviewSurface: (paneId, rawFilePath, opts) => set((state: StoreState) => {
@@ -277,7 +278,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     const existing = pane.surfaces.find((s) => s.surfaceType === 'preview'
       && s.previewFilePath !== undefined && normalizeHostPath(s.previewFilePath) === filePath);
     if (existing) {
-      pane.activeSurfaceId = existing.id;
+      activateSurface(pane, existing.id);
       return;
     }
     const surface: Surface = {
@@ -290,7 +291,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       previewFilePath: filePath,
     };
     pane.surfaces.push(surface);
-    pane.activeSurfaceId = surface.id;
+    activateSurface(pane, surface.id);
   }),
 
   openCompanyBoard: (workspaceId) => {
@@ -333,7 +334,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       if (ownerWorkspaceId && !existing.diffOwnerWorkspaceId) {
         existing.diffOwnerWorkspaceId = ownerWorkspaceId;
       }
-      pane.activeSurfaceId = existing.id;
+      activateSurface(pane, existing.id);
       return;
     }
     const surface: Surface = {
@@ -348,7 +349,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       ...(ownerWorkspaceId ? { diffOwnerWorkspaceId: ownerWorkspaceId } : {}),
     };
     pane.surfaces.push(surface);
-    pane.activeSurfaceId = surface.id;
+    activateSurface(pane, surface.id);
   }),
 
   addWorkspaceDiffSurface: (paneId, repoPath, title, workspaceId) => set((state: StoreState) => {
@@ -363,7 +364,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       (s) => s.surfaceType === 'diff' && s.diffRepoPath === repoPath,
     );
     if (existing) {
-      pane.activeSurfaceId = existing.id;
+      activateSurface(pane, existing.id);
       return;
     }
     const surface: Surface = {
@@ -376,7 +377,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       diffRepoPath: repoPath,
     };
     pane.surfaces.push(surface);
-    pane.activeSurfaceId = surface.id;
+    activateSurface(pane, surface.id);
   }),
 
   // A stashed pane's tabs are still closable — the surface is an ADDRESS, not
@@ -452,8 +453,9 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (closedPtyId && state.taskPtyRegistry) delete state.taskPtyRegistry[closedPtyId];
 
     pane.surfaces.splice(idx, 1);
+    if (pane.splitTerminalId === surfaceId) delete pane.splitTerminalId;
     if (pane.activeSurfaceId === surfaceId) {
-      pane.activeSurfaceId = pane.surfaces[Math.min(idx, pane.surfaces.length - 1)]?.id || '';
+      activateSurface(pane, pane.surfaces[Math.min(idx, pane.surfaces.length - 1)]?.id || '');
     }
 
     // #977 — a STASHED pane that just lost its last surface has to go with it.
@@ -521,7 +523,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;
     if (pane.surfaces.some((s) => s.id === surfaceId)) {
-      pane.activeSurfaceId = surfaceId;
+      activateSurface(pane, surfaceId);
     }
   }),
 
@@ -531,7 +533,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane || pane.surfaces.length <= 1) return;
     const idx = pane.surfaces.findIndex((s) => s.id === pane.activeSurfaceId);
-    pane.activeSurfaceId = pane.surfaces[(idx + 1) % pane.surfaces.length].id;
+    activateSurface(pane, pane.surfaces[(idx + 1) % pane.surfaces.length].id);
   }),
 
   prevSurface: (paneId) => set((state: StoreState) => {
@@ -540,7 +542,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane || pane.surfaces.length <= 1) return;
     const idx = pane.surfaces.findIndex((s) => s.id === pane.activeSurfaceId);
-    pane.activeSurfaceId = pane.surfaces[(idx - 1 + pane.surfaces.length) % pane.surfaces.length].id;
+    activateSurface(pane, pane.surfaces[(idx - 1 + pane.surfaces.length) % pane.surfaces.length].id);
   }),
 
   updateSurfacePtyId: (paneId, surfaceId, ptyId) => {
