@@ -97,6 +97,15 @@ describe('prepareProbedNative', () => {
     expect(fs.readdirSync(dir).filter((f) => f.includes('.previous'))).toEqual([]);
   });
 
+  it('on windows stages under the real extension, and sweeps such a copy left behind', async () => {
+    ship('good v1');
+    const exe = path.join(dir, 'wmux-native.exe');
+    fs.writeFileSync(path.join(dir, 'wmux-native.staged-1-aa.exe'), 'left by a crash');
+    expect(await prepare({ destinationPath: exe, platform: 'win32' })).toEqual({ binary: exe });
+    expect(path.basename(probed[0])).toMatch(/^wmux-native\.staged-[^.]+\.exe$/);
+    expect(fs.readdirSync(dir).filter((f) => f.includes('.staged-'))).toEqual([]);
+  });
+
   it('keys a verdict by the bytes and the expected line: another line is probed again', async () => {
     ship('good v1');
     await prepare();

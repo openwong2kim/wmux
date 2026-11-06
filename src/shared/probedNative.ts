@@ -271,10 +271,10 @@ function reasonOf(verdict: ProbeVerdict, known: 'pass' | 'fail' | undefined): st
 /** Files an interrupted run left: asides and staged copies. Under the lock, so
  *  none is another run's own. While the copy's name is empty (a Windows swap
  *  whose undo failed), an aside is the only good copy: it is left alone. */
-function sweep(destinationPath: string): void {
+function sweep(destinationPath: string, platform: NodeJS.Platform): void {
   if (fs.existsSync(destinationPath)) sweepAsides(destinationPath);
   const dir = path.dirname(destinationPath);
-  const prefix = `${path.basename(destinationPath)}.staged-`;
+  const { prefix } = stagedName(destinationPath, platform);
   let names: string[];
   try { names = fs.readdirSync(dir); } catch { return; }
   for (const name of names) {
@@ -282,9 +282,20 @@ function sweep(destinationPath: string): void {
   }
 }
 
+/** The staged copy's name: `<base>.staged-<id>`, and on Windows the real
+ *  extension last (`wmux-native.staged-<id>.exe`), so application control and
+ *  antivirus treat it as they treat the copy it becomes. */
+function stagedName(dest: string, platform: NodeJS.Platform): { prefix: string; path: string } {
+  const ext = platform === 'win32' ? path.extname(dest) : '';
+  const prefix = `${path.basename(dest, ext)}.staged-`;
+  const id = `${process.pid}-${randomBytes(4).toString('hex')}`;
+  return { prefix, path: path.join(path.dirname(dest), `${prefix}${id}${ext}`) };
+}
+
 async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promise<ProbedNativeResult> {
   const dest = opts.destinationPath;
-  sweep(dest);
+  const platform = opts.platform ?? process.platform;
+  sweep(dest, platform);
   let bytes: Buffer;
   try {
     bytes = fs.readFileSync(sourcePath);
@@ -314,7 +325,7 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
   const keep = (reason: string): ProbedNativeResult => keepInPlace(opts, reason);
   if (known === 'fail') return keep(reasonOf('fail', known));
 
-  const staged = `${dest}.staged-${process.pid}-${randomBytes(4).toString('hex')}`;
+  const staged = stagedName(dest, platform).path;
   try {
     writeSynced(staged, bytes, opts.mode ?? 0o700);
   } catch (error) {
@@ -328,7 +339,7 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
     return keep(reasonOf(verdict, known));
   }
   try {
-    swapIn(staged, dest, current !== null, opts.platform ?? process.platform);
+    swapIn(staged, dest, current !== null, platform);
   } catch (error) {
     try { fs.unlinkSync(staged); } catch { /* swept next time */ }
     return keep(`could not replace the copy: ${String(error)}`);
