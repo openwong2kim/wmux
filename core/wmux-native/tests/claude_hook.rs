@@ -303,11 +303,11 @@ fn a_named_bridge_in_a_non_utf8_directory_still_dispatches_and_is_noted() {
     let named = OsString::from_vec(b"/nonexistent/\xff\xfe/wmux-bridge.mjs".to_vec());
     quiet(&case.run_argv(&[named, "Stop".into()], &[], true, "{}"));
     assert_eq!(case.node_args(), None);
-    assert_eq!(case.log(), ["bridge-path-differs", "no-auth-token"]);
+    assert_eq!(case.log(), ["no-auth-token"]);
     let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
     assert!(
-        log.contains(r#""named":"/nonexistent/"#)
-            && log.contains(&format!(r#"/wmux-bridge.mjs","used":"{}""#, case.bridge())),
+        log.contains(r#""bridgeNamed":"/nonexistent/"#)
+            && log.contains(&format!(r#"/wmux-bridge.mjs","bridgeUsed":"{}""#, case.bridge())),
         "{log}"
     );
 }
@@ -502,6 +502,34 @@ fn a_missing_bridge_adds_no_line_to_a_run_that_logs_nothing() {
         quiet(&case.run(&["PostToolUse"], &[("WMUX_PTY_ID", "pty-1")], true, payload));
     }
     assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
+}
+
+#[test]
+fn a_named_bridge_adds_no_line_to_a_run_that_logs_nothing() {
+    // A throttled PostToolUse logs nothing, so a differing name adds nothing
+    // to it either; the first run of the two carries it on its own line.
+    let case = Case::new("named-quiet", Some(&pinned()));
+    let payload = r#"{"session_id":"s1","tool_name":"Bash"}"#;
+    let args = ["/elsewhere/wmux-bridge.mjs".into(), "PostToolUse".into()];
+    for _ in 0..2 {
+        quiet(&case.run_argv(&args, &[("WMUX_PTY_ID", "pty-1")], true, payload));
+    }
+    assert_eq!(case.log(), ["no-auth-token"]);
+}
+
+#[test]
+fn a_differing_name_rides_on_the_runs_own_line() {
+    let case = Case::new("named-field", Some(&pinned()));
+    quiet(&case.run_argv(&["/elsewhere/wmux-bridge.mjs".into(), "Stop".into()], &[], true, "{}"));
+    assert_eq!(case.log(), ["no-auth-token"]);
+    let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
+    assert!(
+        log.contains(&format!(
+            r#""bridgeNamed":"/elsewhere/wmux-bridge.mjs","bridgeUsed":"{}","impl":"native"}}"#,
+            case.bridge()
+        )),
+        "{log}"
+    );
 }
 
 /// A main that answers every request with `{"id", "ok": true, "result"}`;
