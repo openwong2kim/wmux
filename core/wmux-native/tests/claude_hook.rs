@@ -453,20 +453,19 @@ fn the_permission_gate_answers_here() {
     // The reader went away: the verdict is logged, then its loss; exit 0.
     let (stdout, reader) = std::os::unix::net::UnixStream::pair().unwrap();
     drop(reader);
-    let child = Command::new(case.dir.join("bin/wmux-native"))
-        .args(["claude-hook", "PreToolUse", "--permission-gate"])
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("HOME", case.dir.join("home"))
-        .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
-        .envs(env)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(std::os::fd::OwnedFd::from(stdout)))
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = spawn(
+        Command::new(case.dir.join("bin/wmux-native"))
+            .args(["claude-hook", "PreToolUse", "--permission-gate"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", case.dir.join("home"))
+            .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
+            .envs(env)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::from(std::os::fd::OwnedFd::from(stdout)))
+            .stderr(Stdio::null()),
+    );
     use std::io::Write;
-    let mut child = child;
     child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
     assert_eq!(child.wait().unwrap().code(), Some(0));
     assert_eq!(case.log()[2..], ["ok", "permission-gate deny", "stdout-lost"]);
