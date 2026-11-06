@@ -6,7 +6,7 @@ import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurf
 import type { CdpConnection } from './CdpSocket';
 import type { Readable, Writable } from 'node:stream';
 import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTransport';
-import { CdpPipeMux } from './CdpPipeMux';
+import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux } from './CdpPipeMux';
 import { CdpPipeEndpoint } from './CdpPipeEndpoint';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
@@ -59,6 +59,16 @@ const READY_TIMEOUT_MS = 10_000;
  */
 const READY_STARTING_MS = CHROME_START_CEILING_MS;
 const READY_POLL_MS = 250;
+/**
+ * Pipe mode: liveness checks that must fail in a row before the launcher lets
+ * a Chrome go, and so stops it (one on a pipe can't be found again). Each check
+ * waits CDP_PIPE_COMMAND_TIMEOUT_MS (10 s), and checks that overlap count once,
+ * so a hung Chrome is stopped at the third failed check: within 30 s of checks
+ * (they run on demand, one per call that needs the browser).
+ */
+const PIPE_MISSES_BEFORE_STOP = 3;
+/** A check that took this much longer than its timeout spanned a sleep (or a stalled main), and doesn't count. */
+const PIPE_SLEEP_SLACK_MS = 5_000;
 /** How long a Chrome asked to quit through Browser.close gets before a signal. */
 export const QUIT_GRACE_MS = 3_000;
 /** How long a fresh launch waits for session restore to settle its tabs. */
@@ -459,6 +469,8 @@ export class ChromeLauncher implements ChromeBackendClient {
    * go with the Chrome (onChildGone).
    */
   private piped: { readonly mux: CdpPipeMux; endpoint: Promise<CdpPipeEndpoint> | null } | null = null;
+  /** Pipe mode: liveness checks failed in a row, and when the last one counted ended. */
+  private pingMisses = { count: 0, lastEnd: 0 };
   private launching: Promise<number> | null = null;
   private disposed = false;
   private readonly portEnvVar: string | null;
@@ -1324,11 +1336,13 @@ export class ChromeLauncher implements ChromeBackendClient {
       if (this.isRunning() && !this.launching) {
         // Cheap liveness check — the process object survives a crash until the
         // exit handler runs; /json/version is the truth.
+        const startedAt = Date.now();
         try {
           await this.reach().ping();
+          this.pingMisses.count = 0;
           return this.boundPort();
         } catch {
-          this.dropUnresponsive();
+          if (!this.livenessFailed(startedAt)) throw new Error('ChromeLauncher: Chrome is not answering');
         }
       }
     } else if (this.isRunning() && !this.launching) {
@@ -1338,11 +1352,13 @@ export class ChromeLauncher implements ChromeBackendClient {
         await this.stopForProtectionChange();
       } else {
         let alive = true;
+        const startedAt = Date.now();
         try {
           await this.reach().ping();
+          this.pingMisses.count = 0;
         } catch {
           alive = false;
-          this.dropUnresponsive();
+          if (!this.livenessFailed(startedAt)) throw new Error('ChromeLauncher: Chrome is not answering');
         }
         if (alive) {
           // Re-armed if its socket dropped; a guard that cannot be re-armed
@@ -2105,6 +2121,29 @@ export class ChromeLauncher implements ChromeBackendClient {
   }
 
   /**
+   * A liveness check that started at `startedAt` failed. On the port the
+   * Chrome is let go at once (a later launch adopts it if it still runs). On a
+   * pipe only after PIPE_MISSES_BEFORE_STOP failed checks in a row, not
+   * counting one that overlaps the last counted one or that spanned a sleep.
+   * Returns whether it was let go.
+   */
+  private livenessFailed(startedAt: number): boolean {
+    if (!this.piped) {
+      this.onChildGone();
+      return true;
+    }
+    const now = Date.now();
+    const slept = now - startedAt > CDP_PIPE_COMMAND_TIMEOUT_MS + PIPE_SLEEP_SLACK_MS;
+    if (!slept && startedAt >= this.pingMisses.lastEnd) {
+      this.pingMisses.count++;
+      this.pingMisses.lastEnd = now;
+    }
+    if (this.pingMisses.count < PIPE_MISSES_BEFORE_STOP) return false;
+    this.dropUnresponsive();
+    return true;
+  }
+
+  /**
    * The bound Chrome stopped answering: let it go. One on a pipe can't be found
    * again (it has no port to adopt), so it is stopped rather than left holding
    * the profile.
@@ -2125,6 +2164,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   private onChildGone(): void {
     this.child = null;
     this.unbindEndpoint();
+    this.pingMisses = { count: 0, lastEnd: 0 };
     // Its clients go with it.
     void this.piped?.endpoint?.then((endpoint) => endpoint.close(), () => undefined);
     this.piped = null;

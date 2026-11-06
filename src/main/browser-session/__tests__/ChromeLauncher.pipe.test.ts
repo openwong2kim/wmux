@@ -189,25 +189,67 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await launcher.dispose({ immediate: true });
   });
 
-  it('a pipe Chrome that stops answering is stopped when let go, not left holding the profile', async () => {
-    const { chrome, child } = spawnPipeChrome(SlowPipeChrome);
-    chrome.start();
-    const launcher = new ChromeLauncher('/tmp/pipe-profile');
-    await launcher.endpoint();
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    chrome.stall();
-    const next = spawnPipeChrome();
-    const again = launcher.endpoint();
-    // The liveness check's own timeout, then the new Chrome's start and settle.
-    for (let i = 0; i < 100 && spawnMock.mock.calls.length < 2; i++) await vi.advanceTimersByTimeAsync(250);
-    expect(child.killed).toBe(true);
-    expect(chrome.fromMux.writableEnded).toBe(true);
-    for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(250);
-    await again;
-    expect(spawnMock).toHaveBeenCalledTimes(2);
-    expect(next.child.killed).toBe(false);
-    await launcher.dispose({ immediate: true });
+  describe('a pipe Chrome that stops answering', () => {
+    async function stalled() {
+      const { chrome, child } = spawnPipeChrome(SlowPipeChrome);
+      chrome.start();
+      const launcher = new ChromeLauncher('/tmp/pipe-profile');
+      await launcher.endpoint();
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      chrome.stall();
+      return { chrome, child, launcher };
+    }
+    /** One liveness check that times out; `sleepMs` of wall clock jumps by while it waits. */
+    async function failedCheck(launcher: ChromeLauncher, sleepMs = 0) {
+      const call = launcher.endpoint();
+      const settled = call.then(() => 'ok', (err: Error) => err.message);
+      if (sleepMs) vi.setSystemTime(Date.now() + sleepMs);
+      await vi.advanceTimersByTimeAsync(10_500);
+      return settled;
+    }
+
+    it('is stopped at the third failed check in a row, not before, and a new one is started', async () => {
+      const { chrome, child, launcher } = await stalled();
+      expect(await failedCheck(launcher)).toBe('ChromeLauncher: Chrome is not answering');
+      expect(await failedCheck(launcher)).toBe('ChromeLauncher: Chrome is not answering');
+      expect(child.killed).toBe(false);
+      expect(launcher.isRunning()).toBe(true);
+      const next = spawnPipeChrome();
+      const third = launcher.endpoint();
+      for (let i = 0; i < 100 && spawnMock.mock.calls.length < 2; i++) await vi.advanceTimersByTimeAsync(250);
+      expect(child.killed).toBe(true);
+      expect(chrome.fromMux.writableEnded).toBe(true);
+      for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(250);
+      await third;
+      expect(next.child.killed).toBe(false);
+      await launcher.dispose({ immediate: true });
+    });
+
+    it('a check whose wait spans a sleep does not count, and checks running at once count once', async () => {
+      const { child, launcher } = await stalled();
+      expect(await failedCheck(launcher, 60_000)).toBe('ChromeLauncher: Chrome is not answering');
+      // Two at once, then one more: two misses in all.
+      const both = Promise.all([launcher.endpoint().catch((e: Error) => e.message), launcher.endpoint().catch((e: Error) => e.message)]);
+      await vi.advanceTimersByTimeAsync(10_500);
+      expect(await both).toEqual(['ChromeLauncher: Chrome is not answering', 'ChromeLauncher: Chrome is not answering']);
+      expect(await failedCheck(launcher)).toBe('ChromeLauncher: Chrome is not answering');
+      expect(child.killed).toBe(false);
+      await launcher.dispose({ immediate: true });
+    });
+
+    it('a check that is answered starts the count again', async () => {
+      const { chrome, child, launcher } = await stalled();
+      expect(await failedCheck(launcher)).toBe('ChromeLauncher: Chrome is not answering');
+      expect(await failedCheck(launcher)).toBe('ChromeLauncher: Chrome is not answering');
+      chrome.start();
+      expect(await failedCheck(launcher)).toBe('ok');
+      chrome.stall();
+      expect(await failedCheck(launcher)).toBe('ChromeLauncher: Chrome is not answering');
+      expect(await failedCheck(launcher)).toBe('ChromeLauncher: Chrome is not answering');
+      expect(child.killed).toBe(false);
+      await launcher.dispose({ immediate: true });
+    });
   });
 
   it('opens and lists tabs on the pipe', async () => {

@@ -47,7 +47,9 @@ import type { CdpPipeDiagnostics } from '../../shared/memoryDiagnostics';
 
 /** Ids at and above this are the mux's own commands. */
 export const MUX_ID_BASE = 2 ** 30;
-const DEFAULT_TIMEOUT_MS = 10_000;
+/** How long a connection's command waits on the browser, unless the connection says otherwise. */
+export const CDP_PIPE_COMMAND_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = CDP_PIPE_COMMAND_TIMEOUT_MS;
 
 /** The browser's answer for a session it does not know. */
 const UNKNOWN_SESSION = { code: -32001, message: 'Session with given id not found.' };
