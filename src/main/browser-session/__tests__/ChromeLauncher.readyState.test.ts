@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
 
-// The launcher's ready state: stopped → probing (a candidate endpoint bound)
-// → ready (it answered) → stopped, and probing → stopped when the candidate is
-// dead. isRunning() and currentPort() keep their old meaning: a candidate
-// still being probed counts. Same fakes as ChromeLauncher.os.test.ts.
+// The launcher's ready state, seen through its public reads. A candidate
+// endpoint being probed counts as running, as it did with cdpPort; a probe
+// that loses its Chrome meanwhile (dispose, the child exiting) must not leave
+// the launcher reporting one. Same fakes as ChromeLauncher.os.test.ts.
 
 const { spawnMock, state } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
@@ -33,15 +33,31 @@ vi.mock('node:fs', async (orig) => {
 
 import { ChromeLauncher } from '../ChromeLauncher';
 
-type Observed = { state: string; running: boolean; port: number | null };
+type Seen = { running: boolean; port: number | null };
 
-/** The private state, read for this test only, next to the public reads. */
-function observe(launcher: ChromeLauncher): Observed {
-  return {
-    state: (launcher as unknown as { state: string }).state,
-    running: launcher.isRunning(),
-    port: launcher.currentPort(),
-  };
+const seen = (launcher: ChromeLauncher): Seen => ({ running: launcher.isRunning(), port: launcher.currentPort() });
+
+/** Running exactly when a port is reported: the two reads never disagree. */
+function expectConsistent(launcher: ChromeLauncher): void {
+  expect(launcher.isRunning()).toBe(launcher.currentPort() !== null);
+}
+
+const ok = (body = '{}') => ({ ok: true, status: 200, text: async () => body });
+
+/** A list holding only a startup tab: the restored-tab pass has nothing to close. */
+const STARTUP_LIST = '[{"id":"S","type":"page","url":"about:blank"}]';
+
+type FakeChild = EventEmitter & { kill: () => void };
+
+/** The next spawn writes a fresh DevToolsActivePort for `dir` naming `port`. */
+function spawnWithPort(dir: string, port: number): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  child.kill = () => undefined;
+  spawnMock.mockImplementationOnce(() => {
+    state.portFiles[dir] = `${port}\n/devtools/browser/fresh-${port}\n`;
+    return child;
+  });
+  return child;
 }
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -58,35 +74,37 @@ afterEach(() => {
 });
 
 describe('ChromeLauncher ready state', () => {
-  it('goes stopped → probing → ready on an adopted endpoint, and back to stopped on dispose', async () => {
+  it('reports an adopted endpoint while it is probed and once it answers, and nothing after dispose', async () => {
     state.portFiles['/tmp/ready-profile'] = '9333\n/devtools/browser/old\n';
     const launcher = new ChromeLauncher('/tmp/ready-profile');
-    expect(observe(launcher)).toEqual({ state: 'stopped', running: false, port: null });
+    expect(seen(launcher)).toEqual({ running: false, port: null });
 
-    let seenWhileProbing: Observed | null = null;
+    let whileProbing: Seen | null = null;
     fetchMock.mockImplementation(async (url: string) => {
-      if (url.endsWith('/json/version')) seenWhileProbing ??= observe(launcher);
-      return { ok: true, status: 200, text: async () => '{}' };
+      if (url.endsWith('/json/version')) {
+        whileProbing ??= seen(launcher);
+        expectConsistent(launcher);
+      }
+      return ok();
     });
 
     expect(await launcher.ensureRunning()).toBe(9333);
-    // A candidate being probed already counts as running, as cdpPort > 0 did.
-    expect(seenWhileProbing).toEqual({ state: 'probing', running: true, port: 9333 });
-    expect(observe(launcher)).toEqual({ state: 'ready', running: true, port: 9333 });
+    expect(whileProbing).toEqual({ running: true, port: 9333 });
+    expect(seen(launcher)).toEqual({ running: true, port: 9333 });
 
     await launcher.dispose();
-    expect(observe(launcher)).toEqual({ state: 'stopped', running: false, port: null });
+    expect(seen(launcher)).toEqual({ running: false, port: null });
   });
 
-  it('drops a dead candidate back to stopped before launching its own Chrome', async () => {
+  it('drops a dead candidate before launching its own Chrome', async () => {
     state.portFiles['/tmp/dead-profile'] = '9444\n/devtools/browser/dead\n';
     const launcher = new ChromeLauncher('/tmp/dead-profile');
     fetchMock.mockRejectedValue(new TypeError('fetch failed'));
 
-    let seenAtSpawn: Observed | null = null;
+    let atSpawn: Seen | null = null;
     spawnMock.mockImplementationOnce(() => {
-      seenAtSpawn = observe(launcher);
-      const child = new EventEmitter() as EventEmitter & { kill: () => void };
+      atSpawn = seen(launcher);
+      const child = new EventEmitter() as FakeChild;
       child.kill = () => undefined;
       // The new Chrome dies at once: the launch fails and leaves nothing bound.
       setTimeout(() => child.emit('exit', 1), 0);
@@ -94,7 +112,59 @@ describe('ChromeLauncher ready state', () => {
     });
 
     await expect(launcher.ensureRunning()).rejects.toThrow('Chrome exited during startup');
-    expect(seenAtSpawn).toEqual({ state: 'stopped', running: false, port: null });
-    expect(observe(launcher)).toEqual({ state: 'stopped', running: false, port: null });
+    expect(atSpawn).toEqual({ running: false, port: null });
+    expect(seen(launcher)).toEqual({ running: false, port: null });
+  });
+
+  it('reports nothing when the launched Chrome exits while its first probe is in flight', async () => {
+    const launcher = new ChromeLauncher('/tmp/exit-profile');
+    const child = spawnWithPort('/tmp/exit-profile', 9555);
+    let first = true;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (first && url.endsWith(':9555/json/version')) {
+        first = false;
+        // The child goes away while the probe is still waiting for its answer.
+        child.emit('exit', 1);
+        expectConsistent(launcher);
+      }
+      return ok(STARTUP_LIST);
+    });
+
+    await launcher.ensureRunning().catch(() => undefined);
+    expect(seen(launcher)).toEqual({ running: false, port: null });
+  });
+
+  it('reports nothing when dispose lands while the first probe is in flight', async () => {
+    const launcher = new ChromeLauncher('/tmp/dispose-profile');
+    spawnWithPort('/tmp/dispose-profile', 9666);
+    let first = true;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (first && url.endsWith(':9666/json/version')) {
+        first = false;
+        await launcher.dispose({ immediate: true });
+        expectConsistent(launcher);
+      }
+      return ok(STARTUP_LIST);
+    });
+
+    await expect(launcher.ensureRunning()).rejects.toThrow('disposed');
+    expect(seen(launcher)).toEqual({ running: false, port: null });
+  });
+
+  it('reports nothing when dispose lands while an adopted candidate is probed', async () => {
+    state.portFiles['/tmp/adopt-dispose'] = '9777\n/devtools/browser/old\n';
+    const launcher = new ChromeLauncher('/tmp/adopt-dispose');
+    let duringProbe: Seen | null = null;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith(':9777/json/version') && duringProbe === null) {
+        await launcher.dispose({ immediate: true });
+        duringProbe = seen(launcher);
+      }
+      return ok(STARTUP_LIST);
+    });
+
+    await expect(launcher.ensureRunning()).rejects.toThrow('disposed');
+    expect(duringProbe).toEqual({ running: false, port: null });
+    expect(seen(launcher)).toEqual({ running: false, port: null });
   });
 });

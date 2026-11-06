@@ -428,19 +428,20 @@ function watchedTargetInfo(params: Record<string, unknown>): WatchedTargetInfo |
 
 export class ChromeLauncher implements ChromeBackendClient {
   private child: ChildProcess | null = null;
-  /** How the current Chrome is reached; null when none is bound. */
-  private transport: ChromeTransport | null = null;
   /**
-   * Where the current Chrome stands, whatever carries its CDP:
-   *  - stopped: nothing bound.
+   * The current Chrome's endpoint and where it stands, whatever carries its
+   * CDP. One field, so "running" and "reachable" cannot disagree:
+   *  - stopped: null, nothing bound.
    *  - probing: a candidate endpoint is bound (adoption, or a launch whose
-   *    endpoint is known) and has not answered yet.
-   *  - ready: the bound endpoint answered. A launch may still be finishing
-   *    (restored tabs, the download guard) while `launching` is set.
-   * stopped → probing on bind; probing → ready on the first answer;
-   * probing → stopped when that probe fails; ready → stopped in onChildGone.
+   *    endpoint is known) and has not answered yet (`ready: false`).
+   *  - ready: the bound endpoint answered (`ready: true`). A launch may still
+   *    be finishing (restored tabs, the download guard) while `launching` is set.
+   * stopped → probing on bindEndpoint; probing → ready on markReady, for the
+   * endpoint still bound; probing → stopped when that probe fails; any →
+   * stopped in onChildGone. bindEndpoint and unbindEndpoint are the only
+   * writers.
    */
-  private state: 'stopped' | 'probing' | 'ready' = 'stopped';
+  private bound: { readonly transport: ChromeTransport; ready: boolean } | null = null;
   private launching: Promise<number> | null = null;
   private disposed = false;
   private readonly portEnvVar: string | null;
@@ -1207,34 +1208,35 @@ export class ChromeLauncher implements ChromeBackendClient {
   }
 
   /** True when a CDP endpoint is established (spawned child or adopted
-   *  previous-session instance; liveness is re-verified on demand). A
-   *  candidate still being probed counts, as it always has: callers that look
-   *  mid-launch see it. Narrowing this to `ready` is a later change. */
+   *  previous-session instance; liveness is re-verified on demand). It stays
+   *  true while a candidate endpoint is being probed, as it did with cdpPort. */
   isRunning(): boolean {
-    return this.state !== 'stopped';
+    return this.bound !== null;
   }
 
   /** The established CDP port, or null. Pure read — unlike endpoint(), this
    *  never launches Chrome, so status probes stay side-effect-free. */
   currentPort(): number | null {
-    return this.state !== 'stopped' && this.transport ? this.transport.port : null;
+    return this.bound?.transport.port ?? null;
   }
 
-  /** Binds a candidate endpoint: stopped → probing. */
-  private bindEndpoint(transport: ChromeTransport): void {
-    this.transport = transport;
-    this.state = 'probing';
+  /** Binds a candidate endpoint: → probing. Returns it, for its probe. */
+  private bindEndpoint(transport: ChromeTransport): ChromeTransport {
+    this.bound = { transport, ready: false };
+    return transport;
   }
 
-  /** The bound endpoint answered: probing → ready. */
-  private markReady(): void {
-    this.state = 'ready';
+  /**
+   * `transport` answered: probing → ready, only while it is still the bound
+   * one. A dispose or a dead child that unbound it during the probe wins.
+   */
+  private markReady(transport: ChromeTransport): void {
+    if (this.bound?.transport === transport) this.bound.ready = true;
   }
 
   /** Nothing bound any more: → stopped. */
   private unbindEndpoint(): void {
-    this.transport = null;
-    this.state = 'stopped';
+    this.bound = null;
   }
 
   /**
@@ -1242,12 +1244,12 @@ export class ChromeLauncher implements ChromeBackendClient {
    * nothing: a call made then fails exactly as it did when it went to port 0.
    */
   private reach(): ChromeTransport {
-    return this.transport ?? portTransport(0);
+    return this.bound?.transport ?? portTransport(0);
   }
 
   /** The bound port, 0 when none (what ensureRunning has always resolved). */
   private boundPort(): number {
-    return this.transport?.port ?? 0;
+    return this.bound?.transport.port ?? 0;
   }
 
   /**
@@ -1365,10 +1367,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     const pinned = this.pinnedPort();
     if (pinned !== null && !candidates.includes(pinned)) candidates.push(pinned);
     for (const port of candidates) {
-      this.bindEndpoint(portTransport(port));
+      const candidate = this.bindEndpoint(portTransport(port));
       try {
-        await this.reach().ping();
-        this.markReady();
+        await candidate.ping();
+        this.markReady(candidate);
         this.assertOpen();
         // No child handle for an adopted instance — dispose() can only close
         // tabs we open; the process outlives us like it outlived its spawner.
@@ -1434,7 +1436,7 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   async stopForProtectionChange(): Promise<void> {
     const child = this.child;
-    const transport = this.transport;
+    const transport = this.bound?.transport ?? null;
     // Our own Chrome quits through Browser.close first, so the restart keeps
     // what an ordinary quit keeps (closeGracefully); a signal is the fallback.
     if (child && !(transport && (await this.closeGracefully(transport, child)))) {
@@ -1961,10 +1963,10 @@ export class ChromeLauncher implements ChromeBackendClient {
         candidate = fresh && fresh.raw !== stale?.raw ? fresh.port : null;
       }
       if (candidate !== null) {
-        this.bindEndpoint(portTransport(candidate));
+        const probe = this.bindEndpoint(portTransport(candidate));
         try {
-          await this.reach().ping();
-          this.markReady();
+          await probe.ping();
+          this.markReady(probe);
           // A REAL spawn (adoption already failed above) means this profile's
           // previous Chrome is gone and every tab it held with it. Neither
           // revival rule can hold, so the persisted records are dropped rather
@@ -2197,7 +2199,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   async dispose(opts?: { immediate?: boolean; deadline?: number }): Promise<void> {
     this.disposed = true;
     const child = this.child;
-    const transport = this.transport;
+    const transport = this.bound?.transport ?? null;
     this.onChildGone();
     this.proxy?.close();
     this.proxy = null;
