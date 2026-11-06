@@ -24,8 +24,8 @@ if (!realBuild && process.env.WMUX_REQUIRE_NATIVE_HOOKS === '1') {
 }
 
 let root = '';
-/** The launcher's sandbox home, outside `root` where a socket path must stay short. */
-let home = '';
+/** The launcher's sandbox home; on Unix under /tmp, where its socket path stays short. */
+let sandboxHome = '';
 let child: ChildProcess | null = null;
 let broker: net.Server | null = null;
 const sockets = new Set<net.Socket>();
@@ -48,8 +48,8 @@ afterEach(async () => {
   for (const sock of sockets) sock.destroy();
   if (srv) await new Promise<void>((resolve) => srv.close(() => resolve()));
   fs.rmSync(root, { recursive: true, force: true });
-  if (home) fs.rmSync(home, { recursive: true, force: true });
-  home = '';
+  if (sandboxHome) fs.rmSync(sandboxHome, { recursive: true, force: true });
+  sandboxHome = '';
 });
 
 /**
@@ -127,8 +127,8 @@ describe.skipIf(!realBuild)('prepareNativeLauncher — a refresh while the launc
     // The launcher dials <home>/.wmux-mcpb<suffix>.sock, and a Unix socket
     // path must fit sockaddr_un (104 bytes on macOS), which a deep TMPDIR
     // can exceed: the home sits under /tmp there.
-    home = process.platform === 'win32' ? path.join(root, 'home') : fs.mkdtempSync('/tmp/wnl-');
-    if (process.platform === 'win32') fs.mkdirSync(home);
+    sandboxHome = fs.realpathSync(fs.mkdtempSync(path.join(process.platform === 'win32' ? root : '/tmp', 'wnl-')));
+    const home = sandboxHome;
     const suffix = `-refresh-${process.pid}`;
     const { asked, forwarded } = await holdingBroker(home, suffix);
     child = spawn(first.binary as string, ['mcp-shim'], {
