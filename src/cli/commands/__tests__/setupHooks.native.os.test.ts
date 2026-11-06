@@ -10,6 +10,7 @@ import {
   installHooks,
   installHooksWithNative,
   isPermissionGateInstalled,
+  nativeFromRefusal,
   refreshClaudeNativeAtBoot,
   statusHooks,
   updateHooksWithNative,
@@ -334,5 +335,14 @@ describe.skipIf(process.platform === 'win32')('when no entries will be written',
     expect(plugin).toMatchObject({ ok: true, pluginDetected: true });
     expect(plugin.native).toBeUndefined();
     expect(fs.existsSync(copy)).toBe(false);
+  });
+});
+
+describe('--native-from', () => {
+  it('names a file that exists, or the command stops before anything is written', () => {
+    expect(nativeFromRefusal(path.join(root, 'core', 'target', 'relase', 'wmux-native'))).toMatch(/no file at/);
+    expect(nativeFromRefusal(root)).toMatch(/no file at/);
+    fs.writeFileSync(path.join(root, 'wmux-native'), 'x');
+    expect(nativeFromRefusal(path.join(root, 'wmux-native'))).toBeNull();
   });
 });

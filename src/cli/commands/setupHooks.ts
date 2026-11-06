@@ -797,6 +797,14 @@ export function planClaudeNative(paths: SetupHooksPaths, opts: ClaudeNativeOptio
   });
 }
 
+/** Why `--native-from <path>` cannot be used (no file there), or null. */
+export function nativeFromRefusal(file: string): string | null {
+  try {
+    if (fs.statSync(file).isFile()) return null;
+  } catch { /* reported below */ }
+  return `--native-from: no file at ${path.resolve(file)}`;
+}
+
 /**
  * `--runtime node|native`: record which form installs write. The file is
  * shared with the installed wmux, so only an installed app's CLI, not
@@ -2180,6 +2188,12 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   }
   if ((nativeFrom !== undefined || runtimeArg !== undefined || reprobe) && (remove || status)) {
     console.error('--native-from, --runtime and --reprobe apply to install only; drop --remove/--status.');
+    process.exit(1);
+    return;
+  }
+  const nativeFromError = nativeFrom ? nativeFromRefusal(nativeFrom) : null;
+  if (nativeFromError) {
+    console.error(nativeFromError);
     process.exit(1);
     return;
   }
