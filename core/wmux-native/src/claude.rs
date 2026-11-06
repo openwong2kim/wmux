@@ -4,8 +4,7 @@
 //! integrations/claude/__tests__/fixtures/claude-hook/cases, and each test
 //! below names the cases it mirrors.
 //!
-//! Nothing here is reachable from the command line yet: the `claude-hook`
-//! subcommand that drives it lands with the lifecycle.
+//! claude_hook.rs drives it.
 
 use crate::fsx;
 use crate::hook::{iso_time, now_ms};
@@ -22,6 +21,8 @@ pub const BRIDGE_VERSION: &str = "0.8.1";
 /// HOOK_TIMEOUT_MS: the whole walk's budget.
 const HOOK_TIMEOUT: Duration = Duration::from_millis(2000);
 /// GATE_PERMISSION_TIMEOUT_MS: longer than the daemon's own gate deadline.
+/// The permission gate still runs on the Node bridge (claude_hook.rs).
+#[cfg_attr(not(test), allow(dead_code))]
 const GATE_PERMISSION_TIMEOUT: Duration = Duration::from_millis(130_000);
 /// BRIDGE_LOG_MAX_BYTES.
 const BRIDGE_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
@@ -35,6 +36,7 @@ pub const CLAUDE_POLICY: WalkPolicy = WalkPolicy {
 };
 
 /// The same walk for `--permission-gate`, which waits for a phone's answer.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const PERMISSION_GATE_POLICY: WalkPolicy = WalkPolicy {
     budget: GATE_PERMISSION_TIMEOUT,
     ..CLAUDE_POLICY
@@ -89,6 +91,7 @@ pub fn parse_stdin(bytes: &[u8]) -> Result<Option<Json>, ()> {
 /// takes the new value, as object spread does; `None` is `undefined`, which
 /// JSON.stringify leaves out. The object is stringified as V8 orders it
 /// (index-like keys first). `hook` is the event argument, `"?"` when absent.
+/// `"impl":"native"` closes every line, so a log tells the two bridges apart.
 pub fn log_line(ts_ms: u64, pid: u32, hook: Option<&[u16]>, outcome: &str, extra: Vec<(&str, Option<Json>)>) -> String {
     let mut fields: Vec<(&str, Option<Json>)> = vec![
         ("ts", Some(Json::Str(js::js(&iso_time(ts_ms))))),
@@ -106,6 +109,8 @@ pub fn log_line(ts_ms: u64, pid: u32, hook: Option<&[u16]>, outcome: &str, extra
             None => fields.push((key, value)),
         }
     }
+    // The native bridge marks its lines, after everything Node would write.
+    fields.push(("impl", Some(Json::Str(js::js("native")))));
     let object = Json::Obj(
         fields
             .into_iter()
@@ -245,7 +250,7 @@ mod tests {
         // argv-missing-event: no event is "?".
         assert_eq!(
             log_line(0, 7, None, "unknown-hook-name", vec![]),
-            r#"{"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":7,"hook":"?","outcome":"unknown-hook-name"}"#
+            r#"{"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":7,"hook":"?","outcome":"unknown-hook-name","impl":"native"}"#
         );
         // spool-user-prompt-submit: an undefined detail is left out.
         assert_eq!(
@@ -261,7 +266,7 @@ mod tests {
                     ("detail", None),
                 ]
             ),
-            r#"{"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":7,"hook":"Stop","outcome":"rpc-failed","target":"main","error":"timeout"}"#
+            r#"{"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":7,"hook":"Stop","outcome":"rpc-failed","target":"main","error":"timeout","impl":"native"}"#
         );
     }
 
@@ -276,7 +281,7 @@ mod tests {
             vec![("hook", Some(Json::Str(js("Stop"))))],
         );
         assert!(
-            line.contains(r#""pid":1,"hook":"Stop","outcome":"headless-skipped"}"#),
+            line.contains(r#""pid":1,"hook":"Stop","outcome":"headless-skipped","impl":"native"}"#),
             "{line}"
         );
         // An undefined value over a base key removes the key.
@@ -288,7 +293,7 @@ mod tests {
             Json::Str(js("/h/.wmux-auth-token")),
         ]);
         assert!(log_line(0, 1, None, "no-auth-token", vec![("paths", Some(paths))])
-            .ends_with(r#""outcome":"no-auth-token","paths":["/h/.wmux/daemon-auth-token","/h/.wmux-auth-token"]}"#));
+            .ends_with(r#""outcome":"no-auth-token","paths":["/h/.wmux/daemon-auth-token","/h/.wmux-auth-token"],"impl":"native"}"#));
     }
 
     #[test]
@@ -303,7 +308,7 @@ mod tests {
         );
         assert_eq!(
             line,
-            r#"{"1":1,"9":9,"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":1,"hook":"Stop","outcome":"x"}"#
+            r#"{"1":1,"9":9,"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":1,"hook":"Stop","outcome":"x","impl":"native"}"#
         );
     }
 

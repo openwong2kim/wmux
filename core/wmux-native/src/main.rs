@@ -3,6 +3,8 @@
 //!   wmux-native hook <flavour> [<Event>]   the Claude-compatible hook bridge
 //!   wmux-native <…/wmux-hooks-bridge.mjs> <flavour> [<Event>]   the same: the
 //!       argv the installer writes, so older wmux builds recognise the entry
+//!   wmux-native claude-hook <Event> [flags…]   the Claude hook bridge
+//!       (unix only; elsewhere it is the usage below)
 //!   wmux-native --version | --help
 //!
 //! Each subcommand owns its own contract; `hook` never writes stdout and
@@ -12,26 +14,31 @@
 //! exit 2 as "block this action", so a typo, a non-UTF-8 argument or a newer
 //! subcommand run by an older copy must never produce it.
 
-// Not reachable from the CLI yet: the claude-hook subcommand lands with its
-// lifecycle. Until then only the tests use most of it.
-#[allow(dead_code)]
-mod claude;
-// The Claude transport is unix only: Windows Claude hooks stay on Node.
+// The Claude hook is unix only: Windows Claude hooks stay on Node.
 #[cfg(unix)]
-#[allow(dead_code)]
+mod claude;
+#[cfg(unix)]
+mod claude_hook;
+#[cfg(unix)]
 mod claude_rpc;
-#[allow(dead_code)]
+#[cfg(unix)]
+mod claude_transcript;
+#[cfg(unix)]
+mod claude_where;
+// Only the unix-only Claude hook uses most of it.
+#[cfg_attr(windows, allow(dead_code))]
 mod fsx;
 mod hook;
 mod js;
 mod os_random;
 mod paths;
 mod rpc;
+#[cfg(unix)]
+mod sha256;
 mod targets;
 #[cfg(test)]
 mod testenv;
 #[cfg(unix)]
-#[allow(dead_code)]
 mod unix_sys;
 
 /// Ownership marker: the hook installer recognises a wmux-written copy of this
@@ -41,7 +48,8 @@ pub const MARKER: &str = "wmux-managed: native-hooks";
 /// The Node bridge's file name (SHARED_HOOKS_BRIDGE_BASENAME in hookFlavours.ts).
 const BRIDGE_BASENAME: &str = "wmux-hooks-bridge.mjs";
 
-const USAGE: &str = "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native --version | --help\n";
+const USAGE: &str =
+    "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native claude-hook <Event> [flags…]\n       wmux-native --version | --help\n";
 
 fn main() {
     // A panic must not print: hook output is read by the agent.
@@ -62,6 +70,8 @@ fn main() {
             let event = args.next().map(|a| paths::os_to_js(&a));
             hook::run_hook_process(flavour, event);
         }
+        #[cfg(unix)]
+        Some("claude-hook") => claude_hook::run_process(args.collect()),
         Some("--version") => {
             println!("wmux-native {} ({MARKER})", env!("CARGO_PKG_VERSION"));
         }
