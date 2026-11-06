@@ -26,6 +26,7 @@ if (!realBuild && process.env.WMUX_REQUIRE_NATIVE_HOOKS === '1') {
 let root = '';
 let child: ChildProcess | null = null;
 let broker: net.Server | null = null;
+const sockets = new Set<net.Socket>();
 
 /** Stop the launcher and wait for it, whether or not it already exited. */
 async function stop(proc: ChildProcess): Promise<void> {
@@ -42,29 +43,46 @@ afterEach(async () => {
   child = null;
   const srv = broker;
   broker = null;
+  for (const sock of sockets) sock.destroy();
   if (srv) await new Promise<void>((resolve) => srv.close(() => resolve()));
   fs.rmSync(root, { recursive: true, force: true });
 });
 
 /**
- * A broker stub on the launcher's pipe for this home and suffix. It acks the
- * handshake and then holds the session open, so the launcher stays running
- * until the test stops it. `connected` settles once the launcher has asked.
+ * A broker stub on the launcher's pipe for this home and suffix. It acks a
+ * handshake that asks for one, then holds the session open, so the launcher
+ * stays running until the test stops it. `asked` settles once it has acked;
+ * `forwarded` once a later line arrives through the session.
  */
-async function holdingBroker(home: string, suffix: string): Promise<{ connected: Promise<void> }> {
+async function holdingBroker(home: string, suffix: string): Promise<{ asked: Promise<void>; forwarded: Promise<void> }> {
+  // The shim's own rule for this sandbox home (getMcpBrokerPipeName reads the
+  // test process's home, not the launcher's).
   const pipe = process.platform === 'win32'
     ? `\\\\.\\pipe\\wmux-mcpb${suffix}-${os.userInfo().username || 'default'}`
     : path.join(home, `.wmux-mcpb${suffix}.sock`);
-  let onConnected: (() => void) | undefined;
-  const connected = new Promise<void>((resolve) => { onConnected = resolve; });
+  let onAsked: (() => void) | undefined;
+  let onForwarded: (() => void) | undefined;
+  const asked = new Promise<void>((resolve) => { onAsked = resolve; });
+  const forwarded = new Promise<void>((resolve) => { onForwarded = resolve; });
   const srv = net.createServer((sock) => {
+    sockets.add(sock);
+    sock.on('close', () => sockets.delete(sock));
     let buf = '';
+    let acked = false;
     sock.on('data', (chunk) => {
       buf += chunk;
-      if (!buf.includes('\n')) return;
-      buf = '';
-      sock.write('{"wmuxBroker":1,"ok":true}\n');
-      onConnected?.();
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (acked) {
+          onForwarded?.();
+        } else if (JSON.parse(line).ack === 1) {
+          acked = true;
+          sock.write('{"wmuxBroker":1,"ok":true}\n');
+          onAsked?.();
+        }
+      }
     });
     sock.on('error', () => { /* launcher gone */ });
   });
@@ -73,7 +91,7 @@ async function holdingBroker(home: string, suffix: string): Promise<{ connected:
     srv.listen(pipe, () => resolve());
   });
   broker = srv;
-  return { connected };
+  return { asked, forwarded };
 }
 
 /**
@@ -105,17 +123,23 @@ describe.skipIf(!realBuild)('prepareNativeLauncher — a refresh while the launc
     const home = path.join(root, 'home');
     fs.mkdirSync(home);
     const suffix = `-refresh-${process.pid}`;
-    const { connected } = await holdingBroker(home, suffix);
+    const { asked, forwarded } = await holdingBroker(home, suffix);
     child = spawn(first.binary as string, ['mcp-shim'], {
       env: { ...process.env, HOME: home, USERPROFILE: home, WMUX_DATA_SUFFIX: suffix, WMUX_AUTH_TOKEN: 't' },
       stdio: ['pipe', 'ignore', 'ignore'],
       windowsHide: true,
     });
     const proc = child;
-    await Promise.race([
-      connected,
-      new Promise((_, reject) => proc.once('exit', (code) => reject(new Error(`the launcher exited (${code}) before reaching the broker`)))),
-    ]);
+    const failed = new Promise<never>((_, reject) => {
+      proc.once('error', reject);
+      proc.once('exit', (code) => reject(new Error(`the launcher exited (${code}) before its session was up`)));
+    });
+    failed.catch(() => { /* raced below */ });
+    // Acked, then a host line reaches the broker: the launcher took the ack
+    // and is pumping the session.
+    await Promise.race([asked, failed]);
+    proc.stdin?.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+    await Promise.race([forwarded, failed]);
     expect(child.exitCode).toBeNull();
 
     writeNewerBuild(source);
@@ -128,6 +152,7 @@ describe.skipIf(!realBuild)('prepareNativeLauncher — a refresh while the launc
       expect(fs.readdirSync(stableDir).filter((f) => f.includes('.previous'))).toHaveLength(1);
     }
 
+    expect(child.exitCode).toBeNull();
     await stop(child);
     const nextBoot = await prepareNativeLauncher({ sourcePath: source, stableDir, selfTest: runNativeSelfTest });
     expect(nextBoot.binary).toBe(nativeLauncherPath(stableDir));
