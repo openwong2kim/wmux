@@ -127,6 +127,22 @@ describe('browser RPC — the user paused or took over the tab', () => {
     expect(after.ok).toBe(true);
   });
 
+  it('refuses an upload into a tab the user paused, before any path check or page command', async () => {
+    const { router, cdp, control } = setup();
+    control.apply(SURFACE.surfaceId, 'stop');
+
+    const res = await router.dispatch({
+      id: 'u',
+      method: 'browser.upload.cdp',
+      params: { files: ['/tmp/x'], surfaceId: SURFACE.surfaceId, workspaceId: 'ws-a' },
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('BROWSER_AGENT_PAUSED');
+    expect(cdp.withAutomationLease).not.toHaveBeenCalled();
+    expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
+  });
+
   it('a renew of a lease the user ended fails with the reason, so the op in flight stops', async () => {
     const { router, control } = setup();
     control.apply(SURFACE.surfaceId, 'stop');

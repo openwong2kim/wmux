@@ -148,6 +148,14 @@ import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
 import type { BrowserAgentControl } from '../../browser-session/BrowserAgentControl';
 import { heldBrowserSurfaceRefusal } from './surface.rpc';
 import { agentControlRefusal } from '../../../shared/browserAgentControl';
+import { getWmuxDir } from '../../../daemon/config';
+import {
+  DEFAULT_FILE_INPUT_SELECTOR,
+  checkUploadPath,
+  findFileInputNearElement,
+  uploadRootIn,
+  type UploadPathRefusal,
+} from '../../../shared/browserUpload';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -178,6 +186,88 @@ const PROTECTED_GATE_EXEMPT: ReadonlySet<string> = new Set([
   'browser.navigationPolicy.get',
 ]);
 
+/** A CDP command sender bound to one guest's debugger. */
+type CdpSend = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+
+/** Most files one upload may set, and the longest selector it takes. */
+const UPLOAD_MAX_FILES = 64;
+const UPLOAD_MAX_SELECTOR_CHARS = 2048;
+
+/** The isolated world the file input is looked up in. */
+const UPLOAD_WORLD = 'wmux-upload';
+const UPLOAD_OBJECT_GROUP = 'wmux-upload';
+
+/** Why main will not hand a path to the page, worded for the RPC caller. */
+function uploadRefusalText(input: unknown, refusal: UploadPathRefusal): string {
+  const shown = typeof input === 'string' ? JSON.stringify(input) : 'a path';
+  switch (refusal.reason) {
+    case 'empty':
+      return 'empty path';
+    case 'aliased':
+      return `${shown} has a name Windows opens as a different file`;
+    case 'unresolvable':
+      return `${shown} exists but its real path cannot be resolved`;
+    default:
+      return `${shown} is outside the upload root`;
+  }
+}
+
+/**
+ * Set a file input's files in one guest, by path.
+ *
+ * The guest's debugger is shared with capture, the phone stream and the focus
+ * watcher, so this changes no state any of them depends on: no DOM agent
+ * (DOM.getDocument would enable it), no domain enable or disable, no attach or
+ * detach. The input is looked up in an isolated world — page script cannot
+ * answer the lookup there — and handed to DOM.setFileInputFiles as a remote
+ * object, which needs no DOM agent. Top frame only, as the selector route and
+ * data-wmux-ref tags always were.
+ *
+ * `near`: the selector names an anchor (a snapshot ref's element, usually the
+ * visible upload button) and the input is the one findFileInputNearElement
+ * finds around it.
+ */
+export async function setFilesInIsolatedWorld(
+  send: CdpSend,
+  files: string[],
+  selector: string,
+  near: boolean,
+): Promise<{ uploaded: true; count: number } | { uploaded: false; missing: 'match' | 'near' }> {
+  const tree = (await send('Page.getFrameTree')) as { frameTree?: { frame?: { id?: unknown } } } | null;
+  const frameId = tree?.frameTree?.frame?.id;
+  if (typeof frameId !== 'string') throw new Error('browser.upload.cdp: the page has no frame to upload into');
+  const world = (await send('Page.createIsolatedWorld', { frameId, worldName: UPLOAD_WORLD })) as
+    | { executionContextId?: unknown }
+    | null;
+  const contextId = world?.executionContextId;
+  if (typeof contextId !== 'number') throw new Error('browser.upload.cdp: the page has no context to upload into');
+  const expression =
+    `(() => { const anchor = document.querySelector(${JSON.stringify(selector)}); ` +
+    `if (!anchor) return 'none'; ` +
+    `if (!${near}) return anchor; ` +
+    `return (${String(findFileInputNearElement)})(anchor) || 'anchor'; })()`;
+  try {
+    const reply = (await send('Runtime.evaluate', { expression, contextId, objectGroup: UPLOAD_OBJECT_GROUP })) as {
+      result?: { objectId?: string; subtype?: string; value?: unknown };
+      exceptionDetails?: { exception?: { description?: string }; text?: string };
+    } | null;
+    if (reply?.exceptionDetails) {
+      const why = reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text ?? 'lookup failed';
+      throw new Error(`browser.upload.cdp: ${why.split('\n')[0]}`);
+    }
+    const result = reply?.result;
+    if (!result?.objectId || result.subtype !== 'node') {
+      // Anything but a node is a miss: 'anchor' when the anchor was found and
+      // no input near it, otherwise the selector matched nothing.
+      return { uploaded: false, missing: result?.value === 'anchor' ? 'near' : 'match' };
+    }
+    await send('DOM.setFileInputFiles', { files, objectId: result.objectId });
+    return { uploaded: true, count: files.length };
+  } finally {
+    await send('Runtime.releaseObjectGroup', { objectGroup: UPLOAD_OBJECT_GROUP }).catch(() => undefined);
+  }
+}
+
 /**
  * Methods a protected pane may not call at all, with the reason. Agent-authored
  * page code (evaluate) waits for the consent grant in PR B; profile-wide cookie
@@ -191,6 +281,7 @@ const PROTECTED_DENIED_METHODS: ReadonlyMap<string, string> = new Map([
   ['browser.cookies', 'cookies of a protected pane are reachable only through browser_cookies, limited to its allowed hosts'],
   ['browser.cdp.target', 'a protected pane has no builtin browser target'],
   ['browser.siteGuides.match', 'site guides are off on a protected pane'],
+  ['browser.upload.cdp', 'a protected pane has no builtin browser target'],
 ]);
 
 /**
@@ -4274,6 +4365,38 @@ export function registerBrowserRpc(
     });
 
     return { ok: true, x, y, dispatch: 'mouse' };
+  });
+
+  /**
+   * browser.upload.cdp
+   * Set a file input's files by path, so an upload works without a Playwright
+   * page. Main checks every path itself and hands the page only what that
+   * check returned; what the caller checked is not relied on.
+   * params: { files: string[], selector?: string, near?: boolean, surfaceId?: string }
+   * returns { uploaded: true, count } | { uploaded: false, missing: 'match' | 'near' }
+   */
+  registerLeased('browser.upload.cdp', async (params, scope) => {
+    const files = params['files'];
+    if (!Array.isArray(files) || files.length === 0 || files.length > UPLOAD_MAX_FILES) {
+      throw new Error(`browser.upload.cdp: "files" must hold 1 to ${UPLOAD_MAX_FILES} paths`);
+    }
+    const root = uploadRootIn(getWmuxDir());
+    const safe = files.map((file: unknown) => {
+      const checked = checkUploadPath(file, root);
+      if (!checked.ok) throw new Error(`browser.upload.cdp blocked: ${uploadRefusalText(file, checked)}`);
+      return checked.path;
+    });
+    const selector =
+      typeof params['selector'] === 'string' && params['selector'] ? params['selector'] : DEFAULT_FILE_INPUT_SELECTOR;
+    if (selector.length > UPLOAD_MAX_SELECTOR_CHARS) throw new Error('browser.upload.cdp: "selector" is too long');
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const wc = resolveWc(surfaceId, 'browser.upload.cdp', scope);
+    return setFilesInIsolatedWorld(
+      (method, cmdParams) => wc.debugger.sendCommand(method, cmdParams),
+      safe,
+      selector,
+      params['near'] === true,
+    );
   });
 
   /**

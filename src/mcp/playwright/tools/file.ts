@@ -21,7 +21,7 @@ import {
   BROWSER_CONSENT_DOWNLOAD_START_MAX_MS,
   browserPolicyRefusalCode,
 } from '../../../shared/browserPolicy';
-import type { BrowserToolDeps } from '../browserScope';
+import type { BrowserTargetScope, BrowserToolDeps } from '../browserScope';
 import { resolveRef } from '../snapshot';
 import { describeToolError } from '../toolError';
 import { recordAction } from '../../browser-replay/actionRing';
@@ -33,7 +33,18 @@ import {
   type EffectProbe,
 } from '../resultTrailer';
 import { getWmuxDir } from '../../../daemon/config';
-import { fromAgentPath, toAgentPath, win32AliasedName, wslMountRoot } from '../../wslPaths';
+import { fromAgentPath, toAgentPath, wslMountRoot } from '../../wslPaths';
+import { randomBytes } from 'node:crypto';
+import { sendScopedBrowserRpc } from '../browserScope';
+import { sanitizeRef } from './interaction';
+import {
+  DEFAULT_FILE_INPUT_SELECTOR,
+  checkUploadPath,
+  findFileInputNearElement,
+  uploadRootIn,
+} from '../../../shared/browserUpload';
+
+export { DEFAULT_FILE_INPUT_SELECTOR, findFileInputNearElement };
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -111,15 +122,7 @@ const BROWSER_DIALOG_SHAPE = {
 // ---------------------------------------------------------------------------
 
 function getUploadRoot(): string {
-  const root = path.join(getWmuxDir(), 'uploads');
-  if (!fs.existsSync(root)) {
-    fs.mkdirSync(root, { recursive: true });
-  }
-  try {
-    return fs.realpathSync(root);
-  } catch {
-    return root;
-  }
+  return uploadRootIn(getWmuxDir());
 }
 
 /**
@@ -155,50 +158,25 @@ function displayRoot(root: string): string {
 }
 
 /**
- * The one gate on what a page may be handed, and the reason it is unchanged by
- * the CDP route below.
+ * The upload gate as the tool reports it: checkUploadPath (shared with main,
+ * which runs it again on its side) plus the WSL conversion, which only this
+ * process can do — the WMUX_WSL_* env that names the caller's mount is ours.
  *
- * The route changed from "Node reads the bytes and streams them" to "Chrome
- * opens the path itself", which sounds like it widens the blast radius and does
- * not: Chrome runs as the same user and could always read anything this process
- * could. What matters is that the string handed to the browser is the one this
- * function RETURNED — the realpath'd, root-checked value — and never the
- * caller's raw input. Both call sites below use `safePaths` only.
- *
- * Five ways out of the root, and what stops each:
- *  - `..` segments — path.resolve() normalises them before any check.
- *  - a symlink/junction inside the root pointing out of it — realpathSync()
- *    resolves it, so the relative check runs against the true target.
- *  - another drive or a UNC share (`E:\x`, `\\host\share\x`) — path.relative()
- *    then returns an absolute path, which path.isAbsolute() rejects.
- *  - a path that does not exist, where realpath cannot run: it stays lexical,
- *    but a path Chrome cannot open is a path Chrome cannot leak. fs.existsSync
- *    resolves links exactly as the browser would, so "exists" and "openable"
- *    are the same question here — with one exception, refused up front:
- *  - on Windows, a name ending in a dot or space, or a device name. Node asks
- *    through the `\\?\` namespace, where `uploads\link.\f` does not exist, so
- *    realpath never runs; Chrome opens it as `uploads\link\f` and follows the
- *    junction out of the root (measured on NTFS with Electron 41).
- *
- * Note what is NOT on that list: a path that EXISTS and whose realpath still
- * cannot be computed. Every guarantee above rests on resolving links first, so
- * on that input the gate would quietly become a lexical string compare — a
- * weaker check of a different kind — and that lexical string is exactly what
- * Chrome would then be asked to open. It is refused instead. existsSync does
- * not throw, so the only inputs that get there are already anomalous.
- *
- * The residue is TOCTOU — swapping the file for a symlink between this check
- * and the upload — which needs write access to the uploads root and is no wider
- * than it was when Playwright did the reading.
+ * The route changed from "Node reads the bytes and streams them" to "the
+ * browser opens the path itself", which sounds like it widens the blast radius
+ * and does not: the browser runs as the same user and could always read
+ * anything this process could. What matters is that the string handed to the
+ * browser is the one the check RETURNED, never the caller's raw input. Every
+ * call site below uses `safePaths` only.
  */
 export function validateUploadPath(input: string): string {
   if (typeof input !== 'string' || input.length === 0) {
     throw new Error('browser_file_upload blocked: empty path');
   }
   const root = getUploadRoot();
-  // A WSL caller speaks /mnt/<drive>/ paths; every check below runs on the
-  // host path they name. A distro path (`/home/me/x`) has no host spelling,
-  // so it cannot be under the root at all.
+  // A WSL caller speaks /mnt/<drive>/ paths; every check runs on the host path
+  // they name. A distro path (`/home/me/x`) has no host spelling, so it cannot
+  // be under the root at all.
   const hostInput = fromAgentPath(input);
   if (hostInput === null) {
     throw new Error(
@@ -206,44 +184,30 @@ export function validateUploadPath(input: string): string {
       `Copy the file under the upload root (${displayRoot(root)}) and pass that path.`,
     );
   }
-  const abs = path.resolve(hostInput);
-  if (process.platform === 'win32') {
-    const aliased = win32AliasedName(abs);
-    if (aliased !== undefined) {
+  const checked = checkUploadPath(hostInput, root);
+  if (checked.ok) return checked.path;
+  switch (checked.reason) {
+    case 'aliased':
       throw new Error(
-        `browser_file_upload blocked: "${input}" has a name (${JSON.stringify(aliased)}) that Windows opens as a different file ` +
+        `browser_file_upload blocked: "${input}" has a name (${JSON.stringify(checked.name)}) that Windows opens as a different file ` +
         `(a trailing dot or space, or a device name), so it cannot be checked against the upload root.`,
       );
-    }
+    case 'unresolvable':
+      throw new Error(
+        `browser_file_upload blocked: "${input}" exists but its real path cannot be resolved, ` +
+        `so it cannot be checked against the upload root.`,
+      );
+    default:
+      throw new Error(
+        `browser_file_upload blocked: "${input}" is outside the allowed upload root (${displayRoot(root)}). ` +
+        `Move the file under that root before uploading.`,
+      );
   }
-  let resolved = abs;
-  try {
-    if (fs.existsSync(abs)) resolved = fs.realpathSync(abs);
-  } catch {
-    throw new Error(
-      `browser_file_upload blocked: "${input}" exists but its real path cannot be resolved, ` +
-      `so it cannot be checked against the upload root.`,
-    );
-  }
-  const rel = path.relative(root, resolved);
-  // `rel === '..'` and `'..' + sep` are the escapes; a bare startsWith('..')
-  // also swallows legitimate names — `..dots` in the root relativises to
-  // `..dots` and was refused forever.
-  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
-    throw new Error(
-      `browser_file_upload blocked: "${input}" is outside the allowed upload root (${displayRoot(root)}). ` +
-      `Move the file under that root before uploading.`,
-    );
-  }
-  return resolved;
 }
 
 // ---------------------------------------------------------------------------
 // Upload transport: hand Chrome the path, not the bytes
 // ---------------------------------------------------------------------------
-
-/** The default file input — the page's first one, as before `selector` existed. */
-export const DEFAULT_FILE_INPUT_SELECTOR = 'input[type="file"]';
 
 /**
  * Fallback wall-clock for the ref path. Nothing legitimate can reach it: that
@@ -550,94 +514,11 @@ function describeUploadTimeout(message: string): string {
  * so the proximity search is unit-testable against a plain object.
  */
 interface ElementHandleLike {
-  evaluate: (fn: (node: unknown) => boolean) => Promise<boolean>;
+  evaluate: <R, A>(fn: (node: unknown, arg: A) => R, arg?: A) => Promise<R>;
   evaluateHandle: (
     fn: (node: unknown) => unknown,
   ) => Promise<{ asElement?: () => unknown; dispose?: () => Promise<void> } | null>;
   setInputFiles: (paths: string[], options: { timeout: number }) => Promise<void>;
-}
-
-/** The shape of the DOM nodes the proximity search walks. */
-interface ProximityNode {
-  nodeType?: number;
-  tagName?: string;
-  id?: string;
-  getAttribute?: (name: string) => string | null;
-  children?: ArrayLike<ProximityNode>;
-  parentElement?: ProximityNode | null;
-  closest?: (selector: string) => ProximityNode | null;
-}
-
-/**
- * Find the file input at or near an anchor element.
- *
- * mirrors browser-use browser/session.py find_file_input_near_element: from the
- * anchor, walk up to MAX_HEIGHT parents; at each level test the node itself,
- * its descendants up to MAX_DESCENDANT_DEPTH, and its siblings, for an
- * `input[type=file]`.
- *
- * Why it is needed: real uploaders style a <button>/<label> and keep the actual
- * input visually hidden, so the ref an agent gets from a snapshot is the button,
- * and setInputFiles on a button fails with an unhelpful error.
- *
- * Deliberately self-contained (no imports, no closure): it is handed to
- * `ElementHandle.evaluateHandle` AS A FUNCTION, which Playwright serialises and
- * calls with the element as its argument. It used to be passed as a source
- * STRING, which Playwright evaluated as an expression instead — the search
- * never ran on the anchor at all and every styled uploader reported "no file
- * input found" (live dogfood).
- */
-export function findFileInputNearElement(anchor: unknown): unknown {
-  const MAX_HEIGHT = 3;
-  const MAX_DESCENDANT_DEPTH = 3;
-  const start = anchor as ProximityNode | null;
-  const isFileInput = (n: ProximityNode | null | undefined): boolean =>
-    !!n &&
-    n.nodeType === 1 &&
-    n.tagName === 'INPUT' &&
-    String((n.getAttribute && n.getAttribute('type')) || '').toLowerCase() === 'file';
-
-  // Walking three levels up reaches sibling subtrees that can belong to a
-  // DIFFERENT widget — a second upload form on the same page. When either the
-  // anchor or the candidate sits in a <form>, they must sit in the SAME one;
-  // otherwise the files would be attached to someone else's form.
-  const anchorForm = start && start.closest ? start.closest('form') : null;
-  const sameOwner = (n: ProximityNode): boolean => {
-    const form = n.closest ? n.closest('form') : null;
-    if (anchorForm || form) return form === anchorForm;
-    return true;
-  };
-  const accept = (n: ProximityNode | null | undefined): boolean => !!n && isFileInput(n) && sameOwner(n);
-
-  const inDescendants = (n: ProximityNode | null | undefined, depth: number): ProximityNode | null => {
-    if (!n || depth < 0) return null;
-    if (accept(n)) return n;
-    const kids = n.children ? Array.prototype.slice.call(n.children) : [];
-    for (const child of kids as ProximityNode[]) {
-      const found = inDescendants(child, depth - 1);
-      if (found) return found;
-    }
-    return null;
-  };
-
-  let current: ProximityNode | null | undefined = start;
-  for (let level = 0; current && level <= MAX_HEIGHT; level++) {
-    if (accept(current)) return current;
-    const inside = inDescendants(current, MAX_DESCENDANT_DEPTH);
-    if (inside) return inside;
-    const parent: ProximityNode | null | undefined = current.parentElement;
-    if (parent) {
-      const siblings = parent.children ? Array.prototype.slice.call(parent.children) : [];
-      for (const sibling of siblings as ProximityNode[]) {
-        if (sibling === current) continue;
-        if (accept(sibling)) return sibling;
-        const found = inDescendants(sibling, MAX_DESCENDANT_DEPTH);
-        if (found) return found;
-      }
-    }
-    current = parent;
-  }
-  return null;
 }
 
 /** Hint appended when no file input can be reached from what the caller named. */
@@ -692,6 +573,106 @@ export async function resolveFileInputFromRef(
   return (found as ElementHandleLike | null) ?? null;
 }
 
+/** What main answers browser.upload.cdp with. */
+interface MainUploadReply {
+  uploaded?: boolean;
+  /** Nothing was sent: the selector matched nothing, or no input was near the anchor. */
+  missing?: 'match' | 'near';
+}
+
+/** Marks the input main should fill. Self-contained: Playwright serialises it. */
+function markUploadTarget(node: unknown, nonce: string): void {
+  (node as { setAttribute: (name: string, value: string) => void }).setAttribute('data-wmux-upload', nonce);
+}
+
+/** Takes the mark off again, unless the page has since put another there. */
+function clearUploadTarget(node: unknown, nonce: string): void {
+  const el = node as { getAttribute: (name: string) => string | null; removeAttribute: (name: string) => void };
+  if (el.getAttribute('data-wmux-upload') === nonce) el.removeAttribute('data-wmux-upload');
+}
+
+/**
+ * Builtin backend: main sets the files on the input, so the upload works
+ * whether or not a Playwright page is attached. Main checks every path again
+ * and passes the page only what its check returned.
+ *
+ * A ref takes one of two routes. With a page, the page resolves it as it
+ * always has — an a11y ref exists only in that page's ref map — and the input
+ * it leads to gets a one-shot attribute that main is pointed at. Without one,
+ * the ref can only be a DOM-snapshot ref, so main looks up its data-wmux-ref
+ * tag and runs the same nearby-input search. Neither route ever falls through
+ * to a different element.
+ *
+ * Returns the page used to resolve a ref, if one was.
+ */
+async function uploadThroughMain(
+  engine: PlaywrightEngine,
+  scope: BrowserTargetScope,
+  effect: EffectProbe,
+  safePaths: string[],
+  selector: string | undefined,
+  ref: string | undefined,
+): Promise<Page | null> {
+  let target: { selector: string; near: boolean };
+  let page: Page | null = null;
+  let marked: ElementHandleLike | null = null;
+  let nonce = '';
+  if (ref) {
+    const safeRef = sanitizeRef(ref, scope);
+    page = await engine.getPageForScope(scope, { intent: 'write' }).catch(() => null);
+    if (page) {
+      const el = await resolveRef(page, safeRef);
+      if (!el) {
+        throw taggedFailure('ref_not_found', `Could not resolve ref="${ref}" to an element.`);
+      }
+      const input = await resolveFileInputFromRef(el as unknown as ElementHandleLike);
+      if (!input) {
+        throw taggedFailure(
+          'element_not_interactable',
+          `No file input found at or near ref="${ref}".` + FILE_INPUT_PROXIMITY_HINT,
+        );
+      }
+      nonce = randomBytes(8).toString('hex');
+      await input.evaluate(markUploadTarget, nonce);
+      marked = input;
+      target = { selector: `[data-wmux-upload="${nonce}"]`, near: false };
+    } else {
+      target = { selector: `[data-wmux-ref="${safeRef}"]`, near: true };
+    }
+  } else {
+    target = { selector: selector ?? DEFAULT_FILE_INPUT_SELECTOR, near: false };
+  }
+
+  let reply: MainUploadReply | undefined;
+  try {
+    reply = await effect.dispatch(() =>
+      sendScopedBrowserRpc<MainUploadReply>('browser.upload.cdp', scope, { files: safePaths, ...target }),
+    );
+  } finally {
+    if (marked) await marked.evaluate(clearUploadTarget, nonce).catch(() => undefined);
+  }
+  if (reply?.uploaded === true) return page;
+
+  // Main sent nothing to the page, so nothing happened.
+  if (ref) {
+    if (reply?.missing === 'near') {
+      throw taggedFailure(
+        'element_not_interactable',
+        `No file input found at or near ref="${ref}".` + FILE_INPUT_PROXIMITY_HINT,
+        'none',
+      );
+    }
+    throw taggedFailure('ref_not_found', `Could not resolve ref="${ref}" to an element.`, 'none');
+  }
+  throw taggedFailure(
+    'selector_not_found',
+    (selector
+      ? `No file input element matches selector: ${selector}`
+      : 'No file input element found on the page.') + FILE_INPUT_PROXIMITY_HINT,
+    'none',
+  );
+}
+
 /**
  * Register file-related MCP tools on the given server.
  *
@@ -709,50 +690,57 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_file_upload',
-    'Upload files to a file input, by default the page\'s first one — pass selector to pick another. Paths MUST live under the uploads root (~/.wmux/uploads/, instance suffix applied); anything else is rejected so a malicious page cannot exfiltrate credentials or SSH keys. Size is not a limit on the selector path: the browser opens the path itself. A ref instead of a selector takes a slower path that cannot carry more than 50MB. Only a real <input type=file> is supported; a drop-zone-only uploader fails with "No file input element found".' + EFFECT_TRAILER_NOTE,
+    'Upload files to a file input, by default the page\'s first one — pass selector to pick another. Paths MUST live under the uploads root (~/.wmux/uploads/, instance suffix applied); anything else is rejected so a malicious page cannot exfiltrate credentials or SSH keys. Size is not a limit: the browser opens the path itself, except on the Chrome backend, where a ref instead of a selector takes a slower path that cannot carry more than 50MB. Only a real <input type=file> is supported; a drop-zone-only uploader fails with "No file input element found".' + EFFECT_TRAILER_NOTE,
     BROWSER_FILE_UPLOAD_SHAPE,
     async ({ paths, selector, ref, timeout, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope, { intent: 'write' });
-        if (!page) {
-          throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
-
-        const safePaths = paths.map(validateUploadPath);
         const resolvedSelector = selector ?? DEFAULT_FILE_INPUT_SELECTOR;
-        const resolvedTimeout = timeout ?? REF_UPLOAD_TIMEOUT_MS;
+        let page: Page | null = null;
+        let safePaths: string[];
+        if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) !== 'chrome') {
+          safePaths = paths.map(validateUploadPath);
+          page = await uploadThroughMain(engine, scope, effect, safePaths, selector, ref);
+        } else {
+          page = await engine.getPageForScope(scope, { intent: 'write' });
+          if (!page) {
+            throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+          }
 
-        if (ref) {
-          // A ref names an element we hold as a handle, not as a selector, so
-          // the by-path CDP route cannot address it and this stays on
-          // Playwright's content-copying path — 50MB cap included. Kept for
-          // compatibility; `selector` is the route that scales.
-          const el = await resolveRef(page, ref);
-          if (!el) {
-            throw taggedFailure('ref_not_found', `Could not resolve ref="${ref}" to an element.`);
+          safePaths = paths.map(validateUploadPath);
+          const resolvedTimeout = timeout ?? REF_UPLOAD_TIMEOUT_MS;
+
+          if (ref) {
+            // A ref names an element we hold as a handle, not as a selector, so
+            // the by-path CDP route cannot address it and this stays on
+            // Playwright's content-copying path — 50MB cap included. Kept for
+            // compatibility; `selector` is the route that scales.
+            const el = await resolveRef(page, ref);
+            if (!el) {
+              throw taggedFailure('ref_not_found', `Could not resolve ref="${ref}" to an element.`);
+            }
+            // The ref usually names the visible upload BUTTON, not the input.
+            const input = await resolveFileInputFromRef(el as unknown as ElementHandleLike);
+            if (!input) {
+              throw taggedFailure(
+                'element_not_interactable',
+                `No file input found at or near ref="${ref}".` + FILE_INPUT_PROXIMITY_HINT,
+              );
+            }
+            await effect.dispatch(() => setInputFilesTagged(input, safePaths, resolvedTimeout));
+          } else if (!(await uploadViaCdp(page, resolvedSelector, safePaths, effect))) {
+            // No CDP (or the selector matched nothing): fall back to the DOM
+            // handle, which also produces the user-facing "no file input" error.
+            const fileInput = await page.$(resolvedSelector);
+            if (!fileInput) {
+              throw taggedFailure(
+                'selector_not_found',
+                (selector
+                  ? `No file input element matches selector: ${resolvedSelector}`
+                  : 'No file input element found on the page.') + FILE_INPUT_PROXIMITY_HINT,
+              );
+            }
+            await effect.dispatch(() => setInputFilesTagged(fileInput, safePaths, resolvedTimeout));
           }
-          // The ref usually names the visible upload BUTTON, not the input.
-          const input = await resolveFileInputFromRef(el as unknown as ElementHandleLike);
-          if (!input) {
-            throw taggedFailure(
-              'element_not_interactable',
-              `No file input found at or near ref="${ref}".` + FILE_INPUT_PROXIMITY_HINT,
-            );
-          }
-          await effect.dispatch(() => setInputFilesTagged(input, safePaths, resolvedTimeout));
-        } else if (!(await uploadViaCdp(page, resolvedSelector, safePaths, effect))) {
-          // No CDP (or the selector matched nothing): fall back to the DOM
-          // handle, which also produces the user-facing "no file input" error.
-          const fileInput = await page.$(resolvedSelector);
-          if (!fileInput) {
-            throw taggedFailure(
-              'selector_not_found',
-              (selector
-                ? `No file input element matches selector: ${resolvedSelector}`
-                : 'No file input element found on the page.') + FILE_INPUT_PROXIMITY_HINT,
-            );
-          }
-          await effect.dispatch(() => setInputFilesTagged(fileInput, safePaths, resolvedTimeout));
         }
 
         // Recorded with a placeholder per file, never the paths themselves.

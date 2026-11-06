@@ -204,13 +204,15 @@ describe('protected-pane gate', () => {
     expect((await call(router, 'browser.open', { workspaceId: 'ws-1', url: 'https://blocked.test/' }, 'pty-b')).error).toBeUndefined();
   });
 
-  it('refuses page scripts, raw cookies, the builtin target and site guides', async () => {
+  it('refuses page scripts, raw cookies, the builtin target, builtin uploads and site guides', async () => {
     await protectPaneA();
     const router = register(profiles, policy);
+    // No surfaceId on purpose: refused by name, before any surface check.
     for (const [method, extra] of [
       ['browser.evaluate', { expression: '1' }],
       ['browser.cookies', { action: 'get' }],
       ['browser.cdp.target', {}],
+      ['browser.upload.cdp', { files: ['/tmp/x'] }],
       ['browser.siteGuides.match', { url: 'https://a.test/' }],
     ] as const) {
       expect((await call(router, method, { workspaceId: 'ws-1', ...extra }, 'pty-a')).error, method).toContain('policy_denied');
@@ -253,6 +255,7 @@ describe('protected-pane gate', () => {
       ['browser.tabs', { action: 'select' }],
       ['browser.close', {}],
       ['browser.help.request', { prompt: 'help' }],
+      ['browser.upload.cdp', { files: ['/tmp/x'] }],
     ] as const) {
       const res = await call(router, method, { workspaceId: 'ws-1', surfaceId: webviewSurface, ...extra }, 'pty-a');
       expect(res.error, method).toContain('policy_denied');

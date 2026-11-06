@@ -355,6 +355,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.click.cdp':         { capability: 'browser.click', riskClass: 'browser' },
   'browser.hover.cdp':         { capability: 'browser.click', riskClass: 'browser' },
   'browser.drag.cdp':          { capability: 'browser.click', riskClass: 'browser' },
+  // Its own capability: it hands the page files from disk, which no click,
+  // keystroke or page script can do.
+  'browser.upload.cdp':        { capability: 'browser.upload', riskClass: 'browser' },
   'browser.press.cdp':         { capability: 'browser.type',  riskClass: 'browser' },
   // State tools (#111 packaged RPC fallback). resize stays under
   // `browser.evaluate`: a caller that can already run arbitrary JS can resize the
@@ -804,6 +807,7 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
   'browser.read':      'browser',
   'browser.cookies':   'browser',
   'browser.emulate':   'browser',
+  'browser.upload':    'browser',
   // Desktop computer use
   'computer.observe':  'computer',
   'computer.control':  'computer',
@@ -906,6 +910,7 @@ export const CAPABILITY_EFFECT: Record<string, 'read' | 'write'> = {
   'computer.observe':  'read',
   'computer.control':  'write',
   'browser.emulate':   'write',
+  'browser.upload':    'write',
   // A2A
   'a2a.send':    'write',
   'a2a.execute': 'write',
