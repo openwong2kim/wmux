@@ -2087,18 +2087,32 @@ mod tests {
         assert_eq!(live_bytes(&[b"ab\xc2"]).held_len(), 1);
         assert_eq!(live_bytes(&[b"a\xf0\x9f\x98"]).held_len(), 3);
         assert_eq!(live_bytes(&[b"a\xf0\x9f", b"\x98\x80"]).held_len(), 0);
-        // A replay feed holds nothing, and still sees the split control.
-        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
-        let mut parser: Processor = Processor::new();
-        let mut feed = XtermFeed::default();
-        feed.feed(&mut parser, &mut term, b"ab\xc2");
-        assert_eq!(feed.held_len(), 0);
-        feed.feed(&mut parser, &mut term, b"\x9bx");
-        assert!(feed.divergent);
         // The earlier control counts, though the C1 scan runs first.
         assert_eq!(
             live_bytes(&[b"a\x1b[Sb\xc2\x9bx"]).taint.map(|t| t.at),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn a_replay_feed_refuses_a_c1_control_split_across_feeds() {
+        // feed_xterm stops at the refusal and the snapshot falls back to
+        // xterm, which executes the control (RustSnapshot never splits a
+        // character between calls, so this takes a caller that does).
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut feed = XtermFeed::default();
+        feed.feed(&mut parser, &mut term, b"0123456789ab\xc2");
+        assert_eq!(feed.held_len(), 0, "a replay feed holds nothing");
+        assert!(!feed.divergent);
+        feed.feed(&mut parser, &mut term, b"\x9bx");
+        assert!(feed.divergent);
+        assert_eq!(
+            feed.taint,
+            Some(Taint {
+                reason: "divergent-control",
+                at: 12
+            })
         );
     }
 }
