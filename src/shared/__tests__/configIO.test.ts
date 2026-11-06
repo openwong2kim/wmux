@@ -322,6 +322,16 @@ describe('configIO — read helpers', () => {
     expect(back.other).toBe(1);
   });
 
+  it('keeps the other keys of a JSON server entry (env, timeout, type) through node → native → node', () => {
+    const native = { kind: 'native' as const, binary: '/Users/u/.wmux/mcp/wmux-native' };
+    const extra = { type: 'stdio', env: { FOO: 'bar' }, timeout: 30000 };
+    const start = JSON.stringify({ mcpServers: { wmux: { ...extra, command: 'node', args: ['/old/index.js', '--core'] } } });
+    const toNative = upsertMcpServer(start, 'json', 'wmux', native);
+    expect(JSON.parse(toNative).mcpServers.wmux).toEqual({ ...extra, command: native.binary, args: ['mcp-shim', '--core'] });
+    const back = upsertMcpServer(toNative, 'json', 'wmux', '/new/index.js');
+    expect(JSON.parse(back).mcpServers.wmux).toEqual({ ...extra, command: 'node', args: ['/new/index.js', '--core'] });
+  });
+
   it('round-trips node → native → node in TOML, keeping extra keys, comments and child tables', () => {
     const native = { kind: 'native' as const, binary: 'C:\\Users\\u\\.wmux\\mcp\\wmux-native.exe' };
     const start = `[mcp_servers.wmux] # wmux

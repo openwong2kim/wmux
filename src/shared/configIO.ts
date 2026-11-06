@@ -253,7 +253,11 @@ function upsertJson(text: string, key: string, command: string, args: string[]):
   const servers = (config.mcpServers && typeof config.mcpServers === 'object'
     ? config.mcpServers
     : (config.mcpServers = {})) as Record<string, unknown>;
-  servers[key] = { command, args };
+  // Merge over the existing entry, as the TOML writer does: only `command` and
+  // `args` are ours to rewrite; `env`, `type`, timeouts and the rest stay.
+  const existing = servers[key];
+  const kept = existing && typeof existing === 'object' && !Array.isArray(existing) ? existing as Record<string, unknown> : {};
+  servers[key] = { ...kept, command, args };
   return JSON.stringify(config, null, 2) + '\n';
 }
 
