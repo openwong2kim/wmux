@@ -506,13 +506,27 @@ function isSessionsSummary(v: unknown): v is McpSessionsSummary {
   if (!b || typeof b !== 'object' || !n || typeof n !== 'object') return false;
   const nums = (rec: Record<string, unknown>, keys: string[]) => keys.every((k) => typeof rec[k] === 'number');
   return typeof b.enabled === 'boolean' && typeof b.running === 'boolean' && typeof b.standingDown === 'boolean'
+    && (b.downReason === null || typeof b.downReason === 'string')
     && nums(b, ['connections', 'crashExits', 'spawnFailures', 'standDowns'])
     && (b.pid === null || typeof b.pid === 'number')
     && (b.uptimeS === null || typeof b.uptimeS === 'number')
     && typeof n.capped === 'boolean' && nums(n, ['recent', 'ttlS']);
 }
 
-function brokerLine(b: McpSessionsSummary['broker']): CheckLine {
+/** What each kind of registered agent does while the broker is down. */
+function downConsequences(kinds: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  if (kinds.has('native')) out.push('Agents on the native launcher start the full bundle themselves meanwhile.');
+  if (kinds.has('node-shim')) out.push('Agents on the Node shim cannot start a session until it runs.');
+  return out;
+}
+
+/**
+ * The broker line. A down broker is described only as far as its state is
+ * known: a restart is promised only when one is scheduled, and a state this
+ * doctor cannot name gets no hint at all.
+ */
+function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>): CheckLine {
   if (!b.enabled) return { label: 'broker', value: 'off', verdict: 'OK' };
   if (b.running) {
     return {
@@ -525,19 +539,27 @@ function brokerLine(b: McpSessionsSummary['broker']): CheckLine {
   if (b.standingDown) {
     return { label: 'broker', value: `served by another wmux instance's broker (stand-downs ${b.standDowns})`, verdict: 'OK' };
   }
-  return {
-    label: 'broker',
-    value: `not running (crash exits ${b.crashExits})`,
-    verdict: 'WARN',
-    hint: 'The broker is on but down; agents started now get the full bundle until it restarts.',
+  const known: Record<string, { value: string; next?: string }> = {
+    restarting: {
+      value: `not running: restarting after an exit (crash exits ${b.crashExits}, spawn failures ${b.spawnFailures})`,
+      next: 'The app restarts it with a backoff.',
+    },
+    'script-missing': { value: 'not running: this build has no broker script', next: 'It will not start in this session.' },
+    stopped: { value: 'not running: stopped by the app' },
   };
+  const state = typeof b.downReason === 'string' ? known[b.downReason] : undefined;
+  if (!state) return { label: 'broker', value: 'not running', verdict: 'WARN' };
+  const hint = [state.next, ...downConsequences(kinds)].filter(Boolean).join(' ');
+  return { label: 'broker', value: state.value, verdict: 'WARN', ...(hint ? { hint } : {}) };
 }
 
 export async function buildMcpSection(
   deps: McpDoctorDeps,
   appPipeReachable = true,
 ): Promise<{ verdict: Verdict; lines: CheckLine[] }> {
-  const lines = deps.targets().map((t) => registeredLine(t, deps));
+  const targets = deps.targets();
+  const lines = targets.map((t) => registeredLine(t, deps));
+  const kinds = new Set(targets.flatMap((t) => (t.wmux.registered && t.wmux.path ? [launcherKind(t.wmux.path)] : [])));
   let summary: McpSessionsSummary | null = null;
   let skipReason = 'the app is not running';
   if (appPipeReachable) {
@@ -550,7 +572,7 @@ export async function buildMcpSection(
     }
   }
   if (summary) {
-    lines.push(brokerLine(summary.broker));
+    lines.push(brokerLine(summary.broker, kinds));
     const minutes = Math.round(summary.bundle.ttlS / 60);
     lines.push({
       label: `bundle sessions (last ${minutes} min)`,

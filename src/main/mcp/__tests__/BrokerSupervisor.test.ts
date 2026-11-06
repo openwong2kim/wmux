@@ -205,3 +205,43 @@ describe('BrokerSupervisor status', () => {
     vi.useRealTimers();
   });
 });
+
+describe('BrokerSupervisor down reason', () => {
+  it('names why the broker is not running, and nothing while it runs', () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    const second = makeChild();
+    vi.mocked(spawn).mockReturnValueOnce(first as never).mockReturnValueOnce(second as never);
+    const sup = new BrokerSupervisor();
+    expect(sup.status().downReason).toBe('not-started');
+    sup.start();
+    expect(sup.status().downReason).toBeNull();
+    first.emit('exit', 1, null);
+    expect(sup.status().downReason).toBe('restarting');
+    vi.advanceTimersByTime(500);
+    expect(sup.status().downReason).toBeNull();
+    sup.stop();
+    expect(sup.status().downReason).toBe('stopped');
+    vi.useRealTimers();
+  });
+
+  it('says the script is missing when there is none to start', () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    expect(sup.status().downReason).toBe('script-missing');
+  });
+
+  it('says it stands down while another broker serves the pipe', () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    vi.mocked(spawn).mockReturnValue(first as never);
+    vi.mocked(canConnectBrokerPipe).mockResolvedValue(true);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    first.emit('exit', 75, null);
+    expect(sup.status().downReason).toBe('standing-down');
+    sup.stop();
+    vi.useRealTimers();
+  });
+});

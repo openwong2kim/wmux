@@ -19,7 +19,7 @@ function target(id: string, path: string | null, profile: 'full' | 'core' | 'com
 }
 
 const summary: McpSessionsSummary = {
-  broker: { enabled: true, running: true, pid: 4321, uptimeS: 3725, connections: 2, crashExits: 1, spawnFailures: 3, standDowns: 0, standingDown: false },
+  broker: { enabled: true, running: true, pid: 4321, uptimeS: 3725, connections: 2, crashExits: 1, spawnFailures: 3, standDowns: 0, standingDown: false, downReason: null },
   bundle: { recent: 3, capped: false, ttlS: 600 },
 };
 
@@ -84,6 +84,45 @@ describe('doctor mcp section', () => {
     expect(await line({ enabled: false, running: false, pid: null })).toMatchObject({ value: 'off', verdict: 'OK' });
     expect(await line({ running: false, pid: null, standingDown: true })).toMatchObject({ verdict: 'OK' });
     expect(await line({ running: false, pid: null })).toMatchObject({ verdict: 'WARN' });
+  });
+
+  describe('a broker that is on but down', () => {
+    const down = async (downReason: unknown, kinds: string[]) => {
+      const result = { ...summary, broker: { ...summary.broker, running: false, pid: null, uptimeS: null, downReason } };
+      const targets = () => kinds.map((k, i) => target(`t${i}`, `${HOME}/.wmux/mcp/${k}`));
+      const s = await buildMcpSection(deps({ targets, sessions: () => Promise.resolve({ id: '1', ok: true, result }) }));
+      return s.lines.find((l) => l.label === 'broker') as { value: string; verdict: string; hint?: string };
+    };
+
+    it('promises a restart only when one is scheduled', async () => {
+      const line = await down('restarting', ['wmux-native']);
+      expect(line).toMatchObject({ verdict: 'WARN', value: 'not running: restarting after an exit (crash exits 1, spawn failures 3)' });
+      expect(line.hint).toMatch(/restarts it/);
+      expect(line.hint).toMatch(/native launcher start the full bundle themselves/);
+    });
+
+    it('says a missing script will not start, and that Node-shim agents cannot connect', async () => {
+      const line = await down('script-missing', ['shim.js']);
+      expect(line.value).toBe('not running: this build has no broker script');
+      expect(line.hint).toMatch(/Node shim cannot start a session/);
+      expect(line.hint).not.toMatch(/restart|full bundle/);
+    });
+
+    it('says the app stopped it, with no promise', async () => {
+      const line = await down('stopped', ['wmux-native', 'shim.js']);
+      expect(line.value).toBe('not running: stopped by the app');
+      expect(line.hint).not.toMatch(/restart/);
+      expect(line.hint).toMatch(/native launcher/);
+      expect(line.hint).toMatch(/Node shim/);
+    });
+
+    it('promises nothing for a state it cannot name', async () => {
+      for (const reason of [null, 'not-started', 'something-new']) {
+        const line = await down(reason, ['wmux-native', 'shim.js']);
+        expect(line.value).toBe('not running');
+        expect(line.hint ?? '').not.toMatch(/restart|full bundle|cannot start/);
+      }
+    });
   });
 
   it('marks a capped bundle count as a lower bound', async () => {

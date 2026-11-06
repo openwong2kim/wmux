@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
 import { canConnectBrokerPipe } from './brokerProbe';
-import { parseBrokerConnectionsReport, type BrokerStatus } from '../../shared/mcpSessions';
+import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStatus } from '../../shared/mcpSessions';
 
 /**
  * Supervises the shared MCP broker process (Option A,
@@ -63,7 +63,17 @@ export class BrokerSupervisor {
       spawnFailures: this.spawnFailures,
       standDowns: this.standDowns,
       standingDown: this.reclaimTimer !== null,
+      downReason: this.downReason(),
     };
+  }
+
+  private downReason(): BrokerDownReason | null {
+    if (this.child) return null;
+    if (this.stopped) return 'stopped';
+    if (this.scriptMissing) return 'script-missing';
+    if (this.reclaimTimer) return 'standing-down';
+    if (this.restartTimer) return 'restarting';
+    return 'not-started';
   }
 
   /** Resolve the broker script for the current build layout. */

@@ -28,6 +28,13 @@ export function parseBrokerConnectionsReport(message: unknown): number | null {
 /** A bundle server's envelope id: 32 lowercase hex characters. */
 export const MCP_SESSION_ID_RE = /^[0-9a-f]{32}$/;
 
+/**
+ * Why no broker runs: the app stopped it (quit, update), this build has no
+ * broker script, another instance's broker serves the pipe, a restart is
+ * scheduled after an exit, or it was never started.
+ */
+export type BrokerDownReason = 'stopped' | 'script-missing' | 'standing-down' | 'restarting' | 'not-started';
+
 export interface BrokerStatus {
   running: boolean;
   pid: number | null;
@@ -37,6 +44,8 @@ export interface BrokerStatus {
   spawnFailures: number;
   standDowns: number;
   standingDown: boolean;
+  /** Null while a broker runs. */
+  downReason: BrokerDownReason | null;
 }
 
 /** `mcp.sessions.summary` result. */
