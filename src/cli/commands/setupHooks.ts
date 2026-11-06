@@ -67,8 +67,10 @@ OTHER AGENTS (opt-in; touches only that CLI's hook config)
                    Copilot uses) and never edits your settings.
   --reprobe        With --agent, on install: run the native hook bridge's
                    check again for a build already recorded as failing it (or
-                   passing it). A check that timed out or could not start the
-                   copy is never recorded, so a plain re-run already retries it.
+                   passing it). If the copy cannot be started at all (a home
+                   turned noexec), the hooks go back to node and its old pass
+                   is forgotten, so later installs check it again; a check
+                   that times out leaves the recorded verdict as it was.
 
 WSL (opt-in; touches only that distribution's Claude settings)
   --wsl [<distro>] [--uninstall]

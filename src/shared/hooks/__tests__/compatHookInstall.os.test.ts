@@ -536,6 +536,25 @@ describe.skipIf(process.platform === 'win32')('native bridge side effects', () =
     expect(fs.existsSync(path.join(hooks, PROBE_RECORD))).toBe(false);
   });
 
+  // A home that turned noexec after the copy passed: --reprobe moves the
+  // entries to Node, and the old pass no longer vouches for the copy.
+  it('--reprobe on a copy that passed but can no longer start: Node, the pass forgotten, and a plain install probes again', async () => {
+    await installCompatHooks('copilot', withNative);
+    const hooks = path.dirname(dest());
+    const key = probeKey(sha256Of(fs.readFileSync(dest())), expectationKey({ contains: 'wmux-managed: native-hooks' }));
+    expect(recordedProbe(hooks, key)).toBe('pass');
+    fs.chmodSync(dest(), 0o600);
+    const reprobed = await installCompatHooks('copilot', withNative, { reprobe: true });
+    expect(reprobed.native).toMatchObject({ state: 'error', error: 'self-test could not start' });
+    expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
+    expect(recordedProbe(hooks, key)).toBeUndefined();
+    // Not trusted again: the plain install runs the check, which still cannot start it.
+    const plain = await installCompatHooks('copilot', withNative);
+    expect(plain.native).toMatchObject({ state: 'error', error: 'self-test could not start' });
+    expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
+    expect(recordedProbe(hooks, key)).toBeUndefined();
+  });
+
   it('without the lock, keeps the entries on a copy status counts as working', async () => {
     if (process.getuid?.() === 0) return;
     await installCompatHooks('copilot', withNative);

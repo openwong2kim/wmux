@@ -114,6 +114,18 @@ export function recordProbe(dir: string, key: string, verdict: 'pass' | 'fail', 
   const evictable = Object.keys(record.verdicts).filter((k) => k !== keep && k !== key);
   const excess = Object.keys(record.verdicts).length - MAX_RECORDED;
   for (const old of evictable.slice(0, Math.max(0, excess))) delete record.verdicts[old];
+  writeRecord(dir, record);
+}
+
+/** Drop a recorded verdict, so the next run probes those bytes again. */
+export function forgetProbe(dir: string, key: string): void {
+  const record = readRecord(dir);
+  if (!(key in record.verdicts)) return;
+  delete record.verdicts[key];
+  writeRecord(dir, record);
+}
+
+function writeRecord(dir: string, record: ProbeRecord): void {
   const file = path.join(dir, PROBE_RECORD);
   const temp = `${file}.${process.pid}-${randomBytes(4).toString('hex')}.tmp`;
   try {
@@ -323,10 +335,16 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
   const key = probeKey(sha256Of(bytes), opts.line);
   const recorded = recordedProbe(opts.recordDir, key);
   const known = opts.reprobe ? undefined : recorded;
-  // A reprobe that proves nothing (a timeout, a copy that could not start)
-  // leaves the recorded verdict standing, as if it had not run.
-  const settle = (probed: ProbeVerdict): { verdict: ProbeVerdict; known: 'pass' | 'fail' | undefined } =>
-    (probed === 'timeout' || probed === 'unstartable') && recorded ? { verdict: recorded, known: recorded } : { verdict: probed, known };
+  // What a reprobe settles, when these bytes had a verdict: a timeout proves
+  // nothing (a slow antivirus scan), so the recorded verdict stands, as if it
+  // had not run. A copy that could not be started (a home turned noexec) is
+  // not offered, and the recorded verdict is forgotten, so the next run
+  // probes again rather than trusting it; nothing new is recorded.
+  const settle = (probed: ProbeVerdict): { verdict: ProbeVerdict; known: 'pass' | 'fail' | undefined } => {
+    if (probed === 'timeout' && recorded) return { verdict: recorded, known: recorded };
+    if (probed === 'unstartable' && recorded) forgetProbe(opts.recordDir, key);
+    return { verdict: probed, known };
+  };
 
   if (current?.equals(bytes)) {
     // These bytes are in place already: only their verdict is missing.

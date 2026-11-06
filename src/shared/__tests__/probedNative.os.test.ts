@@ -220,18 +220,29 @@ describe('prepareProbedNative — reprobe', () => {
 });
 
 describe('prepareProbedNative — a reprobe that proves nothing', () => {
-  it('leaves the recorded verdict, and what it offers, as they were', async () => {
+  it('a timeout leaves the recorded verdict, and what it offers, as they were', async () => {
     ship('good v1');
     await prepare();
-    for (const inconclusive of ['timeout', 'unstartable'] as const) {
-      expect(await prepare({ reprobe: true, probe: async () => inconclusive })).toEqual({ binary: dest() });
-      expect(recordedProbe(dir, keyOf('good v1'))).toBe('pass');
-    }
+    expect(await prepare({ reprobe: true, probe: async () => 'timeout' })).toEqual({ binary: dest() });
+    expect(recordedProbe(dir, keyOf('good v1'))).toBe('pass');
     ship('good v2');
     await prepare({ probe: async () => 'fail' });
     expect(await prepare({ reprobe: true, probe: async () => 'timeout' })).toMatchObject({ binary: dest(), reason: 'recorded as failing; the installed copy stays' });
     expect(recordedProbe(dir, keyOf('good v2'))).toBe('fail');
     expect(fs.readFileSync(dest(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
+  });
+
+  // A home that turned noexec after the copy passed: `--reprobe` is what the
+  // person runs, and a copy that cannot start must not be offered on the
+  // strength of the old pass, nor kept trusted for the next plain install.
+  it('a copy that cannot start: nothing offered, the recorded pass forgotten, nothing recorded, and the next run probes again', async () => {
+    ship('good v1');
+    await prepare();
+    expect(await prepare({ reprobe: true, probe: async () => 'unstartable' })).toEqual({ binary: null, reason: 'self-test could not start' });
+    expect(recordedProbe(dir, keyOf('good v1'))).toBeUndefined();
+    const before = probed.length;
+    expect(await prepare()).toEqual({ binary: dest() });
+    expect(probed).toHaveLength(before + 1);
   });
 });
 
