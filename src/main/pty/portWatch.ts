@@ -1,7 +1,10 @@
 import { EventEmitter } from 'node:events';
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import { promisify } from 'node:util';
 import { tryNativeSnapshot } from './winSnapshotNative';
+import type { NativeTerminalCore } from '../../shared/nativeTerminalCore';
+import { nativeRead } from '../../daemon/nativeProcessTable';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,13 +50,19 @@ export type SnapshotFn = () => Promise<PortSnapshot>;
 const DEFAULT_INTERVAL_MS = 10_000;
 /** Snapshot subprocess timeout (Unix path) — well under the tick interval. */
 const SNAPSHOT_TIMEOUT_MS = 8_000;
+/** How long one native snapshot may take before its tick goes to ps/lsof.
+ *  A read stuck in the kernel (a D-state /proc read) never returns: the
+ *  timeout keeps the tick moving, and each later tick it blocks counts toward
+ *  the 3-in-a-row latch, so a read hung for good latches native off. */
+export const NATIVE_SNAPSHOT_TIMEOUT_MS = 5_000;
 /**
  * How long tick() waits for a snapshot before counting it as failed. The Unix
- * path runs `ps` then `lsof`, each with its own timeout, plus a margin. A child
+ * path runs the native read up to its timeout, then `ps` then `lsof`, each
+ * with its own timeout, plus a margin. A child
  * stuck in an uninterruptible kernel wait never closes, so the execFile promise
  * may never settle; this deadline keeps one such child from freezing polling.
  */
-export const SNAPSHOT_DEADLINE_MS = 2 * SNAPSHOT_TIMEOUT_MS + 2_000;
+export const SNAPSHOT_DEADLINE_MS = NATIVE_SNAPSHOT_TIMEOUT_MS + 2 * SNAPSHOT_TIMEOUT_MS + 2_000;
 /** After this many consecutive snapshot failures, pause polling briefly. */
 const FAILURE_BACKOFF_THRESHOLD = 3;
 const FAILURE_BACKOFF_MS = 60_000;
@@ -92,11 +101,69 @@ function snapshotWindowsNative(): PortSnapshot {
   return { ppidByPid, listeners };
 }
 
-/** Unix: `ps` for the process table + `lsof` for listening sockets. */
+type PortSnapshotRead = NonNullable<NativeTerminalCore['portSnapshot']>;
+
+/** macOS and Linux: the native core's walk and listening sockets in one call
+ *  (`listen-sockets-v1`), behind the shared latch (nativeRead): one call in
+ *  flight at most, so a hung read can hold one libuv thread, never more. */
+const nativePorts = nativeRead<PortSnapshotRead>({
+  platforms: ['darwin', 'linux'],
+  capability: 'listen-sockets-v1',
+  component: 'port-watch',
+  pick: (core) => (typeof core.portSnapshot === 'function' ? core.portSnapshot : undefined),
+});
+
+/** Where ps and lsof are looked for first, then in PATH. */
+const TOOL_PATHS: Record<'ps' | 'lsof', string[]> = {
+  ps: ['/bin/ps', '/usr/bin/ps'],
+  lsof: ['/usr/sbin/lsof', '/usr/bin/lsof', '/sbin/lsof', '/bin/lsof'],
+};
+const toolPaths = new Map<string, string>();
+/** After a miss, the tool is not looked for again for this long. */
+const TOOL_MISS_RETRY_MS = 60_000;
+const toolMisses = new Map<string, number>();
+
+/**
+ * The tool's absolute path, found in-process: the usual locations, then each
+ * absolute PATH directory (NixOS, Guix), checked for execute access. Spawning
+ * by bare name makes libuv search PATH itself, and on macOS its posix_spawn
+ * path forks a process per PATH entry it tries before the one that holds the
+ * tool (Linux forks once and execvp walks PATH in the child). A hit is kept;
+ * a miss is looked for again TOOL_MISS_RETRY_MS later.
+ */
+function toolPath(tool: 'ps' | 'lsof'): string | undefined {
+  const known = toolPaths.get(tool);
+  if (known) return known;
+  if (Date.now() < (toolMisses.get(tool) ?? 0)) return undefined;
+  const dirs = (process.env.PATH ?? '').split(':').filter((d) => d.startsWith('/'));
+  const found = [...TOOL_PATHS[tool], ...dirs.map((d) => `${d.replace(/\/+$/, '')}/${tool}`)].find((p) => {
+    try {
+      fs.accessSync(p, fs.constants.X_OK);
+      return fs.statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  });
+  if (found) toolPaths.set(tool, found);
+  else toolMisses.set(tool, Date.now() + TOOL_MISS_RETRY_MS);
+  return found;
+}
+
+/** Unix: the native walk and socket list, else `ps` for the process table +
+ *  `lsof` for listening sockets. */
 async function snapshotUnix(): Promise<PortSnapshot> {
+  const native = await nativePorts.call((read) => read(), NATIVE_SNAPSHOT_TIMEOUT_MS);
+  if (native) {
+    return {
+      ppidByPid: new Map(native.processes.map((r) => [r.pid, r.ppid])),
+      listeners: native.sockets.map((s) => ({ port: s.port, pid: s.pid })),
+    };
+  }
   const ppidByPid = new Map<number, number>();
   try {
-    const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid='], {
+    const ps = toolPath('ps');
+    if (!ps) throw new Error('ps not found');
+    const { stdout } = await execFileAsync(ps, ['-axo', 'pid=,ppid='], {
       timeout: SNAPSHOT_TIMEOUT_MS,
       killSignal: 'SIGKILL',
       maxBuffer: 16 * 1024 * 1024,
@@ -109,8 +176,10 @@ async function snapshotUnix(): Promise<PortSnapshot> {
 
   const listeners: SessionPort[] = [];
   try {
+    const lsof = toolPath('lsof');
+    if (!lsof) throw new Error('lsof not found');
     // -F p n: machine-readable "p<pid>" / "n<addr>" lines.
-    const { stdout } = await execFileAsync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'], {
+    const { stdout } = await execFileAsync(lsof, ['-nP', '-iTCP', '-sTCP:LISTEN', '-Fpn'], {
       timeout: SNAPSHOT_TIMEOUT_MS,
       killSignal: 'SIGKILL',
       maxBuffer: 16 * 1024 * 1024,

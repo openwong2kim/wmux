@@ -38,6 +38,7 @@ import { resolveBackgroundLaunch } from '../account/backgroundLaunchAccount';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../../shared/commanderSurface';
 import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
+import { attachScrollback } from '../session/rendererScrollback';
 import { registerBrainPty, type BrainPtyHookBlock, type BrainPtyHookContext } from './brainPtyHookBus';
 import { installBrainSkills, syncBrainContractFile } from './brainSkills';
 import type { StopGateVerdict } from './stopGate';
@@ -202,7 +203,7 @@ export function createBrainPtyHost(client: DaemonClientLike): BrainPtyHost {
       });
     },
     async attach(id) {
-      await client.rpc('daemon.attachSession', { id });
+      await client.rpc('daemon.attachSession', { id, scrollback: attachScrollback() });
       await client.connectSessionPipe(id);
     },
     write(id, data) {

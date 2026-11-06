@@ -221,7 +221,7 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { setBrokerPidSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
-import { claimCdpPort, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
+import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { registerBrowserPrivateNetworkIpc } from './ipc/handlers/browserPrivateNetwork.handler';
@@ -589,6 +589,7 @@ if (process.platform === 'win32' && app.isPackaged) {
 // config. Closing the port is the single largest same-user surface reduction
 // in the app: CDP only needs a loopback socket, unlike other same-user vectors
 // which need filesystem or process control. See docs/SECURITY.md §3.
+dropDebuggingSwitches(app.commandLine);
 const cdpEnabled =
   process.env.WMUX_DISABLE_CDP !== 'true' &&
   loadConfig().browser?.cdp?.enabled !== false;
@@ -830,6 +831,7 @@ const mcpBrokerSupervisor = new BrokerSupervisor();
 setBrokerPidSource(() => mcpBrokerSupervisor.pid);
 const webviewCdpManager = new WebviewCdpManager(0);
 webviewCdpManager.setCdpFailureReason(cdpEnabled ? 'CDP ownership verification pending' : 'CDP disabled by configuration');
+webviewCdpManager.setCdpDisabled(!cdpEnabled);
 // "Agent is driving" marker + Stop / Take over for in-app browser tabs. Activity
 // is the surface's automation lease count; Stop and Take over end the leases in
 // flight (their holders learn why on the next renew) and stop a navigation.
@@ -2474,7 +2476,7 @@ app.on('ready', async () => {
         const { targetInfo } = await localDebugger.sendCommand('Target.getTargetInfo');
         const probe = await probeCdpEndpointWithRetry(cdpPort, targetInfo?.targetId ?? '');
         if (probe.ok) {
-          await webviewCdpManager.setCdpPort(cdpPort);
+          webviewCdpManager.setCdpPort(cdpPort);
           console.log(`[WinMux] CDP listening on port ${cdpPort} (${probe.browser})`);
           retry = false;
         } else {

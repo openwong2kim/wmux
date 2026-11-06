@@ -6,7 +6,8 @@
 // Per-target rules (see mcpTargets.ts / McpRegistrar.ts header):
 //   - uninstalled agent (config absent + !createIfMissing) → skipped, never created
 //   - malformed config → left untouched (never clobbered)
-//   - foreign entry (a `wmux` key whose command !== node) → left untouched
+//   - foreign entry (a `wmux` key that is neither `node <script>` nor
+//     `<dir>/wmux-native mcp-shim`) → left untouched
 //   - TOML writes are surgical (configIO) so comments / order / quoted keys survive
 //   - all writes atomic (tmp + rename)
 
@@ -222,7 +223,7 @@ export interface RegisterTargetResult {
   skipped: 'absent' | 'malformed' | null;
   /** keys written/updated this call. */
   wrote: string[];
-  /** keys left untouched because a foreign (non-node) entry occupies them. */
+  /** keys left untouched because a foreign (not wmux-owned) entry occupies them. */
   foreign: string[];
   /** The surface the wmux entry carries AFTER this call — what the caller
    *  asked for, or what was preserved. Null when nothing was registered
