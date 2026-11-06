@@ -136,11 +136,17 @@ describe('native hooks stage freshness', () => {
 
   // In a package hook, not at config load: loading the config (to run any
   // forge command, or a test) must not depend on the stage.
+  // A build with no stage ships no wmux-native: it warns and packages on. A
+  // stage that is there but stale or foreign still stops the package.
   it('is checked by the forge config before packaging', () => {
     const forge = read('forge.config.ts');
-    expect(forge).toMatch(
-      /prePackage: async \(\) => \{\n\s*if \(!shipsNativeHooks\) return;\n\s*const problem = require\('\.\/scripts\/build-native-hooks\.mjs'\)\.nativeHooksStageProblem\(__dirname, [^\n]+\);\n\s*if \(problem\) throw new Error\(problem\);/,
+    const hook = forge.match(
+      /prePackage: async \(\) => \{\n\s*if \(!shipsNativeHooks\) \{\n([\s\S]*?)\n\s*return;\n\s*\}\n\s*const problem = require\('\.\/scripts\/build-native-hooks\.mjs'\)\.nativeHooksStageProblem\(__dirname, [^\n]+\);\n\s*if \(problem\) throw new Error\(problem\);\n\s*\},/,
     );
+    expect(hook).not.toBeNull();
+    const notStaged = hook[1];
+    expect(notStaged).toMatch(/console\.warn\(/);
+    expect(notStaged).not.toMatch(/\bthrow\b/);
     expect(forge).not.toMatch(/^if \(shipsNativeHooks\)/m);
   });
 });
