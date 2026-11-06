@@ -184,7 +184,8 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
 }
 
 /** Both shims on one suffix. With a broker they take turns at it; without
- *  one (ten 300 ms tries each) they run side by side. `prepare` may plant
+ *  one (shim.ts tries ten times 300 ms apart; the native shim falls back at
+ *  once on a missing endpoint) they run side by side. `prepare` may plant
  *  something at the endpoint first. */
 async function both(c: Case, prepare?: (pipe: string) => void): Promise<{ js: Run; native: Run }> {
   const suffix = `-nsp${process.pid}-${++seq}`;

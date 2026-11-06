@@ -575,8 +575,9 @@ fn an_unsuffixed_marker_does_not_stop_a_suffixed_shim() {
     let sb = Sandbox::new();
     sb.write_token("tok");
     sb.broker_off(Some(""));
+    let listener = stub::bind(&sb.pipe());
     let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
-    let mut conn = stub::bind(&sb.pipe()).accept(WAIT);
+    let mut conn = listener.accept(WAIT);
     assert!(read_line(&mut conn).starts_with("{\"wmuxShim\":1,"));
     ack(&mut conn);
     drop(child.stdin.take());
@@ -592,8 +593,9 @@ fn a_suffixed_marker_does_not_stop_the_unsuffixed_shim() {
     let sb = Sandbox::with_suffix(String::new());
     sb.write_token("tok");
     sb.broker_off(Some("-other"));
+    let listener = stub::bind(&sb.pipe());
     let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
-    let mut conn = stub::bind(&sb.pipe()).accept(WAIT);
+    let mut conn = listener.accept(WAIT);
     assert!(read_line(&mut conn).starts_with("{\"wmuxShim\":1,"));
     ack(&mut conn);
     drop(child.stdin.take());

@@ -1,11 +1,11 @@
 import { execFileSync, spawn, type ChildProcess } from 'child_process';
 import * as fs from 'fs';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { prepareNativeLauncher } from '../nativeLauncher';
 import { nativeLauncherPath, runNativeSelfTest } from '../../../shared/mcpLauncher';
-import { deliberateSleep } from '../../../test-utils/waitFor';
 
 // A refresh while an agent is running the launcher: Windows cannot replace a
 // running exe, only rename it, so the copy goes aside, the new one takes its
@@ -25,6 +25,7 @@ if (!realBuild && process.env.WMUX_REQUIRE_NATIVE_HOOKS === '1') {
 
 let root = '';
 let child: ChildProcess | null = null;
+let broker: net.Server | null = null;
 
 /** Stop the launcher and wait for it, whether or not it already exited. */
 async function stop(proc: ChildProcess): Promise<void> {
@@ -39,8 +40,41 @@ beforeEach(() => {
 afterEach(async () => {
   if (child) await stop(child);
   child = null;
+  const srv = broker;
+  broker = null;
+  if (srv) await new Promise<void>((resolve) => srv.close(() => resolve()));
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+/**
+ * A broker stub on the launcher's pipe for this home and suffix. It acks the
+ * handshake and then holds the session open, so the launcher stays running
+ * until the test stops it. `connected` settles once the launcher has asked.
+ */
+async function holdingBroker(home: string, suffix: string): Promise<{ connected: Promise<void> }> {
+  const pipe = process.platform === 'win32'
+    ? `\\\\.\\pipe\\wmux-mcpb${suffix}-${os.userInfo().username || 'default'}`
+    : path.join(home, `.wmux-mcpb${suffix}.sock`);
+  let onConnected: (() => void) | undefined;
+  const connected = new Promise<void>((resolve) => { onConnected = resolve; });
+  const srv = net.createServer((sock) => {
+    let buf = '';
+    sock.on('data', (chunk) => {
+      buf += chunk;
+      if (!buf.includes('\n')) return;
+      buf = '';
+      sock.write('{"wmuxBroker":1,"ok":true}\n');
+      onConnected?.();
+    });
+    sock.on('error', () => { /* launcher gone */ });
+  });
+  await new Promise<void>((resolve, reject) => {
+    srv.once('error', reject);
+    srv.listen(pipe, () => resolve());
+  });
+  broker = srv;
+  return { connected };
+}
 
 /**
  * A second build of the same program, with other bytes that still run: a
@@ -66,17 +100,22 @@ describe.skipIf(!realBuild)('prepareNativeLauncher — a refresh while the launc
     const first = await prepareNativeLauncher({ sourcePath: source, stableDir, selfTest: runNativeSelfTest });
     expect(first.binary).toBe(nativeLauncherPath(stableDir));
 
-    // An agent's launcher, retrying a broker that never comes (about 3 s):
+    // An agent's launcher in a session with a broker that holds it open:
     // a token is present and the pipe name is this test's own.
     const home = path.join(root, 'home');
     fs.mkdirSync(home);
+    const suffix = `-refresh-${process.pid}`;
+    const { connected } = await holdingBroker(home, suffix);
     child = spawn(first.binary as string, ['mcp-shim'], {
-      env: { ...process.env, HOME: home, USERPROFILE: home, WMUX_DATA_SUFFIX: `-refresh-${process.pid}`, WMUX_AUTH_TOKEN: 't' },
+      env: { ...process.env, HOME: home, USERPROFILE: home, WMUX_DATA_SUFFIX: suffix, WMUX_AUTH_TOKEN: 't' },
       stdio: ['pipe', 'ignore', 'ignore'],
       windowsHide: true,
     });
-    // Nothing to wait for: it only needs to be running, and it stays so for ~3 s.
-    await deliberateSleep(300, 'let the launcher start; it then retries for about 3 s');
+    const proc = child;
+    await Promise.race([
+      connected,
+      new Promise((_, reject) => proc.once('exit', (code) => reject(new Error(`the launcher exited (${code}) before reaching the broker`)))),
+    ]);
     expect(child.exitCode).toBeNull();
 
     writeNewerBuild(source);
