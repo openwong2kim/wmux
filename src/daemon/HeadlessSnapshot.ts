@@ -145,15 +145,51 @@ let queueTail: Promise<unknown> = Promise.resolve();
  */
 const waitingByKey = new Map<string, Promise<unknown>>();
 
+// BASELINE TRACE (local only, never committed)
+import { AsyncLocalStorage as TraceStorage } from 'node:async_hooks';
+import { appendFileSync as traceAppend } from 'node:fs';
+type TraceCtx = { caller: string; queuedAt: number; startedAt?: number; lane: string };
+const traceStore = new TraceStorage<TraceCtx>();
+const TRACE_FILE = process.env.WMUX_SNAPSHOT_TRACE;
+function traceCaller(): string {
+  const lines = (new Error().stack ?? '').split('\n').slice(2)
+    .map((l) => l.trim().replace(/^at /, '').replace(/ \(.*\)$/, '').replace(/^async /, ''))
+    .filter((l) => l && !/HeadlessSnapshot|traceCaller|enqueueSnapshotJob|createSnapshotLane|node:internal|processTicksAndRejections|new Promise|<anonymous>|^Promise\./.test(l));
+  return lines.slice(0, 4).join(' < ');
+}
+function traceRun<T>(lane: string, job: () => Promise<T>): () => Promise<T> {
+  if (!TRACE_FILE) return job;
+  const ctx: TraceCtx = { caller: traceCaller(), queuedAt: Date.now(), lane };
+  return () => traceStore.run(ctx, () => { ctx.startedAt = Date.now(); return job(); });
+}
+async function traceInner<T extends { ok: boolean }>(kind: string, req: SnapshotRequest, run: () => Promise<T>): Promise<T> {
+  if (!TRACE_FILE) return run();
+  const ctx = traceStore.getStore() ?? { caller: traceCaller(), queuedAt: Date.now(), lane: 'direct' };
+  const t0 = Date.now();
+  const cpu0 = process.cpuUsage();
+  const out = await run();
+  const cpu = process.cpuUsage(cpu0);
+  try {
+    traceAppend(TRACE_FILE, JSON.stringify({
+      t: t0, kind, lane: ctx.lane, caller: ctx.caller,
+      waitMs: (ctx.startedAt ?? t0) - ctx.queuedAt, ms: Date.now() - t0, cpuMs: Math.round((cpu.user + cpu.system) / 1000),
+      bytes: req.initial.length + ((req.nativeSource as { size?: number } | undefined)?.size ?? 0),
+      scrollback: req.scrollback, ok: out.ok, reason: (out as { reason?: string }).reason,
+    }) + '\n');
+  } catch { /* trace only */ }
+  return out;
+}
+
 export function enqueueSnapshotJob<T>(job: () => Promise<T>, coalesceKey?: string): Promise<T> {
   if (coalesceKey !== undefined) {
     const waiting = waitingByKey.get(coalesceKey);
     if (waiting) return waiting as Promise<T>;
   }
+  const traced = traceRun('queue', job);
   const run: Promise<T> = queueTail.then(() => {
     // Its turn: from here a new request for the key queues afresh.
     if (coalesceKey !== undefined && waitingByKey.get(coalesceKey) === run) waitingByKey.delete(coalesceKey);
-    return job();
+    return traced();
   });
   if (coalesceKey !== undefined) waitingByKey.set(coalesceKey, run);
   // The queue must survive a rejected job (a defensive catch keeps one bug
@@ -178,7 +214,8 @@ export const SMALL_SNAPSHOT_CONCURRENCY = 4;
 export function createSnapshotLane(concurrency: number): <T>(job: () => Promise<T>) => Promise<T> {
   let running = 0;
   const waiters: Array<() => void> = [];
-  return async <T>(job: () => Promise<T>): Promise<T> => {
+  return async <T>(rawJob: () => Promise<T>): Promise<T> => {
+    const job = traceRun(`lane${concurrency}`, rawJob);
     if (running < concurrency) {
       running++;
     } else {
@@ -286,7 +323,7 @@ export function capTextRowsToFrameBudget(
 }
 
 async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
-  return selectTextSnapshot(req, generateXtermTextInner);
+  return traceInner('text', req, () => selectTextSnapshot(req, generateXtermTextInner));
 }
 
 async function generateXtermTextInner(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
@@ -403,7 +440,7 @@ export function generateSnapshotUnqueued(req: SnapshotRequest): Promise<Snapshot
 }
 
 async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
-  return selectAnsiSnapshot(req, generateXtermInner);
+  return traceInner('ansi', req, () => selectAnsiSnapshot(req, generateXtermInner));
 }
 
 async function generateXtermInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
