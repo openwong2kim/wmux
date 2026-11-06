@@ -42,6 +42,8 @@ function refuse(socket: Duplex, status: string): void {
 
 export class CdpPipeEndpoint {
   private readonly clients = new Set<WebSocket>();
+  /** Upgrades accepted and still in their handshake: they count against the cap. */
+  private handshaking = 0;
   private closed = false;
 
   private constructor(
@@ -80,8 +82,19 @@ export class CdpPipeEndpoint {
         refuse(socket, '403 Forbidden');
         return;
       }
-      if (endpoint.clients.size >= maxClients) { refuse(socket, '503 Service Unavailable'); return; }
-      wss.handleUpgrade(req, socket, head, (ws) => endpoint.accept(mux, ws, maxBuffered));
+      if (endpoint.clients.size + endpoint.handshaking >= maxClients) { refuse(socket, '503 Service Unavailable'); return; }
+      endpoint.handshaking++;
+      let settled = false;
+      const settle = () => {
+        if (!settled) endpoint.handshaking--;
+        settled = true;
+      };
+      // A handshake that fails closes the socket without calling back.
+      socket.once('close', settle);
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        settle();
+        endpoint.accept(mux, ws, maxBuffered);
+      });
     });
     return endpoint;
   }
@@ -92,7 +105,8 @@ export class CdpPipeEndpoint {
   }
 
   private accept(mux: CdpPipeMux, ws: WebSocket, maxBuffered: number): void {
-    if (this.closed) { ws.terminate(); return; }
+    // The mux may have closed during the handshake.
+    if (this.closed || !mux.isOpen()) { ws.terminate(); return; }
     this.clients.add(ws);
     const client = mux.attachExternal('external', (text) => {
       if (ws.readyState !== ws.OPEN) return;

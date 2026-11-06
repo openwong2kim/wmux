@@ -32,5 +32,9 @@ describe('perf.status memory diagnostics', () => {
     Object.assign(pipe, { frames: 3, bytes: 300, dropped: { 'root-event': 1 } });
     const used = await router.dispatch({ id: 'used', method: 'perf.status', params: { includeMemory: true } });
     expect(used).toMatchObject({ ok: true, result: { memory: { cdpPipe: { frames: 3, bytes: 300, dropped: { 'root-event': 1 }, refused: 0 } } } });
+    // A pipe that only ever sent what could not be read still shows.
+    Object.assign(pipe, { frames: 0, bytes: 0, dropped: { unparsable: 4 } });
+    const garbled = await router.dispatch({ id: 'garbled', method: 'perf.status', params: { includeMemory: true } });
+    expect(garbled).toMatchObject({ ok: true, result: { memory: { cdpPipe: { frames: 0, dropped: { unparsable: 4 } } } } });
   });
 });

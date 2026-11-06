@@ -33,7 +33,7 @@ export function registerPerfRpc(router: RpcRouter): void {
         workingSetBytes: metric.memory.workingSetSize * 1024,
       })),
       // Only once a Chrome on a debugging pipe has said something.
-      ...(pipe.frames > 0 || pipe.refused > 0 ? { cdpPipe: pipe } : {}),
+      ...(pipe.frames > 0 || pipe.refused > 0 || Object.keys(pipe.dropped).length > 0 ? { cdpPipe: pipe } : {}),
     } : undefined;
     return Promise.resolve({ retention: revealStatsAggregator.getStats(), ...(memory ? { memory } : {}) });
   });

@@ -27,12 +27,17 @@ vi.mock('node:fs', async (orig) => {
       throw new Error('ENOENT (unit test)');
     }),
     writeFileSync: () => undefined,
+    unlinkSync: vi.fn((p: unknown) => {
+      const s = String(p).replace(/\\/g, '/');
+      for (const dir of Object.keys(state.portFiles)) if (s.startsWith(dir) && s.endsWith('DevToolsActivePort')) delete state.portFiles[dir];
+    }),
   };
 });
 
 import { ChromeLauncher, chromeTransportKind } from '../ChromeLauncher';
+import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
 
-type FakeChild = EventEmitter & { kill: () => void; stdio: unknown[]; killed: boolean };
+type FakeChild = EventEmitter & { kill: () => void; stdio: unknown[]; killed: boolean; exitCode: number | null; signalCode: string | null };
 
 /** A browser that exits (and closes its pipe) on Browser.close. */
 class PipeChrome extends FakeBrowser {
@@ -51,6 +56,7 @@ class PipeChrome extends FakeBrowser {
 
   exit(): void {
     this.toMux.end();
+    this.child.exitCode = 0;
     this.child.emit('exit', 0, null);
   }
 }
@@ -69,11 +75,18 @@ class SlowPipeChrome extends PipeChrome {
     this.held = null;
     for (const c of held) super.handle(c);
   }
+
+  /** Answer nothing from now on, while still running. */
+  stall(): void {
+    this.held ??= [];
+  }
 }
 
 function spawnPipeChrome<T extends PipeChrome = PipeChrome>(Kind: new (child: FakeChild) => T = PipeChrome as new (child: FakeChild) => T): { child: FakeChild; chrome: T } {
   const child = new EventEmitter() as FakeChild;
   child.killed = false;
+  child.exitCode = null;
+  child.signalCode = null;
   const chrome = new Kind(child);
   child.stdio = [null, null, null, chrome.fromMux, chrome.toMux];
   child.kill = () => {
@@ -150,6 +163,45 @@ describe('ChromeLauncher over a debugging pipe', () => {
     })).rejects.toThrow();
   });
 
+  it('names no port for a pipe Chrome', async () => {
+    spawnPipeChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    await launcher.endpoint();
+    expect(launcher.isRunning()).toBe(true);
+    expect(launcher.currentPort()).toBeNull();
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('a loopback endpoint that failed to open is opened again on the next call', async () => {
+    spawnPipeChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    vi.spyOn(CdpPipeEndpoint, 'open').mockRejectedValueOnce(new Error('listen EACCES'));
+    await expect(launcher.endpoint()).rejects.toThrow('listen EACCES');
+    expect((await launcher.endpoint()).wsEndpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('a pipe Chrome that stops answering is stopped when let go, not left holding the profile', async () => {
+    const { chrome, child } = spawnPipeChrome(SlowPipeChrome);
+    chrome.start();
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    await launcher.endpoint();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    chrome.stall();
+    const next = spawnPipeChrome();
+    const again = launcher.endpoint();
+    // The liveness check's own timeout, then the new Chrome's start and settle.
+    for (let i = 0; i < 100 && spawnMock.mock.calls.length < 2; i++) await vi.advanceTimersByTimeAsync(250);
+    expect(child.killed).toBe(true);
+    expect(chrome.fromMux.writableEnded).toBe(true);
+    for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(250);
+    await again;
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    expect(next.child.killed).toBe(false);
+    await launcher.dispose({ immediate: true });
+  });
+
   it('opens and lists tabs on the pipe', async () => {
     const { chrome } = spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
@@ -175,7 +227,13 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await launcher.endpoint();
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(launcher.isRunning()).toBe(true);
+    // The record is dropped: the next start never dials that port again, whatever took it since.
+    expect(state.portFiles['/tmp/pipe-old']).toBeUndefined();
     await launcher.dispose({ immediate: true });
+    const dialed = fetchMock.mock.calls.length;
+    spawnPipeChrome();
+    await launcher.endpoint().catch(() => undefined);
+    expect(fetchMock.mock.calls.length).toBe(dialed);
   });
 
   it('a Chrome that exits leaves the launcher stopped', async () => {

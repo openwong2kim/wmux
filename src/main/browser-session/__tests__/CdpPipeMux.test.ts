@@ -164,6 +164,22 @@ describe('CdpPipeMux: routing', () => {
     mux.close();
   });
 
+  it('a reply on the client\'s browser session with sessionId before the result still carries the client\'s own id', async () => {
+    class SessionFirst extends FakeBrowser {
+      protected override handle(c: Parameters<FakeBrowser['handle']>[0]): void {
+        if (c.method === 'Test.sessionFirst') this.emit(`{"id":${c.id},"sessionId":${JSON.stringify(c.sessionId)},"result":{"ok":true}}`);
+        else super.handle(c);
+      }
+    }
+    const browser = new SessionFirst();
+    const mux = new CdpPipeMux(browser.fromMux, browser.toMux);
+    const a = external(mux, 'a');
+    // An id unlike the mux's own numbering, so a reply that kept the mux's would show.
+    a.client.receive(JSON.stringify({ id: 77, method: 'Test.sessionFirst', params: {} }));
+    expect(await a.replyTo(77)).toEqual({ id: 77, result: { ok: true } });
+    mux.close();
+  });
+
   it('a filter (the place for method blocks) refuses a command before it reaches the browser', async () => {
     const { browser, mux } = setup({ filter: (_client, command) => (command.method === 'Browser.close' ? { code: -32000, message: 'refused' } : null) });
     const a = external(mux, 'a');
@@ -214,6 +230,27 @@ describe('CdpPipeMux: a target grant (C3 and C2b)', () => {
     await vi.waitFor(() => expect(a.inbox.filter((m) => m.method === 'Target.targetInfoChanged')).toHaveLength(1), { timeout: 5_000 });
     expect((a.inbox.find((m) => m.method === 'Target.targetInfoChanged')?.params as { targetInfo: { targetId: string } }).targetInfo.targetId).toBe(ta);
     expect(cdpPipeCounters().dropped['ungranted-target']).toBe(3);
+    mux.close();
+  });
+
+  it('a page\'s own frames and workers go with the page, and a session the client owns is told it ended after its grant went', async () => {
+    const granted = new Set<string>();
+    const browser = new FakeBrowser();
+    const mux = new CdpPipeMux(browser.fromMux, browser.toMux, { targetGrant: (_client, targetId) => granted.has(targetId) });
+    const a = external(mux, 'a');
+    await a.replyTo(a.send('Browser.getVersion'));
+    granted.add('T0');
+    const page = (await a.replyTo(a.send('Target.attachToTarget', { targetId: 'T0', flatten: true }))).result?.sessionId as string;
+    // An iframe auto-attached on the page's session: its target was never granted on its own.
+    browser.sessions.add('IFRAME');
+    browser.event(page, 'Target.attachedToTarget', { sessionId: 'IFRAME', targetInfo: { targetId: 'F1', type: 'iframe' }, waitingForDebugger: false });
+    await vi.waitFor(() => expect(a.inbox.some((m) => m.method === 'Target.attachedToTarget' && m.sessionId === page)).toBe(true), { timeout: 5_000 });
+    expect((await a.replyTo(a.send('Runtime.evaluate', { expression: 'f' }, 'IFRAME'))).result).toBeDefined();
+    // The grant goes; the page closes: the client still hears its session end, and no longer owns it.
+    granted.delete('T0');
+    browser.event('B1', 'Target.detachedFromTarget', { sessionId: page, targetId: 'T0' });
+    await vi.waitFor(() => expect(a.inbox.some((m) => m.method === 'Target.detachedFromTarget')).toBe(true), { timeout: 5_000 });
+    expect((await a.replyTo(a.send('Runtime.evaluate', { expression: 'x' }, page))).error?.code).toBe(-32001);
     mux.close();
   });
 });

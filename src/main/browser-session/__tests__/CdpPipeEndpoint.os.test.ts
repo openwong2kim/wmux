@@ -110,6 +110,15 @@ describe('CdpPipeEndpoint', () => {
     b.close();
   });
 
+  it('an upgrade that fails its handshake gives its place back', async () => {
+    const { endpoint } = await setup({ maxClients: 1 });
+    const { port, pathname } = new URL(endpoint.url);
+    // No Sec-WebSocket-Key: refused by the handshake itself.
+    const bad = `GET ${pathname} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\n\r\n`;
+    expect(await rawStatus(Number(port), bad)).toBe('HTTP/1.1 400 Bad Request');
+    await vi.waitFor(async () => { (await dial(endpoint.url)).close(); }, { timeout: 5_000 });
+  });
+
   it('drops a connection whose headers never finish', async () => {
     const { endpoint } = await setup({ headerTimeoutMs: 200 });
     const started = Date.now();

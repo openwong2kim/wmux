@@ -405,10 +405,14 @@ export class CdpPipeMux {
     if (typeof frame.sessionId !== 'string') { bump(totals.dropped, 'root-event'); return; }
     const owner = this.owner.get(frame.sessionId);
     if (!owner) { bump(totals.dropped, 'unknown-session'); return; }
-    if (this.opts.targetGrant && frame.method.startsWith('Target.')) {
+    // Grants are checked where targets are discovered, on the client's browser
+    // session. A page's own frames and workers come on that page's session and
+    // go with the page. A session the client owns is always told it ended.
+    if (this.opts.targetGrant && frame.sessionId === owner.browserSession && frame.method.startsWith('Target.')) {
       const params = frame.params as { targetId?: unknown; targetInfo?: { targetId?: unknown }; sessionId?: unknown } | undefined;
       const target = params?.targetInfo?.targetId ?? params?.targetId;
-      if (typeof target === 'string' && !this.granted(owner, target)) {
+      const endsOwned = frame.method === 'Target.detachedFromTarget' && typeof params?.sessionId === 'string' && owner.owned.has(params.sessionId);
+      if (typeof target === 'string' && !endsOwned && !this.granted(owner, target)) {
         bump(totals.dropped, 'ungranted-target');
         // Auto-attached to a target the client may not have: let it go again, on the session it came on.
         if (frame.method === 'Target.attachedToTarget' && typeof params?.sessionId === 'string') {
@@ -471,7 +475,7 @@ class ExternalClient extends Client {
 
   reply(clientId: number, frame: Frame, text: string): void {
     // The browser session is the client's root: it never sees that session's id.
-    this.sendText(withoutSession(frame, withId(frame, text, clientId), this.browserSession));
+    this.sendText(withoutSession({ ...frame, id: clientId }, withId(frame, text, clientId), this.browserSession));
   }
 
   event(frame: Frame, text: string): void {

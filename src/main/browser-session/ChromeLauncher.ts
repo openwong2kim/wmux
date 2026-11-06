@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
 import type { CdpConnection } from './CdpSocket';
@@ -1229,7 +1229,12 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   /** The loopback endpoint for `piped`, opened once; closed at once if that Chrome went meanwhile. */
   private async pipeEndpoint(piped: NonNullable<ChromeLauncher['piped']>): Promise<CdpPipeEndpoint> {
-    piped.endpoint ??= CdpPipeEndpoint.open(piped.mux);
+    if (!piped.endpoint) {
+      const opening = CdpPipeEndpoint.open(piped.mux);
+      piped.endpoint = opening;
+      // A listen that failed is tried again on the next call.
+      opening.catch(() => { if (piped.endpoint === opening) piped.endpoint = null; });
+    }
     const endpoint = await piped.endpoint;
     if (this.piped !== piped) {
       await endpoint.close();
@@ -1253,7 +1258,8 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** The established CDP port, or null. Pure read — unlike endpoint(), this
    *  never launches Chrome, so status probes stay side-effect-free. */
   currentPort(): number | null {
-    return this.bound?.transport.port ?? null;
+    const transport = this.bound?.transport;
+    return transport?.kind === 'port' ? transport.port : null;
   }
 
   /** Binds a candidate endpoint: → probing. Returns it, for its probe. */
@@ -1322,7 +1328,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           await this.reach().ping();
           return this.boundPort();
         } catch {
-          this.onChildGone();
+          this.dropUnresponsive();
         }
       }
     } else if (this.isRunning() && !this.launching) {
@@ -1336,7 +1342,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           await this.reach().ping();
         } catch {
           alive = false;
-          this.onChildGone();
+          this.dropUnresponsive();
         }
         if (alive) {
           // Re-armed if its socket dropped; a guard that cannot be re-armed
@@ -1682,15 +1688,20 @@ export class ChromeLauncher implements ChromeBackendClient {
    * proxy: whatever still answers on the profile's recorded endpoint is closed
    * first, and the launch waits for it to be gone.
    */
-  private async evictExisting(): Promise<void> {
+  private async evictExisting(): Promise<boolean> {
     const file = this.readPortFile();
-    if (!file) return;
+    if (!file) return true;
     const previous = portTransport(file.port);
-    if (!(await previous.answers())) return; // stale file, nothing running
+    if (!(await previous.answers())) return true; // stale file, nothing running
     await this.closeBrowserAt(previous);
-    if (!(await this.waitEndpointGone(previous)) && !(await this.forceKill(previous, null))) {
-      throw new Error(PROTECTION_NOT_READY);
-    }
+    return (await this.waitEndpointGone(previous)) || this.forceKill(previous, null);
+  }
+
+  /** Drop the profile's DevToolsActivePort: a Chrome on a pipe writes none, so it could only name a Chrome gone by now. */
+  private forgetPortFile(): void {
+    try {
+      unlinkSync(join(this.userDataDir, 'DevToolsActivePort'));
+    } catch { /* none */ }
   }
 
   private async ensureProxy(plan: ChromeProtectionPlan): Promise<number> {
@@ -1922,7 +1933,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.blocked.clear();
     const pipe = chromeTransportKind() === 'pipe';
     if (plan) {
-      await this.evictExisting();
+      if (!(await this.evictExisting())) throw new Error(PROTECTION_NOT_READY);
     } else {
       // Protection is off: the previous instance's proxy has nothing to serve.
       this.proxy?.close();
@@ -1930,12 +1941,15 @@ export class ChromeLauncher implements ChromeBackendClient {
       // A Chrome on a pipe can't be adopted (it exits with the process that
       // holds the pipe), and one still running on this profile would take the
       // new start over: it is closed instead, as for a protected profile.
-      if (pipe) await this.evictExisting();
-      else {
+      if (pipe) {
+        if (!(await this.evictExisting())) throw new Error('ChromeLauncher: the Chrome still running on this profile did not stop');
+      } else {
         const adopted = await this.adoptExisting();
         if (adopted !== null) return adopted;
       }
     }
+    // Once on a pipe, the recorded port could only lead to whatever took it since.
+    if (pipe) this.forgetPortFile();
 
     const binary = discoverChromeBinary();
     if (!binary) {
@@ -2082,6 +2096,24 @@ export class ChromeLauncher implements ChromeBackendClient {
         throw new Error('ChromeLauncher: CDP endpoint did not become ready in time');
       }
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
+    }
+  }
+
+  /**
+   * The bound Chrome stopped answering: let it go. One on a pipe can't be found
+   * again (it has no port to adopt), so it is stopped rather than left holding
+   * the profile.
+   */
+  private dropUnresponsive(): void {
+    const child = this.child;
+    const piped = this.piped;
+    this.onChildGone();
+    if (!piped) return;
+    piped.mux.close();
+    if (child && child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill();
+      } catch { /* already gone */ }
     }
   }
 
