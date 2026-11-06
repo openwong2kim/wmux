@@ -82,7 +82,7 @@ describe('memory diagnostics', () => {
     };
     expect(isDaemonMemoryDiagnostics(daemon)).toBe(true);
     const text = renderMemoryDiagnostics(undefined, daemon, { available: false, reason: 'n/a' });
-    expect(text).toContain('screen reads: screen 8 parsed, 32 reused');
+    expect(text).toContain('screen reads: screen 8 missed, 32 reused');
     expect(text).toContain('screen parses: 8 (avg 60 ms, max 200 ms, 8.0 MiB replayed)');
     expect(text).toContain('snapshot queue: 10 jobs, wait avg 10 ms (max 40 ms), run avg 60 ms (max 200 ms)');
     expect(text).toContain('event loop: 4.2% busy since the daemon started');
@@ -93,6 +93,12 @@ describe('memory diagnostics', () => {
     for (const bad of [{ screenReads: { screen: null } }, { screenParses: { pane: { parses: 1 } } },
       { snapshotQueue: { jobs: 1 } }, { eventLoop: { activeMs: -1, idleMs: 0 } }]) {
       expect(isDaemonMemoryDiagnostics({ ...base, ...bad })).toBe(false);
+    }
+    const session = { id: 's', state: 'running', ringStoredBytes: 0, ringAllocatedBytes: 0, ringCapacityBytes: 0, socketQueuedBytes: 0, socketPeakQueuedBytes: 0, resyncQueuedBytes: 0 };
+    expect(isDaemonMemoryDiagnostics({ ...base, sessions: [session] })).toBe(true);
+    expect(isDaemonMemoryDiagnostics({ ...base, sessions: [{ ...session, ringLifetimeBytes: 12 }] })).toBe(true);
+    for (const ringLifetimeBytes of ['unknown', -1]) {
+      expect(isDaemonMemoryDiagnostics({ ...base, sessions: [{ ...session, ringLifetimeBytes }] })).toBe(false);
     }
   });
 

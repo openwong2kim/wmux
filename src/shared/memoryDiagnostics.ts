@@ -24,7 +24,9 @@ export interface DaemonMemoryDiagnostics {
   hibernation?: { sessions: number; freedBytes: number; wakeFailures?: number };
   /**
    * Screen reads from the ring, by kind: answered from the previous read
-   * (nothing moved), joined to one still running, or parsed. Absent from older daemons.
+   * (nothing moved), joined to one still running, or missed. Two misses can
+   * share one parse in the snapshot queue; `screenParses` counts the parses.
+   * Absent from older daemons.
    */
   screenReads?: Record<string, { hits: number; joins: number; misses: number }>;
   /**
@@ -82,7 +84,8 @@ export function isDaemonMemoryDiagnostics(value: unknown): value is DaemonMemory
   return record(value) && counters(value, ['pid', 'rssBytes', 'heapUsedBytes', 'heapTotalBytes', 'externalBytes', 'arrayBuffersBytes']) &&
     Array.isArray(value.sessions) && value.sessions.every((session: unknown) =>
       record(session) && typeof session.id === 'string' && typeof session.state === 'string' &&
-      counters(session, ['ringStoredBytes', 'ringAllocatedBytes', 'ringCapacityBytes', 'socketQueuedBytes', 'socketPeakQueuedBytes', 'resyncQueuedBytes'])) &&
+      counters(session, ['ringStoredBytes', 'ringAllocatedBytes', 'ringCapacityBytes', 'socketQueuedBytes', 'socketPeakQueuedBytes', 'resyncQueuedBytes']) &&
+      (session.ringLifetimeBytes === undefined || counters(session, ['ringLifetimeBytes']))) &&
     (value.hibernation === undefined || (record(value.hibernation) && counters(value.hibernation, ['sessions', 'freedBytes']) &&
       (value.hibernation.wakeFailures === undefined || counters(value.hibernation, ['wakeFailures'])))) &&
     (value.snapshots === undefined || (record(value.snapshots) &&

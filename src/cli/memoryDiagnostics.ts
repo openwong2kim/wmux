@@ -107,7 +107,7 @@ export function renderMemoryDiagnostics(
     }
     const ms = (value: number) => `${value.toFixed(value < 10 ? 1 : 0)} ms`;
     if (daemon.screenReads) {
-      const reads = Object.entries(daemon.screenReads).map(([family, c]) => `${family} ${c.misses} parsed, ${c.hits + c.joins} reused`);
+      const reads = Object.entries(daemon.screenReads).map(([family, c]) => `${family} ${c.misses} missed, ${c.hits + c.joins} reused`);
       if (reads.length) lines.push(`  screen reads: ${reads.join('; ')}`);
     }
     if (daemon.screenParses) {
