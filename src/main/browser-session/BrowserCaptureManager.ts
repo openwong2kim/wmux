@@ -1,4 +1,5 @@
 import { webContents } from 'electron';
+import type { GuestDialogNote } from './guestDialogs';
 
 // ---------------------------------------------------------------------------
 // Main-process CDP event capture for MCP browser_console / browser_network /
@@ -68,11 +69,13 @@ interface NetEntry extends NetworkEntry {
 }
 
 // Browser lifecycle events surfaced inline in MCP tool results (act→verify
-// loop compression): main-frame navigations, load completion, guest closure.
+// loop compression): main-frame navigations, load completion, guest closure,
+// and page dialogs answered while an agent drove the tab.
 export interface LifecycleEntry {
-  type: 'navigated' | 'loaded' | 'closed';
+  type: 'navigated' | 'loaded' | 'closed' | 'dialog';
   url?: string;
   ts: number;
+  dialog?: GuestDialogNote;
 }
 
 // Lifecycle ring bound: these are drained on nearly every browser_* tool call,
@@ -446,6 +449,12 @@ export class BrowserCaptureManager {
     if (state.console.length > MAX_CAPTURE_ENTRIES) {
       state.console.splice(0, state.console.length - MAX_CAPTURE_ENTRIES);
     }
+  }
+
+  /** Report an answered dialog in the next tool result, if this guest is captured. */
+  noteDialog(webContentsId: number, dialog: GuestDialogNote): void {
+    const state = this.states.get(webContentsId);
+    if (state) this.pushLifecycle(state, { type: 'dialog', ts: dialog.at, dialog });
   }
 
   private pushLifecycle(state: CaptureState, entry: LifecycleEntry): void {

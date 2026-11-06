@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { WebviewCdpManager } from '../WebviewCdpManager';
 
 const mockWebContents = {
-  debugger: { attach: vi.fn(), detach: vi.fn(), sendCommand: vi.fn(async () => ({})) },
+  debugger: { on: vi.fn(), attach: vi.fn(), detach: vi.fn(), sendCommand: vi.fn(async () => ({})) },
   isDestroyed: vi.fn(() => false),
   on: vi.fn(),
   getURL: vi.fn(() => 'https://example.com'),
