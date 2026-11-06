@@ -65,6 +65,20 @@ describe('the macOS sheet port', () => {
     expect(port.key(first)).not.toBe(port.key(second));
   });
 
+  it('reads the buttons of a real alert: _NSAlertButton in a stack view, not the label inside it', () => {
+    // The view tree of Electron's confirm box on macOS, as read on a packaged build.
+    const button = (title: string) => obj({ cls: '_NSAlertButton', title, subviews: [obj({ cls: 'NSButtonBezelView' }), obj({ cls: 'NSButtonTextField', value: title })] });
+    const sheet = obj({ contentView: obj({ cls: '_NSAlertContentView', subviews: [
+      obj({ cls: '_NSAlertImageView', subviews: [obj({ cls: '_NSImageViewSimpleImageView' })] }),
+      obj({ cls: 'NSTextField', value: 'c-click' }),
+      obj({ cls: 'NSTextField', value: '' }),
+      obj({ cls: '_NSAlertButtonsStackView', subviews: [button('OK'), button('Cancel')] }),
+    ] }) });
+    const port = createObjcSheetPort(fakeObjc(obj({ sheets: [sheet] })).objc);
+
+    expect(port.shape(sheet)).toEqual({ texts: ['c-click', ''], buttons: ['OK', 'Cancel'] });
+  });
+
   it('ends a sheet only through performSelector afterDelay:0, never endSheet: directly', () => {
     // A synchronous endSheet: runs Electron's completion handler, which calls
     // back into JS inside the FFI call: a V8 check failure that kills main.

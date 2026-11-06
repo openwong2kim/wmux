@@ -21,6 +21,8 @@ export interface ObjcCall {
 
 /** Deep enough for an alert's content view. */
 const MAX_VIEW_DEPTH = 6;
+/** An alert's buttons are _NSAlertButton (an NSButton) in a stack view. */
+const BUTTON_CLASSES: ReadonlySet<string> = new Set(['NSButton', '_NSAlertButton']);
 
 export function createObjcSheetPort(objc: ObjcCall): SheetPort<BrowserWindow, unknown> {
   const list = (host: BrowserWindow): unknown[] => {
@@ -37,7 +39,11 @@ export function createObjcSheetPort(objc: ObjcCall): SheetPort<BrowserWindow, un
       if (!view || depth > MAX_VIEW_DEPTH) return;
       const cls = objc.utf8(objc.send(view, 'className'));
       if (cls === 'NSTextField') texts.push(objc.utf8(objc.send(view, 'stringValue')));
-      else if (cls === 'NSButton') buttons.push(objc.utf8(objc.send(view, 'title')));
+      else if (BUTTON_CLASSES.has(cls)) {
+        // Its label is an NSButtonTextField inside it, not one of the box's texts.
+        buttons.push(objc.utf8(objc.send(view, 'title')));
+        return;
+      }
       const subviews = objc.send(view, 'subviews');
       const n = objc.count(subviews, 'count');
       for (let i = 0; i < n; i++) walk(objc.objectAt(subviews, i), depth + 1);
