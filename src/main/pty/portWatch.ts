@@ -50,13 +50,18 @@ export type SnapshotFn = () => Promise<PortSnapshot>;
 const DEFAULT_INTERVAL_MS = 10_000;
 /** Snapshot subprocess timeout (Unix path) — well under the tick interval. */
 const SNAPSHOT_TIMEOUT_MS = 8_000;
+/** How long one native snapshot may take before its tick goes to ps/lsof.
+ *  A read stuck in the kernel (a D-state /proc read) never returns: the
+ *  timeout keeps the tick, and the 3-in-a-row latch, moving. */
+export const NATIVE_SNAPSHOT_TIMEOUT_MS = 5_000;
 /**
  * How long tick() waits for a snapshot before counting it as failed. The Unix
- * path runs `ps` then `lsof`, each with its own timeout, plus a margin. A child
+ * path runs the native read up to its timeout, then `ps` then `lsof`, each
+ * with its own timeout, plus a margin. A child
  * stuck in an uninterruptible kernel wait never closes, so the execFile promise
  * may never settle; this deadline keeps one such child from freezing polling.
  */
-export const SNAPSHOT_DEADLINE_MS = 2 * SNAPSHOT_TIMEOUT_MS + 2_000;
+export const SNAPSHOT_DEADLINE_MS = NATIVE_SNAPSHOT_TIMEOUT_MS + 2 * SNAPSHOT_TIMEOUT_MS + 2_000;
 /** After this many consecutive snapshot failures, pause polling briefly. */
 const FAILURE_BACKOFF_THRESHOLD = 3;
 const FAILURE_BACKOFF_MS = 60_000;
@@ -97,13 +102,9 @@ function snapshotWindowsNative(): PortSnapshot {
 
 type PortSnapshotRead = NonNullable<NativeTerminalCore['portSnapshot']>;
 
-/** How long one native snapshot may take before its tick goes to ps/lsof.
- *  A read stuck in the kernel (a D-state /proc read) never returns: the
- *  timeout keeps the tick, and the 3-in-a-row latch, moving. */
-export const NATIVE_SNAPSHOT_TIMEOUT_MS = 5_000;
-
 /** macOS and Linux: the native core's walk and listening sockets in one call
- *  (`listen-sockets-v1`), behind the shared latch (nativeRead). */
+ *  (`listen-sockets-v1`), behind the shared latch (nativeRead): one call in
+ *  flight at most, so a hung read can hold one libuv thread, never more. */
 const nativePorts = nativeRead<PortSnapshotRead>({
   platforms: ['darwin', 'linux'],
   capability: 'listen-sockets-v1',
@@ -117,18 +118,22 @@ const TOOL_PATHS: Record<'ps' | 'lsof', string[]> = {
   lsof: ['/usr/sbin/lsof', '/usr/bin/lsof', '/sbin/lsof', '/bin/lsof'],
 };
 const toolPaths = new Map<string, string>();
+/** After a miss, the tool is not looked for again for this long. */
+const TOOL_MISS_RETRY_MS = 60_000;
+const toolMisses = new Map<string, number>();
 
 /**
  * The tool's absolute path, found in-process: the usual locations, then each
  * absolute PATH directory (NixOS, Guix), checked for execute access. Spawning
  * by bare name makes libuv search PATH itself, and on macOS its posix_spawn
  * path forks a process per PATH entry it tries before the one that holds the
- * tool (Linux forks once and execvp walks PATH in the child). Only a hit is
- * cached: after a miss the next tick looks again.
+ * tool (Linux forks once and execvp walks PATH in the child). A hit is kept;
+ * a miss is looked for again TOOL_MISS_RETRY_MS later.
  */
 function toolPath(tool: 'ps' | 'lsof'): string | undefined {
   const known = toolPaths.get(tool);
   if (known) return known;
+  if (Date.now() < (toolMisses.get(tool) ?? 0)) return undefined;
   const dirs = (process.env.PATH ?? '').split(':').filter((d) => d.startsWith('/'));
   const found = [...TOOL_PATHS[tool], ...dirs.map((d) => `${d.replace(/\/+$/, '')}/${tool}`)].find((p) => {
     try {
@@ -139,6 +144,7 @@ function toolPath(tool: 'ps' | 'lsof'): string | undefined {
     }
   });
   if (found) toolPaths.set(tool, found);
+  else toolMisses.set(tool, Date.now() + TOOL_MISS_RETRY_MS);
   return found;
 }
 

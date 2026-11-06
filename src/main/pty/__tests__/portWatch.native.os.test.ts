@@ -87,18 +87,44 @@ describe.each(['darwin', 'linux'] as const)('PortWatcher snapshot on %s', (platf
     expect(new Set(spawn.execFile.mock.calls.map((c) => c[0]))).toEqual(new Set(['/bin/ps', '/usr/sbin/lsof']));
   });
 
-  it('a native call that never returns times out into ps and lsof, and counts toward the latch', async () => {
+  it('a native call that never returns times out into ps and lsof, and no second call starts while it hangs', async () => {
     vi.useFakeTimers();
     const { defaultSnapshot, NATIVE_SNAPSHOT_TIMEOUT_MS } = await load();
-    // Never settles.
-    native.portSnapshot.mockReturnValue(new Promise(vi.fn()));
+    native.portSnapshot.mockReturnValue(new Promise(vi.fn())); // never settles
     for (let i = 0; i < 4; i++) {
       const tick = defaultSnapshot();
       await vi.advanceTimersByTimeAsync(NATIVE_SNAPSHOT_TIMEOUT_MS);
       expect((await tick).listeners).toEqual([{ port: 5173, pid: 200 }]);
     }
-    // Three hung calls latch it off: the fourth tick starts no new one.
-    expect(native.portSnapshot).toHaveBeenCalledTimes(3);
+    // At most one libuv thread is ever stuck: the hung call is the only one.
+    expect(native.portSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('a second tick while the first native read is pending goes to the fallback, and native serves again once it settles', async () => {
+    const { defaultSnapshot } = await load();
+    let settle: (v: unknown) => void = () => undefined;
+    native.portSnapshot.mockReturnValueOnce(new Promise((resolve) => { settle = resolve; }));
+    const first = defaultSnapshot();
+    const second = await defaultSnapshot();
+    expect(second.listeners).toEqual([{ port: 5173, pid: 200 }]);
+    expect(native.portSnapshot).toHaveBeenCalledTimes(1);
+    settle({ processes: [{ pid: 200, ppid: 100, name: 'node' }], sockets: [{ pid: 200, port: 3000, address: '::', family: 6 }] });
+    expect((await first).listeners).toEqual([{ port: 3000, pid: 200 }]);
+    expect((await defaultSnapshot()).listeners).toEqual([{ port: 3000, pid: 200 }, { port: 3000, pid: 200 }]);
+    expect(native.portSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('a tick whose native read times out and whose ps and lsof run to their timeouts still lands before the deadline', async () => {
+    vi.useFakeTimers();
+    const { defaultSnapshot, withDeadline, SNAPSHOT_DEADLINE_MS, NATIVE_SNAPSHOT_TIMEOUT_MS } = await load();
+    native.portSnapshot.mockReturnValue(new Promise(vi.fn()));
+    const slow = 7_900; // just under each spawn's own 8 s timeout
+    spawn.execFile.mockImplementation((file: string, _a: string[], _o: unknown, cb: (e: Error | null, r: { stdout: string; stderr: string }) => void) => {
+      setTimeout(() => cb(null, { stdout: file.endsWith('lsof') ? LSOF_OUT : '  200   100\n', stderr: '' }), slow);
+    });
+    const tick = withDeadline(defaultSnapshot(), SNAPSHOT_DEADLINE_MS, null);
+    await vi.advanceTimersByTimeAsync(NATIVE_SNAPSHOT_TIMEOUT_MS + 2 * slow);
+    expect((await tick)?.listeners).toEqual([{ port: 5173, pid: 200 }]);
   });
 
   it('a success resets the failure count', async () => {
@@ -142,14 +168,20 @@ describe.each(['darwin', 'linux'] as const)('PortWatcher snapshot on %s', (platf
     expect(files.checked.some((p) => !p.startsWith('/'))).toBe(false);
   });
 
-  it('looks again after a miss, and keeps a hit', async () => {
+  it('looks again a minute after a miss, and keeps a hit', async () => {
+    vi.useFakeTimers();
     process.env.WMUX_NATIVE_PROCESS_TABLE = 'off';
     files.present = new Set(['/bin/ps']);
     const { defaultSnapshot } = await load();
     expect((await defaultSnapshot()).listeners).toEqual([]);
     expect(spawn.execFile.mock.calls.map((c) => c[0])).toEqual(['/bin/ps']);
-    // lsof installed since: the next tick finds it.
+    // lsof installed since: within the minute the miss stands, unchecked.
     files.present = new Set(['/bin/ps', '/usr/sbin/lsof']);
+    files.checked = [];
+    expect((await defaultSnapshot()).listeners).toEqual([]);
+    expect(files.checked).toEqual([]);
+    // A minute on, it is looked for again and found.
+    vi.advanceTimersByTime(60_000);
     expect((await defaultSnapshot()).listeners).toEqual([{ port: 5173, pid: 200 }]);
     // Both are found now; a later tick checks nothing again.
     files.checked = [];

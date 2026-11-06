@@ -37,7 +37,10 @@ const MAX_FAILURES = 3;
  * fallback of `component`). `call()` runs one read: a rejection, or no answer
  * within `timeoutMs`, is a failure and resolves undefined, so the caller takes
  * its spawn path for that read; MAX_FAILURES in a row latch the read off for
- * the process's life. A success resets the count.
+ * the process's life (no retry after a backoff). A success resets the count.
+ * A timed read also keeps one call in flight at most: while one has not
+ * settled (a timed-out call may still hold a libuv thread), `call()` answers
+ * undefined at once without starting another, and that is no failure.
  */
 export interface NativeRead<F> {
   get(): F | undefined;
@@ -52,6 +55,7 @@ export function nativeRead<F>(opts: {
 }): NativeRead<F> {
   let fn: F | null | undefined;
   let failures = 0;
+  let inFlight = false;
   const latchOff = (): void => {
     fn = null;
     reportNativeFallback(opts.component);
@@ -75,10 +79,17 @@ export function nativeRead<F>(opts: {
   const call = async <T>(run: (read: F) => Promise<T>, timeoutMs?: number): Promise<T | undefined> => {
     const read = get();
     if (!read) return undefined;
+    if (timeoutMs !== undefined && inFlight) return undefined;
     let timer: NodeJS.Timeout | undefined;
     try {
-      const result = await (timeoutMs === undefined ? run(read) : Promise.race([
-        run(read),
+      const pending = run(read);
+      if (timeoutMs !== undefined) {
+        inFlight = true;
+        const settle = (): void => { inFlight = false; };
+        pending.then(settle, settle);
+      }
+      const result = await (timeoutMs === undefined ? pending : Promise.race([
+        pending,
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error('Native read timed out')), timeoutMs);
           timer.unref?.();
