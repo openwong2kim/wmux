@@ -417,3 +417,15 @@ fn the_hand_over_comes_before_the_run_thread() {
     run(&[]);
     assert_eq!(case.log(), ["uncaught"]);
 }
+
+#[test]
+fn a_missing_bridge_adds_no_line_to_a_run_that_logs_nothing() {
+    // A throttled PostToolUse logs nothing, so it does not log the missing
+    // bridge either; the first run of the two does.
+    let case = Case::new("no-bridge-quiet", None);
+    let payload = r#"{"session_id":"s1","tool_name":"Bash"}"#;
+    for _ in 0..2 {
+        quiet(&case.run(&["PostToolUse"], &[("WMUX_PTY_ID", "pty-1")], true, payload));
+    }
+    assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
+}

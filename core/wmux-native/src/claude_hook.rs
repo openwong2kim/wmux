@@ -14,7 +14,8 @@
 //!      UserPromptSubmit. Their answers (exit 2, stdout) are not ported yet.
 //!
 //! No bridge beside the binary: the run stays native (logged
-//! `impl-native-no-bridge`). A decision flag then fails open (exit 0, empty
+//! `impl-native-no-bridge` just before the run's first other line, so a run
+//! that logs nothing adds none). A decision flag then fails open (exit 0, empty
 //! stdout, logged `decision-unported` with the flag) and the run goes on as
 //! a plain one with that mode off: the signal is sent and a lifecycle
 //! capture that did not land is spooled. A failed exec (no node) is logged
@@ -49,6 +50,7 @@ use crate::sha256;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The bridge this port follows (claudeHookContract.test.ts pins the same file).
 const PORTED_FROM_SHA256: &str = include_str!("../claude-hook.ported-from.sha256");
@@ -93,8 +95,16 @@ const INTERACTIVE_ENTRYPOINTS: [&str; 3] = ["cli", "vscode", "jetbrains"];
 pub fn run_process(args: Vec<OsString>) -> ! {
     let argv: Vec<JsStr> = std::env::args_os().map(|a| paths::os_to_js(&a)).collect();
     let event = args.first().map(|a| paths::os_to_js(a));
-    let log = |outcome: &str, extra: Vec<(&str, Option<Json>)>| claude::log_event(event.as_ref(), outcome, extra);
-    if let Some(start) = hand_over(&args, event.as_ref(), &argv, &log) {
+    // A missing bridge is logged with the run's first line, not on its own:
+    // a run that logs nothing (a throttled PostToolUse) adds no line for it.
+    let no_bridge = AtomicBool::new(false);
+    let log = |outcome: &str, extra: Vec<(&str, Option<Json>)>| {
+        if no_bridge.swap(false, Ordering::Relaxed) {
+            claude::log_event(event.as_ref(), "impl-native-no-bridge", vec![]);
+        }
+        claude::log_event(event.as_ref(), outcome, extra)
+    };
+    if let Some(start) = hand_over(&args, event.as_ref(), &argv, &no_bridge, &log) {
         if let Err(message) = on_own_stack(STACK_BYTES, || run(start, &log)) {
             log("uncaught", vec![("error", s(&message))]);
         }
@@ -220,7 +230,13 @@ struct Start {
 
 /// Everything before stdin: hands the process to Node when it should (and
 /// does not return then), or logs why the run ends here (None).
-fn hand_over(args: &[OsString], event: Option<&JsStr>, argv: &[JsStr], log: Log) -> Option<Start> {
+fn hand_over(
+    args: &[OsString],
+    event: Option<&JsStr>,
+    argv: &[JsStr],
+    no_bridge: &AtomicBool,
+    log: Log,
+) -> Option<Start> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf));
@@ -243,7 +259,7 @@ fn hand_over(args: &[OsString], event: Option<&JsStr>, argv: &[JsStr], log: Log)
         }
         _ => {
             handover.bridge = None;
-            log("impl-native-no-bridge", vec![]);
+            no_bridge.store(true, Ordering::Relaxed);
         }
     }
 
