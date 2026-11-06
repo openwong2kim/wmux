@@ -825,6 +825,8 @@ mod tests {
             21 => format!("\x1b[{};{}r", 1 + rng.below(3), 3 + rng.below(6)),
             22 => "\x1b[r".into(),
             23 => "\x08".into(),
+            // A C1 control: the cut can fall between its two bytes.
+            _ if rng.below(2) == 0 => "\u{9b}31m".into(),
             _ => "\x1b[53m".into(),
         }
     }

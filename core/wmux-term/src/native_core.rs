@@ -248,6 +248,9 @@ pub(crate) struct XtermFeed {
     offset: u64,
     /// The first reason this grid can't match xterm's.
     taint: Option<Taint>,
+    /// The last byte fed was 0xC2 and isn't held: the next feed's first byte
+    /// can complete a C1 control with it.
+    c1_lead: bool,
 }
 
 /// Why a grid can't match xterm's, and the lifetime offset of the byte
@@ -313,6 +316,25 @@ fn without_sync(sequence: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// How many bytes at the end of `data` start a UTF-8 character that isn't
+/// finished.
+fn unfinished_utf8(data: &[u8]) -> usize {
+    for back in 1..=data.len().min(3) {
+        let byte = data[data.len() - back];
+        if byte & 0xc0 == 0x80 {
+            continue;
+        }
+        let len = match byte {
+            0xc0..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf7 => 4,
+            _ => return 0,
+        };
+        return if back < len { back } else { 0 };
+    }
+    0
+}
+
 /// String terminators as PartialSequenceTracker reads them: BEL, CAN, SUB,
 /// and ESC (ST, or an abort that starts a new sequence).
 fn string_end(data: &[u8]) -> Option<usize> {
@@ -333,18 +355,20 @@ impl XtermFeed {
     /// A control Alacritty parses differently, at lifetime offset `at`.
     fn diverge(&mut self, at: u64) {
         self.divergent = true;
-        self.taint.get_or_insert(Taint {
-            reason: "divergent-control",
-            at,
-        });
+        self.taint_at("divergent-control", at);
     }
 
     /// A resize at lifetime offset `at` scrolled rows xterm keeps on screen.
     pub(crate) fn note_reflow(&mut self, at: u64) {
-        self.taint.get_or_insert(Taint {
-            reason: "reflow",
-            at,
-        });
+        self.taint_at("reflow", at);
+    }
+
+    /// Keep the earliest taint by offset: a feed finds C1 controls before it
+    /// scans its sequences, so the order found isn't the stream's order.
+    fn taint_at(&mut self, reason: &'static str, at: u64) {
+        if self.taint.is_none_or(|taint| at < taint.at) {
+            self.taint = Some(Taint { reason, at });
+        }
     }
 
     /// Count the next byte fed as lifetime offset `offset` (after a lead
@@ -481,6 +505,12 @@ impl XtermFeed {
         let start = self.offset - data.len() as u64;
         self.offset += bytes.len() as u64;
         data.extend_from_slice(bytes);
+        if !data.is_empty() {
+            if self.c1_lead && (0x80..=0x9f).contains(&data[0]) {
+                self.diverge(start - 1);
+            }
+            self.c1_lead = data.last() == Some(&0xc2);
+        }
         if let Some(at) = crate::native_serialize::c1_at(&data) {
             self.diverge(start + at as u64);
         }
@@ -565,8 +595,19 @@ impl XtermFeed {
             }
             printed = false;
         }
+        // A live feed holds an unfinished UTF-8 character too: the parser
+        // reads a C1 control split across two calls differently from a whole
+        // one, and a live screen's chunks must not change its grid.
+        if self.live && self.held.is_empty() && !self.in_string {
+            let tail = unfinished_utf8(&data[from..]);
+            if tail > 0 {
+                self.held = data.split_off(data.len() - tail);
+            }
+        }
         // A held sequence or an unfinished string ends the stream so far.
         self.printed = printed && self.held.is_empty() && !self.in_string;
+        // Held bytes are scanned again with the next feed.
+        self.c1_lead &= self.held.is_empty();
         parser.advance(term, &data[from..]);
     }
 
@@ -2006,5 +2047,53 @@ mod tests {
             // The CR inside the sequence executes: b overwrites a.
             assert_eq!(row(&term, 0), "bc", "{chunks:?}");
         }
+    }
+
+    fn live_bytes(chunks: &[&[u8]]) -> XtermFeed {
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut feed = XtermFeed::live(0);
+        for chunk in chunks {
+            feed.feed(&mut parser, &mut term, chunk);
+        }
+        feed
+    }
+
+    #[test]
+    fn a_c1_control_split_across_feeds_is_seen() {
+        let feed = live_bytes(&[b"ab\xc2", b"\x9bx"]);
+        assert_eq!(
+            feed.taint,
+            Some(Taint {
+                reason: "divergent-control",
+                at: 2
+            })
+        );
+        assert_eq!(
+            live_bytes(&[b"ab\xc2", b"\xa0x"]).taint,
+            None,
+            "a printable character"
+        );
+        assert_eq!(
+            live_bytes(&[b"ab\xc2", b"", b"\x9bx"]).taint.map(|t| t.at),
+            Some(2)
+        );
+        // A live feed holds the lead byte, so the parser reads the control whole.
+        assert_eq!(live_bytes(&[b"ab\xc2"]).held_len(), 1);
+        assert_eq!(live_bytes(&[b"a\xf0\x9f\x98"]).held_len(), 3);
+        assert_eq!(live_bytes(&[b"a\xf0\x9f", b"\x98\x80"]).held_len(), 0);
+        // A replay feed holds nothing, and still sees the split control.
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut feed = XtermFeed::default();
+        feed.feed(&mut parser, &mut term, b"ab\xc2");
+        assert_eq!(feed.held_len(), 0);
+        feed.feed(&mut parser, &mut term, b"\x9bx");
+        assert!(feed.divergent);
+        // The earlier control counts, though the C1 scan runs first.
+        assert_eq!(
+            live_bytes(&[b"a\x1b[Sb\xc2\x9bx"]).taint.map(|t| t.at),
+            Some(1)
+        );
     }
 }
