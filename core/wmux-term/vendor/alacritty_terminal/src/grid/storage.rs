@@ -81,11 +81,20 @@ impl<T> Storage<T> {
     where
         T: Default,
     {
+        self.grow_visible_lines_up_to(next, usize::MAX);
+    }
+
+    /// wmux: `grow_visible_lines`, never allocating more than `max_rows` rows
+    /// (see `initialize_up_to`).
+    pub fn grow_visible_lines_up_to(&mut self, next: usize, max_rows: usize)
+    where
+        T: Default,
+    {
         // Number of lines the buffer needs to grow.
         let additional_lines = next - self.visible_lines;
 
         let columns = self[Line(0)].len();
-        self.initialize(additional_lines, columns);
+        self.initialize_up_to(additional_lines, columns, max_rows);
 
         // Update visible lines.
         self.visible_lines = next;

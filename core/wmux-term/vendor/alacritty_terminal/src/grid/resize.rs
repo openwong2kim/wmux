@@ -76,7 +76,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let lines_added = target - self.lines;
 
         // Need to resize before updating buffer.
-        self.raw.grow_visible_lines(target);
+        self.raw.grow_visible_lines_up_to(target, target + self.max_scroll_limit);
         self.lines = target;
 
         let history_size = self.history_size();

@@ -822,6 +822,22 @@ mod tests {
         assert_eq!(text.rows[0].undimmed.as_deref(), Some("ab"));
     }
 
+    #[test]
+    fn a_taller_resize_with_full_history_allocates_only_what_it_can_hold() {
+        let mut r = ring();
+        r.mark_geometry(120, 40).unwrap();
+        for i in 0..1_000 {
+            r.write_bytes(format!("line {i}\r\n").as_bytes()).unwrap();
+        }
+        let mut screen = seeded(&r, 120, 40, 300);
+        r.mark_geometry(120, 41).unwrap();
+        r.write_bytes(b"x").unwrap();
+        assert_eq!(screen.read(&r).unwrap(), ReadStatus::Ok);
+        let bytes = screen.allocated_bytes();
+        println!("allocated at 120x41 after 120x40, depth 300: {bytes} bytes");
+        assert!(bytes < 1_200_000, "{bytes}");
+    }
+
     // ---- live == a fresh replay with the same seed, depth and geometry ----
 
     struct Rng(u64);
