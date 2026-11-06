@@ -6,6 +6,7 @@ import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { dispatchAsClaimedCaller } from './claimedCaller';
 import type { BrowserBackendStore } from '../../../browser-session/BrowserBackendStore';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 /**
  * browser.upload.cdp, called directly: main checks every path itself, and the
@@ -262,9 +263,10 @@ describe('browser.upload.cdp: the shared debugger', () => {
     // The page wakes up (a dialog closed, a slow load finished) after the
     // caller was told nothing was set.
     answerLookup({ result: { type: 'object', subtype: 'node', objectId: 'obj-late' } });
-    await new Promise((r) => setTimeout(r, 20));
+    // The release comes after the point where a set would have gone out.
+    await vi.waitFor(() => expect(sent()).toContain('Runtime.releaseObjectGroup'), { timeout: 5_000 });
+    await deliberateSleep(50, 'a negative check: no set may follow the late lookup');
     expect(sent()).not.toContain('DOM.setFileInputFiles');
-    expect(sent()).toContain('Runtime.releaseObjectGroup');
   });
 
   it('reports a page that does not take the files in time as an error, since it still may', async () => {
