@@ -45,7 +45,7 @@ import {
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider, type PathLocation } from '../terminal/pathLinkProvider';
-import { openTerminalFileLink } from '../terminal/openTerminalFileLink';
+import { openTerminalFileLink, type OpenFailure } from '../terminal/openTerminalFileLink';
 import { createHardWrappedLinkProvider } from '../terminal/hardWrappedLinkProvider';
 import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPromptCarry, noteCodexEndedByPrompt, clearCodexEndedOnSlug } from '../terminal/newlineKeys';
 import { resolveMacLineDeleteByte } from '../terminal/macLineDeleteKey';
@@ -857,7 +857,14 @@ export function showCopyToastText(text: string) {
 // associated app). Shares no DOM with the copy toasts so they can briefly
 // overlap if a user copies-then-clicks in quick succession.
 let openPathToastTimer: ReturnType<typeof setTimeout> | null = null;
-function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.openPathFailed' | 'terminal.openPathProtected' | 'terminal.openPathNotFound' | 'terminal.openPathRefused') {
+/** Toast for each reason a terminal file link opened nothing. */
+const FAILURE_TOAST = {
+  remote: 'terminal.openPathRemote',
+  'viewer-only': 'terminal.openPathViewerOnly',
+  'not-found': 'terminal.openPathNotFound',
+} as const satisfies Record<OpenFailure, string>;
+
+function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.openPathFailed' | 'terminal.openPathProtected' | 'terminal.openPathNotFound' | 'terminal.openPathRemote' | 'terminal.openPathViewerOnly') {
   let el = document.getElementById('wmux-openpath-toast');
   if (!el) {
     el = document.createElement('div');
@@ -1892,7 +1899,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         //   • error='BLOCKED_SENSITIVE' → a credential location the viewer
         //     refuses too; nothing was opened or revealed
         //   • error='NOT_FOUND' → the path does not exist; nothing revealed
-        //   • error=<message> → openPath failed (file gone, no handler);
+        //   • error=<message> → openPath failed (no handler, permission denied);
         //     main already revealed the parent folder via showItemInFolder
         // The toast tells the user *why* their click landed on a folder
         // instead of opening the file — otherwise it reads as a no-op.
@@ -1918,7 +1925,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const openTerminalPath = (filePath: string, location?: PathLocation, viewerOnly = false): void => {
       void openTerminalFileLink(filePath, location, ptyIdRef.current || undefined, {
         openWithOs,
-        onFailure: (reason) => showOpenPathToast(reason === 'refused' ? 'terminal.openPathRefused' : 'terminal.openPathNotFound'),
+        onFailure: (reason) => showOpenPathToast(FAILURE_TOAST[reason]),
         viewerOnly,
       }).catch((err: unknown) => {
         console.warn('[useTerminal] open file link failed:', err);

@@ -696,7 +696,8 @@ export const zh = {
   'terminal.openPathFailed': '无法打开 — 显示文件夹位置',
   'terminal.openPathProtected': '这是受保护的凭据位置，wmux 不会打开它。',
   'terminal.openPathNotFound': '未找到 — 未打开任何内容',
-  'terminal.openPathRefused': '未打开链接 — 链接只能打开本机文件',
+  'terminal.openPathRemote': '未打开链接 — 链接只能打开本机文件',
+  'terminal.openPathViewerOnly': '未打开链接 — wmux 查看器无法显示，程序输出的链接不会在 wmux 之外打开',
   'terminal.bookmarkAdded': '已添加书签',
 
   // Context menu

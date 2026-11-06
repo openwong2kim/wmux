@@ -116,9 +116,10 @@ export function registerShellHandlers(): () => void {
   //   • must be an absolute path on the current OS (path.isAbsolute)
   //
   // Behaviour: shell.openPath opens folders in Explorer / Finder and files
-  // with the OS default app. When that fails (missing file, no associated
-  // app, permission denied) we fall back to showItemInFolder so the user
-  // can still locate the target.
+  // with the OS default app. A path that does not exist is not opened and
+  // gives NOT_FOUND. When the open fails (no associated app, permission
+  // denied) we fall back to showItemInFolder so the user can still locate
+  // the target.
   ipcMain.removeHandler(IPC.SHELL_OPEN_PATH);
   ipcMain.handle(IPC.SHELL_OPEN_PATH, wrapHandler(IPC.SHELL_OPEN_PATH, async (_event: Electron.IpcMainInvokeEvent, rawPath: string) => {
     if (typeof rawPath !== 'string') {
@@ -153,14 +154,16 @@ export function registerShellHandlers(): () => void {
       shell.showItemInFolder(opened);
       return { ok: false, error: 'BLOCKED_EXTENSION' };
     }
+    // Nothing there (the check found no real path): say so, without handing
+    // the OS a path to open or revealing a parent the user did not click.
+    if (target.real === null) {
+      return { ok: false, error: 'NOT_FOUND' };
+    }
     if (!(await sameRealPath(opened, target.real))) {
       return { ok: false, error: 'BLOCKED_SENSITIVE' };
     }
     const err = await shell.openPath(opened);
     if (err) {
-      // Nothing there (the check found no real path): say so and reveal no
-      // folder, since a missing path's parent is not what the user clicked.
-      if (target.real === null) return { ok: false, error: 'NOT_FOUND' };
       // openPath returns an error string when the file has no associated
       // handler or the OS refused the open. Reveal the parent folder so the
       // user still gets useful feedback instead of a silent no-op.

@@ -560,8 +560,9 @@ const electronAPI = {
     // Open an absolute filesystem path in the OS default app / explorer.
     // Backed by Electron's shell.openPath; main validates the path is
     // absolute, length-capped, and free of NUL bytes. Resolves with
-    // { ok, error? } — on `ok=false` main has already revealed the parent
-    // folder via showItemInFolder, so the renderer typically ignores it.
+    // { ok, error? } — when the open itself failed, main has already
+    // revealed the parent folder via showItemInFolder; 'NOT_FOUND' and
+    // 'BLOCKED_SENSITIVE' reveal nothing, so callers toast those.
     openPath: (filePath: string) =>
       ipcRenderer.invoke(IPC.SHELL_OPEN_PATH, filePath) as Promise<{ ok: boolean; error?: string }>,
     // Detect folder-opening apps available on the system (VS Code, Windows

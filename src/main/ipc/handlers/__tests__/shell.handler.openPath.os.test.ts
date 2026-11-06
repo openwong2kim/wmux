@@ -132,10 +132,14 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
 
   it('normalizes the path before forwarding (collapses `..`)', async () => {
     const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    const input = process.platform === 'win32' ? 'C:\\foo\\..\\bar' : '/foo/../bar';
-    const expected = process.platform === 'win32' ? 'C:\\bar' : '/bar';
-    await handler(fakeEvent, input);
-    expect(openPath).toHaveBeenCalledWith(expected);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-open-'));
+    fs.writeFileSync(path.join(dir, 'bar.txt'), 'x');
+    try {
+      await handler(fakeEvent, `${dir}${path.sep}foo${path.sep}..${path.sep}bar.txt`);
+      expect(openPath).toHaveBeenCalledWith(path.join(dir, 'bar.txt'));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('falls back to showItemInFolder when openPath fails on a path that exists', async () => {
@@ -153,11 +157,11 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
     }
   });
 
-  it('says NOT_FOUND for a path that does not exist, and reveals no folder', async () => {
-    openPath.mockResolvedValueOnce('Failed to open path');
+  it('says NOT_FOUND for a path that does not exist, without opening it or revealing a folder', async () => {
     const handler = getHandler(IPC.SHELL_OPEN_PATH);
     const input = process.platform === 'win32' ? 'C:\\does-not-exist' : '/does-not-exist';
     const result = await handler(fakeEvent, input);
+    expect(openPath).not.toHaveBeenCalled();
     expect(showItemInFolder).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: false, error: 'NOT_FOUND' });
   });
@@ -199,10 +203,16 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
 
     it('allows non-executable extensions', async () => {
       const handler = getHandler(IPC.SHELL_OPEN_PATH);
-      const input = process.platform === 'win32' ? 'C:\\foo.txt' : '/foo.txt';
-      const result = await handler(fakeEvent, input);
-      expect(openPath).toHaveBeenCalledWith(input);
-      expect(result).toEqual({ ok: true, error: undefined });
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-txt-'));
+      const input = path.join(dir, 'foo.txt');
+      fs.writeFileSync(input, 'x');
+      try {
+        const result = await handler(fakeEvent, input);
+        expect(openPath).toHaveBeenCalledWith(input);
+        expect(result).toEqual({ ok: true, error: undefined });
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it('refuses a sensitive path without opening or revealing it', async () => {
@@ -310,10 +320,14 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
 
     it('allows extension-less paths (folders)', async () => {
       const handler = getHandler(IPC.SHELL_OPEN_PATH);
-      const input = process.platform === 'win32' ? 'C:\\Users\\rizz' : '/home/rizz';
-      const result = await handler(fakeEvent, input);
-      expect(openPath).toHaveBeenCalledWith(input);
-      expect(result).toEqual({ ok: true, error: undefined });
+      const input = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-dir-'));
+      try {
+        const result = await handler(fakeEvent, input);
+        expect(openPath).toHaveBeenCalledWith(input);
+        expect(result).toEqual({ ok: true, error: undefined });
+      } finally {
+        fs.rmSync(input, { recursive: true, force: true });
+      }
     });
   });
 });
