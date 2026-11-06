@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { NATIVE_SELF_TEST_LINE, approvedInstalledNative, fileSha256, nativeLauncherPath, recordVerdict, runNativeSelfTest } from '../mcpLauncher';
+import { NATIVE_SELF_TEST_LINE, approvedInstalledNative, nativeLauncherPath, runNativeSelfTest } from '../mcpLauncher';
+import { fileSha256, probeKey, recordProbe } from '../probedNative';
 
 // The self-test runs a real process. A shell script stands in for the binary
 // on POSIX; the real build (when there is one) answers for itself everywhere.
@@ -66,14 +67,14 @@ describe('approvedInstalledNative', () => {
     const binary = nativeLauncherPath(stable);
     fs.writeFileSync(binary, 'build 1 wmux-managed: native-hooks');
     const hash = fileSha256(binary) as string;
-    recordVerdict(stable, hash, 'pass');
+    recordProbe(stable, probeKey(hash, NATIVE_SELF_TEST_LINE), 'pass');
     expect(approvedInstalledNative(stable)).toBeNull(); // no index.js beside it
     fs.writeFileSync(path.join(stable, 'index.js'), '// bundle');
     expect(approvedInstalledNative(stable)).toBe(binary);
     // Other bytes in its place are not what was approved.
     fs.writeFileSync(binary, 'build 2 wmux-managed: native-hooks');
     expect(approvedInstalledNative(stable)).toBeNull();
-    recordVerdict(stable, fileSha256(binary) as string, 'fail');
+    recordProbe(stable, probeKey(fileSha256(binary) as string, NATIVE_SELF_TEST_LINE), 'fail');
     expect(approvedInstalledNative(stable)).toBeNull();
   });
 });

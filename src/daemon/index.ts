@@ -92,7 +92,7 @@ import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
-import { queuedScreenText, queuedTextSnapshot } from './queuedSessionText';
+import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import { HOST_WINDOW_RPC, createHostWindowRpc } from './hostWindowRpc';
@@ -111,7 +111,7 @@ import type { PushTableRouterDeps } from './push/pushTableRouter';
 import { parseBotApprovalPushRows, type BotApprovalPushRow } from '../shared/botApprovalPush';
 import { parseBotPromptPushRows, type BotPromptPushRow } from '../shared/botPromptPush';
 import { readPendingToolUse } from './transcript/pendingToolUse';
-import { STALL_AGENT, StallWatch, lastHumanPrompt, readTranscriptTail, stopAndPrefill } from './transcript/stallWatch';
+import { STALL_AGENT, StallWatch, lastHumanPrompt, readTranscriptTail, spinnerTokenCount, stopAndPrefill } from './transcript/stallWatch';
 import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
 import { StateWriter, scrubPersistedCredentials, detachedTtlHoursFor } from './StateWriter';
 import { sanitizeCredentialEnv, stripCredentialValues } from '../shared/envFilter';
@@ -3376,13 +3376,17 @@ function registerRpcHandlers(
   // misses. Never resurrects or mutates the session. Works for live, dead, or
   // suspended sessions (it only reads the ring).
   pipeServer.onRpc('daemon.readSessionText', async (params) => {
-    const p = params as unknown as { id: string; scrollback?: number };
+    const p = params as unknown as { id: string; scrollback?: number; tail?: boolean };
     const managed = sessionManager.getSession(p.id);
     if (!managed) {
       throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     }
     const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 5000, MAX_SCROLLBACK);
-    const outcome = await queuedTextSnapshot(sessionManager, p.id, scrollback);
+    // `tail`: a display-only read (Fleet's preview is the one caller that asks),
+    // answered from the ring's newest bytes when that gives the same rows.
+    const outcome = p.tail === true
+      ? await queuedTextTail(sessionManager, p.id, scrollback, 'fleet')
+      : await queuedTextSnapshot(sessionManager, p.id, scrollback);
     if (!outcome) throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     if (!outcome.ok) {
       log('info', `[readText] session=${p.id} unavailable reason=${outcome.reason}`);
@@ -3397,7 +3401,10 @@ function registerRpcHandlers(
     if (capped.truncated) {
       log('info', `[readText] session=${p.id} response truncated to fit frame budget (${outcome.rows.length} rows)`);
     }
-    return { ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, rowsBelowCursor: outcome.rowsBelowCursor, truncated: capped.truncated };
+    return {
+      ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, rowsBelowCursor: outcome.rowsBelowCursor, truncated: capped.truncated,
+      ...('via' in outcome ? { via: outcome.via } : {}),
+    };
   });
 
   // #2408: how long a session list waits for a recovered pane's screen read.
@@ -4732,8 +4739,14 @@ function registerRpcHandlers(
       },
       awaitingHuman: (id) => sessionManager.getSession(id)?.bridge.getAgentStatus() === 'awaiting_input'
         || approvalRegistry?.list().pending.some((r) => r.sessionId === id) === true,
+      // An estimate, not a gate: read from the ring's newest bytes when that
+      // gives the whole ring's rows (guardedTailRead.ts). Its inputs are what
+      // the real-data check compares, by count only.
       readScreen: async (id) => {
-        const outcome = await queuedScreenText(sessionManager, id);
+        const outcome = await queuedScreenTail(sessionManager, id, 'stallwatch', (rows) => ({
+          running: screenShowsRunningTurn(rows, STALL_AGENT),
+          token: spinnerTokenCount(rows),
+        }));
         return outcome?.ok ? outcome.rows.map((r) => r.text) : null;
       },
       titleRunning: (id) => titleShowsRunningTurn(sessionManager.getSession(id)?.bridge.getTitle(), STALL_AGENT, Date.now()),

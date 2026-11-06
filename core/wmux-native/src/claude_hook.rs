@@ -27,7 +27,8 @@
 //! Where it differs from Node, on purpose (each is a characterisation case's
 //! strictForPort):
 //!   - argv-unknown-event, argv-missing-event: `unknown-hook-name` logs this
-//!     process's argv, `[<exe>, "claude-hook", …]`.
+//!     process's argv, `[<exe>, "claude-hook", …]`, or `[<exe>, <bridge>, …]`
+//!     in the form a settings entry carries.
 //!   - argv-proto-key: only the hook names of HOOK_TO_KIND are hooks. Node's
 //!     plain-object lookup also accepts inherited keys (`constructor`) and
 //!     sends an envelope without a kind; here that is `unknown-hook-name`.
@@ -63,10 +64,11 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 /// The bridge this port follows (claudeHookContract.test.ts pins the same file).
 const PORTED_FROM_SHA256: &str = include_str!("../claude-hook.ported-from.sha256");
-const BRIDGE_BASENAME: &str = "wmux-bridge.mjs";
+pub(crate) const BRIDGE_BASENAME: &str = "wmux-bridge.mjs";
 const KILL_SWITCH_FILE: &str = "native-disabled";
 
 /// MAX_STDIN_BYTES.
@@ -111,23 +113,38 @@ type Log<'a> = &'a (dyn Fn(&str, Vec<(&str, Option<Json>)>) + Sync);
 
 const INTERACTIVE_ENTRYPOINTS: [&str; 3] = ["cli", "vscode", "jetbrains"];
 
-/// The process: `args` are the arguments after `claude-hook`. Never returns.
-/// The hand-over runs here, on the main thread, before any other thread
-/// exists; the rest of the run gets a thread with its own large stack.
-pub fn run_process(args: Vec<OsString>) -> ! {
+/// What `wmux-native --self-test` prints: the hook installer names this copy
+/// in Claude Code's settings only after reading it. Reads no stdin, writes no
+/// log.
+pub fn self_test_line() -> String {
+    format!("wmux-claude-hook protocol 1 pin {}", PORTED_FROM_SHA256.trim())
+}
+
+/// The process: `args` are the arguments after `claude-hook`, or after the
+/// bridge path a settings entry names (`named_bridge`). Never returns. The
+/// hand-over runs here, on the main thread, before any other thread exists;
+/// the rest of the run gets a thread with its own large stack.
+pub fn run_process(args: Vec<OsString>, named_bridge: Option<PathBuf>) -> ! {
     let argv: Vec<JsStr> = std::env::args_os().map(|a| paths::os_to_js(&a)).collect();
     let event = args.first().map(|a| paths::os_to_js(a));
     // A missing bridge is logged with the run's first line, not on its own:
     // a run that logs nothing (a throttled PostToolUse) adds no line for it.
     let no_bridge = AtomicBool::new(false);
-    let log = |outcome: &str, extra: Vec<(&str, Option<Json>)>| {
+    // So is a named bridge that is not the one used: as fields of that line.
+    let named_note: Mutex<Option<NamedNote>> = Mutex::new(None);
+    let log = |outcome: &str, mut extra: Vec<(&str, Option<Json>)>| {
         if no_bridge.swap(false, Ordering::Relaxed) {
             claude::log_event(event.as_ref(), "impl-native-no-bridge", vec![]);
+        }
+        if let Some(note) = named_note.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            extra.push(("bridgeNamed", Some(note.named)));
+            extra.push(("bridgeUsed", note.used));
         }
         claude::log_event(event.as_ref(), outcome, extra)
     };
     let mut code = 0;
-    if let Some(start) = hand_over(&args, event.as_ref(), &argv, &no_bridge, &log) {
+    let named = named_bridge.as_deref().map(|path| (path, &named_note));
+    if let Some(start) = hand_over(&args, named, event.as_ref(), &argv, &no_bridge, &log) {
         code = finish(on_own_stack(STACK_BYTES, || run(start, &log)), &log);
     }
     std::process::exit(code);
@@ -224,6 +241,30 @@ impl Handover {
         self.node_missing = true;
         log("impl-fallback", vec![("reason", Some(Json::Str(js("node-missing"))))]);
     }
+}
+
+/// A bridge named in argv[1] that is not the one the run uses.
+struct NamedNote {
+    named: Json,
+    used: Option<Json>,
+}
+
+/// A settings entry names the bridge in argv[1], but the run uses the one
+/// beside this binary, as every other run does. A name that is not that file
+/// (once both are resolved) is noted on the run's first log line, and the run
+/// goes on. The installer writes the path beside the binary itself: equal as
+/// bytes, nothing is resolved.
+fn named_note(named: &Path, beside: Option<&Path>, used: Option<&Path>) -> Option<NamedNote> {
+    if beside.map(Path::as_os_str) == Some(named.as_os_str()) {
+        return None;
+    }
+    let resolved = |p: &Path| std::fs::canonicalize(p).ok();
+    let same = resolved(named).is_some_and(|n| used.and_then(resolved) == Some(n));
+    let text = |p: &Path| Json::Str(paths::os_to_js(p.as_os_str()));
+    (!same).then(|| NamedNote {
+        named: text(named),
+        used: used.map(text),
+    })
 }
 
 fn kill_switch(exe_dir: Option<&Path>) -> bool {
@@ -350,6 +391,7 @@ struct Start {
 /// does not return then), or logs why the run ends here (None).
 fn hand_over(
     args: &[OsString],
+    named_bridge: Option<(&Path, &Mutex<Option<NamedNote>>)>,
     event: Option<&JsStr>,
     argv: &[JsStr],
     no_bridge: &AtomicBool,
@@ -358,16 +400,18 @@ fn hand_over(
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf));
-    let bridge = exe_dir
-        .as_ref()
-        .map(|d| d.join(BRIDGE_BASENAME))
-        .filter(|b| b.is_file());
+    let beside = exe_dir.as_ref().map(|d| d.join(BRIDGE_BASENAME));
     let mut handover = Handover {
-        bridge,
+        bridge: beside.clone().filter(|b| b.is_file()),
         node_missing: false,
     };
     if kill_switch(exe_dir.as_deref()) {
         handover.exec(args, log);
+    }
+    if let Some((named, note)) = named_bridge {
+        // The bridge the run uses: none when there is no file beside it.
+        let used = handover.bridge.as_deref();
+        *note.lock().unwrap_or_else(PoisonError::into_inner) = named_note(named, beside.as_deref(), used);
     }
     match handover.bridge.as_ref().map(std::fs::read) {
         Some(Ok(source)) if ported_from(&source) => {}

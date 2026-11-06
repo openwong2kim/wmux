@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
 import { canConnectBrokerPipe } from './brokerProbe';
+import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStatus } from '../../shared/mcpSessions';
 
 /**
  * Supervises the shared MCP broker process (Option A,
@@ -36,10 +37,43 @@ export class BrokerSupervisor {
   private scriptMissing = false;
   /** Exit-75 reclaim probe (W2): live only while standing down for another broker. */
   private reclaimTimer: NodeJS.Timeout | null = null;
+  /** When the current child was spawned; null while none runs. */
+  private childStartedAt: number | null = null;
+  /** Open connections, as the current child last reported them. */
+  private connections = 0;
+  private crashExits = 0;
+  /** Spawns that failed outright (ENOENT, EPERM, a scanner): not crashes. */
+  private spawnFailures = 0;
+  private standDowns = 0;
 
   /** The running broker's pid, for telling its relayed calls apart (peer pid measurement). */
   get pid(): number | null {
     return this.child?.pid ?? null;
+  }
+
+  /** Counts for `wmux doctor` (mcp.sessions.summary). */
+  status(): BrokerStatus {
+    const pid = this.child?.pid ?? null;
+    return {
+      running: pid !== null,
+      pid,
+      uptimeS: this.child && this.childStartedAt !== null ? Math.floor((Date.now() - this.childStartedAt) / 1000) : null,
+      connections: this.child ? this.connections : 0,
+      crashExits: this.crashExits,
+      spawnFailures: this.spawnFailures,
+      standDowns: this.standDowns,
+      standingDown: this.reclaimTimer !== null,
+      downReason: this.downReason(),
+    };
+  }
+
+  private downReason(): BrokerDownReason | null {
+    if (this.child) return null;
+    if (this.stopped) return 'stopped';
+    if (this.scriptMissing) return 'script-missing';
+    if (this.reclaimTimer) return 'standing-down';
+    if (this.restartTimer) return 'restarting';
+    return 'not-started';
   }
 
   /** Resolve the broker script for the current build layout. */
@@ -77,11 +111,21 @@ export class BrokerSupervisor {
     const startedAt = Date.now();
     const child = spawn(process.execPath, [script], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-      stdio: ['ignore', 'ignore', 'pipe'],
+      // The IPC channel carries the broker's connection reports; stdout stays
+      // ignored, since a hosted server's stray console.log would land there.
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
       windowsHide: true,
     });
     this.child = child;
+    this.childStartedAt = startedAt;
+    this.connections = 0;
     console.log(`[BrokerSupervisor] broker started pid=${child.pid}`);
+
+    child.on('message', (message: unknown) => {
+      if (this.child !== child) return;
+      const open = parseBrokerConnectionsReport(message);
+      if (open !== null) this.connections = open;
+    });
 
     child.stderr?.on('data', (chunk: Buffer) => {
       const line = chunk.toString('utf8').trim();
@@ -91,11 +135,13 @@ export class BrokerSupervisor {
     // Guard so a spawn 'error' and the trailing 'exit' don't both schedule a
     // restart (a failed spawn emits both).
     let settled = false;
-    const scheduleRestart = (reason: string) => {
+    const scheduleRestart = (reason: string, kind: 'crash' | 'spawn') => {
       if (settled) return;
       settled = true;
-      this.child = null;
+      this.clearChild();
       if (this.stopped) return;
+      if (kind === 'spawn') this.spawnFailures++;
+      else this.crashExits++;
       if (Date.now() - startedAt > STABLE_MS) this.restarts = 0;
       const delay = RESTART_BACKOFF_MS[Math.min(this.restarts, RESTART_BACKOFF_MS.length - 1)];
       this.restarts++;
@@ -110,14 +156,18 @@ export class BrokerSupervisor {
     // throws in the main process and can take down the whole app for an optional
     // feature — treat it like a crash exit: log, clear the handle, fail open via
     // the same backoff restart.
+    // A child that is no longer the current one (stop() then resume() spawned a
+    // replacement before it exited) must not touch the replacement's state.
     child.on('error', (err) => {
+      if (this.child !== child) return;
       console.error(`[BrokerSupervisor] broker spawn error: ${err.message}`);
-      scheduleRestart('broker spawn error');
+      scheduleRestart('broker spawn error', 'spawn');
     });
 
     child.on('exit', (code, signal) => {
+      if (this.child !== child) return;
       if (this.stopped) {
-        this.child = null;
+        this.clearChild();
         settled = true;
         return;
       }
@@ -126,14 +176,21 @@ export class BrokerSupervisor {
         // old instance). The pipe is served either way — do not fight it, but
         // keep probing: if that other broker later dies, nothing else would
         // reclaim the orphaned pipe and every shim would be stranded (W2).
-        this.child = null;
+        this.clearChild();
         settled = true;
+        this.standDowns++;
         console.log('[BrokerSupervisor] pipe already served by another broker; standing down');
         this.startReclaimProbe();
         return;
       }
-      scheduleRestart(`broker exited code=${code} signal=${signal}`);
+      scheduleRestart(`broker exited code=${code} signal=${signal}`, 'crash');
     });
+  }
+
+  private clearChild(): void {
+    this.child = null;
+    this.childStartedAt = null;
+    this.connections = 0;
   }
 
   /**
@@ -192,7 +249,7 @@ export class BrokerSupervisor {
     }
     if (this.child) {
       this.child.kill();
-      this.child = null;
+      this.clearChild();
     }
   }
 

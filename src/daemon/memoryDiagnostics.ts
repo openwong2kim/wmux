@@ -6,6 +6,7 @@ import { RingBuffer } from './RingBuffer';
 import { screenParseCounters, screenReadCounters, snapshotQueueCounters } from './screenReadCache';
 import { getAnsiSnapshotBackendDiagnostics } from './AnsiSnapshotBackend';
 import { getTextSnapshotBackendDiagnostics } from './TextSnapshotBackend';
+import { tailReadCounters } from './guardedTailRead';
 
 type BackendDiagnostics = SnapshotBackendCounters & { last?: unknown };
 /** The counters without the last outcome, which says nothing a count doesn't. */
@@ -50,5 +51,6 @@ export function collectDaemonMemoryDiagnostics(
     snapshotQueue: snapshotQueueCounters(),
     eventLoop: { activeMs: loop.active, idleMs: loop.idle },
     snapshots: { ansi: snapshotCounters(getAnsiSnapshotBackendDiagnostics()), text: snapshotCounters(getTextSnapshotBackendDiagnostics()) },
+    tailReads: tailReadCounters(),
   };
 }

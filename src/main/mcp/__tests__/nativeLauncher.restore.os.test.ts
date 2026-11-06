@@ -1,3 +1,4 @@
+// @wmux-lane integration — the launcher installs through shared/probedNative.ts, which stages, links and renames real files in a temp dir.
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -13,6 +14,7 @@ let source = '';
 let runs = 0;
 const dest = () => nativeLauncherPath(stableDir);
 const asides = () => fs.readdirSync(stableDir).filter((f) => f.includes('.previous'));
+const staged = () => fs.readdirSync(stableDir).filter((f) => f.includes('.staged-'));
 const ship = (text: string) => fs.writeFileSync(source, `${text} wmux-managed: native-hooks`);
 const runsIfGood = async (binary: string): Promise<SelfTestVerdict> => {
   runs++;
@@ -36,14 +38,14 @@ afterEach(() => {
 describe('prepareNativeLauncher', () => {
   it('installs a copy that passes its self-test and offers it', async () => {
     ship('good v1');
-    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(await prepare()).toEqual({ binary: dest() });
     expect(fs.readFileSync(dest(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
   });
 
   it('records a pass by content hash, so the next boot does not run the self-test again', async () => {
     ship('good v1');
     await prepare();
-    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(await prepare()).toEqual({ binary: dest() });
     expect(runs).toBe(1);
     expect(approvedInstalledNative(stableDir)).toBe(dest());
     // New bytes are a new hash: tested once more.
@@ -52,10 +54,11 @@ describe('prepareNativeLauncher', () => {
     expect(runs).toBe(2);
   });
 
-  it('never deletes a copy that fails: keeps it, records it, and offers nothing', async () => {
+  it('never puts a copy that fails in place: records it, offers nothing, leaves no staged file', async () => {
     ship('broken v1');
-    expect(await prepare()).toMatchObject({ binary: null, restored: false, reason: 'self-test failed' });
-    expect(fs.readFileSync(dest(), 'utf8')).toBe('broken v1 wmux-managed: native-hooks');
+    expect(await prepare()).toMatchObject({ binary: null, reason: 'self-test failed' });
+    expect(fs.existsSync(dest())).toBe(false);
+    expect(staged()).toEqual([]);
     expect(approvedInstalledNative(stableDir)).toBeNull();
     // Recorded as failing: not run again for the same bytes.
     expect(await prepare()).toMatchObject({ binary: null });
@@ -65,9 +68,9 @@ describe('prepareNativeLauncher', () => {
   it('treats a timeout as unknown: nothing offered now, nothing recorded, tested again next boot', async () => {
     ship('good v1');
     expect(await prepare(async () => 'timeout')).toMatchObject({ binary: null, reason: 'self-test timed out' });
-    expect(fs.existsSync(dest())).toBe(true);
+    expect(fs.existsSync(dest())).toBe(false);
     expect(approvedInstalledNative(stableDir)).toBeNull();
-    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(await prepare()).toEqual({ binary: dest() });
     expect(runs).toBe(1);
   });
 
@@ -75,52 +78,53 @@ describe('prepareNativeLauncher', () => {
     ship('good v1');
     expect(await prepare(async () => 'unstartable')).toMatchObject({ binary: null, reason: 'self-test could not start' });
     expect(approvedInstalledNative(stableDir)).toBeNull();
-    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(await prepare()).toEqual({ binary: dest() });
     expect(runs).toBe(1);
   });
 
-  it('puts the working copy back when a refresh fails, and offers nothing this time', async () => {
+  it('a refresh that fails leaves the working copy in place and still offers it', async () => {
     ship('good v1');
     await prepare();
     ship('broken v2');
-    expect(await prepare()).toMatchObject({ binary: null, restored: true });
+    const result = await prepare();
+    expect(result).toMatchObject({ binary: dest() });
+    expect(result.reason).toContain('the installed copy stays');
     expect(fs.readFileSync(dest(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
     expect(asides()).toEqual([]);
+    expect(staged()).toEqual([]);
   });
 
-  it('after a failed restore, the next boot keeps the failing copy, offers nothing, and does not rerun it', async () => {
+  it('the copy in place keeps its bytes and its inode through a refresh that fails, and the failure is not rerun', async () => {
     ship('good v1');
     await prepare();
+    const inode = fs.statSync(dest()).ino;
     ship('broken v2');
-    // The aside disappears before it can be renamed back: the restore fails.
-    const loseTheAside = async (binary: string) => {
-      for (const f of asides()) fs.unlinkSync(path.join(stableDir, f));
-      return runsIfGood(binary);
-    };
-    expect(await prepare(loseTheAside)).toMatchObject({ binary: null, restored: false });
-    expect(fs.readFileSync(dest(), 'utf8')).toBe('broken v2 wmux-managed: native-hooks');
-    expect(await prepare()).toMatchObject({ binary: null, restored: false });
-    expect(fs.existsSync(dest())).toBe(true);
+    await prepare();
+    await prepare();
+    expect(fs.readFileSync(dest(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
+    expect(fs.statSync(dest()).ino).toBe(inode);
     expect(runs).toBe(2);
   });
 
-  it('serializes overlapping calls, so one call never sweeps the aside another is about to restore', async () => {
+  it('serializes overlapping calls: the second starts only once the first is done', async () => {
     ship('good v1');
     await prepare();
     ship('broken v2');
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
+    const order: string[] = [];
     const slowFail = async (binary: string): Promise<SelfTestVerdict> => {
+      order.push('first probes');
       await gate;
       return runsIfGood(binary);
     };
-    const first = prepare(slowFail);
-    const second = prepare();
-    // Let the second call reach its sweep if it were not waiting.
+    const first = prepare(slowFail).then((r) => { order.push('first done'); return r; });
+    const second = prepare().then((r) => { order.push('second done'); return r; });
     await new Promise((resolve) => setImmediate(resolve));
     release?.();
-    expect(await first).toMatchObject({ binary: null, restored: true });
-    await second;
+    expect(await first).toMatchObject({ binary: dest() });
+    expect(await second).toMatchObject({ binary: dest() });
+    expect(order).toEqual(['first probes', 'first done', 'second done']);
     expect(fs.readFileSync(dest(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
   });
 
@@ -129,7 +133,7 @@ describe('prepareNativeLauncher', () => {
     await prepare();
     fs.writeFileSync(`${dest()}.previous-1-aa`, 'left while it was running');
     ship('good v2');
-    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(await prepare()).toEqual({ binary: dest() });
     expect(fs.readFileSync(dest(), 'utf8')).toBe('good v2 wmux-managed: native-hooks');
     expect(asides()).toEqual([]);
   });

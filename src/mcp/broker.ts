@@ -38,6 +38,8 @@ import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { selfCheckPeerPid } from '../shared/peerPid';
+import { createConnectionReporter, trackConnection, type ReportChannel } from './brokerConnectionReporter';
+import { setBrokerEnvelopeMode } from './wmux-client';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -87,6 +89,9 @@ function tokenMatches(presented: string | undefined, expected: string): boolean 
 
 let connSeq = 0;
 
+/** Open hosted connections, reported to the supervisor for `wmux doctor`. */
+const connectionReporter = createConnectionReporter(process as unknown as ReportChannel);
+
 /** How long a connection may sit without completing the wmuxShim handshake. */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
@@ -95,6 +100,8 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   const scope: ConnectionScope = createConnectionScope();
 
   const log = (msg: string) => console.error(`[wmux-mcp-broker] #${connId} ${msg}`);
+  // Before the await below: a socket that closes during it is counted closed.
+  trackConnection(socket, connectionReporter);
   log(
     `shim connected pid=${handshake.callerPid} ` +
       `commander=${handshake.commanderMode ? 'yes' : 'no'} ` +
@@ -195,6 +202,8 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   };
   socket.on('close', teardown);
   socket.on('end', teardown);
+  // Closed while the session was being set up: no close event is coming.
+  if (socket.destroyed) teardown();
 }
 
 function main(): void {
@@ -202,6 +211,7 @@ function main(): void {
   // a connection scope must fail rather than fall back to a shared registry.
   setReplBrokerMode();
   setBrowserReplBrokerMode();
+  setBrokerEnvelopeMode();
   const expectedToken = readAuthToken();
   if (!expectedToken) {
     console.error('[wmux-mcp-broker] auth token not found; refusing to serve. Is wmux running?');

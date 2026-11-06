@@ -21,7 +21,7 @@ import {
   focusNotificationTarget,
 } from '../../hooks/useNotificationListener';
 import { fleetChangedSinceSeen, type FleetSeenEntry } from '../../stores/slices/uiSlice';
-import { tailForPtyOrDaemon } from '../../utils/terminalTail';
+import { pollTail, tailForPtyOrDaemon } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
 import PresetPicker from '../Sidebar/PresetPicker';
@@ -518,22 +518,16 @@ export default function FleetView() {
   useEffect(() => {
     setTails({});
     if (!previewPtyId) return;
-    let cancelled = false;
     // A background pane has no renderer buffer: its tail comes from the daemon.
-    const refresh = () => {
-      void tailForPtyOrDaemon(previewPtyId, previewTailLines).then((tail) => {
-        if (cancelled) return;
-        setTails((prev) => {
-          const before = prev[previewPtyId];
-          return before?.length === tail.length && tail.every((line, i) => before[i] === line)
-            ? prev : { [previewPtyId]: tail };
-        });
+    const poll = pollTail((onVia) => tailForPtyOrDaemon(previewPtyId, previewTailLines, onVia), (tail) => {
+      setTails((prev) => {
+        const before = prev[previewPtyId];
+        return before?.length === tail.length && tail.every((line, i) => before[i] === line)
+          ? prev : { [previewPtyId]: tail };
       });
-    };
-    refresh();
-    const id = window.setInterval(refresh, 750);
-    const unsub = onTerminalRegistered(refresh);
-    return () => { cancelled = true; window.clearInterval(id); unsub(); };
+    });
+    const unsub = onTerminalRegistered(poll.refresh);
+    return () => { poll.stop(); unsub(); };
   }, [previewPtyId, previewTailLines]);
 
   // Error rows say what failed: the last error line of each one's terminal,

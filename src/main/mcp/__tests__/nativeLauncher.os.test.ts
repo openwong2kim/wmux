@@ -81,7 +81,7 @@ describe.skipIf(!realBuild)('prepareNativeLauncher — a refresh while the launc
 
     writeNewerBuild(source);
     const refreshed = await prepareNativeLauncher({ sourcePath: source, stableDir, selfTest: runNativeSelfTest });
-    expect(refreshed).toEqual({ binary: nativeLauncherPath(stableDir), restored: false });
+    expect(refreshed).toEqual({ binary: nativeLauncherPath(stableDir) });
     expect(fs.readFileSync(nativeLauncherPath(stableDir)).equals(fs.readFileSync(source))).toBe(true);
     if (process.platform === 'win32') {
       // Still running, so the aside could not be deleted yet.

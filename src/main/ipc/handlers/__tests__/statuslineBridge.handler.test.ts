@@ -8,7 +8,7 @@
  * the row reports the same skip, with no error and nothing in the log. So the
  * wire itself is what this file tests.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('electron', () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -20,7 +20,7 @@ vi.mock('electron', () => {
       handlers.delete(channel);
     }),
   };
-  return { ipcMain, __handlers: handlers };
+  return { app: { isPackaged: true }, ipcMain, __handlers: handlers };
 });
 
 const installStatusline = vi.fn((_paths: unknown, _opts?: { force?: boolean }) => ({
@@ -52,8 +52,14 @@ async function invokeInstall(payload?: unknown): Promise<void> {
 
 describe('statuslineBridge install handler', () => {
   beforeEach(() => {
+    // A packaged, unsuffixed instance: the only one this handler writes from.
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
     installStatusline.mockClear();
     registerStatuslineBridgeHandlers();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('passes force:true through to the installer', async () => {
