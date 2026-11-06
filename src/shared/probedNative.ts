@@ -320,13 +320,19 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return { binary: null, reason: `copy unreadable: ${String(error)}` };
   }
   const key = probeKey(sha256Of(bytes), opts.line);
-  const known = opts.reprobe ? undefined : recordedProbe(opts.recordDir, key);
+  const recorded = recordedProbe(opts.recordDir, key);
+  const known = opts.reprobe ? undefined : recorded;
+  // A reprobe that proves nothing (a timeout, a copy that could not start)
+  // leaves the recorded verdict standing, as if it had not run.
+  const settle = (probed: ProbeVerdict): { verdict: ProbeVerdict; known: 'pass' | 'fail' | undefined } =>
+    (probed === 'timeout' || probed === 'unstartable') && recorded ? { verdict: recorded, known: recorded } : { verdict: probed, known };
 
   if (current?.equals(bytes)) {
     // These bytes are in place already: only their verdict is missing.
-    const verdict = known ?? (await opts.probe(dest));
-    if (!known && (verdict === 'pass' || verdict === 'fail')) recordProbe(opts.recordDir, key, verdict, key);
-    return verdict === 'pass' ? { binary: dest } : { binary: null, reason: reasonOf(verdict, known) };
+    const probed = known ?? (await opts.probe(dest));
+    if (!known && (probed === 'pass' || probed === 'fail')) recordProbe(opts.recordDir, key, probed, key);
+    const { verdict, known: decided } = settle(probed);
+    return verdict === 'pass' ? { binary: dest } : { binary: null, reason: reasonOf(verdict, decided) };
   }
   if (current && !opts.ownershipMarkers.some((marker) => current.includes(Buffer.from(marker)))) {
     return { binary: null, reason: 'copy is foreign' };
@@ -343,11 +349,12 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
     try { fs.unlinkSync(staged); } catch { /* never written */ }
     return keep(`could not stage the copy: ${String(error)}`);
   }
-  const verdict = known ?? (await opts.probe(staged));
-  if (!known && (verdict === 'pass' || verdict === 'fail')) recordProbe(opts.recordDir, key, verdict, currentKey);
+  const probed = known ?? (await opts.probe(staged));
+  if (!known && (probed === 'pass' || probed === 'fail')) recordProbe(opts.recordDir, key, probed, currentKey);
+  const { verdict, known: decided } = settle(probed);
   if (verdict !== 'pass') {
     try { fs.unlinkSync(staged); } catch { /* swept next time */ }
-    return keep(reasonOf(verdict, known));
+    return keep(reasonOf(verdict, decided));
   }
   // The probe took time: what is at the name now must still be what was
   // judged wmux's own (or still nothing), or it is not replaced.

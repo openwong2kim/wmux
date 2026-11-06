@@ -219,6 +219,22 @@ describe('prepareProbedNative — reprobe', () => {
   });
 });
 
+describe('prepareProbedNative — a reprobe that proves nothing', () => {
+  it('leaves the recorded verdict, and what it offers, as they were', async () => {
+    ship('good v1');
+    await prepare();
+    for (const inconclusive of ['timeout', 'unstartable'] as const) {
+      expect(await prepare({ reprobe: true, probe: async () => inconclusive })).toEqual({ binary: dest() });
+      expect(recordedProbe(dir, keyOf('good v1'))).toBe('pass');
+    }
+    ship('good v2');
+    await prepare({ probe: async () => 'fail' });
+    expect(await prepare({ reprobe: true, probe: async () => 'timeout' })).toMatchObject({ binary: dest(), reason: 'recorded as failing; the installed copy stays' });
+    expect(recordedProbe(dir, keyOf('good v2'))).toBe('fail');
+    expect(fs.readFileSync(dest(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
+  });
+});
+
 describe('prepareProbedNative — the lock across processes', () => {
   const lockFile = () => path.join(dir, PROBE_LOCK);
 
