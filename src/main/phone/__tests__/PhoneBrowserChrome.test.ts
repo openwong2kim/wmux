@@ -40,7 +40,7 @@ function fixture(chrome?: PhoneChromeDeps) {
     scroll: vi.fn(async () => undefined),
     input: (_id: number, operation: () => Promise<RpcResponse>) => operation(),
     targets: () => [
-      { surfaceId: 'pane', workspaceId: 'ws-1', webContentsId: 1, targetId: 't', wsUrl: 'ws://private' },
+      { surfaceId: 'pane', workspaceId: 'ws-1', webContentsId: 1, targetId: 't' },
     ],
     page: () => ({ title: 'Pane', url: 'https://pane.example.com/' }),
     invoke: vi.fn(async (method: string): Promise<RpcResponse> => ({ id: 'rpc', ok: true, result: method === 'browser.evaluate' ? { value: { width: 1000, height: 728, scrollX: 0, scrollY: 0, scale: 1 } } : { ok: true, tab: { surfaceId: 'chrome-new' } } })),
@@ -80,8 +80,8 @@ describe('phone preview on dedicated-profile Chrome', () => {
     const panes = {
       ...fixture(deps),
       targets: () => [
-        { surfaceId: 'pane', workspaceId: 'ws-1', webContentsId: 1, targetId: 't', wsUrl: 'ws://private' },
-        { surfaceId: 'pane-long', workspaceId: 'ws-1', webContentsId: 2, targetId: 't2', wsUrl: 'ws://private' },
+        { surfaceId: 'pane', workspaceId: 'ws-1', webContentsId: 1, targetId: 't' },
+        { surfaceId: 'pane-long', workspaceId: 'ws-1', webContentsId: 2, targetId: 't2' },
       ],
       page: (id: number) => ({ title: 'Pane', url: id === 2 ? long : 'https://pane.example.com/' }),
     };

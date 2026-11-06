@@ -63,6 +63,23 @@ function defaultIsAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Chromium honours these switches whoever passed them: they open a debugging
+ * endpoint or loosen one. They go before the CDP setting is even read, so a
+ * failure reading it can't leave them in place, and only wmux's own port is
+ * added back.
+ */
+export const DEBUGGING_SWITCHES = [
+  'remote-debugging-port',
+  'remote-debugging-pipe',
+  'remote-debugging-address',
+  'remote-allow-origins',
+] as const;
+
+export function dropDebuggingSwitches(commandLine: { removeSwitch(name: string): void }): void {
+  for (const name of DEBUGGING_SWITCHES) commandLine.removeSwitch(name);
+}
+
 export interface ClaimCdpPortDeps {
   /** Directory for claim files. Defaults to the user-stable cache directory. */
   dir?: string;

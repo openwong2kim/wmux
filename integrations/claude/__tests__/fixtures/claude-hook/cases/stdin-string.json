@@ -1,0 +1,64 @@
+{
+  "description": "A string spreads into one key per UTF-16 unit.",
+  "divergence": "spread of non-object stdin",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": "\"h\\ud83d\\ude00\""
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "0": "h",
+                  "1": "\ud83d",
+                  "2": "\ude00"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

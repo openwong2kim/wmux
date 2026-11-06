@@ -11,8 +11,8 @@ function fixture() {
     scroll: vi.fn(async () => { /* noop */ }),
     input: (_id: number, operation: () => Promise<RpcResponse>) => operation(),
     targets: () => [
-      { surfaceId: 'own', workspaceId: 'ws-1', webContentsId: 1, targetId: 'secret-cdp', wsUrl: 'ws://private' },
-      { surfaceId: 'other', workspaceId: 'ws-2', webContentsId: 2, targetId: 'other', wsUrl: 'ws://other' },
+      { surfaceId: 'own', workspaceId: 'ws-1', webContentsId: 1, targetId: 'secret-cdp' },
+      { surfaceId: 'other', workspaceId: 'ws-2', webContentsId: 2, targetId: 'other' },
     ],
     page: (id: number) => ({ title: 'Page', url: id === 1 ? 'http://user:password@localhost:3000/' : 'https://other.invalid' }),
     invoke: vi.fn(async (method: string): Promise<RpcResponse> => ({ id: 'rpc', ok: true, result: method === 'browser.evaluate' ? {value:{width:1000,height:728,scrollX:0,scrollY:0,scale:1}} : { data: 'aGVsbG8=', mimeType: 'image/jpeg' } })),

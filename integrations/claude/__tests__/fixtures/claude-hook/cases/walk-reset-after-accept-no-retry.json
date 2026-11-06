@@ -1,0 +1,96 @@
+{
+  "description": "A server that accepts and drops the connection at once: the request counts as written on connect, so there is exactly one attempt, no retry and no fallback.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reset"
+    },
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "timing": [
+    {
+      "step": 0,
+      "maxMs": 1500
+    }
+  ],
+  "variants": {
+    "steps.0.log.0": [
+      {
+        "bridge": "0.8.1",
+        "hook": "Stop",
+        "outcome": "rpc-failed",
+        "target": "daemon",
+        "error": "closed-without-response"
+      },
+      {
+        "bridge": "0.8.1",
+        "hook": "Stop",
+        "outcome": "rpc-failed",
+        "target": "daemon",
+        "error": "connect-error",
+        "detail": "EPIPE"
+      },
+      {
+        "bridge": "0.8.1",
+        "hook": "Stop",
+        "outcome": "rpc-failed",
+        "target": "daemon",
+        "error": "connect-error",
+        "detail": "ECONNRESET"
+      },
+      {
+        "bridge": "0.8.1",
+        "hook": "Stop",
+        "outcome": "rpc-failed",
+        "target": "daemon",
+        "error": "connect-error",
+        "detail": "ENOTCONN"
+      },
+      {
+        "bridge": "0.8.1",
+        "hook": "Stop",
+        "outcome": "rpc-failed",
+        "target": "daemon",
+        "error": "connect-error",
+        "detail": "ECONNABORTED"
+      }
+    ]
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"cwd\":\"/work/repo\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          "<variant>"
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "reset": true
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

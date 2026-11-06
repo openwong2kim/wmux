@@ -204,7 +204,7 @@ describe('daemon.promoteSession — guards', () => {
 
     // The attach path is the other client-initiated entry point.
     const attachAt = source.indexOf("pipeServer.onRpc('daemon.attachSession'");
-    expect(source.slice(attachAt, attachAt + 600)).toMatch(/touchPendingRecovery\(p\.id\)/);
+    expect(source.slice(attachAt, attachAt + 800)).toMatch(/touchPendingRecovery\(p\.id\)/);
 
     // The boot background retry (setImmediate, after the RPC registration)
     // must stay untouched.
@@ -295,7 +295,7 @@ describe('attach without promote (#2398)', () => {
     expect(region).toMatch(/reconnectSessionPipe\(daemonClient, id, \{\s*promote: action === 'promote' \|\| action === 'join',/);
     expect(region).toMatch(/if \(pipe\.kind === 'pending'\) return held\('pending again at attach'\);/);
     const pipeStep = readSourceText(path.join(__dirname, '..', 'handlers', 'reconnectSessionPipe.ts'));
-    expect(pipeStep).toMatch(/client\.rpc\('daemon\.attachSession', \{ id, promote: opts\.promote \}\)/);
+    expect(pipeStep).toMatch(/client\.rpc\('daemon\.attachSession', \{ id, promote: opts\.promote, scrollback: attachScrollback\(\) \}\)/);
     const attachAt = pipeStep.indexOf("client.rpc('daemon.attachSession'");
     expect(pipeStep.slice(attachAt, attachAt + 400)).toMatch(/if \(attached\?\.pending\) return \{ kind: 'pending' \};/);
   });

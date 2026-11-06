@@ -1,0 +1,76 @@
+{
+  "description": "Over the cap, the first 1 MiB is kept and parsed.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": {
+        "parts": [
+          "{\"session_id\":\"s1\"}",
+          {
+            "repeat": " ",
+            "count": 1048559
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "stdin-truncated",
+            "totalBytes": 1048576
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

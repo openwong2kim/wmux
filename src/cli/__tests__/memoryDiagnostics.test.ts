@@ -59,4 +59,57 @@ describe('memory diagnostics', () => {
     expect(text).toContain('not swap attribution');
     expect(text).toContain('Do not add them to RSS');
   });
+
+  it('shows native snapshot use with its fallback reasons, most frequent first', () => {
+    const counters = (native: number, fallbacks: number, reasons: Record<string, number>) =>
+      ({ native, fallbacks, skipped: 0, circuitOpen: false, reasons });
+    const daemon = {
+      pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [],
+      snapshots: { ansi: counters(40, 3, { 'unsupported-state': 1, 'unsupported-history-limit': 2 }), text: counters(9, 0, {}) },
+    };
+    const text = renderMemoryDiagnostics(undefined, daemon, { available: false, reason: 'n/a' });
+    expect(text).toContain('native ansi snapshots: 40 native, 3 not served natively, 0 skipped (unsupported-history-limit 2, unsupported-state 1)');
+    expect(text).toContain('native text snapshots: 9 native, 0 not served natively, 0 skipped\n');
+  });
+
+  it('shows what screen reads cost, the snapshot queue and the event loop', () => {
+    const daemon = {
+      pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [],
+      screenReads: { screen: { hits: 30, joins: 2, misses: 8 } },
+      screenParses: { screen: { parses: 8, msTotal: 480, msMax: 200, bytes: 8 * 1024 * 1024 } },
+      snapshotQueue: { jobs: 10, waitMsTotal: 100, waitMsMax: 40, runMsTotal: 600, runMsMax: 200 },
+      eventLoop: { activeMs: 42, idleMs: 958 },
+    };
+    expect(isDaemonMemoryDiagnostics(daemon)).toBe(true);
+    const text = renderMemoryDiagnostics(undefined, daemon, { available: false, reason: 'n/a' });
+    expect(text).toContain('screen reads: screen 8 missed, 32 reused');
+    expect(text).toContain('screen parses: 8 (avg 60 ms, max 200 ms, 8.0 MiB replayed)');
+    expect(text).toContain('snapshot queue: 10 jobs, wait avg 10 ms (max 40 ms), run avg 60 ms (max 200 ms)');
+    expect(text).toContain('event loop: 4.2% busy since the daemon started');
+  });
+
+  it('rejects malformed read counters from a mixed-version daemon', () => {
+    const base = { pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [] };
+    for (const bad of [{ screenReads: { screen: null } }, { screenParses: { pane: { parses: 1 } } },
+      { snapshotQueue: { jobs: 1 } }, { eventLoop: { activeMs: -1, idleMs: 0 } }]) {
+      expect(isDaemonMemoryDiagnostics({ ...base, ...bad })).toBe(false);
+    }
+    const session = { id: 's', state: 'running', ringStoredBytes: 0, ringAllocatedBytes: 0, ringCapacityBytes: 0, socketQueuedBytes: 0, socketPeakQueuedBytes: 0, resyncQueuedBytes: 0 };
+    expect(isDaemonMemoryDiagnostics({ ...base, sessions: [session] })).toBe(true);
+    expect(isDaemonMemoryDiagnostics({ ...base, sessions: [{ ...session, ringLifetimeBytes: 12 }] })).toBe(true);
+    for (const ringLifetimeBytes of ['unknown', -1]) {
+      expect(isDaemonMemoryDiagnostics({ ...base, sessions: [{ ...session, ringLifetimeBytes }] })).toBe(false);
+    }
+  });
+
+  it('rejects malformed snapshot counters from a mixed-version daemon, and accepts their absence', () => {
+    const base = { pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [] };
+    const ok = { native: 1, fallbacks: 0, skipped: 0, circuitOpen: false, reasons: { budget: 1 } };
+    expect(isDaemonMemoryDiagnostics(base)).toBe(true);
+    expect(isDaemonMemoryDiagnostics({ ...base, snapshots: { ansi: ok, text: ok } })).toBe(true);
+    for (const snapshots of [null, { ansi: null, text: ok }, { ansi: ok }, { ansi: ok, text: { ...ok, reasons: { budget: -1 } } },
+      { ansi: ok, text: { ...ok, circuitOpen: 'no' } }, { ansi: ok, text: ok, extra: {} }]) {
+      expect(isDaemonMemoryDiagnostics({ ...base, snapshots })).toBe(false);
+    }
+  });
 });

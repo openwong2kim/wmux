@@ -1,0 +1,53 @@
+{
+  "description": "A failed UserPromptSubmit in a pane is spooled with its permission mode.",
+  "env": {
+    "WMUX_PTY_ID": "pty/1",
+    "WMUX_WORKSPACE_ID": "ws-1"
+  },
+  "steps": [
+    {
+      "argv": [
+        "UserPromptSubmit"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"cwd\":\"/work/repo\",\"prompt\":\"x\",\"permission_mode\":\"bypassPermissions\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "rpc-failed",
+            "target": "main",
+            "error": "connect-error",
+            "detail": "ENOENT"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "resume-spooled",
+            "ptyId": "pty/1",
+            "sessionId": "s1"
+          }
+        ],
+        "requests": {},
+        "spool": {
+          "pty_1.json": {
+            "ptyId": "pty/1",
+            "agent": "claude",
+            "sessionId": "s1",
+            "cwd": "/work/repo",
+            "permissionMode": "bypassPermissions",
+            "workspaceId": "ws-1",
+            "ts": "<ts>"
+          }
+        }
+      }
+    ]
+  }
+}

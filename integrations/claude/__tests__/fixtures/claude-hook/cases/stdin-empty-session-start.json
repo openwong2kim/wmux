@@ -1,0 +1,59 @@
+{
+  "description": "SessionStart is sent even with empty stdin, with an empty payload.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "SessionStart"
+      ],
+      "stdin": ""
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "SessionStart",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.session_start",
+                "agent": "claude",
+                "cwd": "<sandbox>/cwd",
+                "payload": {},
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
