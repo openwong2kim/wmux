@@ -39,6 +39,7 @@ import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { selfCheckPeerPid } from '../shared/peerPid';
 import { createConnectionReporter, type ReportChannel } from './brokerConnectionReporter';
+import { setBrokerEnvelopeMode } from './wmux-client';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -208,6 +209,7 @@ function main(): void {
   // a connection scope must fail rather than fall back to a shared registry.
   setReplBrokerMode();
   setBrowserReplBrokerMode();
+  setBrokerEnvelopeMode();
   const expectedToken = readAuthToken();
   if (!expectedToken) {
     console.error('[wmux-mcp-broker] auth token not found; refusing to serve. Is wmux running?');

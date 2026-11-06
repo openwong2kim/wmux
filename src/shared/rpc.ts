@@ -64,6 +64,13 @@ export interface RpcRequest {
    * that workspace's panes; a PTY outside the scoped workspace is ignored.
    */
   callerPtyId?: string;
+  /**
+   * A single-child MCP server's per-process id (32 hex characters), stamped on
+   * every envelope it sends; broker-hosted calls carry none. Main counts the
+   * distinct ids it saw recently for `wmux doctor`. Measurement only: no
+   * handler reads it for routing or permission.
+   */
+  mcpSession?: string;
 }
 
 /**
