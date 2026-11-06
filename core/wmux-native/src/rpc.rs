@@ -68,7 +68,7 @@ pub fn failure(error: &str, detail: Option<String>, retryable: Option<bool>) -> 
     Json::Obj(o)
 }
 
-pub fn is_true(v: Option<&Json>) -> bool {
+fn is_true(v: Option<&Json>) -> bool {
     v == Some(&Json::Bool(true))
 }
 
@@ -135,14 +135,22 @@ fn exchange(pipe: &str, line: &str, id: &[u16], gate: &Mutex<Gate>) -> Json {
         };
         // Match OUR response by id: the daemon pipe broadcasts id-less events.
         for line in lines.push(&chunk[..n]) {
-            let Ok(parsed) = js::parse(&js::js(&String::from_utf8_lossy(&line))) else {
-                continue;
-            };
-            if parsed.get("id").and_then(Json::as_str).is_some_and(|x| x == id) {
-                return parsed;
+            if let Some(reply) = matching_reply(&line, id) {
+                return reply;
             }
         }
     }
+}
+
+/// The line, parsed, when it is an object whose `id` is ours. Everything
+/// else is skipped: the daemon pipe also broadcasts id-less session events.
+pub fn matching_reply(line: &[u8], id: &[u16]) -> Option<Json> {
+    let parsed = js::parse(&js::js(&String::from_utf8_lossy(line))).ok()?;
+    parsed
+        .get("id")
+        .and_then(Json::as_str)
+        .is_some_and(|x| x == id)
+        .then_some(parsed)
 }
 
 /// Newline-delimited frames from a byte stream. Each byte is scanned once:
@@ -174,10 +182,10 @@ impl LineBuffer {
 }
 
 /// One request on one pipe: `(pipe, line, id, deadline) -> outcome`.
-pub type Send = fn(&str, &str, &[u16], Instant) -> Json;
+pub type SendFn = fn(&str, &str, &[u16], Instant) -> Json;
 
 /// sendRpcWithRetry: retry a transient connect failure inside the deadline.
-pub fn send_rpc_with_retry(send: Send, pipe: &str, line: &str, id: &[u16], deadline: Instant) -> Json {
+pub fn send_rpc_with_retry(send: SendFn, pipe: &str, line: &str, id: &[u16], deadline: Instant) -> Json {
     let mut attempt = 0;
     let mut last = failure("timeout", None, None);
     loop {
@@ -236,7 +244,7 @@ pub fn walk<'t>(
     id: &[u16],
     kind: &str,
     policy: &WalkPolicy,
-    send: Send,
+    send: SendFn,
 ) -> (Json, Option<&'t Target>) {
     let deadline = Instant::now() + policy.budget;
     let mut result = failure("no-target", None, None);
@@ -276,39 +284,26 @@ pub mod transport {
     /// by hand for the long case.
     #[cfg(target_os = "macos")]
     pub fn connect(pipe: &str) -> std::io::Result<UnixStream> {
+        use crate::unix_sys::{self, AF_UNIX, ENAMETOOLONG, SOCK_STREAM};
         use std::io::Error;
         use std::os::fd::FromRawFd;
-        extern "C" {
-            fn socket(domain: i32, kind: i32, protocol: i32) -> i32;
-            fn connect(fd: i32, addr: *const u8, len: u32) -> i32;
-            fn close(fd: i32) -> i32;
-        }
-        const AF_UNIX: u8 = 1;
-        const SOCK_STREAM: i32 = 1;
-        const ENAMETOOLONG: i32 = 63;
         let path = pipe.as_bytes();
         if path.len() < 104 {
             return UnixStream::connect(pipe);
         }
-        // sun_len, sun_family, path, NUL — sun_len is one byte.
-        let len = 2 + path.len() + 1;
-        if len > 255 || path.contains(&0) {
+        let Some(addr) = unix_sys::sockaddr_un(path) else {
             return Err(Error::from_raw_os_error(ENAMETOOLONG));
-        }
-        let mut addr = vec![0u8; len];
-        addr[0] = len as u8;
-        addr[1] = AF_UNIX;
-        addr[2..2 + path.len()].copy_from_slice(path);
+        };
         // SAFETY: plain socket calls; `addr` outlives connect, and the fd is
         // closed on failure or owned by the returned stream.
         unsafe {
-            let fd = socket(AF_UNIX as i32, SOCK_STREAM, 0);
+            let fd = unix_sys::socket(AF_UNIX, SOCK_STREAM, 0);
             if fd < 0 {
                 return Err(Error::last_os_error());
             }
-            if connect(fd, addr.as_ptr(), len as u32) != 0 {
+            if unix_sys::connect(fd, addr.as_ptr(), addr.len() as u32) != 0 {
                 let e = Error::last_os_error();
-                close(fd);
+                unix_sys::close(fd);
                 return Err(e);
             }
             Ok(UnixStream::from_raw_fd(fd))
@@ -337,11 +332,7 @@ pub mod transport {
             #[cfg(target_os = "linux")]
             91 => "EPROTOTYPE",
             #[cfg(target_os = "linux")]
-            103 => "ECONNABORTED",
-            #[cfg(target_os = "linux")]
             104 => "ECONNRESET",
-            #[cfg(target_os = "linux")]
-            107 => "ENOTCONN",
             #[cfg(target_os = "linux")]
             110 => "ETIMEDOUT",
             #[cfg(target_os = "linux")]
@@ -353,11 +344,7 @@ pub mod transport {
             #[cfg(target_os = "macos")]
             41 => "EPROTOTYPE",
             #[cfg(target_os = "macos")]
-            53 => "ECONNABORTED",
-            #[cfg(target_os = "macos")]
             54 => "ECONNRESET",
-            #[cfg(target_os = "macos")]
-            57 => "ENOTCONN",
             #[cfg(target_os = "macos")]
             60 => "ETIMEDOUT",
             #[cfg(target_os = "macos")]
@@ -476,6 +463,17 @@ mod tests {
         assert_eq!(lines.scanned, 64 * 16 * 1024);
         assert_eq!(lines.push(b"\n").len(), 1);
         assert_eq!(lines.scanned, 0);
+    }
+
+    /// The shared bridge's detail for errnos it does not name is the OS text,
+    /// unchanged by the Claude transport's fuller table.
+    #[cfg(unix)]
+    #[test]
+    fn the_shared_errno_names_are_unchanged() {
+        let enotconn = if cfg!(target_os = "macos") { 57 } else { 107 };
+        let e = std::io::Error::from_raw_os_error(enotconn);
+        assert_eq!(transport::code(&e), e.to_string());
+        assert_eq!(transport::code(&std::io::Error::from_raw_os_error(32)), "EPIPE");
     }
 
     #[test]

@@ -30,6 +30,9 @@ mod rpc;
 mod targets;
 #[cfg(test)]
 mod testenv;
+#[cfg(unix)]
+#[allow(dead_code)]
+mod unix_sys;
 
 /// Ownership marker: the hook installer recognises a wmux-written copy of this
 /// binary by this text, as it does the bridge script by its first line.

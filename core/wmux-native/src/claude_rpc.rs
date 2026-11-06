@@ -10,29 +10,46 @@
 //! buffers only a few KB, so a write-then-read client would report the write
 //! failure instead of the reply it was already sent.
 //!
-//! Outcome mapping, as Node's socket events produce it:
+//! The shared hook bridge's transport (rpc.rs) still writes, then reads. The
+//! two differ on purpose for now: changing the shared one is not part of the
+//! Claude port.
+//!
+//! The outcome is a pure function of what the socket showed, in order
+//! (`Session`): connected, data, EOF, a read error, a write error, the
+//! deadline. As Node's socket events produce it:
 //!   - connect fails                → connect-error, detail = errno name, retryable: true
 //!   - `wrote` is true once connected (Node writes in its `connect` handler)
-//!   - EOF after connect            → closed-without-response, retryable: false
-//!   - a socket error after connect → connect-error, detail = errno name, retryable: false
-//!   - the deadline                 → timeout, retryable: !wrote
 //!   - a line whose `id` matches    → that line, parsed (broadcasts, other ids
 //!     and unparsable lines are skipped; a partial last line is never parsed)
+//!   - EOF                          → closed-without-response, retryable: false
+//!   - a read error                 → connect-error, retryable: false
+//!   - the deadline                 → timeout, retryable: !wrote
+//!   - errors are reported by the first one's code, as Node settles on its
+//!     first `error` event
+//!
+//! Write errors: the request may have reached the server, so a write error
+//! ends the exchange at once, as Node's `error` event does: what is readable
+//! right now is drained without waiting, a matching line in it settles `ok`,
+//! and otherwise the outcome is connect-error with the write error's code,
+//! retryable: false. It never waits for EOF: a peer that keeps the socket
+//! open would otherwise turn the error into a timeout, which a Stop gate
+//! reads as a lost answer and fails closed where Node fails open.
 //!
 //! Two decisions where Node itself is not deterministic, recorded by the
 //! #3134 characterisation cases:
 //!   (a) reply-then-close (walk-reply-early-close): Node reports `ok`, EPIPE
 //!       or ENOTCONN depending on which socket event it handles first. This
-//!       transport drains what it can read before it acts on a write error,
-//!       so it settles `ok` on the matching-id line (that case's
-//!       strictForPort).
+//!       transport reads before it writes in every round and drains before it
+//!       acts on a write error, so it settles `ok` on the matching-id line
+//!       (that case's strictForPort).
 //!   (b) accept-then-reset (walk-reset-after-accept-no-retry): Node counts the
 //!       request as written once connected, so the reset is retryable:false:
 //!       exactly one connect, no retry, no fallback. This transport does the same.
 
-use crate::js::{self, Json};
-use crate::rpc::{failure, transport, LineBuffer, Target, WalkPolicy};
-use std::io::{ErrorKind, Read, Write};
+use crate::js::Json;
+use crate::rpc::{failure, matching_reply, LineBuffer, Target, WalkPolicy};
+use crate::unix_sys::{self, PollFd, POLLERR, POLLHUP, POLLIN, POLLOUT};
+use std::io::{Error, ErrorKind, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
@@ -50,95 +67,142 @@ pub fn send_to_targets<'t>(
 
 /// sendRpc: one attempt on `pipe`, bounded by `deadline`.
 pub fn send_rpc(pipe: &str, line: &str, id: &[u16], deadline: Instant) -> Json {
-    let stream = match open(pipe, deadline) {
-        Connect::Connected(s) => s,
-        Connect::Failed(e) => return failure("connect-error", Some(transport::code(&e)), Some(true)),
-        Connect::TimedOut => return failure("timeout", None, Some(true)),
+    let stream = match open(pipe) {
+        Ok(s) => s,
+        Err(e) => return failure("connect-error", Some(errno_name(&e)), Some(true)),
     };
     exchange(stream, line.as_bytes(), id, deadline)
 }
 
-// ----- the exchange ---------------------------------------------------------
+// ----- the outcome --------------------------------------------------------
 
-/// Read and write until the reply, EOF, an error or the deadline. Reading
-/// comes first in every round, and a write error waits for what is already
-/// readable, so a reply the server sent before closing always wins.
-fn exchange(mut stream: UnixStream, out: &[u8], id: &[u16], deadline: Instant) -> Json {
-    let mut written = 0;
-    let mut write_error: Option<std::io::Error> = None;
-    let mut lines = LineBuffer::default();
-    let mut chunk = [0u8; 64 * 1024];
-    loop {
-        let want_write = written < out.len() && write_error.is_none();
-        let Some(timeout_ms) = remaining_ms(deadline) else {
-            return failure("timeout", None, Some(false));
-        };
-        let revents = match poll_one(stream.as_raw_fd(), want_write, timeout_ms) {
-            Ok(r) => r,
-            Err(e) => return lost(&e),
-        };
-        if revents == 0 {
-            continue; // the deadline is checked at the top
+/// What the socket showed, in the order it showed it.
+pub enum Event<'a> {
+    Data(&'a [u8]),
+    Eof,
+    ReadError(Error),
+    WriteError(Error),
+    /// The non-blocking drain after a write error found nothing more.
+    Drained,
+    Deadline,
+}
+
+/// The outcome of one connected exchange, decided from its events alone.
+pub struct Session<'a> {
+    id: &'a [u16],
+    lines: LineBuffer,
+    first_error: Option<Error>,
+}
+
+impl<'a> Session<'a> {
+    pub fn new(id: &'a [u16]) -> Self {
+        Session {
+            id,
+            lines: LineBuffer::default(),
+            first_error: None,
         }
-        // Drain everything readable before acting on anything else.
-        if revents & (POLLIN | POLLHUP | POLLERR) != 0 {
-            loop {
-                match stream.read(&mut chunk) {
-                    Ok(0) => {
-                        return match write_error {
-                            Some(e) => lost(&e),
-                            None => failure("closed-without-response", None, Some(false)),
-                        };
-                    }
-                    Ok(n) => {
-                        for line in lines.push(&chunk[..n]) {
-                            if let Some(reply) = matching_reply(&line, id) {
-                                return reply;
-                            }
-                        }
-                    }
-                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                    Err(e) => return lost(&e),
-                }
+    }
+
+    /// Feed one event; `Some` is the settled outcome.
+    pub fn on(&mut self, event: Event) -> Option<Json> {
+        match event {
+            Event::Data(bytes) => self.lines.push(bytes).iter().find_map(|l| matching_reply(l, self.id)),
+            Event::Eof => Some(match self.first_error.take() {
+                Some(e) => lost(&e),
+                None => failure("closed-without-response", None, Some(false)),
+            }),
+            Event::ReadError(e) => Some(lost(self.first_error.as_ref().unwrap_or(&e))),
+            Event::WriteError(e) => {
+                self.first_error.get_or_insert(e);
+                None
             }
-        }
-        if want_write && revents & POLLOUT != 0 {
-            loop {
-                match stream.write(&out[written..]) {
-                    Ok(n) => {
-                        written += n;
-                        if written == out.len() {
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == ErrorKind::Interrupted => continue,
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                    // Keep reading: the reply may already be on its way.
-                    Err(e) => {
-                        write_error = Some(e);
-                        break;
-                    }
-                }
-            }
+            Event::Drained => self.first_error.take().map(|e| lost(&e)),
+            Event::Deadline => Some(failure("timeout", None, Some(false))),
         }
     }
 }
 
 /// A socket error once connected: Node's `error` event after the write, so
 /// the request may have been delivered and is never sent again.
-fn lost(e: &std::io::Error) -> Json {
-    failure("connect-error", Some(transport::code(e)), Some(false))
+fn lost(e: &Error) -> Json {
+    failure("connect-error", Some(errno_name(e)), Some(false))
 }
 
-/// The line, parsed, when it is an object whose `id` is ours.
-fn matching_reply(line: &[u8], id: &[u16]) -> Option<Json> {
-    let parsed = js::parse(&js::js(&String::from_utf8_lossy(line))).ok()?;
-    parsed
-        .get("id")
-        .and_then(Json::as_str)
-        .is_some_and(|x| x == id)
-        .then_some(parsed)
+// ----- the exchange ---------------------------------------------------------
+
+/// Read and write until the session settles. Each round reads first; a write
+/// error is followed by a drain of what is readable now, then settles.
+fn exchange(mut stream: UnixStream, out: &[u8], id: &[u16], deadline: Instant) -> Json {
+    let mut session = Session::new(id);
+    let mut written = 0;
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let want_write = written < out.len();
+        let Some(timeout_ms) = remaining_ms(deadline) else {
+            return session
+                .on(Event::Deadline)
+                .unwrap_or_else(|| failure("timeout", None, Some(false)));
+        };
+        let revents = match poll_one(stream.as_raw_fd(), want_write, timeout_ms) {
+            Ok(r) => r,
+            Err(e) => return lost(&e),
+        };
+        let ready = match classify(revents) {
+            Ok(ready) => ready,
+            Err(e) => return lost(&e),
+        };
+        if ready.read {
+            if let Some(outcome) = drain(&mut stream, &mut chunk, &mut session) {
+                return outcome;
+            }
+        }
+        if want_write && ready.write {
+            match write_some(&mut stream, &out[written..]) {
+                Ok(n) => written += n,
+                Err(e) => {
+                    if let Some(outcome) = session.on(Event::WriteError(e)) {
+                        return outcome;
+                    }
+                    if let Some(outcome) = drain(&mut stream, &mut chunk, &mut session) {
+                        return outcome;
+                    }
+                    return session
+                        .on(Event::Drained)
+                        .unwrap_or_else(|| failure("timeout", None, Some(false)));
+                }
+            }
+        }
+    }
+}
+
+/// Read until the socket would block, feeding the session.
+fn drain(stream: &mut UnixStream, chunk: &mut [u8], session: &mut Session) -> Option<Json> {
+    loop {
+        let event = match stream.read(chunk) {
+            Ok(0) => Event::Eof,
+            Ok(n) => Event::Data(&chunk[..n]),
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => return None,
+            Err(e) => Event::ReadError(e),
+        };
+        if let Some(outcome) = session.on(event) {
+            return Some(outcome);
+        }
+    }
+}
+
+/// Write until done or the socket would block; the count written.
+fn write_some(stream: &mut UnixStream, out: &[u8]) -> std::io::Result<usize> {
+    let mut written = 0;
+    while written < out.len() {
+        match stream.write(&out[written..]) {
+            Ok(n) => written += n,
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(written)
 }
 
 /// Milliseconds left, rounded up so a poll never wakes just short of the
@@ -153,128 +217,64 @@ fn remaining_ms(deadline: Instant) -> Option<i32> {
 
 // ----- the socket -------------------------------------------------------------
 
-const POLLIN: i16 = 0x1;
-const POLLOUT: i16 = 0x4;
-const POLLERR: i16 = 0x8;
-const POLLHUP: i16 = 0x10;
-
-#[repr(C)]
-struct PollFd {
-    fd: i32,
-    events: i16,
-    revents: i16,
+#[derive(Debug, PartialEq)]
+pub struct Ready {
+    pub read: bool,
+    pub write: bool,
 }
 
-#[cfg(target_os = "macos")]
-type NFds = std::os::raw::c_uint;
-#[cfg(not(target_os = "macos"))]
-type NFds = std::os::raw::c_ulong;
-
-extern "C" {
-    fn poll(fds: *mut PollFd, nfds: NFds, timeout: i32) -> i32;
-    fn socket(domain: i32, kind: i32, protocol: i32) -> i32;
-    fn connect(fd: i32, addr: *const u8, len: u32) -> i32;
-    fn getsockopt(fd: i32, level: i32, name: i32, value: *mut i32, len: *mut u32) -> i32;
-}
-
-#[cfg(target_os = "macos")]
-mod sys {
-    pub const EINPROGRESS: i32 = 36;
-    pub const ENAMETOOLONG: i32 = 63;
-    pub const SOL_SOCKET: i32 = 0xffff;
-    pub const SO_ERROR: i32 = 0x1007;
-    /// sun_len, sun_family, the path and its NUL. A path past the 104-byte
-    /// `sun_path` is allowed when sun_len says so, as libuv relies on.
-    pub fn sockaddr(path: &[u8]) -> Option<Vec<u8>> {
-        let len = 2 + path.len() + 1;
-        if len > 255 {
-            return None;
-        }
-        let mut addr = vec![0u8; len];
-        addr[0] = len as u8;
-        addr[1] = 1; // AF_UNIX
-        addr[2..2 + path.len()].copy_from_slice(path);
-        Some(addr)
+/// What a poll result allows. POLLERR and POLLHUP mean "read to find out";
+/// POLLNVAL, or any bit this loop never asked about, is a dead descriptor:
+/// fail now rather than spin on it.
+pub fn classify(revents: i16) -> Result<Ready, Error> {
+    if revents & !(POLLIN | POLLOUT | POLLERR | POLLHUP) != 0 {
+        return Err(Error::from_raw_os_error(unix_sys::EBADF));
     }
+    Ok(Ready {
+        read: revents & (POLLIN | POLLHUP | POLLERR) != 0,
+        write: revents & POLLOUT != 0,
+    })
 }
 
-#[cfg(not(target_os = "macos"))]
-mod sys {
-    pub const EINPROGRESS: i32 = 115;
-    pub const ENAMETOOLONG: i32 = 36;
-    pub const SOL_SOCKET: i32 = 1;
-    pub const SO_ERROR: i32 = 4;
-    /// sun_family, then the path and its NUL within the 108-byte `sun_path`.
-    pub fn sockaddr(path: &[u8]) -> Option<Vec<u8>> {
-        if path.len() >= 108 {
-            return None;
-        }
-        let mut addr = vec![0u8; 2 + path.len() + 1];
-        addr[..2].copy_from_slice(&1u16.to_ne_bytes()); // AF_UNIX
-        addr[2..2 + path.len()].copy_from_slice(path);
-        Some(addr)
-    }
-}
-
-enum Connect {
-    Connected(UnixStream),
-    Failed(std::io::Error),
-    TimedOut,
-}
-
-/// A non-blocking connect, as libuv makes it: a full backlog is an
-/// immediate error (EAGAIN on Linux), never a wait, and a pending connect is
-/// bounded by the deadline.
-fn open(pipe: &str, deadline: Instant) -> Connect {
-    use std::io::Error;
-    let path = pipe.as_bytes();
-    let Some(addr) = (!path.contains(&0)).then(|| sys::sockaddr(path)).flatten() else {
-        return Connect::Failed(Error::from_raw_os_error(sys::ENAMETOOLONG));
+/// A non-blocking, close-on-exec unix socket connected to `pipe`, as libuv
+/// makes it: a full backlog is an immediate error (EAGAIN on Linux,
+/// ECONNREFUSED on macOS), never a wait, and EINTR retries the connect.
+fn open(pipe: &str) -> std::io::Result<UnixStream> {
+    let Some(addr) = unix_sys::sockaddr_un(pipe.as_bytes()) else {
+        return Err(Error::from_raw_os_error(unix_sys::ENAMETOOLONG));
     };
-    // SAFETY: socket() returns a fresh fd that the UnixStream then owns and
-    // closes; `addr` outlives the connect call.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let kind = unix_sys::SOCK_STREAM | unix_sys::SOCK_CLOEXEC;
+    #[cfg(target_os = "macos")]
+    let kind = unix_sys::SOCK_STREAM;
+    // SAFETY: socket() returns a fresh fd that the UnixStream then owns.
     let stream = unsafe {
-        let fd = socket(1, 1, 0); // AF_UNIX, SOCK_STREAM
+        let fd = unix_sys::socket(unix_sys::AF_UNIX, kind, 0);
         if fd < 0 {
-            return Connect::Failed(Error::last_os_error());
+            return Err(Error::last_os_error());
         }
         UnixStream::from_raw_fd(fd)
     };
-    if let Err(e) = stream.set_nonblocking(true) {
-        return Connect::Failed(e);
+    #[cfg(target_os = "macos")]
+    // SAFETY: F_SETFD on an fd this function owns.
+    if unsafe { unix_sys::fcntl(stream.as_raw_fd(), unix_sys::F_SETFD, unix_sys::FD_CLOEXEC) } != 0 {
+        return Err(Error::last_os_error());
     }
-    // SAFETY: the fd is open and `addr` is a valid sockaddr_un of that length.
-    if unsafe { connect(stream.as_raw_fd(), addr.as_ptr(), addr.len() as u32) } == 0 {
-        return Connect::Connected(stream);
-    }
-    let e = Error::last_os_error();
-    if e.raw_os_error() != Some(sys::EINPROGRESS) {
-        return Connect::Failed(e);
-    }
+    stream.set_nonblocking(true)?;
     loop {
-        let Some(timeout_ms) = remaining_ms(deadline) else {
-            return Connect::TimedOut;
-        };
-        match poll_one(stream.as_raw_fd(), true, timeout_ms) {
-            Ok(0) => continue,
-            Ok(_) => break,
-            Err(e) => return Connect::Failed(e),
+        // SAFETY: the fd is open and `addr` is a sockaddr_un of that length.
+        if unsafe { unix_sys::connect(stream.as_raw_fd(), addr.as_ptr(), addr.len() as u32) } == 0 {
+            return Ok(stream);
+        }
+        let e = Error::last_os_error();
+        if e.raw_os_error() != Some(unix_sys::EINTR) {
+            return Err(e);
         }
     }
-    let mut err = 0i32;
-    let mut len = std::mem::size_of::<i32>() as u32;
-    // SAFETY: SO_ERROR writes one int into `err`.
-    if unsafe { getsockopt(stream.as_raw_fd(), sys::SOL_SOCKET, sys::SO_ERROR, &mut err, &mut len) } != 0 {
-        return Connect::Failed(Error::last_os_error());
-    }
-    if err != 0 {
-        return Connect::Failed(Error::from_raw_os_error(err));
-    }
-    Connect::Connected(stream)
 }
 
 /// poll(2) on one fd: always for reading, and for writing when asked.
-/// Returns the revents (0 on timeout); EINTR is a timeout-free retry.
+/// Returns the revents (0 on timeout or EINTR).
 fn poll_one(fd: i32, want_write: bool, timeout_ms: i32) -> std::io::Result<i16> {
     let mut p = PollFd {
         fd,
@@ -282,9 +282,9 @@ fn poll_one(fd: i32, want_write: bool, timeout_ms: i32) -> std::io::Result<i16> 
         revents: 0,
     };
     // SAFETY: one valid pollfd for the duration of the call.
-    let n = unsafe { poll(&mut p, 1, timeout_ms) };
+    let n = unsafe { unix_sys::poll(&mut p, 1, timeout_ms) };
     if n < 0 {
-        let e = std::io::Error::last_os_error();
+        let e = Error::last_os_error();
         return if e.kind() == ErrorKind::Interrupted {
             Ok(0)
         } else {
@@ -294,13 +294,70 @@ fn poll_one(fd: i32, want_write: bool, timeout_ms: i32) -> std::io::Result<i16> 
     Ok(if n == 0 { 0 } else { p.revents })
 }
 
+/// libuv's name for an errno, as Node puts it in `err.code`. This table is
+/// the Claude transport's own; the shared bridge keeps its shorter one.
+pub fn errno_name(e: &Error) -> String {
+    let Some(n) = e.raw_os_error() else {
+        return e.to_string();
+    };
+    let common = match n {
+        1 => Some("EPERM"),
+        2 => Some("ENOENT"),
+        4 => Some("EINTR"),
+        9 => Some("EBADF"),
+        12 => Some("ENOMEM"),
+        13 => Some("EACCES"),
+        16 => Some("EBUSY"),
+        20 => Some("ENOTDIR"),
+        22 => Some("EINVAL"),
+        23 => Some("ENFILE"),
+        24 => Some("EMFILE"),
+        32 => Some("EPIPE"),
+        _ => None,
+    };
+    #[cfg(target_os = "macos")]
+    let specific = match n {
+        35 => Some("EAGAIN"),
+        38 => Some("ENOTSOCK"),
+        41 => Some("EPROTOTYPE"),
+        53 => Some("ECONNABORTED"),
+        54 => Some("ECONNRESET"),
+        55 => Some("ENOBUFS"),
+        57 => Some("ENOTCONN"),
+        60 => Some("ETIMEDOUT"),
+        61 => Some("ECONNREFUSED"),
+        63 => Some("ENAMETOOLONG"),
+        _ => None,
+    };
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let specific = match n {
+        11 => Some("EAGAIN"),
+        36 => Some("ENAMETOOLONG"),
+        88 => Some("ENOTSOCK"),
+        91 => Some("EPROTOTYPE"),
+        103 => Some("ECONNABORTED"),
+        104 => Some("ECONNRESET"),
+        105 => Some("ENOBUFS"),
+        107 => Some("ENOTCONN"),
+        110 => Some("ETIMEDOUT"),
+        111 => Some("ECONNREFUSED"),
+        _ => None,
+    };
+    // uv_err_name for an errno libuv does not know.
+    common
+        .or(specific)
+        .map_or_else(|| format!("Unknown system error -{n}"), str::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     //! The transport against stubs of #3134's stub daemon modes; each test
     //! names the characterisation cases it stands for.
     use super::*;
     use crate::claude::CLAUDE_POLICY;
+    use crate::js;
     use crate::rpc::{send_rpc_with_retry, WalkPolicy};
+    use crate::unix_sys::POLLNVAL;
     use std::os::unix::net::UnixListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -501,6 +558,178 @@ mod tests {
             || ["EPIPE", "ECONNRESET", "ENOTCONN"]
                 .iter()
                 .any(|c| t == format!(r#"{{"ok":false,"error":"connect-error","detail":"{c}","retryable":false}}"#))
+    }
+
+    // ----- the outcome, from event sequences alone -------------------------
+
+    fn errno(name: &str) -> Error {
+        let n = match name {
+            "EPIPE" => 32,
+            "ECONNRESET" if cfg!(target_os = "macos") => 54,
+            "ECONNRESET" => 104,
+            _ => unreachable!(),
+        };
+        Error::from_raw_os_error(n)
+    }
+
+    /// Feed events until one settles; None when none did.
+    fn outcome(events: Vec<Event>) -> Option<String> {
+        let id = js::js(ID);
+        let mut session = Session::new(&id);
+        events.into_iter().find_map(|e| session.on(e)).map(|o| text(&o))
+    }
+
+    fn connect_error(code: &str) -> Option<String> {
+        Some(format!(
+            r#"{{"ok":false,"error":"connect-error","detail":"{code}","retryable":false}}"#
+        ))
+    }
+
+    #[test]
+    fn a_write_error_settles_by_its_own_code() {
+        // Then EOF: the write error, not closed-without-response.
+        assert_eq!(
+            outcome(vec![Event::WriteError(errno("EPIPE")), Event::Eof]),
+            connect_error("EPIPE")
+        );
+        // Nothing readable after it: settled at once, never a wait for EOF.
+        assert_eq!(
+            outcome(vec![Event::WriteError(errno("EPIPE")), Event::Drained]),
+            connect_error("EPIPE")
+        );
+        // Then a read error: the first error's code, as Node's first `error` event.
+        assert_eq!(
+            outcome(vec![
+                Event::WriteError(errno("EPIPE")),
+                Event::ReadError(errno("ECONNRESET"))
+            ]),
+            connect_error("EPIPE")
+        );
+        // A write error is never an outcome by itself.
+        assert_eq!(outcome(vec![Event::WriteError(errno("EPIPE"))]), None);
+    }
+
+    #[test]
+    fn a_matching_reply_wins_over_a_write_error() {
+        let reply = format!("{}\n", ok_reply());
+        assert_eq!(
+            outcome(vec![Event::Data(reply.as_bytes()), Event::WriteError(errno("EPIPE"))]),
+            Some(ok_reply())
+        );
+        assert_eq!(
+            outcome(vec![
+                Event::WriteError(errno("EPIPE")),
+                Event::Data(reply.as_bytes()),
+                Event::Drained
+            ]),
+            Some(ok_reply())
+        );
+    }
+
+    #[test]
+    fn the_other_events_map_as_node_does() {
+        assert_eq!(
+            outcome(vec![Event::Eof]).as_deref(),
+            Some(r#"{"ok":false,"error":"closed-without-response","retryable":false}"#)
+        );
+        assert_eq!(
+            outcome(vec![Event::ReadError(errno("ECONNRESET"))]),
+            connect_error("ECONNRESET")
+        );
+        assert_eq!(
+            outcome(vec![Event::Deadline]).as_deref(),
+            Some(r#"{"ok":false,"error":"timeout","retryable":false}"#)
+        );
+        // Foreign lines and a partial last line settle nothing; EOF does.
+        let partial = format!("{{\"id\":\"other\"}}\nnot json\n{}", ok_reply());
+        assert_eq!(
+            outcome(vec![Event::Data(partial.as_bytes()), Event::Eof]).as_deref(),
+            Some(r#"{"ok":false,"error":"closed-without-response","retryable":false}"#)
+        );
+    }
+
+    // ----- the socket ----------------------------------------------------------
+
+    #[test]
+    fn a_dead_descriptor_fails_instead_of_spinning() {
+        assert_eq!(
+            classify(POLLIN | POLLHUP).unwrap(),
+            Ready {
+                read: true,
+                write: false
+            }
+        );
+        assert_eq!(
+            classify(POLLOUT | POLLERR).unwrap(),
+            Ready {
+                read: true,
+                write: true
+            }
+        );
+        assert_eq!(classify(POLLNVAL).unwrap_err().raw_os_error(), Some(unix_sys::EBADF));
+        assert!(classify(0x40).is_err(), "an unasked-for bit");
+        // A descriptor that is not open polls as POLLNVAL.
+        let revents = poll_one(1_000_000, true, 100).unwrap();
+        assert!(classify(revents).is_err(), "revents {revents:#x}");
+    }
+
+    #[test]
+    fn the_socket_is_close_on_exec() {
+        let s = stub("cloexec", Mode::Hold);
+        let stream = open(&s.path).unwrap();
+        // SAFETY: F_GETFD on an open fd.
+        let flags = unsafe { unix_sys::fcntl(stream.as_raw_fd(), unix_sys::F_GETFD) };
+        assert!(flags >= 0 && flags & unix_sys::FD_CLOEXEC != 0, "flags {flags}");
+    }
+
+    #[test]
+    fn errno_names_are_libuv_names() {
+        let name = |n| errno_name(&Error::from_raw_os_error(n));
+        for (n, expected) in [
+            (4, "EINTR"),
+            (23, "ENFILE"),
+            (24, "EMFILE"),
+            (12, "ENOMEM"),
+            (9, "EBADF"),
+        ] {
+            assert_eq!(name(n), expected);
+        }
+        #[cfg(target_os = "macos")]
+        let specific = [(35, "EAGAIN"), (53, "ECONNABORTED"), (55, "ENOBUFS"), (57, "ENOTCONN")];
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let specific = [
+            (11, "EAGAIN"),
+            (103, "ECONNABORTED"),
+            (105, "ENOBUFS"),
+            (107, "ENOTCONN"),
+        ];
+        for (n, expected) in specific {
+            assert_eq!(name(n), expected);
+        }
+        assert_eq!(name(9999), "Unknown system error -9999");
+    }
+
+    /// A server that stops reading for good but keeps the socket open: Linux
+    /// fails the client's writes with EPIPE. The outcome comes at once, not
+    /// at the deadline (a Stop gate would read a timeout as a lost answer).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_write_error_with_the_socket_still_open_settles_at_once() {
+        let d = dir("shut-read");
+        let path = format!("{d}/s.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            let mut kept = Vec::new();
+            for conn in listener.incoming().flatten() {
+                let _ = conn.shutdown(std::net::Shutdown::Read);
+                kept.push(conn);
+            }
+        });
+        let start = Instant::now();
+        let result = send(&path, &request(900_000), 3000);
+        assert!(start.elapsed() < Duration::from_millis(1000), "{:?}", start.elapsed());
+        assert_eq!(Some(text(&result)), connect_error("EPIPE"));
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]
