@@ -26,7 +26,8 @@ import type { CdpConnection, CdpEventHandler } from './CdpSocket';
 //    consumed here and never reach a client (a client that sees an id it never
 //    sent may fail on it).
 //  - Targets themselves stay visible to every client, as on the port: target
-//    discovery and Target.getTargets are browser-wide.
+//    discovery and Target.getTargets are browser-wide. A TargetGrant (C3's
+//    caller identity with C2b's rules) narrows that per client when given.
 //
 // Cost (measured 2026-11-07, Chrome 149, macOS arm64, a synthetic 6 MB/s
 // terminal relay on the same Node event loop; the gate is relative to
@@ -50,6 +51,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 /** The browser's answer for a session it does not know. */
 const UNKNOWN_SESSION = { code: -32001, message: 'Session with given id not found.' };
 /** Its answer when a Target command names, in its params, a session it does not know. */
+const UNKNOWN_TARGET = { code: -32602, message: 'No target with given id found' };
 const UNKNOWN_PARAM_SESSION = { code: -32602, message: 'No session with given id' };
 /**
  * Commands that name a session in their params. The browser already scopes
@@ -81,6 +83,16 @@ export interface ClientCommand {
  * refuse a command; nothing is refused here yet.
  */
 export type ClientCommandFilter = (client: { kind: 'internal' | 'external'; label: string }, command: ClientCommand) => { code: number; message: string } | null;
+
+/**
+ * Whether `client` may see and address the target `targetId`: C3's caller
+ * identity with C2b's rules. Without one every target is every client's, as on
+ * the port. With one, a target not granted to a client is, to that client, not
+ * there: commands naming it get the browser's own unknown-target answer, its
+ * target events and its Target.getTargets entry are left out, and a session
+ * auto-attached to it is detached again rather than handed over.
+ */
+export type TargetGrant = (client: { kind: 'internal' | 'external'; label: string }, targetId: string) => boolean;
 
 export interface CdpPipeCounters {
   frames: number;
@@ -156,6 +168,8 @@ export class CdpPipeMux {
       onClose?: () => void;
       /** C2b. */
       filter?: ClientCommandFilter;
+      /** C3 and C2b. */
+      targetGrant?: TargetGrant;
     } = {},
   ) {
     fromBrowser.on('data', (chunk: Buffer) => this.onData(chunk));
@@ -221,6 +235,12 @@ export class CdpPipeMux {
       client.reply(clientId, { id: clientId, error: UNKNOWN_PARAM_SESSION }, JSON.stringify({ id: clientId, error: UNKNOWN_PARAM_SESSION }));
       return;
     }
+    const target = command.params.targetId;
+    if (typeof target === 'string' && !this.granted(client, target)) {
+      totals.refused++;
+      client.reply(clientId, { id: clientId, error: UNKNOWN_TARGET }, JSON.stringify({ id: clientId, error: UNKNOWN_TARGET }));
+      return;
+    }
     if (client.closed || !this.open) return;
     const id = this.nextClientCommandId++;
     if (this.nextClientCommandId >= MUX_ID_BASE) this.nextClientCommandId = 1;
@@ -269,6 +289,10 @@ export class CdpPipeMux {
     client.attaching = attaching;
     attaching.catch(() => { if (client.attaching === attaching) client.attaching = null; });
     return attaching;
+  }
+
+  private granted(client: Client, targetId: string): boolean {
+    return this.opts.targetGrant?.(client, targetId) ?? true;
   }
 
   private adopt(client: Client, session: string): void {
@@ -374,6 +398,14 @@ export class CdpPipeMux {
         const session = (frame.result as { sessionId?: unknown } | undefined)?.sessionId;
         if (typeof session === 'string') this.adopt(job.client, session);
       }
+      if (job.method === 'Target.getTargets' && this.opts.targetGrant && !frame.error) {
+        const infos = (frame.result as { targetInfos?: Array<{ targetId?: unknown }> } | undefined)?.targetInfos;
+        if (Array.isArray(infos)) {
+          const shown = { ...frame, result: { ...(frame.result as Record<string, unknown>), targetInfos: infos.filter((t) => typeof t.targetId === 'string' && this.granted(job.client, t.targetId)) } };
+          job.client.reply(job.clientId, shown, JSON.stringify(shown));
+          return;
+        }
+      }
       job.client.reply(job.clientId, frame, text);
       return;
     }
@@ -382,6 +414,18 @@ export class CdpPipeMux {
     if (typeof frame.sessionId !== 'string') { bump(totals.dropped, 'root-event'); return; }
     const owner = this.owner.get(frame.sessionId);
     if (!owner) { bump(totals.dropped, 'unknown-session'); return; }
+    if (this.opts.targetGrant && frame.method.startsWith('Target.')) {
+      const params = frame.params as { targetId?: unknown; targetInfo?: { targetId?: unknown }; sessionId?: unknown } | undefined;
+      const target = params?.targetInfo?.targetId ?? params?.targetId;
+      if (typeof target === 'string' && !this.granted(owner, target)) {
+        bump(totals.dropped, 'ungranted-target');
+        // Auto-attached to a target the client may not have: let it go again, on the session it came on.
+        if (frame.method === 'Target.attachedToTarget' && typeof params?.sessionId === 'string') {
+          this.ownCommand('Target.detachFromTarget', { sessionId: params.sessionId }, frame.sessionId).catch(() => undefined);
+        }
+        return;
+      }
+    }
     if (frame.method === 'Target.attachedToTarget') {
       const child = (frame.params as { sessionId?: unknown } | undefined)?.sessionId;
       if (typeof child === 'string') this.adopt(owner, child);

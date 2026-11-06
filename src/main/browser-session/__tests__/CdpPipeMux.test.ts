@@ -173,6 +173,51 @@ describe('CdpPipeMux: routing', () => {
   });
 });
 
+describe('CdpPipeMux: a target grant (C3 and C2b)', () => {
+  it('a target not granted to a client is not there for it: commands, events, auto-attach and the target list', async () => {
+    // Granted by what each client opened: the url names its label.
+    const browser = new FakeBrowser();
+    const ownTarget = (label: string, targetId: string) => browser.targets.find((t) => t.targetId === targetId)?.url.includes(`//${label}/`) ?? false;
+    const mux = new CdpPipeMux(browser.fromMux, browser.toMux, { targetGrant: (client, targetId) => ownTarget(client.label, targetId) });
+    const a = external(mux, 'a');
+    const b = external(mux, 'b');
+    for (const c of [a, b]) await c.replyTo(c.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }));
+    const ta = (await a.replyTo(a.send('Target.createTarget', { url: 'http://a/' }))).result?.targetId as string;
+    const tb = (await b.replyTo(b.send('Target.createTarget', { url: 'http://b/' }))).result?.targetId as string;
+
+    // Each is auto-attached to its own target only; the other's attach is let go on the session it came on.
+    await vi.waitFor(() => expect(browser.received.filter((c) => c.method === 'Target.detachFromTarget' && c.id >= MUX_ID_BASE)).toHaveLength(2), { timeout: 5_000 });
+    const attachedTo = (c: typeof a) => c.inbox.filter((m) => m.method === 'Target.attachedToTarget').map((m) => (m.params as { targetInfo: { targetId: string } }).targetInfo.targetId);
+    expect(attachedTo(a)).toEqual([ta]);
+    expect(attachedTo(b)).toEqual([tb]);
+    for (const detach of browser.received.filter((c) => c.method === 'Target.detachFromTarget')) {
+      expect(browser.sessions.has(detach.params.sessionId as string)).toBe(false);
+      expect(['B1', 'B2']).toContain(detach.sessionId);
+    }
+
+    // The target list shows each its own.
+    const listed = async (c: typeof a) => ((await c.replyTo(c.send('Target.getTargets'))).result?.targetInfos as Array<{ targetId: string }>).map((t) => t.targetId);
+    expect(await listed(a)).toEqual([ta]);
+    expect(await listed(b)).toEqual([tb]);
+
+    // A command naming the other's target gets the browser's unknown-target answer and never reaches it.
+    const before = browser.received.length;
+    for (const method of ['Target.attachToTarget', 'Target.closeTarget', 'Target.activateTarget']) {
+      expect((await a.replyTo(a.send(method, { targetId: tb, flatten: true }))).error).toEqual({ code: -32602, message: 'No target with given id found' });
+    }
+    expect(browser.received.length).toBe(before);
+    expect((await a.replyTo(a.send('Target.activateTarget', { targetId: ta }))).result).toEqual({ success: true });
+
+    // The other's target events never reach it.
+    browser.event('B1', 'Target.targetInfoChanged', { targetInfo: { targetId: tb, type: 'page', url: 'http://b/2' } });
+    browser.event('B1', 'Target.targetInfoChanged', { targetInfo: { targetId: ta, type: 'page', url: 'http://a/2' } });
+    await vi.waitFor(() => expect(a.inbox.filter((m) => m.method === 'Target.targetInfoChanged')).toHaveLength(1), { timeout: 5_000 });
+    expect((a.inbox.find((m) => m.method === 'Target.targetInfoChanged')?.params as { targetInfo: { targetId: string } }).targetInfo.targetId).toBe(ta);
+    expect(cdpPipeCounters().dropped['ungranted-target']).toBe(3);
+    mux.close();
+  });
+});
+
 describe('CdpPipeMux: forged sessions are refused in every shape', () => {
   async function twoClientsAndMain() {
     const { browser, mux } = setup();
