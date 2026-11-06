@@ -954,10 +954,11 @@ mod sys {
             pump_to_stdout(|buf| reader.read(&event, buf))
         });
         pump_from_stdin(|bytes| conn.write_all(&writer_event, bytes));
-        // Host closed stdin: close the pipe and end the session.
+        // Host closed stdin: end the session. The handle is not closed here:
+        // the reader thread may have an overlapped read pending on it, and
+        // closing under it races that read. The process exit right after
+        // cancels the read and closes the handle.
         if super::claim_exit() {
-            // SAFETY: the process exits next, so the handle is never used again.
-            unsafe { CloseHandle(conn.0) };
             std::process::exit(Outcome::StdinEnd.code());
         }
         loop {
