@@ -12,7 +12,8 @@
 //   seen before and left unclaimed never pairs later.
 // - its shape is a page dialog's: exactly the message, no detail, and the buttons
 //   of that dialog type.
-// - it is the only such new sheet, and no other dialog is opening on the window.
+// - no other tab is opening a dialog with the same text and type on the window,
+//   and there are no more such new sheets than this tab's openings waiting for one.
 // Anything else tracks nothing and the box stays as before: ambiguity costs a box,
 // never a person's answer. At close only the sheet's identity counts, and it is
 // ended only if that same sheet is still showing.
@@ -201,36 +202,53 @@ export function createSheetTracker<H extends object, S>(deps: SheetTrackerDeps<H
       for (const key of [...state.ending]) if (!keys.includes(key)) state.ending.delete(key);
 
       const waiting = openings.filter((o) => o.host === host);
-      if (waiting.length > 1) {
-        for (const o of waiting) {
-          decide(o, 'no pair: another dialog is opening on the same window');
-          drop(o);
-        }
-        return;
-      }
-      const opening = waiting[0];
-      if (!opening) return;
+      if (waiting.length === 0) return;
       // Each new sheet's shape is read once per look.
-      const candidates = fresh.filter((s) => looksLike(step('shape', () => p.shape(s)), opening));
-      if (candidates.length > 1) {
-        decide(opening, `no pair: ${candidates.length} new boxes look like it`);
-        drop(opening);
-        return;
+      const shapes = fresh.map((s) => step('shape', () => p.shape(s)));
+      // Openings that could match the same box: same text and type.
+      const groups = new Map<string, Array<Opening<H>>>();
+      for (const o of waiting) {
+        const key = `${o.type}\n${o.message}`;
+        groups.set(key, [...(groups.get(key) ?? []), o]);
       }
-      if (candidates.length === 0) {
-        if (deps.now() >= opening.deadline) {
-          decide(opening, 'no pair: no box like it was listed in time');
-          drop(opening);
+      for (const group of groups.values()) {
+        // Two tabs showing the same text can't be told apart, and a mismatch would
+        // end a person's box on the other tab. One tab's openings can: a page shows
+        // its dialogs one after another, and their boxes queue in the same order, so
+        // the oldest opening takes the earliest box. A mismatch there stays on that
+        // tab: its next dialog's box closes a moment early, and it is being answered.
+        if (new Set(group.map((o) => o.surfaceId)).size > 1) {
+          for (const o of group) {
+            decide(o, 'no pair: another tab is opening a dialog with the same text on this window');
+            drop(o);
+          }
+          continue;
         }
-        return;
+        const candidates = fresh.filter((_s, i) => looksLike(shapes[i], group[0]));
+        if (candidates.length > group.length) {
+          for (const o of group) {
+            decide(o, `no pair: ${candidates.length} new boxes look like it`);
+            drop(o);
+          }
+          continue;
+        }
+        group.forEach((opening, i) => {
+          const sheet = candidates[i];
+          if (!sheet) {
+            if (deps.now() >= opening.deadline) {
+              decide(opening, 'no pair: no box like it was listed in time');
+              drop(opening);
+            }
+            return;
+          }
+          step('retain', () => p.retain(sheet));
+          drop(opening);
+          decide(opening, 'paired');
+          const entry = { host, sheet };
+          if (opening.closed) end(p, entry);
+          else owned.set(opening.surfaceId, entry);
+        });
       }
-      const sheet = candidates[0];
-      step('retain', () => p.retain(sheet));
-      drop(opening);
-      decide(opening, 'paired');
-      const entry = { host, sheet };
-      if (opening.closed) end(p, entry);
-      else owned.set(opening.surfaceId, entry);
     } catch (err) {
       if (!(err instanceof StepFailed)) throw err;
     } finally {

@@ -185,6 +185,39 @@ describe('dialog sheets: which box belongs to which dialog', () => {
     expect(ended).toEqual([]);
   });
 
+  it('two openings with different text on one window: both pair', () => {
+    const { tracker, ended, tick, expire } = rig();
+    const win = host();
+
+    // 'loop 1' is answered before its box is listed; another tab opens 'other'.
+    tracker.trackOpening('s1', win, 'loop 1', 'alert');
+    tracker.closeIfStale('s1');
+    tracker.trackOpening('s2', win, 'other', 'alert');
+    win.sheets.push(alertBox('one', 'loop 1'), alertBox('two', 'other'));
+    tick();
+    tracker.closeIfStale('s2');
+    expire();
+
+    expect(ended).toEqual(['one', 'two']);
+  });
+
+  it('a page looping the same alert text: its openings pair in order', () => {
+    const { tracker, ended, tick, expire } = rig();
+    const win = host();
+
+    tracker.trackOpening('s1', win, 'again', 'alert');
+    tracker.closeIfStale('s1');
+    tracker.trackOpening('s1', win, 'again', 'alert');
+    win.sheets.push(alertBox('one', 'again'), alertBox('two', 'again'));
+    tick();
+    // The answered opening took the earliest box; the open one holds the next.
+    expect(ended).toEqual(['one']);
+    tracker.closeIfStale('s1');
+    expire();
+
+    expect(ended).toEqual(['one', 'two']);
+  });
+
   it('a person who already clicked the box leaves nothing to end', () => {
     const { tracker, ended, released } = rig();
     const win = host();
