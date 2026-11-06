@@ -16,9 +16,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { dataSuffix } from '../../shared/constants';
-import { ROLE_TOOL_SURFACES, resolveRoleName, roleMcpArgv } from '../../shared/roleSurfaces';
+import { ROLE_TOOL_SURFACES, resolveRoleName, roleMcpArgv, type WmuxServerLauncher } from '../../shared/roleSurfaces';
 import { CORE_TOOL_SURFACE } from '../../shared/coreSurface';
-import { codexConfigPath, codexHasWmuxServer } from '../../shared/mcpRegistration';
+import { codexConfigPath, codexHasWmuxServer, codexWmuxLauncher } from '../../shared/mcpRegistration';
 import {
   applyRoleBinding, bindingEnforcesFreshContext, bindingEnforcesSkipPermissions, normalizeRoleBindings,
   type RoleBinding, type WmuxTools,
@@ -84,6 +84,8 @@ export function resolveRole(
   mcpEntry = defaultMcpEntry(),
   codexRegistered: () => boolean = () => codexHasWmuxServer(codexConfigPath(process.env)),
   customAgents: readonly CustomAgent[] = [],
+  /** What the codex config runs for wmux; an override must carry its args. */
+  codexLauncher: (entry: string) => WmuxServerLauncher = (entry) => codexWmuxLauncher(codexConfigPath(process.env), entry),
 ): ResolvedRole {
   const agent = binding.agent;
   const effort = agent === 'agy' ? (binding.model ? agyEffortOf(binding.model) : undefined) : binding.effort;
@@ -106,7 +108,7 @@ export function resolveRole(
     freshContext: bindingEnforcesFreshContext(binding),
     argv,
     flags: argv.slice(1),
-    ...mcpFor(role, agent, binding.tools, mcpEntry, codexRegistered),
+    ...mcpFor(role, agent, binding.tools, agent === 'codex' ? codexLauncher(mcpEntry) : mcpEntry, codexRegistered),
   };
 }
 
@@ -116,7 +118,7 @@ function mcpFor(
   role: string,
   agent: string | undefined,
   tools: WmuxTools | undefined,
-  entry: string,
+  entry: WmuxServerLauncher,
   codexRegistered: () => boolean,
 ): Pick<ResolvedRole, 'mcp' | 'mcpUnavailable'> {
   if (!agent || !tools) return {};

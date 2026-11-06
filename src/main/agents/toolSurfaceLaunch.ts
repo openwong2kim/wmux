@@ -21,10 +21,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { externalRegistrationSkipReason } from '../../shared/mcpTargets';
-import { codexConfigPath, codexHasWmuxServer } from '../../shared/mcpRegistration';
+import { codexConfigPath, codexHasWmuxServer, codexWmuxLauncher } from '../../shared/mcpRegistration';
 import { tokenize, launcherStem } from '../../shared/agentResume';
 import { WMUX_TOOLS, type WmuxTools } from '../../shared/orchestratorRole';
-import { resolveRoleName, toolSurfaceShellFlags, wmuxServerArgs } from '../../shared/roleSurfaces';
+import { resolveRoleName, toolSurfaceShellFlags, wmuxServerArgs, type WmuxServerLauncher } from '../../shared/roleSurfaces';
 import { splitModelEnvMarker } from '../../shared/workerLaunch';
 
 export interface WmuxToolsHint {
@@ -100,6 +100,9 @@ export interface ToolSurfaceDeps {
   writeFile?: (p: string, data: string) => void;
   /** Whether the codex config this launch will read registers a wmux server. */
   codexHasWmuxServer?: () => boolean;
+  /** What that codex config runs for wmux (codexWmuxLauncher): a codex
+   *  override replaces only the args, so they must be that launcher's. */
+  codexLauncher?: (entry: string) => WmuxServerLauncher;
   /** Where a skipped splice is reported. */
   log?: (line: string) => void;
 }
@@ -128,7 +131,8 @@ export function applyWmuxToolsToCommand(fullCommand: string, hint: WmuxToolsHint
   const role = known.kind === 'role' ? known.role : undefined;
   if (hint.tools === 'role' && !role) return command;
   const configFile = path.join(mcpDir, `surface-${hint.tools}${role ? `-${role.toLowerCase()}` : ''}.json`);
-  const flags = toolSurfaceShellFlags(stem, hint.tools, entry, role, configFile);
+  const launcher = stem === 'codex' ? (deps.codexLauncher ?? ((e: string) => codexWmuxLauncher(codexConfigPath(), e)))(entry) : entry;
+  const flags = toolSurfaceShellFlags(stem, hint.tools, launcher, role, configFile);
   if (!flags) return command;
   if (stem === 'codex') {
     const hasServer = deps.codexHasWmuxServer ?? (() => codexHasWmuxServer(codexConfigPath()));

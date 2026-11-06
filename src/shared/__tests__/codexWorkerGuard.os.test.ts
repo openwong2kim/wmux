@@ -51,6 +51,14 @@ describe('the codex worker launch line: an allowlist', () => {
     expect(buildCodexWorkerLaunchLine(parsed, CWD, ['/repo/.git'])).toBeNull();
   });
 
+  it('writes the native launcher\'s args when that is what the codex config runs', () => {
+    const parsed = parseCodexWorkerLine(`codex ${TRUST} -c "mcp_servers.wmux.args=['/evil.js','--role=Builder']" ${PROMPT}`, CWD)!;
+    const built = buildCodexWorkerLaunchLine(parsed, CWD, ['/repo/.git'], { mcpEntry: { kind: 'native', binary: '/u/.wmux/mcp/wmux-native' } })!;
+    expect(built).toContain(`-c "mcp_servers.wmux.args=['mcp-shim','--role=Builder']"`);
+    // Read back as the same level: the guard parses what it writes.
+    expect(parseCodexWorkerLine(built, CWD)?.wmuxTools).toEqual({ tools: 'role', role: 'Builder' });
+  });
+
   it.each([
     ['a bypass flag', `codex ${TRUST} --yolo ${PROMPT}`],
     ['the bypass flag', `codex ${TRUST} --dangerously-bypass-approvals-and-sandbox ${PROMPT}`],

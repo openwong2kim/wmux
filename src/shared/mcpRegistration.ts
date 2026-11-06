@@ -35,6 +35,8 @@ import {
   launcherCommand,
   entryProfileFlags,
   removeMcpServers,
+  nativeLauncherOf,
+  type WmuxLauncher,
   type WmuxLauncherInput,
   isWmuxOwnedNotify,
   upsertNotifyToml,
@@ -164,6 +166,21 @@ export function codexHasWmuxServer(configPath: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The launcher the codex config at `configPath` runs for `wmux`: the native
+ * launcher when its entry is one, else node with `nodeEntry`. A
+ * `-c mcp_servers.wmux.args=…` override replaces the args and keeps the
+ * configured command, so every tool-level override is written for this.
+ */
+export function codexWmuxLauncher(configPath: string, nodeEntry: string): WmuxLauncher {
+  try {
+    const parsed = parseConfig(fs.readFileSync(configPath, 'utf8'), 'toml');
+    const binary = nativeLauncherOf(getMcpServerEntry(parsed, 'toml', WMUX_SERVER_KEY));
+    if (binary) return { kind: 'native', binary };
+  } catch { /* missing or unreadable: the node entry */ }
+  return { kind: 'node', script: nodeEntry };
 }
 
 /** True when the codex config at `configPath` defines a `wmux` server of any

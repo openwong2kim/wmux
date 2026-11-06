@@ -225,6 +225,11 @@ function isNativeShimEntry(entry: McpServerEntry): boolean {
     && entry.args[0] === 'mcp-shim';
 }
 
+/** The binary of a native launcher entry, or null for any other entry. */
+export function nativeLauncherOf(entry: McpServerEntry | null): string | null {
+  return entry && isNativeShimEntry(entry) ? entry.command : null;
+}
+
 /** The path wmux wrote for a server key: the script (first arg) of a node
  *  entry, the binary of a native launcher entry, or null when the key is
  *  absent / malformed / foreign-shaped. */

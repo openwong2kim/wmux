@@ -14,6 +14,7 @@ import {
   unregisterCodexHooks,
   readCodexHooksStatus,
   codexWmuxApprovedTools,
+  codexWmuxLauncher,
 } from '../mcpRegistration';
 import { upsertCodexHooksToml } from '../configIO';
 import { getWmuxHomeDir } from '../constants';
@@ -713,5 +714,16 @@ describe('registerCodexHooks — the hooks lane (#1107)', () => {
     // The operator re-pastes the block by hand (README flow: no stamp write).
     writeCodex(upsertCodexHooksToml('model = "x"\n', BRIDGE));
     expect(readCodexHooksStatus(home, BRIDGE).state).toBe('written');
+  });
+});
+
+describe('codexWmuxLauncher', () => {
+  it('answers with the launcher the codex config registered, else node with the given entry', () => {
+    const configPath = path.join(home, 'config.toml');
+    expect(codexWmuxLauncher(configPath, '/e/index.js')).toEqual({ kind: 'node', script: '/e/index.js' });
+    fs.writeFileSync(configPath, '[mcp_servers.wmux]\ncommand = "node"\nargs = ["/old/index.js"]\n');
+    expect(codexWmuxLauncher(configPath, '/e/index.js')).toEqual({ kind: 'node', script: '/e/index.js' });
+    fs.writeFileSync(configPath, '[mcp_servers.wmux]\ncommand = "/Users/u/.wmux/mcp/wmux-native"\nargs = ["mcp-shim"]\n');
+    expect(codexWmuxLauncher(configPath, '/e/index.js')).toEqual({ kind: 'native', binary: '/Users/u/.wmux/mcp/wmux-native' });
   });
 });

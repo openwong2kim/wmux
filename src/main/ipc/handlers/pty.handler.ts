@@ -1,5 +1,5 @@
 import { applyWmuxToolsToCommand, isWmuxToolsHint, locateWmuxMcpEntry } from '../../agents/toolSurfaceLaunch';
-import { codexConfigPath, codexHasWmuxServer } from '../../../shared/mcpRegistration';
+import { codexConfigPath, codexHasWmuxServer, codexWmuxLauncher } from '../../../shared/mcpRegistration';
 import { WSL_RPC_TIMEOUT_MS } from '../../../shared/wsl';
 import { heldReconnectAnswer, promoteOutcome, promoteStartedSession, suspendedReconnectAction } from '../../../shared/suspendedSession';
 import { app, ipcMain, BrowserWindow } from 'electron';
@@ -217,6 +217,7 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   const initialCommand = applyWmuxToolsToCommand(rest.initialCommand, wmuxTools, {
     entry: currentMcpEntry(),
     codexHasWmuxServer: () => codexHasWmuxServer(codexConfigPath(rest.env)),
+    codexLauncher: (entry) => codexWmuxLauncher(codexConfigPath(rest.env), entry),
   });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
   return { ...rest, initialCommand };
