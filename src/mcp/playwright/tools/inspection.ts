@@ -758,7 +758,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
 
   server.tool(
     'browser_screenshot',
-    'Screenshot the page or one element as a base64-encoded PNG. Requires browser_open first, even if a browser panel is already visible. A viewport capture states ONE scale (image px per viewport CSS px, device pixel ratio and any downscale already folded in) plus a screenshotScale JSON line: click with browser_click imageX/imageY, or divide by that scale yourself. fullPage and element captures are not in click coordinates at all. CSS animations and transitions are frozen for the capture, so two shots of an unchanged page match.',
+    'Screenshot the page or one element as a base64-encoded PNG. Requires browser_open first, even if a browser panel is already visible. A viewport capture states ONE scale (image px per viewport CSS px, device pixel ratio and any downscale already folded in) plus a screenshotScale JSON line: click with browser_click imageX/imageY, or divide by that scale yourself. fullPage and element captures are not in click coordinates at all. CSS animations and transitions are frozen for the capture when a Playwright page is attached, so two shots of an unchanged page match; the in-app browser\'s RPC lane (no page) does not freeze them.',
     BROWSER_SCREENSHOT_SHAPE,
     async ({ fullPage, ref, surfaceId, maxBytes, refs }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const ceiling = clampScreenshotCeilingBytes(maxBytes);
@@ -840,12 +840,13 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             return imageResult(fitted, refs ? `${basis}\n\n${await refsTable(page)}` : basis);
           }
         }
-        // Element (ref) captures. Builtin always goes over RPC: main crops the
-        // guest's own capture to the element, so the result never depends on
-        // whether the engine happens to hold a Page (that is attach order).
-        // The chrome backend has no browser.screenshot lane and keeps
-        // Playwright's element capture.
-        if (ref && (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) !== 'chrome') {
+        // Element (ref) captures, in the same order as click and fill. With a
+        // Playwright page the snapshot minted accessibility refs and wrote no
+        // data-wmux-ref tags, so the ref is resolved on that page. Without one
+        // (attach order, not build), main crops the guest's own capture to the
+        // tagged element. The chrome backend has no browser.screenshot lane.
+        const refPage = ref ? await engine.getPageForScope(scope).catch(allowScopedRpcFallback) : null;
+        if (ref && !refPage && (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) !== 'chrome') {
           const selector = `[data-wmux-ref="${sanitizeRef(ref, scope)}"]`;
           const result = await sendScopedBrowserRpc<{ data: string }>('browser.screenshot', scope, { selector });
           const fitted = await fitScreenshot(
@@ -867,7 +868,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           );
         }
         if (ref) {
-          const page = await engine.getPageForScope(scope);
+          const page = refPage;
           if (page) {
             const el = await resolveRef(page, ref);
             if (!el) {
