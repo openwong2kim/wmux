@@ -251,8 +251,12 @@ struct NamedNote {
 /// A settings entry names the bridge in argv[1], but the run uses the one
 /// beside this binary, as every other run does. A name that is not that file
 /// (once both are resolved) is noted on the run's first log line, and the run
-/// goes on.
-fn named_note(named: &Path, used: Option<&Path>) -> Option<NamedNote> {
+/// goes on. The installer writes the path beside the binary itself: equal as
+/// bytes, nothing is resolved.
+fn named_note(named: &Path, beside: Option<&Path>, used: Option<&Path>) -> Option<NamedNote> {
+    if beside.map(Path::as_os_str) == Some(named.as_os_str()) {
+        return None;
+    }
     let resolved = |p: &Path| std::fs::canonicalize(p).ok();
     let same = resolved(named).is_some_and(|n| used.and_then(resolved) == Some(n));
     let text = |p: &Path| Json::Str(paths::os_to_js(p.as_os_str()));
@@ -406,7 +410,7 @@ fn hand_over(
     if let Some((named, note)) = named_bridge {
         // The bridge the run uses: none when there is no file beside it.
         let used = handover.bridge.as_deref();
-        *note.lock().unwrap_or_else(PoisonError::into_inner) = named_note(named, used);
+        *note.lock().unwrap_or_else(PoisonError::into_inner) = named_note(named, beside.as_deref(), used);
     }
     match handover.bridge.as_ref().map(std::fs::read) {
         Some(Ok(source)) if ported_from(&source) => {}

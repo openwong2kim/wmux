@@ -545,6 +545,18 @@ fn without_a_bridge_beside_it_the_named_one_is_noted_with_none_used() {
     assert!(!log.contains("bridgeUsed"), "{log}");
 }
 
+#[test]
+fn the_path_beside_it_named_byte_for_byte_is_never_noted() {
+    // The installer's case: argv[1] is the path beside the binary. Equal as
+    // bytes, it is not resolved at all, so even with no file there it is not
+    // a differing name (the missing bridge is logged on its own).
+    let case = Case::new("named-same-bytes", None);
+    quiet(&case.run_argv(&[case.bridge().into(), "Stop".into()], &[], true, "{}"));
+    assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
+    let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
+    assert!(!log.contains("bridgeNamed"), "{log}");
+}
+
 /// A main that answers every request with `{"id", "ok": true, "result"}`;
 /// the socket's path, under the system temp dir (sun_path is short).
 fn stub_main(tag: &str, result: &'static str) -> String {
