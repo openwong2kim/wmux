@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
 import { canConnectBrokerPipe } from './brokerProbe';
+import { brokerOffEffects, type BrokerOffEffects } from './brokerOffMarker';
 import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStatus } from '../../shared/mcpSessions';
 
 /**
@@ -27,6 +28,16 @@ const EXIT_ALREADY_RUNNING = 75;
 const RECLAIM_PROBE_MS = 15_000;
 /** Per-probe connect timeout — Windows named-pipe connect can hang without it. */
 const PROBE_TIMEOUT_MS = 200;
+/**
+ * The crash-loop breaker: this many failures (crash exits and failed spawns)
+ * within each window stop the restarts until wmux restarts. The long window
+ * catches a broker that lives past STABLE_MS each time, which resets the
+ * backoff and would otherwise loop forever.
+ */
+const BREAKER_WINDOWS: ReadonlyArray<{ failures: number; withinMs: number }> = [
+  { failures: 5, withinMs: 60_000 },
+  { failures: 8, withinMs: 30 * 60_000 },
+];
 
 export class BrokerSupervisor {
   private child: ChildProcess | null = null;
@@ -45,6 +56,18 @@ export class BrokerSupervisor {
   /** Spawns that failed outright (ENOENT, EPERM, a scanner): not crashes. */
   private spawnFailures = 0;
   private standDowns = 0;
+  /** When each recent failure happened, oldest first (the longest window's worth). */
+  private failureTimes: number[] = [];
+  /** Set once the breaker trips; cleared only by a new supervisor (an app restart). */
+  private tripped = false;
+  /** Tool calls in flight, as the current child last reported them. */
+  private inflight: string[] = [];
+  private lastCrashTools: string[] = [];
+  private readonly brokerOff: BrokerOffEffects;
+
+  constructor(opts: { brokerOff?: BrokerOffEffects } = {}) {
+    this.brokerOff = opts.brokerOff ?? brokerOffEffects();
+  }
 
   /** The running broker's pid, for telling its relayed calls apart (peer pid measurement). */
   get pid(): number | null {
@@ -64,6 +87,7 @@ export class BrokerSupervisor {
       standDowns: this.standDowns,
       standingDown: this.reclaimTimer !== null,
       downReason: this.downReason(),
+      lastCrashTools: [...this.lastCrashTools],
     };
   }
 
@@ -72,6 +96,7 @@ export class BrokerSupervisor {
     if (this.stopped) return 'stopped';
     if (this.scriptMissing) return 'script-missing';
     if (this.reclaimTimer) return 'standing-down';
+    if (this.tripped) return 'crash-loop';
     if (this.restartTimer) return 'restarting';
     return 'not-started';
   }
@@ -89,7 +114,7 @@ export class BrokerSupervisor {
   }
 
   start(): void {
-    if (this.stopped || this.child) return;
+    if (this.stopped || this.child || this.tripped) return;
     const script = this.getBrokerScriptPath();
     if (!script) {
       this.scriptMissing = true;
@@ -97,6 +122,9 @@ export class BrokerSupervisor {
       return;
     }
     this.scriptMissing = false;
+    // A broker is starting here, so none is meant to be off: a marker an
+    // earlier run's breaker, or another instance's, left goes.
+    this.brokerOff.clear();
 
     // Defensive: if a reclaim probe is somehow still armed as we spawn our own
     // child, tear it down — otherwise every 15s tick would see our live broker
@@ -119,12 +147,15 @@ export class BrokerSupervisor {
     this.child = child;
     this.childStartedAt = startedAt;
     this.connections = 0;
+    this.inflight = [];
     console.log(`[BrokerSupervisor] broker started pid=${child.pid}`);
 
     child.on('message', (message: unknown) => {
       if (this.child !== child) return;
-      const open = parseBrokerConnectionsReport(message);
-      if (open !== null) this.connections = open;
+      const report = parseBrokerConnectionsReport(message);
+      if (report === null) return;
+      this.connections = report.open;
+      this.inflight = report.inflight;
     });
 
     child.stderr?.on('data', (chunk: Buffer) => {
@@ -138,10 +169,13 @@ export class BrokerSupervisor {
     const scheduleRestart = (reason: string, kind: 'crash' | 'spawn') => {
       if (settled) return;
       settled = true;
+      // A failed spawn ran no tools: an older crash's names would mislead.
+      this.lastCrashTools = kind === 'crash' ? this.inflight : [];
       this.clearChild();
       if (this.stopped) return;
       if (kind === 'spawn') this.spawnFailures++;
       else this.crashExits++;
+      if (this.noteFailure()) return;
       if (Date.now() - startedAt > STABLE_MS) this.restarts = 0;
       const delay = RESTART_BACKOFF_MS[Math.min(this.restarts, RESTART_BACKOFF_MS.length - 1)];
       this.restarts++;
@@ -191,6 +225,30 @@ export class BrokerSupervisor {
     this.child = null;
     this.childStartedAt = null;
     this.connections = 0;
+    this.inflight = [];
+  }
+
+  /**
+   * Record a failure; true when it trips the breaker. A tripped breaker stops
+   * the restarts and marks the broker off (unless another instance's broker
+   * serves the pipe), so native launchers go straight to their own server.
+   * The agents' registrations are left alone.
+   */
+  private noteFailure(): boolean {
+    const now = Date.now();
+    const longest = Math.max(...BREAKER_WINDOWS.map((w) => w.withinMs));
+    this.failureTimes = [...this.failureTimes.filter((t) => now - t < longest), now];
+    const trips = BREAKER_WINDOWS.some(
+      (w) => this.failureTimes.filter((t) => now - t < w.withinMs).length >= w.failures,
+    );
+    if (!trips) return false;
+    this.tripped = true;
+    console.error(
+      `[BrokerSupervisor] ${this.failureTimes.length} broker failures; ` +
+        'not restarting it until wmux restarts (agents use their own MCP server)',
+    );
+    void this.brokerOff.tripped().catch(() => undefined);
+    return true;
   }
 
   /**
