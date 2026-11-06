@@ -152,6 +152,15 @@ describe('classifyMcpParent — who may vouch for a threadId', () => {
     expect(argv).toEqual(['cmd', '/d', '/s', '/c', 'C:\\Program Files\\wmux\\resources\\wmux-native.exe', 'mcp-shim', '--core']);
     expect(classifyMcpParent([argv, SHARED_SERVER])).toBe('shared-server');
   });
+  it('reaches the shared server from the native fallback on Windows: node under the shim under cmd /c', () => {
+    // On Windows the shim's fallback runs node as its child, so node's chain is
+    // the shim, the host's cmd /c wrapper, then the host: all three hops.
+    const shim = ['C:\\Users\\u\\.wmux\\mcp\\wmux-native.exe', 'mcp-shim', '--core'];
+    const wrapper = ['cmd.exe', '/d', '/s', '/c', 'C:\\Users\\u\\.wmux\\mcp\\wmux-native.exe', 'mcp-shim', '--core'];
+    expect(classifyMcpParent([shim, wrapper, SHARED_SERVER])).toBe('shared-server');
+    // One more wrapper pushes the host past the hop limit, which stays unknown.
+    expect(classifyMcpParent([shim, wrapper, wrapper])).toBe('unknown');
+  });
   it('does not skip a look-alike of the native launcher', () => {
     const otherOf = (argv: string[]) => classifyMcpParent([argv, SHARED_SERVER]);
     expect(otherOf(['/Users/u/.wmux/bin/wmux-native-evil', 'mcp-shim'])).toBe('other');
