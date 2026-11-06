@@ -16,6 +16,10 @@
 // lifecycle. Until then only the tests use most of it.
 #[allow(dead_code)]
 mod claude;
+// The Claude transport is unix only: Windows Claude hooks stay on Node.
+#[cfg(unix)]
+#[allow(dead_code)]
+mod claude_rpc;
 #[allow(dead_code)]
 mod fsx;
 mod hook;

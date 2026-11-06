@@ -54,7 +54,7 @@ pub struct Target {
     pub method: &'static str,
 }
 
-fn failure(error: &str, detail: Option<String>, retryable: Option<bool>) -> Json {
+pub fn failure(error: &str, detail: Option<String>, retryable: Option<bool>) -> Json {
     let mut o = vec![
         (js::js("ok"), Json::Bool(false)),
         (js::js("error"), Json::Str(js::js(error))),
@@ -68,7 +68,7 @@ fn failure(error: &str, detail: Option<String>, retryable: Option<bool>) -> Json
     Json::Obj(o)
 }
 
-fn is_true(v: Option<&Json>) -> bool {
+pub fn is_true(v: Option<&Json>) -> bool {
     v == Some(&Json::Bool(true))
 }
 
@@ -148,14 +148,14 @@ fn exchange(pipe: &str, line: &str, id: &[u16], gate: &Mutex<Gate>) -> Json {
 /// Newline-delimited frames from a byte stream. Each byte is scanned once:
 /// `scanned` remembers how far the unfinished tail has been searched.
 #[derive(Default)]
-struct LineBuffer {
+pub struct LineBuffer {
     buffer: Vec<u8>,
     scanned: usize,
 }
 
 impl LineBuffer {
     /// Append a chunk and return the lines it completed, without their `\n`.
-    fn push(&mut self, chunk: &[u8]) -> Vec<Vec<u8>> {
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<Vec<u8>> {
         self.buffer.extend_from_slice(chunk);
         let mut lines = Vec::new();
         let mut start = 0;
@@ -173,15 +173,18 @@ impl LineBuffer {
     }
 }
 
+/// One request on one pipe: `(pipe, line, id, deadline) -> outcome`.
+pub type Send = fn(&str, &str, &[u16], Instant) -> Json;
+
 /// sendRpcWithRetry: retry a transient connect failure inside the deadline.
-fn send_rpc_with_retry(pipe: &str, line: &str, id: &[u16], deadline: Instant) -> Json {
+pub fn send_rpc_with_retry(send: Send, pipe: &str, line: &str, id: &[u16], deadline: Instant) -> Json {
     let mut attempt = 0;
     let mut last = failure("timeout", None, None);
     loop {
         if Instant::now() >= deadline {
             return last;
         }
-        last = send_rpc(pipe, line, id, deadline);
+        last = send(pipe, line, id, deadline);
         if !str_is(last.get("error"), "connect-error") {
             return last;
         }
@@ -214,13 +217,26 @@ pub fn should_try_next_target(result: &Json, kind: &str, policy: &WalkPolicy) ->
     true
 }
 
-/// sendToTargets: one budget for the whole walk, spent as `policy` says.
+/// sendToTargets over this module's transport.
 pub fn send_to_targets<'t>(
     targets: &'t [Target],
     build_line: impl Fn(&Target) -> String,
     id: &[u16],
     kind: &str,
     policy: &WalkPolicy,
+) -> (Json, Option<&'t Target>) {
+    walk(targets, build_line, id, kind, policy, send_rpc)
+}
+
+/// sendToTargets: one budget for the whole walk, spent as `policy` says, each
+/// request sent by `send`.
+pub fn walk<'t>(
+    targets: &'t [Target],
+    build_line: impl Fn(&Target) -> String,
+    id: &[u16],
+    kind: &str,
+    policy: &WalkPolicy,
+    send: Send,
 ) -> (Json, Option<&'t Target>) {
     let deadline = Instant::now() + policy.budget;
     let mut result = failure("no-target", None, None);
@@ -237,7 +253,7 @@ pub fn send_to_targets<'t>(
         } else {
             deadline
         };
-        result = send_rpc_with_retry(&target.pipe, &build_line(target), id, target_deadline);
+        result = send_rpc_with_retry(send, &target.pipe, &build_line(target), id, target_deadline);
         if !should_try_next_target(&result, kind, policy) {
             break;
         }
@@ -246,7 +262,7 @@ pub fn send_to_targets<'t>(
 }
 
 #[cfg(unix)]
-mod transport {
+pub mod transport {
     use std::os::unix::net::UnixStream;
 
     #[cfg(not(target_os = "macos"))]
@@ -321,7 +337,11 @@ mod transport {
             #[cfg(target_os = "linux")]
             91 => "EPROTOTYPE",
             #[cfg(target_os = "linux")]
+            103 => "ECONNABORTED",
+            #[cfg(target_os = "linux")]
             104 => "ECONNRESET",
+            #[cfg(target_os = "linux")]
+            107 => "ENOTCONN",
             #[cfg(target_os = "linux")]
             110 => "ETIMEDOUT",
             #[cfg(target_os = "linux")]
@@ -333,7 +353,11 @@ mod transport {
             #[cfg(target_os = "macos")]
             41 => "EPROTOTYPE",
             #[cfg(target_os = "macos")]
+            53 => "ECONNABORTED",
+            #[cfg(target_os = "macos")]
             54 => "ECONNRESET",
+            #[cfg(target_os = "macos")]
+            57 => "ENOTCONN",
             #[cfg(target_os = "macos")]
             60 => "ETIMEDOUT",
             #[cfg(target_os = "macos")]
