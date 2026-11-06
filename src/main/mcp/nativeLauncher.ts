@@ -11,7 +11,7 @@
 
 import { NATIVE_HOOKS_MARKER } from '../../shared/hooks/hookFlavours';
 import { NATIVE_SELF_TEST_LINE, nativeLauncherPath, type SelfTestVerdict } from '../../shared/mcpLauncher';
-import { prepareProbedNative } from '../../shared/probedNative';
+import { prepareProbedNative, type ProbedNativeResult } from '../../shared/probedNative';
 
 export interface NativeLauncherOptions {
   /** The binary this build ships, or null when it ships none. */
@@ -22,18 +22,12 @@ export interface NativeLauncherOptions {
   platform?: NodeJS.Platform;
 }
 
-export interface NativeLauncherResult {
-  /** The launcher to register, or null to register a node launcher. */
-  binary: string | null;
-  /** Always false: a failing copy never replaces a working one, so none is
-   *  put back. Kept for callers that read it. */
-  restored: boolean;
-  /** Why no new launcher is offered; for the log. */
-  reason?: string;
-}
+/** The launcher to register (null: register a node launcher), and why no new
+ *  one is offered, for the log. */
+export type NativeLauncherResult = ProbedNativeResult;
 
-export async function prepareNativeLauncher(opts: NativeLauncherOptions): Promise<NativeLauncherResult> {
-  const result = await prepareProbedNative({
+export function prepareNativeLauncher(opts: NativeLauncherOptions): Promise<NativeLauncherResult> {
+  return prepareProbedNative({
     sourcePath: opts.sourcePath,
     destinationPath: nativeLauncherPath(opts.stableDir, opts.platform),
     recordDir: opts.stableDir,
@@ -42,5 +36,4 @@ export async function prepareNativeLauncher(opts: NativeLauncherOptions): Promis
     ownershipMarkers: [NATIVE_HOOKS_MARKER],
     platform: opts.platform,
   });
-  return { binary: result.binary, restored: false, ...(result.reason ? { reason: result.reason } : {}) };
 }

@@ -378,29 +378,19 @@ function writeSynced(file: string, bytes: Buffer, mode: number): void {
 
 /**
  * Move a staged copy that passed into place.
- *   unix: the copy in place is linked aside first, so its name never goes
- *         missing; the rename is atomic and a running copy keeps its inode;
- *         the aside is then dropped.
+ *   unix: one rename, which replaces atomically; a running copy keeps its
+ *         inode.
  *   Windows: a running exe cannot be replaced, only renamed: it goes aside,
  *         the staged copy takes its name, and only if that second rename
  *         fails is the aside renamed back (a filesystem undo; nothing failed
  *         a probe). An aside still running is swept on a later run.
  */
 function swapIn(staged: string, dest: string, hasCurrent: boolean, platform: NodeJS.Platform): void {
+  if (platform !== 'win32' || !hasCurrent) {
+    fs.renameSync(staged, dest);
+    return;
+  }
   const aside = `${dest}.previous-${process.pid}-${randomBytes(4).toString('hex')}`;
-  if (platform !== 'win32') {
-    let linked = false;
-    if (hasCurrent) {
-      try { fs.linkSync(dest, aside); linked = true; } catch { /* no hard links here: the rename alone is still atomic */ }
-    }
-    fs.renameSync(staged, dest);
-    if (linked) try { fs.unlinkSync(aside); } catch { /* swept next time */ }
-    return;
-  }
-  if (!hasCurrent) {
-    fs.renameSync(staged, dest);
-    return;
-  }
   fs.renameSync(dest, aside);
   try {
     fs.renameSync(staged, dest);

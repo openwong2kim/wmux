@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { WmuxLauncher } from './configIO';
 import { nativeHooksBasename } from './hooks/hookFlavours';
-import { PROBE_RECORD, fileSha256, probeKey, recordProbe, recordedProbe, runProbe, type ProbeVerdict } from './probedNative';
+import { fileSha256, probeKey, recordedProbe, runProbe, type ProbeVerdict } from './probedNative';
 
 /** What `wmux-native mcp-shim --self-test` prints when it speaks the broker
  *  protocol this wmux expects (core/wmux-native/src/mcp_shim.rs). */
@@ -26,25 +26,6 @@ export type SelfTestVerdict = ProbeVerdict;
 /** Run the native launcher's self-test. Never throws. */
 export function runNativeSelfTest(binary: string, timeoutMs = NATIVE_SELF_TEST_TIMEOUT_MS): Promise<SelfTestVerdict> {
   return runProbe(binary, ['mcp-shim', '--self-test'], NATIVE_SELF_TEST_LINE, timeoutMs);
-}
-
-/**
- * The verdicts the app recorded for launcher builds in the stable MCP
- * directory, by sha256 of the copy and the self-test line. Only the app writes
- * it (after a self-test); the CLI reads it, so both offer the same copies. A
- * timeout is never recorded.
- */
-export const NATIVE_HEALTH_RECORD = PROBE_RECORD;
-
-export { fileSha256 };
-
-export function recordedVerdict(stableDir: string, hash: string): 'pass' | 'fail' | undefined {
-  return recordedProbe(stableDir, probeKey(hash, NATIVE_SELF_TEST_LINE));
-}
-
-/** Record a verdict for a build; the newest few builds are kept. */
-export function recordVerdict(stableDir: string, hash: string, verdict: 'pass' | 'fail'): void {
-  recordProbe(stableDir, probeKey(hash, NATIVE_SELF_TEST_LINE), verdict);
 }
 
 /** Where the native launcher lives inside the stable MCP directory. */
@@ -62,7 +43,8 @@ export function approvedInstalledNative(stableDir: string): string | null {
   const binary = nativeLauncherPath(stableDir);
   if (!fs.existsSync(binary) || !fs.existsSync(path.join(stableDir, 'index.js'))) return null;
   const hash = fileSha256(binary);
-  return hash && recordedVerdict(stableDir, hash) === 'pass' ? binary : null;
+  // The app records verdicts there (shared/probedNative.ts); the CLI only reads.
+  return hash && recordedProbe(stableDir, probeKey(hash, NATIVE_SELF_TEST_LINE)) === 'pass' ? binary : null;
 }
 
 export type LauncherLane = 'native' | 'node-shim' | 'bundle';

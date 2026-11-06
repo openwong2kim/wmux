@@ -88,6 +88,22 @@ describe('prepareProbedNative — a Windows swap whose undo fails too', () => {
   });
 });
 
+describe.skipIf(process.platform === 'win32')('prepareProbedNative — the unix swap', () => {
+  it('is one rename: no link aside', async () => {
+    const source = path.join(dir, 'source');
+    const prepare = () => prepareProbedNative({
+      sourcePath: source, destinationPath: path.join(dir, 'wmux-native'), recordDir: dir, line: 'line 1',
+      probe: async () => 'pass', ownershipMarkers: ['wmux-managed: native-hooks'],
+    });
+    realFs.writeFileSync(source, 'v1 wmux-managed: native-hooks');
+    await prepare();
+    realFs.writeFileSync(source, 'v2 wmux-managed: native-hooks');
+    vi.mocked(fs.linkSync).mockClear();
+    expect(await prepare()).toEqual({ binary: path.join(dir, 'wmux-native') });
+    expect(fs.linkSync).not.toHaveBeenCalled();
+  });
+});
+
 describe('prepareProbedNative — a lock that cannot be created', () => {
   it('reports the error itself, not another holder', async () => {
     const source = path.join(dir, 'source');

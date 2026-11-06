@@ -38,14 +38,14 @@ afterEach(() => {
 describe('prepareNativeLauncher', () => {
   it('installs a copy that passes its self-test and offers it', async () => {
     ship('good v1');
-    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(await prepare()).toEqual({ binary: dest() });
     expect(fs.readFileSync(dest(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
   });
 
   it('records a pass by content hash, so the next boot does not run the self-test again', async () => {
     ship('good v1');
     await prepare();
-    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(await prepare()).toEqual({ binary: dest() });
     expect(runs).toBe(1);
     expect(approvedInstalledNative(stableDir)).toBe(dest());
     // New bytes are a new hash: tested once more.
@@ -56,7 +56,7 @@ describe('prepareNativeLauncher', () => {
 
   it('never puts a copy that fails in place: records it, offers nothing, leaves no staged file', async () => {
     ship('broken v1');
-    expect(await prepare()).toMatchObject({ binary: null, restored: false, reason: 'self-test failed' });
+    expect(await prepare()).toMatchObject({ binary: null, reason: 'self-test failed' });
     expect(fs.existsSync(dest())).toBe(false);
     expect(staged()).toEqual([]);
     expect(approvedInstalledNative(stableDir)).toBeNull();
@@ -70,7 +70,7 @@ describe('prepareNativeLauncher', () => {
     expect(await prepare(async () => 'timeout')).toMatchObject({ binary: null, reason: 'self-test timed out' });
     expect(fs.existsSync(dest())).toBe(false);
     expect(approvedInstalledNative(stableDir)).toBeNull();
-    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(await prepare()).toEqual({ binary: dest() });
     expect(runs).toBe(1);
   });
 
@@ -78,7 +78,7 @@ describe('prepareNativeLauncher', () => {
     ship('good v1');
     expect(await prepare(async () => 'unstartable')).toMatchObject({ binary: null, reason: 'self-test could not start' });
     expect(approvedInstalledNative(stableDir)).toBeNull();
-    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(await prepare()).toEqual({ binary: dest() });
     expect(runs).toBe(1);
   });
 
@@ -87,7 +87,7 @@ describe('prepareNativeLauncher', () => {
     await prepare();
     ship('broken v2');
     const result = await prepare();
-    expect(result).toMatchObject({ binary: dest(), restored: false });
+    expect(result).toMatchObject({ binary: dest() });
     expect(result.reason).toContain('the installed copy stays');
     expect(fs.readFileSync(dest(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
     expect(asides()).toEqual([]);
@@ -133,7 +133,7 @@ describe('prepareNativeLauncher', () => {
     await prepare();
     fs.writeFileSync(`${dest()}.previous-1-aa`, 'left while it was running');
     ship('good v2');
-    expect(await prepare()).toEqual({ binary: dest(), restored: false });
+    expect(await prepare()).toEqual({ binary: dest() });
     expect(fs.readFileSync(dest(), 'utf8')).toBe('good v2 wmux-managed: native-hooks');
     expect(asides()).toEqual([]);
   });
