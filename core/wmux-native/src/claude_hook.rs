@@ -45,7 +45,7 @@ use crate::paths;
 use crate::rpc::Target;
 use crate::sha256;
 use std::ffi::OsString;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// The bridge this port follows (claudeHookContract.test.ts pins the same file).
@@ -428,7 +428,8 @@ fn run(args: &[OsString], event: Option<&JsStr>, argv: &[JsStr]) {
         fields.push(("permissionMode", truthy_field("permissionMode")));
         let mut line = String::from("WMUX_BRIDGE_DEBUG_ENVELOPE=");
         js::stringify(&object(fields), &mut line);
-        eprintln!("{line}");
+        // Best effort, as Node's console.error: a broken stderr is not an error.
+        let _ = writeln!(std::io::stderr(), "{line}");
     }
 
     let mut fields = meta;

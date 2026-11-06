@@ -40,6 +40,17 @@ impl Case {
     }
 
     fn run(&self, args: &[&str], env: &[(&str, &str)], with_node: bool, stdin: &str) -> Output {
+        self.run_with_stderr(args, env, with_node, stdin, Stdio::piped())
+    }
+
+    fn run_with_stderr(
+        &self,
+        args: &[&str],
+        env: &[(&str, &str)],
+        with_node: bool,
+        stdin: &str,
+        stderr: Stdio,
+    ) -> Output {
         let path = if with_node {
             format!("{}:/usr/bin:/bin", self.dir.join("fake-node").display())
         } else {
@@ -56,7 +67,7 @@ impl Case {
             .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(stderr)
             .spawn()
             .unwrap();
         use std::io::Write;
@@ -308,4 +319,26 @@ fn after_a_failed_hand_over_a_closed_daemon_socket_is_logged_not_fatal() {
     }
     let _ = std::fs::remove_file(&socket);
     assert_eq!(&case.log()[..2], ["impl-fallback node-missing", "rpc-failed"]);
+}
+
+#[test]
+fn a_broken_stderr_does_not_stop_the_send() {
+    // WMUX_BRIDGE_DEBUG writes the envelope to stderr; a stderr nobody reads
+    // any more must not end the run before the RPC.
+    let case = Case::new("broken-stderr", Some(&pinned()));
+    let wmux_home = case.dir.join("home/.wmux-claude-hook-test");
+    std::fs::create_dir_all(&wmux_home).unwrap();
+    std::fs::write(wmux_home.join("daemon-auth-token"), "t").unwrap();
+    let (stderr, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    drop(reader);
+    let absent = case.dir.join("absent.sock").display().to_string();
+    let out = case.run_with_stderr(
+        &["Stop"],
+        &[("WMUX_BRIDGE_DEBUG", "1"), ("WMUX_PIPE_NAME", &absent)],
+        true,
+        r#"{"session_id":"s"}"#,
+        Stdio::from(std::os::fd::OwnedFd::from(stderr)),
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(case.log(), ["rpc-failed"]);
 }
