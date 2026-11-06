@@ -6,6 +6,7 @@ import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../../shared/se
 import type { RpcRequest } from '../../shared/rpc';
 import { RpcRouter } from './RpcRouter';
 import { peerPidOf } from '../../shared/peerPid';
+import { mcpSessionTracker } from '../mcp/mcpSessionTracker';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -389,6 +390,9 @@ export class PipeServer {
       socket.destroy();
       return;
     }
+
+    // Live bundle-session count for `wmux doctor`, from authenticated requests only.
+    mcpSessionTracker.touch(request.mcpSession);
 
     // Rate limiting: per-socket (50/s) and global (200/s) — only for authenticated requests
     const now = Date.now();
