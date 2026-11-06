@@ -201,6 +201,15 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     expect(JSON.parse(fs.readFileSync(agyJson(), 'utf8')).mcpServers.wmux).toEqual(bundle);
   });
 
+  it('leaves an entry on a dev checkout\'s shim alone', async () => {
+    ship('broken');
+    const devShim = { command: 'node', args: [path.join(tmpHome, 'repo', 'dist', 'mcp-bundle', 'shim.js')] };
+    fs.mkdirSync(path.dirname(agyJson()), { recursive: true });
+    fs.writeFileSync(agyJson(), JSON.stringify({ mcpServers: { wmux: devShim } }));
+    await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: true });
+    expect(JSON.parse(fs.readFileSync(agyJson(), 'utf8')).mcpServers.wmux).toEqual(devShim);
+  });
+
   it('keeps the profile flags when it moves an entry from node to native', async () => {
     ship('good');
     fs.writeFileSync(path.join(tmpHome, '.claude.json'), JSON.stringify({ mcpServers: { wmux: { command: 'node', args: ['/old/index.js', '--core'] } } }));

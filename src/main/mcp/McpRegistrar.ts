@@ -347,15 +347,22 @@ export class McpRegistrar {
       // the node shim an older build registered, and the native launcher when
       // it is not offered this time (its copy is kept but may not run here).
       if (app.isPackaged) {
-        const stableDir = path.join(this.home, '.wmux', 'mcp');
-        const native = choice.lane !== 'native' ? nativeLauncherPath(stableDir) : null;
-        // The shim's stable copy, or a versioned one inside some app's bundle.
+        // Compared resolved, and without case on Windows, so an entry written
+        // with other slashes or drive-letter case still matches.
+        const norm = (p: string) => (process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p));
+        const stableDir = norm(path.join(this.home, '.wmux', 'mcp'));
+        const native = choice.lane !== 'native' ? norm(nativeLauncherPath(path.join(this.home, '.wmux', 'mcp'))) : null;
+        // The shim's stable copy, or a versioned one in an installed app's
+        // resources/mcp-bundle (a dev checkout's dist/ is left alone).
         const isShim = (at: string) =>
-          path.basename(at) === 'shim.js' && (path.dirname(at) === stableDir || path.basename(path.dirname(at)) === 'mcp-bundle');
+          path.basename(at) === 'shim.js' &&
+          (path.dirname(at) === stableDir ||
+            (path.basename(path.dirname(at)) === 'mcp-bundle' && path.basename(path.dirname(path.dirname(at))).toLowerCase() === 'resources'));
         for (const target of MCP_TARGETS) {
           let what: string | undefined;
           try {
-            const at = readTargetStatus(target, this.home).wmux.path;
+            const raw = readTargetStatus(target, this.home).wmux.path;
+            const at = raw ? norm(raw) : null;
             what = !at ? undefined : isShim(at) ? 'the node shim' : at === native ? 'the native launcher' : undefined;
             if (!what) continue;
             const moved = registerTarget(target, this.home, choice.launcher, this.ownedFor(target.id));

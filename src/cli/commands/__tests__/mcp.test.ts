@@ -33,7 +33,6 @@ import {
 } from '../mcp';
 
 const existsSyncMock = fs.existsSync as unknown as ReturnType<typeof vi.fn>;
-const readFileSyncMock = fs.readFileSync as unknown as ReturnType<typeof vi.fn>;
 
 // A fake net.Socket whose connect outcome is scripted. It emits its terminal
 // event on the next tick — the real net.connect resolves asynchronously too, so
@@ -177,20 +176,18 @@ describe('resolveWmuxLauncher / launcherForTarget', () => {
   it('from a packaged app\'s CLI (beside app.asar), offers the bundle when the native launcher is not approved, never the shim', async () => {
     scriptConnect('connect');
     existsSyncMock.mockImplementation((p: unknown) => /(shim|index|entry)\.js$|app\.asar$/.test(String(p)));
-    // The stable copy holds this build's bundle.
-    readFileSyncMock.mockImplementation(() => Buffer.from('bundle v2'));
     const plan = await resolveWmuxLauncher(home, approvesNothing);
     // The stable copy the app registers, not the versioned one inside the app.
     expect(plan?.launcher).toEqual({ kind: 'node', script: path.join(home, '.wmux', 'mcp', 'index.js') });
     expect(existsSyncMock.mock.calls.some(([p]) => String(p).endsWith('shim.js'))).toBe(false);
     scriptConnect('connect');
     expect((await resolveWmuxLauncher(home, approves))?.launcher).toEqual({ kind: 'native', binary: approved });
-    // A stable copy the app has not brought up to this build is not offered.
-    readFileSyncMock.mockImplementation((p: unknown) => Buffer.from(String(p).startsWith(path.join(home, '.wmux')) ? 'bundle v1' : 'bundle v2'));
+    // Before the app has made a stable copy, the bundle beside the CLI.
+    existsSyncMock.mockImplementation((p: unknown) => !String(p).startsWith(path.join(home, '.wmux')) && /(shim|index|entry)\.js$|app\.asar$/.test(String(p)));
     scriptConnect('connect');
-    const stale = await resolveWmuxLauncher(home, approvesNothing);
-    expect(stale?.launcher.kind === 'node' && stale.launcher.script).not.toBe(path.join(home, '.wmux', 'mcp', 'index.js'));
-    expect(stale?.launcher.kind === 'node' && stale.launcher.script).toMatch(/index\.js$|entry\.js$/);
+    const first = await resolveWmuxLauncher(home, approvesNothing);
+    expect(first?.launcher.kind === 'node' && first.launcher.script).toMatch(/index\.js$|entry\.js$/);
+    expect(first?.launcher.kind === 'node' && first.launcher.script).not.toBe(path.join(home, '.wmux', 'mcp', 'index.js'));
   });
 
   it('with the app closed, keeps an entry already on the approved launcher and writes node elsewhere', async () => {
