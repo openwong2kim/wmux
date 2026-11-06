@@ -312,3 +312,27 @@ describe.skipIf(process.platform === 'win32')('status in an isolated instance', 
     expect(statusHooks(paths).hooks.every((h) => h.state === 'ok')).toBe(true);
   });
 });
+
+// Nothing to write, so nothing to copy or run: a corrupt settings.json, or a
+// plugin that owns the hooks (whose hooks.json runs node).
+describe.skipIf(process.platform === 'win32')('when no entries will be written', () => {
+  it('copies and runs nothing, and reports no native runner', async () => {
+    shipNative(goodLine());
+    fs.writeFileSync(paths.settingsPath, '{ not json');
+    const corrupt = await installHooksWithNative(paths, undefined, { suffixed: false });
+    expect(corrupt.ok).toBe(false);
+    expect(corrupt.native).toBeUndefined();
+    expect(fs.existsSync(copy)).toBe(false);
+    expect((await updateHooksWithNative(paths, { suffixed: false })).ok).toBe(false);
+    expect(fs.existsSync(copy)).toBe(false);
+
+    fs.writeFileSync(paths.settingsPath, '{}');
+    const manifest = path.join(path.dirname(paths.settingsPath), 'plugins', 'installed_plugins.json');
+    fs.mkdirSync(path.dirname(manifest), { recursive: true });
+    fs.writeFileSync(manifest, JSON.stringify({ plugins: { 'wmux-claude-integration@wmux': [{}] } }));
+    const plugin = await installHooksWithNative(paths, undefined, { suffixed: false });
+    expect(plugin).toMatchObject({ ok: true, pluginDetected: true });
+    expect(plugin.native).toBeUndefined();
+    expect(fs.existsSync(copy)).toBe(false);
+  });
+});

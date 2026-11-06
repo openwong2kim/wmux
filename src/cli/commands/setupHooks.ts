@@ -820,14 +820,23 @@ export async function installHooksWithNative(
   requestedProfile?: HookProfile,
   opts: ClaudeNativeOptions = {},
 ): Promise<InstallOutcome> {
-  const plan = await planClaudeNative(paths, opts);
+  const plan = willWriteEntries(paths) ? await planClaudeNative(paths, opts) : null;
   return installHooks(paths, requestedProfile, plan);
 }
 
 /** `updateHooks` with the native form decided first, as installHooksWithNative. */
 export async function updateHooksWithNative(paths: SetupHooksPaths, opts: ClaudeNativeOptions = {}): Promise<UpdateOutcome> {
-  const plan = await planClaudeNative(paths, opts);
+  const plan = willWriteEntries(paths) ? await planClaudeNative(paths, opts) : null;
   return updateHooks(paths, plan);
+}
+
+/** False when an install would write no entries (settings.json corrupt, or
+ *  the plugin owns the hooks): then no copy is made or run. Read again by
+ *  the install itself, which decides. */
+function willWriteEntries(paths: SetupHooksPaths): boolean {
+  const load = loadSettings(paths.settingsPath);
+  if (load.corrupted) return false;
+  return !(detectPluginViaManifest(paths.settingsPath) && !isPluginExplicitlyDisabled(load.settings));
 }
 
 /**
