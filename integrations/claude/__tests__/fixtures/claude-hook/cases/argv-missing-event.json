@@ -1,5 +1,20 @@
 {
   "description": "No event at all is the same unknown-hook-name exit.",
+  "divergence": "native logs its own argv: [<exe>, \"claude-hook\", …]",
+  "variants": {
+    "steps.0.log.0.argv": [
+      [
+        "<node>",
+        "<bridge>"
+      ]
+    ]
+  },
+  "strictForPort": {
+    "steps.0.log.0.argv": [
+      "<impl>",
+      "claude-hook"
+    ]
+  },
   "steps": [
     {
       "argv": [],
@@ -19,10 +34,7 @@
             "bridge": "0.8.1",
             "hook": "?",
             "outcome": "unknown-hook-name",
-            "argv": [
-              "<node>",
-              "<bridge>"
-            ]
+            "argv": "<variant>"
           }
         ],
         "requests": {}
