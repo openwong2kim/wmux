@@ -7,7 +7,7 @@
  *   • path.normalize is applied (so `..` collapses before isAbsolute check)
  *   • openPath returning an error string triggers showItemInFolder fallback
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -93,9 +93,17 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
   it('forwards a Windows drive path on a Windows host', async () => {
     if (process.platform !== 'win32') return;
     const handler = getHandler(IPC.SHELL_OPEN_PATH);
-    const result = await handler(fakeEvent, 'C:\\Users\\rizz\\file.txt');
-    expect(openPath).toHaveBeenCalledWith('C:\\Users\\rizz\\file.txt');
-    expect(result).toEqual({ ok: true, error: undefined });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-win-'));
+    const input = path.join(dir, 'file.txt');
+    fs.writeFileSync(input, 'x');
+    try {
+      expect(input).toMatch(/^[A-Za-z]:\\/);
+      const result = await handler(fakeEvent, input);
+      expect(openPath).toHaveBeenCalledWith(input);
+      expect(result).toEqual({ ok: true, error: undefined });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('rejects a non-string argument', async () => {
@@ -180,12 +188,20 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       '.command', '.app', '.tool', '.terminal', '.workflow', '.sh',
     ];
 
+    // The files exist: a missing one is NOT_FOUND whatever its extension.
+    let dir = '';
+    beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-blocked-')); });
+    afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+    const existing = (name: string): string => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, 'x');
+      return file;
+    };
+
     for (const ext of blockedSamples) {
       it(`blocks ${ext} extension and reveals folder`, async () => {
         const handler = getHandler(IPC.SHELL_OPEN_PATH);
-        const input = process.platform === 'win32'
-          ? `C:\\Users\\rizz\\evil${ext}`
-          : `/home/rizz/evil${ext}`;
+        const input = existing(`evil${ext}`);
         const result = await handler(fakeEvent, input);
         expect(openPath).not.toHaveBeenCalled();
         expect(showItemInFolder).toHaveBeenCalledWith(expectNormalized(input));
@@ -195,10 +211,18 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
 
     it('matches blocked extension case-insensitively', async () => {
       const handler = getHandler(IPC.SHELL_OPEN_PATH);
-      const input = process.platform === 'win32' ? 'C:\\foo.EXE' : '/foo.EXE';
+      const input = existing('foo.EXE');
       const result = await handler(fakeEvent, input);
       expect(openPath).not.toHaveBeenCalled();
       expect(result).toEqual({ ok: false, error: 'BLOCKED_EXTENSION' });
+    });
+
+    it('a missing file with a blocked extension is NOT_FOUND, and reveals no folder', async () => {
+      const handler = getHandler(IPC.SHELL_OPEN_PATH);
+      const result = await handler(fakeEvent, path.join(dir, 'missing.sh'));
+      expect(openPath).not.toHaveBeenCalled();
+      expect(showItemInFolder).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'NOT_FOUND' });
     });
 
     it('allows non-executable extensions', async () => {

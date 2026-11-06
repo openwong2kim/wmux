@@ -260,8 +260,11 @@ export function createPathLinkProvider(
         const line = buffer.getLine(y);
         let part = line?.translateToString(y === last) ?? '';
         // A wide character that did not fit in the last column moved to the
-        // next row and left that cell empty: it is padding, not a space.
-        if (y < last && line && line.length > 0 && line.getCell(line.length - 1)?.getChars() === '') {
+        // next row and left that cell empty (width 1): padding, not a space.
+        // The width-0 right half of a wide character that did fit is empty
+        // too, and translateToString already skipped it.
+        const lastCell = y < last && line && line.length > 0 ? line.getCell(line.length - 1) : undefined;
+        if (lastCell?.getChars() === '' && lastCell.getWidth() === 1) {
           part = part.slice(0, -1);
         }
         text += part;

@@ -146,18 +146,18 @@ export function registerShellHandlers(): () => void {
       return { ok: false, error: 'BLOCKED_SENSITIVE' };
     }
     const opened = normalized;
-    // Block executable extensions — refuse the open and reveal the folder
-    // so the user still gets useful feedback without launching code from
-    // untrusted PTY content. See BLOCKED_EXTENSIONS for the rationale. A
-    // link's own name and its target's both count.
-    if ([normalized, target.real ?? normalized].some((p) => BLOCKED_EXTENSIONS.has(path.extname(p).toLowerCase()))) {
-      shell.showItemInFolder(opened);
-      return { ok: false, error: 'BLOCKED_EXTENSION' };
-    }
     // Nothing there (the check found no real path): say so, without handing
     // the OS a path to open or revealing a parent the user did not click.
     if (target.real === null) {
       return { ok: false, error: 'NOT_FOUND' };
+    }
+    // Block executable extensions — refuse the open and reveal the folder
+    // so the user still gets useful feedback without launching code from
+    // untrusted PTY content. See BLOCKED_EXTENSIONS for the rationale. A
+    // link's own name and its target's both count.
+    if ([normalized, target.real].some((p) => BLOCKED_EXTENSIONS.has(path.extname(p).toLowerCase()))) {
+      shell.showItemInFolder(opened);
+      return { ok: false, error: 'BLOCKED_EXTENSION' };
     }
     if (!(await sameRealPath(opened, target.real))) {
       return { ok: false, error: 'BLOCKED_SENSITIVE' };

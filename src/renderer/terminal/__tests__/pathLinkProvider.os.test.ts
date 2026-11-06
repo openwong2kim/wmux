@@ -252,7 +252,7 @@ describe('createPathLinkProvider', () => {
    * `getLine(n).isWrapped`, so a stub is faster + clearer than mocking
    * the full xterm interface.
    */
-  function makeTerminal(lines: { text: string; wrapped?: boolean; padded?: boolean }[]) {
+  function makeTerminal(lines: { text: string; wrapped?: boolean; padded?: boolean; wideEnd?: boolean }[]) {
     return {
       buffer: {
         active: {
@@ -262,10 +262,18 @@ describe('createPathLinkProvider', () => {
             return {
               translateToString: () => l.text,
               isWrapped: !!l.wrapped,
-              length: l.text.length,
               // `padded`: the last cell was left empty by a wide character
               // that moved to the next row (xterm prints it as a space).
-              getCell: (x: number) => ({ getChars: () => (l.padded && x === l.text.length - 1 ? '' : l.text[x]) }),
+              // `wideEnd`: a wide character fills the last two cells; the
+              // last is its empty width-0 right half (not in `text`).
+              length: l.text.length + (l.wideEnd ? 1 : 0),
+              getCell: (x: number) => {
+                const half = l.wideEnd && x === l.text.length;
+                return {
+                  getChars: () => (half || (l.padded && x === l.text.length - 1) ? '' : l.text[x]),
+                  getWidth: () => (half ? 0 : 1),
+                };
+              },
             };
           },
         },
@@ -327,6 +335,17 @@ describe('createPathLinkProvider', () => {
   it('drops the empty cell a wide character left at the end of a wrapped row', () => {
     const terminal = makeTerminal([
       { text: 'see /tmp/漢 ', padded: true },
+      { text: '字/x.txt', wrapped: true },
+    ]);
+    const provider = createPathLinkProvider(terminal, vi.fn(), 'linux');
+    const cb = vi.fn();
+    provider.provideLinks(2, cb);
+    expect(cb.mock.calls[0][0].map((l: { text: string }) => l.text)).toEqual(['/tmp/漢字/x.txt']);
+  });
+
+  it('keeps a wide character that fills the last two cells of a wrapped row', () => {
+    const terminal = makeTerminal([
+      { text: 'see /tmp/漢', wideEnd: true },
       { text: '字/x.txt', wrapped: true },
     ]);
     const provider = createPathLinkProvider(terminal, vi.fn(), 'linux');
