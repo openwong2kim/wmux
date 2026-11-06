@@ -6,8 +6,9 @@
 // request-id suffix and the envelope timestamp are masked), the log outcome
 // each run writes, stdout (always empty) and the exit code (always 0).
 //
-// The binary is found at WMUX_NATIVE_HOOKS_BIN, the staged dist/native-hooks
-// copy, or a cargo build under core/wmux-native/target. Without one the suite
+// The binary is WMUX_NATIVE_HOOKS_BIN, else the newest of the staged
+// dist/native-hooks copy and the cargo builds under core/wmux-native/target.
+// Without one the suite
 // skips, unless WMUX_REQUIRE_NATIVE_HOOKS=1 (the native-hooks workflow sets it).
 //
 // Isolation: a throwaway home (HOME and USERPROFILE), a data suffix, and every
@@ -27,14 +28,17 @@ const BRIDGE = path.join(REPO_ROOT, 'integrations', 'shared', 'bin', 'wmux-hooks
 const isWin = process.platform === 'win32';
 const EXE = isWin ? 'wmux-native.exe' : 'wmux-native';
 
+/** The named binary, else the newest build: a stale release build must not
+ *  stand in for the debug build just made from the source under test. */
 function findNative(): string | null {
-  const candidates = [
-    process.env.WMUX_NATIVE_HOOKS_BIN,
+  if (process.env.WMUX_NATIVE_HOOKS_BIN) return process.env.WMUX_NATIVE_HOOKS_BIN;
+  const builds = [
     path.join(REPO_ROOT, 'dist', 'native-hooks', EXE),
     path.join(REPO_ROOT, 'core', 'wmux-native', 'target', 'release', EXE),
     path.join(REPO_ROOT, 'core', 'wmux-native', 'target', 'debug', EXE),
-  ];
-  return candidates.find((p): p is string => !!p && fs.existsSync(p)) ?? null;
+  ].filter((p) => fs.existsSync(p));
+  builds.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+  return builds[0] ?? null;
 }
 
 const NATIVE = findNative();
@@ -136,7 +140,8 @@ function mask(line: string): string {
 }
 
 function maskLog(entries: Record<string, unknown>[]): Record<string, unknown>[] {
-  return entries.map(({ ts: _ts, pid: _pid, runtime: _runtime, ...rest }) => rest);
+  const varying = new Set(['ts', 'pid', 'runtime']);
+  return entries.map((e) => Object.fromEntries(Object.entries(e).filter(([k]) => !varying.has(k))));
 }
 
 const PAYLOAD_EXTRAS = {

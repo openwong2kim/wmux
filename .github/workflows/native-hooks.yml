@@ -1,0 +1,66 @@
+name: Native hooks
+# wmux-native (core/wmux-native): build it on every platform wmux ships, run
+# its unit tests, and hold `wmux-native hook` byte-for-byte to the shared Node
+# bridge with the parity suite, which must run here (not skip).
+on:
+  pull_request:
+    paths:
+      - 'core/wmux-native/**'
+      - 'integrations/shared/**'
+      - 'src/shared/hooks/**'
+      - 'src/main/mcp/__tests__/hookBridge.lockstep.test.ts'
+      - 'scripts/build-native-hooks.mjs'
+      - 'scripts/__tests__/buildNativeHooks.os.test.mjs'
+      - 'forge.config.ts'
+      - '.github/workflows/native-hooks.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: native-hooks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  native-hooks:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, name: macos-arm64 }
+          - { os: windows-2022, name: windows-x64 }
+          - { os: ubuntu-22.04, name: linux-x64 }
+          - { os: ubuntu-22.04-arm, name: linux-arm64 }
+    name: native-hooks (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '>=24.21.0 <25'
+          cache: npm
+      - run: npm install -g npm@11
+      - run: npm ci
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - name: Format, lint and unit tests
+        working-directory: core/wmux-native
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+      - name: Build and stage the binary
+        run: node scripts/build-native-hooks.mjs
+      - name: Parity with the Node bridge, lockstep, installer
+        run: npx vitest run integrations/shared/__tests__/hooksBridgeNative.parity.os.test.ts integrations/shared/__tests__/hookFlavours.lockstep.test.ts integrations/shared/__tests__/hooksBridgeShells.os.test.ts src/shared/hooks/__tests__/compatHookInstall.os.test.ts src/main/mcp/__tests__/hookBridge.lockstep.test.ts scripts/__tests__/buildNativeHooks.os.test.mjs
+        env:
+          WMUX_REQUIRE_NATIVE_HOOKS: '1'
+          WMUX_NATIVE_HOOKS_BIN: ${{ github.workspace }}/dist/native-hooks/${{ runner.os == 'Windows' && 'wmux-native.exe' || 'wmux-native' }}
+      - name: Retain the staged binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wmux-native-${{ matrix.name }}
+          path: dist/native-hooks/
+          if-no-files-found: error
