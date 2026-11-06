@@ -99,6 +99,7 @@ describe('native hooks stage freshness', () => {
     fs.writeFileSync(crate('src', 'main.rs'), 'fn main() {}');
     fs.writeFileSync(crate('src', 'nested', 'mod.rs'), '');
     fs.writeFileSync(crate('flavours.json'), '{}');
+    fs.writeFileSync(crate('claude-hook.ported-from.sha256'), 'pin');
     fs.writeFileSync(crate('Cargo.lock'), 'lock');
     fs.writeFileSync(crate('Cargo.toml'), '[package]');
     fs.mkdirSync(crate('.cargo'), { recursive: true });
@@ -106,13 +107,14 @@ describe('native hooks stage freshness', () => {
   });
   afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-  it('hashes the crate sources, the flavour table, the lockfile and the cargo config', () => {
+  it('hashes the crate sources, the embedded files, the lockfile and the cargo config', () => {
     const before = nativeHooksSourceHash(root);
     expect(before).toMatch(/^[0-9a-f]{64}$/);
     // Build output is not a source.
     fs.writeFileSync(crate('target', 'release', 'wmux-native'), 'binary');
     expect(nativeHooksSourceHash(root)).toBe(before);
-    for (const file of [['src', 'nested', 'mod.rs'], ['flavours.json'], ['Cargo.lock'], ['Cargo.toml'], ['.cargo', 'config.toml']]) {
+    // flavours.json and the Claude hook's pinned bridge hash are compiled in.
+    for (const file of [['src', 'nested', 'mod.rs'], ['flavours.json'], ['claude-hook.ported-from.sha256'], ['Cargo.lock'], ['Cargo.toml'], ['.cargo', 'config.toml']]) {
       const original = fs.readFileSync(crate(...file));
       fs.writeFileSync(crate(...file), 'changed');
       expect(nativeHooksSourceHash(root), file.join('/')).not.toBe(before);
