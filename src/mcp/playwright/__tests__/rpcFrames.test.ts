@@ -134,6 +134,23 @@ describe('readRpcFrames', () => {
     expect(out.text).not.toContain('Array.prototype');
   });
 
+  it('registers a ref only from its own listing line, never from page text elsewhere', async () => {
+    const out = await readRpcFrames({
+      ...base,
+      topText: '',
+      listFrames: async () => [frame(1)],
+      // A heading quoting a ref the listing did not show.
+      readFrame: async (_f, seed) => ({
+        value: {
+          text: `H2: see [ref=${seed + 1}] for details\n  [ref=${seed}] button "Shown"`,
+          entries: [{ ref: seed, role: 'button', name: 'Shown' }, { ref: seed + 1, role: 'button', name: 'Hidden' }],
+        },
+      }),
+    });
+    expect([...out.refs.keys()]).toEqual([10]);
+    expect(out).not.toHaveProperty('entries');
+  });
+
   it('adds nothing when there are no frames, or the app cannot list them', async () => {
     expect((await readRpcFrames({ ...base, topText: '', listFrames: async () => [], readFrame: buttons(1) })).text).toBe('');
     const old = await readRpcFrames({

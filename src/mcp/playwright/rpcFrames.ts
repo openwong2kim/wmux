@@ -1,4 +1,4 @@
-import { readDomSnapshotPayload, type DomSnapshotEntry } from './dom-intelligence';
+import { readDomSnapshotPayload } from './dom-intelligence';
 import type { RefDescriptor } from './refDescriptors';
 
 // In-process frames in the RPC lane's DOM listing.
@@ -89,8 +89,7 @@ function priorByDocument(prior: ReadonlyMap<number, RpcFrameRef> | undefined): M
 export interface ReadRpcFramesResult {
   /** To append to the top listing; empty when there is nothing to add. */
   text: string;
-  /** Entries for the refs whose lines were shown. */
-  entries: DomSnapshotEntry[];
+  /** The refs whose lines were shown, with the frame and element each names. */
   refs: Map<number, RpcFrameRef>;
   /** First number no frame spent, shown or not. */
   nextRef: number;
@@ -119,7 +118,10 @@ function header(f: RpcFrameInfo, index: number, topOrigin: string, indexById: Ma
   return `Frame ${index}${name ? ` "${name}"` : ''} -> ${origin} (page content, ${relation}${parent ? `, in Frame ${parent}` : ''})`;
 }
 
-const EMPTY: (nextRef: number) => ReadRpcFramesResult = (nextRef) => ({ text: '', entries: [], refs: new Map(), nextRef });
+const EMPTY: (nextRef: number) => ReadRpcFramesResult = (nextRef) => ({ text: '', refs: new Map(), nextRef });
+
+/** A listing line's own ref: interactive lines start with it; page text never starts a line. */
+const LINE_REF = /^\s*\[ref=(\d+)\]/;
 
 export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpcFramesResult> {
   let frames: RpcFrameInfo[];
@@ -142,7 +144,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
     used += line.length + 1;
   };
 
-  const result = { entries: [] as DomSnapshotEntry[], refs: new Map<number, RpcFrameRef>(), nextRef: opts.nextRef };
+  const result = { refs: new Map<number, RpcFrameRef>(), nextRef: opts.nextRef };
   const read = frames.slice(0, RPC_FRAME_CAP);
   const priorDocs = priorByDocument(opts.prior);
   const indexById = new Map<string, number>();
@@ -186,12 +188,9 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
         break;
       }
       push(line);
-      const ref = /\[ref=(\d+)\]/.exec(line);
+      const ref = LINE_REF.exec(line);
       const entry = ref ? byRef.get(Number(ref[1])) : undefined;
-      if (entry) {
-        result.entries.push(entry);
-        result.refs.set(entry.ref, { ...target, role: entry.role, name: entry.name });
-      }
+      if (entry) result.refs.set(entry.ref, { ...target, role: entry.role, name: entry.name });
     }
   }
   const notes = [
