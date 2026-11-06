@@ -50,7 +50,8 @@ import {
 } from '../../shared/memoryDiagnostics';
 import { collectProcessMemory, renderMemoryDiagnostics } from '../memoryDiagnostics';
 import { readAllTargetStatuses, type TargetRegStatus } from '../../shared/mcpRegistration';
-import { fileSha256, recordedVerdict } from '../../shared/mcpLauncher';
+import { NATIVE_SELF_TEST_LINE } from '../../shared/mcpLauncher';
+import { fileSha256, probeKey, recordedProbe } from '../../shared/probedNative';
 import type { McpSessionsSummary } from '../../shared/mcpSessions';
 import { homeRelative } from '../../shared/homeRelative';
 
@@ -553,6 +554,16 @@ function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>)
   return { label: 'broker', value: state.value, verdict: 'WARN', ...(hint ? { hint } : {}) };
 }
 
+/**
+ * The self-test verdict the app recorded for the launcher at `binary`, read
+ * under the key approvedInstalledNative uses: these bytes and the self-test
+ * line (shared/probedNative.ts).
+ */
+export function recordedNativeVerdict(binary: string): 'pass' | 'fail' | undefined {
+  const hash = fileSha256(binary);
+  return hash ? recordedProbe(dirname(binary), probeKey(hash, NATIVE_SELF_TEST_LINE)) : undefined;
+}
+
 export async function buildMcpSection(
   deps: McpDoctorDeps,
   appPipeReachable = true,
@@ -934,10 +945,7 @@ export async function handleDoctor(args: string[], jsonMode: boolean): Promise<v
     mcp: {
       home: os.homedir(),
       targets: () => readAllTargetStatuses(os.homedir()),
-      recordedVerdict: (binary) => {
-        const hash = fileSha256(binary);
-        return hash ? recordedVerdict(dirname(binary), hash) : undefined;
-      },
+      recordedVerdict: recordedNativeVerdict,
       sessions: () => sendRequest('mcp.sessions.summary', {}),
     },
   };
