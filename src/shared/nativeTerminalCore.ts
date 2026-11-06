@@ -19,6 +19,40 @@ export interface NativeRingStorage {
   readAllWithGeometry(): { data: Buffer; writtenAt: number; geometry?: ReplayGeometry | null };
   dispose(): void;
   freeze(): NativeFrozenRing;
+  /** `live-screen-v1`: the bytes from a lifetime offset of this ring object (it counts from 0 again after a
+   *  wake), the size there and every size mark at or after it. */
+  readRange?(from: number, clears?: number): NativeRingRange;
+}
+export interface NativeRingRange {
+  /** Why a reader can't continue in order: 'evicted', 'cleared' or 'marks-dropped'. */
+  evicted?: string | null;
+  data: Buffer;
+  end: number;
+  size?: { cols: number; rows: number } | null;
+  marks: Array<{ at: number; cols: number; rows: number }>;
+  clears: number;
+}
+/** `live-screen-v1`: a terminal that has consumed a ring in order (core/wmux-term/src/live_screen.rs). */
+export interface NativeLiveScreen {
+  seed(ring: NativeRingStorage, lead?: Uint8Array): NativeLiveRead;
+  read(ring: NativeRingStorage): NativeLiveRead;
+  text(maxHistory: number, undimmed: boolean, unknownChar?: string): {
+    rows: Array<{ text: string; wrapped: boolean; undimmed?: string | null }>;
+    bufferType: string;
+    rowsBelowCursor: number;
+    unknown?: string[] | null;
+  };
+  readonly fedTo: number;
+  readonly taint?: { reason: string; at: number } | null;
+  readonly heldLen: number;
+  readonly syncPending: boolean;
+  readonly allocatedBytes: number;
+  readonly size: { cols: number; rows: number };
+  dispose(): void;
+}
+export interface NativeLiveRead {
+  status: 'ok' | 'rebuild' | 'sync-pending';
+  reason?: string | null;
 }
 /** Synchronous delivery only; the owner disposes the chunk after listeners return. */
 export interface NativeOutputChunk {
@@ -41,6 +75,7 @@ export interface NativeTerminalCore {
   NativeRing: new (capacity: number) => NativeRingStorage;
   NativeOutputDecoder?: new () => { feed(bytes: Uint8Array, finish: boolean): NativeOutputChunk };
   NativeOutputInterpreter?: new () => NativeOutputInterpreter;
+  NativeLiveScreen?: new (cols: number, rows: number, history?: number) => NativeLiveScreen;
   NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string, parentWindow?: Uint8Array) => NativeTransport;
   /** Windows, macOS and Linux (`process-table-v1`); macOS and Linux read the walk only (no created/cmdline). */
   processTable?(withCommandLines: boolean): Promise<Array<{ pid: number; ppid: number; name: string; created?: number | null; cmdline?: string | null }>>;
@@ -113,6 +148,7 @@ export function loadNativeTerminalCore(capability: string): NativeTerminalCore {
       !cached.module.nativeCoreCapabilities().includes('ring-v1'))) throw new Error('Native terminal core lacks the combined PTY/ring contract');
   if (capability === 'ring-v1' && typeof cached.module.NativeRing !== 'function') throw new Error('Native terminal core lacks ring storage');
   if (capability === 'output-interpreter-v1' && typeof cached.module.NativeOutputInterpreter !== 'function') throw new Error('Native terminal core lacks output interpretation');
+  if (capability === 'live-screen-v1' && typeof cached.module.NativeLiveScreen !== 'function') throw new Error('Native terminal core lacks live screens');
   return cached.module;
 }
 
