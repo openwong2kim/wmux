@@ -23,8 +23,8 @@
 //! bytes and no taint points into the lead.
 
 use crate::native_core::{
-    buffer_type, resize_like_xterm, text_rows, NativeRing, NativeTextRow, RingRange, Size, Taint,
-    XtermFeed,
+    buffer_type, check_cells, grid_size, resize_like_xterm, text_rows, NativeRing, NativeTextRow,
+    RingRange, Size, Taint, XtermFeed,
 };
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Row;
@@ -70,16 +70,8 @@ pub(crate) struct Screen {
 }
 
 fn check_size(cols: u32, rows: u32, history: u32) -> std::result::Result<Size, &'static str> {
-    if !(2..=1000).contains(&cols) || !(1..=1000).contains(&rows) {
-        return Err("Live screen requires 2..1000 columns and 1..1000 rows");
-    }
-    if history > 100_000 || (rows as u64 + history as u64) * cols as u64 > 4_000_000 {
-        return Err("Live screen grid exceeds four million cells");
-    }
-    Ok(Size {
-        cols: cols as usize,
-        rows: rows as usize,
-    })
+    check_cells(cols, rows, history)?;
+    grid_size(cols, rows)
 }
 
 /// See the module header: a lead that ends inside anything, or holds a

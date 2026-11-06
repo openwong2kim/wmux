@@ -164,15 +164,31 @@ impl Dimensions for Size {
 }
 
 fn dimensions(cols: u32, rows: u32) -> Result<Size> {
+    grid_size(cols, rows).map_err(Error::from_reason)
+}
+
+/// The screen sizes the native terminals take.
+pub(crate) fn grid_size(cols: u32, rows: u32) -> std::result::Result<Size, &'static str> {
     if !(2..=1000).contains(&cols) || !(1..=1000).contains(&rows) {
-        return Err(Error::from_reason(
-            "Experiment requires 2..1000 columns and 1..1000 rows",
-        ));
+        return Err("Experiment requires 2..1000 columns and 1..1000 rows");
     }
     Ok(Size {
         cols: cols as usize,
         rows: rows as usize,
     })
+}
+
+/// The most a native terminal holds: a screen plus `history` rows, at most
+/// four million cells in all.
+pub(crate) fn check_cells(
+    cols: u32,
+    rows: u32,
+    history: u32,
+) -> std::result::Result<(), &'static str> {
+    if history > 100_000 || (rows as u64 + history as u64) * cols as u64 > 4_000_000 {
+        return Err("Experiment grid exceeds four million cells");
+    }
+    Ok(())
 }
 
 #[napi(object)]
@@ -763,11 +779,7 @@ impl NativeTerminal {
     #[napi(constructor, catch_unwind)]
     pub fn new(cols: u32, rows: u32, scrollback: u32) -> Result<Self> {
         let size = dimensions(cols, rows)?;
-        if scrollback > 100_000 || (rows as u64 + scrollback as u64) * cols as u64 > 4_000_000 {
-            return Err(Error::from_reason(
-                "Experiment grid exceeds four million cells",
-            ));
-        }
+        check_cells(cols, rows, scrollback).map_err(Error::from_reason)?;
         let config = Config {
             scrolling_history: scrollback as usize,
             osc52: Osc52::Disabled,
@@ -839,11 +851,7 @@ impl NativeTerminal {
     #[napi(catch_unwind)]
     pub fn resize(&mut self, cols: u32, rows: u32) -> Result<()> {
         let size = dimensions(cols, rows)?;
-        if (rows as u64 + self.scrollback as u64) * cols as u64 > 4_000_000 {
-            return Err(Error::from_reason(
-                "Experiment grid exceeds four million cells",
-            ));
-        }
+        check_cells(cols, rows, self.scrollback).map_err(Error::from_reason)?;
         let term = self
             .term
             .as_mut()
@@ -1510,7 +1518,7 @@ impl NativeRing {
         if self.capacity == 0 {
             return Err("Ring disposed");
         }
-        let start = self.total_written - self.length as u64;
+        let start = self.start();
         let governing = self.geometry.iter().rposition(|m| m.at <= from);
         let evicted = if clears.is_some_and(|seen| seen != self.clears) {
             Some("cleared")
@@ -1574,7 +1582,7 @@ impl NativeRing {
     /// The bytes between lifetime offsets `from` and `to`, in order, as at
     /// most two slices of the ring. Both must be inside the ring.
     pub(crate) fn slices(&self, from: u64, to: u64) -> [&[u8]; 2] {
-        let start = self.total_written - self.length as u64;
+        let start = self.start();
         debug_assert!(start <= from && from <= to && to <= self.total_written);
         if from >= to {
             return [&[], &[]];
@@ -1631,23 +1639,15 @@ impl NativeRing {
     }
 
     fn copy_bytes(&self) -> Vec<u8> {
-        if self.length == 0 {
-            return Vec::new();
-        }
-        let start = if self.length < self.bytes.len() {
-            0
-        } else {
-            self.write_pos
-        };
-        let tail = self.length.min(self.bytes.len() - start);
-        let mut result = Vec::with_capacity(self.length);
-        result.extend_from_slice(&self.bytes[start..start + tail]);
-        result.extend_from_slice(&self.bytes[..self.length - tail]);
+        let [first, second] = self.slices(self.start(), self.total_written);
+        let mut result = Vec::with_capacity(first.len() + second.len());
+        result.extend_from_slice(first);
+        result.extend_from_slice(second);
         result
     }
 
     fn prune_geometry(&mut self) {
-        let start = self.total_written - self.length as u64;
+        let start = self.start();
         let keep = self
             .geometry
             .iter()
