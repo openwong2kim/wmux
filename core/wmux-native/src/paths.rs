@@ -40,13 +40,21 @@ fn data_suffix() -> String {
     env("WMUX_DATA_SUFFIX").unwrap_or_default()
 }
 
-/// `os.homedir()`: HOME (USERPROFILE on Windows) even when empty, else the
-/// account database. std::env::home_dir follows the same order.
-#[allow(deprecated)]
+/// `os.homedir()`: HOME (USERPROFILE on Windows) whenever it is set, even to
+/// an empty string, else the account database. std::env::home_dir alone would
+/// replace an empty value with the account's real home, which is a different
+/// instance's state, so the set-but-empty case is decided here.
 fn os_homedir() -> String {
-    std::env::home_dir()
-        .map(|p| os_to_string(p.into_os_string()))
-        .unwrap_or_default()
+    homedir_from(env(if cfg!(windows) { "USERPROFILE" } else { "HOME" }), || {
+        #[allow(deprecated)]
+        std::env::home_dir()
+            .map(|p| os_to_string(p.into_os_string()))
+            .unwrap_or_default()
+    })
+}
+
+fn homedir_from(var: Option<String>, account: impl FnOnce() -> String) -> String {
+    var.unwrap_or_else(account)
 }
 
 fn home_dir() -> String {
@@ -213,6 +221,14 @@ fn resolve_segments<'a>(segments: impl Iterator<Item = &'a str>, absolute: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_home_variable_is_kept_not_replaced() {
+        assert_eq!(homedir_from(Some(String::new()), || "/Users/real".into()), "");
+        assert_eq!(homedir_from(None, || "/Users/real".into()), "/Users/real");
+        // join() then drops the empty part: Node resolves `.wmux` against the cwd.
+        assert_eq!(join(&["", ".wmux-x"]), ".wmux-x");
+    }
 
     #[test]
     fn posix_join_matches_node() {

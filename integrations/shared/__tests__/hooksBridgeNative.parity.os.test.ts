@@ -47,7 +47,7 @@ const SUFFIX = '-native-parity';
 const MAIN_TOKEN = 'main-token-π';
 const DAEMON_TOKEN = 'daemon-token';
 
-type Reply = 'ok' | 'rejected' | 'refused' | 'hangup';
+type Reply = 'ok' | 'rejected' | 'refused' | 'hangup' | 'stall' | 'deep';
 
 /** A fake wmux pipe that records each request line as raw bytes. */
 class FakePipe {
@@ -55,13 +55,19 @@ class FakePipe {
   readonly lines: string[] = [];
   reply: Reply = 'ok';
   private server!: net.Server;
+  private readonly sockets = new Set<net.Socket>();
 
-  constructor(label: string, dir: string) {
-    this.name = isWin ? `\\\\.\\pipe\\wmux-native-parity-${label}-${randomUUID()}` : path.join(dir, `${label}.sock`);
+  constructor(name: string) {
+    this.name = name;
   }
 
   async start(): Promise<void> {
     this.server = net.createServer((sock) => {
+      this.sockets.add(sock);
+      sock.on('close', () => this.sockets.delete(sock));
+      // Accept, then never read: a large request fills the socket buffers and
+      // the client's write blocks until its time slice runs out.
+      if (this.reply === 'stall') { sock.pause(); sock.on('error', () => { /* client gone */ }); return; }
       let buf = Buffer.alloc(0);
       sock.on('data', (chunk) => {
         buf = Buffer.concat([buf, chunk]);
@@ -73,6 +79,13 @@ class FakePipe {
         // A broadcast frame first: replies are matched by id, not position.
         sock.write(JSON.stringify({ type: 'session.output', sessionId: 'x' }) + '\n');
         if (this.reply === 'hangup') { sock.destroy(); return; }
+        if (this.reply === 'deep') {
+          // Nested past any stack (written by hand: JSON.stringify cannot):
+          // logging it must end in `uncaught`, not a crash.
+          const reason = `${'['.repeat(100_000)}${']'.repeat(100_000)}`;
+          sock.end(`{"id":${JSON.stringify(id)},"ok":true,"result":{"ok":false,"reason":${reason}}}\n`);
+          return;
+        }
         const body = this.reply === 'ok' ? { id, ok: true, result: { ok: true } }
           : this.reply === 'rejected' ? { id, ok: true, result: { ok: false, reason: 'no-workspace-match' } }
           : { id, ok: false, error: 'refused', detail: { code: 7 } };
@@ -84,6 +97,8 @@ class FakePipe {
   }
 
   stop(): Promise<void> {
+    // A stalled connection never ends on its own.
+    for (const sock of this.sockets) sock.destroy();
     return new Promise((resolve) => this.server.close(() => resolve()));
   }
 }
@@ -209,8 +224,10 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native hook ↔ wmux-hooks-bridge.mj
     cwd = fs.mkdtempSync(path.join(home, 'cwd é-'));
     wmuxDir = path.join(home, `.wmux${SUFFIX}`);
     fs.mkdirSync(wmuxDir, { recursive: true });
-    daemon = new FakePipe('daemon', wmuxDir);
-    main = new FakePipe('main', home);
+    // The daemon is found through its hint file; main by the name both bridges
+    // derive from the home directory and suffix, so a fall-through really lands.
+    daemon = new FakePipe(isWin ? `\\\\.\\pipe\\wmux-native-parity-daemon-${randomUUID()}` : path.join(wmuxDir, 'daemon.sock'));
+    main = new FakePipe(isWin ? `\\\\.\\pipe\\wmux${SUFFIX}-${os.userInfo().username || 'default'}` : path.join(home, `.wmux${SUFFIX}.sock`));
     await daemon.start();
     await main.start();
   });
@@ -248,10 +265,14 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native hook ↔ wmux-hooks-bridge.mj
     ['daemon refuses: falls through to main', 'refused' as Reply, 'UserPromptSubmit'],
     ['daemon hangs up after the write: an idempotent kind goes on to main', 'hangup' as Reply, 'Stop'],
     ['daemon hangs up after the write: a non-idempotent kind does not', 'hangup' as Reply, 'PermissionRequest'],
+    ['daemon stops reading: its slice times out, an idempotent kind goes on to main', 'stall' as Reply, 'Stop'],
+    ['daemon replies with a value nested past the stack', 'deep' as Reply, 'Stop'],
   ])('%s', async (_name, reply, event) => {
     useEndpoints({ daemonToken: true, mainToken: true });
     daemon.reply = reply;
-    const fx: Fixture = { name: `${reply} ${event}`, argv: ['qwen', event], stdin: JSON.stringify({ session_id: 's-1', cwd: '/w' }) };
+    // A request large enough to fill the socket buffers of a peer that stops reading.
+    const cwd = reply === 'stall' ? `/w/${'x'.repeat(200 * 1024)}` : '/w';
+    const fx: Fixture = { name: `${reply} ${event}`, argv: ['qwen', event], stdin: JSON.stringify({ session_id: 's-1', cwd }) };
     const [node, native] = await bothRuntimes(fx);
     daemon.reply = 'ok';
     expectParity(fx, node, native);
@@ -269,6 +290,20 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native hook ↔ wmux-hooks-bridge.mj
     const fx: Fixture = { name, argv: ['copilot', 'Stop'], stdin: '{"session_id":"s-1"}', env };
     const [node, native] = await bothRuntimes(fx);
     expectParity(fx, node, native);
+  });
+
+  // The request carries the token: a pipe name that is a plain file must be
+  // refused, never written to.
+  it('writes nothing to a pipe name that is a plain file', async () => {
+    useEndpoints({ daemonToken: false, mainToken: true });
+    const decoy = path.join(home, 'not-a-pipe');
+    fs.writeFileSync(decoy, 'untouched');
+    const fx: Fixture = { name: 'plain-file pipe', argv: ['copilot', 'Stop'], stdin: '{}', env: { WMUX_PIPE_NAME: decoy } };
+    const [node, native] = await bothRuntimes(fx);
+    expect(native.status).toBe(0);
+    expect(native.stdout).toBe('');
+    expect(fs.readFileSync(decoy, 'utf8')).toBe('untouched');
+    expect(maskLog(native.log).map((e) => e.outcome)).toEqual(maskLog(node.log).map((e) => e.outcome));
   });
 
   it('honours WMUX_PIPE_NAME as the only endpoint', async () => {

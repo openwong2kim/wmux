@@ -213,16 +213,33 @@ describe('removeCompatHooks / statusCompatHooks', () => {
 
 // The native bridge, when the build ships one: the entries run its copy under
 // ~/.wmux/hooks/ directly, and fall back to `node <bridge>` without it.
-describe('native bridge command form', () => {
-  const exe = process.platform === 'win32' ? 'wmux-native.exe' : 'wmux-native';
+const NATIVE_EXE = process.platform === 'win32' ? 'wmux-native.exe' : 'wmux-native';
+
+/** Something that runs and answers `--version` with the marker: a real build
+ *  when there is one, else (POSIX) a script standing in for it. */
+function runnableNative(): Buffer | null {
+  const builds = [
+    process.env.WMUX_NATIVE_HOOKS_BIN,
+    path.join(REPO_ROOT, 'dist', 'native-hooks', NATIVE_EXE),
+    path.join(REPO_ROOT, 'core', 'wmux-native', 'target', 'release', NATIVE_EXE),
+    path.join(REPO_ROOT, 'core', 'wmux-native', 'target', 'debug', NATIVE_EXE),
+  ].filter((p): p is string => !!p && fs.existsSync(p));
+  if (builds[0]) return fs.readFileSync(builds[0]);
+  if (process.platform === 'win32') return null;
+  return Buffer.from("#!/bin/sh\necho 'wmux-native 0.0.0 (wmux-managed: native-hooks)'\n");
+}
+
+const NATIVE_BYTES = runnableNative();
+
+describe.skipIf(!NATIVE_BYTES)('native bridge command form', () => {
+  const exe = NATIVE_EXE;
   let staged: string;
   let withNative: CompatHookPaths;
 
   beforeEach(() => {
-    // A stand-in binary: the installer copies bytes and checks the marker.
     staged = path.join(home, 'app', 'resources', 'native-hooks', exe);
     fs.mkdirSync(path.dirname(staged), { recursive: true });
-    fs.writeFileSync(staged, 'ELF... wmux-managed: native-hooks ...');
+    fs.writeFileSync(staged, NATIVE_BYTES as Buffer, { mode: 0o755 });
     withNative = {
       ...paths,
       nativeHooks: {
@@ -267,6 +284,16 @@ describe('native bridge command form', () => {
     fs.writeFileSync(path.join(home, '.wmux', 'hooks', exe), 'not ours');
     const outcome = installCompatHooks('copilot', withNative);
     expect(outcome).toMatchObject({ ok: true, action: 'installed', native: { state: 'foreign' } });
+    expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
+    expect(statusCompatHooks('copilot', withNative).config).toBe('current');
+  });
+
+  // A binary this machine will not run (noexec home, application control, a
+  // foreign libc) would fail every event; `node <bridge>` would not.
+  it('stays on Node when the installed copy does not run here', () => {
+    fs.writeFileSync(staged, 'not a program, though it says wmux-managed: native-hooks');
+    const outcome = installCompatHooks('copilot', withNative);
+    expect(outcome).toMatchObject({ ok: true, action: 'installed', native: { state: 'error' } });
     expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
     expect(statusCompatHooks('copilot', withNative).config).toBe('current');
   });

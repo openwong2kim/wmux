@@ -93,15 +93,17 @@ fn exchange(pipe: &str, line: &str, id: &[u16], gate: &Mutex<Gate>) -> Json {
         Err(e) => return failure("connect-error", Some(transport::code(&e)), Some(true)),
     };
     {
+        // Claim the write under the lock, then write without it: a peer that
+        // stops reading must not hold the caller's timeout path on the lock.
         let mut g = gate.lock().unwrap_or_else(|e| e.into_inner());
         if g.abandoned {
             return failure("timeout", None, Some(true));
         }
         // Node marks `wrote` once write() is called, whatever it returns.
         g.wrote = true;
-        if let Err(e) = stream.write_all(line.as_bytes()).and_then(|_| stream.flush()) {
-            return failure("connect-error", Some(transport::code(&e)), Some(false));
-        }
+    }
+    if let Err(e) = stream.write_all(line.as_bytes()).and_then(|_| stream.flush()) {
+        return failure("connect-error", Some(transport::code(&e)), Some(false));
     }
     let mut buffer: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 16 * 1024];
@@ -297,17 +299,37 @@ mod transport {
 #[cfg(windows)]
 mod transport {
     use std::fs::{File, OpenOptions};
+    use std::os::windows::io::AsRawHandle;
     use std::time::Duration;
 
     const ERROR_PIPE_BUSY: i32 = 231;
+    const ERROR_INVALID_FUNCTION: i32 = 1;
+    const FILE_TYPE_PIPE: u32 = 3;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileType(handle: *mut core::ffi::c_void) -> u32;
+    }
 
     /// Open the client end of a named pipe. libuv waits out ERROR_PIPE_BUSY
     /// (all instances taken) rather than failing, so this does too; the
     /// caller's deadline bounds the wait.
+    ///
+    /// Only a pipe is accepted: a pipe name that resolves to a plain file is
+    /// refused before anything is written (libuv fails it the same way, when
+    /// it sets the pipe mode), so the request and its token never land in a file.
     pub fn connect(pipe: &str) -> std::io::Result<File> {
         loop {
             match OpenOptions::new().read(true).write(true).open(pipe) {
                 Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => std::thread::sleep(Duration::from_millis(10)),
+                Ok(file) => {
+                    // SAFETY: the handle is owned by `file` and valid for this call.
+                    let kind = unsafe { GetFileType(file.as_raw_handle() as *mut core::ffi::c_void) };
+                    if kind != FILE_TYPE_PIPE {
+                        return Err(std::io::Error::from_raw_os_error(ERROR_INVALID_FUNCTION));
+                    }
+                    return Ok(file);
+                }
                 other => return other,
             }
         }

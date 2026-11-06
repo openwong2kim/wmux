@@ -18,9 +18,11 @@ describe('build-native-hooks', () => {
     expect(read('src', 'shared', 'hooks', 'hookFlavours.ts')).toContain(`export const NATIVE_HOOKS_MARKER = '${NATIVE_HOOKS_MARKER}';`);
   });
 
+  // Same architectures; Linux swaps glibc for a static musl build, so the
+  // binary runs on any distribution the app does.
   it('builds for every platform the terminal core ships on', () => {
     for (const key of Object.keys(NATIVE_TERMINAL_TARGETS)) {
-      expect(NATIVE_HOOKS_TARGETS[key], key).toBe(NATIVE_TERMINAL_TARGETS[key].target);
+      expect(NATIVE_HOOKS_TARGETS[key], key).toBe(NATIVE_TERMINAL_TARGETS[key].target.replace(/-linux-gnu$/, '-linux-musl'));
     }
   });
 

@@ -323,6 +323,10 @@ fn read_stdin() -> Result<Option<Json>, ()> {
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            // An inherited non-blocking stdin: wait for data as Node's reader does.
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(2))
+            }
             Err(_) => return Err(()),
         }
     }
@@ -458,7 +462,15 @@ pub fn run_hook(flavour_id: Option<&[u16]>, argv_event: Option<&[u16]>) {
             vec![("kind", kind_field), ("target", target_field)],
         );
     } else {
-        let take = |v: Option<&Json>| v.cloned().map(Field::Json);
+        // A reply value is logged whole, as JSON.stringify would. One nested
+        // past V8's stack ends the run the way Node's RangeError does: in the
+        // `uncaught` line, never in a stack overflow.
+        let take = |v: Option<&Json>| {
+            v.map(|v| {
+                assert!(!v.deeper_than(1000), "RangeError: Maximum call stack size exceeded");
+                Field::Json(v.clone())
+            })
+        };
         log_event(
             Some(flavour),
             if outer_ok { "rpc-rejected" } else { "rpc-failed" },

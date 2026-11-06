@@ -22,6 +22,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
+import { randomBytes } from 'crypto';
 import { writeJsonAtomic } from '../settingsFile';
 import {
   findLifecycleAssetSourceFrom,
@@ -240,10 +242,27 @@ function isOwnedHookFile(parsed: unknown, flavourId: CompatHookFlavourId): boole
   return leaves > 0;
 }
 
+/**
+ * Whether the installed binary actually runs here: a noexec home, an
+ * application-control policy or a foreign libc would fail every hook event,
+ * where `node <bridge>` would have worked.
+ */
+function nativeHooksRuns(binary: string): boolean {
+  try {
+    const out = execFileSync(binary, ['--version'], {
+      encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return out.includes(NATIVE_HOOKS_MARKER);
+  } catch {
+    return false;
+  }
+}
+
 /** The installed native bridge the entries should run, or null for the Node form. */
 export function activeNativeHooksPath(paths: Pick<CompatHookPaths, 'nativeHooks'>): string | null {
   const spec = paths.nativeHooks;
-  return spec && inspectLifecycleAsset(spec).state === 'current' ? spec.destinationPath : null;
+  if (!spec || inspectLifecycleAsset(spec).state !== 'current') return null;
+  return nativeHooksRuns(spec.destinationPath) ? spec.destinationPath : null;
 }
 
 export function inspectCompatHookConfig(
@@ -286,18 +305,31 @@ export interface CompatHookInstallOutcome {
 }
 
 /**
- * Copy the native bridge when this build ships one, executable by its owner
- * only. Its copy is what the entries run, so a copy that is not current (a
- * foreign file in the way, a locked exe on Windows) leaves them on Node.
+ * Copy the native bridge when this build ships one. The copy is executable by
+ * its owner from the moment it appears (a hook may fire during a refresh), and
+ * is used only once it has run here. Anything short of that (a foreign file in
+ * the way, a locked exe on Windows, a binary this machine will not run) leaves
+ * the entries on Node.
  */
 function installNativeHooks(spec: LifecycleAssetSpec | null): LifecycleAssetInstallOutcome | null {
   if (!spec) return null;
-  const outcome = installLifecycleAsset(spec);
-  if (outcome.state !== 'current') return outcome;
-  try {
-    fs.chmodSync(spec.destinationPath, 0o700);
-  } catch (error) {
-    return { ...outcome, state: 'error', error: String(error) };
+  const before = inspectLifecycleAsset(spec);
+  let outcome: LifecycleAssetInstallOutcome = { ...before, action: 'none' };
+  if (before.state === 'missing' || before.state === 'stale') {
+    const dest = spec.destinationPath;
+    const temp = `${dest}.${process.pid}-${randomBytes(6).toString('hex')}.tmp`;
+    try {
+      fs.mkdirSync(path.dirname(dest), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(temp, fs.readFileSync(spec.sourcePath as string), { mode: 0o700 });
+      fs.renameSync(temp, dest);
+    } catch (error) {
+      try { fs.unlinkSync(temp); } catch { /* never written, or already renamed */ }
+      return { ...before, state: 'error', error: String(error), action: 'none' };
+    }
+    outcome = { ...before, state: 'current', error: null, action: before.state === 'missing' ? 'installed' : 'refreshed' };
+  }
+  if (outcome.state === 'current' && !nativeHooksRuns(spec.destinationPath)) {
+    return { ...outcome, state: 'error', error: 'the native hook bridge does not run on this machine' };
   }
   return outcome;
 }

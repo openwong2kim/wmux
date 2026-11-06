@@ -67,13 +67,20 @@ impl Json {
         }
     }
 
-    /// Insert or overwrite in place, like a JS property assignment.
-    pub fn set(entries: &mut Vec<(JsStr, Json)>, key: JsStr, value: Json) {
-        if let Some(slot) = entries.iter_mut().find(|(k, _)| *k == key) {
-            slot.1 = value;
-        } else {
-            entries.push((key, value));
+    /// True when the value nests deeper than `limit` (checked iteratively).
+    pub fn deeper_than(&self, limit: usize) -> bool {
+        let mut pending: Vec<(&Json, usize)> = vec![(self, 0)];
+        while let Some((v, depth)) = pending.pop() {
+            if depth > limit {
+                return true;
+            }
+            match v {
+                Json::Arr(items) => pending.extend(items.iter().map(|i| (i, depth + 1))),
+                Json::Obj(entries) => pending.extend(entries.iter().map(|(_, i)| (i, depth + 1))),
+                _ => {}
+            }
         }
+        false
     }
 }
 
@@ -99,9 +106,11 @@ pub fn decode_utf8_trimmed(bytes: &[u8]) -> JsStr {
 
 // ----- JSON.parse ----------------------------------------------------------
 
+/// An open object keeps a key index, so a duplicate key overwrites in place
+/// (first position, last value, as a JS property assignment) in O(1).
 enum Frame {
     Arr(Vec<Json>),
-    Obj(Vec<(JsStr, Json)>, JsStr),
+    Obj(Vec<(JsStr, Json)>, std::collections::HashMap<JsStr, usize>, JsStr),
 }
 
 struct Parser<'a> {
@@ -224,7 +233,7 @@ impl Parser<'_> {
                     return Ok(Some(Json::Obj(Vec::new())));
                 }
                 let key = self.key()?;
-                stack.push(Frame::Obj(Vec::new(), key));
+                stack.push(Frame::Obj(Vec::new(), Default::default(), key));
                 Ok(None)
             }
             0x5B => {
@@ -270,18 +279,24 @@ pub fn parse(s: &[u16]) -> Result<Json, ()> {
         };
         match frame {
             Frame::Arr(items) => items.push(value),
-            Frame::Obj(entries, key) => Json::set(entries, std::mem::take(key), value),
+            Frame::Obj(entries, index, key) => match index.get(&*key) {
+                Some(&at) => entries[at].1 = value,
+                None => {
+                    index.insert(key.clone(), entries.len());
+                    entries.push((std::mem::take(key), value));
+                }
+            },
         }
         p.ws();
         if p.eat(b',').is_ok() {
-            if let Some(Frame::Obj(_, key)) = stack.last_mut() {
+            if let Some(Frame::Obj(_, _, key)) = stack.last_mut() {
                 *key = p.key()?;
             }
             continue;
         }
         let closed = match stack.pop() {
             Some(Frame::Arr(items)) => p.eat(b']').map(|_| Json::Arr(items)),
-            Some(Frame::Obj(entries, _)) => p.eat(b'}').map(|_| Json::Obj(entries)),
+            Some(Frame::Obj(entries, _, _)) => p.eat(b'}').map(|_| Json::Obj(entries)),
             None => Err(()),
         }?;
         done = Some(closed);
@@ -439,6 +454,24 @@ mod tests {
         ] {
             assert!(p(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn many_keys_parse_in_linear_time() {
+        let body: Vec<String> = (0..200_000).map(|i| format!("\"k{i}\":{i}")).collect();
+        let started = std::time::Instant::now();
+        let parsed = p(&format!("{{{}}}", body.join(","))).unwrap();
+        let Json::Obj(entries) = &parsed else { panic!() };
+        assert_eq!(entries.len(), 200_000);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn measures_depth_without_recursion() {
+        let deep = p(&format!("{}{}", "[".repeat(100_000), "]".repeat(100_000))).unwrap();
+        assert!(deep.deeper_than(1000));
+        assert!(!p("[[1],{\"a\":[2]}]").unwrap().deeper_than(3));
+        assert!(p("[[1],{\"a\":[2]}]").unwrap().deeper_than(2));
     }
 
     #[test]

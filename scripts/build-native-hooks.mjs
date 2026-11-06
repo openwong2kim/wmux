@@ -12,12 +12,14 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 
-/** The Rust target for each platform wmux packages. */
+/** The Rust target for each platform wmux packages. Linux links musl
+ *  statically: a glibc build needs the build host's glibc or newer, and the
+ *  app itself runs on older distributions than the CI image. */
 export const NATIVE_HOOKS_TARGETS = {
   'darwin-arm64': 'aarch64-apple-darwin',
   'darwin-x64': 'x86_64-apple-darwin',
-  'linux-x64': 'x86_64-unknown-linux-gnu',
-  'linux-arm64': 'aarch64-unknown-linux-gnu',
+  'linux-x64': 'x86_64-unknown-linux-musl',
+  'linux-arm64': 'aarch64-unknown-linux-musl',
   'win32-x64': 'x86_64-pc-windows-msvc',
   'win32-arm64': 'aarch64-pc-windows-msvc',
 };
@@ -36,6 +38,8 @@ function main() {
   if (!target) throw new Error(`No native hooks target for ${process.platform}-${process.arch}`);
   const binary = nativeHooksBinary(process.platform);
 
+  // Not installed with a minimal toolchain; a no-op once it is.
+  if (target.endsWith('-musl')) execFileSync('rustup', ['target', 'add', target], { stdio: 'inherit' });
   // Run from the crate so its .cargo/config.toml applies (static CRT on Windows).
   execFileSync('cargo', ['build', '--release', '--locked', '--target', target], { cwd: crate, stdio: 'inherit' });
   const built = path.join(crate, 'target', target, 'release', binary);

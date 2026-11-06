@@ -60,6 +60,35 @@ describe('hook flavours — TS table ↔ bridge table', () => {
     expect(rt.sourceField).toEqual(ts.sourceField);
   });
 
+  // The constants both bridges hard-code, read off the two sources: a change to
+  // the Node bridge's timing, retry, idempotency or forwarding rules must be
+  // made to the native one too.
+  it('the native bridge hard-codes the same rules as the Node bridge', () => {
+    const mjs = fs.readFileSync(path.join(REPO_ROOT, 'integrations', 'shared', 'bin', 'wmux-hooks-bridge.mjs'), 'utf8');
+    const rs = ['hook.rs', 'rpc.rs']
+      .map((f) => fs.readFileSync(path.join(REPO_ROOT, 'core', 'wmux-native', 'src', f), 'utf8'))
+      .join('\n');
+    const pick = (src: string, re: RegExp): string => {
+      const m = src.match(re);
+      expect(m, String(re)).not.toBeNull();
+      return (m as RegExpMatchArray)[1].replace(/\s+/g, '').replace(/'/g, '"').replace(/,$/, '');
+    };
+    const pairs: [RegExp, RegExp][] = [
+      [/const BRIDGE_VERSION = ('[^']+')/, /const BRIDGE_VERSION: &str = ("[^"]+")/],
+      [/const HOOK_TIMEOUT_MS = (\d+)/, /const HOOK_TIMEOUT: Duration = Duration::from_millis\((\d+)\)/],
+      [/const MAX_STDIN_BYTES = ([^;]+);/, /const MAX_STDIN_BYTES: usize = ([^;]+);/],
+      [/const CONNECT_RETRY_BACKOFFS_MS = \[([^\]]+)\]/, /const CONNECT_RETRY_BACKOFFS_MS: \[u64; \d+\] = \[([^\]]+)\]/],
+      [/const TRANSIENT_CONNECT_CODES = new Set\(\[([^\]]+)\]\)/, /const TRANSIENT_CONNECT_CODES: \[&str; \d+\] = \[([^\]]+)\]/],
+      [/const IDEMPOTENT_KINDS = new Set\(\[([^\]]+)\]\)/, /const IDEMPOTENT_KINDS: \[&str; \d+\] = \[([^\]]+)\]/],
+      [/const FORWARDED_SESSION_SOURCES = new Set\(\[([^\]]+)\]\)/, /const FORWARDED_SESSION_SOURCES: \[&str; \d+\] = \[([^\]]+)\]/],
+      // Rust matches the pattern by hand; its doc comment names the one it implements.
+      [/const SESSION_ID_RE = (\/[^\n]+\/);/, /\/\/\/ SESSION_ID_RE: (\/[^\n]+\/)/],
+    ];
+    for (const [fromMjs, fromRs] of pairs) {
+      expect(pick(rs, fromRs), String(fromMjs)).toBe(pick(mjs, fromMjs));
+    }
+  });
+
   // Registering an event the bridge drops spawns a process per occurrence to
   // do nothing (the CODEX_HOOK_EVENTS rule).
   it.each(COMPAT_HOOK_FLAVOUR_IDS)('%s: registers only events the bridge maps', (id) => {
