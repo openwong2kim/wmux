@@ -19,6 +19,8 @@ describe('tail hazard scan', () => {
       ['\x1b[2;20r', 'margins'],
       ['\x1b[1;10r', 'margins'],
       ['\x1b[?6h', 'origin'],
+      ['\x1b[?25;6h', 'origin'],
+      ['\x1b[?6;2026h', 'origin'],
       ['\x1b[?69h', 'lr-margins'],
       ['\x1b(0', 'charset'],
       ['\x1b)0\x0e', 'charset'],
@@ -41,6 +43,8 @@ describe('tail hazard scan', () => {
     const before = '\x1b[2;20r\x1b[r\x1b(0\x1b(B\x1b[?6h\x1b[?6l\x1b[4h\x1b[4l\x1b)0\x0e\x0f\x1b)B';
     expect(hazard(`${before}text\r\nmore`, before.length + 6)).toBeNull();
     expect(hazard('text\r\n\x1b[2;20r\x1b(0\x1b[4h', 6)).toBeNull();
+    // Private modes that only look like 6 or 69.
+    expect(hazard('\x1b[?16h\x1b[?60h\x1b[?690h\x1b[?2026h\r\nx', 29)).toBeNull();
   });
 
   it('a margin of the whole screen is no margin, at the size read', () => {

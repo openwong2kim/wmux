@@ -24,7 +24,7 @@
  *
  * Scanned at read time, so the PTY's write path pays nothing: each read scans
  * the ring bytes new since that session's last read, keeping a state
- * checkpoint every 64 KiB, then scans from the checkpoint before the cut to
+ * checkpoint every 64 KiB of the stream, then scans from the checkpoint before the cut to
  * the cut, and the tail itself for its own changes. The scan starts at the
  * ring's oldest byte with defaults; state carried from bytes the ring has
  * since dropped can only report a hazard the replay no longer has (a
@@ -70,12 +70,14 @@ const DEFAULT_STATE: HazardState = {
 /**
  * The sequences that change hazard state. Matched on a latin1 view of the
  * ring's bytes, so a match index is a byte offset: every sequence here is
- * ASCII, and ESC/SO/SI never occur inside a UTF-8 character.
- *   1-3: CSI [?] Ps;... h|l|r|g    4-5: ESC (|)|*|+|-|.|/ <final>
- *   6:   ESC c|H|n|o               7:   SO / SI
+ * ASCII, and ESC/SO/SI never occur inside a UTF-8 character. A DEC private
+ * mode list matches only when it names ?6 or ?69, so the ?2026 pair a TUI
+ * sends every frame is not even a match.
+ *   1-2: CSI ? ...6|69... h|l      3-4: CSI Ps;... h|l|r|g
+ *   5-6: ESC (|)|*|+|-|.|/ <final> 7:   ESC c|H|n|o      8: SO / SI
  */
 // eslint-disable-next-line no-control-regex
-const STATE_RE = /\x1b(?:\[(\??)([0-9;]*)([hlrg])|([()*+\-./])([\x20-\x2f]*[\x30-\x7e])|([cHno]))|([\x0e\x0f])/g;
+const STATE_RE = /\x1b(?:\[\?((?:\d*;)*(?:6|69)(?:;\d*)*)([hl])|\[([0-9;]*)([hlrg])|([()*+\-./])([\x20-\x2f]*[\x30-\x7e])|([cHno]))|([\x0e\x0f])/g;
 
 /**
  * Inside the tail: DEC private mode lists (screen switches, autowrap, ?1048),
@@ -85,7 +87,7 @@ const STATE_RE = /\x1b(?:\[(\??)([0-9;]*)([hlrg])|([()*+\-./])([\x20-\x2f]*[\x30
 // eslint-disable-next-line no-control-regex
 const TAIL_RE = /\x1b(?:\[\?([0-9;]*)([hl])|\[([su])|([78]))/g;
 
-/** State checkpoints are kept about this far apart. */
+/** State checkpoints are kept this far apart. */
 const CHECKPOINT_BYTES = 64 * 1024;
 /** Bytes re-read before an incremental scan's start, so a sequence cut by the previous read's end still matches. */
 const OVERLAP_BYTES = 64;
@@ -107,34 +109,35 @@ function hazardOf(state: HazardState, rows: number): TailHazard | null {
 
 /** The state after the sequence `m`. */
 function applied(s: HazardState, m: RegExpExecArray): HazardState {
-  if (m[3] !== undefined) {
-    const priv = m[1] === '?';
-    const params = m[2].split(';').map((p) => (p === '' ? 0 : Number(p)));
-    if (m[3] === 'h' || m[3] === 'l') {
-      const on = m[3] === 'h';
-      let next = s;
-      for (const p of params) {
-        if (priv) {
-          if (p === 6) next = { ...next, origin: on };
-          else if (p === 69) next = { ...next, lrMargins: on };
-        } else if (p === 4) next = { ...next, insert: on };
-        else if (p === 20) next = { ...next, newline: on };
-      }
-      return next;
+  if (m[2] !== undefined) {
+    let next = s;
+    for (const p of m[1].split(';')) {
+      if (p === '6') next = { ...next, origin: m[2] === 'h' };
+      else if (p === '69') next = { ...next, lrMargins: m[2] === 'h' };
     }
-    if (priv) return s;
-    return m[3] === 'r' ? { ...s, top: params[0] ?? 0, bottom: params[1] ?? 0 } : { ...s, tabs: true };
+    return next;
   }
   if (m[4] !== undefined) {
-    const index = SET_INDEX[m[4]];
-    return { ...s, sets: s.sets.slice(0, index) + (m[5] === 'B' ? 'B' : '?') + s.sets.slice(index + 1) };
+    const params = m[3].split(';').map((p) => (p === '' ? 0 : Number(p)));
+    if (m[4] === 'r') return { ...s, top: params[0] ?? 0, bottom: params[1] ?? 0 };
+    if (m[4] === 'g') return { ...s, tabs: true };
+    let next = s;
+    for (const p of params) {
+      if (p === 4) next = { ...next, insert: m[4] === 'h' };
+      else if (p === 20) next = { ...next, newline: m[4] === 'h' };
+    }
+    return next;
   }
-  if (m[6] !== undefined) {
-    if (m[6] === 'c') return DEFAULT_STATE;
-    if (m[6] === 'H') return { ...s, tabs: true };
-    return { ...s, gl: m[6] === 'n' ? 2 : 3 };
+  if (m[5] !== undefined) {
+    const index = SET_INDEX[m[5]];
+    return { ...s, sets: s.sets.slice(0, index) + (m[6] === 'B' ? 'B' : '?') + s.sets.slice(index + 1) };
   }
-  return { ...s, gl: m[7] === '\x0e' ? 1 : 0 };
+  if (m[7] !== undefined) {
+    if (m[7] === 'c') return DEFAULT_STATE;
+    if (m[7] === 'H') return { ...s, tabs: true };
+    return { ...s, gl: m[7] === 'n' ? 2 : 3 };
+  }
+  return { ...s, gl: m[8] === '\x0e' ? 1 : 0 };
 }
 
 /** The first change inside the tail (`text`) whose state at the cut the tail cannot know, or null. */
@@ -212,12 +215,13 @@ export class TailHazardScan {
     while ((m = STATE_RE.exec(text)) !== null) {
       if (m.index + m[0].length <= seenEnd) continue;
       const at = from + m.index;
-      if (at >= nextCheckpoint) {
-        this.checkpoints.push({ at, state: this.state });
-        nextCheckpoint = at + CHECKPOINT_BYTES;
-      }
+      // Matches come in start order, so before the first one at or past a
+      // checkpoint, the state is exactly that of every sequence before it.
+      for (; at >= nextCheckpoint; nextCheckpoint += CHECKPOINT_BYTES) this.checkpoints.push({ at: nextCheckpoint, state: this.state });
       this.state = applied(this.state, m);
     }
+    // Past the last match: exact up to where a sequence could still be unfinished.
+    for (; nextCheckpoint <= writtenAt - OVERLAP_BYTES; nextCheckpoint += CHECKPOINT_BYTES) this.checkpoints.push({ at: nextCheckpoint, state: this.state });
     this.scannedTo = writtenAt;
     // Checkpoints before the ring's start have no bytes left to scan from; keep the newest of them as the floor.
     while (this.checkpoints.length > 1 && this.checkpoints[1].at <= ringStart) this.checkpoints.shift();
