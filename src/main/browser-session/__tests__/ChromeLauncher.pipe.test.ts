@@ -54,10 +54,26 @@ class PipeChrome extends FakeBrowser {
   }
 }
 
-function spawnPipeChrome(): { child: FakeChild; chrome: PipeChrome } {
+/** A browser on a cold start: it reads its commands but answers none until start(). */
+class SlowPipeChrome extends PipeChrome {
+  private held: Command[] | null = [];
+
+  protected override handle(c: Command): void {
+    if (this.held) this.held.push(c);
+    else super.handle(c);
+  }
+
+  start(): void {
+    const held = this.held ?? [];
+    this.held = null;
+    for (const c of held) super.handle(c);
+  }
+}
+
+function spawnPipeChrome<T extends PipeChrome = PipeChrome>(Kind: new (child: FakeChild) => T = PipeChrome as new (child: FakeChild) => T): { child: FakeChild; chrome: T } {
   const child = new EventEmitter() as FakeChild;
   child.killed = false;
-  const chrome = new PipeChrome(child);
+  const chrome = new Kind(child);
   child.stdio = [null, null, null, chrome.fromMux, chrome.toMux];
   child.kill = () => {
     child.killed = true;
@@ -78,6 +94,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
@@ -140,6 +157,44 @@ describe('ChromeLauncher over a debugging pipe', () => {
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
     await launcher.endpoint();
     chrome.exit();
+    expect(launcher.isRunning()).toBe(false);
+  });
+
+  // A first start after the install changed reads it from a cold disk before it
+  // answers: 21.8 s for the first headless Chrome on a windows-latest runner.
+  it('waits on a cold start that answers within the start ceiling', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { chrome, child } = spawnPipeChrome(SlowPipeChrome);
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    let ready = false;
+    const launched = launcher.endpoint().then(() => { ready = true; });
+    await vi.advanceTimersByTimeAsync(22_000);
+    expect(ready).toBe(false);
+    expect(child.killed).toBe(false);
+    chrome.start();
+    // Then the launch's restored-tab settle, as on the port.
+    for (let i = 0; i < 40 && !ready; i++) await vi.advanceTimersByTimeAsync(250);
+    await launched;
+    // The attempts that timed out shared the one browser session still being attached.
+    expect(chrome.received.filter((c) => c.method === 'Target.attachToBrowserTarget')).toHaveLength(1);
+    expect(launcher.isRunning()).toBe(true);
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('gives up on a Chrome that never answers once the start ceiling passes, and stops it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { child } = spawnPipeChrome(SlowPipeChrome);
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    const launched = launcher.endpoint();
+    const failed = expect(launched).rejects.toThrow('ChromeLauncher: CDP endpoint did not become ready in time');
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(child.killed).toBe(false);
+    // Past the 30 s ceiling; the last attempt may still hold its own 10 s.
+    await vi.advanceTimersByTimeAsync(12_000);
+    await failed;
+    expect(child.killed).toBe(true);
     expect(launcher.isRunning()).toBe(false);
   });
 
