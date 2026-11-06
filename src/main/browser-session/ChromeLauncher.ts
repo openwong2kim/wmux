@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
-import { CdpSocket } from './CdpSocket';
+import type { CdpConnection } from './CdpSocket';
 import { portTransport, type ChromeTransport } from './ChromeTransport';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
@@ -407,14 +407,14 @@ interface WatchedTargetInfo {
 }
 
 interface PageSessionEntry {
-  socket: CdpSocket;
+  socket: CdpConnection;
   sessionId: string;
   targetId: string;
   valid: boolean;
 }
 
 interface StreamSessionEntry {
-  socket: CdpSocket;
+  socket: CdpConnection;
   sessionId: string;
   closed: boolean;
   unsubscribe: Array<() => void>;
@@ -455,7 +455,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   private restored = false;
 
   // ── Tab-target watcher state (all of it optional; see TARGET_WATCHER_ENV) ──
-  private watcher: CdpSocket | null = null;
+  private watcher: CdpConnection | null = null;
   private watcherStarting: Promise<void> | null = null;
   /** Bumped by every close/start so a superseded startup can bail out. */
   private watcherGeneration = 0;
@@ -481,7 +481,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** streamSession()s alive on the watcher socket. */
   private readonly streamSessions = new Set<StreamSessionEntry>();
   /** The watcher socket whose discovery replay is over: only pages created after it are adopted. */
-  private adoptingOn: CdpSocket | null = null;
+  private adoptingOn: CdpConnection | null = null;
   private readonly openedListeners = new Set<(opened: ChromeOpenedSurface) => void>();
   /** Adoption times in the last minute, per opener (`tab:`), per workspace (`ws:`) and for all (ALL_OPENERS). */
   private readonly adoptedAt = new Map<string, number[]>();
@@ -507,7 +507,7 @@ export class ChromeLauncher implements ChromeBackendClient {
    *  changed (#2063); the pane editor offers an Allow for each. */
   private readonly blocked = new BlockedHostLog();
   /** Main's own browser-level session that keeps downloads denied. */
-  private downloadGuard: CdpSocket | null = null;
+  private downloadGuard: CdpConnection | null = null;
   /** The guard being armed, so concurrent callers share one socket. */
   private guardArming: Promise<void> | null = null;
   private readonly proxyProbeTimeoutMs: number | undefined;
@@ -633,7 +633,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   }
 
   /** The watcher's connection went away (CdpSocket re-dials in place): every page session on it is dead. */
-  private dropPageSessionsOf(socket: CdpSocket): void {
+  private dropPageSessionsOf(socket: CdpConnection): void {
     for (const [surfaceId, entry] of this.pageSessions) {
       if (entry.socket !== socket) continue;
       entry.valid = false;
@@ -784,7 +784,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     };
   }
 
-  private attachPage(surfaceId: string, targetId: string, socket: CdpSocket): Promise<PageSessionEntry> {
+  private attachPage(surfaceId: string, targetId: string, socket: CdpConnection): Promise<PageSessionEntry> {
     const key = `${surfaceId}\n${targetId}`;
     const inFlight = this.attachingPages.get(key);
     if (inFlight) return inFlight;
@@ -850,7 +850,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.closeWatcher();
     if (this.disposed) return;
     const generation = ++this.watcherGeneration;
-    const socket: CdpSocket = transport.connect(
+    const socket: CdpConnection = transport.connect(
       () => {
         const url = this.browserWsEndpoint;
         if (!url) throw new Error('ChromeLauncher: no browser CDP endpoint');
@@ -887,7 +887,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     await this.syncTabAnchors();
   }
 
-  private subscribeTargetEvents(socket: CdpSocket): void {
+  private subscribeTargetEvents(socket: CdpConnection): void {
     socket.on('Target.targetCreated', (params) => {
       const info = watchedTargetInfo(params);
       if (info?.type === 'tab' && info.targetId) void this.attachTab(info.targetId);
@@ -1096,7 +1096,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     }
   }
 
-  private async getTabTargets(socket: CdpSocket): Promise<WatchedTargetInfo[]> {
+  private async getTabTargets(socket: CdpConnection): Promise<WatchedTargetInfo[]> {
     const read = async (params: Record<string, unknown>): Promise<WatchedTargetInfo[]> =>
       ((await socket.send('Target.getTargets', params)) as { targetInfos?: WatchedTargetInfo[] })?.targetInfos ?? [];
     let infos: WatchedTargetInfo[];

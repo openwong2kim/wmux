@@ -1,4 +1,4 @@
-import { CdpSocket, type CdpSocketOptions } from './CdpSocket';
+import { CdpSocket, type CdpConnection, type CdpSocketOptions } from './CdpSocket';
 
 /**
  * How ChromeLauncher reaches a Chrome it launched or adopted.
@@ -44,7 +44,7 @@ export interface ChromeTransport {
    */
   browserEndpointIgnoringStatus(): Promise<string | null>;
   /** A browser-level CDP connection to `endpoint` (re-read on every dial). */
-  connect(endpoint: () => string, opts: CdpSocketOptions): CdpSocket;
+  connect(endpoint: () => string, opts: CdpSocketOptions): CdpConnection;
 }
 
 /** The ws URL an answer to the version request names, or null. */
