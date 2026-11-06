@@ -194,6 +194,20 @@ export class WebviewCdpManager {
     },
   });
 
+  private readonly dialogHookedGuests = new WeakSet<object>();
+
+  private onGuestDebuggerMessage(webContentsId: number, method: string, params?: Record<string, unknown>): void {
+    if (method !== 'Page.javascriptDialogOpening' && method !== 'Page.javascriptDialogClosed') return;
+    const surfaceId = [...this.sessions.values()].find((s) => s.webContentsId === webContentsId)?.surfaceId;
+    if (!surfaceId) return;
+    if (method === 'Page.javascriptDialogClosed') {
+      this.dialogs.closed(surfaceId);
+      return;
+    }
+    const driven = (this.guestState.get(surfaceId)?.leases ?? 0) > 0;
+    this.dialogs.opening(surfaceId, String(params?.type ?? 'alert'), String(params?.message ?? ''), driven);
+  }
+
   /** browser_dialog: the answer for the next dialog one of the agent's inputs raises here. */
   armDialog(surfaceId: string, accept: boolean, text?: string): void {
     this.dialogs.arm(surfaceId, accept, text);
@@ -257,6 +271,20 @@ export class WebviewCdpManager {
       console.warn(`[WebviewCdpManager] setBackgroundThrottling failed:`, err);
     }
 
+    // One listener per guest however often it re-registers: an unregister
+    // detaches the debugger but keeps its listeners. Capture enables the Page
+    // domain too, but it can fail or still be starting, and a dialog nobody
+    // hears blocks the agent.
+    if (!this.dialogHookedGuests.has(wc)) {
+      this.dialogHookedGuests.add(wc);
+      wc.debugger.on('message', (_event, method, params) => this.onGuestDebuggerMessage(webContentsId, method, params));
+    }
+    try {
+      await wc.debugger.sendCommand('Page.enable');
+    } catch (err) {
+      console.warn(`[WebviewCdpManager] Page.enable failed:`, err);
+    }
+
     let targetId = `wc-${webContentsId}`;
     try {
       const { targetInfo } = await wc.debugger.sendCommand('Target.getTargetInfo');
@@ -279,15 +307,6 @@ export class WebviewCdpManager {
     // Same-guest re-registration keeps the existing destroyed listener —
     // adding another would fire unregister twice.
     if (!sameGuestReregister) {
-      wc.debugger.on('message', (_event, method, params) => {
-        if (this.sessions.get(surfaceId)?.webContentsId !== webContentsId) return;
-        if (method === 'Page.javascriptDialogOpening') {
-          const driven = (this.guestState.get(surfaceId)?.leases ?? 0) > 0;
-          this.dialogs.opening(surfaceId, String(params?.type ?? 'alert'), String(params?.message ?? ''), driven);
-        } else if (method === 'Page.javascriptDialogClosed') {
-          this.dialogs.closed(surfaceId);
-        }
-      });
       // Left alone, a page's beforeunload cancels the navigation with no prompt:
       // the person is stuck on the page with no explanation, and an agent's
       // navigation is silently undone. Asking would take a synchronous dialog

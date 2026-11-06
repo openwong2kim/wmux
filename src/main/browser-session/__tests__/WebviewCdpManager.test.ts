@@ -54,9 +54,25 @@ describe('WebviewCdpManager', () => {
         (event: unknown, method: string, params: Record<string, unknown>) => void;
       listener({}, method, params);
       // The answer waits briefly, for a Playwright page to answer first.
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await vi.advanceTimersByTimeAsync(200);
     };
     const answered = () => mockDebugger.sendCommand.mock.calls.filter(([m]) => m === 'Page.handleJavaScriptDialog');
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('enables the Page domain itself and keeps one listener across re-registration', async () => {
+      await manager.register('surface-1', 42);
+      manager.unregister('surface-1');
+      await manager.register('surface-1', 42);
+      expect(mockDebugger.sendCommand).toHaveBeenCalledWith('Page.enable');
+      expect(mockDebugger.on.mock.calls.filter(([name]) => name === 'message')).toHaveLength(1);
+    });
 
     it("leaves a person's dialog alone when no lease is held", async () => {
       await manager.register('surface-1', 42);

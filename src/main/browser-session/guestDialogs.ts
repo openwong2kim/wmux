@@ -23,6 +23,8 @@ const MAX_MESSAGE_CHARS = 200;
 const ANSWER_WINDOW_MS = 10_000;
 const MAX_ANSWERS_PER_WINDOW = 3;
 const ANSWER_DELAY_MS = 150;
+/** A hung input call stops counting as in flight after this. */
+const DISPATCH_TTL_MS = ARMED_DIALOG_TTL_MS;
 
 export type GuestDialogAnswer =
   | 'dismissed'
@@ -48,10 +50,10 @@ export interface GuestDialogsDeps {
 
 interface SurfaceDialogs {
   /** Open and unanswered. A page can only have one: it is blocked until it's answered. */
-  open?: { type: string; message: string; capNoted: boolean };
+  open?: { type: string; message: string; capNoted: boolean; raisedByInput: boolean };
   armed?: { accept: boolean; text?: string; expires: number };
-  /** Input dispatches in flight. Only a dialog raised by one may use an armed answer. */
-  dispatching: number;
+  /** Input dispatches in flight. Only a dialog raised during one may use an armed answer. */
+  dispatches: Set<{ expires: number }>;
   answeredAt: number[];
 }
 
@@ -67,7 +69,7 @@ export class GuestDialogs {
   private surface(surfaceId: string): SurfaceDialogs {
     let state = this.surfaces.get(surfaceId);
     if (!state) {
-      state = { dispatching: 0, answeredAt: [] };
+      state = { dispatches: new Set(), answeredAt: [] };
       this.surfaces.set(surfaceId, state);
     }
     return state;
@@ -79,7 +81,9 @@ export class GuestDialogs {
     if (type === 'beforeunload') return;
     const state = this.surface(surfaceId);
     const capped = message.length > MAX_MESSAGE_CHARS ? `${message.slice(0, MAX_MESSAGE_CHARS)}…` : message;
-    state.open = { type, message: capped, capNoted: false };
+    const now = this.now();
+    const raisedByInput = [...state.dispatches].some((dispatch) => dispatch.expires > now);
+    state.open = { type, message: capped, capNoted: false, raisedByInput };
     if (!driven) return;
     const opened = state.open;
     this.defer(() => {
@@ -115,12 +119,10 @@ export class GuestDialogs {
   /** Mark an input dispatch in flight. Returns the closer; safe to call twice. */
   beginDispatch(surfaceId: string): () => void {
     const state = this.surface(surfaceId);
-    state.dispatching++;
-    let closed = false;
+    const dispatch = { expires: this.now() + DISPATCH_TTL_MS };
+    state.dispatches.add(dispatch);
     return () => {
-      if (closed) return;
-      closed = true;
-      state.dispatching = Math.max(0, state.dispatching - 1);
+      state.dispatches.delete(dispatch);
     };
   }
 
@@ -140,17 +142,20 @@ export class GuestDialogs {
       }
       return;
     }
-    const armed = state.armed && state.armed.expires > now && state.dispatching > 0 ? state.armed : undefined;
+    const armed = open.raisedByInput && state.armed && state.armed.expires > now ? state.armed : undefined;
     if (armed) state.armed = undefined;
     state.open = undefined;
     state.answeredAt.push(now);
-    // Already answered, or the page is gone: nothing to do either way.
-    void this.deps.answer(surfaceId, armed?.accept ?? false, armed?.text).catch(() => undefined);
-    this.deps.note(surfaceId, {
-      type: open.type,
-      message: open.message,
-      answer: armed ? (armed.accept ? 'accepted (pre-armed)' : 'dismissed (pre-armed)') : 'dismissed',
-      at: now,
-    });
+    // Report only what happened. A failed answer means something else got there
+    // first, and it reports its own, or the page is gone.
+    void this.deps.answer(surfaceId, armed?.accept ?? false, armed?.text).then(
+      () => this.deps.note(surfaceId, {
+        type: open.type,
+        message: open.message,
+        answer: armed ? (armed.accept ? 'accepted (pre-armed)' : 'dismissed (pre-armed)') : 'dismissed',
+        at: now,
+      }),
+      () => undefined,
+    );
   }
 }
