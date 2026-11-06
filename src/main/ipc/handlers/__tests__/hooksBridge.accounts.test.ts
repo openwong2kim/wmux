@@ -15,6 +15,7 @@ import type { Account } from '../../../account/accountStore';
 import { accountHookDrift, registerHooksBridgeHandlers } from '../hooksBridge.handler';
 
 vi.mock('electron', () => ({
+  app: { isPackaged: true },
   ipcMain: { removeHandler: vi.fn(), handle: vi.fn() },
 }));
 
@@ -57,9 +58,12 @@ beforeEach(() => {
   accounts.base = base;
   accounts.list = [];
   vi.mocked(ipcMain.handle).mockClear();
+  // A packaged, unsuffixed instance: the only one these handlers write from.
+  vi.stubEnv('WMUX_DATA_SUFFIX', '');
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
