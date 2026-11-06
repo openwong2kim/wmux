@@ -9,21 +9,20 @@
 //!      beside the binary;
 //!   2. a bridge this port was not made from: its SHA-256 (CRLF read as LF)
 //!      is not PORTED_FROM_SHA256 (logged `impl-fallback`,
-//!      reason `bridge-sha-mismatch`);
-//!   3. a decision flag: `--gate`, `--permission-gate`, or `--context` on
-//!      UserPromptSubmit. Their answers (exit 2, stdout) are not ported yet.
+//!      reason `bridge-sha-mismatch`).
 //!
 //! No bridge beside the binary: the run stays native (logged
 //! `impl-native-no-bridge` just before the run's first other line, so a run
-//! that logs nothing adds none). A decision flag then fails open (exit 0, empty
-//! stdout, logged `decision-unported` with the flag) and the run goes on as
-//! a plain one with that mode off: the signal is sent and a lifecycle
-//! capture that did not land is spooled. A failed exec (no node) is logged
-//! `impl-fallback`, reason `node-missing`, and is handled the same.
+//! that logs nothing adds none). A failed exec (no node) is logged
+//! `impl-fallback`, reason `node-missing`, and the run stays native too, so
+//! where there is no node the kill switch cannot turn native runs off.
 //!
-//! The rest is main() of the bridge, with gate, context and permission-gate
-//! mode off; the exit code is always 0 and stdout is never written. Every
-//! bridge.log line this binary writes ends with `"impl":"native"`.
+//! The rest is main() of the bridge, its decision modes included:
+//! `--gate` (exit 2 and a reason on stderr), `--context` on UserPromptSubmit
+//! (a block, or additionalContext on stdout) and `--permission-gate` (allow or
+//! deny on stdout, always exit 0). Every other run exits 0 with an empty
+//! stdout. Every bridge.log line this binary writes ends with
+//! `"impl":"native"`.
 //!
 //! Where it differs from Node, on purpose (each is a characterisation case's
 //! strictForPort):
@@ -38,6 +37,9 @@
 //!     5 000 to 8 000 levels, by node release), and then only once a socket
 //!     connects, where the exception ends the process with exit 1; between
 //!     the two limits this binary sends what Node cannot.
+//!   - A verdict whose stdout or stderr reader went away keeps its exit code
+//!     (a block stays 2) and logs `stdout-lost` / `stderr-lost` after the
+//!     verdict's line; Node dies on the write error with exit 1.
 
 use crate::claude::{self, CLAUDE_POLICY, PERMISSION_GATE_POLICY};
 use crate::claude_rpc;
@@ -217,31 +219,42 @@ fn ported_from(source: &[u8]) -> bool {
     sha256::lf_hex(source) == PORTED_FROM_SHA256.trim()
 }
 
-/// The decision flag that hands this run to Node, if any: the modes not
-/// ported yet.
-fn decision_flag<'a>(hook: &str, flags: &'a [JsStr]) -> Option<&'a JsStr> {
-    flags
-        .iter()
-        .find(|f| hook == "UserPromptSubmit" && **f == js("--context"))
-}
-
 /// main()'s modes: any argv token after the event.
 #[derive(Clone, Copy, Default)]
 struct Modes {
     /// `--gate`: the orchestrator's Stop gate, answered with exit 2.
     gate: bool,
+    /// `--context`, on UserPromptSubmit only: the HQ brain's prompt, which
+    /// main can refuse (exit 2) or add context to (stdout).
+    context: bool,
     /// `--permission-gate`: the PreToolUse permission gate, answered on stdout.
     permission_gate: bool,
 }
 
 impl Modes {
-    fn of(flags: &[JsStr]) -> Modes {
+    fn of(hook: &str, flags: &[JsStr]) -> Modes {
         let has = |flag: &str| flags.iter().any(|f| *f == js(flag));
         Modes {
             gate: has("--gate"),
+            context: hook == "UserPromptSubmit" && has("--context"),
             permission_gate: has("--permission-gate"),
         }
     }
+}
+
+/// outputPromptContext's line.
+fn prompt_context_line(text: &JsStr) -> String {
+    let fields = vec![
+        (js("hookEventName"), Json::Str(js("UserPromptSubmit"))),
+        (js("additionalContext"), Json::Str(text.clone())),
+    ];
+    let mut line = String::new();
+    js::stringify(
+        &Json::Obj(vec![(js("hookSpecificOutput"), Json::Obj(fields))]),
+        &mut line,
+    );
+    line.push('\n');
+    line
 }
 
 /// What the gate writes when the answer was lost after the request reached
@@ -378,12 +391,7 @@ fn hand_over(
         return None;
     };
     let flags: Vec<JsStr> = args.iter().skip(1).map(|a| paths::os_to_js(a)).collect();
-    if let Some(flag) = decision_flag(&hook, &flags) {
-        handover.exec(args, log);
-        // Only the decision fails open; the run goes on as a plain one.
-        log("decision-unported", vec![("flag", Some(Json::Str(flag.clone())))]);
-    }
-    let modes = Modes::of(&flags);
+    let modes = Modes::of(&hook, &flags);
     Some(Start { hook, kind, modes })
 }
 
@@ -507,8 +515,9 @@ fn run(start: Start, log: Log) {
         return;
     }
 
-    // The gate is main's alone: the daemon has no gate to consult.
-    let targets: Vec<Target> = claude::resolve_targets(modes.gate)
+    // The gate and the context are main's alone: the daemon has neither a
+    // gate nor a brain lane to consult.
+    let targets: Vec<Target> = claude::resolve_targets(modes.gate || modes.context)
         .into_iter()
         .filter(|t| hook != "SessionEnd" || t.name == "daemon")
         .collect();
@@ -691,6 +700,33 @@ fn run(start: Start, log: Log) {
             log("stderr-lost", fields());
         }
         panic_after_verdict_for_tests();
+    }
+
+    // The HQ brain's prompt: only an explicit refusal blocks it (a lost
+    // answer lets it run); else main's additionalContext goes to stdout.
+    let additional_context = inner
+        .and_then(|r| r.get("additionalContext"))
+        .and_then(Json::as_str)
+        .filter(|t| !t.is_empty());
+    if modes.context && inner_ok {
+        if let Some(reason) = block_reason(inner) {
+            let mut text = js::lossy(&reason);
+            text.push('\n');
+            set_exit_code(2);
+            let written = write_out(2, text.as_bytes());
+            log("prompt-blocked", fields());
+            if !written {
+                log("stderr-lost", fields());
+            }
+            panic_after_verdict_for_tests();
+        } else if let Some(context) = additional_context {
+            let written = write_out(1, prompt_context_line(context).as_bytes());
+            log("prompt-context", fields());
+            if !written {
+                log("stdout-lost", fields());
+            }
+            panic_after_verdict_for_tests();
+        }
     }
 
     let lifecycle = matches!(
@@ -1093,23 +1129,16 @@ mod tests {
     }
 
     #[test]
-    fn only_nodes_decision_modes_hand_over() {
-        let flags = |f: &[&str]| f.iter().map(|x| js(x)).collect::<Vec<_>>();
+    fn the_modes_are_read_as_main_reads_them() {
+        let modes = |hook: &str, f: &[&str]| Modes::of(hook, &f.iter().map(|x| js(x)).collect::<Vec<_>>());
         // argv-flags-any-position, gate-with-permission-gate
-        // The gate and the permission gate run here now.
-        assert_eq!(decision_flag("Stop", &flags(&["--unknown", "--gate"])), None);
-        assert!(Modes::of(&flags(&["--unknown", "--gate"])).gate);
-        // The permission gate runs here now.
-        assert_eq!(decision_flag("PreToolUse", &flags(&["--permission-gate"])), None);
-        assert!(Modes::of(&flags(&["--x", "--permission-gate"])).permission_gate);
-        assert!(!Modes::of(&flags(&["--permission-gated"])).permission_gate);
+        let both = modes("Stop", &["--unknown", "--gate", "--permission-gate"]);
+        assert!(both.gate && both.permission_gate && !both.context);
         // argv-context-needs-user-prompt-submit: --context elsewhere is ignored.
-        assert_eq!(decision_flag("Stop", &flags(&["--context"])), None);
-        assert_eq!(
-            decision_flag("UserPromptSubmit", &flags(&["--context"])),
-            Some(&js("--context"))
-        );
-        assert_eq!(decision_flag("Stop", &flags(&["--gated", "gate"])), None);
+        assert!(!modes("Stop", &["--context"]).context);
+        assert!(modes("UserPromptSubmit", &["--context"]).context);
+        let none = modes("Stop", &["--gated", "gate", "--permission-gated"]);
+        assert!(!none.gate && !none.context && !none.permission_gate);
     }
 
     #[test]

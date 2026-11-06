@@ -182,18 +182,16 @@ fn without_node_the_kill_switch_runs_natively() {
 
 #[test]
 fn a_failed_exec_is_not_tried_again() {
-    // Kill switch, a stale bridge and a decision flag would each hand over.
+    // The kill switch and a stale bridge would each hand over.
     let mut changed = pinned();
     changed.extend_from_slice(b"// edited\n");
     let case = Case::new("exec-once", Some(&changed));
-    let args = ["UserPromptSubmit", "--context"];
-    quiet(&case.run(&args, &[("WMUX_HOOK_RUNTIME", "node")], false, "{}"));
+    quiet(&case.run(&["Stop"], &[("WMUX_HOOK_RUNTIME", "node")], false, "{}"));
     assert_eq!(
         case.log(),
         [
             "impl-fallback node-missing",
             "impl-fallback bridge-sha-mismatch",
-            "decision-unported --context",
             "no-auth-token"
         ]
     );
@@ -205,69 +203,6 @@ fn without_a_bridge_beside_it_the_run_stays_native() {
     quiet(&case.run(&["Stop"], &[("WMUX_HOOK_RUNTIME", "node")], true, "{}"));
     assert_eq!(case.node_args(), None);
     assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
-}
-
-#[test]
-fn decision_flags_run_on_node() {
-    let case = Case::new("decision", Some(&pinned()));
-    let args = ["UserPromptSubmit", "--context"];
-    quiet(&case.run(&args, &[], true, ""));
-    assert_eq!(
-        case.node_args(),
-        Some(vec![case.bridge(), args[0].into(), args[1].into()])
-    );
-    assert!(case.log().is_empty());
-}
-
-#[test]
-fn a_decision_flag_with_no_bridge_or_no_node_fails_open() {
-    // Only the decision fails open: exit 0 and an empty stdout (the gate
-    // allows, the prompt runs, the tool goes through the session's own
-    // permission flow). The run itself goes on as a plain one: the signal is
-    // sent, and a lifecycle capture that did not land is spooled.
-    {
-        let (args, payload, kind, spooled) = (
-            ["UserPromptSubmit", "--context"],
-            r#"{"session_id":"s1","prompt":"p"}"#,
-            "agent.user_prompt_submit",
-            true,
-        );
-        let case = Case::new(&format!("decision-{}", &args[1][2..]), None);
-        let wmux_home = case.dir.join("home/.wmux-claude-hook-test");
-        std::fs::create_dir_all(&wmux_home).unwrap();
-        std::fs::write(wmux_home.join("daemon-auth-token"), "t").unwrap();
-        let absent = case.dir.join("absent.sock").display().to_string();
-        let env = [
-            ("WMUX_PIPE_NAME", absent.as_str()),
-            ("WMUX_PTY_ID", "pty-1"),
-            ("WMUX_BRIDGE_DEBUG", "1"),
-        ];
-        let out = case.run(&args, &env, true, payload);
-        quiet(&out);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains(&format!(r#""kind":"{kind}""#)), "{args:?}: {stderr}");
-        let mut expected = vec![
-            "impl-native-no-bridge".to_string(),
-            format!("decision-unported {}", args[1]),
-            "rpc-failed".to_string(),
-        ];
-        if spooled {
-            expected.push("resume-spooled".into());
-        }
-        assert_eq!(case.log(), expected, "{args:?}");
-        assert_eq!(case.node_args(), None);
-    }
-
-    let no_node = Case::new("decision-no-node", Some(&pinned()));
-    quiet(&no_node.run(&["UserPromptSubmit", "--context"], &[], false, "{}"));
-    assert_eq!(
-        no_node.log(),
-        [
-            "impl-fallback node-missing",
-            "decision-unported --context",
-            "no-auth-token"
-        ]
-    );
 }
 
 #[test]
