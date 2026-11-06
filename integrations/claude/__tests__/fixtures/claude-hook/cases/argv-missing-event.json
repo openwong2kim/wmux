@@ -12,7 +12,7 @@
   "strictForPort": {
     "steps.0.log.0.argv": [
       "<impl>",
-      "claude-hook"
+      "<prefix>"
     ]
   },
   "steps": [

@@ -5,6 +5,9 @@
 //!       argv the installer writes, so older wmux builds recognise the entry
 //!   wmux-native claude-hook <Event> [flags…]   the Claude hook bridge
 //!       (unix only; elsewhere it is the usage below)
+//!   wmux-native <…/wmux-bridge.mjs> <Event> [flags…]   the same: the argv
+//!       a Claude settings entry carries, so older wmux builds recognise it
+//!   wmux-native --self-test   the Claude hook's protocol and pin (unix only)
 //!   wmux-native --version | --help
 //!
 //! Each subcommand owns its own contract; `hook` never writes stdout and
@@ -49,7 +52,11 @@ pub const MARKER: &str = "wmux-managed: native-hooks";
 /// The Node bridge's file name (SHARED_HOOKS_BRIDGE_BASENAME in hookFlavours.ts).
 const BRIDGE_BASENAME: &str = "wmux-hooks-bridge.mjs";
 
-const USAGE: &str = "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native claude-hook <Event> [flags…]\n       wmux-native mcp-shim [--commander] [--core] [--role=R] [--bot*] | --self-test\n       wmux-native --version | --help\n";
+/// The Claude Node bridge's file name (WMUX_BRIDGE_MARKER in setupHooks.ts).
+#[cfg(unix)]
+const CLAUDE_BRIDGE_BASENAME: &str = "wmux-bridge.mjs";
+
+const USAGE: &str = "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native claude-hook <Event> [flags…]\n       wmux-native mcp-shim [--commander] [--core] [--role=R] [--bot*] | --self-test\n       wmux-native --version | --help | --self-test\n";
 
 fn main() {
     // A panic must not print: hook output is read by the agent.
@@ -58,8 +65,13 @@ fn main() {
     let sub = args.next();
     let sub_text = sub.as_ref().map(|s| s.to_string_lossy());
     // The basename of a `/` or `\` path, as the installer's ownership check reads it.
-    let names_bridge = sub_text.as_deref().and_then(|s| s.rsplit(['/', '\\']).next()) == Some(BRIDGE_BASENAME);
+    let basename = sub_text.as_deref().and_then(|s| s.rsplit(['/', '\\']).next());
+    let names_bridge = basename == Some(BRIDGE_BASENAME);
+    #[cfg(unix)]
+    let names_claude_bridge = basename == Some(CLAUDE_BRIDGE_BASENAME);
     match sub.as_ref().and_then(|s| s.to_str()) {
+        #[cfg(unix)]
+        _ if names_claude_bridge => claude_hook::run_process(args.collect(), sub.map(std::path::PathBuf::from)),
         _ if names_bridge => {
             let flavour = args.next().map(|a| paths::os_to_js(&a));
             let event = args.next().map(|a| paths::os_to_js(&a));
@@ -71,11 +83,13 @@ fn main() {
             hook::run_hook_process(flavour, event);
         }
         #[cfg(unix)]
-        Some("claude-hook") => claude_hook::run_process(args.collect()),
+        Some("claude-hook") => claude_hook::run_process(args.collect(), None),
         Some("mcp-shim") => mcp_shim::run(&args.collect::<Vec<_>>()),
         Some("--version") => {
             println!("wmux-native {} ({MARKER})", env!("CARGO_PKG_VERSION"));
         }
+        #[cfg(unix)]
+        Some("--self-test") => println!("{}", claude_hook::self_test_line()),
         Some("--help") => print!("{USAGE}"),
         _ => eprint!("{USAGE}"),
     }

@@ -111,10 +111,18 @@ type Log<'a> = &'a (dyn Fn(&str, Vec<(&str, Option<Json>)>) + Sync);
 
 const INTERACTIVE_ENTRYPOINTS: [&str; 3] = ["cli", "vscode", "jetbrains"];
 
-/// The process: `args` are the arguments after `claude-hook`. Never returns.
-/// The hand-over runs here, on the main thread, before any other thread
-/// exists; the rest of the run gets a thread with its own large stack.
-pub fn run_process(args: Vec<OsString>) -> ! {
+/// What `wmux-native --self-test` prints: the hook installer names this copy
+/// in Claude Code's settings only after reading it. Reads no stdin, writes no
+/// log.
+pub fn self_test_line() -> String {
+    format!("wmux-claude-hook protocol 1 pin {}", PORTED_FROM_SHA256.trim())
+}
+
+/// The process: `args` are the arguments after `claude-hook`, or after the
+/// bridge path a settings entry names (`named_bridge`). Never returns. The
+/// hand-over runs here, on the main thread, before any other thread exists;
+/// the rest of the run gets a thread with its own large stack.
+pub fn run_process(args: Vec<OsString>, named_bridge: Option<PathBuf>) -> ! {
     let argv: Vec<JsStr> = std::env::args_os().map(|a| paths::os_to_js(&a)).collect();
     let event = args.first().map(|a| paths::os_to_js(a));
     // A missing bridge is logged with the run's first line, not on its own:
@@ -127,7 +135,7 @@ pub fn run_process(args: Vec<OsString>) -> ! {
         claude::log_event(event.as_ref(), outcome, extra)
     };
     let mut code = 0;
-    if let Some(start) = hand_over(&args, event.as_ref(), &argv, &no_bridge, &log) {
+    if let Some(start) = hand_over(&args, named_bridge.as_deref(), event.as_ref(), &argv, &no_bridge, &log) {
         code = finish(on_own_stack(STACK_BYTES, || run(start, &log)), &log);
     }
     std::process::exit(code);
@@ -223,6 +231,21 @@ impl Handover {
         crate::unix_sys::ignore_sigpipe();
         self.node_missing = true;
         log("impl-fallback", vec![("reason", Some(Json::Str(js("node-missing"))))]);
+    }
+}
+
+/// A settings entry names the bridge in argv[1], but the run uses the one
+/// beside this binary, as every other run does. A name that is not that file
+/// (once both are resolved) is noted, and the run goes on.
+fn note_named_bridge(named: &Path, beside: Option<&Path>, log: Log) {
+    let resolved = |p: &Path| std::fs::canonicalize(p).ok();
+    let same = resolved(named).is_some_and(|n| beside.and_then(resolved) == Some(n));
+    if !same {
+        let text = |p: &Path| Json::Str(paths::os_to_js(p.as_os_str()));
+        log(
+            "bridge-path-differs",
+            vec![("named", Some(text(named))), ("used", beside.map(text))],
+        );
     }
 }
 
@@ -350,6 +373,7 @@ struct Start {
 /// does not return then), or logs why the run ends here (None).
 fn hand_over(
     args: &[OsString],
+    named_bridge: Option<&Path>,
     event: Option<&JsStr>,
     argv: &[JsStr],
     no_bridge: &AtomicBool,
@@ -358,10 +382,11 @@ fn hand_over(
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf));
-    let bridge = exe_dir
-        .as_ref()
-        .map(|d| d.join(BRIDGE_BASENAME))
-        .filter(|b| b.is_file());
+    let beside = exe_dir.as_ref().map(|d| d.join(BRIDGE_BASENAME));
+    if let Some(named) = named_bridge {
+        note_named_bridge(named, beside.as_deref(), log);
+    }
+    let bridge = beside.filter(|b| b.is_file());
     let mut handover = Handover {
         bridge,
         node_missing: false,

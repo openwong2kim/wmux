@@ -21,7 +21,10 @@
  * `variants` lists the outcomes the reference may produce where node itself
  * is racy. A port is held to `strictForPort` at the same path instead: the
  * single outcome a full-duplex transport must reach; or, where only the
- * kernel's errno differs between runs or platforms, to `portVariants`.
+ * kernel's errno differs between runs or platforms, to `portVariants`. In a
+ * `strictForPort` value, an array element `"<prefix>"` stands for the
+ * implementation's prefix arguments as its log shows them: `claude-hook`, or
+ * `<bridge>` for the argv a Claude settings entry carries.
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -49,6 +52,8 @@ export const IS_REFERENCE = !process.env.WMUX_CLAUDE_HOOK_IMPL?.trim();
  * reference's.
  */
 const SIBLING_BRIDGE = IS_REFERENCE ? BRIDGE_PATH : path.join(path.dirname(IMPL[0]), 'wmux-bridge.mjs');
+/** The implementation's prefix arguments, masked as its log shows them. */
+const PREFIX_SHOWN = IMPL.slice(1).map((arg) => (arg === BRIDGE_PATH || arg === SIBLING_BRIDGE ? '<bridge>' : arg));
 
 type StdinPart = string | { repeat: string; count: number } | { base64: string };
 type Endpoint = StubBehaviour | { mode: 'absent' } | { mode: 'refused' };
@@ -447,6 +452,15 @@ function holderAt(result: unknown, dotted: string): [Record<string, unknown> | u
   return [parent as Record<string, unknown> | undefined, last];
 }
 
+/** `value` with each `"<prefix>"` array element replaced by PREFIX_SHOWN. */
+function withPrefix(value: unknown): unknown {
+  if (Array.isArray(value)) return value.flatMap((v) => (v === '<prefix>' ? PREFIX_SHOWN : [withPrefix(v)]));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, withPrefix(v)]));
+  }
+  return value;
+}
+
 function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems: string[]): void {
   const paths = new Set([
     ...Object.keys(fixture.variants ?? {}),
@@ -459,7 +473,7 @@ function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems:
     const strict = fixture.strictForPort?.[dotted];
     const forPort = fixture.portVariants?.[dotted];
     const allowed = !IS_REFERENCE && strict !== undefined
-      ? [strict]
+      ? [withPrefix(strict)]
       : !IS_REFERENCE && forPort !== undefined
         ? forPort
         : [...fixture.variants?.[dotted] ?? [], ...fixture.platformVariants?.[process.platform]?.[dotted] ?? []];
