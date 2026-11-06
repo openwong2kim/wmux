@@ -324,6 +324,16 @@ fn another_basename_in_argv1_is_the_usage() {
 }
 
 #[test]
+fn a_backslash_is_part_of_a_unix_file_name_so_it_is_the_usage() {
+    let case = Case::new("argv-backslash", Some(&pinned()));
+    let named = format!("{}/old\\wmux-bridge.mjs", case.dir.display());
+    let out = case.run_argv(&[named.into(), "Stop".into()], &[], true, "{}");
+    quiet(&out);
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: wmux-native"));
+    assert!(!case.dir.join("home/.wmux-claude-hook-test").exists());
+}
+
+#[test]
 fn the_self_test_answers_without_reading_stdin_or_logging() {
     let case = Case::new("self-test", Some(&pinned()));
     let mut command = case.command(&[], true);

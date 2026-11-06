@@ -67,8 +67,13 @@ fn main() {
     // The basename of a `/` or `\` path, as the installer's ownership check reads it.
     let basename = sub_text.as_deref().and_then(|s| s.rsplit(['/', '\\']).next());
     let names_bridge = basename == Some(BRIDGE_BASENAME);
+    // On unix only `/` separates: `\` is a file name character there.
     #[cfg(unix)]
-    let names_claude_bridge = basename == Some(CLAUDE_BRIDGE_BASENAME);
+    let names_claude_bridge = sub
+        .as_deref()
+        .map(std::path::Path::new)
+        .and_then(std::path::Path::file_name)
+        == Some(std::ffi::OsStr::new(CLAUDE_BRIDGE_BASENAME));
     match sub.as_ref().and_then(|s| s.to_str()) {
         #[cfg(unix)]
         _ if names_claude_bridge => claude_hook::run_process(args.collect(), sub.map(std::path::PathBuf::from)),
