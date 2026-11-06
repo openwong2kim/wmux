@@ -52,7 +52,7 @@ import { collectProcessMemory, renderMemoryDiagnostics } from '../memoryDiagnost
 import { readAllTargetStatuses, type TargetRegStatus } from '../../shared/mcpRegistration';
 import { NATIVE_SELF_TEST_LINE } from '../../shared/mcpLauncher';
 import { fileSha256, probeKey, recordedProbe } from '../../shared/probedNative';
-import type { McpSessionsSummary } from '../../shared/mcpSessions';
+import { BROKER_TOOL_NAME_RE, type McpSessionsSummary } from '../../shared/mcpSessions';
 import { homeRelative } from '../../shared/homeRelative';
 
 // --- public report model -----------------------------------------------------
@@ -514,6 +514,13 @@ function isSessionsSummary(v: unknown): v is McpSessionsSummary {
     && typeof n.capped === 'boolean' && nums(n, ['recent', 'ttlS']);
 }
 
+/** The tool calls the broker's last crash cut off, names only, as a hint sentence. */
+function lastCrash(b: McpSessionsSummary['broker']): string | undefined {
+  const names = (Array.isArray(b.lastCrashTools) ? b.lastCrashTools : [])
+    .filter((n): n is string => typeof n === 'string' && BROKER_TOOL_NAME_RE.test(n));
+  return names.length > 0 ? `Last crash during: ${names.join(', ')}.` : undefined;
+}
+
 /** What each kind of registered agent does while the broker is down. */
 function downConsequences(kinds: ReadonlySet<string>): string[] {
   const out: string[] = [];
@@ -543,7 +550,11 @@ function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>)
   const known: Record<string, { value: string; next?: string }> = {
     restarting: {
       value: `not running: restarting after an exit (crash exits ${b.crashExits}, spawn failures ${b.spawnFailures})`,
-      next: 'The app restarts it with a backoff.',
+      next: ['The app restarts it with a backoff.', lastCrash(b)].filter(Boolean).join(' '),
+    },
+    'crash-loop': {
+      value: `not running: it kept failing (crash exits ${b.crashExits}, spawn failures ${b.spawnFailures}), off until wmux restarts`,
+      next: lastCrash(b),
     },
     'script-missing': { value: 'not running: this build has no broker script', next: 'It will not start in this session.' },
     stopped: { value: 'not running: stopped by the app' },

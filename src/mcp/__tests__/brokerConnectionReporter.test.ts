@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createConnectionReporter, trackConnection, type ReportChannel } from '../brokerConnectionReporter';
+import { createConnectionReporter, trackConnection, trackToolCalls, type ReportChannel } from '../brokerConnectionReporter';
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -82,6 +82,50 @@ describe('trackConnection', () => {
     const ch = channel();
     const r = createConnectionReporter(ch);
     trackConnection(fakeSocket(true), r);
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 0 });
+  });
+});
+
+describe('tool calls in flight', () => {
+  it('names the tool calls in flight in the report, names only, until each answers', async () => {
+    const ch = channel();
+    const r = createConnectionReporter(ch);
+    r.opened();
+    r.toolStarted('browser_click');
+    r.toolStarted('browser_click');
+    r.toolStarted('../not a tool');
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 1, inflight: ['browser_click'] });
+    r.toolEnded('browser_click');
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 1, inflight: ['browser_click'] });
+    r.toolEnded('browser_click');
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 1 });
+  });
+
+  it('follows tools/call requests to their responses on a transport, and ends what is left on dispose', async () => {
+    const ch = channel();
+    const r = createConnectionReporter(ch);
+    const sent: unknown[] = [];
+    const transport = {
+      onmessage: vi.fn() as ((message: unknown) => void) | undefined,
+      send: vi.fn(async (message: unknown) => { sent.push(message); }),
+    };
+    const inner = transport.onmessage;
+    const dispose = trackToolCalls(transport, r);
+    transport.onmessage?.({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'browser_click', arguments: { ref: '1' } } });
+    transport.onmessage?.({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'terminal_send' } });
+    transport.onmessage?.({ jsonrpc: '2.0', id: 3, method: 'tools/list' });
+    expect(inner).toHaveBeenCalledTimes(3);
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toMatchObject({ inflight: ['browser_click', 'terminal_send'] });
+    await transport.send({ jsonrpc: '2.0', id: 1, result: {} });
+    expect(sent).toHaveLength(1);
+    await flush();
+    expect(ch.send.mock.calls.at(-1)?.[0]).toMatchObject({ inflight: ['terminal_send'] });
+    dispose();
     await flush();
     expect(ch.send.mock.calls.at(-1)?.[0]).toEqual({ wmuxBroker: 'connections', open: 0 });
   });

@@ -277,3 +277,117 @@ describe('BrokerSupervisor after an aborted teardown', () => {
     vi.useRealTimers();
   });
 });
+
+describe('BrokerSupervisor crash-loop breaker', () => {
+  function effects() {
+    return { mark: vi.fn(), clear: vi.fn(), unlinkStaleSocket: vi.fn(async () => undefined) };
+  }
+
+  /** Each spawn returns a fresh child; `children` holds them in order. */
+  function spawning() {
+    const children: FakeChild[] = [];
+    vi.mocked(spawn).mockImplementation((() => {
+      const c = makeChild();
+      children.push(c);
+      return c;
+    }) as never);
+    return children;
+  }
+
+  it('stops restarting after 5 failures in 60 s, marks the broker off and clears a stale socket', async () => {
+    vi.useFakeTimers();
+    const children = spawning();
+    const off = effects();
+    const sup = new BrokerSupervisor({ brokerOff: off });
+    sup.start();
+    for (let i = 0; i < 4; i++) {
+      children.at(-1)!.emit('exit', 1, null);
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
+    expect(children).toHaveLength(5);
+    expect(off.mark).not.toHaveBeenCalled();
+    children.at(-1)!.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(children).toHaveLength(5);
+    expect(sup.status()).toMatchObject({ running: false, crashExits: 5, downReason: 'crash-loop' });
+    expect(off.mark).toHaveBeenCalledTimes(1);
+    expect(off.unlinkStaleSocket).toHaveBeenCalledTimes(1);
+    sup.stop();
+    vi.useRealTimers();
+  });
+
+  it('catches a slow loop: 8 failures in 30 minutes, though no minute holds 5', async () => {
+    vi.useFakeTimers();
+    const children = spawning();
+    const off = effects();
+    const sup = new BrokerSupervisor({ brokerOff: off });
+    sup.start();
+    for (let i = 0; i < 7; i++) {
+      await vi.advanceTimersByTimeAsync(40_000); // outlives the stable window, so the backoff resets
+      children.at(-1)!.emit('exit', 1, null);
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(off.mark).not.toHaveBeenCalled();
+    expect(children).toHaveLength(8);
+    await vi.advanceTimersByTimeAsync(40_000);
+    children.at(-1)!.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(children).toHaveLength(8);
+    expect(sup.status().downReason).toBe('crash-loop');
+    expect(off.mark).toHaveBeenCalledTimes(1);
+    sup.stop();
+    vi.useRealTimers();
+  });
+
+  it('counts spawn failures toward the breaker', async () => {
+    vi.useFakeTimers();
+    const children = spawning();
+    const off = effects();
+    const sup = new BrokerSupervisor({ brokerOff: off });
+    sup.start();
+    for (let i = 0; i < 5; i++) {
+      children.at(-1)!.emit('error', new Error('EPERM'));
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
+    expect(children).toHaveLength(5);
+    expect(sup.status()).toMatchObject({ spawnFailures: 5, downReason: 'crash-loop' });
+    sup.stop();
+    vi.useRealTimers();
+  });
+
+  it('clears the marker on its first start only, and never on a restart', async () => {
+    vi.useFakeTimers();
+    const children = spawning();
+    const off = effects();
+    const sup = new BrokerSupervisor({ brokerOff: off });
+    sup.start();
+    expect(off.clear).toHaveBeenCalledTimes(1);
+    children.at(-1)!.emit('exit', 1, null);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(children).toHaveLength(2);
+    expect(off.clear).toHaveBeenCalledTimes(1);
+    sup.stop();
+    vi.useRealTimers();
+  });
+
+  it('keeps the tool names a crash interrupted, names only', async () => {
+    vi.useFakeTimers();
+    const children = spawning();
+    const sup = new BrokerSupervisor({ brokerOff: effects() });
+    sup.start();
+    children[0].emit('message', { wmuxBroker: 'connections', open: 2, inflight: ['browser_click', 'terminal_send'] });
+    expect(sup.status()).toMatchObject({ connections: 2, lastCrashTools: [] });
+    children[0].emit('exit', 1, null);
+    expect(sup.status().lastCrashTools).toEqual(['browser_click', 'terminal_send']);
+    await vi.advanceTimersByTimeAsync(1_000);
+    // A report naming anything but tool names is not taken.
+    for (const inflight of [['../etc/passwd'], ['a b'], ['x'.repeat(65)], Array(9).fill('t'), 'browser_click', [1]]) {
+      children[1].emit('message', { wmuxBroker: 'connections', open: 5, inflight });
+    }
+    expect(sup.status().connections).toBe(0);
+    children[1].emit('exit', 1, null);
+    expect(sup.status().lastCrashTools).toEqual([]);
+    sup.stop();
+    vi.useRealTimers();
+  });
+});

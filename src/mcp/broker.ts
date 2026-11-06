@@ -38,7 +38,7 @@ import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { selfCheckPeerPid } from '../shared/peerPid';
-import { createConnectionReporter, trackConnection, type ReportChannel } from './brokerConnectionReporter';
+import { createConnectionReporter, trackConnection, trackToolCalls, type ReportChannel } from './brokerConnectionReporter';
 import { setBrokerEnvelopeMode } from './wmux-client';
 
 interface ShimHandshake {
@@ -120,6 +120,8 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   let transport: StdioServerTransport | null = null;
   // Guards the onclose teardown against the re-entry that server.close() causes.
   let connClosed = false;
+  // Ends this connection's tool calls still in flight when it closes.
+  let endToolCalls: () => void = () => undefined;
 
   await runInConnectionScope(scope, async () => {
     const server = createWmuxServer({
@@ -150,6 +152,10 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
 
     transport = new StdioServerTransport(socket, socket);
     await server.connect(transport);
+    // The tool names in flight go to the supervisor, so a crash can say what
+    // it cut off. Wrapped inside the scope wrapper below, so it sees every
+    // message the server does.
+    endToolCalls = trackToolCalls(transport as never, connectionReporter);
 
     // server.connect wired transport.onmessage/onclose/onerror. Re-wrap them
     // so every later dispatch (they fire from socket events, OUTSIDE this
@@ -167,6 +173,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
         if (connClosed) return;
         connClosed = true;
         log('transport closed');
+        endToolCalls();
         // Tear down THIS caller's browser session only. The engine is
         // per-connection (scope.playwright), so no other agent is touched.
         const engine = scope.playwright as PlaywrightEngine | undefined;
@@ -335,6 +342,10 @@ function main(): void {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  // Started by main with an IPC channel: when main goes (a crash, a kill), the
+  // channel closes and the broker goes too, rather than living on without a
+  // supervisor. A broker started by hand has no channel and is unaffected.
+  if (process.send) process.on('disconnect', shutdown);
 }
 
 main();
