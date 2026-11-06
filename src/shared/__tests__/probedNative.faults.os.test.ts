@@ -46,7 +46,23 @@ afterEach(() => {
   vi.mocked(fs.openSync).mockImplementation(realFs.openSync as never);
   vi.mocked(fs.readFileSync).mockImplementation(realFs.readFileSync as never);
   vi.mocked(fs.unlinkSync).mockImplementation(realFs.unlinkSync as never);
+  vi.mocked(fs.renameSync).mockImplementation(realFs.renameSync as never);
   realFs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe('lockDir — taking over a stale lock', () => {
+  it('never removes the lock another waiter took over first: two waiters, one dead lock', async () => {
+    // W1 already took the dead lock over and holds a fresh one; W2 still
+    // reads the dead lock it judged, right up to its takeover.
+    const dead = `999999999 ${Date.now()} w0`;
+    const fresh = `${process.pid} ${Date.now()} w1`;
+    realFs.writeFileSync(lockFile(), fresh);
+    vi.mocked(fs.readFileSync).mockImplementation(((...args: unknown[]) =>
+      String(args[0]) === lockFile() ? dead : (realFs.readFileSync as (...a: unknown[]) => unknown)(...args)) as never);
+    expect(await lockDir(dir, { waitMs: 200, pollMs: 50 })).toBeNull();
+    expect(realFs.readFileSync(lockFile(), 'utf8')).toBe(fresh);
+    expect(realFs.readdirSync(dir)).toEqual([PROBE_LOCK]);
+  });
 });
 
 describe('lockDir — every way round the loop waits and keeps the deadline', () => {
@@ -63,6 +79,10 @@ describe('lockDir — every way round the loop waits and keeps the deadline', ()
   it('a stale lock that cannot be removed (held by an antivirus scan)', async () => {
     realFs.writeFileSync(lockFile(), `999999999 ${Date.now() - 60_000} other`);
     fail('unlinkSync', (p) => p === lockFile(), 'EBUSY');
+    vi.mocked(fs.renameSync).mockImplementation(((...args: unknown[]) => {
+      if (String(args[0]) === lockFile()) throw Object.assign(new Error('EBUSY: injected'), { code: 'EBUSY' });
+      return (realFs.renameSync as (...a: unknown[]) => unknown)(...args);
+    }) as never);
     const calls = countLockAttempts();
     const started = Date.now();
     expect(await lockDir(dir, { waitMs: 300, pollMs: 50 })).toBeNull();

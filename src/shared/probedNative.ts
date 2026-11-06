@@ -176,8 +176,18 @@ function takeOverIfStale(file: string, staleMs: number): void {
   } else if (alive(pid) && Date.now() - since < staleMs) {
     return;
   }
-  // Only if it is still the lock just read.
-  try { if (fs.readFileSync(file, 'utf8') === held) fs.unlinkSync(file); } catch { /* gone, or held fast */ }
+  // Atomic: move it to a name of our own, then check it is the lock judged.
+  // Another waiter may have taken the dead lock over first; then this is that
+  // waiter's fresh lock, and it goes back under its name with link(), which
+  // never replaces a newer lock there.
+  const grabbed = `${file}.stale-${process.pid}-${randomBytes(4).toString('hex')}`;
+  try { fs.renameSync(file, grabbed); } catch { return; /* gone, or held fast */ }
+  let moved: string | null = null;
+  try { moved = fs.readFileSync(grabbed, 'utf8'); } catch { /* unreadable: put back */ }
+  if (moved !== held) {
+    try { fs.linkSync(grabbed, file); } catch { /* a newer lock has the name */ }
+  }
+  try { fs.unlinkSync(grabbed); } catch { /* left behind: a stray file, never read as the lock */ }
 }
 
 // ----- stage, probe, swap --------------------------------------------------------
