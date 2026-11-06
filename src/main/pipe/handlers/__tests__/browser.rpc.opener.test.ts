@@ -305,8 +305,8 @@ describe('opener reporting', () => {
     const cdp = {
       getTarget: vi.fn(() => null),
       listTargets: vi.fn(() => [
-        { surfaceId: 'surf-a', targetId: 'tgt-a', workspaceId: 'ws-1', webContentsId: 1, wsUrl: '' },
-        { surfaceId: 'surf-restored', targetId: 'tgt-r', workspaceId: 'ws-1', webContentsId: 2, wsUrl: '' },
+        { surfaceId: 'surf-a', targetId: 'tgt-a', workspaceId: 'ws-1', webContentsId: 1 },
+        { surfaceId: 'surf-restored', targetId: 'tgt-r', workspaceId: 'ws-1', webContentsId: 2 },
       ]),
       getCdpPort: vi.fn(() => 18800),
       waitForTarget: vi.fn(),
