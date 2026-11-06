@@ -6,7 +6,8 @@
 // While an agent drives the tab (a lease is held), the same wait would stall the
 // agent's call until someone happened to look. So the dialog is answered at once,
 // dismissed unless the agent armed an answer for it, and reported in the next tool
-// result. A dialog already open when a lease starts is answered then.
+// result. A dialog already open when a lease starts is answered then, or once it's
+// old enough if it has only just opened (see below).
 //
 // Answering over CDP doesn't close Electron's box: it stays until someone clicks
 // it, harmlessly, and each answered dialog leaves its own. On macOS it's a sheet
@@ -55,7 +56,7 @@ export interface GuestDialogsDeps {
 
 interface SurfaceDialogs {
   /** Open and unanswered. A page can only have one: it is blocked until it's answered. */
-  open?: { type: string; message: string; capNoted: boolean; raisedByInput: boolean };
+  open?: { type: string; message: string; capNoted: boolean; raisedByInput: boolean; openedAt: number };
   armed?: { accept: boolean; text?: string; expires: number };
   /** Input dispatches in flight. Only a dialog raised during one may use an armed answer. */
   dispatches: Set<{ expires: number }>;
@@ -89,21 +90,27 @@ export class GuestDialogs {
     const capped = message.length > MAX_MESSAGE_CHARS ? `${message.slice(0, MAX_MESSAGE_CHARS)}…` : message;
     const now = this.now();
     const raisedByInput = [...state.dispatches].some((dispatch) => dispatch.expires > now);
-    state.open = { type, message: capped, capNoted: false, raisedByInput };
-    if (!driven) return;
-    if (raisedByInput) {
+    state.open = { type, message: capped, capNoted: false, raisedByInput, openedAt: now };
+    if (driven) this.settleWhenDue(surfaceId, state);
+  }
+
+  /** Settle now if the open dialog is ours or has had its delay; otherwise when it has. */
+  private settleWhenDue(surfaceId: string, state: SurfaceDialogs): void {
+    const opened = state.open;
+    if (!opened) return;
+    const wait = opened.raisedByInput ? 0 : opened.openedAt + ANSWER_DELAY_MS - this.now();
+    if (wait <= 0) {
       this.settle(surfaceId, state);
       return;
     }
-    const opened = state.open;
     this.defer(() => {
       if (state.open === opened) this.settle(surfaceId, state);
-    });
+    }, wait);
   }
 
-  private defer(fn: () => void): void {
-    if (this.deps.defer) this.deps.defer(fn, ANSWER_DELAY_MS);
-    else setTimeout(fn, ANSWER_DELAY_MS).unref?.();
+  private defer(fn: () => void, ms: number): void {
+    if (this.deps.defer) this.deps.defer(fn, ms);
+    else setTimeout(fn, ms).unref?.();
   }
 
   /** `Page.javascriptDialogClosed`: answered by anyone, including the person. */
@@ -115,7 +122,7 @@ export class GuestDialogs {
   /** A lease just started on this surface. */
   leaseStarted(surfaceId: string): void {
     const state = this.surfaces.get(surfaceId);
-    if (state?.open) this.settle(surfaceId, state);
+    if (state) this.settleWhenDue(surfaceId, state);
   }
 
   arm(surfaceId: string, accept: boolean, text?: string): void {

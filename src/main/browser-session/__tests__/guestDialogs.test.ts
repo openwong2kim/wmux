@@ -121,6 +121,23 @@ describe('GuestDialogs', () => {
       expect(answers).toHaveLength(2);
     });
 
+    it('gives a dialog that has only just opened the rest of its delay when a lease starts', () => {
+      local.opening('s', 'confirm', 'a timer during a wait poll', true);
+      clock += 20;
+      local.leaseStarted('s');
+      clock += 20;
+      local.leaseStarted('s');
+      expect(answers).toHaveLength(0);
+      expect(deferred.map(({ ms }) => ms)).toEqual([500, 480, 460]);
+      runDeferred();
+      expect(answers).toHaveLength(1);
+
+      local.opening('s', 'alert', 'waited on its box', false);
+      clock += 500;
+      local.leaseStarted('s');
+      expect(answers).toHaveLength(2);
+    });
+
     it('stands down when something else answers during the wait', () => {
       local.opening('s', 'confirm', 'answered by Playwright', true);
       local.closed('s');
