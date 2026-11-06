@@ -96,6 +96,16 @@ describe('WebviewCdpManager', () => {
     });
   });
 
+  it("lets a person or agent leave a page whose beforeunload objects, with one listener per guest", async () => {
+    await manager.register('surface-1', 42);
+    await manager.register('surface-1', 42);
+    const listeners = mockWebContents.on.mock.calls.filter(([name]) => name === 'will-prevent-unload');
+    expect(listeners).toHaveLength(1);
+    const preventDefault = vi.fn();
+    (listeners[0][1] as (event: { preventDefault(): void }) => void)({ preventDefault });
+    expect(preventDefault).toHaveBeenCalledOnce();
+  });
+
   it('keeps a wc- id when the target lookup fails', async () => {
     mockDebugger.sendCommand.mockImplementation(async (method: string) => {
       if (method === 'Target.getTargetInfo') throw new Error('gone');
