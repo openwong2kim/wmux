@@ -143,7 +143,7 @@ Total: **319** methods (`ALL_RPC_METHODS` in
 | `browser.evaluate` | `browser.evaluate` | `browser` |
 | `browser.console.get` | `browser.read` | `browser` |
 | `browser.frames.tree` | `browser.read` | `browser` |
-| `browser.frames.read` | `browser.read` | `browser` |
+| `browser.frames.read` | `browser.evaluate` | `browser` |
 | `browser.lifecycle.get` | `browser.read` | `browser` |
 | `browser.network.get` | `browser.read` | `browser` |
 | `browser.responseBody.get` | `browser.read` | `browser` |

@@ -654,13 +654,15 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             budget: windowBudget(),
             nextRef: nextRefFor(domKey, 0),
             prior: rpcFrameRefsFor(browserScopeKey(scope)),
+            topRefs: new Set(payload.entries.map((e) => e.ref)),
             listFrames: async () =>
               (await sendScopedBrowserRpc<{ frames?: RpcFrameInfo[] }>('browser.frames.tree', scope, {})).frames ?? [],
             // Main builds the frame listing itself; no expression travels.
-            readFrames: (batch, seed) =>
+            readFrames: (batch, seed, budget) =>
               sendScopedBrowserRpc<{ frames: RpcFrameAnswer[]; nextRef: number }>('browser.frames.read', scope, {
                 frames: batch.map(({ frame, prior }) => ({ frameId: frame.frameId, loaderId: frame.loaderId, prior })),
                 seed,
+                budget,
                 ...(filter && { filter }),
               }),
           });

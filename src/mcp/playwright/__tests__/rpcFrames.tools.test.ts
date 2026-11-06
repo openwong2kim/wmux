@@ -89,7 +89,7 @@ describe('in-process frames on the RPC lane', () => {
     expect(snap).toContain('Frame 1 "card" -> https://pay.test (page content, another origin)');
     expect(snap).toContain('[ref=1] input name="cc"');
     // Every frame in one browser.frames.read that carries no code; nothing evaluates in a frame.
-    expect(calls('browser.frames.read')).toEqual([{ frames: [{ frameId: 'F1', loaderId: 'L1', prior: [] }], seed: 1, workspaceId: 'ws-test' }]);
+    expect(calls('browser.frames.read')).toEqual([{ frames: [{ frameId: 'F1', loaderId: 'L1', prior: [] }], seed: 1, budget: expect.any(Number), workspaceId: 'ws-test' }]);
     expect(calls('browser.evaluate').filter((p) => 'frameId' in p)).toEqual([]);
 
     await tool('browser_click')({ ref: '1' });

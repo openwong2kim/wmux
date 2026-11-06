@@ -253,6 +253,52 @@ describe('readRpcFrames', () => {
     expect(out.nextRef).toBe(10);
   });
 
+  it('never keeps or offers a frame ref whose number the top listing just stamped', async () => {
+    const prior = new Map([
+      [3, { frameId: 'F1', loaderId: 'L1', origin: 'https://top.test', role: 'button', name: 'Pay 0' }],
+      [4, { frameId: 'F2', loaderId: 'L2', origin: 'https://top.test', role: 'button', name: 'Pay 0' }],
+    ]);
+    const readFrames = vi.fn(perFrame(async (f, seed, docPrior) => {
+      if (f.frameId === 'F2') throw new Error('Connection closed before response was received.');
+      return buttons(1)(f, docPrior[0]?.ref ?? seed);
+    }));
+    // The top document's history was dropped and its listing numbered from 0 again.
+    const out = await readRpcFrames({
+      ...base,
+      topText: '',
+      prior,
+      topRefs: new Set([0, 1, 2, 3, 4]),
+      listFrames: async () => [frame(1), frame(2)],
+      readFrames,
+    });
+    expect(readFrames.mock.calls[0][0].map((f) => f.prior)).toEqual([[], []]);
+    expect(out.refs.has(3)).toBe(false);
+    expect(out.refs.has(4)).toBe(false);
+    expect([...out.refs.keys()]).toEqual([10]);
+  });
+
+  it('hands main the bytes the pool has left, and says which frames main left unread and why', async () => {
+    const readFrames = vi.fn(async (batch: Array<{ frame: RpcFrameInfo }>, seed: number, _budget: number) => ({
+      frames: batch.map((_, i): RpcFrameAnswer => (i === 0
+        ? { value: { text: `  [ref=${seed}] button "Pay"`, entries: [{ ref: seed, role: 'button', name: 'Pay' }] } }
+        : { unread: i === 1 ? 'budget' : 'time' })),
+      nextRef: seed + 1,
+    }));
+    const out = await readRpcFrames({ ...base, topText: '', listFrames: async () => [frame(1), frame(2), frame(3)], readFrames });
+    const budget = readFrames.mock.calls[0][2] as number;
+    expect(budget).toBeGreaterThan(0);
+    expect(budget).toBeLessThanOrEqual(BUDGET.bytes * RPC_FRAME_BUDGET_SHARE);
+    expect(out.text).toMatch(/\(\+2 more frames not read: the snapshot's frame budget is spent\)/);
+
+    const late = await readRpcFrames({
+      ...base,
+      topText: '',
+      listFrames: async () => [frame(1), frame(2)],
+      readFrames: async () => ({ frames: [{ unread: 'time' }, { unread: 'time' }], nextRef: 10 }),
+    });
+    expect(late.text).toContain('(+2 more frames not read: reading them took too long this time)');
+  });
+
   it('adds nothing when there are no frames, or the app cannot list them', async () => {
     expect((await readRpcFrames({ ...base, topText: '', listFrames: async () => [], readFrames: perFrame(buttons(1)) })).text).toBe('');
     const old = await readRpcFrames({

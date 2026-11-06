@@ -4,7 +4,8 @@
 // in browser-session/__tests__/frameAccess.chrome.runtime.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
-import { registerBrowserRpc } from '../browser.rpc';
+import { FRAMES_READ_DEADLINE_MS, registerBrowserRpc } from '../browser.rpc';
+import { METHOD_CAPABILITY } from '../../../mcp/methodCapabilityMap';
 import { dispatchAsClaimedCaller } from './claimedCaller';
 
 const mockWebContents = {
@@ -226,6 +227,7 @@ describe('browser.frames.read — every frame listing in one call', () => {
       childFrames: [
         { frame: { id: 'R1', loaderId: 'RL1', parentId: 'MAIN', url: 'https://top.test/a' } },
         { frame: { id: 'R2', loaderId: 'RL2', parentId: 'MAIN', url: 'https://pay.test/b' } },
+        { frame: { id: 'R3', loaderId: 'RL3', parentId: 'MAIN', url: 'https://pay.test/c' } },
       ],
     },
   };
@@ -345,6 +347,61 @@ describe('browser.frames.read — every frame listing in one call', () => {
     });
     expect(res).toMatchObject({ ok: true, result: { frames: [{ gone: true }, { unreachable: true }, { failed: true }], nextRef: 5 } });
     expect(JSON.stringify(res)).not.toContain('secret');
+  });
+
+  it('stops reading at its deadline, well inside the client timeout, and says which frames it left unread', async () => {
+    const evaluated = guestListing(1);
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const impl = mockWebContents.debugger.sendCommand.getMockImplementation() as (m: string, p: Record<string, unknown>) => Promise<unknown>;
+    mockWebContents.debugger.sendCommand.mockImplementation((async (method: string, params: Record<string, unknown>) => {
+      if (method === 'Runtime.evaluate') now += FRAMES_READ_DEADLINE_MS / 2 + 1;
+      return impl(method, params);
+    }) as never);
+    const res = await register().dispatch({
+      id: 'd',
+      method: 'browser.frames.read',
+      params: { frames: [...frames, { frameId: 'R3', loaderId: 'RL3' }], seed: 1 },
+    });
+    clock.mockRestore();
+    expect(FRAMES_READ_DEADLINE_MS).toBeLessThan(10_000);
+    expect(evaluated).toHaveLength(2);
+    expect(res).toMatchObject({ ok: true, result: { frames: [{ value: expect.any(Object) }, { value: expect.any(Object) }, { unread: 'time' }] } });
+  });
+
+  it('stops when the caller has hung up, so an abandoned snapshot stamps nothing more', async () => {
+    const evaluated = guestListing(1);
+    const hangUp = new AbortController();
+    const impl = mockWebContents.debugger.sendCommand.getMockImplementation() as (m: string, p: Record<string, unknown>) => Promise<unknown>;
+    mockWebContents.debugger.sendCommand.mockImplementation((async (method: string, params: Record<string, unknown>) => {
+      const out = await impl(method, params);
+      if (method === 'Runtime.evaluate') hangUp.abort();
+      return out;
+    }) as never);
+    await register().dispatch(
+      { id: 'a', method: 'browser.frames.read', params: { frames, seed: 1 } },
+      { operator: true, signal: hangUp.signal },
+    );
+    expect(evaluated).toHaveLength(1);
+  });
+
+  it('reads no further once the listings it read fill the byte budget it was given', async () => {
+    const evaluated = guestListing(3);
+    const res = await register().dispatch({
+      id: 'g',
+      method: 'browser.frames.read',
+      params: { frames: [...frames, { frameId: 'R3', loaderId: 'RL3' }], seed: 1, budget: 10 },
+    });
+    expect(evaluated).toHaveLength(1);
+    expect(res).toMatchObject({ ok: true, result: { frames: [{ value: expect.any(Object) }, { unread: 'budget' }, { unread: 'budget' }], nextRef: 4 } });
+    for (const budget of [0, -1, 1.5, '10']) {
+      const bad = await register().dispatch({ id: 'gb', method: 'browser.frames.read', params: { frames, seed: 1, budget } });
+      expect(bad.ok, String(budget)).toBe(false);
+    }
+  });
+
+  it('needs the capability the snapshot listing needs: it rewrites data-wmux-ref in the frames', () => {
+    expect(METHOD_CAPABILITY['browser.frames.read'].capability).toBe(METHOD_CAPABILITY['browser.evaluate'].capability);
   });
 
   it('is held by the same gates as the snapshot read: an unscoped caller is refused', async () => {

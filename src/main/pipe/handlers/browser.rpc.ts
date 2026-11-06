@@ -11,6 +11,7 @@ import { HelpRequests } from '../../browser-session/HelpRequests';
 import { FrameTarget, FrameWorlds, evaluateInFrame, listChildFrames, type CdpSend, type Point as FramePoint } from '../../browser-session/frameAccess';
 import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../../../mcp/playwright/dom-intelligence';
 import type { RefDescriptor } from '../../../mcp/playwright/refDescriptors';
+import { RPC_FRAME_CAP, isFrameGoneError, type RpcFrameAnswer } from '../../../mcp/playwright/rpcFrames';
 import {
   buildHelpHighlightExpression,
   buildHelpProbeExpression,
@@ -1033,8 +1034,11 @@ function frameParam(params: Record<string, unknown>): { frameId: string; loaderI
   return { frameId, ...(loaderId !== undefined ? { loaderId } : {}) };
 }
 
-/** Frames one browser.frames.read may list, whatever the request asks for. */
-export const FRAMES_READ_CAP = 20;
+/**
+ * How long one browser.frames.read keeps starting frame reads: well inside the
+ * client's 10 s RPC timeout, so a call never outlives the snapshot that asked.
+ */
+export const FRAMES_READ_DEADLINE_MS = 6000;
 /** Earlier refs one frame may name, and the longest role or name in them. */
 const FRAME_PRIOR_CAP = 5000;
 const FRAME_PRIOR_TEXT_CAP = 1000;
@@ -1043,6 +1047,8 @@ interface FramesReadRequest {
   frames: Array<{ frameId: string; loaderId: string; prior: RefDescriptor[] }>;
   seed: number;
   filter?: 'interactive';
+  /** UTF-8 bytes of listing text after which no further frame is read. */
+  budget?: number;
 }
 
 const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
@@ -1059,13 +1065,16 @@ function framesReadParams(params: Record<string, unknown>): FramesReadRequest {
   if ('expression' in params) throw noCode;
   const frames = params['frames'];
   if (!Array.isArray(frames) || frames.length === 0) throw bad('"frames" must be a non-empty array');
-  if (frames.length > FRAMES_READ_CAP) throw bad(`at most ${FRAMES_READ_CAP} frames per call`);
+  if (frames.length > RPC_FRAME_CAP) throw bad(`at most ${RPC_FRAME_CAP} frames per call`);
   if (!isCount(params['seed'])) throw bad('"seed" must be a non-negative integer');
   const filter = params['filter'];
   if (filter !== undefined && filter !== 'interactive') throw bad('"filter" must be "interactive" when given');
+  const budget = params['budget'];
+  if (budget !== undefined && !(isCount(budget) && budget > 0)) throw bad('"budget" must be a positive integer when given');
   return {
     seed: params['seed'],
     ...(filter ? { filter } : {}),
+    ...(budget !== undefined ? { budget } : {}),
     frames: frames.map((raw: unknown) => {
       if (raw === null || typeof raw !== 'object') throw bad('each frame is {frameId, loaderId, prior?}');
       const f = raw as Record<string, unknown>;
@@ -1090,23 +1099,34 @@ function framesReadParams(params: Record<string, unknown>): FramesReadRequest {
   };
 }
 
-/** One frame's answer: its listing, or which kind of miss, never the reason text. */
-type FrameListing = { value: unknown } | { unreachable: true } | { gone: true } | { failed: true };
-
 /**
  * List each frame's document in its own isolated world, in order, each one
  * numbering its new elements on from where the previous one stopped. An error
- * is reduced to its kind: a read's error text can carry page content.
+ * is reduced to its kind: a read's error text can carry page content. Reading
+ * stops at the byte budget, at the deadline, or when the caller has hung up
+ * (an abandoned snapshot must not go on stamping numbers into frames); the
+ * frames left are answered `unread`.
  */
 async function readFrameListings(
   wc: WebContents,
   req: FramesReadRequest,
-): Promise<{ frames: FrameListing[]; nextRef: number }> {
+  signal: AbortSignal | undefined,
+): Promise<{ frames: RpcFrameAnswer[]; nextRef: number }> {
   const send = cdpSendOf(wc);
   const worlds = frameWorldsOf(wc);
+  const deadline = Date.now() + FRAMES_READ_DEADLINE_MS;
   let seed = req.seed;
-  const frames: FrameListing[] = [];
+  let spent = 0;
+  const frames: RpcFrameAnswer[] = [];
   for (const f of req.frames) {
+    if (req.budget !== undefined && spent >= req.budget) {
+      frames.push({ unread: 'budget' });
+      continue;
+    }
+    if (signal?.aborted || Date.now() >= deadline) {
+      frames.push({ unread: 'time' });
+      continue;
+    }
     const expression = buildDomSnapshotExpression(undefined, {
       ...(req.filter ? { filter: req.filter } : {}),
       frame: { seed, prior: f.prior },
@@ -1118,11 +1138,12 @@ async function readFrameListings(
         frames.push({ unreachable: true });
         continue;
       }
-      for (const e of readDomSnapshotPayload(answer.value).entries) if (e.ref + 1 > seed) seed = e.ref + 1;
+      const payload = readDomSnapshotPayload(answer.value);
+      for (const e of payload.entries) if (e.ref + 1 > seed) seed = e.ref + 1;
+      spent += Buffer.byteLength(payload.text, 'utf8');
       frames.push({ value: answer.value });
     } catch (err) {
-      const gone = /^FRAME_(?:GONE|NAVIGATED):/.test(err instanceof Error ? err.message : String(err));
-      frames.push(gone ? { gone: true } : { failed: true });
+      frames.push(isFrameGoneError(err) ? { gone: true } : { failed: true });
     }
   }
   return { frames, nextRef: seed };
@@ -4471,17 +4492,18 @@ export function registerBrowserRpc(
    * frame mode, which main builds (no caller code runs). An element `prior`
    * names keeps its number; new ones are numbered on from `seed`, frame after
    * frame. Each answer is the listing, or unreachable, gone (navigated or
-   * removed) or failed, with no error text. At most 20 frames per call.
-   * params: { frames: [{ frameId, loaderId, prior? }], seed, filter?, surfaceId? }
+   * removed) or failed, with no error text, or unread when the byte `budget`
+   * or main's deadline was spent first. At most 20 frames per call.
+   * params: { frames: [{ frameId, loaderId, prior? }], seed, filter?, budget?, surfaceId? }
    */
-  registerLeased('browser.frames.read', async (params, scope) => {
+  registerLeased('browser.frames.read', async (params, scope, ctx) => {
     const req = framesReadParams(params);
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const target = webviewCdpManager.getTarget(surfaceId, scope);
     if (!target) throw noTargetError('browser.frames.read', surfaceId, scope);
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.frames.read: WebContents unavailable');
-    return readFrameListings(wc, req);
+    return readFrameListings(wc, req, ctx?.signal);
   });
 
   /**

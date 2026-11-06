@@ -61,27 +61,50 @@ export interface ReadRpcFramesOptions {
   nextRef: number;
   /** The frame refs this connection's last snapshot of the surface recorded. */
   prior?: ReadonlyMap<number, RpcFrameRef>;
+  /**
+   * The refs the top listing just stamped. A frame ref with one of these
+   * numbers is never kept or offered again: the top document's number history
+   * can be dropped (refDescriptors keeps a bounded set of surfaces) and start
+   * over, and one number must never name an element in two documents.
+   */
+  topRefs?: ReadonlySet<number>;
   listFrames: () => Promise<RpcFrameInfo[]>;
   /**
    * Every frame's frame-mode listing in one call (browser.frames.read), each
    * given its document's earlier refs, numbering new elements on from `seed`
-   * frame after frame. `nextRef` is past every number the reads handed out.
+   * frame after frame, and reading no further once the listings fill `budget`
+   * bytes. `nextRef` is past every number the reads handed out.
    */
   readFrames: (
     frames: Array<{ frame: RpcFrameInfo; prior: RefDescriptor[] }>,
     seed: number,
+    budget: number,
   ) => Promise<{ frames: RpcFrameAnswer[]; nextRef: number }>;
 }
 
-/** One frame's answer: its listing, or which kind of miss (never the reason text). */
-export type RpcFrameAnswer = { value: unknown } | { unreachable: true } | { gone: true } | { failed: true };
+/**
+ * One frame's answer from browser.frames.read: its listing, which kind of miss
+ * (never the reason text), or unread because the byte budget or main's
+ * deadline was spent first.
+ */
+export type RpcFrameAnswer =
+  | { value: unknown }
+  | { unreachable: true }
+  | { gone: true }
+  | { failed: true }
+  | { unread: 'budget' | 'time' };
+
+/** Main's report that the frame named is no longer the document asked about. */
+export function isFrameGoneError(err: unknown): boolean {
+  return /^FRAME_(?:GONE|NAVIGATED):/.test(err instanceof Error ? err.message : String(err));
+}
 
 /** The earlier refs of each frame document, as the descriptors stable numbering matches. */
 function priorByDocument(prior: ReadonlyMap<number, RpcFrameRef> | undefined): Map<string, RefDescriptor[]> {
   const out = new Map<string, RefDescriptor[]>();
   const kinds = new Map<string, number>();
   for (const [ref, r] of prior ?? []) {
-    const doc = `${r.frameId}\u0000${r.loaderId}`;
+    const doc = docOf(r);
     const kindKey = `${doc}\u0000${r.role}\u0000${r.name}`;
     const kindIndex = kinds.get(kindKey) ?? 0;
     kinds.set(kindKey, kindIndex + 1);
@@ -159,6 +182,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
     return EMPTY(opts.nextRef);
   }
   if (frames.length === 0) return EMPTY(opts.nextRef);
+  const prior = new Map([...(opts.prior ?? [])].filter(([ref]) => !opts.topRefs?.has(ref)));
 
   // Charged in UTF-8 bytes, which bound characters too, against what the top
   // document left of the window it is served in: nothing a frame adds can be
@@ -173,7 +197,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   let used = size(SECTION_INTRO) + 2;
   if (used > pool) {
     const empty = EMPTY(opts.nextRef);
-    carryUnlisted(empty.refs, opts.prior, frames, new Set());
+    carryUnlisted(empty.refs, prior, frames, new Set());
     return empty;
   }
   // Content and headers leave room for the closing notes; the notes may use it.
@@ -185,12 +209,16 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
 
   const result = { refs: new Map<number, RpcFrameRef>(), nextRef: opts.nextRef };
   const read = frames.slice(0, RPC_FRAME_CAP);
-  const priorDocs = priorByDocument(opts.prior);
+  const priorDocs = priorByDocument(prior);
   // One round trip for every frame: a call per frame spent a connection each
   // from the app's shared per-second allowance.
   let answers: RpcFrameAnswer[] = [];
   try {
-    const batch = await opts.readFrames(read.map((frame) => ({ frame, prior: priorDocs.get(docOf(frame)) ?? [] })), opts.nextRef);
+    const batch = await opts.readFrames(
+      read.map((frame) => ({ frame, prior: priorDocs.get(docOf(frame)) ?? [] })),
+      opts.nextRef,
+      pool - used,
+    );
     answers = Array.isArray(batch.frames) ? batch.frames : [];
     // Numbers stamped into frames the pool then left unshown are spent too.
     if (Number.isSafeInteger(batch.nextRef) && batch.nextRef > result.nextRef) result.nextRef = batch.nextRef;
@@ -201,6 +229,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   /** Documents this snapshot listed, or saw go away: nothing to carry for them. */
   const settled = new Set<string>();
   let unread = 0;
+  let unreadInTime = 0;
   for (let i = 0; i < read.length; i++) {
     const f = read[i];
     const head = header(f, i + 1, opts.topOrigin, indexById);
@@ -211,6 +240,11 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
     indexById.set(f.frameId, i + 1);
     const raw: unknown = answers[i];
     const answer: RpcFrameAnswer = raw !== null && typeof raw === 'object' ? (raw as RpcFrameAnswer) : { failed: true };
+    if ('unread' in answer) {
+      if (answer.unread === 'time') unreadInTime = read.length - i;
+      else unread = read.length - i;
+      break;
+    }
     if ('gone' in answer || 'value' in answer) settled.add(docOf(f));
     if (!('value' in answer)) {
       const note = 'gone' in answer ? GONE_NOTE : 'unreachable' in answer ? UNREACHABLE_NOTE : FAILED_NOTE;
@@ -244,9 +278,10 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   }
   const notes = [
     unread > 0 ? `(+${unread} more frames not read: the snapshot's frame budget is spent)` : '',
+    unreadInTime > 0 ? `(+${unreadInTime} more frames not read: reading them took too long this time)` : '',
     frames.length > RPC_FRAME_CAP ? `(+${frames.length - RPC_FRAME_CAP} more frames not read: past the ${RPC_FRAME_CAP}-frame limit for one snapshot)` : '',
   ];
   for (const note of notes) if (note && fits(note, 0)) push(note);
-  carryUnlisted(result.refs, opts.prior, frames, settled);
+  carryUnlisted(result.refs, prior, frames, settled);
   return { text: lines.join('\n'), ...result };
 }
