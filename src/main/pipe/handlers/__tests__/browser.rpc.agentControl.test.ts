@@ -118,6 +118,22 @@ describe('browser RPC — the user paused or took over the tab', () => {
     expect(cdp.withAutomationLease).not.toHaveBeenCalled();
     expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
 
+    // A frame read or a frame click is held the same way.
+    for (const [method, extra] of [
+      ['browser.evaluate', { expression: '1+1', frameId: 'F1', loaderId: 'L1' }],
+      ['browser.click.cdp', { selector: '[data-wmux-ref="3"]', frameId: 'F1', loaderId: 'L1' }],
+      ['browser.frames.tree', {}],
+    ] as const) {
+      const held = await router.dispatch({
+        id: `e-${method}`,
+        method,
+        params: { ...extra, surfaceId: SURFACE.surfaceId, workspaceId: 'ws-a' },
+      });
+      expect(held.ok, method).toBe(false);
+      if (!held.ok) expect(held.error).toContain('BROWSER_USER_IN_CONTROL');
+    }
+    expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
+
     control.apply(SURFACE.surfaceId, 'handBack');
     const after = await router.dispatch({
       id: 'e2',

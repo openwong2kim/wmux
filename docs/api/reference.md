@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **317** methods (`ALL_RPC_METHODS` in
+Total: **318** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -142,6 +142,7 @@ Total: **317** methods (`ALL_RPC_METHODS` in
 | `browser.screenshot` | `browser.screenshot` | `browser` |
 | `browser.evaluate` | `browser.evaluate` | `browser` |
 | `browser.console.get` | `browser.read` | `browser` |
+| `browser.frames.tree` | `browser.read` | `browser` |
 | `browser.lifecycle.get` | `browser.read` | `browser` |
 | `browser.network.get` | `browser.read` | `browser` |
 | `browser.responseBody.get` | `browser.read` | `browser` |

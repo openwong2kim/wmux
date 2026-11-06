@@ -8,6 +8,7 @@ import { logNotificationFailure } from '../../notification/notificationFailure';
 import { osToastsAllowed } from '../../notification/osToastGate';
 import { IPC } from '../../../shared/constants';
 import { HelpRequests } from '../../browser-session/HelpRequests';
+import { FrameTarget, FrameWorlds, evaluateInFrame, listChildFrames, type CdpSend, type Point as FramePoint } from '../../browser-session/frameAccess';
 import {
   buildHelpHighlightExpression,
   buildHelpProbeExpression,
@@ -996,6 +997,84 @@ async function touchTargetPoint(
     `${method}: ${selector} is not the element at (${Math.round(point.x)}, ${Math.round(point.y)}) ` +
     `— it is moving, or something is covering it. Refusing to tap what is there instead.`,
   );
+}
+
+// ── In-process frames on the builtin webview lane ──────────────────────────
+// One FrameWorlds per guest: its worlds live as long as the guest's documents.
+const frameWorldsByGuest = new WeakMap<WebContents, FrameWorlds>();
+
+function cdpSendOf(wc: WebContents): CdpSend {
+  return (method, params) => wc.debugger.sendCommand(method, params) as Promise<unknown>;
+}
+
+function frameWorldsOf(wc: WebContents): FrameWorlds {
+  let worlds = frameWorldsByGuest.get(wc);
+  if (!worlds) {
+    worlds = new FrameWorlds(cdpSendOf(wc));
+    frameWorldsByGuest.set(wc, worlds);
+  }
+  return worlds;
+}
+
+/** The frame a call names, from its params, or undefined for the top document. */
+function frameParam(params: Record<string, unknown>): { frameId: string; loaderId?: string } | undefined {
+  const frameId = params['frameId'];
+  if (frameId === undefined) return undefined;
+  if (typeof frameId !== 'string' || !frameId) throw new Error('"frameId" must be a non-empty string');
+  const loaderId = params['loaderId'];
+  if (loaderId !== undefined && typeof loaderId !== 'string') throw new Error('"loaderId" must be a string');
+  return { frameId, ...(loaderId ? { loaderId } : {}) };
+}
+
+/**
+ * Where to press on `selector` inside a frame, after checking the hit.
+ *
+ * The same contract as approachElement, with the check made BEFORE the pointer
+ * moves as well as after: a point that is not on the target is refused rather
+ * than pressed, and one re-resolution is allowed when the target moved while
+ * the pointer walked. `approach: false` (a touchscreen) skips the walk.
+ */
+async function frameTargetPoint(
+  wc: WebContents,
+  webContentsId: number,
+  frame: { frameId: string; loaderId?: string },
+  selector: string,
+  method: string,
+  approach: boolean,
+): Promise<FramePoint> {
+  const send = cdpSendOf(wc);
+  const resolveOnce = async (): Promise<{ target: FrameTarget; point: FramePoint }> => {
+    const target = await FrameTarget.resolve(send, frameWorldsOf(wc), frame.frameId, frame.loaderId, selector);
+    if (target === null) throw new Error(`Element not found in the frame: ${selector}`);
+    if (!(target instanceof FrameTarget)) throw new Error(`${method}: the frame cannot be reached (${target.unreachable})`);
+    const point = await target.point();
+    if (!point) {
+      await target.release();
+      throw new Error(`Element not found in the frame: ${selector} has no area`);
+    }
+    return { target, point };
+  };
+  const refuse = (point: FramePoint) => new Error(
+    `${method}: ${selector} in the frame is not the element at (${Math.round(point.x)}, ${Math.round(point.y)}) ` +
+    `— it is moving, or something is covering it. Refusing to click what is there instead.`,
+  );
+  let { target, point } = await resolveOnce();
+  try {
+    if (!(await target.hits(point))) throw refuse(point);
+    if (!approach) return point;
+    await movePointerTo(wc, webContentsId, point.x, point.y);
+    if (await target.hits(point)) return point;
+  } finally {
+    await target.release();
+  }
+  ({ target, point } = await resolveOnce());
+  try {
+    await movePointerTo(wc, webContentsId, point.x, point.y);
+    if (!(await target.hits(point))) throw refuse(point);
+    return point;
+  } finally {
+    await target.release();
+  }
 }
 
 /** The intermediate points between two positions, step count from the distance. */
@@ -4233,6 +4312,12 @@ export function registerBrowserRpc(
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.evaluate: WebContents unavailable');
 
+    // A frame is read in its own isolated world, never in the top document:
+    // no executeJavaScript fallback here, which would run in the wrong one.
+    // An unreachable frame (another process) is an answer, not an error.
+    const frame = frameParam(params);
+    if (frame) return evaluateInFrame(cdpSendOf(wc), frameWorldsOf(wc), frame.frameId, expression, frame.loaderId);
+
     // Use CDP Runtime.evaluate for reliable execution (executeJavaScript can fail silently)
     try {
       const cdpResult = await wc.debugger.sendCommand('Runtime.evaluate', {
@@ -4259,6 +4344,22 @@ export function registerBrowserRpc(
         throw new Error(`evaluate failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`);
       }
     }
+  });
+
+  /**
+   * browser.frames.tree
+   * The guest's in-process child frames, to depth 5, in tree order: frameId,
+   * loaderId (the document a later call must still find), parent, depth and
+   * origin. The name attribute is the page's own text.
+   * params: { surfaceId?: string }
+   */
+  registerLeased('browser.frames.tree', async (params, scope) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.frames.tree', surfaceId, scope);
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.frames.tree: WebContents unavailable');
+    return { frames: await listChildFrames(cdpSendOf(wc)) };
   });
 
   /**
@@ -4392,7 +4493,9 @@ export function registerBrowserRpc(
   /**
    * browser.click.cdp
    * Click at coordinates or on the focused element via CDP Input events.
-   * params: { x?: number, y?: number, selector?: string, surfaceId?: string }
+   * With frameId (and the loaderId the snapshot saw), the selector is found in
+   * that in-process frame's document and the press point is hit-checked first.
+   * params: { x?: number, y?: number, selector?: string, frameId?: string, loaderId?: string, surfaceId?: string }
    */
   registerLeased('browser.click.cdp', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
@@ -4411,7 +4514,13 @@ export function registerBrowserRpc(
     // pointer to walk to the target first.
     const touch = touchPresetActive(wc);
 
-    if (selector) {
+    const frame = frameParam(params);
+    if (frame && !selector) throw new Error('browser.click.cdp: "frameId" needs a "selector"');
+    if (frame && selector) {
+      const point = await frameTargetPoint(wc, target.webContentsId, frame, selector, 'browser.click.cdp', !touch);
+      x = point.x;
+      y = point.y;
+    } else if (selector) {
       // Walk the pointer to the target before pressing. A single mouseMoved
       // onto the exact spot, from a pointer that has never been anywhere else,
       // is not what a page sees from a person. The intermediate moves also keep
