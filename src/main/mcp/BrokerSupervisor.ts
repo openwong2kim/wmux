@@ -42,6 +42,8 @@ export class BrokerSupervisor {
   /** Open connections, as the current child last reported them. */
   private connections = 0;
   private crashExits = 0;
+  /** Spawns that failed outright (ENOENT, EPERM, a scanner): not crashes. */
+  private spawnFailures = 0;
   private standDowns = 0;
 
   /** The running broker's pid, for telling its relayed calls apart (peer pid measurement). */
@@ -58,6 +60,7 @@ export class BrokerSupervisor {
       uptimeS: this.child && this.childStartedAt !== null ? Math.floor((Date.now() - this.childStartedAt) / 1000) : null,
       connections: this.child ? this.connections : 0,
       crashExits: this.crashExits,
+      spawnFailures: this.spawnFailures,
       standDowns: this.standDowns,
       standingDown: this.reclaimTimer !== null,
     };
@@ -122,12 +125,13 @@ export class BrokerSupervisor {
     // Guard so a spawn 'error' and the trailing 'exit' don't both schedule a
     // restart (a failed spawn emits both).
     let settled = false;
-    const scheduleRestart = (reason: string) => {
+    const scheduleRestart = (reason: string, kind: 'crash' | 'spawn') => {
       if (settled) return;
       settled = true;
       this.clearChild();
       if (this.stopped) return;
-      this.crashExits++;
+      if (kind === 'spawn') this.spawnFailures++;
+      else this.crashExits++;
       if (Date.now() - startedAt > STABLE_MS) this.restarts = 0;
       const delay = RESTART_BACKOFF_MS[Math.min(this.restarts, RESTART_BACKOFF_MS.length - 1)];
       this.restarts++;
@@ -144,7 +148,7 @@ export class BrokerSupervisor {
     // the same backoff restart.
     child.on('error', (err) => {
       console.error(`[BrokerSupervisor] broker spawn error: ${err.message}`);
-      scheduleRestart('broker spawn error');
+      scheduleRestart('broker spawn error', 'spawn');
     });
 
     child.on('exit', (code, signal) => {
@@ -165,7 +169,7 @@ export class BrokerSupervisor {
         this.startReclaimProbe();
         return;
       }
-      scheduleRestart(`broker exited code=${code} signal=${signal}`);
+      scheduleRestart(`broker exited code=${code} signal=${signal}`, 'crash');
     });
   }
 

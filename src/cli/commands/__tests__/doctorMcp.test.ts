@@ -19,7 +19,7 @@ function target(id: string, path: string | null, profile: 'full' | 'core' | 'com
 }
 
 const summary: McpSessionsSummary = {
-  broker: { enabled: true, running: true, pid: 4321, uptimeS: 3725, connections: 2, crashExits: 1, standDowns: 0, standingDown: false },
+  broker: { enabled: true, running: true, pid: 4321, uptimeS: 3725, connections: 2, crashExits: 1, spawnFailures: 3, standDowns: 0, standingDown: false },
   bundle: { recent: 3, capped: false, ttlS: 600 },
 };
 
@@ -68,7 +68,7 @@ describe('doctor mcp section', () => {
     const section = await buildMcpSection(deps());
     const byLabel = Object.fromEntries(section.lines.map((l) => [l.label, l]));
     expect(byLabel['broker']).toMatchObject({
-      value: 'running pid 4321, up 1h 2m 5s, connections 2, crash exits 1, stand-downs 0',
+      value: 'running pid 4321, up 1h 2m 5s, connections 2, crash exits 1, spawn failures 3, stand-downs 0',
       verdict: 'OK',
     });
     expect(byLabel['bundle sessions (last 10 min)']).toMatchObject({ value: '3', verdict: 'OK' });

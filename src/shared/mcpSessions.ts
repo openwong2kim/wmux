@@ -34,6 +34,7 @@ export interface BrokerStatus {
   uptimeS: number | null;
   connections: number;
   crashExits: number;
+  spawnFailures: number;
   standDowns: number;
   standingDown: boolean;
 }

@@ -7,7 +7,7 @@ import { METHOD_CAPABILITY } from '../../../mcp/methodCapabilityMap';
 import type { BrokerStatus } from '../../../../shared/mcpSessions';
 
 const broker: BrokerStatus = {
-  running: true, pid: 4321, uptimeS: 65, connections: 2, crashExits: 1, standDowns: 0, standingDown: false,
+  running: true, pid: 4321, uptimeS: 65, connections: 2, crashExits: 1, spawnFailures: 0, standDowns: 0, standingDown: false,
 };
 
 describe('mcp.sessions.summary', () => {

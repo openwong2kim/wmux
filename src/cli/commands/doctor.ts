@@ -506,7 +506,7 @@ function isSessionsSummary(v: unknown): v is McpSessionsSummary {
   if (!b || typeof b !== 'object' || !n || typeof n !== 'object') return false;
   const nums = (rec: Record<string, unknown>, keys: string[]) => keys.every((k) => typeof rec[k] === 'number');
   return typeof b.enabled === 'boolean' && typeof b.running === 'boolean' && typeof b.standingDown === 'boolean'
-    && nums(b, ['connections', 'crashExits', 'standDowns'])
+    && nums(b, ['connections', 'crashExits', 'spawnFailures', 'standDowns'])
     && (b.pid === null || typeof b.pid === 'number')
     && (b.uptimeS === null || typeof b.uptimeS === 'number')
     && typeof n.capped === 'boolean' && nums(n, ['recent', 'ttlS']);
@@ -518,7 +518,7 @@ function brokerLine(b: McpSessionsSummary['broker']): CheckLine {
     return {
       label: 'broker',
       value: `running pid ${b.pid}, up ${formatUptime(b.uptimeS ?? undefined)}, connections ${b.connections}, ` +
-        `crash exits ${b.crashExits}, stand-downs ${b.standDowns}`,
+        `crash exits ${b.crashExits}, spawn failures ${b.spawnFailures}, stand-downs ${b.standDowns}`,
       verdict: 'OK',
     };
   }

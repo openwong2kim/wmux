@@ -176,7 +176,7 @@ describe('BrokerSupervisor status', () => {
     vi.useRealTimers();
   });
 
-  it('counts a failed spawn once, and an exit after stop() not at all', () => {
+  it('counts a failed spawn once, apart from crashes, and an exit after stop() not at all', () => {
     vi.useFakeTimers();
     const first = makeChild();
     const second = makeChild();
@@ -185,11 +185,11 @@ describe('BrokerSupervisor status', () => {
     sup.start();
     first.emit('error', new Error('EPERM'));
     first.emit('exit', null, null);
-    expect(sup.status().crashExits).toBe(1);
+    expect(sup.status()).toMatchObject({ spawnFailures: 1, crashExits: 0 });
     vi.advanceTimersByTime(500);
     sup.stop();
     second.emit('exit', null, 'SIGTERM');
-    expect(sup.status().crashExits).toBe(1);
+    expect(sup.status()).toMatchObject({ spawnFailures: 1, crashExits: 0 });
     vi.useRealTimers();
   });
 
