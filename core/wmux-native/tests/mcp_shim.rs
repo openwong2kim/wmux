@@ -577,6 +577,84 @@ fn a_zero_length_message_from_the_broker_is_not_the_end_of_the_stream() {
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
 }
 
+/// Reap `pid` (polling, bounded by WAIT) and return its exit code and the
+/// context switches it made (voluntary plus involuntary: macOS counts a sleep
+/// as the latter, Linux as the former). A process that waits by sleeping in a
+/// loop switches hundreds of times a second; one that waits in poll(2) does not.
+#[cfg(unix)]
+fn reap_counting_wakeups(pid: u32) -> (Option<i32>, i64) {
+    #[repr(C)]
+    struct Rusage {
+        utime: [i64; 2],
+        stime: [i64; 2],
+        // ru_maxrss .. ru_nivcsw; ru_nvcsw and ru_nivcsw are the last two.
+        longs: [i64; 14],
+    }
+    extern "C" {
+        fn wait4(pid: i32, status: *mut i32, options: i32, usage: *mut Rusage) -> i32;
+    }
+    const WNOHANG: i32 = 1;
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let mut status = 0;
+        let mut usage = Rusage {
+            utime: [0; 2],
+            stime: [0; 2],
+            longs: [0; 14],
+        };
+        // SAFETY: reaps a child this test spawned and has not reaped.
+        let got = unsafe { wait4(pid as i32, &mut status, WNOHANG, &mut usage) };
+        if got == pid as i32 {
+            let code = (status & 0x7f == 0).then_some((status >> 8) & 0xff);
+            return (code, usage.longs[12] + usage.longs[13]);
+        }
+        assert!(got == 0 && Instant::now() < deadline, "wait4: {got}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Waiting on a non-blocking stdin (nothing to read) and stdout (the host
+/// not reading) must block in poll(2), not spin.
+#[cfg(unix)]
+#[test]
+fn a_waiting_non_blocking_stdio_does_not_spin() {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    let listener = stub::bind(&sb.pipe());
+    let (host_in, shim_in) = UnixStream::pair().unwrap();
+    let (mut host_out, shim_out) = UnixStream::pair().unwrap();
+    shim_in.set_nonblocking(true).unwrap();
+    shim_out.set_nonblocking(true).unwrap();
+    // Reaped by wait4 in reap_counting_wakeups, which also reads its usage.
+    #[allow(clippy::zombie_processes)]
+    let child = sb
+        .shim(&[])
+        .stdin(Stdio::from(OwnedFd::from(shim_in)))
+        .stdout(Stdio::from(OwnedFd::from(shim_out)))
+        .spawn()
+        .expect("spawn shim");
+    let mut conn = listener.accept(WAIT);
+    read_line(&mut conn);
+    // One second with nothing on stdin.
+    std::thread::sleep(Duration::from_millis(1000));
+    // One second with stdout full and the host not reading.
+    let big = vec![b'x'; 512 * 1024];
+    let mut writer = conn.try_clone().unwrap();
+    let sent = big.clone();
+    let feeder = std::thread::spawn(move || writer.write_all(&sent));
+    std::thread::sleep(Duration::from_millis(1000));
+    host_out.set_read_timeout(Some(WAIT)).unwrap();
+    assert_eq!(read_exact(&mut host_out, big.len()), big);
+    feeder.join().unwrap().unwrap();
+    drop(host_in);
+    let (code, wakeups) = reap_counting_wakeups(child.id());
+    assert_eq!(code, Some(0));
+    // A 2 ms sleep loop makes about 1000 over the two idle seconds.
+    assert!(wakeups < 400, "{wakeups} context switches while waiting");
+}
+
 #[test]
 fn self_test_prints_the_protocol_version_without_a_network() {
     let sb = Sandbox::new();

@@ -370,16 +370,36 @@ fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
     Err(last.unwrap_or_else(|| std::io::Error::other("no attempt")))
 }
 
-/// Interrupted is retried at once; WouldBlock (an inherited non-blocking
-/// stdio) after a short wait, as Node's stream would wait for readiness.
-fn should_retry(e: &std::io::Error) -> bool {
+/// Which of the host's stdio streams an operation is on.
+#[derive(Clone, Copy)]
+enum HostStream {
+    Stdin,
+    Stdout,
+}
+
+/// What to do after a failed stdio read or write.
+#[derive(PartialEq)]
+enum Next {
+    Retry,
+    /// The stream ended (EOF for stdin, gone for stdout).
+    Ended,
+    Fail,
+}
+
+/// Interrupted is retried at once. WouldBlock (an inherited non-blocking
+/// stdio) waits until the stream is ready, as Node's stream would, and is
+/// retried, unless the wait finds the stream ended.
+fn after_error(e: &std::io::Error, stream: HostStream) -> Next {
     match e.kind() {
-        std::io::ErrorKind::Interrupted => true,
+        std::io::ErrorKind::Interrupted => Next::Retry,
         std::io::ErrorKind::WouldBlock => {
-            std::thread::sleep(Duration::from_millis(2));
-            true
+            if sys::wait_ready(stream) {
+                Next::Retry
+            } else {
+                Next::Ended
+            }
         }
-        _ => false,
+        _ => Next::Fail,
     }
 }
 
@@ -389,14 +409,14 @@ fn write_patiently(out: &mut impl Write, mut bytes: &[u8]) -> std::io::Result<()
         match out.write(bytes) {
             Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
             Ok(n) => bytes = &bytes[n..],
-            Err(e) if should_retry(&e) => {}
+            Err(e) if after_error(&e, HostStream::Stdout) == Next::Retry => {}
             Err(e) => return Err(e),
         }
     }
     loop {
         match out.flush() {
             Ok(()) => return Ok(()),
-            Err(e) if should_retry(&e) => {}
+            Err(e) if after_error(&e, HostStream::Stdout) == Next::Retry => {}
             Err(e) => return Err(e),
         }
     }
@@ -429,8 +449,11 @@ fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) {
         let n = match stdin.read(&mut buf) {
             Ok(0) => return,
             Ok(n) => n,
-            Err(e) if should_retry(&e) => continue,
-            Err(_) => finish(Outcome::StdinError),
+            Err(e) => match after_error(&e, HostStream::Stdin) {
+                Next::Retry => continue,
+                Next::Ended => return,
+                Next::Fail => finish(Outcome::StdinError),
+            },
         };
         if let Err(e) = write(&buf[..n]) {
             finish(Outcome::BrokerError(socket_error("write", &e)));
@@ -537,6 +560,55 @@ mod sys {
 
     pub fn parent_pid() -> i64 {
         i64::from(std::os::unix::process::parent_id())
+    }
+
+    /// Block in poll(2) until the host's stdin is readable or its stdout
+    /// writable. False when poll reports the stream ended instead (HUP, ERR or
+    /// NVAL without the readiness asked for) or fails: what a read or write
+    /// would then report, end of input for stdin and a gone reader for stdout.
+    pub fn wait_ready(stream: super::HostStream) -> bool {
+        #[repr(C)]
+        struct PollFd {
+            fd: i32,
+            events: i16,
+            revents: i16,
+        }
+        #[cfg(target_os = "linux")]
+        type NFds = std::ffi::c_ulong;
+        #[cfg(not(target_os = "linux"))]
+        type NFds = std::ffi::c_uint;
+        extern "C" {
+            fn poll(fds: *mut PollFd, nfds: NFds, timeout: i32) -> i32;
+        }
+        const POLLIN: i16 = 0x1;
+        const POLLOUT: i16 = 0x4;
+        const POLLERR: i16 = 0x8;
+        const POLLHUP: i16 = 0x10;
+        const POLLNVAL: i16 = 0x20;
+        let (fd, want) = match stream {
+            super::HostStream::Stdin => (0, POLLIN),
+            super::HostStream::Stdout => (1, POLLOUT),
+        };
+        loop {
+            let mut pfd = PollFd {
+                fd,
+                events: want,
+                revents: 0,
+            };
+            // SAFETY: one valid pollfd; no timeout.
+            if unsafe { poll(&mut pfd, 1, -1) } < 0 {
+                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return false;
+            }
+            if pfd.revents & want != 0 {
+                return true;
+            }
+            if pfd.revents & (POLLERR | POLLHUP | POLLNVAL) != 0 {
+                return false;
+            }
+        }
     }
 
     extern "C" fn on_signal(_: i32) {
@@ -801,6 +873,13 @@ mod sys {
             return Err(Error::from_raw_os_error(ERROR_INVALID_FUNCTION));
         }
         Ok(conn)
+    }
+
+    /// A non-blocking stdio is a Unix notion; a pipe handle that reports one
+    /// anyway is retried after a short sleep.
+    pub fn wait_ready(_: super::HostStream) -> bool {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        true
     }
 
     /// `process.ppid`: libuv reads InheritedFromUniqueProcessId, -1 on failure.
