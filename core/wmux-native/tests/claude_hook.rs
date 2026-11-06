@@ -6,12 +6,30 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{PoisonError, RwLock, RwLockWriteGuard};
 
 const BRIDGE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../integrations/claude/bin/wmux-bridge.mjs"
 );
+
+/// Parallel tests write executables and spawn processes. A fork inherits any
+/// write descriptor another test still has open until the child execs, and
+/// exec of a file open for writing fails with ETXTBSY ("Text file busy"). So
+/// creating, writing or copying an executable holds the write lock, and every
+/// spawn holds the read lock until the child has exec'd (`Command::spawn`
+/// returns only after that).
+static EXECUTABLES: RwLock<()> = RwLock::new(());
+
+fn writing_executables() -> RwLockWriteGuard<'static, ()> {
+    EXECUTABLES.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn spawn(command: &mut Command) -> Child {
+    let _no_executable_being_written = EXECUTABLES.read().unwrap_or_else(PoisonError::into_inner);
+    command.spawn().unwrap()
+}
 
 struct Case {
     dir: PathBuf,
@@ -25,6 +43,7 @@ impl Case {
         for sub in ["bin", "fake-node", "home"] {
             std::fs::create_dir_all(dir.join(sub)).unwrap();
         }
+        let _writing = writing_executables();
         std::fs::copy(env!("CARGO_BIN_EXE_wmux-native"), dir.join("bin/wmux-native")).unwrap();
         if let Some(source) = bridge {
             std::fs::write(dir.join("bin/wmux-bridge.mjs"), source).unwrap();
@@ -56,20 +75,20 @@ impl Case {
         } else {
             "/usr/bin:/bin".into()
         };
-        let mut child = Command::new(self.dir.join("bin/wmux-native"))
-            .arg("claude-hook")
-            .args(args)
-            .env_clear()
-            .env("PATH", path)
-            .env("HOME", self.dir.join("home"))
-            .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
-            .env("FAKE_NODE_ARGS", self.dir.join("node-args"))
-            .envs(env.iter().copied())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(stderr)
-            .spawn()
-            .unwrap();
+        let mut child = spawn(
+            Command::new(self.dir.join("bin/wmux-native"))
+                .arg("claude-hook")
+                .args(args)
+                .env_clear()
+                .env("PATH", path)
+                .env("HOME", self.dir.join("home"))
+                .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
+                .env("FAKE_NODE_ARGS", self.dir.join("node-args"))
+                .envs(env.iter().copied())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(stderr),
+        );
         use std::io::Write;
         let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
         child.wait_with_output().unwrap()
@@ -385,30 +404,37 @@ fn the_hand_over_comes_before_the_run_thread() {
     // still hands over, and without it the run fails open.
     let case = Case::new("no-thread", Some(&pinned()));
     let limited = case.dir.join("limited");
-    std::fs::write(
-        &limited,
-        format!(
-            "#!/bin/sh\nulimit -v 49152 || exit 99\nexec '{}' \"$@\"\n",
-            case.dir.join("bin/wmux-native").display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&limited, std::fs::Permissions::from_mode(0o755)).unwrap();
+    {
+        let _writing = writing_executables();
+        std::fs::write(
+            &limited,
+            format!(
+                "#!/bin/sh\nulimit -v 49152 || exit 99\nexec '{}' \"$@\"\n",
+                case.dir.join("bin/wmux-native").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&limited, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let run = |env: &[(&str, &str)]| {
-        let out = Command::new(&limited)
-            .args(["claude-hook", "Stop"])
-            .env_clear()
-            .env(
-                "PATH",
-                format!("{}:/usr/bin:/bin", case.dir.join("fake-node").display()),
-            )
-            .env("HOME", case.dir.join("home"))
-            .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
-            .env("FAKE_NODE_ARGS", case.dir.join("node-args"))
-            .envs(env.iter().copied())
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
+        let out = spawn(
+            Command::new(&limited)
+                .args(["claude-hook", "Stop"])
+                .env_clear()
+                .env(
+                    "PATH",
+                    format!("{}:/usr/bin:/bin", case.dir.join("fake-node").display()),
+                )
+                .env("HOME", case.dir.join("home"))
+                .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
+                .env("FAKE_NODE_ARGS", case.dir.join("node-args"))
+                .envs(env.iter().copied())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .wait_with_output()
+        .unwrap();
         quiet(&out);
     };
     run(&[("WMUX_HOOK_RUNTIME", "node")]);
