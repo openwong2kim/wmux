@@ -170,6 +170,23 @@ fn without_node_the_kill_switch_runs_natively() {
 }
 
 #[test]
+fn a_failed_exec_is_not_tried_again() {
+    // Kill switch, a stale bridge and a decision flag would each hand over.
+    let mut changed = pinned();
+    changed.extend_from_slice(b"// edited\n");
+    let case = Case::new("exec-once", Some(&changed));
+    quiet(&case.run(&["Stop", "--gate"], &[("WMUX_HOOK_RUNTIME", "node")], false, "{}"));
+    assert_eq!(
+        case.log(),
+        [
+            "impl-fallback node-missing",
+            "impl-fallback bridge-sha-mismatch",
+            "decision-unported --gate"
+        ]
+    );
+}
+
+#[test]
 fn without_a_bridge_beside_it_the_run_stays_native() {
     let case = Case::new("no-bridge", None);
     quiet(&case.run(&["Stop"], &[("WMUX_HOOK_RUNTIME", "node")], true, "{}"));
