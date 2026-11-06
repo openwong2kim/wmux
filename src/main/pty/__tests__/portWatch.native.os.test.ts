@@ -4,13 +4,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // and the file system stubbed: which path serves each tick, the failure and
 // timeout latch, the kill switch, and the in-process tool lookup (no PATH
 // walk by the spawn).
-const native = vi.hoisted(() => ({ portSnapshot: vi.fn(), load: vi.fn() }));
+const native = vi.hoisted(() => ({ portSnapshot: vi.fn(), load: vi.fn(), fallback: vi.fn() }));
 const spawn = vi.hoisted(() => ({ execFile: vi.fn() }));
 const files = vi.hoisted(() => ({ present: new Set<string>(), checked: [] as string[] }));
 
 vi.mock('../../../shared/nativeTerminalCore', () => ({
   loadNativeTerminalCore: native.load,
-  reportNativeFallback: vi.fn(),
+  reportNativeFallback: native.fallback,
 }));
 vi.mock('node:child_process', () => ({ execFile: spawn.execFile }));
 vi.mock('node:fs', async (importOriginal) => {
@@ -47,6 +47,7 @@ beforeEach(() => {
     ],
   });
   native.load.mockReset().mockImplementation(() => ({ portSnapshot: native.portSnapshot }));
+  native.fallback.mockReset();
   spawn.execFile.mockReset();
   files.present = new Set(['/bin/ps', '/usr/sbin/lsof']);
   files.checked = [];
@@ -98,6 +99,43 @@ describe.each(['darwin', 'linux'] as const)('PortWatcher snapshot on %s', (platf
     }
     // At most one libuv thread is ever stuck: the hung call is the only one.
     expect(native.portSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('a native call that hangs for good latches native off after three ticks, and reports it once', async () => {
+    vi.useFakeTimers();
+    const { defaultSnapshot, NATIVE_SNAPSHOT_TIMEOUT_MS } = await load();
+    let settle: (v: unknown) => void = () => undefined;
+    native.portSnapshot.mockReturnValueOnce(new Promise((resolve) => { settle = resolve; }));
+    // Tick 1 times out; ticks 2 and 3 find it still hung and count too.
+    for (let i = 0; i < 3; i++) {
+      const tick = defaultSnapshot();
+      await vi.advanceTimersByTimeAsync(NATIVE_SNAPSHOT_TIMEOUT_MS);
+      expect((await tick).listeners).toEqual([{ port: 5173, pid: 200 }]);
+    }
+    expect(native.fallback).toHaveBeenCalledTimes(1);
+    expect(native.fallback).toHaveBeenCalledWith('port-watch');
+    // Latched: even once the hung call returns, native is not called again.
+    settle({ processes: [], sockets: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    for (let i = 0; i < 2; i++) expect((await defaultSnapshot()).listeners).toEqual([{ port: 5173, pid: 200 }]);
+    expect(native.portSnapshot).toHaveBeenCalledTimes(1);
+    expect(native.fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('a tick while a native call is pending but not yet timed out is no failure', async () => {
+    const { defaultSnapshot } = await load();
+    const pending: Array<(v: unknown) => void> = [];
+    native.portSnapshot.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
+    const ok = { processes: [{ pid: 200, ppid: 100, name: 'node' }], sockets: [{ pid: 200, port: 3000, address: '::', family: 6 }] };
+    // Each round: one native call starts, three ticks skip it, then it answers.
+    for (let round = 0; round < 2; round++) {
+      const first = defaultSnapshot();
+      for (let i = 0; i < 3; i++) await defaultSnapshot();
+      pending[round](ok);
+      expect((await first).listeners).toEqual([{ port: 3000, pid: 200 }]);
+    }
+    expect(native.portSnapshot).toHaveBeenCalledTimes(2);
+    expect(native.fallback).not.toHaveBeenCalled();
   });
 
   it('a second tick while the first native read is pending goes to the fallback, and native serves again once it settles', async () => {

@@ -52,7 +52,8 @@ const DEFAULT_INTERVAL_MS = 10_000;
 const SNAPSHOT_TIMEOUT_MS = 8_000;
 /** How long one native snapshot may take before its tick goes to ps/lsof.
  *  A read stuck in the kernel (a D-state /proc read) never returns: the
- *  timeout keeps the tick, and the 3-in-a-row latch, moving. */
+ *  timeout keeps the tick moving, and each later tick it blocks counts toward
+ *  the 3-in-a-row latch, so a read hung for good latches native off. */
 export const NATIVE_SNAPSHOT_TIMEOUT_MS = 5_000;
 /**
  * How long tick() waits for a snapshot before counting it as failed. The Unix

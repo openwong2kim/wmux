@@ -40,7 +40,9 @@ const MAX_FAILURES = 3;
  * the process's life (no retry after a backoff). A success resets the count.
  * A timed read also keeps one call in flight at most: while one has not
  * settled (a timed-out call may still hold a libuv thread), `call()` answers
- * undefined at once without starting another, and that is no failure.
+ * undefined at once without starting another. That skip is no failure while
+ * the pending call is within its timeout; once the call has timed out and is
+ * still pending, each skip is a failure, so a read hung for good latches too.
  */
 export interface NativeRead<F> {
   get(): F | undefined;
@@ -56,9 +58,14 @@ export function nativeRead<F>(opts: {
   let fn: F | null | undefined;
   let failures = 0;
   let inFlight = false;
+  // The in-flight call has outlived its timeout and has not settled since.
+  let hung = false;
   const latchOff = (): void => {
     fn = null;
     reportNativeFallback(opts.component);
+  };
+  const fail = (): void => {
+    if (++failures >= MAX_FAILURES && fn) latchOff();
   };
   const get = (): F | undefined => {
     if (fn === undefined) {
@@ -79,26 +86,32 @@ export function nativeRead<F>(opts: {
   const call = async <T>(run: (read: F) => Promise<T>, timeoutMs?: number): Promise<T | undefined> => {
     const read = get();
     if (!read) return undefined;
-    if (timeoutMs !== undefined && inFlight) return undefined;
+    if (timeoutMs !== undefined && inFlight) {
+      if (hung) fail();
+      return undefined;
+    }
     let timer: NodeJS.Timeout | undefined;
     try {
       const pending = run(read);
       if (timeoutMs !== undefined) {
         inFlight = true;
-        const settle = (): void => { inFlight = false; };
+        const settle = (): void => { inFlight = false; hung = false; };
         pending.then(settle, settle);
       }
       const result = await (timeoutMs === undefined ? pending : Promise.race([
         pending,
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('Native read timed out')), timeoutMs);
+          timer = setTimeout(() => {
+            hung = true;
+            reject(new Error('Native read timed out'));
+          }, timeoutMs);
           timer.unref?.();
         }),
       ]));
       failures = 0;
       return result;
     } catch {
-      if (++failures >= MAX_FAILURES && fn) latchOff();
+      fail();
       return undefined;
     } finally {
       if (timer) clearTimeout(timer);
