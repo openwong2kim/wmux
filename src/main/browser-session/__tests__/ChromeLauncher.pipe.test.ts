@@ -163,6 +163,14 @@ describe('ChromeLauncher over a debugging pipe', () => {
     })).rejects.toThrow();
   });
 
+  it('refuses a protected profile on the pipe, naming it, before anything is spawned or dialed', async () => {
+    const launcher = new ChromeLauncher('/tmp/pipe-protected', { profileName: 'bank', protection: () => ({ matcher: () => ({ allows: () => false }) }) });
+    await expect(launcher.endpoint()).rejects.toThrow('policy_denied: the protected browser profile "bank" can\'t start with WMUX_CHROME_TRANSPORT=pipe');
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(launcher.isRunning()).toBe(false);
+  });
+
   it('names no port for a pipe Chrome', async () => {
     spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');

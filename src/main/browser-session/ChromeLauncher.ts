@@ -1932,6 +1932,11 @@ export class ChromeLauncher implements ChromeBackendClient {
     // is not what this one will ask for.
     this.blocked.clear();
     const pipe = chromeTransportKind() === 'pipe';
+    // A protected profile stays on the port until the pipe has its ownership
+    // rules (C2b): refused before anything touches the profile.
+    if (plan && pipe) {
+      throw new Error(`policy_denied: the protected browser profile "${this.profileName}" can't start with WMUX_CHROME_TRANSPORT=pipe`);
+    }
     if (plan) {
       if (!(await this.evictExisting())) throw new Error(PROTECTION_NOT_READY);
     } else {
