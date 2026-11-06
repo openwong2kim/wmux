@@ -23,6 +23,9 @@ mod js;
 mod os_random;
 mod paths;
 mod rpc;
+mod targets;
+#[cfg(test)]
+mod testenv;
 
 /// Ownership marker: the hook installer recognises a wmux-written copy of this
 /// binary by this text, as it does the bridge script by its first line.

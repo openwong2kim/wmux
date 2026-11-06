@@ -16,6 +16,7 @@
 use crate::js::{self, js, JsStr, Json};
 use crate::paths;
 use crate::rpc::{self, Target, HOOK_TIMEOUT};
+use crate::targets;
 use std::io::Read;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,8 +26,6 @@ const BRIDGE_VERSION: &str = "0.1.0";
 const MAX_STDIN_BYTES: usize = 256 * 1024;
 /// #1111: the main pipe allows exactly this clientName its one method.
 const WMUX_CLIENT_NAME: &str = "wmux-hook-bridge";
-const MAIN_METHOD: &str = "hooks.signal";
-const DAEMON_METHOD: &str = "daemon.hooks.signal";
 const FORWARDED_SESSION_SOURCES: [&str; 3] = ["startup", "resume", "clear"];
 
 pub const FLAVOURS_JSON: &str = include_str!("../flavours.json");
@@ -347,39 +346,21 @@ fn read_capped(mut input: impl Read) -> Result<Vec<u8>, ()> {
 
 // ----- Main ----------------------------------------------------------------
 
+/// resolveTargets: the override is one target addressed to main, with main's
+/// token; otherwise the daemon, then main.
 fn resolve_targets() -> Vec<Target> {
-    let main_token = paths::read_token_file(&paths::auth_token_path());
-    if let Some(pipe) = paths::env("WMUX_PIPE_NAME").filter(|p| !p.is_empty()) {
-        return main_token
+    match targets::pipe_override() {
+        Some(pipe) => targets::main_token()
             .map(|token| Target {
                 name: "main",
                 pipe,
                 token,
-                method: MAIN_METHOD,
+                method: targets::MAIN_METHOD,
             })
             .into_iter()
-            .collect();
+            .collect(),
+        None => targets::default_walk(true),
     }
-    let mut targets = Vec::new();
-    if paths::env("WMUX_HOOKS_TO_MAIN").as_deref() != Some("1") {
-        if let Some(token) = paths::read_token_file(&paths::daemon_auth_token_path()) {
-            targets.push(Target {
-                name: "daemon",
-                pipe: paths::daemon_pipe_name(),
-                token,
-                method: DAEMON_METHOD,
-            });
-        }
-    }
-    if let Some(token) = main_token {
-        targets.push(Target {
-            name: "main",
-            pipe: paths::pipe_name(),
-            token,
-            method: MAIN_METHOD,
-        });
-    }
-    targets
 }
 
 /// A v4 UUID from the OS generator, as crypto.randomUUID() formats it.

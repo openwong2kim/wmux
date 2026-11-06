@@ -83,7 +83,9 @@ describe('native hook bridge — enforcer lockstep (#1111)', () => {
   });
 
   it('calls no main-pipe method outside the lane', () => {
-    const methods = [...src.matchAll(/const [A-Z_]+_METHOD: &str = "([^"]+)";/g)].map((m) => m[1]);
+    // The method names live with the target walk both native bridges share.
+    const targets = fs.readFileSync(path.join(REPO_ROOT, 'core', 'wmux-native', 'src', 'targets.rs'), 'utf8').replace(/\r\n/g, '\n');
+    const methods = [...targets.matchAll(/const [A-Z_]+_METHOD: &str = "([^"]+)";/g)].map((m) => m[1]);
     expect(methods.sort()).toEqual(['daemon.hooks.signal', 'hooks.signal']);
     const outside = methods.filter((m) => !m.startsWith('daemon.') && !HOOK_BRIDGE_METHODS.has(m as never));
     expect(outside).toEqual([]);

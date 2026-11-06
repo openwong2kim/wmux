@@ -59,13 +59,19 @@ pub fn mtime_ms(path: &str) -> io::Result<f64> {
     Ok(since * 1000.0)
 }
 
-/// The last `max` bytes of a file and the offset they start at, read the way
-/// the bridge's transcript readers do: a buffer of `min(max, size)` zeroed
-/// bytes, filled by reading from `size - len`. A file that shrinks between the
-/// stat and the read leaves the rest zeroed, as Node's `readSync` does.
-pub fn read_tail(path: &str, max: u64) -> io::Result<(Vec<u8>, u64)> {
+/// The last `max` bytes of a file and the offset they start at, read as the
+/// bridge's transcript readers do. `Ok(None)` when the path cannot be stat'ed
+/// (`!existsSync(path)`: the readers return null without logging); any later
+/// failure, such as reading a directory, is an error the readers log. The
+/// buffer is `min(max, size)` zeroed bytes filled from `size - len`, so a file
+/// that shrinks between the stat and the read leaves the rest zeroed, as
+/// Node's `readSync` does.
+pub fn read_tail(path: &str, max: u64) -> io::Result<Option<(Vec<u8>, u64)>> {
+    let Ok(meta) = fs::metadata(path) else {
+        return Ok(None);
+    };
+    let size = meta.len();
     let mut file = fs::File::open(path)?;
-    let size = file.metadata()?.len();
     let len = max.min(size);
     let offset = size - len;
     let mut buf = vec![0u8; len as usize];
@@ -77,13 +83,15 @@ pub fn read_tail(path: &str, max: u64) -> io::Result<(Vec<u8>, u64)> {
             n => filled += n,
         }
     }
-    Ok((buf, offset))
+    Ok(Some((buf, offset)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testenv;
 
+    /// Every test here reads std::env::temp_dir, so it holds the env lock.
     fn temp_dir(tag: &str) -> String {
         let dir = std::env::temp_dir().join(format!("wmux-fsx-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -93,6 +101,7 @@ mod tests {
 
     #[test]
     fn ensure_dir_creates_parents_with_the_mode() {
+        let _env = testenv::lock();
         let root = temp_dir("dir");
         let dir = format!("{root}/a/b");
         ensure_dir(&dir, 0o700);
@@ -109,6 +118,7 @@ mod tests {
 
     #[test]
     fn append_creates_then_appends() {
+        let _env = testenv::lock();
         let root = temp_dir("append");
         let file = format!("{root}/bridge.log");
         append(&file, b"one\n").unwrap();
@@ -119,6 +129,7 @@ mod tests {
 
     #[test]
     fn write_file_sets_the_mode_on_create_only() {
+        let _env = testenv::lock();
         let root = temp_dir("write");
         let file = format!("{root}/stamp");
         write_file(&file, b"abc", 0o600).unwrap();
@@ -134,6 +145,7 @@ mod tests {
 
     #[test]
     fn rotation_happens_only_past_the_cap_and_replaces_the_old_generation() {
+        let _env = testenv::lock();
         let root = temp_dir("rotate");
         let file = format!("{root}/bridge.log");
         fs::write(&file, b"12345").unwrap();
@@ -149,6 +161,7 @@ mod tests {
 
     #[test]
     fn mtime_follows_the_file() {
+        let _env = testenv::lock();
         let root = temp_dir("mtime");
         let file = format!("{root}/stamp");
         fs::write(&file, b"").unwrap();
@@ -167,12 +180,16 @@ mod tests {
 
     #[test]
     fn read_tail_returns_the_end_and_its_offset() {
+        let _env = testenv::lock();
         let root = temp_dir("tail");
         let file = format!("{root}/t.jsonl");
         fs::write(&file, b"0123456789").unwrap();
-        assert_eq!(read_tail(&file, 4).unwrap(), (b"6789".to_vec(), 6));
-        assert_eq!(read_tail(&file, 64).unwrap(), (b"0123456789".to_vec(), 0));
-        assert!(read_tail(&format!("{root}/missing"), 4).is_err());
+        assert_eq!(read_tail(&file, 4).unwrap(), Some((b"6789".to_vec(), 6)));
+        assert_eq!(read_tail(&file, 64).unwrap(), Some((b"0123456789".to_vec(), 0)));
+        // A missing transcript is no transcript: null, nothing logged.
+        assert_eq!(read_tail(&format!("{root}/missing"), 4).unwrap(), None);
+        // One that exists but cannot be read is an error the reader logs.
+        assert!(read_tail(&root, 4).is_err());
         fs::remove_dir_all(root).unwrap();
     }
 }

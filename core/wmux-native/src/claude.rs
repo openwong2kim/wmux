@@ -1,8 +1,8 @@
 //! Core of the Claude hook bridge, integrations/claude/bin/wmux-bridge.mjs:
-//! its walk policies, endpoint and token resolution, stdin parsing and
-//! bridge.log. The characterisation cases in
-//! integrations/claude/__tests__/fixtures/claude-hook/cases pin this
-//! behaviour; each test below names the cases it mirrors.
+//! its walk policies, target resolution, stdin parsing and bridge.log.
+//! The characterisation cases in #3134 pin this behaviour; they live in
+//! integrations/claude/__tests__/fixtures/claude-hook/cases, and each test
+//! below names the cases it mirrors.
 //!
 //! Nothing here is reachable from the command line yet: the `claude-hook`
 //! subcommand that drives it lands with the lifecycle.
@@ -11,17 +11,20 @@ use crate::fsx;
 use crate::hook::{iso_time, now_ms};
 use crate::js::{self, decode_utf8_trimmed, JsStr, Json};
 use crate::paths;
-use crate::rpc::{Target, WalkPolicy, HOOK_TIMEOUT};
+use crate::rpc::{Target, WalkPolicy};
+use crate::targets;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+// Literals of wmux-bridge.mjs; `constants_match_the_bridge` reads them back.
 /// BRIDGE_VERSION, stamped on every bridge.log line.
 pub const BRIDGE_VERSION: &str = "0.8.1";
-const BRIDGE_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+/// HOOK_TIMEOUT_MS: the whole walk's budget.
+const HOOK_TIMEOUT: Duration = Duration::from_millis(2000);
 /// GATE_PERMISSION_TIMEOUT_MS: longer than the daemon's own gate deadline.
 const GATE_PERMISSION_TIMEOUT: Duration = Duration::from_millis(130_000);
-const MAIN_METHOD: &str = "hooks.signal";
-const DAEMON_METHOD: &str = "daemon.hooks.signal";
+/// BRIDGE_LOG_MAX_BYTES.
+const BRIDGE_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 /// sendToTargets in wmux-bridge.mjs: one deadline shared by every target,
 /// never sliced, and a request that was written is never sent elsewhere.
@@ -37,49 +40,37 @@ pub const PERMISSION_GATE_POLICY: WalkPolicy = WalkPolicy {
     ..CLAUDE_POLICY
 };
 
-/// resolveTargets. WMUX_PIPE_NAME collapses the walk to that one pipe,
-/// addressed to the daemon, or to main in gate and context mode (whose token
-/// is then tried first). Otherwise the daemon (unless in gate/context mode or
-/// WMUX_HOOKS_TO_MAIN=1), then main; a target without a token is left out.
+/// resolveTargets. Without an override: the daemon then main, except in gate
+/// and context mode, which talk to main only (the daemon has no brain lane).
+/// WMUX_PIPE_NAME collapses the walk to that one pipe, addressed by mode:
+/// to the daemon with the daemon's token first, or in gate and context mode
+/// to main with main's token first.
 pub fn resolve_targets(gate_mode: bool) -> Vec<Target> {
-    let main_token = || paths::read_token_file(&paths::auth_token_path());
-    let daemon_token = || paths::read_token_file(&paths::daemon_auth_token_path());
-    if let Some(pipe) = paths::env("WMUX_PIPE_NAME").filter(|p| !p.is_empty()) {
-        let (name, method, token) = if gate_mode {
-            ("main", MAIN_METHOD, main_token().or_else(daemon_token))
-        } else {
-            ("daemon", DAEMON_METHOD, daemon_token().or_else(main_token))
-        };
-        return token
-            .map(|token| Target {
-                name,
-                pipe,
-                token,
-                method,
-            })
-            .into_iter()
-            .collect();
-    }
-    let mut targets = Vec::new();
-    if !gate_mode && paths::env("WMUX_HOOKS_TO_MAIN").as_deref() != Some("1") {
-        if let Some(token) = daemon_token() {
-            targets.push(Target {
-                name: "daemon",
-                pipe: paths::daemon_pipe_name(),
-                token,
-                method: DAEMON_METHOD,
-            });
-        }
-    }
-    if let Some(token) = main_token() {
-        targets.push(Target {
-            name: "main",
-            pipe: paths::main_pipe_name(),
+    let Some(pipe) = targets::pipe_override() else {
+        return targets::default_walk(!gate_mode);
+    };
+    let (name, method, token) = if gate_mode {
+        (
+            "main",
+            targets::MAIN_METHOD,
+            targets::main_token().or_else(targets::daemon_token),
+        )
+    } else {
+        (
+            "daemon",
+            targets::DAEMON_METHOD,
+            targets::daemon_token().or_else(targets::main_token),
+        )
+    };
+    token
+        .map(|token| Target {
+            name,
+            pipe,
             token,
-            method: MAIN_METHOD,
-        });
-    }
-    targets
+            method,
+        })
+        .into_iter()
+        .collect()
 }
 
 /// readStdin's parse: lossy UTF-8, JS trim (a BOM goes, U+0085 stays), then
@@ -93,10 +84,11 @@ pub fn parse_stdin(bytes: &[u8]) -> Result<Option<Json>, ()> {
     js::parse(&text).map(Some)
 }
 
-/// One bridge.log line: `{ts, bridge, pid, hook, outcome, ...extra}`. A key in
-/// `extra` that is already there keeps its place and takes the new value, as
-/// object spread does; `None` is `undefined`, which JSON.stringify leaves out.
-/// `hook` is the event argument, `"?"` when there is none.
+/// One bridge.log line: `JSON.stringify({ts, bridge, pid, hook, outcome,
+/// ...extra})`. A key in `extra` that is already there keeps its place and
+/// takes the new value, as object spread does; `None` is `undefined`, which
+/// JSON.stringify leaves out. The object is stringified as V8 orders it
+/// (index-like keys first). `hook` is the event argument, `"?"` when absent.
 pub fn log_line(ts_ms: u64, pid: u32, hook: Option<&[u16]>, outcome: &str, extra: Vec<(&str, Option<Json>)>) -> String {
     let mut fields: Vec<(&str, Option<Json>)> = vec![
         ("ts", Some(Json::Str(js::js(&iso_time(ts_ms))))),
@@ -114,16 +106,14 @@ pub fn log_line(ts_ms: u64, pid: u32, hook: Option<&[u16]>, outcome: &str, extra
             None => fields.push((key, value)),
         }
     }
-    let mut line = String::from("{");
-    for (key, value) in fields.iter().filter_map(|(k, v)| v.as_ref().map(|v| (k, v))) {
-        if line.len() > 1 {
-            line.push(',');
-        }
-        js::quote_str(key, &mut line);
-        line.push(':');
-        js::stringify(value, &mut line);
-    }
-    line.push('}');
+    let object = Json::Obj(
+        fields
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|v| (js::js(k), v)))
+            .collect(),
+    );
+    let mut line = String::new();
+    js::stringify(&object, &mut line);
     line
 }
 
@@ -134,14 +124,19 @@ static LOG_ROTATION_CHECKED: AtomicBool = AtomicBool::new(false);
 /// Best-effort: nothing here fails the hook.
 pub fn log_event(hook: Option<&JsStr>, outcome: &str, extra: Vec<(&str, Option<Json>)>) {
     let line = log_line(now_ms(), std::process::id(), hook.map(Vec::as_slice), outcome, extra);
-    write_log(&paths::wmux_home_dir(), &line, &LOG_ROTATION_CHECKED);
+    write_log(
+        &paths::wmux_home_dir(),
+        &line,
+        &LOG_ROTATION_CHECKED,
+        BRIDGE_LOG_MAX_BYTES,
+    );
 }
 
-fn write_log(dir: &str, line: &str, rotation_checked: &AtomicBool) {
+fn write_log(dir: &str, line: &str, rotation_checked: &AtomicBool, max_bytes: u64) {
     fsx::ensure_dir(dir, 0o700);
     let path = paths::join(&[dir, "bridge.log"]);
     if !rotation_checked.swap(true, Ordering::Relaxed) {
-        fsx::rotate_if_over(&path, BRIDGE_LOG_MAX_BYTES);
+        fsx::rotate_if_over(&path, max_bytes);
     }
     let _ = fsx::append(&path, format!("{line}\n").as_bytes());
 }
@@ -150,7 +145,43 @@ fn write_log(dir: &str, line: &str, rotation_checked: &AtomicBool) {
 mod tests {
     use super::*;
     use crate::js::js;
-    use std::sync::Mutex;
+    use crate::targets::{DAEMON_METHOD, MAIN_METHOD};
+    use crate::testenv;
+
+    // ----- lockstep with the bridge ------------------------------------------
+
+    /// The right-hand side of `const <name> = …;` in wmux-bridge.mjs, which
+    /// must declare it exactly once at the start of a line.
+    fn bridge_literal(name: &str) -> String {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../integrations/claude/bin/wmux-bridge.mjs"
+        );
+        let source = std::fs::read_to_string(path).expect("wmux-bridge.mjs");
+        let prefix = format!("const {name} = ");
+        let found: Vec<&str> = source.lines().filter_map(|l| l.strip_prefix(&prefix)).collect();
+        assert_eq!(found.len(), 1, "{name} is declared {} times", found.len());
+        found[0].split(';').next().unwrap().trim().to_string()
+    }
+
+    /// `2000`, `130_000` or `5 * 1024 * 1024`.
+    fn bridge_number(name: &str) -> u64 {
+        bridge_literal(name)
+            .split('*')
+            .map(|part| part.trim().replace('_', "").parse::<u64>().expect(name))
+            .product()
+    }
+
+    #[test]
+    fn constants_match_the_bridge() {
+        assert_eq!(bridge_literal("BRIDGE_VERSION"), format!("'{BRIDGE_VERSION}'"));
+        assert_eq!(bridge_number("HOOK_TIMEOUT_MS"), HOOK_TIMEOUT.as_millis() as u64);
+        assert_eq!(
+            bridge_number("GATE_PERMISSION_TIMEOUT_MS"),
+            GATE_PERMISSION_TIMEOUT.as_millis() as u64
+        );
+        assert_eq!(bridge_number("BRIDGE_LOG_MAX_BYTES"), BRIDGE_LOG_MAX_BYTES);
+    }
 
     // ----- stdin -------------------------------------------------------------
 
@@ -261,12 +292,29 @@ mod tests {
     }
 
     #[test]
+    fn log_keys_are_ordered_as_v8_orders_them() {
+        // JSON.stringify puts array-index keys first, ascending.
+        let line = log_line(
+            0,
+            1,
+            Some(&js("Stop")),
+            "x",
+            vec![("9", Some(Json::Num(9.0))), ("1", Some(Json::Num(1.0)))],
+        );
+        assert_eq!(
+            line,
+            r#"{"1":1,"9":9,"ts":"1970-01-01T00:00:00.000Z","bridge":"0.8.1","pid":1,"hook":"Stop","outcome":"x"}"#
+        );
+    }
+
+    #[test]
     fn the_log_is_created_appended_and_rotated_once() {
+        let _env = testenv::lock();
         let root = std::env::temp_dir().join(format!("wmux-claude-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let dir = root.join(".wmux-x").to_string_lossy().into_owned();
         let checked = AtomicBool::new(false);
-        write_log(&dir, "{\"a\":1}", &checked);
+        write_log(&dir, "{\"a\":1}", &checked, 16);
         let log = paths::join(&[&dir, "bridge.log"]);
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "{\"a\":1}\n");
         #[cfg(unix)]
@@ -275,41 +323,40 @@ mod tests {
             assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
         }
         // Past the cap, but this process already checked: no rotation.
-        std::fs::write(&log, vec![b'x'; BRIDGE_LOG_MAX_BYTES as usize + 1]).unwrap();
-        write_log(&dir, "{}", &checked);
+        std::fs::write(&log, b"0123456789abcdefg").unwrap();
+        write_log(&dir, "{}", &checked, 16);
         assert!(!std::path::Path::new(&format!("{log}.1")).exists());
         // A fresh process rotates first, then starts the new file.
-        write_log(&dir, "{\"b\":2}", &AtomicBool::new(false));
+        write_log(&dir, "{\"b\":2}", &AtomicBool::new(false), 16);
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "{\"b\":2}\n");
         assert_eq!(
-            std::fs::metadata(format!("{log}.1")).unwrap().len(),
-            BRIDGE_LOG_MAX_BYTES + 4
+            std::fs::read_to_string(format!("{log}.1")).unwrap(),
+            "0123456789abcdefg{}\n"
         );
         std::fs::remove_dir_all(root).unwrap();
     }
 
     // ----- targets -----------------------------------------------------------
 
-    /// These tests set process env; they hold this lock, and no other test in
-    /// the crate reads the variables they set.
-    static ENV: Mutex<()> = Mutex::new(());
-
-    struct Sandbox {
-        root: std::path::PathBuf,
-        home: String,
-        wmux: String,
-    }
-
-    const VARS: [&str; 6] = [
+    const VARS: [&str; 5] = [
         "HOME",
         "USERPROFILE",
         "WMUX_DATA_SUFFIX",
         "WMUX_PIPE_NAME",
         "WMUX_HOOKS_TO_MAIN",
-        "X_UNUSED",
     ];
 
+    /// A home with the given tokens, the env pointed at it; the env is put
+    /// back exactly as it was on drop. Hold `testenv::lock()` around it.
+    struct Sandbox {
+        root: std::path::PathBuf,
+        home: String,
+        wmux: String,
+        _saved: testenv::SavedEnv,
+    }
+
     fn sandbox(tag: &str, daemon: Option<&str>, main: Option<&str>) -> Sandbox {
+        let saved = testenv::SavedEnv::new(&VARS);
         let root = std::env::temp_dir().join(format!("wch-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let home = root.join("home");
@@ -331,14 +378,12 @@ mod tests {
             root,
             home: home.to_string_lossy().into_owned(),
             wmux: wmux.to_string_lossy().into_owned(),
+            _saved: saved,
         }
     }
 
     impl Drop for Sandbox {
         fn drop(&mut self) {
-            for var in VARS {
-                std::env::remove_var(var);
-            }
             let _ = std::fs::remove_dir_all(&self.root);
         }
     }
@@ -350,15 +395,27 @@ mod tests {
             .collect()
     }
 
+    /// The main pipe for a home, written out rather than derived.
+    fn main_pipe(home: &str) -> String {
+        #[cfg(windows)]
+        {
+            let _ = home;
+            format!(r"\\.\pipe\wmux-t-{}", paths::username())
+        }
+        #[cfg(not(windows))]
+        {
+            format!("{home}/.wmux-t.sock")
+        }
+    }
+
     #[test]
     fn the_walk_is_daemon_then_main_each_with_its_token() {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = testenv::lock();
         let sb = sandbox("walk", Some(" daemon-token\n"), Some("main-token"));
         std::fs::write(paths::join(&[&sb.wmux, "daemon-pipe"]), "/run/d.sock\n").unwrap();
         // walk-daemon-full-envelope, walk-daemon-absent-advances
-        let targets = resolve_targets(false);
         assert_eq!(
-            summary(&targets),
+            summary(&resolve_targets(false)),
             vec![
                 (
                     "daemon".into(),
@@ -370,7 +427,7 @@ mod tests {
                     "main".into(),
                     MAIN_METHOD.into(),
                     "main-token".into(),
-                    paths::main_pipe_name()
+                    main_pipe(&sb.home)
                 ),
             ]
         );
@@ -382,9 +439,19 @@ mod tests {
         assert_eq!(resolve_targets(true)[0].name, "main");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_home_puts_the_main_socket_in_tmp() {
+        let _env = testenv::lock();
+        let _sb = sandbox("tmp", None, Some("main-token"));
+        // os.homedir() is '' when HOME is set but empty: `homedir() || '/tmp'`.
+        std::env::set_var("HOME", "");
+        assert_eq!(resolve_targets(false)[0].pipe, "/tmp/.wmux-t.sock");
+    }
+
     #[test]
     fn tokens_must_exist_and_not_be_blank() {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = testenv::lock();
         // walk-empty-token-is-absent
         let sb = sandbox("blank", Some(" \n"), Some("main-token"));
         assert_eq!(summary(&resolve_targets(false)).len(), 1);
@@ -397,7 +464,7 @@ mod tests {
 
     #[test]
     fn the_pipe_override_is_one_target_addressed_by_mode() {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = testenv::lock();
         let _sb = sandbox("override", Some("daemon-token"), Some("main-token"));
         std::env::set_var("WMUX_PIPE_NAME", "/run/o.sock");
         // walk-pipe-override
@@ -427,25 +494,26 @@ mod tests {
 
     #[test]
     fn the_override_falls_back_to_the_other_token() {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = testenv::lock();
         // walk-pipe-override-daemon-token-fallback
         let sb = sandbox("fallback", Some("daemon-token"), None);
         std::env::set_var("WMUX_PIPE_NAME", "/run/o.sock");
         assert_eq!(resolve_targets(true)[0].token, "daemon-token");
         drop(sb);
-        let _sb = sandbox("fallback2", None, Some("main-token"));
+        let sb = sandbox("fallback2", None, Some("main-token"));
         std::env::set_var("WMUX_PIPE_NAME", "/run/o.sock");
         assert_eq!(resolve_targets(false)[0].token, "main-token");
         assert_eq!(resolve_targets(false)[0].name, "daemon");
+        drop(sb);
         // walk-pipe-override-no-token
-        let _none = sandbox("fallback3", None, None);
+        let _sb = sandbox("fallback3", None, None);
         std::env::set_var("WMUX_PIPE_NAME", "/run/o.sock");
         assert!(resolve_targets(false).is_empty());
     }
 
     #[test]
     fn userprofile_wins_for_files_and_homedir_names_the_main_socket() {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = testenv::lock();
         let sb = sandbox("homes", Some("daemon-token"), Some("main-token"));
         let alt = sb.root.join("alt");
         std::fs::create_dir_all(alt.join(".wmux-t")).unwrap();
@@ -457,9 +525,8 @@ mod tests {
         assert_eq!(targets[0].token, "daemon-token");
         assert_eq!(targets[1].token, "main-token");
         assert_eq!(paths::wmux_home_dir(), sb.wmux);
-        if cfg!(unix) {
-            assert_eq!(targets[1].pipe, alt.join(".wmux-t.sock").to_string_lossy());
-        }
+        #[cfg(unix)]
+        assert_eq!(targets[1].pipe, format!("{}/.wmux-t.sock", alt.to_string_lossy()));
         // home-userprofile-empty-uses-home, home-userprofile-unset-uses-home
         std::env::set_var("HOME", &sb.home);
         std::env::set_var("USERPROFILE", "");
@@ -470,15 +537,14 @@ mod tests {
 
     #[test]
     fn the_daemon_hint_is_trimmed_and_else_derived() {
-        let _env = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = testenv::lock();
         let sb = sandbox("hint", Some("daemon-token"), None);
         let hint = paths::join(&[&sb.wmux, "daemon-pipe"]);
         // daemon-hint-absent-derived
-        let derived = if cfg!(windows) {
-            format!(r"\\.\pipe\wmux-daemon-t-{}", paths::username())
-        } else {
-            paths::join(&[&sb.wmux, "daemon.sock"])
-        };
+        #[cfg(windows)]
+        let derived = format!(r"\\.\pipe\wmux-daemon-t-{}", paths::username());
+        #[cfg(not(windows))]
+        let derived = format!("{}/daemon.sock", sb.wmux);
         assert_eq!(resolve_targets(false)[0].pipe, derived);
         // daemon-hint-crlf, daemon-hint-blanks
         std::fs::write(&hint, "/run/d.sock\r\n").unwrap();
@@ -494,8 +560,8 @@ mod tests {
 
     #[test]
     fn the_policies_match_the_bridge() {
-        assert_eq!(CLAUDE_POLICY.budget, Duration::from_millis(2000));
-        assert_eq!(PERMISSION_GATE_POLICY.budget, Duration::from_millis(130_000));
+        assert_eq!(CLAUDE_POLICY.budget, HOOK_TIMEOUT);
+        assert_eq!(PERMISSION_GATE_POLICY.budget, GATE_PERMISSION_TIMEOUT);
         const { assert!(!CLAUDE_POLICY.slice_per_target && !PERMISSION_GATE_POLICY.slice_per_target) };
         assert!(CLAUDE_POLICY.resend_after_write.is_empty());
         // walk-close-after-write-stops, walk-reply-retryable-false-stops:

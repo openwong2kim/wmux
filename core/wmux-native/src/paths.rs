@@ -75,22 +75,22 @@ pub fn daemon_auth_token_path() -> String {
     join(&[&wmux_home_dir(), "daemon-auth-token"])
 }
 
-pub fn pipe_name() -> String {
-    env_nonempty("WMUX_PIPE_NAME").unwrap_or_else(main_pipe_name)
-}
-
-/// The main pipe's derived name, ignoring WMUX_PIPE_NAME (getPipeName in
-/// wmux-bridge.mjs, whose override is decided by the caller). On POSIX it
+/// The main pipe's derived name (getPipeName in both bridges; WMUX_PIPE_NAME
+/// is decided by each bridge's target walk before this is asked). On POSIX it
 /// lives under `os.homedir()`, not under USERPROFILE || HOME.
 pub fn main_pipe_name() -> String {
-    if cfg!(windows) {
-        return format!(r"\\.\pipe\wmux{}-{}", data_suffix(), username());
+    #[cfg(windows)]
+    {
+        format!(r"\\.\pipe\wmux{}-{}", data_suffix(), username())
     }
-    let home = os_homedir();
-    join(&[
-        if home.is_empty() { "/tmp" } else { &home },
-        &format!(".wmux{}.sock", data_suffix()),
-    ])
+    #[cfg(not(windows))]
+    {
+        let home = os_homedir();
+        join(&[
+            if home.is_empty() { "/tmp" } else { &home },
+            &format!(".wmux{}.sock", data_suffix()),
+        ])
+    }
 }
 
 /// The daemon's own `daemon-pipe` hint first (the name it actually bound),
@@ -102,10 +102,14 @@ pub fn daemon_pipe_name() -> String {
             return hint;
         }
     }
-    if cfg!(windows) {
-        return format!(r"\\.\pipe\wmux-daemon{}-{}", data_suffix(), username());
+    #[cfg(windows)]
+    {
+        format!(r"\\.\pipe\wmux-daemon{}-{}", data_suffix(), username())
     }
-    join(&[&wmux_home_dir(), "daemon.sock"])
+    #[cfg(not(windows))]
+    {
+        join(&[&wmux_home_dir(), "daemon.sock"])
+    }
 }
 
 /// A token file's trimmed content, or None when absent, unreadable or blank.
@@ -135,11 +139,6 @@ pub fn username() -> String {
     } else {
         name
     }
-}
-
-#[cfg(not(windows))]
-pub fn username() -> String {
-    unreachable!("the username only names a Windows pipe")
 }
 
 /// `path.join` for the host platform.
