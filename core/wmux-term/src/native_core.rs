@@ -1181,10 +1181,10 @@ impl Task for KillPty {
 }
 
 #[derive(Clone)]
-struct GeometryMark {
-    at: u64,
-    cols: u32,
-    rows: u32,
+pub(crate) struct GeometryMark {
+    pub at: u64,
+    pub cols: u32,
+    pub rows: u32,
 }
 
 #[napi(object)]

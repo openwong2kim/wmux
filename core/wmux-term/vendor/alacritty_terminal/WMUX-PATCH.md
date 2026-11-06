@@ -25,7 +25,8 @@ Local changes:
 - `src/grid/storage.rs` adds `initialize_up_to` and `grow_visible_lines_up_to`,
   which never allocate more rows than the grid can hold; `src/grid/mod.rs` uses
   the first where history grows and `src/grid/resize.rs` the second where a
-  taller resize adds screen rows.
+  taller resize adds screen rows. The uncapped `initialize` and
+  `grow_visible_lines` remain for upstream's own tests only.
   Upstream grows by at least 1,000 rows, so a 300-row history allocated as much
   as a 1,000-row one (live screens keep 300). It also adds read-only
   `allocated_cells`/`allocated_rows` (and `Grid::allocated`) for memory

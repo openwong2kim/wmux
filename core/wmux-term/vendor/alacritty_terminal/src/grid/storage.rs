@@ -77,6 +77,7 @@ impl<T> Storage<T> {
 
     /// Increase the number of lines in the buffer.
     #[inline]
+    #[cfg(test)]
     pub fn grow_visible_lines(&mut self, next: usize)
     where
         T: Default,
@@ -131,6 +132,7 @@ impl<T> Storage<T> {
     }
 
     /// Dynamically grow the storage buffer at runtime.
+    #[cfg(test)]
     #[inline]
     pub fn initialize(&mut self, additional_rows: usize, columns: usize)
     where
