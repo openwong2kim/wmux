@@ -15,6 +15,12 @@
 //! recorded as taint and parsing goes on. Wired to nothing yet
 //! (live-screen-v1); the native ring re-created on wake from hibernation
 //! counts from 0 again, so a screen belongs to one ring object.
+//!
+//! The seed's lead (the caller's mode preamble and unknown-cell fill) must
+//! be finished and plain: no unfinished sequence, string or character at its
+//! end, and no control a replay refuses. A seed refuses any other lead before
+//! feeding anything, so no parser state of the lead runs into the ring's
+//! bytes and no taint points into the lead.
 
 use crate::native_core::{
     buffer_type, resize_like_xterm, text_rows, NativeRing, NativeTextRow, RingRange, Size, Taint,
@@ -76,6 +82,26 @@ fn check_size(cols: u32, rows: u32, history: u32) -> std::result::Result<Size, &
     })
 }
 
+/// See the module header: a lead that ends inside anything, or holds a
+/// control a replay refuses, is refused. Read on a throwaway terminal.
+fn check_lead(lead: &[u8]) -> std::result::Result<(), &'static str> {
+    if lead.is_empty() {
+        return Ok(());
+    }
+    let config = Config {
+        scrolling_history: 0,
+        ..Config::default()
+    };
+    let mut term = Term::new(config, &Size { cols: 2, rows: 1 }, VoidListener);
+    let mut parser = Processor::new();
+    let mut feed = XtermFeed::live(0);
+    feed.feed(&mut parser, &mut term, lead);
+    if feed.held_len() > 0 || feed.in_string() || feed.taint().is_some() {
+        return Err("Live screen lead must be finished and hold no control a replay refuses");
+    }
+    Ok(())
+}
+
 impl Screen {
     pub(crate) fn new(
         cols: u32,
@@ -114,6 +140,7 @@ impl Screen {
         if self.seeded {
             return Err("Live screen already seeded");
         }
+        check_lead(lead)?;
         let start = ring.start();
         // The geometry a replay of the whole ring uses (readAllWithGeometry):
         // its first mark from the oldest byte, wherever that mark is.
@@ -765,6 +792,18 @@ mod tests {
         assert_eq!(screen.size(), (5, 3));
         assert_eq!(texts(&screen), ["    Z"]);
         assert_eq!(screen.taint(), None);
+    }
+
+    #[test]
+    fn a_lead_that_would_run_into_the_ring_is_refused() {
+        for lead in [&b"\x1b]0;title"[..], b"\x1b[", b"\x1b(0", b"ok\x1b"] {
+            let mut r = ring();
+            r.write_bytes(b"abc").unwrap();
+            let mut screen = Screen::new(10, 3, 10).unwrap();
+            assert!(screen.seed(&r, lead).is_err(), "{lead:?}");
+            assert!(texts(&screen).is_empty(), "{lead:?}: nothing fed");
+            assert!(screen.read(&r).is_err(), "{lead:?}: not seeded");
+        }
     }
 
     // ---- live == a fresh replay with the same seed, depth and geometry ----

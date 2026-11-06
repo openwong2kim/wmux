@@ -386,6 +386,11 @@ impl XtermFeed {
         self.held.len()
     }
 
+    /// The stream so far ends inside a string (OSC, DCS, SOS, PM, APC).
+    pub(crate) fn in_string(&self) -> bool {
+        self.in_string
+    }
+
     fn push_tail(&mut self, bytes: &[u8]) {
         for &b in bytes {
             if self.tail_overflow {
