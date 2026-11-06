@@ -238,6 +238,23 @@ struct XtermFeed {
     shifted: bool,
     /// A control Alacritty parses differently from xterm.
     divergent: bool,
+    /// A live screen's feed (NativeLiveScreen): mode 2026 is stripped, so the
+    /// parser never holds bytes back, and taint is recorded.
+    live: bool,
+    /// Mode 2026 as the stream sets it (a live feed never passes it on).
+    sync_mode: bool,
+    /// Lifetime offset of the next byte fed.
+    offset: u64,
+    /// The first reason this grid can't match xterm's.
+    taint: Option<Taint>,
+}
+
+/// Why a grid can't match xterm's, and the lifetime offset of the byte
+/// (or the resize) where that started. Chunking doesn't move it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Taint {
+    pub reason: &'static str,
+    pub at: u64,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -264,6 +281,37 @@ fn is_rep(sequence: &[u8]) -> bool {
         .is_some_and(|params| params.iter().all(|&b| b.is_ascii_digit() || b == b';'))
 }
 
+/// A DECSET or DECRST naming mode 2026, without it: `?25;2026h` becomes
+/// `?25h`, and a sequence naming nothing else becomes nothing. Modes read by
+/// number, as xterm reads them. C0 controls inside the sequence execute
+/// before its dispatch, so they come first. None for any other sequence.
+fn without_sync(sequence: &[u8]) -> Option<Vec<u8>> {
+    let body = sequence.strip_prefix(b"\x1b[?")?;
+    let mut out: Vec<u8> = body.iter().copied().filter(|&b| b < 0x20).collect();
+    let body: Vec<u8> = body.iter().copied().filter(|&b| b >= 0x20).collect();
+    let (&last, params) = body.split_last()?;
+    if !matches!(last, b'h' | b'l') || !params.iter().all(|&b| b.is_ascii_digit() || b == b';') {
+        return None;
+    }
+    let is_sync = |mode: &&[u8]| {
+        std::str::from_utf8(mode)
+            .ok()
+            .and_then(|m| m.parse::<u16>().ok())
+            == Some(2026)
+    };
+    let modes: Vec<&[u8]> = params.split(|&b| b == b';').collect();
+    if !modes.iter().any(is_sync) {
+        return None;
+    }
+    let kept: Vec<&[u8]> = modes.into_iter().filter(|m| !is_sync(m)).collect();
+    if !kept.is_empty() {
+        out.extend_from_slice(b"\x1b[?");
+        out.extend_from_slice(&kept.join(&b';'));
+        out.push(last);
+    }
+    Some(out)
+}
+
 /// String terminators as PartialSequenceTracker reads them: BEL, CAN, SUB,
 /// and ESC (ST, or an abort that starts a new sequence).
 fn string_end(data: &[u8]) -> Option<usize> {
@@ -272,6 +320,32 @@ fn string_end(data: &[u8]) -> Option<usize> {
 }
 
 impl XtermFeed {
+    /// The feed of a live screen, whose next byte is at lifetime `offset`.
+    pub(crate) fn live(offset: u64) -> Self {
+        Self {
+            live: true,
+            offset,
+            ..Self::default()
+        }
+    }
+
+    /// A control Alacritty parses differently, at lifetime offset `at`.
+    fn diverge(&mut self, at: u64) {
+        self.divergent = true;
+        self.taint.get_or_insert(Taint {
+            reason: "divergent-control",
+            at,
+        });
+    }
+
+    /// A resize at lifetime offset `at` scrolled rows xterm keeps on screen.
+    pub(crate) fn note_reflow(&mut self, at: u64) {
+        self.taint.get_or_insert(Taint {
+            reason: "reflow",
+            at,
+        });
+    }
+
     fn push_tail(&mut self, bytes: &[u8]) {
         for &b in bytes {
             if self.tail_overflow {
@@ -365,6 +439,7 @@ impl XtermFeed {
                 for mode in modes {
                     match mode {
                         Some(25) => self.cursor_hidden = !set,
+                        Some(2026) => self.sync_mode = set,
                         Some(1016) => self.sgr_pixels = set,
                         Some(1006) => self.sgr_mouse = set,
                         Some(protocol @ (9 | 1000 | 1002 | 1003)) => {
@@ -381,8 +456,13 @@ impl XtermFeed {
     /// sequence at the end waits in `held` for the bytes that complete it.
     fn feed(&mut self, parser: &mut Processor, term: &mut Term<VoidListener>, bytes: &[u8]) {
         let mut data = std::mem::take(&mut self.held);
+        // Held bytes were counted when they first came.
+        let start = self.offset - data.len() as u64;
+        self.offset += bytes.len() as u64;
         data.extend_from_slice(bytes);
-        self.divergent |= crate::native_serialize::has_c1(&data);
+        if let Some(at) = crate::native_serialize::c1_at(&data) {
+            self.diverge(start + at as u64);
+        }
         let mut from = 0;
         let mut next = if self.in_string {
             self.string_payload(&mut data, 0)
@@ -407,7 +487,7 @@ impl XtermFeed {
                 if data.len() - at <= MAX_HELD {
                     self.held = data.split_off(at);
                 } else {
-                    self.divergent = true;
+                    self.diverge(start + at as u64);
                 }
                 break;
             };
@@ -439,9 +519,17 @@ impl XtermFeed {
             } else {
                 // xterm forgets the preceding character at any control;
                 // Alacritty repeats whatever was printed last.
-                self.divergent |=
-                    crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
+                if crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed) {
+                    self.diverge(start + at as u64);
+                }
                 self.track(sequence);
+                // A live screen can't stop a synchronized update on a read
+                // without touching the parser, so its parser never enters one.
+                if let Some(replacement) = without_sync(sequence).filter(|_| self.live) {
+                    parser.advance(term, &data[from..at]);
+                    parser.advance(term, &replacement);
+                    from = at + len;
+                }
                 next = Some(at + len);
             }
             printed = false;
@@ -492,6 +580,35 @@ fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: 
     if synchronized {
         parser.advance(term, b"\x1b[?2026h");
     }
+}
+
+/// Resize as xterm would see it; returns whether the resize scrolled rows
+/// xterm keeps on screen (then the grid can't match xterm's).
+fn resize_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, size: Size) -> bool {
+    // Rows a narrower reflow adds above the cursor go into Alacritty's
+    // history even with room below; xterm moves the cursor down instead.
+    let before = |term: &Term<VoidListener>| {
+        [term.grid(), term.inactive_grid()].map(|grid| {
+            let room = grid.cursor.point.line.0 + 1 < grid.screen_lines() as i32;
+            (grid.history_size(), room)
+        })
+    };
+    // vte holds bytes back inside a synchronized update; xterm parsed them
+    // at the old size. Apply them first, then re-enter the update.
+    let synchronized = parser.sync_timeout().pending_timeout();
+    if synchronized {
+        parser.stop_sync(term);
+    }
+    let start = before(term);
+    term.resize(size);
+    let end = before(term);
+    if synchronized {
+        parser.advance(term, b"\x1b[?2026h");
+    }
+    start
+        .iter()
+        .zip(end.iter())
+        .any(|(&(history, room), &(after, _))| room && after > history)
 }
 
 #[napi]
@@ -584,31 +701,7 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // Rows a narrower reflow adds above the cursor go into Alacritty's
-        // history even with room below; xterm moves the cursor down instead.
-        let before = |term: &Term<VoidListener>| {
-            [term.grid(), term.inactive_grid()].map(|grid| {
-                let room = grid.cursor.point.line.0 + 1 < grid.screen_lines() as i32;
-                (grid.history_size(), room)
-            })
-        };
-        // vte holds bytes back inside a synchronized update; xterm parsed them
-        // at the old size. Apply them first, then re-enter the update.
-        let synchronized = self.parser.sync_timeout().pending_timeout();
-        if synchronized {
-            self.parser.stop_sync(term);
-        }
-        let start = before(term);
-        term.resize(size);
-        let end = before(term);
-        if synchronized {
-            self.parser.advance(term, b"\x1b[?2026h");
-        }
-        if start
-            .iter()
-            .zip(end.iter())
-            .any(|(&(history, room), &(after, _))| room && after > history)
-        {
+        if resize_like_xterm(&mut self.parser, term, size) {
             self.refusal
                 .get_or_insert("unsupported-reflow: a resize scrolled rows xterm keeps on screen");
         }
@@ -1280,11 +1373,11 @@ impl NativeRing {
 
 #[cfg(test)]
 mod tests {
-    use super::{Size, XtermFeed};
+    use super::{resize_like_xterm, Size, Taint, XtermFeed};
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
-    use alacritty_terminal::term::{Config, Term};
+    use alacritty_terminal::term::{Config, Term, TermMode};
     use alacritty_terminal::vte::ansi::{Processor, Timeout};
 
     fn feed_with(chunks: &[&str]) -> (Term<VoidListener>, Processor, XtermFeed) {
@@ -1444,5 +1537,129 @@ mod tests {
         assert!(!pixels(&["\x1b[?1016h\x1b[?1016l"]));
         assert!(!pixels(&["\x1b[?1016h\x1bc"]));
         assert!(pixels(&["\x1b[?10", "16h"]), "split across chunks");
+    }
+
+    fn live_with(chunks: &[&str]) -> (Term<VoidListener>, Processor, XtermFeed) {
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut feed = XtermFeed::live(0);
+        for chunk in chunks {
+            feed.feed(&mut parser, &mut term, chunk.as_bytes());
+        }
+        (term, parser, feed)
+    }
+
+    #[test]
+    fn a_live_feed_strips_mode_2026_in_every_form() {
+        // (chunks, mode 2026 as the stream left it, top row)
+        let cases: &[(&[&str], bool, &str)] = &[
+            (&["a\x1b[?2026hb"], true, "ab"),
+            (&["a\x1b[?2026hb\x1b[?2026lc"], false, "abc"),
+            (&["a\x1b[?02026hb"], true, "ab"),
+            (&["a\x1b[?25;2026hb"], true, "ab"),
+            (&["a\x1b[?2026;1hb"], true, "ab"),
+            (&["a\x1b[?20", "26hb"], true, "ab"),
+            (&["a\x1b[", "?2026", "h", "b"], true, "ab"),
+            // The CR inside executes, as it does in both parsers.
+            (&["abc\x1b[?20\r26hX"], true, "Xbc"),
+        ];
+        for &(chunks, sync, top) in cases {
+            let (term, parser, feed) = live_with(chunks);
+            assert!(!parser.sync_timeout().pending_timeout(), "{chunks:?}");
+            assert_eq!(feed.sync_mode, sync, "{chunks:?}");
+            assert_eq!(row(&term, 0), top, "{chunks:?}");
+        }
+    }
+
+    #[test]
+    fn stripping_2026_keeps_the_other_modes_of_the_list() {
+        let (term, _, _) = live_with(&["\x1b[?25;2026l"]);
+        assert!(!term.mode().contains(TermMode::SHOW_CURSOR));
+        let (term, _, _) = live_with(&["\x1b[?25l", "\x1b[?2026;25h"]);
+        assert!(term.mode().contains(TermMode::SHOW_CURSOR));
+    }
+
+    #[test]
+    fn a_replay_feed_still_passes_2026_on() {
+        let (_, parser, feed) = feed_with(&["a\x1b[?2026hb"]);
+        assert!(parser.sync_timeout().pending_timeout());
+        assert!(feed.sync_mode);
+    }
+
+    #[test]
+    fn a_live_feed_leaves_the_grid_a_finished_update_would() {
+        let stream = ["a\x1b[?2026hb\r\n", "c\x1b[2Jd\x1b[3@e", "\x1b[?2026lf"];
+        let (live, _, _) = live_with(&stream);
+        let (mut replay, mut parser, _) = feed_with(&stream);
+        parser.stop_sync(&mut replay);
+        for line in 0..3 {
+            assert_eq!(row(&live, line), row(&replay, line), "line {line}");
+        }
+    }
+
+    #[test]
+    fn mode_2026_inside_a_string_is_not_touched() {
+        let (term, _, feed) = live_with(&["\x1b]0;[?20", "26h\x07ok"]);
+        assert!(!feed.sync_mode);
+        assert_eq!(row(&term, 0), "ok");
+    }
+
+    #[test]
+    fn a_live_feed_keeps_parsing_past_a_divergent_control() {
+        // SGR 53: overline, which Alacritty doesn't have.
+        let (term, _, feed) = live_with(&["ok\x1b[5", "3mq", "\r\nmore"]);
+        assert_eq!(
+            feed.taint,
+            Some(Taint {
+                reason: "divergent-control",
+                at: 2
+            })
+        );
+        assert_eq!(row(&term, 1), "more");
+    }
+
+    #[test]
+    fn taint_is_at_the_same_offset_however_the_stream_is_chunked() {
+        let at = |chunks: &[&str]| live_with(chunks).2.taint.map(|t| t.at);
+        assert_eq!(at(&["0123456789ab\x1b(0"]), Some(12));
+        assert_eq!(at(&["0123456789", "ab\x1b(", "0"]), Some(12));
+        assert_eq!(at(&["0123456789", "ab\x1b", "(0"]), Some(12));
+        assert_eq!(at(&["ab\u{9b}x"]), Some(2), "C1 control");
+        assert_eq!(at(&["a", "b\u{9b}x"]), Some(2), "C1 control");
+        // Only the first counts.
+        assert_eq!(at(&["\x1b(0", "ab\u{9b}"]), Some(0));
+    }
+
+    #[test]
+    fn a_live_feed_counts_from_its_seed_offset() {
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut feed = XtermFeed::live(1_000);
+        feed.feed(&mut parser, &mut term, b"abc\x1b(0");
+        assert_eq!(feed.taint.map(|t| t.at), Some(1_003));
+    }
+
+    #[test]
+    fn a_reflow_is_reported_and_taints_a_live_feed() {
+        let (mut term, mut parser, mut feed) = live_with(&["aaaaaaaaaa", "\r\nb"]);
+        assert!(resize_like_xterm(
+            &mut parser,
+            &mut term,
+            Size { cols: 5, rows: 3 }
+        ));
+        feed.note_reflow(11);
+        assert_eq!(
+            feed.taint,
+            Some(Taint {
+                reason: "reflow",
+                at: 11
+            })
+        );
+        let (mut term, mut parser, _) = live_with(&["ab\r\nc"]);
+        assert!(!resize_like_xterm(
+            &mut parser,
+            &mut term,
+            Size { cols: 12, rows: 3 }
+        ));
     }
 }
