@@ -295,6 +295,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   //     undeclared plugin must not receive it (PR #470 codex review). The CLI
   //     (`wmux doctor`) is unaffected — it rides the WMUX_CLI_METHODS tier.
   'perf.status':         { capability: 'pane.read' },
+  // --- Live MCP counts (`wmux doctor`). No plugin needs them; the CLI reaches
+  //     the method through the WMUX_CLI_METHODS tier.
+  'mcp.sessions.summary': { capability: 'wmux.internal' },
 
   // --- Desktop computer use. Observation and input are separate grants: a
   // screenshot of another app is sensitive, but injecting input into it is a
