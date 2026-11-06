@@ -8,6 +8,10 @@ import { logNotificationFailure } from '../../notification/notificationFailure';
 import { osToastsAllowed } from '../../notification/osToastGate';
 import { IPC } from '../../../shared/constants';
 import { HelpRequests } from '../../browser-session/HelpRequests';
+import { FrameTarget, FrameWorlds, evaluateInFrame, listChildFrames, type CdpSend, type Point as FramePoint } from '../../browser-session/frameAccess';
+import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../../../mcp/playwright/dom-intelligence';
+import type { RefDescriptor } from '../../../mcp/playwright/refDescriptors';
+import { RPC_FRAME_CAP, isFrameGoneError, type RpcFrameAnswer } from '../../../mcp/playwright/rpcFrames';
 import {
   buildHelpHighlightExpression,
   buildHelpProbeExpression,
@@ -150,7 +154,7 @@ import { heldBrowserSurfaceRefusal } from './surface.rpc';
 import { agentControlRefusal } from '../../../shared/browserAgentControl';
 import { getWmuxDir } from '../../../daemon/config';
 import { randomBytes } from 'node:crypto';
-import { topWorld, type CdpSend } from '../../phone/PhoneBrowserFocus';
+import { topWorld } from '../../phone/PhoneBrowserFocus';
 import {
   DEFAULT_FILE_INPUT_SELECTOR,
   UPLOAD_MAX_TIMEOUT_MS,
@@ -323,6 +327,7 @@ export async function setFilesInIsolatedWorld(
  */
 const PROTECTED_DENIED_METHODS: ReadonlyMap<string, string> = new Map([
   ['browser.evaluate', 'running page scripts needs a consent grant on a protected pane'],
+  ['browser.frames.read', 'a protected pane has no builtin browser target'],
   ['browser.cookies', 'cookies of a protected pane are reachable only through browser_cookies, limited to its allowed hosts'],
   ['browser.cdp.target', 'a protected pane has no builtin browser target'],
   ['browser.dialog.arm', 'a protected pane has no builtin browser target'],
@@ -1131,6 +1136,209 @@ async function touchTargetPoint(
     `${method}: ${selector} is not the element at (${Math.round(point.x)}, ${Math.round(point.y)}) ` +
     `— it is moving, or something is covering it. Refusing to tap what is there instead.`,
   );
+}
+
+// ── In-process frames on the builtin webview lane ──────────────────────────
+// One FrameWorlds per guest: its worlds live as long as the guest's documents.
+const frameWorldsByGuest = new WeakMap<WebContents, FrameWorlds>();
+
+function cdpSendOf(wc: WebContents): CdpSend {
+  return (method, params) => wc.debugger.sendCommand(method, params) as Promise<unknown>;
+}
+
+function frameWorldsOf(wc: WebContents): FrameWorlds {
+  let worlds = frameWorldsByGuest.get(wc);
+  if (!worlds) {
+    worlds = new FrameWorlds(cdpSendOf(wc));
+    frameWorldsByGuest.set(wc, worlds);
+  }
+  return worlds;
+}
+
+/** The frame a call names, from its params, or undefined for the top document. */
+function frameParam(params: Record<string, unknown>): { frameId: string; loaderId?: string } | undefined {
+  const frameId = params['frameId'];
+  if (frameId === undefined) return undefined;
+  if (typeof frameId !== 'string' || !frameId) throw new Error('"frameId" must be a non-empty string');
+  // Absent means "the frame's current document"; present must name one, so a
+  // blank value cannot quietly turn the document check off.
+  const loaderId = params['loaderId'];
+  if (loaderId !== undefined && (typeof loaderId !== 'string' || !loaderId)) {
+    throw new Error('"loaderId" must be a non-empty string');
+  }
+  return { frameId, ...(loaderId !== undefined ? { loaderId } : {}) };
+}
+
+/**
+ * How long one browser.frames.read keeps starting frame reads: well inside the
+ * client's 10 s RPC timeout, so a call never outlives the snapshot that asked.
+ */
+export const FRAMES_READ_DEADLINE_MS = 6000;
+/** Earlier refs one frame may name, and the longest role or name in them. */
+const FRAME_PRIOR_CAP = 5000;
+const FRAME_PRIOR_TEXT_CAP = 1000;
+
+interface FramesReadRequest {
+  frames: Array<{ frameId: string; loaderId: string; prior: RefDescriptor[] }>;
+  seed: number;
+  filter?: 'interactive';
+  /** UTF-8 bytes of listing text after which no further frame is read. */
+  budget?: number;
+}
+
+const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+const isBoundedText = (v: unknown): v is string => typeof v === 'string' && v.length <= FRAME_PRIOR_TEXT_CAP;
+
+/**
+ * browser.frames.read's params, checked field by field. It reads with the one
+ * listing expression main builds; a caller's `expression` is refused, here or
+ * on a frame, so the method can never become a way to run page code.
+ */
+function framesReadParams(params: Record<string, unknown>): FramesReadRequest {
+  const bad = (what: string) => new Error(`browser.frames.read: ${what}`);
+  const noCode = bad('takes no expression; it reads with the listing main builds');
+  if ('expression' in params) throw noCode;
+  const frames = params['frames'];
+  if (!Array.isArray(frames) || frames.length === 0) throw bad('"frames" must be a non-empty array');
+  if (frames.length > RPC_FRAME_CAP) throw bad(`at most ${RPC_FRAME_CAP} frames per call`);
+  if (!isCount(params['seed'])) throw bad('"seed" must be a non-negative integer');
+  const filter = params['filter'];
+  if (filter !== undefined && filter !== 'interactive') throw bad('"filter" must be "interactive" when given');
+  const budget = params['budget'];
+  if (budget !== undefined && !(isCount(budget) && budget > 0)) throw bad('"budget" must be a positive integer when given');
+  return {
+    seed: params['seed'],
+    ...(filter ? { filter } : {}),
+    ...(budget !== undefined ? { budget } : {}),
+    frames: frames.map((raw: unknown) => {
+      if (raw === null || typeof raw !== 'object') throw bad('each frame is {frameId, loaderId, prior?}');
+      const f = raw as Record<string, unknown>;
+      if ('expression' in f) throw noCode;
+      if (typeof f['frameId'] !== 'string' || !f['frameId']) throw bad('"frameId" must be a non-empty string');
+      // Always the document the snapshot listed: the check cannot be left off here.
+      if (typeof f['loaderId'] !== 'string' || !f['loaderId']) throw bad('"loaderId" must be a non-empty string');
+      const prior = f['prior'] ?? [];
+      if (!Array.isArray(prior) || prior.length > FRAME_PRIOR_CAP) throw bad(`"prior" must be an array of at most ${FRAME_PRIOR_CAP}`);
+      return {
+        frameId: f['frameId'],
+        loaderId: f['loaderId'],
+        prior: prior.map((p: unknown) => {
+          const d = (p ?? {}) as Record<string, unknown>;
+          if (!isCount(d['ref']) || !isCount(d['kindIndex']) || !isBoundedText(d['role']) || !isBoundedText(d['name'])) {
+            throw bad('each prior entry is {ref, role, name, kindIndex}');
+          }
+          return { ref: d['ref'], role: d['role'], name: d['name'], kindIndex: d['kindIndex'] };
+        }),
+      };
+    }),
+  };
+}
+
+/**
+ * List each frame's document in its own isolated world, in order, each one
+ * numbering its new elements on from where the previous one stopped. An error
+ * is reduced to its kind: a read's error text can carry page content. Reading
+ * stops at the byte budget, at the deadline, or when the caller has hung up
+ * (an abandoned snapshot must not go on stamping numbers into frames); the
+ * frames left are answered `unread`.
+ */
+async function readFrameListings(
+  wc: WebContents,
+  req: FramesReadRequest,
+  signal: AbortSignal | undefined,
+): Promise<{ frames: RpcFrameAnswer[]; nextRef: number }> {
+  const send = cdpSendOf(wc);
+  const worlds = frameWorldsOf(wc);
+  const deadline = Date.now() + FRAMES_READ_DEADLINE_MS;
+  let seed = req.seed;
+  let spent = 0;
+  const frames: RpcFrameAnswer[] = [];
+  for (const f of req.frames) {
+    if (req.budget !== undefined && spent >= req.budget) {
+      frames.push({ unread: 'budget' });
+      continue;
+    }
+    if (signal?.aborted || Date.now() >= deadline) {
+      frames.push({ unread: 'time' });
+      continue;
+    }
+    // Bounded by the deadline: Chrome stops the script then, the wait ends
+    // then, and a listing that only starts after it touches nothing.
+    const expression = buildDomSnapshotExpression(undefined, {
+      ...(req.filter ? { filter: req.filter } : {}),
+      frame: { seed, prior: f.prior, notAfter: deadline },
+      withEntries: true,
+    });
+    try {
+      const answer = await evaluateInFrame(send, worlds, f.frameId, expression, f.loaderId, deadline - Date.now());
+      if ('unreachable' in answer) {
+        frames.push({ unreachable: true });
+        continue;
+      }
+      if (answer.value === null) {
+        frames.push({ unread: 'time' });
+        continue;
+      }
+      const payload = readDomSnapshotPayload(answer.value);
+      for (const e of payload.entries) if (e.ref + 1 > seed) seed = e.ref + 1;
+      spent += Buffer.byteLength(payload.text, 'utf8');
+      frames.push({ value: answer.value });
+    } catch (err) {
+      frames.push(isFrameGoneError(err) ? { gone: true } : Date.now() >= deadline ? { unread: 'time' } : { failed: true });
+    }
+  }
+  return { frames, nextRef: seed };
+}
+
+/**
+ * Where to press on `selector` inside a frame, after checking the hit.
+ *
+ * The same contract as approachElement, with the check made BEFORE the pointer
+ * moves as well as after: a point that is not on the target is refused rather
+ * than pressed, and one re-resolution is allowed when the target moved while
+ * the pointer walked. `approach: false` (a touchscreen) skips the walk.
+ */
+async function frameTargetPoint(
+  wc: WebContents,
+  webContentsId: number,
+  frame: { frameId: string; loaderId?: string },
+  selector: string,
+  method: string,
+  approach: boolean,
+): Promise<FramePoint> {
+  const send = cdpSendOf(wc);
+  const resolveOnce = async (): Promise<{ target: FrameTarget; point: FramePoint }> => {
+    const target = await FrameTarget.resolve(send, frameWorldsOf(wc), frame.frameId, frame.loaderId, selector);
+    if (target === null) throw new Error(`Element not found in the frame: ${selector}`);
+    if (!(target instanceof FrameTarget)) throw new Error(`${method}: the frame cannot be reached (${target.unreachable})`);
+    const point = await target.point();
+    if (!point) {
+      await target.release();
+      throw new Error(`Element not found in the frame: ${selector} has no area`);
+    }
+    return { target, point };
+  };
+  const refuse = (point: FramePoint) => new Error(
+    `${method}: ${selector} in the frame is not the element at (${Math.round(point.x)}, ${Math.round(point.y)}) ` +
+    `— it is moving, or something is covering it. Refusing to click what is there instead.`,
+  );
+  let { target, point } = await resolveOnce();
+  try {
+    if (!(await target.hits(point))) throw refuse(point);
+    if (!approach) return point;
+    await movePointerTo(wc, webContentsId, point.x, point.y);
+    if (await target.hits(point)) return point;
+  } finally {
+    await target.release();
+  }
+  ({ target, point } = await resolveOnce());
+  try {
+    await movePointerTo(wc, webContentsId, point.x, point.y);
+    if (!(await target.hits(point))) throw refuse(point);
+    return point;
+  } finally {
+    await target.release();
+  }
 }
 
 /** The intermediate points between two positions, step count from the distance. */
@@ -4368,6 +4576,12 @@ export function registerBrowserRpc(
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.evaluate: WebContents unavailable');
 
+    // A frame is read in its own isolated world, never in the top document:
+    // no executeJavaScript fallback here, which would run in the wrong one.
+    // An unreachable frame (another process) is an answer, not an error.
+    const frame = frameParam(params);
+    if (frame) return evaluateInFrame(cdpSendOf(wc), frameWorldsOf(wc), frame.frameId, expression, frame.loaderId);
+
     // Use CDP Runtime.evaluate for reliable execution (executeJavaScript can fail silently)
     try {
       const cdpResult = await wc.debugger.sendCommand('Runtime.evaluate', {
@@ -4394,6 +4608,43 @@ export function registerBrowserRpc(
         throw new Error(`evaluate failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`);
       }
     }
+  });
+
+  /**
+   * browser.frames.tree
+   * The guest's in-process child frames, to depth 5, in tree order: frameId,
+   * loaderId (the document a later call must still find), parent, depth and
+   * origin. The name attribute is the page's own text.
+   * params: { surfaceId?: string }
+   */
+  registerLeased('browser.frames.tree', async (params, scope) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.frames.tree', surfaceId, scope);
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.frames.tree: WebContents unavailable');
+    return { frames: await listChildFrames(cdpSendOf(wc)) };
+  });
+
+  /**
+   * browser.frames.read
+   * List in-process frames' documents for the RPC lane's snapshot, all in one
+   * call: each frame is read in its own isolated world with the DOM listing's
+   * frame mode, which main builds (no caller code runs). An element `prior`
+   * names keeps its number; new ones are numbered on from `seed`, frame after
+   * frame. Each answer is the listing, or unreachable, gone (navigated or
+   * removed) or failed, with no error text, or unread when the byte `budget`
+   * or main's deadline was spent first. At most 20 frames per call.
+   * params: { frames: [{ frameId, loaderId, prior? }], seed, filter?, budget?, surfaceId? }
+   */
+  registerLeased('browser.frames.read', async (params, scope, ctx) => {
+    const req = framesReadParams(params);
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.frames.read', surfaceId, scope);
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.frames.read: WebContents unavailable');
+    return readFrameListings(wc, req, ctx?.signal);
   });
 
   /**
@@ -4527,7 +4778,9 @@ export function registerBrowserRpc(
   /**
    * browser.click.cdp
    * Click at coordinates or on the focused element via CDP Input events.
-   * params: { x?: number, y?: number, selector?: string, surfaceId?: string }
+   * With frameId (and the loaderId the snapshot saw), the selector is found in
+   * that in-process frame's document and the press point is hit-checked first.
+   * params: { x?: number, y?: number, selector?: string, frameId?: string, loaderId?: string, surfaceId?: string }
    */
   registerLeased('browser.click.cdp', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
@@ -4546,7 +4799,13 @@ export function registerBrowserRpc(
     // pointer to walk to the target first.
     const touch = touchPresetActive(wc);
 
-    if (selector) {
+    const frame = frameParam(params);
+    if (frame && !selector) throw new Error('browser.click.cdp: "frameId" needs a "selector"');
+    if (frame && selector) {
+      const point = await frameTargetPoint(wc, target.webContentsId, frame, selector, 'browser.click.cdp', !touch);
+      x = point.x;
+      y = point.y;
+    } else if (selector) {
       // Walk the pointer to the target before pressing. A single mouseMoved
       // onto the exact spot, from a pointer that has never been anywhere else,
       // is not what a page sees from a person. The intermediate moves also keep

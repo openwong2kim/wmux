@@ -95,6 +95,13 @@ export function renderMemoryDiagnostics(
   lines.push(app
     ? `  Electron working sets: ${mib(app.processes.reduce((sum, p) => sum + p.workingSetBytes, 0))} (${app.processes.length} processes)`
     : '  Electron metrics unavailable (app not running or older build)');
+  if (app?.cdpPipe) {
+    const p = app.cdpPipe;
+    const dropped = Object.entries(p.dropped).sort((x, y) => y[1] - x[1]).map(([why, n]) => `${why} ${n}`).join(', ');
+    lines.push(`  Chrome debugging pipe: ${p.frames} frames, ${mib(p.bytes)}; parse ${p.parseMsTotal.toFixed(1)} ms in all, ` +
+      `slowest frame ${p.parseMsMax.toFixed(1)} ms, largest ${mib(p.largestFrameBytes)}; ` +
+      `${Object.values(p.dropped).reduce((a, b) => a + b, 0)} dropped${dropped ? ` (${dropped})` : ''}, ${p.refused} commands refused`);
+  }
   if (daemon) {
     lines.push(`  daemon RSS: ${mib(daemon.rssBytes)}; JS heap used: ${mib(daemon.heapUsedBytes)}; external: ${mib(daemon.externalBytes)}; ArrayBuffers: ${mib(daemon.arrayBuffersBytes)}`);
     const sum = (key: 'ringStoredBytes' | 'ringAllocatedBytes' | 'ringCapacityBytes' | 'socketQueuedBytes' | 'resyncQueuedBytes') =>

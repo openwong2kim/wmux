@@ -351,6 +351,10 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.screenshot':        { capability: 'browser.screenshot', riskClass: 'browser' },
   'browser.evaluate':          { capability: 'browser.evaluate',   riskClass: 'browser' },
   'browser.console.get':       { capability: 'browser.read',       riskClass: 'browser' },
+  'browser.frames.tree':       { capability: 'browser.read',       riskClass: 'browser' },
+  // The frame listing rewrites data-wmux-ref in each frame, as the top
+  // listing does through browser.evaluate: the same capability.
+  'browser.frames.read':       { capability: 'browser.evaluate',   riskClass: 'browser' },
   'browser.lifecycle.get':     { capability: 'browser.read',       riskClass: 'browser' },
   'browser.network.get':       { capability: 'browser.read',       riskClass: 'browser' },
   'browser.responseBody.get':  { capability: 'browser.read',       riskClass: 'browser' },

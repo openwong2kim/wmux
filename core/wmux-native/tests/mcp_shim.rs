@@ -64,21 +64,34 @@ fn unique() -> String {
 struct Sandbox {
     home: PathBuf,
     suffix: String,
+    /// Data dirs a broker-off marker was written into, removed on drop.
+    marker_dirs: std::cell::RefCell<Vec<PathBuf>>,
 }
 
 impl Sandbox {
     fn new() -> Self {
+        let tag = unique();
+        Self::at(&tag, format!("-t{tag}"))
+    }
+
+    /// A sandbox whose shim runs with `suffix` (an empty one included).
+    #[cfg(unix)]
+    fn with_suffix(suffix: String) -> Self {
+        Self::at(&unique(), suffix)
+    }
+
+    fn at(tag: &str, suffix: String) -> Self {
         let base = if cfg!(windows) {
             std::env::temp_dir()
         } else {
             PathBuf::from("/tmp")
         };
-        let tag = unique();
         let home = base.join(format!("wmsh-{tag}"));
         std::fs::create_dir(&home).expect("create sandbox home");
         Sandbox {
             home,
-            suffix: format!("-t{tag}"),
+            suffix,
+            marker_dirs: Default::default(),
         }
     }
 
@@ -122,6 +135,11 @@ impl Sandbox {
 
 impl Drop for Sandbox {
     fn drop(&mut self) {
+        // Removed here rather than in the tests, so a failed assert leaves none.
+        for dir in self.marker_dirs.borrow().iter() {
+            let _ = std::fs::remove_file(dir.join("mcp-broker-off"));
+            let _ = std::fs::remove_dir(dir);
+        }
         let _ = std::fs::remove_file(self.token_path());
         if cfg!(unix) {
             let _ = std::fs::remove_file(self.pipe());
@@ -450,7 +468,7 @@ fn no_token_exits_1_without_dialling() {
 }
 
 #[test]
-fn an_unreachable_broker_exits_1_after_ten_tries() {
+fn a_missing_broker_endpoint_falls_back_at_once() {
     let sb = Sandbox::new();
     sb.write_token("tok");
     let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
@@ -465,19 +483,120 @@ fn an_unreachable_broker_exits_1_after_ten_tries() {
         String::from_utf8_lossy(&out.stderr),
         format!("[wmux-mcp-shim] no broker\n{}", lone.no_bundle_line())
     );
-    // Ten tries, 300 ms apart.
-    assert!(elapsed >= Duration::from_millis(2900), "{elapsed:?}");
-    assert!(elapsed < Duration::from_secs(10), "{elapsed:?}");
+    // No endpoint at all: nothing is listening or about to be, so no retries
+    // (ten used to take 3 s; the bound leaves room for a loaded machine).
+    assert!(elapsed < Duration::from_millis(1500), "{elapsed:?}");
 }
 
+/// A socket file nobody listens on: what a broker that is restarting leaves.
+#[cfg(unix)]
+fn stale_socket(sb: &Sandbox) {
+    drop(std::os::unix::net::UnixListener::bind(sb.pipe()).expect("bind"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_refused_connection_is_tried_three_times_then_falls_back() {
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    stale_socket(&sb);
+    let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
+    let started = Instant::now();
+    let out = output(lone.shim(&sb, &[]).stdin(Stdio::null())).expect("run shim");
+    let elapsed = started.elapsed();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("[wmux-mcp-shim] no broker\n{}", lone.no_bundle_line())
+    );
+    // Three tries, 300 ms apart.
+    assert!(elapsed >= Duration::from_millis(550), "{elapsed:?}");
+    assert!(elapsed < Duration::from_millis(2000), "{elapsed:?}");
+}
+
+#[cfg(unix)]
 #[test]
 fn a_broker_that_comes_up_during_the_retries_is_reached() {
     let sb = Sandbox::new();
     sb.write_token("tok");
+    stale_socket(&sb);
     let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
-    std::thread::sleep(Duration::from_millis(1000));
-    let mut conn = stub::bind(&sb.pipe()).accept(WAIT);
+    std::thread::sleep(Duration::from_millis(100));
+    // Bound beside it and renamed over it: the endpoint never goes missing,
+    // as it does not for a broker that comes back.
+    let fresh = format!("{}.new", sb.pipe());
+    let listener = stub::bind(&fresh);
+    std::fs::rename(&fresh, sb.pipe()).expect("replace the stale socket");
+    let mut conn = listener.accept(WAIT);
     assert!(read_line(&mut conn).starts_with("{\"wmuxShim\":1,\"authToken\":\"tok\","));
+    ack(&mut conn);
+    drop(child.stdin.take());
+    assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
+}
+
+impl Sandbox {
+    /// `<home>/.wmux<suffix>/mcp-broker-off`, the marker main writes when the
+    /// broker is off; `suffix` None means this sandbox's own.
+    fn broker_off(&self, suffix: Option<&str>) {
+        let dir = self.home.join(format!(".wmux{}", suffix.unwrap_or(&self.suffix)));
+        std::fs::create_dir_all(&dir).expect("data dir");
+        std::fs::write(dir.join("mcp-broker-off"), "").expect("write the marker");
+        self.marker_dirs.borrow_mut().push(dir);
+    }
+}
+
+#[test]
+fn a_broker_off_marker_hands_the_session_to_the_bundle_without_dialling() {
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    sb.broker_off(None);
+    let listener = stub::bind(&sb.pipe());
+    let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
+    let started = Instant::now();
+    let out = output(lone.shim(&sb, &[]).stdin(Stdio::null())).expect("run shim");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("[wmux-mcp-shim] broker off\n{}", lone.no_bundle_line())
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "{:?}",
+        started.elapsed()
+    );
+    #[cfg(unix)]
+    assert!(!listener.has_pending(), "the shim dialled a broker that is off");
+    #[cfg(windows)]
+    let _ = &listener;
+}
+
+#[test]
+fn an_unsuffixed_marker_does_not_stop_a_suffixed_shim() {
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    sb.broker_off(Some(""));
+    let listener = stub::bind(&sb.pipe());
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
+    let mut conn = listener.accept(WAIT);
+    assert!(read_line(&mut conn).starts_with("{\"wmuxShim\":1,"));
+    ack(&mut conn);
+    drop(child.stdin.take());
+    assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
+}
+
+/// Unix only: an unsuffixed shim on Windows dials the unsuffixed broker pipe,
+/// which is the live instance's name, while on Unix the socket sits in the
+/// sandbox home.
+#[cfg(unix)]
+#[test]
+fn a_suffixed_marker_does_not_stop_the_unsuffixed_shim() {
+    let sb = Sandbox::with_suffix(String::new());
+    sb.write_token("tok");
+    sb.broker_off(Some("-other"));
+    let listener = stub::bind(&sb.pipe());
+    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
+    let mut conn = listener.accept(WAIT);
+    assert!(read_line(&mut conn).starts_with("{\"wmuxShim\":1,"));
     ack(&mut conn);
     drop(child.stdin.take());
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
@@ -576,8 +695,10 @@ fn a_signal_during_the_connect_retries_kills_by_the_signal() {
     }
     let sb = Sandbox::new();
     sb.write_token("tok");
+    stale_socket(&sb);
     let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
-    std::thread::sleep(Duration::from_millis(500));
+    // Well inside the three tries' 600 ms.
+    std::thread::sleep(Duration::from_millis(100));
     // SAFETY: signals a child this test spawned and still owns.
     assert_eq!(unsafe { kill(child.id() as i32, 15) }, 0);
     let status = wait_within(&mut child, WAIT);

@@ -295,7 +295,7 @@ export class PlaywrightEngine {
    */
   private workspaceIdResolver: (() => Promise<string>) | null = null;
 
-  private constructor() {}
+  private constructor() { /* a singleton: getInstance() */ }
 
   setWorkspaceIdResolver(resolver: () => Promise<string>): void {
     this.workspaceIdResolver = resolver;
@@ -1469,14 +1469,15 @@ export class PlaywrightEngine {
           ? targetInfos.find((t) => t.targetId === wmuxTarget.targetId)
           : undefined;
 
-        // Live-Chrome attach (wsEndpoint responses only): browser_tabs
-        // exposes EVERY live tab by design — the workspace's 'live' binding is
-        // the grant — so a pinned surfaceId may name a pre-existing user tab
-        // that the wmux-opened registry above cannot know. Match Chrome's own
-        // target list directly. Deliberately NOT extended to dedicated (port)
-        // chrome instances: there the registry match is what keeps workspace B
-        // from pinning workspace A's tab on a shared profile.
-        if (!webviewTarget && surfaceId && typeof info.wsEndpoint === 'string') {
+        // Live-Chrome attach: browser_tabs exposes EVERY live tab by design —
+        // the workspace's 'live' binding is the grant — so a pinned surfaceId
+        // may name a pre-existing user tab that the wmux-opened registry above
+        // cannot know. Match Chrome's own target list directly. Deliberately
+        // NOT extended to dedicated chrome instances: there the registry match
+        // is what keeps workspace B from pinning workspace A's tab on a shared
+        // profile. Keyed on liveWriteScope, which main sends for Live Chrome
+        // only: a dedicated Chrome on a debugging pipe has a wsEndpoint too.
+        if (!webviewTarget && surfaceId && typeof info.wsEndpoint === 'string' && info.liveWriteScope !== undefined) {
           webviewTarget = targetInfos.find(
             (t) => t.type === 'page' && t.targetId === surfaceId,
           );
