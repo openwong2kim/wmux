@@ -657,15 +657,18 @@ mod sys {
 
     /// SIGTERM and SIGINT end the session cleanly (exit 0), as in shim.ts.
     fn install_exit_handlers() {
+        // Declared with the handler as an address, matching unix_sys.rs:
+        // two declarations of one C symbol must agree.
         extern "C" {
-            fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+            fn signal(signum: i32, handler: usize) -> usize;
         }
         const SIGINT: i32 = 2;
         const SIGTERM: i32 = 15;
+        let handler = on_signal as extern "C" fn(i32) as usize;
         // SAFETY: the handler only calls _exit.
         unsafe {
-            signal(SIGTERM, on_signal);
-            signal(SIGINT, on_signal);
+            signal(SIGTERM, handler);
+            signal(SIGINT, handler);
         }
     }
 
