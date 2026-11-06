@@ -23,6 +23,18 @@
 //!
 //! EAGAIN on an inherited non-blocking stdin or stdout is waited out, not
 //! taken as the end of the session.
+//!
+//! Fallback (fallback.rs): when the broker is unreachable at startup, and
+//! always for `--bot*` arguments (the broker hosts no bot surface), the shim
+//! hands the session to the full bundle, `node <sibling index.js> <same
+//! args>`, before it has read a byte of stdin. Once the handshake is written
+//! there is no fallback: a dropped session still exits 1.
+//!
+//! Handshake ack: the shim adds `ack: 1` to the handshake (additive; an older
+//! broker ignores the field). A broker that knows it answers with one line,
+//! `{"wmuxBroker":1,"ok":…}`, as the first bytes of the connection; the shim
+//! consumes that line and never forwards it. See `classify_head` for how it is
+//! told apart from MCP traffic without waiting on an older broker.
 
 use crate::js::{decode_utf8_trimmed, stringify, JsStr, Json};
 use crate::paths::{env, env_js, os_to_js};
@@ -30,6 +42,8 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+mod fallback;
 
 /// The `wmuxShim` handshake version the broker checks for.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -48,6 +62,9 @@ pub struct Args {
     /// The last `--role=` value, unvalidated (the broker judges it).
     pub role: Option<JsStr>,
     pub self_test: bool,
+    /// Any `--bot`, `--bot=…` or `--bot-…` argument: bot mode, which only the
+    /// full bundle serves.
+    pub bot: bool,
 }
 
 /// `process.argv.includes(...)` and `roleArgValue`: exact flags, the last
@@ -67,6 +84,12 @@ pub fn parse_args(args: &[OsString]) -> Args {
         if a.starts_with(&prefix) {
             out.role = Some(a[prefix.len()..].to_vec());
         }
+        if a == crate::js::js("--bot")
+            || a.starts_with(&crate::js::js("--bot="))
+            || a.starts_with(&crate::js::js("--bot-"))
+        {
+            out.bot = true;
+        }
     }
     out
 }
@@ -79,16 +102,31 @@ pub enum Outcome {
     Signal,
     StdoutClosed,
     NoToken,
-    Unreachable { pipe: String, error: String },
+    Unreachable {
+        pipe: String,
+        error: String,
+    },
     BrokerClosed,
     BrokerError(String),
+    /// A broker that knows the ack answered `ok: false`.
+    BrokerRefused(String),
+    /// No full bundle beside the binary to fall back to.
+    NoBundle(String),
+    /// The full bundle could not be started.
+    BundleFailed(String),
 }
 
 impl Outcome {
     pub const fn code(&self) -> i32 {
         match self {
             Outcome::StdinEnd | Outcome::StdinError | Outcome::Signal | Outcome::StdoutClosed => 0,
-            Outcome::NoToken | Outcome::Unreachable { .. } | Outcome::BrokerClosed | Outcome::BrokerError(_) => 1,
+            Outcome::NoToken
+            | Outcome::Unreachable { .. }
+            | Outcome::BrokerClosed
+            | Outcome::BrokerError(_)
+            | Outcome::BrokerRefused(_)
+            | Outcome::NoBundle(_)
+            | Outcome::BundleFailed(_) => 1,
         }
     }
 
@@ -99,6 +137,9 @@ impl Outcome {
             Outcome::Unreachable { pipe, error } => Some(format!("{PREFIX} cannot reach broker at {pipe}: {error}")),
             Outcome::BrokerClosed => Some(format!("{PREFIX} broker connection closed")),
             Outcome::BrokerError(e) => Some(format!("{PREFIX} broker connection error: {e}")),
+            Outcome::BrokerRefused(e) => Some(format!("{PREFIX} broker refused the session: {e}")),
+            Outcome::NoBundle(path) => Some(format!("{PREFIX} no full bundle at {path} to fall back to")),
+            Outcome::BundleFailed(e) => Some(format!("{PREFIX} cannot start the full bundle: {e}")),
             _ => None,
         }
     }
@@ -211,6 +252,9 @@ pub fn handshake_line(h: &Handshake) -> String {
     if let Some(role) = &h.args.role {
         entries.push((key("roleSurface"), Json::Str(role.clone())));
     }
+    // Additive, last: shim.ts sends no ack field, so everything before it is
+    // byte-identical to shim.ts's handshake.
+    entries.push((key("ack"), Json::Num(1.0)));
     let mut out = String::new();
     stringify(&Json::Obj(entries), &mut out);
     out.push('\n');
@@ -457,20 +501,98 @@ fn read_step(r: std::io::Result<usize>) -> ReadStep {
     }
 }
 
-/// Broker to stdout until either side ends.
+/// The first bytes of a broker ack line. JSON-RPC messages are objects whose
+/// keys are jsonrpc/id/method/params/result/error, so none starts with this.
+const ACK_PREFIX: &[u8] = b"{\"wmuxBroker\":";
+/// An ack line is about 40 bytes; a longer unterminated one is not an ack.
+const MAX_ACK_LINE: usize = 8 * 1024;
+
+/// What the head of the broker's stream (the bytes received so far, before
+/// anything was forwarded) turned out to be.
+#[derive(Debug, PartialEq)]
+pub enum Head {
+    /// Still a prefix of an ack line: read more.
+    Pending,
+    /// MCP traffic (an older broker): forward the head as it is.
+    Traffic,
+    /// The ack line, `len` bytes with its newline; the rest is traffic.
+    Ack {
+        ok: bool,
+        error: Option<String>,
+        len: usize,
+    },
+    /// An ack prefix that never became a valid ack line.
+    Malformed,
+}
+
+/// Tell an ack line from MCP traffic. The decision is made by bytes, never by
+/// time: the first byte that differs from ACK_PREFIX makes the head traffic,
+/// so an older broker's reply is held back only while it still matches the
+/// prefix (no MCP message does past `{"`), and never waits on a timer. A head
+/// that matches the whole prefix is the ack, read to its newline.
+pub fn classify_head(head: &[u8]) -> Head {
+    let n = head.len().min(ACK_PREFIX.len());
+    if head[..n] != ACK_PREFIX[..n] {
+        return Head::Traffic;
+    }
+    let Some(nl) = head.iter().position(|&b| b == b'\n') else {
+        return if head.len() > MAX_ACK_LINE {
+            Head::Malformed
+        } else {
+            Head::Pending
+        };
+    };
+    let line = crate::js::js(&String::from_utf8_lossy(&head[..nl]));
+    match crate::js::parse(&line) {
+        Ok(v @ Json::Obj(_)) => Head::Ack {
+            ok: v.get("ok") == Some(&Json::Bool(true)),
+            error: v.get("error").and_then(Json::as_str).map(|e| crate::js::lossy(e)),
+            len: nl + 1,
+        },
+        _ => Head::Malformed,
+    }
+}
+
+/// Broker to stdout until either side ends. The head of the stream is held
+/// until classify_head decides it; held bytes are forwarded first and in
+/// order, so nothing is lost or reordered when no ack comes.
 fn pump_to_stdout(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> ! {
     let mut buf = vec![0u8; 64 * 1024];
     let stdout = std::io::stdout();
+    // A write failure means the host stopped reading: its session is over
+    // (exit 0, the divergence the module doc states).
+    let emit = |bytes: &[u8]| {
+        if !bytes.is_empty() && write_patiently(&mut stdout.lock(), bytes).is_err() {
+            finish(Outcome::StdoutClosed);
+        }
+    };
+    let mut head: Option<Vec<u8>> = Some(Vec::new());
     loop {
         let n = match read_step(read(&mut buf)) {
             ReadStep::Data(n) => n,
             ReadStep::Retry => continue,
-            ReadStep::End(outcome) => finish(outcome),
+            ReadStep::End(outcome) => {
+                if outcome == Outcome::BrokerClosed {
+                    if let Some(held) = head.take() {
+                        emit(&held);
+                    }
+                }
+                finish(outcome)
+            }
         };
-        // A write failure means the host stopped reading: its session is over
-        // (exit 0, the divergence the module doc states).
-        if write_patiently(&mut stdout.lock(), &buf[..n]).is_err() {
-            finish(Outcome::StdoutClosed);
+        let Some(held) = head.as_mut() else {
+            emit(&buf[..n]);
+            continue;
+        };
+        held.extend_from_slice(&buf[..n]);
+        match classify_head(held) {
+            Head::Pending => {}
+            Head::Traffic => emit(&head.take().unwrap_or_default()),
+            Head::Ack { ok: true, len, .. } => emit(&head.take().unwrap_or_default()[len..]),
+            Head::Ack { ok: false, error, .. } => finish(Outcome::BrokerRefused(
+                error.unwrap_or_else(|| "no reason given".into()),
+            )),
+            Head::Malformed => finish(Outcome::BrokerError("malformed broker ack line".into())),
         }
     }
 }
@@ -495,11 +617,14 @@ fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) {
     }
 }
 
-pub fn run(args: &[OsString]) -> ! {
-    let args = parse_args(args);
+pub fn run(raw: &[OsString]) -> ! {
+    let args = parse_args(raw);
     if args.self_test {
         let _ = writeln!(std::io::stdout(), "wmux-mcp-shim protocol {PROTOCOL_VERSION}");
         std::process::exit(0);
+    }
+    if args.bot {
+        fallback::run_full_bundle(raw, false);
     }
     let Some(token) = read_auth_token() else {
         exit_with(Outcome::NoToken);
@@ -507,10 +632,14 @@ pub fn run(args: &[OsString]) -> ! {
     let pipe = broker_pipe_name();
     let conn = match connect_with_retry(&pipe) {
         Ok(conn) => conn,
-        Err(e) => exit_with(Outcome::Unreachable {
-            error: connect_error(&e, &pipe),
-            pipe,
-        }),
+        Err(e) => {
+            let unreachable = Outcome::Unreachable {
+                error: connect_error(&e, &pipe),
+                pipe,
+            };
+            say(&unreachable.message().unwrap_or_default());
+            fallback::run_full_bundle(raw, true)
+        }
     };
     let line = handshake_line(&Handshake {
         token,
@@ -1027,6 +1156,18 @@ mod tests {
         assert_eq!(b, Args::default());
         assert_eq!(parse_args(&argv(&["--role="])).role, Some(js("")));
         assert!(parse_args(&argv(&["--self-test"])).self_test);
+        for bot in [
+            "--bot",
+            "--bot=researcher",
+            "--bot-token-file=/t",
+            "--bot-surface=room-post",
+            "--bot-token-file-keep",
+        ] {
+            assert!(parse_args(&argv(&[bot])).bot, "{bot}");
+        }
+        for not_bot in ["--bots", "--botx=1", "-bot", "bot"] {
+            assert!(!parse_args(&argv(&[not_bot])).bot, "{not_bot}");
+        }
     }
 
     #[test]
@@ -1078,19 +1219,20 @@ mod tests {
         assert_eq!(
             handshake_line(&sample(None, Args::default())),
             "{\"wmuxShim\":1,\"authToken\":\"t\\\"k\\u0001\",\"callerPid\":42,\"callerPpid\":7,\
-             \"envWorkspaceHint\":\"ws\",\"envPtyHint\":\"\",\"commanderMode\":false,\"coreMode\":false}\n"
+             \"envWorkspaceHint\":\"ws\",\"envPtyHint\":\"\",\"commanderMode\":false,\"coreMode\":false,\"ack\":1}\n"
         );
         let args = Args {
             commander: true,
             core: true,
             role: Some(js("")),
             self_test: false,
+            bot: false,
         };
         assert_eq!(
             handshake_line(&sample(Some(""), args)),
             "{\"wmuxShim\":1,\"authToken\":\"t\\\"k\\u0001\",\"callerPid\":42,\"callerPpid\":7,\
              \"envWorkspaceHint\":\"ws\",\"envPtyHint\":\"\",\"commanderToken\":\"\",\
-             \"commanderMode\":true,\"coreMode\":true,\"roleSurface\":\"\"}\n"
+             \"commanderMode\":true,\"coreMode\":true,\"roleSurface\":\"\",\"ack\":1}\n"
         );
         let mut h = sample(Some("c"), Args::default());
         h.ppid = -1;
@@ -1170,6 +1312,42 @@ mod tests {
     }
 
     #[test]
+    fn the_ack_line_is_told_from_mcp_traffic_by_its_bytes() {
+        // MCP traffic is decided at the first byte that leaves the prefix.
+        assert_eq!(classify_head(b"{\"jsonrpc\":\"2.0\""), Head::Traffic);
+        assert_eq!(classify_head(b"{\"result\":{}}\n"), Head::Traffic);
+        assert_eq!(classify_head(b"\xfe"), Head::Traffic);
+        assert_eq!(classify_head(b"{\"w"), Head::Pending);
+        assert_eq!(classify_head(b"{\"wmuxBroker\":1,\"ok\":tr"), Head::Pending);
+        let ok = b"{\"wmuxBroker\":1,\"ok\":true}\n{\"jsonrpc\"";
+        assert_eq!(
+            classify_head(ok),
+            Head::Ack {
+                ok: true,
+                error: None,
+                len: 27
+            }
+        );
+        assert_eq!(
+            classify_head(b"{\"wmuxBroker\":1,\"ok\":false,\"error\":\"auth\"}\n"),
+            Head::Ack {
+                ok: false,
+                error: Some("auth".into()),
+                len: 43
+            }
+        );
+        // ok must be exactly true.
+        assert!(matches!(
+            classify_head(b"{\"wmuxBroker\":1,\"ok\":1}\n"),
+            Head::Ack { ok: false, .. }
+        ));
+        assert_eq!(classify_head(b"{\"wmuxBroker\":1,oops}\n"), Head::Malformed);
+        let mut long = ACK_PREFIX.to_vec();
+        long.resize(MAX_ACK_LINE + 1, b' ');
+        assert_eq!(classify_head(&long), Head::Malformed);
+    }
+
+    #[test]
     fn host_ends_exit_0_and_broker_failures_exit_1() {
         for o in [
             Outcome::StdinEnd,
@@ -1189,6 +1367,9 @@ mod tests {
             unreachable,
             Outcome::BrokerClosed,
             Outcome::BrokerError("e".into()),
+            Outcome::BrokerRefused("auth".into()),
+            Outcome::NoBundle("/x/index.js".into()),
+            Outcome::BundleFailed("node: e".into()),
         ] {
             assert_eq!(o.code(), 1, "{o:?}");
             assert!(o.message().unwrap().starts_with("[wmux-mcp-shim] "), "{o:?}");

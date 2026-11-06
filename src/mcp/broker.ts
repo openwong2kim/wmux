@@ -26,6 +26,7 @@
 import '../shared/exeSearchGuard';
 import * as net from 'net';
 import * as fs from 'fs';
+// eslint-disable-next-line import/no-unresolved -- the SDK's exports map, which esbuild resolves (src/mcp/index.ts has the same exemption in .eslintrc.json)
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { getMcpBrokerPipeName, getAuthTokenPath } from '../shared/constants';
 import { createWmuxServer } from './index';
@@ -53,6 +54,17 @@ interface ShimHandshake {
   coreMode?: boolean;
   /** Optional `--role=<Role>` value; absent from an older shim (full surface). */
   roleSurface?: string;
+  /** Additive: `1` asks for one broker line, `{"wmuxBroker":1,"ok":…}`, as
+   *  the first bytes on the connection, before any MCP traffic. Absent from
+   *  shim.ts and older shims, which get no such line. */
+  ack?: number;
+}
+
+/** The answer to a handshake that asked for one (`ack: 1`). Always the first
+ *  bytes the shim reads, so the shim tells it from MCP traffic by its prefix
+ *  (`{"wmuxBroker":`), which no JSON-RPC message starts with. */
+function brokerAckLine(ok: boolean, error?: string): string {
+  return JSON.stringify(ok ? { wmuxBroker: 1, ok } : { wmuxBroker: 1, ok, error }) + '\n';
 }
 
 function readAuthToken(): string | undefined {
@@ -230,11 +242,15 @@ function main(): void {
         socket.destroy();
         return;
       }
+      const wantsAck = handshake.ack === 1;
       if (!tokenMatches(handshake.authToken, expectedToken)) {
         console.error('[wmux-mcp-broker] auth failed, dropping connection');
-        socket.destroy();
+        if (wantsAck) socket.end(brokerAckLine(false, 'auth'), () => socket.destroy());
+        else socket.destroy();
         return;
       }
+      // Before hosting, so the ack precedes every byte the server may write.
+      if (wantsAck) socket.write(brokerAckLine(true));
 
       const rest = buffer.subarray(nl + 1);
       hostConnection(socket, handshake)
