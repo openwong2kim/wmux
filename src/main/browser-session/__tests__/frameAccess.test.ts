@@ -47,7 +47,7 @@ describe('FrameWorlds', () => {
 describe('FrameTarget', () => {
   it('keeps each target in its own object group, so releasing one leaves another intact', async () => {
     let object = 0;
-    const send = vi.fn(async (method: string) => {
+    const send = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
       if (method === 'Page.getFrameTree') return treeWith('L1');
       if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
       if (method === 'Runtime.evaluate') return { result: { objectId: `obj-${++object}` } };
