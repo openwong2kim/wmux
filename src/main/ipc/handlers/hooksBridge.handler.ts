@@ -132,12 +132,12 @@ export function computeInstalled(s: StatusOutcome): boolean {
  * change what the installed wmux runs. The boot refresh skips there for the
  * same reason; the deliberate path is the CLI, which warns and proceeds.
  */
-export function claudeSettingsWriteRefusal(): string | null {
+export function claudeSettingsWriteRefusal(command = 'wmux setup-hooks'): string | null {
   const suffix = dataSuffix();
   if (suffix === '' && app.isPackaged) return null;
   const instance = suffix !== '' ? `an isolated instance (WMUX_DATA_SUFFIX=${suffix})` : 'a development build';
   return `This wmux is ${instance}. Claude Code settings are shared with your installed wmux, so it does not ` +
-    'change them. Make this change from your installed wmux, or run wmux setup-hooks in a terminal.';
+    `change them. Make this change from your installed wmux, or run ${command} in a terminal.`;
 }
 
 export function registerHooksBridgeHandlers(): void {
