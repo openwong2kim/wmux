@@ -55,13 +55,22 @@ function counters(value: Record<string, unknown>, keys: string[]): boolean {
   return keys.every((key) => typeof value[key] === 'number' && Number.isFinite(value[key]) && (value[key] as number) >= 0);
 }
 
+function snapshotBackendCounters(value: unknown): boolean {
+  return record(value) && counters(value, ['native', 'fallbacks', 'skipped']) &&
+    typeof value.circuitOpen === 'boolean' && record(value.reasons) &&
+    counters(value.reasons, Object.keys(value.reasons));
+}
+
 export function isDaemonMemoryDiagnostics(value: unknown): value is DaemonMemoryDiagnostics {
   return record(value) && counters(value, ['pid', 'rssBytes', 'heapUsedBytes', 'heapTotalBytes', 'externalBytes', 'arrayBuffersBytes']) &&
     Array.isArray(value.sessions) && value.sessions.every((session: unknown) =>
       record(session) && typeof session.id === 'string' && typeof session.state === 'string' &&
       counters(session, ['ringStoredBytes', 'ringAllocatedBytes', 'ringCapacityBytes', 'socketQueuedBytes', 'socketPeakQueuedBytes', 'resyncQueuedBytes'])) &&
     (value.hibernation === undefined || (record(value.hibernation) && counters(value.hibernation, ['sessions', 'freedBytes']) &&
-      (value.hibernation.wakeFailures === undefined || counters(value.hibernation, ['wakeFailures']))));
+      (value.hibernation.wakeFailures === undefined || counters(value.hibernation, ['wakeFailures'])))) &&
+    (value.snapshots === undefined || (record(value.snapshots) &&
+      snapshotBackendCounters(value.snapshots.ansi) && snapshotBackendCounters(value.snapshots.text) &&
+      Object.values(value.snapshots).every(snapshotBackendCounters)));
 }
 
 export function isAppMemoryDiagnostics(value: unknown): value is AppMemoryDiagnostics {

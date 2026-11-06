@@ -108,7 +108,7 @@ export function renderMemoryDiagnostics(
     if (daemon.snapshots) {
       for (const [name, c] of Object.entries(daemon.snapshots)) {
         const reasons = Object.entries(c.reasons).sort((a, b) => b[1] - a[1]).map(([reason, n]) => `${reason} ${n}`).join(', ');
-        lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} fell back to xterm, ${c.skipped} skipped${reasons ? ` (${reasons})` : ''}${c.circuitOpen ? '; native module bypassed after an error' : ''}`);
+        lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} not served natively, ${c.skipped} skipped${reasons ? ` (${reasons})` : ''}${c.circuitOpen ? '; native module bypassed after an error' : ''}`);
       }
     }
     for (const session of [...daemon.sessions].sort((a, b) =>
