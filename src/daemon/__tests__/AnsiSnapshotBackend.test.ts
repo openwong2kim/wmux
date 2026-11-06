@@ -134,6 +134,30 @@ describe('ANSI snapshot backend selection', () => {
     expect(reference).not.toHaveBeenCalled();
   });
 
+  // `wmux doctor` shows these, so the next native gap is picked by how often
+  // real panes hit it.
+  it('counts each fallback and skip by reason, a native refusal by its family', async () => {
+    const before = getAnsiSnapshotBackendDiagnostics().reasons;
+    const delta = () => {
+      const now = getAnsiSnapshotBackendDiagnostics().reasons;
+      return Object.fromEntries(Object.entries(now).map(([k, n]) => [k, n - (before[k] ?? 0)]).filter(([, n]) => n));
+    };
+    const reference = vi.fn(async () => success);
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-state: a control Alacritty parses differently' });
+    await selectAnsiSnapshot(request, reference);
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-history-limit: history reached the native grid cap' });
+    await selectAnsiSnapshot(request, reference);
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-history-limit: history reached the native grid cap' });
+    await selectAnsiSnapshot(request, reference);
+    native.mockResolvedValueOnce({ ok: false, reason: 'margins' });
+    await selectAnsiSnapshot(request, reference);
+    native.mockResolvedValueOnce({ ok: false, reason: 'budget' });
+    await selectAnsiSnapshot(request, reference);
+    await selectAnsiSnapshot({ ...request, scrollback: 100001 }, reference);
+    expect(delta()).toEqual({ 'unsupported-state': 1, 'unsupported-history-limit': 2, margins: 1, budget: 1, limits: 1 });
+    expect(getAnsiSnapshotBackendDiagnostics().circuitOpen).toBe(false);
+  });
+
   it('rejects a result that did not parse every byte', async () => {
     native.mockResolvedValue({ ...success, bytesIn: 4 } as never);
     const reference = vi.fn(async () => success);

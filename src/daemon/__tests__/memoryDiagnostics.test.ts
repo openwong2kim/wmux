@@ -39,5 +39,9 @@ describe('daemon memory diagnostics', () => {
     expect(result.sessions[1]).toMatchObject({ state: 'dead', socketQueuedBytes: 0, socketPeakQueuedBytes: 0 });
     expect(read).not.toHaveBeenCalled();
     expect(result.pid).toBe(process.pid);
+    for (const backend of [result.snapshots!.ansi, result.snapshots!.text]) {
+      expect(backend).toEqual({ native: expect.any(Number), fallbacks: expect.any(Number), skipped: expect.any(Number),
+        circuitOpen: expect.any(Boolean), reasons: expect.any(Object) });
+    }
   });
 });

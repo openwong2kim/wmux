@@ -25,6 +25,21 @@ export interface DaemonMemoryDiagnostics {
    * (nothing moved), joined to one still running, or parsed. Absent from older daemons.
    */
   screenReads?: Record<string, { hits: number; joins: number; misses: number }>;
+  /**
+   * Native (Rust) snapshot use by backend: answered natively, fell back to
+   * xterm after trying, or skipped straight to xterm. `reasons` counts each
+   * fallback and skip. Absent from older daemons.
+   */
+  snapshots?: { ansi: SnapshotBackendCounters; text: SnapshotBackendCounters };
+}
+
+export interface SnapshotBackendCounters {
+  native: number;
+  fallbacks: number;
+  skipped: number;
+  /** The native module failed and is bypassed until it changes. */
+  circuitOpen: boolean;
+  reasons: Record<string, number>;
 }
 
 export interface AppMemoryDiagnostics {

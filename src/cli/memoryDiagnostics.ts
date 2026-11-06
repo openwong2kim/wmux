@@ -105,6 +105,12 @@ export function renderMemoryDiagnostics(
       const failures = daemon.hibernation.wakeFailures ? `; ${daemon.hibernation.wakeFailures} wake(s) could not read the .buf` : '';
       lines.push(`  hibernated idle panes: ${daemon.hibernation.sessions} (${mib(daemon.hibernation.freedBytes)} ring memory freed${failures})`);
     }
+    if (daemon.snapshots) {
+      for (const [name, c] of Object.entries(daemon.snapshots)) {
+        const reasons = Object.entries(c.reasons).sort((a, b) => b[1] - a[1]).map(([reason, n]) => `${reason} ${n}`).join(', ');
+        lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} fell back to xterm, ${c.skipped} skipped${reasons ? ` (${reasons})` : ''}${c.circuitOpen ? '; native module bypassed after an error' : ''}`);
+      }
+    }
     for (const session of [...daemon.sessions].sort((a, b) =>
       (b.socketQueuedBytes + b.resyncQueuedBytes + b.ringAllocatedBytes) - (a.socketQueuedBytes + a.resyncQueuedBytes + a.ringAllocatedBytes)).slice(0, 5)) {
       lines.push(`    ${session.id} (${session.state}): ring ${mib(session.ringAllocatedBytes)}, socket ${mib(session.socketQueuedBytes)} (pipe peak ${mib(session.socketPeakQueuedBytes)}), resync ${mib(session.resyncQueuedBytes)}`);
