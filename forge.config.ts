@@ -116,6 +116,15 @@ const shipsComputerUseMac = process.platform === 'darwin' && fs.existsSync(COMPU
 const COMPUTER_USE_WIN_STAGE = path.join(__dirname, 'dist', 'computer-use-windows');
 const shipsComputerUseWin = process.platform === 'win32' && fs.existsSync(COMPUTER_USE_WIN_STAGE);
 
+// The native hook bridge (core/wmux-native), staged by
+// scripts/build-native-hooks.mjs and shipped as resources/native-hooks/. The
+// hook installers run it when present and fall back to `node <bridge>`
+// without it. On macOS signAsync signs it with the app, hardened runtime and
+// no entitlements: it is a plain CLI that needs none of Electron's.
+const NATIVE_HOOKS_STAGE = './dist/native-hooks';
+const NATIVE_HOOKS_RESOURCE = `${path.sep}Contents${path.sep}Resources${path.sep}native-hooks${path.sep}`;
+const shipsNativeHooks = fs.existsSync(path.join(__dirname, NATIVE_HOOKS_STAGE, 'manifest.json'));
+
 // Resolve the signing identity by its SHA-1 fingerprint, not by name.
 // `find-identity` searches every keychain in the default list — in CI that is
 // the temporary build keychain AND login.keychain-db (release.yml) — so a
@@ -193,9 +202,10 @@ async function signMacAppIfConfigured(appPath: string, terminalCoreDir?: string)
     identity: identity.sha1,
     // The computer-use helper keeps the signature build.sh gave it.
     ignore: (filePath: string) => filePath.includes(COMPUTER_USE_MAC_RESOURCE) || path.resolve(filePath) === signedTerminalCore,
-    optionsForFile: () => ({
+    optionsForFile: (filePath: string) => ({
       hardenedRuntime: true,
-      entitlements,
+      // An empty list is an empty entitlements plist, not osx-sign's defaults.
+      entitlements: filePath.includes(NATIVE_HOOKS_RESOURCE) ? [] : entitlements,
     }),
   });
   if (terminalCoreDir) {
@@ -299,12 +309,19 @@ const config: ForgeConfig = {
     // bytes to the renderer (main/dictation/dictation.handler.ts). wongtty's
     // two are the Labs terminal switch's, handed over the same way, and only
     // once the switch is on (main/ipc/handlers/labs.handler.ts).
-    extraResource: [...(shipsTerminalCore ? [TERMINAL_CORE_STAGE] : []), './node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', './node_modules/wongtty/dist/wongtty.wasm', './node_modules/wongtty/dist/xterm_web_bg.wasm', './dist/mcp-bundle', './dist/daemon-bundle', './dist/daemon-web', './dist/cli-bundle', './node_modules/@anthropic-ai/claude-agent-sdk', './examples/plugins/agent-state-page', './examples/plugins/office', './examples/plugins/commander', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './assets/trayTemplate.png', './assets/trayTemplate@2x.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks', ...(shipsComputerUseMac ? [COMPUTER_USE_MAC_STAGE] : []), ...(shipsComputerUseWin ? [COMPUTER_USE_WIN_STAGE] : []), ...(shipsServerManifest ? [SERVER_MANIFEST_STAGE] : [])],
+    extraResource: [...(shipsTerminalCore ? [TERMINAL_CORE_STAGE] : []), ...(shipsNativeHooks ? [NATIVE_HOOKS_STAGE] : []), './node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm', './node_modules/wongtty/dist/wongtty.wasm', './node_modules/wongtty/dist/xterm_web_bg.wasm', './dist/mcp-bundle', './dist/daemon-bundle', './dist/daemon-web', './dist/cli-bundle', './node_modules/@anthropic-ai/claude-agent-sdk', './examples/plugins/agent-state-page', './examples/plugins/office', './examples/plugins/commander', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './assets/trayTemplate.png', './assets/trayTemplate@2x.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks', ...(shipsComputerUseMac ? [COMPUTER_USE_MAC_STAGE] : []), ...(shipsComputerUseWin ? [COMPUTER_USE_WIN_STAGE] : []), ...(shipsServerManifest ? [SERVER_MANIFEST_STAGE] : [])],
     // macOS 서명/노타라이즈는 packagerConfig가 아니라 postPackage hook 끝에서
     // 수행한다(signMacAppIfConfigured 주석 참고). 여기서 서명하면 postPackage의
     // node-pty 복사가 서명을 깨뜨리기 때문이다.
   },
   hooks: {
+    // A stage left from other sources would ship a bridge no parity test ran
+    // against. Checked when packaging starts, not when the config loads.
+    prePackage: async () => {
+      if (!shipsNativeHooks) return;
+      const problem = require('./scripts/build-native-hooks.mjs').nativeHooksStageProblem(__dirname, path.join(__dirname, NATIVE_HOOKS_STAGE));
+      if (problem) throw new Error(problem);
+    },
     postPackage: async (_config, packageResult) => {
       const asar = require('@electron/asar');
       const outputPath = packageResult.outputPaths[0];
@@ -367,6 +384,15 @@ const config: ForgeConfig = {
       const resourcesDir = appBundle
         ? path.join(outputPath, appBundle, 'Contents', 'Resources')
         : path.join(outputPath, 'resources');
+      if (shipsNativeHooks) {
+        // A binary staged on another machine or arch would be copied into every
+        // user's ~/.wmux/hooks/ and fail on each hook event.
+        const staged = JSON.parse(fs.readFileSync(path.join(resourcesDir, 'native-hooks', 'manifest.json'), 'utf8'));
+        const wanted = `${targetPlatform ?? process.platform}-${targetArch ?? process.arch}`;
+        if (`${staged.platform}-${staged.arch}` !== wanted) {
+          throw new Error(`[postPackage] dist/native-hooks is for ${staged.platform}-${staged.arch}, not ${wanted}; rerun scripts/build-native-hooks.mjs on the target`);
+        }
+      }
       if (shipsTerminalCore) {
         // Check the actual copied resource before signing changes Mach-O bytes.
         require('./scripts/verify-native-terminal-package.cjs').verifyIntegrity(

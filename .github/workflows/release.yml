@@ -61,6 +61,10 @@ jobs:
       # configuration: repo VARIABLE SIGNPATH_HELPER_ARTIFACT_CONFIGURATION_SLUG.
       # No-op until both are configured.
       HELPER_SIGNING_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_HELPER_ARTIFACT_CONFIGURATION_SLUG != '' }}
+      # The native hook bridge (wmux-native.exe) is a third SignPath artifact:
+      # repo VARIABLE SIGNPATH_NATIVE_ARTIFACT_CONFIGURATION_SLUG. Until both
+      # are configured it is not shipped on Windows at all.
+      NATIVE_SIGNING_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_NATIVE_ARTIFACT_CONFIGURATION_SLUG != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -180,6 +184,61 @@ jobs:
           "WMUX_WIN_HELPER_SHA256=$hash" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           Write-Host "Staged helper sha256=$hash (release-signed: $([bool]$env:WMUX_WIN_HELPER_RELEASE_SIGNED))"
 
+      # ── Windows native hook bridge ───────────────────────────────────────
+      # Order (scripts/__tests__/nativeHooksRelease.test.mjs enforces it):
+      # build -> sign -> make -> check. wmux-native.exe is spawned on every
+      # hook event, so an unsigned one never ships: without signing it is not
+      # built at all, forge finds no dist/native-hooks, and the installers keep
+      # `node <bridge>` on Windows.
+      - name: Build the native hook bridge
+        if: env.NATIVE_SIGNING_ENABLED == 'true'
+        run: node scripts/build-native-hooks.mjs
+
+      - name: Upload unsigned native hook bridge for signing
+        id: upload-native-unsigned
+        if: env.NATIVE_SIGNING_ENABLED == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wmux-native-unsigned
+          path: dist/native-hooks/wmux-native.exe
+          if-no-files-found: error
+
+      - name: Sign native hook bridge via SignPath
+        if: env.NATIVE_SIGNING_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_NATIVE_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-native-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: out/signed-native
+
+      - name: Replace the unsigned native hook bridge with the signed one
+        if: env.NATIVE_SIGNING_ENABLED == 'true'
+        shell: pwsh
+        env:
+          SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          EXPECTED_THUMBPRINT: ${{ vars.SIGNPATH_RELEASE_SIGNER_THUMBPRINT }}
+        run: |
+          # Exactly the file we uploaded, not the first match anywhere in the output.
+          $signed = "out/signed-native/wmux-native.exe"
+          if (-not (Test-Path -LiteralPath $signed -PathType Leaf)) { Write-Error "SignPath returned no $signed"; exit 1 }
+          $dest = "dist/native-hooks/wmux-native.exe"
+          Copy-Item -LiteralPath $signed $dest -Force
+          # Unlike the helper, there is no lesser mark to fall back to: an exe
+          # run on every hook event ships only Valid and from our certificate.
+          $sig = Get-AuthenticodeSignature $dest
+          if ($sig.Status -ne 'Valid') { Write-Error "Native hook bridge signature is not Valid: $($sig.Status)"; exit 1 }
+          if (-not $env:EXPECTED_THUMBPRINT -or $sig.SignerCertificate.Thumbprint -ne $env:EXPECTED_THUMBPRINT.ToUpper()) {
+            Write-Error "Native hook bridge signer $($sig.SignerCertificate.Thumbprint) is not the expected release certificate"; exit 1
+          }
+          $hash = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLower()
+          "WMUX_WIN_NATIVE_SHA256=$hash" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Write-Host "Signed native hook bridge in place (sha256=$hash, publisher: $($sig.SignerCertificate.Subject))"
+
       - name: Build & Make
         env:
           WMUX_PACKAGE_TERMINAL_CORE: '1'
@@ -212,6 +271,29 @@ jobs:
             Write-Error "the main bundle does not carry the helper's SHA-256 pin"; exit 1
           }
           Write-Host "Packaged helper matches the pin ($env:WMUX_WIN_HELPER_SHA256)"
+
+      # The signed exe, byte for byte, or none at all.
+      - name: Check the packaged native hook bridge
+        shell: pwsh
+        env:
+          EXPECTED_THUMBPRINT: ${{ vars.SIGNPATH_RELEASE_SIGNER_THUMBPRINT }}
+        run: |
+          $exes = @(Get-ChildItem out -Recurse -Filter "wmux-native.exe")
+          if ($env:NATIVE_SIGNING_ENABLED -ne 'true') {
+            if ($exes.Count -ne 0) { Write-Error "an unsigned native hook bridge was packaged: $($exes.FullName -join ', ')"; exit 1 }
+            Write-Host "No native hook bridge packaged (signing not configured)"
+            exit 0
+          }
+          if ($exes.Count -eq 0) { Write-Error "no native hook bridge in the packaged app"; exit 1 }
+          if (-not $env:EXPECTED_THUMBPRINT) { Write-Error "SIGNPATH_RELEASE_SIGNER_THUMBPRINT is not set"; exit 1 }
+          foreach ($e in $exes) {
+            $hash = (Get-FileHash $e.FullName -Algorithm SHA256).Hash.ToLower()
+            if ($hash -ne $env:WMUX_WIN_NATIVE_SHA256) { Write-Error "packaged $($e.FullName) hashes to $hash, signed $env:WMUX_WIN_NATIVE_SHA256"; exit 1 }
+            $sig = Get-AuthenticodeSignature $e.FullName
+            if ($sig.Status -ne 'Valid') { Write-Error "packaged $($e.FullName) signature is not Valid: $($sig.Status)"; exit 1 }
+            if ($sig.SignerCertificate.Thumbprint -ne $env:EXPECTED_THUMBPRINT.ToUpper()) { Write-Error "packaged $($e.FullName) is signed by $($sig.SignerCertificate.Thumbprint)"; exit 1 }
+          }
+          Write-Host "Packaged native hook bridge is the signed one ($env:WMUX_WIN_NATIVE_SHA256)"
 
       # The packaged app must carry the manifest written above, byte for byte:
       # without it "Add PC over SSH" has no hash to verify the download with.
@@ -595,6 +677,11 @@ jobs:
             native/computer-use-macos/check-signature.sh "dist/computer-use-macos/wmux Computer Use.app" --release
           fi
 
+      # Before `make`: forge ships dist/native-hooks as resources/native-hooks
+      # only if it exists (signed with the app inside `make`).
+      - name: Build the native hook bridge
+        run: node scripts/build-native-hooks.mjs
+
       # Forge signs + notarizes inside `make` only when Apple creds are present
       # (see macSignConfig in forge.config.ts); otherwise it builds unsigned.
       #
@@ -644,6 +731,24 @@ jobs:
               native/computer-use-macos/check-signature.sh "$helper"
             fi
           done <<<"$HELPERS"
+
+      # The copy the installers will hand to every Claude-compatible hook: it
+      # must run, and a signed build must carry our hardened signature.
+      - name: Check the packaged native hook bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          BINS="$(find out -type f -path '*/Contents/Resources/native-hooks/wmux-native')"
+          [ -n "$BINS" ] || { echo "::error::no native hook bridge in the packaged app"; exit 1; }
+          while IFS= read -r bin; do
+            "$bin" --version | grep -q 'wmux-managed: native-hooks' || { echo "::error::$bin does not run"; exit 1; }
+            if [ -n "$APPLE_CERT_P12_BASE64" ]; then
+              codesign --verify --strict --verbose=2 "$bin"
+              INFO="$(codesign -dv "$bin" 2>&1)"
+              grep -q "TeamIdentifier=$APPLE_TEAM_ID" <<<"$INFO" || { echo "::error::$bin is not signed by our team"; exit 1; }
+              grep -Eq 'flags=.*runtime' <<<"$INFO" || { echo "::error::$bin lacks the hardened runtime"; exit 1; }
+            fi
+          done <<<"$BINS"
 
       # Append the .zip/.dmg to the release the `build` job already created.
       #
@@ -834,6 +939,11 @@ jobs:
       - name: Write the server manifest
         run: node scripts/build-server-artifact.mjs manifest --in out/server --out dist/server-manifest.json
 
+      # Before `make`: forge ships dist/native-hooks as resources/native-hooks
+      # only if it exists.
+      - name: Build the native hook bridge
+        run: node scripts/build-native-hooks.mjs
+
       - name: Build & Make
         env:
           WMUX_PACKAGE_TERMINAL_CORE: '1'
@@ -862,6 +972,18 @@ jobs:
 
       # Same reasoning as the macOS upload: deb/rpm/AppImage are made in
       # sequence, so one failing maker must not discard the ones that succeeded.
+
+      # The copy the installers will hand to every Claude-compatible hook.
+      - name: Check the packaged native hook bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          BINS="$(find out -type f -path '*/resources/native-hooks/wmux-native')"
+          [ -n "$BINS" ] || { echo "::error::no native hook bridge in the packaged app"; exit 1; }
+          while IFS= read -r bin; do
+            "$bin" --version | grep -q 'wmux-managed: native-hooks' || { echo "::error::$bin does not run"; exit 1; }
+          done <<<"$BINS"
+
       - name: Upload Linux preview artifacts
         if: always() && steps.bundle-check.outcome == 'success' && github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

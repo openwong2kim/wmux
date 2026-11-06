@@ -1736,6 +1736,7 @@ async function handleCompatAgentHooks(
       console.log(JSON.stringify(outcome, null, 2));
     } else {
       printAssetStatus('shared hooks bridge', outcome.bridge);
+      console.log(outcome.nativeSummary);
       // Say so when an env var (COPILOT_HOME) chose the directory, so the
       // path is not mistaken for the default one.
       const install = flavours.COMPAT_HOOK_FLAVOURS[flavour].install;
@@ -1767,6 +1768,7 @@ async function handleCompatAgentHooks(
     console.log(JSON.stringify(outcome, null, 2));
   } else {
     printAssetInstall('shared hooks bridge', outcome.bridge);
+    if (outcome.nativeSummary) console.log(outcome.nativeSummary);
     if (outcome.before === 'foreign' || outcome.before === 'malformed') {
       console.warn(`${flavour} hooks: ${outcome.configPath} is not wmux's (${outcome.before}); left untouched`);
     } else if (outcome.action === 'none' && outcome.ok) {

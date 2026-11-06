@@ -18,6 +18,11 @@ import { AGENT_SLUGS, isAgentSlug } from '../../../src/shared/agentIdentity';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
+// The native bridge (core/wmux-native) embeds this file as its flavour table.
+const NATIVE_FLAVOURS = JSON.parse(
+  fs.readFileSync(path.join(REPO_ROOT, 'core', 'wmux-native', 'flavours.json'), 'utf8'),
+) as typeof FLAVOURS;
+
 describe('hook flavours — TS table ↔ bridge table', () => {
   it('names the same flavours on both sides', () => {
     expect(Object.keys(FLAVOURS).sort()).toEqual([...COMPAT_HOOK_FLAVOUR_IDS].sort());
@@ -32,6 +37,58 @@ describe('hook flavours — TS table ↔ bridge table', () => {
     expect(rt.sessionIdFields).toEqual(ts.sessionIdFields);
     expect(rt.cwdFields).toEqual(ts.cwdFields);
     expect(rt.sourceField).toEqual(ts.sourceField);
+  });
+
+  // The Rust table is the whole runtime row, runtime-only fields included
+  // (log file, request-id prefix), in the same order: both bridges serve the
+  // same CLIs and write the same logs.
+  it('the native bridge table equals the Node bridge table', () => {
+    expect(NATIVE_FLAVOURS).toEqual(FLAVOURS);
+    expect(Object.keys(NATIVE_FLAVOURS)).toEqual(Object.keys(FLAVOURS));
+    for (const id of Object.keys(FLAVOURS)) {
+      expect(Object.keys(NATIVE_FLAVOURS[id].events), id).toEqual(Object.keys(FLAVOURS[id].events));
+    }
+  });
+
+  it.each(COMPAT_HOOK_FLAVOUR_IDS)('%s: the native table matches the TS table', (id) => {
+    const ts = COMPAT_HOOK_FLAVOURS[id];
+    const rt = NATIVE_FLAVOURS[id];
+    expect(rt.agent).toBe(ts.agent);
+    expect(rt.events).toEqual(ts.events);
+    expect(rt.sessionIdFields).toEqual(ts.sessionIdFields);
+    expect(rt.cwdFields).toEqual(ts.cwdFields);
+    expect(rt.sourceField).toEqual(ts.sourceField);
+  });
+
+  // The constants both bridges hard-code, read off the two sources: a change to
+  // the Node bridge's timing, retry, idempotency or forwarding rules must be
+  // made to the native one too.
+  it('the native bridge hard-codes the same rules as the Node bridge', () => {
+    // Line endings normalised: a Windows checkout may have CRLF.
+    const lf = (text: string): string => text.replace(/\r\n/g, '\n');
+    const mjs = lf(fs.readFileSync(path.join(REPO_ROOT, 'integrations', 'shared', 'bin', 'wmux-hooks-bridge.mjs'), 'utf8'));
+    const rs = ['hook.rs', 'rpc.rs']
+      .map((f) => lf(fs.readFileSync(path.join(REPO_ROOT, 'core', 'wmux-native', 'src', f), 'utf8')))
+      .join('\n');
+    const pick = (src: string, re: RegExp): string => {
+      const m = src.match(re);
+      expect(m, String(re)).not.toBeNull();
+      return (m as RegExpMatchArray)[1].replace(/\s+/g, '').replace(/'/g, '"').replace(/,$/, '');
+    };
+    const pairs: [RegExp, RegExp][] = [
+      [/const BRIDGE_VERSION = ('[^']+')/, /const BRIDGE_VERSION: &str = ("[^"]+")/],
+      [/const HOOK_TIMEOUT_MS = (\d+)/, /const HOOK_TIMEOUT: Duration = Duration::from_millis\((\d+)\)/],
+      [/const MAX_STDIN_BYTES = ([^;]+);/, /const MAX_STDIN_BYTES: usize = ([^;]+);/],
+      [/const CONNECT_RETRY_BACKOFFS_MS = \[([^\]]+)\]/, /const CONNECT_RETRY_BACKOFFS_MS: \[u64; \d+\] = \[([^\]]+)\]/],
+      [/const TRANSIENT_CONNECT_CODES = new Set\(\[([^\]]+)\]\)/, /const TRANSIENT_CONNECT_CODES: \[&str; \d+\] = \[([^\]]+)\]/],
+      [/const IDEMPOTENT_KINDS = new Set\(\[([^\]]+)\]\)/, /const IDEMPOTENT_KINDS: \[&str; \d+\] = \[([^\]]+)\]/],
+      [/const FORWARDED_SESSION_SOURCES = new Set\(\[([^\]]+)\]\)/, /const FORWARDED_SESSION_SOURCES: \[&str; \d+\] = \[([^\]]+)\]/],
+      // Rust matches the pattern by hand; its doc comment names the one it implements.
+      [/const SESSION_ID_RE = (\/[^\n]+\/);/, /\/\/\/ SESSION_ID_RE: (\/[^\n]+\/)/],
+    ];
+    for (const [fromMjs, fromRs] of pairs) {
+      expect(pick(rs, fromRs), String(fromMjs)).toBe(pick(mjs, fromMjs));
+    }
   });
 
   // Registering an event the bridge drops spawns a process per occurrence to
