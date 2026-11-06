@@ -54,9 +54,9 @@ interface ShimHandshake {
   /** Optional `--role=<Role>` value; absent from an older shim (full surface). */
   roleSurface?: string;
   /** Additive: `1` asks for one broker line, `{"wmuxBroker":1,"ok":…}`, as
-   *  the first bytes on the connection: ok:true once the session is hosted,
-   *  ok:false when it is refused. Absent from shim.ts and older shims, which
-   *  get no such line. */
+   *  the first bytes on the connection: ok:true once the session's server is
+   *  created, ok:false when it is refused. Absent from shim.ts and older
+   *  shims, which get no such line. */
   ack?: number;
 }
 
@@ -132,11 +132,17 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
 
     // The remaining socket bytes are line-framed MCP JSON-RPC — exactly what
     // StdioServerTransport speaks; it accepts any Readable/Writable pair.
+    // The session's server exists: answer a shim that asked, before connect.
+    // The socket stays paused from the handshake read until the resume() after
+    // this function returns (transport.start() only adds a 'data' listener,
+    // which does not resume an explicitly paused stream), so bytes the shim
+    // sends on the ack wait in the socket until the scope wrappers below are in
+    // place. If connect then rejects, the caller destroys the socket: the shim,
+    // already pumping, exits 1.
+    if (handshake.ack === 1) socket.write(brokerAckLine(true));
+
     transport = new StdioServerTransport(socket, socket);
     await server.connect(transport);
-    // The session is hosted: answer a shim that asked. The socket is still
-    // paused here, so no request has been read and no reply written yet.
-    if (handshake.ack === 1) socket.write(brokerAckLine(true));
 
     // server.connect wired transport.onmessage/onclose/onerror. Re-wrap them
     // so every later dispatch (they fire from socket events, OUTSIDE this

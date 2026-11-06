@@ -30,11 +30,17 @@
 //!
 //! Startup gate: the shim adds `ack: 1` to the handshake (additive; shim.ts
 //! sends none, and the broker answers it only when asked). The broker answers
-//! with one line, `{"wmuxBroker":1,"ok":…}`, once it has hosted the session,
-//! and writes nothing before it. The shim reads no stdin until that line:
-//! ok:true starts the pumps; ok:false exits 1 (a refusal is an answer, not an
-//! outage); no answer within ACK_DEADLINE, a close, or a first line that is not
-//! the ack (an older broker) drops the connection and falls back.
+//! with one line, `{"wmuxBroker":1,"ok":…}`, once it has created the session's
+//! server, and writes nothing before it. The shim reads no stdin until that
+//! line: ok:true starts the pumps; ok:false exits 1 (a refusal is an answer,
+//! not an outage); no answer within ACK_DEADLINE, a close, or a first line that
+//! is not the ack (an older broker) drops the connection and falls back. A
+//! broker that fails to connect the server after acking drops the connection;
+//! the pumps have started by then, so that is an exit 1, not a fallback.
+//!
+//! Each fallback writes one stderr line with its reason: `no broker`, `no ack
+//! in 5 s`, `closed before ack` or `not an ack`. Bot mode (below) is the
+//! designed path and writes none.
 //!
 //! Fallback (fallback.rs): when the broker is unreachable or does not take the
 //! session, and always for `--bot*` arguments (the broker hosts no bot
@@ -109,10 +115,6 @@ pub enum Outcome {
     Signal,
     StdoutClosed,
     NoToken,
-    Unreachable {
-        pipe: String,
-        error: String,
-    },
     BrokerClosed,
     BrokerError(String),
     /// A broker that knows the ack answered `ok: false`.
@@ -128,7 +130,6 @@ impl Outcome {
         match self {
             Outcome::StdinEnd | Outcome::StdinError | Outcome::Signal | Outcome::StdoutClosed => 0,
             Outcome::NoToken
-            | Outcome::Unreachable { .. }
             | Outcome::BrokerClosed
             | Outcome::BrokerError(_)
             | Outcome::BrokerRefused(_)
@@ -141,7 +142,6 @@ impl Outcome {
     pub fn message(&self) -> Option<String> {
         match self {
             Outcome::NoToken => Some(format!("{PREFIX} auth token not found. Is wmux running?")),
-            Outcome::Unreachable { pipe, error } => Some(format!("{PREFIX} cannot reach broker at {pipe}: {error}")),
             Outcome::BrokerClosed => Some(format!("{PREFIX} broker connection closed")),
             Outcome::BrokerError(e) => Some(format!("{PREFIX} broker connection error: {e}")),
             Outcome::BrokerRefused(e) => Some(format!("{PREFIX} broker refused the session: {e}")),
@@ -418,11 +418,6 @@ fn socket_error(syscall: &str, e: &std::io::Error) -> String {
     format!("{syscall} {}", errno_name(e))
 }
 
-/// Node's err.message for a failed pipe connect: `connect <code> <pipe>`.
-fn connect_error(e: &std::io::Error, pipe: &str) -> String {
-    format!("connect {} {pipe}", errno_name(e))
-}
-
 fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
     let mut last = None;
     for _ in 0..CONNECT_RETRIES {
@@ -503,21 +498,18 @@ fn read_step(r: std::io::Result<usize>) -> ReadStep {
     match r {
         Ok(0) => ReadStep::End(Outcome::BrokerClosed),
         Ok(n) => ReadStep::Data(n),
-        // WouldBlock only if the ack wait's read timeout outlived it.
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-            ) =>
-        {
-            ReadStep::Retry
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => ReadStep::Retry,
         Err(e) => ReadStep::End(Outcome::BrokerError(socket_error("read", &e))),
     }
 }
 
 /// How long the shim waits for the broker's ack before it falls back.
-const ACK_DEADLINE: Duration = Duration::from_secs(2);
+const ACK_DEADLINE: Duration = Duration::from_secs(5);
+/// The fallback reasons, one stderr line each.
+const NO_BROKER: &str = "no broker";
+const NO_ACK: &str = "no ack in 5 s";
+const CLOSED_BEFORE_ACK: &str = "closed before ack";
+const NOT_AN_ACK: &str = "not an ack";
 /// An ack line is about 40 bytes; a longer first line is not one.
 const MAX_ACK_LINE: usize = 8 * 1024;
 
@@ -528,24 +520,24 @@ pub enum Ack {
     Hosted { rest: Vec<u8> },
     /// The broker answered ok:false, with its reason.
     Refused(String),
-    /// No ack: why, for the fallback notice.
-    Missing(String),
+    /// No ack: the fallback reason (NO_ACK, CLOSED_BEFORE_ACK or NOT_AN_ACK).
+    Missing(&'static str),
 }
 
 /// Read the broker's first line through `read`, which must fail with
-/// WouldBlock or TimedOut once ACK_DEADLINE has passed.
+/// TimedOut (or WouldBlock) once ACK_DEADLINE has passed.
 pub fn await_ack(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> Ack {
     let mut head = Vec::new();
     let mut buf = [0u8; 1024];
     loop {
         let n = match read(&mut buf) {
-            Ok(0) => return Ack::Missing("it closed the connection".into()),
+            Ok(0) => return Ack::Missing(CLOSED_BEFORE_ACK),
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
-                return Ack::Missing(format!("no answer within {} s", ACK_DEADLINE.as_secs()))
+                return Ack::Missing(NO_ACK)
             }
-            Err(e) => return Ack::Missing(socket_error("read", &e)),
+            Err(_) => return Ack::Missing(CLOSED_BEFORE_ACK),
         };
         head.extend_from_slice(&buf[..n]);
         if let Some(nl) = head.iter().position(|&b| b == b'\n') {
@@ -564,12 +556,26 @@ pub fn await_ack(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> A
                         )
                     }
                 }
-                _ => Ack::Missing("its first line is not an ack".into()),
+                _ => Ack::Missing(NOT_AN_ACK),
             };
         }
         if head.len() > MAX_ACK_LINE {
-            return Ack::Missing("its first line is not an ack".into());
+            return Ack::Missing(NOT_AN_ACK);
         }
+    }
+}
+
+/// The outcome of an overlapped read cancelled at the ack deadline. One that
+/// completed anyway keeps its bytes (an ack at 4.999 s is still an ack); one
+/// the cancel stopped (ERROR_OPERATION_ABORTED) is the timeout; any other
+/// failure is itself.
+#[cfg(any(windows, test))]
+fn after_cancel(completed: bool, n: u32, error: Option<i32>) -> std::io::Result<usize> {
+    const ERROR_OPERATION_ABORTED: i32 = 995;
+    match (completed, error) {
+        (true, _) => Ok(n as usize),
+        (false, Some(ERROR_OPERATION_ABORTED) | None) => Err(std::io::ErrorKind::TimedOut.into()),
+        (false, Some(code)) => Err(std::io::Error::from_raw_os_error(code)),
     }
 }
 
@@ -577,8 +583,8 @@ pub fn await_ack(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> A
 /// full bundle gets the session from the host's first byte. The caller has
 /// dropped the connection.
 fn no_session(why: &str, raw: &[OsString]) -> ! {
-    say(&format!("{PREFIX} no session from the broker: {why}"));
-    fallback::run_full_bundle(raw, true)
+    say(&format!("{PREFIX} {why}"));
+    fallback::run_full_bundle(raw)
 }
 
 /// Broker to stdout until either side ends, starting with `first` (what came
@@ -631,7 +637,7 @@ pub fn run(raw: &[OsString]) -> ! {
         std::process::exit(0);
     }
     if args.bot {
-        fallback::run_full_bundle(raw, false);
+        fallback::run_full_bundle(raw);
     }
     let Some(token) = read_auth_token() else {
         exit_with(Outcome::NoToken);
@@ -639,14 +645,7 @@ pub fn run(raw: &[OsString]) -> ! {
     let pipe = broker_pipe_name();
     let conn = match connect_with_retry(&pipe) {
         Ok(conn) => conn,
-        Err(e) => {
-            let unreachable = Outcome::Unreachable {
-                error: connect_error(&e, &pipe),
-                pipe,
-            };
-            say(&unreachable.message().unwrap_or_default());
-            fallback::run_full_bundle(raw, true)
-        }
+        Err(_) => no_session(NO_BROKER, raw),
     };
     let line = handshake_line(&Handshake {
         token,
@@ -668,6 +667,7 @@ mod sys {
     use std::ffi::OsString;
     use std::io::{Read, Write};
     use std::net::Shutdown;
+    use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
     use std::time::Instant;
 
@@ -739,6 +739,29 @@ mod sys {
     /// NVAL without the readiness asked for) or fails: what a read or write
     /// would then report, end of input for stdin and a gone reader for stdout.
     pub fn wait_ready(stream: super::HostStream) -> bool {
+        let (fd, want) = match stream {
+            super::HostStream::Stdin => (0, POLLIN),
+            super::HostStream::Stdout => (1, POLLOUT),
+        };
+        loop {
+            match poll_one(fd, want, -1) {
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => return false,
+                Ok(revents) if revents & want != 0 => return true,
+                Ok(revents) if revents & (POLLERR | POLLHUP | POLLNVAL) != 0 => return false,
+                Ok(_) => {}
+            }
+        }
+    }
+
+    const POLLIN: i16 = 0x1;
+    const POLLOUT: i16 = 0x4;
+    const POLLERR: i16 = 0x8;
+    const POLLHUP: i16 = 0x10;
+    const POLLNVAL: i16 = 0x20;
+
+    /// poll(2) on one fd: its revents, 0 on timeout (`millis` < 0 waits forever).
+    fn poll_one(fd: i32, events: i16, millis: i32) -> std::io::Result<i16> {
         #[repr(C)]
         struct PollFd {
             fd: i32,
@@ -752,35 +775,12 @@ mod sys {
         extern "C" {
             fn poll(fds: *mut PollFd, nfds: NFds, timeout: i32) -> i32;
         }
-        const POLLIN: i16 = 0x1;
-        const POLLOUT: i16 = 0x4;
-        const POLLERR: i16 = 0x8;
-        const POLLHUP: i16 = 0x10;
-        const POLLNVAL: i16 = 0x20;
-        let (fd, want) = match stream {
-            super::HostStream::Stdin => (0, POLLIN),
-            super::HostStream::Stdout => (1, POLLOUT),
-        };
-        loop {
-            let mut pfd = PollFd {
-                fd,
-                events: want,
-                revents: 0,
-            };
-            // SAFETY: one valid pollfd; no timeout.
-            if unsafe { poll(&mut pfd, 1, -1) } < 0 {
-                if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return false;
-            }
-            if pfd.revents & want != 0 {
-                return true;
-            }
-            if pfd.revents & (POLLERR | POLLHUP | POLLNVAL) != 0 {
-                return false;
-            }
+        let mut pfd = PollFd { fd, events, revents: 0 };
+        // SAFETY: one valid pollfd for the duration of the call.
+        if unsafe { poll(&mut pfd, 1, millis) } < 0 {
+            return Err(std::io::Error::last_os_error());
         }
+        Ok(pfd.revents)
     }
 
     extern "C" fn on_signal(_: i32) {
@@ -807,16 +807,21 @@ mod sys {
 
     pub fn session(mut conn: UnixStream, handshake: &[u8], raw: &[OsString]) -> ! {
         if let Err(e) = conn.write_all(handshake) {
+            let _ = e;
             drop(conn);
-            no_session(&super::socket_error("write", &e), raw);
+            no_session(super::CLOSED_BEFORE_ACK, raw);
         }
         let deadline = Instant::now() + super::ACK_DEADLINE;
+        // poll(2) against the deadline, then a read that cannot block: no
+        // socket timeout to set (macOS refuses setsockopt once the broker has
+        // closed, even with its answer still buffered) or to clear afterwards.
         let ack = await_ack(|buf| {
             let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
+            // Rounded up, so a sub-millisecond remainder still waits.
+            let millis = left.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32;
+            if millis == 0 || poll_one(conn.as_raw_fd(), POLLIN, millis)? == 0 {
                 return Err(std::io::ErrorKind::TimedOut.into());
             }
-            conn.set_read_timeout(Some(left))?;
             conn.read(buf)
         });
         let first = match ack {
@@ -824,12 +829,9 @@ mod sys {
             Ack::Refused(why) => exit_with(Outcome::BrokerRefused(why)),
             Ack::Missing(why) => {
                 drop(conn);
-                no_session(&why, raw)
+                no_session(why, raw)
             }
         };
-        // macOS refuses this (EINVAL) once the broker has closed its end;
-        // the reader's next read then reports the close itself.
-        let _ = conn.set_read_timeout(None);
         install_exit_handlers();
         let mut reader = match conn.try_clone() {
             Ok(r) => r,
@@ -1016,8 +1018,16 @@ mod sys {
                 }
                 if WaitForSingleObject(event.0, millis) == WAIT_TIMEOUT {
                     CancelIoEx(self.0, &mut ov);
-                    let _ = GetOverlappedResult(self.0, &mut ov, &mut n, 1);
-                    return Err(std::io::ErrorKind::TimedOut.into());
+                    // The read may have completed just before the cancel
+                    // (CancelIoEx then fails with ERROR_NOT_FOUND): wait for
+                    // its final state either way, and keep its bytes.
+                    let completed = GetOverlappedResult(self.0, &mut ov, &mut n, 1) != 0;
+                    let error = if completed {
+                        None
+                    } else {
+                        Error::last_os_error().raw_os_error()
+                    };
+                    return super::after_cancel(completed, n, error);
                 }
                 if GetOverlappedResult(self.0, &mut ov, &mut n, 1) == 0 {
                     return Err(Error::last_os_error());
@@ -1175,8 +1185,9 @@ mod sys {
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
         };
         if let Err(e) = conn.write_all(&writer_event, handshake) {
+            let _ = e;
             drop(conn);
-            no_session(&super::socket_error("write", &e), raw);
+            no_session(super::CLOSED_BEFORE_ACK, raw);
         }
         let deadline = Instant::now() + super::ACK_DEADLINE;
         let first = match await_ack(|buf| conn.read_until(&writer_event, buf, deadline)) {
@@ -1184,7 +1195,7 @@ mod sys {
             Ack::Refused(why) => exit_with(Outcome::BrokerRefused(why)),
             Ack::Missing(why) => {
                 drop(conn);
-                no_session(&why, raw)
+                no_session(why, raw)
             }
         };
         let conn = Arc::new(conn);
@@ -1322,23 +1333,16 @@ mod tests {
     }
 
     #[test]
-    fn an_unreachable_broker_is_worded_as_nodes_connect_error() {
-        let os = std::io::Error::from_raw_os_error;
-        assert_eq!(connect_error(&os(2), "/p"), "connect ENOENT /p");
-        let refused = if cfg!(windows) {
-            1225
-        } else if cfg!(target_os = "linux") {
-            111
-        } else {
-            61
-        };
-        assert_eq!(connect_error(&os(refused), "/p"), "connect ECONNREFUSED /p");
-        let unknown = if cfg!(windows) {
-            "UNKNOWN"
-        } else {
-            "Unknown system error -9999"
-        };
-        assert_eq!(connect_error(&os(9999), "/p"), format!("connect {unknown} /p"));
+    fn a_read_cancelled_at_the_deadline_keeps_what_completed() {
+        assert_eq!(after_cancel(true, 27, None).unwrap(), 27);
+        assert_eq!(after_cancel(true, 0, None).unwrap(), 0);
+        let timed_out = after_cancel(false, 0, Some(995)).unwrap_err();
+        assert_eq!(timed_out.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(
+            after_cancel(false, 0, None).unwrap_err().kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        assert_eq!(after_cancel(false, 0, Some(109)).unwrap_err().raw_os_error(), Some(109));
     }
 
     #[test]
@@ -1423,11 +1427,13 @@ mod tests {
             Ack::Refused("no reason given".into())
         );
         // An older broker: silence, a close, or MCP traffic first.
-        assert_eq!(ack_from(&[]), Ack::Missing("no answer within 2 s".into()));
-        assert_eq!(ack_from(&[b"{\"wmuxBr"]), Ack::Missing("no answer within 2 s".into()));
+        assert_eq!(ack_from(&[]), Ack::Missing("no ack in 5 s"));
+        assert_eq!(ack_from(&[b"{\"wmuxBr"]), Ack::Missing("no ack in 5 s"));
         let closed = await_ack(|_| Ok(0));
-        assert_eq!(closed, Ack::Missing("it closed the connection".into()));
-        let not_ack = Ack::Missing("its first line is not an ack".into());
+        assert_eq!(closed, Ack::Missing("closed before ack"));
+        let reset = await_ack(|_| Err(std::io::ErrorKind::ConnectionReset.into()));
+        assert_eq!(reset, Ack::Missing("closed before ack"));
+        let not_ack = Ack::Missing("not an ack");
         assert_eq!(ack_from(&[b"{\"jsonrpc\":\"2.0\",\"id\":1}\n"]), not_ack);
         assert_eq!(ack_from(&[b"{\"wmuxBroker\":2,\"ok\":true}\n"]), not_ack);
         let spaces = [b' '; 1024];
@@ -1446,13 +1452,8 @@ mod tests {
             assert_eq!(o.code(), 0, "{o:?}");
             assert_eq!(o.message(), None, "{o:?}");
         }
-        let unreachable = Outcome::Unreachable {
-            pipe: "/p".into(),
-            error: "e".into(),
-        };
         for o in [
             Outcome::NoToken,
-            unreachable,
             Outcome::BrokerClosed,
             Outcome::BrokerError("e".into()),
             Outcome::BrokerRefused("auth".into()),

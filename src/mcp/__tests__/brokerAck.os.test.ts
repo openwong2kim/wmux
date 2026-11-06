@@ -152,6 +152,29 @@ describe('broker handshake ack', () => {
     s.socket.destroy();
   });
 
+  // The ack goes out before server.connect; the socket stays paused until the
+  // connection's scope wrappers are in place. Requests sent the moment the ack
+  // arrives must all be served, in order, and inside the connection scope:
+  // repl_sessions fails ("no MCP connection scope is active") when a request
+  // is handled outside it.
+  it('requests sent on the ack are all served, inside the connection scope', async () => {
+    const s = await open(handshake({ ack: 1 }));
+    const [first] = await s.lines(1);
+    expect(first).toBe('{"wmuxBroker":1,"ok":true}');
+    s.socket.write(
+      INITIALIZE + '\n'
+      + JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n'
+      + JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n'
+      + JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'repl_sessions', arguments: {} } }) + '\n',
+    );
+    const [, init, list, call] = await s.lines(4);
+    expect(JSON.parse(init)).toMatchObject({ id: 1, result: { serverInfo: { name: 'wmux' } } });
+    expect(JSON.parse(list)).toMatchObject({ id: 2, result: { tools: expect.any(Array) } });
+    expect(JSON.parse(call)).toMatchObject({ id: 3, result: expect.any(Object) });
+    expect(call).not.toContain('no MCP connection scope');
+    s.socket.destroy();
+  });
+
   it('no ack field: the stream is MCP traffic from the first byte', async () => {
     const s = await open(handshake({}));
     s.socket.write(INITIALIZE + '\n');

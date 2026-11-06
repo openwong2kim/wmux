@@ -1,6 +1,7 @@
 //! The fallback to the full bundle: the session is handed to node and the
 //! bundle's entry script, with the shim's own arguments, before the shim has
-//! read a byte of stdin.
+//! read a byte of stdin. node is the first `node` (`node.exe` on Windows) in
+//! an absolute PATH entry; see `node_on_path`.
 //!
 //! The registration runs the bundle as `command: "node"`, `args: [<script>,
 //! ...flags]`. The entry script is one of three fixed places, tried in order
@@ -14,7 +15,7 @@
 //!      repository's `dist/mcp/mcp/entry.js` (there, index.js is the server
 //!      factory and entry.js the stdio entry).
 
-use super::{exit_with, say, Outcome, PREFIX};
+use super::{exit_with, Outcome};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -61,10 +62,9 @@ fn exe_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "cannot locate this binary's directory".into())
 }
 
-/// Run the session on the full bundle; never returns. `announce` says so on
-/// stderr (a broker that did not take the session); bot mode is the designed
-/// path and stays quiet.
-pub fn run_full_bundle(args: &[OsString], announce: bool) -> ! {
+/// Run the session on the full bundle; never returns. The caller has written
+/// the fallback's reason, if any, to stderr.
+pub fn run_full_bundle(args: &[OsString]) -> ! {
     let entry = match exe_dir().map(|dir| find_bundle(&dir)) {
         Ok(Ok(entry)) => entry,
         Ok(Err(looked)) => {
@@ -73,24 +73,36 @@ pub fn run_full_bundle(args: &[OsString], announce: bool) -> ! {
         }
         Err(why) => exit_with(Outcome::NoBundle(why)),
     };
-    if announce {
-        say(&format!(
-            "{PREFIX} falling back to the full bundle at {}",
-            entry.display()
-        ));
-    }
-    sys::hand_over(&entry, args)
+    let Some(node) = node_on_path(std::env::var_os("PATH")) else {
+        exit_with(Outcome::BundleFailed("no node on PATH".into()))
+    };
+    sys::hand_over(&node, &entry, args)
 }
 
-/// The first `node.exe` in an absolute PATH entry, in PATH order. Relative
-/// entries are skipped, and so are the binary's own directory and the working
-/// directory unless PATH names them absolutely; no PATHEXT, no `.cmd`.
-#[cfg(any(windows, test))]
+/// node's file name on this OS.
+const NODE: &str = if cfg!(windows) { "node.exe" } else { "node" };
+
+/// The first node in an absolute PATH entry, in PATH order, on every OS.
+/// Empty, `.` and other relative entries are skipped (they name the working
+/// directory), and so is the binary's own directory unless PATH names it; no
+/// PATHEXT, no `.cmd`. On Unix the file must be executable, as execvp's own
+/// search requires.
 pub fn node_on_path(path_var: Option<OsString>) -> Option<PathBuf> {
     std::env::split_paths(&path_var?)
         .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join("node.exe"))
-        .find(|node| node.is_file())
+        .map(|dir| dir.join(NODE))
+        .find(|node| is_executable(node))
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(windows)]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 #[cfg(unix)]
@@ -100,17 +112,19 @@ mod sys {
     use std::os::unix::process::CommandExt;
     use std::path::Path;
 
-    /// execvp of `node`, as the registration's command names it: node replaces
-    /// the shim under the same pid, with the host's stdio as it was.
-    pub fn hand_over(entry: &Path, args: &[OsString]) -> ! {
-        let e = super::Command::new("node").arg(entry).args(args).exec();
-        exit_with(Outcome::BundleFailed(format!("node: {e}")))
+    /// execv of the absolute node path: node replaces the shim under the same
+    /// pid, with the host's stdio as it was. argv[0] stays `node`, as the
+    /// registration's command names it, so a parent-chain check reading the
+    /// command line still sees node.
+    pub fn hand_over(node: &Path, entry: &Path, args: &[OsString]) -> ! {
+        let e = super::Command::new(node).arg0("node").arg(entry).args(args).exec();
+        exit_with(Outcome::BundleFailed(format!("{}: {e}", node.display())))
     }
 }
 
 #[cfg(windows)]
 mod sys {
-    use super::{exit_with, node_on_path, Outcome};
+    use super::{exit_with, Outcome};
     use core::ffi::c_void;
     use std::ffi::OsString;
     use std::io::Error;
@@ -190,18 +204,15 @@ mod sys {
     }
 
     /// Run node as a child with the inherited stdio, in the job, and exit with
-    /// its exit code. Without a job (or without node.exe on PATH) nothing is
-    /// started: an uncontained node could outlive the shim.
-    pub fn hand_over(entry: &Path, args: &[OsString]) -> ! {
-        let Some(node) = node_on_path(std::env::var_os("PATH")) else {
-            exit_with(Outcome::BundleFailed("no node.exe on PATH".into()))
-        };
+    /// its exit code. Without a job nothing is started: an uncontained node
+    /// could outlive the shim.
+    pub fn hand_over(node: &Path, entry: &Path, args: &[OsString]) -> ! {
         if let Err(e) = contain_in_job() {
             exit_with(Outcome::BundleFailed(format!("cannot create its job object: {e}")))
         }
         // SAFETY: registers a handler that only returns a value.
         unsafe { SetConsoleCtrlHandler(Some(outlive_console_breaks), 1) };
-        match super::Command::new(&node).arg(entry).args(args).status() {
+        match super::Command::new(node).arg(entry).args(args).status() {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(e) => exit_with(Outcome::BundleFailed(format!("{}: {e}", node.display()))),
         }
@@ -288,30 +299,57 @@ mod tests {
         assert!(looked[0].ends_with("index.js") && looked[2].ends_with("entry.js"));
     }
 
+    /// A file named like node, executable on Unix.
+    fn node_file(t: &Tree, dir: &str) -> PathBuf {
+        let path = t.file(&format!("{dir}/{NODE}"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
     #[test]
-    fn node_is_the_first_node_exe_in_an_absolute_path_entry() {
+    fn node_is_the_first_node_in_an_absolute_path_entry() {
         let t = Tree::new("node");
-        let first = t.dir("a");
-        let second = t.dir("b");
-        t.file("b/node.exe");
-        t.file("c/node.exe");
+        let empty = t.dir("a");
+        node_file(&t, "b");
+        node_file(&t, "c");
         t.file("b/node.cmd");
-        // A relative entry that does reach c/node.exe from the working
+        // A relative entry that does reach c's node from the working
         // directory (up to the root, then down again) is still skipped.
         #[cfg(unix)]
         let relative_c = {
             let cwd = std::env::current_dir().unwrap();
             let up: PathBuf = cwd.components().skip(1).map(|_| "..").collect();
             let relative = t.0.join("c").components().skip(1).fold(up, |p, c| p.join(c));
-            assert!(relative.is_relative() && relative.join("node.exe").is_file());
+            assert!(relative.is_relative() && relative.join(NODE).is_file());
             relative
         };
         #[cfg(not(unix))]
         let relative_c = PathBuf::from("c");
-        let path = std::env::join_paths([first.clone(), relative_c, second.clone(), t.0.join("c")]).unwrap();
-        assert_eq!(node_on_path(Some(path)), Some(second.join("node.exe")));
-        let only_cmd = std::env::join_paths([first]).unwrap();
-        assert_eq!(node_on_path(Some(only_cmd)), None);
+        let path = std::env::join_paths([empty.clone(), relative_c, t.0.join("b"), t.0.join("c")]).unwrap();
+        assert_eq!(node_on_path(Some(path)), Some(t.0.join("b").join(NODE)));
+        // Empty and `.` entries name the working directory: skipped.
+        #[cfg(unix)]
+        {
+            let tricky = format!(":.::{}:", t.0.join("c").display());
+            assert_eq!(node_on_path(Some(tricky.into())), Some(t.0.join("c").join(NODE)));
+            assert_eq!(node_on_path(Some(":.::".into())), None);
+        }
+        assert_eq!(node_on_path(Some(std::env::join_paths([empty]).unwrap())), None);
         assert_eq!(node_on_path(None), None);
+    }
+
+    /// On Unix a node that cannot be executed is passed over, as execvp would.
+    #[cfg(unix)]
+    #[test]
+    fn a_node_that_is_not_executable_is_skipped() {
+        let t = Tree::new("noexec");
+        t.file("a/node");
+        let ok = node_file(&t, "b");
+        let path = std::env::join_paths([t.0.join("a"), t.0.join("b")]).unwrap();
+        assert_eq!(node_on_path(Some(path)), Some(ok));
     }
 }

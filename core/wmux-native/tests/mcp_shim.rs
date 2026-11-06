@@ -428,15 +428,11 @@ fn an_unreachable_broker_exits_1_after_ten_tries() {
     let elapsed = started.elapsed();
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty());
-    // The last error as node words err.message: `connect <code> <pipe>`, then
-    // why there is no fallback (no bundle anywhere the binary looks).
-    let pipe = sb.pipe();
+    // The fallback's reason, then why there is no fallback (no bundle
+    // anywhere the binary looks).
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        format!(
-            "[wmux-mcp-shim] cannot reach broker at {pipe}: connect ENOENT {pipe}\n{}",
-            lone.no_bundle_line()
-        )
+        format!("[wmux-mcp-shim] no broker\n{}", lone.no_bundle_line())
     );
     // Ten tries, 300 ms apart.
     assert!(elapsed >= Duration::from_millis(2900), "{elapsed:?}");
@@ -859,10 +855,7 @@ fn a_broker_without_the_ack_gets_no_session() {
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(1));
     assert_eq!(
         err.join().unwrap(),
-        format!(
-            "[wmux-mcp-shim] no session from the broker: its first line is not an ack\n{}",
-            lone.no_bundle_line()
-        )
+        format!("[wmux-mcp-shim] not an ack\n{}", lone.no_bundle_line())
     );
     let mut stdout = Vec::new();
     child.stdout.take().unwrap().read_to_end(&mut stdout).unwrap();
@@ -1036,6 +1029,16 @@ impl Drop for Install {
     }
 }
 
+/// The command line of `pid`, as `ps` shows it.
+#[cfg(unix)]
+fn ps_command(pid: u32) -> String {
+    let ps = Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps");
+    String::from_utf8_lossy(&ps.stdout).trim().to_string()
+}
+
 fn ends(rx: &Receiver<String>) {
     let deadline = Instant::now() + WAIT;
     loop {
@@ -1074,20 +1077,14 @@ fn with_the_broker_down_the_full_bundle_serves_the_session() {
     let out = lines(child.stdout.take().unwrap());
     let mut stdin = child.stdin.take().unwrap();
     serves(&mut stdin, &out, true);
-    let pipe = sb.pipe();
-    assert_eq!(
-        recv_line_with(&err, "cannot reach broker"),
-        format!("[wmux-mcp-shim] cannot reach broker at {pipe}: connect ENOENT {pipe}")
-    );
-    assert!(recv_line_with(&err, "falling back").contains("index.js"));
+    assert_eq!(recv_line_with(&err, "[wmux-mcp-shim]"), "[wmux-mcp-shim] no broker");
+    // Same pid, now node: argv[0] is `node` (not the absolute path), then
+    // the entry script and the shim's own arguments.
     #[cfg(unix)]
     {
-        let ps = Command::new("ps")
-            .args(["-o", "command=", "-p", &child.id().to_string()])
-            .output()
-            .expect("ps");
-        let command = String::from_utf8_lossy(&ps.stdout);
-        assert!(command.contains("index.js") && command.contains("--core"), "{command}");
+        let command = ps_command(child.id());
+        assert!(command.starts_with("node "), "{command}");
+        assert!(command.contains("/index.js --core"), "{command}");
     }
     child.kill().expect("kill the shim's pid");
     ends(&out);
@@ -1095,7 +1092,7 @@ fn with_the_broker_down_the_full_bundle_serves_the_session() {
 }
 
 /// A broker that takes the handshake and never answers: after ACK_DEADLINE
-/// the full bundle serves the session, including the bytes the host sent
+/// (5 s) the full bundle serves the session, including the bytes the host sent
 /// while the shim was waiting (none were read).
 #[test]
 fn a_silent_broker_gets_the_fallback_within_the_deadline() {
@@ -1114,11 +1111,8 @@ fn a_silent_broker_gets_the_fallback_within_the_deadline() {
     read_line(&mut conn);
     serves(&mut stdin, &out, true);
     let elapsed = started.elapsed();
-    assert!(elapsed >= Duration::from_secs(2), "{elapsed:?}");
-    assert_eq!(
-        recv_line_with(&err, "no session"),
-        "[wmux-mcp-shim] no session from the broker: no answer within 2 s"
-    );
+    assert!(elapsed >= Duration::from_secs(5), "{elapsed:?}");
+    assert_eq!(recv_line_with(&err, "[wmux-mcp-shim]"), "[wmux-mcp-shim] no ack in 5 s");
     drop(conn);
     child.kill().expect("kill the shim's pid");
     let _ = child.wait();
@@ -1168,11 +1162,16 @@ fn falls_back_on_an_early_close(install: &Install, sb: &Sandbox, want: &str) {
     drop(conn);
     serves(&mut stdin, &out, false);
     assert_eq!(
-        recv_line_with(&err, "no session"),
-        "[wmux-mcp-shim] no session from the broker: it closed the connection"
+        recv_line_with(&err, "[wmux-mcp-shim]"),
+        "[wmux-mcp-shim] closed before ack"
     );
-    let line = recv_line_with(&err, "falling back");
-    assert!(line.replace('\\', "/").ends_with(want), "{line}");
+    #[cfg(unix)]
+    {
+        let command = ps_command(child.id());
+        assert!(command.starts_with("node ") && command.contains(want), "{command}");
+    }
+    #[cfg(windows)]
+    let _ = want;
     child.kill().expect("kill the shim's pid");
     let _ = child.wait();
 }
@@ -1215,8 +1214,15 @@ fn a_development_build_falls_back_to_the_repository_entry_script() {
     read_line(&mut conn);
     drop(conn);
     serves(&mut stdin, &out, false);
-    let line = recv_line_with(&err, "falling back");
-    assert!(line.replace('\\', "/").ends_with("/dist/mcp/mcp/entry.js"), "{line}");
+    assert_eq!(
+        recv_line_with(&err, "[wmux-mcp-shim]"),
+        "[wmux-mcp-shim] closed before ack"
+    );
+    #[cfg(unix)]
+    {
+        let command = ps_command(child.id());
+        assert!(command.contains("/dist/mcp/mcp/entry.js"), "{command}");
+    }
     child.kill().expect("kill the shim's pid");
     let _ = child.wait();
 }
@@ -1238,10 +1244,7 @@ fn an_unmarked_index_beside_the_binary_is_not_used() {
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(1));
     assert_eq!(
         err.join().unwrap(),
-        format!(
-            "[wmux-mcp-shim] no session from the broker: it closed the connection\n{}",
-            install.no_bundle_line()
-        )
+        format!("[wmux-mcp-shim] closed before ack\n{}", install.no_bundle_line())
     );
 }
 
@@ -1285,4 +1288,97 @@ fn a_drop_after_the_ack_exits_1_without_falling_back() {
     drop(conn);
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(1));
     assert_eq!(err.join().unwrap(), "[wmux-mcp-shim] broker connection closed\n");
+}
+
+/// A refusal longer than one read (the ack reader takes 1 KiB at a time),
+/// written in one go with the connection closed right after: the second read
+/// comes after the close. Nothing may stand between the reads that fails on a
+/// closed socket (macOS refuses setsockopt then, though the rest of the line is
+/// still buffered), so it is a refusal and an exit 1, not a fallback.
+#[test]
+fn a_refusal_longer_than_one_read_survives_the_close() {
+    let reason = "x".repeat(1500);
+    for round in 0..10 {
+        let sb = Sandbox::new();
+        sb.write_token("tok");
+        let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
+        let listener = stub::bind(&sb.pipe());
+        let mut child = lone.shim(&sb, &[]).spawn().expect("spawn shim");
+        let err = collect(child.stderr.take().unwrap());
+        let mut conn = listener.accept(WAIT);
+        read_line(&mut conn);
+        let line = format!("{{\"wmuxBroker\":1,\"ok\":false,\"error\":\"{reason}\"}}\n");
+        conn.write_all(line.as_bytes()).unwrap();
+        drop(conn);
+        assert_eq!(wait_within(&mut child, WAIT).code(), Some(1), "round {round}");
+        assert_eq!(
+            err.join().unwrap(),
+            format!("[wmux-mcp-shim] broker refused the session: {reason}\n"),
+            "round {round}"
+        );
+    }
+}
+
+/// The first absolute PATH entry holding an executable node wins. Empty
+/// entries, `.` and relative entries name the working directory and are
+/// skipped even when it holds a node.
+#[cfg(unix)]
+#[test]
+fn node_comes_from_an_absolute_path_entry_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let real = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .filter(|d| d.is_absolute())
+        .map(|d| d.join("node"))
+        .find(|n| n.is_file())
+        .expect("node on PATH");
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    let Some(install) = Install::new(&sb, Layout::Marked) else {
+        return;
+    };
+    // A working directory whose own node, and rel/node, would betray a
+    // relative lookup: they leave a mark and exit 7.
+    let cwd = sb.home.join("cwd");
+    let mark = sb.home.join("fake-node-ran");
+    let fake = format!("#!/bin/sh\ntouch '{}'\nexit 7\n", mark.display());
+    std::fs::create_dir_all(cwd.join("rel")).unwrap();
+    for node in [cwd.join("node"), cwd.join("rel").join("node")] {
+        std::fs::write(&node, &fake).unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path = format!(":.::rel:{}:", real.parent().unwrap().display());
+    let mut child = install
+        .shim(&sb, &["--bot=nobody"])
+        .current_dir(&cwd)
+        .env("PATH", &path)
+        .spawn()
+        .expect("spawn shim");
+    let out = lines(child.stdout.take().unwrap());
+    let mut stdin = child.stdin.take().unwrap();
+    serves(&mut stdin, &out, false);
+    assert!(!mark.exists(), "a node from the working directory ran");
+    assert!(ps_command(child.id()).starts_with("node "));
+    drop(stdin);
+    let _ = wait_within(&mut child, WAIT);
+
+    // With no absolute entry holding node there is none, whatever the
+    // working directory holds.
+    let out = install
+        .shim(&sb, &["--bot=nobody"])
+        .current_dir(&cwd)
+        .env("PATH", ":.::rel:")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run shim");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "[wmux-mcp-shim] cannot start the full bundle: no node on PATH\n"
+    );
+    assert!(!mark.exists(), "a node from the working directory ran");
+    for f in [cwd.join("node"), cwd.join("rel").join("node")] {
+        let _ = std::fs::remove_file(f);
+    }
+    let _ = std::fs::remove_dir(cwd.join("rel"));
+    let _ = std::fs::remove_dir(&cwd);
 }

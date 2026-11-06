@@ -5,16 +5,15 @@
 // line, then drops the connection. The test compares the line byte for byte
 // (callerPid masked: each shim reports its own pid), the parsed values and
 // their key order, and the exit code, stdout and stderr that follow. Cases with
-// no token or no broker compare the refusal instead (the unreachable message
-// is node's err.message for the connect). DIVERGENCES records where the native
-// shim differs on purpose: each runs both and asserts both outcomes, so the
-// difference stays recorded rather than ignored. Two additive differences are
-// checked in place: the native handshake ends with `"ack":1` (the broker ack;
-// everything before it is shim.ts's bytes), and with no broker the native shim
-// adds one line naming the places it looked for a full bundle to fall back to
-// (the binary under test runs from a directory of its own, so there is none,
-// and it then exits 1 as shim.ts does). The stub answers a handshake that asks
-// for the ack, as the broker does.
+// no token or no broker compare the refusal instead: shim.ts prints node's
+// err.message for the connect, the native shim its fallback reason (`no
+// broker`) and the places it looked for a full bundle (the binary under test
+// runs from a directory of its own, so there is none, and it then exits 1 as
+// shim.ts does). DIVERGENCES records where the native shim differs on purpose:
+// each runs both and asserts both outcomes, so the difference stays recorded
+// rather than ignored. The native handshake also ends with `"ack":1` (the
+// broker ack; everything before it is shim.ts's bytes), checked in place, and
+// the stub answers a handshake that asks for the ack, as the broker does.
 //
 // shim.ts is bundled from source with esbuild, so the test follows the source
 // rather than a stale build. The binary is WMUX_NATIVE_HOOKS_BIN, else the
@@ -238,10 +237,11 @@ function withoutAck(line: string): string {
   return line.replace(/,"ack":1\}\n$/, '}\n');
 }
 
-/** Native stderr with no broker: shim.ts's line, then the missing-bundle line. */
-function expectRefusalPlusNoBundle(nativeStderr: string, jsStderr: string): void {
-  expect(nativeStderr.startsWith(jsStderr), nativeStderr).toBe(true);
-  expect(nativeStderr.slice(jsStderr.length)).toMatch(/^\[wmux-mcp-shim\] no full bundle to fall back to \(looked at .*index\.js\)\n$/);
+/** Native stderr with no broker: its one fallback-reason line in place of
+ *  shim.ts's connect error, then the missing-bundle line. A recorded
+ *  difference: the native shim falls back where shim.ts gives up. */
+function expectNoBrokerThenNoBundle(nativeStderr: string): void {
+  expect(nativeStderr).toMatch(/^\[wmux-mcp-shim\] no broker\n\[wmux-mcp-shim\] no full bundle to fall back to \(looked at .*index\.js\)\n$/);
 }
 
 describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshake parity', () => {
@@ -305,7 +305,7 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
     expect(native.code).toBe(js.code);
     expect(native.code).toBe(1);
     expect(native.stdout).toBe(js.stdout);
-    expectRefusalPlusNoBundle(native.stderr, js.stderr);
+    expectNoBrokerThenNoBundle(native.stderr);
     expect(js.stderr).toMatch(/^\[wmux-mcp-shim\] cannot reach broker at (.+): connect ENOENT \1\n$/);
   }, 20_000);
 
@@ -313,7 +313,7 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
     const { js, native } = await both({ name: 'stale socket', tokenFile: 'tok', broker: 'none' }, plantStaleSocket);
     expect(native.code).toBe(1);
     expect(native.code).toBe(js.code);
-    expectRefusalPlusNoBundle(native.stderr, js.stderr);
+    expectNoBrokerThenNoBundle(native.stderr);
     expect(js.stderr).toMatch(/: connect ECONNREFUSED /);
   }, 20_000);
 
