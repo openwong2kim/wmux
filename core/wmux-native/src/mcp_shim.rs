@@ -270,6 +270,7 @@ fn errno_name(e: &std::io::Error) -> String {
         (22, "EINVAL"),
         (23, "ENFILE"),
         (24, "EMFILE"),
+        (32, "EPIPE"),
         (36, "ENAMETOOLONG"),
         (40, "ELOOP"),
         (88, "ENOTSOCK"),
@@ -294,6 +295,7 @@ fn errno_name(e: &std::io::Error) -> String {
         (22, "EINVAL"),
         (23, "ENFILE"),
         (24, "EMFILE"),
+        (32, "EPIPE"),
         (35, "EAGAIN"),
         (38, "ENOTSOCK"),
         (41, "EPROTOTYPE"),
@@ -341,6 +343,12 @@ fn errno_name(e: &std::io::Error) -> String {
         _ => "UNKNOWN",
     }
     .into()
+}
+
+/// Node's err.message for a failed socket read or write mid-session:
+/// `<syscall> <code>`, e.g. `read ECONNRESET` (no address, unlike connect).
+fn socket_error(syscall: &str, e: &std::io::Error) -> String {
+    format!("{syscall} {}", errno_name(e))
 }
 
 /// Node's err.message for a failed pipe connect: `connect <code> <pipe>`.
@@ -403,7 +411,7 @@ fn pump_to_stdout(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> 
             Ok(0) => finish(Outcome::BrokerClosed),
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => finish(Outcome::BrokerError(e.to_string())),
+            Err(e) => finish(Outcome::BrokerError(socket_error("read", &e))),
         };
         // A write failure means the host stopped reading: its session is over
         // (exit 0, the divergence the module doc states).
@@ -425,7 +433,7 @@ fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) {
             Err(_) => finish(Outcome::StdinError),
         };
         if let Err(e) = write(&buf[..n]) {
-            finish(Outcome::BrokerError(e.to_string()));
+            finish(Outcome::BrokerError(socket_error("write", &e)));
         }
     }
 }
@@ -555,7 +563,7 @@ mod sys {
 
     pub fn session(mut conn: UnixStream, handshake: &[u8]) -> ! {
         if let Err(e) = conn.write_all(handshake) {
-            finish(Outcome::BrokerError(e.to_string()));
+            finish(Outcome::BrokerError(super::socket_error("write", &e)));
         }
         install_exit_handlers();
         let mut reader = match conn.try_clone() {
@@ -855,7 +863,7 @@ mod sys {
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
         };
         if let Err(e) = conn.write_all(&writer_event, handshake) {
-            finish(Outcome::BrokerError(e.to_string()));
+            finish(Outcome::BrokerError(super::socket_error("write", &e)));
         }
         install_exit_handlers();
         let reader = Arc::clone(&conn);
@@ -994,6 +1002,26 @@ mod tests {
             "Unknown system error -9999"
         };
         assert_eq!(connect_error(&os(9999), "/p"), format!("connect {unknown} /p"));
+    }
+
+    #[test]
+    fn a_mid_session_socket_error_is_worded_as_nodes_err_message() {
+        let os = std::io::Error::from_raw_os_error;
+        let (reset, pipe) = if cfg!(windows) {
+            (64, 232)
+        } else if cfg!(target_os = "linux") {
+            (104, 32)
+        } else {
+            (54, 32)
+        };
+        assert_eq!(socket_error("read", &os(reset)), "read ECONNRESET");
+        assert_eq!(socket_error("write", &os(pipe)), "write EPIPE");
+        assert_eq!(
+            Outcome::BrokerError(socket_error("read", &os(reset)))
+                .message()
+                .unwrap(),
+            "[wmux-mcp-shim] broker connection error: read ECONNRESET"
+        );
     }
 
     #[test]

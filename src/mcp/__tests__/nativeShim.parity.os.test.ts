@@ -56,8 +56,9 @@ interface Run {
 }
 
 /** What the stub broker does: take the handshake and hang up, take it and
- *  keep writing until the shim goes, or not be there at all. */
-type Broker = 'hangup' | 'flood' | 'none';
+ *  keep writing until the shim goes, take it and close with bytes from the
+ *  shim still unread (a reset on Linux), or not be there at all. */
+type Broker = 'hangup' | 'flood' | 'reset' | 'none';
 
 interface Case {
   name: string;
@@ -111,6 +112,7 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
   let line: string | null = null;
   const broker = c.broker ?? 'hangup';
   const flooding = new Set<ReturnType<typeof setInterval>>();
+  let child: ReturnType<typeof spawn> | null = null;
   if (broker !== 'none') {
     const srv = net.createServer((sock) => {
       let buf = Buffer.alloc(0);
@@ -120,6 +122,14 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
         if (nl === -1 || line !== null) return;
         line = buf.subarray(0, nl + 1).toString('utf8');
         if (broker === 'hangup') { sock.destroy(); return; }
+        if (broker === 'reset') {
+          // Stop reading, have the host send a line the shim forwards, then
+          // close with it unread in this socket's receive queue.
+          sock.pause();
+          setTimeout(() => child?.stdin?.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n'), 50);
+          setTimeout(() => sock.destroy(), 400);
+          return;
+        }
         const timer = setInterval(() => sock.write('{"jsonrpc":"2.0","method":"notifications/ping"}\n'), 20);
         flooding.add(timer);
         sock.on('close', () => { clearInterval(timer); flooding.delete(timer); });
@@ -135,19 +145,20 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
   const [cmd, ...args] = runtime === 'js'
     ? [process.execPath, jsShim, ...(c.args ?? [])]
     : [NATIVE ?? EXE, 'mcp-shim', ...(c.args ?? [])];
-  const child = spawn(cmd, args, { env: childEnv(suffix, c.env ?? {}), stdio: ['pipe', 'pipe', 'pipe'] });
+  const proc = spawn(cmd, args, { env: childEnv(suffix, c.env ?? {}), stdio: ['pipe', 'pipe', 'pipe'] });
+  child = proc;
   let stdout = '';
   let stderr = '';
-  if (c.closeStdout) child.stdout.destroy();
-  else child.stdout.on('data', (d) => { stdout += d; });
-  child.stderr.on('data', (d) => { stderr += d; });
+  if (c.closeStdout) proc.stdout.destroy();
+  else proc.stdout.on('data', (d) => { stdout += d; });
+  proc.stderr.on('data', (d) => { stderr += d; });
   // 'close', not 'exit': stdout and stderr may still hold data at exit.
-  const code = await new Promise<number | null>((resolve) => child.on('close', (c2) => resolve(c2)));
+  const code = await new Promise<number | null>((resolve) => proc.on('close', (c2) => resolve(c2)));
   for (const timer of flooding) clearInterval(timer);
-  child.stdin.destroy();
+  proc.stdin.destroy();
   const srv = server;
   if (srv) await new Promise<void>((resolve) => srv.close(() => resolve()));
-  return { line, pid: child.pid ?? -1, code, stdout, stderr };
+  return { line, pid: proc.pid ?? -1, code, stdout, stderr };
 }
 
 /** Both shims on one suffix. With a broker they take turns at it; without
@@ -265,6 +276,16 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
     expect(native.code).toBe(js.code);
     expect(native.stderr).toBe(js.stderr);
     expect(native.stderr).toMatch(/: connect ECONNREFUSED /);
+  }, 20_000);
+
+  // A Unix socket closed with unread bytes resets its peer on Linux only;
+  // macOS reports a plain end of stream, and a Windows pipe has no such state.
+  it.skipIf(process.platform !== 'linux')('a reset mid-session: the same `read ECONNRESET` error', async () => {
+    const { js, native } = await both({ name: 'reset', tokenFile: 'tok', broker: 'reset' });
+    expect(js.stderr).toBe('[wmux-mcp-shim] broker connection error: read ECONNRESET\n');
+    expect(native.stderr).toBe(js.stderr);
+    expect(native.code).toBe(1);
+    expect(native.code).toBe(js.code);
   }, 20_000);
 
   for (const d of DIVERGENCES) {
