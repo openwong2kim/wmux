@@ -243,9 +243,10 @@ function reasonOf(verdict: ProbeVerdict, known: 'pass' | 'fail' | undefined): st
 }
 
 /** Files an interrupted run left: asides and staged copies. Under the lock, so
- *  none is another run's own. */
+ *  none is another run's own. While the copy's name is empty (a Windows swap
+ *  whose undo failed), an aside is the only good copy: it is left alone. */
 function sweep(destinationPath: string): void {
-  sweepAsides(destinationPath);
+  if (fs.existsSync(destinationPath)) sweepAsides(destinationPath);
   const dir = path.dirname(destinationPath);
   const prefix = `${path.basename(destinationPath)}.staged-`;
   let names: string[];
@@ -285,7 +286,7 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
   const currentKey = current ? probeKey(sha256Of(current), opts.line) : undefined;
   // What a refresh that does not happen still offers: the copy in place.
   const keep = (reason: string): ProbedNativeResult =>
-    currentKey && recordedProbe(opts.recordDir, currentKey) === 'pass'
+    currentKey && recordedProbe(opts.recordDir, currentKey) === 'pass' && fs.existsSync(dest)
       ? { binary: dest, reason: `${reason}; the installed copy stays` }
       : { binary: null, reason };
   if (known === 'fail') return keep(reasonOf('fail', known));
@@ -354,7 +355,9 @@ function swapIn(staged: string, dest: string, hasCurrent: boolean, platform: Nod
   try {
     fs.renameSync(staged, dest);
   } catch (error) {
-    fs.renameSync(aside, dest);
+    // Undo; if that fails too the name stays empty and the aside is kept
+    // (see sweep). Either way the first failure is the one reported.
+    try { fs.renameSync(aside, dest); } catch { /* the aside is kept */ }
     throw error;
   }
   try { fs.unlinkSync(aside); } catch { /* still running: swept next time */ }

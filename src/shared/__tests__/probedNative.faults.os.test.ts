@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PROBE_LOCK, lockDir } from '../probedNative';
+import { PROBE_LOCK, lockDir, prepareProbedNative, type ProbeVerdict } from '../probedNative';
 
 vi.mock('fs', async (importOriginal) => {
   const real = await importOriginal<typeof import('fs')>();
@@ -48,6 +48,44 @@ afterEach(() => {
   vi.mocked(fs.unlinkSync).mockImplementation(realFs.unlinkSync as never);
   vi.mocked(fs.renameSync).mockImplementation(realFs.renameSync as never);
   realFs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe('prepareProbedNative — a Windows swap whose undo fails too', () => {
+  it('offers nothing while the copy is missing, keeps the aside through the next sweep, and reports the first error', async () => {
+    const dest = path.join(dir, 'wmux-native.exe');
+    const source = path.join(dir, 'source.exe');
+    const ship = (text: string) => realFs.writeFileSync(source, `${text} wmux-managed: native-hooks`);
+    const probe = async (binary: string): Promise<ProbeVerdict> => (realFs.readFileSync(binary, 'utf8').includes('good') ? 'pass' : 'fail');
+    const prepare = (p = probe) => prepareProbedNative({
+      sourcePath: source, destinationPath: dest, recordDir: dir, line: 'line 1', probe: p,
+      ownershipMarkers: ['wmux-managed: native-hooks'], platform: 'win32',
+    });
+    ship('good v1');
+    expect(await prepare()).toEqual({ binary: dest });
+    ship('good v2');
+    // The staged copy cannot take the name, and the aside cannot go back.
+    vi.mocked(fs.renameSync).mockImplementation(((from: string, to: string) => {
+      if (to === dest && String(from).includes('.staged-')) throw Object.assign(new Error('EPERM: staged held'), { code: 'EPERM' });
+      if (to === dest && String(from).includes('.previous-')) throw Object.assign(new Error('EBUSY: undo failed'), { code: 'EBUSY' });
+      return realFs.renameSync(from, to);
+    }) as never);
+    const result = await prepare();
+    expect(result.binary).toBeNull();
+    expect(result.reason).toContain('EPERM: staged held');
+    expect(result.reason).not.toContain('EBUSY');
+    const asides = () => realFs.readdirSync(dir).filter((f) => f.includes('.previous-'));
+    expect(realFs.existsSync(dest)).toBe(false);
+    expect(asides()).toHaveLength(1);
+    // The next run sweeps first, but never the only good copy while the name
+    // is empty; v2's recorded pass then installs it without a probe.
+    vi.mocked(fs.renameSync).mockImplementation(realFs.renameSync as never);
+    expect(await prepare()).toEqual({ binary: dest });
+    expect(realFs.readFileSync(dest, 'utf8')).toBe('good v2 wmux-managed: native-hooks');
+    expect(asides()).toHaveLength(1);
+    // With the name filled again, the aside is swept.
+    await prepare();
+    expect(asides()).toEqual([]);
+  });
 });
 
 describe('lockDir — taking over a stale lock', () => {
