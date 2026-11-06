@@ -190,7 +190,7 @@ describe('ProcessMonitor on the native process table', () => {
     monitor.unwatchAll();
   });
 
-  it('keeps the spawn cadence off Windows', async () => {
+  it('sweeps at the no-spawn cadence off Windows (kill(0)), without loading the native module', async () => {
     Object.defineProperty(process, 'platform', { value: 'linux' });
     vi.useFakeTimers();
     const { ProcessMonitor } = await load();
@@ -198,7 +198,7 @@ describe('ProcessMonitor on the native process table', () => {
     const monitor = new ProcessMonitor(15_000, 3_000);
     monitor.watch('s', 100, vi.fn());
     await vi.advanceTimersByTimeAsync(14_000);
-    expect(batch).toHaveBeenCalledTimes(1);
+    expect(batch).toHaveBeenCalledTimes(5); // immediate + 4 ticks at 3 s
     expect(native.load).not.toHaveBeenCalled();
     monitor.unwatchAll();
   });
