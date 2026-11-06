@@ -376,20 +376,27 @@ async function installNativeHooks(
 ): Promise<{ outcome: LifecycleAssetInstallOutcome; active: string | null } | null> {
   if (!spec) return null;
   const before = inspectLifecycleAsset(spec);
+  let probed = false;
   const result = await prepareProbedNative({
     sourcePath: spec.sourcePath,
     destinationPath: spec.destinationPath,
     recordDir: path.dirname(spec.destinationPath),
     line: NATIVE_HOOKS_PROBE_KEY,
-    probe: (binary) => runProbe(binary, ['--version'], NATIVE_HOOKS_PROBE, NATIVE_HOOKS_PROBE_TIMEOUT_MS),
+    probe: (binary) => {
+      probed = true;
+      return runProbe(binary, ['--version'], NATIVE_HOOKS_PROBE, NATIVE_HOOKS_PROBE_TIMEOUT_MS);
+    },
     ownershipMarkers: spec.ownershipMarkers,
     mode: spec.mode,
     reprobe: opts.reprobe,
   });
   const after = inspectLifecycleAsset(spec);
-  // Nothing offered can still mean nothing was proved (the lock held
-  // elsewhere): the copy in place is then judged as status judges it.
-  const active = result.binary ?? activeNativeHooksPath(spec, after);
+  // Nothing offered without a probe (the lock held elsewhere) proved nothing:
+  // the copy in place is then judged as status judges it. Once a probe ran
+  // and did not pass, even one that proved nothing (a copy that could not be
+  // started), only a recorded pass, which prepareProbedNative already offers,
+  // keeps the entries native.
+  const active = result.binary ?? (probed ? null : activeNativeHooksPath(spec, after));
   if (active && after.state === 'current') {
     const action = before.state === 'missing' ? 'installed' : before.state === 'current' ? 'none' : 'refreshed';
     return { outcome: { ...after, action }, active };

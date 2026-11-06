@@ -519,6 +519,23 @@ describe.skipIf(process.platform === 'win32')('native bridge side effects', () =
   // A run that cannot take the lock proves nothing new: the copy in place is
   // offered by the rule status uses, including a copy an older wmux installed
   // before any verdict was recorded (it kept a copy only once it ran).
+  // The probe ran and proved nothing (the copy could not be started: noexec,
+  // application control): that is no reason to trust a copy no verdict was
+  // recorded for. The entries go to Node, and nothing is recorded.
+  it('a current copy with no verdict that cannot be started: Node, the reason, nothing recorded', async () => {
+    await installCompatHooks('copilot', withNative);
+    const hooks = path.dirname(dest());
+    fs.unlinkSync(path.join(hooks, PROBE_RECORD));
+    fs.chmodSync(dest(), 0o600);
+    const outcome = await installCompatHooks('copilot', withNative);
+    expect(outcome.native).toMatchObject({ state: 'error', error: 'self-test could not start' });
+    expect(outcome.nativeSummary).toMatch(/not used \(self-test could not start\).*node/);
+    expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
+    const key = probeKey(sha256Of(fs.readFileSync(dest())), expectationKey({ contains: 'wmux-managed: native-hooks' }));
+    expect(recordedProbe(hooks, key)).toBeUndefined();
+    expect(fs.existsSync(path.join(hooks, PROBE_RECORD))).toBe(false);
+  });
+
   it('without the lock, keeps the entries on a copy status counts as working', async () => {
     if (process.getuid?.() === 0) return;
     await installCompatHooks('copilot', withNative);
