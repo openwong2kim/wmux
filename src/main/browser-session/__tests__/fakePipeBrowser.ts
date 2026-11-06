@@ -45,7 +45,7 @@ export class FakeBrowser {
     this.emit(`{"method":${JSON.stringify(method)},"params":${JSON.stringify(params)},"sessionId":${JSON.stringify(sessionId)}}`);
   }
 
-  private handle(c: Command): void {
+  protected handle(c: Command): void {
     if (c.sessionId !== undefined && !this.sessions.has(c.sessionId)) {
       this.reply(c, '"error":{"code":-32001,"message":"Session with given id not found."}');
       return;

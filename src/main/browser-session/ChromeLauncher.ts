@@ -4,7 +4,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
 import type { CdpConnection } from './CdpSocket';
-import { portTransport, type ChromeTransport } from './ChromeTransport';
+import type { Readable, Writable } from 'node:stream';
+import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTransport';
+import { CdpPipeMux } from './CdpPipeMux';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
 import { surfaceOpeners } from './SurfaceOpeners';
@@ -79,6 +81,14 @@ const TARGET_WATCHER_ENV = 'WMUX_CHROME_TARGET_WATCHER';
 /** Whether dedicated launchers may run their tab-target watcher (and so attach page sessions). */
 export function chromeTargetWatcherEnabled(): boolean {
   return process.env[TARGET_WATCHER_ENV] !== '0';
+}
+
+/**
+ * How a launched Chrome is reached: its DevTools port (the default), or a
+ * debugging pipe on fds 3 and 4 (`WMUX_CHROME_TRANSPORT=pipe`, off by default).
+ */
+export function chromeTransportKind(): 'port' | 'pipe' {
+  return process.env.WMUX_CHROME_TRANSPORT === 'pipe' ? 'pipe' : 'port';
 }
 
 export interface ChromeTargetInfo {
@@ -1887,14 +1897,21 @@ export class ChromeLauncher implements ChromeBackendClient {
     // A fresh Chrome starts with a fresh list: what the last one was refused
     // is not what this one will ask for.
     this.blocked.clear();
+    const pipe = chromeTransportKind() === 'pipe';
     if (plan) {
       await this.evictExisting();
     } else {
       // Protection is off: the previous instance's proxy has nothing to serve.
       this.proxy?.close();
       this.proxy = null;
-      const adopted = await this.adoptExisting();
-      if (adopted !== null) return adopted;
+      // A Chrome on a pipe can't be adopted (it exits with the process that
+      // holds the pipe), and one still running on this profile would take the
+      // new start over: it is closed instead, as for a protected profile.
+      if (pipe) await this.evictExisting();
+      else {
+        const adopted = await this.adoptExisting();
+        if (adopted !== null) return adopted;
+      }
     }
 
     const binary = discoverChromeBinary();
@@ -1905,12 +1922,12 @@ export class ChromeLauncher implements ChromeBackendClient {
       );
     }
 
-    const pinned = this.pinnedPort();
+    const pinned = pipe ? null : this.pinnedPort();
     // Port 0 (the normal path): Chrome picks an ephemeral port and records it
     // in DevToolsActivePort. The file may still hold the PREVIOUS instance's
     // endpoint (already probed dead by adoptExisting above) — snapshot it so
     // the fresh write is recognized by content, not mere existence.
-    const stale = pinned === null ? this.readPortFile() : null;
+    const stale = !pipe && pinned === null ? this.readPortFile() : null;
 
     if (this.profileLabel) seedChromeProfileLabel(this.userDataDir, this.profileLabel);
 
@@ -1922,9 +1939,13 @@ export class ChromeLauncher implements ChromeBackendClient {
       binary,
       [
         `--user-data-dir=${this.userDataDir}`,
-        `--remote-debugging-port=${pinned ?? 0}`,
-        // connectOverCDP's websocket handshake (Chrome 111+ origin check).
-        '--remote-allow-origins=*',
+        ...(pipe
+          ? ['--remote-debugging-pipe']
+          : [
+            `--remote-debugging-port=${pinned ?? 0}`,
+            // connectOverCDP's websocket handshake (Chrome 111+ origin check).
+            '--remote-allow-origins=*',
+          ]),
         // `--remote-debugging-port` alone flips `navigator.webdriver` to true on
         // every page, even with no client attached; this restores its normal value.
         '--disable-blink-features=AutomationControlled',
@@ -1939,7 +1960,8 @@ export class ChromeLauncher implements ChromeBackendClient {
         ...protectedArgs,
         ...this.extraArgs,
       ],
-      { stdio: 'ignore' },
+      // The pipe: Chrome reads fd 3 and writes fd 4.
+      { stdio: pipe ? ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] : 'ignore' },
     );
 
     // BrokerSupervisor idiom: a failed spawn emits BOTH 'error' and 'exit' —
@@ -1954,6 +1976,17 @@ export class ChromeLauncher implements ChromeBackendClient {
     child.on('exit', onGone);
 
     this.child = child;
+    // The pipe ends with the process; one that breaks first ends it too.
+    const piped = pipe
+      ? pipeTransport(new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable, {
+        onClose: () => {
+          if (this.child !== child) return;
+          try {
+            child.kill();
+          } catch { /* already gone */ }
+        },
+      }))
+      : null;
 
     // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
     // poll /json/version until the endpoint answers. Past READY_TIMEOUT_MS a
@@ -1963,12 +1996,13 @@ export class ChromeLauncher implements ChromeBackendClient {
     for (;;) {
       if (gone) throw new Error('ChromeLauncher: Chrome exited during startup');
       let candidate = pinned;
-      if (candidate === null) {
+      if (candidate === null && !piped) {
         const fresh = this.readPortFile();
         candidate = fresh && fresh.raw !== stale?.raw ? fresh.port : null;
       }
-      if (candidate !== null) {
-        const probe = this.bindEndpoint(portTransport(candidate));
+      const reachable = piped ?? (candidate !== null ? portTransport(candidate) : null);
+      if (reachable) {
+        const probe = this.bindEndpoint(reachable);
         try {
           await probe.ping();
           this.markReady(probe);
@@ -2001,7 +2035,7 @@ export class ChromeLauncher implements ChromeBackendClient {
               throw err;
             }
           }
-          return candidate;
+          return candidate ?? 0;
         } catch (err) {
           // Enforcement that failed is final for this launch: the child is
           // already stopped, so polling on would only wait out the deadline.
