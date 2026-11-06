@@ -122,6 +122,25 @@ describe('guarded tail: served', () => {
     });
   }
 
+  it('origin mode set before the ring start is served: the whole-ring replay does not restore it either', async () => {
+    // ?6h falls out of a small ring; the pages set margins inside the tail.
+    // The whole-ring replay starts with origin off, as the tail does, so both
+    // put the text on row 1 (a live terminal would put it on row 3).
+    const ringBuffer = new RingBuffer(320 * 1024);
+    const outputModes = new OutputModeTracker();
+    for (const chunk of pages('\x1b[?6h', (i) => `\x1b[3;20r\x1b[1;1Horigin ${i}\x1b[r\r\n`)) {
+      ringBuffer.write(Buffer.from(chunk, 'utf8'));
+      outputModes.feed(chunk, ringBuffer.totalBytesWritten);
+    }
+    expect(ringBuffer.totalBytesWritten).toBeGreaterThan(ringBuffer.size);
+    const s = { meta: { cols: COLS, rows: ROWS }, ringBuffer, bridge: { outputModes } };
+    const full = texts(await queuedScreenText(table(s), 'pane'));
+    const guarded = await queuedScreenTail(table(s), 'pane', 'stallwatch');
+    expect(guarded?.via).toBe('tail');
+    expect(texts(guarded)).toEqual(full);
+    expect(full.findIndex((row) => row.startsWith('origin 359'))).toBe(0);
+  });
+
   it('a ring that fits in the tail is read whole', async () => {
     const s = session(['\x1b[2;20rsmall ring\r\n']);
     const guarded = await queuedScreenTail(table(s), 'pane', 'stallwatch');

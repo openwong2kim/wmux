@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TailHazardScan } from '../tailHazards';
+import { OutputInterpreter } from '../OutputInterpreter';
 
 /** A scan of `stream`, fed in pieces cut at `cuts` (byte offsets), as successive ring reads would. */
 function scanned(stream: string, cuts: number[] = [], ringStart = 0): { scan: TailHazardScan; end: number } {
@@ -105,5 +106,20 @@ describe('tail hazard scan', () => {
     const { scan, end } = scanned(toggles);
     expect(scan.hazardAt(end, 24)).toBeNull();
     expect(scan.hazardAt(5, 24)).toBe('hazard-history');
+  });
+
+  it('the mode preamble restores no hazard, so the whole-ring replay starts every hazard at its default', () => {
+    // The scan starts at the ring's oldest byte with defaults because neither
+    // mode tracker (JS MODE_DEFAULTS, rust output_interpreter.rs MODES)
+    // replays a hazard. If one ever does, the scan must seed it from there.
+    const hazards = '\x1b[?6h\x1b[?69h\x1b[4h\x1b[20h\x1b[2;20r\x1b(0\x1bH';
+    for (const backend of ['node', 'rust'] as const) {
+      const interpreter = new OutputInterpreter(backend);
+      interpreter.feed(`${hazards}\x1b[?1h`, hazards.length + 5);
+      const preamble = interpreter.modes.preamble(hazards.length + 5);
+      expect(preamble, backend).toContain('\x1b[?1h');
+      for (const hazard of ['\x1b[?6h', '\x1b[?69h', '\x1b[4h', '\x1b[20h', 'r', '\x1b(', '\x1bH']) expect(preamble, backend).not.toContain(hazard);
+      interpreter.dispose();
+    }
   });
 });
