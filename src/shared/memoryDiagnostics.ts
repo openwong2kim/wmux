@@ -45,6 +45,40 @@ export interface DaemonMemoryDiagnostics {
    * fallback and skip. Absent from older daemons.
    */
   snapshots?: { ansi: SnapshotBackendCounters; text: SnapshotBackendCounters };
+  /**
+   * Reads answered from the ring's newest 256 KiB instead of the whole ring,
+   * by the site that asked (`fleet`, `stallwatch`). Absent from older daemons.
+   */
+  tailReads?: Record<string, TailReadCounters>;
+}
+
+/** Counts and times only: never terminal text. */
+export interface TailReadCounters {
+  /** Jobs that ran (reuse of a previous answer is in `screenReads`). */
+  reads: number;
+  /** Answered by the tail. */
+  served: number;
+  /** The whole ring fit in the tail, so the tail was the whole replay. */
+  whole: number;
+  /** Answered by the whole ring instead, by why the tail could not be. */
+  fallbacks: Record<string, number>;
+  /** Ring copy, hazard scan and tail parse: until the read knew whether the tail serves. */
+  tailMsTotal: number;
+  tailMsMax: number;
+  /** The whole-ring parse of a fallback. */
+  fallbackMsTotal: number;
+  fallbackMsMax: number;
+  /** Copying the whole ring out, which every read still does. */
+  ringCopyMsTotal: number;
+  ringCopyMsMax: number;
+  /** The hazard scan of the ring bytes new since the session's last scan. */
+  scanMsTotal: number;
+  scanMsMax: number;
+  scanBytes: number;
+  /** Served answers also compared with the whole ring's (at most one per pane per 10 minutes). */
+  checks: number;
+  /** What differed in those comparisons, by part (`viewport`, `history`, a site input and its direction). */
+  mismatches: Record<string, number>;
 }
 
 export interface SnapshotBackendCounters {
@@ -94,7 +128,15 @@ export function isDaemonMemoryDiagnostics(value: unknown): value is DaemonMemory
     countersByKey(value.screenReads, ['hits', 'joins', 'misses']) &&
     countersByKey(value.screenParses, ['parses', 'msTotal', 'msMax', 'bytes']) &&
     (value.snapshotQueue === undefined || (record(value.snapshotQueue) && counters(value.snapshotQueue, ['jobs', 'waitMsTotal', 'waitMsMax', 'runMsTotal', 'runMsMax']))) &&
-    (value.eventLoop === undefined || (record(value.eventLoop) && counters(value.eventLoop, ['activeMs', 'idleMs'])));
+    (value.eventLoop === undefined || (record(value.eventLoop) && counters(value.eventLoop, ['activeMs', 'idleMs']))) &&
+    (value.tailReads === undefined || (record(value.tailReads) && Object.values(value.tailReads).every(tailReadCounters)));
+}
+
+function tailReadCounters(value: unknown): boolean {
+  return record(value) && counters(value, ['reads', 'served', 'whole', 'tailMsTotal', 'tailMsMax', 'fallbackMsTotal', 'fallbackMsMax',
+    'ringCopyMsTotal', 'ringCopyMsMax', 'scanMsTotal', 'scanMsMax', 'scanBytes', 'checks']) &&
+    record(value.fallbacks) && counters(value.fallbacks, Object.keys(value.fallbacks)) &&
+    record(value.mismatches) && counters(value.mismatches, Object.keys(value.mismatches));
 }
 
 export function isAppMemoryDiagnostics(value: unknown): value is AppMemoryDiagnostics {

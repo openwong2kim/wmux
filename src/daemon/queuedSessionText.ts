@@ -4,6 +4,7 @@ import { enqueueSnapshotJob, generateTextSnapshotUnqueued, type TextSnapshotOutc
 import { snapshotRingTextUnqueued } from './nativeRingSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
 import { fencedRead, identityTag, noteScreenParse } from './screenReadCache';
+import { guardedTailRead, type TailInputs, type TailOutcome, type TailSite } from './guardedTailRead';
 
 /** What a queued text read needs of a session (a ManagedSession). */
 export interface TextReadSession {
@@ -44,13 +45,13 @@ function sessionToken(session: TextReadSession): number {
  * session's last answer of the same kind gets that answer without queueing
  * (screenReadCache).
  */
-function queuedSessionRead(
+function queuedSessionRead<T extends TextSnapshotOutcome>(
   sessions: TextReadSessions,
   sessionId: string,
   kind: string,
-  read: (session: TextReadSession) => Promise<TextSnapshotOutcome>,
+  read: (session: TextReadSession) => Promise<T>,
   reuse = true,
-): Promise<TextSnapshotOutcome | null> {
+): Promise<T | null> {
   const pinned = sessions.getSession(sessionId);
   // Already gone: the answer the job would give at its turn, without the wait.
   if (!pinned) return Promise.resolve(null);
@@ -116,4 +117,30 @@ export function queuedScreenText(sessions: TextReadSessions, sessionId: string, 
       initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
       ...(undimmed ? { undimmed: true } : {}),
     }));
+}
+
+/**
+ * queuedTextSnapshot from the ring's newest 256 KiB when that gives the same
+ * rows (guardedTailRead.ts), else from the whole ring. For display only (the
+ * Fleet preview): its own kind, so its answers are never reused by, or joined
+ * to, a whole-ring read.
+ */
+export function queuedTextTail(sessions: TextReadSessions, sessionId: string, scrollback: number, site: TailSite): Promise<TailOutcome | null> {
+  return queuedSessionRead(sessions, sessionId, `text-tail:${scrollback}`, (managed) => {
+    const request = { cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24, scrollback };
+    return guardedTailRead(managed, { site, parse: (initial) => generateTextSnapshotUnqueued({ ...request, initial }) });
+  }, scrollback <= REUSE_MAX_SCROLLBACK);
+}
+
+/**
+ * queuedScreenText (plain) from the ring's newest 256 KiB when that gives the
+ * same rows, else from the whole ring. For estimates only (StallWatch), never
+ * for a safety gate: its own kind, as queuedTextTail. `inputs` are the site's
+ * decisions over the rows, which the real-data check compares by count.
+ */
+export function queuedScreenTail(sessions: TextReadSessions, sessionId: string, site: TailSite, inputs?: TailInputs): Promise<TailOutcome | null> {
+  return queuedSessionRead(sessions, sessionId, 'screen-tail:plain', (managed) => {
+    const request = { cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24, scrollback: 0 };
+    return guardedTailRead(managed, { site, inputs, parse: (initial) => generateTextSnapshotUnqueued({ ...request, initial }) });
+  });
 }
