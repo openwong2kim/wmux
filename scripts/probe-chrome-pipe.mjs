@@ -53,18 +53,22 @@ function candidates(name) {
     : ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable', '/opt/microsoft/msedge/msedge'];
 }
 
-/** Processes whose command line names `marker` (the temporary profile path). */
+/**
+ * Processes whose command line names `marker` (the temporary profile path), as
+ * "pid name". The query's own process is left out: its command line holds the
+ * marker too.
+ */
 function processesNaming(marker) {
   try {
     if (process.platform === 'win32') {
       const escaped = marker.replace(/'/g, "''");
       const out = execFileSync('powershell.exe', ['-NoProfile', '-Command',
-        `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${escaped}') } | ForEach-Object { $_.ProcessId }`],
+        `Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains('${escaped}') } | ForEach-Object { "$($_.ProcessId) $($_.Name)" }`],
       { encoding: 'utf8' });
-      return out.split(/\s+/).filter(Boolean).map(Number);
+      return out.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     }
-    const out = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
-    return out.split('\n').filter((line) => line.includes(marker)).map((line) => Number(line.trim().split(/\s+/)[0]));
+    const out = execFileSync('ps', ['-axo', 'pid=,comm=,command='], { encoding: 'utf8' });
+    return out.split('\n').filter((line) => line.includes(marker)).map((line) => line.trim().split(/\s+/).slice(0, 2).join(' '));
   } catch {
     return null;
   }
