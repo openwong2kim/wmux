@@ -1,6 +1,6 @@
-//! Process table for the daemon, in place of the processes it used to spawn
-//! for it: tasklist and a PowerShell CIM query on Windows, `ps` on macOS and
-//! Linux.
+//! Process table and listening sockets for the daemon, in place of the
+//! processes it used to spawn for them: tasklist and a PowerShell CIM query
+//! on Windows, `ps` and `lsof` (PortWatcher) on macOS and Linux.
 //!
 //! The same rules hold on every OS:
 //! - the liveness table (no details) is the walk alone, so a detail read that
@@ -27,6 +27,12 @@ mod linux;
 #[cfg(target_os = "linux")]
 #[cfg_attr(not(feature = "native-core"), allow(unused_imports))]
 pub use linux::snapshot;
+
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+mod listen_sockets;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg_attr(not(feature = "native-core"), allow(unused_imports))]
+pub use listen_sockets::{listening, ListenSocket};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProcessRow {
