@@ -462,15 +462,19 @@ async function planCliLauncher(
 ): Promise<CliLauncherPlan | null> {
   const approved = stableDir ? approvedNative(stableDir) : null;
   const brokerEnabled = process.env.WMUX_MCP_BROKER !== '0' && (await canConnectBrokerPipe(300));
+  // Inside an installed app the CLI bundle sits in resources beside app.asar,
+  // which is what makes main's app.isPackaged true.
+  const packaged = fs.existsSync(path.join(__dirname, '..', 'app.asar'));
+  // An installed app registers the stable copy of the bundle, which outlives
+  // the versioned one beside this CLI; register the same.
+  const stableBundle = packaged && stableDir ? path.join(stableDir, 'index.js') : null;
   const choice = await chooseLauncher({
-    // Inside an installed app the CLI bundle sits in resources beside app.asar,
-    // which is what makes main's app.isPackaged true.
-    packaged: fs.existsSync(path.join(__dirname, '..', 'app.asar')),
+    packaged,
     brokerEnabled,
     nativeBinary: approved,
     brokerReady: async () => brokerEnabled,
-    shimScript: brokerEnabled ? findScriptUp(SHIM_CANDIDATES) : null,
-    bundleScript: findScriptUp(FULL_BUNDLE_CANDIDATES),
+    shimScript: brokerEnabled && !packaged ? findScriptUp(SHIM_CANDIDATES) : null,
+    bundleScript: stableBundle && fs.existsSync(stableBundle) ? stableBundle : findScriptUp(FULL_BUNDLE_CANDIDATES),
   });
   return choice ? { launcher: choice.launcher, approvedNative: approved } : null;
 }

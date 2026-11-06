@@ -179,6 +179,25 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     expect(selfTest).not.toHaveBeenCalled();
   });
 
+  it('with the broker flag off, an explicit useShim still registers the bundle', async () => {
+    ship('good');
+    delete process.env.WMUX_MCP_BROKER;
+    await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: true });
+    expect(claudeEntry()).toEqual({ command: 'node', args: [path.join(stableDir(), 'index.js')] });
+  });
+
+  it('moves every entry off the node shim an older build registered, an explicitly registered target included', async () => {
+    ship('broken');
+    const shim = path.join(stableDir(), 'shim.js');
+    fs.writeFileSync(path.join(tmpHome, '.claude.json'), JSON.stringify({ mcpServers: { wmux: { command: 'node', args: [shim] } } }));
+    fs.mkdirSync(path.dirname(agyJson()), { recursive: true });
+    fs.writeFileSync(agyJson(), JSON.stringify({ mcpServers: { wmux: { command: 'node', args: [shim] } } }));
+    await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: true });
+    const bundle = { command: 'node', args: [path.join(stableDir(), 'index.js')] };
+    expect(claudeEntry()).toEqual(bundle);
+    expect(JSON.parse(fs.readFileSync(agyJson(), 'utf8')).mcpServers.wmux).toEqual(bundle);
+  });
+
   it('keeps the profile flags when it moves an entry from node to native', async () => {
     ship('good');
     fs.writeFileSync(path.join(tmpHome, '.claude.json'), JSON.stringify({ mcpServers: { wmux: { command: 'node', args: ['/old/index.js', '--core'] } } }));

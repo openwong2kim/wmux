@@ -176,7 +176,9 @@ describe('resolveWmuxLauncher / launcherForTarget', () => {
     scriptConnect('connect');
     existsSyncMock.mockImplementation((p: unknown) => /(shim|index|entry)\.js$|app\.asar$/.test(String(p)));
     const plan = await resolveWmuxLauncher(home, approvesNothing);
-    expect(plan?.launcher.kind === 'node' && plan.launcher.script).toMatch(/index\.js$|entry\.js$/);
+    // The stable copy the app registers, not the versioned one inside the app.
+    expect(plan?.launcher).toEqual({ kind: 'node', script: '/home/u/.wmux/mcp/index.js' });
+    expect(existsSyncMock.mock.calls.some(([p]) => String(p).endsWith('shim.js'))).toBe(false);
     scriptConnect('connect');
     expect((await resolveWmuxLauncher(home, approves))?.launcher).toEqual({ kind: 'native', binary: approved });
   });

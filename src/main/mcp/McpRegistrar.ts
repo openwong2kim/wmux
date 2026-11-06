@@ -188,6 +188,8 @@ export class McpRegistrar {
    * the pre-broker world is byte-identical.
    */
   private async resolveUseShim(opts?: { useShim?: boolean }): Promise<boolean> {
+    // A packaged build never registers the shim: nothing to probe or force.
+    if (app.isPackaged) return false;
     if (opts && typeof opts.useShim === 'boolean') return opts.useShim;
     if (!isMcpBrokerEnabled()) return false;
     return canConnectBrokerPipe(300);
@@ -209,8 +211,9 @@ export class McpRegistrar {
    */
   async register(authToken: string, opts?: RegisterOptions): Promise<McpTargetResult[]> {
     const useShim = await this.resolveUseShim(opts);
-    // Only the broker topology surfaces a path-choice log; flag-off stays silent.
-    if (isMcpBrokerEnabled()) {
+    // Only a dev build's broker topology surfaces a path-choice log (a packaged
+    // build never takes the shim); flag-off stays silent.
+    if (isMcpBrokerEnabled() && !app.isPackaged) {
       console.log(useShim ? '[mcp] broker reachable → shim' : '[mcp] broker unreachable → full bundle');
     }
     const results: McpTargetResult[] = [];
@@ -338,18 +341,24 @@ export class McpRegistrar {
         }
       }
 
-      // Without the launcher this time, no entry may stay on it, including
+      // No entry may stay on a launcher this build does not offer, including
       // targets this call did not cover (a target registered only on request):
-      // its copy is kept but not offered, and may not run here.
-      if (choice.lane !== 'native' && app.isPackaged) {
-        const native = nativeLauncherPath(path.join(this.home, '.wmux', 'mcp'));
+      // the node shim an older build registered, and the native launcher when
+      // it is not offered this time (its copy is kept but may not run here).
+      if (app.isPackaged) {
+        const stableDir = path.join(this.home, '.wmux', 'mcp');
+        const retired = new Map([[path.join(stableDir, 'shim.js'), 'the node shim']]);
+        if (choice.lane !== 'native') retired.set(nativeLauncherPath(stableDir), 'the native launcher');
         for (const target of MCP_TARGETS) {
+          let what: string | undefined;
           try {
-            if (readTargetStatus(target, this.home).wmux.path !== native) continue;
+            const at = readTargetStatus(target, this.home).wmux.path;
+            what = at ? retired.get(at) : undefined;
+            if (!what) continue;
             const moved = registerTarget(target, this.home, choice.launcher, this.ownedFor(target.id));
-            if (moved.wrote.length > 0) console.log(`[McpRegistrar] ${target.displayName}: moved off the native launcher → ${moved.configPath}`);
+            if (moved.wrote.length > 0) console.log(`[McpRegistrar] ${target.displayName}: moved off ${what} → ${moved.configPath}`);
           } catch (err) {
-            console.error(`[McpRegistrar] ${target.displayName}: could not move off the native launcher:`, err);
+            console.error(`[McpRegistrar] ${target.displayName}: could not move off ${what}:`, err);
           }
         }
       }
@@ -423,8 +432,9 @@ export class McpRegistrar {
 
   /**
    * The launcher to register: the native launcher when the broker is enabled
-   * and it is healthy (no readiness probe, see shared/mcpLauncher.ts), else
-   * the node shim when the broker answers (`useShim`), else the full bundle.
+   * and it is healthy (no readiness probe, see shared/mcpLauncher.ts), else,
+   * in a dev build only, the node shim when the broker answers (`useShim`),
+   * else the full bundle.
    */
   private async resolveLauncher(useShim: boolean): Promise<LauncherChoice | null> {
     const brokerEnabled = isMcpBrokerEnabled();
@@ -434,7 +444,8 @@ export class McpRegistrar {
     const nativeBinary = brokerEnabled && app.isPackaged ? await this.prepareNative(memo) : null;
     return chooseLauncher({
       packaged: app.isPackaged,
-      // An explicit `useShim: true` still selects the shim with the flag off.
+      // In a dev build an explicit `useShim: true` still selects the shim with
+      // the flag off.
       brokerEnabled: brokerEnabled || useShim,
       nativeBinary,
       brokerReady: async () => useShim,
