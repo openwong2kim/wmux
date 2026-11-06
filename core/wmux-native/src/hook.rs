@@ -16,6 +16,7 @@
 use crate::js::{self, js, JsStr, Json};
 use crate::paths;
 use crate::rpc::{self, Target, HOOK_TIMEOUT};
+use crate::targets;
 use std::io::Read;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,8 +26,6 @@ const BRIDGE_VERSION: &str = "0.1.0";
 const MAX_STDIN_BYTES: usize = 256 * 1024;
 /// #1111: the main pipe allows exactly this clientName its one method.
 const WMUX_CLIENT_NAME: &str = "wmux-hook-bridge";
-const MAIN_METHOD: &str = "hooks.signal";
-const DAEMON_METHOD: &str = "daemon.hooks.signal";
 const FORWARDED_SESSION_SOURCES: [&str; 3] = ["startup", "resume", "clear"];
 
 pub const FLAVOURS_JSON: &str = include_str!("../flavours.json");
@@ -287,18 +286,9 @@ pub fn log_event(flavour: Option<&Flavour>, outcome: &str, extra: Vec<(&str, Opt
 
 fn append_log(flavour: Option<&Flavour>, line: &str) {
     let dir = paths::wmux_home_dir();
-    if !std::path::Path::new(&dir).exists() {
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        let _ = builder.create(&dir);
-    }
+    crate::fsx::ensure_dir(&dir, 0o700);
     let file = flavour.map_or("hooks-bridge.log", |f| f.log_file.as_str());
-    let path = paths::join(&[&dir, file]);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = std::io::Write::write_all(&mut f, line.as_bytes());
-    }
+    let _ = crate::fsx::append(&paths::join(&[&dir, file]), line.as_bytes());
 }
 
 /// `String(x).slice(0, n)` on UTF-16 units.
@@ -356,39 +346,21 @@ fn read_capped(mut input: impl Read) -> Result<Vec<u8>, ()> {
 
 // ----- Main ----------------------------------------------------------------
 
+/// resolveTargets: the override is one target addressed to main, with main's
+/// token; otherwise the daemon, then main.
 fn resolve_targets() -> Vec<Target> {
-    let main_token = paths::read_token_file(&paths::auth_token_path());
-    if let Some(pipe) = paths::env("WMUX_PIPE_NAME").filter(|p| !p.is_empty()) {
-        return main_token
+    match targets::pipe_override() {
+        Some(pipe) => targets::main_token()
             .map(|token| Target {
                 name: "main",
                 pipe,
                 token,
-                method: MAIN_METHOD,
+                method: targets::MAIN_METHOD,
             })
             .into_iter()
-            .collect();
+            .collect(),
+        None => targets::default_walk(true),
     }
-    let mut targets = Vec::new();
-    if paths::env("WMUX_HOOKS_TO_MAIN").as_deref() != Some("1") {
-        if let Some(token) = paths::read_token_file(&paths::daemon_auth_token_path()) {
-            targets.push(Target {
-                name: "daemon",
-                pipe: paths::daemon_pipe_name(),
-                token,
-                method: DAEMON_METHOD,
-            });
-        }
-    }
-    if let Some(token) = main_token {
-        targets.push(Target {
-            name: "main",
-            pipe: paths::pipe_name(),
-            token,
-            method: MAIN_METHOD,
-        });
-    }
-    targets
 }
 
 /// A v4 UUID from the OS generator, as crypto.randomUUID() formats it.
@@ -466,7 +438,7 @@ pub fn run_hook(flavour_id: Option<&[u16]>, argv_event: Option<&[u16]>) {
         line.push_str("}\n");
         line
     };
-    let (result, target) = rpc::send_to_targets(&targets, build_line, &js(&request_id), &kind);
+    let (result, target) = rpc::send_to_targets(&targets, build_line, &js(&request_id), &kind, &rpc::SHARED_POLICY);
     let outer_ok = result.get("ok") == Some(&Json::Bool(true));
     let inner = result.get("result");
     let inner_ok = outer_ok && inner.and_then(|r| r.get("ok")) == Some(&Json::Bool(true));

@@ -12,11 +12,20 @@
 //! exit 2 as "block this action", so a typo, a non-UTF-8 argument or a newer
 //! subcommand run by an older copy must never produce it.
 
+// Not reachable from the CLI yet: the claude-hook subcommand lands with its
+// lifecycle. Until then only the tests use most of it.
+#[allow(dead_code)]
+mod claude;
+#[allow(dead_code)]
+mod fsx;
 mod hook;
 mod js;
 mod os_random;
 mod paths;
 mod rpc;
+mod targets;
+#[cfg(test)]
+mod testenv;
 
 /// Ownership marker: the hook installer recognises a wmux-written copy of this
 /// binary by this text, as it does the bridge script by its first line.
