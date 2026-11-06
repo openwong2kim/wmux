@@ -52,7 +52,16 @@ pub const MARKER: &str = "wmux-managed: native-hooks";
 /// The Node bridge's file name (SHARED_HOOKS_BRIDGE_BASENAME in hookFlavours.ts).
 const BRIDGE_BASENAME: &str = "wmux-hooks-bridge.mjs";
 
-const USAGE: &str = "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native claude-hook <Event> [flags…]\n       wmux-native mcp-shim [--commander] [--core] [--role=R] [--bot*] | --self-test\n       wmux-native --version | --help | --self-test\n";
+/// The usage text: the Claude hook's commands exist on unix only.
+const fn usage(unix: bool) -> &'static str {
+    if unix {
+        "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native claude-hook <Event> [flags…]\n       wmux-native mcp-shim [--commander] [--core] [--role=R] [--bot*] | --self-test\n       wmux-native --version | --help | --self-test\n"
+    } else {
+        "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native mcp-shim [--commander] [--core] [--role=R] [--bot*] | --self-test\n       wmux-native --version | --help\n"
+    }
+}
+
+const USAGE: &str = usage(cfg!(unix));
 
 fn main() {
     // A panic must not print: hook output is read by the agent.
@@ -93,5 +102,21 @@ fn main() {
         Some("--self-test") => println!("{}", claude_hook::self_test_line()),
         Some("--help") => print!("{USAGE}"),
         _ => eprint!("{USAGE}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::usage;
+
+    #[test]
+    fn only_unix_advertises_the_claude_hook() {
+        for unix in [true, false] {
+            let text = usage(unix);
+            assert_eq!(text.contains("claude-hook"), unix, "{text}");
+            assert_eq!(text.contains("--help | --self-test"), unix, "{text}");
+            // mcp-shim's own --self-test exists everywhere.
+            assert!(text.contains("[--bot*] | --self-test"), "{text}");
+        }
     }
 }
