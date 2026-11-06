@@ -114,6 +114,7 @@ export async function launchApp(sb, { extraArgs = [], appRoot = ROOT } = {}) {
     PATH: `${sb.bin}${path.delimiter}${process.env.PATH}`,
     WMUX_DATA_SUFFIX: SUFFIX,
     WMUX_E2E_RUN: sb.runId,
+    WMUX_TEST_CDP_PORT: '1',
   };
   delete env.WMUX_SOCKET_PATH;
   delete env.WMUX_AUTH_TOKEN;

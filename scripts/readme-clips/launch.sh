@@ -57,7 +57,7 @@ ZRC
 
 LOG="$STATE/app.log"
 : >"$LOG"
-nohup env "${UNSET[@]}" SHELL=/bin/zsh ZDOTDIR="$ZD" WMUX_DATA_SUFFIX="$SUFFIX" "$APP" </dev/null >>"$LOG" 2>&1 &
+nohup env "${UNSET[@]}" SHELL=/bin/zsh ZDOTDIR="$ZD" WMUX_DATA_SUFFIX="$SUFFIX" WMUX_TEST_CDP_PORT=1 "$APP" </dev/null >>"$LOG" 2>&1 &
 PID=$!
 echo "$PID" >"$STATE/app.pid"
 # The start time pins the PID to this process: down.sh and rec.mjs refuse a reused PID.

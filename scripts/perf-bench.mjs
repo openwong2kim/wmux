@@ -476,6 +476,7 @@ function makeInstance() {
     LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
     WMUX_DATA_SUFFIX: suffix,
     WMUX_NO_DIALOG: '1',
+    WMUX_TEST_CDP_PORT: '1',
   };
   delete env.WMUX_DISABLE_CDP; // the bench NEEDS the app's CDP endpoint
   fs.mkdirSync(env.APPDATA, { recursive: true });
