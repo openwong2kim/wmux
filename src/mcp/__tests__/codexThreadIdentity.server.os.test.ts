@@ -150,7 +150,9 @@ describe('where the parent classification starts', () => {
     expect((await call(client, 'a2a_whoami', {}, T1)).isError).toBeFalsy();
     const res = await call(client, 'a2a_whoami', {});
     await client.close();
-    expect(parentChain).toHaveBeenCalledWith(4243);
+    // Read from the reported parent and from nothing else (not the caller itself).
+    expect(parentChain.mock.calls.length).toBeGreaterThan(0);
+    expect(parentChain.mock.calls.every((c) => c[0] === 4243)).toBe(true);
     expect(res.isError).toBe(true);
     expect(whoamiParams().map((p) => `${p.workspaceId}/${p.senderPtyId}`)).toEqual(['ws-1/pty-a']);
   });

@@ -60,10 +60,27 @@ describe('classifyMcpParent — who may vouch for a threadId', () => {
   it('accepts a shared Codex app-server as the direct parent', () => {
     expect(classifyMcpParent([SHARED_SERVER])).toBe('shared-server');
   });
-  it('skips this server\'s own launcher wrappers (cmd /c, shim)', () => {
-    const cmdWrapper = ['cmd.exe', '/c', 'node', 'C:\\Users\\u\\.wmux\\mcp\\index.js'];
-    expect(classifyMcpParent([cmdWrapper, SHARED_SERVER])).toBe('shared-server');
+  it('skips this server\'s own launcher (the node shim)', () => {
     expect(classifyMcpParent([['node', '/opt/wmux/mcp-bundle/shim.js'], SHARED_SERVER])).toBe('shared-server');
+  });
+  // No shipping host is known to wrap a wmux entry in cmd, and wmux writes
+  // none, so a cmd parent is never taken for our launcher: cmd's own parsing
+  // (quotes, `^`, `;` `,` `=` as command-name delimiters) is not ours to
+  // re-implement, and on Windows the verdict changes nothing today.
+  it('never skips a cmd wrapper, whatever it runs', () => {
+    const exe = 'C:\\Users\\u\\.wmux\\mcp\\wmux-native.exe';
+    const entry = 'C:\\Users\\u\\.wmux\\mcp\\index.js';
+    for (const wrapper of [
+      ['cmd.exe', '/c', 'node', entry],
+      ['cmd.exe', '/d', '/s', '/c', 'node', entry],
+      ['cmd.exe', '/d', '/s', '/c', exe, 'mcp-shim', '--core'],
+      ['cmd', '/c', exe, 'mcp-shim'],
+      // Node's shell:true form: the whole line is one token.
+      ['cmd.exe', '/d', '/s', '/c', `"node ${entry}"`],
+      tokenizeCommandLine(`cmd /d /s /c "C:\\Program Files\\wmux\\resources\\wmux-native.exe" mcp-shim --core`),
+    ]) {
+      expect(classifyMcpParent([wrapper, SHARED_SERVER]), wrapper.join(' ')).toBe('other');
+    }
   });
   it('rejects a per-pane Codex (--no-daemon / stdio app-server)', () => {
     expect(classifyMcpParent([['codex', '--no-daemon']])).toBe('other');
@@ -98,7 +115,6 @@ describe('classifyMcpParent — who may vouch for a threadId', () => {
   it('skips the real launcher shapes: wmux flags, cmd /d /s /c, the dev bundle', () => {
     expect(classifyMcpParent([['node', '/Users/u/.wmux/mcp/index.js', '--core', '--role=Reviewer'], SHARED_SERVER])).toBe('shared-server');
     expect(classifyMcpParent([['node', '/Users/u/.wmux/mcp/index.js', '--commander'], SHARED_SERVER])).toBe('shared-server');
-    expect(classifyMcpParent([['cmd.exe', '/d', '/s', '/c', 'node', 'C:\\Users\\u\\.wmux\\mcp\\index.js'], SHARED_SERVER])).toBe('shared-server');
     expect(classifyMcpParent([['node', '/src/wmux/dist/mcp/mcp/entry.js'], SHARED_SERVER])).toBe('shared-server');
     // Anything else after the entry is not ours.
     expect(classifyMcpParent([['node', '/Users/u/.wmux/mcp/index.js', '--role=x', 'evil'], SHARED_SERVER])).toBe('other');
@@ -107,11 +123,10 @@ describe('classifyMcpParent — who may vouch for a threadId', () => {
     const argv = tokenizeCommandLine('"C:\\Program Files\\codex\\codex.exe" app-server --listen unix:// --managed-daemon');
     expect(isSharedServerArgv(argv)).toBe(true);
   });
-  it('skips the native launcher: wmux-native mcp-shim with wmux flags, direct or behind cmd /c', () => {
+  it('skips the native launcher: wmux-native mcp-shim with wmux flags', () => {
     expect(classifyMcpParent([['/Users/u/.wmux/bin/wmux-native', 'mcp-shim'], SHARED_SERVER])).toBe('shared-server');
     expect(classifyMcpParent([['/Users/u/.wmux/bin/wmux-native', 'mcp-shim', '--core', '--role=Reviewer', '--commander'], SHARED_SERVER])).toBe('shared-server');
     expect(classifyMcpParent([['C:\\Users\\u\\.wmux\\bin\\wmux-native.exe', 'mcp-shim', '--core'], SHARED_SERVER])).toBe('shared-server');
-    expect(classifyMcpParent([['cmd.exe', '/d', '/s', '/c', 'C:\\Users\\u\\.wmux\\bin\\wmux-native.exe', 'mcp-shim'], SHARED_SERVER])).toBe('shared-server');
     const wmi = tokenizeCommandLine('"C:\\Program Files\\wmux\\resources\\wmux-native.exe" mcp-shim --role=Reviewer');
     expect(classifyMcpParent([wmi, SHARED_SERVER])).toBe('shared-server');
     // The launcher alone proves nothing about who started it.
@@ -147,33 +162,16 @@ describe('classifyMcpParent — who may vouch for a threadId', () => {
     expect(skipped('/src/wmux/core/wmux-term/target/other/wmux-native')).toBe(false);
     expect(skipped('/src/wmux/core/wmux-term/target/release/deps/wmux-native')).toBe(false);
   });
-  it('splits a quoted, spaced launcher path behind cmd /d /s /c with the real tokenizer', () => {
-    const argv = tokenizeCommandLine('cmd /d /s /c "C:\\Program Files\\wmux\\resources\\wmux-native.exe" mcp-shim --core');
-    expect(argv).toEqual(['cmd', '/d', '/s', '/c', 'C:\\Program Files\\wmux\\resources\\wmux-native.exe', 'mcp-shim', '--core']);
-    expect(classifyMcpParent([argv, SHARED_SERVER])).toBe('shared-server');
-  });
-  it('reaches the shared server from the native fallback on Windows: node under the shim under cmd /c', () => {
-    // On Windows the shim's fallback runs node as its child, so node's chain is
-    // the shim, the host's cmd /c wrapper, then the host: all three hops.
+  it('reaches the shared server from the native fallback on Windows within the hop limit', () => {
+    // On Windows the launcher's fallback runs node as its child, so main reads
+    // [node entry, launcher, host]: the host is the third and last command line.
+    const node = ['node', 'C:\\Users\\u\\.wmux\\mcp\\index.js', '--core'];
     const shim = ['C:\\Users\\u\\.wmux\\mcp\\wmux-native.exe', 'mcp-shim', '--core'];
-    const wrapper = ['cmd.exe', '/d', '/s', '/c', 'C:\\Users\\u\\.wmux\\mcp\\wmux-native.exe', 'mcp-shim', '--core'];
-    expect(classifyMcpParent([shim, wrapper, SHARED_SERVER])).toBe('shared-server');
-    // One more wrapper pushes the host past the hop limit, which stays unknown.
-    expect(classifyMcpParent([shim, wrapper, wrapper])).toBe('unknown');
-  });
-  it('does not skip a cmd /c wrapper with a shell metacharacter in any token after /c', () => {
-    const wrapped = (...rest: string[]) => classifyMcpParent([['cmd.exe', '/d', '/s', '/c', ...rest], SHARED_SERVER]);
-    const exe = 'C:\\Users\\u\\.wmux\\mcp\\wmux-native.exe';
-    expect(wrapped(exe, 'mcp-shim', '--core')).toBe('shared-server');
-    expect(wrapped('node', 'C:\\Users\\u\\.wmux\\mcp\\index.js')).toBe('shared-server');
-    for (const ch of ['&', '|', '<', '>', '^', '%', '(', ')', '!']) {
-      // In the launcher path, in a flag, and in the node entry: cmd would act on it.
-      expect(wrapped(`C:\\Users\\u${ch}x\\.wmux\\mcp\\wmux-native.exe`, 'mcp-shim'), ch).toBe('other');
-      expect(wrapped(exe, 'mcp-shim', `--role=a${ch}b`), ch).toBe('other');
-      expect(wrapped('node', `C:\\Users\\u${ch}x\\.wmux\\mcp\\index.js`), ch).toBe('other');
-    }
-    // The same characters outside a cmd wrapper are not cmd syntax.
-    expect(classifyMcpParent([['/Users/u (x)/.wmux/mcp/wmux-native', 'mcp-shim'], SHARED_SERVER])).toBe('shared-server');
+    expect(classifyMcpParent([node, shim, SHARED_SERVER])).toBe('shared-server');
+    // Anything between the launcher and the host: a wrapper-only chain is
+    // 'unknown', and a cmd wrapper is 'other'.
+    expect(classifyMcpParent([node, shim, shim])).toBe('unknown');
+    expect(classifyMcpParent([node, shim, ['cmd.exe', '/c', 'codex', 'app-server', '--managed-daemon']])).toBe('other');
   });
   it('does not skip a look-alike of the native launcher', () => {
     const otherOf = (argv: string[]) => classifyMcpParent([argv, SHARED_SERVER]);
@@ -189,8 +187,6 @@ describe('classifyMcpParent — who may vouch for a threadId', () => {
     expect(otherOf(['/Users/u/.wmux/bin/wmux-native', 'mcp-shim-x'])).toBe('other');
     expect(otherOf(['/Users/u/.wmux/bin/wmux-native', 'mcp-shim', '--core', 'evil'])).toBe('other');
     expect(otherOf(['/Users/u/.wmux/bin/wmux-native', 'hook', 'mcp-shim'])).toBe('other');
-    expect(otherOf(['cmd.exe', '/c', 'C:\\Users\\u\\.wmux\\bin\\wmux-native-evil.exe', 'mcp-shim'])).toBe('other');
-    expect(otherOf(['cmd.exe', '/c', 'C:\\tmp\\wmux-native.exe', 'mcp-shim'])).toBe('other');
   });
 });
 
@@ -411,8 +407,12 @@ describe.skipIf(process.platform === 'win32')('readParentChain — a live native
 
   it('does not skip a look-alike at the registered place', async () => {
     const lookalike = await chainUnderServer('.wmux/mcp/wmux-native-x', ['mcp-shim']);
+    expect(lookalike[0]?.[0]).toMatch(/\/\.wmux\/mcp\/wmux-native-x$/);
+    expect(lookalike[0]?.slice(1)).toEqual(['mcp-shim']);
     expect(classifyMcpParent(lookalike)).toBe('other');
     const extraArg = await chainUnderServer('.wmux/mcp/wmux-native', ['mcp-shim', 'evil']);
+    expect(extraArg[0]?.[0]).toMatch(/\/\.wmux\/mcp\/wmux-native$/);
+    expect(extraArg[0]?.slice(1)).toEqual(['mcp-shim', 'evil']);
     expect(classifyMcpParent(extraArg)).toBe('other');
   }, 20000);
 
