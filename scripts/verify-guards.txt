@@ -47,3 +47,7 @@ scripts/__tests__/hashbangImports.test.mjs
 # Every vitest config registers the plugin that loads a CRLF hashbang file;
 # it reads the config files at the repository root.
 scripts/__tests__/hashbangLf.test.mjs
+
+# Every script that launches the app and reads its CDP port from the app log
+# sets the test harness opt-in (WMUX_TEST_CDP_PORT=1); it scans scripts/.
+scripts/__tests__/testCdpOptIn.guard.test.mjs
