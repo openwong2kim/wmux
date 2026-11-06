@@ -252,6 +252,11 @@ export function createSheetTracker<H extends object, S>(deps: SheetTrackerDeps<H
     } catch (err) {
       if (!(err instanceof StepFailed)) throw err;
     } finally {
+      // A look that failed still lets its openings run out of time, or it retries for ever.
+      for (const o of openings.filter((x) => x.host === host && deps.now() >= x.deadline)) {
+        decide(o, 'no pair: the window could not be read in time');
+        drop(o);
+      }
       if (openings.some((o) => o.host === host) && !state.retryScheduled) {
         state.retryScheduled = true;
         deps.schedule(() => {
@@ -328,19 +333,28 @@ function errorText(err: unknown): string {
  */
 export function createDialogSheets(): DialogSheets {
   if (process.platform !== 'darwin' || process.env['WMUX_DIALOG_SHEET_CLOSE'] === '0') return NO_DIALOG_SHEETS;
+  // Every way into the tracker from outside goes through here, so whatever
+  // throws behind it costs the box closing, never the dialog's answer.
+  const guarded = <A extends unknown[]>(name: string, fn: (...args: A) => void) => (...args: A): void => {
+    try {
+      fn(...args);
+    } catch (err) {
+      console.warn(`[dialog-sheets] ${name} failed: ${errorText(err)}`);
+    }
+  };
   const tracker = createSheetTracker<BrowserWindow, unknown>({
     port: () => {
       const port = createObjcSheetPort(loadObjc());
       console.log('[dialog-sheets] macOS: an answered dialog\'s box closes');
       return port;
     },
-    schedule: (fn, ms) => { setTimeout(fn, ms).unref?.(); },
+    schedule: (fn, ms) => { setTimeout(guarded('retry', fn), ms).unref?.(); },
     now: () => Date.now(),
     warn: (text) => console.warn(text),
   });
   const watched = new WeakSet<BrowserWindow>();
   return {
-    trackOpening(surfaceId, guest, text, type) {
+    trackOpening: guarded('trackOpening', (surfaceId: string, guest: WebContents | undefined, text: string, type: string) => {
       let host: BrowserWindow | null = null;
       try {
         host = guest && !guest.isDestroyed() ? hostWindowOf(guest) : null;
@@ -351,11 +365,11 @@ export function createDialogSheets(): DialogSheets {
       if (!watched.has(host)) {
         watched.add(host);
         const closing = host;
-        closing.once('closed', () => tracker.forgetHost(closing));
+        closing.once('closed', guarded('forgetHost', () => tracker.forgetHost(closing)));
       }
       tracker.trackOpening(surfaceId, host, text, type);
-    },
-    closeIfStale: (surfaceId) => tracker.closeIfStale(surfaceId),
-    forget: (surfaceId) => tracker.forget(surfaceId),
+    }),
+    closeIfStale: guarded('closeIfStale', (surfaceId: string) => tracker.closeIfStale(surfaceId)),
+    forget: guarded('forget', (surfaceId: string) => tracker.forget(surfaceId)),
   };
 }
