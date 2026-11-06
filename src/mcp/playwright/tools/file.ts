@@ -61,17 +61,17 @@ export const BROWSER_FILE_UPLOAD_SHAPE = {
   selector: z
     .string()
     .optional()
-    .describe('CSS selector of the file input; default the page\'s first one.'),
+    .describe('CSS selector of the file input; default the page\'s first one. CSS only on the built-in browser.'),
   ref: z
     .string()
     .optional()
-    .describe('Ref of a file input. Prefer selector — a ref takes the 50MB-capped path.'),
+    .describe('Ref of a file input or of the upload button beside it. On the Chrome backend a ref takes the 50MB-capped path.'),
   timeout: z
     .number()
     .int()
     .min(1)
     .optional()
-    .describe('Milliseconds, ref path only; default 120000.'),
+    .describe('Milliseconds for the page to take the files; default 120000 (at most 120000 on the built-in browser). On the Chrome backend, ref path only.'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -122,7 +122,7 @@ const BROWSER_DIALOG_SHAPE = {
 // ---------------------------------------------------------------------------
 
 function getUploadRoot(): string {
-  return uploadRootIn(getWmuxDir());
+  return uploadRootIn(getWmuxDir()).real;
 }
 
 /**
@@ -173,7 +173,8 @@ export function validateUploadPath(input: string): string {
   if (typeof input !== 'string' || input.length === 0) {
     throw new Error('browser_file_upload blocked: empty path');
   }
-  const root = getUploadRoot();
+  const uploadRoot = uploadRootIn(getWmuxDir());
+  const root = uploadRoot.real;
   // A WSL caller speaks /mnt/<drive>/ paths; every check runs on the host path
   // they name. A distro path (`/home/me/x`) has no host spelling, so it cannot
   // be under the root at all.
@@ -184,7 +185,7 @@ export function validateUploadPath(input: string): string {
       `Copy the file under the upload root (${displayRoot(root)}) and pass that path.`,
     );
   }
-  const checked = checkUploadPath(hostInput, root);
+  const checked = checkUploadPath(hostInput, uploadRoot);
   if (checked.ok) return checked.path;
   switch (checked.reason) {
     case 'aliased':
@@ -196,6 +197,15 @@ export function validateUploadPath(input: string): string {
       throw new Error(
         `browser_file_upload blocked: "${input}" exists but its real path cannot be resolved, ` +
         `so it cannot be checked against the upload root.`,
+      );
+    case 'missing':
+      throw new Error(
+        `browser_file_upload blocked: "${input}" does not exist. ` +
+        `Put the file under the upload root (${displayRoot(root)}) first.`,
+      );
+    case 'not-a-file':
+      throw new Error(
+        `browser_file_upload blocked: "${input}" is not a regular file. Pass files, not directories.`,
       );
     default:
       throw new Error(
@@ -457,8 +467,9 @@ function describeStrayNavigation(
 /**
  * Marks the one error that means "this may actually have worked".
  *
- * Raised only from the Playwright transfer call, never inferred from message
- * text: the rejection messages echo the caller's own path, so a file living
+ * Raised only from the transfer call itself (Playwright's, or main's whole-
+ * message timeout), never inferred from a scan of message text: the rejection
+ * messages echo the caller's own path, so a file living
  * under `.wmux-timeout/` would have matched a text scan and been told its
  * upload might have landed — advice that manufactures exactly the duplicate
  * retry the warning exists to prevent.
@@ -576,11 +587,15 @@ export async function resolveFileInputFromRef(
 /** What main answers browser.upload.cdp with. */
 interface MainUploadReply {
   uploaded?: boolean;
-  /** Nothing was sent: the selector matched nothing, or no input was near the anchor. */
-  missing?: 'match' | 'near';
+  /** Nothing was sent to the page; see UploadOutcome in browser.rpc.ts. */
+  missing?: 'match' | 'ambiguous' | 'near' | 'invalid' | 'unanswered';
+  detail?: string;
 }
 
-/** Marks the input main should fill. Self-contained: Playwright serialises it. */
+/** Room for main to report its own timeout before the client gives up. */
+const MAIN_UPLOAD_RPC_MARGIN_MS = 5_000;
+
+/** Marks a ref's element for main. Self-contained: Playwright serialises it. */
 function markUploadTarget(node: unknown, nonce: string): void {
   (node as { setAttribute: (name: string, value: string) => void }).setAttribute('data-wmux-upload', nonce);
 }
@@ -592,16 +607,31 @@ function clearUploadTarget(node: unknown, nonce: string): void {
 }
 
 /**
+ * A wait main or the client gave up on after the files may have been sent.
+ * Matched whole, never as a substring: main's refusals echo the caller's path.
+ */
+function isMainUploadTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /^browser\.upload\.cdp: the page did not take the files within \d+ ms$/.test(message) ||
+    /^RPC timeout: browser\.upload\.cdp \(\d+ms\)$/.test(message)
+  );
+}
+
+/**
  * Builtin backend: main sets the files on the input, so the upload works
  * whether or not a Playwright page is attached. Main checks every path again
- * and passes the page only what its check returned.
+ * and passes the page only what its check returned. Selectors are CSS, looked
+ * up in an isolated world in the top document.
  *
- * A ref takes one of two routes. With a page, the page resolves it as it
- * always has — an a11y ref exists only in that page's ref map — and the input
- * it leads to gets a one-shot attribute that main is pointed at. Without one,
- * the ref can only be a DOM-snapshot ref, so main looks up its data-wmux-ref
- * tag and runs the same nearby-input search. Neither route ever falls through
- * to a different element.
+ * A ref names an anchor (usually the visible upload button) and main finds
+ * the file input around it, in that same isolated world. Without a page the
+ * ref can only be a DOM-snapshot ref, and main finds its data-wmux-ref tag
+ * directly. With one, the page resolves the ref as it always has — an a11y ref
+ * exists only in that page's ref map and the handle exposes no node id — so
+ * the anchor gets a one-shot attribute and main is pointed at it. Main refuses
+ * a mark or tag found on more than one element. A ref minted inside an iframe
+ * is refused (sanitizeRef): main reaches the top document only.
  *
  * Returns the page used to resolve a ref, if one was.
  */
@@ -612,6 +642,7 @@ async function uploadThroughMain(
   safePaths: string[],
   selector: string | undefined,
   ref: string | undefined,
+  timeoutMs: number,
 ): Promise<Page | null> {
   let target: { selector: string; near: boolean };
   let page: Page | null = null;
@@ -625,17 +656,10 @@ async function uploadThroughMain(
       if (!el) {
         throw taggedFailure('ref_not_found', `Could not resolve ref="${ref}" to an element.`);
       }
-      const input = await resolveFileInputFromRef(el as unknown as ElementHandleLike);
-      if (!input) {
-        throw taggedFailure(
-          'element_not_interactable',
-          `No file input found at or near ref="${ref}".` + FILE_INPUT_PROXIMITY_HINT,
-        );
-      }
       nonce = randomBytes(8).toString('hex');
-      await input.evaluate(markUploadTarget, nonce);
-      marked = input;
-      target = { selector: `[data-wmux-upload="${nonce}"]`, near: false };
+      marked = el as unknown as ElementHandleLike;
+      await marked.evaluate(markUploadTarget, nonce);
+      target = { selector: `[data-wmux-upload="${nonce}"]`, near: true };
     } else {
       target = { selector: `[data-wmux-ref="${safeRef}"]`, near: true };
     }
@@ -646,31 +670,54 @@ async function uploadThroughMain(
   let reply: MainUploadReply | undefined;
   try {
     reply = await effect.dispatch(() =>
-      sendScopedBrowserRpc<MainUploadReply>('browser.upload.cdp', scope, { files: safePaths, ...target }),
+      sendScopedBrowserRpc<MainUploadReply>(
+        'browser.upload.cdp',
+        scope,
+        { files: safePaths, ...target, timeoutMs },
+        timeoutMs + MAIN_UPLOAD_RPC_MARGIN_MS,
+      ),
     );
+  } catch (error) {
+    if (isMainUploadTimeout(error)) throw new UploadTransferTimeout(error);
+    throw error;
   } finally {
     if (marked) await marked.evaluate(clearUploadTarget, nonce).catch(() => undefined);
   }
   if (reply?.uploaded === true) return page;
 
   // Main sent nothing to the page, so nothing happened.
-  if (ref) {
-    if (reply?.missing === 'near') {
+  switch (reply?.missing) {
+    case 'unanswered':
+      throw taggedFailure('timeout', `The page did not answer within ${timeoutMs} ms; no file was set.`, 'none');
+    case 'invalid':
+      throw taggedFailure(
+        'invalid_params',
+        `Invalid selector "${selector ?? ''}": the built-in browser takes CSS selectors only` +
+          (reply.detail ? ` (${reply.detail})` : '') + '.',
+        'none',
+      );
+    case 'ambiguous':
+      throw taggedFailure(
+        'ref_not_found',
+        `ref="${ref}" now names more than one element. Run browser_snapshot for current refs.`,
+        'none',
+      );
+    case 'near':
       throw taggedFailure(
         'element_not_interactable',
         `No file input found at or near ref="${ref}".` + FILE_INPUT_PROXIMITY_HINT,
         'none',
       );
-    }
-    throw taggedFailure('ref_not_found', `Could not resolve ref="${ref}" to an element.`, 'none');
+    default:
+      if (ref) throw taggedFailure('ref_not_found', `Could not resolve ref="${ref}" to an element.`, 'none');
+      throw taggedFailure(
+        'selector_not_found',
+        (selector
+          ? `No file input element matches selector: ${selector}`
+          : 'No file input element found on the page.') + FILE_INPUT_PROXIMITY_HINT,
+        'none',
+      );
   }
-  throw taggedFailure(
-    'selector_not_found',
-    (selector
-      ? `No file input element matches selector: ${selector}`
-      : 'No file input element found on the page.') + FILE_INPUT_PROXIMITY_HINT,
-    'none',
-  );
 }
 
 /**
@@ -690,7 +737,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_file_upload',
-    'Upload files to a file input, by default the page\'s first one — pass selector to pick another. Paths MUST live under the uploads root (~/.wmux/uploads/, instance suffix applied); anything else is rejected so a malicious page cannot exfiltrate credentials or SSH keys. Size is not a limit: the browser opens the path itself, except on the Chrome backend, where a ref instead of a selector takes a slower path that cannot carry more than 50MB. Only a real <input type=file> is supported; a drop-zone-only uploader fails with "No file input element found".' + EFFECT_TRAILER_NOTE,
+    'Upload files to a file input, by default the page\'s first one — pass selector to pick another. Paths MUST live under the uploads root (~/.wmux/uploads/, instance suffix applied); anything else is rejected so a malicious page cannot exfiltrate credentials or SSH keys. Size is not a limit: the browser opens the path itself, except on the Chrome backend, where a ref instead of a selector takes a slower path that cannot carry more than 50MB. Only a real <input type=file> is supported; a drop-zone-only uploader fails with "No file input element found". On the built-in browser, selectors are CSS and refs and selectors reach the top document only; a ref from inside an iframe is refused.' + EFFECT_TRAILER_NOTE,
     BROWSER_FILE_UPLOAD_SHAPE,
     async ({ paths, selector, ref, timeout, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
@@ -699,7 +746,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         let safePaths: string[];
         if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) !== 'chrome') {
           safePaths = paths.map(validateUploadPath);
-          page = await uploadThroughMain(engine, scope, effect, safePaths, selector, ref);
+          page = await uploadThroughMain(engine, scope, effect, safePaths, selector, ref, timeout ?? REF_UPLOAD_TIMEOUT_MS);
         } else {
           page = await engine.getPageForScope(scope, { intent: 'write' });
           if (!page) {

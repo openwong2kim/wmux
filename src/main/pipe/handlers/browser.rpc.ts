@@ -149,6 +149,8 @@ import type { BrowserAgentControl } from '../../browser-session/BrowserAgentCont
 import { heldBrowserSurfaceRefusal } from './surface.rpc';
 import { agentControlRefusal } from '../../../shared/browserAgentControl';
 import { getWmuxDir } from '../../../daemon/config';
+import { randomBytes } from 'node:crypto';
+import { topWorld, type CdpSend } from '../../phone/PhoneBrowserFocus';
 import {
   DEFAULT_FILE_INPUT_SELECTOR,
   checkUploadPath,
@@ -186,16 +188,16 @@ const PROTECTED_GATE_EXEMPT: ReadonlySet<string> = new Set([
   'browser.navigationPolicy.get',
 ]);
 
-/** A CDP command sender bound to one guest's debugger. */
-type CdpSend = (method: string, params?: Record<string, unknown>) => Promise<unknown>;
-
 /** Most files one upload may set, and the longest selector it takes. */
 const UPLOAD_MAX_FILES = 64;
 const UPLOAD_MAX_SELECTOR_CHARS = 2048;
 
+/** How long the page may take to take the files: the default, and the cap. */
+const UPLOAD_DEFAULT_TIMEOUT_MS = 120_000;
+const UPLOAD_MAX_TIMEOUT_MS = 120_000;
+
 /** The isolated world the file input is looked up in. */
 const UPLOAD_WORLD = 'wmux-upload';
-const UPLOAD_OBJECT_GROUP = 'wmux-upload';
 
 /** Why main will not hand a path to the page, worded for the RPC caller. */
 function uploadRefusalText(input: unknown, refusal: UploadPathRefusal): string {
@@ -205,12 +207,27 @@ function uploadRefusalText(input: unknown, refusal: UploadPathRefusal): string {
       return 'empty path';
     case 'aliased':
       return `${shown} has a name Windows opens as a different file`;
+    case 'missing':
+      return `${shown} does not exist`;
+    case 'not-a-file':
+      return `${shown} is not a regular file`;
     case 'unresolvable':
       return `${shown} exists but its real path cannot be resolved`;
     default:
       return `${shown} is outside the upload root`;
   }
 }
+
+/**
+ * What an upload into one guest came to. `missing` means nothing was sent to
+ * the page: the selector matched nothing (`match`), a ref's mark is on more
+ * than one element (`ambiguous`), no input is near the anchor (`near`), the
+ * selector is not CSS the page can parse (`invalid`), or the page did not
+ * answer the lookup in time (`unanswered`).
+ */
+export type UploadOutcome =
+  | { uploaded: true; count: number }
+  | { uploaded: false; missing: 'match' | 'ambiguous' | 'near' | 'invalid' | 'unanswered'; detail?: string };
 
 /**
  * Set a file input's files in one guest, by path.
@@ -220,51 +237,74 @@ function uploadRefusalText(input: unknown, refusal: UploadPathRefusal): string {
  * (DOM.getDocument would enable it), no domain enable or disable, no attach or
  * detach. The input is looked up in an isolated world — page script cannot
  * answer the lookup there — and handed to DOM.setFileInputFiles as a remote
- * object, which needs no DOM agent. Top frame only, as the selector route and
- * data-wmux-ref tags always were.
+ * object, which needs no DOM agent. The remote objects live in a group of
+ * this call's own, so a concurrent call's release cannot take them away. Top
+ * frame only, as the selector route and data-wmux-ref tags always were.
  *
- * `near`: the selector names an anchor (a snapshot ref's element, usually the
- * visible upload button) and the input is the one findFileInputNearElement
- * finds around it.
+ * `near`: the selector names a ref's anchor (usually the visible upload
+ * button). It must match exactly one element, and the input is the one
+ * findFileInputNearElement finds around it, also in the isolated world.
+ *
+ * `timeoutMs` bounds the whole call. Expiring before the files were sent is a
+ * miss (`unanswered`, nothing happened); expiring after is an error, since the
+ * page may still take them.
  */
 export async function setFilesInIsolatedWorld(
   send: CdpSend,
   files: string[],
   selector: string,
   near: boolean,
-): Promise<{ uploaded: true; count: number } | { uploaded: false; missing: 'match' | 'near' }> {
-  const tree = (await send('Page.getFrameTree')) as { frameTree?: { frame?: { id?: unknown } } } | null;
-  const frameId = tree?.frameTree?.frame?.id;
-  if (typeof frameId !== 'string') throw new Error('browser.upload.cdp: the page has no frame to upload into');
-  const world = (await send('Page.createIsolatedWorld', { frameId, worldName: UPLOAD_WORLD })) as
-    | { executionContextId?: unknown }
-    | null;
-  const contextId = world?.executionContextId;
-  if (typeof contextId !== 'number') throw new Error('browser.upload.cdp: the page has no context to upload into');
-  const expression =
-    `(() => { const anchor = document.querySelector(${JSON.stringify(selector)}); ` +
-    `if (!anchor) return 'none'; ` +
-    `if (!${near}) return anchor; ` +
-    `return (${String(findFileInputNearElement)})(anchor) || 'anchor'; })()`;
+  timeoutMs: number = UPLOAD_DEFAULT_TIMEOUT_MS,
+): Promise<UploadOutcome> {
+  const group = `wmux-upload-${randomBytes(8).toString('hex')}`;
+  let sent = false;
+  const run = async (): Promise<UploadOutcome> => {
+    let contextId: number | undefined;
+    try {
+      contextId = await topWorld(send, UPLOAD_WORLD);
+    } catch {
+      contextId = undefined;
+    }
+    if (contextId === undefined) throw new Error('browser.upload.cdp: the page has no context to upload into');
+    const expression =
+      `(() => { const all = document.querySelectorAll(${JSON.stringify(selector)}); ` +
+      `if (all.length === 0) return 'none'; ` +
+      `if (!${near}) return all[0]; ` +
+      `if (all.length > 1) return 'many'; ` +
+      `return (${String(findFileInputNearElement)})(all[0]) || 'anchor'; })()`;
+    try {
+      const reply = (await send('Runtime.evaluate', { expression, contextId, objectGroup: group })) as {
+        result?: { objectId?: string; subtype?: string; value?: unknown };
+        exceptionDetails?: { exception?: { description?: string }; text?: string };
+      } | null;
+      if (reply?.exceptionDetails) {
+        const why = (reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text ?? '').split('\n')[0];
+        if (why.startsWith('SyntaxError')) return { uploaded: false, missing: 'invalid', detail: why };
+        throw new Error(`browser.upload.cdp: ${why || 'lookup failed'}`);
+      }
+      const result = reply?.result;
+      if (!result?.objectId || result.subtype !== 'node') {
+        const value = result?.value;
+        return { uploaded: false, missing: value === 'anchor' ? 'near' : value === 'many' ? 'ambiguous' : 'match' };
+      }
+      sent = true;
+      await send('DOM.setFileInputFiles', { files, objectId: result.objectId });
+      return { uploaded: true, count: files.length };
+    } finally {
+      await send('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined);
+    }
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<'expired'>((resolve) => {
+    timer = setTimeout(() => resolve('expired'), timeoutMs);
+  });
   try {
-    const reply = (await send('Runtime.evaluate', { expression, contextId, objectGroup: UPLOAD_OBJECT_GROUP })) as {
-      result?: { objectId?: string; subtype?: string; value?: unknown };
-      exceptionDetails?: { exception?: { description?: string }; text?: string };
-    } | null;
-    if (reply?.exceptionDetails) {
-      const why = reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text ?? 'lookup failed';
-      throw new Error(`browser.upload.cdp: ${why.split('\n')[0]}`);
-    }
-    const result = reply?.result;
-    if (!result?.objectId || result.subtype !== 'node') {
-      // Anything but a node is a miss: 'anchor' when the anchor was found and
-      // no input near it, otherwise the selector matched nothing.
-      return { uploaded: false, missing: result?.value === 'anchor' ? 'near' : 'match' };
-    }
-    await send('DOM.setFileInputFiles', { files, objectId: result.objectId });
-    return { uploaded: true, count: files.length };
+    const outcome = await Promise.race([run(), expired]);
+    if (outcome !== 'expired') return outcome;
+    if (!sent) return { uploaded: false, missing: 'unanswered' };
+    throw new Error(`browser.upload.cdp: the page did not take the files within ${timeoutMs} ms`);
   } finally {
-    await send('Runtime.releaseObjectGroup', { objectGroup: UPLOAD_OBJECT_GROUP }).catch(() => undefined);
+    clearTimeout(timer);
   }
 }
 
@@ -4372,8 +4412,8 @@ export function registerBrowserRpc(
    * Set a file input's files by path, so an upload works without a Playwright
    * page. Main checks every path itself and hands the page only what that
    * check returned; what the caller checked is not relied on.
-   * params: { files: string[], selector?: string, near?: boolean, surfaceId?: string }
-   * returns { uploaded: true, count } | { uploaded: false, missing: 'match' | 'near' }
+   * params: { files: string[], selector?: string, near?: boolean, timeoutMs?: number, surfaceId?: string }
+   * returns UploadOutcome
    */
   registerLeased('browser.upload.cdp', async (params, scope) => {
     const files = params['files'];
@@ -4390,12 +4430,18 @@ export function registerBrowserRpc(
       typeof params['selector'] === 'string' && params['selector'] ? params['selector'] : DEFAULT_FILE_INPUT_SELECTOR;
     if (selector.length > UPLOAD_MAX_SELECTOR_CHARS) throw new Error('browser.upload.cdp: "selector" is too long');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const asked = params['timeoutMs'];
+    const timeoutMs =
+      typeof asked === 'number' && Number.isFinite(asked) && asked >= 1
+        ? Math.min(Math.floor(asked), UPLOAD_MAX_TIMEOUT_MS)
+        : UPLOAD_DEFAULT_TIMEOUT_MS;
     const wc = resolveWc(surfaceId, 'browser.upload.cdp', scope);
     return setFilesInIsolatedWorld(
       (method, cmdParams) => wc.debugger.sendCommand(method, cmdParams),
       safe,
       selector,
       params['near'] === true,
+      timeoutMs,
     );
   });
 

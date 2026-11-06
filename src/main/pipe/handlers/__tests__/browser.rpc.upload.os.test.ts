@@ -134,6 +134,11 @@ describe('browser.upload.cdp: main decides what the page may open', () => {
     }],
     ['a UNC path', () => '\\\\attacker\\share\\x.png'],
     ['the root itself', () => UPLOADS],
+    ['a directory under the root', () => {
+      fs.mkdirSync(path.join(UPLOADS, 'folder'), { recursive: true });
+      return path.join(UPLOADS, 'folder');
+    }],
+    ['a file that does not exist (yet)', () => path.join(UPLOADS, 'later.mp4')],
     ['an empty path', () => ''],
   ];
   for (const [label, file] of refused) {
@@ -214,16 +219,58 @@ describe('browser.upload.cdp: the shared debugger', () => {
     guest.lookup = { result: { type: 'string', value: 'anchor' } };
     expect((await call(register(), 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')], near: true })).result)
       .toEqual({ uploaded: false, missing: 'near' });
+    guest.lookup = { result: { type: 'string', value: 'many' } };
+    expect((await call(register(), 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')], near: true })).result)
+      .toEqual({ uploaded: false, missing: 'ambiguous' });
     expect(sent()).not.toContain('DOM.setFileInputFiles');
-    expect(sent().filter((m) => m === 'Runtime.releaseObjectGroup')).toHaveLength(2);
+    expect(sent().filter((m) => m === 'Runtime.releaseObjectGroup')).toHaveLength(3);
   });
 
-  it('reports a selector the page cannot parse', async () => {
+  it('answers a selector the page cannot parse as a miss, first line only', async () => {
     guest.lookup = { exceptionDetails: { exception: { description: "SyntaxError: '[[' is not a valid selector.\n    at x" } } };
     const res = await call(register(), 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')], selector: '[[' });
-    expect(res.error).toContain("SyntaxError: '[[' is not a valid selector.");
-    expect(res.error).not.toContain('at x');
+    expect(res.result).toEqual({ uploaded: false, missing: 'invalid', detail: "SyntaxError: '[[' is not a valid selector." });
     expect(sent()).not.toContain('DOM.setFileInputFiles');
+  });
+
+  it('keeps each call\'s remote objects in a group of its own', async () => {
+    const router = register();
+    await call(router, 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')] });
+    await call(router, 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')] });
+    const calls = guest.wc.debugger.sendCommand.mock.calls as Array<[string, Record<string, unknown>?]>;
+    const evaluated = calls.filter((c) => c[0] === 'Runtime.evaluate').map((c) => c[1]?.objectGroup);
+    const released = calls.filter((c) => c[0] === 'Runtime.releaseObjectGroup').map((c) => c[1]?.objectGroup);
+    expect(evaluated).toHaveLength(2);
+    expect(new Set(evaluated).size).toBe(2);
+    expect(released).toEqual(evaluated);
+  });
+
+  it('gives up on a page that never answers the lookup, sending nothing', async () => {
+    guest.wc.debugger.sendCommand.mockImplementation(async (method: string) =>
+      method === 'Runtime.evaluate' ? new Promise(() => undefined) : answer(method));
+    const res = await call(register(), 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')], timeoutMs: 50 });
+    expect(res.result).toEqual({ uploaded: false, missing: 'unanswered' });
+    expect(sent()).not.toContain('DOM.setFileInputFiles');
+  });
+
+  it('reports a page that does not take the files in time as an error, since it still may', async () => {
+    guest.wc.debugger.sendCommand.mockImplementation(async (method: string) =>
+      method === 'DOM.setFileInputFiles' ? new Promise(() => undefined) : answer(method));
+    const res = await call(register(), 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')], timeoutMs: 50 });
+    expect(res.error).toBe('browser.upload.cdp: the page did not take the files within 50 ms');
+  });
+
+  it('caps the wait at two minutes', async () => {
+    vi.useFakeTimers();
+    try {
+      guest.wc.debugger.sendCommand.mockImplementation(async (method: string) =>
+        method === 'Runtime.evaluate' ? new Promise(() => undefined) : answer(method));
+      const pending = call(register(), 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')], timeoutMs: 10_000_000 });
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect((await pending).result).toEqual({ uploaded: false, missing: 'unanswered' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -255,15 +302,23 @@ describe('setFilesInIsolatedWorld: the lookup it injects', () => {
     button.parentElement = parent;
     input.parentElement = parent;
     const asked: string[] = [];
-    const doc = { querySelector: (s: string) => (asked.push(s), button) };
+    const doc = { querySelectorAll: (s: string) => (asked.push(s), [button]) };
     expect(await lookupWith(doc, '[data-wmux-ref="7"]', true)).toBe(input);
     expect(asked).toEqual(['[data-wmux-ref="7"]']);
   });
 
-  it('answers the anchor itself without the search, and misses by name', async () => {
+  it('answers the first match without the search, and misses by name', async () => {
     const button = node('BUTTON');
-    expect(await lookupWith({ querySelector: () => button }, 'button', false)).toBe(button);
-    expect(await lookupWith({ querySelector: () => button }, 'button', true)).toBe('anchor');
-    expect(await lookupWith({ querySelector: () => null }, 'input', false)).toBe('none');
+    const other = node('BUTTON');
+    const doc = (...found: unknown[]) => ({ querySelectorAll: () => found });
+    expect(await lookupWith(doc(button, other), 'button', false)).toBe(button);
+    expect(await lookupWith(doc(button), 'button', true)).toBe('anchor');
+    expect(await lookupWith(doc(), 'input', false)).toBe('none');
+  });
+
+  it('refuses a ref anchor found on more than one element', async () => {
+    const input = node('INPUT', 'file');
+    expect(await lookupWith({ querySelectorAll: () => [input, node('INPUT', 'file')] }, '[data-wmux-upload="n"]', true))
+      .toBe('many');
   });
 });

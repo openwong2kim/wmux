@@ -103,9 +103,60 @@ describe('browser_file_upload on builtin goes through main', () => {
     expect(text(res)).toContain('Uploaded 1 file(s)');
     expect(text(res)).toContain('effect_state: committed');
     expect(uploads()).toEqual([
-      { files: [CLIP], selector: '#pick', near: false, surfaceId: 'surface-1', workspaceId: 'ws-test' },
+      { files: [CLIP], selector: '#pick', near: false, timeoutMs: 120_000, surfaceId: 'surface-1', workspaceId: 'ws-test' },
     ]);
     expect(getPage).not.toHaveBeenCalled();
+  });
+
+  it('passes its timeout to main, and gives the client room for main\'s own answer', async () => {
+    await run({ timeout: 4_000 });
+    const call = mockSendRpc.mock.calls.find((c) => c[0] === 'browser.upload.cdp');
+    expect(call?.[1]).toMatchObject({ timeoutMs: 4_000 });
+    expect(call?.[2]).toBe(9_000);
+  });
+
+  it('refuses a missing file and a directory itself, before calling main', async () => {
+    const missing = await run({ paths: [path.join(UPLOADS, 'later.mp4')] });
+    expect(text(missing)).toContain('does not exist');
+    fs.mkdirSync(path.join(UPLOADS, 'folder'), { recursive: true });
+    const folder = await run({ paths: [path.join(UPLOADS, 'folder')] });
+    expect(text(folder)).toContain('is not a regular file');
+    expect(uploads()).toEqual([]);
+  });
+
+  it('names a selector the page could not parse, as nothing happened', async () => {
+    mockSendRpc.mockResolvedValue({ uploaded: false, missing: 'invalid', detail: 'SyntaxError: bad' });
+    const res = await run({ selector: 'input >> nth=1' });
+    expect(text(res)).toContain('Invalid selector "input >> nth=1": the built-in browser takes CSS selectors only (SyntaxError: bad).');
+    expect(text(res)).toContain('error_code: invalid_params');
+    expect(text(res)).toContain('effect_state: none');
+  });
+
+  it('a lookup the page never answered is a timeout where nothing happened', async () => {
+    mockSendRpc.mockResolvedValue({ uploaded: false, missing: 'unanswered' });
+    const res = await run({ timeout: 50 });
+    expect(text(res)).toContain('did not answer within 50 ms');
+    expect(text(res)).toContain('effect_state: none');
+  });
+
+  it('a wait that ran out after the files were sent warns that the upload may have landed', async () => {
+    for (const message of [
+      'browser.upload.cdp: the page did not take the files within 50 ms',
+      'RPC timeout: browser.upload.cdp (5050ms)',
+    ]) {
+      mockSendRpc.mockRejectedValueOnce(new Error(message));
+      const res = await run({ timeout: 50 });
+      expect(text(res), message).toContain('a blind retry then uploads the same file twice');
+      expect(text(res), message).toContain('effect_state: unknown');
+    }
+  });
+
+  it('does not take a refusal that merely mentions that wording for a timeout', async () => {
+    mockSendRpc.mockRejectedValue(
+      new Error('browser.upload.cdp blocked: "/x/the page did not take the files within 50 ms" does not exist'),
+    );
+    const res = await run({});
+    expect(text(res)).not.toContain('uploads the same file twice');
   });
 
   it('defaults to the page\'s first file input', async () => {
@@ -169,20 +220,29 @@ describe('browser_file_upload by ref on builtin', () => {
     expect(text(far)).toContain('effect_state: none');
   });
 
-  it('with a page, resolves the ref there and points main at that exact input, then unmarks it', async () => {
-    const input = handle({ isFileInput: true });
+  it('with a page, resolves the ref there, marks that element, and leaves the input search to main', async () => {
+    const button = handle({ isFileInput: false });
     getPage.mockResolvedValue({ url: () => 'https://app.test/' });
-    resolveRef.mockResolvedValue(input);
+    resolveRef.mockResolvedValue(button);
     let markedDuringCall = '';
     mockSendRpc.mockImplementation(async (method: string) => {
-      if (method === 'browser.upload.cdp') markedDuringCall = input.attrs.get('data-wmux-upload') ?? '';
+      if (method === 'browser.upload.cdp') markedDuringCall = button.attrs.get('data-wmux-upload') ?? '';
       return { uploaded: true, count: 1 };
     });
     const res = await run({ ref: '12' });
     expect(res.isError).toBeUndefined();
     expect(markedDuringCall).toMatch(/^[0-9a-f]{16}$/);
-    expect(uploads()[0]).toMatchObject({ selector: `[data-wmux-upload="${markedDuringCall}"]`, near: false });
-    expect(input.attrs.has('data-wmux-upload')).toBe(false);
+    expect(uploads()[0]).toMatchObject({ selector: `[data-wmux-upload="${markedDuringCall}"]`, near: true });
+    expect(button.attrs.has('data-wmux-upload')).toBe(false);
+    // The nearby-input search is main's, in its isolated world: none runs here.
+    expect(button.evaluateHandle).not.toHaveBeenCalled();
+  });
+
+  it('refuses a ref whose mark main found on more than one element', async () => {
+    mockSendRpc.mockResolvedValue({ uploaded: false, missing: 'ambiguous' });
+    const res = await run({ ref: '7' });
+    expect(text(res)).toContain('ref="7" now names more than one element');
+    expect(text(res)).toContain('effect_state: none');
   });
 
   it('unmarks the input even when main fails', async () => {
