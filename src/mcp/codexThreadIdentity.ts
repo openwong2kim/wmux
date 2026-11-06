@@ -152,6 +152,13 @@ const isNativeLauncher = (token: string | undefined) => {
   const dir = exe.slice(0, exe.lastIndexOf('/') + 1);
   return /^wmux-native(?:\.exe)?$/.test(exe.slice(dir.length)) && NATIVE_LAUNCHER_ROOTS.some((root) => root.test(dir));
 };
+/**
+ * Characters cmd.exe acts on in a `/c` command line (operators, redirection,
+ * grouping, escapes, variable expansion). A wrapper whose tokens carry one is
+ * not just re-running the entry, whatever the tokens look like.
+ */
+const CMD_METACHARS = /[&|<>^%()!]/;
+
 /** Flags wmux itself puts after the entry (MCP config args). */
 const isOwnFlag = (token: string) => token === '--core' || token === '--commander' || /^--role=[\w-]+$/.test(token);
 
@@ -161,7 +168,8 @@ const isOwnFlag = (token: string) => token === '--core' || token === '--commande
  * `<root>/wmux-native[.exe] mcp-shim [wmux flags]` (NATIVE_LAUNCHER_ROOTS),
  * or either one behind `cmd [/d] [/s] /c`. Strict on shape, so a script that
  * merely passes the entry path as an argument (`node evil.js …/index.js`), a
- * differently named or placed binary, or a shell line is NOT skipped.
+ * differently named or placed binary, or a shell line is NOT skipped; behind
+ * `cmd /c`, neither is any token after `/c` holding a cmd metacharacter.
  */
 function isOwnLauncher(argv: string[]): boolean {
   const isNode = (t: string | undefined) => /^node(?:\.exe)?$/.test(baseName(t));
@@ -174,6 +182,7 @@ function isOwnLauncher(argv: string[]): boolean {
     let i = 1;
     while (/^\/[ds]$/i.test(argv[i] ?? '')) i++;
     if (/^\/c$/i.test(argv[i] ?? '')) {
+      if (argv.slice(i + 1).some((token) => CMD_METACHARS.test(token))) return false;
       if (isNode(argv[i + 1])) return entryWithFlags(argv.slice(i + 2));
       return isNativeShim(argv.slice(i + 1));
     }
@@ -201,6 +210,10 @@ function decidingParent(chain: string[][]): string[] | undefined {
  * An empty, unreadable or wrapper-only chain (lookup timeout, `ps`/CIM
  * failure) is 'unknown': nothing was proven either way, so callers must not
  * treat it as 'other' and must not remember it.
+ *
+ * The chain holds at most MAX_PARENT_HOPS (3) command lines (readParentChain):
+ * the start and two ancestors. A host more than two wrappers away is never
+ * reached, so that chain is wrapper-only and classifies as 'unknown'.
  */
 export function classifyMcpParent(chain: string[][]): McpParentClass {
   const parent = decidingParent(chain);
@@ -235,6 +248,7 @@ export function codexOwnerIndexAvailable(platform: NodeJS.Platform = process.pla
   return platform !== 'win32';
 }
 
+/** Command lines readParentChain reads: the start and two ancestors. */
 const MAX_PARENT_HOPS = 3;
 
 /**
