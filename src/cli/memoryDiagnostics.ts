@@ -105,6 +105,24 @@ export function renderMemoryDiagnostics(
       const failures = daemon.hibernation.wakeFailures ? `; ${daemon.hibernation.wakeFailures} wake(s) could not read the .buf` : '';
       lines.push(`  hibernated idle panes: ${daemon.hibernation.sessions} (${mib(daemon.hibernation.freedBytes)} ring memory freed${failures})`);
     }
+    const ms = (value: number) => `${value.toFixed(value < 10 ? 1 : 0)} ms`;
+    if (daemon.screenReads) {
+      const reads = Object.entries(daemon.screenReads).map(([family, c]) => `${family} ${c.misses} missed, ${c.hits + c.joins} reused`);
+      if (reads.length) lines.push(`  screen reads: ${reads.join('; ')}`);
+    }
+    if (daemon.screenParses) {
+      for (const [bucket, c] of Object.entries(daemon.screenParses)) {
+        lines.push(`  ${bucket} parses: ${c.parses} (avg ${ms(c.msTotal / Math.max(c.parses, 1))}, max ${ms(c.msMax)}, ${mib(c.bytes)} replayed)`);
+      }
+    }
+    if (daemon.snapshotQueue?.jobs) {
+      const q = daemon.snapshotQueue;
+      lines.push(`  snapshot queue: ${q.jobs} jobs, wait avg ${ms(q.waitMsTotal / q.jobs)} (max ${ms(q.waitMsMax)}), run avg ${ms(q.runMsTotal / q.jobs)} (max ${ms(q.runMsMax)})`);
+    }
+    if (daemon.eventLoop) {
+      const { activeMs, idleMs } = daemon.eventLoop;
+      lines.push(`  event loop: ${(100 * activeMs / Math.max(activeMs + idleMs, 1)).toFixed(1)}% busy since the daemon started`);
+    }
     if (daemon.snapshots) {
       for (const [name, c] of Object.entries(daemon.snapshots)) {
         const reasons = Object.entries(c.reasons).sort((a, b) => b[1] - a[1]).map(([reason, n]) => `${reason} ${n}`).join(', ');

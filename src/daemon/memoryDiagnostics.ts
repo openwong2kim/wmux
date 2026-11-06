@@ -1,8 +1,9 @@
+import { performance } from 'node:perf_hooks';
 import type { DaemonMemoryDiagnostics, SnapshotBackendCounters } from '../shared/memoryDiagnostics';
 import type { ManagedSession } from './DaemonSessionManager';
 import type { SessionPipe } from './SessionPipe';
 import { RingBuffer } from './RingBuffer';
-import { screenReadCounters } from './screenReadCache';
+import { screenParseCounters, screenReadCounters, snapshotQueueCounters } from './screenReadCache';
 import { getAnsiSnapshotBackendDiagnostics } from './AnsiSnapshotBackend';
 import { getTextSnapshotBackendDiagnostics } from './TextSnapshotBackend';
 
@@ -18,6 +19,7 @@ export function collectDaemonMemoryDiagnostics(
   pipes: ReadonlyMap<string, SessionPipe>,
 ): DaemonMemoryDiagnostics {
   const memory = process.memoryUsage();
+  const loop = performance.eventLoopUtilization();
   const hibernated = sessions.filter(({ ringBuffer }) => ringBuffer.isHibernated);
   return {
     pid: process.pid,
@@ -32,6 +34,7 @@ export function collectDaemonMemoryDiagnostics(
       ringStoredBytes: ringBuffer.size,
       ringAllocatedBytes: ringBuffer.allocatedBytes,
       ringCapacityBytes: ringBuffer.totalCapacity,
+      ringLifetimeBytes: ringBuffer.totalBytesWritten,
       ...(pipes.get(meta.id)?.getMemoryDiagnostics() ?? {
         socketQueuedBytes: 0, socketPeakQueuedBytes: 0, resyncQueuedBytes: 0,
       }),
@@ -43,6 +46,9 @@ export function collectDaemonMemoryDiagnostics(
       wakeFailures: RingBuffer.wakeFailures,
     },
     screenReads: screenReadCounters(),
+    screenParses: screenParseCounters(),
+    snapshotQueue: snapshotQueueCounters(),
+    eventLoop: { activeMs: loop.active, idleMs: loop.idle },
     snapshots: { ansi: snapshotCounters(getAnsiSnapshotBackendDiagnostics()), text: snapshotCounters(getTextSnapshotBackendDiagnostics()) },
   };
 }
