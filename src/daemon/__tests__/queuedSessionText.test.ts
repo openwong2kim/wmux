@@ -134,4 +134,16 @@ describe('queued screen reads', () => {
     expect(fresh).not.toBe(old);
     expect(lines(fresh)).toEqual(['same bytes']);
   });
+
+  it('a pane whose mode tracker was dropped (its shell exited) reads again', async () => {
+    const sessions = sessionTable();
+    const pane = session('exited shell');
+    const modes = { preamble: () => '' };
+    (pane.bridge as { outputModes: typeof modes | null }).outputModes = modes;
+    sessions.map.set('pane-a', pane);
+    const before = await queuedScreenText(sessions, 'pane-a');
+    expect(await queuedScreenText(sessions, 'pane-a')).toBe(before);
+    (pane.bridge as { outputModes: typeof modes | null }).outputModes = null;
+    expect(await queuedScreenText(sessions, 'pane-a')).not.toBe(before);
+  });
 });

@@ -47,7 +47,7 @@
 import type { RingBuffer, ReplayGeometry } from './RingBuffer';
 import { UNKNOWN_CELL, readRingTailWithModesAndGeometry, readRingWithModesAndGeometry, withUnknownCells } from './sessionTextReplay';
 import { screenShowsActiveDialog, screenShowsPermissionDialog } from './transcript/chatScreenGate';
-import { fencedRead } from './screenReadCache';
+import { fencedRead, identityTag } from './screenReadCache';
 import { isNativeDecision, type ApprovalRequest } from './approvals/types';
 
 /** Wait before the confirming second read of a dialog-free frame. */
@@ -326,7 +326,7 @@ export const AWAITING_RENDER_WINDOW_BYTES = 256 * 1024;
 export interface RenderablePane {
   meta: { cols?: number; rows?: number };
   ptyProcess: { cols?: number; rows?: number };
-  ringBuffer: Pick<RingBuffer, 'readAllWithGeometry'> & Partial<Pick<RingBuffer, 'totalBytesWritten'>>;
+  ringBuffer: Pick<RingBuffer, 'readAllWithGeometry'> & Partial<Pick<RingBuffer, 'totalBytesWritten' | 'isHibernated'>>;
   bridge: { readonly isMuted: boolean; readonly outputModes?: { preamble(windowStart: number): string } | null };
 }
 
@@ -394,7 +394,7 @@ export async function renderPaneScreen(
   if (!geometry) return null;
   const written = pane.ringBuffer.totalBytesWritten;
   if (!opts.reuse || typeof written !== 'number') return (await renderFrame(getPane, pane, geometry, snapshot, opts)).frame;
-  const fence = `${written}:${geometry.cols}x${geometry.rows}`;
+  const fence = `${written}:${geometry.cols}x${geometry.rows}:${identityTag(pane.bridge.outputModes)}`;
   // renderFrame copies the ring before its first await, in this same step.
   const read = await fencedRead(pane, `pane:${snapshotId(snapshot)}:${opts.tail === false ? 'whole' : 'tail'}`, fence,
     () => renderFrame(getPane, pane, geometry, snapshot, opts),
@@ -429,9 +429,11 @@ async function renderFrame(
   // such a cell reads as unknown (withUnknownCells), not as a blank.
   const whole = readRingWithModesAndGeometry(pane.ringBuffer, outputModes);
   const mark = whole.writtenAt;
+  // A ring that failed to wake read only its pending bytes: not a whole read.
+  const wokeFully = pane.ringBuffer.isHibernated !== true;
   let read = withUnknownCells(whole, geometry);
   let outcome = await snapshot({ ...geometry, scrollback: 0, initial: read.replay, geometry: read.geometry });
-  let fromWhole = true;
+  let fromWhole = wokeFully;
   if (!outcome.ok && outcome.reason === 'budget' && opts.tail !== false) {
     fromWhole = false;
     const tail = readRingTailWithModesAndGeometry(pane.ringBuffer, outputModes, AWAITING_RENDER_WINDOW_BYTES);

@@ -717,6 +717,15 @@ describe('renderPaneScreen reuse', () => {
     expect(copies()).toBe(3);
   });
 
+  it('does not reuse a frame read while the ring failed to wake (only its pending bytes)', async () => {
+    const { pane, copies } = countingPane();
+    Object.defineProperty(pane.ringBuffer, 'isHibernated', { get: () => true });
+    const snapshot = async () => ({ ok: true as const, rows: [{ text: 'partial' }] });
+    await renderPaneScreen(() => pane, snapshot, { reuse: true });
+    await renderPaneScreen(() => pane, snapshot, { reuse: true });
+    expect(copies()).toBe(2);
+  });
+
   it('does not reuse a frame read from the tail after the whole ring ran out of budget', async () => {
     const { pane } = countingPane();
     let calls = 0;

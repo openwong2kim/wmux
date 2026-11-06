@@ -99,6 +99,21 @@ export function fencedRead<T>(
   return pending;
 }
 
+const identities = new WeakMap<object, number>();
+let nextIdentity = 0;
+
+/**
+ * A tag for an object a read depends on but the ring's bytes do not name,
+ * such as the session's mode tracker (dropped when the shell exits), for use
+ * in a fence. Absent is "0".
+ */
+export function identityTag(value: object | null | undefined): string {
+  if (!value) return '0';
+  let id = identities.get(value);
+  if (id === undefined) identities.set(value, (id = ++nextIdentity));
+  return String(id);
+}
+
 /** Copies of the counters by kind family, for the daemon's diagnostics. */
 export function screenReadCounters(): Record<string, ScreenReadCounters> {
   return Object.fromEntries([...counters].map(([kind, c]) => [kind, { ...c }]));

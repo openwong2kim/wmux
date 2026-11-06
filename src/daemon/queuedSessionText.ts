@@ -3,7 +3,7 @@ import type { OutputModeTracker } from './util/outputModeTracker';
 import { enqueueSnapshotJob, generateTextSnapshotUnqueued, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { snapshotRingTextUnqueued } from './nativeRingSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
-import { fencedRead } from './screenReadCache';
+import { fencedRead, identityTag } from './screenReadCache';
 
 /** What a queued text read needs of a session (a ManagedSession). */
 export interface TextReadSession {
@@ -60,7 +60,11 @@ function queuedSessionRead(
     // `read` copies the ring before its first await, so this names exactly
     // the bytes and size the answer describes.
     readAt = readFence(pinned);
-    return read(pinned);
+    const answer = read(pinned);
+    // A ring that failed to wake read only its pending bytes: answer, but
+    // don't keep it, or it would stand once the stored history reads again.
+    if (pinned.ringBuffer.isHibernated) readAt = null;
+    return answer;
   }, `${kind}:${sessionId}#${sessionToken(pinned)}`);
   if (!reuse) return queued();
   return fencedRead(pinned, kind, readFence(pinned), queued, (outcome) => (outcome?.ok ? readAt : null));
@@ -70,7 +74,8 @@ function queuedSessionRead(
 const REUSE_MAX_SCROLLBACK = 2000;
 
 function readFence(session: TextReadSession): string {
-  return `${session.ringBuffer.totalBytesWritten}:${session.meta.cols ?? 80}x${session.meta.rows ?? 24}`;
+  const { ringBuffer, meta, bridge } = session;
+  return `${ringBuffer.totalBytesWritten}:${meta.cols ?? 80}x${meta.rows ?? 24}:${identityTag(bridge.outputModes)}`;
 }
 
 /**
