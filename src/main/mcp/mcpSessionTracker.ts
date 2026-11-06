@@ -18,7 +18,8 @@ export class McpSessionTracker {
   private readonly cap: number;
 
   constructor(opts: { now?: () => number; ttlMs?: number; cap?: number } = {}) {
-    this.now = opts.now ?? Date.now;
+    // Monotonic: a wall clock set ahead would expire every session at once.
+    this.now = opts.now ?? (() => performance.now());
     this.ttlMs = opts.ttlMs ?? MCP_SESSION_TTL_MS;
     this.cap = opts.cap ?? MCP_SESSION_CAP;
   }
@@ -43,11 +44,11 @@ export class McpSessionTracker {
     return { recent: this.seen.size, capped: this.seen.size >= this.cap, ttlS: Math.round(this.ttlMs / 1000) };
   }
 
+  /** A full pass: touch order is not time order once a clock steps back. */
   private prune(): void {
-    const cutoff = this.now() - this.ttlMs;
+    const now = this.now();
     for (const [id, at] of this.seen) {
-      if (at >= cutoff) break;
-      this.seen.delete(id);
+      if (now - at > this.ttlMs) this.seen.delete(id);
     }
   }
 }
