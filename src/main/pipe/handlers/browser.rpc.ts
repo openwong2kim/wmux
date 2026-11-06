@@ -223,11 +223,13 @@ function uploadRefusalText(input: unknown, refusal: UploadPathRefusal): string {
  * the page: the selector matched nothing (`match`), a ref's mark is on more
  * than one element (`ambiguous`), no input is near the anchor (`near`), the
  * selector is not CSS the page can parse (`invalid`), or the page did not
- * answer the lookup in time (`unanswered`).
+ * answer the lookup in time (`unanswered`, with the wait that actually ran:
+ * the caller's ask, capped).
  */
 export type UploadOutcome =
   | { uploaded: true; count: number }
-  | { uploaded: false; missing: 'match' | 'ambiguous' | 'near' | 'invalid' | 'unanswered'; detail?: string };
+  | { uploaded: false; missing: 'match' | 'ambiguous' | 'near' | 'invalid'; detail?: string }
+  | { uploaded: false; missing: 'unanswered'; waitedMs: number };
 
 /**
  * Set a file input's files in one guest, by path.
@@ -285,7 +287,7 @@ export async function setFilesInIsolatedWorld(
         const value = result?.value;
         return { uploaded: false, missing: value === 'anchor' ? 'near' : value === 'many' ? 'ambiguous' : 'match' };
       }
-      if (gaveUp) return { uploaded: false, missing: 'unanswered' };
+      if (gaveUp) return { uploaded: false, missing: 'unanswered', waitedMs: timeoutMs };
       sent = true;
       await send('DOM.setFileInputFiles', { files, objectId: result.objectId });
       return { uploaded: true, count: files.length };
@@ -303,7 +305,7 @@ export async function setFilesInIsolatedWorld(
   try {
     const outcome = await Promise.race([run(), expired]);
     if (outcome !== 'expired') return outcome;
-    if (!sent) return { uploaded: false, missing: 'unanswered' };
+    if (!sent) return { uploaded: false, missing: 'unanswered', waitedMs: timeoutMs };
     throw new Error(`browser.upload.cdp: the page did not take the files within ${timeoutMs} ms`);
   } finally {
     clearTimeout(timer);

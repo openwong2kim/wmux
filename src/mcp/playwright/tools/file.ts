@@ -590,6 +590,8 @@ interface MainUploadReply {
   /** Nothing was sent to the page; see UploadOutcome in browser.rpc.ts. */
   missing?: 'match' | 'ambiguous' | 'near' | 'invalid' | 'unanswered';
   detail?: string;
+  /** With `unanswered`: the wait main ran, which caps what was asked. */
+  waitedMs?: number;
 }
 
 /** Room for main to report its own timeout before the client gives up. */
@@ -688,7 +690,11 @@ async function uploadThroughMain(
   // Main sent nothing to the page, so nothing happened.
   switch (reply?.missing) {
     case 'unanswered':
-      throw taggedFailure('timeout', `The page did not answer within ${timeoutMs} ms; no file was set.`, 'none');
+      throw taggedFailure(
+        'timeout',
+        `The page did not answer within ${reply.waitedMs ?? timeoutMs} ms; no file was set.`,
+        'none',
+      );
     case 'invalid':
       throw taggedFailure(
         'invalid_params',

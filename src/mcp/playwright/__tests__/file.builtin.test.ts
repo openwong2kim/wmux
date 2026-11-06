@@ -132,6 +132,13 @@ describe('browser_file_upload on builtin goes through main', () => {
     expect(text(res)).toContain('effect_state: none');
   });
 
+  it('names the wait main actually ran, which caps what was asked', async () => {
+    mockSendRpc.mockResolvedValue({ uploaded: false, missing: 'unanswered', waitedMs: 120_000 });
+    const res = await run({ timeout: 600_000 });
+    expect(text(res)).toContain('did not answer within 120000 ms');
+    expect(text(res)).not.toContain('600000');
+  });
+
   it('a lookup the page never answered is a timeout where nothing happened', async () => {
     mockSendRpc.mockResolvedValue({ uploaded: false, missing: 'unanswered' });
     const res = await run({ timeout: 50 });

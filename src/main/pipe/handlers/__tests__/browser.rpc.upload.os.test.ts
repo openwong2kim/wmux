@@ -250,7 +250,7 @@ describe('browser.upload.cdp: the shared debugger', () => {
     guest.wc.debugger.sendCommand.mockImplementation(async (method: string) =>
       method === 'Runtime.evaluate' ? new Promise(() => undefined) : answer(method));
     const res = await call(register(), 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')], timeoutMs: 50 });
-    expect(res.result).toEqual({ uploaded: false, missing: 'unanswered' });
+    expect(res.result).toEqual({ uploaded: false, missing: 'unanswered', waitedMs: 50 });
     expect(sent()).not.toContain('DOM.setFileInputFiles');
   });
 
@@ -259,7 +259,7 @@ describe('browser.upload.cdp: the shared debugger', () => {
     guest.wc.debugger.sendCommand.mockImplementation(async (method: string) =>
       method === 'Runtime.evaluate' ? new Promise((resolve) => { answerLookup = resolve; }) : answer(method));
     const res = await call(register(), 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')], timeoutMs: 50 });
-    expect(res.result).toEqual({ uploaded: false, missing: 'unanswered' });
+    expect(res.result).toEqual({ uploaded: false, missing: 'unanswered', waitedMs: 50 });
     // The page wakes up (a dialog closed, a slow load finished) after the
     // caller was told nothing was set.
     answerLookup({ result: { type: 'object', subtype: 'node', objectId: 'obj-late' } });
@@ -283,7 +283,8 @@ describe('browser.upload.cdp: the shared debugger', () => {
         method === 'Runtime.evaluate' ? new Promise(() => undefined) : answer(method));
       const pending = call(register(), 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')], timeoutMs: 10_000_000 });
       await vi.advanceTimersByTimeAsync(120_000);
-      expect((await pending).result).toEqual({ uploaded: false, missing: 'unanswered' });
+      // The reply names the wait that actually ran, not the one asked for.
+      expect((await pending).result).toEqual({ uploaded: false, missing: 'unanswered', waitedMs: 120_000 });
     } finally {
       vi.useRealTimers();
     }
