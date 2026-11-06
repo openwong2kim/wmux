@@ -1,3 +1,6 @@
+// @wmux-lane unit
+// Pure path arithmetic: the Windows cases pass path.win32 explicitly, so the
+// result is the same on every host.
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
 import { homeRelative } from '../homeRelative';
