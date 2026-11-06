@@ -832,7 +832,8 @@ fn the_ack_line_is_consumed_and_never_forwarded() {
 }
 
 /// An older broker sends no ack: its first reply, even split right after
-/// `{"`, reaches stdout byte for byte and in order.
+/// `{"`, reaches stdout byte for byte and in order, and without waiting for
+/// its newline once it has left the ack prefix.
 #[test]
 fn without_an_ack_the_first_reply_is_forwarded_intact() {
     let sb = Sandbox::new();
@@ -845,9 +846,13 @@ fn without_an_ack_the_first_reply_is_forwarded_intact() {
     conn.write_all(b"{\"").unwrap();
     conn.flush().unwrap();
     std::thread::sleep(Duration::from_millis(100));
-    conn.write_all(b"jsonrpc\":\"2.0\",\"id\":7}\n{\"id\":8}\n").unwrap();
-    let want = b"{\"jsonrpc\":\"2.0\",\"id\":7}\n{\"id\":8}\n";
-    assert_eq!(recv_exact(&out, want.len()), want);
+    // Past the prefix it is traffic at once: no newline is waited for.
+    conn.write_all(b"jsonrpc\":\"2.0\",\"id\":7}").unwrap();
+    let head = b"{\"jsonrpc\":\"2.0\",\"id\":7}";
+    assert_eq!(recv_exact(&out, head.len()), head);
+    conn.write_all(b"\n{\"id\":8}\n").unwrap();
+    let rest = b"\n{\"id\":8}\n";
+    assert_eq!(recv_exact(&out, rest.len()), rest);
     drop(child.stdin.take());
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
 }
