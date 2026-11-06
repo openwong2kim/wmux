@@ -71,3 +71,21 @@ describe('hook bridges — enforcer lockstep (#1111)', () => {
     ).toEqual([]);
   });
 });
+
+// The native twin of the shared bridge (core/wmux-native) speaks the same lane
+// from Rust, so its request builder is checked the same way.
+describe('native hook bridge — enforcer lockstep (#1111)', () => {
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'core', 'wmux-native', 'src', 'hook.rs'), 'utf8');
+
+  it('sends the recognised clientName on the request', () => {
+    expect(src).toContain(`const WMUX_CLIENT_NAME: &str = "${WMUX_HOOK_BRIDGE_CLIENT_NAME}";`);
+    expect(src).toContain('",\\"clientName\\":"');
+  });
+
+  it('calls no main-pipe method outside the lane', () => {
+    const methods = [...src.matchAll(/const [A-Z_]+_METHOD: &str = "([^"]+)";/g)].map((m) => m[1]);
+    expect(methods.sort()).toEqual(['daemon.hooks.signal', 'hooks.signal']);
+    const outside = methods.filter((m) => !m.startsWith('daemon.') && !HOOK_BRIDGE_METHODS.has(m as never));
+    expect(outside).toEqual([]);
+  });
+});

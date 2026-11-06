@@ -18,6 +18,11 @@ import { AGENT_SLUGS, isAgentSlug } from '../../../src/shared/agentIdentity';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
+// The native bridge (core/wmux-native) embeds this file as its flavour table.
+const NATIVE_FLAVOURS = JSON.parse(
+  fs.readFileSync(path.join(REPO_ROOT, 'core', 'wmux-native', 'flavours.json'), 'utf8'),
+) as typeof FLAVOURS;
+
 describe('hook flavours — TS table ↔ bridge table', () => {
   it('names the same flavours on both sides', () => {
     expect(Object.keys(FLAVOURS).sort()).toEqual([...COMPAT_HOOK_FLAVOUR_IDS].sort());
@@ -27,6 +32,27 @@ describe('hook flavours — TS table ↔ bridge table', () => {
     const ts = COMPAT_HOOK_FLAVOURS[id];
     const rt = FLAVOURS[id];
     expect(ts.id).toBe(id);
+    expect(rt.agent).toBe(ts.agent);
+    expect(rt.events).toEqual(ts.events);
+    expect(rt.sessionIdFields).toEqual(ts.sessionIdFields);
+    expect(rt.cwdFields).toEqual(ts.cwdFields);
+    expect(rt.sourceField).toEqual(ts.sourceField);
+  });
+
+  // The Rust table is the whole runtime row, runtime-only fields included
+  // (log file, request-id prefix), in the same order: both bridges serve the
+  // same CLIs and write the same logs.
+  it('the native bridge table equals the Node bridge table', () => {
+    expect(NATIVE_FLAVOURS).toEqual(FLAVOURS);
+    expect(Object.keys(NATIVE_FLAVOURS)).toEqual(Object.keys(FLAVOURS));
+    for (const id of Object.keys(FLAVOURS)) {
+      expect(Object.keys(NATIVE_FLAVOURS[id].events), id).toEqual(Object.keys(FLAVOURS[id].events));
+    }
+  });
+
+  it.each(COMPAT_HOOK_FLAVOUR_IDS)('%s: the native table matches the TS table', (id) => {
+    const ts = COMPAT_HOOK_FLAVOURS[id];
+    const rt = NATIVE_FLAVOURS[id];
     expect(rt.agent).toBe(ts.agent);
     expect(rt.events).toEqual(ts.events);
     expect(rt.sessionIdFields).toEqual(ts.sessionIdFields);

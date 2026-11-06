@@ -1,0 +1,57 @@
+{
+  "kiro": {
+    "agent": "kiro",
+    "events": {
+      "stop": { "kind": "agent.stop" },
+      "agentSpawn": { "kind": "agent.session_start" }
+    },
+    "sessionIdFields": [],
+    "cwdFields": ["cwd"],
+    "sourceField": null,
+    "logFile": "kiro-bridge.log",
+    "requestPrefix": "kiro-hook"
+  },
+  "copilot": {
+    "agent": "copilot",
+    "events": {
+      "SessionStart": { "kind": "agent.session_start" },
+      "UserPromptSubmit": { "kind": "agent.user_prompt_submit" },
+      "Stop": { "kind": "agent.stop" },
+      "PermissionRequest": { "kind": "agent.awaiting_input" }
+    },
+    "sessionIdFields": ["session_id", "sessionId"],
+    "cwdFields": ["cwd"],
+    "sourceField": "source",
+    "logFile": "copilot-hooks.log",
+    "requestPrefix": "copilot-hook"
+  },
+  "gemini": {
+    "agent": "gemini",
+    "events": {
+      "SessionStart": { "kind": "agent.session_start" },
+      "BeforeAgent": { "kind": "agent.user_prompt_submit" },
+      "AfterAgent": { "kind": "agent.stop" },
+      "Notification": { "kind": "agent.awaiting_input", "when": { "field": "notification_type", "equals": "ToolPermission" } }
+    },
+    "sessionIdFields": ["session_id"],
+    "cwdFields": ["cwd"],
+    "sourceField": "source",
+    "logFile": "gemini-hooks.log",
+    "requestPrefix": "gemini-hook"
+  },
+  "qwen": {
+    "agent": "qwen",
+    "events": {
+      "SessionStart": { "kind": "agent.session_start" },
+      "UserPromptSubmit": { "kind": "agent.user_prompt_submit" },
+      "Stop": { "kind": "agent.stop" },
+      "StopFailure": { "kind": "agent.stop_failure" },
+      "PermissionRequest": { "kind": "agent.awaiting_input" }
+    },
+    "sessionIdFields": ["session_id"],
+    "cwdFields": ["cwd"],
+    "sourceField": "source",
+    "logFile": "qwen-hooks.log",
+    "requestPrefix": "qwen-hook"
+  }
+}
