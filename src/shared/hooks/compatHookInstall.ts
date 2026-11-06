@@ -105,18 +105,28 @@ export function resolveCompatHookConfigDir(
 }
 
 /**
- * The staged native bridge, from two known roots only, since the installer
- * copies and runs what it finds: the packaged app's resources/native-hooks/
- * beside the CLI bundle it runs from (resources/cli-bundle/), and a source
- * checkout's dist/native-hooks/, seen from the checkout root or from its
- * dist/cli-bundle/. No other directory up the tree is ever looked at.
+ * The native bridge to install, from two known roots only, since the installer
+ * copies and runs what it finds. Both sit inside the roots where wmux-native
+ * counts as wmux's own (#3129: below .wmux/, an app resources/ directory, or
+ * core/<crate>/target/(debug|release)/):
+ *   - a packaged app: resources/native-hooks/ beside the CLI bundle it runs
+ *     from (resources/cli-bundle/);
+ *   - a source checkout: core/wmux-native/target/release/, seen from the
+ *     checkout root or from its dist/cli-bundle/.
+ * dist/native-hooks/ (the forge stage) and target/<triple>/ (a cross build)
+ * are build inputs, never runtime sources. No other directory is looked at.
  */
 export function findNativeHooksSource(startDir: string, platform: NodeJS.Platform = process.platform): string | null {
   const exe = nativeHooksBasename(platform);
+  const parent = path.dirname(startDir);
   const candidates: string[] = [];
-  if (path.basename(startDir) === 'cli-bundle') candidates.push(path.join(path.dirname(startDir), 'native-hooks', exe));
-  if (fs.existsSync(path.join(startDir, 'core', 'wmux-native', 'Cargo.toml'))) {
-    candidates.push(path.join(startDir, 'dist', 'native-hooks', exe));
+  const inCliBundle = path.basename(startDir) === 'cli-bundle';
+  if (inCliBundle && path.basename(parent).toLowerCase() === 'resources') {
+    candidates.push(path.join(parent, 'native-hooks', exe));
+  }
+  const repo = inCliBundle && path.basename(parent) === 'dist' ? path.dirname(parent) : startDir;
+  if (fs.existsSync(path.join(repo, 'core', 'wmux-native', 'Cargo.toml'))) {
+    candidates.push(path.join(repo, 'core', 'wmux-native', 'target', 'release', exe));
   }
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }

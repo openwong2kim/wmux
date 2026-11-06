@@ -269,16 +269,33 @@ describe.skipIf(!NATIVE_BYTES)('native bridge command form', () => {
     expect(findNativeHooksSource(path.join(home, 'elsewhere'))).toBeNull();
   });
 
-  it('finds the stage of a source checkout from its root or its dist/cli-bundle', () => {
+  it('finds the cargo build of a source checkout from its root or its dist/cli-bundle', () => {
     const repo = path.join(home, 'repo');
-    const stage = path.join(repo, 'dist', 'native-hooks', exe);
-    fs.mkdirSync(path.dirname(stage), { recursive: true });
-    fs.mkdirSync(path.join(repo, 'core', 'wmux-native'), { recursive: true });
+    const build = path.join(repo, 'core', 'wmux-native', 'target', 'release', exe);
+    fs.mkdirSync(path.dirname(build), { recursive: true });
     fs.mkdirSync(path.join(repo, 'dist', 'cli-bundle'), { recursive: true });
     fs.writeFileSync(path.join(repo, 'core', 'wmux-native', 'Cargo.toml'), '');
-    fs.writeFileSync(stage, 'x');
-    expect(findNativeHooksSource(repo)).toBe(stage);
-    expect(findNativeHooksSource(path.join(repo, 'dist', 'cli-bundle'))).toBe(stage);
+    fs.writeFileSync(build, 'x');
+    expect(findNativeHooksSource(repo)).toBe(build);
+    expect(findNativeHooksSource(path.join(repo, 'dist', 'cli-bundle'))).toBe(build);
+  });
+
+  // dist/native-hooks is packaging input and target/<triple>/release a
+  // cross-build output: neither may be what a hook command runs (#3129 counts
+  // wmux-native as wmux's own only under .wmux/, resources/ or
+  // core/<crate>/target/(debug|release)/).
+  it('never picks the forge stage or a cross-build directory', () => {
+    const repo = path.join(home, 'repo');
+    fs.mkdirSync(path.join(repo, 'core', 'wmux-native'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'core', 'wmux-native', 'Cargo.toml'), '');
+    for (const dir of [['dist', 'native-hooks'], ['core', 'wmux-native', 'target', 'aarch64-apple-darwin', 'release']]) {
+      fs.mkdirSync(path.join(repo, ...dir), { recursive: true });
+      fs.writeFileSync(path.join(repo, ...dir, exe), 'x');
+    }
+    fs.mkdirSync(path.join(repo, 'dist', 'cli-bundle'), { recursive: true });
+    expect(findNativeHooksSource(repo)).toBeNull();
+    expect(findNativeHooksSource(path.join(repo, 'dist', 'cli-bundle'))).toBeNull();
+    expect(resolveCompatHookPaths(home, path.join(repo, 'dist', 'cli-bundle'), {}).nativeHooks).toBeNull();
   });
 
   // The installer copies and runs what it finds, so only the two known roots
