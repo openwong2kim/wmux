@@ -79,13 +79,21 @@ export const INTERACTIVE_SELECTOR =
  * The `Page:`/`URL:` header always stays: the auto-diff URL guard in
  * inspection.ts parses the `URL: …` line out of this text.
  *
- * Frames: each `<iframe>`/`<frame>` under the root is listed after the
- * interactive elements as one boundary line (role, name or title, where it
- * points, "contents not in this snapshot"). It is read from the element, so a
- * cross-site frame is listed like any other. The location keeps scheme, host
- * and path only: credentials, query and fragment can carry tokens. Kept under
- * `filter: 'interactive'` too, since a frame may hold the control the caller
- * is after. At most FRAME_LINE_CAP lines, then one line counting the rest.
+ * Frames: each frame element under the root (`iframe`, `frame`, `object`,
+ * `embed`, `fencedframe`, the root itself, and those inside open shadow roots)
+ * is listed after the interactive elements as one boundary line: its tag, its
+ * name, the origin it points at, "contents not in this snapshot". It is read
+ * from the element, so a cross-site frame is listed like any other. The line
+ * starts with the tag, never the page's `role`, and the location is the origin
+ * plus `/…` for a non-root path: paths, queries and credentials can carry
+ * tokens. Kept under `filter: 'interactive'` too, since a frame may hold the
+ * control the caller is after. At most FRAME_LINE_CAP lines, then one line
+ * counting the rest.
+ *
+ * Page text: every page-derived string goes through pageText (C0/C1 controls
+ * and bidi/format characters dropped, whitespace collapsed), so no page string
+ * can start a line of its own, and a quoted frame name is escaped as well, so
+ * it cannot close its quotes early.
  */
 export interface DomSnapshotEntry {
   ref: number;
@@ -129,6 +137,20 @@ export const FRAME_LINE_CAP = 50;
 /** Ends every frame boundary line. */
 export const FRAME_BOUNDARY_SUFFIX = '(contents not in this snapshot)';
 
+/**
+ * In-page helpers for page-derived text (see buildDomSnapshotExpression). The
+ * controls dropped exclude tab and the line breaks, which collapse to a space
+ * instead, so words either side of a newline stay apart.
+ */
+const PAGE_TEXT_JS = String.raw`
+    const UNSAFE_CHARS = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+    const pageText = (s, max) => {
+      const t = String(s == null ? '' : s).replace(UNSAFE_CHARS, '').replace(/\s+/g, ' ').trim();
+      return max === undefined ? t : t.substring(0, max);
+    };
+    const quotedPageText = (s, max) => pageText(s, max).replace(/[\\"]/g, '\\$&');
+`;
+
 export function buildDomSnapshotExpression(
   rootSelector?: string,
   opts?: DomSnapshotExpressionOptions,
@@ -142,6 +164,7 @@ export function buildDomSnapshotExpression(
     const assignStableRefs = (${STABLE_REF_ASSIGNMENT_JS});
     const prior = ${JSON.stringify(opts?.stable?.prior ?? [])};
     const seedNext = ${JSON.stringify(opts?.stable?.nextRef ?? 0)};
+    ${PAGE_TEXT_JS}
     const root = rootSel ? document.querySelector(rootSel) : document;
     if (!root) return withEntries ? { text: ${miss}, entries: [] } : ${miss};
     document.querySelectorAll('[data-wmux-ref]').forEach(el => el.removeAttribute('data-wmux-ref'));
@@ -170,23 +193,23 @@ export function buildDomSnapshotExpression(
     const assigned = assignStableRefs(prior, seedNext, described);
     const refs = assigned.refs;
     interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(refs[i])));
-    const title = document.title;
+    const title = pageText(document.title);
     const url = location.href;
     const lines = ['Page: ' + title, 'URL: ' + url, ''];
     if (rootSel) lines.push('Scope: ' + rootSel, '');
     if (!interactiveOnly) root.querySelectorAll('h1,h2,h3').forEach(h => {
-      lines.push(h.tagName + ': ' + (h.textContent || '').trim().substring(0, 80));
+      lines.push(h.tagName + ': ' + pageText(h.textContent, 80));
     });
     lines.push('', 'Interactive elements (use ref number for click/fill/type):');
     interactives.forEach((el, i) => {
       const tag = el.tagName.toLowerCase();
-      const role = el.getAttribute('role') || '';
-      const text = (el.textContent || '').trim().substring(0, 60);
-      const label = el.getAttribute('aria-label') || '';
-      const name = el.getAttribute('name') || '';
-      const type = el.getAttribute('type') || '';
-      const placeholder = el.getAttribute('placeholder') || '';
-      const href = el.getAttribute('href') || '';
+      const role = pageText(el.getAttribute('role'));
+      const text = pageText(el.textContent, 60);
+      const label = pageText(el.getAttribute('aria-label'));
+      const name = pageText(el.getAttribute('name'));
+      const type = pageText(el.getAttribute('type'));
+      const placeholder = pageText(el.getAttribute('placeholder'));
+      const href = pageText(el.getAttribute('href'), 60);
       let desc = '  [ref=' + refs[i] + '] ' + tag;
       if (type) desc += '[type=' + type + ']';
       if (role) desc += '[role=' + role + ']';
@@ -198,29 +221,51 @@ export function buildDomSnapshotExpression(
       if (hoverTriggers.has(el)) desc += ${JSON.stringify(HAS_SUBMENU_DOM_MARKER)};
       lines.push(desc);
     });
-    // Where a frame points, without what could be a secret: srcdoc wins over
-    // src (as it does in the browser), and only http(s)/file keep a path.
-    const frameLocation = (f) => {
-      if (f.hasAttribute('srcdoc')) return 'about:srcdoc';
-      const raw = (f.getAttribute('src') || '').trim();
-      if (!raw) return 'about:blank';
+    // Where a frame points, as an origin: a path, query or credentials can
+    // carry a token, and the boundary is all the caller needs.
+    const FRAME_SELECTOR = 'iframe,frame,object,embed,fencedframe';
+    const originOnly = (raw) => {
       let u;
-      try { u = new URL(raw, document.baseURI); } catch (e) { return '(invalid src)'; }
-      if (u.protocol === 'http:' || u.protocol === 'https:' || u.protocol === 'file:') {
-        return u.protocol + '//' + u.host + u.pathname;
-      }
-      if (u.protocol === 'about:') return 'about:' + u.pathname;
+      try { u = new URL(raw, document.baseURI); } catch (e) { return '(invalid location)'; }
+      if (u.protocol === 'http:' || u.protocol === 'https:') return u.origin + (u.pathname && u.pathname !== '/' ? '/…' : '');
+      if (u.protocol === 'about:') return 'about:' + pageText(u.pathname, 20);
+      if (u.protocol === 'file:') return 'file:///…';
       return u.protocol;
     };
-    const frames = [...root.querySelectorAll('iframe,frame')];
+    // Where the frame is now when this document may read it (same origin),
+    // else what it was told to load. A loading frame still reads about:blank.
+    const frameLocation = (f) => {
+      if (f.tagName === 'FENCEDFRAME') return 'opaque';
+      let live = '';
+      try {
+        const w = f.contentWindow;
+        live = w && typeof w.location.href === 'string' ? w.location.href : '';
+      } catch (e) {
+        live = '';
+      }
+      if (live && live !== 'about:blank') return originOnly(live);
+      if (f.tagName === 'IFRAME' && f.hasAttribute('srcdoc')) return 'about:srcdoc';
+      const raw = ((f.tagName === 'OBJECT' ? f.getAttribute('data') : f.getAttribute('src')) || '').trim();
+      return raw ? originOnly(raw) : 'about:blank';
+    };
+    const frames = [];
+    const collectFrames = (scope) => {
+      for (const el of scope.querySelectorAll('*')) {
+        if (el.matches(FRAME_SELECTOR)) frames.push(el);
+        if (el.shadowRoot) collectFrames(el.shadowRoot);
+      }
+    };
+    if (root !== document) {
+      if (root.matches(FRAME_SELECTOR)) frames.push(root);
+      if (root.shadowRoot) collectFrames(root.shadowRoot);
+    }
+    collectFrames(root);
     if (frames.length > 0) {
       const frameCap = ${JSON.stringify(FRAME_LINE_CAP)};
       lines.push('', 'Frames (separate documents):');
       frames.slice(0, frameCap).forEach((f) => {
-        const role = f.getAttribute('role') || f.tagName.toLowerCase();
-        const name = (f.getAttribute('aria-label') || f.getAttribute('title') || f.getAttribute('name') || '')
-          .replace(/\\s+/g, ' ').trim().substring(0, 80);
-        lines.push('  ' + role + (name ? ' "' + name + '"' : '') + ' -> ' + frameLocation(f).substring(0, 160)
+        const name = quotedPageText(f.getAttribute('aria-label') || f.getAttribute('title') || f.getAttribute('name'), 80);
+        lines.push('  ' + f.tagName.toLowerCase() + (name ? ' "' + name + '"' : '') + ' -> ' + frameLocation(f)
           + ' ' + ${JSON.stringify(FRAME_BOUNDARY_SUFFIX)});
       });
       if (frames.length > frameCap) lines.push('  (+' + (frames.length - frameCap) + ' more frames not listed)');
