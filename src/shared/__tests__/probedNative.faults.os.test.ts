@@ -1,0 +1,72 @@
+// probedNative under filesystem faults: every fs call goes through a spy that
+// runs the real call unless a test makes it fail.
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PROBE_LOCK, lockDir } from '../probedNative';
+
+vi.mock('fs', async (importOriginal) => {
+  const real = await importOriginal<typeof import('fs')>();
+  const spied = Object.fromEntries(
+    (['openSync', 'readFileSync', 'unlinkSync', 'renameSync', 'linkSync', 'statSync', 'mkdirSync'] as const)
+      .map((name) => [name, vi.fn(real[name] as (...args: unknown[]) => unknown)]),
+  );
+  return { ...real, ...spied, default: { ...real, ...spied } };
+});
+
+const realFs = await vi.importActual<typeof import('fs')>('fs');
+let dir = '';
+const lockFile = () => path.join(dir, PROBE_LOCK);
+
+/** Fail `name` for paths `matches` picks with `code`. */
+function fail(name: 'readFileSync' | 'unlinkSync', matches: (p: string) => boolean, code: string): void {
+  const real = realFs[name] as (...args: unknown[]) => unknown;
+  vi.mocked(fs[name]).mockImplementation(((...args: unknown[]) => {
+    if (!matches(String(args[0]))) return real(...args);
+    throw Object.assign(new Error(`${code}: injected`), { code });
+  }) as never);
+}
+
+/** Count the attempts to create the lock; past `limit` the attempt fails
+ *  with EIO, so a loop that never waits ends instead of hanging the worker. */
+function countLockAttempts(limit = 2000): () => number {
+  let calls = 0;
+  vi.mocked(fs.openSync).mockImplementation(((...args: unknown[]) => {
+    if (String(args[0]) === lockFile() && ++calls > limit) throw Object.assign(new Error('EIO: too many attempts'), { code: 'EIO' });
+    return (realFs.openSync as (...a: unknown[]) => unknown)(...args);
+  }) as never);
+  return () => calls;
+}
+
+beforeEach(() => {
+  dir = realFs.mkdtempSync(path.join(os.tmpdir(), 'wmux-probed-faults-'));
+});
+afterEach(() => {
+  vi.mocked(fs.openSync).mockImplementation(realFs.openSync as never);
+  vi.mocked(fs.readFileSync).mockImplementation(realFs.readFileSync as never);
+  vi.mocked(fs.unlinkSync).mockImplementation(realFs.unlinkSync as never);
+  realFs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe('lockDir — every way round the loop waits and keeps the deadline', () => {
+  it('a held lock that cannot be read (a root-owned file, a directory)', async () => {
+    realFs.writeFileSync(lockFile(), 'unreadable');
+    fail('readFileSync', (p) => p === lockFile(), 'EACCES');
+    const calls = countLockAttempts();
+    const started = Date.now();
+    expect(await lockDir(dir, { waitMs: 300, pollMs: 50 })).toBeNull();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    expect(calls()).toBeLessThan(50);
+  });
+
+  it('a stale lock that cannot be removed (held by an antivirus scan)', async () => {
+    realFs.writeFileSync(lockFile(), `999999999 ${Date.now() - 60_000} other`);
+    fail('unlinkSync', (p) => p === lockFile(), 'EBUSY');
+    const calls = countLockAttempts();
+    const started = Date.now();
+    expect(await lockDir(dir, { waitMs: 300, pollMs: 50 })).toBeNull();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    expect(calls()).toBeLessThan(50);
+  });
+});

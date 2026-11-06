@@ -151,17 +151,23 @@ export async function lockDir(dir: string, opts: LockOptions = {}): Promise<{ re
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return null;
     }
-    let held = '';
-    try { held = fs.readFileSync(file, 'utf8'); } catch { continue; /* released meanwhile */ }
-    const [pid, since] = held.split(' ').map(Number);
-    if (!Number.isInteger(pid) || !alive(pid) || !(Date.now() - since < staleMs)) {
-      // Taken over: only if it is still the lock just read.
-      try { if (fs.readFileSync(file, 'utf8') === held) fs.unlinkSync(file); } catch { /* gone */ }
-      continue;
-    }
+    takeOverIfStale(file, staleMs);
+    // Every way round waits and keeps the deadline: a lock that cannot be
+    // read or removed must not spin the main process.
     if (Date.now() >= deadline) return null;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
+}
+
+/** Remove a held lock whose pid is gone or that is older than `staleMs`; the
+ *  next attempt then creates its own. Best effort: any failure leaves it. */
+function takeOverIfStale(file: string, staleMs: number): void {
+  let held = '';
+  try { held = fs.readFileSync(file, 'utf8'); } catch { return; }
+  const [pid, since] = held.split(' ').map(Number);
+  if (Number.isInteger(pid) && alive(pid) && Date.now() - since < staleMs) return;
+  // Only if it is still the lock just read.
+  try { if (fs.readFileSync(file, 'utf8') === held) fs.unlinkSync(file); } catch { /* gone, or held fast */ }
 }
 
 // ----- stage, probe, swap --------------------------------------------------------
