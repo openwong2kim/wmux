@@ -20,6 +20,11 @@ export interface DaemonMemoryDiagnostics {
   }>;
   /** Idle panes whose ring sits in its `.buf`, and the ring memory that freed. Absent from older daemons. */
   hibernation?: { sessions: number; freedBytes: number; wakeFailures?: number };
+  /**
+   * Screen reads from the ring, by kind: answered from the previous read
+   * (nothing moved), joined to one still running, or parsed. Absent from older daemons.
+   */
+  screenReads?: Record<string, { hits: number; joins: number; misses: number }>;
 }
 
 export interface AppMemoryDiagnostics {

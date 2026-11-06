@@ -1,0 +1,125 @@
+/**
+ * Reuse a screen read while nothing it depends on has changed.
+ *
+ * A read rebuilds a pane's screen from its ring, so its answer is a function
+ * of the ring's bytes and the size it is read at. The fence names both: the
+ * ring's lifetime byte count (monotonic across wrap and hibernation) and the
+ * size. A read whose fence matches the last one of the same kind on the same
+ * session object answers the rows that read produced, with no ring copy and
+ * no parse. A read still in flight with the same fence is joined instead of
+ * started again. Only the latest answer per session and kind is kept.
+ *
+ * The session object, not its id, is the owner: a supervised restart
+ * re-creates a dead pane under the same id, and the new session must never
+ * read the old one's screen.
+ */
+
+export interface ScreenReadCounters {
+  /** Answered from the previous read: same session, kind and fence. */
+  hits: number;
+  /** Joined a read of the same fence that was still running. */
+  joins: number;
+  /** Read the ring and parsed. */
+  misses: number;
+}
+
+interface Entry<T> {
+  fence: string;
+  value?: T;
+  pending?: Promise<T>;
+}
+
+const entries = new WeakMap<object, Map<string, Entry<unknown>>>();
+const counters = new Map<string, ScreenReadCounters>();
+
+/**
+ * Kinds kept per session. A kind carries its read's depth (`text:300`), and
+ * callers pick depths freely, so the oldest kind is dropped past this.
+ */
+const KINDS_PER_SESSION = 4;
+
+/** Counted by the kind's family (`text`, `screen`, `pane`), a fixed set. */
+function count(kind: string): ScreenReadCounters {
+  const family = kind.split(':', 1)[0];
+  let c = counters.get(family);
+  if (!c) counters.set(family, (c = { hits: 0, joins: 0, misses: 0 }));
+  return c;
+}
+
+/**
+ * The answer for `kind` on `owner` at `fence` (the fence now): the kept one,
+ * the running one, or a new `read()`. A running read of the same fence is
+ * joined even if it ends up reading newer bytes, as a queued read always has.
+ * `settle` names the fence the answer actually describes, taken in the same
+ * synchronous step as the ring copy behind it, or null when the answer must
+ * not be reused (a failure, a partial read, a pane that went away).
+ */
+export function fencedRead<T>(
+  owner: object,
+  kind: string,
+  fence: string,
+  read: () => Promise<T>,
+  settle: (value: T) => string | null,
+): Promise<T> {
+  let byKind = entries.get(owner);
+  if (!byKind) entries.set(owner, (byKind = new Map()));
+  const known = byKind.get(kind) as Entry<T> | undefined;
+  const c = count(kind);
+  if (known?.fence === fence && (known.pending || 'value' in known)) {
+    byKind.delete(kind); // still in use: keep it the newest kind
+    byKind.set(kind, known as Entry<unknown>);
+    if (known.pending) { c.joins++; return known.pending; }
+    c.hits++;
+    return Promise.resolve(known.value as T);
+  }
+  c.misses++;
+  const entry: Entry<T> = { fence };
+  const pending = read().then(
+    (value) => {
+      // A newer read of this kind may have replaced the entry meanwhile.
+      if (byKind.get(kind) === entry) {
+        const at = settle(value);
+        if (at === null) byKind.delete(kind);
+        else { entry.fence = at; entry.value = value; delete entry.pending; }
+      }
+      return value;
+    },
+    (err: unknown) => {
+      if (byKind.get(kind) === entry) byKind.delete(kind);
+      throw err;
+    },
+  );
+  entry.pending = pending;
+  byKind.delete(kind); // re-inserted last: the newest kind
+  byKind.set(kind, entry as Entry<unknown>);
+  for (const oldest of byKind.keys()) {
+    if (byKind.size <= KINDS_PER_SESSION) break;
+    byKind.delete(oldest);
+  }
+  return pending;
+}
+
+const identities = new WeakMap<object, number>();
+let nextIdentity = 0;
+
+/**
+ * A tag for an object a read depends on but the ring's bytes do not name,
+ * such as the session's mode tracker (dropped when the shell exits), for use
+ * in a fence. Absent is "0".
+ */
+export function identityTag(value: object | null | undefined): string {
+  if (!value) return '0';
+  let id = identities.get(value);
+  if (id === undefined) identities.set(value, (id = ++nextIdentity));
+  return String(id);
+}
+
+/** Copies of the counters by kind family, for the daemon's diagnostics. */
+export function screenReadCounters(): Record<string, ScreenReadCounters> {
+  return Object.fromEntries([...counters].map(([kind, c]) => [kind, { ...c }]));
+}
+
+/** Tests only. */
+export function resetScreenReadCounters(): void {
+  counters.clear();
+}
