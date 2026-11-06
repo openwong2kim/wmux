@@ -17,9 +17,13 @@
 //! run or node cannot be started (on Windows, also when no job object can
 //! contain it). A dropped session is never resumed: MCP servers keep
 //! per-session state, so the host must see the server die and restart it. The
-//! signal handlers are installed once the session is acknowledged; before that
-//! a signal kills the process by its default disposition, as it does the Node
-//! shim before its handlers.
+//! signal handlers are installed once the broker connection is up, right before
+//! the handshake is written, so no signal falls between the two (shim.ts
+//! installs them in the same tick as its write). A signal while the ack is
+//! awaited therefore ends the shim with 0; the fallback does not inherit them
+//! (exec resets caught signals on Unix; on Windows the handover's own console
+//! handler runs first). During the connect retries a signal kills the process
+//! by its default disposition.
 //!
 //! One intentional divergence from shim.ts: a failed stdout write exits 0.
 //! The host stopped reading, which is a normal shutdown, and node's exit 1
@@ -806,6 +810,7 @@ mod sys {
     }
 
     pub fn session(mut conn: UnixStream, handshake: &[u8], raw: &[OsString]) -> ! {
+        install_exit_handlers();
         if let Err(e) = conn.write_all(handshake) {
             let _ = e;
             drop(conn);
@@ -832,7 +837,6 @@ mod sys {
                 no_session(why, raw)
             }
         };
-        install_exit_handlers();
         let mut reader = match conn.try_clone() {
             Ok(r) => r,
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
@@ -1184,6 +1188,7 @@ mod sys {
             Ok(e) => e,
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
         };
+        install_exit_handlers();
         if let Err(e) = conn.write_all(&writer_event, handshake) {
             let _ = e;
             drop(conn);
@@ -1199,7 +1204,6 @@ mod sys {
             }
         };
         let conn = Arc::new(conn);
-        install_exit_handlers();
         let reader = Arc::clone(&conn);
         std::thread::spawn(move || {
             let event = match Event::new() {

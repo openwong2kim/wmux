@@ -498,6 +498,27 @@ fn sigterm_and_sigint_exit_0() {
     }
 }
 
+/// The handlers are in before the handshake goes out, so a signal while the
+/// ack is awaited ends the shim with 0, never by the default disposition.
+#[cfg(unix)]
+#[test]
+fn a_signal_while_the_ack_is_awaited_exits_0() {
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    for sig in [15, 2] {
+        let sb = Sandbox::new();
+        sb.write_token("tok");
+        let listener = stub::bind(&sb.pipe());
+        let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+        let mut conn = listener.accept(WAIT);
+        read_line(&mut conn);
+        // SAFETY: signals a child this test spawned and still owns.
+        assert_eq!(unsafe { kill(child.id() as i32, sig) }, 0);
+        assert_eq!(wait_within(&mut child, WAIT).code(), Some(0), "signal {sig}");
+    }
+}
+
 #[test]
 fn a_broken_stderr_still_ends_a_dropped_session_with_1() {
     let sb = Sandbox::new();
@@ -513,8 +534,8 @@ fn a_broken_stderr_still_ends_a_dropped_session_with_1() {
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(1));
 }
 
-/// Before the handshake is written the shim keeps the default disposition, so
-/// a signal kills it, as it does the Node shim (its handlers come later).
+/// Until the broker connection is up the shim keeps the default disposition,
+/// so a signal kills it, as it does the Node shim (its handlers come later).
 #[cfg(unix)]
 #[test]
 fn a_signal_during_the_connect_retries_kills_by_the_signal() {
