@@ -21,8 +21,8 @@ pub const BRIDGE_VERSION: &str = "0.8.1";
 /// HOOK_TIMEOUT_MS: the whole walk's budget.
 const HOOK_TIMEOUT: Duration = Duration::from_millis(2000);
 /// GATE_PERMISSION_TIMEOUT_MS: longer than the daemon's own gate deadline.
-/// The permission gate still runs on the Node bridge (claude_hook.rs).
-#[cfg_attr(not(test), allow(dead_code))]
+/// The hook declares no timeout, so Claude Code's default applies; the
+/// bridge's own comment puts it at 600 s, which is not verified here.
 const GATE_PERMISSION_TIMEOUT: Duration = Duration::from_millis(130_000);
 /// BRIDGE_LOG_MAX_BYTES.
 const BRIDGE_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
@@ -36,7 +36,6 @@ pub const CLAUDE_POLICY: WalkPolicy = WalkPolicy {
 };
 
 /// The same walk for `--permission-gate`, which waits for a phone's answer.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const PERMISSION_GATE_POLICY: WalkPolicy = WalkPolicy {
     budget: GATE_PERMISSION_TIMEOUT,
     ..CLAUDE_POLICY

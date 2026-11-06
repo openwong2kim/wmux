@@ -41,6 +41,42 @@ describe('normaliseStderr', () => {
     normaliseStderr(`WMUX_BRIDGE_DEBUG_ENVELOPE={${pidField}"ts":"x"}`, problems);
     expect(problems).toContain('debug line has no numeric ts');
   });
+  const masked = (trace: string): string => {
+    const problems: string[] = [];
+    const out = normaliseStderr(trace, problems);
+    expect(problems).toEqual([]);
+    return out;
+  };
+
+  it('collapses each run of node-internal frames, named, unnamed or aliased, and masks the version', () => {
+    expect(masked([
+      'RangeError: Maximum call stack size exceeded',
+      '    at JSON.stringify (<anonymous>)',
+      '    at Socket.<anonymous> (file://<bridge>:945:23)',
+      '    at Socket.emit (node:events:531:35)',
+      '    at PipeConnectWrap.afterConnect [as oncomplete] (node:net:1623:10)',
+      '    at node:internal/process/task_queues:105:5',
+      '    at async node:internal/modules/esm/loader:640:26',
+      '    at main (file://<bridge>:1640:3)',
+      '    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)',
+      '',
+      'Node.js v24.11.0',
+    ].join('\n'))).toBe([
+      'RangeError: Maximum call stack size exceeded',
+      '    at JSON.stringify (<anonymous>)',
+      '    at Socket.<anonymous> (file://<bridge>:945:23)',
+      '    at <node internals>',
+      '    at main (file://<bridge>:1640:3)',
+      '    at <node internals>',
+      '',
+      'Node.js <version>',
+    ].join('\n'));
+  });
+
+  it('leaves everything else as written', () => {
+    const text = 'wait\n    at nothing\nNode.js is great\n';
+    expect(masked(text)).toBe(text);
+  });
 });
 
 describe('childEnv', () => {

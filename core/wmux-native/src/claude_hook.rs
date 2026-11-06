@@ -9,21 +9,20 @@
 //!      beside the binary;
 //!   2. a bridge this port was not made from: its SHA-256 (CRLF read as LF)
 //!      is not PORTED_FROM_SHA256 (logged `impl-fallback`,
-//!      reason `bridge-sha-mismatch`);
-//!   3. a decision flag: `--gate`, `--permission-gate`, or `--context` on
-//!      UserPromptSubmit. Their answers (exit 2, stdout) are not ported yet.
+//!      reason `bridge-sha-mismatch`).
 //!
 //! No bridge beside the binary: the run stays native (logged
 //! `impl-native-no-bridge` just before the run's first other line, so a run
-//! that logs nothing adds none). A decision flag then fails open (exit 0, empty
-//! stdout, logged `decision-unported` with the flag) and the run goes on as
-//! a plain one with that mode off: the signal is sent and a lifecycle
-//! capture that did not land is spooled. A failed exec (no node) is logged
-//! `impl-fallback`, reason `node-missing`, and is handled the same.
+//! that logs nothing adds none). A failed exec (no node) is logged
+//! `impl-fallback`, reason `node-missing`, and the run stays native too, so
+//! where there is no node the kill switch cannot turn native runs off.
 //!
-//! The rest is main() of the bridge, with gate, context and permission-gate
-//! mode off; the exit code is always 0 and stdout is never written. Every
-//! bridge.log line this binary writes ends with `"impl":"native"`.
+//! The rest is main() of the bridge, its decision modes included:
+//! `--gate` (exit 2 and a reason on stderr), `--context` on UserPromptSubmit
+//! (a block, or additionalContext on stdout) and `--permission-gate` (allow or
+//! deny on stdout, always exit 0). Every other run exits 0 with an empty
+//! stdout. Every bridge.log line this binary writes ends with
+//! `"impl":"native"`.
 //!
 //! Where it differs from Node, on purpose (each is a characterisation case's
 //! strictForPort):
@@ -32,13 +31,25 @@
 //!   - argv-proto-key: only the hook names of HOOK_TO_KIND are hooks. Node's
 //!     plain-object lookup also accepts inherited keys (`constructor`) and
 //!     sends an envelope without a kind; here that is `unknown-hook-name`.
-//!   - A payload nested deeper than PAYLOAD_DEPTH_MAX levels is refused at
-//!     once, logged `uncaught` with V8's RangeError message, and nothing is
-//!     sent. Node fails at its own stack limit (about 5 000 to 8 000 levels,
-//!     by node release) and then only once a socket connects, where the
-//!     exception ends the process with exit 1.
+//!   - A payload nested deeper than PAYLOAD_DEPTH_MAX (1 500) levels is
+//!     refused at once, logged `uncaught` with V8's RangeError message, and
+//!     nothing is sent (exit 0): never a request the servers cannot parse.
+//!     Node sends far deeper payloads (6 622 levels on node 22) and only dies,
+//!     with exit 1, at its own stack limit. Between the servers' parse limit
+//!     and that, the server answers `Invalid JSON` with no id, so the Node
+//!     bridge waits out its deadline and a `--gate` Stop fails closed on
+//!     every retry. That stuck path stays wherever the Node bridge runs
+//!     (Windows, the kill switch, a stale pin).
+//!   - A verdict whose stdout or stderr reader went away keeps its exit code
+//!     (a block stays 2) and logs `stdout-lost` / `stderr-lost` after the
+//!     verdict's line; Node dies on the write error with exit 1.
+//!   - A panic after a verdict exits with that verdict's code (a block stays
+//!     2); Node's catch exits 0 after any exception. With `--gate
+//!     --permission-gate`, a panic between the gate's block and the
+//!     permission verdict exits 2 with no permission answer on stdout, where
+//!     the permission gate would have exited 0.
 
-use crate::claude::{self, CLAUDE_POLICY};
+use crate::claude::{self, CLAUDE_POLICY, PERMISSION_GATE_POLICY};
 use crate::claude_rpc;
 use crate::claude_transcript as transcript;
 use crate::claude_where::{self, WhereEnv};
@@ -47,10 +58,11 @@ use crate::js::{self, js, JsStr, Json};
 use crate::paths;
 use crate::rpc::Target;
 use crate::sha256;
+use crate::unix_sys;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 /// The bridge this port follows (claudeHookContract.test.ts pins the same file).
 const PORTED_FROM_SHA256: &str = include_str!("../claude-hook.ported-from.sha256");
@@ -63,10 +75,20 @@ const MAX_STDIN_BYTES: usize = 1024 * 1024;
 const ACTIVITY_STAMP_THROTTLE_MS: f64 = 2500.0;
 /// WMUX_CLIENT_NAME.
 const WMUX_CLIENT_NAME: &str = "wmux-hook-bridge";
-/// The deepest payload accepted (Node 22 forwards 5 000 levels).
-const PAYLOAD_DEPTH_MAX: usize = 5000;
+/// The deepest payload sent, the outermost value being level 0 (it sits at
+/// the envelope's `params.payload`, two levels down). The servers parse a
+/// request with a reviver, which recurses, so they cannot take what Node
+/// can stringify. Measured on the line as sent, in a socket callback as the
+/// servers parse it, 2026-11-06: main (Electron 45.1.0 main process, node
+/// 24.22.1) 3 499; the daemon (Electron 45.1.0 as node) 3 530; a headless
+/// daemon on system node 22.23.3 (`wmux daemon` runs it on the CLI's node)
+/// 1 823. node 18 and 20, which the engines range allows, were not measured.
+/// 1 500 stays under the lowest with a margin; claudeHookDepthServers.test.ts
+/// holds it to both servers' parse.
+const PAYLOAD_DEPTH_MAX: usize = 1_500;
 /// The run's own stack: room for PAYLOAD_DEPTH_MAX levels of the recursive
-/// clone and stringify, whatever the platform's main-thread default.
+/// clone and stringify, whatever the platform's main-thread default. A debug
+/// build measured here gets through 40 000 levels and overflows below 80 000.
 const STACK_BYTES: usize = 64 * 1024 * 1024;
 const RANGE_ERROR: &str = "RangeError: Maximum call stack size exceeded";
 
@@ -104,12 +126,61 @@ pub fn run_process(args: Vec<OsString>) -> ! {
         }
         claude::log_event(event.as_ref(), outcome, extra)
     };
+    let mut code = 0;
     if let Some(start) = hand_over(&args, event.as_ref(), &argv, &no_bridge, &log) {
-        if let Err(message) = on_own_stack(STACK_BYTES, || run(start, &log)) {
-            log("uncaught", vec![("error", s(&message))]);
+        code = finish(on_own_stack(STACK_BYTES, || run(start, &log)), &log);
+    }
+    std::process::exit(code);
+}
+
+/// The exit code of the verdict this run reached: 0 until a decision sets
+/// it (set_exit_code). Every way out reads it, a panic after the verdict
+/// included, so a block stays a block.
+static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
+
+fn set_exit_code(code: i32) {
+    EXIT_CODE.store(code, Ordering::SeqCst);
+}
+
+/// How the run ended: a panic is logged `uncaught`, as Node's catch logs
+/// it; the exit code is the verdict's either way.
+fn finish(outcome: Result<(), String>, log: Log) -> i32 {
+    if let Err(message) = outcome {
+        log("uncaught", vec![("error", s(&message))]);
+    }
+    EXIT_CODE.load(Ordering::SeqCst)
+}
+
+/// All of `bytes` to `fd` (stdout or stderr). An inherited non-blocking
+/// descriptor is waited on until it takes more, with no deadline: a reader
+/// that never reads holds the run, as it holds Node's stream. False when the
+/// write failed or the wait cannot go on (the reader went away, poll fails or
+/// cannot watch the descriptor); the caller logs the loss and keeps its exit
+/// code.
+fn write_out(fd: i32, bytes: &[u8]) -> bool {
+    write_waiting(fd, bytes, |fd| crate::claude_rpc::poll_fd(fd, unix_sys::POLLOUT, -1))
+}
+
+/// write_out with its wait for writability given: the revents, or poll's error.
+fn write_waiting(fd: i32, bytes: &[u8], wait: impl Fn(i32) -> std::io::Result<i16>) -> bool {
+    use std::os::fd::FromRawFd;
+    // SAFETY: fd 1 and 2 stay open for the whole process, and ManuallyDrop
+    // never closes them.
+    let mut out = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+    let mut written = 0;
+    while written < bytes.len() {
+        match out.write(&bytes[written..]) {
+            Ok(0) => return false,
+            Ok(n) => written += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => match wait(fd) {
+                Ok(revents) if revents & (unix_sys::POLLNVAL | unix_sys::POLLERR) == 0 => {}
+                _ => return false,
+            },
+            Err(_) => return false,
         }
     }
-    std::process::exit(0);
+    true
 }
 
 /// `f` on a thread with a `stack`-byte stack. Err is a panic's text, or why
@@ -165,12 +236,58 @@ fn ported_from(source: &[u8]) -> bool {
     sha256::lf_hex(source) == PORTED_FROM_SHA256.trim()
 }
 
-/// The decision flag that hands this run to Node, if any: Node's own modes.
-fn decision_flag<'a>(hook: &str, flags: &'a [JsStr]) -> Option<&'a JsStr> {
-    flags.iter().find(|f| {
-        **f == js("--gate") || **f == js("--permission-gate") || (hook == "UserPromptSubmit" && **f == js("--context"))
-    })
+/// main()'s modes: any argv token after the event.
+#[derive(Clone, Copy, Default)]
+struct Modes {
+    /// `--gate`: the orchestrator's Stop gate, answered with exit 2.
+    gate: bool,
+    /// `--context`, on UserPromptSubmit only: the HQ brain's prompt, which
+    /// main can refuse (exit 2) or add context to (stdout).
+    context: bool,
+    /// `--permission-gate`: the PreToolUse permission gate, answered on stdout.
+    permission_gate: bool,
 }
+
+impl Modes {
+    fn of(hook: &str, flags: &[JsStr]) -> Modes {
+        let has = |flag: &str| flags.iter().any(|f| *f == js(flag));
+        Modes {
+            gate: has("--gate"),
+            context: hook == "UserPromptSubmit" && has("--context"),
+            permission_gate: has("--permission-gate"),
+        }
+    }
+}
+
+/// A hook's JSON answer on stdout, as outputPromptContext and
+/// outputPermissionDecision write it: `{"hookSpecificOutput":{…}}` and a newline.
+fn hook_output_line(fields: Vec<(&str, Json)>) -> String {
+    let fields = fields.into_iter().map(|(k, v)| (js(k), v)).collect();
+    let mut line = String::new();
+    js::stringify(
+        &Json::Obj(vec![(js("hookSpecificOutput"), Json::Obj(fields))]),
+        &mut line,
+    );
+    line.push('\n');
+    line
+}
+
+/// What the gate writes when the answer was lost after the request reached
+/// main (mjs main()).
+const GATE_LOST_TEXT: &str = "wmux could not confirm this Stop with the orchestrator (the reply was lost in flight). \
+                              Do not end the turn on this attempt \u{2014} check the fleet and stop again.\n";
+
+/// Test-only, and absent from release builds: WMUX_CLAUDE_HOOK_PANIC_AFTER_VERDICT=1
+/// panics right after a verdict, to prove its exit code outlives a panic.
+fn panic_after_verdict_for_tests() {
+    #[cfg(debug_assertions)]
+    if paths::env("WMUX_CLAUDE_HOOK_PANIC_AFTER_VERDICT").as_deref() == Some("1") {
+        panic!("WMUX_CLAUDE_HOOK_PANIC_AFTER_VERDICT");
+    }
+}
+
+/// The deny's reason, so the model reads who refused (mjs main()).
+const DENY_REASON: &str = "denied from the wmux remote approval";
 
 // ----- main() ----------------------------------------------------------------
 
@@ -226,6 +343,7 @@ fn post_tool_use_kind(payload: Option<&Json>) -> &'static str {
 struct Start {
     hook: String,
     kind: &'static str,
+    modes: Modes,
 }
 
 /// Everything before stdin: hands the process to Node when it should (and
@@ -270,20 +388,32 @@ fn hand_over(
         return None;
     };
     let flags: Vec<JsStr> = args.iter().skip(1).map(|a| paths::os_to_js(a)).collect();
-    if let Some(flag) = decision_flag(&hook, &flags) {
-        handover.exec(args, log);
-        // Only the decision fails open; the run goes on as a plain one.
-        log("decision-unported", vec![("flag", Some(Json::Str(flag.clone())))]);
-    }
-    Some(Start { hook, kind })
+    let modes = Modes::of(&hook, &flags);
+    Some(Start { hook, kind, modes })
 }
 
 fn run(start: Start, log: Log) {
-    let Start { hook, kind } = start;
+    let Start { hook, kind, modes } = start;
     let hook_field = || s(&hook);
 
     let raw_entrypoint = paths::env_js("CLAUDE_CODE_ENTRYPOINT");
     let interactive = |e: Option<&JsStr>| e.is_some_and(|e| INTERACTIVE_ENTRYPOINTS.iter().any(|i| *e == js(i)));
+    // The permission gate's fast ways out, before stdin: no opinion, so an
+    // empty stdout.
+    if modes.permission_gate {
+        if paths::env("WMUX_GATE").as_deref() == Some("0") {
+            log("permission-gate-skipped", vec![("reason", s("gate-disabled"))]);
+            return;
+        }
+        if env_set("WMUX_PTY_ID").is_none() || !interactive(raw_entrypoint.as_ref()) {
+            let shown = raw_entrypoint.map_or(Json::Null, Json::Str);
+            log(
+                "permission-gate-skipped",
+                vec![("reason", s("headless-or-outside-wmux")), ("entrypoint", Some(shown))],
+            );
+            return;
+        }
+    }
     if (hook == "PermissionRequest" || hook == "Notification") && !interactive(raw_entrypoint.as_ref()) {
         let outcome = if hook == "Notification" {
             "notification-skipped"
@@ -336,7 +466,8 @@ fn run(start: Start, log: Log) {
     let payload = payload.as_ref();
 
     // Claude Code's own forked agents: an agent_id without an agent_type.
-    if hook != "PermissionRequest"
+    if !modes.permission_gate
+        && hook != "PermissionRequest"
         && js::truthy(payload)
         && non_empty(payload, "agent_id").is_some()
         && non_empty(payload, "agent_type").is_none()
@@ -344,7 +475,7 @@ fn run(start: Start, log: Log) {
         log("skip-internal-fork", vec![("hook", hook_field())]);
         return;
     }
-    if hook == "PreToolUse" && !str_is(payload, "tool_name", "AskUserQuestion") {
+    if hook == "PreToolUse" && !modes.permission_gate && !str_is(payload, "tool_name", "AskUserQuestion") {
         // `payload && payload.tool_name`
         let tool = if js::truthy(payload) {
             logged(payload.and_then(|p| p.get("tool_name")))
@@ -354,7 +485,8 @@ fn run(start: Start, log: Log) {
         log("skip-pretooluse", vec![("tool", tool)]);
         return;
     }
-    if hook == "PreToolUse" && paths::env("WMUX_MOA_DELEGATE_WORKER").as_deref() == Some("1") {
+    if hook == "PreToolUse" && !modes.permission_gate && paths::env("WMUX_MOA_DELEGATE_WORKER").as_deref() == Some("1")
+    {
         log(
             "skip-pretooluse",
             vec![("tool", s("AskUserQuestion")), ("reason", s("moa-delegate-worker"))],
@@ -380,7 +512,9 @@ fn run(start: Start, log: Log) {
         return;
     }
 
-    let targets: Vec<Target> = claude::resolve_targets(false)
+    // The gate and the context are main's alone: the daemon has neither a
+    // gate nor a brain lane to consult.
+    let targets: Vec<Target> = claude::resolve_targets(modes.gate || modes.context)
         .into_iter()
         .filter(|t| hook != "SessionEnd" || t.name == "daemon")
         .collect();
@@ -419,7 +553,9 @@ fn run(start: Start, log: Log) {
         None
     };
 
-    let kind = if hook == "PostToolUse" {
+    let kind = if modes.permission_gate {
+        "agent.awaiting_permission"
+    } else if hook == "PostToolUse" {
         post_tool_use_kind(payload)
     } else {
         kind
@@ -491,7 +627,13 @@ fn run(start: Start, log: Log) {
         line.push_str("}\n");
         line
     };
-    let (result, target) = claude_rpc::send_to_targets(&targets, build_line, &js(&request_id), kind, &CLAUDE_POLICY);
+    // The permission gate waits for the phone's answer.
+    let policy = if modes.permission_gate {
+        &PERMISSION_GATE_POLICY
+    } else {
+        &CLAUDE_POLICY
+    };
+    let (result, target) = claude_rpc::send_to_targets(&targets, build_line, &js(&request_id), kind, policy);
     let target_field = target.map(|t| Json::Str(js(t.name)));
     let outer_ok = result.get("ok") == Some(&Json::Bool(true));
     let inner = result.get("result");
@@ -499,13 +641,13 @@ fn run(start: Start, log: Log) {
     // `x ?? 'unknown'`
     let or_unknown = |v: Option<&Json>| logged(v.filter(|v| **v != Json::Null)).or_else(|| s("unknown"));
     if inner_ok {
-        log("ok", vec![("hook", hook_field()), ("target", target_field)]);
+        log("ok", vec![("hook", hook_field()), ("target", target_field.clone())]);
     } else if outer_ok {
         log(
             "rpc-rejected",
             vec![
                 ("hook", hook_field()),
-                ("target", target_field),
+                ("target", target_field.clone()),
                 ("reason", or_unknown(inner.and_then(|r| r.get("reason")))),
             ],
         );
@@ -514,11 +656,75 @@ fn run(start: Start, log: Log) {
             "rpc-failed",
             vec![
                 ("hook", hook_field()),
-                ("target", target_field),
+                ("target", target_field.clone()),
                 ("error", or_unknown(result.get("error"))),
                 ("detail", logged(result.get("detail"))),
             ],
         );
+    }
+
+    // The Stop gate: an explicit refusal, or an answer lost after the request
+    // provably reached main, ends in exit 2 with the reason on stderr; all
+    // else allows. The exit code is stored before anything is written.
+    let fields = || vec![("hook", hook_field()), ("target", target_field.clone())];
+    // A verdict's text goes out right before its log line, and its loss, when
+    // the reader went away, is logged after it; the exit code stays.
+    let answer = |fd: i32, text: &str, outcome: &str, extra: Vec<(&'static str, Option<Json>)>| {
+        let written = text.is_empty() || write_out(fd, text.as_bytes());
+        let mut line = fields();
+        line.extend(extra);
+        log(outcome, line);
+        if !written {
+            log(if fd == 1 { "stdout-lost" } else { "stderr-lost" }, fields());
+        }
+        panic_after_verdict_for_tests();
+    };
+    // A refusal: exit 2, stored before anything is written, and its reason
+    // on stderr.
+    let refuse = |outcome: &str, text: &str, extra: Vec<(&'static str, Option<Json>)>| {
+        set_exit_code(2);
+        answer(2, text, outcome, extra);
+    };
+    let block_reason = |r: Option<&Json>| {
+        r.and_then(|r| r.get("block"))
+            .filter(|b| js::truthy(Some(b)))
+            .and_then(|b| b.get("reason"))
+            .and_then(Json::as_str)
+            .filter(|reason| !reason.is_empty())
+            .map(|reason| js::lossy(reason) + "\n")
+    };
+
+    // The Stop gate: an explicit refusal, or an answer lost after the request
+    // provably reached main, ends in exit 2 with the reason on stderr; all
+    // else allows.
+    if modes.gate && inner_ok {
+        if let Some(reason) = block_reason(inner) {
+            refuse("gate-blocked", &reason, vec![]);
+        }
+    } else if modes.gate && is_gate_answer_lost(&result) {
+        refuse(
+            "gate-fail-closed",
+            GATE_LOST_TEXT,
+            vec![("error", logged(result.get("error")))],
+        );
+    }
+
+    // The HQ brain's prompt: only an explicit refusal blocks it (a lost
+    // answer lets it run); else main's additionalContext goes to stdout.
+    if modes.context && inner_ok {
+        let context = inner
+            .and_then(|r| r.get("additionalContext"))
+            .and_then(Json::as_str)
+            .filter(|t| !t.is_empty());
+        if let Some(reason) = block_reason(inner) {
+            refuse("prompt-blocked", &reason, vec![]);
+        } else if let Some(context) = context {
+            let line = hook_output_line(vec![
+                ("hookEventName", Json::Str(js("UserPromptSubmit"))),
+                ("additionalContext", Json::Str(context.clone())),
+            ]);
+            answer(1, &line, "prompt-context", vec![]);
+        }
     }
 
     let lifecycle = matches!(
@@ -542,6 +748,31 @@ fn run(start: Start, log: Log) {
             ("ts", Some(Json::Num(ts as f64))),
         ]);
         spool_resume_binding(&paths::wmux_home_dir(), pty, session, &record, ts as f64, log);
+    }
+
+    // The permission gate's verdict: only `allow` or `deny` is written, right
+    // before its log line; anything else is no opinion. Always exit 0, over
+    // any other mode's code.
+    if modes.permission_gate {
+        let decision = inner.and_then(|r| r.get("permissionDecision")).filter(|_| inner_ok);
+        let verdict = match decision {
+            Some(Json::Str(d)) if *d == js("allow") => "allow",
+            Some(Json::Str(d)) if *d == js("deny") => "deny",
+            _ => "no-opinion",
+        };
+        set_exit_code(0);
+        let mut line = String::new();
+        if verdict != "no-opinion" {
+            let mut fields = vec![
+                ("hookEventName", Json::Str(js("PreToolUse"))),
+                ("permissionDecision", Json::Str(js(verdict))),
+            ];
+            if verdict == "deny" {
+                fields.push(("permissionDecisionReason", Json::Str(js(DENY_REASON))));
+            }
+            line = hook_output_line(fields);
+        }
+        answer(1, &line, "permission-gate", vec![("verdict", s(verdict))]);
     }
 }
 
@@ -709,10 +940,9 @@ fn spool_resume_binding(wmux_home: &str, pty_id: &[u16], session_id: &[u16], rec
 
 /// isGateAnswerLost: a Stop gate's request that provably reached main and
 /// then lost its answer. True only for a timeout or a close after the write
-/// (retryable: false); a connect error, written or not, fails open. The
-/// Stop gate itself still runs on the Node bridge; this is its verdict, held
-/// to the transport's outcomes before the gate is ported.
-#[cfg_attr(not(test), allow(dead_code))]
+/// (retryable: false); a connect error, written or not, fails open. One such
+/// connect error is this transport's own: a poll(2) failure after the write
+/// (claude_rpc's `lost`) has no Node twin, and it fails open too.
 pub fn is_gate_answer_lost(result: &Json) -> bool {
     if result.get("ok") == Some(&Json::Bool(true)) || result.get("retryable") != Some(&Json::Bool(false)) {
         return false;
@@ -738,6 +968,127 @@ mod tests {
         let mut out = String::new();
         js::stringify(v, &mut out);
         out
+    }
+
+    #[test]
+    fn no_source_can_log_an_unported_decision() {
+        // Every decision mode runs here, so no outcome says one did not; log
+        // outcomes are literals, so a source without it cannot write it.
+        let unported = concat!("decision", "-unported");
+        let src = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut read = 0;
+        for entry in std::fs::read_dir(src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(!text.contains(unported), "{}", path.display());
+                read += 1;
+            }
+        }
+        assert!(read > 10);
+    }
+
+    #[test]
+    fn every_flag_the_bridge_reads_is_a_mode_here() {
+        // main() reads its modes as `process.argv.slice(3).includes('--x')`: a
+        // flag added there and not here would run as a plain hook.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../integrations/claude/bin/wmux-bridge.mjs"
+        );
+        let source = std::fs::read_to_string(path).unwrap();
+        let mut flags: Vec<&str> = source
+            .split("argv.slice(3).includes('")
+            .skip(1)
+            .map(|rest| rest.split('\'').next().unwrap())
+            .collect();
+        flags.sort();
+        assert_eq!(flags, ["--context", "--gate", "--permission-gate"]);
+        for flag in flags {
+            let m = Modes::of("UserPromptSubmit", &[js(flag)]);
+            let set = [m.gate, m.context, m.permission_gate].iter().filter(|b| **b).count();
+            assert_eq!(set, 1, "{flag}");
+        }
+    }
+
+    #[test]
+    fn the_decision_texts_are_the_bridges() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../integrations/claude/bin/wmux-bridge.mjs"
+        );
+        let source = std::fs::read_to_string(path).unwrap();
+        let (first, second) = GATE_LOST_TEXT.split_at(GATE_LOST_TEXT.find("Do not").unwrap());
+        let second = second.strip_suffix('\n').unwrap();
+        assert!(
+            source.contains(&format!("'{first}'\n        + '{second}\\n'")),
+            "{GATE_LOST_TEXT}"
+        );
+        assert!(source.contains(&format!("'{DENY_REASON}'")));
+    }
+
+    #[test]
+    fn a_panic_after_the_verdict_keeps_its_exit_code() {
+        // The uncaught path reads the stored code: what a release build does
+        // when anything panics after a gate block.
+        let logged = std::sync::Mutex::new(Vec::new());
+        let log = |outcome: &str, _: Vec<(&str, Option<Json>)>| logged.lock().unwrap().push(outcome.to_string());
+        let outcome = on_own_stack(STACK_BYTES, || {
+            set_exit_code(2);
+            panic!("after the verdict");
+        });
+        assert_eq!(finish(outcome, &log), 2);
+        assert_eq!(*logged.lock().unwrap(), ["uncaught"]);
+        set_exit_code(0);
+        assert_eq!(finish(Ok(()), &log), 0);
+    }
+
+    #[test]
+    fn output_stops_when_the_wait_cannot_go_on() {
+        // A full non-blocking descriptor whose poll fails, or cannot watch it
+        // (POLLNVAL, as macOS poll(2) answers for some devices), or reports an
+        // error: the write ends after that one wait, it does not spin.
+        use std::os::fd::AsRawFd;
+        let (writer, _reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        let big = vec![b'x'; 4 * 1024 * 1024];
+        for answer in [
+            Ok(unix_sys::POLLNVAL),
+            Ok(unix_sys::POLLERR | unix_sys::POLLOUT),
+            Err(std::io::Error::from_raw_os_error(22)),
+        ] {
+            let waits = std::cell::Cell::new(0);
+            let wait = |_: i32| {
+                waits.set(waits.get() + 1);
+                match &answer {
+                    Ok(revents) => Ok(*revents),
+                    Err(e) => Err(std::io::Error::from_raw_os_error(e.raw_os_error().unwrap())),
+                }
+            };
+            assert!(!write_waiting(writer.as_raw_fd(), &big, wait), "{answer:?}");
+            assert_eq!(waits.get(), 1, "{answer:?}");
+        }
+    }
+
+    #[test]
+    fn output_waits_on_a_full_non_blocking_reader_and_reports_a_gone_one() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        let (writer, mut reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        let big = vec![b'x'; 4 * 1024 * 1024];
+        let drain = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let mut got = Vec::new();
+            reader.read_to_end(&mut got).unwrap();
+            got.len()
+        });
+        assert!(write_out(writer.as_raw_fd(), &big));
+        drop(writer);
+        assert_eq!(drain.join().unwrap(), big.len());
+        let (writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(reader);
+        assert!(!write_out(writer.as_raw_fd(), b"lost\n"));
     }
 
     #[test]
@@ -848,24 +1199,16 @@ mod tests {
     }
 
     #[test]
-    fn only_nodes_decision_modes_hand_over() {
-        let flags = |f: &[&str]| f.iter().map(|x| js(x)).collect::<Vec<_>>();
+    fn the_modes_are_read_as_main_reads_them() {
+        let modes = |hook: &str, f: &[&str]| Modes::of(hook, &f.iter().map(|x| js(x)).collect::<Vec<_>>());
         // argv-flags-any-position, gate-with-permission-gate
-        assert_eq!(
-            decision_flag("Stop", &flags(&["--unknown", "--gate"])),
-            Some(&js("--gate"))
-        );
-        assert_eq!(
-            decision_flag("PreToolUse", &flags(&["--permission-gate"])),
-            Some(&js("--permission-gate"))
-        );
+        let both = modes("Stop", &["--unknown", "--gate", "--permission-gate"]);
+        assert!(both.gate && both.permission_gate && !both.context);
         // argv-context-needs-user-prompt-submit: --context elsewhere is ignored.
-        assert_eq!(decision_flag("Stop", &flags(&["--context"])), None);
-        assert_eq!(
-            decision_flag("UserPromptSubmit", &flags(&["--context"])),
-            Some(&js("--context"))
-        );
-        assert_eq!(decision_flag("Stop", &flags(&["--gated", "gate"])), None);
+        assert!(!modes("Stop", &["--context"]).context);
+        assert!(modes("UserPromptSubmit", &["--context"]).context);
+        let none = modes("Stop", &["--gated", "gate", "--permission-gated"]);
+        assert!(!none.gate && !none.context && !none.permission_gate);
     }
 
     #[test]

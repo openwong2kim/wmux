@@ -1,0 +1,139 @@
+{
+  "description": "--permission-gate deny while stdout's and stderr's readers are gone.",
+  "divergence": "Node dies on the stdout write's EPIPE (exit 1); the port keeps exit 0 and logs stdout-lost after the permission-gate line, so the logged deny is not taken for one that reached Claude Code.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1",
+    "CLAUDE_CODE_ENTRYPOINT": "cli"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "permissionDecision": "deny"
+          }
+        }
+      ]
+    }
+  },
+  "variants": {
+    "steps.0": [
+      {
+        "exitCode": 1,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PreToolUse",
+            "outcome": "ok",
+            "target": "daemon"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "PreToolUse",
+            "outcome": "permission-gate",
+            "target": "daemon",
+            "verdict": "deny"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.awaiting_permission",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "ptyId": "pty-1",
+                "entrypoint": "cli",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "tool_name": "Bash"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "strictForPort": {
+    "steps.0": {
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": "",
+      "log": [
+        {
+          "bridge": "0.8.1",
+          "hook": "PreToolUse",
+          "outcome": "ok",
+          "target": "daemon"
+        },
+        {
+          "bridge": "0.8.1",
+          "hook": "PreToolUse",
+          "outcome": "permission-gate",
+          "target": "daemon",
+          "verdict": "deny"
+        },
+        {
+          "bridge": "0.8.1",
+          "hook": "PreToolUse",
+          "outcome": "stdout-lost",
+          "target": "daemon"
+        }
+      ],
+      "requests": {
+        "daemon": [
+          {
+            "id": "<request-id>",
+            "method": "daemon.hooks.signal",
+            "params": {
+              "kind": "agent.awaiting_permission",
+              "agent": "claude",
+              "agentSessionId": "s1",
+              "ptyId": "pty-1",
+              "entrypoint": "cli",
+              "cwd": "<sandbox>/cwd",
+              "payload": {
+                "session_id": "s1",
+                "tool_name": "Bash"
+              },
+              "ts": "<ts>"
+            },
+            "token": "daemon-token",
+            "clientName": "wmux-hook-bridge"
+          }
+        ]
+      }
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "PreToolUse",
+        "--permission-gate"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"Bash\"}",
+      "closed": [
+        "stdout",
+        "stderr"
+      ]
+    }
+  ],
+  "expect": {
+    "steps": [
+      "<variant>"
+    ]
+  }
+}

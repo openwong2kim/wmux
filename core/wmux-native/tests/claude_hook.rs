@@ -112,7 +112,7 @@ impl Case {
                     Some(line[at..].split('"').next().unwrap().to_string())
                 };
                 let outcome = field("outcome").unwrap();
-                match field("reason").or_else(|| field("flag")) {
+                match field("reason").or_else(|| field("flag")).or_else(|| field("verdict")) {
                     Some(extra) => format!("{outcome} {extra}"),
                     None => outcome,
                 }
@@ -201,17 +201,16 @@ fn without_node_the_kill_switch_runs_natively() {
 
 #[test]
 fn a_failed_exec_is_not_tried_again() {
-    // Kill switch, a stale bridge and a decision flag would each hand over.
+    // The kill switch and a stale bridge would each hand over.
     let mut changed = pinned();
     changed.extend_from_slice(b"// edited\n");
     let case = Case::new("exec-once", Some(&changed));
-    quiet(&case.run(&["Stop", "--gate"], &[("WMUX_HOOK_RUNTIME", "node")], false, "{}"));
+    quiet(&case.run(&["Stop"], &[("WMUX_HOOK_RUNTIME", "node")], false, "{}"));
     assert_eq!(
         case.log(),
         [
             "impl-fallback node-missing",
             "impl-fallback bridge-sha-mismatch",
-            "decision-unported --gate",
             "no-auth-token"
         ]
     );
@@ -223,83 +222,6 @@ fn without_a_bridge_beside_it_the_run_stays_native() {
     quiet(&case.run(&["Stop"], &[("WMUX_HOOK_RUNTIME", "node")], true, "{}"));
     assert_eq!(case.node_args(), None);
     assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
-}
-
-#[test]
-fn decision_flags_run_on_node() {
-    let case = Case::new("decision", Some(&pinned()));
-    for args in [
-        vec!["Stop", "--gate"],
-        vec!["PreToolUse", "--permission-gate"],
-        vec!["UserPromptSubmit", "--context"],
-    ] {
-        let _ = std::fs::remove_file(case.dir.join("node-args"));
-        quiet(&case.run(&args, &[], true, ""));
-        let expected: Vec<String> = std::iter::once(case.bridge())
-            .chain(args.iter().map(|a| a.to_string()))
-            .collect();
-        assert_eq!(case.node_args(), Some(expected), "{args:?}");
-    }
-    assert!(case.log().is_empty());
-}
-
-#[test]
-fn a_decision_flag_with_no_bridge_or_no_node_fails_open() {
-    // Only the decision fails open: exit 0 and an empty stdout (the gate
-    // allows, the prompt runs, the tool goes through the session's own
-    // permission flow). The run itself goes on as a plain one: the signal is
-    // sent, and a lifecycle capture that did not land is spooled.
-    for (args, payload, kind, spooled) in [
-        (["Stop", "--gate"], r#"{"session_id":"s1"}"#, "agent.stop", true),
-        (
-            ["UserPromptSubmit", "--context"],
-            r#"{"session_id":"s1","prompt":"p"}"#,
-            "agent.user_prompt_submit",
-            true,
-        ),
-        (
-            ["PreToolUse", "--permission-gate"],
-            r#"{"session_id":"s1","tool_name":"AskUserQuestion"}"#,
-            "agent.awaiting_input",
-            false,
-        ),
-    ] {
-        let case = Case::new(&format!("decision-{}", &args[1][2..]), None);
-        let wmux_home = case.dir.join("home/.wmux-claude-hook-test");
-        std::fs::create_dir_all(&wmux_home).unwrap();
-        std::fs::write(wmux_home.join("daemon-auth-token"), "t").unwrap();
-        let absent = case.dir.join("absent.sock").display().to_string();
-        let env = [
-            ("WMUX_PIPE_NAME", absent.as_str()),
-            ("WMUX_PTY_ID", "pty-1"),
-            ("WMUX_BRIDGE_DEBUG", "1"),
-        ];
-        let out = case.run(&args, &env, true, payload);
-        quiet(&out);
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains(&format!(r#""kind":"{kind}""#)), "{args:?}: {stderr}");
-        let mut expected = vec![
-            "impl-native-no-bridge".to_string(),
-            format!("decision-unported {}", args[1]),
-            "rpc-failed".to_string(),
-        ];
-        if spooled {
-            expected.push("resume-spooled".into());
-        }
-        assert_eq!(case.log(), expected, "{args:?}");
-        assert_eq!(case.node_args(), None);
-    }
-
-    let no_node = Case::new("decision-no-node", Some(&pinned()));
-    quiet(&no_node.run(&["Stop", "--gate"], &[], false, "{}"));
-    assert_eq!(
-        no_node.log(),
-        [
-            "impl-fallback node-missing",
-            "decision-unported --gate",
-            "no-auth-token"
-        ]
-    );
 }
 
 #[test]
@@ -317,16 +239,31 @@ fn an_unknown_event_logs_this_process_argv_and_reads_no_stdin() {
     assert_eq!(case.node_args(), None);
 }
 
+/// `depth` levels below the outermost array: `[` × (depth + 1).
+fn nested(depth: usize) -> String {
+    format!("{}{}", "[".repeat(depth + 1), "]".repeat(depth + 1))
+}
+
 #[test]
-fn a_payload_deeper_than_the_limit_is_refused_and_exits_0() {
+fn a_payload_at_the_depth_limit_goes_through_every_recursive_path() {
+    // PAYLOAD_DEPTH_MAX is 1 500: on the run's 64 MiB stack the payload is
+    // cloned (spread, and the unknown-entrypoint strip) and stringified (the
+    // envelope); the debug envelope lists its keys.
     let case = Case::new("deep", Some(&pinned()));
     std::fs::create_dir_all(case.dir.join("home/.wmux-claude-hook-test")).unwrap();
     std::fs::write(case.dir.join("home/.wmux-claude-hook-test/daemon-auth-token"), "t").unwrap();
-    let ok = format!("{}{}", "[".repeat(5000), "]".repeat(5000));
-    quiet(&case.run(&["Stop"], &[], true, &ok));
-    assert_eq!(case.log().last().unwrap(), "rpc-failed");
-    let deep = format!("{}{}", "[".repeat(200_000), "]".repeat(200_000));
-    quiet(&case.run(&["Stop"], &[], true, &deep));
+    let in_object = format!(r#"{{"session_id":"s","x":{}}}"#, nested(1_499));
+    for (env, payload) in [
+        (vec![], nested(1_500)),
+        (vec![("CLAUDE_CODE_ENTRYPOINT", "desktop")], in_object.clone()),
+        (vec![("WMUX_BRIDGE_DEBUG", "1")], in_object.clone()),
+    ] {
+        let out = case.run(&["Stop"], &env, true, &payload);
+        quiet(&out);
+        assert_eq!(case.log().last().unwrap(), "rpc-failed", "{env:?}");
+    }
+    // One level more is refused before anything is sent.
+    quiet(&case.run(&["Stop"], &[], true, &nested(1_501)));
     let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
     assert!(
         log.lines()
@@ -335,6 +272,8 @@ fn a_payload_deeper_than_the_limit_is_refused_and_exits_0() {
             .contains(r#""outcome":"uncaught","error":"RangeError: Maximum call stack size exceeded""#),
         "{log}"
     );
+    quiet(&case.run(&["Stop"], &[], true, &nested(200_000)));
+    assert_eq!(case.log().last().unwrap(), "uncaught");
 }
 
 #[test]
@@ -454,4 +393,298 @@ fn a_missing_bridge_adds_no_line_to_a_run_that_logs_nothing() {
         quiet(&case.run(&["PostToolUse"], &[("WMUX_PTY_ID", "pty-1")], true, payload));
     }
     assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
+}
+
+/// A main that answers every request with `{"id", "ok": true, "result"}`;
+/// the socket's path, under the system temp dir (sun_path is short).
+fn stub_main(tag: &str, result: &'static str) -> String {
+    use std::io::{BufRead, BufReader, Write};
+    let socket = std::env::temp_dir().join(format!("wmux-{tag}-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut line = String::new();
+            let _ = BufReader::new(&stream).read_line(&mut line);
+            let id = line
+                .split(r#""id":""#)
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .unwrap_or("");
+            let _ = writeln!(stream, r#"{{"id":"{id}","ok":true,"result":{result}}}"#);
+        }
+    });
+    socket.display().to_string()
+}
+
+/// A case with a daemon token, for a run that sends.
+fn with_token(tag: &str) -> Case {
+    let case = Case::new(tag, Some(&pinned()));
+    let wmux_home = case.dir.join("home/.wmux-claude-hook-test");
+    std::fs::create_dir_all(&wmux_home).unwrap();
+    std::fs::write(wmux_home.join("daemon-auth-token"), "t").unwrap();
+    case
+}
+
+#[test]
+fn the_permission_gate_answers_here() {
+    let case = with_token("perm-deny");
+    let socket = stub_main("perm-deny", r#"{"ok":true,"permissionDecision":"deny"}"#);
+    let env = [
+        ("WMUX_PIPE_NAME", socket.as_str()),
+        ("WMUX_PTY_ID", "pty-1"),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+    ];
+    let payload = r#"{"session_id":"s1","tool_name":"Bash"}"#;
+    let out = case.run(&["PreToolUse", "--permission-gate"], &env, true, payload);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        concat!(
+            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","#,
+            r#""permissionDecisionReason":"denied from the wmux remote approval"}}"#,
+            "\n"
+        )
+    );
+    assert_eq!(case.log(), ["ok", "permission-gate deny"]);
+    assert_eq!(case.node_args(), None);
+
+    // The reader went away: the verdict is logged, then its loss; exit 0.
+    let (stdout, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    drop(reader);
+    let mut child = spawn(
+        Command::new(case.dir.join("bin/wmux-native"))
+            .args(["claude-hook", "PreToolUse", "--permission-gate"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", case.dir.join("home"))
+            .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
+            .envs(env)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::from(std::os::fd::OwnedFd::from(stdout)))
+            .stderr(Stdio::null()),
+    );
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+    assert_eq!(case.log()[2..], ["ok", "permission-gate deny", "stdout-lost"]);
+    let _ = std::fs::remove_file(&socket);
+}
+
+/// A gate block from a stub main: (case, the stub's socket).
+fn gate_block(tag: &str) -> (Case, String) {
+    let case = with_token(tag);
+    let socket = stub_main(tag, r#"{"ok":true,"block":{"reason":"wait"}}"#);
+    // The gate is main's: main's token.
+    std::fs::write(case.dir.join("home/.wmux-claude-hook-test-auth-token"), "m").unwrap();
+    (case, socket)
+}
+
+#[test]
+fn a_gate_block_is_exit_2_even_when_stderr_is_gone() {
+    let (case, socket) = gate_block("gate-block");
+    let env = [("WMUX_PIPE_NAME", socket.as_str())];
+    let out = case.run(&["Stop", "--gate"], &env, true, r#"{"session_id":"s1"}"#);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "wait\n");
+    assert!(out.stdout.is_empty());
+    assert_eq!(case.log(), ["ok", "gate-blocked"]);
+
+    let (stderr, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    drop(reader);
+    let out = case.run_with_stderr(
+        &["Stop", "--gate"],
+        &env,
+        true,
+        r#"{"session_id":"s1"}"#,
+        Stdio::from(std::os::fd::OwnedFd::from(stderr)),
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(case.log()[2..], ["ok", "gate-blocked", "stderr-lost"]);
+    let _ = std::fs::remove_file(&socket);
+}
+
+/// The panic hook exists in debug builds only.
+#[cfg(debug_assertions)]
+#[test]
+fn a_gate_block_is_exit_2_even_when_the_run_panics_after_it() {
+    let (case, socket) = gate_block("gate-panic");
+    let env = [
+        ("WMUX_PIPE_NAME", socket.as_str()),
+        ("WMUX_CLAUDE_HOOK_PANIC_AFTER_VERDICT", "1"),
+    ];
+    let out = case.run(&["Stop", "--gate"], &env, true, r#"{"session_id":"s1"}"#);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(case.log(), ["ok", "gate-blocked", "uncaught"]);
+    let _ = std::fs::remove_file(&socket);
+}
+
+const ALLOW: &str = concat!(
+    r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}"#,
+    "\n"
+);
+
+/// What a run printed and logged.
+#[derive(Clone, Debug, PartialEq)]
+struct Seen {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    log: Vec<String>,
+}
+
+fn seen(case: &Case, out: Output, before: usize) -> Seen {
+    Seen {
+        code: out.status.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        log: case.log()[before..].to_vec(),
+    }
+}
+
+fn expect(code: i32, stdout: &str, stderr: &str, log: &[&str]) -> Seen {
+    Seen {
+        code: Some(code),
+        stdout: stdout.into(),
+        stderr: stderr.into(),
+        log: log.iter().map(|l| l.to_string()).collect(),
+    }
+}
+
+/// Both tokens, for a walk that may address main or the daemon.
+fn both_tokens(case: &Case) {
+    let home = case.dir.join("home");
+    std::fs::create_dir_all(home.join(".wmux-claude-hook-test")).unwrap();
+    std::fs::write(home.join(".wmux-claude-hook-test/daemon-auth-token"), "d").unwrap();
+    std::fs::write(home.join(".wmux-claude-hook-test-auth-token"), "m").unwrap();
+}
+
+#[test]
+fn every_decision_runs_here_whatever_the_setup() {
+    // One reply holds a refusal, a context and an allow, so each mode's own
+    // answer shows. Every setup but a stale bridge with node runs natively.
+    let socket = stub_main(
+        "matrix",
+        r#"{"ok":true,"block":{"reason":"r"},"additionalContext":"c","permissionDecision":"allow"}"#,
+    );
+    let env = [
+        ("WMUX_PIPE_NAME", socket.as_str()),
+        ("WMUX_PTY_ID", "pty-1"),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+    ];
+    let payload = r#"{"session_id":"s1","prompt":"p","tool_name":"Bash"}"#;
+    let rows: [(&[&str], Seen); 8] = [
+        (&["Stop", "--gate"], expect(2, "", "r\n", &["ok", "gate-blocked"])),
+        (
+            &["UserPromptSubmit", "--context"],
+            expect(2, "", "r\n", &["ok", "prompt-blocked"]),
+        ),
+        // --context on another event is no mode: a plain run.
+        (&["Stop", "--context"], expect(0, "", "", &["ok"])),
+        (
+            &["PreToolUse", "--permission-gate"],
+            expect(0, ALLOW, "", &["ok", "permission-gate allow"]),
+        ),
+        // The permission gate's exit 0 wins over a block's 2.
+        (
+            &["PreToolUse", "--gate", "--permission-gate"],
+            expect(0, ALLOW, "r\n", &["ok", "gate-blocked", "permission-gate allow"]),
+        ),
+        (
+            &["UserPromptSubmit", "--context", "--permission-gate"],
+            expect(0, ALLOW, "r\n", &["ok", "prompt-blocked", "permission-gate allow"]),
+        ),
+        (
+            &["UserPromptSubmit", "--gate", "--context"],
+            expect(2, "", "r\nr\n", &["ok", "gate-blocked", "prompt-blocked"]),
+        ),
+        (
+            &["UserPromptSubmit", "--gate", "--context", "--permission-gate"],
+            expect(
+                0,
+                ALLOW,
+                "r\nr\n",
+                &["ok", "gate-blocked", "prompt-blocked", "permission-gate allow"],
+            ),
+        ),
+    ];
+    let mut stale = pinned();
+    stale.extend_from_slice(b"// edited\n");
+    let pin = pinned();
+    // (tag, the bridge beside the binary, node on PATH, the lines before the run's own)
+    let setups = [
+        ("pinned", Some(&pin[..]), true, vec![]),
+        ("no-bridge", None, true, vec!["impl-native-no-bridge"]),
+        ("no-node", Some(&pin[..]), false, vec![]),
+        (
+            "stale-no-node",
+            Some(&stale[..]),
+            false,
+            vec!["impl-fallback bridge-sha-mismatch", "impl-fallback node-missing"],
+        ),
+    ];
+    for (tag, bridge, with_node, prefix) in setups {
+        let case = Case::new(&format!("matrix-{tag}"), bridge);
+        both_tokens(&case);
+        for (args, row) in &rows {
+            let before = case.log().len();
+            let mut want = row.clone();
+            want.log = prefix
+                .iter()
+                .map(|l| l.to_string())
+                .chain(row.log.iter().cloned())
+                .collect();
+            let out = case.run(args, &env, with_node, payload);
+            assert_eq!(seen(&case, out, before), want, "{tag} {args:?}");
+        }
+        assert_eq!(case.node_args(), None, "{tag}");
+        let all = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
+        assert!(!all.contains(concat!("decision", "-unported")), "{tag}");
+    }
+
+    // A stale bridge with node: the one setup that still hands decisions over.
+    let case = Case::new("matrix-stale-node", Some(&stale));
+    both_tokens(&case);
+    let out = case.run(&["Stop", "--gate"], &env, true, payload);
+    assert_eq!(
+        seen(&case, out, 0),
+        expect(0, "", "", &["impl-fallback bridge-sha-mismatch"])
+    );
+    assert_eq!(
+        case.node_args(),
+        Some(vec![case.bridge(), "Stop".into(), "--gate".into()])
+    );
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[test]
+fn each_mode_on_a_run_with_nothing_to_decide() {
+    // No token, malformed stdin, and an answer with no decision in it: no
+    // block, no stdout, exit 0; only the permission gate logs its no-opinion.
+    let socket = stub_main("nothing", r#"{"ok":true}"#);
+    let env = [
+        ("WMUX_PIPE_NAME", socket.as_str()),
+        ("WMUX_PTY_ID", "pty-1"),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+    ];
+    let payload = r#"{"session_id":"s1","prompt":"p","tool_name":"Bash"}"#;
+    for (args, answered) in [
+        (["Stop", "--gate"], &["ok"][..]),
+        (["UserPromptSubmit", "--context"], &["ok"][..]),
+        (
+            ["PreToolUse", "--permission-gate"],
+            &["ok", "permission-gate no-opinion"][..],
+        ),
+    ] {
+        let case = Case::new(&format!("nothing-{}", &args[1][2..]), Some(&pinned()));
+        let out = case.run(&args, &env, true, payload);
+        assert_eq!(seen(&case, out, 0), expect(0, "", "", &["no-auth-token"]), "{args:?}");
+        both_tokens(&case);
+        let out = case.run(&args, &env, true, "{");
+        assert_eq!(seen(&case, out, 1), expect(0, "", "", &["malformed-stdin"]), "{args:?}");
+        let out = case.run(&args, &env, true, payload);
+        assert_eq!(seen(&case, out, 2), expect(0, "", "", answered), "{args:?}");
+    }
+    let _ = std::fs::remove_file(&socket);
 }

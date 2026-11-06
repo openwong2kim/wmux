@@ -5,7 +5,8 @@
  * servers (DaemonPipeServer, PipeServer) can:
  *
  *   reply            read the whole line, then write `lines` (templated: the
- *                    string "$ID" becomes the request id)
+ *                    string "$ID" becomes the request id), `delayMs` later
+ *                    when set
  *   reply-early      write the reply as soon as the request id has arrived and
  *                    stop reading: the rest of the request stays unread
  *   reply-early-close the same, then destroy the socket at once (the servers
@@ -14,6 +15,8 @@
  *   hold             read the whole line and never answer
  *   over-long        what both servers do with a line over 1 MiB: destroy the
  *                    socket once the unterminated tail passes the limit
+ *   over-long-after-line  the same drop for a line just over 1 MiB that arrived
+ *                    whole: destroy once the newline is in, unanswered
  *   reset            accept, then destroy the socket at once, reading nothing
  */
 import { createServer, type Server, type Socket } from 'node:net';
@@ -23,11 +26,11 @@ export const SERVER_MAX_LINE = 1024 * 1024;
 export type StubLine = unknown;
 
 export type StubBehaviour =
-  | { mode: 'reply'; lines: StubLine[] }
+  | { mode: 'reply'; lines: StubLine[]; delayMs?: number }
   | { mode: 'reply-early' | 'reply-early-close'; lines: StubLine[] }
   | { mode: 'close-after-read' }
   | { mode: 'hold' }
-  | { mode: 'over-long' }
+  | { mode: 'over-long' | 'over-long-after-line' }
   | { mode: 'reset' };
 
 /** What one connection delivered. `request` is the parsed line, when whole. */
@@ -96,6 +99,11 @@ export function startStubDaemon(endpoint: string, behaviour: StubBehaviour): Pro
       }
       if (nl === -1) return;
       done = true;
+      if (behaviour.mode === 'over-long-after-line' && nl > SERVER_MAX_LINE) {
+        record.destroyedOverLong = true;
+        socket.destroy();
+        return;
+      }
       const line = text.slice(0, nl);
       try {
         record.request = JSON.parse(line);
@@ -104,7 +112,9 @@ export function startStubDaemon(endpoint: string, behaviour: StubBehaviour): Pro
       }
       const id = (record.request as { id?: unknown })?.id;
       if (behaviour.mode === 'reply') {
-        socket.write(behaviour.lines.map((l) => render(l, typeof id === 'string' ? id : '')).join(''));
+        const reply = behaviour.lines.map((l) => render(l, typeof id === 'string' ? id : '')).join('');
+        if (behaviour.delayMs) setTimeout(() => socket.write(reply), behaviour.delayMs);
+        else socket.write(reply);
       } else if (behaviour.mode === 'close-after-read') {
         socket.end();
       }

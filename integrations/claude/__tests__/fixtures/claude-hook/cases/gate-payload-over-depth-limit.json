@@ -1,0 +1,124 @@
+{
+  "description": "Stop --gate with a payload one level past the depth limit.",
+  "divergence": "Past the depth limit the port sends nothing (logged uncaught, exit 0): the servers' reviver parse fails from about 1 800 levels (a daemon on node 22) or 3 500 (Electron), so a request that deep could never be answered. Node sends it (the stub here parses without a reviver); against a real server its gate times out and fails closed on every retry of that Stop.",
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "wait"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "variants": {
+    "steps.0": [
+      {
+        "exitCode": 2,
+        "stdout": "",
+        "stderr": "wait\n",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "main"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "gate-blocked",
+            "target": "main"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "0": [
+                    [
+                      [
+                        [
+                          [
+                            [
+                              [
+                                [
+                                  [
+                                    [
+                                      "<json length=2982 sha256=9a786f2fe8ce4064>"
+                                    ]
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "strictForPort": {
+    "steps.0": {
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": "",
+      "log": [
+        {
+          "bridge": "0.8.1",
+          "hook": "Stop",
+          "outcome": "uncaught",
+          "error": "RangeError: Maximum call stack size exceeded"
+        }
+      ],
+      "requests": {}
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate"
+      ],
+      "stdin": {
+        "parts": [
+          {
+            "repeat": "[",
+            "count": 1502
+          },
+          {
+            "repeat": "]",
+            "count": 1502
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      "<variant>"
+    ]
+  }
+}
