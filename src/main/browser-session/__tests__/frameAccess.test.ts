@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { FrameWorlds, evaluateInFrame, type CdpSend } from '../frameAccess';
+import { FrameTarget, FrameWorlds, evaluateInFrame, type CdpSend } from '../frameAccess';
 
 // Cache behaviour of frame worlds against a fake CDP session. The real-Chrome
 // behaviour is in frameAccess.chrome.runtime.test.ts.
@@ -41,5 +41,28 @@ describe('FrameWorlds', () => {
     loader = 'L2'; // the frame navigated: its old world is destroyed
     live = -1;
     await expect(evaluateInFrame(send as unknown as CdpSend, worlds, 'F1', '1', 'L1')).rejects.toThrow(/^FRAME_NAVIGATED/);
+  });
+});
+
+describe('FrameTarget', () => {
+  it('keeps each target in its own object group, so releasing one leaves another intact', async () => {
+    let object = 0;
+    const send = vi.fn(async (method: string) => {
+      if (method === 'Page.getFrameTree') return treeWith('L1');
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 7 };
+      if (method === 'Runtime.evaluate') return { result: { objectId: `obj-${++object}` } };
+      return {};
+    });
+    const worlds = new FrameWorlds(send as unknown as CdpSend);
+    const a = await FrameTarget.resolve(send as unknown as CdpSend, worlds, 'F1', 'L1', '#a');
+    const b = await FrameTarget.resolve(send as unknown as CdpSend, worlds, 'F1', 'L1', '#b');
+    if (!(a instanceof FrameTarget) || !(b instanceof FrameTarget)) throw new Error('not resolved');
+    const groupsOf = (method: string) =>
+      send.mock.calls.filter(([m]) => m === method).map(([, p]) => (p as { objectGroup?: string }).objectGroup);
+    const [groupA, groupB] = groupsOf('Runtime.evaluate');
+    expect(groupA).toBeTruthy();
+    expect(groupA).not.toBe(groupB);
+    await a.release();
+    expect(groupsOf('Runtime.releaseObjectGroup')).toEqual([groupA]);
   });
 });

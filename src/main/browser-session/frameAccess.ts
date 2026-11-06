@@ -22,8 +22,13 @@ const FRAME_WORLD_NAME = 'wmux-rpc-frames';
 /** Worlds kept per page before the least recently used is dropped. */
 const MAX_CACHED_WORLDS = 64;
 
-/** Remote objects a frame click creates, released together when it ends. */
-const OBJECT_GROUP = 'wmux-rpc-frames';
+/**
+ * Prefix of the object group each frame target's remote objects belong to.
+ * Every target has its own group: clicks on one guest are not serialized, so
+ * a shared group released by one would invalidate another's handles.
+ */
+const OBJECT_GROUP_PREFIX = 'wmux-rpc-frames';
+let objectGroupSeq = 0;
 
 export interface FrameEntry {
   frameId: string;
@@ -228,6 +233,7 @@ export class FrameTarget {
     readonly frameId: string,
     private readonly contextId: number,
     private readonly objectId: string,
+    private readonly objectGroup: string,
   ) {}
 
   static async resolve(
@@ -237,6 +243,7 @@ export class FrameTarget {
     expectLoaderId: string | undefined,
     selector: string,
   ): Promise<FrameTarget | { unreachable: string } | null> {
+    const objectGroup = `${OBJECT_GROUP_PREFIX}-${++objectGroupSeq}`;
     const found = await inWorld(worlds, frameId, expectLoaderId, async (contextId) => {
       const reply = (await send('Runtime.evaluate', {
         expression: `(() => {
@@ -245,14 +252,14 @@ export class FrameTarget {
           return el;
         })()`,
         contextId,
-        objectGroup: OBJECT_GROUP,
+        objectGroup,
       })) as EvalReply;
       if (reply.exceptionDetails) throw evalError(reply);
       const objectId = reply.result?.subtype === 'null' ? undefined : reply.result?.objectId;
       return objectId ? { contextId, objectId } : null;
     });
     if (found === null || 'unreachable' in found) return found;
-    return new FrameTarget(send, frameId, found.contextId, found.objectId);
+    return new FrameTarget(send, frameId, found.contextId, found.objectId, objectGroup);
   }
 
   /** The middle of the element's first visible quad, or null when it has no area. */
@@ -290,7 +297,7 @@ export class FrameTarget {
     const resolved = (await this.send('DOM.resolveNode', {
       backendNodeId: hit.backendNodeId,
       executionContextId: this.contextId,
-      objectGroup: OBJECT_GROUP,
+      objectGroup: this.objectGroup,
     }).catch(() => null)) as { object?: { objectId?: string } } | null;
     const hitObject = resolved?.object?.objectId;
     if (!hitObject) return false;
@@ -305,6 +312,6 @@ export class FrameTarget {
 
   /** Release the remote objects this target made. */
   async release(): Promise<void> {
-    await this.send('Runtime.releaseObjectGroup', { objectGroup: OBJECT_GROUP }).catch(() => undefined);
+    await this.send('Runtime.releaseObjectGroup', { objectGroup: this.objectGroup }).catch(() => undefined);
   }
 }
