@@ -2,7 +2,8 @@ name: Native hooks
 # wmux-native (core/wmux-native): build it on every platform wmux ships, run
 # its unit tests, and hold `wmux-native hook` to the shared Node bridge with
 # the parity suite (envelope byte-for-byte, logs equivalent), which must run
-# here (not skip).
+# here (not skip). `wmux-native mcp-shim` is held to src/mcp/shim.ts the same
+# way, and its end-to-end test runs against the built broker bundle.
 #
 # It runs on every pull request so it can be a required check: the `changes`
 # job decides whether the pull request touches anything the native bridge
@@ -34,7 +35,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          RELEVANT: '^(core/wmux-native/|integrations/shared/|src/shared/hooks/|src/main/pipe/|src/shared/lifecycleIntegrations\.ts$|src/shared/rpc\.ts$|src/cli/commands/setupHooks\.ts$|src/daemon/DaemonPipeServer\.ts$|src/main/mcp/hookBridge\.ts$|src/main/mcp/__tests__/hookBridge\.lockstep\.test\.ts$|scripts/build-native-hooks\.mjs$|scripts/__tests__/(buildNativeHooks\.os\.test|nativeHooksRelease\.test)\.mjs$|forge\.config\.ts$|package(-lock)?\.json$|\.github/workflows/(native-hooks|release)\.yml$)'
+          RELEVANT: '^(core/wmux-native/|integrations/shared/|src/shared/hooks/|src/main/pipe/|src/shared/lifecycleIntegrations\.ts$|src/shared/rpc\.ts$|src/cli/commands/setupHooks\.ts$|src/daemon/DaemonPipeServer\.ts$|src/main/mcp/hookBridge\.ts$|src/main/mcp/__tests__/hookBridge\.lockstep\.test\.ts$|src/mcp/(shim|broker)\.ts$|src/mcp/__tests__/nativeShim\.parity\.os\.test\.ts$|src/shared/(constants|roleSurfaces|commanderSurface|coreSurface)\.ts$|scripts/build-mcp\.js$|scripts/build-native-hooks\.mjs$|scripts/__tests__/(buildNativeHooks\.os\.test|nativeHooksRelease\.test)\.mjs$|forge\.config\.ts$|package(-lock)?\.json$|\.github/workflows/(native-hooks|release)\.yml$)'
         run: |
           if [ "$EVENT" != "pull_request" ]; then echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           files="$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')"
@@ -67,12 +68,17 @@ jobs:
         if: needs.changes.outputs.relevant != 'false'
       - run: npm ci
         if: needs.changes.outputs.relevant != 'false'
+      - name: Build the MCP bundle (the broker for the mcp-shim end-to-end test)
+        if: needs.changes.outputs.relevant != 'false'
+        run: npm run build:mcp
       - name: Install Rust toolchain
         if: needs.changes.outputs.relevant != 'false'
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
       - name: Format, lint and unit tests
         if: needs.changes.outputs.relevant != 'false'
         working-directory: core/wmux-native
+        env:
+          WMUX_REQUIRE_BROKER_E2E: '1'
         run: |
           cargo fmt --check
           cargo clippy --locked --all-targets -- -D warnings
@@ -80,9 +86,9 @@ jobs:
       - name: Build and stage the binary
         if: needs.changes.outputs.relevant != 'false'
         run: node scripts/build-native-hooks.mjs
-      - name: Parity with the Node bridge, lockstep, installer
+      - name: Parity with the Node bridge and the Node MCP shim, lockstep, installer
         if: needs.changes.outputs.relevant != 'false'
-        run: npx vitest run integrations/shared/__tests__/hooksBridgeNative.parity.os.test.ts integrations/shared/__tests__/hookFlavours.lockstep.test.ts integrations/shared/__tests__/hooksBridgeShells.os.test.ts src/shared/hooks/__tests__/compatHookInstall.os.test.ts src/main/mcp/__tests__/hookBridge.lockstep.test.ts scripts/__tests__/buildNativeHooks.os.test.mjs scripts/__tests__/nativeHooksRelease.test.mjs
+        run: npx vitest run integrations/shared/__tests__/hooksBridgeNative.parity.os.test.ts src/mcp/__tests__/nativeShim.parity.os.test.ts integrations/shared/__tests__/hookFlavours.lockstep.test.ts integrations/shared/__tests__/hooksBridgeShells.os.test.ts src/shared/hooks/__tests__/compatHookInstall.os.test.ts src/main/mcp/__tests__/hookBridge.lockstep.test.ts scripts/__tests__/buildNativeHooks.os.test.mjs scripts/__tests__/nativeHooksRelease.test.mjs
         env:
           WMUX_REQUIRE_NATIVE_HOOKS: '1'
           WMUX_NATIVE_HOOKS_BIN: ${{ github.workspace }}/dist/native-hooks/${{ runner.os == 'Windows' && 'wmux-native.exe' || 'wmux-native' }}
