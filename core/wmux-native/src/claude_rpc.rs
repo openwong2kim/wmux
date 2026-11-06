@@ -75,7 +75,7 @@ fn exchange(mut stream: UnixStream, out: &[u8], id: &[u16], deadline: Instant) -
         };
         let revents = match poll_one(stream.as_raw_fd(), want_write, timeout_ms) {
             Ok(r) => r,
-            Err(e) => return failure("connect-error", Some(transport::code(&e)), Some(false)),
+            Err(e) => return lost(&e),
         };
         if revents == 0 {
             continue; // the deadline is checked at the top
@@ -86,7 +86,7 @@ fn exchange(mut stream: UnixStream, out: &[u8], id: &[u16], deadline: Instant) -
                 match stream.read(&mut chunk) {
                     Ok(0) => {
                         return match write_error {
-                            Some(e) => failure("connect-error", Some(transport::code(&e)), Some(false)),
+                            Some(e) => lost(&e),
                             None => failure("closed-without-response", None, Some(false)),
                         };
                     }
@@ -99,7 +99,7 @@ fn exchange(mut stream: UnixStream, out: &[u8], id: &[u16], deadline: Instant) -
                     }
                     Err(e) if e.kind() == ErrorKind::Interrupted => continue,
                     Err(e) if e.kind() == ErrorKind::WouldBlock => break,
-                    Err(e) => return failure("connect-error", Some(transport::code(&e)), Some(false)),
+                    Err(e) => return lost(&e),
                 }
             }
         }
@@ -123,6 +123,12 @@ fn exchange(mut stream: UnixStream, out: &[u8], id: &[u16], deadline: Instant) -
             }
         }
     }
+}
+
+/// A socket error once connected: Node's `error` event after the write, so
+/// the request may have been delivered and is never sent again.
+fn lost(e: &std::io::Error) -> Json {
+    failure("connect-error", Some(transport::code(e)), Some(false))
 }
 
 /// The line, parsed, when it is an object whose `id` is ours.
@@ -495,6 +501,19 @@ mod tests {
             || ["EPIPE", "ECONNRESET", "ENOTCONN"]
                 .iter()
                 .any(|c| t == format!(r#"{{"ok":false,"error":"connect-error","detail":"{c}","retryable":false}}"#))
+    }
+
+    #[test]
+    fn an_error_after_connect_is_not_retryable() {
+        for (errno, name) in [
+            (32, "EPIPE"),
+            (if cfg!(target_os = "macos") { 54 } else { 104 }, "ECONNRESET"),
+        ] {
+            assert_eq!(
+                text(&lost(&std::io::Error::from_raw_os_error(errno))),
+                format!(r#"{{"ok":false,"error":"connect-error","detail":"{name}","retryable":false}}"#)
+            );
+        }
     }
 
     #[test]
