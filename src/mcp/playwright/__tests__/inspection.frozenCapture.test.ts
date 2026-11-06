@@ -123,4 +123,12 @@ describe('browser_screenshot — animations are frozen for every Playwright capt
     expect(calls.length).toBeGreaterThanOrEqual(2);
     for (const opts of calls) expect(opts['animations']).toBe('disabled');
   });
+
+  it('fails an element capture with no page, rather than answering with the viewport', async () => {
+    getPage.mockResolvedValue(null);
+    const result = await screenshot({ ref: 'e1' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('Could not capture ref="e1"');
+    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.screenshot', expect.anything());
+  });
 });

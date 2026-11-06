@@ -1,0 +1,37 @@
+{
+  "description": "A failed activity signal is not spooled.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1"
+  },
+  "steps": [
+    {
+      "argv": [
+        "PostToolUse"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"Read\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PostToolUse",
+            "outcome": "rpc-failed",
+            "target": "main",
+            "error": "connect-error",
+            "detail": "ENOENT"
+          }
+        ],
+        "requests": {},
+        "stamps": [
+          "pty-1"
+        ]
+      }
+    ]
+  }
+}

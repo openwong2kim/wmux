@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebviewCdpManager } from '../WebviewCdpManager';
 
-const mockDebugger = { attach: vi.fn(), detach: vi.fn(), sendCommand: vi.fn(async () => ({})) };
+const answerCommands = async (method: string): Promise<unknown> =>
+  method === 'Target.getTargetInfo' ? { targetInfo: { targetId: 'target-abc' } } : {};
+const mockDebugger = { attach: vi.fn(), detach: vi.fn(), sendCommand: vi.fn(answerCommands) };
 const mockWebContents = {
   debugger: mockDebugger,
   isDestroyed: vi.fn(() => false),
@@ -18,18 +20,6 @@ vi.mock('electron', () => ({
   },
 }));
 
-const mockTargets = [
-  {
-    id: 'target-abc',
-    type: 'page',
-    url: 'https://example.com',
-    webSocketDebuggerUrl: 'ws://127.0.0.1:18800/devtools/page/target-abc',
-  },
-];
-global.fetch = vi.fn(() =>
-  Promise.resolve({ json: () => Promise.resolve(mockTargets) } as Response),
-);
-
 describe('WebviewCdpManager', () => {
   let manager: WebviewCdpManager;
 
@@ -38,29 +28,37 @@ describe('WebviewCdpManager', () => {
     manager = new WebviewCdpManager(18800);
   });
 
-  it('keeps local registration while pending and discovers remote targets after verification', async () => {
+  it('registers the real target id whether or not a port is up', async () => {
     manager = new WebviewCdpManager(0);
     manager.setCdpFailureReason('ownership verification pending');
     await manager.register('surface-1', 42);
     expect(manager.getCdpPort()).toBe(0);
     expect(manager.getCdpFailureReason()).toContain('pending');
-    expect(manager.getTarget('surface-1')?.wsUrl).toBe('');
-    expect(mockDebugger.attach).toHaveBeenCalled();
-    expect(mockWebContents.setBackgroundThrottling).toHaveBeenCalledWith(false);
-    expect(global.fetch).not.toHaveBeenCalled();
-    await manager.setCdpPort(18800);
     expect(manager.getTarget('surface-1')?.targetId).toBe('target-abc');
+    expect(mockWebContents.setBackgroundThrottling).toHaveBeenCalledWith(false);
+    manager.setCdpPort(18800);
+    expect(manager.getCdpPort()).toBe(18800);
     expect(manager.getCdpFailureReason()).toBe('');
   });
 
-  it('register attaches debugger and stores session', async () => {
+  it('register attaches the debugger, keeps it attached and stores the session', async () => {
     await manager.register('surface-1', 42);
     expect(mockDebugger.attach).toHaveBeenCalledWith('1.3');
-    expect(global.fetch).toHaveBeenCalledWith('http://127.0.0.1:18800/json');
-    const target = manager.getTarget('surface-1');
-    expect(target).not.toBeNull();
-    expect(target?.targetId).toBe('target-abc');
-    expect(target?.wsUrl).toContain('ws://');
+    expect(mockDebugger.detach).not.toHaveBeenCalled();
+    expect(manager.getTarget('surface-1')?.targetId).toBe('target-abc');
+  });
+
+  it('keeps a wc- id when the target lookup fails', async () => {
+    mockDebugger.sendCommand.mockImplementation(async (method: string) => {
+      if (method === 'Target.getTargetInfo') throw new Error('gone');
+      return {};
+    });
+    try {
+      await manager.register('surface-1', 42);
+      expect(manager.getTarget('surface-1')?.targetId).toBe('wc-42');
+    } finally {
+      mockDebugger.sendCommand.mockImplementation(answerCommands);
+    }
   });
 
   it('starts console/network capture as soon as a guest registers (#1081)', async () => {
@@ -559,7 +557,7 @@ describe('WebviewCdpManager discard mode (#517 slice C)', () => {
     expect(manager.isDiscarded('s1')).toBe(true);
 
     const awake = manager.ensureAwake('s1');
-    // Let the mocked register()'s async steps (fetch) settle — but do NOT run
+    // Let the mocked register()'s async steps settle — but do NOT run
     // all timers: the re-registered guest is still invisible, so a fresh dwell
     // timer arms immediately and running it would legitimately re-discard.
     await vi.advanceTimersByTimeAsync(100);

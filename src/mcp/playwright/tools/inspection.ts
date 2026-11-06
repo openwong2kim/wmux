@@ -861,6 +861,8 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
               refs ? `${basis}\n\nrefs:true lists boxes for page captures only; omit ref.` : basis,
             );
           }
+          // Falling through would answer with the whole viewport and report success.
+          throw new Error(`Could not capture ref="${ref}": element capture needs a Playwright page, and this surface has none right now. Omit ref to capture the viewport, or use the chrome backend.`);
         }
 
         // Use RPC for fast, reliable screenshots (bypasses Playwright CDP discovery)

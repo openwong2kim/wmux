@@ -1,0 +1,45 @@
+{
+  "description": "SessionEnd inside a pane is not sent.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "SessionEnd"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"cwd\":\"/work/repo\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "SessionEnd",
+            "outcome": "skip-session-end-in-pane"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

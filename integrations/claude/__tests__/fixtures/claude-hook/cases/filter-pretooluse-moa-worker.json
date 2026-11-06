@@ -1,0 +1,47 @@
+{
+  "description": "A delegate worker does not report AskUserQuestion.",
+  "env": {
+    "WMUX_MOA_DELEGATE_WORKER": "1"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "PreToolUse"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"tool_name\":\"AskUserQuestion\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PreToolUse",
+            "outcome": "skip-pretooluse",
+            "tool": "AskUserQuestion",
+            "reason": "moa-delegate-worker"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

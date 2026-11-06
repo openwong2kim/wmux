@@ -1,0 +1,113 @@
+{
+  "description": "A request line over the servers' 1 MiB limit is dropped by the server; the walk stops there.",
+  "endpoints": {
+    "daemon": {
+      "mode": "over-long"
+    },
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "variants": {
+    "steps.0.log.0": [
+      {
+        "bridge": "0.8.1",
+        "hook": "Stop",
+        "outcome": "rpc-failed",
+        "target": "daemon",
+        "error": "closed-without-response"
+      },
+      {
+        "bridge": "0.8.1",
+        "hook": "Stop",
+        "outcome": "rpc-failed",
+        "target": "daemon",
+        "error": "connect-error",
+        "detail": "EPIPE"
+      },
+      {
+        "bridge": "0.8.1",
+        "hook": "Stop",
+        "outcome": "rpc-failed",
+        "target": "daemon",
+        "error": "connect-error",
+        "detail": "ECONNRESET"
+      },
+      {
+        "bridge": "0.8.1",
+        "hook": "Stop",
+        "outcome": "rpc-failed",
+        "target": "daemon",
+        "error": "connect-error",
+        "detail": "ENOTCONN"
+      },
+      {
+        "bridge": "0.8.1",
+        "hook": "Stop",
+        "outcome": "rpc-failed",
+        "target": "daemon",
+        "error": "connect-error",
+        "detail": "ECONNABORTED"
+      }
+    ]
+  },
+  "platformVariants": {
+    "win32": {
+      "steps.0.log.0": [
+        {
+          "bridge": "0.8.1",
+          "hook": "Stop",
+          "outcome": "rpc-failed",
+          "target": "daemon",
+          "error": "connect-error",
+          "detail": "EOF"
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": {
+        "parts": [
+          "{\"session_id\":\"s1\",\"cwd\":\"/x",
+          {
+            "repeat": "a",
+            "count": 600000
+          },
+          "\"}"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          "<variant>"
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "destroyedOverLong": true
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

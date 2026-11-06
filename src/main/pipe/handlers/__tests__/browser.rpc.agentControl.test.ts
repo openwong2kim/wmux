@@ -28,7 +28,7 @@ vi.mock('../_bridge', () => ({
 
 const SURFACE = {
   surfaceId: 'tab-1', webContentsId: 42,
-  targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/1', workspaceId: 'ws-a',
+  targetId: 'target-1', workspaceId: 'ws-a',
 };
 
 function setup() {

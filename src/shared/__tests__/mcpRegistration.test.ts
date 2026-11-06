@@ -13,6 +13,7 @@ import {
   registerCodexHooks,
   unregisterCodexHooks,
   readCodexHooksStatus,
+  codexWmuxApprovedTools,
 } from '../mcpRegistration';
 import { upsertCodexHooksToml } from '../configIO';
 import { getWmuxHomeDir } from '../constants';
@@ -353,6 +354,64 @@ describe('registerTarget — Gemini (unverified, never created)', () => {
     const after = JSON.parse(fs.readFileSync(p, 'utf8')) as { theme: string; mcpServers: Record<string, unknown> };
     expect(after.theme).toBe('dark');
     expect(after.mcpServers.wmux).toBeTruthy();
+  });
+});
+
+describe('registerTarget — the native launcher entry (wmux-native mcp-shim)', () => {
+  const NATIVE = '/Users/u/.wmux/bin/wmux-native';
+
+  it('reports a native entry as registered, with its binary and profile', () => {
+    fs.writeFileSync(claudeTarget.configPath(home), JSON.stringify({ mcpServers: { wmux: { command: NATIVE, args: ['mcp-shim', '--core'] } } }), 'utf8');
+    expect(readTargetStatus(claudeTarget, home).wmux).toEqual({ registered: true, path: NATIVE, profile: 'core' });
+  });
+
+  it('treats a native entry as wmux\'s own: rewritten to node, flags kept, not reported foreign', () => {
+    const p = claudeTarget.configPath(home);
+    fs.writeFileSync(p, JSON.stringify({ mcpServers: { wmux: { command: NATIVE, args: ['mcp-shim', '--core'] } } }), 'utf8');
+    const r = registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(r.foreign).toEqual([]);
+    expect(r.wrote).toEqual(['wmux']);
+    expect(r.profile).toBe('core');
+    const after = JSON.parse(fs.readFileSync(p, 'utf8')) as { mcpServers: Record<string, { command: string; args: string[] }> };
+    expect(after.mcpServers.wmux).toEqual({ command: 'node', args: [WMUX_SCRIPT, '--core'] });
+  });
+
+  it('still leaves a look-alike binary that takes mcp-shim untouched', () => {
+    const p = claudeTarget.configPath(home);
+    const foreign = JSON.stringify({ mcpServers: { wmux: { command: '/x/wmux-native-evil', args: ['mcp-shim'] } } });
+    fs.writeFileSync(p, foreign, 'utf8');
+    const r = registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(r.foreign).toEqual(['wmux']);
+    expect(fs.readFileSync(p, 'utf8')).toBe(foreign);
+    expect(unregisterTarget(claudeTarget, home).removed).toEqual([]);
+  });
+
+  it('rewrites a native Codex entry in place, keeping the tool approvals and other keys', () => {
+    const p = codexTarget.configPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, [
+      '[mcp_servers.wmux]',
+      `command = ${JSON.stringify(NATIVE)}`,
+      'args = ["mcp-shim"]',
+      'startup_timeout_sec = 30',
+      '',
+      '[mcp_servers.wmux.tools.pane_list]',
+      'approval_mode = "approve"',
+      '',
+    ].join('\n'), 'utf8');
+    const r = registerTarget(codexTarget, home, WMUX_SCRIPT);
+    expect(r.wrote).toEqual(['wmux']);
+    expect(readTargetStatus(codexTarget, home).wmux).toEqual({ registered: true, path: WMUX_SCRIPT, profile: 'full' });
+    expect(codexWmuxApprovedTools(p)).toEqual(['pane_list']);
+    expect(fs.readFileSync(p, 'utf8')).toContain('startup_timeout_sec = 30');
+  });
+
+  it('unregisters a native entry', () => {
+    const p = codexTarget.configPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, `[tui]\ntheme = "dark"\n\n[mcp_servers.wmux]\ncommand = 'C:\\wmux\\wmux-native.exe'\nargs = ["mcp-shim"]\n`, 'utf8');
+    expect(unregisterTarget(codexTarget, home).removed).toEqual(['wmux']);
+    expect(fs.readFileSync(p, 'utf8')).toBe('[tui]\ntheme = "dark"\n');
   });
 });
 
