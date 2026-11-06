@@ -124,6 +124,9 @@ export const ja = {
   'terminal.openPathBlocked': '実行ファイルをブロック — 親フォルダを開きました',
   'terminal.openPathFailed': '開けません — フォルダを表示',
   'terminal.openPathProtected': 'これは保護された認証情報の場所のため、wmux では開きません。',
+  'terminal.openPathNotFound': '見つかりません — 何も開いていません',
+  'terminal.openPathRemote': 'リンクを開きません — リンクからはこのコンピューターのファイルのみ開きます',
+  'terminal.openPathViewerOnly': 'リンクを開きません — wmux のビューアーで表示できず、プログラムのリンクは wmux の外では開きません',
   'terminal.bookmarkAdded': 'ブックマークを追加',
 
   // Context menu

@@ -31,6 +31,12 @@ function shortPath(filePath: string): string {
  */
 export default function PreviewPanel({ filePath, isActive, paneId }: { filePath: string; isActive: boolean; paneId: string }) {
   const t = useT();
+  // The file may be gone since it was previewed: say so rather than nothing.
+  const openOutside = (target: string): void => {
+    void window.electronAPI.shell.openPath(target).then((result) => {
+      if (result?.error === 'NOT_FOUND') useStore.getState().pushToast({ level: 'warn', message: t('terminal.openPathNotFound') });
+    });
+  };
   const source = usePreviewSource(filePath);
   const addEditorSurface = useStore((s) => s.addEditorSurface);
   const isHtml = /\.html?$/i.test(filePath);
@@ -62,7 +68,7 @@ export default function PreviewPanel({ filePath, isActive, paneId }: { filePath:
         <button
           type="button"
           className={ACTION}
-          onClick={() => { void window.electronAPI.shell.openPath(filePath); }}
+          onClick={() => openOutside(filePath)}
           title={t('preview.openExternal')}
           aria-label={t('preview.openExternal')}
           data-preview-action="open"
@@ -72,7 +78,7 @@ export default function PreviewPanel({ filePath, isActive, paneId }: { filePath:
         <button
           type="button"
           className={ACTION}
-          onClick={() => { void window.electronAPI.shell.openPath(parentDir(filePath)); }}
+          onClick={() => openOutside(parentDir(filePath))}
           title={t('preview.openFolder')}
           aria-label={t('preview.openFolder')}
           data-preview-action="folder"

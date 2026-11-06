@@ -1299,6 +1299,9 @@ export const ko = {
   'terminal.openPathBlocked': '실행 파일 차단됨 — 부모 폴더만 열림',
   'terminal.openPathFailed': '열 수 없음 — 폴더 위치 표시',
   'terminal.openPathProtected': '자격 증명이 있는 보호된 위치라서 wmux가 열지 않습니다.',
+  'terminal.openPathNotFound': '찾을 수 없음 — 아무것도 열지 않음',
+  'terminal.openPathRemote': '링크를 열지 않음 — 링크로는 이 컴퓨터의 파일만 엽니다',
+  'terminal.openPathViewerOnly': '링크를 열지 않음 — wmux 뷰어로 볼 수 없고, 프로그램이 낸 링크는 wmux 밖에서 열지 않습니다',
   'terminal.bookmarkAdded': '북마크 추가됨',
   'terminal.imeInputRecovered': '한글 입력기에 키 입력이 갇혀 있어 자동으로 복구했습니다',
 

@@ -403,6 +403,8 @@ function notifyOpenFailed(t: (key: TranslationKey, params?: Record<string, strin
   let message = detail ? `${label}: ${detail}` : label;
   if (detail === 'BLOCKED_SENSITIVE') {
     message = t('terminal.openPathProtected');
+  } else if (detail === 'NOT_FOUND') {
+    message = t('terminal.openPathNotFound');
   } else if (detail === 'PATH_NOT_QUOTABLE') {
     message = `${label}: ${t('workspace.openFailedQuoting')}`;
   } else if (detail?.startsWith('PATH_HAS_ENV_SYNTAX:')) {

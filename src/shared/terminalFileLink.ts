@@ -93,6 +93,21 @@ function isOwnHost(host: string, localHostName: string): boolean {
   return shortOnOneSide && host.split('.')[0] === own.split('.')[0];
 }
 
+function isLocalHost(host: string, localHostName: string | undefined): boolean {
+  return host === '' || host === 'localhost' || (!!localHostName && isOwnHost(host, localHostName));
+}
+
+/** Whether `raw` is a well-formed `file:` URL whose host is another computer. */
+export function namesOtherComputer(raw: string, localHostName: string | undefined): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return false;
+  }
+  return url.protocol === 'file:' && !isLocalHost(url.hostname.toLowerCase(), localHostName);
+}
+
 function fromFileUrl(raw: string, localHostName: string | undefined): { path: string; line?: number } | null {
   let url: URL;
   try {
@@ -115,8 +130,7 @@ function fromFileUrl(raw: string, localHostName: string | undefined): { path: st
   // are accepted, and the host is dropped: the path below is all that is used.
   // WSL shares are reached through plain POSIX paths instead. `ls --hyperlink`
   // names this machine; inside WSL the distro is named after it by default.
-  const local = host === '' || host === 'localhost' || (!!localHostName && isOwnHost(host, localHostName));
-  if (!local) return null;
+  if (!isLocalHost(host, localHostName)) return null;
   // file:///C:/x -> C:/x
   if (/^\/[A-Za-z]:[\\/]/.test(pathname)) return { path: pathname.slice(1), line };
   return { path: pathname, line };

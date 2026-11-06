@@ -767,13 +767,15 @@ export default function FleetView() {
     restoreFocusRef.current = null;
     // worktree:false task: nothing to diff — its result is the folder.
     if (entry.outputDir && !entry.branch) {
-      void window.electronAPI.shell.openPath(entry.outputDir);
+      void window.electronAPI.shell.openPath(entry.outputDir).then((result) => {
+        if (result?.error === 'NOT_FOUND') useStore.getState().pushToast({ level: 'warn', message: t('terminal.openPathNotFound') });
+      });
       setVisible(false);
       return;
     }
     openTaskDiff(entry.taskId, entry.workspaceId, entry.title, entry.ownerWorkspaceId);
     setVisible(false);
-  }, [setVisible]);
+  }, [setVisible, t]);
   const jumpToReviewTask = useCallback((entry: ReviewQueueEntry) => {
     focusNotificationTarget(() => useStore.getState(), { workspaceId: entry.workspaceId });
     finishJump();
