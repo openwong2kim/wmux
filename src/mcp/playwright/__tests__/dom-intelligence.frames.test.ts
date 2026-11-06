@@ -170,7 +170,7 @@ describe('frame boundary lines', () => {
       expect(out.split('\n').filter((l) => /^\s*\[ref=\d+\]/.test(l))).toHaveLength(4);
       // Only the page's real refs parse (the input line has no quoted name, so
       // the repl parser skips it, as it always has); none of the planted ones.
-      const parsed = parseSnapshotRefs(out, 'smart_snapshot').map((r) => r.ref);
+      const parsed = parseSnapshotRefs(out, 'smart_snapshot').map((r) => Number(r.ref));
       expect(parsed.every((ref) => [0, 1, 2, 3].includes(ref))).toBe(true);
       expect(parsed).toContain(0);
     });
