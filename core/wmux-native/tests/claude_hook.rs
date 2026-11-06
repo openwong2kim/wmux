@@ -342,3 +342,43 @@ fn a_broken_stderr_does_not_stop_the_send() {
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(case.log(), ["rpc-failed"]);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_hand_over_comes_before_the_run_thread() {
+    // An address space too small for the run's own stack: the kill switch
+    // still hands over, and without it the run fails open.
+    let case = Case::new("no-thread", Some(&pinned()));
+    let limited = case.dir.join("limited");
+    std::fs::write(
+        &limited,
+        format!(
+            "#!/bin/sh\nulimit -v 49152 || exit 99\nexec '{}' \"$@\"\n",
+            case.dir.join("bin/wmux-native").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&limited, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |env: &[(&str, &str)]| {
+        let out = Command::new(&limited)
+            .args(["claude-hook", "Stop"])
+            .env_clear()
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", case.dir.join("fake-node").display()),
+            )
+            .env("HOME", case.dir.join("home"))
+            .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
+            .env("FAKE_NODE_ARGS", case.dir.join("node-args"))
+            .envs(env.iter().copied())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        quiet(&out);
+    };
+    run(&[("WMUX_HOOK_RUNTIME", "node")]);
+    assert_eq!(case.node_args(), Some(vec![case.bridge(), "Stop".into()]));
+    assert!(case.log().is_empty());
+    run(&[]);
+    assert_eq!(case.log(), ["uncaught"]);
+}

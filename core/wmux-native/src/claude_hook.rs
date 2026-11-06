@@ -81,29 +81,36 @@ const HOOK_TO_KIND: [(&str, &str); 10] = [
 ];
 
 /// logEvent with this run's hook: `(outcome, extra)`.
-type Log<'a> = &'a dyn Fn(&str, Vec<(&str, Option<Json>)>);
+type Log<'a> = &'a (dyn Fn(&str, Vec<(&str, Option<Json>)>) + Sync);
 
 const INTERACTIVE_ENTRYPOINTS: [&str; 3] = ["cli", "vscode", "jetbrains"];
 
 /// The process: `args` are the arguments after `claude-hook`. Never returns.
+/// The hand-over runs here, on the main thread, before any other thread
+/// exists; the rest of the run gets a thread with its own large stack.
 pub fn run_process(args: Vec<OsString>) -> ! {
     let argv: Vec<JsStr> = std::env::args_os().map(|a| paths::os_to_js(&a)).collect();
     let event = args.first().map(|a| paths::os_to_js(a));
-    let hook = event.clone();
-    let worker = std::thread::Builder::new()
-        .stack_size(STACK_BYTES)
-        .spawn(move || run(&args, event.as_ref(), &argv));
-    let outcome = worker
-        .map_err(|e| e.to_string())
-        .and_then(|w| w.join().map_err(panic_text));
-    if let Err(message) = outcome {
-        claude::log_event(
-            hook.as_ref(),
-            "uncaught",
-            vec![("error", Some(Json::Str(js(&message))))],
-        );
+    let log = |outcome: &str, extra: Vec<(&str, Option<Json>)>| claude::log_event(event.as_ref(), outcome, extra);
+    if let Some(start) = hand_over(&args, event.as_ref(), &argv, &log) {
+        if let Err(message) = on_own_stack(STACK_BYTES, || run(start, &log)) {
+            log("uncaught", vec![("error", s(&message))]);
+        }
     }
     std::process::exit(0);
+}
+
+/// `f` on a thread with a `stack`-byte stack. Err is a panic's text, or why
+/// the thread could not start (then `f` never runs: the run fails open).
+fn on_own_stack(stack: usize, f: impl FnOnce() + Send) -> Result<(), String> {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(stack)
+            .spawn_scoped(scope, f)
+            .map_err(|e| e.to_string())?
+            .join()
+            .map_err(panic_text)
+    })
 }
 
 fn panic_text(panic: Box<dyn std::any::Any + Send>) -> String {
@@ -203,8 +210,15 @@ fn post_tool_use_kind(payload: Option<&Json>) -> &'static str {
     }
 }
 
-fn run(args: &[OsString], event: Option<&JsStr>, argv: &[JsStr]) {
-    let log = |outcome: &str, extra: Vec<(&str, Option<Json>)>| claude::log_event(event, outcome, extra);
+/// What the run goes on with once it stays native.
+struct Start {
+    hook: String,
+    kind: &'static str,
+}
+
+/// Everything before stdin: hands the process to Node when it should (and
+/// does not return then), or logs why the run ends here (None).
+fn hand_over(args: &[OsString], event: Option<&JsStr>, argv: &[JsStr], log: Log) -> Option<Start> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf));
@@ -217,13 +231,13 @@ fn run(args: &[OsString], event: Option<&JsStr>, argv: &[JsStr]) {
         node_missing: false,
     };
     if kill_switch(exe_dir.as_deref()) {
-        handover.exec(args, &log);
+        handover.exec(args, log);
     }
     match handover.bridge.as_ref().map(std::fs::read) {
         Some(Ok(source)) if ported_from(&source) => {}
         Some(Ok(_)) => {
             log("impl-fallback", vec![("reason", s("bridge-sha-mismatch"))]);
-            handover.exec(args, &log);
+            handover.exec(args, log);
         }
         _ => {
             handover.bridge = None;
@@ -235,14 +249,19 @@ fn run(args: &[OsString], event: Option<&JsStr>, argv: &[JsStr]) {
     let Some(kind) = kind_of(&hook) else {
         let argv = argv.iter().map(|a| Json::Str(a.clone())).collect();
         log("unknown-hook-name", vec![("argv", Some(Json::Arr(argv)))]);
-        return;
+        return None;
     };
     let flags: Vec<JsStr> = args.iter().skip(1).map(|a| paths::os_to_js(a)).collect();
     if let Some(flag) = decision_flag(&hook, &flags) {
-        handover.exec(args, &log);
+        handover.exec(args, log);
         log("decision-unported", vec![("flag", Some(Json::Str(flag.clone())))]);
-        return;
+        return None;
     }
+    Some(Start { hook, kind })
+}
+
+fn run(start: Start, log: Log) {
+    let Start { hook, kind } = start;
     let hook_field = || s(&hook);
 
     let raw_entrypoint = paths::env_js("CLAUDE_CODE_ENTRYPOINT");
@@ -268,7 +287,7 @@ fn run(args: &[OsString], event: Option<&JsStr>, argv: &[JsStr]) {
         return;
     }
 
-    let mut payload = match read_stdin(&log) {
+    let mut payload = match read_stdin(log) {
         Ok(p) => p,
         Err(error) => {
             log("malformed-stdin", vec![("error", s(&error))]);
@@ -501,7 +520,7 @@ fn run(args: &[OsString], event: Option<&JsStr>, argv: &[JsStr]) {
             ("workspaceId", jstr(workspace_id.as_ref())),
             ("ts", Some(Json::Num(ts as f64))),
         ]);
-        spool_resume_binding(&paths::wmux_home_dir(), pty, session, &record, ts as f64, &log);
+        spool_resume_binding(&paths::wmux_home_dir(), pty, session, &record, ts as f64, log);
     }
 }
 
@@ -686,7 +705,6 @@ mod tests {
     use super::*;
     use crate::claude_rpc::{Event, Session};
     use crate::testenv;
-    use std::cell::RefCell;
 
     /// A fresh directory; std::env::temp_dir reads TMPDIR, so hold testenv::lock().
     fn scratch(tag: &str) -> String {
@@ -699,6 +717,21 @@ mod tests {
         let mut out = String::new();
         js::stringify(v, &mut out);
         out
+    }
+
+    #[test]
+    fn a_run_whose_thread_cannot_start_fails_open() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let ran = AtomicBool::new(false);
+        // No such stack can be mapped: the spawn fails and nothing runs.
+        assert!(on_own_stack(1 << 60, || ran.store(true, SeqCst)).is_err());
+        assert!(!ran.load(SeqCst));
+        assert_eq!(on_own_stack(STACK_BYTES, || ran.store(true, SeqCst)), Ok(()));
+        assert!(ran.load(SeqCst));
+        assert_eq!(
+            on_own_stack(STACK_BYTES, || panic!("{RANGE_ERROR}")),
+            Err(RANGE_ERROR.to_string())
+        );
     }
 
     #[test]
@@ -745,11 +778,11 @@ mod tests {
     }
 
     fn spool(home: &str, ts: f64) -> Vec<String> {
-        let logged = RefCell::new(Vec::new());
-        let log = |outcome: &str, _: Vec<(&str, Option<Json>)>| logged.borrow_mut().push(outcome.to_string());
+        let logged = std::sync::Mutex::new(Vec::new());
+        let log = |outcome: &str, _: Vec<(&str, Option<Json>)>| logged.lock().unwrap().push(outcome.to_string());
         let record = Json::Obj(vec![(js("ptyId"), Json::Str(js("p/1"))), (js("ts"), Json::Num(ts))]);
         spool_resume_binding(home, &js("p/1"), &js("s1"), &record, ts, &log);
-        logged.into_inner()
+        logged.into_inner().unwrap()
     }
 
     fn spooled(home: &str) -> String {
