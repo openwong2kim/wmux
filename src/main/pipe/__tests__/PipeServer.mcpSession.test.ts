@@ -1,7 +1,5 @@
 import type * as net from 'net';
 import { describe, expect, it, vi } from 'vitest';
-import type { RpcRequest, RpcResponse } from '../../../shared/rpc';
-import type { RpcRouter } from '../RpcRouter';
 
 vi.mock('../../../shared/constants', () => ({
   getPipeName: () => 'wmux-test-pipe',
@@ -11,6 +9,7 @@ vi.mock('../../../shared/constants', () => ({
 vi.mock('../../../shared/security', () => ({ secureWriteTokenFile: vi.fn(), scheduleTokenFileReHarden: vi.fn() }));
 
 import { PipeServer } from '../PipeServer';
+import { RpcRouter } from '../RpcRouter';
 import { mcpSessionTracker } from '../../mcp/mcpSessionTracker';
 
 function fakeSocket(): net.Socket {
@@ -23,16 +22,24 @@ function send(server: PipeServer, request: Record<string, unknown>) {
 
 describe('PipeServer bundle session count', () => {
   it('counts a session only from a request that passed auth', async () => {
-    const dispatch = vi.fn(async (r: RpcRequest): Promise<RpcResponse> => ({ id: r.id, ok: true, result: null }));
-    const server = new PipeServer({ dispatch } as unknown as RpcRouter);
-    const before = mcpSessionTracker.summary().recent;
+    const router = new RpcRouter();
+    const seen = vi.fn(() => Promise.resolve({ ok: true }));
+    router.register('system.identify', seen);
+    const server = new PipeServer(router);
 
-    send(server, { id: '1', method: 'pane.list', params: {}, token: 'wrong', mcpSession: 'a'.repeat(32) });
-    expect(mcpSessionTracker.summary().recent).toBe(before);
-
-    send(server, { id: '2', method: 'pane.list', params: {}, token: server.getAuthToken(), mcpSession: 'b'.repeat(32) });
-    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce(), { timeout: 5_000 });
+    send(server, { id: '1', method: 'system.identify', params: {}, token: 'wrong', mcpSession: 'a'.repeat(32) });
+    send(server, { id: '2', method: 'system.identify', params: {}, token: server.getAuthToken(), mcpSession: 'b'.repeat(32) });
+    await vi.waitFor(() => expect(seen).toHaveBeenCalledOnce(), { timeout: 5_000 });
     expect(mcpSessionTracker.has('b'.repeat(32))).toBe(true);
     expect(mcpSessionTracker.has('a'.repeat(32))).toBe(false);
+  });
+
+  it('counts nothing from an in-process dispatch', async () => {
+    const router = new RpcRouter();
+    router.register('system.identify', () => Promise.resolve({ ok: true }));
+    await router.dispatch({ id: '3', method: 'system.identify', params: {}, mcpSession: 'c'.repeat(32) });
+    await router.dispatch({ id: '4', method: 'system.identify', params: {}, mcpSession: 'd'.repeat(32) }, { firstParty: true });
+    expect(mcpSessionTracker.has('c'.repeat(32))).toBe(false);
+    expect(mcpSessionTracker.has('d'.repeat(32))).toBe(false);
   });
 });

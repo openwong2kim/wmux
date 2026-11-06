@@ -11,6 +11,7 @@ import { hostedBindingOf, isHostedCaller, sanitizeClientDisplayName } from '../.
 import { check as enforcerCheck } from '../mcp/PermissionEnforcer';
 import { METHOD_CAPABILITY, isAlwaysEnforcedMethod, type RequiredCapability } from '../mcp/methodCapabilityMap';
 import { isLocalExternalWireContext } from '../mcp/rpcProvenance';
+import { mcpSessionTracker } from '../mcp/mcpSessionTracker';
 import { noteCommanderTokenUse, resolveCommanderToken } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
 import { GUEST_SAFE_RPC, GUEST_TURN_SURFACE_REFUSAL, botSurfaceRefusal, type BotRefusal } from '../../shared/botSurface';
@@ -327,6 +328,9 @@ export class RpcRouter {
       };
     }
     const firstParty = operator || inProcessFirstParty;
+    // Live bundle-session count for `wmux doctor`. Only PipeServer dispatches
+    // on the external wire, and only after the request passed auth.
+    if (externalWire) mcpSessionTracker.touch(request.mcpSession);
 
     // Host-derived workspace (#922). Accepted ONLY from the in-process plugin
     // host lane. A non-firstParty caller that supplies it is the same class of
