@@ -969,6 +969,24 @@ mod tests {
     }
 
     #[test]
+    fn no_source_can_log_an_unported_decision() {
+        // Every decision mode runs here, so no outcome says one did not; log
+        // outcomes are literals, so a source without it cannot write it.
+        let unported = concat!("decision", "-unported");
+        let src = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut read = 0;
+        for entry in std::fs::read_dir(src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert!(!text.contains(unported), "{}", path.display());
+                read += 1;
+            }
+        }
+        assert!(read > 10);
+    }
+
+    #[test]
     fn the_decision_texts_are_the_bridges() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),

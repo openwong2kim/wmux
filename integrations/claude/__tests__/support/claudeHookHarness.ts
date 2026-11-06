@@ -43,8 +43,9 @@ export const IMPL = implCommand();
 /** True when the reference (node + the .mjs) runs, so `variants` apply. */
 export const IS_REFERENCE = !process.env.WMUX_CLAUDE_HOOK_IMPL?.trim();
 /**
- * The Node bridge a native implementation hands decision modes to: the copy
- * beside its binary. Its path is masked like the reference's.
+ * The Node bridge beside a native implementation's binary (what its kill
+ * switch and a stale pin hand runs to). Its path is masked like the
+ * reference's.
  */
 const SIBLING_BRIDGE = IS_REFERENCE ? BRIDGE_PATH : path.join(path.dirname(IMPL[0]), 'wmux-bridge.mjs');
 
@@ -317,12 +318,13 @@ function normaliseLog(line: string, pid: number, problems: string[]): unknown {
   if (entry.pid !== pid) problems.push(`log pid ${String(entry.pid)} is not ${pid}`);
   delete entry.ts;
   delete entry.pid;
-  // A native implementation marks its own lines; the lines it leaves to the
-  // Node bridge (decision modes) carry no mark. The reference never marks.
-  if ('impl' in entry) {
-    if (IS_REFERENCE || entry.impl !== 'native') problems.push(`log impl ${JSON.stringify(entry.impl)}`);
-    delete entry.impl;
+  // A native implementation marks every line it writes, and no fixture hands
+  // a native run to Node, so an unmarked line from a port is a run that went
+  // to Node anyway. The reference never marks.
+  if (IS_REFERENCE ? 'impl' in entry : entry.impl !== 'native') {
+    problems.push(`log impl ${JSON.stringify(entry.impl)}`);
   }
+  delete entry.impl;
   // The message is V8's and changes between node releases; the class is the contract.
   if (entry.outcome === 'malformed-stdin' && typeof entry.error === 'string') {
     entry.error = entry.error.split(':')[0];

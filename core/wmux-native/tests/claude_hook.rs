@@ -93,7 +93,7 @@ impl Case {
                     Some(line[at..].split('"').next().unwrap().to_string())
                 };
                 let outcome = field("outcome").unwrap();
-                match field("reason").or_else(|| field("flag")) {
+                match field("reason").or_else(|| field("flag")).or_else(|| field("verdict")) {
                     Some(extra) => format!("{outcome} {extra}"),
                     None => outcome,
                 }
@@ -421,7 +421,7 @@ fn the_permission_gate_answers_here() {
             "\n"
         )
     );
-    assert_eq!(case.log(), ["ok", "permission-gate"]);
+    assert_eq!(case.log(), ["ok", "permission-gate deny"]);
     assert_eq!(case.node_args(), None);
 
     // The reader went away: the verdict is logged, then its loss; exit 0.
@@ -443,7 +443,7 @@ fn the_permission_gate_answers_here() {
     let mut child = child;
     child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
     assert_eq!(child.wait().unwrap().code(), Some(0));
-    assert_eq!(case.log()[2..], ["ok", "permission-gate", "stdout-lost"]);
+    assert_eq!(case.log()[2..], ["ok", "permission-gate deny", "stdout-lost"]);
     let _ = std::fs::remove_file(&socket);
 }
 
@@ -480,5 +480,174 @@ fn a_gate_block_is_exit_2_even_when_the_run_panics_or_stderr_is_gone() {
     );
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(case.log()[5..], ["ok", "gate-blocked", "stderr-lost"]);
+    let _ = std::fs::remove_file(&socket);
+}
+
+const ALLOW: &str = concat!(
+    r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}"#,
+    "\n"
+);
+
+/// What a run printed and logged.
+#[derive(Clone, Debug, PartialEq)]
+struct Seen {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    log: Vec<String>,
+}
+
+fn seen(case: &Case, out: Output, before: usize) -> Seen {
+    Seen {
+        code: out.status.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        log: case.log()[before..].to_vec(),
+    }
+}
+
+fn expect(code: i32, stdout: &str, stderr: &str, log: &[&str]) -> Seen {
+    Seen {
+        code: Some(code),
+        stdout: stdout.into(),
+        stderr: stderr.into(),
+        log: log.iter().map(|l| l.to_string()).collect(),
+    }
+}
+
+/// Both tokens, for a walk that may address main or the daemon.
+fn both_tokens(case: &Case) {
+    let home = case.dir.join("home");
+    std::fs::create_dir_all(home.join(".wmux-claude-hook-test")).unwrap();
+    std::fs::write(home.join(".wmux-claude-hook-test/daemon-auth-token"), "d").unwrap();
+    std::fs::write(home.join(".wmux-claude-hook-test-auth-token"), "m").unwrap();
+}
+
+#[test]
+fn every_decision_runs_here_whatever_the_setup() {
+    // One reply holds a refusal, a context and an allow, so each mode's own
+    // answer shows. Every setup but a stale bridge with node runs natively.
+    let socket = stub_main(
+        "matrix",
+        r#"{"ok":true,"block":{"reason":"r"},"additionalContext":"c","permissionDecision":"allow"}"#,
+    );
+    let env = [
+        ("WMUX_PIPE_NAME", socket.as_str()),
+        ("WMUX_PTY_ID", "pty-1"),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+    ];
+    let payload = r#"{"session_id":"s1","prompt":"p","tool_name":"Bash"}"#;
+    let rows: [(&[&str], Seen); 8] = [
+        (&["Stop", "--gate"], expect(2, "", "r\n", &["ok", "gate-blocked"])),
+        (
+            &["UserPromptSubmit", "--context"],
+            expect(2, "", "r\n", &["ok", "prompt-blocked"]),
+        ),
+        // --context on another event is no mode: a plain run.
+        (&["Stop", "--context"], expect(0, "", "", &["ok"])),
+        (
+            &["PreToolUse", "--permission-gate"],
+            expect(0, ALLOW, "", &["ok", "permission-gate allow"]),
+        ),
+        // The permission gate's exit 0 wins over a block's 2.
+        (
+            &["PreToolUse", "--gate", "--permission-gate"],
+            expect(0, ALLOW, "r\n", &["ok", "gate-blocked", "permission-gate allow"]),
+        ),
+        (
+            &["UserPromptSubmit", "--context", "--permission-gate"],
+            expect(0, ALLOW, "r\n", &["ok", "prompt-blocked", "permission-gate allow"]),
+        ),
+        (
+            &["UserPromptSubmit", "--gate", "--context"],
+            expect(2, "", "r\nr\n", &["ok", "gate-blocked", "prompt-blocked"]),
+        ),
+        (
+            &["UserPromptSubmit", "--gate", "--context", "--permission-gate"],
+            expect(
+                0,
+                ALLOW,
+                "r\nr\n",
+                &["ok", "gate-blocked", "prompt-blocked", "permission-gate allow"],
+            ),
+        ),
+    ];
+    let mut stale = pinned();
+    stale.extend_from_slice(b"// edited\n");
+    let pin = pinned();
+    // (tag, the bridge beside the binary, node on PATH, the lines before the run's own)
+    let setups = [
+        ("pinned", Some(&pin[..]), true, vec![]),
+        ("no-bridge", None, true, vec!["impl-native-no-bridge"]),
+        ("no-node", Some(&pin[..]), false, vec![]),
+        (
+            "stale-no-node",
+            Some(&stale[..]),
+            false,
+            vec!["impl-fallback bridge-sha-mismatch", "impl-fallback node-missing"],
+        ),
+    ];
+    for (tag, bridge, with_node, prefix) in setups {
+        let case = Case::new(&format!("matrix-{tag}"), bridge);
+        both_tokens(&case);
+        for (args, row) in &rows {
+            let before = case.log().len();
+            let mut want = row.clone();
+            want.log = prefix
+                .iter()
+                .map(|l| l.to_string())
+                .chain(row.log.iter().cloned())
+                .collect();
+            let out = case.run(args, &env, with_node, payload);
+            assert_eq!(seen(&case, out, before), want, "{tag} {args:?}");
+        }
+        assert_eq!(case.node_args(), None, "{tag}");
+        let all = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
+        assert!(!all.contains(concat!("decision", "-unported")), "{tag}");
+    }
+
+    // A stale bridge with node: the one setup that still hands decisions over.
+    let case = Case::new("matrix-stale-node", Some(&stale));
+    both_tokens(&case);
+    let out = case.run(&["Stop", "--gate"], &env, true, payload);
+    assert_eq!(
+        seen(&case, out, 0),
+        expect(0, "", "", &["impl-fallback bridge-sha-mismatch"])
+    );
+    assert_eq!(
+        case.node_args(),
+        Some(vec![case.bridge(), "Stop".into(), "--gate".into()])
+    );
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[test]
+fn each_mode_on_a_run_with_nothing_to_decide() {
+    // No token, malformed stdin, and an answer with no decision in it: no
+    // block, no stdout, exit 0; only the permission gate logs its no-opinion.
+    let socket = stub_main("nothing", r#"{"ok":true}"#);
+    let env = [
+        ("WMUX_PIPE_NAME", socket.as_str()),
+        ("WMUX_PTY_ID", "pty-1"),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+    ];
+    let payload = r#"{"session_id":"s1","prompt":"p","tool_name":"Bash"}"#;
+    for (args, answered) in [
+        (["Stop", "--gate"], &["ok"][..]),
+        (["UserPromptSubmit", "--context"], &["ok"][..]),
+        (
+            ["PreToolUse", "--permission-gate"],
+            &["ok", "permission-gate no-opinion"][..],
+        ),
+    ] {
+        let case = Case::new(&format!("nothing-{}", &args[1][2..]), Some(&pinned()));
+        let out = case.run(&args, &env, true, payload);
+        assert_eq!(seen(&case, out, 0), expect(0, "", "", &["no-auth-token"]), "{args:?}");
+        both_tokens(&case);
+        let out = case.run(&args, &env, true, "{");
+        assert_eq!(seen(&case, out, 1), expect(0, "", "", &["malformed-stdin"]), "{args:?}");
+        let out = case.run(&args, &env, true, payload);
+        assert_eq!(seen(&case, out, 2), expect(0, "", "", answered), "{args:?}");
+    }
     let _ = std::fs::remove_file(&socket);
 }
