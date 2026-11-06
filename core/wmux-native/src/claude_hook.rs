@@ -14,9 +14,11 @@
 //!      UserPromptSubmit. Their answers (exit 2, stdout) are not ported yet.
 //!
 //! No bridge beside the binary: the run stays native (logged
-//! `impl-native-no-bridge`), and a decision flag fails open: exit 0, empty
-//! stdout, logged `decision-unported` with the flag. A failed exec (no node)
-//! is logged `impl-fallback`, reason `node-missing`, and is handled the same.
+//! `impl-native-no-bridge`). A decision flag then fails open (exit 0, empty
+//! stdout, logged `decision-unported` with the flag) and the run goes on as
+//! a plain one with that mode off: the signal is sent and a lifecycle
+//! capture that did not land is spooled. A failed exec (no node) is logged
+//! `impl-fallback`, reason `node-missing`, and is handled the same.
 //!
 //! The rest is main() of the bridge, with gate, context and permission-gate
 //! mode off; the exit code is always 0 and stdout is never written. Every
@@ -254,8 +256,8 @@ fn hand_over(args: &[OsString], event: Option<&JsStr>, argv: &[JsStr], log: Log)
     let flags: Vec<JsStr> = args.iter().skip(1).map(|a| paths::os_to_js(a)).collect();
     if let Some(flag) = decision_flag(&hook, &flags) {
         handover.exec(args, log);
+        // Only the decision fails open; the run goes on as a plain one.
         log("decision-unported", vec![("flag", Some(Json::Str(flag.clone())))]);
-        return None;
     }
     Some(Start { hook, kind })
 }
