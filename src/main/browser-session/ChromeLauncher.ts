@@ -355,7 +355,8 @@ export interface ChromeProtectionPlan {
  */
 export interface ConsentDownloadGuard {
   send(method: string, params: Record<string, unknown>): Promise<unknown>;
-  claim(claimant: (params: Record<string, unknown>) => boolean): (() => void) | null;
+  /** `reassert`: called on the guard's re-assert tick while this claim holds, in place of the guard's own deny. */
+  claim(claimant: (params: Record<string, unknown>) => boolean, reassert?: () => Promise<unknown>): (() => void) | null;
   onProgress(listener: (params: Record<string, unknown>) => void): () => void;
   /** Called once when this guard goes away (socket dropped, Chrome gone). */
   onClose(listener: () => void): () => void;
@@ -551,6 +552,8 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly proxyProbeTimeoutMs: number | undefined;
   /** Consent: may keep ONE download the guard would cancel (see consentDownloadGuard). */
   private downloadClaimant: ((params: Record<string, unknown>) => boolean) | null = null;
+  /** The claimant's own behaviour, re-asserted on the guard's tick while it holds the guard. */
+  private downloadClaimReassert: (() => Promise<unknown>) | null = null;
   private readonly downloadProgress = new Set<(params: Record<string, unknown>) => void>();
   private readonly downloadGuardClosed = new Set<() => void>();
 
@@ -1835,9 +1838,13 @@ export class ChromeLauncher implements ChromeBackendClient {
     const reassert = setInterval(() => {
       if (!guard.isOpen()) return clearInterval(reassert);
       // An operator-approved download pass owns the behaviour while it holds
-      // the guard (and restores deny itself); every other download is still
-      // cancelled by guid in the meantime.
-      if (this.downloadClaimant) return;
+      // the guard (and restores deny itself): the tick re-asserts the pass's
+      // own, so another connection can't hold it away. Every other download
+      // is still cancelled by guid in the meantime.
+      if (this.downloadClaimant) {
+        void this.downloadClaimReassert?.().catch(() => undefined);
+        return;
+      }
       void deny().catch(() => undefined);
       void denyContexts().catch(() => undefined);
     }, DOWNLOAD_DENY_REASSERT_MS);
@@ -1930,6 +1937,7 @@ export class ChromeLauncher implements ChromeBackendClient {
    *  through it, so every pass holding it fails now. */
   private dropConsentClaims(): void {
     this.downloadClaimant = null;
+    this.downloadClaimReassert = null;
     const listeners = [...this.downloadGuardClosed];
     this.downloadGuardClosed.clear();
     for (const l of listeners) {
@@ -1949,11 +1957,14 @@ export class ChromeLauncher implements ChromeBackendClient {
         if (!guard?.isOpen()) return Promise.reject(new Error(PROTECTION_NOT_READY));
         return guard.send(method, params);
       },
-      claim: (claimant) => {
+      claim: (claimant, reassert) => {
         if (this.downloadClaimant) return null;
         this.downloadClaimant = claimant;
+        this.downloadClaimReassert = reassert ?? null;
         return () => {
-          if (this.downloadClaimant === claimant) this.downloadClaimant = null;
+          if (this.downloadClaimant !== claimant) return;
+          this.downloadClaimant = null;
+          this.downloadClaimReassert = null;
         };
       },
       onProgress: (listener) => {
