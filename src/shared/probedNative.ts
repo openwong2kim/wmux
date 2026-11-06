@@ -163,9 +163,19 @@ export async function lockDir(dir: string, opts: LockOptions = {}): Promise<{ re
  *  next attempt then creates its own. Best effort: any failure leaves it. */
 function takeOverIfStale(file: string, staleMs: number): void {
   let held = '';
-  try { held = fs.readFileSync(file, 'utf8'); } catch { return; }
+  let mtime = 0;
+  try {
+    held = fs.readFileSync(file, 'utf8');
+    mtime = fs.statSync(file).mtimeMs;
+  } catch { return; }
   const [pid, since] = held.split(' ').map(Number);
-  if (Number.isInteger(pid) && alive(pid) && Date.now() - since < staleMs) return;
+  if (!(Number.isInteger(pid) && pid > 0 && Number.isFinite(since))) {
+    // Empty or unreadable: a holder between its open and its write. Held
+    // until the file itself is stale.
+    if (Date.now() - mtime < staleMs) return;
+  } else if (alive(pid) && Date.now() - since < staleMs) {
+    return;
+  }
   // Only if it is still the lock just read.
   try { if (fs.readFileSync(file, 'utf8') === held) fs.unlinkSync(file); } catch { /* gone, or held fast */ }
 }

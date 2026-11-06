@@ -6,6 +6,7 @@ import { buildSync } from 'esbuild';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   PROBE_LOCK,
+  lockDir,
   PROBE_RECORD,
   prepareProbedNative,
   probeKey,
@@ -173,6 +174,19 @@ describe('prepareProbedNative — the lock across processes', () => {
     expect(fs.existsSync(path.join(dir, PROBE_RECORD))).toBe(false);
     expect(probed).toEqual([]);
     expect(fs.readFileSync(lockFile(), 'utf8')).toBe(held);
+  });
+
+  it('holds an empty or unreadable lock (a holder between its open and its write) until its mtime is stale', async () => {
+    for (const content of ['', 'not a lock']) {
+      fs.writeFileSync(lockFile(), content);
+      expect(await lockDir(dir, { waitMs: 200, pollMs: 50 })).toBeNull();
+      expect(fs.readFileSync(lockFile(), 'utf8')).toBe(content);
+      const old = (Date.now() - 31_000) / 1000;
+      fs.utimesSync(lockFile(), old, old);
+      const lock = await lockDir(dir, { waitMs: 200, pollMs: 50 });
+      expect(lock).not.toBeNull();
+      lock?.release();
+    }
   });
 
   it('takes over a lock whose pid is gone', async () => {
