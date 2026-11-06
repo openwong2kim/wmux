@@ -29,6 +29,7 @@ import {
   recordedVerdictOf,
   runProbe,
   type ProbeExpectation,
+  type ProbeVerdict,
 } from '../probedNative';
 import {
   findLifecycleAssetSourceFrom,
@@ -377,14 +378,18 @@ async function installNativeHooks(
   if (!spec) return null;
   const before = inspectLifecycleAsset(spec);
   let probed = false;
+  // What the probe said of the copy in place, when it ran that one.
+  const inPlace: { verdict?: ProbeVerdict } = {};
   const result = await prepareProbedNative({
     sourcePath: spec.sourcePath,
     destinationPath: spec.destinationPath,
     recordDir: path.dirname(spec.destinationPath),
     line: NATIVE_HOOKS_PROBE_KEY,
-    probe: (binary) => {
+    probe: async (binary) => {
       probed = true;
-      return runProbe(binary, ['--version'], NATIVE_HOOKS_PROBE, NATIVE_HOOKS_PROBE_TIMEOUT_MS);
+      const verdict = await runProbe(binary, ['--version'], NATIVE_HOOKS_PROBE, NATIVE_HOOKS_PROBE_TIMEOUT_MS);
+      if (binary === spec.destinationPath) inPlace.verdict = verdict;
+      return verdict;
     },
     ownershipMarkers: spec.ownershipMarkers,
     mode: spec.mode,
@@ -403,7 +408,28 @@ async function installNativeHooks(
   }
   if (active) return { outcome: { ...after, state: 'stale', error: result.reason ?? null, action: 'none' }, active };
   if (after.state === 'foreign' || after.state === 'source-missing') return { outcome: { ...after, action: 'none' }, active: null };
+  removeUnprovenCopy(spec, inPlace.verdict);
   return { outcome: { ...after, state: 'error', error: result.reason ?? after.error, action: 'none' }, active: null };
+}
+
+/**
+ * The entries go to Node after this run failed to run the copy in place (it
+ * could not start, or gave no answer), and no pass is recorded for it: the
+ * copy is removed, best effort, as before the probed install. Status then
+ * reads it as not installed, not as the copy the hooks run, and the next
+ * install stages and probes a fresh one, so a fixed home or a finished scan
+ * recovers on its own. A copy recorded as failing is kept: status reads it.
+ */
+function removeUnprovenCopy(spec: LifecycleAssetSpec, verdict: ProbeVerdict | undefined): void {
+  if (verdict !== 'unstartable' && verdict !== 'timeout') return;
+  const dest = spec.destinationPath;
+  if (recordedVerdictOf(dest, path.dirname(dest), NATIVE_HOOKS_PROBE_KEY) !== undefined) return;
+  try {
+    // Only the bytes this run probed (the shipped ones): another install may
+    // have put a copy that passed there since.
+    if (!spec.sourcePath || !fs.readFileSync(dest).equals(fs.readFileSync(spec.sourcePath))) return;
+    fs.unlinkSync(dest);
+  } catch { /* left: status reads it, the next install probes it */ }
 }
 
 /**

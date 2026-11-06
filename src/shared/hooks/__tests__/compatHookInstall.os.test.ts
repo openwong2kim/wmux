@@ -519,40 +519,86 @@ describe.skipIf(process.platform === 'win32')('native bridge side effects', () =
   // A run that cannot take the lock proves nothing new: the copy in place is
   // offered by the rule status uses, including a copy an older wmux installed
   // before any verdict was recorded (it kept a copy only once it ran).
-  // The probe ran and proved nothing (the copy could not be started: noexec,
-  // application control): that is no reason to trust a copy no verdict was
-  // recorded for. The entries go to Node, and nothing is recorded.
-  it('a current copy with no verdict that cannot be started: Node, the reason, nothing recorded', async () => {
+  // A copy in place that a probe just failed to run (it could not start, or
+  // gave no answer), with no pass recorded for it, is removed when the entries
+  // go to Node: then --status says it is not installed rather than "hooks run
+  // it", and the next install stages and probes a fresh copy, so a fixed home
+  // or a finished scan recovers on its own.
+  const markerKey = () => probeKey(sha256Of(fs.readFileSync(dest())), expectationKey({ contains: 'wmux-managed: native-hooks' }));
+  const expectRemovedAndRecovering = async () => {
+    expect(fs.existsSync(dest())).toBe(false);
+    expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
+    const status = statusCompatHooks('copilot', withNative);
+    expect(status).toMatchObject({ config: 'current', native: { state: 'missing' } });
+    expect(status.nativeSummary).toMatch(/not installed .*node/);
+    // The next install probes a fresh copy, which runs here.
+    const before = runs();
+    expect((await installCompatHooks('copilot', withNative)).native).toMatchObject({ state: 'current', action: 'installed' });
+    expect(runs()).toBe(before + 1);
+    expect(readConfig().hooks.Stop[0].exec).toBe(dest());
+  };
+
+  it('a current copy with no verdict that cannot be started: Node, the reason, nothing recorded, the copy removed', async () => {
     await installCompatHooks('copilot', withNative);
     const hooks = path.dirname(dest());
     fs.unlinkSync(path.join(hooks, PROBE_RECORD));
     fs.chmodSync(dest(), 0o600);
+    const key = markerKey();
     const outcome = await installCompatHooks('copilot', withNative);
     expect(outcome.native).toMatchObject({ state: 'error', error: 'self-test could not start' });
     expect(outcome.nativeSummary).toMatch(/not used \(self-test could not start\).*node/);
-    expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
-    const key = probeKey(sha256Of(fs.readFileSync(dest())), expectationKey({ contains: 'wmux-managed: native-hooks' }));
     expect(recordedProbe(hooks, key)).toBeUndefined();
     expect(fs.existsSync(path.join(hooks, PROBE_RECORD))).toBe(false);
+    await expectRemovedAndRecovering();
   });
 
   // A home that turned noexec after the copy passed: --reprobe moves the
   // entries to Node, and the old pass no longer vouches for the copy.
-  it('--reprobe on a copy that passed but can no longer start: Node, the pass forgotten, and a plain install probes again', async () => {
+  it('--reprobe on a copy that passed but can no longer start: Node, the pass forgotten, the copy removed', async () => {
     await installCompatHooks('copilot', withNative);
     const hooks = path.dirname(dest());
-    const key = probeKey(sha256Of(fs.readFileSync(dest())), expectationKey({ contains: 'wmux-managed: native-hooks' }));
+    const key = markerKey();
     expect(recordedProbe(hooks, key)).toBe('pass');
     fs.chmodSync(dest(), 0o600);
     const reprobed = await installCompatHooks('copilot', withNative, { reprobe: true });
     expect(reprobed.native).toMatchObject({ state: 'error', error: 'self-test could not start' });
-    expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
     expect(recordedProbe(hooks, key)).toBeUndefined();
-    // Not trusted again: the plain install runs the check, which still cannot start it.
-    const plain = await installCompatHooks('copilot', withNative);
-    expect(plain.native).toMatchObject({ state: 'error', error: 'self-test could not start' });
+    await expectRemovedAndRecovering();
+  });
+
+  // No answer within the probe's 5 s (a slow antivirus scan) is treated the
+  // same way: nothing proves the copy runs, so it is not left for status.
+  it('a current copy with no verdict that gives no answer: Node, nothing recorded, the copy removed', async () => {
+    const hang = `#!/bin/sh\n# wmux-managed: native-hooks\nexec sleep 30\n`;
+    fs.writeFileSync(withNative.nativeHooks?.sourcePath as string, hang, { mode: 0o755 });
+    fs.mkdirSync(path.dirname(dest()), { recursive: true });
+    fs.writeFileSync(dest(), hang, { mode: 0o700 });
+    const outcome = await installCompatHooks('copilot', withNative);
+    expect(outcome.native).toMatchObject({ state: 'error', error: 'self-test timed out' });
+    expect(fs.existsSync(dest())).toBe(false);
     expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
-    expect(recordedProbe(hooks, key)).toBeUndefined();
+    expect(statusCompatHooks('copilot', withNative)).toMatchObject({ config: 'current', native: { state: 'missing' } });
+  }, 20_000);
+
+  it('--remove works once such a copy is gone', async () => {
+    await installCompatHooks('copilot', withNative);
+    fs.chmodSync(dest(), 0o600);
+    await installCompatHooks('copilot', withNative, { reprobe: true });
+    expect(fs.existsSync(dest())).toBe(false);
+    expect(removeCompatHooks('copilot', withNative)).toMatchObject({ ok: true, removed: true, before: 'current' });
+    expect(fs.existsSync(configFile())).toBe(false);
+  });
+
+  it('a copy recorded as failing is kept, with the entries on Node, and --remove works', async () => {
+    await installCompatHooks('copilot', withNative);
+    const hooks = path.dirname(dest());
+    recordProbe(hooks, markerKey(), 'fail');
+    const outcome = await installCompatHooks('copilot', withNative);
+    expect(outcome.native).toMatchObject({ state: 'error', error: 'recorded as failing' });
+    expect(fs.existsSync(dest())).toBe(true);
+    expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
+    expect(statusCompatHooks('copilot', withNative).config).toBe('current');
+    expect(removeCompatHooks('copilot', withNative)).toMatchObject({ ok: true, removed: true });
   });
 
   it('without the lock, keeps the entries on a copy status counts as working', async () => {
