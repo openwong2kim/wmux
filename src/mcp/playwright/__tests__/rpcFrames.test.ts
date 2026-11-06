@@ -309,4 +309,16 @@ describe('readRpcFrames', () => {
     });
     expect(old).toMatchObject({ text: '', nextRef: 10 });
   });
+
+  it('numbers on past every frame ref kept when the top listing\'s count is behind them, on every return', async () => {
+    const prior = new Map([[40, { frameId: 'F1', loaderId: 'L1', origin: 'https://top.test', role: 'button', name: 'Pay 0' }]]);
+    const readFrames = vi.fn(perFrame(buttons(2)));
+    const out = await readRpcFrames({ ...base, nextRef: 1, topText: '', prior, listFrames: async () => [frame(1)], readFrames });
+    expect(readFrames.mock.calls[0][1]).toBe(41);
+    expect(out.nextRef).toBe(43);
+    const opts = { ...base, nextRef: 1, topText: '', prior, readFrames };
+    expect((await readRpcFrames({ ...opts, listFrames: async () => [] })).nextRef).toBe(41);
+    expect((await readRpcFrames({ ...opts, listFrames: async () => { throw new Error('down'); } })).nextRef).toBe(41);
+    expect((await readRpcFrames({ ...opts, budget: { chars: 10, bytes: 10 }, listFrames: async () => [frame(1)] })).nextRef).toBe(41);
+  });
 });

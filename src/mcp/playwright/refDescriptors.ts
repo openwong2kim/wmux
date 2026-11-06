@@ -124,8 +124,12 @@ export function assignStableRefs(
   }
 
   // Pass 3 — genuinely new elements, after the previous maximum. Numbers are
-  // only ever handed out, never recycled.
+  // only ever handed out, never recycled: past every number `prior` holds too,
+  // even when the caller's count is behind it.
   let next = nextRef;
+  for (let q = 0; q < prior.length; q++) {
+    if (prior[q].ref + 1 > next) next = prior[q].ref + 1;
+  }
   for (let f = 0; f < current.length; f++) {
     if (refs[f] === undefined) {
       refs[f] = next;
@@ -181,7 +185,7 @@ export const DESCRIPTOR_GENERATIONS = 3;
  * dropped. Same ceiling as the snapshot baselines: a handful of surfaces per
  * agent is the realistic maximum, and an entry costs three listings.
  */
-const MAX_SURFACES = 16;
+export const MAX_SURFACES = 16;
 
 interface SurfaceHistory {
   /** Newest last. At most DESCRIPTOR_GENERATIONS entries. */

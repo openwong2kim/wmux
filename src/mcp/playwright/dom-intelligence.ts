@@ -117,8 +117,9 @@ export interface DomSnapshotExpressionOptions {
    * header or frame list of its own (the caller labels the section). An
    * element `prior` describes (this document's refs from the last listing)
    * keeps its number; a new one is numbered on from `seed`, which is past
-   * every number the surface has handed out. The top document's history is
-   * never offered here, so a frame cannot take a number the top holds.
+   * the surface's listing count and every frame ref still kept. The top
+   * document's history is never offered here, so a frame cannot take a number
+   * the top holds.
    */
   frame?: {
     seed: number;

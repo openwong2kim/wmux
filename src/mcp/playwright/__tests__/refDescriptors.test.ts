@@ -58,6 +58,13 @@ describe('assignStableRefs', () => {
     expect(new Set(out.refs).size).toBe(2);
     expect(out.refs).toEqual([3, 4]);
   });
+
+  it('numbers a new element past every number the history holds, even with a seed behind it', () => {
+    const prior = [{ ref: 5, role: 'input', name: 'cc', kindIndex: 0 }];
+    const out = assignStableRefs(prior, 1, [el('input', 'cc'), el('input', 'added')]);
+    expect(out.refs).toEqual([5, 6]);
+    expect(out.nextRef).toBe(7);
+  });
 });
 
 describe('uniqueDescriptorMatch', () => {

@@ -31,7 +31,7 @@ import { registerInspectionTools } from '../tools/inspection';
 import { registerInteractionTools } from '../tools/interaction';
 import { ActionRing } from '../../browser-replay/actionRing';
 import { createConnectionScope, runInConnectionScope } from '../../connectionScope';
-import { clearRefDescriptors } from '../refDescriptors';
+import { clearRefDescriptors, MAX_SURFACES } from '../refDescriptors';
 import { resetProtectionMemoryForTests } from '../automationLease';
 import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
 import { __resetFrameRefsForTesting } from '../snapshot';
@@ -220,6 +220,10 @@ describe('in-process frames on the RPC lane', () => {
     const stamps = new Map<string, number>();
     let elements = ['cc'];
     answer({
+      // The other surfaces have no frames.
+      'browser.frames.tree': (p) => ({
+        frames: p.surfaceId ? [] : [{ frameId: 'F1', loaderId: 'L1', parentId: 'MAIN', depth: 1, origin: 'https://pay.test', name: 'card' }],
+      }),
       'browser.frames.read': (p) => {
         const [f] = p.frames as Array<{ prior: Array<{ ref: number; name: string }> }>;
         let next = p.seed as number;
@@ -238,10 +242,15 @@ describe('in-process frames on the RPC lane', () => {
     });
     await tool('browser_snapshot')({});
     expect(stamps.get('cc')).toBe(1);
-    // Seventeen other surfaces' listings push this one's numbering out of its store.
-    for (let i = 0; i < 17; i++) await tool('browser_snapshot')({ surfaceId: `other-${i}` });
+    // Other surfaces' listings push this one's numbering out of its store.
+    for (let i = 0; i < MAX_SURFACES + 1; i++) await tool('browser_snapshot')({ surfaceId: `other-${i}` });
     elements = ['cc', 'added'];
+    mockSendRpc.mockClear();
     const text = textOf(await tool('browser_snapshot')({}));
+    const top = String(calls('browser.evaluate').find((p) => !p.surfaceId)?.expression);
+    // The listing's own history is gone, and its numbering starts past the kept frame ref.
+    expect(top).toContain('const prior = [];');
+    expect(Number(/const seedNext = (\d+);/.exec(top)?.[1])).toBeGreaterThanOrEqual(2);
     const numbers = [...text.matchAll(/\[ref=(\d+)\]/g)].map((m) => Number(m[1]));
     expect(new Set(numbers).size).toBe(numbers.length);
     expect(text).toContain('[ref=1] input name="cc"');

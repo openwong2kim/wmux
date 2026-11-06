@@ -632,6 +632,10 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           // via the shared buildDomSnapshotExpression() helper — filter honored,
           // aria noted, same as there (#1066).
           const domKey = domListingKey(scope, undefined);
+          // Frame refs this surface still holds outlive the listing's own
+          // count, which can be dropped: the top document never takes them.
+          const keptFrameRefs = rpcFrameRefsFor(browserScopeKey(scope));
+          for (const ref of keptFrameRefs.keys()) reserveRefs(domKey, 0, ref + 1);
           const result = await sendScopedBrowserRpc<{ value: unknown }>('browser.evaluate', scope, {
             expression: buildDomSnapshotExpression(undefined, {
               ...(filter && { filter }),
@@ -653,7 +657,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             topOrigin: topListingOrigin(text),
             budget: windowBudget(),
             nextRef: nextRefFor(domKey, 0),
-            prior: rpcFrameRefsFor(browserScopeKey(scope)),
+            prior: keptFrameRefs,
             topRefs: new Set(payload.entries.map((e) => e.ref)),
             listFrames: async () =>
               (await sendScopedBrowserRpc<{ frames?: RpcFrameInfo[] }>('browser.frames.tree', scope, {})).frames ?? [],

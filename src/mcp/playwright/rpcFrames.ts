@@ -174,19 +174,24 @@ function carryUnlisted(
 const LINE_REF = /^\s*\[ref=(\d+)\]/;
 
 export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpcFramesResult> {
+  // New numbers start past every frame ref kept: the listing's own count can
+  // have been dropped while those refs live on, and a reissued one would point
+  // two elements at the same number. Every return reports it.
+  const prior = new Map<number, RpcFrameRef>();
+  let seed = opts.nextRef;
+  for (const [ref, r] of opts.prior ?? []) {
+    if (opts.topRefs?.has(ref)) continue;
+    prior.set(ref, r);
+    if (ref + 1 > seed) seed = ref + 1;
+  }
   let frames: RpcFrameInfo[];
   try {
     frames = await opts.listFrames();
   } catch {
     // An app that cannot list frames (an older main) leaves the listing as it was.
-    return EMPTY(opts.nextRef);
+    return EMPTY(seed);
   }
-  if (frames.length === 0) return EMPTY(opts.nextRef);
-  const prior = new Map([...(opts.prior ?? [])].filter(([ref]) => !opts.topRefs?.has(ref)));
-  // New numbers start past every frame ref kept: the listing's own count can
-  // have been dropped while those refs live on, and a reissued one would point
-  // two elements at the same number.
-  const seed = Math.max(opts.nextRef, ...[...prior.keys()].map((ref) => ref + 1));
+  if (frames.length === 0) return EMPTY(seed);
 
   // Charged in UTF-8 bytes, which bound characters too, against what the top
   // document left of the window it is served in: nothing a frame adds can be
