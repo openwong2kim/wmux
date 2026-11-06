@@ -74,6 +74,11 @@ export class CdpPipeEndpoint {
       server.once('error', reject);
       server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve(); });
     });
+    // From here on a server error is logged, never thrown at main (an 'error'
+    // with no listener is an uncaught exception). Never with the URL.
+    server.on('error', (err) => console.warn('[CdpPipeEndpoint] server error:', err.message));
+    // A client that sends something that is not HTTP is dropped.
+    server.on('clientError', (_err, socket) => socket.destroy());
     const { port } = server.address() as AddressInfo;
     const endpoint = new CdpPipeEndpoint(server, wss, Buffer.from(path), `ws://127.0.0.1:${port}${path}`);
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {

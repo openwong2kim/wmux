@@ -119,6 +119,17 @@ describe('CdpPipeEndpoint', () => {
     await vi.waitFor(async () => { (await dial(endpoint.url)).close(); }, { timeout: 5_000 });
   });
 
+  it('a server error after it is listening is logged, not thrown, and a client sending garbage is dropped', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { endpoint } = await setup();
+    const server = (endpoint as unknown as { server: import('node:http').Server }).server;
+    expect(() => server.emit('error', new Error('EMFILE'))).not.toThrow();
+    expect(warn).toHaveBeenCalledWith('[CdpPipeEndpoint] server error:', 'EMFILE');
+    expect(await rawStatus(Number(new URL(endpoint.url).port), '\x00\x01 not http at all\r\n\r\n')).toBe('closed');
+    // Still serving.
+    (await dial(endpoint.url)).close();
+  });
+
   it('drops a connection whose headers never finish', async () => {
     const { endpoint } = await setup({ headerTimeoutMs: 200 });
     const started = Date.now();
