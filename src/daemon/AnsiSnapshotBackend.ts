@@ -2,6 +2,7 @@ import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import type { SnapshotOutcome, SnapshotRequest } from './HeadlessSnapshot';
 import { generateRustSnapshot } from './RustSnapshot';
 import { withSnapshotShadow } from './SnapshotShadow';
+import { countReason, refusalFamily, type SnapshotReasons } from './snapshotBackendReasons';
 
 type Reference = (req: SnapshotRequest) => Promise<SnapshotOutcome>;
 type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'limits' | 'state' | 'circuit-open';
@@ -9,13 +10,15 @@ interface Diagnostics {
   native: number;
   fallbacks: number;
   skipped: number;
+  /** Each fallback and skip, by reason (a native refusal by its `unsupported-*` family). */
+  reasons: SnapshotReasons;
   last?: { backend: 'rust' | 'xterm'; reason: Reason };
 }
-const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0 };
+const diagnostics: Diagnostics = { native: 0, fallbacks: 0, skipped: 0, reasons: {} };
 let failedModule: { path: string | undefined } | undefined;
 
 export function getAnsiSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean } {
-  return { ...diagnostics, last: diagnostics.last && { ...diagnostics.last },
+  return { ...diagnostics, reasons: { ...diagnostics.reasons }, last: diagnostics.last && { ...diagnostics.last },
     circuitOpen: !!failedModule && failedModule.path === (process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE) };
 }
 
@@ -54,6 +57,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   const skip = !eligible(input) ? 'limits' : failedModule ? 'circuit-open' : undefined;
   if (skip) {
     diagnostics.skipped++;
+    countReason(diagnostics.reasons, skip);
     diagnostics.last = { backend: 'xterm', reason: skip };
     return xterm(input);
   }
@@ -74,6 +78,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
     return chunks;
   });
   let failure: Reason = 'error';
+  let refusal: string | undefined;
   try {
     // Half of the caller's total budget stays reserved for the fallback.
     const native = await generateRustSnapshot({ ...input, drainQueue: record, budgetMs: budget / 2 }, 'ansi');
@@ -87,9 +92,11 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
       // margins and an oversized partial tail fail the reference identically.
       if (native.reason === 'margins' || native.reason === 'partial-tail-overflow') {
         diagnostics.fallbacks++;
+        countReason(diagnostics.reasons, native.reason);
         diagnostics.last = { backend: 'rust', reason: 'unsupported' };
         return native;
       }
+      refusal = native.detail;
       if (native.reason === 'budget') failure = 'budget';
       // The native terminal refuses a stream or grid it cannot replay as
       // xterm would (a divergent control, a reflow, the history cap): the
@@ -100,6 +107,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   } catch { /* Module or disposal errors also use the intact xterm input. */ }
   if (failure === 'error') failedModule = { path: modulePath };
   diagnostics.fallbacks++;
+  countReason(diagnostics.reasons, failure === 'state' || failure === 'unsupported' ? refusalFamily(refusal, failure) : failure);
   diagnostics.last = { backend: 'xterm', reason: failure };
   const remaining = budget - (performance.now() - started);
   if (remaining <= 0) return overBudget();

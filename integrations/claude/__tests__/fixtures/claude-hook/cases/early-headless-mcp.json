@@ -1,0 +1,48 @@
+{
+  "description": "The mcp entrypoint is headless too.",
+  "env": {
+    "CLAUDE_CODE_ENTRYPOINT": "mcp"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "UserPromptSubmit"
+      ],
+      "stdin": {
+        "hold": true
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "headless-skipped",
+            "entrypoint": "mcp"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

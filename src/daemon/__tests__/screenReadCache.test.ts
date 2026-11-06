@@ -4,9 +4,30 @@
 // failed read leaving nothing behind, the bound on kinds kept per session, and
 // the counters the daemon's diagnostics report.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { fencedRead, resetScreenReadCounters, screenReadCounters } from '../screenReadCache';
+import { fencedRead, noteScreenParse, resetScreenReadCounters, screenParseCounters, screenReadCounters } from '../screenReadCache';
 
 const keep = (fence: string) => () => fence;
+
+describe('screen parse counters', () => {
+  beforeEach(() => resetScreenReadCounters());
+
+  it('count a parse by family, with text reads reduced to depth buckets', () => {
+    noteScreenParse('screen:plain', 40, 100);
+    noteScreenParse('screen:undimmed', 60, 300);
+    noteScreenParse('pane', 10, 50);
+    noteScreenParse('text:160', 5, 1);
+    noteScreenParse('text:300', 5, 1);
+    noteScreenParse('text:2000', 7, 2);
+    noteScreenParse('text:5000', 9, 3);
+    expect(screenParseCounters()).toEqual({
+      screen: { parses: 2, msTotal: 100, msMax: 60, bytes: 400 },
+      pane: { parses: 1, msTotal: 10, msMax: 10, bytes: 50 },
+      'text<=300': { parses: 2, msTotal: 10, msMax: 5, bytes: 2 },
+      'text<=2000': { parses: 1, msTotal: 7, msMax: 7, bytes: 2 },
+      'text>2000': { parses: 1, msTotal: 9, msMax: 9, bytes: 3 },
+    });
+  });
+});
 
 describe('fencedRead', () => {
   beforeEach(() => resetScreenReadCounters());
