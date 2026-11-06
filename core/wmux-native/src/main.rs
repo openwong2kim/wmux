@@ -1,10 +1,14 @@
 //! wmux-native: standalone native helpers for wmux.
 //!
 //!   wmux-native hook <flavour> [<Event>]   the Claude-compatible hook bridge
-//!   wmux-native --version
+//!   wmux-native --version | --help
 //!
 //! Each subcommand owns its own contract; `hook` never writes stdout and
 //! always exits 0. More subcommands (an MCP shim) slot in beside it.
+//!
+//! Any other argv also exits 0, with the usage on stderr: hook hosts read
+//! exit 2 as "block this action", so a typo, a non-UTF-8 argument or a newer
+//! subcommand run by an older copy must never produce it.
 
 mod hook;
 mod js;
@@ -16,7 +20,7 @@ mod rpc;
 /// binary by this text, as it does the bridge script by its first line.
 pub const MARKER: &str = "wmux-managed: native-hooks";
 
-const USAGE: &str = "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native --version\n";
+const USAGE: &str = "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native --version | --help\n";
 
 fn main() {
     // A panic must not print: hook output is read by the agent.
@@ -32,9 +36,7 @@ fn main() {
         Some("--version") => {
             println!("wmux-native {} ({MARKER})", env!("CARGO_PKG_VERSION"));
         }
-        _ => {
-            eprint!("{USAGE}");
-            std::process::exit(2);
-        }
+        Some("--help") => print!("{USAGE}"),
+        _ => eprint!("{USAGE}"),
     }
 }

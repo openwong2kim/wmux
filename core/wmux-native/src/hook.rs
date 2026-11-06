@@ -241,7 +241,8 @@ pub enum Field {
 }
 
 /// logEvent. Never logs a payload field; `extra` is built here only. The
-/// `runtime` key is the one addition, so a log shows which bridge ran.
+/// `runtime` key is an addition, so a log shows which bridge ran. Equivalent
+/// to the Node line, not byte-for-byte: see the parity suite's header.
 pub fn log_event(flavour: Option<&Flavour>, outcome: &str, extra: Vec<(&str, Option<Field>)>) {
     let mut line = String::from("{\"ts\":");
     js::quote_str(&iso_time(now_ms()), &mut line);

@@ -36,6 +36,8 @@ export interface LifecycleAssetSpec {
   ownershipMarkers: readonly string[];
   /** Runtime modules installed beside this entry point before it is registered. */
   dependencies?: readonly LifecycleAssetSpec[];
+  /** File mode of the installed copy, from the moment it appears. Default 0o600. */
+  mode?: number;
 }
 
 export interface LifecycleAssetStatus {
@@ -55,38 +57,45 @@ function isMissingError(error: unknown): boolean {
 
 /** Read-only freshness/ownership check. Never creates a directory or throws. */
 export function inspectLifecycleAsset(spec: LifecycleAssetSpec): LifecycleAssetStatus {
+  return inspectAsset(spec).status;
+}
+
+/** The check, plus the source bytes it read, so an install reads them once. */
+function inspectAsset(spec: LifecycleAssetSpec): { status: LifecycleAssetStatus; source?: Buffer } {
   const base = {
     sourcePath: spec.sourcePath,
     destinationPath: spec.destinationPath,
     error: null,
   };
   if (!spec.sourcePath || !fs.existsSync(spec.sourcePath)) {
-    return { ...base, state: 'source-missing' };
+    return { status: { ...base, state: 'source-missing' } };
   }
 
   let source: Buffer;
   try {
     source = fs.readFileSync(spec.sourcePath);
   } catch (error) {
-    return { ...base, state: 'error', error: String(error) };
+    return { status: { ...base, state: 'error', error: String(error) } };
   }
 
   let destination: Buffer;
   try {
     destination = fs.readFileSync(spec.destinationPath);
   } catch (error) {
-    if (isMissingError(error)) return { ...base, state: 'missing' };
-    return { ...base, state: 'error', error: String(error) };
+    if (isMissingError(error)) return { status: { ...base, state: 'missing' }, source };
+    return { status: { ...base, state: 'error', error: String(error) } };
   }
 
   for (const dependency of spec.dependencies ?? []) {
     const status = inspectLifecycleAsset(dependency);
-    if (status.state !== 'current') return { ...base, state: status.state === 'missing' ? 'stale' : status.state, error: status.error };
+    if (status.state !== 'current') {
+      return { status: { ...base, state: status.state === 'missing' ? 'stale' : status.state, error: status.error }, source };
+    }
   }
-  if (source.equals(destination)) return { ...base, state: 'current' };
+  if (source.equals(destination)) return { status: { ...base, state: 'current' } };
   const destinationText = destination.toString('utf8');
   const owned = spec.ownershipMarkers.some((marker) => destinationText.includes(marker));
-  return { ...base, state: owned ? 'stale' : 'foreign' };
+  return { status: { ...base, state: owned ? 'stale' : 'foreign' }, source };
 }
 
 /**
@@ -101,19 +110,18 @@ export function installLifecycleAsset(spec: LifecycleAssetSpec): LifecycleAssetI
       state: outcome.state, error: outcome.error, action: 'none',
     };
   }
-  const before = inspectLifecycleAsset(spec);
-  if (before.state !== 'missing' && before.state !== 'stale') {
+  const { status: before, source } = inspectAsset(spec);
+  if ((before.state !== 'missing' && before.state !== 'stale') || !source) {
     return { ...before, action: 'none' };
   }
 
   try {
-    const source = fs.readFileSync(spec.sourcePath as string);
     const destinationDir = path.dirname(spec.destinationPath);
     if (!fs.existsSync(destinationDir)) {
       fs.mkdirSync(destinationDir, { recursive: true, mode: 0o700 });
     }
     const tempPath = `${spec.destinationPath}.${process.pid}-${randomBytes(6).toString('hex')}.tmp`;
-    fs.writeFileSync(tempPath, source, { mode: 0o600 });
+    fs.writeFileSync(tempPath, source, { mode: spec.mode ?? 0o600 });
     try {
       fs.renameSync(tempPath, spec.destinationPath);
     } catch (error) {

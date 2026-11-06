@@ -1,7 +1,8 @@
 name: Native hooks
 # wmux-native (core/wmux-native): build it on every platform wmux ships, run
-# its unit tests, and hold `wmux-native hook` byte-for-byte to the shared Node
-# bridge with the parity suite, which must run here (not skip).
+# its unit tests, and hold `wmux-native hook` to the shared Node bridge with
+# the parity suite (envelope byte-for-byte, logs equivalent), which must run
+# here (not skip).
 on:
   pull_request:
     paths:

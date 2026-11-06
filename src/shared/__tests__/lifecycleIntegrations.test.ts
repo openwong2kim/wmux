@@ -130,6 +130,17 @@ describe('installLifecycleAsset — atomic install with foreign preservation', (
     expect(fs.readFileSync(dest, 'utf8')).toBe(SOURCE_TEXT);
   });
 
+  // An executable asset (the native hook bridge) must be runnable from the
+  // moment it appears under its name; the default stays owner read/write.
+  it.skipIf(path.sep !== '/')('writes the destination with the spec mode, else 0600', () => {
+    const plain = path.join(home, 'plain.mjs');
+    installLifecycleAsset(specWithSource(SOURCE_TEXT, plain));
+    expect(fs.statSync(plain).mode & 0o777).toBe(0o600);
+    const exe = path.join(home, 'tool');
+    installLifecycleAsset({ ...specWithSource(SOURCE_TEXT, exe), mode: 0o700 });
+    expect(fs.statSync(exe).mode & 0o777).toBe(0o700);
+  });
+
   it('is a no-op (action=none) when already current', () => {
     const dest = path.join(home, 'dest.mjs');
     const spec = specWithSource(SOURCE_TEXT, dest);

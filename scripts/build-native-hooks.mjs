@@ -6,8 +6,11 @@
 //   node scripts/build-native-hooks.mjs
 //
 // The crate has no dependencies, so the stage holds the binary and a manifest
-// naming the platform it was built for (forge refuses a package for another).
+// naming the platform it was built for and a hash of the sources it was built
+// from. forge refuses a stage for another platform, or from other sources than
+// the checkout's.
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -31,6 +34,43 @@ export function nativeHooksBinary(platform) {
 /** The marker main.rs prints with --version; the installer matches it in the bytes. */
 export const NATIVE_HOOKS_MARKER = 'wmux-managed: native-hooks';
 
+/**
+ * A hash of everything the binary is built from: the crate's src/ tree, its
+ * flavour table, Cargo.toml and Cargo.lock. Paths are hashed with the bytes,
+ * so a moved or added file changes it too.
+ */
+export function nativeHooksSourceHash(root) {
+  const crate = path.join(root, 'core', 'wmux-native');
+  const files = ['flavours.json', 'Cargo.toml', 'Cargo.lock'];
+  const walk = (rel) => {
+    for (const entry of fs.readdirSync(path.join(crate, rel), { withFileTypes: true })) {
+      const child = path.posix.join(rel, entry.name);
+      if (entry.isDirectory()) walk(child);
+      else files.push(child);
+    }
+  };
+  walk('src');
+  const hash = createHash('sha256');
+  for (const rel of files.sort()) {
+    hash.update(`${rel}\0`).update(fs.readFileSync(path.join(crate, ...rel.split('/')))).update('\0');
+  }
+  return hash.digest('hex');
+}
+
+/** Why `stageDir` must not be packaged from this checkout, or null when it may. */
+export function nativeHooksStageProblem(root, stageDir) {
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(stageDir, 'manifest.json'), 'utf8'));
+  } catch (error) {
+    return `${stageDir} has no readable manifest (${error}); rerun node scripts/build-native-hooks.mjs`;
+  }
+  if (manifest.sourceHash !== nativeHooksSourceHash(root)) {
+    return `${stageDir} was built from other sources than core/wmux-native in this checkout; rerun node scripts/build-native-hooks.mjs`;
+  }
+  return null;
+}
+
 function main() {
   const root = fileURLToPath(new URL('..', import.meta.url));
   const crate = path.join(root, 'core', 'wmux-native');
@@ -52,7 +92,8 @@ function main() {
   for (const name of fs.readdirSync(stage)) fs.unlinkSync(path.join(stage, name));
   fs.copyFileSync(built, path.join(stage, binary));
   fs.chmodSync(path.join(stage, binary), 0o755);
-  fs.writeFileSync(path.join(stage, 'manifest.json'), JSON.stringify({ platform: process.platform, arch: process.arch, target, binary }, null, 2) + '\n');
+  const manifest = { platform: process.platform, arch: process.arch, target, binary, sourceHash: nativeHooksSourceHash(root) };
+  fs.writeFileSync(path.join(stage, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
   console.log(`[build-native-hooks] staged ${path.relative(root, path.join(stage, binary))} (${target})`);
 }
 

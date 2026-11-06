@@ -1,8 +1,8 @@
 //! The slice of JavaScript value semantics the hook bridge depends on.
 //!
 //! The Node bridge reads stdin with `Buffer#toString('utf8')`, `String#trim`
-//! and `JSON.parse`, and writes with `JSON.stringify`. Matching it byte for byte
-//! means matching those, including where they differ from serde-style JSON:
+//! and `JSON.parse`, and writes with `JSON.stringify`. Matching its envelope
+//! byte for byte (and its logs in substance) means matching those, including where they differ from serde-style JSON:
 //! strings are UTF-16 (a lone surrogate parses and is re-escaped as `\udXXX`),
 //! `trim` has its own whitespace set, duplicate keys keep the first position
 //! with the last value, and nesting depth is unbounded. So strings here are

@@ -246,8 +246,20 @@ describe.skipIf(!NATIVE_BYTES)('native bridge command form', () => {
         sourcePath: staged,
         destinationPath: path.join(home, '.wmux', 'hooks', exe),
         ownershipMarkers: ['wmux-managed: native-hooks'],
+        mode: 0o700,
       },
     };
+  });
+
+  it('resolves the copy as executable by its owner only', () => {
+    const cliDir = path.join(home, 'app', 'resources', 'cli-bundle');
+    fs.mkdirSync(cliDir, { recursive: true });
+    expect(resolveCompatHookPaths(home, cliDir, {}).nativeHooks).toEqual({
+      sourcePath: staged,
+      destinationPath: path.join(home, '.wmux', 'hooks', exe),
+      ownershipMarkers: ['wmux-managed: native-hooks'],
+      mode: 0o700,
+    });
   });
 
   it('finds the staged binary from the packaged CLI directory', () => {
@@ -255,6 +267,45 @@ describe.skipIf(!NATIVE_BYTES)('native bridge command form', () => {
     fs.mkdirSync(cliDir, { recursive: true });
     expect(findNativeHooksSource(cliDir)).toBe(staged);
     expect(findNativeHooksSource(path.join(home, 'elsewhere'))).toBeNull();
+  });
+
+  it('finds the stage of a source checkout from its root or its dist/cli-bundle', () => {
+    const repo = path.join(home, 'repo');
+    const stage = path.join(repo, 'dist', 'native-hooks', exe);
+    fs.mkdirSync(path.dirname(stage), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'core', 'wmux-native'), { recursive: true });
+    fs.mkdirSync(path.join(repo, 'dist', 'cli-bundle'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'core', 'wmux-native', 'Cargo.toml'), '');
+    fs.writeFileSync(stage, 'x');
+    expect(findNativeHooksSource(repo)).toBe(stage);
+    expect(findNativeHooksSource(path.join(repo, 'dist', 'cli-bundle'))).toBe(stage);
+  });
+
+  // The installer copies and runs what it finds, so only the two known roots
+  // count: nothing planted further up the tree is ever picked up.
+  it('ignores a binary planted in an ancestor directory', () => {
+    const deep = path.join(home, 'a', 'b', 'c');
+    fs.mkdirSync(deep, { recursive: true });
+    for (const dir of [home, path.join(home, 'a'), path.join(home, 'a', 'b')]) {
+      fs.mkdirSync(path.join(dir, 'native-hooks'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'native-hooks', exe), 'planted');
+      fs.mkdirSync(path.join(dir, 'dist', 'native-hooks'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'dist', 'native-hooks', exe), 'planted');
+    }
+    expect(findNativeHooksSource(deep)).toBeNull();
+    // A resources directory is only trusted from the CLI bundle inside it.
+    const notCli = path.join(home, 'app', 'resources', 'something-else');
+    fs.mkdirSync(notCli, { recursive: true });
+    expect(findNativeHooksSource(notCli)).toBeNull();
+  });
+
+  it('says which command the entries run, and why', () => {
+    expect(installCompatHooks('copilot', paths).nativeSummary).toMatch(/not shipped with this build.*node/);
+    const installed = installCompatHooks('copilot', withNative);
+    const dest = path.join(home, '.wmux', 'hooks', exe);
+    expect(installed.nativeSummary).toBe(`native hook bridge: installed → ${dest}; hooks run it`);
+    expect(statusCompatHooks('copilot', withNative).nativeSummary).toBe(`native hook bridge: ${dest} (up to date); hooks run it`);
+    expect(statusCompatHooks('copilot', paths).nativeSummary).toBe('native hook bridge: not shipped with this build; hooks run `node <bridge>`');
   });
 
   it('writes entries that exec the installed native copy', () => {
@@ -294,6 +345,9 @@ describe.skipIf(!NATIVE_BYTES)('native bridge command form', () => {
     fs.writeFileSync(staged, 'not a program, though it says wmux-managed: native-hooks');
     const outcome = installCompatHooks('copilot', withNative);
     expect(outcome).toMatchObject({ ok: true, action: 'installed', native: { state: 'error' } });
+    expect(outcome.nativeSummary).toMatch(/not used \(.*does not run.*\).*node/);
+    // The copy that does not run is not left behind for status to mistake.
+    expect(fs.existsSync(path.join(home, '.wmux', 'hooks', exe))).toBe(false);
     expect(readConfig()).toEqual(buildOwnedHookFile('copilot', paths.bridge.destinationPath));
     expect(statusCompatHooks('copilot', withNative).config).toBe('current');
   });
@@ -305,5 +359,49 @@ describe.skipIf(!NATIVE_BYTES)('native bridge command form', () => {
       fs.writeFileSync(configFile(), JSON.stringify({ version: 1, hooks: { Stop: [{ type: 'command', exec: dest, args, timeoutSec: 5 }] } }));
       expect(installCompatHooks('copilot', withNative).before, args.join(' ')).toBe('foreign');
     }
+  });
+});
+
+// What install may do before it has decided to write anything, and what
+// status and remove may never do: run the binary. A script stands in for it
+// and counts its runs.
+describe.skipIf(process.platform === 'win32')('native bridge side effects', () => {
+  let counter: string;
+  let withNative: CompatHookPaths;
+  const dest = () => path.join(home, '.wmux', 'hooks', NATIVE_EXE);
+  const runs = () => (fs.existsSync(counter) ? fs.readFileSync(counter, 'utf8').length : 0);
+
+  beforeEach(() => {
+    counter = path.join(home, 'runs');
+    const staged = path.join(home, 'app', 'resources', 'native-hooks', NATIVE_EXE);
+    fs.mkdirSync(path.dirname(staged), { recursive: true });
+    fs.writeFileSync(staged, `#!/bin/sh\nprintf x >> '${counter}'\necho 'wmux-native 0.0.0 (wmux-managed: native-hooks)'\n`, { mode: 0o755 });
+    withNative = {
+      ...paths,
+      nativeHooks: { sourcePath: staged, destinationPath: dest(), ownershipMarkers: ['wmux-managed: native-hooks'], mode: 0o700 },
+    };
+  });
+
+  it('decides a foreign config before copying or running the binary', () => {
+    fs.mkdirSync(path.dirname(configFile()), { recursive: true });
+    fs.writeFileSync(configFile(), JSON.stringify({ version: 1, hooks: { Stop: [{ type: 'command', bash: './mine.sh' }] } }));
+    expect(installCompatHooks('copilot', withNative)).toMatchObject({ ok: false, before: 'foreign' });
+    expect(fs.existsSync(dest())).toBe(false);
+    expect(runs()).toBe(0);
+  });
+
+  it('copies nothing when the Node bridge cannot be installed', () => {
+    const missing = { ...withNative, bridge: { ...withNative.bridge, sourcePath: null } };
+    expect(installCompatHooks('copilot', missing).ok).toBe(false);
+    expect(fs.existsSync(dest())).toBe(false);
+    expect(runs()).toBe(0);
+  });
+
+  it('runs the binary once to install it, and never for status or remove', () => {
+    expect(installCompatHooks('copilot', withNative).native?.state).toBe('current');
+    expect(runs()).toBe(1);
+    expect(statusCompatHooks('copilot', withNative).config).toBe('current');
+    expect(removeCompatHooks('copilot', withNative).removed).toBe(true);
+    expect(runs()).toBe(1);
   });
 });

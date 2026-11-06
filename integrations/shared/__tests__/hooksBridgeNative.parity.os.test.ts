@@ -1,10 +1,16 @@
-// Byte-for-byte parity: `wmux-native hook` against the shared Node bridge.
+// Parity: `wmux-native hook` against the shared Node bridge. The envelope is
+// byte-for-byte; the logs are equivalent.
 //
 // Every fixture runs twice, once per runtime, against the same fake wmux pipes
 // in the same throwaway home. The test compares the exact bytes of each request
 // line the pipes receive (method, envelope, token, clientName; only the random
-// request-id suffix and the envelope timestamp are masked), the log outcome
-// each run writes, stdout (always empty) and the exit code (always 0).
+// request-id suffix and the envelope timestamp are masked), the log entries
+// each run writes as parsed JSON, stdout (always empty) and the exit code
+// (always 0). Log lines are not byte-for-byte: native adds `runtime`, keeps a
+// reply object's integer-like keys in arrival order (JS lists them first), and
+// gives up on a reply value nested past 1000 levels where V8's own limit
+// differs; some error `detail` strings differ too (an OS message where libuv
+// has a code name).
 //
 // The binary is WMUX_NATIVE_HOOKS_BIN, else the newest of the staged
 // dist/native-hooks copy and the cargo builds under core/wmux-native/target.

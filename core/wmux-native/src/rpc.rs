@@ -105,24 +105,52 @@ fn exchange(pipe: &str, line: &str, id: &[u16], gate: &Mutex<Gate>) -> Json {
     if let Err(e) = stream.write_all(line.as_bytes()).and_then(|_| stream.flush()) {
         return failure("connect-error", Some(transport::code(&e)), Some(false));
     }
-    let mut buffer: Vec<u8> = Vec::new();
+    let mut lines = LineBuffer::default();
     let mut chunk = [0u8; 16 * 1024];
     loop {
-        match stream.read(&mut chunk) {
+        let n = match stream.read(&mut chunk) {
             Ok(0) => return failure("closed-without-response", None, Some(false)),
-            Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+            Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => return failure("connect-error", Some(transport::code(&e)), Some(false)),
-        }
+        };
         // Match OUR response by id: the daemon pipe broadcasts id-less events.
-        while let Some(nl) = buffer.iter().position(|&b| b == b'\n') {
-            let raw: Vec<u8> = buffer.drain(..=nl).collect();
-            let text = js::js(&String::from_utf8_lossy(&raw[..raw.len() - 1]));
-            let Ok(parsed) = js::parse(&text) else { continue };
+        for line in lines.push(&chunk[..n]) {
+            let Ok(parsed) = js::parse(&js::js(&String::from_utf8_lossy(&line))) else {
+                continue;
+            };
             if parsed.get("id").and_then(Json::as_str).is_some_and(|x| x == id) {
                 return parsed;
             }
         }
+    }
+}
+
+/// Newline-delimited frames from a byte stream. Each byte is scanned once:
+/// `scanned` remembers how far the unfinished tail has been searched.
+#[derive(Default)]
+struct LineBuffer {
+    buffer: Vec<u8>,
+    scanned: usize,
+}
+
+impl LineBuffer {
+    /// Append a chunk and return the lines it completed, without their `\n`.
+    fn push(&mut self, chunk: &[u8]) -> Vec<Vec<u8>> {
+        self.buffer.extend_from_slice(chunk);
+        let mut lines = Vec::new();
+        let mut start = 0;
+        while let Some(at) = self.buffer[self.scanned..].iter().position(|&b| b == b'\n') {
+            let end = self.scanned + at;
+            lines.push(self.buffer[start..end].to_vec());
+            start = end + 1;
+            self.scanned = start;
+        }
+        if start > 0 {
+            self.buffer.drain(..start);
+        }
+        self.scanned = self.buffer.len();
+        lines
     }
 }
 
@@ -296,6 +324,37 @@ mod transport {
     }
 }
 
+/// libuv's uv_translate_sys_error for the Win32 errors a pipe connect, write
+/// or read can return (what Node puts in `err.code`). ERROR_BROKEN_PIPE is
+/// end of file, not an error, on this path.
+#[cfg(any(windows, test))]
+fn win32_code_name(code: i32) -> Option<&'static str> {
+    Some(match code {
+        1 => "EISDIR",              // ERROR_INVALID_FUNCTION
+        2 | 3 => "ENOENT",          // ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
+        4 => "EMFILE",              // ERROR_TOO_MANY_OPEN_FILES
+        5 => "EPERM",               // ERROR_ACCESS_DENIED
+        6 => "EBADF",               // ERROR_INVALID_HANDLE
+        8 | 14 => "ENOMEM",         // ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY
+        32 => "EBUSY",              // ERROR_SHARING_VIOLATION
+        64 => "ECONNRESET",         // ERROR_NETNAME_DELETED
+        87 => "EINVAL",             // ERROR_INVALID_PARAMETER
+        121 => "ETIMEDOUT",         // ERROR_SEM_TIMEOUT
+        123 | 161 => "ENOENT",      // ERROR_INVALID_NAME, ERROR_BAD_PATHNAME
+        206 => "ENAMETOOLONG",      // ERROR_FILENAME_EXCED_RANGE
+        230 | 232 | 233 => "EPIPE", // ERROR_BAD_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED
+        231 => "EBUSY",             // ERROR_PIPE_BUSY
+        267 => "ENOENT",            // ERROR_DIRECTORY
+        995 => "ECANCELED",         // ERROR_OPERATION_ABORTED
+        1225 => "ECONNREFUSED",     // ERROR_CONNECTION_REFUSED
+        1314 => "EPERM",            // ERROR_PRIVILEGE_NOT_HELD
+        1920 => "EACCES",           // ERROR_CANT_ACCESS_FILE
+        1921 => "ELOOP",            // ERROR_CANT_RESOLVE_FILENAME
+        10054 => "ECONNRESET",      // WSAECONNRESET
+        _ => return None,
+    })
+}
+
 #[cfg(windows)]
 mod transport {
     use std::fs::{File, OpenOptions};
@@ -324,7 +383,7 @@ mod transport {
                 Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => std::thread::sleep(Duration::from_millis(10)),
                 Ok(file) => {
                     // SAFETY: the handle is owned by `file` and valid for this call.
-                    let kind = unsafe { GetFileType(file.as_raw_handle() as *mut core::ffi::c_void) };
+                    let kind = unsafe { GetFileType(file.as_raw_handle()) };
                     if kind != FILE_TYPE_PIPE {
                         return Err(std::io::Error::from_raw_os_error(ERROR_INVALID_FUNCTION));
                     }
@@ -337,25 +396,64 @@ mod transport {
 
     /// libuv's translation of a Win32 error (what Node puts in `err.code`).
     pub fn code(e: &std::io::Error) -> String {
-        let Some(n) = e.raw_os_error() else {
-            return e.to_string();
-        };
-        let name = match n {
-            2 | 3 => "ENOENT",
-            5 => "EPERM",
-            121 => "ETIMEDOUT",
-            232 | 233 => "EPIPE",
-            1225 => "ECONNREFUSED",
-            10054 => "ECONNRESET",
-            _ => return e.to_string(),
-        };
-        name.into()
+        match e.raw_os_error().and_then(super::win32_code_name) {
+            Some(name) => name.into(),
+            None => e.to_string(),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_buffer_slices_lines_across_chunks() {
+        let mut lines = LineBuffer::default();
+        assert!(lines.push(b"{\"a\"").is_empty());
+        assert!(lines.push(b":1}").is_empty());
+        assert_eq!(
+            lines.push(b"\nx\n{\"b\":2}\r\n{\"c"),
+            vec![b"{\"a\":1}".to_vec(), b"x".to_vec(), b"{\"b\":2}\r".to_vec()]
+        );
+        assert_eq!(lines.push(b"\"}\n"), vec![b"{\"c\"}".to_vec()]);
+    }
+
+    #[test]
+    fn line_buffer_scans_each_byte_once() {
+        let mut lines = LineBuffer::default();
+        let chunk = vec![b'x'; 16 * 1024];
+        for _ in 0..64 {
+            assert!(lines.push(&chunk).is_empty());
+        }
+        // Everything was scanned once, nothing twice.
+        assert_eq!(lines.scanned, 64 * 16 * 1024);
+        assert_eq!(lines.push(b"\n").len(), 1);
+        assert_eq!(lines.scanned, 0);
+    }
+
+    #[test]
+    fn win32_codes_match_libuv() {
+        for (code, name) in [
+            (2, "ENOENT"),
+            (3, "ENOENT"),
+            (5, "EPERM"),
+            (64, "ECONNRESET"),
+            (121, "ETIMEDOUT"),
+            (123, "ENOENT"),
+            (161, "ENOENT"),
+            (206, "ENAMETOOLONG"),
+            (231, "EBUSY"),
+            (232, "EPIPE"),
+            (233, "EPIPE"),
+            (1, "EISDIR"),
+            (1225, "ECONNREFUSED"),
+            (995, "ECANCELED"),
+        ] {
+            assert_eq!(win32_code_name(code), Some(name), "{code}");
+        }
+        assert_eq!(win32_code_name(99999), None);
+    }
 
     fn obj(s: &str) -> Json {
         js::parse(&js::js(s)).unwrap()
