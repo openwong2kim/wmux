@@ -447,27 +447,24 @@ fn the_permission_gate_answers_here() {
     let _ = std::fs::remove_file(&socket);
 }
 
-#[test]
-fn a_gate_block_is_exit_2_even_when_the_run_panics_or_stderr_is_gone() {
-    let case = with_token("gate-block");
-    let socket = stub_main("gate-block", r#"{"ok":true,"block":{"reason":"wait"}}"#);
+/// A gate block from a stub main: (case, the stub's socket).
+fn gate_block(tag: &str) -> (Case, String) {
+    let case = with_token(tag);
+    let socket = stub_main(tag, r#"{"ok":true,"block":{"reason":"wait"}}"#);
     // The gate is main's: main's token.
     std::fs::write(case.dir.join("home/.wmux-claude-hook-test-auth-token"), "m").unwrap();
+    (case, socket)
+}
+
+#[test]
+fn a_gate_block_is_exit_2_even_when_stderr_is_gone() {
+    let (case, socket) = gate_block("gate-block");
     let env = [("WMUX_PIPE_NAME", socket.as_str())];
     let out = case.run(&["Stop", "--gate"], &env, true, r#"{"session_id":"s1"}"#);
     assert_eq!(out.status.code(), Some(2));
     assert_eq!(String::from_utf8_lossy(&out.stderr), "wait\n");
     assert!(out.stdout.is_empty());
     assert_eq!(case.log(), ["ok", "gate-blocked"]);
-
-    // Test-only (debug builds): a panic right after the verdict.
-    let panics = [
-        ("WMUX_PIPE_NAME", socket.as_str()),
-        ("WMUX_CLAUDE_HOOK_PANIC_AFTER_VERDICT", "1"),
-    ];
-    let out = case.run(&["Stop", "--gate"], &panics, true, r#"{"session_id":"s1"}"#);
-    assert_eq!(out.status.code(), Some(2));
-    assert_eq!(case.log()[2..], ["ok", "gate-blocked", "uncaught"]);
 
     let (stderr, reader) = std::os::unix::net::UnixStream::pair().unwrap();
     drop(reader);
@@ -479,7 +476,22 @@ fn a_gate_block_is_exit_2_even_when_the_run_panics_or_stderr_is_gone() {
         Stdio::from(std::os::fd::OwnedFd::from(stderr)),
     );
     assert_eq!(out.status.code(), Some(2));
-    assert_eq!(case.log()[5..], ["ok", "gate-blocked", "stderr-lost"]);
+    assert_eq!(case.log()[2..], ["ok", "gate-blocked", "stderr-lost"]);
+    let _ = std::fs::remove_file(&socket);
+}
+
+/// The panic hook exists in debug builds only.
+#[cfg(debug_assertions)]
+#[test]
+fn a_gate_block_is_exit_2_even_when_the_run_panics_after_it() {
+    let (case, socket) = gate_block("gate-panic");
+    let env = [
+        ("WMUX_PIPE_NAME", socket.as_str()),
+        ("WMUX_CLAUDE_HOOK_PANIC_AFTER_VERDICT", "1"),
+    ];
+    let out = case.run(&["Stop", "--gate"], &env, true, r#"{"session_id":"s1"}"#);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(case.log(), ["ok", "gate-blocked", "uncaught"]);
     let _ = std::fs::remove_file(&socket);
 }
 
