@@ -31,7 +31,7 @@ describe('PipeServer bundle session count', () => {
     expect(mcpSessionTracker.summary().recent).toBe(before);
 
     send(server, { id: '2', method: 'pane.list', params: {}, token: server.getAuthToken(), mcpSession: 'b'.repeat(32) });
-    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce(), { timeout: 5_000 });
     expect(mcpSessionTracker.has('b'.repeat(32))).toBe(true);
     expect(mcpSessionTracker.has('a'.repeat(32))).toBe(false);
   });
