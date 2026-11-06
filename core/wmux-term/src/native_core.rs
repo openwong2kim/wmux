@@ -1240,6 +1240,8 @@ pub(crate) struct RingRange {
     pub evicted: Option<&'static str>,
     pub end: u64,
     pub size: Option<(u32, u32)>,
+    /// The offset of the mark `size` comes from.
+    pub size_at: Option<u64>,
     pub marks: Vec<(u64, u32, u32)>,
     pub clears: u32,
 }
@@ -1348,14 +1350,14 @@ impl NativeRing {
     #[napi(catch_unwind)]
     pub fn read_all_with_geometry(&mut self) -> NativeRingSnapshot {
         self.prune_geometry();
-        let start = self.total_written - self.length as u64;
-        let geometry = self.geometry.first().map(|first| NativeReplayGeometry {
+        let start = self.start();
+        let marks = self.replay_marks();
+        let geometry = marks.first().map(|first| NativeReplayGeometry {
             start: NativeGeometrySize {
                 cols: first.cols,
                 rows: first.rows,
             },
-            changes: self
-                .geometry
+            changes: marks
                 .iter()
                 .skip(1)
                 .map(|m| NativeGeometryChange {
@@ -1467,10 +1469,46 @@ impl NativeRing {
             evicted,
             end: self.total_written,
             size: governing.map(|i| (self.geometry[i].cols, self.geometry[i].rows)),
+            size_at: governing.map(|i| self.geometry[i].at),
             marks: self
                 .geometry
                 .iter()
                 .filter(|m| m.at >= from)
+                .map(|m| (m.at, m.cols, m.rows))
+                .collect(),
+            clears: self.clears,
+        })
+    }
+
+    /// The size marks a replay of the whole ring uses, as readAllWithGeometry
+    /// gives them: the first applies from the oldest byte (the mark in effect
+    /// there, or the first one after it when none is kept), the rest at their
+    /// offsets.
+    pub(crate) fn replay_marks(&self) -> &[GeometryMark] {
+        let start = self.start();
+        let first = self
+            .geometry
+            .iter()
+            .rposition(|m| m.at <= start)
+            .unwrap_or(0);
+        &self.geometry[first..]
+    }
+
+    /// What a reader starting at the oldest byte needs, by replay_marks: the
+    /// first as the start size, the rest as marks. Never evicted.
+    pub(crate) fn seed_range(&self) -> std::result::Result<RingRange, &'static str> {
+        if self.capacity == 0 {
+            return Err("Ring disposed");
+        }
+        let marks = self.replay_marks();
+        Ok(RingRange {
+            evicted: None,
+            end: self.total_written,
+            size: marks.first().map(|m| (m.cols, m.rows)),
+            size_at: marks.first().map(|m| m.at),
+            marks: marks
+                .iter()
+                .skip(1)
                 .map(|m| (m.at, m.cols, m.rows))
                 .collect(),
             clears: self.clears,

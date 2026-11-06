@@ -104,8 +104,8 @@ impl Screen {
     }
 
     /// Consume the ring from its oldest byte: `lead` first (the caller's mode
-    /// preamble and unknown-cell fill, as a replay starts), at the size in
-    /// effect there, then the ring's bytes as a read feeds them.
+    /// preamble and unknown-cell fill, as a replay starts), at the size a
+    /// replay starts at, then the ring's bytes as a read feeds them.
     pub(crate) fn seed(
         &mut self,
         ring: &NativeRing,
@@ -115,12 +115,11 @@ impl Screen {
             return Err("Live screen already seeded");
         }
         let start = ring.start();
-        let range = ring.range(start, None)?;
-        if let Some(reason) = range.evicted {
-            return Ok(ReadStatus::Rebuild(reason));
-        }
-        if let Some((cols, rows)) = range.size {
-            self.resize(cols, rows, start)?;
+        // The geometry a replay of the whole ring uses (readAllWithGeometry):
+        // its first mark from the oldest byte, wherever that mark is.
+        let range = ring.seed_range()?;
+        if let (Some((cols, rows)), Some(at)) = (range.size, range.size_at) {
+            self.resize(cols, rows, at)?;
         }
         self.feed = XtermFeed::live(start);
         self.feed.feed(&mut self.parser, &mut self.term, lead);
@@ -733,6 +732,41 @@ mod tests {
         assert!(texts(&screen).is_empty(), "nothing fed twice");
     }
 
+    #[test]
+    fn a_seed_after_the_mark_cap_starts_at_the_first_kept_mark() {
+        let mut r = ring();
+        for i in 0..300u32 {
+            r.mark_geometry(10 + i % 2, 3).unwrap();
+            r.write_bytes(b"x").unwrap();
+        }
+        let mut screen = Screen::new(80, 24, 10).unwrap();
+        // As readAllWithGeometry replays it: the first kept mark (offset 44,
+        // 10x3) from the oldest byte, then the rest.
+        assert_eq!(screen.seed(&r, b"").unwrap(), ReadStatus::Ok);
+        assert_eq!(screen.size(), (11, 3));
+        assert_eq!(Some(texts(&screen)), replay(&r, 10).map(|(texts, _)| texts));
+        // An existing screen whose offset lost its mark still can't go on.
+        let mut early = Screen::new(80, 24, 10).unwrap();
+        let mut small = ring();
+        small.mark_geometry(10, 3).unwrap();
+        early.seed(&small, b"").unwrap();
+        assert_eq!(
+            early.read(&r).unwrap(),
+            ReadStatus::Rebuild("marks-dropped")
+        );
+    }
+
+    #[test]
+    fn a_seed_before_the_first_mark_uses_that_mark_from_the_start() {
+        let mut r = ring();
+        r.write_bytes(b"\x1b[1;7HZ").unwrap();
+        r.mark_geometry(5, 3).unwrap();
+        let screen = seeded(&r, 80, 24, 10);
+        assert_eq!(screen.size(), (5, 3));
+        assert_eq!(texts(&screen), ["    Z"]);
+        assert_eq!(screen.taint(), None);
+    }
+
     // ---- live == a fresh replay with the same seed, depth and geometry ----
 
     struct Rng(u64);
@@ -837,7 +871,8 @@ mod tests {
             ..Config::default()
         };
         let start = ring.start();
-        let range = ring.range(start, None).unwrap();
+        // The geometry readAllWithGeometry hands today's replay.
+        let range = ring.seed_range().unwrap();
         let (cols, rows) = range.size.unwrap();
         let size = |cols: u32, rows: u32| Size {
             cols: cols as usize,
