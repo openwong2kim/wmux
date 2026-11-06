@@ -8,10 +8,12 @@ import {
   applyRuntimeFlag,
   installHooks,
   installHooksWithNative,
+  isPermissionGateInstalled,
   statusHooks,
   updateHooksWithNative,
   type SetupHooksPaths,
 } from '../setupHooks';
+import { probeKey, recordProbe, sha256Of } from '../../../shared/probedNative';
 import { CLAUDE_RUNTIME_FILE, claudeHookCopyPath, claudeSelfTestLine, writeClaudeRuntime } from '../../../shared/hooks/claudeNativeHook';
 
 let root = '';
@@ -158,5 +160,29 @@ describe.skipIf(process.platform === 'win32')('rollback: --runtime node', () => 
     writeClaudeRuntime(path.dirname(paths.bridgeDest), 'native');
     expect(applyRuntimeFlag(checkout, 'node', false)).not.toBeNull();
     expect(fs.readFileSync(runtimeFile, 'utf8')).toBe('native\n');
+  });
+});
+
+// #970's guard for `wmux web --allow-input`: a gate entry that cannot run
+// raises no approval, so it must not read as installed.
+describe.skipIf(process.platform === 'win32')('isPermissionGateInstalled with the native form', () => {
+  it('is true while the copy passes for the bridge beside it, false once it is missing or failed', async () => {
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    expect(isPermissionGateInstalled(paths.settingsPath)).toBe(true);
+    // The self-test recorded as failing for these bytes.
+    recordProbe(path.dirname(copy), probeKey(sha256Of(fs.readFileSync(copy)), goodLine()), 'fail');
+    expect(isPermissionGateInstalled(paths.settingsPath)).toBe(false);
+    fs.unlinkSync(copy);
+    expect(isPermissionGateInstalled(paths.settingsPath)).toBe(false);
+  });
+
+  // A copy never checked against the bridge beside it hands each run to node
+  // (its pin differs), where the gate still raises: nothing proves it broken.
+  it('stays true when the bridge beside the copy is not one it was checked against', async () => {
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    fs.writeFileSync(paths.bridgeDest, '// another bridge\n');
+    expect(isPermissionGateInstalled(paths.settingsPath)).toBe(true);
   });
 });

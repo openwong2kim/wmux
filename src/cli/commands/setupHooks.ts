@@ -7,6 +7,7 @@ import { writeJsonAtomic } from '../../shared/settingsFile';
 import { dataSuffix } from '../../shared/constants';
 import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
 import {
+  claudeCopyVerdict,
   claudeNativeAvailable,
   isPackagedBridge,
   packagedClaudeNativeSource,
@@ -1564,7 +1565,28 @@ export function isPermissionGateInstalled(settingsPath: string = defaultSettings
   if (detectPluginViaManifest(settingsPath) && !isPluginExplicitlyDisabled(load.settings)) {
     return true;
   }
-  return installedSpecsIn(load.settings).has(specKey(PERMISSION_GATE_SPEC));
+  const hooks = load.settings.hooks;
+  const groups = hooks && typeof hooks === 'object' && !Array.isArray(hooks)
+    ? (hooks as Record<string, unknown>)[PERMISSION_GATE_SPEC.event]
+    : undefined;
+  if (!Array.isArray(groups)) return false;
+  const leaves = groups
+    .filter((g) => isEffectiveWmuxGroupForSpec(g, PERMISSION_GATE_SPEC))
+    .flatMap((g) => ((g as HookGroup).hooks as unknown[]).filter((leaf) => isWmuxLeafWithTail(leaf, PERMISSION_GATE_SPEC)));
+  // A native leaf whose copy is gone, or recorded as failing its self-test for
+  // the bridge beside it, raises nothing. One hash of the copy per call: this
+  // runs once, as `wmux web` starts.
+  return leaves.some((leaf) => leafForm(leaf) === 'node' || nativeLeafRuns((leaf as HookLeaf).command));
+}
+
+/** The copy a native leaf names exists and is not recorded as failing for
+ *  the bridge beside it. Runs nothing. */
+function nativeLeafRuns(command: string): boolean {
+  const copy = /^"([^"]*)"/.exec(command.trim())?.[1];
+  if (!copy) return false;
+  const bridgeDest = path.join(path.dirname(copy), 'wmux-bridge.mjs');
+  const verdict = claudeCopyVerdict(bridgeDest, bridgeDest);
+  return verdict !== 'missing' && verdict !== 'fail';
 }
 
 // ----- Printing -----------------------------------------------------------
