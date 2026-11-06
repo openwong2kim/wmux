@@ -4,6 +4,8 @@
 //! PATH that only records its argv.
 #![cfg(unix)]
 
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -70,25 +72,39 @@ impl Case {
         stdin: &str,
         stderr: Stdio,
     ) -> Output {
+        let mut command = self.command(env, with_node);
+        command.arg("claude-hook").args(args).stderr(stderr);
+        Self::feed(spawn(&mut command), stdin)
+    }
+
+    /// The binary with exactly `args`: the form a settings entry carries.
+    fn run_argv(&self, args: &[OsString], env: &[(&str, &str)], with_node: bool, stdin: &str) -> Output {
+        let mut command = self.command(env, with_node);
+        command.args(args).stderr(Stdio::piped());
+        Self::feed(spawn(&mut command), stdin)
+    }
+
+    /// The binary in the sandbox, with no arguments yet.
+    fn command(&self, env: &[(&str, &str)], with_node: bool) -> Command {
         let path = if with_node {
             format!("{}:/usr/bin:/bin", self.dir.join("fake-node").display())
         } else {
             "/usr/bin:/bin".into()
         };
-        let mut child = spawn(
-            Command::new(self.dir.join("bin/wmux-native"))
-                .arg("claude-hook")
-                .args(args)
-                .env_clear()
-                .env("PATH", path)
-                .env("HOME", self.dir.join("home"))
-                .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
-                .env("FAKE_NODE_ARGS", self.dir.join("node-args"))
-                .envs(env.iter().copied())
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(stderr),
-        );
+        let mut command = Command::new(self.dir.join("bin/wmux-native"));
+        command
+            .env_clear()
+            .env("PATH", path)
+            .env("HOME", self.dir.join("home"))
+            .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
+            .env("FAKE_NODE_ARGS", self.dir.join("node-args"))
+            .envs(env.iter().copied())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        command
+    }
+
+    fn feed(mut child: Child, stdin: &str) -> Output {
         use std::io::Write;
         let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
         child.wait_with_output().unwrap()
@@ -147,6 +163,17 @@ fn the_kill_switch_env_hands_the_run_to_node_before_anything_else() {
     quiet(&out);
     assert_eq!(case.node_args(), Some(vec![case.bridge(), "Stop".into(), "--x".into()]));
     assert!(case.log().is_empty());
+}
+
+#[test]
+fn the_named_form_hands_over_to_node_before_anything_else() {
+    // Even a named bridge that is not the one beside the binary: nothing is
+    // compared, logged or created before the hand-over.
+    let case = Case::new("env-switch-named", Some(&pinned()));
+    let args = ["/elsewhere/wmux-bridge.mjs".into(), "Stop".into(), "--x".into()];
+    quiet(&case.run_argv(&args, &[("WMUX_HOOK_RUNTIME", "node")], true, "{}"));
+    assert_eq!(case.node_args(), Some(vec![case.bridge(), "Stop".into(), "--x".into()]));
+    assert!(!case.dir.join("home/.wmux-claude-hook-test").exists());
 }
 
 #[test]
@@ -236,6 +263,98 @@ fn an_unknown_event_logs_this_process_argv_and_reads_no_stdin() {
         )),
         "{log}"
     );
+    assert_eq!(case.node_args(), None);
+}
+
+#[test]
+fn the_bridge_named_in_argv1_runs_the_claude_hook() {
+    let case = Case::new("argv-bridge", Some(&pinned()));
+    quiet(&case.run_argv(&[case.bridge().into(), "Stop".into()], &[], true, "{}"));
+    assert_eq!(case.node_args(), None);
+    assert_eq!(case.log(), ["no-auth-token"]);
+}
+
+#[test]
+fn the_named_form_hands_over_with_the_node_forms_argv() {
+    let case = Case::new("argv-switch", Some(&pinned()));
+    let args = [case.bridge().into(), "PreToolUse".into(), "--permission-gate".into()];
+    quiet(&case.run_argv(&args, &[("WMUX_HOOK_RUNTIME", "node")], true, "{}"));
+    assert_eq!(
+        case.node_args(),
+        Some(vec![case.bridge(), "PreToolUse".into(), "--permission-gate".into()])
+    );
+    assert!(case.log().is_empty());
+}
+
+#[test]
+fn a_named_bridge_reached_through_a_link_is_the_one_beside_it() {
+    let case = Case::new("argv-link", Some(&pinned()));
+    std::os::unix::fs::symlink(case.dir.join("bin"), case.dir.join("link")).unwrap();
+    let named = case.dir.join("link/wmux-bridge.mjs");
+    quiet(&case.run_argv(&[named.into(), "Stop".into()], &[], true, "{}"));
+    assert_eq!(case.log(), ["no-auth-token"]);
+}
+
+#[test]
+fn a_named_bridge_in_a_non_utf8_directory_still_dispatches_and_is_noted() {
+    let case = Case::new("argv-elsewhere", Some(&pinned()));
+    // Not UTF-8, and not the bridge beside the binary: the basename still
+    // dispatches, the run uses the bridge beside it, and the difference is noted.
+    let named = OsString::from_vec(b"/nonexistent/\xff\xfe/wmux-bridge.mjs".to_vec());
+    quiet(&case.run_argv(&[named, "Stop".into()], &[], true, "{}"));
+    assert_eq!(case.node_args(), None);
+    assert_eq!(case.log(), ["no-auth-token"]);
+    let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
+    assert!(
+        log.contains(r#""bridgeNamed":"/nonexistent/"#)
+            && log.contains(&format!(r#"/wmux-bridge.mjs","bridgeUsed":"{}""#, case.bridge())),
+        "{log}"
+    );
+}
+
+#[test]
+fn another_basename_in_argv1_is_the_usage() {
+    let case = Case::new("argv-other", Some(&pinned()));
+    let named = format!("{}.bak", case.bridge());
+    let out = case.run_argv(&[named.into(), "Stop".into()], &[], true, "{}");
+    quiet(&out);
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: wmux-native"));
+    assert_eq!(case.node_args(), None);
+    assert!(!case.dir.join("home/.wmux-claude-hook-test").exists());
+}
+
+#[test]
+fn a_backslash_is_part_of_a_unix_file_name_so_it_is_the_usage() {
+    let case = Case::new("argv-backslash", Some(&pinned()));
+    let named = format!("{}/old\\wmux-bridge.mjs", case.dir.display());
+    let out = case.run_argv(&[named.into(), "Stop".into()], &[], true, "{}");
+    quiet(&out);
+    assert!(String::from_utf8_lossy(&out.stderr).starts_with("usage: wmux-native"));
+    assert!(!case.dir.join("home/.wmux-claude-hook-test").exists());
+}
+
+#[test]
+fn the_self_test_answers_without_reading_stdin_or_logging() {
+    let case = Case::new("self-test", Some(&pinned()));
+    let mut command = case.command(&[], true);
+    command.arg("--self-test").stderr(Stdio::piped());
+    let mut child = spawn(&mut command);
+    // Held open: a self-test that read stdin would never return.
+    let _stdin = child.stdin.take();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        assert!(std::time::Instant::now() < deadline, "the self-test waited on stdin");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let pin = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/claude-hook.ported-from.sha256")).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("wmux-claude-hook protocol 1 pin {}\n", pin.trim())
+    );
+    assert!(out.stderr.is_empty());
+    assert!(std::fs::read_dir(case.dir.join("home")).unwrap().next().is_none());
     assert_eq!(case.node_args(), None);
 }
 
@@ -393,6 +512,59 @@ fn a_missing_bridge_adds_no_line_to_a_run_that_logs_nothing() {
         quiet(&case.run(&["PostToolUse"], &[("WMUX_PTY_ID", "pty-1")], true, payload));
     }
     assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
+}
+
+#[test]
+fn a_named_bridge_adds_no_line_to_a_run_that_logs_nothing() {
+    // A throttled PostToolUse logs nothing, so a differing name adds nothing
+    // to it either; the first run of the two carries it on its own line.
+    let case = Case::new("named-quiet", Some(&pinned()));
+    let payload = r#"{"session_id":"s1","tool_name":"Bash"}"#;
+    let args = ["/elsewhere/wmux-bridge.mjs".into(), "PostToolUse".into()];
+    for _ in 0..2 {
+        quiet(&case.run_argv(&args, &[("WMUX_PTY_ID", "pty-1")], true, payload));
+    }
+    assert_eq!(case.log(), ["no-auth-token"]);
+}
+
+#[test]
+fn a_differing_name_rides_on_the_runs_own_line() {
+    let case = Case::new("named-field", Some(&pinned()));
+    quiet(&case.run_argv(&["/elsewhere/wmux-bridge.mjs".into(), "Stop".into()], &[], true, "{}"));
+    assert_eq!(case.log(), ["no-auth-token"]);
+    let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
+    assert!(
+        log.contains(&format!(
+            r#""bridgeNamed":"/elsewhere/wmux-bridge.mjs","bridgeUsed":"{}","impl":"native"}}"#,
+            case.bridge()
+        )),
+        "{log}"
+    );
+}
+
+#[test]
+fn without_a_bridge_beside_it_the_named_one_is_noted_with_none_used() {
+    let case = Case::new("named-no-bridge", None);
+    quiet(&case.run_argv(&["/elsewhere/wmux-bridge.mjs".into(), "Stop".into()], &[], true, "{}"));
+    assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
+    let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
+    assert!(
+        log.contains(r#""bridgeNamed":"/elsewhere/wmux-bridge.mjs","impl":"native"}"#),
+        "{log}"
+    );
+    assert!(!log.contains("bridgeUsed"), "{log}");
+}
+
+#[test]
+fn the_path_beside_it_named_byte_for_byte_is_never_noted() {
+    // The installer's case: argv[1] is the path beside the binary. Equal as
+    // bytes, it is not resolved at all, so even with no file there it is not
+    // a differing name (the missing bridge is logged on its own).
+    let case = Case::new("named-same-bytes", None);
+    quiet(&case.run_argv(&[case.bridge().into(), "Stop".into()], &[], true, "{}"));
+    assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
+    let log = std::fs::read_to_string(case.dir.join("home/.wmux-claude-hook-test/bridge.log")).unwrap();
+    assert!(!log.contains("bridgeNamed"), "{log}");
 }
 
 /// A main that answers every request with `{"id", "ok": true, "result"}`;

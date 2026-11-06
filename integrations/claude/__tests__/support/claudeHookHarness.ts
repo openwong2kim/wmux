@@ -21,7 +21,10 @@
  * `variants` lists the outcomes the reference may produce where node itself
  * is racy. A port is held to `strictForPort` at the same path instead: the
  * single outcome a full-duplex transport must reach; or, where only the
- * kernel's errno differs between runs or platforms, to `portVariants`.
+ * kernel's errno differs between runs or platforms, to `portVariants`. In a
+ * `strictForPort` value, an array element `"<prefix>"` stands for the
+ * implementation's prefix arguments as its log shows them: `claude-hook`, or
+ * `<bridge>` for the argv a Claude settings entry carries.
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -447,7 +450,21 @@ function holderAt(result: unknown, dotted: string): [Record<string, unknown> | u
   return [parent as Record<string, unknown> | undefined, last];
 }
 
-function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems: string[]): void {
+/**
+ * `value` with each `"<prefix>"` array element replaced by the prefix
+ * arguments, each masked by normaliseString as the log they are compared with.
+ */
+export function withPrefix(value: unknown, prefix: readonly string[], box: Sandbox): unknown {
+  const shown = prefix.map((arg) => normaliseString(arg, box));
+  const expand = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.flatMap((item) => (item === '<prefix>' ? shown : [expand(item)]));
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([key, item]) => [key, expand(item)]));
+    return v;
+  };
+  return expand(value);
+}
+
+function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems: string[], box: Sandbox): void {
   const paths = new Set([
     ...Object.keys(fixture.variants ?? {}),
     ...Object.keys(fixture.strictForPort ?? {}),
@@ -459,7 +476,7 @@ function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems:
     const strict = fixture.strictForPort?.[dotted];
     const forPort = fixture.portVariants?.[dotted];
     const allowed = !IS_REFERENCE && strict !== undefined
-      ? [strict]
+      ? [withPrefix(strict, IMPL.slice(1), box)]
       : !IS_REFERENCE && forPort !== undefined
         ? forPort
         : [...fixture.variants?.[dotted] ?? [], ...fixture.platformVariants?.[process.platform]?.[dotted] ?? []];
@@ -599,7 +616,7 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
     }
     // Round-trip: absent fields drop out exactly as they do in the stored golden.
     const result = JSON.parse(JSON.stringify({ steps })) as { steps: unknown[] };
-    applyVariants(result, fixture, problems);
+    applyVariants(result, fixture, problems, box);
     return { result, problems };
   } finally {
     if (parentProfile) {

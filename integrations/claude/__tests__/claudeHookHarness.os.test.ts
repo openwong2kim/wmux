@@ -3,7 +3,7 @@
  * exactly the volatile part, or a golden could hide a real difference.
  */
 import { describe, expect, it } from 'vitest';
-import { childEnv, normaliseStderr, normaliseString, type HomeChoice, type Sandbox } from './support/claudeHookHarness';
+import { childEnv, normaliseStderr, normaliseString, withPrefix, type HomeChoice, type Sandbox } from './support/claudeHookHarness';
 
 const winBox: Sandbox = {
   root: 'C:\\T\\wch-ab12',
@@ -12,6 +12,17 @@ const winBox: Sandbox = {
   wmuxHome: 'C:\\T\\wch-ab12\\home\\.wmux-c0ffee',
   suffix: '-c0ffee',
 };
+
+describe('withPrefix', () => {
+  const box: Sandbox = { root: '/tmp/wch-ab12', home: '/tmp/wch-ab12/home', cwd: '/tmp/wch-ab12/cwd', wmuxHome: '/tmp/wch-ab12/home/.wmux-c0ffee', suffix: '-c0ffee' };
+
+  it('expands "<prefix>" into the prefix arguments, masked as the log they are compared with', () => {
+    const prefix = ['/tmp/wch-ab12/stage/wmux-bridge.mjs', process.execPath, 'claude-hook'];
+    expect(withPrefix({ argv: ['<impl>', '<prefix>', 'Bogus'] }, prefix, box)).toEqual({
+      argv: ['<impl>', '<sandbox>/stage/wmux-bridge.mjs', '<node>', 'claude-hook', 'Bogus'],
+    });
+  });
+});
 
 describe('normaliseString', () => {
   it('turns separators into / only inside the sandbox path', () => {
