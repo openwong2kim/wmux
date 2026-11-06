@@ -75,18 +75,22 @@ pub fn daemon_auth_token_path() -> String {
     join(&[&wmux_home_dir(), "daemon-auth-token"])
 }
 
-pub fn pipe_name() -> String {
-    if let Some(v) = env_nonempty("WMUX_PIPE_NAME") {
-        return v;
+/// The main pipe's derived name (getPipeName in both bridges; WMUX_PIPE_NAME
+/// is decided by each bridge's target walk before this is asked). On POSIX it
+/// lives under `os.homedir()`, not under USERPROFILE || HOME.
+pub fn main_pipe_name() -> String {
+    #[cfg(windows)]
+    {
+        format!(r"\\.\pipe\wmux{}-{}", data_suffix(), username())
     }
-    if cfg!(windows) {
-        return format!(r"\\.\pipe\wmux{}-{}", data_suffix(), username());
+    #[cfg(not(windows))]
+    {
+        let home = os_homedir();
+        join(&[
+            if home.is_empty() { "/tmp" } else { &home },
+            &format!(".wmux{}.sock", data_suffix()),
+        ])
     }
-    let home = os_homedir();
-    join(&[
-        if home.is_empty() { "/tmp" } else { &home },
-        &format!(".wmux{}.sock", data_suffix()),
-    ])
 }
 
 /// The daemon's own `daemon-pipe` hint first (the name it actually bound),
@@ -98,10 +102,14 @@ pub fn daemon_pipe_name() -> String {
             return hint;
         }
     }
-    if cfg!(windows) {
-        return format!(r"\\.\pipe\wmux-daemon{}-{}", data_suffix(), username());
+    #[cfg(windows)]
+    {
+        format!(r"\\.\pipe\wmux-daemon{}-{}", data_suffix(), username())
     }
-    join(&[&wmux_home_dir(), "daemon.sock"])
+    #[cfg(not(windows))]
+    {
+        join(&[&wmux_home_dir(), "daemon.sock"])
+    }
 }
 
 /// A token file's trimmed content, or None when absent, unreadable or blank.
@@ -112,7 +120,7 @@ pub fn read_token_file(path: &str) -> Option<String> {
 
 /// `os.userInfo().username || 'default'` on Windows.
 #[cfg(windows)]
-fn username() -> String {
+pub fn username() -> String {
     #[link(name = "advapi32")]
     extern "system" {
         fn GetUserNameW(buffer: *mut u16, size: *mut u32) -> i32;
@@ -131,11 +139,6 @@ fn username() -> String {
     } else {
         name
     }
-}
-
-#[cfg(not(windows))]
-fn username() -> String {
-    unreachable!("the username only names a Windows pipe")
 }
 
 /// `path.join` for the host platform.

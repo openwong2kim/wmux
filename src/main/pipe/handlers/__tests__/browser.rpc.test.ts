@@ -1858,6 +1858,54 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
 
 // ── #529 — screenshot hang fallback ─────────────────────────────────────────
 
+describe('browser.dialog.arm and input dispatch', () => {
+  function registerWithDialogs() {
+    const router = dispatchAsClaimedCaller(new RpcRouter());
+    const end = vi.fn();
+    const manager = {
+      getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1' })),
+      listTargets: vi.fn(() => [{ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1' }]),
+      getCdpPort: vi.fn(() => 18800),
+      waitForTarget: vi.fn(),
+      ensureAwake: vi.fn(async () => null),
+      setCaptureCleanup: vi.fn(),
+      setCaptureAttach: vi.fn(),
+      setDialogNoteSink: vi.fn(),
+      armDialog: vi.fn(),
+      beginDialogDispatch: vi.fn(() => end),
+      withAutomationLease: vi.fn(async (_surfaceId: string, fn: () => Promise<unknown>) => fn()),
+    };
+    registerBrowserRpc(router, () => null, manager as never);
+    return { router, manager, end };
+  }
+
+  it('arms the resolved surface', async () => {
+    const { router, manager } = registerWithDialogs();
+    const response = await router.dispatch({ id: '1', method: 'browser.dialog.arm', params: { accept: true, text: 'typed' } });
+    expect(response.ok).toBe(true);
+    expect(manager.armDialog).toHaveBeenCalledWith('surface-1', true, 'typed');
+  });
+
+  it('treats anything but accept:true as a dismissal', async () => {
+    const { router, manager } = registerWithDialogs();
+    await router.dispatch({ id: '1', method: 'browser.dialog.arm', params: { accept: 'yes' } });
+    expect(manager.armDialog).toHaveBeenCalledWith('surface-1', false, undefined);
+  });
+
+  it('marks input RPCs as dispatches and ends them even when they fail', async () => {
+    const { router, manager, end } = registerWithDialogs();
+    await router.dispatch({ id: '1', method: 'browser.press.cdp', params: {} });
+    expect(manager.beginDialogDispatch).toHaveBeenCalledWith('surface-1');
+    expect(end).toHaveBeenCalledOnce();
+  });
+
+  it('does not mark a read as a dispatch', async () => {
+    const { router, manager } = registerWithDialogs();
+    await router.dispatch({ id: '1', method: 'browser.lifecycle.get', params: {} });
+    expect(manager.beginDialogDispatch).not.toHaveBeenCalled();
+  });
+});
+
 describe('browser.cdp.info with no port up', () => {
   function registerWith(cdp: { port: number; disabled: boolean }): RpcRouter {
     const router = dispatchAsClaimedCaller(new RpcRouter());

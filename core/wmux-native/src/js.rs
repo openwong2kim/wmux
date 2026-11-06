@@ -94,15 +94,19 @@ impl Json {
     }
 }
 
+/// ECMAScript WhiteSpace plus LineTerminator: what `trim` removes and what
+/// a regex `\s` matches.
+pub fn is_space(c: u16) -> bool {
+    matches!(
+        c,
+        0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x20 | 0xA0 | 0x1680 | 0x2000
+            ..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F | 0x3000 | 0xFEFF
+    )
+}
+
 /// `String.prototype.trim`: ECMAScript WhiteSpace plus LineTerminator.
 pub fn trim(s: &[u16]) -> &[u16] {
-    fn ws(c: u16) -> bool {
-        matches!(
-            c,
-            0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x20 | 0xA0 | 0x1680 | 0x2000
-                ..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F | 0x3000 | 0xFEFF
-        )
-    }
+    let ws = is_space;
     let start = s.iter().position(|&c| !ws(c)).unwrap_or(s.len());
     let end = s.iter().rposition(|&c| !ws(c)).map_or(start, |i| i + 1);
     &s[start..end]
@@ -411,6 +415,52 @@ fn v8_key_order(entries: &[(JsStr, Json)]) -> Vec<&(JsStr, Json)> {
     let mut order: Vec<&(JsStr, Json)> = indexed.into_iter().map(|(_, e)| e).collect();
     order.extend(entries.iter().filter(|e| array_index(&e.0).is_none()));
     order
+}
+
+/// `Object.keys(o)`, in V8's order.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn object_keys(entries: &[(JsStr, Json)]) -> Vec<JsStr> {
+    v8_key_order(entries).into_iter().map(|(k, _)| k.clone()).collect()
+}
+
+/// `o[key] = value` on an object's entries: an existing key keeps its place.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn assign(entries: &mut Vec<(JsStr, Json)>, key: JsStr, value: Json) {
+    match entries.iter_mut().find(|(k, _)| *k == key) {
+        Some(slot) => slot.1 = value,
+        None => entries.push((key, value)),
+    }
+}
+
+/// `{...v}`: an object's own entries; an array's elements under their
+/// indices; a string's UTF-16 units under theirs; nothing for anything else.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn spread(v: &Json) -> Vec<(JsStr, Json)> {
+    match v {
+        Json::Obj(entries) => entries.clone(),
+        Json::Arr(items) => items
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (js(&i.to_string()), x.clone()))
+            .collect(),
+        Json::Str(s) => s
+            .iter()
+            .enumerate()
+            .map(|(i, u)| (js(&i.to_string()), Json::Str(vec![*u])))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// JavaScript truthiness of an optional value (absent is `undefined`).
+#[cfg_attr(windows, allow(dead_code))]
+pub fn truthy(v: Option<&Json>) -> bool {
+    match v {
+        None | Some(Json::Null) | Some(Json::Bool(false)) => false,
+        Some(Json::Num(n)) => *n != 0.0 && !n.is_nan(),
+        Some(Json::Str(s)) => !s.is_empty(),
+        Some(_) => true,
+    }
 }
 
 pub fn stringify(v: &Json, out: &mut String) {

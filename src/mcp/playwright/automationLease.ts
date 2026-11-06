@@ -25,7 +25,7 @@ import { takeGuideAnnouncement } from './guideAnnounce';
 import { redactPasswordParams } from './redact';
 import { invalidateSnapshotBaseline, invalidateSnapshotBaselineIfStale } from './snapshotCache';
 import { PlaywrightEngine } from './PlaywrightEngine';
-import { drainDialogNotes, renderModalBlock } from './modalState';
+import { drainDialogNotes, renderModalBlock, type DialogNote } from './modalState';
 import {
   isServable,
   normalizeUrlKey,
@@ -324,9 +324,11 @@ function untilCancelled<T>(run: () => Promise<T>, cancel: CancelSignal): Promise
 // ---------------------------------------------------------------------------
 
 interface LifecycleEventWire {
-  type: 'navigated' | 'loaded' | 'closed';
+  type: 'navigated' | 'loaded' | 'closed' | 'dialog';
   url?: string;
   ts: number;
+  /** type 'dialog': one main answered on the RPC lane. */
+  dialog?: DialogNote;
 }
 
 async function collectLifecycleEvents(scope: BrowserTargetScope): Promise<LifecycleEventWire[]> {
@@ -397,10 +399,14 @@ function formatAgo(ts: number): string {
  * as { content: [...] } are touched (isError results included) — anything
  * else passes through unchanged.
  */
-function prependBrowserEvents<T>(result: T, events: LifecycleEventWire[]): T {
-  if (events.length === 0) return result;
+function prependBrowserEvents<T>(result: T, allEvents: LifecycleEventWire[]): T {
+  if (allEvents.length === 0) return result;
   const shaped = result as { content?: Array<{ type: string; text?: string }> } | null | undefined;
   if (!shaped || !Array.isArray(shaped.content)) return result;
+  const dialogs = allEvents.flatMap((e) => (e.type === 'dialog' && e.dialog ? [e.dialog] : []));
+  if (dialogs.length > 0) shaped.content.unshift({ type: 'text', text: renderModalBlock(dialogs) });
+  const events = allEvents.filter((e) => e.type !== 'dialog');
+  if (events.length === 0) return result;
   // Lifecycle URLs are rendered into the tool result like any other URL, so a
   // credential in a query string or in `scheme://user:pass@host` is masked here
   // too. The self-echo match above runs on the RAW url and is unaffected.

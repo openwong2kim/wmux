@@ -2,8 +2,10 @@ name: Native hooks
 # wmux-native (core/wmux-native): build it on every platform wmux ships, run
 # its unit tests, and hold `wmux-native hook` to the shared Node bridge with
 # the parity suite (envelope byte-for-byte, logs equivalent), which must run
-# here (not skip). `wmux-native mcp-shim` is held to src/mcp/shim.ts the same
-# way, and its end-to-end test runs against the built broker bundle.
+# here (not skip). On macOS and Linux it also runs every Claude hook
+# characterisation case against `wmux-native claude-hook`. `wmux-native
+# mcp-shim` is held to src/mcp/shim.ts the same way, and its end-to-end test
+# runs against the built broker bundle.
 #
 # It runs on every pull request so it can be a required check: the `changes`
 # job decides whether the pull request touches anything the native bridge
@@ -35,7 +37,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          RELEVANT: '^(core/wmux-native/|integrations/shared/|src/shared/hooks/|src/main/pipe/|src/shared/lifecycleIntegrations\.ts$|src/shared/rpc\.ts$|src/cli/commands/setupHooks\.ts$|src/daemon/DaemonPipeServer\.ts$|src/main/mcp/hookBridge\.ts$|src/main/mcp/__tests__/hookBridge\.lockstep\.test\.ts$|src/mcp/(shim|broker)\.ts$|src/mcp/__tests__/nativeShim\.parity\.os\.test\.ts$|src/shared/(constants|roleSurfaces|commanderSurface|coreSurface)\.ts$|scripts/build-mcp\.js$|scripts/build-native-hooks\.mjs$|scripts/__tests__/(buildNativeHooks\.os\.test|nativeHooksRelease\.test)\.mjs$|forge\.config\.ts$|package(-lock)?\.json$|\.github/workflows/(native-hooks|release)\.yml$)'
+          RELEVANT: '^(core/wmux-native/|integrations/shared/|integrations/claude/(bin/wmux-bridge\.mjs$|__tests__/)|src/shared/hooks/|src/main/pipe/|src/shared/lifecycleIntegrations\.ts$|src/shared/rpc\.ts$|src/cli/commands/setupHooks\.ts$|src/daemon/DaemonPipeServer\.ts$|src/main/mcp/hookBridge\.ts$|src/main/mcp/__tests__/hookBridge\.lockstep\.test\.ts$|src/mcp/(shim|broker)\.ts$|src/mcp/__tests__/nativeShim\.parity\.os\.test\.ts$|src/shared/(constants|roleSurfaces|commanderSurface|coreSurface)\.ts$|scripts/build-mcp\.js$|scripts/build-native-hooks\.mjs$|scripts/__tests__/(buildNativeHooks\.os\.test|nativeHooksRelease\.test)\.mjs$|forge\.config\.ts$|package(-lock)?\.json$|\.github/workflows/(native-hooks|release)\.yml$)'
         run: |
           if [ "$EVENT" != "pull_request" ]; then echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           files="$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')"
@@ -92,6 +94,17 @@ jobs:
         env:
           WMUX_REQUIRE_NATIVE_HOOKS: '1'
           WMUX_NATIVE_HOOKS_BIN: ${{ github.workspace }}/dist/native-hooks/${{ runner.os == 'Windows' && 'wmux-native.exe' || 'wmux-native' }}
+      - name: Claude hook characterisation against the native binary
+        if: needs.changes.outputs.relevant != 'false'
+        shell: bash
+        run: |
+          # The Claude hook is unix only: Windows keeps the Node bridge.
+          if [ "$RUNNER_OS" = "Windows" ]; then echo "No native Claude hook on Windows."; exit 0; fi
+          # Beside the binary, the Node bridge it hands decision modes to.
+          stage="$RUNNER_TEMP/claude-hook"
+          mkdir -p "$stage"
+          cp dist/native-hooks/wmux-native integrations/claude/bin/wmux-bridge.mjs "$stage/"
+          WMUX_CLAUDE_HOOK_IMPL="$stage/wmux-native claude-hook" npx vitest run integrations/claude/__tests__/claudeHookCharacterisation.os.test.ts integrations/claude/__tests__/claudeHookContract.test.ts
       - name: Retain the staged binary
         if: needs.changes.outputs.relevant != 'false'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

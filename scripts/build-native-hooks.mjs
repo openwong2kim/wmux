@@ -35,14 +35,15 @@ export function nativeHooksBinary(platform) {
 export const NATIVE_HOOKS_MARKER = 'wmux-managed: native-hooks';
 
 /**
- * A hash of everything the binary is built from: the crate's src/ tree, its
- * flavour table, Cargo.toml, Cargo.lock and .cargo/ (build flags such as the
- * static CRT). Paths are hashed with the bytes, so a moved or added file
+ * A hash of everything the binary is built from: the crate's src/ tree, the
+ * files it compiles in (the flavour table and the Claude hook's pinned bridge
+ * hash), Cargo.toml, Cargo.lock and .cargo/ (build flags such as the static
+ * CRT). Paths are hashed with the bytes, so a moved or added file
  * changes it too.
  */
 export function nativeHooksSourceHash(root) {
   const crate = path.join(root, 'core', 'wmux-native');
-  const files = ['flavours.json', 'Cargo.toml', 'Cargo.lock'];
+  const files = ['flavours.json', 'claude-hook.ported-from.sha256', 'Cargo.toml', 'Cargo.lock'];
   const walk = (rel) => {
     for (const entry of fs.readdirSync(path.join(crate, rel), { withFileTypes: true })) {
       const child = path.posix.join(rel, entry.name);

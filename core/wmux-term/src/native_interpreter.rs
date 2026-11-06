@@ -18,13 +18,13 @@ pub struct NativeOutputInterpreter {
 }
 #[napi]
 impl NativeOutputInterpreter {
-    #[napi(constructor)]
+    #[napi(constructor, catch_unwind)]
     pub fn new() -> Self {
         Self {
             inner: Some(OutputInterpreter::default()),
         }
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn feed(
         &mut self,
         text: String,
@@ -33,7 +33,7 @@ impl NativeOutputInterpreter {
     ) -> Result<Option<NativeOscBatch>> {
         self.apply(&text, end, include_osc)
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn feed_chunk(
         &mut self,
         chunk: &NativeOutputChunk,
@@ -46,24 +46,24 @@ impl NativeOutputInterpreter {
             true,
         )
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn is_set(&self, mode: u32) -> Result<bool> {
         Ok(self.get()?.is_set(mode))
     }
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn alt_screen(&self) -> Result<bool> {
         Ok(self.get()?.alt_screen())
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn preamble(&self, start: f64) -> Result<String> {
         Ok(self.get()?.preamble(start))
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn reset(&mut self) -> Result<()> {
         self.get_mut()?.reset_modes();
         Ok(())
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
         self.inner = None;
     }

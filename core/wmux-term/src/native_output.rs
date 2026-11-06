@@ -9,21 +9,21 @@ pub struct NativeOutputChunk {
 }
 #[napi]
 impl NativeOutputChunk {
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn text(&self) -> &str {
         // napi copies straight into a JS string; no intermediate Rust String.
         // Only the streaming decoder constructs these normalized bytes.
         std::str::from_utf8(&self.bytes).expect("Output decoder produces valid UTF-8")
     }
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn byte_length(&self) -> u32 {
         self.bytes.len() as u32
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_bytes(&self) -> Buffer {
         self.bytes.clone().into()
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
         self.bytes = Vec::new();
     }
@@ -38,11 +38,11 @@ pub struct NativeOutputDecoder {
 }
 #[napi]
 impl NativeOutputDecoder {
-    #[napi(constructor)]
+    #[napi(constructor, catch_unwind)]
     pub fn new() -> Self {
         Self::default()
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn feed(&mut self, bytes: Uint8Array, finish: bool) -> NativeOutputChunk {
         self.decode(bytes.to_vec(), finish)
     }

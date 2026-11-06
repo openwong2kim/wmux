@@ -244,6 +244,7 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'browser.drag.cdp',
   'browser.type.cdp',
   'browser.press.cdp',
+  'browser.dialog.arm',
   'browser.cookies',
   'browser.resize',
   'browser.emulate',
