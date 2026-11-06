@@ -104,13 +104,23 @@ class FakePipe {
       });
       sock.on('error', () => { /* client gone */ });
     });
-    await new Promise<void>((resolve) => this.server.listen(this.name, resolve));
+    // A bind that fails (a socket path past sun_path, say) rejects here, so
+    // setup reports that error instead of timing out.
+    await new Promise<void>((resolve, reject) => {
+      this.server.once('error', reject);
+      this.server.listen(this.name, () => {
+        this.server.off('error', reject);
+        resolve();
+      });
+    });
   }
 
   stop(): Promise<void> {
     // A stalled connection never ends on its own.
     for (const sock of this.sockets) sock.destroy();
-    return new Promise((resolve) => this.server.close(() => resolve()));
+    const server = this.server;
+    if (!server?.listening) return Promise.resolve();
+    return new Promise((resolve) => server.close(() => resolve()));
   }
 }
 
@@ -236,7 +246,10 @@ function expectParity(fx: Fixture, node: RunResult, native: RunResult): void {
 describe.skipIf(!NATIVE && !REQUIRED)('wmux-native hook ↔ wmux-hooks-bridge.mjs parity', () => {
   beforeAll(async () => {
     if (!NATIVE) throw new Error('WMUX_REQUIRE_NATIVE_HOOKS=1 but no wmux-native binary was found');
-    home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux native parity-'));
+    // POSIX sockets live under this home and macOS caps sun_path at 104 bytes:
+    // a runner's TMPDIR (/var/folders/<2>/<28>/T) already left the daemon socket
+    // past it. /tmp keeps the path short; Windows uses named pipes.
+    home = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'wnp parity-'));
     cwd = fs.mkdtempSync(path.join(home, 'cwd é-'));
     wmuxDir = path.join(home, `.wmux${SUFFIX}`);
     fs.mkdirSync(wmuxDir, { recursive: true });
