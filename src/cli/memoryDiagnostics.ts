@@ -129,6 +129,18 @@ export function renderMemoryDiagnostics(
         lines.push(`  native ${name} snapshots: ${c.native} native, ${c.fallbacks} not served natively, ${c.skipped} skipped${reasons ? ` (${reasons})` : ''}${c.circuitOpen ? '; native module bypassed after an error' : ''}`);
       }
     }
+    for (const [site, c] of Object.entries(daemon.tailReads ?? {})) {
+      const fallbacks = Object.values(c.fallbacks).reduce((sum, n) => sum + n, 0);
+      const reasons = Object.entries(c.fallbacks).sort((x, y) => y[1] - x[1]).map(([reason, n]) => `${reason} ${n}`).join(', ');
+      const avg = (total: number, n: number) => ms(total / Math.max(n, 1));
+      lines.push(`  ${site} tail reads: ${c.served} served, ${c.whole} whole ring fit, ${fallbacks} fell back${reasons ? ` (${reasons})` : ''}; ` +
+        `tail avg ${avg(c.tailMsTotal, c.reads)} (ring copy ${avg(c.ringCopyMsTotal, c.reads)}, scan ${avg(c.scanMsTotal, c.reads)}), ` +
+        `fallback avg ${avg(c.fallbackMsTotal, fallbacks)} (max ${ms(c.fallbackMsMax)})`);
+      if (c.checks) {
+        const mismatches = Object.entries(c.mismatches).filter(([key]) => key !== 'any').map(([key, n]) => `${key} ${n}`).join(', ');
+        lines.push(`    checked against the whole ring: ${c.checks}, ${c.mismatches.any ?? 0} differed${mismatches ? ` (${mismatches})` : ''}`);
+      }
+    }
     for (const session of [...daemon.sessions].sort((a, b) =>
       (b.socketQueuedBytes + b.resyncQueuedBytes + b.ringAllocatedBytes) - (a.socketQueuedBytes + a.resyncQueuedBytes + a.ringAllocatedBytes)).slice(0, 5)) {
       lines.push(`    ${session.id} (${session.state}): ring ${mib(session.ringAllocatedBytes)}, socket ${mib(session.socketQueuedBytes)} (pipe peak ${mib(session.socketPeakQueuedBytes)}), resync ${mib(session.resyncQueuedBytes)}`);
