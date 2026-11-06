@@ -105,14 +105,34 @@ export function recordedVerdictOf(file: string, recordDir: string, line: string)
   return hash ? recordedProbe(recordDir, probeKey(hash, line)) : undefined;
 }
 
-/** Record a verdict; the newest few are kept, and never evicted is `keep`
- *  (the key of the bytes in place). */
+/** The sha256 of every file in `dir` (each copy in place, the record's
+ *  neighbours). Best effort: an unreadable file is left out. */
+function hashesInPlace(dir: string): Set<string> {
+  const hashes = new Set<string>();
+  let names: string[] = [];
+  try { names = fs.readdirSync(dir); } catch { return hashes; }
+  for (const name of names) {
+    const file = path.join(dir, name);
+    try {
+      if (fs.statSync(file).isFile()) hashes.add(sha256Of(fs.readFileSync(file)));
+    } catch { /* gone, or unreadable */ }
+  }
+  return hashes;
+}
+
+/** Record a verdict; the newest few are kept, and never evicted are `keep`
+ *  (the key of the bytes in place) and the verdicts of any file still in
+ *  `dir`: one record serves every copy installed there. */
 export function recordProbe(dir: string, key: string, verdict: 'pass' | 'fail', keep?: string): void {
   const record = readRecord(dir);
   delete record.verdicts[key];
   record.verdicts[key] = verdict;
-  const evictable = Object.keys(record.verdicts).filter((k) => k !== keep && k !== key);
+  let evictable = Object.keys(record.verdicts).filter((k) => k !== keep && k !== key);
   const excess = Object.keys(record.verdicts).length - MAX_RECORDED;
+  if (excess > 0) {
+    const inPlace = hashesInPlace(dir);
+    evictable = evictable.filter((k) => !inPlace.has(k.split(' ')[0]));
+  }
   for (const old of evictable.slice(0, Math.max(0, excess))) delete record.verdicts[old];
   writeRecord(dir, record);
 }
