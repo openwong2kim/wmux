@@ -94,6 +94,10 @@ export type ClientCommandFilter = (client: { kind: 'internal' | 'external'; labe
  * there: commands naming it get the browser's own unknown-target answer, its
  * target events and its Target.getTargets entry are left out, and a session
  * auto-attached to it is detached again rather than handed over.
+ *
+ * Checked where targets are found, on the client's browser session only:
+ * what attaches on a session the client already owns (a granted page's frames
+ * and workers) follows that page and is not checked again, by design.
  */
 export type TargetGrant = (client: { kind: 'internal' | 'external'; label: string }, targetId: string) => boolean;
 
