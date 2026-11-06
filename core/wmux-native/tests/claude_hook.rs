@@ -209,11 +209,7 @@ fn without_a_bridge_beside_it_the_run_stays_native() {
 #[test]
 fn decision_flags_run_on_node() {
     let case = Case::new("decision", Some(&pinned()));
-    for args in [
-        vec!["Stop", "--gate"],
-        vec!["PreToolUse", "--permission-gate"],
-        vec!["UserPromptSubmit", "--context"],
-    ] {
+    for args in [vec!["Stop", "--gate"], vec!["UserPromptSubmit", "--context"]] {
         let _ = std::fs::remove_file(case.dir.join("node-args"));
         quiet(&case.run(&args, &[], true, ""));
         let expected: Vec<String> = std::iter::once(case.bridge())
@@ -237,12 +233,6 @@ fn a_decision_flag_with_no_bridge_or_no_node_fails_open() {
             r#"{"session_id":"s1","prompt":"p"}"#,
             "agent.user_prompt_submit",
             true,
-        ),
-        (
-            ["PreToolUse", "--permission-gate"],
-            r#"{"session_id":"s1","tool_name":"AskUserQuestion"}"#,
-            "agent.awaiting_input",
-            false,
         ),
     ] {
         let case = Case::new(&format!("decision-{}", &args[1][2..]), None);
@@ -445,4 +435,82 @@ fn a_missing_bridge_adds_no_line_to_a_run_that_logs_nothing() {
         quiet(&case.run(&["PostToolUse"], &[("WMUX_PTY_ID", "pty-1")], true, payload));
     }
     assert_eq!(case.log(), ["impl-native-no-bridge", "no-auth-token"]);
+}
+
+/// A main that answers every request with `{"id", "ok": true, "result"}`;
+/// the socket's path, under the system temp dir (sun_path is short).
+fn stub_main(tag: &str, result: &'static str) -> String {
+    use std::io::{BufRead, BufReader, Write};
+    let socket = std::env::temp_dir().join(format!("wmux-{tag}-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut line = String::new();
+            let _ = BufReader::new(&stream).read_line(&mut line);
+            let id = line
+                .split(r#""id":""#)
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .unwrap_or("");
+            let _ = writeln!(stream, r#"{{"id":"{id}","ok":true,"result":{result}}}"#);
+        }
+    });
+    socket.display().to_string()
+}
+
+/// A case with a daemon token, for a run that sends.
+fn with_token(tag: &str) -> Case {
+    let case = Case::new(tag, Some(&pinned()));
+    let wmux_home = case.dir.join("home/.wmux-claude-hook-test");
+    std::fs::create_dir_all(&wmux_home).unwrap();
+    std::fs::write(wmux_home.join("daemon-auth-token"), "t").unwrap();
+    case
+}
+
+#[test]
+fn the_permission_gate_answers_here() {
+    let case = with_token("perm-deny");
+    let socket = stub_main("perm-deny", r#"{"ok":true,"permissionDecision":"deny"}"#);
+    let env = [
+        ("WMUX_PIPE_NAME", socket.as_str()),
+        ("WMUX_PTY_ID", "pty-1"),
+        ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+    ];
+    let payload = r#"{"session_id":"s1","tool_name":"Bash"}"#;
+    let out = case.run(&["PreToolUse", "--permission-gate"], &env, true, payload);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        concat!(
+            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","#,
+            r#""permissionDecisionReason":"denied from the wmux remote approval"}}"#,
+            "\n"
+        )
+    );
+    assert_eq!(case.log(), ["ok", "permission-gate"]);
+    assert_eq!(case.node_args(), None);
+
+    // The reader went away: the verdict is logged, then its loss; exit 0.
+    let (stdout, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+    drop(reader);
+    let child = Command::new(case.dir.join("bin/wmux-native"))
+        .args(["claude-hook", "PreToolUse", "--permission-gate"])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", case.dir.join("home"))
+        .env("WMUX_DATA_SUFFIX", "-claude-hook-test")
+        .envs(env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(std::os::fd::OwnedFd::from(stdout)))
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    use std::io::Write;
+    let mut child = child;
+    child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+    assert_eq!(case.log()[2..], ["ok", "permission-gate", "stdout-lost"]);
+    let _ = std::fs::remove_file(&socket);
 }

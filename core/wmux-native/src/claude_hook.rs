@@ -1030,10 +1030,10 @@ mod tests {
             decision_flag("Stop", &flags(&["--unknown", "--gate"])),
             Some(&js("--gate"))
         );
-        assert_eq!(
-            decision_flag("PreToolUse", &flags(&["--permission-gate"])),
-            Some(&js("--permission-gate"))
-        );
+        // The permission gate runs here now.
+        assert_eq!(decision_flag("PreToolUse", &flags(&["--permission-gate"])), None);
+        assert!(Modes::of(&flags(&["--x", "--permission-gate"])).permission_gate);
+        assert!(!Modes::of(&flags(&["--permission-gated"])).permission_gate);
         // argv-context-needs-user-prompt-submit: --context elsewhere is ignored.
         assert_eq!(decision_flag("Stop", &flags(&["--context"])), None);
         assert_eq!(
