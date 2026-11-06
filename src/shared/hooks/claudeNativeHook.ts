@@ -13,7 +13,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { randomBytes } from 'crypto';
+import { writeFileAtomic } from '../mcpRegistration';
 import {
   prepareProbedNative,
   recordedVerdictOf,
@@ -21,7 +21,8 @@ import {
   runProbe,
   sha256Of,
 } from '../probedNative';
-import { NATIVE_HOOKS_MARKER, nativeHooksBasename } from './hookFlavours';
+import { NATIVE_HOOKS_MARKER } from './hookFlavours';
+import { packagedNativeHooksSource } from './compatHookInstall';
 
 export const CLAUDE_HOOK_BASENAME = 'wmux-claude-hook';
 /** `node` or `native`: what `wmux setup-hooks` writes (`--runtime`). Beside
@@ -39,18 +40,12 @@ export function claudeHookCopyPath(bridgeDest: string): string {
   return path.join(path.dirname(bridgeDest), CLAUDE_HOOK_BASENAME);
 }
 
-/** The resources directory a packaged bridge sits in
- *  (`<resources>/cli-bundle/wmux-bridge.mjs`), or null for any other layout. */
-function packagedResourcesOf(bridgeSource: string | null): string | null {
-  if (!bridgeSource) return null;
-  const bundle = path.dirname(bridgeSource);
-  const resources = path.dirname(bundle);
-  return path.basename(bundle) === 'cli-bundle' && path.basename(resources).toLowerCase() === 'resources' ? resources : null;
-}
-
-/** True when the bridge comes from an installed app, not a checkout. */
+/** True when the bridge comes from an installed app
+ *  (`<resources>/cli-bundle/wmux-bridge.mjs`), not a checkout. */
 export function isPackagedBridge(bridgeSource: string | null): boolean {
-  return packagedResourcesOf(bridgeSource) !== null;
+  if (!bridgeSource) return false;
+  const bundle = path.dirname(bridgeSource);
+  return path.basename(bundle) === 'cli-bundle' && path.basename(path.dirname(bundle)).toLowerCase() === 'resources';
 }
 
 /**
@@ -59,10 +54,8 @@ export function isPackagedBridge(bridgeSource: string | null): boolean {
  * (`wmux setup-hooks --native-from`). Null on Windows.
  */
 export function packagedClaudeNativeSource(bridgeSource: string | null, platform: NodeJS.Platform = process.platform): string | null {
-  const resources = packagedResourcesOf(bridgeSource);
-  if (platform === 'win32' || !resources) return null;
-  const candidate = path.join(resources, 'native-hooks', nativeHooksBasename(platform));
-  return fs.existsSync(candidate) ? candidate : null;
+  if (platform === 'win32' || !bridgeSource) return null;
+  return packagedNativeHooksSource(path.dirname(bridgeSource), platform);
 }
 
 /** The bridge's pin as the binary computes it: SHA-256 with every CRLF read
@@ -92,15 +85,7 @@ export function readClaudeRuntime(hooksDir: string): ClaudeHookRuntime {
 
 export function writeClaudeRuntime(hooksDir: string, runtime: ClaudeHookRuntime): void {
   fs.mkdirSync(hooksDir, { recursive: true, mode: 0o700 });
-  const file = path.join(hooksDir, CLAUDE_RUNTIME_FILE);
-  const temp = `${file}.${process.pid}-${randomBytes(4).toString('hex')}.tmp`;
-  fs.writeFileSync(temp, `${runtime}\n`, { mode: 0o600 });
-  try {
-    fs.renameSync(temp, file);
-  } catch (error) {
-    try { fs.unlinkSync(temp); } catch { /* never written */ }
-    throw error;
-  }
+  writeFileAtomic(path.join(hooksDir, CLAUDE_RUNTIME_FILE), `${runtime}\n`);
 }
 
 /** Which form the entries take, and why not native when they do not. */
