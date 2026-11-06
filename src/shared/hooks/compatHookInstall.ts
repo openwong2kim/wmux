@@ -25,10 +25,8 @@ import * as path from 'path';
 import { writeJsonAtomic } from '../settingsFile';
 import {
   expectationKey,
-  fileSha256,
   prepareProbedNative,
-  probeKey,
-  recordedProbe,
+  recordedVerdictOf,
   runProbe,
   type ProbeExpectation,
 } from '../probedNative';
@@ -275,9 +273,7 @@ const NATIVE_HOOKS_PROBE_TIMEOUT_MS = 5000;
  */
 function activeNativeHooksPath(spec: LifecycleAssetSpec | null, native: LifecycleAssetStatus | null): string | null {
   if (!spec || !native || (native.state !== 'current' && native.state !== 'stale')) return null;
-  const hash = fileSha256(spec.destinationPath);
-  if (!hash) return null;
-  const verdict = recordedProbe(path.dirname(spec.destinationPath), probeKey(hash, NATIVE_HOOKS_PROBE_KEY));
+  const verdict = recordedVerdictOf(spec.destinationPath, path.dirname(spec.destinationPath), NATIVE_HOOKS_PROBE_KEY);
   if (verdict) return verdict === 'pass' ? spec.destinationPath : null;
   return native.state === 'current' ? spec.destinationPath : null;
 }
@@ -386,11 +382,14 @@ async function installNativeHooks(
     reprobe: opts.reprobe,
   });
   const after = inspectLifecycleAsset(spec);
-  if (result.binary && after.state === 'current') {
+  // Nothing offered can still mean nothing was proved (the lock held
+  // elsewhere): the copy in place is then judged as status judges it.
+  const active = result.binary ?? activeNativeHooksPath(spec, after);
+  if (active && after.state === 'current') {
     const action = before.state === 'missing' ? 'installed' : before.state === 'current' ? 'none' : 'refreshed';
-    return { outcome: { ...after, action }, active: result.binary };
+    return { outcome: { ...after, action }, active };
   }
-  if (result.binary) return { outcome: { ...after, state: 'stale', error: result.reason ?? null, action: 'none' }, active: result.binary };
+  if (active) return { outcome: { ...after, state: 'stale', error: result.reason ?? null, action: 'none' }, active };
   if (after.state === 'foreign' || after.state === 'source-missing') return { outcome: { ...after, action: 'none' }, active: null };
   return { outcome: { ...after, state: 'error', error: result.reason ?? after.error, action: 'none' }, active: null };
 }

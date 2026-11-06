@@ -98,6 +98,13 @@ export function recordedProbe(dir: string, key: string): 'pass' | 'fail' | undef
   return verdict === 'pass' || verdict === 'fail' ? verdict : undefined;
 }
 
+/** The verdict recorded on the bytes now at `file`, asked `line`; undefined
+ *  when nothing is recorded or the file cannot be read. Runs nothing. */
+export function recordedVerdictOf(file: string, recordDir: string, line: string): 'pass' | 'fail' | undefined {
+  const hash = fileSha256(file);
+  return hash ? recordedProbe(recordDir, probeKey(hash, line)) : undefined;
+}
+
 /** Record a verdict; the newest few are kept, and never evicted is `keep`
  *  (the key of the bytes in place). */
 export function recordProbe(dir: string, key: string, verdict: 'pass' | 'fail', keep?: string): void {
@@ -268,13 +275,7 @@ async function prepareLocked(opts: ProbedNativeOptions): Promise<ProbedNativeRes
  * would move to node for this start.
  */
 function keepInPlace(opts: ProbedNativeOptions, reason: string): ProbedNativeResult {
-  let current: Buffer;
-  try {
-    current = fs.readFileSync(opts.destinationPath);
-  } catch {
-    return { binary: null, reason };
-  }
-  return recordedProbe(opts.recordDir, probeKey(sha256Of(current), opts.line)) === 'pass'
+  return recordedVerdictOf(opts.destinationPath, opts.recordDir, opts.line) === 'pass'
     ? { binary: opts.destinationPath, reason: `${reason}; the installed copy stays` }
     : { binary: null, reason };
 }

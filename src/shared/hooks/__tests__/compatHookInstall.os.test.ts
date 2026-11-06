@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { expectationKey, PROBE_LOCK, probeKey, recordedProbe, sha256Of } from '../../probedNative';
+import { expectationKey, PROBE_LOCK, PROBE_RECORD, probeKey, recordedProbe, sha256Of } from '../../probedNative';
 import {
   buildOwnedHookFile,
   compatHookConfigPath,
@@ -503,6 +503,26 @@ describe.skipIf(process.platform === 'win32')('native bridge side effects', () =
     expect(runs()).toBe(1);
     expect((await installCompatHooks('copilot', withNative, { reprobe: true })).native).toMatchObject({ state: 'current', action: 'none' });
     expect(runs()).toBe(2);
+  });
+
+  // A run that cannot take the lock proves nothing new: the copy in place is
+  // offered by the rule status uses, including a copy an older wmux installed
+  // before any verdict was recorded (it kept a copy only once it ran).
+  it('without the lock, keeps the entries on a copy status counts as working', async () => {
+    if (process.getuid?.() === 0) return;
+    await installCompatHooks('copilot', withNative);
+    const hooks = path.dirname(dest());
+    fs.unlinkSync(path.join(hooks, PROBE_RECORD));
+    fs.chmodSync(hooks, 0o500);
+    try {
+      const outcome = await installCompatHooks('copilot', withNative);
+      expect(outcome.ok).toBe(true);
+      expect(readConfig().hooks.Stop[0].exec).toBe(dest());
+      expect(statusCompatHooks('copilot', withNative).config).toBe('current');
+      expect(runs()).toBe(1);
+    } finally {
+      fs.chmodSync(hooks, 0o700);
+    }
   });
 
   it('takes the lock of ~/.wmux/hooks, the one every native copy there is installed under', async () => {
