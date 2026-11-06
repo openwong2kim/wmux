@@ -127,10 +127,22 @@ impl<T> Storage<T> {
     where
         T: Default,
     {
+        self.initialize_up_to(additional_rows, columns, usize::MAX);
+    }
+
+    /// wmux: `initialize`, never allocating more than `max_rows` rows, the
+    /// most the grid can hold. Upstream grows by at least `MAX_CACHE_SIZE`,
+    /// so a 300-row history allocates as much as a 1,000-row one.
+    #[inline]
+    pub fn initialize_up_to(&mut self, additional_rows: usize, columns: usize, max_rows: usize)
+    where
+        T: Default,
+    {
         if self.len + additional_rows > self.inner.len() {
             self.rezero();
 
-            let realloc_size = self.inner.len() + max(additional_rows, MAX_CACHE_SIZE);
+            let realloc_size = (self.inner.len() + max(additional_rows, MAX_CACHE_SIZE))
+                .min(max(max_rows, self.len + additional_rows));
             self.inner.resize_with(realloc_size, || Row::new(columns));
         }
 
@@ -140,6 +152,16 @@ impl<T> Storage<T> {
     #[inline]
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// wmux: the cells allocated, cached rows included (read-only).
+    pub fn allocated_cells(&self) -> usize {
+        self.inner.iter().map(Row::len).sum()
+    }
+
+    /// wmux: the rows allocated, cached rows included (read-only).
+    pub fn allocated_rows(&self) -> usize {
+        self.inner.len()
     }
 
     /// Swap implementation for Row<T>.
