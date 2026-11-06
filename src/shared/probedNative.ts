@@ -29,8 +29,18 @@ import { sweepAsides } from './lifecycleIntegrations';
  *  bytes, so neither is recorded. */
 export type ProbeVerdict = 'pass' | 'fail' | 'timeout' | 'unstartable';
 
-/** Run `binary args…` and compare its trimmed stdout with `line`. Never throws. */
-export function runProbe(binary: string, args: readonly string[], line: string, timeoutMs: number): Promise<ProbeVerdict> {
+/** What a passing probe prints: exactly one line, or output containing a
+ *  text (a `--version` that every build answers carries a marker line). */
+export type ProbeExpectation = { line: string } | { contains: string };
+
+/** An expectation as part of a verdict's key: a line is itself, so the keys
+ *  recorded before `contains` existed stay valid; a contained text is tagged. */
+export function expectationKey(expect: ProbeExpectation): string {
+  return 'line' in expect ? expect.line : `contains:${expect.contains}`;
+}
+
+/** Run `binary args…` and hold its stdout to `expect`. Never throws. */
+export function runProbe(binary: string, args: readonly string[], expect: ProbeExpectation, timeoutMs: number): Promise<ProbeVerdict> {
   return new Promise((resolve) => {
     try {
       execFile(binary, [...args], { timeout: timeoutMs, windowsHide: true, encoding: 'utf8' }, (error, stdout) => {
@@ -38,7 +48,9 @@ export function runProbe(binary: string, args: readonly string[], line: string, 
         // A string code is a spawn error (EACCES, EPERM, EBUSY, ENOENT); an
         // exit status is a number.
         if (error && typeof (error as { code?: unknown }).code === 'string') return resolve('unstartable');
-        resolve(!error && String(stdout).trim() === line ? 'pass' : 'fail');
+        const out = String(stdout);
+        const met = 'line' in expect ? out.trim() === expect.line : out.includes(expect.contains);
+        resolve(!error && met ? 'pass' : 'fail');
       });
     } catch {
       resolve('unstartable');
@@ -200,12 +212,17 @@ export interface ProbedNativeOptions {
   destinationPath: string;
   /** Where the verdicts and the lock live. */
   recordDir: string;
-  /** The line a passing probe prints: part of every verdict's key. */
+  /** What the probe expects, as expectationKey gives it: part of every
+   *  verdict's key. */
   line: string;
   /** Runs the probe on a path; the real one is runProbe. */
   probe: (binary: string) => Promise<ProbeVerdict>;
   /** Any one of them in a destination makes it wmux's to replace. */
   ownershipMarkers: readonly string[];
+  /** Probe again even bytes with a recorded verdict, and record the new one
+   *  (`wmux setup-hooks --reprobe`, after the cause of a recorded failure is
+   *  gone). Never set at boot. */
+  reprobe?: boolean;
   /** The staged copy's mode. Default 0o700. */
   mode?: number;
   lock?: LockOptions;
@@ -303,7 +320,7 @@ async function prepareOnce(opts: ProbedNativeOptions, sourcePath: string): Promi
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return { binary: null, reason: `copy unreadable: ${String(error)}` };
   }
   const key = probeKey(sha256Of(bytes), opts.line);
-  const known = recordedProbe(opts.recordDir, key);
+  const known = opts.reprobe ? undefined : recordedProbe(opts.recordDir, key);
 
   if (current?.equals(bytes)) {
     // These bytes are in place already: only their verdict is missing.
