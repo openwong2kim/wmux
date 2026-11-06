@@ -1,6 +1,7 @@
 name: Chrome pipe probe
-# Drives the installed Chrome and Edge over --remote-debugging-pipe (fds 3
-# and 4) the way the dedicated Chrome is spawned, on each platform wmux ships:
+# Drives the installed Chrome and Edge, and Playwright's Chromium build, over
+# --remote-debugging-pipe (fds 3 and 4) the way the dedicated Chrome is
+# spawned, on each platform wmux ships:
 # first answer, a tab, a browser session, exit when the pipe closes, nothing
 # left running on the profile, and a cookie kept across a restart
 # (scripts/probe-chrome-pipe.mjs). The results table is in the job summary.
@@ -43,13 +44,25 @@ jobs:
         with:
           node-version: '>=24.21.0 <25'
 
+      # Chromium: no runner image ships it on all three (Ubuntu only), so
+      # Playwright's build (Chrome for Testing) at the version wmux depends on.
+      # About 30 s; --no-shell skips the headless shell the probe does not run.
+      - name: Install Chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw
+        run: npx -y playwright-core@1.58.2 install chromium --no-shell
+
       - name: Probe (Windows, macOS)
         if: runner.os != 'Linux'
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw
         run: node scripts/probe-chrome-pipe.mjs --json pipe-probe.json
 
       # Headed mode needs a display: a virtual one.
       - name: Probe (Linux)
         if: runner.os == 'Linux'
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw
         run: xvfb-run -a node scripts/probe-chrome-pipe.mjs --json pipe-probe.json
 
       - name: Upload results

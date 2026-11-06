@@ -20,7 +20,9 @@
  *   - list lock files left;
  *   - start again on the same profile and read the cookie back.
  *
- * Usage: node scripts/probe-chrome-pipe.mjs [--browser chrome|edge|<path>]... [--headless-only] [--json out.json]
+ * Usage: node scripts/probe-chrome-pipe.mjs [--browser chrome|edge|chromium|<path>]... [--headless-only] [--json out.json]
+ * `chromium` is Playwright's build, installed by `playwright-core install
+ * chromium` into PLAYWRIGHT_BROWSERS_PATH.
  * Exits non-zero when a browser that was found fails a step. Pages are
  * about:blank only; nothing is fetched from the network.
  */
@@ -38,7 +40,7 @@ for (let i = 0; i < args.length; i++) {
   else if (args[i] === '--headless-only') headlessOnly = true;
   else if (args[i] === '--json') jsonOut = args[++i];
 }
-if (wanted.length === 0) wanted.push('chrome', 'edge');
+if (wanted.length === 0) wanted.push('chrome', 'edge', 'chromium');
 
 const STEP_TIMEOUT_MS = 30_000;
 /** CHROME_START_CEILING_MS in src/shared/chromeStart.ts: how long the launcher waits on a Chrome to start. */
@@ -50,6 +52,16 @@ const EXIT_TIMEOUT_MS = 5_000;
 const LINGER_DEADLINE_MS = 30_000;
 
 function candidates(name) {
+  if (name === 'chromium') {
+    const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+    if (!root || !fs.existsSync(root)) return [];
+    const rel = process.platform === 'win32'
+      ? ['chrome-win64', 'chrome.exe']
+      : process.platform === 'darwin'
+        ? [`chrome-mac-${process.arch}`, 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing']
+        : ['chrome-linux64', 'chrome'];
+    return fs.readdirSync(root).filter((d) => /^chromium-\d+$/.test(d)).map((d) => path.join(root, d, ...rel));
+  }
   if (name !== 'chrome' && name !== 'edge') return [name];
   if (process.platform === 'win32') {
     const roots = [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA].filter(Boolean);
