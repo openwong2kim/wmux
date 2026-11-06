@@ -106,7 +106,8 @@ jobs:
           cp dist/native-hooks/wmux-native integrations/claude/bin/wmux-bridge.mjs "$stage/"
           WMUX_CLAUDE_HOOK_IMPL="$stage/wmux-native claude-hook" npx vitest run integrations/claude/__tests__/claudeHookCharacterisation.os.test.ts integrations/claude/__tests__/claudeHookContract.test.ts
           # The argv a Claude settings entry carries: the bridge path in argv[1].
-          WMUX_CLAUDE_HOOK_IMPL="$stage/wmux-native $stage/wmux-bridge.mjs" npx vitest run integrations/claude/__tests__/claudeHookCharacterisation.os.test.ts integrations/claude/__tests__/claudeHookContract.test.ts
+          # claudeHookContract.test.ts does not read WMUX_CLAUDE_HOOK_IMPL: once is enough.
+          WMUX_CLAUDE_HOOK_IMPL="$stage/wmux-native $stage/wmux-bridge.mjs" npx vitest run integrations/claude/__tests__/claudeHookCharacterisation.os.test.ts
       - name: Retain the staged binary
         if: needs.changes.outputs.relevant != 'false'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
