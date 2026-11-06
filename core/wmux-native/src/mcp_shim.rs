@@ -72,7 +72,7 @@ pub fn parse_args(args: &[OsString]) -> Args {
 }
 
 /// How a session ended, and the exit code each end maps to.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Outcome {
     StdinEnd,
     StdinError,
@@ -219,11 +219,27 @@ pub fn handshake_line(h: &Handshake) -> String {
 
 // ----- process ---------------------------------------------------------------
 
-static EXITING: AtomicBool = AtomicBool::new(false);
+/// Claimed once by whichever end of the session comes first.
+struct ExitClaim(AtomicBool);
 
-/// First end wins: a stdin EOF racing a broker close must not report both.
+impl ExitClaim {
+    const fn new() -> Self {
+        ExitClaim(AtomicBool::new(false))
+    }
+
+    /// True for the first caller only.
+    fn claim(&self) -> bool {
+        !self.0.swap(true, Ordering::SeqCst)
+    }
+}
+
+static EXITING: ExitClaim = ExitClaim::new();
+
+/// First end wins: a stdin EOF racing a broker close must not report both,
+/// and a broker read error reports itself, as node's 'error' comes before
+/// its 'close'.
 fn claim_exit() -> bool {
-    !EXITING.swap(true, Ordering::SeqCst)
+    EXITING.claim()
 }
 
 /// Best effort: a broken stderr must not stop the exit (eprintln! panics).
@@ -422,16 +438,34 @@ fn write_patiently(out: &mut impl Write, mut bytes: &[u8]) -> std::io::Result<()
     }
 }
 
+/// What one read from the broker means for the session.
+#[derive(Debug, PartialEq)]
+enum ReadStep {
+    Data(usize),
+    Retry,
+    End(Outcome),
+}
+
+/// A read error ends the session as that error (`read ECONNRESET`), never as
+/// a plain close: only a read of 0 bytes is the broker closing.
+fn read_step(r: std::io::Result<usize>) -> ReadStep {
+    match r {
+        Ok(0) => ReadStep::End(Outcome::BrokerClosed),
+        Ok(n) => ReadStep::Data(n),
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => ReadStep::Retry,
+        Err(e) => ReadStep::End(Outcome::BrokerError(socket_error("read", &e))),
+    }
+}
+
 /// Broker to stdout until either side ends.
 fn pump_to_stdout(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> ! {
     let mut buf = vec![0u8; 64 * 1024];
     let stdout = std::io::stdout();
     loop {
-        let n = match read(&mut buf) {
-            Ok(0) => finish(Outcome::BrokerClosed),
-            Ok(n) => n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => finish(Outcome::BrokerError(socket_error("read", &e))),
+        let n = match read_step(read(&mut buf)) {
+            ReadStep::Data(n) => n,
+            ReadStep::Retry => continue,
+            ReadStep::End(outcome) => finish(outcome),
         };
         // A write failure means the host stopped reading: its session is over
         // (exit 0, the divergence the module doc states).
@@ -1102,6 +1136,37 @@ mod tests {
                 .unwrap(),
             "[wmux-mcp-shim] broker connection error: read ECONNRESET"
         );
+    }
+
+    /// Linux reports a peer that closed with unread bytes as ECONNRESET on
+    /// the next read. That read must end the session as `read ECONNRESET`,
+    /// as node's 'error' event does, not as the plain close a 0-byte read is.
+    #[test]
+    fn a_reset_on_read_is_an_error_not_a_close() {
+        let reset = std::io::Error::from_raw_os_error(if cfg!(windows) {
+            64
+        } else if cfg!(target_os = "linux") {
+            104
+        } else {
+            54
+        });
+        assert_eq!(
+            read_step(Err(reset)),
+            ReadStep::End(Outcome::BrokerError("read ECONNRESET".into()))
+        );
+        assert_eq!(read_step(Ok(0)), ReadStep::End(Outcome::BrokerClosed));
+        assert_eq!(read_step(Ok(5)), ReadStep::Data(5));
+        assert_eq!(read_step(Err(std::io::ErrorKind::Interrupted.into())), ReadStep::Retry);
+    }
+
+    /// The first end claims the exit and later ones are dropped, so the
+    /// reader's error, reported first, is the one printed.
+    #[test]
+    fn the_first_end_wins_the_exit() {
+        let claim = ExitClaim::new();
+        assert!(claim.claim());
+        assert!(!claim.claim());
+        assert!(!claim.claim());
     }
 
     #[test]

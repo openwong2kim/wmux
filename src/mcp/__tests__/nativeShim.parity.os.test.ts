@@ -114,7 +114,11 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
   const flooding = new Set<ReturnType<typeof setInterval>>();
   let child: ReturnType<typeof spawn> | null = null;
   if (broker !== 'none') {
-    const srv = net.createServer((sock) => {
+    // For 'reset', a one-byte high-water mark: node keeps reading a paused
+    // socket from the kernel until its buffer reaches that mark, so with the
+    // default (64 KiB) the stub would drain the shim's bytes and close with an
+    // empty receive queue, a plain EOF. At 1 byte it stops after one chunk.
+    const srv = net.createServer({ highWaterMark: broker === 'reset' ? 1 : undefined }, (sock) => {
       let buf = Buffer.alloc(0);
       sock.on('data', (chunk) => {
         buf = Buffer.concat([buf, chunk]);
@@ -123,11 +127,18 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
         line = buf.subarray(0, nl + 1).toString('utf8');
         if (broker === 'hangup') { sock.destroy(); return; }
         if (broker === 'reset') {
-          // Stop reading, have the host send a line the shim forwards, then
-          // close with it unread in this socket's receive queue.
+          // Stop reading, then have the host send two lines the shim forwards
+          // as two writes. The first fills the one-byte buffer (node then stops
+          // reading the socket); the second stays unread in the kernel, so the
+          // close below resets the shim's end on Linux (af_unix.c,
+          // unix_release_sock: ECONNRESET only with a non-empty receive queue).
           sock.pause();
           setTimeout(() => child?.stdin?.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n'), 50);
-          setTimeout(() => sock.destroy(), 400);
+          setTimeout(() => child?.stdin?.write('{"jsonrpc":"2.0","id":2,"method":"ping"}\n'), 150);
+          setTimeout(() => {
+            if (sock.readableLength === 0) throw new Error('the stub never received the first line');
+            sock.destroy();
+          }, 400);
           return;
         }
         const timer = setInterval(() => sock.write('{"jsonrpc":"2.0","method":"notifications/ping"}\n'), 20);
