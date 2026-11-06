@@ -9,6 +9,8 @@ import { osToastsAllowed } from '../../notification/osToastGate';
 import { IPC } from '../../../shared/constants';
 import { HelpRequests } from '../../browser-session/HelpRequests';
 import { FrameTarget, FrameWorlds, evaluateInFrame, listChildFrames, type CdpSend, type Point as FramePoint } from '../../browser-session/frameAccess';
+import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../../../mcp/playwright/dom-intelligence';
+import type { RefDescriptor } from '../../../mcp/playwright/refDescriptors';
 import {
   buildHelpHighlightExpression,
   buildHelpProbeExpression,
@@ -190,6 +192,7 @@ const PROTECTED_GATE_EXEMPT: ReadonlySet<string> = new Set([
  */
 const PROTECTED_DENIED_METHODS: ReadonlyMap<string, string> = new Map([
   ['browser.evaluate', 'running page scripts needs a consent grant on a protected pane'],
+  ['browser.frames.read', 'a protected pane has no builtin browser target'],
   ['browser.cookies', 'cookies of a protected pane are reachable only through browser_cookies, limited to its allowed hosts'],
   ['browser.cdp.target', 'a protected pane has no builtin browser target'],
   ['browser.dialog.arm', 'a protected pane has no builtin browser target'],
@@ -1028,6 +1031,101 @@ function frameParam(params: Record<string, unknown>): { frameId: string; loaderI
     throw new Error('"loaderId" must be a non-empty string');
   }
   return { frameId, ...(loaderId !== undefined ? { loaderId } : {}) };
+}
+
+/** Frames one browser.frames.read may list, whatever the request asks for. */
+export const FRAMES_READ_CAP = 20;
+/** Earlier refs one frame may name, and the longest role or name in them. */
+const FRAME_PRIOR_CAP = 5000;
+const FRAME_PRIOR_TEXT_CAP = 1000;
+
+interface FramesReadRequest {
+  frames: Array<{ frameId: string; loaderId: string; prior: RefDescriptor[] }>;
+  seed: number;
+  filter?: 'interactive';
+}
+
+const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+const isBoundedText = (v: unknown): v is string => typeof v === 'string' && v.length <= FRAME_PRIOR_TEXT_CAP;
+
+/**
+ * browser.frames.read's params, checked field by field. It reads with the one
+ * listing expression main builds; a caller's `expression` is refused, here or
+ * on a frame, so the method can never become a way to run page code.
+ */
+function framesReadParams(params: Record<string, unknown>): FramesReadRequest {
+  const bad = (what: string) => new Error(`browser.frames.read: ${what}`);
+  const noCode = bad('takes no expression; it reads with the listing main builds');
+  if ('expression' in params) throw noCode;
+  const frames = params['frames'];
+  if (!Array.isArray(frames) || frames.length === 0) throw bad('"frames" must be a non-empty array');
+  if (frames.length > FRAMES_READ_CAP) throw bad(`at most ${FRAMES_READ_CAP} frames per call`);
+  if (!isCount(params['seed'])) throw bad('"seed" must be a non-negative integer');
+  const filter = params['filter'];
+  if (filter !== undefined && filter !== 'interactive') throw bad('"filter" must be "interactive" when given');
+  return {
+    seed: params['seed'],
+    ...(filter ? { filter } : {}),
+    frames: frames.map((raw: unknown) => {
+      if (raw === null || typeof raw !== 'object') throw bad('each frame is {frameId, loaderId, prior?}');
+      const f = raw as Record<string, unknown>;
+      if ('expression' in f) throw noCode;
+      if (typeof f['frameId'] !== 'string' || !f['frameId']) throw bad('"frameId" must be a non-empty string');
+      // Always the document the snapshot listed: the check cannot be left off here.
+      if (typeof f['loaderId'] !== 'string' || !f['loaderId']) throw bad('"loaderId" must be a non-empty string');
+      const prior = f['prior'] ?? [];
+      if (!Array.isArray(prior) || prior.length > FRAME_PRIOR_CAP) throw bad(`"prior" must be an array of at most ${FRAME_PRIOR_CAP}`);
+      return {
+        frameId: f['frameId'],
+        loaderId: f['loaderId'],
+        prior: prior.map((p: unknown) => {
+          const d = (p ?? {}) as Record<string, unknown>;
+          if (!isCount(d['ref']) || !isCount(d['kindIndex']) || !isBoundedText(d['role']) || !isBoundedText(d['name'])) {
+            throw bad('each prior entry is {ref, role, name, kindIndex}');
+          }
+          return { ref: d['ref'], role: d['role'], name: d['name'], kindIndex: d['kindIndex'] };
+        }),
+      };
+    }),
+  };
+}
+
+/** One frame's answer: its listing, or which kind of miss, never the reason text. */
+type FrameListing = { value: unknown } | { unreachable: true } | { gone: true } | { failed: true };
+
+/**
+ * List each frame's document in its own isolated world, in order, each one
+ * numbering its new elements on from where the previous one stopped. An error
+ * is reduced to its kind: a read's error text can carry page content.
+ */
+async function readFrameListings(
+  wc: WebContents,
+  req: FramesReadRequest,
+): Promise<{ frames: FrameListing[]; nextRef: number }> {
+  const send = cdpSendOf(wc);
+  const worlds = frameWorldsOf(wc);
+  let seed = req.seed;
+  const frames: FrameListing[] = [];
+  for (const f of req.frames) {
+    const expression = buildDomSnapshotExpression(undefined, {
+      ...(req.filter ? { filter: req.filter } : {}),
+      frame: { seed, prior: f.prior },
+      withEntries: true,
+    });
+    try {
+      const answer = await evaluateInFrame(send, worlds, f.frameId, expression, f.loaderId);
+      if ('unreachable' in answer) {
+        frames.push({ unreachable: true });
+        continue;
+      }
+      for (const e of readDomSnapshotPayload(answer.value).entries) if (e.ref + 1 > seed) seed = e.ref + 1;
+      frames.push({ value: answer.value });
+    } catch (err) {
+      const gone = /^FRAME_(?:GONE|NAVIGATED):/.test(err instanceof Error ? err.message : String(err));
+      frames.push(gone ? { gone: true } : { failed: true });
+    }
+  }
+  return { frames, nextRef: seed };
 }
 
 /**
@@ -4364,6 +4462,26 @@ export function registerBrowserRpc(
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.frames.tree: WebContents unavailable');
     return { frames: await listChildFrames(cdpSendOf(wc)) };
+  });
+
+  /**
+   * browser.frames.read
+   * List in-process frames' documents for the RPC lane's snapshot, all in one
+   * call: each frame is read in its own isolated world with the DOM listing's
+   * frame mode, which main builds (no caller code runs). An element `prior`
+   * names keeps its number; new ones are numbered on from `seed`, frame after
+   * frame. Each answer is the listing, or unreachable, gone (navigated or
+   * removed) or failed, with no error text. At most 20 frames per call.
+   * params: { frames: [{ frameId, loaderId, prior? }], seed, filter?, surfaceId? }
+   */
+  registerLeased('browser.frames.read', async (params, scope) => {
+    const req = framesReadParams(params);
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.frames.read', surfaceId, scope);
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.frames.read: WebContents unavailable');
+    return readFrameListings(wc, req);
   });
 
   /**

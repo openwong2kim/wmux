@@ -349,6 +349,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.evaluate':          { capability: 'browser.evaluate',   riskClass: 'browser' },
   'browser.console.get':       { capability: 'browser.read',       riskClass: 'browser' },
   'browser.frames.tree':       { capability: 'browser.read',       riskClass: 'browser' },
+  'browser.frames.read':       { capability: 'browser.read',       riskClass: 'browser' },
   'browser.lifecycle.get':     { capability: 'browser.read',       riskClass: 'browser' },
   'browser.network.get':       { capability: 'browser.read',       riskClass: 'browser' },
   'browser.responseBody.get':  { capability: 'browser.read',       riskClass: 'browser' },

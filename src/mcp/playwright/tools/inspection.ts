@@ -18,7 +18,7 @@ import {
 } from '../snapshot';
 import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../dom-intelligence';
 import { nextRefFor, priorRefDescriptors, recordRefGeneration, reserveRefs } from '../refDescriptors';
-import { readRpcFrames, type RpcFrameInfo, type RpcFrameRef } from '../rpcFrames';
+import { readRpcFrames, type RpcFrameAnswer, type RpcFrameInfo, type RpcFrameRef } from '../rpcFrames';
 import { pageEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
@@ -656,11 +656,12 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             prior: rpcFrameRefsFor(browserScopeKey(scope)),
             listFrames: async () =>
               (await sendScopedBrowserRpc<{ frames?: RpcFrameInfo[] }>('browser.frames.tree', scope, {})).frames ?? [],
-            readFrame: (frame, seed, prior) =>
-              sendScopedBrowserRpc<{ value: unknown } | { unreachable: string }>('browser.evaluate', scope, {
-                expression: buildDomSnapshotExpression(undefined, { ...(filter && { filter }), frame: { seed, prior }, withEntries: true }),
-                frameId: frame.frameId,
-                loaderId: frame.loaderId,
+            // Main builds the frame listing itself; no expression travels.
+            readFrames: (batch, seed) =>
+              sendScopedBrowserRpc<{ frames: RpcFrameAnswer[]; nextRef: number }>('browser.frames.read', scope, {
+                frames: batch.map(({ frame, prior }) => ({ frameId: frame.frameId, loaderId: frame.loaderId, prior })),
+                seed,
+                ...(filter && { filter }),
               }),
           });
           if (frames.text) text += redactPasswordParams(frames.text);

@@ -62,13 +62,19 @@ export interface ReadRpcFramesOptions {
   /** The frame refs this connection's last snapshot of the surface recorded. */
   prior?: ReadonlyMap<number, RpcFrameRef>;
   listFrames: () => Promise<RpcFrameInfo[]>;
-  /** One frame's frame-mode listing (or why it cannot be read), given its document's earlier refs. */
-  readFrame: (
-    frame: RpcFrameInfo,
+  /**
+   * Every frame's frame-mode listing in one call (browser.frames.read), each
+   * given its document's earlier refs, numbering new elements on from `seed`
+   * frame after frame. `nextRef` is past every number the reads handed out.
+   */
+  readFrames: (
+    frames: Array<{ frame: RpcFrameInfo; prior: RefDescriptor[] }>,
     seed: number,
-    prior: RefDescriptor[],
-  ) => Promise<{ value: unknown } | { unreachable: string }>;
+  ) => Promise<{ frames: RpcFrameAnswer[]; nextRef: number }>;
 }
+
+/** One frame's answer: its listing, or which kind of miss (never the reason text). */
+export type RpcFrameAnswer = { value: unknown } | { unreachable: true } | { gone: true } | { failed: true };
 
 /** The earlier refs of each frame document, as the descriptors stable numbering matches. */
 function priorByDocument(prior: ReadonlyMap<number, RpcFrameRef> | undefined): Map<string, RefDescriptor[]> {
@@ -180,6 +186,17 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
   const result = { refs: new Map<number, RpcFrameRef>(), nextRef: opts.nextRef };
   const read = frames.slice(0, RPC_FRAME_CAP);
   const priorDocs = priorByDocument(opts.prior);
+  // One round trip for every frame: a call per frame spent a connection each
+  // from the app's shared per-second allowance.
+  let answers: RpcFrameAnswer[] = [];
+  try {
+    const batch = await opts.readFrames(read.map((frame) => ({ frame, prior: priorDocs.get(docOf(frame)) ?? [] })), opts.nextRef);
+    answers = Array.isArray(batch.frames) ? batch.frames : [];
+    // Numbers stamped into frames the pool then left unshown are spent too.
+    if (Number.isSafeInteger(batch.nextRef) && batch.nextRef > result.nextRef) result.nextRef = batch.nextRef;
+  } catch {
+    // Every frame reads as failed below; their earlier refs carry over.
+  }
   const indexById = new Map<string, number>();
   /** Documents this snapshot listed, or saw go away: nothing to carry for them. */
   const settled = new Set<string>();
@@ -192,15 +209,11 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
       break;
     }
     indexById.set(f.frameId, i + 1);
-    let answer: { value: unknown } | { unreachable: string } | 'gone' | 'failed';
-    try {
-      answer = await opts.readFrame(f, result.nextRef, priorDocs.get(`${f.frameId}\u0000${f.loaderId}`) ?? []);
-    } catch (err) {
-      answer = /FRAME_(?:GONE|NAVIGATED)/.test(err instanceof Error ? err.message : String(err)) ? 'gone' : 'failed';
-    }
-    if (answer === 'gone' || (answer !== 'failed' && 'value' in answer)) settled.add(docOf(f));
-    if (answer === 'gone' || answer === 'failed' || 'unreachable' in answer) {
-      const note = answer === 'gone' ? GONE_NOTE : answer === 'failed' ? FAILED_NOTE : UNREACHABLE_NOTE;
+    const raw: unknown = answers[i];
+    const answer: RpcFrameAnswer = raw !== null && typeof raw === 'object' ? (raw as RpcFrameAnswer) : { failed: true };
+    if ('gone' in answer || 'value' in answer) settled.add(docOf(f));
+    if (!('value' in answer)) {
+      const note = 'gone' in answer ? GONE_NOTE : 'unreachable' in answer ? UNREACHABLE_NOTE : FAILED_NOTE;
       const line = `${head} ${note}`;
       push(fits(line) ? line : head);
       continue;

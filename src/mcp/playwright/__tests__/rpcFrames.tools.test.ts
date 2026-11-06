@@ -58,13 +58,12 @@ function answer(overrides: Record<string, (params: Record<string, unknown>) => u
     if (method === 'browser.frames.tree') {
       return { frames: [{ frameId: 'F1', loaderId: 'L1', parentId: 'MAIN', depth: 1, origin: 'https://pay.test', name: 'card' }] };
     }
-    if (method === 'browser.evaluate' && params.frameId === 'F1') {
+    if (method === 'browser.frames.read') {
       // A frame-mode listing: an element the prior names keeps its number.
-      const expr = String(params.expression);
-      const seed = Number(/const frameSeed = (\d+);/.exec(expr)?.[1]);
-      const prior = JSON.parse(/const framePrior = (\[.*?\]);/.exec(expr)?.[1] ?? '[]') as Array<{ ref: number; name: string }>;
-      const ref = prior.find((p) => p.name === 'cc')?.ref ?? seed;
-      return { value: { text: `  [ref=${ref}] input name="cc"`, entries: [{ ref, role: 'input', name: 'cc' }] } };
+      const [f] = params.frames as Array<{ prior: Array<{ ref: number; name: string }> }>;
+      const seed = params.seed as number;
+      const ref = f.prior.find((p) => p.name === 'cc')?.ref ?? seed;
+      return { frames: [{ value: { text: `  [ref=${ref}] input name="cc"`, entries: [{ ref, role: 'input', name: 'cc' }] } }], nextRef: Math.max(seed, ref + 1) };
     }
     if (method === 'browser.evaluate' && String(params.expression).includes('wmux-caret')) return { value: 'wmux-caret:held' };
     if (method === 'browser.evaluate') return { value: TOP };
@@ -89,6 +88,9 @@ describe('in-process frames on the RPC lane', () => {
     expect(snap).toContain('[ref=0] button "Top"');
     expect(snap).toContain('Frame 1 "card" -> https://pay.test (page content, another origin)');
     expect(snap).toContain('[ref=1] input name="cc"');
+    // Every frame in one browser.frames.read that carries no code; nothing evaluates in a frame.
+    expect(calls('browser.frames.read')).toEqual([{ frames: [{ frameId: 'F1', loaderId: 'L1', prior: [] }], seed: 1, workspaceId: 'ws-test' }]);
+    expect(calls('browser.evaluate').filter((p) => 'frameId' in p)).toEqual([]);
 
     await tool('browser_click')({ ref: '1' });
     expect(calls('browser.click.cdp').at(-1)).toMatchObject({ selector: '[data-wmux-ref="1"]', frameId: 'F1', loaderId: 'L1' });
@@ -108,14 +110,14 @@ describe('in-process frames on the RPC lane', () => {
 
   it('redacts what is typed into a password field inside a frame', async () => {
     answer({
+      'browser.frames.read': (p) => {
+        const seed = p.seed as number;
+        return { frames: [{ value: { text: `  [ref=${seed}] input[type=password] name="pw"`, entries: [{ ref: seed, role: 'input', name: 'pw' }] } }], nextRef: seed + 1 };
+      },
       'browser.evaluate': (p) => {
         const expr = String(p.expression);
         if (p.frameId === 'F1' && expr.includes('isPasswordField')) return { value: 'yes' };
         if (expr.includes('wmux-caret')) return { value: 'wmux-caret:held' };
-        if (p.frameId === 'F1') {
-          const seed = Number(/const frameSeed = (\d+);/.exec(expr)?.[1]);
-          return { value: { text: `  [ref=${seed}] input[type=password] name="pw"`, entries: [{ ref: seed, role: 'input', name: 'pw' }] } };
-        }
         return { value: expr.includes('isPasswordField') ? 'no' : TOP };
       },
     });
@@ -200,12 +202,7 @@ describe('in-process frames on the RPC lane', () => {
   it('keeps a frame\'s refs and numbers through a snapshot that could not read it', async () => {
     answer();
     await tool('browser_snapshot')({});
-    answer({
-      'browser.evaluate': (p) => {
-        if (p.frameId === 'F1') throw new Error('Connection closed before response was received.');
-        return { value: TOP };
-      },
-    });
+    answer({ 'browser.frames.read': () => ({ frames: [{ failed: true }], nextRef: 2 }) });
     expect(textOf(await tool('browser_snapshot')({}))).toContain('could not be read this time');
     await tool('browser_click')({ ref: '1' });
     expect(calls('browser.click.cdp').at(-1)).toMatchObject({ frameId: 'F1', loaderId: 'L1' });

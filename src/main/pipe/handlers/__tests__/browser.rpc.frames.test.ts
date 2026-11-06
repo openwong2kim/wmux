@@ -198,3 +198,165 @@ describe('in-process frames on the builtin lane (frameId)', () => {
     expect(res.ok).toBe(false);
   });
 });
+
+describe('browser.frames.read — every frame listing in one call', () => {
+  function register(enforcementMode: 'shadow' | 'enforce' = 'shadow'): RpcRouter {
+    const router = dispatchAsClaimedCaller(new RpcRouter());
+    const webviewCdpManager = {
+      getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1' })),
+      listTargets: vi.fn(() => []),
+      getCdpPort: vi.fn(() => 18800),
+      waitForTarget: vi.fn(),
+      ensureAwake: vi.fn(async () => null),
+      setCaptureCleanup: vi.fn(),
+      setCaptureAttach: vi.fn(),
+      withAutomationLease: vi.fn(async (_surfaceId: string, fn: () => Promise<unknown>) => fn()),
+      acquireRpcLease: vi.fn(() => 'lease-1'),
+      renewRpcLease: vi.fn(() => true),
+      releaseRpcLease: vi.fn(() => true),
+    };
+    registerBrowserRpc(router, () => null, webviewCdpManager as never, undefined, vi.fn(), () => enforcementMode);
+    return router;
+  }
+
+  // Two frames, each document named by a loaderId no other case uses (worlds are cached per document).
+  const TWO = {
+    frameTree: {
+      frame: { id: 'MAIN', loaderId: 'LM', url: 'https://top.test/' },
+      childFrames: [
+        { frame: { id: 'R1', loaderId: 'RL1', parentId: 'MAIN', url: 'https://top.test/a' } },
+        { frame: { id: 'R2', loaderId: 'RL2', parentId: 'MAIN', url: 'https://pay.test/b' } },
+      ],
+    },
+  };
+
+  /** A guest whose frames answer a listing of `count` buttons numbered from the seed in the expression. */
+  function guestListing(count: number) {
+    const evaluated: Array<{ contextId: unknown; expression: string }> = [];
+    let world = 20;
+    mockWebContents.debugger.sendCommand.mockImplementation((async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'Page.getFrameTree') return TWO;
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: ++world };
+      if (method === 'Runtime.evaluate') {
+        const expression = String(params['expression']);
+        evaluated.push({ contextId: params['contextId'], expression });
+        const seed = Number(/const frameSeed = (\d+);/.exec(expression)?.[1]);
+        const entries = Array.from({ length: count }, (_, i) => ({ ref: seed + i, role: 'button', name: `B${i}` }));
+        return { result: { value: { text: entries.map((e) => `[ref=${e.ref}] button "${e.name}"`).join('\n'), entries } } };
+      }
+      return {};
+    }) as never);
+    return evaluated;
+  }
+
+  const frames = [{ frameId: 'R1', loaderId: 'RL1' }, { frameId: 'R2', loaderId: 'RL2' }];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWebContents.isDestroyed.mockReturnValue(false);
+  });
+
+  it('lists each frame in its own world with the listing main builds, numbering on frame after frame', async () => {
+    const executeJavaScript = vi.fn(async () => 'TOP');
+    (mockWebContents as Record<string, unknown>)['executeJavaScript'] = executeJavaScript;
+    const evaluated = guestListing(3);
+    const res = await register().dispatch({
+      id: 'r1',
+      method: 'browser.frames.read',
+      params: { frames: [{ ...frames[0], prior: [{ ref: 4, role: 'button', name: 'B0', kindIndex: 0 }] }, frames[1]], seed: 10, filter: 'interactive' },
+    });
+    expect(res).toMatchObject({ ok: true, result: { nextRef: 16, frames: [{ value: { entries: expect.any(Array) } }, { value: expect.any(Object) }] } });
+    expect(evaluated.map((e) => e.contextId)).toEqual([21, 22]);
+    // Main's frame-mode listing: the seed carried from frame to frame, the prior as data, the filter applied.
+    expect(evaluated[0].expression).toContain('const frameSeed = 10;');
+    expect(evaluated[0].expression).toContain('const framePrior = [{"ref":4,"role":"button","name":"B0","kindIndex":0}];');
+    expect(evaluated[1].expression).toContain('const frameSeed = 13;');
+    expect(evaluated[0].expression).toContain('const interactiveOnly = true;');
+    expect(executeJavaScript).not.toHaveBeenCalled();
+  });
+
+  it('runs no caller code: an expression is refused, at the top or on a frame', async () => {
+    const evaluated = guestListing(1);
+    const router = register();
+    for (const params of [
+      { frames, seed: 1, expression: 'document.cookie' },
+      { frames: [{ ...frames[0], expression: 'document.cookie' }], seed: 1 },
+    ]) {
+      const res = await router.dispatch({ id: 'x', method: 'browser.frames.read', params });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error).toMatch(/expression/);
+    }
+    // A prior entry is data with a fixed shape, never text spliced into the listing.
+    const smuggled = await router.dispatch({
+      id: 'p',
+      method: 'browser.frames.read',
+      params: { frames: [{ ...frames[0], prior: [{ ref: '1]; fetch("x"); [', role: 'b', name: 'n', kindIndex: 0 }] }], seed: 1 },
+    });
+    expect(smuggled.ok).toBe(false);
+    expect(evaluated).toEqual([]);
+  });
+
+  it('refuses more than 20 frames, a missing loaderId and a bad seed before touching the guest', async () => {
+    const evaluated = guestListing(1);
+    const router = register();
+    for (const params of [
+      { frames: Array.from({ length: 21 }, (_, i) => ({ frameId: `F${i}`, loaderId: `L${i}` })), seed: 1 },
+      { frames: [{ frameId: 'R1' }], seed: 1 },
+      { frames: [{ frameId: 'R1', loaderId: '' }], seed: 1 },
+      { frames, seed: -1 },
+      { frames, seed: 1, filter: 'all' },
+      { frames: [], seed: 1 },
+    ]) {
+      const res = await router.dispatch({ id: 'b', method: 'browser.frames.read', params });
+      expect(res.ok, JSON.stringify(params).slice(0, 60)).toBe(false);
+    }
+    expect(evaluated).toEqual([]);
+    expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('answers gone, unreachable or failed per frame, with no error text', async () => {
+    let world = 40;
+    mockWebContents.debugger.sendCommand.mockImplementation((async (method: string, params: Record<string, unknown> = {}) => {
+      if (method === 'Page.getFrameTree') {
+        return {
+          frameTree: {
+            frame: { id: 'MAIN', loaderId: 'LM', url: 'https://top.test/' },
+            childFrames: [
+              { frame: { id: 'G1', loaderId: 'GL1-NOW', parentId: 'MAIN', url: 'https://top.test/' } },
+              { frame: { id: 'G2', loaderId: 'GL2', parentId: 'MAIN', url: 'https://top.test/' } },
+              { frame: { id: 'G3', loaderId: 'GL3', parentId: 'MAIN', url: 'https://top.test/' } },
+            ],
+          },
+        };
+      }
+      if (method === 'Page.createIsolatedWorld') {
+        if (params['frameId'] === 'G2') throw new Error('No frame for given id found');
+        return { executionContextId: ++world };
+      }
+      if (method === 'Runtime.evaluate') {
+        return { exceptionDetails: { text: 'Uncaught', exception: { description: 'Error: secret page text' } } };
+      }
+      return {};
+    }) as never);
+    const res = await register().dispatch({
+      id: 'k',
+      method: 'browser.frames.read',
+      params: { frames: [{ frameId: 'G1', loaderId: 'GL1-OLD' }, { frameId: 'G2', loaderId: 'GL2' }, { frameId: 'G3', loaderId: 'GL3' }], seed: 5 },
+    });
+    expect(res).toMatchObject({ ok: true, result: { frames: [{ gone: true }, { unreachable: true }, { failed: true }], nextRef: 5 } });
+    expect(JSON.stringify(res)).not.toContain('secret');
+  });
+
+  it('is held by the same gates as the snapshot read: an unscoped caller is refused', async () => {
+    guestListing(1);
+    const res = await register('enforce').dispatch({
+      id: 's',
+      method: 'browser.frames.read',
+      params: { frames, seed: 1 },
+      clientName: 'approved-plugin',
+    }, { externalWire: true });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toContain('BROWSER_SCOPE_REFUSED');
+    expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
+  });
+});

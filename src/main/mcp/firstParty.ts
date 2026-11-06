@@ -238,6 +238,7 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'browser.cdp.info',
   'browser.console.get',
   'browser.frames.tree',
+  'browser.frames.read',
   'browser.network.get',
   'browser.responseBody.get',
   'browser.click.cdp',

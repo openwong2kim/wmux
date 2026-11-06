@@ -123,6 +123,7 @@ describe('browser RPC — the user paused or took over the tab', () => {
       ['browser.evaluate', { expression: '1+1', frameId: 'F1', loaderId: 'L1' }],
       ['browser.click.cdp', { selector: '[data-wmux-ref="3"]', frameId: 'F1', loaderId: 'L1' }],
       ['browser.frames.tree', {}],
+      ['browser.frames.read', { frames: [{ frameId: 'F1', loaderId: 'L1' }], seed: 1 }],
     ] as const) {
       const held = await router.dispatch({
         id: `e-${method}`,

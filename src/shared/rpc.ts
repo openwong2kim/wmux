@@ -529,6 +529,9 @@ export type RpcMethod =
   // A guest page's in-process child frames (ids, loaderIds, origins), for the
   // RPC lane's frame-aware snapshot. Read-only.
   | 'browser.frames.tree'
+  // Those frames' documents as DOM listings, read with an expression main
+  // builds (no caller code). Read-only.
+  | 'browser.frames.read'
   | 'browser.lifecycle.get'
   | 'browser.network.get'
   | 'browser.responseBody.get'
@@ -919,6 +922,7 @@ export const ALL_RPC_METHODS = [
   'browser.evaluate',
   'browser.console.get',
   'browser.frames.tree',
+  'browser.frames.read',
   'browser.lifecycle.get',
   'browser.network.get',
   'browser.responseBody.get',
