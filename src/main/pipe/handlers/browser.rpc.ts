@@ -936,8 +936,17 @@ interface PixelRect { x: number; y: number; width: number; height: number }
  * preset's scale both stretch CSS pixels on screen.
  */
 function viewRect(wc: WebContents, rect: PixelRect): PixelRect {
+  return scaleRect(rect, pageZoom(wc) * (activePreset.get(wc)?.scale ?? 1));
+}
+
+/** The guest's page zoom (Cmd +/-); 1 when it can't be read. */
+function pageZoom(wc: WebContents): number {
   const zoom = wc.getZoomFactor?.();
-  const scale = (typeof zoom === 'number' && zoom > 0 ? zoom : 1) * (activePreset.get(wc)?.scale ?? 1);
+  return typeof zoom === 'number' && zoom > 0 ? zoom : 1;
+}
+
+/** `rect` times `scale`, rounded outward to whole pixels. */
+function scaleRect(rect: PixelRect, scale: number): PixelRect {
   const x = Math.floor(rect.x * scale);
   const y = Math.floor(rect.y * scale);
   return {
@@ -1148,7 +1157,8 @@ async function captureElement(
   const shot = await withDeadline(
     wc.debugger.sendCommand('Page.captureScreenshot', {
       format: 'png',
-      clip: { ...box.page, scale: 1 },
+      // In zoomed pixels: under page zoom the clip is not in CSS px.
+      clip: { ...scaleRect(box.page, pageZoom(wc)), scale: 1 },
       // Only for an element that doesn't fit: it resizes the viewport to the
       // document, which moves fixed and sticky elements and reflows 100vh.
       ...(!box.inViewport && { captureBeyondViewport: true }),

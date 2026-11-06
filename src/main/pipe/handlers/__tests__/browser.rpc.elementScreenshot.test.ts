@@ -183,6 +183,15 @@ describe('browser.screenshot with a selector (element capture over RPC)', () => 
     expect(mockWebContents.capturePage).toHaveBeenCalledWith({ x: 20, y: 40, width: 60, height: 80 });
   });
 
+  it('scales the CDP clip by the guest zoom: the clip is in zoomed pixels, not CSS px', async () => {
+    zoom = 1.5;
+
+    await shoot(register(), { selector: '[data-wmux-ref="3"]' });
+
+    const shot = sent.find((s) => s.method === 'Page.captureScreenshot');
+    expect(shot?.params).toMatchObject({ clip: { x: 15, y: 780, width: 45, height: 60, scale: 1 } });
+  });
+
   it('scales the fallback crop by the guest zoom (Cmd +/-), times any preset', async () => {
     const router = register();
     const emulate = async (scale: number) => {
