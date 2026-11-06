@@ -517,7 +517,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
         document.addEventListener('click', onClick, true);
         window.__wmuxInspector = { onMove, onClick, overlay, label };
       })();
-    `).catch(() => {});
+    `).catch(() => undefined);
   }, [isReady]);
 
   const removeInspector = useCallback(() => {
@@ -532,7 +532,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
         window.__wmuxInspector.label.remove();
         delete window.__wmuxInspector;
       })();
-    `).catch(() => {});
+    `).catch(() => undefined);
   }, [isReady]);
 
   const handleToggleInspect = useCallback(() => {
