@@ -233,6 +233,24 @@ describe('CdpPipeMux: a target grant (C3 and C2b)', () => {
     mux.close();
   });
 
+  it('a browser session the client attached itself is held to the grant too', async () => {
+    const browser = new FakeBrowser();
+    const mux = new CdpPipeMux(browser.fromMux, browser.toMux, { targetGrant: () => false });
+    const a = external(mux, 'a');
+    await a.replyTo(a.send('Browser.getVersion'));
+    const second = (await a.replyTo(a.send('Target.attachToBrowserTarget'))).result?.sessionId as string;
+    expect(second).toMatch(/^B/);
+    await a.replyTo(a.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, second));
+    const main = mux.connect({ label: 'main' });
+    await main.send('Target.createTarget', { url: 'about:blank' });
+    // The auto-attach on the client's own browser session is let go on that session, not handed over.
+    await vi.waitFor(() => expect(browser.received.some((c) => c.method === 'Target.detachFromTarget' && c.sessionId === second && c.id >= MUX_ID_BASE)).toBe(true), { timeout: 5_000 });
+    browser.event(second, 'Target.targetCreated', { targetInfo: { targetId: 'T9', type: 'page' } });
+    await vi.waitFor(() => expect(cdpPipeCounters().dropped['ungranted-target']).toBe(2), { timeout: 5_000 });
+    expect(a.inbox.some((m) => m.method === 'Target.attachedToTarget' || m.method === 'Target.targetCreated')).toBe(false);
+    mux.close();
+  });
+
   it('a page\'s own frames and workers go with the page, and a session the client owns is told it ended after its grant went', async () => {
     const granted = new Set<string>();
     const browser = new FakeBrowser();

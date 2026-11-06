@@ -95,9 +95,10 @@ export type ClientCommandFilter = (client: { kind: 'internal' | 'external'; labe
  * target events and its Target.getTargets entry are left out, and a session
  * auto-attached to it is detached again rather than handed over.
  *
- * Checked where targets are found, on the client's browser session only:
- * what attaches on a session the client already owns (a granted page's frames
- * and workers) follows that page and is not checked again, by design.
+ * Checked where targets are found: on every browser session the client
+ * holds, the mux's and any it attached itself (Target.attachToBrowserTarget).
+ * What attaches on a page session the client already owns (a granted page's
+ * frames and workers) follows that page and is not checked again, by design.
  */
 export type TargetGrant = (client: { kind: 'internal' | 'external'; label: string }, targetId: string) => boolean;
 
@@ -130,6 +131,8 @@ interface Pending {
 /** One client of the mux: its browser session and the sessions it owns. */
 abstract class Client {
   browserSession: string | null = null;
+  /** Browser sessions the client attached itself (Target.attachToBrowserTarget), beside the mux's. */
+  readonly ownBrowserSessions = new Set<string>();
   /** In flight: the mux's attachToBrowserTarget for this client. */
   attaching: Promise<string> | null = null;
   readonly owned = new Set<string>();
@@ -262,6 +265,7 @@ export class CdpPipeMux {
     client.epoch++;
     for (const session of client.owned) this.owner.delete(session);
     client.owned.clear();
+    client.ownBrowserSessions.clear();
     client.browserSession = null;
     client.attaching = null;
     for (const [id, p] of this.pending) if (p.client === client) this.pending.delete(id);
@@ -393,7 +397,10 @@ export class CdpPipeMux {
       // A session attached by the client's own command is the client's.
       if ((job.method === 'Target.attachToTarget' || job.method === 'Target.attachToBrowserTarget') && !frame.error) {
         const session = (frame.result as { sessionId?: unknown } | undefined)?.sessionId;
-        if (typeof session === 'string') this.adopt(job.client, session);
+        if (typeof session === 'string') {
+          this.adopt(job.client, session);
+          if (job.method === 'Target.attachToBrowserTarget' && this.owner.get(session) === job.client) job.client.ownBrowserSessions.add(session);
+        }
       }
       if (job.method === 'Target.getTargets' && this.opts.targetGrant && !frame.error) {
         const infos = (frame.result as { targetInfos?: Array<{ targetId?: unknown }> } | undefined)?.targetInfos;
@@ -411,10 +418,12 @@ export class CdpPipeMux {
     if (typeof frame.sessionId !== 'string') { bump(totals.dropped, 'root-event'); return; }
     const owner = this.owner.get(frame.sessionId);
     if (!owner) { bump(totals.dropped, 'unknown-session'); return; }
-    // Grants are checked where targets are discovered, on the client's browser
-    // session. A page's own frames and workers come on that page's session and
-    // go with the page. A session the client owns is always told it ended.
-    if (this.opts.targetGrant && frame.sessionId === owner.browserSession && frame.method.startsWith('Target.')) {
+    // Grants are checked where targets are discovered, on every browser
+    // session the client holds. A page's own frames and workers come on that
+    // page's session and go with the page. A session the client owns is always
+    // told it ended.
+    const onBrowserSession = frame.sessionId === owner.browserSession || owner.ownBrowserSessions.has(frame.sessionId);
+    if (this.opts.targetGrant && onBrowserSession && frame.method.startsWith('Target.')) {
       const params = frame.params as { targetId?: unknown; targetInfo?: { targetId?: unknown }; sessionId?: unknown } | undefined;
       const target = params?.targetInfo?.targetId ?? params?.targetId;
       const endsOwned = frame.method === 'Target.detachedFromTarget' && typeof params?.sessionId === 'string' && owner.owned.has(params.sessionId);
@@ -437,6 +446,7 @@ export class CdpPipeMux {
       if (typeof child === 'string' && this.owner.get(child) === owner && child !== owner.browserSession) {
         this.owner.delete(child);
         owner.owned.delete(child);
+        owner.ownBrowserSessions.delete(child);
       }
     }
   }
