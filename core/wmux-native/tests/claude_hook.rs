@@ -210,14 +210,12 @@ fn without_a_bridge_beside_it_the_run_stays_native() {
 #[test]
 fn decision_flags_run_on_node() {
     let case = Case::new("decision", Some(&pinned()));
-    for args in [vec!["UserPromptSubmit", "--context"]] {
-        let _ = std::fs::remove_file(case.dir.join("node-args"));
-        quiet(&case.run(&args, &[], true, ""));
-        let expected: Vec<String> = std::iter::once(case.bridge())
-            .chain(args.iter().map(|a| a.to_string()))
-            .collect();
-        assert_eq!(case.node_args(), Some(expected), "{args:?}");
-    }
+    let args = ["UserPromptSubmit", "--context"];
+    quiet(&case.run(&args, &[], true, ""));
+    assert_eq!(
+        case.node_args(),
+        Some(vec![case.bridge(), args[0].into(), args[1].into()])
+    );
     assert!(case.log().is_empty());
 }
 
@@ -227,12 +225,13 @@ fn a_decision_flag_with_no_bridge_or_no_node_fails_open() {
     // allows, the prompt runs, the tool goes through the session's own
     // permission flow). The run itself goes on as a plain one: the signal is
     // sent, and a lifecycle capture that did not land is spooled.
-    for (args, payload, kind, spooled) in [(
-        ["UserPromptSubmit", "--context"],
-        r#"{"session_id":"s1","prompt":"p"}"#,
-        "agent.user_prompt_submit",
-        true,
-    )] {
+    {
+        let (args, payload, kind, spooled) = (
+            ["UserPromptSubmit", "--context"],
+            r#"{"session_id":"s1","prompt":"p"}"#,
+            "agent.user_prompt_submit",
+            true,
+        );
         let case = Case::new(&format!("decision-{}", &args[1][2..]), None);
         let wmux_home = case.dir.join("home/.wmux-claude-hook-test");
         std::fs::create_dir_all(&wmux_home).unwrap();
