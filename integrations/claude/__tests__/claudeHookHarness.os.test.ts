@@ -3,7 +3,7 @@
  * exactly the volatile part, or a golden could hide a real difference.
  */
 import { describe, expect, it } from 'vitest';
-import { normaliseStderr, normaliseString, type Sandbox } from './support/claudeHookHarness';
+import { childEnv, normaliseStderr, normaliseString, type HomeChoice, type Sandbox } from './support/claudeHookHarness';
 
 const winBox: Sandbox = {
   root: 'C:\\T\\wch-ab12',
@@ -40,5 +40,36 @@ describe('normaliseStderr', () => {
     const problems: string[] = [];
     normaliseStderr(`WMUX_BRIDGE_DEBUG_ENVELOPE={${pidField}"ts":"x"}`, problems);
     expect(problems).toContain('debug line has no numeric ts');
+  });
+});
+
+describe('childEnv', () => {
+  const homeDir = (choice: HomeChoice): string => (choice === 'alt' ? 'C:\\T\\wch-ab12\\alt' : winBox.home);
+  const profileKeys = (env: NodeJS.ProcessEnv): string[] => Object.keys(env).filter((k) => /^userprofile$/i.test(k));
+
+  it('leaves USERPROFILE out entirely, in any case, when the fixture unsets it', () => {
+    const before = process.env.Userprofile;
+    process.env.Userprofile = 'C:\\Users\\real';
+    try {
+      const env = childEnv({ homes: { USERPROFILE: 'unset' } }, winBox, homeDir);
+      expect(profileKeys(env)).toEqual([]);
+      expect(env.HOME).toBe(winBox.home);
+    } finally {
+      if (before === undefined) delete process.env.Userprofile;
+      else process.env.Userprofile = before;
+    }
+  });
+
+  it('passes an empty USERPROFILE through as set-but-empty', () => {
+    const env = childEnv({ homes: { USERPROFILE: '' } }, winBox, homeDir);
+    expect(profileKeys(env)).toEqual(['USERPROFILE']);
+    expect(env.USERPROFILE).toBe('');
+  });
+
+  it('builds the env from nothing but the variables it names', () => {
+    const env = childEnv({ homes: { HOME: 'alt' }, env: { X: '<wmux>' } }, winBox, homeDir, 'p');
+    const allowed = ['PATH', 'HOME', 'USERPROFILE', 'WMUX_DATA_SUFFIX', 'WMUX_PIPE_NAME', 'X', 'SystemRoot', 'TEMP', 'TMP'];
+    expect(Object.keys(env).filter((k) => !allowed.includes(k))).toEqual([]);
+    expect(env).toMatchObject({ HOME: 'C:\\T\\wch-ab12\\alt', USERPROFILE: winBox.home, WMUX_PIPE_NAME: 'p', X: '.wmux-c0ffee' });
   });
 });

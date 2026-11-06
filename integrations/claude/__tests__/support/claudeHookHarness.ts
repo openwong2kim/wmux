@@ -47,7 +47,7 @@ type StdinPart = string | { repeat: string; count: number } | { base64: string }
 type Endpoint = StubBehaviour | { mode: 'absent' } | { mode: 'refused' };
 type EndpointName = 'daemon' | 'main' | 'override';
 /** `data` is the sandbox home the tokens are in; `alt` is a second home holding decoy tokens. */
-type HomeChoice = 'data' | 'alt';
+export type HomeChoice = 'data' | 'alt';
 
 export interface Step {
   argv: string[];
@@ -68,8 +68,14 @@ export interface Fixture {
   tokens?: { daemon?: string; main?: string };
   /** Extra files, relative to the data home. */
   files?: Record<string, string>;
-  /** HOME and USERPROFILE; both `data` by default. USERPROFILE may also be '' or unset. */
-  homes?: { HOME?: HomeChoice; USERPROFILE?: HomeChoice | '' | 'unset' };
+  /**
+   * HOME and USERPROFILE; both `data` by default. USERPROFILE may also be ''
+   * or unset. On Windows an unset USERPROFILE is filled in from this test
+   * process (libuv's uv_spawn copies its required_vars, USERPROFILE among
+   * them, into a child env that lacks them), so `parentUSERPROFILE` points
+   * this process's own USERPROFILE into the sandbox for the run.
+   */
+  homes?: { HOME?: HomeChoice; USERPROFILE?: HomeChoice | '' | 'unset'; parentUSERPROFILE?: HomeChoice };
   /** How the daemon-pipe hint file is written; `absent` leaves the derived name. */
   daemonHint?: 'lf' | 'crlf' | 'blanks' | 'absent';
   endpoints?: Partial<Record<EndpointName, Endpoint>>;
@@ -78,6 +84,8 @@ export interface Fixture {
   timing?: { step: number; minMs?: number; maxMs?: number }[];
   /** Dotted path in the result → the values the reference may produce there. */
   variants?: Record<string, unknown[]>;
+  /** More values allowed at a path on one platform only. */
+  platformVariants?: Partial<Record<NodeJS.Platform, Record<string, unknown[]>>>;
   /** Dotted path → the one value a port must produce there. */
   strictForPort?: Record<string, unknown>;
   expect?: { steps: unknown[] };
@@ -383,10 +391,39 @@ function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems:
     const [holder, last] = holderAt(result, dotted);
     const actual = JSON.stringify(holder?.[last]);
     const strict = fixture.strictForPort?.[dotted];
-    const allowed = !IS_REFERENCE && strict !== undefined ? [strict] : fixture.variants?.[dotted] ?? [];
+    const allowed = !IS_REFERENCE && strict !== undefined
+      ? [strict]
+      : [...fixture.variants?.[dotted] ?? [], ...fixture.platformVariants?.[process.platform]?.[dotted] ?? []];
     if (holder && allowed.some((v) => JSON.stringify(v) === actual)) holder[last] = '<variant>';
     else problems.push(`${dotted} = ${actual}, not one of ${JSON.stringify(allowed)}`);
   }
+}
+
+/**
+ * The child's whole env, built from nothing so no variable of this process
+ * leaks in under another case: on Windows env keys are case-insensitive, and
+ * a stray `Userprofile` would act as USERPROFILE.
+ */
+export function childEnv(
+  fixture: Pick<Fixture, 'homes' | 'env'>,
+  box: Sandbox,
+  homeDir: (choice: HomeChoice) => string,
+  pipeOverride?: string,
+): NodeJS.ProcessEnv {
+  const homes = { HOME: 'data', USERPROFILE: 'data', ...fixture.homes };
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: homeDir(homes.HOME as HomeChoice),
+    WMUX_DATA_SUFFIX: box.suffix,
+    ...(process.platform === 'win32'
+      ? { SystemRoot: process.env.SystemRoot, TEMP: box.root, TMP: box.root }
+      : {}),
+    ...(pipeOverride ? { WMUX_PIPE_NAME: pipeOverride } : {}),
+  };
+  if (homes.USERPROFILE === '') env.USERPROFILE = '';
+  else if (homes.USERPROFILE !== 'unset') env.USERPROFILE = homeDir(homes.USERPROFILE as HomeChoice);
+  for (const [key, value] of Object.entries(fixture.env ?? {})) env[key] = fill(value, box);
+  return env;
 }
 
 export interface FixtureRun {
@@ -399,6 +436,7 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
   const box = makeSandbox();
   const problems: string[] = [];
   const stubs: Partial<Record<EndpointName, StubDaemon>> = {};
+  let parentProfile: { value: string | undefined } | undefined;
   try {
     const tokens = fixture.tokens ?? { daemon: 'daemon-token', main: 'main-token' };
     if (tokens.daemon !== undefined) writeFileSync(path.join(box.wmuxHome, 'daemon-auth-token'), tokens.daemon);
@@ -413,7 +451,7 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
     // wrong variable authenticates with these, or writes its files here.
     const alt = path.join(box.root, 'alt');
     const homes = { HOME: 'data', USERPROFILE: 'data', ...fixture.homes };
-    const usesAlt = homes.HOME === 'alt' || homes.USERPROFILE === 'alt';
+    const usesAlt = homes.HOME === 'alt' || homes.USERPROFILE === 'alt' || homes.parentUSERPROFILE === 'alt';
     if (usesAlt) {
       mkdirSync(path.join(alt, `.wmux${box.suffix}`), { recursive: true });
       writeFileSync(path.join(alt, `.wmux${box.suffix}`, 'daemon-auth-token'), 'decoy-daemon-token');
@@ -434,22 +472,16 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
       else stubs[name] = await startStubDaemon(paths[name], endpoint);
     }
 
-    const baseEnv: NodeJS.ProcessEnv = {
-      PATH: process.env.PATH,
-      HOME: posixHome,
-      WMUX_DATA_SUFFIX: box.suffix,
-      ...(process.platform === 'win32'
-        ? { SystemRoot: process.env.SystemRoot, TEMP: box.root, TMP: box.root }
-        : {}),
-      ...(fixture.endpoints?.override ? { WMUX_PIPE_NAME: paths.override } : {}),
-    };
-    if (homes.USERPROFILE === '') baseEnv.USERPROFILE = '';
-    else if (homes.USERPROFILE !== 'unset') baseEnv.USERPROFILE = homeDir(homes.USERPROFILE as HomeChoice);
-    for (const [key, value] of Object.entries(fixture.env ?? {})) baseEnv[key] = fill(value, box);
+    const baseEnv = childEnv(fixture, box, homeDir, fixture.endpoints?.override ? paths.override : undefined);
+    if (homes.parentUSERPROFILE) {
+      parentProfile = { value: process.env.USERPROFILE };
+      process.env.USERPROFILE = homeDir(homes.parentUSERPROFILE);
+    }
 
     const steps: unknown[] = [];
     const seen: Record<string, number> = {};
     let logSeen = 0;
+    let altLogSeen = 0;
     for (const [index, step] of fixture.steps.entries()) {
       const env = { ...baseEnv };
       for (const [key, value] of Object.entries(step.env ?? {})) env[key] = fill(value, box);
@@ -471,12 +503,16 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
       logSeen = lines.length;
 
       const stampsDir = path.join(box.wmuxHome, 'activity-stamps');
+      // A log written under the other home: the bridge resolved that one.
+      const altLogLines = readLines(path.join(alt, `.wmux${box.suffix}`, 'bridge.log')).slice(altLogSeen);
+      altLogSeen += altLogLines.length;
       const rest = normaliseDeep({
         log,
         requests,
         spool: readSpool(path.join(box.wmuxHome, 'resume-spool'), problems),
         stamps: existsSync(stampsDir) ? readdirSync(stampsDir).sort() : undefined,
         alt: usesAlt ? listFiles(alt) : undefined,
+        altLog: usesAlt && altLogLines.length > 0 ? altLogLines.map((line) => normaliseLog(line, run.pid, problems)) : undefined,
       }, box) as Record<string, unknown>;
       steps.push({
         exitCode: run.exitCode,
@@ -497,6 +533,10 @@ export async function runFixture(fixture: Fixture): Promise<FixtureRun> {
     applyVariants(result, fixture, problems);
     return { result, problems };
   } finally {
+    if (parentProfile) {
+      if (parentProfile.value === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = parentProfile.value;
+    }
     for (const stub of Object.values(stubs)) await stub.close();
     rmSync(box.root, { recursive: true, force: true });
   }

@@ -60,6 +60,20 @@
       }
     ]
   },
+  "platformVariants": {
+    "win32": {
+      "steps.0.log.0": [
+        {
+          "bridge": "0.8.1",
+          "hook": "Stop",
+          "outcome": "rpc-failed",
+          "target": "daemon",
+          "error": "connect-error",
+          "detail": "EOF"
+        }
+      ]
+    }
+  },
   "steps": [
     {
       "argv": [

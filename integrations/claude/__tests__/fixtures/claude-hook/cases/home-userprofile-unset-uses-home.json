@@ -1,5 +1,10 @@
 {
   "description": "No USERPROFILE at all uses HOME.",
+  "platforms": [
+    "darwin",
+    "linux"
+  ],
+  "skipReason": "a Windows child cannot be started without USERPROFILE: uv_spawn copies it from the parent (required_vars in libuv src/win/process.c); see home-userprofile-unset-win32-inherits-parent",
   "homes": {
     "USERPROFILE": "unset",
     "HOME": "data"
