@@ -1,4 +1,5 @@
 import { readDomSnapshotPayload, type DomSnapshotEntry } from './dom-intelligence';
+import type { RefDescriptor } from './refDescriptors';
 
 // In-process frames in the RPC lane's DOM listing.
 //
@@ -36,11 +37,17 @@ export interface RpcFrameInfo {
   name: string;
 }
 
-/** What a frame ref names: the frame, the document it was minted in, and where it is. */
+/**
+ * What a frame ref names: the frame, the document it was minted in, where it
+ * is, and the element's role and name (so the next listing of the same
+ * document gives it the same number).
+ */
 export interface RpcFrameRef {
   frameId: string;
   loaderId: string;
   origin: string;
+  role: string;
+  name: string;
 }
 
 export interface ReadRpcFramesOptions {
@@ -52,9 +59,31 @@ export interface ReadRpcFramesOptions {
   budget: number;
   /** First ref number the top listing left unspent. */
   nextRef: number;
+  /** The frame refs this connection's last snapshot of the surface recorded. */
+  prior?: ReadonlyMap<number, RpcFrameRef>;
   listFrames: () => Promise<RpcFrameInfo[]>;
-  /** One frame's frame-mode listing (or why it cannot be read). */
-  readFrame: (frame: RpcFrameInfo, seed: number) => Promise<{ value: unknown } | { unreachable: string }>;
+  /** One frame's frame-mode listing (or why it cannot be read), given its document's earlier refs. */
+  readFrame: (
+    frame: RpcFrameInfo,
+    seed: number,
+    prior: RefDescriptor[],
+  ) => Promise<{ value: unknown } | { unreachable: string }>;
+}
+
+/** The earlier refs of each frame document, as the descriptors stable numbering matches. */
+function priorByDocument(prior: ReadonlyMap<number, RpcFrameRef> | undefined): Map<string, RefDescriptor[]> {
+  const out = new Map<string, RefDescriptor[]>();
+  const kinds = new Map<string, number>();
+  for (const [ref, r] of prior ?? []) {
+    const doc = `${r.frameId}\u0000${r.loaderId}`;
+    const kindKey = `${doc}\u0000${r.role}\u0000${r.name}`;
+    const kindIndex = kinds.get(kindKey) ?? 0;
+    kinds.set(kindKey, kindIndex + 1);
+    const list = out.get(doc) ?? [];
+    list.push({ ref, role: r.role, name: r.name, kindIndex });
+    out.set(doc, list);
+  }
+  return out;
 }
 
 export interface ReadRpcFramesResult {
@@ -115,6 +144,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
 
   const result = { entries: [] as DomSnapshotEntry[], refs: new Map<number, RpcFrameRef>(), nextRef: opts.nextRef };
   const read = frames.slice(0, RPC_FRAME_CAP);
+  const priorDocs = priorByDocument(opts.prior);
   const indexById = new Map<string, number>();
   let unread = 0;
   for (let i = 0; i < read.length; i++) {
@@ -127,7 +157,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
     indexById.set(f.frameId, i + 1);
     let answer: { value: unknown } | { unreachable: string } | 'gone' | 'failed';
     try {
-      answer = await opts.readFrame(f, result.nextRef);
+      answer = await opts.readFrame(f, result.nextRef, priorDocs.get(`${f.frameId}\u0000${f.loaderId}`) ?? []);
     } catch (err) {
       answer = /FRAME_(?:GONE|NAVIGATED)/.test(err instanceof Error ? err.message : String(err)) ? 'gone' : 'failed';
     }
@@ -147,7 +177,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
     }
     push(head);
     const byRef = new Map(payload.entries.map((e) => [e.ref, e]));
-    const target: RpcFrameRef = { frameId: f.frameId, loaderId: f.loaderId, origin: f.origin };
+    const target = { frameId: f.frameId, loaderId: f.loaderId, origin: f.origin };
     for (let j = 0; j < content.length; j++) {
       const line = `  ${content[j]}`;
       const more = j < content.length - 1;
@@ -160,7 +190,7 @@ export async function readRpcFrames(opts: ReadRpcFramesOptions): Promise<ReadRpc
       const entry = ref ? byRef.get(Number(ref[1])) : undefined;
       if (entry) {
         result.entries.push(entry);
-        result.refs.set(entry.ref, target);
+        result.refs.set(entry.ref, { ...target, role: entry.role, name: entry.name });
       }
     }
   }

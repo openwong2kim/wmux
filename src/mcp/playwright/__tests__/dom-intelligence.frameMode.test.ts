@@ -25,6 +25,13 @@ describe('frame mode', () => {
     expect([...document.querySelectorAll('[data-wmux-ref]')].map((el) => el.getAttribute('data-wmux-ref'))).toEqual(['40', '41']);
   });
 
+  it('keeps the numbers an earlier read of this document gave, and numbers new elements from the seed', () => {
+    document.body.innerHTML = '<button>New</button><button>Pay</button>';
+    const prior = [{ ref: 7, role: 'button', name: 'Pay', kindIndex: 0 }];
+    const { entries } = run(buildDomSnapshotExpression(undefined, { frame: { seed: 50, prior }, withEntries: true }));
+    expect(entries.map((e) => [e.name, e.ref])).toEqual([['New', 50], ['Pay', 7]]);
+  });
+
   it('clears tags the page or an earlier read left in this document', () => {
     document.body.innerHTML = '<a data-wmux-ref="7" href="#">stale</a><span data-wmux-ref="3">not interactive</span>';
     run(buildDomSnapshotExpression(undefined, { frame: { seed: 9 }, withEntries: true }));

@@ -59,8 +59,12 @@ function answer(overrides: Record<string, (params: Record<string, unknown>) => u
       return { frames: [{ frameId: 'F1', loaderId: 'L1', parentId: 'MAIN', depth: 1, origin: 'https://pay.test', name: 'card' }] };
     }
     if (method === 'browser.evaluate' && params.frameId === 'F1') {
-      const seed = Number(/const frameSeed = (\d+);/.exec(String(params.expression))?.[1]);
-      return { value: { text: `  [ref=${seed}] input name="cc"`, entries: [{ ref: seed, role: 'input', name: 'cc' }] } };
+      // A frame-mode listing: an element the prior names keeps its number.
+      const expr = String(params.expression);
+      const seed = Number(/const frameSeed = (\d+);/.exec(expr)?.[1]);
+      const prior = JSON.parse(/const framePrior = (\[.*?\]);/.exec(expr)?.[1] ?? '[]') as Array<{ ref: number; name: string }>;
+      const ref = prior.find((p) => p.name === 'cc')?.ref ?? seed;
+      return { value: { text: `  [ref=${ref}] input name="cc"`, entries: [{ ref, role: 'input', name: 'cc' }] } };
     }
     if (method === 'browser.evaluate' && String(params.expression).includes('wmux-caret')) return { value: 'wmux-caret:held' };
     if (method === 'browser.evaluate') return { value: TOP };
@@ -153,6 +157,16 @@ describe('in-process frames on the RPC lane', () => {
     expect(calls('browser.click.cdp').at(-1)).not.toHaveProperty('frameId');
     await runInConnectionScope(a, () => tool('browser_click')({ ref: '1' }));
     expect(calls('browser.click.cdp').at(-1)).toMatchObject({ frameId: 'F1' });
+  });
+
+  it('keeps a frame element\'s number across snapshots, so a kept ref still works', async () => {
+    answer();
+    await tool('browser_snapshot')({});
+    const second = textOf(await tool('browser_snapshot')({}));
+    // Unchanged page: the diff has nothing to report, and ref=1 is still the field.
+    expect(second).not.toMatch(/\[ref=2\]/);
+    await tool('browser_click')({ ref: '1' });
+    expect(calls('browser.click.cdp').at(-1)).toMatchObject({ frameId: 'F1', loaderId: 'L1' });
   });
 
   it('never hands a frame ref\'s number to the top document on the next snapshot', async () => {

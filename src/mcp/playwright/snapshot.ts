@@ -1067,6 +1067,13 @@ export function rpcFrameRefOf(scopeKey: string, ref: string): RpcFrameRef | null
   return frameRefStore().get(scopeKey)?.get(wanted) ?? null;
 }
 
+/** Every RPC lane frame ref this connection's last snapshot of the surface recorded. */
+export function rpcFrameRefsFor(scopeKey: string): Map<number, RpcFrameRef> {
+  const out = new Map<number, RpcFrameRef>();
+  for (const [ref, target] of frameRefStore().get(scopeKey) ?? []) if (target) out.set(ref, target);
+  return out;
+}
+
 /** The message both guards raise, so the agent reads one explanation. */
 export function frameRefFallbackMessage(ref: string): string {
   return (

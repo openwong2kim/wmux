@@ -13,6 +13,7 @@ import {
   browserScopeKey,
   markDomRefsActive,
   noteFrameRefsForScope,
+  rpcFrameRefsFor,
   resolveRef,
 } from '../snapshot';
 import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../dom-intelligence';
@@ -643,18 +644,21 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           text = redactPasswordParams(payload.text);
           if (payload.entries.length > 0) recordRefGeneration(domKey, 0, payload.entries);
           // In-process frames, after the top document and never at its cost.
-          // Their refs are fresh numbers past the top's, spent but not kept as
-          // descriptors, so no later listing can give one to another element.
+          // A frame element keeps the number its document gave it last time;
+          // new ones get numbers past every number handed out. Frame numbers
+          // are spent but never kept as top descriptors, so the top document
+          // can never take one.
           const frames = await readRpcFrames({
             topText: text,
             topOrigin: topListingOrigin(text),
             budget: DEFAULT_SNAPSHOT_WINDOW_CHARS,
             nextRef: nextRefFor(domKey, 0),
+            prior: rpcFrameRefsFor(browserScopeKey(scope)),
             listFrames: async () =>
               (await sendScopedBrowserRpc<{ frames?: RpcFrameInfo[] }>('browser.frames.tree', scope, {})).frames ?? [],
-            readFrame: (frame, seed) =>
+            readFrame: (frame, seed, prior) =>
               sendScopedBrowserRpc<{ value: unknown } | { unreachable: string }>('browser.evaluate', scope, {
-                expression: buildDomSnapshotExpression(undefined, { ...(filter && { filter }), frame: { seed }, withEntries: true }),
+                expression: buildDomSnapshotExpression(undefined, { ...(filter && { filter }), frame: { seed, prior }, withEntries: true }),
                 frameId: frame.frameId,
                 loaderId: frame.loaderId,
               }),

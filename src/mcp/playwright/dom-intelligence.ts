@@ -113,12 +113,14 @@ export interface DomSnapshotExpressionOptions {
   /** Return `{ text, entries }` rather than the listing text alone. */
   withEntries?: boolean;
   /**
-   * List one frame's document, read in place on the RPC lane: refs numbered
-   * on from `seed` (fresh, never matched against earlier listings, so a frame
-   * never takes a number the top document holds), and no page header or frame
-   * list of its own. The caller labels the section.
+   * List one frame's document, read in place on the RPC lane, with no page
+   * header or frame list of its own (the caller labels the section). An
+   * element `prior` describes (this document's refs from the last listing)
+   * keeps its number; a new one is numbered on from `seed`, which is past
+   * every number the surface has handed out. The top document's history is
+   * never offered here, so a frame cannot take a number the top holds.
    */
-  frame?: { seed: number };
+  frame?: { seed: number; prior?: readonly RefDescriptor[] };
 }
 
 /**
@@ -170,6 +172,7 @@ export function buildDomSnapshotExpression(
     const withEntries = ${JSON.stringify(opts?.withEntries === true)};
     const assignStableRefs = (${STABLE_REF_ASSIGNMENT_JS});
     const frameSeed = ${JSON.stringify(opts?.frame ? opts.frame.seed : null)};
+    const framePrior = ${JSON.stringify(opts?.frame?.prior ?? [])};
     const prior = ${JSON.stringify(opts?.stable?.prior ?? [])};
     const seedNext = ${JSON.stringify(opts?.stable?.nextRef ?? 0)};
     ${PAGE_TEXT_JS}
@@ -200,7 +203,7 @@ export function buildDomSnapshotExpression(
     }
     const refs = frameSeed === null
       ? assignStableRefs(prior, seedNext, described).refs
-      : described.map((_, i) => frameSeed + i);
+      : assignStableRefs(framePrior, frameSeed, described).refs;
     interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(refs[i])));
     const title = pageText(document.title);
     const url = location.href;

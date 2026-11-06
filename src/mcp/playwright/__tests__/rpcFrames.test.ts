@@ -37,10 +37,21 @@ describe('readRpcFrames', () => {
       '    [ref=11] button "Pay 0"',
     ]);
     expect([...out.refs.entries()]).toEqual([
-      [10, { frameId: 'F1', loaderId: 'L1', origin: 'https://top.test' }],
-      [11, { frameId: 'F2', loaderId: 'L2', origin: 'https://pay.test' }],
+      [10, { frameId: 'F1', loaderId: 'L1', origin: 'https://top.test', role: 'button', name: 'Pay 0' }],
+      [11, { frameId: 'F2', loaderId: 'L2', origin: 'https://pay.test', role: 'button', name: 'Pay 0' }],
     ]);
     expect(out.nextRef).toBe(12);
+  });
+
+  it('hands each frame document the refs it had last time, and records role and name for the next', async () => {
+    const readFrame = vi.fn(buttons(1));
+    const prior = new Map([
+      [7, { frameId: 'F1', loaderId: 'L1', origin: 'https://top.test', role: 'button', name: 'Pay 0' }],
+      [8, { frameId: 'F1', loaderId: 'OLD', origin: 'https://top.test', role: 'button', name: 'Gone' }],
+    ]);
+    const out = await readRpcFrames({ ...base, topText: '', prior, listFrames: async () => [frame(1)], readFrame });
+    expect(readFrame).toHaveBeenCalledWith(expect.objectContaining({ frameId: 'F1' }), 10, [{ ref: 7, role: 'button', name: 'Pay 0', kindIndex: 0 }]);
+    expect(out.refs.get(10)).toEqual({ frameId: 'F1', loaderId: 'L1', origin: 'https://top.test', role: 'button', name: 'Pay 0' });
   });
 
   it('cleans a frame name, so it cannot end the header or start a line', async () => {
