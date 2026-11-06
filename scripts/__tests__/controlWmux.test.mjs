@@ -83,7 +83,7 @@ describe('CDP port discovery', () => {
 describe('scrubEnv', () => {
   it('drops the parent pane identity and Claude session, then sets our suffix', () => {
     const env = scrubEnv({ PATH: '/bin', WMUX_PTY_ID: 'p', WMUX_DATA_SUFFIX: '', CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 's' }, '-verify-a');
-    expect(env).toEqual({ PATH: '/bin', WMUX_DATA_SUFFIX: '-verify-a' });
+    expect(env).toEqual({ PATH: '/bin', WMUX_DATA_SUFFIX: '-verify-a', WMUX_TEST_CDP_PORT: '1' });
   });
 });
 
@@ -94,7 +94,7 @@ describe('launchEnv', () => {
       '-verify-a',
       { PATH: 'C:\\fake;C:\\Windows', WMUX_NO_PATH_REFRESH: '1' },
     );
-    expect(env).toEqual({ PATH: 'C:\\fake;C:\\Windows', WMUX_NO_PATH_REFRESH: '1', WMUX_DATA_SUFFIX: '-verify-a' });
+    expect(env).toEqual({ PATH: 'C:\\fake;C:\\Windows', WMUX_NO_PATH_REFRESH: '1', WMUX_DATA_SUFFIX: '-verify-a', WMUX_TEST_CDP_PORT: '1' });
   });
 
   it('never lets the file pick the suffix, and wants string values', () => {
@@ -107,7 +107,7 @@ describe('launchEnv', () => {
     expect(launchEnv({}, '-verify-a', { WMUX_MCP_REGISTER_EXTERNAL: '1' }).refusal).toMatch(/WMUX_MCP_REGISTER_EXTERNAL/);
     expect(launchEnv({}, '-verify-a', { wmux_mcp_register_external: '0' }).refusal).toMatch(/WMUX_MCP_REGISTER_EXTERNAL/);
     // Inherited, it never reaches the instance either: the scrub drops WMUX_*.
-    expect(launchEnv({ WMUX_MCP_REGISTER_EXTERNAL: '1' }, '-verify-a', {}).env).toEqual({ WMUX_DATA_SUFFIX: '-verify-a' });
+    expect(launchEnv({ WMUX_MCP_REGISTER_EXTERNAL: '1' }, '-verify-a', {}).env).toEqual({ WMUX_DATA_SUFFIX: '-verify-a', WMUX_TEST_CDP_PORT: '1' });
   });
 });
 
