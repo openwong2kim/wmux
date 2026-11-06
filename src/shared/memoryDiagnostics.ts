@@ -93,6 +93,22 @@ export interface SnapshotBackendCounters {
 export interface AppMemoryDiagnostics {
   mainPid: number;
   processes: Array<{ pid: number; type: string; workingSetBytes: number }>;
+  /** A dedicated Chrome's debugging pipe, since main started. Absent when none ran, and from older builds. */
+  cdpPipe?: CdpPipeDiagnostics;
+}
+
+/** What the debugging-pipe multiplexer (CdpPipeMux) read and routed. Counts and times only. */
+export interface CdpPipeDiagnostics {
+  frames: number;
+  bytes: number;
+  parseMsTotal: number;
+  /** The slowest single frame parse, the stall that matters. */
+  parseMsMax: number;
+  largestFrameBytes: number;
+  /** Frames from the browser that had no owner, by why. */
+  dropped: Record<string, number>;
+  /** Client commands refused (a session the client does not own, a malformed command). */
+  refused: number;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -141,5 +157,8 @@ function tailReadCounters(value: unknown): boolean {
 
 export function isAppMemoryDiagnostics(value: unknown): value is AppMemoryDiagnostics {
   return record(value) && counters(value, ['mainPid']) && Array.isArray(value.processes) &&
-    value.processes.every((p: unknown) => record(p) && typeof p.type === 'string' && counters(p, ['pid', 'workingSetBytes']));
+    value.processes.every((p: unknown) => record(p) && typeof p.type === 'string' && counters(p, ['pid', 'workingSetBytes'])) &&
+    (value.cdpPipe === undefined || (record(value.cdpPipe) &&
+      counters(value.cdpPipe, ['frames', 'bytes', 'parseMsTotal', 'parseMsMax', 'largestFrameBytes', 'refused']) &&
+      record(value.cdpPipe.dropped) && counters(value.cdpPipe.dropped, Object.keys(value.cdpPipe.dropped))));
 }

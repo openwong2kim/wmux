@@ -363,7 +363,7 @@ function describeMode(mode: Mode): void {
       await eventually(async () => (await viewport(surfaceId)).w === desktop.w);
       await mobile(surfaceId, true);
       await eventually(async () => (await viewport(surfaceId)).w === 390);
-      // The stream's session detaching takes its emulation with it.
+      // The stream stopping takes its emulation with it.
       streams.stopAll();
       await eventually(async () => (await viewport(surfaceId)).w === desktop.w);
       expect(await viewport(surfaceId)).toMatchObject({ w: desktop.w, dpr: desktop.dpr });
@@ -416,7 +416,7 @@ function describeMode(mode: Mode): void {
       // The agent applied last: its own.
       await override(700);
       await widthIs(700);
-      // The stream's session detaching: the real size again, the agent's 700 gone too.
+      // The stream stopping: the real size again, the agent's 700 gone too.
       streams.stopAll();
       await widthIs(real);
       // A stream that never applied mobile leaves the agent's override alone.

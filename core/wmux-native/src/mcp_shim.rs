@@ -25,9 +25,13 @@
 //! handler runs first). During the connect retries a signal kills the process
 //! by its default disposition.
 //!
-//! One intentional divergence from shim.ts: a failed stdout write exits 0.
-//! The host stopped reading, which is a normal shutdown, and node's exit 1
-//! there is an unhandled-error accident, not a contract.
+//! Intentional divergences from shim.ts:
+//! - A failed stdout write exits 0. The host stopped reading, which is a
+//!   normal shutdown, and node's exit 1 there is an unhandled-error accident,
+//!   not a contract.
+//! - The broker-off marker is checked before dialling, a missing endpoint
+//!   falls back at once, and any other connect failure is tried 3 times
+//!   (shim.ts tries 10 and has no fallback to fall back to).
 //!
 //! EAGAIN on an inherited non-blocking stdin or stdout is waited out, not
 //! taken as the end of the session.
@@ -42,8 +46,9 @@
 //! broker that fails to connect the server after acking drops the connection;
 //! the pumps have started by then, so that is an exit 1, not a fallback.
 //!
-//! Each fallback writes one stderr line with its reason: `no broker`, `no ack
-//! in 5 s`, `closed before ack` or `not an ack`. Bot mode (below) is the
+//! Each fallback writes one stderr line with its reason: `broker off` (main's
+//! marker, checked before dialling), `no broker`, `no ack in 5 s`, `closed
+//! before ack` or `not an ack`. Bot mode (below) is the
 //! designed path and writes none.
 //!
 //! Fallback (fallback.rs): when the broker is unreachable or does not take the
@@ -64,7 +69,7 @@ mod fallback;
 
 /// The `wmuxShim` handshake version the broker checks for.
 pub const PROTOCOL_VERSION: u32 = 1;
-const CONNECT_RETRIES: u32 = 10;
+const CONNECT_RETRIES: u32 = 3;
 const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(300);
 const COMMANDER_MODE_ARG: &str = "--commander";
 const CORE_MODE_ARG: &str = "--core";
@@ -172,11 +177,15 @@ fn data_suffix() -> String {
 
 /// getAuthTokenPath: a template string, so an empty home yields `/.wmux…`.
 pub fn token_path_from(userprofile: Option<String>, home: Option<String>, suffix: &str) -> String {
-    let home = userprofile
+    format!("{}/.wmux{suffix}-auth-token", wmux_home_from(userprofile, home))
+}
+
+/// `USERPROFILE || HOME || ''`, the home getAuthTokenPath and getWmuxHomeDir use.
+fn wmux_home_from(userprofile: Option<String>, home: Option<String>) -> String {
+    userprofile
         .filter(|v| !v.is_empty())
         .or(home.filter(|v| !v.is_empty()))
-        .unwrap_or_default();
-    format!("{home}/.wmux{suffix}-auth-token")
+        .unwrap_or_default()
 }
 
 /// readAuthToken: the trimmed file if non-empty, else a non-empty
@@ -186,6 +195,16 @@ pub fn resolve_token(file: Option<&[u8]>, env_token: Option<JsStr>) -> Option<Js
         return Some(token);
     }
     env_token.filter(|t| !t.is_empty())
+}
+
+/// `<getWmuxHomeDir()>/mcp-broker-off`: the marker main writes while the
+/// broker is off, under the same home and suffix as the auth token.
+pub fn broker_off_marker_from(userprofile: Option<String>, home: Option<String>, suffix: &str) -> String {
+    format!("{}/.wmux{suffix}/mcp-broker-off", wmux_home_from(userprofile, home))
+}
+
+fn broker_is_off() -> bool {
+    std::path::Path::new(&broker_off_marker_from(env("USERPROFILE"), env("HOME"), &data_suffix())).exists()
 }
 
 fn read_auth_token() -> Option<JsStr> {
@@ -422,18 +441,24 @@ fn socket_error(syscall: &str, e: &std::io::Error) -> String {
     format!("{syscall} {}", errno_name(e))
 }
 
+/// No endpoint at all (ENOENT, or ERROR_FILE_NOT_FOUND for a pipe) means
+/// nothing is listening, so the session falls back at once. Any other failure,
+/// such as a socket file whose broker is restarting, is tried CONNECT_RETRIES
+/// times, CONNECT_RETRY_DELAY apart.
 fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
-    let mut last = None;
-    for _ in 0..CONNECT_RETRIES {
+    let mut tries = 0;
+    loop {
         match sys::connect(pipe) {
             Ok(conn) => return Ok(conn),
             Err(e) => {
-                last = Some(e);
+                tries += 1;
+                if e.kind() == std::io::ErrorKind::NotFound || tries >= CONNECT_RETRIES {
+                    return Err(e);
+                }
                 std::thread::sleep(CONNECT_RETRY_DELAY);
             }
         }
     }
-    Err(last.unwrap_or_else(|| std::io::Error::other("no attempt")))
 }
 
 /// Which of the host's stdio streams an operation is on.
@@ -511,6 +536,7 @@ fn read_step(r: std::io::Result<usize>) -> ReadStep {
 const ACK_DEADLINE: Duration = Duration::from_secs(5);
 /// The fallback reasons, one stderr line each.
 const NO_BROKER: &str = "no broker";
+const BROKER_OFF: &str = "broker off";
 const NO_ACK: &str = "no ack in 5 s";
 const CLOSED_BEFORE_ACK: &str = "closed before ack";
 const NOT_AN_ACK: &str = "not an ack";
@@ -642,6 +668,9 @@ pub fn run(raw: &[OsString]) -> ! {
     }
     if args.bot {
         fallback::run_full_bundle(raw);
+    }
+    if broker_is_off() {
+        no_session(BROKER_OFF, raw);
     }
     let Some(token) = read_auth_token() else {
         exit_with(Outcome::NoToken);
@@ -1287,6 +1316,16 @@ mod tests {
         assert_eq!(token_path_from(s("C:\\U"), s("/h"), "-x"), "C:\\U/.wmux-x-auth-token");
         assert_eq!(token_path_from(s(""), s("/h"), ""), "/h/.wmux-auth-token");
         assert_eq!(token_path_from(None, s(""), "-x"), "/.wmux-x-auth-token");
+    }
+
+    #[test]
+    fn the_broker_off_marker_sits_in_the_data_dir_the_token_names() {
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(
+            broker_off_marker_from(s("C:\\U"), s("/h"), "-x"),
+            "C:\\U/.wmux-x/mcp-broker-off"
+        );
+        assert_eq!(broker_off_marker_from(s(""), s("/h"), ""), "/h/.wmux/mcp-broker-off");
     }
 
     #[test]

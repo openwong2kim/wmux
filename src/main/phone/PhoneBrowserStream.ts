@@ -20,8 +20,9 @@
 //
 // While the daemon says a subscriber asked for `viewport=mobile`
 // (`mobile` on browser.streamStart and browser.streamUpdate), the tab emulates
-// a phone: Chrome on the stream's own session, which Chrome undoes when the
-// session detaches; a builtin pane through the phone's own viewport action,
+// a phone: Chrome on the stream's own session, cleared by the stream before
+// that session detaches (some Chrome versions keep a detached session's
+// viewport size); a builtin pane through the phone's own viewport action,
 // undone by the stream only while that preset is still the one it set.
 //
 // Two sources feed the same stream (TabStream): a dedicated-profile Chrome
@@ -762,6 +763,8 @@ class ChromeTabStream extends TabStream {
   private lastProbeAt = 0;
   private reattachedAt: number[] = [];
   private offOpened: (() => void) | null = null;
+  /** The session this stream set a phone's viewport on, until it clears it. */
+  private emulatedOn: ChromeStreamSession | null = null;
 
   constructor(
     streamId: string,
@@ -843,6 +846,7 @@ class ChromeTabStream extends TabStream {
     if (!session) throw new ChromePageSessionError('gone', 'stream session ended');
     const vp = viewportOf(await session.send('Page.getLayoutMetrics'));
     const size = (Number.isFinite(vp.scale) && vp.scale > 0 ? vp.scale : 1) * (Number.isFinite(vp.zoom) ? vp.zoom : 1);
+    this.emulatedOn = session;
     await session.send('Emulation.setDeviceMetricsOverride', {
       width: Math.min(MOBILE_WIDTH, Math.floor(vp.width * size)), height: Math.min(MOBILE_HEIGHT, Math.floor(vp.height * size)),
       deviceScaleFactor: MOBILE_SCALE, mobile: true,
@@ -855,6 +859,7 @@ class ChromeTabStream extends TabStream {
   protected async clearMobile(): Promise<void> {
     await this.cdp('Emulation.clearDeviceMetricsOverride');
     await this.cdp('Emulation.setTouchEmulationEnabled', { enabled: false });
+    this.emulatedOn = null;
   }
 
   protected cdp(method: string, params?: Record<string, unknown>): Promise<unknown> {
@@ -946,8 +951,16 @@ class ChromeTabStream extends TabStream {
     this.session = null;
     if (!session || session.closed) return Promise.resolve();
     // The focus watcher's teardown runs on this session: it goes first.
-    // Detaching takes the session's emulation with it.
     return unwatched.then(() => session.send('Page.stopScreencast')).catch(() => undefined)
+      // After a change still running: a phone's viewport this stream set is
+      // cleared as turning mobile off would, before the session goes. Some
+      // Chrome versions keep a detached session's viewport size.
+      .then(() => this.mobileStep(async () => {
+        if (this.emulatedOn !== session) return;
+        this.emulatedOn = null;
+        await session.send('Emulation.clearDeviceMetricsOverride');
+        await session.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+      }))
       .then(() => session.detach()).catch(() => undefined);
   }
 }
