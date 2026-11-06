@@ -3,7 +3,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PROBE_LOCK, lockDir, prepareProbedNative, type ProbeVerdict } from '../probedNative';
 
 vi.mock('fs', async (importOriginal) => {
@@ -15,7 +15,7 @@ vi.mock('fs', async (importOriginal) => {
   return { ...real, ...spied, default: { ...real, ...spied } };
 });
 
-const realFs = await vi.importActual<typeof import('fs')>('fs');
+let realFs: typeof import('fs');
 let dir = '';
 const lockFile = () => path.join(dir, PROBE_LOCK);
 
@@ -39,6 +39,9 @@ function countLockAttempts(limit = 2000): () => number {
   return () => calls;
 }
 
+beforeAll(async () => {
+  realFs = await vi.importActual<typeof import('fs')>('fs');
+});
 beforeEach(() => {
   dir = realFs.mkdtempSync(path.join(os.tmpdir(), 'wmux-probed-faults-'));
 });
