@@ -209,6 +209,9 @@ describe('protected-pane gate', () => {
     const router = register(profiles, policy);
     for (const [method, extra] of [
       ['browser.evaluate', { expression: '1' }],
+      // Naming a frame reads in another world, not under another rule.
+      ['browser.evaluate', { expression: '1', frameId: 'F1', loaderId: 'L1' }],
+      ['browser.frames.read', { frames: [{ frameId: 'F1', loaderId: 'L1' }], seed: 1 }],
       ['browser.cookies', { action: 'get' }],
       ['browser.cdp.target', {}],
       ['browser.siteGuides.match', { url: 'https://a.test/' }],

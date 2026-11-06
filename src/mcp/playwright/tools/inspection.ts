@@ -13,10 +13,12 @@ import {
   browserScopeKey,
   markDomRefsActive,
   noteFrameRefsForScope,
+  rpcFrameRefsFor,
   resolveRef,
 } from '../snapshot';
 import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../dom-intelligence';
-import { nextRefFor, priorRefDescriptors, recordRefGeneration } from '../refDescriptors';
+import { nextRefFor, priorRefDescriptors, recordRefGeneration, reserveRefs } from '../refDescriptors';
+import { readRpcFrames, type RpcFrameAnswer, type RpcFrameInfo, type RpcFrameRef } from '../rpcFrames';
 import { pageEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
@@ -24,6 +26,7 @@ import {
   capCaptureText,
   continueSnapshotCapture,
   cursorIgnoredNote,
+  windowBudget,
   windowSnapshotText,
 } from '../snapshotCursor';
 import { captureSnapshotListing } from '../snapshotListing';
@@ -76,6 +79,16 @@ import {
  * because a scoped listing numbers refs inside one subtree — its descriptors
  * describe a different listing from the unscoped one's.
  */
+/** The top document's origin, from the DOM listing's `URL:` line ('' if none). */
+function topListingOrigin(listing: string): string {
+  const line = /^URL: (.*)$/m.exec(listing);
+  try {
+    return line ? new URL(line[1]).origin : '';
+  } catch {
+    return '';
+  }
+}
+
 function domListingKey(scope: BrowserTargetScope, selector: string | undefined): string {
   return `dom:${browserScopeKey(scope)}:${selector ?? ''}`;
 }
@@ -528,6 +541,8 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         }
 
         let text: string;
+        // Refs the RPC listing read inside frames, for the fail-closed guard.
+        let rpcFrameRefs: Map<number, RpcFrameRef> | undefined;
         // Which route served a SCOPED snapshot. Part of the diff key: an a11y
         // subtree and a DOM listing of the same selector are different
         // renderings, so a call that falls back must not diff against a baseline
@@ -617,6 +632,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           // via the shared buildDomSnapshotExpression() helper — filter honored,
           // aria noted, same as there (#1066).
           const domKey = domListingKey(scope, undefined);
+          // Frame refs this surface still holds outlive the listing's own
+          // count, which can be dropped: the top document never takes them.
+          let keptPast = 0;
+          for (const ref of rpcFrameRefsFor(browserScopeKey(scope)).keys()) keptPast = Math.max(keptPast, ref + 1);
+          reserveRefs(domKey, 0, keptPast);
           const result = await sendScopedBrowserRpc<{ value: unknown }>('browser.evaluate', scope, {
             expression: buildDomSnapshotExpression(undefined, {
               ...(filter && { filter }),
@@ -628,6 +648,32 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           // Same URL redaction as the scoped DOM listing above.
           text = redactPasswordParams(payload.text);
           if (payload.entries.length > 0) recordRefGeneration(domKey, 0, payload.entries);
+          // In-process frames, after the top document and never at its cost.
+          // A frame element keeps the number its document gave it last time;
+          // new ones get numbers past every number handed out. Frame numbers
+          // are spent but never kept as top descriptors, so the top document
+          // can never take one.
+          const frames = await readRpcFrames({
+            topText: text,
+            topOrigin: topListingOrigin(text),
+            budget: windowBudget(),
+            nextRef: nextRefFor(domKey, 0),
+            prior: rpcFrameRefsFor(browserScopeKey(scope)),
+            topRefs: new Set(payload.entries.map((e) => e.ref)),
+            listFrames: async () =>
+              (await sendScopedBrowserRpc<{ frames?: RpcFrameInfo[] }>('browser.frames.tree', scope, {})).frames ?? [],
+            // Main builds the frame listing itself; no expression travels.
+            readFrames: (batch, seed, budget) =>
+              sendScopedBrowserRpc<{ frames: RpcFrameAnswer[]; nextRef: number }>('browser.frames.read', scope, {
+                frames: batch.map(({ frame, prior }) => ({ frameId: frame.frameId, loaderId: frame.loaderId, prior })),
+                seed,
+                budget,
+                ...(filter && { filter }),
+              }),
+          });
+          if (frames.text) text += redactPasswordParams(frames.text);
+          reserveRefs(domKey, 0, frames.nextRef);
+          if (frames.refs.size > 0) rpcFrameRefs = frames.refs;
           if (format === 'aria') {
             text = `(note: aria format unavailable — no live page, returning the DOM interactive listing)\n${text}`;
           }
@@ -641,7 +687,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // a11y, scoped, DOM listing, RPC — passes through this one handler.
         // A route that mints no frame refs clears the surface, which is what
         // keeps a later DOM snapshot's tags resolvable.
-        noteFrameRefsForScope(browserScopeKey(scope), page ?? null);
+        noteFrameRefsForScope(browserScopeKey(scope), page ?? null, rpcFrameRefs);
 
         // Bound what everything downstream retains. deferTruncation hands back
         // the whole assembled tree, and the aria lane has no interactive strip to
