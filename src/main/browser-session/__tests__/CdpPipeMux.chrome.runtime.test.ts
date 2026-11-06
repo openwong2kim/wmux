@@ -13,11 +13,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chromium, type Browser } from 'playwright-core';
 import WebSocket, { WebSocketServer } from 'ws';
 import { CdpPipeMux } from '../CdpPipeMux';
 import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
+import { ChromeLauncher } from '../ChromeLauncher';
 
 const CHROME = process.env.CHROME_PATH;
 
@@ -93,6 +94,7 @@ function sessionsOf(frames: Array<Record<string, unknown>>): { given: Set<string
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const b of browsers.splice(0)) await b.close().catch(() => undefined);
   for (const r of relays.splice(0)) r.close();
   for (const s of started.splice(0)) {
@@ -164,4 +166,39 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
     expect(Date.now() - started).toBeLessThan(5_000);
     expect(fs.readdirSync(s.profile).filter((f) => /^Singleton/.test(f))).toEqual([]);
   }, 60_000);
+
+  // SIGSTOP: the browser process stops reading the pipe, and SIGTERM stays
+  // pending; only SIGKILL ends it. No SIGSTOP on Windows.
+  it.skipIf(process.platform === 'win32')('a pipe Chrome that stops (SIGSTOP) is let go at the third failed check, killed, and a new one starts on its profile', async () => {
+    vi.stubEnv('WMUX_CHROME_TRANSPORT', 'pipe');
+    vi.stubEnv('WMUX_CHROME_PATH', CHROME as string);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pipe-stopped-'));
+    const launcher = new ChromeLauncher(dir, { portEnvVar: null, extraArgs: ['--headless=new', '--use-mock-keychain', '--password-store=basic'] });
+    try {
+      const first = (await launcher.endpoint()).wsEndpoint as string;
+      const before = await chromium.connectOverCDP(first);
+      await before.contexts()[0].addCookies([{ name: 'kept', value: '1', domain: 'probe.invalid', path: '/', expires: Math.floor(Date.now() / 1000) + 86_400 }]);
+      await before.close();
+      const pid = (launcher as unknown as { child: ChildProcess }).child.pid as number;
+      process.kill(pid, 'SIGSTOP');
+      const stoppedAt = Date.now();
+      await expect(launcher.endpoint()).rejects.toThrow('ChromeLauncher: Chrome is not answering');
+      await expect(launcher.endpoint()).rejects.toThrow('ChromeLauncher: Chrome is not answering');
+      const second = (await launcher.endpoint()).wsEndpoint as string;
+      const tookMs = Date.now() - stoppedAt;
+      expect(second).not.toBe(first);
+      expect(() => process.kill(pid, 0)).toThrow();
+      const after = await chromium.connectOverCDP(second);
+      browsers.push(after);
+      const cookieKept = (await after.contexts()[0].cookies('https://probe.invalid/')).some((c) => c.name === 'kept');
+      // Measured, not asserted: a SIGKILL loses cookie writes Chrome had not flushed yet.
+      console.log(JSON.stringify({ stoppedToNewStartMs: tookMs, cookieKept }));
+      expect(tookMs).toBeLessThan(45_000);
+    } finally {
+      // Graceful: Chrome is gone, and done writing, before its profile is removed.
+      for (const b of browsers.splice(0)) await b.close().catch(() => undefined);
+      await launcher.dispose();
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    }
+  }, 120_000);
 });

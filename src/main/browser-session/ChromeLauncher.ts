@@ -62,11 +62,18 @@ const READY_POLL_MS = 250;
 /**
  * Pipe mode: liveness checks that must fail in a row before the launcher lets
  * a Chrome go, and so stops it (one on a pipe can't be found again). Each check
- * waits CDP_PIPE_COMMAND_TIMEOUT_MS (10 s), and checks that overlap count once,
- * so a hung Chrome is stopped at the third failed check: within 30 s of checks
- * (they run on demand, one per call that needs the browser).
+ * waits CDP_PIPE_COMMAND_TIMEOUT_MS (10 s), and checks that overlap count once.
+ * A hung Chrome is let go at the third failed check, within 30 s of checks
+ * (they run on demand, one per call that needs the browser); it is then sent
+ * SIGTERM, SIGKILL PIPE_KILL_GRACE_MS later, and the next launch waits up to
+ * PIPE_KILL_WAIT_MS more for it to exit: 35 s from the first failed check to a
+ * new start, or a launch error if it never exits.
  */
 const PIPE_MISSES_BEFORE_STOP = 3;
+/** A let-go pipe Chrome's time between SIGTERM and SIGKILL. */
+const PIPE_KILL_GRACE_MS = 2_000;
+/** How long a launch waits for a let-go pipe Chrome to exit after SIGKILL. */
+const PIPE_KILL_WAIT_MS = 3_000;
 /** A check that took this much longer than its timeout spanned a sleep (or a stalled main), and doesn't count. */
 const PIPE_SLEEP_SLACK_MS = 5_000;
 /** How long a Chrome asked to quit through Browser.close gets before a signal. */
@@ -471,6 +478,8 @@ export class ChromeLauncher implements ChromeBackendClient {
   private piped: { readonly mux: CdpPipeMux; endpoint: Promise<CdpPipeEndpoint> | null } | null = null;
   /** Pipe mode: liveness checks failed in a row, and when the last one counted ended. */
   private pingMisses = { count: 0, lastEnd: 0 };
+  /** Pipe mode: a Chrome let go and still on its way out. The next launch waits for it. */
+  private exiting: { readonly child: ChildProcess; readonly exited: Promise<boolean> } | null = null;
   private launching: Promise<number> | null = null;
   private disposed = false;
   private readonly portEnvVar: string | null;
@@ -1953,6 +1962,17 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (plan && pipe) {
       throw new Error(`policy_denied: the protected browser profile "${this.profileName}" can't start with WMUX_CHROME_TRANSPORT=pipe`);
     }
+    // A Chrome let go still holds the profile until it exits: wait for it, bounded.
+    if (this.exiting) {
+      const { child, exited } = this.exiting;
+      if (!(await exited) && !hasExited(child)) {
+        try {
+          child.kill('SIGKILL');
+        } catch { /* already gone */ }
+        if (!(await waitForExit(child, PIPE_KILL_WAIT_MS))) throw new Error('ChromeLauncher: the previous Chrome on this profile has not exited');
+      }
+      if (this.exiting?.child === child) this.exiting = null;
+    }
     if (plan) {
       if (!(await this.evictExisting())) throw new Error(PROTECTION_NOT_READY);
     } else {
@@ -2154,11 +2174,19 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.onChildGone();
     if (!piped) return;
     piped.mux.close();
-    if (child && child.exitCode === null && child.signalCode === null) {
+    if (!child || hasExited(child)) return;
+    // SIGTERM first; a browser that does not act on it (hung, or stopped) gets SIGKILL.
+    try {
+      child.kill('SIGTERM');
+    } catch { /* already gone */ }
+    const exited = waitForExit(child, PIPE_KILL_GRACE_MS).then((gone) => {
+      if (gone) return true;
       try {
-        child.kill();
+        child.kill('SIGKILL');
       } catch { /* already gone */ }
-    }
+      return waitForExit(child, PIPE_KILL_WAIT_MS);
+    });
+    this.exiting = { child, exited };
   }
 
   private onChildGone(): void {
@@ -2342,6 +2370,12 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   async dispose(opts?: { immediate?: boolean; deadline?: number }): Promise<void> {
     this.disposed = true;
+    // A let-go pipe Chrome still on its way out does not outlive us.
+    if (this.exiting && !hasExited(this.exiting.child)) {
+      try {
+        this.exiting.child.kill('SIGKILL');
+      } catch { /* already gone */ }
+    }
     const child = this.child;
     const transport = this.bound?.transport ?? null;
     this.onChildGone();

@@ -37,7 +37,7 @@ vi.mock('node:fs', async (orig) => {
 import { ChromeLauncher, chromeTransportKind } from '../ChromeLauncher';
 import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
 
-type FakeChild = EventEmitter & { kill: () => void; stdio: unknown[]; killed: boolean; exitCode: number | null; signalCode: string | null };
+type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; killed: boolean; exitCode: number | null; signalCode: string | null; signals: string[] };
 
 /** A browser that exits (and closes its pipe) on Browser.close. */
 class PipeChrome extends FakeBrowser {
@@ -82,16 +82,22 @@ class SlowPipeChrome extends PipeChrome {
   }
 }
 
-function spawnPipeChrome<T extends PipeChrome = PipeChrome>(Kind: new (child: FakeChild) => T = PipeChrome as new (child: FakeChild) => T): { child: FakeChild; chrome: T } {
+/** `exitsOn`: the signals the fake process exits on (any, by default). */
+function spawnPipeChrome<T extends PipeChrome = PipeChrome>(
+  Kind: new (child: FakeChild) => T = PipeChrome as new (child: FakeChild) => T,
+  exitsOn: (signal: string) => boolean = () => true,
+): { child: FakeChild; chrome: T } {
   const child = new EventEmitter() as FakeChild;
   child.killed = false;
   child.exitCode = null;
   child.signalCode = null;
+  child.signals = [];
   const chrome = new Kind(child);
   child.stdio = [null, null, null, chrome.fromMux, chrome.toMux];
-  child.kill = () => {
+  child.kill = (signal = 'SIGTERM') => {
+    child.signals.push(signal);
     child.killed = true;
-    chrome.exit();
+    if (exitsOn(signal) && child.exitCode === null) chrome.exit();
   };
   spawnMock.mockImplementationOnce(() => child);
   return { child, chrome };
@@ -190,8 +196,8 @@ describe('ChromeLauncher over a debugging pipe', () => {
   });
 
   describe('a pipe Chrome that stops answering', () => {
-    async function stalled() {
-      const { chrome, child } = spawnPipeChrome(SlowPipeChrome);
+    async function stalled(exitsOn?: (signal: string) => boolean) {
+      const { chrome, child } = spawnPipeChrome(SlowPipeChrome, exitsOn);
       chrome.start();
       const launcher = new ChromeLauncher('/tmp/pipe-profile');
       await launcher.endpoint();
@@ -224,6 +230,39 @@ describe('ChromeLauncher over a debugging pipe', () => {
       await third;
       expect(next.child.killed).toBe(false);
       await launcher.dispose({ immediate: true });
+    });
+
+    it('one that ignores SIGTERM gets SIGKILL after the grace, and the new start waits for it to exit', async () => {
+      const { child, launcher } = await stalled((signal) => signal === 'SIGKILL');
+      await failedCheck(launcher);
+      await failedCheck(launcher);
+      const next = spawnPipeChrome();
+      const third = launcher.endpoint();
+      await vi.advanceTimersByTimeAsync(10_500);
+      expect(child.signals).toEqual(['SIGTERM']);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
+      for (let i = 0; i < 60 && spawnMock.mock.calls.length < 2; i++) await vi.advanceTimersByTimeAsync(250);
+      expect(spawnMock).toHaveBeenCalledTimes(2);
+      for (let i = 0; i < 40; i++) await vi.advanceTimersByTimeAsync(250);
+      await third;
+      expect(next.child.killed).toBe(false);
+      await launcher.dispose({ immediate: true });
+    });
+
+    it('one that never exits fails the new start with a clear error instead of starting another on its profile', async () => {
+      const { child, launcher } = await stalled(() => false);
+      await failedCheck(launcher);
+      await failedCheck(launcher);
+      const third = launcher.endpoint().then(() => 'started', (err: Error) => err.message);
+      // The check's 10 s, the 2 s grace, the 3 s wait after SIGKILL, and the launch's own 3 s more.
+      await vi.advanceTimersByTimeAsync(10_500 + 2_000 + 3_000 + 3_000 + 500);
+      expect(await third).toBe('ChromeLauncher: the previous Chrome on this profile has not exited');
+      expect(child.signals).toEqual(['SIGTERM', 'SIGKILL', 'SIGKILL']);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      await launcher.dispose({ immediate: true });
+      expect(child.signals.at(-1)).toBe('SIGKILL');
     });
 
     it('a check whose wait spans a sleep does not count, and checks running at once count once', async () => {
