@@ -2,6 +2,7 @@ import type { DaemonMemoryDiagnostics } from '../shared/memoryDiagnostics';
 import type { ManagedSession } from './DaemonSessionManager';
 import type { SessionPipe } from './SessionPipe';
 import { RingBuffer } from './RingBuffer';
+import { screenReadCounters } from './screenReadCache';
 
 /** Read counters only: never copy terminal contents or trigger a snapshot. */
 export function collectDaemonMemoryDiagnostics(
@@ -33,5 +34,6 @@ export function collectDaemonMemoryDiagnostics(
       freedBytes: hibernated.reduce((total, { ringBuffer }) => total + ringBuffer.hibernatedBytes, 0),
       wakeFailures: RingBuffer.wakeFailures,
     },
+    screenReads: screenReadCounters(),
   };
 }

@@ -679,3 +679,46 @@ describe('AwaitingScreenVerifier end to end', () => {
     }
   });
 });
+
+// The approval reader polls a pane every 100 ms while an answer lands, and on
+// every keystroke at a prompt: while the ring and size have not moved, the
+// frame read from the whole ring stands, with no ring copy and no parse.
+describe('renderPaneScreen reuse', () => {
+  function countingPane() {
+    const ring = new RingBuffer(4096);
+    ring.write(Buffer.from('prompt'));
+    let copies = 0;
+    const readAllWithGeometry = ring.readAllWithGeometry.bind(ring);
+    const ringBuffer = Object.assign(Object.create(ring) as RingBuffer, {
+      readAllWithGeometry: () => { copies++; return readAllWithGeometry(); },
+    });
+    const pane = renderablePane({ ringBuffer, ptyProcess: { cols: 80, rows: 24 } });
+    return { ring, pane, copies: () => copies };
+  }
+
+  it('reuses the whole-ring frame until bytes arrive or the pane is resized', async () => {
+    const { ring, pane, copies } = countingPane();
+    let parses = 0;
+    const snapshot = async () => { parses++; return { ok: true as const, rows: [{ text: `frame ${parses}` }] }; };
+    const first = await renderPaneScreen(() => pane, snapshot);
+    expect(await renderPaneScreen(() => pane, snapshot)).toBe(first);
+    expect([copies(), parses]).toEqual([1, 1]);
+
+    ring.write(Buffer.from('!'));
+    expect((await renderPaneScreen(() => pane, snapshot))?.rows).toEqual(['frame 2']);
+    pane.ptyProcess.cols = 100;
+    expect((await renderPaneScreen(() => pane, snapshot))?.rows).toEqual(['frame 3']);
+    expect([copies(), parses]).toEqual([3, 3]);
+  });
+
+  it('does not reuse a frame read from the tail after the whole ring ran out of budget', async () => {
+    const { pane } = countingPane();
+    let calls = 0;
+    const snapshot = async () => (++calls % 2 === 1
+      ? { ok: false as const, reason: 'budget' }
+      : { ok: true as const, rows: [{ text: 'tail' }] });
+    expect((await renderPaneScreen(() => pane, snapshot))?.rows).toEqual(['tail']);
+    await renderPaneScreen(() => pane, snapshot);
+    expect(calls).toBe(4);
+  });
+});

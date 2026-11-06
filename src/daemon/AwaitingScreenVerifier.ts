@@ -47,6 +47,7 @@
 import type { RingBuffer, ReplayGeometry } from './RingBuffer';
 import { UNKNOWN_CELL, readRingTailWithModesAndGeometry, readRingWithModesAndGeometry, withUnknownCells } from './sessionTextReplay';
 import { screenShowsActiveDialog, screenShowsPermissionDialog } from './transcript/chatScreenGate';
+import { fencedRead } from './screenReadCache';
 import { isNativeDecision, type ApprovalRequest } from './approvals/types';
 
 /** Wait before the confirming second read of a dialog-free frame. */
@@ -325,7 +326,7 @@ export const AWAITING_RENDER_WINDOW_BYTES = 256 * 1024;
 export interface RenderablePane {
   meta: { cols?: number; rows?: number };
   ptyProcess: { cols?: number; rows?: number };
-  ringBuffer: Pick<RingBuffer, 'readAllWithGeometry'>;
+  ringBuffer: Pick<RingBuffer, 'readAllWithGeometry'> & Partial<Pick<RingBuffer, 'totalBytesWritten'>>;
   bridge: { readonly isMuted: boolean; readonly outputModes?: { preamble(windowStart: number): string } | null };
 }
 
@@ -375,6 +376,11 @@ export async function renderPaneTail(
  * snapshot queue (the frame then describes a grid the pane no longer has).
  * `tail: false`: a whole ring that does not parse in time is null too, not
  * read from its tail.
+ * Readers poll this (every keystroke at a prompt, every 100 ms while an
+ * answer lands), so a frame read from the whole ring is reused while the
+ * ring's bytes and the pane's size have not moved (screenReadCache): the
+ * ring is then neither copied nor parsed again. A frame read from the tail
+ * is not reused, since a later read may parse the whole ring in time.
  */
 export async function renderPaneScreen(
   getPane: () => RenderablePane | undefined,
@@ -385,6 +391,31 @@ export async function renderPaneScreen(
   if (!pane || pane.bridge.isMuted) return null;
   const geometry = liveGeometry(pane);
   if (!geometry) return null;
+  const written = pane.ringBuffer.totalBytesWritten;
+  if (typeof written !== 'number') return (await renderFrame(getPane, pane, geometry, snapshot, opts)).frame;
+  const fence = `${written}:${geometry.cols}x${geometry.rows}`;
+  // renderFrame copies the ring before its first await, in this same step.
+  const read = await fencedRead(pane, `pane:${snapshotId(snapshot)}:${opts.tail === false ? 'whole' : 'tail'}`, fence,
+    () => renderFrame(getPane, pane, geometry, snapshot, opts),
+    (r) => (r.frame && r.whole && r.frame.mark === written ? fence : null));
+  return read.frame;
+}
+
+const snapshotIds = new WeakMap<TextSnapshot, number>();
+let nextSnapshotId = 0;
+function snapshotId(snapshot: TextSnapshot): number {
+  let id = snapshotIds.get(snapshot);
+  if (id === undefined) snapshotIds.set(snapshot, (id = ++nextSnapshotId));
+  return id;
+}
+
+async function renderFrame(
+  getPane: () => RenderablePane | undefined,
+  pane: RenderablePane,
+  geometry: { cols: number; rows: number },
+  snapshot: TextSnapshot,
+  opts: { tail?: boolean },
+): Promise<{ frame: AwaitingFrame | null; whole: boolean }> {
   // The mark is taken at the same instant the ring is read. The whole ring is
   // replayed, each stretch at the size it was written at: Claude Code's
   // fullscreen renderer repaints by cell diff and skips a cell that already
@@ -399,20 +430,22 @@ export async function renderPaneScreen(
   const mark = whole.writtenAt;
   let read = withUnknownCells(whole, geometry);
   let outcome = await snapshot({ ...geometry, scrollback: 0, initial: read.replay, geometry: read.geometry });
+  let fromWhole = true;
   if (!outcome.ok && outcome.reason === 'budget' && opts.tail !== false) {
+    fromWhole = false;
     const tail = readRingTailWithModesAndGeometry(pane.ringBuffer, outputModes, AWAITING_RENDER_WINDOW_BYTES);
-    if (tail.writtenAt !== mark) return null;
+    if (tail.writtenAt !== mark) return { frame: null, whole: false };
     read = withUnknownCells(tail, geometry);
     outcome = await snapshot({ ...geometry, scrollback: 0, initial: read.replay, geometry: read.geometry });
   }
-  if (!outcome.ok) return null;
-  if (getPane() !== pane) return null;
+  if (!outcome.ok) return { frame: null, whole: false };
+  if (getPane() !== pane) return { frame: null, whole: false };
   const after = liveGeometry(pane);
-  if (!after || after.cols !== geometry.cols || after.rows !== geometry.rows) return null;
+  if (!after || after.cols !== geometry.cols || after.rows !== geometry.rows) return { frame: null, whole: false };
   const texts = outcome.rows.map((r) => r.text);
   const wrapped = outcome.rows.some((r) => r.wrapped !== undefined) ? { wrapped: outcome.rows.map((r) => r.wrapped === true) } : {};
-  if (!read.marked || !texts.some((t) => t.includes(UNKNOWN_CELL))) return { rows: texts, mark, cols: geometry.cols, ...wrapped };
+  if (!read.marked || !texts.some((t) => t.includes(UNKNOWN_CELL))) return { frame: { rows: texts, mark, cols: geometry.cols, ...wrapped }, whole: fromWhole };
   // Every other reader sees what it saw before: an unknown cell as a blank.
   const rows = texts.map((t) => t.split(UNKNOWN_CELL).join(' ').replace(/ +$/, ''));
-  return { rows, mark, cols: geometry.cols, unknown: texts, ...wrapped };
+  return { frame: { rows, mark, cols: geometry.cols, unknown: texts, ...wrapped }, whole: fromWhole };
 }
