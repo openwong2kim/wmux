@@ -146,6 +146,15 @@ describe('guarded tail: served', () => {
     expect(full.findIndex((row) => row.startsWith('origin 359'))).toBe(0);
   });
 
+  it('a TUI that writes no line feed until its last line is still served (the cut starts at an escape)', async () => {
+    const frames = Array.from({ length: 2000 }, (_, n) =>
+      `\x1b[H${Array.from({ length: ROWS }, (_, r) => `\x1b[${r + 1};1Hitem ${n}:${r} ${'x'.repeat(30 + ((n * r) % 40))}\x1b[K`).join('')}`);
+    const s = session(['\x1b[?1049h\x1b[2J', ...frames, '\r\ndone']);
+    const guarded = await queuedScreenTail(table(s), 'pane', 'stallwatch');
+    expect(guarded?.via).toBe('tail');
+    expect(texts(guarded)).toEqual(texts(await queuedScreenText(table(s), 'pane')));
+  });
+
   it('a ring that fits in the tail is read whole', async () => {
     const s = session(['\x1b[2;20rsmall ring\r\n']);
     const guarded = await queuedScreenTail(table(s), 'pane', 'stallwatch');

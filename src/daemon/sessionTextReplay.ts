@@ -94,9 +94,10 @@ export function readRingTailWithModesAndGeometry(
 
 /**
  * Where a replay of the newest `maxBytes` of `data` starts: 0 when all of it
- * fits, else the next line start after the byte budget's edge.
+ * fits, else the next line start after the byte budget's edge, or the next
+ * escape sequence when no line starts within `lineWithin` bytes of the edge.
  */
-export function tailCut(data: Buffer, maxBytes: number): number {
+export function tailCut(data: Buffer, maxBytes: number, lineWithin = Number.POSITIVE_INFINITY): number {
   const cut = Math.max(0, data.length - maxBytes);
   if (cut === 0) return 0;
   // Start on a line: a cut mid-sequence or mid-character would parse its
@@ -105,8 +106,10 @@ export function tailCut(data: Buffer, maxBytes: number): number {
   // screen, so it starts at an escape sequence instead (ESC is ASCII: never
   // inside a UTF-8 character).
   const nl = data.indexOf(0x0a, cut);
-  const esc = nl === -1 ? data.indexOf(0x1b, cut) : -1;
-  return nl !== -1 ? nl + 1 : esc !== -1 ? esc : data.length;
+  if (nl !== -1 && nl - cut <= lineWithin) return nl + 1;
+  const esc = data.indexOf(0x1b, cut);
+  if (esc !== -1 && (nl === -1 || esc < nl)) return esc;
+  return nl !== -1 ? nl + 1 : data.length;
 }
 
 /** A cell no byte of a replay wrote (see withUnknownCells). Private use: no TUI draws it. */

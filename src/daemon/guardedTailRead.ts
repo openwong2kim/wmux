@@ -24,6 +24,8 @@ import type { OutputModeTracker } from './util/outputModeTracker';
  */
 
 export const TAIL_BYTES = 256 * 1024;
+/** How far past the byte budget's edge a tail still looks for a line start. */
+const TAIL_LINE_WITHIN = 16 * 1024;
 /** The real-data check compares a served answer with the whole ring's at most this often per pane, */
 export const TAIL_CHECK_INTERVAL_MS = 10 * 60_000;
 /** and at most this often across panes, so a daemon start doesn't stack one extra whole-ring parse per pane. */
@@ -99,7 +101,9 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
     return { ...answer, via: 'full' };
   };
 
-  const cut = tailCut(data, TAIL_BYTES);
+  // A TUI that repaints by position writes few line feeds: one far past the
+  // edge would leave almost nothing to replay, so start at an escape instead.
+  const cut = tailCut(data, TAIL_BYTES, TAIL_LINE_WITHIN);
   if (cut === 0) {
     // The whole ring fits: the tail is the whole replay.
     const answer = await options.parse(full);
