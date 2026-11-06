@@ -258,6 +258,9 @@ export async function setFilesInIsolatedWorld(
 ): Promise<UploadOutcome> {
   const group = `wmux-upload-${randomBytes(8).toString('hex')}`;
   let sent = false;
+  // Set when the wait runs out. The caller may already have been told nothing
+  // was set, so a lookup that lands after that must not set anything either.
+  let gaveUp = false;
   const run = async (): Promise<UploadOutcome> => {
     let contextId: number | undefined;
     try {
@@ -287,6 +290,7 @@ export async function setFilesInIsolatedWorld(
         const value = result?.value;
         return { uploaded: false, missing: value === 'anchor' ? 'near' : value === 'many' ? 'ambiguous' : 'match' };
       }
+      if (gaveUp) return { uploaded: false, missing: 'unanswered' };
       sent = true;
       await send('DOM.setFileInputFiles', { files, objectId: result.objectId });
       return { uploaded: true, count: files.length };
@@ -296,7 +300,10 @@ export async function setFilesInIsolatedWorld(
   };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<'expired'>((resolve) => {
-    timer = setTimeout(() => resolve('expired'), timeoutMs);
+    timer = setTimeout(() => {
+      gaveUp = true;
+      resolve('expired');
+    }, timeoutMs);
   });
   try {
     const outcome = await Promise.race([run(), expired]);

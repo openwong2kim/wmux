@@ -253,6 +253,20 @@ describe('browser.upload.cdp: the shared debugger', () => {
     expect(sent()).not.toContain('DOM.setFileInputFiles');
   });
 
+  it('never sends the files once it has answered "unanswered", even when the lookup lands late', async () => {
+    let answerLookup: (value: unknown) => void = () => undefined;
+    guest.wc.debugger.sendCommand.mockImplementation(async (method: string) =>
+      method === 'Runtime.evaluate' ? new Promise((resolve) => { answerLookup = resolve; }) : answer(method));
+    const res = await call(register(), 'browser.upload.cdp', { files: [path.join(UPLOADS, 'clip.mp4')], timeoutMs: 50 });
+    expect(res.result).toEqual({ uploaded: false, missing: 'unanswered' });
+    // The page wakes up (a dialog closed, a slow load finished) after the
+    // caller was told nothing was set.
+    answerLookup({ result: { type: 'object', subtype: 'node', objectId: 'obj-late' } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(sent()).not.toContain('DOM.setFileInputFiles');
+    expect(sent()).toContain('Runtime.releaseObjectGroup');
+  });
+
   it('reports a page that does not take the files in time as an error, since it still may', async () => {
     guest.wc.debugger.sendCommand.mockImplementation(async (method: string) =>
       method === 'DOM.setFileInputFiles' ? new Promise(() => undefined) : answer(method));
