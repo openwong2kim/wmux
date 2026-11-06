@@ -17,10 +17,12 @@ import {
 // Chromium with no listening CDP port at all, and the log still said "enabled".
 
 describe('dropDebuggingSwitches', () => {
-  it('removes both ways of opening a debugging endpoint', () => {
+  it('removes every switch that opens or loosens a debugging endpoint', () => {
     const removeSwitch = vi.fn();
     dropDebuggingSwitches({ removeSwitch });
-    expect(removeSwitch.mock.calls.map(([name]) => name)).toEqual(['remote-debugging-port', 'remote-debugging-pipe']);
+    expect(removeSwitch.mock.calls.map(([name]) => name)).toEqual([
+      'remote-debugging-port', 'remote-debugging-pipe', 'remote-debugging-address', 'remote-allow-origins',
+    ]);
   });
 });
 

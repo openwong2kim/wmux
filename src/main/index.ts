@@ -589,6 +589,7 @@ if (process.platform === 'win32' && app.isPackaged) {
 // config. Closing the port is the single largest same-user surface reduction
 // in the app: CDP only needs a loopback socket, unlike other same-user vectors
 // which need filesystem or process control. See docs/SECURITY.md §3.
+dropDebuggingSwitches(app.commandLine);
 const cdpEnabled =
   process.env.WMUX_DISABLE_CDP !== 'true' &&
   loadConfig().browser?.cdp?.enabled !== false;
@@ -612,7 +613,6 @@ if (cdpEnabled) {
   );
 
 } else {
-  dropDebuggingSwitches(app.commandLine);
   console.log('[WinMux] CDP disabled — browser automation will be unavailable (enable via ~/.wmux/config.json browser.cdp.enabled)');
 }
 
