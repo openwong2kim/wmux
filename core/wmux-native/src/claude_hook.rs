@@ -48,10 +48,11 @@ use crate::js::{self, js, JsStr, Json};
 use crate::paths;
 use crate::rpc::Target;
 use crate::sha256;
+use crate::unix_sys;
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 /// The bridge this port follows (claudeHookContract.test.ts pins the same file).
 const PORTED_FROM_SHA256: &str = include_str!("../claude-hook.ported-from.sha256");
@@ -107,12 +108,62 @@ pub fn run_process(args: Vec<OsString>) -> ! {
         }
         claude::log_event(event.as_ref(), outcome, extra)
     };
+    let mut code = 0;
     if let Some(start) = hand_over(&args, event.as_ref(), &argv, &no_bridge, &log) {
-        if let Err(message) = on_own_stack(STACK_BYTES, || run(start, &log)) {
-            log("uncaught", vec![("error", s(&message))]);
+        code = finish(on_own_stack(STACK_BYTES, || run(start, &log)), &log);
+    }
+    std::process::exit(code);
+}
+
+/// The exit code of the verdict this run reached: 0 until a decision sets
+/// it (set_exit_code). Every way out reads it, a panic after the verdict
+/// included, so a block stays a block.
+static EXIT_CODE: AtomicI32 = AtomicI32::new(0);
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn set_exit_code(code: i32) {
+    EXIT_CODE.store(code, Ordering::SeqCst);
+}
+
+/// How the run ended: a panic is logged `uncaught`, as Node's catch logs
+/// it; the exit code is the verdict's either way.
+fn finish(outcome: Result<(), String>, log: Log) -> i32 {
+    if let Err(message) = outcome {
+        log("uncaught", vec![("error", s(&message))]);
+    }
+    EXIT_CODE.load(Ordering::SeqCst)
+}
+
+/// All of `bytes` to `fd` (stdout or stderr). An inherited non-blocking
+/// descriptor is waited on until it takes more, as Node's stream holds the
+/// process until it drains. False when the write failed (the reader went
+/// away); the caller logs the loss and keeps its exit code.
+#[cfg_attr(not(test), allow(dead_code))]
+fn write_out(fd: i32, bytes: &[u8]) -> bool {
+    use std::os::fd::FromRawFd;
+    // SAFETY: fd 1 and 2 stay open for the whole process, and ManuallyDrop
+    // never closes them.
+    let mut out = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+    let mut written = 0;
+    while written < bytes.len() {
+        match out.write(&bytes[written..]) {
+            Ok(0) => return false,
+            Ok(n) => written += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let mut p = unix_sys::PollFd {
+                    fd,
+                    events: unix_sys::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: one valid pollfd for the duration of the call. A
+                // reader that went away wakes it, and the next write fails.
+                unsafe { unix_sys::poll(&mut p, 1, -1) };
+            }
+            Err(_) => return false,
         }
     }
-    std::process::exit(0);
+    true
 }
 
 /// `f` on a thread with a `stack`-byte stack. Err is a panic's text, or why
@@ -741,6 +792,43 @@ mod tests {
         let mut out = String::new();
         js::stringify(v, &mut out);
         out
+    }
+
+    #[test]
+    fn a_panic_after_the_verdict_keeps_its_exit_code() {
+        // The uncaught path reads the stored code: what a release build does
+        // when anything panics after a gate block.
+        let logged = std::sync::Mutex::new(Vec::new());
+        let log = |outcome: &str, _: Vec<(&str, Option<Json>)>| logged.lock().unwrap().push(outcome.to_string());
+        let outcome = on_own_stack(STACK_BYTES, || {
+            set_exit_code(2);
+            panic!("after the verdict");
+        });
+        assert_eq!(finish(outcome, &log), 2);
+        assert_eq!(*logged.lock().unwrap(), ["uncaught"]);
+        set_exit_code(0);
+        assert_eq!(finish(Ok(()), &log), 0);
+    }
+
+    #[test]
+    fn output_waits_on_a_full_non_blocking_reader_and_reports_a_gone_one() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        let (writer, mut reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        let big = vec![b'x'; 4 * 1024 * 1024];
+        let drain = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let mut got = Vec::new();
+            reader.read_to_end(&mut got).unwrap();
+            got.len()
+        });
+        assert!(write_out(writer.as_raw_fd(), &big));
+        drop(writer);
+        assert_eq!(drain.join().unwrap(), big.len());
+        let (writer, reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(reader);
+        assert!(!write_out(writer.as_raw_fd(), b"lost\n"));
     }
 
     #[test]
