@@ -148,6 +148,34 @@ describe('in-process frames on the RPC lane', () => {
     expect(textOf(res)).toMatch(/ref=1 belonged to a frame that has navigated or gone.*browser_snapshot/s);
   });
 
+  it('stops a multi-line type when the frame navigates after an Enter', async () => {
+    answer();
+    await tool('browser_snapshot')({});
+    let pressed = false;
+    answer({
+      'browser.press.cdp': () => { pressed = true; return { ok: true }; },
+      'browser.evaluate': (p) => {
+        if (pressed) throw new Error('FRAME_NAVIGATED: the frame has loaded another document since the snapshot');
+        if (String(p.expression).includes('wmux-caret')) return { value: 'wmux-caret:held' };
+        return { value: 'no' };
+      },
+    });
+    const res = await tool('browser_type')({ ref: '1', text: 'a\nb\nc', newline: 'enter' });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/Typed 1 of 3 lines/);
+    expect(calls('browser.type.cdp').map((p) => p.text)).toEqual(['a']);
+  });
+
+  it('never sends a smartRef or a caller\'s own selector into a frame', async () => {
+    answer();
+    await tool('browser_snapshot')({});
+    await tool('browser_click')({ smartRef: 1 });
+    await tool('browser_type')({ selector: '[data-wmux-ref="1"]', text: 'x' });
+    for (const p of [...calls('browser.click.cdp'), ...calls('browser.evaluate').slice(-3)]) {
+      expect(p).not.toHaveProperty('frameId');
+    }
+  });
+
   it('never resolves one broker connection\'s frame ref on another', async () => {
     answer();
     const a = createConnectionScope();
