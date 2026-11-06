@@ -2,6 +2,7 @@ import { ipcMain, app } from 'electron';
 import * as path from 'path';
 import { IPC } from '../../../shared/constants';
 import { SessionManager } from '../../session/SessionManager';
+import { noteRendererScrollback } from '../../session/rendererScrollback';
 import type { SessionData } from '../../../shared/types';
 import { wrapHandler } from '../wrapHandler';
 import {
@@ -55,6 +56,7 @@ export function registerSessionHandlers(
 
   ipcMain.removeHandler(IPC.SESSION_SAVE);
   ipcMain.handle(IPC.SESSION_SAVE, wrapHandler(IPC.SESSION_SAVE, (_event: Electron.IpcMainInvokeEvent, data: SessionData) => {
+    noteRendererScrollback(data);
     sessionManager.save(data);
     return { success: true };
   }));
@@ -65,13 +67,16 @@ export function registerSessionHandlers(
   // (sync) so reboot survival is unchanged.
   ipcMain.removeHandler(IPC.SESSION_SAVE_ASYNC);
   ipcMain.handle(IPC.SESSION_SAVE_ASYNC, wrapHandler(IPC.SESSION_SAVE_ASYNC, (_event: Electron.IpcMainInvokeEvent, data: SessionData) => {
+    noteRendererScrollback(data);
     sessionManager.saveAsync(data);
     return { success: true };
   }));
 
   ipcMain.removeHandler(IPC.SESSION_LOAD);
   ipcMain.handle(IPC.SESSION_LOAD, wrapHandler(IPC.SESSION_LOAD, () => {
-    return sessionManager.load();
+    const data = sessionManager.load();
+    noteRendererScrollback(data);
+    return data;
   }));
 
   // scrollback:dump — write terminal buffer to file.
