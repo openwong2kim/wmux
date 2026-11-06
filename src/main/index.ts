@@ -104,6 +104,8 @@ import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerCodexRpc } from './pipe/handlers/codex.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
+import { registerMcpSessionsRpc } from './pipe/handlers/mcpSessions.rpc';
+import { McpSessionTracker } from './mcp/mcpSessionTracker';
 import { registerComputerRpc } from './pipe/handlers/computer.rpc';
 import { resolvePtyOwnerWorkspace } from './workspace/ptyOwnership';
 import { createFanoutCallerSubmit } from './deck/fanoutCallerSubmit';
@@ -1241,6 +1243,14 @@ registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerCodexRpc(rpcRouter, () => mainWindow, () => daemonClient);
 registerPerfRpc(rpcRouter);
+// One tracker: the router counts into it, the summary RPC reads it.
+const mcpSessionTracker = new McpSessionTracker();
+rpcRouter.setMcpSessionSink(mcpSessionTracker);
+registerMcpSessionsRpc(rpcRouter, {
+  brokerEnabled: isMcpBrokerEnabled,
+  brokerStatus: () => mcpBrokerSupervisor.status(),
+  tracker: mcpSessionTracker,
+});
 // Desktop computer use. Built on first call, so an install that never opts in
 // (Settings › Computer use) never constructs it or spawns a helper. Consent rides
 // the approval queue, which is created further down — hence the late binding.
