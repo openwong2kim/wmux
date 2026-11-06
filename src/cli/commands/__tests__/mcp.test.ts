@@ -24,6 +24,7 @@ import * as fs from 'fs';
 import {
   canConnectBrokerPipe,
   isolatedInstanceNotice,
+  launcherForTarget,
   resolveWmuxLauncher,
   resolveWmuxScript,
   selectedProfile,
@@ -146,43 +147,39 @@ describe('resolveWmuxScript', () => {
   });
 });
 
-describe('resolveWmuxLauncher', () => {
+describe('resolveWmuxLauncher / launcherForTarget', () => {
   const home = '/home/u';
-  const native = (p: string) => p.endsWith('wmux-native') || p.endsWith('wmux-native.exe');
-  function existsWithNative(nativeThere: boolean) {
-    existsSyncMock.mockImplementation((p: unknown) => {
-      const s = String(p);
-      if (native(s)) return nativeThere;
-      return s.endsWith('shim.js') || s.endsWith('index.js') || s.endsWith('entry.js');
-    });
+  const approved = '/home/u/.wmux/mcp/wmux-native';
+  const approves = () => approved;
+  const approvesNothing = () => null;
+  function existsAll() {
+    existsSyncMock.mockImplementation((p: unknown) => /(shim|index|entry)\.js$/.test(String(p)));
   }
 
-  it('keeps the installed native launcher when a broker answers and it passes its self-test', async () => {
+  it('offers the native launcher the app approved when a broker answers, running nothing', async () => {
     scriptConnect('connect');
-    existsWithNative(true);
-    const selfTest = vi.fn(async () => true);
-    const launcher = await resolveWmuxLauncher(home, selfTest);
-    expect(launcher?.kind).toBe('native');
-    expect(launcher?.kind === 'native' && launcher.binary).toMatch(/[\\/]\.wmux[\\/]mcp[\\/]wmux-native(\.exe)?$/);
-    expect(selfTest).toHaveBeenCalledTimes(1);
+    existsAll();
+    const plan = await resolveWmuxLauncher(home, approves);
+    expect(plan?.launcher).toEqual({ kind: 'native', binary: approved });
   });
 
-  it('falls back to the node shim when the native launcher fails its self-test', async () => {
+  it('offers native only for a build the app approved', async () => {
     scriptConnect('connect');
-    existsWithNative(true);
-    const launcher = await resolveWmuxLauncher(home, async () => false);
-    expect(launcher).toMatchObject({ kind: 'node' });
-    expect(launcher?.kind === 'node' && launcher.script).toMatch(/shim\.js$/);
+    existsAll();
+    const plan = await resolveWmuxLauncher(home, approvesNothing);
+    expect(plan?.launcher.kind === 'node' && plan.launcher.script).toMatch(/shim\.js$/);
+    expect(plan?.approvedNative).toBeNull();
+    expect(launcherForTarget(plan!, approved)).toEqual(plan?.launcher);
   });
 
-  it('never runs the native launcher when no broker answers, or with WMUX_MCP_BROKER=0', async () => {
-    const selfTest = vi.fn(async () => true);
+  it('with the app closed, keeps an entry already on the approved launcher and writes node elsewhere', async () => {
     scriptConnect('error');
-    existsWithNative(true);
-    expect(await resolveWmuxLauncher(home, selfTest)).toMatchObject({ kind: 'node' });
-    process.env.WMUX_MCP_BROKER = '0';
-    expect(await resolveWmuxLauncher(home, selfTest)).toMatchObject({ kind: 'node' });
-    expect(selfTest).not.toHaveBeenCalled();
+    existsAll();
+    const plan = await resolveWmuxLauncher(home, approves);
+    expect(plan?.launcher.kind).toBe('node');
+    expect(launcherForTarget(plan!, approved)).toEqual({ kind: 'native', binary: approved });
+    expect(launcherForTarget(plan!, '/home/u/.wmux/mcp/index.js')).toEqual(plan?.launcher);
+    expect(launcherForTarget(plan!, null)).toEqual(plan?.launcher);
   });
 });
 

@@ -182,6 +182,47 @@ export function installLifecycleAsset(spec: LifecycleAssetSpec): LifecycleAssetI
   }
 }
 
+export interface SettledProbe {
+  /** True when the installed copy ran and was kept. */
+  runs: boolean;
+  /** True when a copy that did not run was replaced by the one it replaced. */
+  restored: boolean;
+}
+
+/**
+ * The step after installLifecycleAsset put an executable in place and a probe
+ * ran it. A copy that runs is kept and the copy it replaced (`previousPath`)
+ * is dropped. One that does not run is replaced by that previous copy, or,
+ * without one, removed, unless `keepFailing`: a caller whose registrations may
+ * already point at the path keeps the file and stops offering it instead.
+ * Failures to rename or remove are left for the next run to meet.
+ */
+export function settleProbedAsset(
+  destinationPath: string,
+  previousPath: string | undefined,
+  runs: boolean,
+  opts: { keepFailing?: boolean } = {},
+): SettledProbe {
+  if (runs) {
+    if (previousPath) {
+      try { fs.unlinkSync(previousPath); } catch { /* still running: swept next time */ }
+    }
+    return { runs: true, restored: false };
+  }
+  if (previousPath) {
+    try {
+      fs.renameSync(previousPath, destinationPath);
+      return { runs: false, restored: true };
+    } catch {
+      return { runs: false, restored: false };
+    }
+  }
+  if (!opts.keepFailing) {
+    try { fs.unlinkSync(destinationPath); } catch { /* status then reports the copy as stale */ }
+  }
+  return { runs: false, restored: false };
+}
+
 /** Locate one bundled lifecycle asset from CLI, packaged, or repo layouts. */
 export function findLifecycleAssetSourceFrom(
   startDir: string,

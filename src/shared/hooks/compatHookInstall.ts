@@ -28,6 +28,7 @@ import {
   findLifecycleAssetSourceFrom,
   installLifecycleAsset,
   inspectLifecycleAsset,
+  settleProbedAsset,
   type LifecycleAssetInstallOutcome,
   type LifecycleAssetSpec,
   type LifecycleAssetStatus,
@@ -352,18 +353,8 @@ function installNativeHooks(spec: LifecycleAssetSpec | null): LifecycleAssetInst
   if (!spec) return null;
   const outcome = installLifecycleAsset(spec);
   if (outcome.state !== 'current') return outcome;
-  const { previousPath } = outcome;
-  if (nativeHooksRuns(spec.destinationPath)) {
-    if (previousPath) {
-      try { fs.unlinkSync(previousPath); } catch { /* still running: swept next time */ }
-    }
-    return outcome;
-  }
   // The copy this run replaced did run: put it back rather than leave nothing.
-  try {
-    if (previousPath) fs.renameSync(previousPath, spec.destinationPath);
-    else fs.unlinkSync(spec.destinationPath);
-  } catch { /* status then reports the copy as stale */ }
+  if (settleProbedAsset(spec.destinationPath, outcome.previousPath, nativeHooksRuns(spec.destinationPath)).runs) return outcome;
   return { ...outcome, state: 'error', error: 'the native hook bridge does not run on this machine' };
 }
 

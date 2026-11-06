@@ -10,6 +10,7 @@
 //   bundle     everything else: `node index.js`, the full server.
 
 import { execFile } from 'child_process';
+import { createHash, randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { WmuxLauncher } from './configIO';
@@ -20,17 +21,70 @@ import { nativeHooksBasename } from './hooks/hookFlavours';
 export const NATIVE_SELF_TEST_LINE = 'wmux-mcp-shim protocol 1';
 export const NATIVE_SELF_TEST_TIMEOUT_MS = 5000;
 
-/** Run the native launcher's self-test. Never throws; false on any failure. */
-export function runNativeSelfTest(binary: string, timeoutMs = NATIVE_SELF_TEST_TIMEOUT_MS): Promise<boolean> {
+/** What a self-test proved: it runs, it does not, or nothing (it timed out,
+ *  as it can under an antivirus scan or load). */
+export type SelfTestVerdict = 'pass' | 'fail' | 'timeout';
+
+/** Run the native launcher's self-test. Never throws. */
+export function runNativeSelfTest(binary: string, timeoutMs = NATIVE_SELF_TEST_TIMEOUT_MS): Promise<SelfTestVerdict> {
   return new Promise((resolve) => {
     try {
       execFile(binary, ['mcp-shim', '--self-test'], { timeout: timeoutMs, windowsHide: true, encoding: 'utf8' }, (error, stdout) => {
-        resolve(!error && String(stdout).trim() === NATIVE_SELF_TEST_LINE);
+        if (error && (error as { killed?: boolean }).killed) return resolve('timeout');
+        resolve(!error && String(stdout).trim() === NATIVE_SELF_TEST_LINE ? 'pass' : 'fail');
       });
     } catch {
-      resolve(false);
+      resolve('fail');
     }
   });
+}
+
+/**
+ * The verdicts the app recorded for launcher builds, by sha256 of the copy, in
+ * the stable MCP directory. Only the app writes it (after a self-test); the
+ * CLI reads it, so both offer the same copies. A timeout is never recorded.
+ */
+export const NATIVE_HEALTH_RECORD = '.wmux-native-health.json';
+const MAX_RECORDED_BUILDS = 8;
+
+type HealthRecord = { version: 1; verdicts: Record<string, 'pass' | 'fail'> };
+
+function readHealthRecord(stableDir: string): HealthRecord {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(stableDir, NATIVE_HEALTH_RECORD), 'utf8')) as Partial<HealthRecord>;
+    if (parsed && parsed.version === 1 && parsed.verdicts && typeof parsed.verdicts === 'object') return parsed as HealthRecord;
+  } catch { /* missing or unreadable: nothing recorded */ }
+  return { version: 1, verdicts: {} };
+}
+
+export function fileSha256(file: string): string | null {
+  try {
+    return createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+export function recordedVerdict(stableDir: string, hash: string): 'pass' | 'fail' | undefined {
+  const verdict = readHealthRecord(stableDir).verdicts[hash];
+  return verdict === 'pass' || verdict === 'fail' ? verdict : undefined;
+}
+
+/** Record a verdict for a build; the newest few builds are kept. */
+export function recordVerdict(stableDir: string, hash: string, verdict: 'pass' | 'fail'): void {
+  const record = readHealthRecord(stableDir);
+  delete record.verdicts[hash];
+  record.verdicts[hash] = verdict;
+  const hashes = Object.keys(record.verdicts);
+  for (const old of hashes.slice(0, Math.max(0, hashes.length - MAX_RECORDED_BUILDS))) delete record.verdicts[old];
+  const file = path.join(stableDir, NATIVE_HEALTH_RECORD);
+  const temp = `${file}.${process.pid}-${randomBytes(4).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(temp, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    fs.renameSync(temp, file);
+  } catch {
+    try { fs.unlinkSync(temp); } catch { /* never written */ }
+  }
 }
 
 /** Where the native launcher lives inside the stable MCP directory. */
@@ -40,13 +94,15 @@ export function nativeLauncherPath(stableDir: string, platform: NodeJS.Platform 
 
 /**
  * The installed native launcher, when it sits beside the stable bundle it
- * falls back to and passes its self-test; otherwise null. Read-only: the CLI
- * uses it, and only the app installs the launcher.
+ * falls back to and the app recorded a passing self-test for these exact
+ * bytes; otherwise null. Read-only and runs nothing: the CLI uses it, and only
+ * the app installs and tests the launcher.
  */
-export async function usableInstalledNative(stableDir: string, selfTest = runNativeSelfTest): Promise<string | null> {
+export function approvedInstalledNative(stableDir: string): string | null {
   const binary = nativeLauncherPath(stableDir);
   if (!fs.existsSync(binary) || !fs.existsSync(path.join(stableDir, 'index.js'))) return null;
-  return (await selfTest(binary)) ? binary : null;
+  const hash = fileSha256(binary);
+  return hash && recordedVerdict(stableDir, hash) === 'pass' ? binary : null;
 }
 
 export type LauncherLane = 'native' | 'node-shim' | 'bundle';

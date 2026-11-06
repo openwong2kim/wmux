@@ -11,12 +11,13 @@ import {
 import { MCP_TARGETS, type McpTarget } from '../../shared/mcpTargets';
 import {
   readAllTargetStatuses,
+  readTargetStatus,
   registerTarget,
   unregisterTarget,
   type TargetRegStatus,
 } from '../../shared/mcpRegistration';
 import type { WmuxLauncher, WmuxMcpEntryProfile } from '../../shared/configIO';
-import { chooseLauncher, runNativeSelfTest, usableInstalledNative } from '../../shared/mcpLauncher';
+import { approvedInstalledNative, chooseLauncher } from '../../shared/mcpLauncher';
 
 /**
  * `wmux mcp …` — inspect / manage MCP registration across the installed agent
@@ -421,33 +422,54 @@ export function canConnectBrokerPipe(timeoutMs = 300): Promise<boolean> {
  * (fail-open, mirroring McpRegistrar).
  */
 export async function resolveWmuxScript(): Promise<string | null> {
-  const launcher = await chooseCliLauncher(null);
-  return launcher?.kind === 'node' ? launcher.script : null;
+  const plan = await planCliLauncher(null, () => null);
+  return plan?.launcher.kind === 'node' ? plan.launcher.script : null;
+}
+
+/** What `wmux mcp register` writes: the launcher it chose, and the native
+ *  launcher the app approved (null when there is none). */
+export interface CliLauncherPlan {
+  launcher: WmuxLauncher;
+  approvedNative: string | null;
 }
 
 /**
  * The launcher `wmux mcp register` writes, through the same choice the app
- * makes (shared/mcpLauncher.ts): the native launcher the app installed in
- * `~/.wmux/mcp` when a broker answers and the launcher passes its self-test,
- * else what resolveWmuxScript picks. So an explicit re-register keeps a
- * working native entry instead of rewriting it to node. The CLI never
- * installs the launcher itself.
+ * makes (shared/mcpLauncher.ts). The native launcher is offered only when a
+ * broker answers and the app recorded a passing self-test for the installed
+ * copy's exact bytes; the CLI never runs or installs it. See also
+ * launcherForTarget: an entry already on that approved copy is kept even
+ * when no broker answers (the app may simply be closed).
  */
-export async function resolveWmuxLauncher(home: string, selfTest = runNativeSelfTest): Promise<WmuxLauncher | null> {
-  return chooseCliLauncher(path.join(home, '.wmux', 'mcp'), selfTest);
+export async function resolveWmuxLauncher(
+  home: string,
+  approvedNative: (stableDir: string) => string | null = approvedInstalledNative,
+): Promise<CliLauncherPlan | null> {
+  return planCliLauncher(path.join(home, '.wmux', 'mcp'), approvedNative);
 }
 
-async function chooseCliLauncher(stableDir: string | null, selfTest = runNativeSelfTest): Promise<WmuxLauncher | null> {
+/** The launcher for one target: an entry already on the approved native
+ *  launcher stays there, whatever the plan chose; the rest get the plan's. */
+export function launcherForTarget(plan: CliLauncherPlan, registeredPath: string | null): WmuxLauncher {
+  return plan.approvedNative && registeredPath === plan.approvedNative
+    ? { kind: 'native', binary: plan.approvedNative }
+    : plan.launcher;
+}
+
+async function planCliLauncher(
+  stableDir: string | null,
+  approvedNative: (stableDir: string) => string | null,
+): Promise<CliLauncherPlan | null> {
+  const approved = stableDir ? approvedNative(stableDir) : null;
   const brokerEnabled = process.env.WMUX_MCP_BROKER !== '0' && (await canConnectBrokerPipe(300));
-  const nativeBinary = brokerEnabled && stableDir ? await usableInstalledNative(stableDir, selfTest) : null;
   const choice = await chooseLauncher({
     brokerEnabled,
-    nativeBinary,
+    nativeBinary: approved,
     brokerReady: async () => brokerEnabled,
     shimScript: brokerEnabled ? findScriptUp(SHIM_CANDIDATES) : null,
     bundleScript: findScriptUp(FULL_BUNDLE_CANDIDATES),
   });
-  return choice?.launcher ?? null;
+  return choice ? { launcher: choice.launcher, approvedNative: approved } : null;
 }
 
 export async function handleMcp(args: string[], jsonMode: boolean): Promise<void> {
@@ -498,9 +520,9 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
       // who must see this, and stderr never pollutes the stdout JSON.
       const registerNotice = isolatedInstanceNotice('register');
       if (registerNotice) console.error(registerNotice);
-      const wmuxLauncher = await resolveWmuxLauncher(home);
+      const plan = await resolveWmuxLauncher(home);
       // The wmux MCP script is required; bail if the bundle can't be found.
-      if (!wmuxLauncher) {
+      if (!plan) {
         const warning =
           'Could not locate the wmux MCP bundle next to this CLI. Open the wmux app once and use Settings → General → MCP → Re-register, or reinstall wmux.';
         if (jsonMode) console.log(JSON.stringify({ error: warning }, null, 2));
@@ -512,10 +534,13 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
       // issues are 'malformed'); capture them per-target so one failure neither
       // aborts the rest nor is silently swallowed.
       const results = targets.map((t) => {
-        try { return { target: t, result: registerTarget(t, home, wmuxLauncher, undefined, profile), error: null as string | null }; }
+        try {
+          const launcher = launcherForTarget(plan, readTargetStatus(t, home).wmux.path);
+          return { target: t, result: registerTarget(t, home, launcher, undefined, profile), error: null as string | null };
+        }
         catch (e) { return { target: t, result: null, error: e instanceof Error ? e.message : String(e) }; }
       });
-      const wmuxScript = wmuxLauncher.kind === 'node' ? wmuxLauncher.script : wmuxLauncher.binary;
+      const wmuxScript = plan.launcher.kind === 'node' ? plan.launcher.script : plan.launcher.binary;
       if (jsonMode) {
         console.log(JSON.stringify({ scripts: { wmux: wmuxScript }, results: results.map((r) => ({ id: r.target.id, error: r.error, ...(r.result ?? {}) })) }, null, 2));
         if (results.some((r) => r.error)) process.exit(1);

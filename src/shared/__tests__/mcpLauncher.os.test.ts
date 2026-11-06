@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { NATIVE_SELF_TEST_LINE, nativeLauncherPath, runNativeSelfTest, usableInstalledNative } from '../mcpLauncher';
+import { NATIVE_SELF_TEST_LINE, approvedInstalledNative, fileSha256, nativeLauncherPath, recordVerdict, runNativeSelfTest } from '../mcpLauncher';
 
 // The self-test runs a real process. A shell script stands in for the binary
 // on POSIX; the real build (when there is one) answers for itself everywhere.
@@ -31,32 +31,41 @@ function script(name: string, body: string): string {
 
 describe.skipIf(process.platform === 'win32')('runNativeSelfTest (stand-in scripts)', () => {
   it('passes only on the exact protocol line', async () => {
-    expect(await runNativeSelfTest(script('ok', `[ "$1 $2" = "mcp-shim --self-test" ] && echo '${NATIVE_SELF_TEST_LINE}'`))).toBe(true);
-    expect(await runNativeSelfTest(script('other-protocol', "echo 'wmux-mcp-shim protocol 2'"))).toBe(false);
-    expect(await runNativeSelfTest(script('marker-only', "echo 'wmux-native 0.0.0 (wmux-managed: native-hooks)'"))).toBe(false);
-    expect(await runNativeSelfTest(script('fails', `echo '${NATIVE_SELF_TEST_LINE}'; exit 3`))).toBe(false);
+    expect(await runNativeSelfTest(script('ok', `[ "$1 $2" = "mcp-shim --self-test" ] && echo '${NATIVE_SELF_TEST_LINE}'`))).toBe('pass');
+    expect(await runNativeSelfTest(script('other-protocol', "echo 'wmux-mcp-shim protocol 2'"))).toBe('fail');
+    expect(await runNativeSelfTest(script('marker-only', "echo 'wmux-native 0.0.0 (wmux-managed: native-hooks)'"))).toBe('fail');
+    expect(await runNativeSelfTest(script('fails', `echo '${NATIVE_SELF_TEST_LINE}'; exit 3`))).toBe('fail');
   });
 
-  it('gives up on a hung binary at the timeout, and on one that is not there', async () => {
+  it('reports a hung binary as a timeout, not a failure, and a missing one as a failure', async () => {
     const started = Date.now();
-    expect(await runNativeSelfTest(script('hangs', 'sleep 5'), 300)).toBe(false);
+    expect(await runNativeSelfTest(script('hangs', 'sleep 5'), 300)).toBe('timeout');
     expect(Date.now() - started).toBeLessThan(3000);
-    expect(await runNativeSelfTest(path.join(dir, 'missing'))).toBe(false);
-  });
-
-  it('offers an installed launcher only beside a stable bundle and only when it passes', async () => {
-    const stable = path.join(dir, 'mcp');
-    fs.mkdirSync(stable);
-    fs.writeFileSync(nativeLauncherPath(stable), `#!/bin/sh\necho '${NATIVE_SELF_TEST_LINE}'\n`, { mode: 0o755 });
-    expect(await usableInstalledNative(stable)).toBeNull(); // no index.js beside it
-    fs.writeFileSync(path.join(stable, 'index.js'), '// bundle');
-    expect(await usableInstalledNative(stable)).toBe(nativeLauncherPath(stable));
-    expect(await usableInstalledNative(stable, async () => false)).toBeNull();
+    expect(await runNativeSelfTest(path.join(dir, 'missing'))).toBe('fail');
   });
 });
 
 describe.skipIf(!realBuild)('runNativeSelfTest (the real build)', () => {
   it('passes on the binary this checkout builds', async () => {
-    expect(await runNativeSelfTest(realBuild as string)).toBe(true);
+    expect(await runNativeSelfTest(realBuild as string)).toBe('pass');
+  });
+});
+
+describe('approvedInstalledNative', () => {
+  it('offers the installed launcher only beside a stable bundle and with a recorded pass for its bytes', () => {
+    const stable = path.join(dir, 'mcp');
+    fs.mkdirSync(stable);
+    const binary = nativeLauncherPath(stable);
+    fs.writeFileSync(binary, 'build 1 wmux-managed: native-hooks');
+    const hash = fileSha256(binary) as string;
+    recordVerdict(stable, hash, 'pass');
+    expect(approvedInstalledNative(stable)).toBeNull(); // no index.js beside it
+    fs.writeFileSync(path.join(stable, 'index.js'), '// bundle');
+    expect(approvedInstalledNative(stable)).toBe(binary);
+    // Other bytes in its place are not what was approved.
+    fs.writeFileSync(binary, 'build 2 wmux-managed: native-hooks');
+    expect(approvedInstalledNative(stable)).toBeNull();
+    recordVerdict(stable, fileSha256(binary) as string, 'fail');
+    expect(approvedInstalledNative(stable)).toBeNull();
   });
 });
