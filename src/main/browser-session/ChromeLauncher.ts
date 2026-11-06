@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
 import { CdpSocket } from './CdpSocket';
+import { portTransport, type ChromeTransport } from './ChromeTransport';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
 import { surfaceOpeners } from './SurfaceOpeners';
@@ -427,7 +428,20 @@ function watchedTargetInfo(params: Record<string, unknown>): WatchedTargetInfo |
 
 export class ChromeLauncher implements ChromeBackendClient {
   private child: ChildProcess | null = null;
-  private cdpPort = 0;
+  /**
+   * The current Chrome's endpoint and where it stands, whatever carries its
+   * CDP. One field, so "running" and "reachable" cannot disagree:
+   *  - stopped: null, nothing bound.
+   *  - probing: a candidate endpoint is bound (adoption, or a launch whose
+   *    endpoint is known) and has not answered yet (`ready: false`).
+   *  - ready: the bound endpoint answered (`ready: true`). A launch may still
+   *    be finishing (restored tabs, the download guard) while `launching` is set.
+   * stopped → probing on bindEndpoint; probing → ready on markReady, for the
+   * endpoint still bound; probing → stopped when that probe fails; any →
+   * stopped in onChildGone. bindEndpoint and unbindEndpoint are the only
+   * writers.
+   */
+  private bound: { readonly transport: ChromeTransport; ready: boolean } | null = null;
   private launching: Promise<number> | null = null;
   private disposed = false;
   private readonly portEnvVar: string | null;
@@ -824,17 +838,19 @@ export class ChromeLauncher implements ChromeBackendClient {
   }
 
   private async startTargetWatcher(): Promise<void> {
-    if (this.cdpPort <= 0) return; // nothing running yet; a later demand retries
-    const version = (await this.fetchJson('/json/version')) as { webSocketDebuggerUrl?: string };
-    const endpoint = version?.webSocketDebuggerUrl;
-    if (typeof endpoint !== 'string' || !endpoint.startsWith('ws')) {
+    if (!this.isRunning()) return; // nothing running yet; a later demand retries
+    // One transport for the read and the dial: an endpoint is only good on
+    // the transport that named it.
+    const transport = this.reach();
+    const endpoint = await transport.browserEndpoint();
+    if (endpoint === null) {
       this.watcherDown('no browser webSocketDebuggerUrl on /json/version');
       return;
     }
     this.closeWatcher();
     if (this.disposed) return;
     const generation = ++this.watcherGeneration;
-    const socket: CdpSocket = new CdpSocket(
+    const socket: CdpSocket = transport.connect(
       () => {
         const url = this.browserWsEndpoint;
         if (!url) throw new Error('ChromeLauncher: no browser CDP endpoint');
@@ -1195,15 +1211,48 @@ export class ChromeLauncher implements ChromeBackendClient {
   }
 
   /** True when a CDP endpoint is established (spawned child or adopted
-   *  previous-session instance; liveness is re-verified on demand). */
+   *  previous-session instance; liveness is re-verified on demand). It stays
+   *  true while a candidate endpoint is being probed, as it did with cdpPort. */
   isRunning(): boolean {
-    return this.cdpPort > 0;
+    return this.bound !== null;
   }
 
   /** The established CDP port, or null. Pure read — unlike endpoint(), this
    *  never launches Chrome, so status probes stay side-effect-free. */
   currentPort(): number | null {
-    return this.cdpPort > 0 ? this.cdpPort : null;
+    return this.bound?.transport.port ?? null;
+  }
+
+  /** Binds a candidate endpoint: → probing. Returns it, for its probe. */
+  private bindEndpoint(transport: ChromeTransport): ChromeTransport {
+    this.bound = { transport, ready: false };
+    return transport;
+  }
+
+  /**
+   * `transport` answered: probing → ready, only while it is still the bound
+   * one. A dispose or a dead child that unbound it during the probe wins.
+   */
+  private markReady(transport: ChromeTransport): void {
+    if (this.bound?.transport === transport) this.bound.ready = true;
+  }
+
+  /** Nothing bound any more: → stopped. */
+  private unbindEndpoint(): void {
+    this.bound = null;
+  }
+
+  /**
+   * The bound transport. With none bound, the port-0 transport, which answers
+   * nothing: a call made then fails exactly as it did when it went to port 0.
+   */
+  private reach(): ChromeTransport {
+    return this.bound?.transport ?? portTransport(0);
+  }
+
+  /** The bound port, 0 when none (what ensureRunning has always resolved). */
+  private boundPort(): number {
+    return this.bound?.transport.port ?? 0;
   }
 
   /**
@@ -1237,8 +1286,8 @@ export class ChromeLauncher implements ChromeBackendClient {
         // Cheap liveness check — the process object survives a crash until the
         // exit handler runs; /json/version is the truth.
         try {
-          await this.fetchJson('/json/version');
-          return this.cdpPort;
+          await this.reach().ping();
+          return this.boundPort();
         } catch {
           this.onChildGone();
         }
@@ -1251,7 +1300,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       } else {
         let alive = true;
         try {
-          await this.fetchJson('/json/version');
+          await this.reach().ping();
         } catch {
           alive = false;
           this.onChildGone();
@@ -1260,7 +1309,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           // Re-armed if its socket dropped; a guard that cannot be re-armed
           // refuses the call rather than hand out an unguarded profile.
           await this.armDownloadGuard();
-          return this.cdpPort;
+          return this.boundPort();
         }
       }
     }
@@ -1321,9 +1370,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     const pinned = this.pinnedPort();
     if (pinned !== null && !candidates.includes(pinned)) candidates.push(pinned);
     for (const port of candidates) {
-      this.cdpPort = port;
+      const candidate = this.bindEndpoint(portTransport(port));
       try {
-        await this.fetchJson('/json/version');
+        await candidate.ping();
+        this.markReady(candidate);
         this.assertOpen();
         // No child handle for an adopted instance — dispose() can only close
         // tabs we open; the process outlives us like it outlived its spawner.
@@ -1339,7 +1389,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         this.assertOpen();
         return port;
       } catch (err) {
-        this.cdpPort = 0;
+        this.unbindEndpoint();
         if (this.disposed) throw err;
       }
     }
@@ -1360,7 +1410,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (persisted.length === 0) return;
     let liveIds = new Set<string>();
     try {
-      const live = (await this.fetchJson('/json/list')) as Array<{ id: string; type: string }>;
+      const live = (await this.reach().listTargets()) as Array<{ id: string; type: string }>;
       liveIds = new Set(live.filter((t) => t.type === 'page').map((t) => t.id));
     } catch {
       /* no list → nothing re-binds; records stay unbound */
@@ -1389,19 +1439,19 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   async stopForProtectionChange(): Promise<void> {
     const child = this.child;
-    const port = this.cdpPort;
+    const transport = this.bound?.transport ?? null;
     // Our own Chrome quits through Browser.close first, so the restart keeps
     // what an ordinary quit keeps (closeGracefully); a signal is the fallback.
-    if (child && !(port > 0 && (await this.closeGracefully(port, child)))) {
+    if (child && !(transport && (await this.closeGracefully(transport, child)))) {
       try {
         child.kill();
       } catch {
         /* already gone */
       }
-    } else if (!child && port > 0) {
-      await this.closeBrowserAt(port);
+    } else if (!child && transport) {
+      await this.closeBrowserAt(transport);
     }
-    if (port > 0 && !(await this.waitEndpointGone(port)) && !(await this.forceKill(port, child))) {
+    if (transport && !(await this.waitEndpointGone(transport)) && !(await this.forceKill(transport, child))) {
       throw new Error(PROTECTION_NOT_READY);
     }
     this.onChildGone();
@@ -1412,14 +1462,14 @@ export class ChromeLauncher implements ChromeBackendClient {
    * outright (ours by handle, an adopted one by the pid it reports), so it
    * cannot keep running under the terms it was started with.
    */
-  private async forceKill(port: number, child: ChildProcess | null): Promise<boolean> {
+  private async forceKill(transport: ChromeTransport, child: ChildProcess | null): Promise<boolean> {
     try {
       if (child) {
         child.kill('SIGKILL');
       } else {
-        const url = await this.browserWsUrlAt(port);
+        const url = await transport.browserEndpointIgnoringStatus();
         if (url) {
-          const socket = new CdpSocket(() => url, { label: 'ChromeLauncher force stop', timeoutMs: 3_000 });
+          const socket = transport.connect(() => url, { label: 'ChromeLauncher force stop', timeoutMs: 3_000 });
           try {
             const info = (await socket.send('SystemInfo.getProcessInfo')) as {
               processInfo?: Array<{ type?: string; id?: number }>;
@@ -1434,7 +1484,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     } catch {
       /* fall through to the endpoint check */
     }
-    return this.waitEndpointGone(port);
+    return this.waitEndpointGone(transport);
   }
 
   /** Apply a protection change now rather than at the next call (policy edits). */
@@ -1448,25 +1498,12 @@ export class ChromeLauncher implements ChromeBackendClient {
     await this.stopForProtectionChange();
   }
 
-  /** The browser-level CDP endpoint answering on `port`, or null. */
-  private async browserWsUrlAt(port: number): Promise<string | null> {
+  /** Ask the Chrome at `transport` to quit. false when nothing there could be asked. */
+  private async closeBrowserAt(transport: ChromeTransport, current: () => boolean = () => true): Promise<boolean> {
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/version`);
-      const version = (await res.json()) as { webSocketDebuggerUrl?: string };
-      return typeof version.webSocketDebuggerUrl === 'string' && version.webSocketDebuggerUrl.startsWith('ws')
-        ? version.webSocketDebuggerUrl
-        : null;
-    } catch {
-      return null;
-    }
-  }
-
-  /** Ask the Chrome on `port` to quit. false when nothing there could be asked. */
-  private async closeBrowserAt(port: number, current: () => boolean = () => true): Promise<boolean> {
-    try {
-      const url = await this.browserWsUrlAt(port);
+      const url = await transport.browserEndpointIgnoringStatus();
       if (!url || !current()) return false;
-      const socket = new CdpSocket(() => url, { label: 'ChromeLauncher evict', timeoutMs: 3_000 });
+      const socket = transport.connect(() => url, { label: 'ChromeLauncher evict', timeoutMs: 3_000 });
       await socket.send('Browser.close').catch(() => undefined);
       socket.close();
       return true;
@@ -1485,7 +1522,7 @@ export class ChromeLauncher implements ChromeBackendClient {
    * the caller shares one deadline across several Chromes).
    */
   private async closeGracefully(
-    port: number,
+    transport: ChromeTransport,
     child: ChildProcess,
     deadline = Date.now() + QUIT_GRACE_MS,
   ): Promise<boolean> {
@@ -1496,21 +1533,21 @@ export class ChromeLauncher implements ChromeBackendClient {
     const stop = expiry.signal;
     const ask = async () => {
       try {
-        const list = await this.fetchJsonAt(port, '/json/list', 'GET', boundedBy(stop));
+        const list = await transport.listTargets(boundedBy(stop));
         if (Array.isArray(list) && !stop.aborted) {
           const { closed } = await this.closeToStartupTab(
-            port,
+            transport,
             list as Array<{ id: string; url: string; type: string }>,
             stop,
           );
           // `/json/close` only starts a close; a tab still closing when the
           // quit lands stays in the saved session.
-          await this.waitTargetsGone(port, closed, stop);
+          await this.waitTargetsGone(transport, closed, stop);
         }
       } catch {
         /* nothing listed; the quit itself still keeps the cookies */
       }
-      return !stop.aborted && this.closeBrowserAt(port, () => !stop.aborted);
+      return !stop.aborted && this.closeBrowserAt(transport, () => !stop.aborted);
     };
     // The bound covers the ask too: a wedged endpoint must not hold a quit.
     const asked = await Promise.race([ask(), exited]);
@@ -1530,12 +1567,13 @@ export class ChromeLauncher implements ChromeBackendClient {
    * until it holds still.
    */
   private async closeRestoredTabs(): Promise<boolean> {
+    const transport = this.reach();
     const deadline = Date.now() + RESTORE_SETTLE_MS;
     let pages: Array<{ id: string; url: string }> = [];
     let previous = '';
     for (;;) {
       try {
-        const list = await this.fetchJson('/json/list', 'GET', AbortSignal.timeout(RESTORE_SETTLE_MS));
+        const list = await transport.listTargets(AbortSignal.timeout(RESTORE_SETTLE_MS));
         if (!Array.isArray(list)) return false;
         pages = (list as Array<{ id: string; url: string; type: string }>).filter((t) => t.type === 'page');
       } catch {
@@ -1546,9 +1584,8 @@ export class ChromeLauncher implements ChromeBackendClient {
       previous = ids;
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
     }
-    const port = this.cdpPort;
-    const { closed, complete } = await this.closeToStartupTab(port, pages);
-    return complete && (await this.waitTargetsGone(port, closed));
+    const { closed, complete } = await this.closeToStartupTab(transport, pages);
+    return complete && (await this.waitTargetsGone(transport, closed));
   }
 
   /**
@@ -1558,7 +1595,7 @@ export class ChromeLauncher implements ChromeBackendClient {
    * endpoint cannot hold a launch or a quit.
    */
   private async closeToStartupTab(
-    port: number,
+    transport: ChromeTransport,
     targets: Array<{ id: string; url: string; type?: string }>,
     stop?: AbortSignal,
   ): Promise<{ closed: string[]; complete: boolean }> {
@@ -1567,26 +1604,26 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (others.length === 0) return { closed: [], complete: true };
     const keptOpen =
       others.length < pages.length ||
-      (await this.fetchJsonAt(port, '/json/new', 'PUT', boundedBy(stop)).then(
+      (await transport.createTarget(undefined, boundedBy(stop)).then(
         (t) => typeof (t as { id?: unknown } | null)?.id === 'string',
         () => false,
       ));
     if (stop?.aborted) return { closed: [], complete: false };
     const closing = keptOpen ? others : others.slice(1);
     await Promise.all(
-      closing.map((p) => this.fetchJsonAt(port, `/json/close/${p.id}`, 'GET', boundedBy(stop)).catch(() => undefined)),
+      closing.map((p) => transport.closeTarget(p.id, boundedBy(stop)).catch(() => undefined)),
     );
     return { closed: closing.map((p) => p.id), complete: keptOpen };
   }
 
   /** Wait (bounded) until none of `ids` is listed any more; false if one still is. */
-  private async waitTargetsGone(port: number, ids: string[], stop?: AbortSignal): Promise<boolean> {
+  private async waitTargetsGone(transport: ChromeTransport, ids: string[], stop?: AbortSignal): Promise<boolean> {
     const deadline = Date.now() + RESTORE_SETTLE_MS;
     for (;;) {
       if (ids.length === 0) return true;
       if (stop?.aborted) return false;
       try {
-        const list = await this.fetchJsonAt(port, '/json/list', 'GET', boundedBy(stop));
+        const list = await transport.listTargets(boundedBy(stop));
         if (Array.isArray(list) && !list.some((t: { id?: string }) => t.id !== undefined && ids.includes(t.id))) {
           return true;
         }
@@ -1598,14 +1635,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     }
   }
 
-  private async waitEndpointGone(port: number): Promise<boolean> {
+  private async waitEndpointGone(transport: ChromeTransport): Promise<boolean> {
     const deadline = Date.now() + READY_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      try {
-        await fetch(`http://127.0.0.1:${port}/json/version`);
-      } catch {
-        return true;
-      }
+      if (!(await transport.answers())) return true;
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
     }
     return false;
@@ -1619,13 +1652,10 @@ export class ChromeLauncher implements ChromeBackendClient {
   private async evictExisting(): Promise<void> {
     const file = this.readPortFile();
     if (!file) return;
-    try {
-      await fetch(`http://127.0.0.1:${file.port}/json/version`);
-    } catch {
-      return; // stale file, nothing running
-    }
-    await this.closeBrowserAt(file.port);
-    if (!(await this.waitEndpointGone(file.port)) && !(await this.forceKill(file.port, null))) {
+    const previous = portTransport(file.port);
+    if (!(await previous.answers())) return; // stale file, nothing running
+    await this.closeBrowserAt(previous);
+    if (!(await this.waitEndpointGone(previous)) && !(await this.forceKill(previous, null))) {
       throw new Error(PROTECTION_NOT_READY);
     }
   }
@@ -1687,8 +1717,9 @@ export class ChromeLauncher implements ChromeBackendClient {
   private async armDownloadGuardOnce(): Promise<void> {
     this.downloadGuard?.close();
     this.downloadGuard = null;
-    const url = await this.browserWsUrl();
-    const guard = new CdpSocket(() => url, {
+    const transport = this.reach();
+    const url = await this.browserWsUrl(transport);
+    const guard = transport.connect(() => url, {
       label: 'ChromeLauncher download guard',
       onDisconnect: () => {
         if (this.downloadGuard === guard) this.downloadGuard = null;
@@ -1728,16 +1759,15 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.downloadGuard = guard;
   }
 
-  /** This instance's browser-level CDP endpoint; not-ready when absent. */
-  private async browserWsUrl(): Promise<string> {
-    let endpoint: string | undefined;
+  /** The browser-level CDP endpoint `transport` names; not-ready when absent. */
+  private async browserWsUrl(transport: ChromeTransport): Promise<string> {
+    let endpoint: string | null;
     try {
-      const version = (await this.fetchJson('/json/version')) as { webSocketDebuggerUrl?: string };
-      endpoint = version?.webSocketDebuggerUrl;
+      endpoint = await transport.browserEndpoint();
     } catch {
-      endpoint = undefined;
+      endpoint = null;
     }
-    if (typeof endpoint !== 'string' || !endpoint.startsWith('ws')) throw new Error(PROTECTION_NOT_READY);
+    if (endpoint === null) throw new Error(PROTECTION_NOT_READY);
     return endpoint;
   }
 
@@ -1760,8 +1790,9 @@ export class ChromeLauncher implements ChromeBackendClient {
     const proxy = this.proxy;
     if (!proxy?.isRunning()) throw new Error(PROTECTION_NOT_READY);
     const probe = proxy.armProbe();
-    const url = await this.browserWsUrl();
-    const socket = new CdpSocket(() => url, { label: 'ChromeLauncher proxy probe', timeoutMs: Math.max(1, deadlineMs - Date.now()) });
+    const transport = this.reach();
+    const url = await this.browserWsUrl(transport);
+    const socket = transport.connect(() => url, { label: 'ChromeLauncher proxy probe', timeoutMs: Math.max(1, deadlineMs - Date.now()) });
     let targetId: string | undefined;
     let settle: ((why: ProbeOutcome) => void) | null = null;
     const outcome = new Promise<ProbeOutcome>((resolve) => { settle = resolve; });
@@ -1937,9 +1968,10 @@ export class ChromeLauncher implements ChromeBackendClient {
         candidate = fresh && fresh.raw !== stale?.raw ? fresh.port : null;
       }
       if (candidate !== null) {
-        this.cdpPort = candidate;
+        const probe = this.bindEndpoint(portTransport(candidate));
         try {
-          await this.fetchJson('/json/version');
+          await probe.ping();
+          this.markReady(probe);
           // A REAL spawn (adoption already failed above) means this profile's
           // previous Chrome is gone and every tab it held with it. Neither
           // revival rule can hold, so the persisted records are dropped rather
@@ -1974,7 +2006,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           // Enforcement that failed is final for this launch: the child is
           // already stopped, so polling on would only wait out the deadline.
           if (err instanceof Error && err.message === PROTECTION_NOT_READY) throw err;
-          this.cdpPort = 0;
+          this.unbindEndpoint();
         }
       }
       const waited = Date.now() - startedAt;
@@ -1996,7 +2028,7 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   private onChildGone(): void {
     this.child = null;
-    this.cdpPort = 0;
+    this.unbindEndpoint();
     this.launchedProtected = false;
     this.enforcementReady = false;
     this.downloadGuard?.close();
@@ -2032,8 +2064,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     // Arm the anchor watcher before the tab exists so its targetCreated is
     // seen. Never throws — a launcher without a watcher still opens tabs.
     await this.ensureTargetWatcher();
-    // Chrome 111+ requires PUT for /json/new.
-    const created = (await this.fetchJson(`/json/new?${encodeURIComponent(url)}`, 'PUT')) as {
+    const created = (await this.reach().createTarget(url)) as {
       id?: string;
       url?: string;
     };
@@ -2068,7 +2099,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (!this.isRunning()) return [];
     let live: Array<{ id: string; url: string; title: string; type: string }>;
     try {
-      live = (await this.fetchJson('/json/list')) as typeof live;
+      live = (await this.reach().listTargets()) as typeof live;
     } catch {
       return [];
     }
@@ -2114,7 +2145,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     const record = this.surfaces.get(surfaceId);
     if (!record?.targetId || !this.isRunning()) return false;
     try {
-      await this.fetchJson(`/json/activate/${record.targetId}`);
+      await this.reach().activateTarget(record.targetId);
     } catch {
       return false;
     }
@@ -2153,7 +2184,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (record.targetId) {
       if (!this.isRunning()) return false;
       try {
-        await this.fetchJson(`/json/close/${record.targetId}`);
+        await this.reach().closeTarget(record.targetId);
       } catch {
         return false;
       }
@@ -2173,37 +2204,21 @@ export class ChromeLauncher implements ChromeBackendClient {
   async dispose(opts?: { immediate?: boolean; deadline?: number }): Promise<void> {
     this.disposed = true;
     const child = this.child;
-    const port = this.cdpPort;
+    const transport = this.bound?.transport ?? null;
     this.onChildGone();
     this.proxy?.close();
     this.proxy = null;
     if (!child) return;
-    if (!opts?.immediate && port > 0 && (await this.closeGracefully(port, child, opts?.deadline))) return;
+    if (!opts?.immediate && transport && (await this.closeGracefully(transport, child, opts?.deadline))) return;
     // On Windows the signal is a hard kill: cookie writes Chrome still held in
     // memory are lost, so say when the grace ran out.
-    if (!opts?.immediate && port > 0) {
+    if (!opts?.immediate && transport) {
       console.warn(`[ChromeLauncher] Chrome (${this.profileName}) did not quit within the grace — ${process.platform === 'win32' ? 'terminating it' : 'signalling it'}`);
     }
     try {
       child.kill();
     } catch {
       /* already gone */
-    }
-  }
-
-  private fetchJson(path: string, method: 'GET' | 'PUT' = 'GET', signal?: AbortSignal): Promise<unknown> {
-    return this.fetchJsonAt(this.cdpPort, path, method, signal);
-  }
-
-  private async fetchJsonAt(port: number, path: string, method: 'GET' | 'PUT', signal?: AbortSignal): Promise<unknown> {
-    const res = await fetch(`http://127.0.0.1:${port}${path}`, { method, ...(signal && { signal }) });
-    if (!res.ok) throw new Error(`ChromeLauncher: ${path} → HTTP ${res.status}`);
-    const text = await res.text();
-    try {
-      return JSON.parse(text);
-    } catch {
-      // /json/close answers with plain text ("Target is closing").
-      return text;
     }
   }
 }

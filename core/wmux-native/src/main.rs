@@ -30,6 +30,7 @@ mod claude_where;
 mod fsx;
 mod hook;
 mod js;
+mod mcp_shim;
 mod os_random;
 mod paths;
 mod rpc;
@@ -48,8 +49,7 @@ pub const MARKER: &str = "wmux-managed: native-hooks";
 /// The Node bridge's file name (SHARED_HOOKS_BRIDGE_BASENAME in hookFlavours.ts).
 const BRIDGE_BASENAME: &str = "wmux-hooks-bridge.mjs";
 
-const USAGE: &str =
-    "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native claude-hook <Event> [flags…]\n       wmux-native --version | --help\n";
+const USAGE: &str = "usage: wmux-native hook <flavour> [<Event>]\n       wmux-native claude-hook <Event> [flags…]\n       wmux-native mcp-shim [--commander] [--core] [--role=R] | --self-test\n       wmux-native --version | --help\n";
 
 fn main() {
     // A panic must not print: hook output is read by the agent.
@@ -72,6 +72,7 @@ fn main() {
         }
         #[cfg(unix)]
         Some("claude-hook") => claude_hook::run_process(args.collect()),
+        Some("mcp-shim") => mcp_shim::run(&args.collect::<Vec<_>>()),
         Some("--version") => {
             println!("wmux-native {} ({MARKER})", env!("CARGO_PKG_VERSION"));
         }

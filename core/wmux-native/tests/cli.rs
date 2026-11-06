@@ -18,7 +18,7 @@ fn run(args: &[&std::ffi::OsStr]) -> std::process::Output {
 
 #[test]
 fn an_unknown_argv_exits_0_with_usage_on_stderr() {
-    for args in [vec![], vec!["hok"], vec!["mcp-shim", "--port", "1"], vec!["-x"]] {
+    for args in [vec![], vec!["hok"], vec!["mcp-shimx", "--port", "1"], vec!["-x"]] {
         let args: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
         let out = run(&args);
         assert_eq!(out.status.code(), Some(0), "{args:?}");
