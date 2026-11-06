@@ -1,9 +1,10 @@
 /**
  * Claude Code's settings are shared with the installed wmux, so an isolated
  * instance (WMUX_DATA_SUFFIX set) or a development build never writes them
- * from the Settings handlers: each answers with a refusal that names
- * `wmux setup-hooks`, and every file is left as it was. A packaged, unsuffixed
- * instance writes as before.
+ * from the Settings handlers while its home is the account's real one: each
+ * answers with a refusal that names `wmux setup-hooks`, and every file is
+ * left as it was. With a sandbox home (a test harness) it writes there. A
+ * packaged, unsuffixed instance writes as before.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
@@ -14,7 +15,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../../shared/constants';
 import { installHooks, type SetupHooksPaths } from '../../../../cli/commands/setupHooks';
 import type { Account } from '../../../account/accountStore';
-import { registerHooksBridgeHandlers } from '../hooksBridge.handler';
+import { claudeSettingsWriteRefusal, registerHooksBridgeHandlers } from '../hooksBridge.handler';
 
 const state = vi.hoisted(() => ({ isPackaged: true, list: [] as Account[], base: null as SetupHooksPaths | null }));
 vi.mock('electron', () => ({
@@ -34,6 +35,12 @@ vi.mock('../../../../cli/commands/setupHooks', async (importOriginal) => {
 });
 
 let tmp: string;
+
+/** What the OS says the account's home is (os.userInfo().homedir). */
+function accountHome(home: string): void {
+  const real = os.userInfo();
+  vi.spyOn(os, 'userInfo').mockReturnValue({ ...real, homedir: home } as never);
+}
 
 function handlerFor(channel: string): (event: unknown, ...args: unknown[]) => Promise<unknown> {
   registerHooksBridgeHandlers();
@@ -88,9 +95,12 @@ beforeEach(() => {
   state.isPackaged = true;
   vi.stubEnv('WMUX_DATA_SUFFIX', '');
   vi.mocked(ipcMain.handle).mockClear();
+  // The account's home is the one this process runs with: the real home.
+  accountHome(os.homedir());
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   fs.rmSync(tmp, { recursive: true, force: true });
 });
@@ -128,5 +138,44 @@ describe.each(HANDLERS)('$name', ({ channel, args, wrote }) => {
     const outcome = (await handlerFor(channel)({}, ...args)) as { ok: boolean; error: string | null };
     expect(outcome).toMatchObject({ ok: true, error: null });
     expect(snapshot()[wrote]).not.toBe(before[wrote]);
+  });
+});
+
+describe('the guard asks whether the home is the account\'s real one', () => {
+  it('lets an isolated instance write into a sandbox home', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '-e2e');
+    accountHome(path.join(tmp, 'the-account-home'));
+    expect(claudeSettingsWriteRefusal()).toBeNull();
+    const outcome = (await handlerFor(IPC.HOOKS_BRIDGE_INSTALL)({})) as { ok: boolean; error: string | null };
+    expect(outcome).toMatchObject({ ok: true, error: null });
+  });
+
+  it('lets a development build write into a sandbox home', () => {
+    state.isPackaged = false;
+    accountHome(path.join(tmp, 'the-account-home'));
+    expect(claudeSettingsWriteRefusal()).toBeNull();
+  });
+
+  it('counts a home reached through a symlink as the real one', () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '-e2e');
+    const link = path.join(tmp, 'home-link');
+    fs.symlinkSync(os.homedir(), link);
+    accountHome(link);
+    expect(claudeSettingsWriteRefusal()).toContain('isolated instance');
+  });
+
+  it.skipIf(process.platform === 'linux')('counts a home that differs only by case as the real one, resolved or not', () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '-e2e');
+    accountHome(os.homedir().toUpperCase());
+    expect(claudeSettingsWriteRefusal()).toContain('isolated instance');
+    // realpath gives the case on disk; where it cannot run, case still does not count.
+    vi.spyOn(fs.realpathSync, 'native').mockImplementation(() => { throw new Error('EACCES: injected'); });
+    expect(claudeSettingsWriteRefusal()).toContain('isolated instance');
+  });
+
+  it('refuses when the account\'s home cannot be read', () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '-e2e');
+    vi.spyOn(os, 'userInfo').mockImplementation(() => { throw new Error('ENOENT: no passwd entry'); });
+    expect(claudeSettingsWriteRefusal()).toContain('isolated instance');
   });
 });

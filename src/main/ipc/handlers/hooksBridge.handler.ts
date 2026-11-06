@@ -16,6 +16,7 @@
 // merge, same stable bridge copy under ~/.wmux/hooks/, same atomic writes.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { app, ipcMain } from 'electron';
 import { IPC, dataSuffix } from '../../../shared/constants';
@@ -125,16 +126,41 @@ export function computeInstalled(s: StatusOutcome): boolean {
 }
 
 /**
+ * True when this process's home (os.homedir(), which follows HOME, or
+ * USERPROFILE on Windows) is the account's own (os.userInfo().homedir, which
+ * the OS reads from the account: the passwd entry, or the Windows profile).
+ * Compared resolved, and without case where the filesystem ignores it. When
+ * the account's home cannot be read, it counts as the real one.
+ */
+function homeIsTheAccounts(): boolean {
+  let account: string;
+  try {
+    account = os.userInfo().homedir;
+  } catch {
+    return true;
+  }
+  const canonical = (dir: string): string => {
+    let resolved: string;
+    try { resolved = fs.realpathSync.native(dir); } catch { resolved = path.resolve(dir); }
+    return process.platform === 'win32' || process.platform === 'darwin' ? resolved.toLowerCase() : resolved;
+  };
+  return canonical(os.homedir()) === canonical(account);
+}
+
+/**
  * Why this instance must not write Claude Code's settings, or null when it may.
  * ~/.claude/settings.json (and account copies of it) and the bridge under
  * ~/.wmux/hooks are shared with the installed wmux (#2104), so an isolated
- * instance (WMUX_DATA_SUFFIX set) or a development build writing them would
- * change what the installed wmux runs. The boot refresh skips there for the
- * same reason; the deliberate path is the CLI, which warns and proceeds.
+ * instance (WMUX_DATA_SUFFIX set) or a development build writing them in the
+ * account's real home would change what the installed wmux runs. With a
+ * sandbox home (a test harness's) they are its own, and it may. The boot
+ * refresh skips for the same reason; the deliberate path is the CLI, which
+ * warns and proceeds.
  */
 export function claudeSettingsWriteRefusal(command = 'wmux setup-hooks'): string | null {
   const suffix = dataSuffix();
   if (suffix === '' && app.isPackaged) return null;
+  if (!homeIsTheAccounts()) return null;
   const instance = suffix !== '' ? `an isolated instance (WMUX_DATA_SUFFIX=${suffix})` : 'a development build';
   return `This wmux is ${instance}. Claude Code settings are shared with your installed wmux, so it does not ` +
     `change them. Make this change from your installed wmux, or run ${command} in a terminal.`;

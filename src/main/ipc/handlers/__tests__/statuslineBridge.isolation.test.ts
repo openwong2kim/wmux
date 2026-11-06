@@ -1,7 +1,8 @@
 /**
  * The status line goes into Claude Code's settings, which are shared with the
  * installed wmux: an isolated instance (WMUX_DATA_SUFFIX set) or a
- * development build never installs it from Settings. It answers with a
+ * development build never installs it from Settings into the account's real
+ * home (a sandbox home is its own). It answers with a
  * refusal that names `wmux setup-statusline`, and every file is left as it
  * was. A packaged, unsuffixed instance installs as before.
  */
@@ -30,6 +31,12 @@ vi.mock('../../../../cli/commands/setupStatusline', async (importOriginal) => {
 });
 
 let tmp: string;
+
+/** What the OS says the account's home is (os.userInfo().homedir). */
+function accountHome(home: string): void {
+  const real = os.userInfo();
+  vi.spyOn(os, 'userInfo').mockReturnValue({ ...real, homedir: home } as never);
+}
 
 function install(): Promise<{ ok: boolean; error: string | null }> {
   registerStatuslineBridgeHandlers();
@@ -72,9 +79,12 @@ beforeEach(() => {
   state.isPackaged = true;
   vi.stubEnv('WMUX_DATA_SUFFIX', '');
   vi.mocked(ipcMain.handle).mockClear();
+  // The account's home is the one this process runs with: the real home.
+  accountHome(os.homedir());
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   fs.rmSync(tmp, { recursive: true, force: true });
 });
@@ -98,6 +108,12 @@ describe('Settings status line install', () => {
     expect(outcome.error).toContain('a development build');
     expect(outcome.error).toContain('wmux setup-statusline');
     expect(snapshot()).toEqual(before);
+  });
+
+  it('installs from an isolated instance whose home is a sandbox', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '-e2e');
+    accountHome(path.join(tmp, 'the-account-home'));
+    expect(await install()).toMatchObject({ ok: true, error: null });
   });
 
   it('installs from a packaged, unsuffixed instance', async () => {
