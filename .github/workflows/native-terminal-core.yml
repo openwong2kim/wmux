@@ -44,6 +44,8 @@ jobs:
         run: rustup toolchain install stable --profile minimal
       - name: Rust interpreter and grid unit tests
         run: cargo test --manifest-path core/wmux-term/Cargo.toml --no-default-features --locked
+      - name: Native core unit tests
+        run: cargo test --manifest-path core/wmux-term/Cargo.toml --features native-core --locked
       - run: npm run test:terminal-core -- --report=native-terminal-report.json
       # Electron 42 dropped its postinstall download: `npm ci` leaves no binary
       # under node_modules/electron/dist, so fetch it before `npx electron`.
