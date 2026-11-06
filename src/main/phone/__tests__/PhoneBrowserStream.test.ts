@@ -525,7 +525,7 @@ describe('phone browser stream (main)', () => {
       expect(methods.indexOf('Emulation.setDeviceMetricsOverride')).toBeLessThan(methods.indexOf('Page.startScreencast'));
     });
 
-    it('turned off and on by the daemon; a stop clears it by detaching, with no command of its own', async () => {
+    it('turned off and on by the daemon; a stop while it is on clears it before detaching', async () => {
       await start();
       const s = sessions[0];
       expect(emulation(s)).toEqual([]);
@@ -544,9 +544,52 @@ describe('phone browser stream (main)', () => {
       await flush();
       expect(emulation(s)).toHaveLength(6);
       streams.stopAll();
-      await flush();
+      for (let i = 0; i < 3; i++) await flush();
       expect(s.detached).toBe(true);
-      expect(emulation(s)).toHaveLength(6);
+      expect(emulation(s).slice(6)).toEqual([
+        ['Emulation.clearDeviceMetricsOverride', undefined],
+        ['Emulation.setTouchEmulationEnabled', { enabled: false }],
+      ]);
+      const methods = s.sent.map((x) => x.method);
+      expect(methods.lastIndexOf('Emulation.setTouchEmulationEnabled')).toBeGreaterThan(methods.lastIndexOf('Page.stopScreencast'));
+    });
+
+    it('a stop that never applied it, or after it was turned off, sends no emulation command: an agent\'s own override stays', async () => {
+      await start();
+      streams.stopAll();
+      for (let i = 0; i < 3; i++) await flush();
+      expect(sessions[0].detached).toBe(true);
+      expect(emulation(sessions[0])).toEqual([]);
+      await start({ mobile: true });
+      await update(false);
+      await flush();
+      expect(emulation(sessions[1])).toHaveLength(4);
+      streams.stopAll();
+      for (let i = 0; i < 3; i++) await flush();
+      expect(sessions[1].detached).toBe(true);
+      expect(emulation(sessions[1])).toHaveLength(4);
+    });
+
+    it('a stop while it is being applied clears it once the apply is done, then detaches', async () => {
+      await start();
+      const s = sessions[0];
+      let answer!: () => void;
+      s.gates.set('Emulation.setDeviceMetricsOverride', new Promise<void>((r) => { answer = r; }));
+      void update(true);
+      for (let i = 0; i < 3; i++) await flush();
+      // Stopped while the override is sent and not yet answered.
+      streams.stopAll();
+      for (let i = 0; i < 3; i++) await flush();
+      expect(s.detached).toBe(false);
+      answer();
+      for (let i = 0; i < 3; i++) await flush();
+      expect(s.detached).toBe(true);
+      expect(emulation(s)).toEqual([
+        ['Emulation.setDeviceMetricsOverride', OVERRIDE],
+        ['Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }],
+        ['Emulation.clearDeviceMetricsOverride', undefined],
+        ['Emulation.setTouchEmulationEnabled', { enabled: false }],
+      ]);
     });
 
     it('a page swap applies it again on the new session before its screencast', async () => {
