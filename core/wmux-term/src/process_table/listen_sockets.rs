@@ -46,6 +46,56 @@ mod fdinfo {
     pub const INI_IPV4: u8 = 1;
     pub const INI_IPV6: u8 = 2;
     pub const EBADF: i32 = 9;
+    pub const ENOMEM: i32 = 12;
+    pub const ENOTSOCK: i32 = 38;
+    /// Not an errno: PROC_PIDFDSOCKETINFO answered with another size than
+    /// `SIZE` and no errno, so the record layout is not the one parsed here.
+    pub const SHORT_RECORD: i32 = -1;
+}
+
+/// One PROC_PIDFDSOCKETINFO answer (`got` bytes, `errno` after it) as
+/// collect_macos reads it: a full record, the errno, or SHORT_RECORD.
+#[cfg(any(target_os = "macos", test))]
+pub(super) fn fd_info_result(got: i32, errno: i32) -> Result<(), i32> {
+    match got {
+        n if n == fdinfo::SIZE as i32 => Ok(()),
+        _ if errno != 0 => Err(errno),
+        _ => Err(fdinfo::SHORT_RECORD),
+    }
+}
+
+/// Read a variable-length libproc list into a buffer that starts at `start`
+/// bytes and doubles while an answer fills it (the list may have grown
+/// since its size was asked), up to 1 MiB. `read` returns (bytes, errno);
+/// 0 bytes with errno 0 is an empty list. A list that still fills 1 MiB is
+/// ENOMEM rather than a list cut short.
+#[cfg(any(target_os = "macos", test))]
+pub(super) fn read_growing(
+    start: usize,
+    mut read: impl FnMut(&mut [u8]) -> (i32, i32),
+) -> Result<Vec<u8>, i32> {
+    const CAP: usize = 1 << 20;
+    let mut len = start.max(64);
+    loop {
+        let mut buf = vec![0u8; len];
+        let (got, errno) = read(&mut buf);
+        if got <= 0 {
+            return if errno == 0 {
+                Ok(Vec::new())
+            } else {
+                Err(errno)
+            };
+        }
+        let got = got as usize;
+        if got < buf.len() {
+            buf.truncate(got);
+            return Ok(buf);
+        }
+        if len >= CAP {
+            return Err(fdinfo::ENOMEM);
+        }
+        len = (len * 2).min(CAP);
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -87,11 +137,12 @@ pub(super) fn parse_socket_fdinfo(buf: &[u8]) -> Option<(u16, String, u8)> {
 
 /// The pids of `walked` (pid, effective uid) that `uid` owns: the only
 /// processes PROC_PIDLISTFDS answers for, as lsof run as this user lists.
+/// Root reads every process.
 #[cfg(any(target_os = "macos", test))]
 pub(super) fn owned_by(walked: &[(super::ProcessRow, u32)], uid: u32) -> Vec<u32> {
     walked
         .iter()
-        .filter(|(_, owner)| *owner == uid)
+        .filter(|(_, owner)| uid == 0 || *owner == uid)
         .map(|(row, _)| row.pid)
         .collect()
 }
@@ -99,8 +150,10 @@ pub(super) fn owned_by(walked: &[(super::ProcessRow, u32)], uid: u32) -> Vec<u32
 /// The listening sockets of `pids` (macOS), read with `socket_fds` (the
 /// socket descriptors of a pid) and `fd_info` (one PROC_PIDFDSOCKETINFO into
 /// the buffer). Errors are errno values. A pid that cannot be read
-/// contributes nothing; a descriptor closed since the listing (EBADF) is
-/// skipped; any other errno fails the call. One buffer serves every read.
+/// contributes nothing; a descriptor closed since the listing (EBADF), or
+/// reused for something that is no socket (ENOTSOCK), is skipped; any other
+/// errno, or a record of another size (SHORT_RECORD), fails the call. One
+/// buffer serves every read.
 #[cfg(any(target_os = "macos", test))]
 pub(super) fn collect_macos(
     pids: impl IntoIterator<Item = u32>,
@@ -128,7 +181,12 @@ pub(super) fn collect_macos(
                         });
                     }
                 }
-                Err(fdinfo::EBADF) => {}
+                Err(fdinfo::EBADF | fdinfo::ENOTSOCK) => {}
+                Err(fdinfo::SHORT_RECORD) => {
+                    return Err(format!(
+                        "PROC_PIDFDSOCKETINFO of {pid}/{fd} answered a record of another size"
+                    ))
+                }
                 Err(e) if unreadable_process(e) => {
                     out.truncate(kept);
                     break;
@@ -243,7 +301,7 @@ pub use macos_sys::port_snapshot;
 
 #[cfg(target_os = "macos")]
 mod macos_sys {
-    use super::{collect_macos, fdinfo, owned_by, PortSnapshot};
+    use super::{collect_macos, fd_info_result, fdinfo, owned_by, read_growing, PortSnapshot};
     use std::ffi::{c_int, c_void};
 
     const PROC_PIDLISTFDS: c_int = 1;
@@ -294,19 +352,12 @@ mod macos_sys {
             };
         }
         // Headroom for descriptors opened since the size query.
-        let mut buf = vec![0u8; needed as usize + 32 * FDINFO_SIZE];
-        let len = buf.len() as c_int;
-        // SAFETY: the buffer is `len` bytes and writable.
-        let (got, errno) =
-            call(|| unsafe { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, buf.as_mut_ptr().cast(), len) });
-        if got <= 0 {
-            return if errno == 0 {
-                Ok(Vec::new())
-            } else {
-                Err(errno)
-            };
-        }
-        Ok(buf[..got as usize]
+        let list = read_growing(needed as usize + 32 * FDINFO_SIZE, |buf| {
+            let len = buf.len() as c_int;
+            // SAFETY: the buffer is `len` bytes and writable.
+            call(|| unsafe { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, buf.as_mut_ptr().cast(), len) })
+        })?;
+        Ok(list
             .as_chunks::<FDINFO_SIZE>()
             .0
             .iter()
@@ -321,12 +372,7 @@ mod macos_sys {
         let (got, errno) = call(|| unsafe {
             proc_pidfdinfo(pid, fd, PROC_PIDFDSOCKETINFO, buf.as_mut_ptr().cast(), size)
         });
-        match got {
-            n if n == size => Ok(()),
-            _ if errno != 0 => Err(errno),
-            // A short answer without an errno: not a socket record; skip it.
-            _ => Err(fdinfo::EBADF),
-        }
+        fd_info_result(got, errno)
     }
 
     /// The walk, and the listening sockets of this user's processes (the
@@ -499,6 +545,53 @@ mod tests {
         };
         let walked = [(row(1), 0), (row(2), 501), (row(3), 502), (row(4), 501)];
         assert_eq!(owned_by(&walked, 501), vec![2, 4]);
+        // Root reads every process.
+        assert_eq!(owned_by(&walked, 0), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn macos_a_descriptor_reused_for_no_socket_is_skipped() {
+        // ENOTSOCK: the fd was closed and reopened as a file since the listing.
+        let info = |_: u32, fd: i32, buf: &mut [u8]| {
+            if fd == 5 {
+                return Err(38);
+            }
+            buf.copy_from_slice(&listener(1000 + fd as u16));
+            Ok(())
+        };
+        let rows = collect_macos([1], |_| Ok(vec![5, 6]), info).expect("collect");
+        assert_eq!(rows.iter().map(|r| r.port).collect::<Vec<_>>(), vec![1006]);
+    }
+
+    #[test]
+    fn macos_a_record_of_another_size_fails_the_call() {
+        // Another size and no errno: a layout this parser does not know. The
+        // tick falls back to lsof rather than report no ports.
+        assert_eq!(fd_info_result(fdinfo::SIZE as i32, 0), Ok(()));
+        assert_eq!(fd_info_result(0, 9), Err(9));
+        assert_eq!(fd_info_result(600, 0), Err(fdinfo::SHORT_RECORD));
+        assert_eq!(fd_info_result(0, 0), Err(fdinfo::SHORT_RECORD));
+        let rows = collect_macos([1], |_| Ok(vec![3]), |_, _, _| fd_info_result(600, 0));
+        assert!(rows.is_err());
+    }
+
+    #[test]
+    fn a_list_that_fills_the_buffer_is_read_again_larger() {
+        // 100 bytes of descriptors: a 64-byte buffer comes back full, a 128-byte one does not.
+        let mut sizes = Vec::new();
+        let list = read_growing(64, |buf| {
+            sizes.push(buf.len());
+            (buf.len().min(100) as i32, 0)
+        })
+        .expect("list");
+        assert_eq!((list.len(), sizes), (100, vec![64, 128]));
+        assert_eq!(read_growing(64, |_| (0, 0)), Ok(Vec::new()));
+        assert_eq!(read_growing(64, |_| (0, 3)), Err(3));
+        // Still full at the cap: an error, never a list cut short.
+        assert_eq!(
+            read_growing(64, |buf| (buf.len() as i32, 0)),
+            Err(fdinfo::ENOMEM)
+        );
     }
 
     #[test]
