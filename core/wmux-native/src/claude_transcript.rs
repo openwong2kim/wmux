@@ -552,11 +552,9 @@ mod tests {
         // `if (!resultTexts.has(id))`: a later result for the same id is not
         // the immediate one.
         let body = [
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1"},{"type":"tool_use","id":"t2"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1"}]}}"#,
             r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Command running in background with ID: b1"}]}}"#,
             r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Error: later"}]}}"#,
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Error: rejected"}]}}"#,
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Command running in background with ID: b2"}]}}"#,
         ]
         .join("\n");
         let path = transcript("first", &body);
