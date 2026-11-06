@@ -10,10 +10,19 @@
 //! identity walk from `callerPid` sees the same ancestry as with the Node shim.
 //!
 //! Exit codes, as shim.ts: 0 when the host ends the session (stdin EOF or a
-//! read error, SIGTERM/SIGINT or a console control event, stdout gone); 1 when
-//! there is no token, the broker cannot be reached, or the connection drops
-//! mid-session. A dropped session is never resumed: MCP servers keep per-session
-//! state, so the host must see the server die and restart it.
+//! read error, SIGTERM/SIGINT, Ctrl+C on Windows); 1 when there is no token,
+//! the broker cannot be reached, or the connection drops mid-session. A dropped
+//! session is never resumed: MCP servers keep per-session state, so the host
+//! must see the server die and restart it. As in shim.ts, the signal handlers
+//! are installed once the handshake is written; before that a signal kills the
+//! process by its default disposition.
+//!
+//! One intentional divergence from shim.ts: a failed stdout write exits 0.
+//! The host stopped reading, which is a normal shutdown, and node's exit 1
+//! there is an unhandled-error accident, not a contract.
+//!
+//! EAGAIN on an inherited non-blocking stdin or stdout is waited out, not
+//! taken as the end of the session.
 
 use crate::js::{decode_utf8_trimmed, stringify, JsStr, Json};
 use crate::paths::{env, env_js, os_to_js};
@@ -96,6 +105,14 @@ impl Outcome {
 }
 
 // ----- token and endpoint ----------------------------------------------------
+//
+// The private helpers from here to the end of the Windows transport mirror
+// shared ones on purpose, so this module stays independent of the parallel
+// reshaping of paths.rs and rpc.rs: data_suffix and the homedir fallback mirror
+// paths::data_suffix and paths::os_homedir; sys::username mirrors
+// paths::username; sys::connect (the macOS sun_path form, and on Windows the
+// PIPE_BUSY wait and the GetFileType check) mirrors rpc::transport::connect;
+// errno_name mirrors rpc::transport::code and rpc::win32_code_name.
 
 fn data_suffix() -> String {
     env("WMUX_DATA_SUFFIX").unwrap_or_default()
@@ -209,11 +226,17 @@ fn claim_exit() -> bool {
     !EXITING.swap(true, Ordering::SeqCst)
 }
 
+/// Best effort: a broken stderr must not stop the exit (eprintln! panics).
+fn say(msg: &str) {
+    let _ = writeln!(std::io::stderr(), "{msg}");
+}
+
 fn exit_with(outcome: Outcome) -> ! {
+    let code = outcome.code();
     if let Some(msg) = outcome.message() {
-        eprintln!("{msg}");
+        say(&msg);
     }
-    std::process::exit(outcome.code())
+    std::process::exit(code)
 }
 
 /// End the process with `outcome` unless another thread already is.
@@ -224,6 +247,105 @@ fn finish(outcome: Outcome) -> ! {
     loop {
         std::thread::park();
     }
+}
+
+/// libuv's error name for an OS error, as Node puts it in `err.code`.
+#[cfg(unix)]
+fn errno_name(e: &std::io::Error) -> String {
+    let Some(n) = e.raw_os_error() else {
+        return e.to_string();
+    };
+    #[cfg(target_os = "linux")]
+    const NAMES: &[(i32, &str)] = &[
+        (1, "EPERM"),
+        (2, "ENOENT"),
+        (4, "EINTR"),
+        (5, "EIO"),
+        (9, "EBADF"),
+        (11, "EAGAIN"),
+        (12, "ENOMEM"),
+        (13, "EACCES"),
+        (20, "ENOTDIR"),
+        (21, "EISDIR"),
+        (22, "EINVAL"),
+        (23, "ENFILE"),
+        (24, "EMFILE"),
+        (36, "ENAMETOOLONG"),
+        (40, "ELOOP"),
+        (88, "ENOTSOCK"),
+        (91, "EPROTOTYPE"),
+        (98, "EADDRINUSE"),
+        (99, "EADDRNOTAVAIL"),
+        (104, "ECONNRESET"),
+        (110, "ETIMEDOUT"),
+        (111, "ECONNREFUSED"),
+    ];
+    #[cfg(not(target_os = "linux"))]
+    const NAMES: &[(i32, &str)] = &[
+        (1, "EPERM"),
+        (2, "ENOENT"),
+        (4, "EINTR"),
+        (5, "EIO"),
+        (9, "EBADF"),
+        (12, "ENOMEM"),
+        (13, "EACCES"),
+        (20, "ENOTDIR"),
+        (21, "EISDIR"),
+        (22, "EINVAL"),
+        (23, "ENFILE"),
+        (24, "EMFILE"),
+        (35, "EAGAIN"),
+        (38, "ENOTSOCK"),
+        (41, "EPROTOTYPE"),
+        (48, "EADDRINUSE"),
+        (49, "EADDRNOTAVAIL"),
+        (54, "ECONNRESET"),
+        (60, "ETIMEDOUT"),
+        (61, "ECONNREFUSED"),
+        (62, "ELOOP"),
+        (63, "ENAMETOOLONG"),
+    ];
+    match NAMES.iter().find(|(code, _)| *code == n) {
+        Some((_, name)) => (*name).into(),
+        None => format!("Unknown system error -{n}"),
+    }
+}
+
+/// libuv's uv_translate_sys_error for a Win32 error, then its name.
+#[cfg(windows)]
+fn errno_name(e: &std::io::Error) -> String {
+    let Some(n) = e.raw_os_error() else {
+        return e.to_string();
+    };
+    match n {
+        1 => "EISDIR",              // ERROR_INVALID_FUNCTION
+        2 | 3 => "ENOENT",          // ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND
+        4 => "EMFILE",              // ERROR_TOO_MANY_OPEN_FILES
+        5 => "EPERM",               // ERROR_ACCESS_DENIED
+        6 => "EBADF",               // ERROR_INVALID_HANDLE
+        8 | 14 => "ENOMEM",         // ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY
+        32 => "EBUSY",              // ERROR_SHARING_VIOLATION
+        64 => "ECONNRESET",         // ERROR_NETNAME_DELETED
+        87 => "EINVAL",             // ERROR_INVALID_PARAMETER
+        121 => "ETIMEDOUT",         // ERROR_SEM_TIMEOUT
+        123 | 161 => "ENOENT",      // ERROR_INVALID_NAME, ERROR_BAD_PATHNAME
+        206 => "ENAMETOOLONG",      // ERROR_FILENAME_EXCED_RANGE
+        230 | 232 | 233 => "EPIPE", // ERROR_BAD_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED
+        231 => "EBUSY",             // ERROR_PIPE_BUSY
+        267 => "ENOENT",            // ERROR_DIRECTORY
+        995 => "ECANCELED",         // ERROR_OPERATION_ABORTED
+        1225 => "ECONNREFUSED",     // ERROR_CONNECTION_REFUSED
+        1314 => "EPERM",            // ERROR_PRIVILEGE_NOT_HELD
+        1920 => "EACCES",           // ERROR_CANT_ACCESS_FILE
+        1921 => "ELOOP",            // ERROR_CANT_RESOLVE_FILENAME
+        _ => "UNKNOWN",
+    }
+    .into()
+}
+
+/// Node's err.message for a failed pipe connect: `connect <code> <pipe>`.
+fn connect_error(e: &std::io::Error, pipe: &str) -> String {
+    format!("connect {} {pipe}", errno_name(e))
 }
 
 fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
@@ -240,6 +362,38 @@ fn connect_with_retry(pipe: &str) -> Result<sys::Conn, std::io::Error> {
     Err(last.unwrap_or_else(|| std::io::Error::other("no attempt")))
 }
 
+/// Interrupted is retried at once; WouldBlock (an inherited non-blocking
+/// stdio) after a short wait, as Node's stream would wait for readiness.
+fn should_retry(e: &std::io::Error) -> bool {
+    match e.kind() {
+        std::io::ErrorKind::Interrupted => true,
+        std::io::ErrorKind::WouldBlock => {
+            std::thread::sleep(Duration::from_millis(2));
+            true
+        }
+        _ => false,
+    }
+}
+
+/// write_all and flush, waiting out WouldBlock instead of failing on it.
+fn write_patiently(out: &mut impl Write, mut bytes: &[u8]) -> std::io::Result<()> {
+    while !bytes.is_empty() {
+        match out.write(bytes) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if should_retry(&e) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    loop {
+        match out.flush() {
+            Ok(()) => return Ok(()),
+            Err(e) if should_retry(&e) => {}
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// Broker to stdout until either side ends.
 fn pump_to_stdout(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> ! {
     let mut buf = vec![0u8; 64 * 1024];
@@ -251,9 +405,9 @@ fn pump_to_stdout(mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> 
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
         };
-        let mut out = stdout.lock();
-        // A write failure means the host stopped reading: its session is over.
-        if out.write_all(&buf[..n]).and_then(|_| out.flush()).is_err() {
+        // A write failure means the host stopped reading: its session is over
+        // (exit 0, the divergence the module doc states).
+        if write_patiently(&mut stdout.lock(), &buf[..n]).is_err() {
             finish(Outcome::StdoutClosed);
         }
     }
@@ -267,7 +421,7 @@ fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) {
         let n = match stdin.read(&mut buf) {
             Ok(0) => return,
             Ok(n) => n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) if should_retry(&e) => continue,
             Err(_) => finish(Outcome::StdinError),
         };
         if let Err(e) = write(&buf[..n]) {
@@ -279,10 +433,9 @@ fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) {
 pub fn run(args: &[OsString]) -> ! {
     let args = parse_args(args);
     if args.self_test {
-        println!("wmux-mcp-shim protocol {PROTOCOL_VERSION}");
+        let _ = writeln!(std::io::stdout(), "wmux-mcp-shim protocol {PROTOCOL_VERSION}");
         std::process::exit(0);
     }
-    sys::install_exit_handlers();
     let Some(token) = read_auth_token() else {
         exit_with(Outcome::NoToken);
     };
@@ -290,8 +443,8 @@ pub fn run(args: &[OsString]) -> ! {
     let conn = match connect_with_retry(&pipe) {
         Ok(conn) => conn,
         Err(e) => exit_with(Outcome::Unreachable {
+            error: connect_error(&e, &pipe),
             pipe,
-            error: e.to_string(),
         }),
     };
     let line = handshake_line(&Handshake {
@@ -317,8 +470,15 @@ mod sys {
 
     pub type Conn = UnixStream;
 
+    /// A path past `sun_path` fails with the errno libuv reports for it
+    /// (std's own error for it carries none).
     #[cfg(not(target_os = "macos"))]
     pub fn connect(pipe: &str) -> std::io::Result<UnixStream> {
+        const SUN_PATH_LEN: usize = 108;
+        const ENAMETOOLONG: i32 = 36;
+        if pipe.len() >= SUN_PATH_LEN {
+            return Err(std::io::Error::from_raw_os_error(ENAMETOOLONG));
+        }
         UnixStream::connect(pipe)
     }
 
@@ -380,7 +540,7 @@ mod sys {
     }
 
     /// SIGTERM and SIGINT end the session cleanly (exit 0), as in shim.ts.
-    pub fn install_exit_handlers() {
+    fn install_exit_handlers() {
         extern "C" {
             fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
         }
@@ -397,6 +557,7 @@ mod sys {
         if let Err(e) = conn.write_all(handshake) {
             finish(Outcome::BrokerError(e.to_string()));
         }
+        install_exit_handlers();
         let mut reader = match conn.try_clone() {
             Ok(r) => r,
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
@@ -648,16 +809,22 @@ mod sys {
         }
     }
 
-    unsafe extern "system" fn on_ctrl(_: u32) -> i32 {
+    const CTRL_C_EVENT: u32 = 0;
+
+    /// Ctrl+C is libuv's SIGINT and ends the session cleanly (exit 0). Every
+    /// other event (Ctrl+Break, close, logoff, shutdown) goes on to the default
+    /// handling, as it does for the Node shim, which listens for SIGINT only.
+    unsafe extern "system" fn on_ctrl(event: u32) -> i32 {
+        if event != CTRL_C_EVENT {
+            return 0;
+        }
         if super::claim_exit() {
             std::process::exit(Outcome::Signal.code());
         }
         1
     }
 
-    /// Ctrl+C, Ctrl+Break, console close, logoff and shutdown end the session
-    /// cleanly (exit 0), the Windows counterpart of SIGINT/SIGTERM.
-    pub fn install_exit_handlers() {
+    fn install_exit_handlers() {
         // SAFETY: registers a handler that only exits the process.
         unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) };
     }
@@ -667,6 +834,7 @@ mod sys {
         if let Err(e) = conn.write_all(handshake) {
             finish(Outcome::BrokerError(e.to_string()));
         }
+        install_exit_handlers();
         let reader = Arc::clone(&conn);
         std::thread::spawn(move || pump_to_stdout(|buf| reader.read(buf)));
         pump_from_stdin(|bytes| conn.write_all(bytes));
@@ -777,6 +945,26 @@ mod tests {
         h.ppid = -1;
         assert!(handshake_line(&h).contains("\"callerPpid\":-1,"));
         assert!(handshake_line(&h).contains("\"commanderToken\":\"c\","));
+    }
+
+    #[test]
+    fn an_unreachable_broker_is_worded_as_nodes_connect_error() {
+        let os = std::io::Error::from_raw_os_error;
+        assert_eq!(connect_error(&os(2), "/p"), "connect ENOENT /p");
+        let refused = if cfg!(windows) {
+            1225
+        } else if cfg!(target_os = "linux") {
+            111
+        } else {
+            61
+        };
+        assert_eq!(connect_error(&os(refused), "/p"), "connect ECONNREFUSED /p");
+        let unknown = if cfg!(windows) {
+            "UNKNOWN"
+        } else {
+            "Unknown system error -9999"
+        };
+        assert_eq!(connect_error(&os(9999), "/p"), format!("connect {unknown} /p"));
     }
 
     #[test]

@@ -399,10 +399,11 @@ fn an_unreachable_broker_exits_1_after_ten_tries() {
     let elapsed = started.elapsed();
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty());
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.starts_with(&format!("[wmux-mcp-shim] cannot reach broker at {}: ", sb.pipe())),
-        "{err}"
+    // The last error as node words err.message: `connect <code> <pipe>`.
+    let pipe = sb.pipe();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("[wmux-mcp-shim] cannot reach broker at {pipe}: connect ENOENT {pipe}\n")
     );
     // Ten tries, 300 ms apart.
     assert!(elapsed >= Duration::from_millis(2900), "{elapsed:?}");
@@ -460,6 +461,86 @@ fn sigterm_and_sigint_exit_0() {
         assert_eq!(unsafe { kill(child.id() as i32, sig) }, 0);
         assert_eq!(wait_within(&mut child, WAIT).code(), Some(0), "signal {sig}");
     }
+}
+
+#[test]
+fn a_broken_stderr_still_ends_a_dropped_session_with_1() {
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    let listener = stub::bind(&sb.pipe());
+    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    // The diagnostic write fails with EPIPE; the exit must not depend on it.
+    drop(child.stderr.take());
+    let mut conn = listener.accept(WAIT);
+    read_line(&mut conn);
+    drop(conn);
+    assert_eq!(wait_within(&mut child, WAIT).code(), Some(1));
+}
+
+/// Before the handshake is written the shim keeps the default disposition, so
+/// a signal kills it, as it does the Node shim (its handlers come later).
+#[cfg(unix)]
+#[test]
+fn a_signal_during_the_connect_retries_kills_by_the_signal() {
+    use std::os::unix::process::ExitStatusExt;
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    let mut child = sb.shim(&[]).spawn().expect("spawn shim");
+    std::thread::sleep(Duration::from_millis(500));
+    // SAFETY: signals a child this test spawned and still owns.
+    assert_eq!(unsafe { kill(child.id() as i32, 15) }, 0);
+    let status = wait_within(&mut child, WAIT);
+    assert_eq!((status.code(), status.signal()), (None, Some(15)));
+}
+
+/// A host may hand over non-blocking pipes. EAGAIN on either one is a wait,
+/// not the end of the session.
+#[cfg(unix)]
+#[test]
+fn a_non_blocking_stdin_and_stdout_are_waited_on() {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    let listener = stub::bind(&sb.pipe());
+    let (mut host_in, shim_in) = UnixStream::pair().unwrap();
+    let (mut host_out, shim_out) = UnixStream::pair().unwrap();
+    shim_in.set_nonblocking(true).unwrap();
+    shim_out.set_nonblocking(true).unwrap();
+    let mut child = sb
+        .shim(&[])
+        .stdin(Stdio::from(OwnedFd::from(shim_in)))
+        .stdout(Stdio::from(OwnedFd::from(shim_out)))
+        .spawn()
+        .expect("spawn shim");
+    let mut conn = listener.accept(WAIT);
+    read_line(&mut conn);
+    // Nothing to read yet: the shim's stdin read sees EAGAIN.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(child.try_wait().unwrap().is_none(), "EAGAIN on stdin ended the session");
+    host_in.write_all(b"up\n").unwrap();
+    assert_eq!(read_exact(&mut conn, 3), b"up\n");
+
+    // Far more than the socket buffers hold while the host is not reading:
+    // the shim's stdout write sees EAGAIN.
+    let big: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
+    let mut writer = conn.try_clone().unwrap();
+    let sent = big.clone();
+    let feeder = std::thread::spawn(move || writer.write_all(&sent));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "EAGAIN on stdout ended the session"
+    );
+    host_out.set_read_timeout(Some(WAIT)).unwrap();
+    assert_eq!(read_exact(&mut host_out, big.len()), big);
+    feeder.join().unwrap().unwrap();
+
+    drop(host_in);
+    assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
 }
 
 #[test]

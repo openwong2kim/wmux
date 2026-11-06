@@ -4,8 +4,11 @@
 // broker bound at the endpoint they both derive. The stub takes the handshake
 // line, then drops the connection. The test compares the line byte for byte
 // (callerPid masked: each shim reports its own pid), the parsed values and
-// their key order, and the exit code, stdout and stderr that follow. A case
-// with no token compares the refusal instead.
+// their key order, and the exit code, stdout and stderr that follow. Cases with
+// no token or no broker compare the refusal instead (the unreachable message
+// is node's err.message for the connect). DIVERGENCES records where the native
+// shim differs on purpose: each runs both and asserts both outcomes, so the
+// difference stays recorded rather than ignored.
 //
 // shim.ts is bundled from source with esbuild, so the test follows the source
 // rather than a stale build. The binary is WMUX_NATIVE_HOOKS_BIN, else the
@@ -17,7 +20,7 @@
 // and no inherited WMUX_* variable, so nothing here can reach a live wmux.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { buildSync } from 'esbuild';
 import * as fs from 'fs';
 import * as net from 'net';
@@ -52,11 +55,18 @@ interface Run {
   stderr: string;
 }
 
+/** What the stub broker does: take the handshake and hang up, take it and
+ *  keep writing until the shim goes, or not be there at all. */
+type Broker = 'hangup' | 'flood' | 'none';
+
 interface Case {
   name: string;
   tokenFile?: string;
   env?: Record<string, string>;
   args?: string[];
+  broker?: Broker;
+  /** The host closes its end of the shim's stdout right after the spawn. */
+  closeStdout?: boolean;
 }
 
 const CASES: Case[] = [
@@ -95,11 +105,13 @@ function childEnv(suffix: string, extra: Record<string, string>): NodeJS.Process
   return { ...env, ...extra };
 }
 
-/** One shim run against a stub broker that takes the handshake and hangs up. */
-async function run(runtime: 'js' | 'native', suffix: string, c: Case, listen: boolean): Promise<Run> {
+/** One shim run against the stub broker the case names. */
+async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<Run> {
   let server: net.Server | null = null;
   let line: string | null = null;
-  if (listen) {
+  const broker = c.broker ?? 'hangup';
+  const flooding = new Set<ReturnType<typeof setInterval>>();
+  if (broker !== 'none') {
     const srv = net.createServer((sock) => {
       let buf = Buffer.alloc(0);
       sock.on('data', (chunk) => {
@@ -107,7 +119,10 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case, listen: bo
         const nl = buf.indexOf(0x0a);
         if (nl === -1 || line !== null) return;
         line = buf.subarray(0, nl + 1).toString('utf8');
-        sock.destroy();
+        if (broker === 'hangup') { sock.destroy(); return; }
+        const timer = setInterval(() => sock.write('{"jsonrpc":"2.0","method":"notifications/ping"}\n'), 20);
+        flooding.add(timer);
+        sock.on('close', () => { clearInterval(timer); flooding.delete(timer); });
       });
       sock.on('error', () => { /* shim gone */ });
     });
@@ -123,27 +138,58 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case, listen: bo
   const child = spawn(cmd, args, { env: childEnv(suffix, c.env ?? {}), stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
-  child.stdout.on('data', (d) => { stdout += d; });
+  if (c.closeStdout) child.stdout.destroy();
+  else child.stdout.on('data', (d) => { stdout += d; });
   child.stderr.on('data', (d) => { stderr += d; });
-  const code = await new Promise<number | null>((resolve) => child.on('exit', (c2) => resolve(c2)));
+  // 'close', not 'exit': stdout and stderr may still hold data at exit.
+  const code = await new Promise<number | null>((resolve) => child.on('close', (c2) => resolve(c2)));
+  for (const timer of flooding) clearInterval(timer);
   child.stdin.destroy();
   const srv = server;
   if (srv) await new Promise<void>((resolve) => srv.close(() => resolve()));
   return { line, pid: child.pid ?? -1, code, stdout, stderr };
 }
 
-async function both(c: Case, listen = true): Promise<{ js: Run; native: Run }> {
+/** Both shims on one suffix. With a broker they take turns at it; without
+ *  one (ten 300 ms tries each) they run side by side. `prepare` may plant
+ *  something at the endpoint first. */
+async function both(c: Case, prepare?: (pipe: string) => void): Promise<{ js: Run; native: Run }> {
   const suffix = `-nsp${process.pid}-${++seq}`;
   const tokenPath = path.join(home, `.wmux${suffix}-auth-token`);
   if (c.tokenFile !== undefined) fs.writeFileSync(tokenPath, c.tokenFile);
+  prepare?.(pipeName(suffix));
   try {
-    const js = await run('js', suffix, c, listen);
-    const native = await run('native', suffix, c, listen);
+    if ((c.broker ?? 'hangup') === 'none') {
+      const [js, native] = await Promise.all([run('js', suffix, c), run('native', suffix, c)]);
+      return { js, native };
+    }
+    const js = await run('js', suffix, c);
+    const native = await run('native', suffix, c);
     return { js, native };
   } finally {
     fs.rmSync(tokenPath, { force: true });
+    if (!isWin) fs.rmSync(pipeName(suffix), { force: true });
   }
 }
+
+/** A Unix socket file whose listener died without unlinking it. */
+function plantStaleSocket(pipe: string): void {
+  const script = `require('net').createServer().listen(${JSON.stringify(pipe)}, () => process.kill(process.pid, 'SIGKILL'))`;
+  spawnSync(process.execPath, ['-e', script]);
+  if (!fs.existsSync(pipe)) throw new Error(`no stale socket at ${pipe}`);
+}
+
+/** Where the native shim differs from shim.ts on purpose, and why. */
+const DIVERGENCES: { c: Case; js: number; native: number; reason: string }[] = [
+  {
+    c: { name: 'the host stops reading stdout', tokenFile: 'tok', broker: 'flood', closeStdout: true },
+    js: 1,
+    native: 0,
+    reason:
+      'the host stopped reading, which is a normal shutdown; node exits 1 there only because shim.ts '
+      + 'has no stdout error listener (an unhandled-error accident, not a contract)',
+  },
+];
 
 function handshake(r: Run, who: string): string {
   if (r.line === null) throw new Error(`the ${who} shim sent no handshake (exit ${r.code}): ${r.stderr}`);
@@ -196,11 +242,37 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
   }
 
   it('no token: the same refusal, nothing dialled', async () => {
-    const { js, native } = await both({ name: 'no token' }, false);
+    const { js, native } = await both({ name: 'no token', broker: 'none' });
     expect(native.code).toBe(js.code);
     expect(native.code).toBe(1);
     expect(native.stdout).toBe(js.stdout);
     expect(native.stderr).toBe(js.stderr);
     expect(native.stderr).toBe('[wmux-mcp-shim] auth token not found. Is wmux running?\n');
   });
+
+  it('no broker: the same refusal after the retries, worded as node words the connect error', async () => {
+    const { js, native } = await both({ name: 'no broker', tokenFile: 'tok', broker: 'none' });
+    expect(native.code).toBe(js.code);
+    expect(native.code).toBe(1);
+    expect(native.stdout).toBe(js.stdout);
+    expect(native.stderr).toBe(js.stderr);
+    expect(native.stderr).toMatch(/^\[wmux-mcp-shim\] cannot reach broker at (.+): connect ENOENT \1\n$/);
+  }, 20_000);
+
+  it.skipIf(isWin)('a stale socket: the same ECONNREFUSED refusal', async () => {
+    const { js, native } = await both({ name: 'stale socket', tokenFile: 'tok', broker: 'none' }, plantStaleSocket);
+    expect(native.code).toBe(1);
+    expect(native.code).toBe(js.code);
+    expect(native.stderr).toBe(js.stderr);
+    expect(native.stderr).toMatch(/: connect ECONNREFUSED /);
+  }, 20_000);
+
+  for (const d of DIVERGENCES) {
+    it(`recorded divergence: ${d.c.name}`, async () => {
+      const { js, native } = await both(d.c);
+      expect(js.code, `shim.ts (${d.reason})`).toBe(d.js);
+      expect(native.code, `native (${d.reason})`).toBe(d.native);
+      expect(native.stdout).toBe('');
+    });
+  }
 });
