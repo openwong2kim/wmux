@@ -27,6 +27,14 @@ function run(command: string, tools: 'full' | 'core' | 'role', role?: string, ex
 }
 
 describe('wmux tool level on a role-bound launch line', () => {
+  it('codex with the native launcher registered gets the launcher\'s args, not the script', () => {
+    const native = { kind: 'native' as const, binary: '/Users/u/.wmux/mcp/wmux-native' };
+    const out = applyWmuxToolsToCommand('codex', { tools: 'role', role: 'Tester' }, {
+      mcpDir, entry, exists: () => true, writeFile: () => undefined, codexHasWmuxServer: () => true, codexLauncher: () => native, log: () => undefined,
+    });
+    expect(out).toBe(`codex -c "mcp_servers.wmux.args=['mcp-shim','--role=Tester']"`);
+  });
+
   it('claude gets a config FILE (no JSON on the shell line) naming the surface', () => {
     const { out, written } = run('claude --model claude-sonnet-5-5', 'role', 'Planner');
     const file = path.join(mcpDir, 'surface-role-planner.json');

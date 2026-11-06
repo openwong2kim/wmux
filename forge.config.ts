@@ -318,7 +318,18 @@ const config: ForgeConfig = {
     // A stage left from other sources would ship a bridge no parity test ran
     // against. Checked when packaging starts, not when the config loads.
     prePackage: async () => {
-      if (!shipsNativeHooks) return;
+      if (!shipsNativeHooks) {
+        // Without the stage this build ships no wmux-native, so a dogfood run
+        // of it would exercise only the node launchers. Say so loudly.
+        console.warn([
+          '',
+          '[forge] WARNING: dist/native-hooks is not staged, so this build ships no wmux-native.',
+          '[forge]          MCP registration and agent hooks will use their node launchers.',
+          '[forge]          Run `node scripts/build-native-hooks.mjs` first to include it.',
+          '',
+        ].join('\n'));
+        return;
+      }
       const problem = require('./scripts/build-native-hooks.mjs').nativeHooksStageProblem(__dirname, path.join(__dirname, NATIVE_HOOKS_STAGE));
       if (problem) throw new Error(problem);
     },

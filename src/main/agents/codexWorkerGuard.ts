@@ -59,7 +59,8 @@ import {
   parseCodexWorkerLine,
   CODEX_WORKER_MIN_VERSION,
 } from '../../shared/codexWorkerGuard';
-import { codexDefinesWmuxServer, codexMcpServerNames, codexWmuxApprovedTools } from '../../shared/mcpRegistration';
+import { codexDefinesWmuxServer, codexMcpServerNames, codexWmuxApprovedTools, codexWmuxLauncher } from '../../shared/mcpRegistration';
+import type { WmuxServerLauncher } from '../../shared/roleSurfaces';
 import type { Connector } from '../../shared/botConnector';
 
 import { resolveOnPath } from '../factory/botEngines';
@@ -112,6 +113,12 @@ function currentMcpEntry(): string | null {
   } catch {
     return null;
   }
+}
+
+/** The launcher a worker's tool-level override is written for: whatever its
+ *  codex config runs for wmux, with main's entry for node (codexWmuxLauncher). */
+function workerMcpLauncher(configPath: string, entry: string | null): WmuxServerLauncher | undefined {
+  return entry ? codexWmuxLauncher(configPath, entry) : undefined;
 }
 
 /** What pty:create knows about this create (botWorkerMergeGuard's record). */
@@ -387,7 +394,7 @@ async function guardedCodexLine(
   if (!mcpWords) throw refuse('a connection cannot be written into the launch line (a quote or backslash in its settings)');
   const line = buildCodexWorkerLaunchLine(parsed, cwd, roots, {
     ...(codexDefinesWmuxServer(configPath) ? { toolApprovals: { ownerApproved } } : {}),
-    ...(parsed.wmuxTools ? { mcpEntry: (deps.mcpEntry ?? currentMcpEntry)() ?? undefined } : {}),
+    ...(parsed.wmuxTools ? { mcpEntry: workerMcpLauncher(configPath, (deps.mcpEntry ?? currentMcpEntry)()) } : {}),
     mcpWords,
   });
   if (!line) throw refuse('a worktree path cannot be written into the launch line');
