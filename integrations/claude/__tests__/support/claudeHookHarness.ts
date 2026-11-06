@@ -20,7 +20,8 @@
  *
  * `variants` lists the outcomes the reference may produce where node itself
  * is racy. A port is held to `strictForPort` at the same path instead: the
- * single outcome a full-duplex transport must reach.
+ * single outcome a full-duplex transport must reach; or, where only the
+ * kernel's errno differs between runs or platforms, to `portVariants`.
  */
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -96,6 +97,8 @@ export interface Fixture {
   platformVariants?: Partial<Record<NodeJS.Platform, Record<string, unknown[]>>>;
   /** Dotted path → the one value a port must produce there. */
   strictForPort?: Record<string, unknown>;
+  /** Dotted path → the values a port may produce there, in place of `variants`. */
+  portVariants?: Record<string, unknown[]>;
   expect?: { steps: unknown[] };
 }
 
@@ -445,14 +448,21 @@ function holderAt(result: unknown, dotted: string): [Record<string, unknown> | u
 }
 
 function applyVariants(result: { steps: unknown[] }, fixture: Fixture, problems: string[]): void {
-  const paths = new Set([...Object.keys(fixture.variants ?? {}), ...Object.keys(fixture.strictForPort ?? {})]);
+  const paths = new Set([
+    ...Object.keys(fixture.variants ?? {}),
+    ...Object.keys(fixture.strictForPort ?? {}),
+    ...Object.keys(fixture.portVariants ?? {}),
+  ]);
   for (const dotted of paths) {
     const [holder, last] = holderAt(result, dotted);
     const actual = JSON.stringify(holder?.[last]);
     const strict = fixture.strictForPort?.[dotted];
+    const forPort = fixture.portVariants?.[dotted];
     const allowed = !IS_REFERENCE && strict !== undefined
       ? [strict]
-      : [...fixture.variants?.[dotted] ?? [], ...fixture.platformVariants?.[process.platform]?.[dotted] ?? []];
+      : !IS_REFERENCE && forPort !== undefined
+        ? forPort
+        : [...fixture.variants?.[dotted] ?? [], ...fixture.platformVariants?.[process.platform]?.[dotted] ?? []];
     if (holder && allowed.some((v) => JSON.stringify(v) === actual)) holder[last] = '<variant>';
     else problems.push(`${dotted} = ${actual}, not one of ${JSON.stringify(allowed)}`);
   }

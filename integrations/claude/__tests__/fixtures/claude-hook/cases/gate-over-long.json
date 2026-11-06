@@ -1,5 +1,6 @@
 {
   "description": "Stop --gate with a request line over the server's limit: the server drops it before the line is whole.",
+  "divergence": "Node can lose the answer and fail closed (exit 2, gate-fail-closed) when the server's close reaches it before the write's EPIPE; the port settles a request the server dropped unfinished as a connect error and fails open (exit 0). Only the errno is the kernel's: EPIPE, or ECONNRESET where the peer closed with data unread.",
   "endpoints": {
     "main": {
       "mode": "over-long"
@@ -7,6 +8,34 @@
   },
   "variants": {
     "steps.0": [
+      {
+        "exitCode": 2,
+        "stdout": "",
+        "stderr": "wmux could not confirm this Stop with the orchestrator (the reply was lost in flight). Do not end the turn on this attempt — check the fleet and stop again.\n",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "rpc-failed",
+            "target": "main",
+            "error": "closed-without-response"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "gate-fail-closed",
+            "target": "main",
+            "error": "closed-without-response"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "destroyedOverLong": true
+            }
+          ]
+        }
+      },
       {
         "exitCode": 0,
         "stdout": "",
@@ -85,6 +114,54 @@
             "target": "main",
             "error": "connect-error",
             "detail": "ECONNABORTED"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "destroyedOverLong": true
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "portVariants": {
+    "steps.0": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "rpc-failed",
+            "target": "main",
+            "error": "connect-error",
+            "detail": "EPIPE"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "destroyedOverLong": true
+            }
+          ]
+        }
+      },
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "rpc-failed",
+            "target": "main",
+            "error": "connect-error",
+            "detail": "ECONNRESET"
           }
         ],
         "requests": {
