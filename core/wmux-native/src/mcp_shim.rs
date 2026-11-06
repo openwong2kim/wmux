@@ -13,9 +13,11 @@
 //! read error, SIGTERM/SIGINT, Ctrl+C on Windows); 1 when there is no token,
 //! the broker cannot be reached, or the connection drops mid-session. A dropped
 //! session is never resumed: MCP servers keep per-session state, so the host
-//! must see the server die and restart it. As in shim.ts, the signal handlers
-//! are installed once the handshake is written; before that a signal kills the
-//! process by its default disposition.
+//! must see the server die and restart it. The signal handlers are installed
+//! once the broker connection is up, right before the handshake is written, so
+//! no signal falls between the two (shim.ts installs them in the same tick as
+//! its write). During the connect retries a signal kills the process by its
+//! default disposition.
 //!
 //! One intentional divergence from shim.ts: a failed stdout write exits 0.
 //! The host stopped reading, which is a normal shutdown, and node's exit 1
@@ -668,10 +670,10 @@ mod sys {
     }
 
     pub fn session(mut conn: UnixStream, handshake: &[u8]) -> ! {
+        install_exit_handlers();
         if let Err(e) = conn.write_all(handshake) {
             finish(Outcome::BrokerError(super::socket_error("write", &e)));
         }
-        install_exit_handlers();
         let mut reader = match conn.try_clone() {
             Ok(r) => r,
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
@@ -975,10 +977,10 @@ mod sys {
             Ok(e) => e,
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
         };
+        install_exit_handlers();
         if let Err(e) = conn.write_all(&writer_event, handshake) {
             finish(Outcome::BrokerError(super::socket_error("write", &e)));
         }
-        install_exit_handlers();
         let reader = Arc::clone(&conn);
         std::thread::spawn(move || {
             let event = match Event::new() {

@@ -487,8 +487,8 @@ fn a_broken_stderr_still_ends_a_dropped_session_with_1() {
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(1));
 }
 
-/// Before the handshake is written the shim keeps the default disposition, so
-/// a signal kills it, as it does the Node shim (its handlers come later).
+/// Until the broker connection is up the shim keeps the default disposition,
+/// so a signal kills it, as it does the Node shim (its handlers come later).
 #[cfg(unix)]
 #[test]
 fn a_signal_during_the_connect_retries_kills_by_the_signal() {
