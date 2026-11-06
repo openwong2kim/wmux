@@ -295,7 +295,7 @@ export class PlaywrightEngine {
    */
   private workspaceIdResolver: (() => Promise<string>) | null = null;
 
-  private constructor() {}
+  private constructor() { /* a singleton: getInstance() */ }
 
   setWorkspaceIdResolver(resolver: () => Promise<string>): void {
     this.workspaceIdResolver = resolver;
