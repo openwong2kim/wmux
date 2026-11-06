@@ -542,14 +542,16 @@ describe.skipIf(process.platform === 'win32')('native bridge side effects', () =
     const holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
     try {
       fs.writeFileSync(lock, `${holder.pid as number} ${Date.now()} other`);
+      // What the install had done while another one held the lock: noted
+      // here, asserted below, so a failure names itself instead of a timeout.
+      let whileHeld: { copied: boolean; runs: number } | null = null;
       setTimeout(() => {
-        // Nothing may have been copied or run while another install held it.
-        expect(fs.existsSync(dest())).toBe(false);
-        expect(runs()).toBe(0);
+        whileHeld = { copied: fs.existsSync(dest()), runs: runs() };
         fs.unlinkSync(lock);
       }, 500);
       const started = Date.now();
       expect((await installCompatHooks('copilot', withNative)).native?.state).toBe('current');
+      expect(whileHeld).toEqual({ copied: false, runs: 0 });
       expect(Date.now() - started).toBeGreaterThanOrEqual(400);
       expect(runs()).toBe(1);
       expect(fs.existsSync(lock)).toBe(false);
