@@ -60,10 +60,10 @@ export interface LifecycleAssetInstallOutcome extends LifecycleAssetStatus {
   previousPath?: string;
 }
 
-/** Remove asides an earlier run left (still running then); best effort. */
-export function sweepAsides(destinationPath: string): void {
+/** Remove the files an earlier run left beside `destinationPath` whose names
+ *  start with `prefix` (by default its asides, still running then); best effort. */
+export function sweepAsides(destinationPath: string, prefix = `${path.basename(destinationPath)}.previous`): void {
   const dir = path.dirname(destinationPath);
-  const prefix = `${path.basename(destinationPath)}.previous`;
   let names: string[];
   try { names = fs.readdirSync(dir); } catch { return; }
   for (const name of names) {
