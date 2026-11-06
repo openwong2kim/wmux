@@ -66,7 +66,7 @@ describe('GuestDialogs', () => {
     expect(answers.at(-1)).toEqual({ surfaceId: 's', accept: true, text: 'typed' });
     expect(notes.at(-1)?.answer).toBe('accepted (pre-armed)');
 
-    clock += 10_000;
+    clock += 60_000;
     dialogs.opening('s', 'confirm', 'spent', true);
     expect(answers.at(-1)).toEqual({ surfaceId: 's', accept: false });
     end();
@@ -91,27 +91,70 @@ describe('GuestDialogs', () => {
     again();
   });
 
-  it('decides whether input raised a dialog when it opens, not when it is answered', () => {
-    const deferred: Array<() => void> = [];
-    const local = new GuestDialogs({
-      answer: async (surfaceId, accept) => { answers.push({ surfaceId, accept }); },
-      note: () => undefined,
-      now: () => clock,
-      defer: (fn) => deferred.push(fn),
-    });
-    local.arm('s', true);
-    const end = local.beginDispatch('s');
-    local.opening('s', 'confirm', 'raised during the click', true);
-    end();
-    deferred.splice(0).forEach((fn) => fn());
-    expect(answers.at(-1)?.accept).toBe(true);
+  describe('with the delay held', () => {
+    let deferred: Array<{ fn: () => void; ms: number }>;
+    let local: GuestDialogs;
 
-    local.arm('s', true);
-    local.opening('s', 'confirm', 'raised by a timer', true);
-    const late = local.beginDispatch('s');
-    deferred.splice(0).forEach((fn) => fn());
-    expect(answers.at(-1)?.accept).toBe(false);
-    late();
+    beforeEach(() => {
+      deferred = [];
+      local = new GuestDialogs({
+        answer: async (surfaceId, accept) => { answers.push({ surfaceId, accept }); },
+        note: () => undefined,
+        now: () => clock,
+        defer: (fn, ms) => deferred.push({ fn, ms }),
+      });
+    });
+    const runDeferred = () => deferred.splice(0).forEach(({ fn }) => fn());
+
+    it("answers an RPC-lane input's dialog at once, and waits on any other", () => {
+      const end = local.beginDispatch('s');
+      local.opening('s', 'confirm', 'from the click', true);
+      expect(answers).toHaveLength(1);
+      end();
+      runDeferred();
+
+      clock += 1_000;
+      local.opening('s', 'confirm', 'a timer, or a Playwright-lane click', true);
+      expect(answers).toHaveLength(1);
+      expect(deferred[0].ms).toBe(500);
+      runDeferred();
+      expect(answers).toHaveLength(2);
+    });
+
+    it('stands down when something else answers during the wait', () => {
+      local.opening('s', 'confirm', 'answered by Playwright', true);
+      local.closed('s');
+      runDeferred();
+      expect(answers).toEqual([]);
+    });
+
+    it('does not count a dialog raised after the input started as that input unless it was in flight', () => {
+      local.arm('s', true);
+      local.opening('s', 'confirm', 'raised by a timer', true);
+      const late = local.beginDispatch('s');
+      runDeferred();
+      expect(answers.at(-1)?.accept).toBe(false);
+      late();
+    });
+
+    it('lets a handler raise its dialog just after the input returns', () => {
+      local.arm('s', true);
+      const end = local.beginDispatch('s');
+      end();
+      clock += 100;
+      local.opening('s', 'confirm', 'setTimeout 0 in the click handler', true);
+      expect(answers.at(-1)?.accept).toBe(true);
+    });
+
+    it('ends that tail: a dialog well after the input is not its own', () => {
+      local.arm('s', true);
+      const end = local.beginDispatch('s');
+      end();
+      clock += 600;
+      local.opening('s', 'confirm', 'much later', true);
+      runDeferred();
+      expect(answers.at(-1)?.accept).toBe(false);
+    });
   });
 
   it('stops counting a hung input call after its limit', () => {
@@ -134,33 +177,21 @@ describe('GuestDialogs', () => {
     expect(notes).toEqual([]);
   });
 
-  it('stops answering a page that loops dialogs, says so once, and resumes after the window', async () => {
-    for (let i = 0; i < 3; i++) dialogs.opening('s', 'alert', `n${i}`, true);
+  it('caps answers across all tabs, says so once per dialog, and resumes after the window', async () => {
+    dialogs.opening('a', 'alert', 'n0', true);
+    dialogs.opening('b', 'alert', 'n1', true);
+    dialogs.opening('a', 'alert', 'n2', true);
     expect(answers).toHaveLength(3);
 
-    dialogs.opening('s', 'alert', 'n3', true);
-    dialogs.leaseStarted('s');
+    dialogs.opening('b', 'alert', 'n3', true);
+    dialogs.leaseStarted('b');
     expect(answers).toHaveLength(3);
     await settled();
     expect(notes.filter((n) => n.answer.startsWith('left open'))).toHaveLength(1);
 
-    clock += 10_000;
-    dialogs.leaseStarted('s');
+    clock += 60_000;
+    dialogs.leaseStarted('b');
     expect(answers).toHaveLength(4);
-  });
-
-  it('stands down when something else answers during the delay', () => {
-    const deferred: Array<() => void> = [];
-    const local = new GuestDialogs({
-      answer: async (surfaceId, accept) => { answers.push({ surfaceId, accept }); },
-      note: (_surfaceId, note) => notes.push(note),
-      defer: (fn) => deferred.push(fn),
-    });
-    local.opening('s', 'confirm', 'answered by Playwright', true);
-    local.closed('s');
-    deferred.forEach((fn) => fn());
-    expect(answers).toEqual([]);
-    expect(notes).toEqual([]);
   });
 
   it('keeps surfaces apart and forgets one', () => {

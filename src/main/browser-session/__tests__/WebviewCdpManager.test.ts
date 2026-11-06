@@ -54,7 +54,7 @@ describe('WebviewCdpManager', () => {
         (event: unknown, method: string, params: Record<string, unknown>) => void;
       listener({}, method, params);
       // The answer waits briefly, for a Playwright page to answer first.
-      await vi.advanceTimersByTimeAsync(200);
+      await vi.advanceTimersByTimeAsync(600);
     };
     const answered = () => mockDebugger.sendCommand.mock.calls.filter(([m]) => m === 'Page.handleJavaScriptDialog');
 

@@ -9,22 +9,27 @@
 // result. A dialog already open when a lease starts is answered then.
 //
 // Answering over CDP doesn't close Electron's box: it stays until someone clicks
-// it, harmlessly, and each answered dialog leaves its own. So answers are capped:
-// without that a page looping alert() would stack boxes without limit, where a
-// page that isn't answered can only ever show one. Past the cap the page waits on
-// its box like any other, and the agent is told why.
+// it, harmlessly, and each answered dialog leaves its own. On macOS it's a sheet
+// on the main window, so answers are capped across all tabs: without that, pages
+// looping alert() would stack boxes without limit, where a page that isn't answered
+// can only ever show one. Past the cap a page waits on its box like any other, and
+// the agent is told why.
 //
-// A Playwright page attached to the guest answers its own dialogs within
-// milliseconds, including armed answers, so the answer here waits briefly and
-// stands down once the dialog has closed.
+// A Playwright page attached to the guest answers its own dialogs, including armed
+// answers, within a few hundred ms, and main can't see that it's there. So a dialog
+// that didn't come from an RPC-lane input waits long enough for that, and this
+// stands down once the dialog has closed. One raised by an RPC-lane input is ours
+// and is answered at once.
 
 export const ARMED_DIALOG_TTL_MS = 30_000;
 const MAX_MESSAGE_CHARS = 200;
-const ANSWER_WINDOW_MS = 10_000;
+const ANSWER_WINDOW_MS = 60_000;
 const MAX_ANSWERS_PER_WINDOW = 3;
-const ANSWER_DELAY_MS = 150;
+const ANSWER_DELAY_MS = 500;
 /** A hung input call stops counting as in flight after this. */
 const DISPATCH_TTL_MS = ARMED_DIALOG_TTL_MS;
+/** A handler often raises its dialog a moment after the input returns. */
+const DISPATCH_TAIL_MS = 500;
 
 export type GuestDialogAnswer =
   | 'dismissed'
@@ -54,11 +59,12 @@ interface SurfaceDialogs {
   armed?: { accept: boolean; text?: string; expires: number };
   /** Input dispatches in flight. Only a dialog raised during one may use an armed answer. */
   dispatches: Set<{ expires: number }>;
-  answeredAt: number[];
 }
 
 export class GuestDialogs {
   private readonly surfaces = new Map<string, SurfaceDialogs>();
+  /** Across all tabs: the boxes these leave all land on the same window. */
+  private answeredAt: number[] = [];
 
   constructor(private readonly deps: GuestDialogsDeps) {}
 
@@ -69,7 +75,7 @@ export class GuestDialogs {
   private surface(surfaceId: string): SurfaceDialogs {
     let state = this.surfaces.get(surfaceId);
     if (!state) {
-      state = { dispatches: new Set(), answeredAt: [] };
+      state = { dispatches: new Set() };
       this.surfaces.set(surfaceId, state);
     }
     return state;
@@ -85,6 +91,10 @@ export class GuestDialogs {
     const raisedByInput = [...state.dispatches].some((dispatch) => dispatch.expires > now);
     state.open = { type, message: capped, capNoted: false, raisedByInput };
     if (!driven) return;
+    if (raisedByInput) {
+      this.settle(surfaceId, state);
+      return;
+    }
     const opened = state.open;
     this.defer(() => {
       if (state.open === opened) this.settle(surfaceId, state);
@@ -119,10 +129,12 @@ export class GuestDialogs {
   /** Mark an input dispatch in flight. Returns the closer; safe to call twice. */
   beginDispatch(surfaceId: string): () => void {
     const state = this.surface(surfaceId);
-    const dispatch = { expires: this.now() + DISPATCH_TTL_MS };
+    const now = this.now();
+    for (const old of state.dispatches) if (old.expires <= now) state.dispatches.delete(old);
+    const dispatch = { expires: now + DISPATCH_TTL_MS };
     state.dispatches.add(dispatch);
     return () => {
-      state.dispatches.delete(dispatch);
+      dispatch.expires = Math.min(dispatch.expires, this.now() + DISPATCH_TAIL_MS);
     };
   }
 
@@ -134,8 +146,8 @@ export class GuestDialogs {
     const open = state.open;
     if (!open) return;
     const now = this.now();
-    state.answeredAt = state.answeredAt.filter((at) => now - at < ANSWER_WINDOW_MS);
-    if (state.answeredAt.length >= MAX_ANSWERS_PER_WINDOW) {
+    this.answeredAt = this.answeredAt.filter((at) => now - at < ANSWER_WINDOW_MS);
+    if (this.answeredAt.length >= MAX_ANSWERS_PER_WINDOW) {
       if (!open.capNoted) {
         open.capNoted = true;
         this.deps.note(surfaceId, { type: open.type, message: open.message, answer: 'left open for a person (too many in a row)', at: now });
@@ -145,7 +157,7 @@ export class GuestDialogs {
     const armed = open.raisedByInput && state.armed && state.armed.expires > now ? state.armed : undefined;
     if (armed) state.armed = undefined;
     state.open = undefined;
-    state.answeredAt.push(now);
+    this.answeredAt.push(now);
     // Report only what happened. A failed answer means something else got there
     // first, and it reports its own, or the page is gone.
     void this.deps.answer(surfaceId, armed?.accept ?? false, armed?.text).then(
