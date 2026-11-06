@@ -3,12 +3,13 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyRuntimeFlag,
   installHooks,
   installHooksWithNative,
   isPermissionGateInstalled,
+  refreshClaudeNativeAtBoot,
   statusHooks,
   updateHooksWithNative,
   type SetupHooksPaths,
@@ -184,5 +185,58 @@ describe.skipIf(process.platform === 'win32')('isPermissionGateInstalled with th
     await installHooksWithNative(paths, undefined, { suffixed: false });
     fs.writeFileSync(paths.bridgeDest, '// another bridge\n');
     expect(isPermissionGateInstalled(paths.settingsPath)).toBe(true);
+  });
+});
+
+// An app update ships a new binary: the copy the entries run follows it at
+// boot, as the bridge beside it does, and settings.json is never written.
+describe.skipIf(process.platform === 'win32')('refreshClaudeNativeAtBoot', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const settingsSnapshot = () => ({ bytes: fs.readFileSync(paths.settingsPath, 'utf8'), mtime: fs.statSync(paths.settingsPath).mtimeMs });
+
+  it('refreshes an installed copy to the shipped build once it passes, and writes no settings', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    const before = settingsSnapshot();
+    expect(await refreshClaudeNativeAtBoot(paths)).toBe('up-to-date');
+    fs.appendFileSync(paths.nativeSource as string, '# the next release\n');
+    expect(await refreshClaudeNativeAtBoot(paths)).toBe('refreshed');
+    expect(fs.readFileSync(copy).equals(fs.readFileSync(paths.nativeSource as string))).toBe(true);
+    expect(settingsSnapshot()).toEqual(before);
+  });
+
+  it('keeps the copy in place when the shipped build does not pass', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    const working = fs.readFileSync(copy);
+    shipNative('wmux-claude-hook protocol 2 pin x');
+    expect(await refreshClaudeNativeAtBoot(paths)).toBe('kept');
+    expect(fs.readFileSync(copy).equals(working)).toBe(true);
+  });
+
+  it('installs nothing where there is no copy, or a file wmux did not write', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
+    shipNative(goodLine());
+    expect(await refreshClaudeNativeAtBoot(paths)).toBe('not-installed');
+    expect(fs.existsSync(copy)).toBe(false);
+    fs.mkdirSync(path.dirname(copy), { recursive: true });
+    fs.writeFileSync(copy, 'someone else\'s program');
+    expect(await refreshClaudeNativeAtBoot(paths)).toBe('not-installed');
+    expect(fs.readFileSync(copy, 'utf8')).toBe('someone else\'s program');
+  });
+
+  it('touches nothing from an isolated instance', async () => {
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    const working = fs.readFileSync(copy);
+    fs.appendFileSync(paths.nativeSource as string, '# the next release\n');
+    vi.stubEnv('WMUX_DATA_SUFFIX', '-dogfood');
+    expect(await refreshClaudeNativeAtBoot(paths)).toBe('isolated');
+    expect(fs.readFileSync(copy).equals(working)).toBe(true);
   });
 });

@@ -6,8 +6,10 @@ import { spawnSync } from 'child_process';
 import { writeJsonAtomic } from '../../shared/settingsFile';
 import { dataSuffix } from '../../shared/constants';
 import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
+import { NATIVE_HOOKS_MARKER } from '../../shared/hooks/hookFlavours';
 import {
   claudeCopyVerdict,
+  claudeHookCopyPath,
   claudeNativeAvailable,
   isPackagedBridge,
   packagedClaudeNativeSource,
@@ -1168,6 +1170,44 @@ export function isolatedScriptsNotice(): string | null {
 export function refreshHookBridgeAtBoot(paths: SetupHooksPaths): BridgeRefreshOutcome | 'isolated' {
   if (dataSuffix() !== '') return 'isolated';
   return refreshHookBridge(paths);
+}
+
+/** What a boot-time refresh of the wmux-claude-hook copy did. */
+export type NativeCopyRefreshOutcome =
+  | 'refreshed'     // the shipped build passed and took the copy's place
+  | 'up-to-date'    // the copy is the shipped build already
+  | 'kept'          // the shipped build did not pass (or could not be put in place); the copy stays
+  | 'not-installed' // no copy of wmux's there: nothing is installed at boot
+  | 'no-source'     // this build ships none
+  | 'runtime-node'  // ~/.wmux/hooks/claude-runtime says node: the copy is not run; an install refreshes it
+  | 'isolated';     // WMUX_DATA_SUFFIX set: the copy is the installed wmux's
+
+/**
+ * Bring the copy the Claude entries run up to the shipped build at boot, as
+ * refreshHookBridge does for the bridge beside it (call this after it, so a
+ * new copy meets the new bridge it pins). Only a copy wmux installed is
+ * refreshed, through the same stage, probe and swap as an install; it never
+ * writes settings.json, and never installs a copy where there is none.
+ */
+export async function refreshClaudeNativeAtBoot(paths: SetupHooksPaths): Promise<NativeCopyRefreshOutcome> {
+  if (dataSuffix() !== '') return 'isolated';
+  const copy = claudeHookCopyPath(paths.bridgeDest);
+  let before: Buffer;
+  try {
+    before = fs.readFileSync(copy);
+  } catch {
+    return 'not-installed';
+  }
+  if (!before.includes(Buffer.from(NATIVE_HOOKS_MARKER))) return 'not-installed';
+  if (!paths.nativeSource || !fs.existsSync(paths.nativeSource)) return 'no-source';
+  if (readClaudeRuntime(path.dirname(paths.bridgeDest)) === 'node') return 'runtime-node';
+  const plan = await planClaudeNative(paths, { suffixed: false });
+  let after: Buffer | null = null;
+  try { after = fs.readFileSync(copy); } catch { /* reported as kept */ }
+  let shipped: Buffer | null = null;
+  try { shipped = fs.readFileSync(paths.nativeSource); } catch { /* reported as kept */ }
+  if (!plan.binary || !after || !shipped || !after.equals(shipped)) return 'kept';
+  return after.equals(before) ? 'up-to-date' : 'refreshed';
 }
 
 // ----- Remove -------------------------------------------------------------
