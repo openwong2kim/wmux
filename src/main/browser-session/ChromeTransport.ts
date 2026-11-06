@@ -1,13 +1,14 @@
 import { CdpSocket, type CdpConnection, type CdpSocketOptions } from './CdpSocket';
+import type { CdpPipeMux } from './CdpPipeMux';
 
 /**
  * How ChromeLauncher reaches a Chrome it launched or adopted.
  *
  * Every launcher call that used to go to `http://127.0.0.1:<port>/json/*`, or
- * opened a browser-level CDP socket, goes through this interface. The port is
- * the only transport today. The methods are the ones a Chrome started with
- * `--remote-debugging-pipe` could also serve, each named after the CDP command
- * that would carry it there:
+ * opened a browser-level CDP socket, goes through this interface. Two
+ * transports serve it: the DevTools port (the default), and a debugging pipe
+ * (`--remote-debugging-pipe`, off by default), where each method is the CDP
+ * command named here:
  *  - ping / browserEndpoint ↔ Browser.getVersion
  *  - listTargets            ↔ Target.getTargets
  *  - createTarget           ↔ Target.createTarget
@@ -16,8 +17,8 @@ import { CdpSocket, type CdpConnection, type CdpSocketOptions } from './CdpSocke
  *  - connect                ↔ a session on the pipe instead of a WebSocket
  */
 export interface ChromeTransport {
-  readonly kind: 'port';
-  /** The DevTools HTTP port. */
+  readonly kind: 'port' | 'pipe';
+  /** The DevTools HTTP port; 0 for a pipe, which has none. */
   readonly port: number;
   /** Rejects unless the endpoint answers its version request with a 2xx. */
   ping(signal?: AbortSignal): Promise<void>;
@@ -101,5 +102,60 @@ export function portTransport(port: number): ChromeTransport {
       }
     },
     connect: (endpoint, opts) => new CdpSocket(endpoint, opts),
+  };
+}
+
+/**
+ * What a pipe transport names as its browser endpoint. A pipe has no address:
+ * its connections are made on the pipe, whatever endpoint they are given.
+ */
+export const PIPE_ENDPOINT = 'pipe:';
+
+/**
+ * The transport for a Chrome started with `--remote-debugging-pipe`, through
+ * the multiplexer on its pipe. The launcher's requests go out on one
+ * connection of its own; `connect` gives each caller another.
+ */
+export function pipeTransport(mux: CdpPipeMux): ChromeTransport {
+  const own = mux.connect({ label: 'ChromeLauncher' });
+  const call = (method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> => {
+    if (signal?.aborted) return Promise.reject(new Error(`ChromeLauncher: ${method} aborted`));
+    const sent = own.send(method, params);
+    if (!signal) return sent;
+    return new Promise((resolve, reject) => {
+      const onAbort = () => reject(new Error(`ChromeLauncher: ${method} aborted`));
+      signal.addEventListener('abort', onAbort, { once: true });
+      sent.then(
+        (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+        (err: unknown) => { signal.removeEventListener('abort', onAbort); reject(err); },
+      );
+    });
+  };
+  // The fields the launcher reads from a /json/list or /json/new entry.
+  const entry = (t: { targetId?: unknown; type?: unknown; title?: unknown; url?: unknown }) => ({ id: t.targetId, type: t.type, title: t.title, url: t.url });
+  return {
+    kind: 'pipe',
+    port: 0,
+    ping: async (signal) => {
+      await call('Browser.getVersion', {}, signal);
+    },
+    answers: async () => mux.isOpen(),
+    listTargets: async (signal) => {
+      const { targetInfos } = (await call('Target.getTargets', {}, signal)) as { targetInfos?: Array<Record<string, unknown>> };
+      return (targetInfos ?? []).map(entry);
+    },
+    createTarget: async (url, signal) => {
+      const target = url ?? 'about:blank';
+      const { targetId } = (await call('Target.createTarget', { url: target }, signal)) as { targetId?: unknown };
+      return entry({ targetId, type: 'page', title: '', url: target });
+    },
+    closeTarget: (targetId, signal) => call('Target.closeTarget', { targetId }, signal),
+    activateTarget: (targetId, signal) => call('Target.activateTarget', { targetId }, signal),
+    browserEndpoint: async (signal) => {
+      await call('Browser.getVersion', {}, signal);
+      return PIPE_ENDPOINT;
+    },
+    browserEndpointIgnoringStatus: async () => (mux.isOpen() ? PIPE_ENDPOINT : null),
+    connect: (_endpoint, opts) => mux.connect({ ...(opts.label && { label: opts.label }), ...(opts.timeoutMs && { timeoutMs: opts.timeoutMs }), ...(opts.onDisconnect && { onDisconnect: opts.onDisconnect }) }),
   };
 }
