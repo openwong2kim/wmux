@@ -177,6 +177,21 @@ describe('in-process frames on the builtin lane (frameId)', () => {
     expect(calls).toContainEqual(['Input.dispatchMouseEvent', expect.objectContaining({ type: 'mousePressed', x: 30, y: 20 })]);
   });
 
+  it('refuses an empty loaderId rather than dropping the document check', async () => {
+    const calls = cdpAnswering({ 'Page.getFrameTree': () => TREE });
+    const router = register();
+    for (const method of ['browser.evaluate', 'browser.click.cdp'] as const) {
+      const res = await router.dispatch({
+        id: `empty-${method}`,
+        method,
+        params: { expression: 'x', selector: '#a', frameId: 'F1', loaderId: '' },
+      });
+      expect(res.ok, method).toBe(false);
+      if (!res.ok) expect(res.error).toMatch(/loaderId/);
+    }
+    expect(calls).toEqual([]);
+  });
+
   it('wants a selector with a frame', async () => {
     cdpAnswering({});
     const res = await register().dispatch({ id: 'c3', method: 'browser.click.cdp', params: { frameId: 'F1', x: 1, y: 1 } });

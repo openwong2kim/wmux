@@ -1021,9 +1021,13 @@ function frameParam(params: Record<string, unknown>): { frameId: string; loaderI
   const frameId = params['frameId'];
   if (frameId === undefined) return undefined;
   if (typeof frameId !== 'string' || !frameId) throw new Error('"frameId" must be a non-empty string');
+  // Absent means "the frame's current document"; present must name one, so a
+  // blank value cannot quietly turn the document check off.
   const loaderId = params['loaderId'];
-  if (loaderId !== undefined && typeof loaderId !== 'string') throw new Error('"loaderId" must be a string');
-  return { frameId, ...(loaderId ? { loaderId } : {}) };
+  if (loaderId !== undefined && (typeof loaderId !== 'string' || !loaderId)) {
+    throw new Error('"loaderId" must be a non-empty string');
+  }
+  return { frameId, ...(loaderId !== undefined ? { loaderId } : {}) };
 }
 
 /**
