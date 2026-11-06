@@ -534,6 +534,7 @@ export type RpcMethod =
   | 'browser.hover.cdp'
   | 'browser.drag.cdp'
   | 'browser.press.cdp'
+  | 'browser.dialog.arm'
   | 'browser.cookies'
   | 'browser.resize'
   | 'browser.emulate'
@@ -922,6 +923,7 @@ export const ALL_RPC_METHODS = [
   'browser.hover.cdp',
   'browser.drag.cdp',
   'browser.press.cdp',
+  'browser.dialog.arm',
   'browser.cookies',
   'browser.resize',
   'browser.emulate',

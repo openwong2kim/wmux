@@ -1,5 +1,6 @@
 import { webContents } from 'electron';
 import { randomUUID } from 'crypto';
+import { GuestDialogs, type GuestDialogNote } from './guestDialogs';
 
 export interface CdpTargetInfo {
   surfaceId: string;
@@ -170,6 +171,53 @@ export class WebviewCdpManager {
     this.captureAttach = fn;
   }
 
+  private dialogNoteSink: ((webContentsId: number, note: GuestDialogNote) => void) | null = null;
+
+  /** Where an answered dialog is reported, for the next tool result. */
+  setDialogNoteSink(fn: (webContentsId: number, note: GuestDialogNote) => void): void {
+    this.dialogNoteSink = fn;
+  }
+
+  private readonly dialogs = new GuestDialogs({
+    answer: async (surfaceId, accept, text) => {
+      const session = this.sessions.get(surfaceId);
+      const wc = session && webContents.fromId(session.webContentsId);
+      if (!wc || wc.isDestroyed()) return;
+      await wc.debugger.sendCommand('Page.handleJavaScriptDialog', {
+        accept,
+        ...(text !== undefined && { promptText: text }),
+      });
+    },
+    note: (surfaceId, note) => {
+      const session = this.sessions.get(surfaceId);
+      if (session) this.dialogNoteSink?.(session.webContentsId, note);
+    },
+  });
+
+  private readonly dialogHookedGuests = new WeakSet<object>();
+
+  private onGuestDebuggerMessage(webContentsId: number, method: string, params?: Record<string, unknown>): void {
+    if (method !== 'Page.javascriptDialogOpening' && method !== 'Page.javascriptDialogClosed') return;
+    const surfaceId = [...this.sessions.values()].find((s) => s.webContentsId === webContentsId)?.surfaceId;
+    if (!surfaceId) return;
+    if (method === 'Page.javascriptDialogClosed') {
+      this.dialogs.closed(surfaceId);
+      return;
+    }
+    const driven = (this.guestState.get(surfaceId)?.leases ?? 0) > 0;
+    this.dialogs.opening(surfaceId, String(params?.type ?? 'alert'), String(params?.message ?? ''), driven);
+  }
+
+  /** browser_dialog: the answer for the next dialog one of the agent's inputs raises here. */
+  armDialog(surfaceId: string, accept: boolean, text?: string): void {
+    this.dialogs.arm(surfaceId, accept, text);
+  }
+
+  /** Mark an input dispatch in flight on this surface. Returns the closer. */
+  beginDialogDispatch(surfaceId: string): () => void {
+    return this.dialogs.beginDispatch(surfaceId);
+  }
+
   async register(surfaceId: string, webContentsId: number, workspaceId?: string): Promise<void> {
     // Same-guest re-registration (codex P2, PR #528): BrowserPanel re-calls
     // register() on every dom-ready, so a hidden navigation/reload would
@@ -223,6 +271,20 @@ export class WebviewCdpManager {
       console.warn(`[WebviewCdpManager] setBackgroundThrottling failed:`, err);
     }
 
+    // One listener per guest however often it re-registers: an unregister
+    // detaches the debugger but keeps its listeners. Capture enables the Page
+    // domain too, but it can fail or still be starting, and a dialog nobody
+    // hears blocks the agent.
+    if (!this.dialogHookedGuests.has(wc)) {
+      this.dialogHookedGuests.add(wc);
+      wc.debugger.on('message', (_event, method, params) => this.onGuestDebuggerMessage(webContentsId, method, params));
+    }
+    try {
+      await wc.debugger.sendCommand('Page.enable');
+    } catch (err) {
+      console.warn(`[WebviewCdpManager] Page.enable failed:`, err);
+    }
+
     let targetId = `wc-${webContentsId}`;
     try {
       const { targetInfo } = await wc.debugger.sendCommand('Target.getTargetInfo');
@@ -245,6 +307,12 @@ export class WebviewCdpManager {
     // Same-guest re-registration keeps the existing destroyed listener —
     // adding another would fire unregister twice.
     if (!sameGuestReregister) {
+      // Left alone, a page's beforeunload cancels the navigation with no prompt:
+      // the person is stuck on the page with no explanation, and an agent's
+      // navigation is silently undone. Asking would take a synchronous dialog
+      // (this event's answer can't wait), which freezes the main process and
+      // every terminal with it, on a page's say-so. So leaving always wins.
+      wc.on('will-prevent-unload', (event) => event.preventDefault());
       wc.on('destroyed', () => {
         // Stale-destroyed guard: a replacement guest may have re-registered
         // under the same surfaceId. Only unregister if WE are still current.
@@ -329,6 +397,7 @@ export class WebviewCdpManager {
     }
 
     this.sessions.delete(surfaceId);
+    this.dialogs.forget(surfaceId);
     // Clear lease bookkeeping for this surface. The visibility flag is kept:
     // the renderer may re-register the same surface (e.g. webview remount) and
     // its last-known effective visibility still applies.
@@ -534,6 +603,7 @@ export class WebviewCdpManager {
     gs.inGrace = false;
     this.recomputeThrottle(surfaceId);
     this.notifyLeases(surfaceId, gs.leases);
+    this.dialogs.leaseStarted(surfaceId);
     return gs.gen;
   }
 
