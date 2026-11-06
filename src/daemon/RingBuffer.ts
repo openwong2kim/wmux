@@ -16,6 +16,7 @@ import {
   readdirSync,
 } from 'node:fs';
 import path from 'node:path';
+import { snapshotTraceTags, nextTraceRingId } from './snapshotTraceTags';
 import crypto from 'node:crypto';
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib';
 import { loadNativeTerminalCore, reportNativeFallback, type NativeRingStorage, type NativeOutputChunk } from '../shared/nativeTerminalCore';
@@ -104,6 +105,8 @@ const RING_CHUNK_BROTLI = {
 };
 
 export class RingBuffer {
+  private readonly traceRing = nextTraceRingId();
+  private traceTag<T extends object | undefined>(v: T): T { if (v) snapshotTraceTags.set(v, { ring: this.traceRing, at: this.totalBytesWritten }); return v; }
   // A rust ring holds its bytes here, except while hibernated: then this is
   // undefined and the node fields below describe the ring (see hibernate()).
   private native?: NativeRingStorage;
@@ -319,7 +322,7 @@ export class RingBuffer {
     // Lifetime offset, like readAllWithGeometry(). An own property shadows the
     // native getter, so the object stays the native instance feedFrozen needs.
     if (frozen && this.nativeBase > 0) Object.defineProperty(frozen, 'writtenAt', { value: this.nativeBase + frozen.writtenAt });
-    return frozen;
+    return this.traceTag(frozen);
   }
 
   /** Release native storage on explicit session removal, independently of GC. */
@@ -367,6 +370,7 @@ export class RingBuffer {
     if (this.backend === 'rust' && !this.wake()) return { data: Buffer.concat(this.pending), geometry: undefined, writtenAt: this.totalWritten };
     if (this.native) {
       const snapshot = this.native.readAllWithGeometry();
+      this.traceTag(snapshot.data);
       return { ...snapshot, writtenAt: this.nativeBase + snapshot.writtenAt, geometry: snapshot.geometry ?? undefined };
     }
     const data = this.readAll();
@@ -406,6 +410,10 @@ export class RingBuffer {
    * Returns a new Buffer copy; the internal buffer is not modified.
    */
   readAll(): Buffer {
+    return this.traceTag(this.readAllUntraced());
+  }
+
+  private readAllUntraced(): Buffer {
     // The `.buf` is unreadable right now: serve the newest bytes, keep the file.
     if (!this.wake()) return Buffer.concat(this.pending);
     if (this.native) return this.native.readAll();

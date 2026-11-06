@@ -148,6 +148,7 @@ const waitingByKey = new Map<string, Promise<unknown>>();
 // BASELINE TRACE (local only, never committed)
 import { AsyncLocalStorage as TraceStorage } from 'node:async_hooks';
 import { appendFileSync as traceAppend } from 'node:fs';
+import { snapshotTraceTags } from './snapshotTraceTags';
 type TraceCtx = { caller: string; queuedAt: number; startedAt?: number; lane: string };
 const traceStore = new TraceStorage<TraceCtx>();
 const TRACE_FILE = process.env.WMUX_SNAPSHOT_TRACE;
@@ -165,6 +166,7 @@ function traceRun<T>(lane: string, job: () => Promise<T>): () => Promise<T> {
 async function traceInner<T extends { ok: boolean }>(kind: string, req: SnapshotRequest, run: () => Promise<T>): Promise<T> {
   if (!TRACE_FILE) return run();
   const ctx = traceStore.getStore() ?? { caller: traceCaller(), queuedAt: Date.now(), lane: 'direct' };
+  const tag = (req.nativeSource && snapshotTraceTags.get(req.nativeSource as object)) || snapshotTraceTags.get(req.initial);
   const t0 = Date.now();
   const cpu0 = process.cpuUsage();
   const out = await run();
@@ -175,6 +177,9 @@ async function traceInner<T extends { ok: boolean }>(kind: string, req: Snapshot
       waitMs: (ctx.startedAt ?? t0) - ctx.queuedAt, ms: Date.now() - t0, cpuMs: Math.round((cpu.user + cpu.system) / 1000),
       bytes: req.initial.length + ((req.nativeSource as { size?: number } | undefined)?.size ?? 0),
       scrollback: req.scrollback, ok: out.ok, reason: (out as { reason?: string }).reason,
+      // Fence: ring identity + lifetime bytes written at the read, and the shape.
+      ring: tag?.ring, at: tag?.at, cols: req.cols, rows: req.rows, undimmed: req.undimmed === true,
+      geo: req.geometry ? `${req.geometry.start.cols}x${req.geometry.start.rows}` : undefined,
     }) + '\n');
   } catch { /* trace only */ }
   return out;
