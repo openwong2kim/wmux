@@ -27,14 +27,17 @@ describe('Windows shapes', () => {
     const daemon = tokenizeCommandLine(
       '"\\\\?\\C:\\Users\\u\\.codex-work\\packages\\app-server-daemon\\releases\\0.162.1\\bin\\codex.exe" app-server --listen unix:// --managed-daemon',
     );
-    // A `cmd /d /s /c node <entry>` wrapper between them is this server's own launcher.
-    const chain = [
-      ['node', 'C:\\Users\\u\\.wmux\\mcp\\index.js'],
+    const chain = [['node', 'C:\\Users\\u\\.wmux\\mcp\\index.js'], daemon];
+    expect(classifyMcpParent(chain)).toBe('shared-server');
+    expect(codexHomeFromParentChain(chain)).toBe('C:\\Users\\u\\.codex-work');
+    // A `cmd /d /s /c node <entry>` wrapper is never skipped: it decides as itself.
+    const wrapped = [
+      chain[0],
       tokenizeCommandLine('C:\\Windows\\system32\\cmd.exe /d /s /c node C:\\Users\\u\\.wmux\\mcp\\index.js'),
       daemon,
     ];
-    expect(classifyMcpParent(chain)).toBe('shared-server');
-    expect(codexHomeFromParentChain(chain)).toBe('C:\\Users\\u\\.codex-work');
+    expect(classifyMcpParent(wrapped)).toBe('other');
+    expect(codexHomeFromParentChain(wrapped)).toBe('');
   });
 
   it('does not let a pane-side Codex TUI vouch for a thread', () => {
