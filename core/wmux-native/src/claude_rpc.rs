@@ -686,6 +686,20 @@ mod tests {
     }
 
     #[test]
+    fn a_drain_stops_at_the_deadline_even_with_data_waiting() {
+        let (mut ours, mut theirs) = UnixStream::pair().unwrap();
+        ours.set_nonblocking(true).unwrap();
+        theirs.write_all(b"{\"id\":\"other\"}\n").unwrap();
+        let id = js::js(ID);
+        let mut session = Session::new(&id);
+        let outcome = drain(&mut ours, &mut [0u8; 64], &mut session, Instant::now());
+        assert_eq!(
+            outcome.map(|o| text(&o)).as_deref(),
+            Some(r#"{"ok":false,"error":"timeout","retryable":false}"#)
+        );
+    }
+
+    #[test]
     fn eof_before_the_whole_request_went_out_is_epipe() {
         // walk-over-long-request, walk-reset-after-accept-no-retry: the server
         // closed on a partial line, which no handler ever saw. Fail open.
