@@ -12,9 +12,9 @@
 // file is already current.
 //
 // Command form: when the native bridge (core/wmux-native) ships beside this
-// code, its copy under ~/.wmux/hooks/ is what the entries run; otherwise they
-// run `node` on the shared bridge script. Both are owned forms, so moving
-// between them is a refresh.
+// code, its copy under ~/.wmux/hooks/ is what the entries run, once it has
+// shown it runs here; otherwise they run `node` on the shared bridge script.
+// Both are owned forms, so moving between them is a refresh.
 //
 // Honesty: "written" is all this module can say. Whether the CLI loads the file
 // is the CLI's business; the bridge's per-flavour log under ~/.wmux/ is where
@@ -22,13 +22,20 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
 import { writeJsonAtomic } from '../settingsFile';
+import {
+  expectationKey,
+  fileSha256,
+  prepareProbedNative,
+  probeKey,
+  recordedProbe,
+  runProbe,
+  type ProbeExpectation,
+} from '../probedNative';
 import {
   findLifecycleAssetSourceFrom,
   installLifecycleAsset,
   inspectLifecycleAsset,
-  settleProbedAsset,
   type LifecycleAssetInstallOutcome,
   type LifecycleAssetSpec,
   type LifecycleAssetStatus,
@@ -152,9 +159,6 @@ export function resolveCompatHookPaths(
         ownershipMarkers: [NATIVE_HOOKS_MARKER],
         // Runnable from the moment it appears: a hook may fire mid-refresh.
         mode: 0o700,
-        // The old copy may be running (Windows cannot replace it then) and is
-        // restored if the new one does not run.
-        replaceAside: true,
       }
       : null,
     bridge: {
@@ -254,40 +258,51 @@ function isOwnedHookFile(parsed: unknown, flavourId: CompatHookFlavourId): boole
 }
 
 /**
- * Whether the installed binary actually runs here: a noexec home, an
- * application-control policy or a foreign libc would fail every hook event,
- * where `node <bridge>` would have worked.
+ * Whether a copy runs here: a noexec home, an application-control policy or a
+ * foreign libc would fail every hook event where `node <bridge>` works. Every
+ * build answers `--version` with the marker line, the oldest included.
  */
-function nativeHooksRuns(binary: string): boolean {
-  try {
-    const out = execFileSync(binary, ['--version'], {
-      encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return out.includes(NATIVE_HOOKS_MARKER);
-  } catch {
-    return false;
-  }
-}
+const NATIVE_HOOKS_PROBE: ProbeExpectation = { contains: NATIVE_HOOKS_MARKER };
+const NATIVE_HOOKS_PROBE_KEY = expectationKey(NATIVE_HOOKS_PROBE);
+const NATIVE_HOOKS_PROBE_TIMEOUT_MS = 5000;
 
 /**
  * The installed native bridge the entries should run, or null for the Node
- * form, from a status of its copy. Never runs the binary: a copy that did not
- * run at install time was removed then, so a current copy is a working one.
+ * form, from a status of its copy. Never runs the binary: the copy is offered
+ * when its bytes have a recorded pass. A copy with no verdict recorded counts
+ * when it is the shipped one: a wmux before the record kept a copy only once
+ * it ran.
  */
-function activeNativeHooksPath(native: LifecycleAssetStatus | null): string | null {
-  return native?.state === 'current' ? native.destinationPath : null;
+function activeNativeHooksPath(spec: LifecycleAssetSpec | null, native: LifecycleAssetStatus | null): string | null {
+  if (!spec || !native || (native.state !== 'current' && native.state !== 'stale')) return null;
+  const hash = fileSha256(spec.destinationPath);
+  if (!hash) return null;
+  const verdict = recordedProbe(path.dirname(spec.destinationPath), probeKey(hash, NATIVE_HOOKS_PROBE_KEY));
+  if (verdict) return verdict === 'pass' ? spec.destinationPath : null;
+  return native.state === 'current' ? spec.destinationPath : null;
 }
 
 /** One line on which command the entries run, and why; for `setup-hooks`. */
-function describeNativeHooks(shipped: boolean, native: LifecycleAssetStatus | LifecycleAssetInstallOutcome | null): string {
+function describeNativeHooks(
+  shipped: boolean,
+  native: LifecycleAssetStatus | LifecycleAssetInstallOutcome | null,
+  active: string | null,
+): string {
   const node = 'hooks run `node <bridge>`';
   if (!shipped || !native) return `native hook bridge: not shipped with this build; ${node}`;
   const action = 'action' in native ? native.action : 'none';
+  if (active && native.state === 'current') {
+    return action === 'none'
+      ? `native hook bridge: ${active} (up to date); hooks run it`
+      : `native hook bridge: ${action} → ${active}; hooks run it`;
+  }
+  if (active) {
+    // The copy in place runs; the shipped one did not replace it.
+    return native.error
+      ? `native hook bridge: ${active} kept (${native.error}); hooks run it`
+      : `native hook bridge: ${active} is stale but runs (re-run \`wmux setup-hooks\`); hooks run it`;
+  }
   switch (native.state) {
-    case 'current':
-      return action === 'none'
-        ? `native hook bridge: ${native.destinationPath} (up to date); hooks run it`
-        : `native hook bridge: ${action} → ${native.destinationPath}; hooks run it`;
     case 'missing':
       return `native hook bridge: not installed (${native.destinationPath}); ${node}`;
     case 'stale':
@@ -341,21 +356,43 @@ export interface CompatHookInstallOutcome {
   error: string | null;
 }
 
+export interface CompatHookInstallOptions {
+  /** Run the copy's check again even when its bytes were judged before
+   *  (`wmux setup-hooks --reprobe`). */
+  reprobe?: boolean;
+}
+
 /**
- * Copy the native bridge when this build ships one, and run the copy once.
- * A copy that does not run here (a noexec home, an application-control policy,
- * a foreign libc) would fail every hook event where `node <bridge>` works, so
- * it is removed (or the copy it replaced is put back) and the entries stay on
- * Node; so they do when the copy cannot be installed at all (a foreign file in
- * the way).
+ * Install the native bridge when this build ships one: the new bytes are
+ * staged and run before they take the copy's name, under the lock of
+ * ~/.wmux/hooks (see probedNative). A refresh whose bytes do not run here
+ * leaves the copy in place, which is still offered when it ran before; with
+ * nothing that runs, or a foreign file in the way, the entries stay on Node.
  */
-function installNativeHooks(spec: LifecycleAssetSpec | null): LifecycleAssetInstallOutcome | null {
+async function installNativeHooks(
+  spec: LifecycleAssetSpec | null,
+  opts: CompatHookInstallOptions,
+): Promise<{ outcome: LifecycleAssetInstallOutcome; active: string | null } | null> {
   if (!spec) return null;
-  const outcome = installLifecycleAsset(spec);
-  if (outcome.state !== 'current') return outcome;
-  // The copy this run replaced did run: put it back rather than leave nothing.
-  if (settleProbedAsset(spec.destinationPath, outcome.previousPath, nativeHooksRuns(spec.destinationPath)).runs) return outcome;
-  return { ...outcome, state: 'error', error: 'the native hook bridge does not run on this machine' };
+  const before = inspectLifecycleAsset(spec);
+  const result = await prepareProbedNative({
+    sourcePath: spec.sourcePath,
+    destinationPath: spec.destinationPath,
+    recordDir: path.dirname(spec.destinationPath),
+    line: NATIVE_HOOKS_PROBE_KEY,
+    probe: (binary) => runProbe(binary, ['--version'], NATIVE_HOOKS_PROBE, NATIVE_HOOKS_PROBE_TIMEOUT_MS),
+    ownershipMarkers: spec.ownershipMarkers,
+    mode: spec.mode,
+    reprobe: opts.reprobe,
+  });
+  const after = inspectLifecycleAsset(spec);
+  if (result.binary && after.state === 'current') {
+    const action = before.state === 'missing' ? 'installed' : before.state === 'current' ? 'none' : 'refreshed';
+    return { outcome: { ...after, action }, active: result.binary };
+  }
+  if (result.binary) return { outcome: { ...after, state: 'stale', error: result.reason ?? null, action: 'none' }, active: result.binary };
+  if (after.state === 'foreign' || after.state === 'source-missing') return { outcome: { ...after, action: 'none' }, active: null };
+  return { outcome: { ...after, state: 'error', error: result.reason ?? after.error, action: 'none' }, active: null };
 }
 
 /**
@@ -363,7 +400,11 @@ function installNativeHooks(spec: LifecycleAssetSpec | null): LifecycleAssetInst
  * and write the flavour's owned hook file pointing at it. Never overwrites a
  * foreign or malformed file.
  */
-export function installCompatHooks(flavourId: CompatHookFlavourId, paths: CompatHookPaths): CompatHookInstallOutcome {
+export async function installCompatHooks(
+  flavourId: CompatHookFlavourId,
+  paths: CompatHookPaths,
+  opts: CompatHookInstallOptions = {},
+): Promise<CompatHookInstallOutcome> {
   const configPath = compatHookConfigPath(flavourId, paths);
   const bridgeDest = paths.bridge.destinationPath;
   const stopped = { flavour: flavourId, configPath, native: null, nativeSummary: null, action: 'none' as const };
@@ -384,9 +425,11 @@ export function installCompatHooks(flavourId: CompatHookFlavourId, paths: Compat
     // missing file for every event. Write nothing.
     return { ...stopped, ok: false, bridge, before: owned, error: bridge.error };
   }
-  const native = installNativeHooks(paths.nativeHooks);
-  const nativePath = activeNativeHooksPath(native);
-  const base = { flavour: flavourId, configPath, native, nativeSummary: describeNativeHooks(!!paths.nativeHooks, native), bridge };
+  const installed = await installNativeHooks(paths.nativeHooks, opts);
+  const native = installed?.outcome ?? null;
+  const nativePath = installed?.active ?? null;
+  const nativeSummary = describeNativeHooks(!!paths.nativeHooks, native, nativePath);
+  const base = { flavour: flavourId, configPath, native, nativeSummary, bridge };
   const { state: before } = inspectCompatHookConfig(flavourId, paths, bridgeDest, nativePath);
   if (before === 'current') return { ...base, ok: true, before, action: 'none', error: null };
   try {
@@ -413,7 +456,7 @@ export interface CompatHookRemoveOutcome {
 export function removeCompatHooks(flavourId: CompatHookFlavourId, paths: CompatHookPaths): CompatHookRemoveOutcome {
   const native = paths.nativeHooks ? inspectLifecycleAsset(paths.nativeHooks) : null;
   const { state: before, configPath } = inspectCompatHookConfig(
-    flavourId, paths, paths.bridge.destinationPath, activeNativeHooksPath(native),
+    flavourId, paths, paths.bridge.destinationPath, activeNativeHooksPath(paths.nativeHooks, native),
   );
   const base = { flavour: flavourId, configPath, before };
   if (before !== 'current' && before !== 'stale') {
@@ -445,15 +488,14 @@ export interface CompatHookStatus {
 export function statusCompatHooks(flavourId: CompatHookFlavourId, paths: CompatHookPaths): CompatHookStatus {
   // Read once, never run: status must not spawn the binary.
   const native = paths.nativeHooks ? inspectLifecycleAsset(paths.nativeHooks) : null;
-  const { state, configPath } = inspectCompatHookConfig(
-    flavourId, paths, paths.bridge.destinationPath, activeNativeHooksPath(native),
-  );
+  const active = activeNativeHooksPath(paths.nativeHooks, native);
+  const { state, configPath } = inspectCompatHookConfig(flavourId, paths, paths.bridge.destinationPath, active);
   return {
     flavour: flavourId,
     verified: COMPAT_HOOK_FLAVOURS[flavourId].verified,
     bridge: inspectLifecycleAsset(paths.bridge),
     native,
-    nativeSummary: describeNativeHooks(!!paths.nativeHooks, native),
+    nativeSummary: describeNativeHooks(!!paths.nativeHooks, native, active),
     configPath,
     configDirSource: paths.configDirs[flavourId]?.source ?? null,
     config: state,
