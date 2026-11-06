@@ -1,0 +1,52 @@
+{
+  "description": "--permission-gate with an empty entrypoint: skipped before stdin, the empty string kept in the log.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1",
+    "CLAUDE_CODE_ENTRYPOINT": ""
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "permissionDecision": "allow"
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "PreToolUse",
+        "--permission-gate"
+      ],
+      "stdin": {
+        "hold": true
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PreToolUse",
+            "outcome": "permission-gate-skipped",
+            "reason": "headless-or-outside-wmux",
+            "entrypoint": ""
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

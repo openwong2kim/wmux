@@ -1,0 +1,50 @@
+{
+  "description": "SessionEnd --gate: the gate walks main only and SessionEnd is the daemon's alone, so nothing is addressed.",
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "r"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "SessionEnd",
+        "--gate"
+      ],
+      "stdin": "{\"session_id\":\"s1\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "SessionEnd",
+            "outcome": "no-auth-token",
+            "paths": [
+              "<sandbox>/home/.wmux<sfx>/daemon-auth-token",
+              "<sandbox>/home/.wmux<sfx>-auth-token"
+            ]
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

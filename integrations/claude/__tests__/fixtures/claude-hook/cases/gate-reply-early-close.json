@@ -169,6 +169,35 @@
       }
     ]
   },
+  "strictForPort": {
+    "steps.0": {
+      "exitCode": 2,
+      "stdout": "",
+      "stderr": "wait\n",
+      "log": [
+        {
+          "bridge": "0.8.1",
+          "hook": "Stop",
+          "outcome": "ok",
+          "target": "main"
+        },
+        {
+          "bridge": "0.8.1",
+          "hook": "Stop",
+          "outcome": "gate-blocked",
+          "target": "main"
+        }
+      ],
+      "requests": {
+        "main": [
+          {
+            "answeredEarly": true,
+            "sawNewline": false
+          }
+        ]
+      }
+    }
+  },
   "steps": [
     {
       "argv": [

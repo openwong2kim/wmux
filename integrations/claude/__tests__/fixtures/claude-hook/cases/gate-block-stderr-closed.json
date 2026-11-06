@@ -1,0 +1,128 @@
+{
+  "description": "Stop --gate blocked while stderr's reader is gone.",
+  "divergence": "Node dies on the stderr write's EPIPE (exit 1), so the block's exit 2 is lost; the port keeps exit 2 and logs stderr-lost after gate-blocked.",
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "wait"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "variants": {
+    "steps.0": [
+      {
+        "exitCode": 1,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "main"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "gate-blocked",
+            "target": "main"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1"
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "strictForPort": {
+    "steps.0": {
+      "exitCode": 2,
+      "stdout": "",
+      "stderr": "",
+      "log": [
+        {
+          "bridge": "0.8.1",
+          "hook": "Stop",
+          "outcome": "ok",
+          "target": "main"
+        },
+        {
+          "bridge": "0.8.1",
+          "hook": "Stop",
+          "outcome": "gate-blocked",
+          "target": "main"
+        },
+        {
+          "bridge": "0.8.1",
+          "hook": "Stop",
+          "outcome": "stderr-lost",
+          "target": "main"
+        }
+      ],
+      "requests": {
+        "main": [
+          {
+            "id": "<request-id>",
+            "method": "hooks.signal",
+            "params": {
+              "kind": "agent.stop",
+              "agent": "claude",
+              "agentSessionId": "s1",
+              "cwd": "<sandbox>/cwd",
+              "payload": {
+                "session_id": "s1"
+              },
+              "ts": "<ts>"
+            },
+            "token": "main-token",
+            "clientName": "wmux-hook-bridge"
+          }
+        ]
+      }
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate"
+      ],
+      "stdin": "{\"session_id\":\"s1\"}",
+      "closed": [
+        "stderr"
+      ]
+    }
+  ],
+  "expect": {
+    "steps": [
+      "<variant>"
+    ]
+  }
+}

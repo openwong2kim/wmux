@@ -1,0 +1,64 @@
+{
+  "description": "UserPromptSubmit --gate --context with the answer lost: the gate fails closed (exit 2), the context lets the prompt run.",
+  "endpoints": {
+    "main": {
+      "mode": "hold"
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "UserPromptSubmit",
+        "--gate",
+        "--context"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"prompt\":\"p\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 2,
+        "stdout": "",
+        "stderr": "wmux could not confirm this Stop with the orchestrator (the reply was lost in flight). Do not end the turn on this attempt — check the fleet and stop again.\n",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "rpc-failed",
+            "target": "main",
+            "error": "timeout"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "gate-fail-closed",
+            "target": "main",
+            "error": "timeout"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.user_prompt_submit",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "prompt": "p"
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

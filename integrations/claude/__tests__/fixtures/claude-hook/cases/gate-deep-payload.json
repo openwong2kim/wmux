@@ -1,0 +1,123 @@
+{
+  "description": "Stop --gate with a payload 10 000 levels deep and a block from main.",
+  "divergence": "Node overflows its stack stringifying the request (about 5 000 to 8 000 levels, by node release) and dies with exit 1 before anything is sent; the port accepts 10 000 levels and answers the gate.",
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "wait"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "variants": {
+    "steps.0": [
+      {
+        "exitCode": 1,
+        "stdout": "",
+        "stderr": "file://<bridge>:945\n      sock.write(JSON.stringify(request) + '\\n');\n                      ^\n\nRangeError: Maximum call stack size exceeded\n    at JSON.stringify (<anonymous>)\n    at Socket.<anonymous> (file://<bridge>:945:23)\n    at <node internals>\n\nNode.js <version>\n",
+        "log": [],
+        "requests": {
+          "main": [
+            {
+              "request": "none"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "strictForPort": {
+    "steps.0": {
+      "exitCode": 2,
+      "stdout": "",
+      "stderr": "wait\n",
+      "log": [
+        {
+          "bridge": "0.8.1",
+          "hook": "Stop",
+          "outcome": "ok",
+          "target": "main"
+        },
+        {
+          "bridge": "0.8.1",
+          "hook": "Stop",
+          "outcome": "gate-blocked",
+          "target": "main"
+        }
+      ],
+      "requests": {
+        "main": [
+          {
+            "id": "<request-id>",
+            "method": "hooks.signal",
+            "params": {
+              "kind": "agent.stop",
+              "agent": "claude",
+              "cwd": "<sandbox>/cwd",
+              "payload": {
+                "0": [
+                  [
+                    [
+                      [
+                        [
+                          [
+                            [
+                              [
+                                [
+                                  [
+                                    "<json length=19980 sha256=23e8d3ea3e2be29a>"
+                                  ]
+                                ]
+                              ]
+                            ]
+                          ]
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              },
+              "ts": "<ts>"
+            },
+            "token": "main-token",
+            "clientName": "wmux-hook-bridge"
+          }
+        ]
+      }
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate"
+      ],
+      "stdin": {
+        "parts": [
+          {
+            "repeat": "[",
+            "count": 10001
+          },
+          {
+            "repeat": "]",
+            "count": 10001
+          }
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      "<variant>"
+    ]
+  }
+}

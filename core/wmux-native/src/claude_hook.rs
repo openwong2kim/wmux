@@ -987,6 +987,29 @@ mod tests {
     }
 
     #[test]
+    fn every_flag_the_bridge_reads_is_a_mode_here() {
+        // main() reads its modes as `process.argv.slice(3).includes('--x')`: a
+        // flag added there and not here would run as a plain hook.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../integrations/claude/bin/wmux-bridge.mjs"
+        );
+        let source = std::fs::read_to_string(path).unwrap();
+        let mut flags: Vec<&str> = source
+            .split("argv.slice(3).includes('")
+            .skip(1)
+            .map(|rest| rest.split('\'').next().unwrap())
+            .collect();
+        flags.sort();
+        assert_eq!(flags, ["--context", "--gate", "--permission-gate"]);
+        for flag in flags {
+            let m = Modes::of("UserPromptSubmit", &[js(flag)]);
+            let set = [m.gate, m.context, m.permission_gate].iter().filter(|b| **b).count();
+            assert_eq!(set, 1, "{flag}");
+        }
+    }
+
+    #[test]
     fn the_decision_texts_are_the_bridges() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),

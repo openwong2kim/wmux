@@ -1,0 +1,52 @@
+{
+  "description": "Stop --gate from a headless run (sdk-cli): skipped before stdin, exit 0.",
+  "env": {
+    "CLAUDE_CODE_ENTRYPOINT": "sdk-cli"
+  },
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "r"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate"
+      ],
+      "stdin": {
+        "hold": true
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "headless-skipped",
+            "entrypoint": "sdk-cli"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

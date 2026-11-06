@@ -62,6 +62,8 @@ export interface Step {
   stdin?: string | { parts: StdinPart[] } | { hold: true };
   /** Activity stamp name → its age in ms, set on the file just before the step. */
   stampAges?: Record<string, number>;
+  /** Streams whose reader is gone before the implementation writes: closed right after spawn. */
+  closed?: ('stdout' | 'stderr')[];
 }
 
 export interface Fixture {
@@ -195,6 +197,7 @@ function runImpl(step: Step, env: NodeJS.ProcessEnv, box: Sandbox): Promise<RawR
   const err: Buffer[] = [];
   child.stdout.on('data', (c: Buffer) => out.push(c));
   child.stderr.on('data', (c: Buffer) => err.push(c));
+  for (const name of step.closed ?? []) child[name].destroy();
   // The bridge stops reading at its cap and destroys stdin; the rest of a large
   // write then fails here, which is expected.
   child.stdin.on('error', () => { /* expected after the cap */ });
@@ -261,13 +264,44 @@ function digest(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 16);
 }
 
+/**
+ * JSON.stringify of a parsed JSON value, without recursion: a request the port
+ * forwards can nest deeper than this process's stack lets JSON.stringify go.
+ */
+function stringifyDeep(value: unknown): string {
+  const out: string[] = [];
+  const todo: ({ text: string } | { value: unknown })[] = [{ value }];
+  while (todo.length > 0) {
+    const task = todo.pop() as { text: string } | { value: unknown };
+    if ('text' in task) {
+      out.push(task.text);
+      continue;
+    }
+    const v = task.value;
+    if (!v || typeof v !== 'object') {
+      out.push(JSON.stringify(v));
+      continue;
+    }
+    const entries = Array.isArray(v) ? v.map((item) => ['', item] as const) : Object.entries(v);
+    const later: ({ text: string } | { value: unknown })[] = [{ text: Array.isArray(v) ? '[' : '{' }];
+    entries.forEach(([key, item], i) => {
+      if (i > 0) later.push({ text: ',' });
+      if (!Array.isArray(v)) later.push({ text: `${JSON.stringify(key)}:` });
+      later.push({ value: item });
+    });
+    later.push({ text: Array.isArray(v) ? ']' : '}' });
+    for (let i = later.length - 1; i >= 0; i--) todo.push(later[i]);
+  }
+  return out.join('');
+}
+
 function normaliseDeep(value: unknown, box: Sandbox, depth = 0): unknown {
   if (typeof value === 'string') {
     const text = normaliseString(value, box);
     return text.length > LONG_STRING ? `<string length=${text.length} sha256=${digest(text)}>` : text;
   }
   if (value && typeof value === 'object' && depth >= DEEP_LEVEL) {
-    const text = JSON.stringify(value);
+    const text = stringifyDeep(value);
     return `<json length=${text.length} sha256=${digest(text)}>`;
   }
   if (Array.isArray(value)) return value.map((v) => normaliseDeep(v, box, depth + 1));
@@ -334,9 +368,20 @@ function normaliseLog(line: string, pid: number, problems: string[]): unknown {
 
 const DEBUG_PREFIX = 'WMUX_BRIDGE_DEBUG_ENVELOPE=';
 
-/** The debug line is compared as raw bytes: volatile values are masked in the text. */
+/**
+ * The debug line is compared as raw bytes: volatile values are masked in the
+ * text. An uncaught exception's trace keeps the bridge's own frames; node's
+ * internal frames (a run of them is one line) and its version change with the
+ * node release, so they are masked.
+ */
 export function normaliseStderr(stderr: string, problems: string[]): string {
-  return stderr.split('\n').map((line) => {
+  const lines: string[] = [];
+  for (const line of stderr.split('\n')) {
+    const internal = /^\s+at .*\(node:[^)]*\)$/.test(line);
+    if (internal && lines.at(-1) === '    at <node internals>') continue;
+    lines.push(internal ? '    at <node internals>' : line.replace(/^Node\.js v\d+\.\d+\.\d+$/, 'Node.js <version>'));
+  }
+  return lines.map((line) => {
     if (!line.startsWith(DEBUG_PREFIX)) return line;
     let text = line;
     const ts = /"ts":(\d+)(?=[,}])/.exec(text);

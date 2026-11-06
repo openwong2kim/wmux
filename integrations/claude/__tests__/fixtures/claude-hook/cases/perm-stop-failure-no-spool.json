@@ -1,0 +1,51 @@
+{
+  "description": "Stop --permission-gate that fails to send: agent.awaiting_permission is no lifecycle kind, so nothing is spooled.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1",
+    "CLAUDE_CODE_ENTRYPOINT": "cli"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "refused"
+    },
+    "main": {
+      "mode": "refused"
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--permission-gate"
+      ],
+      "stdin": "{\"session_id\":\"s1\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "rpc-failed",
+            "target": "main",
+            "error": "connect-error",
+            "detail": "ECONNREFUSED"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "permission-gate",
+            "target": "main",
+            "verdict": "no-opinion"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}
