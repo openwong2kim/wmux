@@ -34,10 +34,9 @@ export function isWorkSurfaceType(surfaceType: string | undefined): boolean {
  * split. Both sides stay visible, but a pane has a single `activeSurfaceId`, so
  * visibility (what renders on each side) must be decoupled from focus (which
  * side `activeSurfaceId` points at). Each side shows its active surface when
- * the active surface is on that side; otherwise each side shows the one last
- * shown there (`lastTerminalId`, `lastWorkId`), else its first. Focusing a
- * terminal never swaps the page or file beside it, and opening a file from a
- * terminal tab keeps that tab beside the file.
+ * the active surface is on that side; otherwise the terminal side shows its
+ * first surface and the work side the one last shown there (`lastWorkId`), so
+ * focusing a terminal never swaps the page or file beside it.
  * (Bug: each surface gated `display` on `surface.id === activeSurfaceId`, so
  * focusing one side display:none'd the other.)
  *
@@ -48,12 +47,9 @@ export function pickSplitShownSurfaces(
   works: ReadonlyArray<{ id: string }>,
   activeSurfaceId: string,
   lastWorkId?: string,
-  lastTerminalId?: string,
 ): { shownTerminalId: string | undefined; shownWorkId: string | undefined } {
   return {
-    shownTerminalId: terminals.find((s) => s.id === activeSurfaceId)?.id
-      ?? terminals.find((s) => s.id === lastTerminalId)?.id
-      ?? terminals[0]?.id,
+    shownTerminalId: terminals.find((s) => s.id === activeSurfaceId)?.id ?? terminals[0]?.id,
     shownWorkId: works.find((s) => s.id === activeSurfaceId)?.id
       ?? works.find((s) => s.id === lastWorkId)?.id
       ?? works[0]?.id,
