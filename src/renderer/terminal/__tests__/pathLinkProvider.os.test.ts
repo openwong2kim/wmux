@@ -252,7 +252,7 @@ describe('createPathLinkProvider', () => {
    * `getLine(n).isWrapped`, so a stub is faster + clearer than mocking
    * the full xterm interface.
    */
-  function makeTerminal(lines: { text: string; wrapped?: boolean }[]) {
+  function makeTerminal(lines: { text: string; wrapped?: boolean; padded?: boolean }[]) {
     return {
       buffer: {
         active: {
@@ -262,6 +262,10 @@ describe('createPathLinkProvider', () => {
             return {
               translateToString: () => l.text,
               isWrapped: !!l.wrapped,
+              length: l.text.length,
+              // `padded`: the last cell was left empty by a wide character
+              // that moved to the next row (xterm prints it as a space).
+              getCell: (x: number) => ({ getChars: () => (l.padded && x === l.text.length - 1 ? '' : l.text[x]) }),
             };
           },
         },
@@ -318,6 +322,33 @@ describe('createPathLinkProvider', () => {
     const cb = vi.fn();
     provider.provideLinks(2, cb);
     expect(cb.mock.calls[0][0].map((l: { text: string }) => l.text)).toEqual(['/var/log/system.log', '/etc/hosts']);
+  });
+
+  it('drops the empty cell a wide character left at the end of a wrapped row', () => {
+    const terminal = makeTerminal([
+      { text: 'see /tmp/漢 ', padded: true },
+      { text: '字/x.txt', wrapped: true },
+    ]);
+    const provider = createPathLinkProvider(terminal, vi.fn(), 'linux');
+    const cb = vi.fn();
+    provider.provideLinks(2, cb);
+    expect(cb.mock.calls[0][0].map((l: { text: string }) => l.text)).toEqual(['/tmp/漢字/x.txt']);
+  });
+
+  it('reads a line longer than the row limit one row at a time, from every row', () => {
+    // 41 rows: past the limit, so no row joins its neighbours, and a path
+    // cut at a row edge reads the same (cut) from the rows on both sides.
+    const rows: { text: string; wrapped?: boolean }[] = [{ text: 'x /opt/fir' }, { text: 'st.txt ', wrapped: true }];
+    for (let i = 0; i < 39; i++) rows.push({ text: `/opt/r${String(i).padStart(2, '0')}.txt `, wrapped: true });
+    const provider = createPathLinkProvider(makeTerminal(rows), vi.fn(), 'linux');
+    const textsAt = (row: number): string[] => {
+      const cb = vi.fn();
+      provider.provideLinks(row, cb);
+      return (cb.mock.calls[0][0] ?? []).map((l: { text: string }) => l.text);
+    };
+    expect(textsAt(1)).toEqual(['/opt/fir']);
+    expect(textsAt(2)).toEqual([]);
+    expect(textsAt(41)).toEqual(['/opt/r38.txt']);
   });
 
   it('passes undefined when the line is empty', () => {

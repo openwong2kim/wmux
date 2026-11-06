@@ -212,6 +212,12 @@ export function locationOf(match: PathMatch): PathLocation | undefined {
 }
 
 /**
+ * Rows of one soft-wrapped line read for a link, at most. A longer line is
+ * read one row at a time, as before, so every row sees the same text.
+ */
+const MAX_WRAPPED_ROWS = 32;
+
+/**
  * Build an xterm ILinkProvider that opens absolute paths via the provided
  * `openPath` callback (typically `window.electronAPI.shell.openPath`).
  *
@@ -219,8 +225,6 @@ export function locationOf(match: PathMatch): PathLocation | undefined {
  * `process.platform` when available, otherwise 'linux' — which still
  * detects Windows drive paths, just without UNC support.
  */
-/** Rows of one soft-wrapped line read for a link, at most. */
-const MAX_WRAPPED_ROWS = 32;
 
 export function createPathLinkProvider(
   terminal: Terminal,
@@ -240,16 +244,27 @@ export function createPathLinkProvider(
       // whole logical line (its first row and the wrapped rows after it), so
       // the path matches whole on any of its rows and a click opens all of it.
       let first = row;
-      while (first > 0 && row - first < MAX_WRAPPED_ROWS && buffer.getLine(first)?.isWrapped) first--;
+      while (first > 0 && row - first <= MAX_WRAPPED_ROWS && buffer.getLine(first)?.isWrapped) first--;
       let last = row;
-      while (last - first < MAX_WRAPPED_ROWS && buffer.getLine(last + 1)?.isWrapped) last++;
+      while (last - first <= MAX_WRAPPED_ROWS && buffer.getLine(last + 1)?.isWrapped) last++;
+      if (last - first >= MAX_WRAPPED_ROWS) {
+        first = row;
+        last = row;
+      }
       // Offset in `text` where each row starts; a row that wraps on keeps its
       // trailing cells (they are part of the line), the last one is trimmed.
       const rowStarts: number[] = [];
       let text = '';
       for (let y = first; y <= last; y++) {
         rowStarts.push(text.length);
-        text += buffer.getLine(y)?.translateToString(y === last) ?? '';
+        const line = buffer.getLine(y);
+        let part = line?.translateToString(y === last) ?? '';
+        // A wide character that did not fit in the last column moved to the
+        // next row and left that cell empty: it is padding, not a space.
+        if (y < last && line && line.length > 0 && line.getCell(line.length - 1)?.getChars() === '') {
+          part = part.slice(0, -1);
+        }
+        text += part;
       }
       // 1-based cell of a text offset (one cell per character, as before).
       const cellAt = (offset: number): { x: number; y: number } => {
