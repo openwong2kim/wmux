@@ -554,9 +554,9 @@ export function sanitizeRef(ref: string, scope: BrowserTargetScope, opts?: { fra
   assertRefSyntax(ref);
   // Every `[data-wmux-ref]` resolution in the tool layer — RPC click, fill,
   // hover, drag, select, scroll, scroll-into-view, the password probe, and
-  // browser_highlight — passes through here first (the one exception is a
-  // smartRef click, see rpcClick), which makes this the one
-  // place a frame ref can be stopped before it reaches a selector that can
+  // browser_highlight — passes through here first, except a smartRef click,
+  // which is not in the frame-ref number space (see rpcClick). That makes this
+  // the one place a frame ref can be stopped before it reaches a selector that can
   // only ever match a main-document element. Fail closed: a frame ref has no
   // data-attr representation at all, so attempting it either finds nothing or,
   // worse, finds whatever a previous DOM snapshot tagged with that number.
