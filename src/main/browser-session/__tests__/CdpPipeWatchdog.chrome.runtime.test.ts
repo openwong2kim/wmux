@@ -10,8 +10,6 @@
 //   CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
 //     npx vitest run -c vitest.runtime.config.ts src/main/browser-session/__tests__/CdpPipeWatchdog.chrome.runtime.test.ts
 import { spawn, type ChildProcess } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
@@ -20,7 +18,8 @@ import { chromium, type Browser } from 'playwright-core';
 import { CdpPipeMux, cdpPipeCounters, resetCdpPipeCounters } from '../CdpPipeMux';
 import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
 import { STALL_MS } from '../CdpPipeStallWatch';
-import { accountDownloads, pinDownloadDir } from '../../../test-utils/chromeDownloads';
+import { accountDownloads } from '../../../test-utils/chromeDownloads';
+import { CHROME_TEARDOWN_TIMEOUT_MS, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 
 const CHROME = process.env.CHROME_PATH;
 const CLIENT = path.join(__dirname, 'fixtures', 'pipeClient.mjs');
@@ -28,21 +27,32 @@ const CLIENT = path.join(__dirname, 'fixtures', 'pipeClient.mjs');
 const ROUNDS = 15;
 const BLOCK_MS = 3_000;
 
-interface Rig { chrome: ChildProcess; profile: string; downloads: string; mux: CdpPipeMux; endpoint: CdpPipeEndpoint }
+interface Rig { chrome: ChildProcess; mux: CdpPipeMux; endpoint: CdpPipeEndpoint }
 let rig: Rig | null = null;
+/** The test's temp profile, removed after its Chrome is gone, launched or not. */
+let profile: TempChromeProfile | null = null;
 let child: ChildProcess | null = null;
 const browsers: Browser[] = [];
 
 async function start(): Promise<Rig> {
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pipe-watchdog-'));
-  const downloads = pinDownloadDir(profile);
+  profile = tempChromeProfile('wmux-pipe-watchdog-');
   const chrome = spawn(CHROME as string, [
-    '--remote-debugging-pipe', `--user-data-dir=${profile}`, '--headless=new',
+    '--remote-debugging-pipe', `--user-data-dir=${profile.dir}`, '--headless=new',
     '--no-first-run', '--no-default-browser-check', '--use-mock-keychain', 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
+  const exited = new Promise<void>((resolve) => chrome.once('exit', () => resolve()));
   const mux = new CdpPipeMux(chrome.stdio[3] as Writable, chrome.stdio[4] as Readable);
-  const endpoint = await CdpPipeEndpoint.open(mux);
-  rig = { chrome, profile, downloads, mux, endpoint };
+  let endpoint: CdpPipeEndpoint;
+  try {
+    endpoint = await CdpPipeEndpoint.open(mux);
+  } catch (err) {
+    // Not in `rig`, so nothing else would stop it before its profile goes.
+    mux.close();
+    chrome.kill('SIGKILL');
+    await exited;
+    throw err;
+  }
+  rig = { chrome, mux, endpoint };
   return rig;
 }
 
@@ -89,11 +99,15 @@ afterEach(async () => {
       rig.chrome.kill('SIGKILL');
       await exited;
     }
-    for (const d of [rig.profile, rig.downloads]) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     rig = null;
   }
-  expect([...accountDownloads(['file.bin'])].filter((n) => !accountBefore.has(n))).toEqual([]);
-});
+  try {
+    expect([...accountDownloads(['file.bin'])].filter((n) => !accountBefore.has(n))).toEqual([]);
+  } finally {
+    await profile?.remove();
+    profile = null;
+  }
+}, CHROME_TEARDOWN_TIMEOUT_MS);
 
 describe.skipIf(!CHROME)('the pipe\'s stall watch, real Chrome', () => {
   // SIGSTOP and SIGCONT: none on Windows.
