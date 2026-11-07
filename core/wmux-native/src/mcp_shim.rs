@@ -41,13 +41,16 @@
 //! with one line, `{"wmuxBroker":1,"ok":…}`, once it has created the session's
 //! server, and writes nothing before it. The shim reads no stdin until that
 //! line: ok:true starts the pumps; ok:false exits 1 (a refusal is an answer,
-//! not an outage); no answer within ACK_DEADLINE, a close, or a first line that
-//! is not the ack (an older broker) drops the connection and falls back. A
+//! not an outage) unless the broker could not tie the connection to this
+//! process (`peer`, `peer-unverified`), which falls back; no answer within
+//! ACK_DEADLINE, a close, or a first line that is not the ack (an older
+//! broker) drops the connection and falls back. A
 //! broker that fails to connect the server after acking drops the connection;
 //! the pumps have started by then, so that is an exit 1, not a fallback.
 //!
 //! Each fallback writes one stderr line with its reason: `broker off` (main's
-//! marker, checked before dialling), `no broker`, `no ack in 5 s`, `closed
+//! marker, checked before dialling), `broker refused the session: peer` (or
+//! `peer-unverified`), `no broker`, `no ack in 5 s`, `closed
 //! before ack` or `not an ack`. Bot mode (below) is the
 //! designed path and writes none.
 //!
@@ -612,6 +615,14 @@ fn after_cancel(completed: bool, n: u32, error: Option<i32>) -> std::io::Result<
 /// The broker did not take the session. Nothing was forwarded yet, so the
 /// full bundle gets the session from the host's first byte. The caller has
 /// dropped the connection.
+/// A refusal the full bundle can still serve: the broker could not tie the
+/// connection to this process (`peer`, `peer-unverified`). The bundle talks to
+/// main directly, so main sees it as its own peer. Any other refusal (`auth`)
+/// is an answer and ends the shim.
+fn refusal_falls_back(why: &str) -> bool {
+    why == "peer" || why == "peer-unverified"
+}
+
 fn no_session(why: &str, raw: &[OsString]) -> ! {
     say(&format!("{PREFIX} {why}"));
     fallback::run_full_bundle(raw)
@@ -863,6 +874,10 @@ mod sys {
         });
         let first = match ack {
             Ack::Hosted { rest } => rest,
+            Ack::Refused(why) if super::refusal_falls_back(&why) => {
+                drop(conn);
+                no_session(&format!("broker refused the session: {why}"), raw)
+            }
             Ack::Refused(why) => exit_with(Outcome::BrokerRefused(why)),
             Ack::Missing(why) => {
                 drop(conn);
@@ -1229,6 +1244,10 @@ mod sys {
         let deadline = Instant::now() + super::ACK_DEADLINE;
         let first = match await_ack(|buf| conn.read_until(&writer_event, buf, deadline)) {
             Ack::Hosted { rest } => rest,
+            Ack::Refused(why) if super::refusal_falls_back(&why) => {
+                drop(conn);
+                no_session(&format!("broker refused the session: {why}"), raw)
+            }
             Ack::Refused(why) => exit_with(Outcome::BrokerRefused(why)),
             Ack::Missing(why) => {
                 drop(conn);
@@ -1460,6 +1479,15 @@ mod tests {
             }
             None => Err(std::io::ErrorKind::WouldBlock.into()),
         })
+    }
+
+    #[test]
+    fn only_a_peer_refusal_falls_back() {
+        assert!(refusal_falls_back("peer"));
+        assert!(refusal_falls_back("peer-unverified"));
+        for why in ["auth", "no reason given", "peer ", "Peer", ""] {
+            assert!(!refusal_falls_back(why), "{why:?}");
+        }
     }
 
     #[test]
