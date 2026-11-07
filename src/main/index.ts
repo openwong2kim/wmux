@@ -261,7 +261,7 @@ import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
 import { ensureDaemon, killDaemonByPidFile, describeDaemonKillOutcome, killVerifiedDaemonPid, checkProcessLiveness, isDaemonPipeGone } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
 import { createDaemonExitWatch } from './daemon/daemonExitWatch';
-import { loadConfig, getWmuxDir } from '../daemon/config';
+import { loadConfig, getWmuxDir, isFailClosedConfig } from '../daemon/config';
 import { atomicWriteJSON } from '../daemon/util/atomicWrite';
 import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
 import { claudeFileSendPath, readClaudeFileSend } from '../daemon/claudeFileSendSetting';
@@ -592,9 +592,13 @@ if (process.platform === 'win32' && app.isPackaged) {
 // in the app: CDP only needs a loopback socket, unlike other same-user vectors
 // which need filesystem or process control. See docs/SECURITY.md §3.
 dropDebuggingSwitches(app.commandLine);
+const bootConfig = loadConfig();
+// An unusable config.json turns CDP off for the session (failClosedConfig);
+// say that, not "disabled by configuration", which points at a setting.
+const cdpOffForUnusableConfig = process.env.WMUX_DISABLE_CDP !== 'true' && isFailClosedConfig(bootConfig);
 const cdpEnabled =
   process.env.WMUX_DISABLE_CDP !== 'true' &&
-  loadConfig().browser?.cdp?.enabled !== false;
+  bootConfig.browser?.cdp?.enabled !== false;
 let cdpPort = 0;
 if (cdpEnabled) {
   // The port is still drawn at random within the range, to keep it
@@ -614,6 +618,8 @@ if (cdpEnabled) {
       (claim.claimed ? '' : ' (port not claimed exclusively — every port in the range is held)'),
   );
 
+} else if (cdpOffForUnusableConfig) {
+  console.log('[WinMux] CDP off — config.json could not be used (see the warning above); fix it and restart wmux');
 } else {
   console.log('[WinMux] CDP disabled — browser automation will be unavailable (enable via ~/.wmux/config.json browser.cdp.enabled)');
 }
@@ -832,7 +838,13 @@ const mcpRegistrar = new McpRegistrar();
 const mcpBrokerSupervisor = new BrokerSupervisor();
 setBrokerPidSource(() => mcpBrokerSupervisor.pid);
 const webviewCdpManager = new WebviewCdpManager(0);
-webviewCdpManager.setCdpFailureReason(cdpEnabled ? 'CDP ownership verification pending' : 'CDP disabled by configuration');
+webviewCdpManager.setCdpFailureReason(
+  cdpEnabled
+    ? 'CDP ownership verification pending'
+    : cdpOffForUnusableConfig
+      ? 'CDP is off because config.json could not be used; fix it and restart wmux'
+      : 'CDP disabled by configuration',
+);
 webviewCdpManager.setCdpDisabled(!cdpEnabled);
 // "Agent is driving" marker + Stop / Take over for in-app browser tabs. Activity
 // is the surface's automation lease count; Stop and Take over end the leases in

@@ -15,6 +15,7 @@ import {
   CHANNEL_TRASH_TTL_HOURS_DEFAULT,
 } from '../shared/channels';
 import { getWindowsDefaultShell } from '../shared/shellResolution';
+import { stripBom } from '../shared/stripBom';
 import { assertNotLiveWmuxDataDir, dataSuffix, getDaemonSocketPath, getLegacyDaemonSocketPath } from '../shared/constants';
 import { coerceLanLinkConfig, defaultLanLinkConfig } from '../shared/lanlink';
 import { coerceA2aRemoteConfig, defaultA2aRemoteConfig } from './a2aRemote/controller';
@@ -383,63 +384,71 @@ export function resetGateMigrationSaveFailure(): void {
 }
 
 /**
- * Drop a leading UTF-8 byte order mark. Windows PowerShell 5.1's
- * `Set-Content -Encoding utf8` and `Out-File` write one, and `JSON.parse`
- * rejects it, so a hand-edited config.json would otherwise read as unusable.
+ * Marks a config built by `failClosedConfig`. Enumerable, so an object spread
+ * of a stand-in (`{ ...config, a2aRemote }`) is still one; `JSON.stringify`
+ * skips symbol keys, so it never reaches disk either way.
  */
-export function stripBom(text: string): string {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-}
+const FAIL_CLOSED = Symbol('wmux.config.failClosed');
 
 /**
- * The config.json `loadConfig` could not use, and why. Set when a load fails,
- * cleared by the next load that succeeds. While it names the current config
- * path, `saveConfigOrThrow` refuses to write there: the file stays exactly as
- * the user left it, and nothing (a gate edit, a LanLink toggle) can replace
- * it with the fail-closed stand-in this process is running on.
+ * True for the stand-in `loadConfig` returns when config.json exists but
+ * cannot be used. Saving one is refused, whenever it is tried: a process that
+ * started on a stand-in keeps it until it restarts, and writing it would
+ * replace the user's file (perhaps fixed by then) with defaults.
  */
-let unusableConfig: { path: string; reason: string } | null = null;
+export function isFailClosedConfig(config: DaemonConfig): boolean {
+  return (config as unknown as Record<symbol, unknown>)[FAIL_CLOSED] === true;
+}
 
-/** Test seam: forget a previous unusable-file result. */
-export function resetUnusableConfig(): void {
-  unusableConfig = null;
+/** The last unusable-file warning, so the daemon (which loads on every hook signal) logs it once. */
+let lastUnusableWarning: string | null = null;
+
+/** Test seam: forget the last unusable-file warning. */
+export function resetUnusableConfigWarning(): void {
+  lastUnusableWarning = null;
 }
 
 /**
  * What a process runs on when config.json exists but cannot be used. The
- * defaults, except that every setting whose default is the open side is
- * closed for the session, because the file may have closed it:
+ * defaults, except where the default is the open side of something the file
+ * may have closed:
  *
  * - `browser.cdp.enabled` → off (the default is on).
  * - `phoneDecisions` → both channels off (the defaults are on); approvals
  *   then take the plain decline path a daemon without the channels serves.
- * - `channels.trashTtlHours` → 0, keep everything (the default deletes the
- *   trash after 30 days, which cannot be undone).
+ *
+ * Nothing irreversible runs on a stand-in either, since the file may have
+ * kept for longer what the defaults delete: the channel trash is kept
+ * (`trashTtlHours` 0), and detached, suspended and dead sessions are kept
+ * for a year rather than 8 h, 7 days and 24 h.
  *
  * The rest already default to the closed side: `lanlink` and `a2aRemote` are
- * off, `notifySinks` is empty, `gate` gates the high-risk tools.
+ * off, `notifySinks` is empty. `gate` gates the default high-risk tools; tools
+ * the file added to it cannot be known from a file that cannot be read.
  */
 function failClosedConfig(): DaemonConfig {
   const config = createDefaultConfig();
   config.browser = { cdp: { enabled: false } };
   config.phoneDecisions = { native: false, stepwise: false };
   config.channels = { ...(config.channels as ChannelRetentionConfig), trashTtlHours: 0 };
+  config.session.detachedTtlHours = DETACHED_TTL_CAP_HOURS;
+  config.session.suspendedTtlHours = SUSPENDED_TTL_CAP_HOURS;
+  config.session.deadSessionTtlHours = 24 * 365;
+  (config as unknown as Record<symbol, unknown>)[FAIL_CLOSED] = true;
   return config;
 }
 
 /**
  * config.json exists but cannot be used: leave it as it is, warn once per
- * failure (the daemon loads on every hook signal), and run fail-closed.
+ * failure, and run on the fail-closed stand-in.
  */
 function unusableConfigFallback(configPath: string, reason: string): DaemonConfig {
-  if (unusableConfig?.path !== configPath || unusableConfig.reason !== reason) {
-    console.warn(
-      `[daemon/config] ${configPath} could not be used (${reason}). It is left unchanged; ` +
-        'until it is fixed, wmux runs with its defaults and with browser CDP, phone decisions ' +
-        'and trash auto-deletion off.',
-    );
-  }
-  unusableConfig = { path: configPath, reason };
+  const warning =
+    `[daemon/config] ${configPath} could not be used (${reason}). It is left unchanged; ` +
+    'until it is fixed, wmux runs with its defaults, with browser CDP and phone decisions ' +
+    'off, and deletes no sessions or trash.';
+  if (warning !== lastUnusableWarning) console.warn(warning);
+  lastUnusableWarning = warning;
   return failClosedConfig();
 }
 
@@ -465,7 +474,7 @@ export function loadConfig(): DaemonConfig {
     raw = fs.readFileSync(configPath, 'utf-8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-      unusableConfig = null;
+      lastUnusableWarning = null;
       saveConfig(defaults);
       return defaults;
     }
@@ -483,10 +492,9 @@ export function loadConfig(): DaemonConfig {
     return unusableConfigFallback(configPath, err instanceof Error ? err.message : String(err));
   }
 
-  if (!validateConfig(parsed)) {
-    return unusableConfigFallback(configPath, 'a required daemon or session field is missing or has the wrong type');
-  }
-  unusableConfig = null;
+  const invalid = configProblem(parsed);
+  if (invalid !== null) return unusableConfigFallback(configPath, invalid);
+  lastUnusableWarning = null;
 
   try {
     const config = parsed as DaemonConfig;
@@ -671,6 +679,9 @@ export function loadConfig(): DaemonConfig {
 
 /** Atomic write: .tmp then rename (mirrors SessionManager pattern) */
 export function saveConfig(config: DaemonConfig): void {
+  // Saving a stand-in throws like a directory that cannot be created: both are
+  // the caller's to report, never a write failure to log and move past.
+  refuseFailClosed(config, getConfigPath());
   // A directory that cannot be created still throws, as it always did.
   const dir = path.dirname(getConfigPath());
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -687,12 +698,7 @@ export function saveConfig(config: DaemonConfig): void {
  */
 export function saveConfigOrThrow(config: DaemonConfig): void {
   const configPath = getConfigPath();
-  if (unusableConfig?.path === configPath) {
-    throw new Error(
-      `${configPath} could not be used (${unusableConfig.reason}), so wmux does not write over it. ` +
-        'Fix or remove the file, then try again.',
-    );
-  }
+  refuseFailClosed(config, configPath);
   const tmpPath = configPath + '.tmp';
   const dir = path.dirname(configPath);
 
@@ -714,39 +720,50 @@ export function saveConfigOrThrow(config: DaemonConfig): void {
   }
 }
 
-/** Structural validation — checks required fields exist with correct types */
-function validateConfig(parsed: unknown): parsed is DaemonConfig {
-  if (typeof parsed !== 'object' || parsed === null) return false;
-  const obj = parsed as Record<string, unknown>;
+/** Throws for a fail-closed stand-in: it must never replace the file it stands in for. */
+function refuseFailClosed(config: DaemonConfig, configPath: string): void {
+  if (!isFailClosedConfig(config)) return;
+  throw new Error(
+    `wmux started while ${configPath} could not be used, so it does not write over that file. ` +
+      'Fix the file, restart wmux, then try again.',
+  );
+}
 
-  if (typeof obj['version'] !== 'number') return false;
+/**
+ * Structural validation: what makes the file unusable, naming the field, or
+ * null when the required fields exist with the right types.
+ */
+function configProblem(parsed: unknown): string | null {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'the top level is not a JSON object';
+  const obj = parsed as Record<string, unknown>;
+  const wrong = (field: string, want: string): string => `${field} is missing or is not ${want}`;
+
+  if (typeof obj['version'] !== 'number') return wrong('version', 'a number');
 
   // daemon section
   const daemon = obj['daemon'];
-  if (typeof daemon !== 'object' || daemon === null) return false;
+  if (typeof daemon !== 'object' || daemon === null) return wrong('daemon', 'an object');
   const d = daemon as Record<string, unknown>;
-  if (typeof d['pipeName'] !== 'string') return false;
-  if (typeof d['logLevel'] !== 'string') return false;
-  if (typeof d['autoStart'] !== 'boolean') return false;
+  if (typeof d['pipeName'] !== 'string') return wrong('daemon.pipeName', 'a string');
+  if (typeof d['logLevel'] !== 'string') return wrong('daemon.logLevel', 'a string');
+  if (typeof d['autoStart'] !== 'boolean') return wrong('daemon.autoStart', 'a boolean');
   // idleShutdownMinutes is optional, but if present must be a finite number.
   // The post-validate path below still clamps to a sensible range — this
   // gate just rejects garbage like {"idleShutdownMinutes": "five"}.
   if (
     d['idleShutdownMinutes'] !== undefined &&
     (typeof d['idleShutdownMinutes'] !== 'number' || !Number.isFinite(d['idleShutdownMinutes'] as number))
-  ) return false;
+  ) return 'daemon.idleShutdownMinutes is not a finite number';
 
   // session section
   const session = obj['session'];
-  if (typeof session !== 'object' || session === null) return false;
+  if (typeof session !== 'object' || session === null) return wrong('session', 'an object');
   const s = session as Record<string, unknown>;
-  if (typeof s['defaultShell'] !== 'string') return false;
-  if (typeof s['defaultCols'] !== 'number') return false;
-  if (typeof s['defaultRows'] !== 'number') return false;
-  if (typeof s['bufferSizeMb'] !== 'number') return false;
-  if (typeof s['bufferMaxMb'] !== 'number') return false;
-  if (typeof s['deadSessionTtlHours'] !== 'number') return false;
-  if (typeof s['deadSessionDumpBuffer'] !== 'boolean') return false;
+  if (typeof s['defaultShell'] !== 'string') return wrong('session.defaultShell', 'a string');
+  for (const field of ['defaultCols', 'defaultRows', 'bufferSizeMb', 'bufferMaxMb', 'deadSessionTtlHours']) {
+    if (typeof s[field] !== 'number') return wrong(`session.${field}`, 'a number');
+  }
+  if (typeof s['deadSessionDumpBuffer'] !== 'boolean') return wrong('session.deadSessionDumpBuffer', 'a boolean');
 
-  return true;
+  return null;
 }

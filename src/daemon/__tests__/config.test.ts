@@ -12,7 +12,8 @@ import {
   resetNotifySinksCache,
   readPushPresenceSuppression,
   resetGateMigrationSaveFailure,
-  resetUnusableConfig,
+  resetUnusableConfigWarning,
+  isFailClosedConfig,
 } from '../config';
 import {
   DESKTOP_PRESENCE_STALE_AFTER_MS,
@@ -34,7 +35,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetUnusableConfig();
+  resetUnusableConfigWarning();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (os as any).homedir = originalHomedir;
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -133,6 +134,7 @@ describe('loadConfig', () => {
           expect(config.browser?.cdp.enabled).toBe(false);
           expect(warn).toHaveBeenCalledTimes(1);
           expect(String(warn.mock.calls[0][0])).toContain(configPath);
+          expect(isFailClosedConfig(config)).toBe(true);
         } finally {
           warn.mockRestore();
         }
@@ -175,6 +177,10 @@ describe('loadConfig', () => {
         expect(config.browser?.cdp.enabled).toBe(false);
         expect(config.phoneDecisions).toEqual({ native: false, stepwise: false });
         expect(config.channels?.trashTtlHours).toBe(0);
+        // Nothing irreversible on a stand-in: sessions are kept for a year.
+        expect(config.session.detachedTtlHours).toBe(24 * 365);
+        expect(config.session.suspendedTtlHours).toBe(24 * 365);
+        expect(config.session.deadSessionTtlHours).toBe(24 * 365);
         expect(config.lanlink?.enabled).toBe(false);
         expect(config.a2aRemote).toEqual(defaults.a2aRemote);
         expect(config.notifySinks).toEqual([]);
@@ -184,35 +190,89 @@ describe('loadConfig', () => {
       }
     });
 
-    it('refuses every later save to that file, so the stand-in never lands on disk', () => {
+    it('names the wrong field when the structure is invalid', () => {
+      const wmuxDir = getWmuxDir();
+      fs.mkdirSync(wmuxDir, { recursive: true });
+      const bad = { ...createDefaultConfig(), session: { ...createDefaultConfig().session, defaultCols: '120' } };
+      fs.writeFileSync(path.join(wmuxDir, 'config.json'), JSON.stringify(bad), 'utf-8');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        loadConfig();
+        expect(String(warn.mock.calls[0][0])).toContain('session.defaultCols is missing or is not a number');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('refuses to save the stand-in, through either saver, so it never lands on disk', () => {
       const configPath = writeGarbage();
       const before = fs.readFileSync(configPath);
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
       try {
         const config = loadConfig();
         expect(() => saveConfigOrThrow(config)).toThrow(configPath);
-        saveConfig(config); // the best-effort saver used by LanLink: logs, does not write
-        expect(error).toHaveBeenCalled();
+        // The best-effort saver (LanLink) throws too: a stand-in is not a write failure to log.
+        expect(() => saveConfig(config)).toThrow(configPath);
+        // A2A saves a spread copy; the copy is still the stand-in.
+        expect(() => saveConfigOrThrow({ ...config, a2aRemote: config.a2aRemote })).toThrow(configPath);
       } finally {
         warn.mockRestore();
-        error.mockRestore();
       }
       expect(fs.readFileSync(configPath).equals(before)).toBe(true);
     });
 
-    it('wmux gate --add says the change did not land and exits non-zero', () => {
+    it('a stand-in loaded before the file was fixed still cannot overwrite the fixed file', () => {
+      const configPath = writeGarbage();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      let bootConfig: DaemonConfig;
+      try {
+        bootConfig = loadConfig();
+      } finally {
+        warn.mockRestore();
+      }
+      const fixed = { ...createDefaultConfig(), browser: { cdp: { enabled: false } } };
+      fs.writeFileSync(configPath, JSON.stringify(fixed), 'utf-8');
+      expect(isFailClosedConfig(loadConfig())).toBe(false); // a later load succeeds
+      const onDisk = fs.readFileSync(configPath);
+      expect(() => saveConfigOrThrow(bootConfig)).toThrow(configPath);
+      expect(fs.readFileSync(configPath).equals(onDisk)).toBe(true);
+    });
+
+    it('a config loaded while the file was good still saves after a later failed load', () => {
+      const wmuxDir = getWmuxDir();
+      fs.mkdirSync(wmuxDir, { recursive: true });
+      const configPath = path.join(wmuxDir, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify(createDefaultConfig()), 'utf-8');
+      const good = loadConfig();
+      fs.writeFileSync(configPath, '{ half-written', 'utf-8');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        loadConfig();
+      } finally {
+        warn.mockRestore();
+      }
+      good.daemon.logLevel = 'debug';
+      expect(() => saveConfigOrThrow(good)).not.toThrow();
+      expect(loadConfig().daemon.logLevel).toBe('debug');
+    });
+
+    it('wmux gate refuses every action, --list included, and exits non-zero', () => {
       const configPath = writeGarbage();
       const before = fs.readFileSync(configPath);
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
       const exitCode = process.exitCode;
       try {
-        handleGate('--add', ['WebFetch'], true);
-        const reply = JSON.parse(String(log.mock.calls[0][0]));
-        expect(reply.ok).toBe(false);
-        expect(reply.error).toContain(configPath);
-        expect(process.exitCode).toBe(1);
+        // Bash is in the stand-in's default list: no "already there" from it.
+        for (const [action, args] of [['--add', ['Bash']], ['--remove', ['Bash']], ['--list', []]] as const) {
+          log.mockClear();
+          process.exitCode = 0;
+          handleGate(action, [...args], true);
+          const reply = JSON.parse(String(log.mock.calls[0][0]));
+          expect(reply.ok).toBe(false);
+          expect(reply.error).toContain('config.json could not be used');
+          expect(process.exitCode).toBe(1);
+        }
       } finally {
         process.exitCode = exitCode;
         warn.mockRestore();

@@ -16,7 +16,8 @@
 // so this stays compatible with the existing daemon config schema.
 
 import * as fs from 'fs';
-import { getConfigPath, stripBom } from '../../daemon/config';
+import { getConfigPath } from '../../daemon/config';
+import { stripBom } from '../../shared/stripBom';
 
 export type EnforcementMode = 'shadow' | 'enforce';
 

@@ -20,7 +20,8 @@
 // change to one section's parsing cannot silently alter another's.
 
 import * as fs from 'fs';
-import { getConfigPath, stripBom } from '../../daemon/config';
+import { getConfigPath } from '../../daemon/config';
+import { stripBom } from '../../shared/stripBom';
 
 export interface FirstPartyClientsReadOptions {
   /** Override the config path for tests. */

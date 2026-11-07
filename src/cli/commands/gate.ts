@@ -3,7 +3,7 @@
 // slice per signal (HookIngest.gateConfig is a getter), so changes take effect
 // on the next tool call without a daemon restart.
 
-import { loadConfig, saveConfigOrThrow } from '../../daemon/config';
+import { isFailClosedConfig, loadConfig, saveConfigOrThrow } from '../../daemon/config';
 import { DEFAULT_GATED_TOOLS } from '../../daemon/approvals/gateConfig';
 
 /**
@@ -26,6 +26,15 @@ function persist(config: ReturnType<typeof loadConfig>, jsonMode: boolean): bool
 
 export function handleGate(action: string, args: string[], jsonMode: boolean): void {
   const config = loadConfig();
+  // The list a stand-in carries is the defaults, not the user's: neither show
+  // it as theirs nor answer "already there" from it.
+  if (isFailClosedConfig(config)) {
+    const message = 'config.json could not be used (see the warning above), so the gate list in it is unknown. Fix the file, then try again.';
+    if (jsonMode) console.log(JSON.stringify({ ok: false, error: message }));
+    else console.error(`Error: ${message}`);
+    process.exitCode = 1;
+    return;
+  }
   const gatedTools = config.gate?.gatedTools ?? [...DEFAULT_GATED_TOOLS];
 
   if (action === '--list' || action === 'list') {
