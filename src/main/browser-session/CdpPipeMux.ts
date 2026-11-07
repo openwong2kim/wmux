@@ -188,6 +188,22 @@ function refuseTo(client: Client, clientId: number, error: { code: number; messa
   client.reply(clientId, frame, JSON.stringify(frame));
 }
 
+/** Add the child frames of a page session's frame tree (Page.getFrameTree's answer). */
+function seedFrames(client: Client, session: string, tree: unknown): void {
+  type Node = { frame?: { id?: unknown; parentId?: unknown }; childFrames?: unknown };
+  const walk = (node: Node | undefined, depth: number) => {
+    if (!node || depth > 64) return;
+    const { id, parentId } = node.frame ?? {};
+    if (typeof id === 'string' && typeof parentId === 'string') {
+      let frames = client.frames.get(session);
+      if (!frames) client.frames.set(session, (frames = new Map()));
+      frames.set(id, parentId);
+    }
+    if (Array.isArray(node.childFrames)) for (const child of node.childFrames) walk(child as Node, depth + 1);
+  };
+  walk(tree as Node | undefined, 0);
+}
+
 /**
  * Keep a page session's child frames as Chrome reports them: attached and
  * navigated frames are added, a detached frame goes with its descendants, and
@@ -556,6 +572,11 @@ export class CdpPipeMux {
           }
           if (job.method === 'Target.attachToBrowserTarget' && this.owner.get(session) === job.client) job.client.ownBrowserSessions.add(session);
         }
+      }
+      // A page already loaded when the client attached: Chrome reports its frames
+      // only in the answer to the client's own Page.getFrameTree.
+      if (job.method === 'Page.getFrameTree' && !frame.error && typeof frame.sessionId === 'string' && job.client.targets.has(frame.sessionId)) {
+        seedFrames(job.client, frame.sessionId, (frame.result as { frameTree?: unknown } | undefined)?.frameTree);
       }
       if (job.method === 'Target.getTargets' && this.opts.targetGrant && !frame.error) {
         const infos = (frame.result as { targetInfos?: Array<{ targetId?: unknown }> } | undefined)?.targetInfos;

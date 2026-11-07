@@ -52,6 +52,7 @@ function serve(req: http.IncomingMessage, res: http.ServerResponse): void {
   if (req.url?.endsWith('/download')) return html('<a id="d" href="/file.bin">file</a>');
   // Same origin, so the frame stays in the page's process.
   if (req.url?.endsWith('/iframe-download')) return html('<iframe id="f" src="/download"></iframe>');
+  if (req.url?.endsWith('/m/iframe-download')) return html('<iframe id="f" src="/download"></iframe>');
   // Starts its download as it loads.
   if (req.url?.includes('/download-now')) return html('<a id="d" href="/file.bin">file</a><script>document.getElementById("d").click()</script>');
   if (req.url?.endsWith('/slow-download')) return html('<a id="d" href="/slow.bin">file</a>');
@@ -107,6 +108,7 @@ const ROWS: Row[] = [
   { id: 'j', what: `a client's new context is denied downloads before the client hears of it (${NEW_CONTEXT_ROUNDS} contexts)` },
   { id: 'k', what: "a download started in a same-process iframe reaches the client's events" },
   { id: 'l', what: 'a command sent through sendMessageToTarget is refused' },
+  { id: 'm', what: "a download in an iframe that loaded before the client attached reaches the client's events" },
   { id: 'n', what: 'a raw client with a flat Target.attachToTarget hears of a download, in the default context and in a created one' },
 ];
 const row = (id: string) => ROWS.find((r) => r.id === id) as Row;
@@ -454,6 +456,23 @@ describe.skipIf(!CHROME).each<Transport>(['port', 'pipe'])('a protected profile 
     }
     record('l', !carried && note.startsWith('refused'), note);
     await browser.close();
+  });
+
+  it('m: a download in an iframe that loaded before the client attached reaches the client\'s events', { timeout: CASE_TIMEOUT_MS }, async (ctx) => {
+    live(ctx);
+    const first = await connect(rig);
+    const loaded = await freshPage(first, `http://a.test:${port}/m/iframe-download`);
+    await loaded.frameLocator('#f').locator('#d').waitFor();
+    // Attaches to a page whose frames are already there.
+    const later = await connect(rig);
+    const p = later.contexts().flatMap((c) => c.pages()).find((x) => x.url().endsWith('/m/iframe-download'));
+    if (!p) throw new Error('the loaded page is not visible to the second client');
+    const heard = p.waitForEvent('download', { timeout: 4_000 }).then(() => true, () => false);
+    await p.frameLocator('#f').locator('#d').click();
+    const seen = await heard;
+    record('m', seen, seen ? 'download event seen' : 'no download event');
+    await later.close();
+    await first.close();
   });
 
   it('n: a raw client with a flat Target.attachToTarget hears of a download, in the default context and in a created one', { timeout: CASE_TIMEOUT_MS }, async (ctx) => {

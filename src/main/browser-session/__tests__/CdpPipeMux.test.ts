@@ -326,6 +326,31 @@ describe('CdpPipeMux: routing', () => {
     mux.close();
   });
 
+  it('learns the frames of a page already loaded from the answer to the client\'s own Page.getFrameTree', async () => {
+    const ref = new Map<string, ClientRef>();
+    const { browser, mux } = setup({ filter: (client) => { ref.set(client.label, client); return null; } });
+    const a = external(mux, 'a');
+    const b = external(mux, 'b');
+    const page = (await a.replyTo(a.send('Target.createTarget', { url: 'http://a/' }))).result?.targetId as string;
+    browser.frameTree = { frame: { id: page }, childFrames: [{ frame: { id: 'F1', parentId: page }, childFrames: [{ frame: { id: 'F2', parentId: 'F1' } }] }] };
+    const session = (await a.replyTo(a.send('Target.attachToTarget', { targetId: page, flatten: true }))).result?.sessionId as string;
+    const [ca, cb] = [ref.get('a') as ClientRef, ref.get('b') as ClientRef];
+    expect(mux.contextOfFrame(ca, 'F2')).toBeUndefined();
+    await a.replyTo(a.send('Page.getFrameTree', {}, session));
+    // No attach event named the page's context: held, unnamed.
+    expect(mux.contextOfFrame(ca, 'F1')).toBeNull();
+    expect(mux.contextOfFrame(ca, 'F2')).toBeNull();
+    // Only the asking client's own session: b's answer on the browser root seeds nothing.
+    await b.replyTo(b.send('Page.getFrameTree'));
+    expect(mux.contextOfFrame(cb, 'F1')).toBeUndefined();
+    // Same bounds: a detached frame goes with its descendants.
+    const seen = a.inbox.length;
+    browser.event(session, 'Page.frameDetached', { frameId: 'F1', reason: 'remove' });
+    await vi.waitFor(() => expect(a.inbox.length).toBeGreaterThan(seen), { timeout: 5_000 });
+    expect((ca as unknown as { frames: Map<string, unknown> }).frames.size).toBe(0);
+    mux.close();
+  });
+
   it('commands that add to what the browser offers are refused from an external client on every profile', async () => {
     const { browser, mux } = setup();
     const a = external(mux, 'a');
