@@ -637,9 +637,10 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
 });
 
 describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', () => {
-  // The guest's target is listed and already attached, but Playwright never
-  // has a Page for it: the shape logged for every in-app tab on Windows when
-  // the tab existed before the engine connected.
+  // The guest's target is listed, but Playwright never has a Page for it. With
+  // alreadyAttached it is the shape logged for every in-app tab on Windows when
+  // the tab existed before the engine connected; that shape stops after one
+  // attempt. Without it, the lookup makes every attempt, as for any other shape.
   const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
   /** The tab the caller's pane resolves to (what browser.cdp.info registers). */
   let targetId = 'wc-1';
@@ -648,6 +649,10 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
   /** Target.getTargets calls left to answer with no targets (a target not up yet). */
   let hiddenListings = 0;
   let connects = 0;
+  /** Whether the guest's target is listed as attached already. */
+  let alreadyAttached = false;
+  /** The guest target's CDP type. */
+  let targetType = 'webview';
   /** The profile browser.cdp.info reports for the pane. */
   let profile = 'p1';
   /** A Page Playwright has for wc-1 (null: none, the Windows shape). */
@@ -668,7 +673,7 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
             return Promise.resolve({ targetInfos: [] });
           }
           return Promise.resolve({
-            targetInfos: [...listed].map((id) => ({ targetId: id, type: 'webview', title: '', url: 'http://127.0.0.1:1/', attached: true })),
+            targetInfos: [...listed].map((id) => ({ targetId: id, type: targetType, title: '', url: 'http://127.0.0.1:1/', attached: alreadyAttached })),
           });
         }
         return Promise.resolve({});
@@ -745,6 +750,8 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     listed = new Set();
     hiddenListings = 0;
     connects = 0;
+    alreadyAttached = false;
+    targetType = 'webview';
     profile = 'p1';
     guestPage = null;
     vi.useFakeTimers();
@@ -857,6 +864,39 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     targetId = 'wc-2';
     await lookup(engine, { atMs: 300, run: () => { profile = 'p2'; } });
     expect(remembered(engine)).toEqual(['wc-2']);
+  });
+
+  it('an already-attached webview with no Page stops after one attempt and is remembered', async () => {
+    alreadyAttached = true;
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    expect(first.connects).toBe(0); // no reconnect
+    expect(first.waitedMs).toBeGreaterThanOrEqual(500); // the one post-attach wait
+    expect(first.waitedMs).toBeLessThan(1_000); // was ~2.5 s here (3 attempts)
+    expect(remembered(engine)).toEqual(['wc-1']);
+    const second = await lookup(engine);
+    expect(second.connects).toBe(0);
+    expect(second.waitedMs).toBeLessThanOrEqual(50);
+  });
+
+  it('an already-attached target of another type still gets every attempt', async () => {
+    alreadyAttached = true;
+    targetType = 'page';
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    expect(first.connects).toBe(2);
+    expect(remembered(engine)).toEqual(['wc-1']);
+  });
+
+  it('an already-attached webview that does have a Page is used and not remembered', async () => {
+    alreadyAttached = true;
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBe(guestPage);
+    expect(remembered(engine)).toEqual([]);
   });
 });
 

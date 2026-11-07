@@ -137,6 +137,13 @@ interface TargetProbe {
   unpaged?: string;
   /** The target was already known unpageable; nothing was tried. */
   knownUnpageable?: boolean;
+  /**
+   * The unpaged target is a webview that was attached before this lookup
+   * touched it. Playwright gives no Page for that shape on a reconnect either
+   * (a new connection to an existing in-app tab never gets one), so the
+   * lookup stops after the attempt that saw it.
+   */
+  attachedWebview?: boolean;
 }
 
 /**
@@ -1255,11 +1262,13 @@ export class PlaywrightEngine {
       agreed = probe.unpaged && (agreed === undefined || agreed === probe.unpaged) ? probe.unpaged : null;
     };
     const epochAtStart = this.unpageableEpoch;
+    let stoppedEarly = false;
     for (let attempt = 1; attempt <= PAGE_FIND_RETRIES; attempt++) {
       opSignal?.throwIfAborted();
       if (attempt > 1) agree();
       probe.unpaged = undefined;
       probe.knownUnpageable = undefined;
+      probe.attachedWebview = undefined;
       try {
         // Strategies 1-3 locate an EXISTING page. When the caller's workspace
         // is known to own no surface (#554), every one of them can only return
@@ -1385,6 +1394,13 @@ export class PlaywrightEngine {
           }
         }
 
+        // An already-attached webview that gave no Page won't give one after a
+        // reconnect either: stop here, and remember it below.
+        if (probe.unpaged && probe.attachedWebview) {
+          stoppedEarly = true;
+          break;
+        }
+
         if (attempt < PAGE_FIND_RETRIES) {
           console.error(`[PlaywrightEngine] No page found, reconnecting... (${attempt}/${PAGE_FIND_RETRIES})`);
           await sleep(PAGE_FIND_DELAY_MS);
@@ -1412,9 +1428,12 @@ export class PlaywrightEngine {
       }
     }
 
-    console.error('[PlaywrightEngine] No webview page found after all retries — marking as temporarily failed');
-    // Every attempt found the same target and attached, and still got no Page:
-    // remember it, so later lookups skip the retries. Not when a disconnect
+    console.error(stoppedEarly
+      ? '[PlaywrightEngine] No page for an already-attached webview — not retrying; marking as temporarily failed'
+      : '[PlaywrightEngine] No webview page found after all retries — marking as temporarily failed');
+    // Every attempt made (all of them, or up to the one that saw an
+    // already-attached webview) found the same target and attached, and still
+    // got no Page: remember it, so later lookups skip the retries. Not when a disconnect
     // cleared the memory meanwhile: that connection is not the one probed.
     agree();
     if (agreed && this.browser && this.unpageableEpoch === epochAtStart) {
@@ -1636,6 +1655,7 @@ export class PlaywrightEngine {
         // by reconnecting — this forces Playwright to re-discover all targets
         console.error('[PlaywrightEngine] Attach did not create a page, will retry with reconnect');
         probe.unpaged = webviewTarget.targetId;
+        probe.attachedWebview = webviewTarget.type === 'webview' && webviewTarget.attached;
         return null;
       } finally {
         // Detach the probe session so it doesn't accumulate in Playwright's
