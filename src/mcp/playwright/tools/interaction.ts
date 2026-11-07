@@ -16,6 +16,7 @@ import {
   resolveSmartRefLocator,
   smartRefAxisEntry,
   smartRefSelector,
+  RESNAPSHOT as SMART_RESNAPSHOT,
 } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
 import type { RpcFrameRef } from '../rpcFrames';
@@ -740,19 +741,33 @@ async function rpcClick(
   // Use CDP click: first get element coordinates via JS, then dispatch mouse events.
   // A smartRef is numbered by browser_smart_snapshot's own count
   // (rpcSmartDescriptorKey) and stamped in its own attribute, so the frame-ref
-  // store says nothing about it: it gets the ref syntax check only, and the
-  // top document, where no frame element carries a stamp.
+  // store says nothing about it: it gets the ref syntax check and the top
+  // document, where no frame element carries a stamp. Only a number this
+  // connection's latest smart snapshot stamped on this lane is sent; a
+  // getByRole record or stamps left by someone else are refused.
   let target: RpcTarget;
   if (smart) {
     assertRefSyntax(ref);
-    target = { selector: smartRefSelector(ref), frame: null };
+    const selector = smartRefSelector(ref);
+    if (getLocatorByRef(Number(ref)) !== selector) {
+      throw taggedFailure('ref_not_found', `smartRef=${ref} is stale or was not listed by browser_smart_snapshot here. ${SMART_RESNAPSHOT}`);
+    }
+    target = { selector, frame: null };
   } else {
     target = rpcRefTarget(ref, scope, { frames: 'allow' });
   }
   // The handler decides between a tap and a press — it is the side that knows
   // whether a device preset with a touchscreen is on this WebContents — and
   // names which one it sent.
-  const res = await sendForTarget<{ dispatch?: string }>('browser.click.cdp', scope, target, { selector: target.selector });
+  let res: { dispatch?: string } | undefined;
+  try {
+    res = await sendForTarget<{ dispatch?: string }>('browser.click.cdp', scope, target, { selector: target.selector });
+  } catch (err) {
+    if (smart && /Element not found/.test(err instanceof Error ? err.message : String(err))) {
+      throw taggedFailure('ref_not_found', `smartRef=${ref} is stale — the element it named is no longer in the page. ${SMART_RESNAPSHOT}`);
+    }
+    throw err;
+  }
   return res?.dispatch === 'touch' ? 'touch' : 'mouse';
 }
 
@@ -1621,10 +1636,16 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         // smartRef takes priority over ref, as on the Playwright lane above.
         const resolvedRef = smartRef !== undefined ? String(smartRef) : (ref as string);
         const rpcDispatch = await effect.dispatch(() => rpcClick(resolvedRef, scope, double, smartRef !== undefined));
-        recordAction(deps, { scope, tool: 'browser_click', page: null, ref: resolvedRef });
+        recordAction(deps, {
+          scope,
+          tool: 'browser_click',
+          page: null,
+          ...(smartRef !== undefined ? { selector: smartRefSelector(smartRef) } : { ref: resolvedRef }),
+        });
+        const named = smartRef !== undefined ? `smartRef=${smartRef}` : `ref=${resolvedRef}`;
         return withEffectTrailer(
           {
-            content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${resolvedRef}${rpcDispatch === 'touch' ? ' (touch tap)' : ''}` }],
+            content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ${named}${rpcDispatch === 'touch' ? ' (touch tap)' : ''}` }],
           },
           effect.success(),
         );

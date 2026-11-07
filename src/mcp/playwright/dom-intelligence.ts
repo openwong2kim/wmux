@@ -1083,13 +1083,12 @@ export async function getSmartSnapshotViaEval(
 
   // Note: the selector + .slice(0, 100) cap mirror browser_snapshot's RPC
   // fallback (inspection.ts) via INTERACTIVE_SELECTOR; the stamp does not.
-  const attr = SMART_REF_ATTRIBUTE;
   const script = `(() => {
     const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
     const max = ${maxContentLength};
     const isPasswordField = ${PASSWORD_FIELD_PREDICATE_JS};
     const redactedPassword = ${JSON.stringify(REDACTED_PASSWORD)};
-    const attr = ${JSON.stringify(attr)};
+    const attr = ${JSON.stringify(SMART_REF_ATTRIBUTE)};
     document.querySelectorAll('[' + attr + ']').forEach((el) => el.removeAttribute(attr));
     const els = [...document.querySelectorAll(sel)].slice(0, 100);
     const roleFor = (el) => {
@@ -1254,7 +1253,8 @@ export class StaleSmartRefError extends Error {
   }
 }
 
-const RESNAPSHOT = 'Run browser_smart_snapshot to get current refs.';
+/** The way out a stale smart ref names. */
+export const RESNAPSHOT = 'Run browser_smart_snapshot to get current refs.';
 
 export interface ResolveSmartRefOptions {
   /**

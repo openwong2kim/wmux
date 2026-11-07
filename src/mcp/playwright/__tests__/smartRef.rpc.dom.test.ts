@@ -60,7 +60,8 @@ beforeEach(() => {
     if (method === 'browser.frames.tree') return { frames: [] };
     if (method === 'browser.click.cdp') {
       const el = document.querySelector(String(params.selector));
-      if (!el) throw new Error(`No element matches selector: ${String(params.selector)}`);
+      // The real handler's wording (browser.rpc.ts).
+      if (!el) throw new Error(`Element not found: ${String(params.selector)}`);
       clicked.push(el.id);
       return { ok: true };
     }
@@ -114,6 +115,17 @@ describe('browser_click({ smartRef }) on the RPC lane', () => {
     await tool('browser_snapshot')({});
     const res = await tool('browser_click')({ smartRef: del });
     expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/smartRef=\d+ is stale.*browser_smart_snapshot/s);
+    expect(clicked).toEqual([]);
+  });
+
+  it('refuses a smartRef this lane\'s smart snapshot did not stamp', async () => {
+    document.body.innerHTML = PAGE;
+    // Stamps left by someone else, and no smart snapshot taken here.
+    document.getElementById('cancel')?.setAttribute('data-wmux-smart-ref', '2');
+    const res = await tool('browser_click')({ smartRef: 2 });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/smartRef=2 is stale.*browser_smart_snapshot/s);
     expect(clicked).toEqual([]);
   });
 
@@ -122,7 +134,8 @@ describe('browser_click({ smartRef }) on the RPC lane', () => {
     await tool('browser_snapshot')({});
     const listing = textOf(await tool('browser_smart_snapshot')({}));
     const del = smartRefOf(listing, 'Delete');
-    await tool('browser_click')({ smartRef: del, ref: '0' });
+    const both = await tool('browser_click')({ smartRef: del, ref: '0' });
+    expect(textOf(both)).toContain(`smartRef=${del}`);
     const empty = await tool('browser_click')({ smartRef: del, ref: '' });
     expect(empty.isError).toBeFalsy();
     expect(clicked).toEqual(['delete', 'delete']);
