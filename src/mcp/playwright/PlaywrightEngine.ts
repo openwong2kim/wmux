@@ -280,21 +280,21 @@ export class PlaywrightEngine {
    * Kept across the reconnects the retry loop makes itself: those reach the
    * same targets after they exist, which gives no Page either, and clearing
    * there let one tab's first lookup wipe what another tab had learned.
-   * Cleared by any other disconnect of a live connection (an explicit one, a
-   * failed connection check), and whenever the endpoint, profile or policy
-   * epoch differs from the one it was learned under (unpageableScope), so the
-   * target is tried again there. Ids that no longer appear in the target list
-   * are dropped as they go.
+   * Cleared by disconnect() (an explicit one, a failed connection check), and
+   * whenever the endpoint, profile or policy epoch differs from the one it was
+   * learned under (unpageableScope), so the target is tried again there. Ids
+   * that no longer appear in the target list are dropped as they go.
+   *
+   * Each target maps to the Pages known not to be it: those there when it was
+   * remembered, and any proven since to be another target. The late-Page
+   * check probes only the rest.
    */
-  private unpageableTargets = new Set<string>();
+  private unpageableTargets = new Map<string, WeakSet<Page>>();
   /** The connection terms unpageableTargets was learned under. */
   private unpageableScope: string | undefined;
   /** Bumped whenever unpageableTargets is cleared, so a lookup that spanned a
    *  clear does not record into the new connection's memory. */
   private unpageableEpoch = 0;
-  /** The Pages there were when a target was last remembered: the late-Page
-   *  check only probes Pages that came after. */
-  private pagesAtRemember = new WeakSet<Page>();
   /**
    * The target ids listed when the current connection was made. A webview
    * among them existed before this connection, and Playwright gives no Page
@@ -464,21 +464,27 @@ export class PlaywrightEngine {
     const byUrl = pages.filter((p) => p.url() === url);
     const candidates = byUrl.length > 0 ? byUrl : pages;
     for (const p of candidates) {
-      try {
-        const session = await p.context().newCDPSession(p);
-        try {
-          const { targetInfo } = (await session.send('Target.getTargetInfo')) as {
-            targetInfo: { targetId: string };
-          };
-          if (targetInfo?.targetId === targetId) return p;
-        } finally {
-          await session.detach().catch(() => { /* best-effort */ });
-        }
-      } catch {
-        /* page may be mid-navigation or gone — try the next candidate */
-      }
+      if ((await this.probeTargetId(p)) === targetId) return p;
     }
     return null;
+  }
+
+  /** The CDP target id of a Page, or null when it can't be read (a Page
+   *  mid-navigation or gone): the caller tries the next candidate. */
+  private async probeTargetId(p: Page): Promise<string | null> {
+    try {
+      const session = await p.context().newCDPSession(p);
+      try {
+        const { targetInfo } = (await session.send('Target.getTargetInfo')) as {
+          targetInfo?: { targetId?: string };
+        };
+        return targetInfo?.targetId ?? null;
+      } finally {
+        await session.detach().catch(() => { /* best-effort */ });
+      }
+    } catch {
+      return null;
+    }
   }
 
   async connect(cdpPortOrWsEndpoint: number | string): Promise<void> {
@@ -492,7 +498,7 @@ export class PlaywrightEngine {
     if (this.browser && (samePort || sameWs) && this.browser.isConnected()) {
       return;
     }
-    await this.disconnect();
+    await this.dropConnection(true);
     // B0: first real use — initialize playwright-core's module graph now.
     const { chromium } = loadPlaywright();
     const browser = await this.connectOverCdp(chromium, endpoint, isPort ? cdpPortOrWsEndpoint : null);
@@ -578,10 +584,20 @@ export class PlaywrightEngine {
     if (url) await fetch(url).catch(() => { /* already gone */ });
   }
 
-  private forgetUnpageable(): void {
+  /**
+   * Empty unpageableTargets and set the terms it is kept under. A disconnect
+   * also bumps the epoch, so a lookup in flight across it records nothing; a
+   * change of terms found by a lookup does not, so that lookup still records
+   * under the new terms it ran on.
+   */
+  private resetUnpageable(scope: string | undefined, bumpEpoch: boolean): void {
     this.unpageableTargets.clear();
-    this.unpageableScope = undefined;
-    this.unpageableEpoch++;
+    this.unpageableScope = scope;
+    if (bumpEpoch) this.unpageableEpoch++;
+  }
+
+  private forgetUnpageable(): void {
+    this.resetUnpageable(undefined, true);
   }
 
   /** The terms of the live connection, as far as unpageableTargets cares. */
@@ -595,7 +611,7 @@ export class PlaywrightEngine {
    * connection behind it any more.
    */
   private async reconnectForRetry(workspaceId: string | undefined): Promise<void> {
-    await this.disconnect(true);
+    await this.dropConnection(true);
     try {
       await this.ensureConnected(workspaceId);
     } catch (err) {
@@ -604,16 +620,20 @@ export class PlaywrightEngine {
     }
   }
 
+  async disconnect(): Promise<void> {
+    await this.dropConnection(false);
+  }
+
   /**
-   * @param retryReconnect the page lookup's own retry is reconnecting: keep
-   *   unpageableTargets (see there). Any other disconnect of a live connection
-   *   clears it.
+   * @param keepMemory keep unpageableTargets (see there): the page lookup's
+   *   own reconnect, and connect()'s drop of the old connection, whose change
+   *   of endpoint the scope check catches. disconnect() always clears it.
    */
-  async disconnect(retryReconnect = false): Promise<void> {
+  private async dropConnection(keepMemory: boolean): Promise<void> {
     const b = this.browser;
     const s = this.autoAttachSession;
     this.browser = null;
-    if (b && !retryReconnect) this.forgetUnpageable();
+    if (!keepMemory) this.forgetUnpageable();
     this.targetsAtConnect = new Set();
     this.cdpPort = null;
     this.connectedEndpoint = null;
@@ -1472,12 +1492,8 @@ export class PlaywrightEngine {
     agree();
     if (agreed && this.browser && this.unpageableEpoch === epochAtStart) {
       const scope = this.connectionScope();
-      if (this.unpageableScope !== scope) {
-        this.unpageableTargets.clear();
-        this.unpageableScope = scope;
-      }
-      this.unpageableTargets.add(agreed);
-      for (const p of this.getAllPages()) this.pagesAtRemember.add(p);
+      if (this.unpageableScope !== scope) this.resetUnpageable(scope, false);
+      this.unpageableTargets.set(agreed, new WeakSet(this.getAllPages()));
       console.error(`[PlaywrightEngine] Target ${agreed} gives no page; later calls use the RPC lane at once`);
     }
     this.playwrightFailed.add(ctx.key);
@@ -1583,12 +1599,11 @@ export class PlaywrightEngine {
         // endpoint, profile or policy epoch, which the lookup's own reconnect
         // can bring), and the targets that are gone (their tab was closed).
         if (this.unpageableTargets.size > 0 && this.unpageableScope !== this.connectionScope()) {
-          this.unpageableTargets.clear();
-          this.unpageableScope = undefined;
+          this.resetUnpageable(undefined, false);
         }
         if (this.unpageableTargets.size > 0) {
           const live = new Set(targetInfos.map((t) => t.targetId));
-          for (const id of this.unpageableTargets) if (!live.has(id)) this.unpageableTargets.delete(id);
+          for (const id of this.unpageableTargets.keys()) if (!live.has(id)) this.unpageableTargets.delete(id);
         }
 
         // Get registered wmux targets for matching, scoped to the caller's
@@ -1646,14 +1661,23 @@ export class PlaywrightEngine {
 
         // Seen unpageable already: skip the attach and its wait. If Playwright
         // has made a Page for it since, use that and forget the target. Only
-        // Pages newer than the last remembering are probed, and only for a
-        // pinned surface (without one, the non-shell fallback runs anyway).
-        if (this.unpageableTargets.has(webviewTarget.targetId)) {
-          const fresh = this.getAllPages().filter((p) => !this.pagesAtRemember.has(p));
-          const late = surfaceId && fresh.length > 0
-            ? await this.matchPinnedPage(fresh, webviewTarget.targetId, webviewTarget.url)
-            : null;
-          for (const p of fresh) if (p !== late) this.pagesAtRemember.add(p);
+        // Pages not yet known to be another target are probed, and only for a
+        // pinned surface (without one, the non-shell fallback runs anyway). A
+        // Page whose probe fails is probed again next time.
+        const notIt = this.unpageableTargets.get(webviewTarget.targetId);
+        if (notIt) {
+          let late: Page | null = null;
+          if (surfaceId) {
+            for (const p of this.getAllPages()) {
+              if (notIt.has(p)) continue;
+              const id = await this.probeTargetId(p);
+              if (id === webviewTarget.targetId) {
+                late = p;
+                break;
+              }
+              if (id !== null) notIt.add(p);
+            }
+          }
           if (late) {
             this.unpageableTargets.delete(webviewTarget.targetId);
             console.error(`[PlaywrightEngine] Found page for a target that gave none before: ${late.url()}`);

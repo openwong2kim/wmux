@@ -655,6 +655,8 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
   let targetType = 'page';
   /** Target.getTargetInfo probes of Pages (matchPinnedPage). */
   let probes = 0;
+  /** Probes of the guest Page left to fail (a Page mid-navigation). */
+  let failGuestProbes = 0;
   /** The profile browser.cdp.info reports for the pane. */
   let profile = 'p1';
   /** A Page Playwright has for wc-1 (null: none, the Windows shape). */
@@ -665,6 +667,10 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     const guestSession = {
       send: vi.fn().mockImplementation(() => {
         probes++;
+        if (failGuestProbes > 0) {
+          failGuestProbes--;
+          return Promise.reject(new Error('Target closed (navigating)'));
+        }
         return Promise.resolve({ targetInfo: { targetId: 'wc-1' } });
       }),
       detach: vi.fn().mockResolvedValue(undefined),
@@ -759,7 +765,7 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
   }
 
   const remembered = (engine: PlaywrightEngine) =>
-    [...(engine as unknown as { unpageableTargets: Set<string> }).unpageableTargets];
+    [...(engine as unknown as { unpageableTargets: Map<string, unknown> }).unpageableTargets.keys()];
 
   beforeEach(() => {
     (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
@@ -773,6 +779,7 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     existedAtConnect = true;
     targetType = 'page';
     probes = 0;
+    failGuestProbes = 0;
     profile = 'p1';
     guestPage = null;
     vi.useFakeTimers();
@@ -958,6 +965,32 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     await done;
     expect(calls).toBeGreaterThan(0);
     expect(remembered(engine)).toEqual([]);
+  });
+  it('the late-Page check for one target never hides a Page from another', async () => {
+    targetType = 'webview';
+    const engine = await engineFor();
+    await lookup(engine); // wc-1 remembered
+    targetId = 'wc-2';
+    await lookup(engine); // wc-2 remembered
+    expect(remembered(engine).sort()).toEqual(['wc-1', 'wc-2']);
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    const forTwo = await lookup(engine); // probes the new Page: it is wc-1's
+    expect(forTwo.page).toBeNull();
+    targetId = 'wc-1';
+    const forOne = await lookup(engine);
+    expect(forOne.page).toBe(guestPage);
+  });
+
+  it('a Page whose probe fails is probed again on the next lookup', async () => {
+    targetType = 'webview';
+    const engine = await engineFor();
+    await lookup(engine);
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    failGuestProbes = 1; // mid-navigation
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    const second = await lookup(engine);
+    expect(second.page).toBe(guestPage);
   });
 });
 
