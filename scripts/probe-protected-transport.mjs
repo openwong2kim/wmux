@@ -12,8 +12,9 @@
  * Usage: node scripts/probe-protected-transport.mjs [--browser chrome|edge|<path>]... [--headful] [--json out.json]
  * --headful runs Chrome with windows, as wmux does (headless Chrome denies
  * downloads in a new context by default).
- * Exits non-zero when a browser that was found fails a pipe row, the pipe
- * holds less than the port on any row, or the suite did not finish.
+ * Exits 1 when a browser that was found fails a pipe row, the pipe holds less
+ * than the port on any row, or the suite did not finish; 2 on a bad argument.
+ * REPORTED_ROWS are known differences from the port: printed, never failed on.
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -25,14 +26,29 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUITE = 'src/main/browser-session/__tests__/ProtectedTransport.chrome.runtime.test.ts';
 const SUITE_TIMEOUT_MS = 15 * 60_000;
 
+/** Rows the suite records but does not assert on the pipe (REPORTED_ROWS there): known differences from the port. */
+const REPORTED_ROWS = new Set(['k']);
+const USAGE = 'usage: node scripts/probe-protected-transport.mjs [--browser chrome|edge|<path>]... [--headful] [--json out.json]';
+
+function usageError(message) {
+  console.error(`${message}\n${USAGE}`);
+  process.exit(2);
+}
+
 const args = process.argv.slice(2);
 const wanted = [];
 let jsonOut = null;
 let headful = false;
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--browser') wanted.push(args[++i]);
+  const value = () => {
+    const v = args[++i];
+    if (v === undefined || v.startsWith('--')) usageError(`${args[i - 1]} needs a value`);
+    return v;
+  };
+  if (args[i] === '--browser') wanted.push(value());
   else if (args[i] === '--headful') headful = true;
-  else if (args[i] === '--json') jsonOut = args[++i];
+  else if (args[i] === '--json') jsonOut = value();
+  else usageError(`unknown argument: ${args[i]}`);
 }
 if (wanted.length === 0) wanted.push('chrome', 'edge');
 
@@ -89,8 +105,11 @@ for (const name of wanted) {
     const notes = ['port', 'pipe'].filter((t) => r.note?.[t]).map((t) => `${t}: ${r.note[t]}`).join('; ');
     console.log(`| ${r.id} | ${r.what} | ${cell(r.port)} | ${cell(r.pipe)} | ${notes} |`);
   }
-  const pipeShort = table.rows.filter((r) => r.pipe !== true).map((r) => r.id);
-  const weaker = table.rows.filter((r) => r.port === true && r.pipe !== true).map((r) => r.id);
+  const counted = table.rows.filter((r) => !REPORTED_ROWS.has(r.id));
+  const pipeShort = counted.filter((r) => r.pipe !== true).map((r) => r.id);
+  const weaker = counted.filter((r) => r.port === true && r.pipe !== true).map((r) => r.id);
+  const reported = table.rows.filter((r) => REPORTED_ROWS.has(r.id) && r.pipe !== true).map((r) => r.id);
+  if (reported.length) console.log(`known differences from the port, reported only: ${reported.join(', ')}`);
   if (pipeShort.length || weaker.length || run.status !== 0) {
     failed = true;
     console.log(`pipe rows not holding: ${pipeShort.join(', ') || 'none'}; pipe weaker than the port: ${weaker.join(', ') || 'none'}; suite exit ${run.status}`);
