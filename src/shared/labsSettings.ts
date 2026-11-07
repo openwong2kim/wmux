@@ -37,7 +37,8 @@ export function labsSettingsPath(): string {
 
 export function ringCompressionInConfig(file?: string): boolean {
   try {
-    return JSON.parse(fs.readFileSync(file ?? path.join(dataDir(), 'config.json'), 'utf8'))?.session?.ringCompression === true;
+    // A leading BOM (Windows PowerShell 5.1 writes one) would fail the parse.
+    return JSON.parse(fs.readFileSync(file ?? path.join(dataDir(), 'config.json'), 'utf8').replace(/^\uFEFF/, ''))?.session?.ringCompression === true;
   } catch {
     return false;
   }

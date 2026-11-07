@@ -20,7 +20,7 @@
 // change to one section's parsing cannot silently alter another's.
 
 import * as fs from 'fs';
-import { getConfigPath } from '../../daemon/config';
+import { getConfigPath, stripBom } from '../../daemon/config';
 
 export interface FirstPartyClientsReadOptions {
   /** Override the config path for tests. */
@@ -48,7 +48,7 @@ export function readConfiguredFirstPartyClients(
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw, (key, value) => {
+    parsed = JSON.parse(stripBom(raw), (key, value) => {
       // Prototype pollution guard — mirrors daemon/config.ts.
       if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
         return undefined;

@@ -230,17 +230,17 @@ function coercePushPresenceSuppression(
 /**
  * Read `pushPresenceSuppression` WITHOUT the repair behaviour of `loadConfig`.
  *
- * `loadConfig` rewrites config.json with defaults when it cannot parse the
- * file. That is right for boot — a daemon needs a config — and wrong for a
- * per-approval read on the push path, where an unlucky moment (a half-written
- * file, a transient EIO) would silently discard the user's whole config to
- * answer a question about one notification. This reads, never writes, and
- * resolves every failure to `failOpenPresenceConfig()`, i.e. send the push.
+ * `loadConfig` creates a missing config.json and runs migrations that write
+ * it, and it is a full backfill of every slice: too much for a per-approval
+ * read on the push path, where an unlucky moment (a half-written file, a
+ * transient EIO) must not decide anything beyond one notification. This
+ * reads, never writes, and resolves every failure to
+ * `failOpenPresenceConfig()`, i.e. send the push.
  */
 export function readPushPresenceSuppression(): PushPresenceSuppressionConfig {
   const failOpen = failOpenPresenceConfig();
   try {
-    const raw = fs.readFileSync(getConfigPath(), 'utf-8');
+    const raw = stripBom(fs.readFileSync(getConfigPath(), 'utf-8'));
     const parsed: unknown = JSON.parse(raw, (key, value) => {
       if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
       return value;
@@ -318,12 +318,11 @@ function coerceBrowserCdp(raw: unknown, defaults: BrowserCdpConfig): BrowserCdpC
 /**
  * The notify path's READ-ONLY view of `notifySinks`.
  *
- * Deliberately not `loadConfig()`. That function is a boot-time repair tool: a
- * read error or a parse failure makes it REWRITE config.json with defaults,
- * which is right when the daemon is starting and needs a usable file, and
- * catastrophic on a per-notification hot path — one transient `EMFILE` while an
- * approval fires would silently replace the operator's whole config with
- * defaults. Nothing here writes, creates a directory, or mutates anything.
+ * Deliberately not `loadConfig()`. That function is a boot-time loader: it
+ * creates a missing config.json, runs migrations that write it, and backfills
+ * every slice, which is right when the daemon is starting and too much for a
+ * per-notification hot path. Nothing here writes, creates a directory, or
+ * mutates anything.
  *
  * Cached on (mtimeMs, size) so the steady state is one `stat` per notification
  * rather than a full read+parse, while a `wmux` config edit still takes effect
@@ -346,7 +345,7 @@ export function readNotifySinks(
     ) {
       return notifySinksCache.sinks;
     }
-    const raw = fs.readFileSync(configPath, 'utf-8');
+    const raw = stripBom(fs.readFileSync(configPath, 'utf-8'));
     const parsed: unknown = JSON.parse(raw, (key, value) => {
       // Same prototype-pollution guard loadConfig uses.
       if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
@@ -384,8 +383,73 @@ export function resetGateMigrationSaveFailure(): void {
 }
 
 /**
+ * Drop a leading UTF-8 byte order mark. Windows PowerShell 5.1's
+ * `Set-Content -Encoding utf8` and `Out-File` write one, and `JSON.parse`
+ * rejects it, so a hand-edited config.json would otherwise read as unusable.
+ */
+export function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
+/**
+ * The config.json `loadConfig` could not use, and why. Set when a load fails,
+ * cleared by the next load that succeeds. While it names the current config
+ * path, `saveConfigOrThrow` refuses to write there: the file stays exactly as
+ * the user left it, and nothing (a gate edit, a LanLink toggle) can replace
+ * it with the fail-closed stand-in this process is running on.
+ */
+let unusableConfig: { path: string; reason: string } | null = null;
+
+/** Test seam: forget a previous unusable-file result. */
+export function resetUnusableConfig(): void {
+  unusableConfig = null;
+}
+
+/**
+ * What a process runs on when config.json exists but cannot be used. The
+ * defaults, except that every setting whose default is the open side is
+ * closed for the session, because the file may have closed it:
+ *
+ * - `browser.cdp.enabled` → off (the default is on).
+ * - `phoneDecisions` → both channels off (the defaults are on); approvals
+ *   then take the plain decline path a daemon without the channels serves.
+ * - `channels.trashTtlHours` → 0, keep everything (the default deletes the
+ *   trash after 30 days, which cannot be undone).
+ *
+ * The rest already default to the closed side: `lanlink` and `a2aRemote` are
+ * off, `notifySinks` is empty, `gate` gates the high-risk tools.
+ */
+function failClosedConfig(): DaemonConfig {
+  const config = createDefaultConfig();
+  config.browser = { cdp: { enabled: false } };
+  config.phoneDecisions = { native: false, stepwise: false };
+  config.channels = { ...(config.channels as ChannelRetentionConfig), trashTtlHours: 0 };
+  return config;
+}
+
+/**
+ * config.json exists but cannot be used: leave it as it is, warn once per
+ * failure (the daemon loads on every hook signal), and run fail-closed.
+ */
+function unusableConfigFallback(configPath: string, reason: string): DaemonConfig {
+  if (unusableConfig?.path !== configPath || unusableConfig.reason !== reason) {
+    console.warn(
+      `[daemon/config] ${configPath} could not be used (${reason}). It is left unchanged; ` +
+        'until it is fixed, wmux runs with its defaults and with browser CDP, phone decisions ' +
+        'and trash auto-deletion off.',
+    );
+  }
+  unusableConfig = { path: configPath, reason };
+  return failClosedConfig();
+}
+
+/**
  * Ensure ~/.wmux directory exists, then load config.json.
- * If the file is missing or malformed, a default config is written and returned.
+ *
+ * A missing file is created with the defaults. A file that exists but cannot
+ * be read, parsed or validated is never rewritten: this returns a fail-closed
+ * config instead (see `failClosedConfig`) and logs one warning naming the
+ * file and the error.
  */
 export function loadConfig(): DaemonConfig {
   const dir = getWmuxDir();
@@ -396,25 +460,35 @@ export function loadConfig(): DaemonConfig {
   const configPath = getConfigPath();
   const defaults = createDefaultConfig();
 
-  if (!fs.existsSync(configPath)) {
-    saveConfig(defaults);
-    return defaults;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(configPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      unusableConfig = null;
+      saveConfig(defaults);
+      return defaults;
+    }
+    return unusableConfigFallback(configPath, err instanceof Error ? err.message : String(err));
   }
 
+  let parsed: unknown;
   try {
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    const parsed: unknown = JSON.parse(raw, (key, value) => {
+    parsed = JSON.parse(stripBom(raw), (key, value) => {
       // Prototype pollution guard (mirrors SessionManager pattern)
       if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
       return value;
     });
+  } catch (err) {
+    return unusableConfigFallback(configPath, err instanceof Error ? err.message : String(err));
+  }
 
-    if (!validateConfig(parsed)) {
-      console.warn('[daemon/config] Invalid config — resetting to defaults');
-      saveConfig(defaults);
-      return defaults;
-    }
+  if (!validateConfig(parsed)) {
+    return unusableConfigFallback(configPath, 'a required daemon or session field is missing or has the wrong type');
+  }
+  unusableConfig = null;
 
+  try {
     const config = parsed as DaemonConfig;
 
     // P7 마이그레이션: config.json에 박제된 pipeName이 "구버전 기본값"
@@ -558,6 +632,8 @@ export function loadConfig(): DaemonConfig {
     // Absent slice (old config.json) → default enabled, preserving every prior
     // install's behaviour. A malformed slice degrades to enabled too, never
     // silently disabling browser automation. validateConfig ignores the field.
+    // (A file that cannot be parsed at all is a different case: see
+    // failClosedConfig, which turns CDP off.)
     config.browser = coerceBrowserCdp(config.browser, defaults.browser ?? { cdp: { enabled: true } });
 
     // ── Gate control (#783): per-field backfill ──
@@ -587,9 +663,9 @@ export function loadConfig(): DaemonConfig {
 
     return config;
   } catch (err) {
-    console.warn('[daemon/config] Failed to read config.json — resetting to defaults:', err);
-    saveConfig(defaults);
-    return defaults;
+    // A throw while backfilling a parsed, valid file is a wmux bug, not the
+    // user's file: still never rewrite it.
+    return unusableConfigFallback(configPath, err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -611,6 +687,12 @@ export function saveConfig(config: DaemonConfig): void {
  */
 export function saveConfigOrThrow(config: DaemonConfig): void {
   const configPath = getConfigPath();
+  if (unusableConfig?.path === configPath) {
+    throw new Error(
+      `${configPath} could not be used (${unusableConfig.reason}), so wmux does not write over it. ` +
+        'Fix or remove the file, then try again.',
+    );
+  }
   const tmpPath = configPath + '.tmp';
   const dir = path.dirname(configPath);
 

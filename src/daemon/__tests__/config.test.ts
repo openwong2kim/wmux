@@ -6,11 +6,13 @@ import {
   createDefaultConfig,
   loadConfig,
   saveConfig,
+  saveConfigOrThrow,
   getWmuxDir,
   readNotifySinks,
   resetNotifySinksCache,
   readPushPresenceSuppression,
   resetGateMigrationSaveFailure,
+  resetUnusableConfig,
 } from '../config';
 import {
   DESKTOP_PRESENCE_STALE_AFTER_MS,
@@ -32,6 +34,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetUnusableConfig();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (os as any).homedir = originalHomedir;
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -86,28 +89,153 @@ describe('loadConfig', () => {
     expect(loaded.daemon.logLevel).toBe('debug');
   });
 
-  it('resets to defaults when config.json contains invalid JSON', () => {
+  it('reads a config.json that starts with a UTF-8 BOM (Windows PowerShell 5.1 writes one)', () => {
     const wmuxDir = getWmuxDir();
     fs.mkdirSync(wmuxDir, { recursive: true });
-    fs.writeFileSync(path.join(wmuxDir, 'config.json'), '{{not json}}', 'utf-8');
-
-    const config = loadConfig();
-    expect(config.version).toBe(1);
-    expect(config.daemon.logLevel).toBe('info');
+    const custom = {
+      ...createDefaultConfig(),
+      daemon: { ...createDefaultConfig().daemon, logLevel: 'debug' },
+      browser: { cdp: { enabled: false } },
+      phoneDecisions: { native: true, stepwise: true },
+    };
+    const configPath = path.join(wmuxDir, 'config.json');
+    fs.writeFileSync(configPath, '\uFEFF' + JSON.stringify(custom, null, 2), 'utf-8');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const config = loadConfig();
+      // The file's own values, not the defaults a failed parse would give.
+      expect(config.daemon.logLevel).toBe('debug');
+      expect(config.browser?.cdp.enabled).toBe(false);
+      expect(config.phoneDecisions).toEqual({ native: true, stepwise: true });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
-  it('resets to defaults when config.json has wrong structure', () => {
-    const wmuxDir = getWmuxDir();
-    fs.mkdirSync(wmuxDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(wmuxDir, 'config.json'),
-      JSON.stringify({ version: 1, daemon: 'wrong' }),
-      'utf-8',
-    );
+  describe('a config.json that cannot be used', () => {
+    const cases: Array<[string, string]> = [
+      ['invalid JSON', '{{not json}}'],
+      ['the wrong structure', JSON.stringify({ version: 1, daemon: 'wrong', browser: { cdp: { enabled: true } } })],
+    ];
+    for (const [what, content] of cases) {
+      it(`${what}: left byte-identical, CDP off, one warning naming the file`, () => {
+        const wmuxDir = getWmuxDir();
+        fs.mkdirSync(wmuxDir, { recursive: true });
+        const configPath = path.join(wmuxDir, 'config.json');
+        fs.writeFileSync(configPath, content, 'utf-8');
+        const before = fs.readFileSync(configPath);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+          const config = loadConfig();
+          // The daemon loads on every hook signal: still one warning.
+          loadConfig();
+          expect(config.browser?.cdp.enabled).toBe(false);
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(String(warn.mock.calls[0][0])).toContain(configPath);
+        } finally {
+          warn.mockRestore();
+        }
+        expect(fs.readFileSync(configPath).equals(before)).toBe(true);
+        expect(fs.existsSync(configPath + '.tmp')).toBe(false);
+      });
+    }
 
-    const config = loadConfig();
-    expect(config.version).toBe(1);
-    expect(config.daemon.logLevel).toBe('info');
+    function writeGarbage(): string {
+      const wmuxDir = getWmuxDir();
+      fs.mkdirSync(wmuxDir, { recursive: true });
+      const configPath = path.join(wmuxDir, 'config.json');
+      fs.writeFileSync(configPath, '{ "browser": { "cdp": { "enabled": false } }', 'utf-8');
+      return configPath;
+    }
+
+    it('names the parse error in the warning', () => {
+      writeGarbage();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        loadConfig();
+        let parseError = '';
+        try {
+          JSON.parse('{ "browser": { "cdp": { "enabled": false } }');
+        } catch (err) {
+          parseError = (err as Error).message;
+        }
+        expect(String(warn.mock.calls[0][0])).toContain(parseError);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('closes every setting whose default is the open side, and keeps the closed ones closed', () => {
+      writeGarbage();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const config = loadConfig();
+        const defaults = createDefaultConfig();
+        expect(config.browser?.cdp.enabled).toBe(false);
+        expect(config.phoneDecisions).toEqual({ native: false, stepwise: false });
+        expect(config.channels?.trashTtlHours).toBe(0);
+        expect(config.lanlink?.enabled).toBe(false);
+        expect(config.a2aRemote).toEqual(defaults.a2aRemote);
+        expect(config.notifySinks).toEqual([]);
+        expect(config.gate).toEqual(defaults.gate);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('refuses every later save to that file, so the stand-in never lands on disk', () => {
+      const configPath = writeGarbage();
+      const before = fs.readFileSync(configPath);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const config = loadConfig();
+        expect(() => saveConfigOrThrow(config)).toThrow(configPath);
+        saveConfig(config); // the best-effort saver used by LanLink: logs, does not write
+        expect(error).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+      }
+      expect(fs.readFileSync(configPath).equals(before)).toBe(true);
+    });
+
+    it('wmux gate --add says the change did not land and exits non-zero', () => {
+      const configPath = writeGarbage();
+      const before = fs.readFileSync(configPath);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      const exitCode = process.exitCode;
+      try {
+        handleGate('--add', ['WebFetch'], true);
+        const reply = JSON.parse(String(log.mock.calls[0][0]));
+        expect(reply.ok).toBe(false);
+        expect(reply.error).toContain(configPath);
+        expect(process.exitCode).toBe(1);
+      } finally {
+        process.exitCode = exitCode;
+        warn.mockRestore();
+        log.mockRestore();
+      }
+      expect(fs.readFileSync(configPath).equals(before)).toBe(true);
+    });
+
+    it('a fixed file is used again on the next load, and saves work again', () => {
+      const configPath = writeGarbage();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        loadConfig();
+      } finally {
+        warn.mockRestore();
+      }
+      fs.writeFileSync(configPath, JSON.stringify(createDefaultConfig(), null, 2), 'utf-8');
+      const config = loadConfig();
+      expect(config.browser?.cdp.enabled).toBe(true);
+      config.daemon.logLevel = 'debug';
+      expect(() => saveConfigOrThrow(config)).not.toThrow();
+      expect(loadConfig().daemon.logLevel).toBe('debug');
+    });
   });
 });
 
