@@ -117,12 +117,20 @@ export class CdpPipeEndpoint {
     // The mux may have closed during the handshake.
     if (this.closed || !mux.isOpen()) { ws.terminate(); return; }
     this.clients.add(ws);
+    let sent = 0;
     const client = mux.attachExternal('external', (text) => {
       if (ws.readyState !== ws.OPEN) return;
       ws.send(text);
+      sent += Buffer.byteLength(text);
       // A client that stopped reading: disconnect it instead of buffering on.
       if (ws.bufferedAmount > maxBuffered) ws.terminate();
-    }, () => ws.close());
+    }, () => ws.close(), {
+      // Signs of life for the stall watch (C2c): the client's WebSocket answers
+      // a ping, and reading down a backlog moves `flushed`.
+      ping: () => { if (ws.readyState === ws.OPEN) ws.ping(); },
+      drain: () => ({ buffered: ws.bufferedAmount, flushed: sent - ws.bufferedAmount }),
+    });
+    ws.on('pong', () => client.pong());
     ws.on('message', (data, isBinary) => {
       if (isBinary) return; // CDP is text
       client.receive(data.toString());

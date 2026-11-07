@@ -113,6 +113,8 @@ export interface CdpPipeDiagnostics {
   absorbed?: Record<string, number>;
   /** Refusals by a profile's rules, by reason. Absent from older builds. */
   refusals?: Record<string, number>;
+  /** The stall watch (C2c): arms, fires and what ended or restarted them, by reason. Absent from older builds. */
+  watchdog?: Record<string, number>;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -170,5 +172,5 @@ export function isAppMemoryDiagnostics(value: unknown): value is AppMemoryDiagno
     (value.cdpPipe === undefined || (record(value.cdpPipe) &&
       counters(value.cdpPipe, ['frames', 'bytes', 'parseMsTotal', 'parseMsMax', 'largestFrameBytes', 'refused']) &&
       record(value.cdpPipe.dropped) && counters(value.cdpPipe.dropped, Object.keys(value.cdpPipe.dropped)) &&
-      countsByReason(value.cdpPipe.absorbed) && countsByReason(value.cdpPipe.refusals)));
+      countsByReason(value.cdpPipe.absorbed) && countsByReason(value.cdpPipe.refusals) && countsByReason(value.cdpPipe.watchdog)));
 }
