@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupFleetByDevice, groupFleetPanes, selectFleetPanes, type FleetDeviceHost, type FleetPane, type FleetRow } from '../fleet';
+import { groupFleetByDevice, groupFleetPanes, selectFleetPanes, withoutUnreachableHosts, type FleetDeviceHost, type FleetPane, type FleetRow } from '../fleet';
 import type { Workspace } from '../../../../shared/types';
 import { LOCAL_PC_ID } from '../../../../shared/pcRail';
 
@@ -75,9 +75,9 @@ describe('groupFleetByDevice', () => {
   it('a host the rail cannot reach, with every attachment stale, keeps a row-less disconnected head with when it was last seen', () => {
     const groups = groupFleetPanes([pane('l')]);
     const remoteWorkspaces = [
-      { hostId: 'host-off', hostLabel: 'office', stale: true },
-      { hostId: 'host-off', hostLabel: 'office', stale: true },
-      { hostId: 'host-up', hostLabel: 'laptop', stale: false },
+      { hostId: 'host-off', hostLabel: 'office', stale: true, panes: [{ sessionId: 'a', agentName: 'Claude Code', agentStatus: 'awaiting_input' as const }] },
+      { hostId: 'host-off', hostLabel: 'office', stale: true, panes: [{ sessionId: 'b', agentName: 'Codex' }, { sessionId: 'c' }] },
+      { hostId: 'host-up', hostLabel: 'laptop', stale: false, panes: [] },
     ];
     const byDevice = groupFleetByDevice(groups, {
       remoteWorkspaces, hosts: [host('host-off', 'office', { offline: true, lastSeenAt: 1_000 })], includeDisconnected: true,
@@ -85,6 +85,8 @@ describe('groupFleetByDevice', () => {
     expect(byDevice.devices.map((d) => d.id)).toEqual([LOCAL_PC_ID, 'host-off']);
     expect(byDevice.devices[1]).toMatchObject({
       label: 'office', state: 'disconnected', lastSeenAt: 1_000, running: [], finished: [], idle: [],
+      // The last snapshot's agent panes (a plain shell is not one).
+      lastSeen: { panes: 2, neededYou: 1 },
     });
     // Not in the rail (or not polled yet): still a head, no age.
     expect(groupFleetByDevice(groups, { remoteWorkspaces, includeDisconnected: true }).devices[1].lastSeenAt).toBeNull();
@@ -95,7 +97,7 @@ describe('groupFleetByDevice', () => {
   it('a host with live rows is connected even when one of its attachments is stale', () => {
     const groups = groupFleetPanes([remote('r', 'host-x', 'x', { agentStatus: 'running' })]);
     const byDevice = groupFleetByDevice(groups, {
-      remoteWorkspaces: [{ hostId: 'host-x', hostLabel: 'x', stale: true }], includeDisconnected: true,
+      remoteWorkspaces: [{ hostId: 'host-x', hostLabel: 'x', stale: true, panes: [] }], includeDisconnected: true,
     });
     expect(byDevice.devices).toHaveLength(1);
     expect(byDevice.devices[0]).toMatchObject({ id: 'host-x', state: 'connected' });
@@ -103,7 +105,7 @@ describe('groupFleetByDevice', () => {
 
   it('a stale attachment on a host the rail still reaches is a workspace gone, not a disconnected PC', () => {
     const byDevice = groupFleetByDevice(groupFleetPanes([pane('l')]), {
-      remoteWorkspaces: [{ hostId: 'host-x', hostLabel: 'x', stale: true }],
+      remoteWorkspaces: [{ hostId: 'host-x', hostLabel: 'x', stale: true, panes: [] }],
       hosts: [host('host-x', 'x', { lastSeenAt: 5_000 })],
       includeDisconnected: true,
     });
@@ -120,7 +122,7 @@ describe('groupFleetByDevice', () => {
   it('a remote pane with no agent resolved still sits under its host, not this computer', () => {
     const shell = pane('', { surfaceType: 'remote-terminal', remoteHostId: 'host-x', paneId: 'p-shell' });
     const byDevice = groupFleetByDevice(groupFleetPanes([pane('l'), shell]), {
-      remoteWorkspaces: [{ hostId: 'host-x', hostLabel: 'x-snapshot', stale: false }],
+      remoteWorkspaces: [{ hostId: 'host-x', hostLabel: 'x-snapshot', stale: false, panes: [] }],
     });
     expect(byDevice.devices.map((d) => [d.id, d.label, d.idle.map((row) => row.pane.paneId)])).toEqual([
       [LOCAL_PC_ID, '', ['p-l']],
@@ -141,11 +143,31 @@ describe('groupFleetByDevice', () => {
     expect(row.remote).toBeUndefined();
   });
 
-  it('a host the rail cannot reach reads disconnected even while its last rows still resolve', () => {
-    const byDevice = groupFleetByDevice(groupFleetPanes([remote('r', 'host-x', 'x')]), {
-      hosts: [host('host-x', 'x', { offline: true, lastSeenAt: 2_000 })],
+  it('an unreachable PC\'s rows leave every section (so the chips), counted for its head, and come back once it answers', () => {
+    const panes = [
+      pane('l', { agentStatus: 'running' }),
+      remote('x-ask', 'host-x', 'x', { agentStatus: 'awaiting_input' }),
+      remote('x-run', 'host-x', 'x', { agentStatus: 'running' }),
+      pane('', { surfaceType: 'remote-terminal', remoteHostId: 'host-x', paneId: 'p-x-shell' }),
+      remote('y-run', 'host-y', 'y', { agentStatus: 'running' }),
+    ];
+    const groups = groupFleetPanes(panes);
+    const { groups: reachable, away } = withoutUnreachableHosts(groups, new Set(['host-x']));
+    // The status list and its chips read these groups.
+    expect([ids(reachable.needsYou), ids(reachable.running).sort(), ids(reachable.idle)]).toEqual([[], ['l', 'y-run'], []]);
+    expect(away).toEqual({ 'host-x': { panes: 3, neededYou: 1 } });
+    // By device: no Needs you row from it on top, a row-less head with the note's counts.
+    const byDevice = groupFleetByDevice(reachable, {
+      hosts: [host('host-x', 'x', { offline: true, lastSeenAt: 2_000 }), host('host-y', 'y')], away, includeDisconnected: true,
     });
-    expect(byDevice.devices[0]).toMatchObject({ id: 'host-x', state: 'disconnected', lastSeenAt: 2_000 });
-    expect(ids(byDevice.devices[0].idle)).toEqual(['r']);
+    expect(byDevice.needsYou).toEqual([]);
+    expect(byDevice.devices.map((d) => [d.id, d.state, d.running.length + d.finished.length + d.idle.length])).toEqual([
+      [LOCAL_PC_ID, 'local', 1], ['host-x', 'disconnected', 0], ['host-y', 'connected', 1],
+    ]);
+    expect(byDevice.devices[1]).toMatchObject({ lastSeenAt: 2_000, lastSeen: { panes: 3, neededYou: 1 } });
+    // It answers again: nothing is dropped, the very same groups come back.
+    const back = withoutUnreachableHosts(groups, new Set());
+    expect(back.groups).toBe(groups);
+    expect(ids(back.groups.needsYou)).toEqual(['x-ask']);
   });
 });

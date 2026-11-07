@@ -50,6 +50,14 @@ function key(name: string): void {
   act(() => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true })); });
 }
 const heads = () => [...container.querySelectorAll<HTMLElement>('[data-fleet-device-head]')];
+/** A head's name, its state and running count, and its fold buttons, apart. */
+const headText = (h: HTMLElement) => [
+  h.querySelector('.wmux-fleet-device-name')?.textContent ?? '',
+  h.querySelector('.wmux-fleet-device-meta')?.textContent ?? '',
+  [...h.querySelectorAll('.wmux-fleet-device-fold')].map((b) => b.textContent).join(' + '),
+].join(' | ');
+const note = (hostId: string) => container.querySelector(`[data-fleet-device-note="${hostId}"]`)?.textContent ?? null;
+const chip = (id: string) => container.querySelector(`[data-filter="${id}"]`)?.textContent ?? null;
 
 beforeEach(() => {
   vi.spyOn(terminalTail, 'tailForPtyOrDaemon').mockResolvedValue([]);
@@ -108,9 +116,20 @@ describe('FleetView — the list grouped by device', () => {
     // The Needs you head counts both, once; no device head counts them again.
     expect(container.querySelector('[data-fleet-section="needsYou"] .wmux-board-col-count')?.textContent).toBe('2');
     expect(heads().map((h) => h.dataset.fleetDeviceHead)).toEqual(['local', 'host-b', 'host-off']);
-    expect(heads().map((h) => h.textContent)).toEqual([
-      'This computerRunning 1 · Idle 1', 'betaOnline · Running 1', 'officeDisconnected',
+    // The fold is a button in the head ("Idle 1 folded"), not a second row
+    // repeating the count.
+    expect(heads().map(headText)).toEqual([
+      'This computer | Running 1 | Idle 1 folded', 'beta | Online · Running 1 | ', 'office | Disconnected | ',
     ]);
+    expect(container.querySelectorAll('.wmux-fleet-idle-toggle')).toHaveLength(0);
+    const fold = container.querySelector<HTMLButtonElement>('[data-fleet-key="fleet:idle-toggle:local"]')!;
+    expect([fold.getAttribute('role'), fold.getAttribute('aria-expanded')]).toEqual(['option', 'false']);
+    act(() => fold.click());
+    expect(fold.getAttribute('aria-expanded')).toBe('true');
+    expect(fold.textContent).toBe('Idle 1');
+    expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-3"]')).not.toBeNull();
+    // Every attachment from office is stale: no rows, a note on what it had.
+    expect(note('host-off')).toBe('Last seen 1 pane. It shows here again when it reconnects.');
     // Rows under their own device's head do not repeat the host.
     const betaRunning = container.querySelector<HTMLElement>('[data-fleet-card][data-status="running"][data-workspace-id="ws-c"]');
     expect(betaRunning?.querySelector('[data-fleet-remote]')).toBeNull();
@@ -153,10 +172,39 @@ describe('FleetView — the list grouped by device', () => {
     mount();
     await flushRaf();
     expect(heads().map((h) => h.dataset.fleetDeviceHead)).toEqual(['local', 'host-b']);
-    expect(heads()[1].textContent).toBe('officeOnline · Running 1');
+    expect(headText(heads()[1])).toBe('office | Online · Running 1 | ');
     act(() => useStore.setState({ pcRailHostStatus: { 'host-b': 'connected', 'host-off': 'unreachable' } }));
     await flushRaf();
-    expect(heads().map((h) => h.textContent)).toContain('homeDisconnected');
+    expect(heads().map(headText)).toContain('home | Disconnected | ');
+  });
+
+  it('a PC the rail cannot reach leaves the list and the chips in both groupings, and comes back when it answers', async () => {
+    act(() => useStore.setState({
+      pcRailHosts: [{ id: 'host-b', label: 'beta' }],
+      pcRailHostStatus: { 'host-b': 'unreachable' },
+    }));
+    mount();
+    await flushRaf();
+    const cards = () => [...container.querySelectorAll<HTMLElement>('[data-fleet-card]')].map((el) => el.dataset.workspaceId).sort();
+    // Beta's asking row is not on top, and its running row is not listed.
+    expect(cards()).toEqual(['ws-1', 'ws-2']);
+    expect(chip('attention')).toContain('1');
+    expect(chip('running')).toContain('1');
+    expect(headText(heads()[1])).toBe('beta | Disconnected | ');
+    expect(note('host-b')).toBe('Last seen 2 panes, 1 needed you. They show here again when it reconnects.');
+    // The status list drops them too.
+    act(() => useStore.getState().setFleetGroupBy('status'));
+    await flushRaf();
+    expect(cards()).toEqual(['ws-1', 'ws-2']);
+    // It answers: the rows are back at once, in either grouping.
+    act(() => useStore.setState({ pcRailHostStatus: { 'host-b': 'connected' } }));
+    await flushRaf();
+    expect(cards()).toEqual(['ws-1', 'ws-2', 'ws-b', 'ws-c']);
+    expect(chip('attention')).toContain('2');
+    act(() => useStore.getState().setFleetGroupBy('device'));
+    await flushRaf();
+    expect(note('host-b')).toBeNull();
+    expect(heads().map(headText)[1]).toBe('beta | Online · Running 1 | ');
   });
 
   it('a search narrows each device and drops the row-less head', async () => {
