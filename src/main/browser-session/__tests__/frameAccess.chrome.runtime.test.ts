@@ -117,11 +117,25 @@ for (const mode of MODES) {
       try {
         await page.goto(h.origin(), { waitUntil: 'load' });
         await loaded(page);
-        const send = await sessionOf(page);
+        const cdp = await sessionOf(page);
+        // Every Runtime.evaluate's context and whether Chrome refused it.
+        const evals: Array<{ contextId: unknown; refused: boolean }> = [];
+        const send: CdpSend = async (method, params) => {
+          if (method !== 'Runtime.evaluate') return cdp(method, params);
+          const entry = { contextId: (params as { contextId?: unknown } | undefined)?.contextId, refused: false };
+          evals.push(entry);
+          try {
+            return await cdp(method, params);
+          } catch (err) {
+            entry.refused = true;
+            throw err;
+          }
+        };
         const worlds = new FrameWorlds(send);
         const inner = (await listChildFrames(send)).find((f) => f.name === 'checkout')!;
         // Cache the world for this exact document.
         expect(await evaluateInFrame(send, worlds, inner.frameId, '1', inner.loaderId)).toEqual({ value: 1 });
+        const cachedContext = evals[0]?.contextId;
         // Remove the iframe but keep its window reachable from the page.
         await page.evaluate(() => {
           const frame = document.getElementById('inner') as HTMLIFrameElement;
@@ -129,6 +143,8 @@ for (const mode of MODES) {
           frame.remove();
         });
         await expect(evaluateInFrame(send, worlds, inner.frameId, '1', inner.loaderId)).rejects.toThrow(/^FRAME_GONE/);
+        // The cached world was tried and Chrome refused it: it went with the document.
+        expect(evals.slice(1)).toEqual([{ contextId: cachedContext, refused: true }]);
       } finally {
         await page.close();
       }
