@@ -63,6 +63,7 @@ const COMPUTER_SHAPE = {
   keys: z.array(z.string()).optional().describe('hotkey: modifiers (ctrl, alt, shift, meta/cmd) plus one pressKey key, e.g. ["ctrl","s"].'),
   direction: z.enum(['up', 'down', 'left', 'right']).optional(),
   amount: z.number().int().min(1).max(50).optional(),
+  keepFront: z.boolean().optional().describe('Input actions (Windows): keep the target window in front afterwards. By default the window the user had in front gets it back, which closes a menu, palette or flyout that dismisses on focus loss; set this for flows that need one to stay open, and on a click that keys (pressKey, hotkey) will follow.'),
 };
 
 /**

@@ -176,6 +176,15 @@ describe('helper protocol', () => {
     });
   });
 
+  it('keeps user_input_active as its own code, not_delivered', () => {
+    const parsed = parseHelperLine(JSON.stringify({
+      id: 6, ok: false, error: { code: 'user_input_active', message: 'x', disposition: 'not_delivered' },
+    }));
+    expect(parsed.kind === 'response' && !parsed.response.ok && parsed.response.error).toEqual({
+      code: 'user_input_active', message: 'x', disposition: 'not_delivered',
+    });
+  });
+
   it('downgrades an unknown helper error code to internal', () => {
     const parsed = parseHelperLine('{"id":4,"ok":false,"error":{"code":"weird","message":"x"}}');
     expect(parsed.kind === 'response' && !parsed.response.ok && parsed.response.error.code).toBe('internal');

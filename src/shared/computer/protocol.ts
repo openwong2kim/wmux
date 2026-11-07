@@ -359,6 +359,15 @@ export type ForegroundMode = 'allow' | 'refuse';
 
 export const FOREGROUND_MODES: readonly ForegroundMode[] = ['allow', 'refuse'];
 
+/*
+ * `keepFront` on an input method (optional, default false): after real input
+ * or an accessibility call that brought the target window to the front, the
+ * Windows helper gives the front back to the window that had it, which closes
+ * anything in the target that goes away on focus loss (a menu, a command
+ * palette, a flyout). `keepFront: true` leaves the target in front. The
+ * result's note says when the front was given back or why it was not.
+ */
+
 /**
  * Methods a helper implements. Coordinates here are window logical points.
  *
@@ -407,26 +416,27 @@ export interface HelperMethods {
       clickCount: number;
       modifiers: Modifier[];
       foreground?: ForegroundMode;
+      keepFront?: boolean;
       marker?: AgentMarker;
     };
     result: ActionResult;
   };
   setValue: {
-    params: { snapshotId: string; target: ControlTarget; index: number; value: string; foreground?: ForegroundMode; marker?: AgentMarker };
+    params: { snapshotId: string; target: ControlTarget; index: number; value: string; foreground?: ForegroundMode; keepFront?: boolean; marker?: AgentMarker };
     result: ActionResult;
   };
   type: {
-    params: { snapshotId: string; target: ControlTarget; index?: number; text: string; foreground?: ForegroundMode; marker?: AgentMarker };
+    params: { snapshotId: string; target: ControlTarget; index?: number; text: string; foreground?: ForegroundMode; keepFront?: boolean; marker?: AgentMarker };
     result: ActionResult;
   };
   /** `key` is canonical (normalizeKey); never a modifier on its own. */
   pressKey: {
-    params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number; foreground?: ForegroundMode; marker?: AgentMarker };
+    params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number; foreground?: ForegroundMode; keepFront?: boolean; marker?: AgentMarker };
     result: ActionResult;
   };
   /** Modifiers down in MODIFIERS order, `key` down/up, modifiers up in reverse. */
   hotkey: {
-    params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key; foreground?: ForegroundMode; marker?: AgentMarker };
+    params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key; foreground?: ForegroundMode; keepFront?: boolean; marker?: AgentMarker };
     result: ActionResult;
   };
   scroll: {
@@ -438,6 +448,7 @@ export interface HelperMethods {
       direction: ScrollDirection;
       amount: number;
       foreground?: ForegroundMode;
+      keepFront?: boolean;
       marker?: AgentMarker;
     };
     result: ActionResult;

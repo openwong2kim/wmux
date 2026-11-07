@@ -147,6 +147,42 @@ internal static unsafe class Input
     public static void CountSemantic()
     {
         lock (Lock) sent++;
+        // The call may inject a key pair (VK 0xB9) that moves GetLastInputInfo.
+        GiveBack.NoteOwnInput(call: true);
+    }
+
+    /// <summary>A key or mouse button this helper pressed is still down.</summary>
+    public static bool AnyHeld
+    {
+        get
+        {
+            lock (Lock) return HeldKeys.Count > 0 || HeldButtons.Count > 0;
+        }
+    }
+
+    /// <summary>The helper is shutting down.</summary>
+    public static bool Stopping
+    {
+        get
+        {
+            lock (Lock) return stopping;
+        }
+    }
+
+    private static System.Drawing.Point? lastPointerEnd;
+
+    /// <summary>Where this action's last pointer batch left the cursor (null: none sent since ForgetPointerEnd).</summary>
+    public static System.Drawing.Point? LastPointerEnd
+    {
+        get
+        {
+            lock (Lock) return lastPointerEnd;
+        }
+    }
+
+    public static void ForgetPointerEnd()
+    {
+        lock (Lock) lastPointerEnd = null;
     }
 
     /// <summary>Takes back CountSemantic for a call that certainly did not run (not supported, disabled).</summary>
@@ -199,8 +235,16 @@ internal static unsafe class Input
             foreach (var e in recorded) Record(e);
             if (recorded.Count > 0) Persist();
 
+            // Read before SendInput: the batch's own events are stamped while it runs.
+            uint lastBefore = BackgroundInput.LastInputTick();
             uint sent = PInvoke.SendInput(inputs, sizeof(INPUT));
             Input.sent += sent;
+            if (sent > 0)
+            {
+                GiveBack.NoteOwnInput(call: false, lastBefore);
+                var pointer = events.Take((int)sent).LastOrDefault(e => e.Kind is InputKind.Other or InputKind.Button);
+                if (pointer.Kind is InputKind.Other or InputKind.Button) lastPointerEnd = new System.Drawing.Point((int)Math.Round(pointer.X), (int)Math.Round(pointer.Y));
+            }
             if (sent == inputs.Length)
             {
                 foreach (var e in recorded) Forget(e);
