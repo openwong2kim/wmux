@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { EDGE_SIGNED_IN_HINT, edgeAccountSignedIn } from '../edgeProfileSignin';
+import { EDGE_SIGNED_IN_HINT, edgeAccountSignedIn, edgeProfileDirs } from '../edgeProfileSignin';
 
 // Shaped like the Default/Preferences Edge 157 wrote after signing a fresh
 // profile in by itself (key names as Edge writes them; every value is fake).
@@ -32,6 +32,14 @@ describe('edgeAccountSignedIn', () => {
     expect(edgeAccountSignedIn('')).toBe(false);
     expect(edgeAccountSignedIn('{not json')).toBe(false);
     expect(edgeAccountSignedIn('{"account_info":"x"}')).toBe(false);
+  });
+
+  it('lists the profile folders Local State names, and Default without one', () => {
+    expect(edgeProfileDirs(JSON.stringify({ profile: { info_cache: { Default: {}, 'Profile 1': {} } } }))).toEqual(['Default', 'Profile 1']);
+    expect(edgeProfileDirs(null)).toEqual(['Default']);
+    expect(edgeProfileDirs('{bad')).toEqual(['Default']);
+    // A name that is not a plain folder name is never joined into a path.
+    expect(edgeProfileDirs(JSON.stringify({ profile: { info_cache: { '..': {}, 'a/b': {}, Default: {} } } }))).toEqual(['Default']);
   });
 
   it('the doctor hint names no email and no account id', () => {

@@ -54,8 +54,8 @@ import { NATIVE_SELF_TEST_LINE } from '../../shared/mcpLauncher';
 import { fileSha256, probeKey, recordedProbe } from '../../shared/probedNative';
 import { BROKER_TOOL_NAME_RE, type McpSessionsSummary } from '../../shared/mcpSessions';
 import { homeRelative } from '../../shared/homeRelative';
-import { EDGE_SIGNED_IN_HINT, edgeAccountSignedIn } from '../../shared/edgeProfileSignin';
-import { defaultSessionPath } from './role';
+import { EDGE_SIGNED_IN_HINT, edgeAccountSignedIn, edgeProfileDirs } from './edgeProfileSignin';
+
 
 // --- public report model -----------------------------------------------------
 
@@ -163,7 +163,7 @@ export interface DoctorDeps {
    * one), as `[name, dir]`. Each one's `Default/Preferences` is read with
    * readTextFile to tell whether Edge signed it in to an account. Absent: no check.
    */
-  browserProfiles?: () => Array<[name: string, dir: string]>;
+  browserProfiles?: (env: Record<string, string | undefined>) => Array<[name: string, dir: string]>;
   /** The MCP section's inputs; the section is left out without them. */
   mcp?: McpDoctorDeps;
 }
@@ -299,8 +299,10 @@ function buildEnvironment(
   });
 
   // Shown only when a profile is signed in: profile names, never the account.
-  const signedIn = (deps.browserProfiles?.() ?? [])
-    .filter(([, dir]) => edgeAccountSignedIn(deps.readTextFile(join(dir, 'Default', 'Preferences'))))
+  // Every profile folder of each user-data-dir (Local State's info_cache), not only Default.
+  const signedIn = (deps.browserProfiles?.(deps.env) ?? [])
+    .filter(([, dir]) => edgeProfileDirs(deps.readTextFile(join(dir, 'Local State')))
+      .some((folder) => edgeAccountSignedIn(deps.readTextFile(join(dir, folder, 'Preferences')))))
     .map(([name]) => name);
   if (signedIn.length > 0) {
     lines.push({
@@ -798,6 +800,19 @@ function getFallbackVersion(): string {
  *   - Linux:   ~/.config/<appName><suffix>/logs/main-YYYY-MM-DD.log
  * The Windows path is the dogfood-verified one; the others are best-effort.
  */
+/**
+ * Electron's userData for this instance: productName `wmux` plus
+ * WMUX_DATA_SUFFIX, under APPDATA (Windows), Application Support (macOS) or
+ * XDG_CONFIG_HOME (elsewhere). An empty variable counts as unset, as in
+ * resolveMainLogPath.
+ */
+export function resolveUserDataDir(env: Record<string, string | undefined>, platform: string, home: string): string {
+  const name = `wmux${env.WMUX_DATA_SUFFIX || ''}`;
+  if (platform === 'win32') return join(env.APPDATA || join(home, 'AppData', 'Roaming'), name);
+  if (platform === 'darwin') return join(home, 'Library', 'Application Support', name);
+  return join(env.XDG_CONFIG_HOME || join(home, '.config'), name);
+}
+
 export function resolveMainLogPath(date: string): string {
   const appName = 'wmux';
   const suffix = dataSuffix();
@@ -831,8 +846,8 @@ export function todayUtc(now: Date = new Date()): string {
  * ChromeLauncherRegistry): `chrome-agent-profile` is the default profile and
  * `chrome-profiles/<name>` the named ones.
  */
-function wmuxBrowserProfiles(): Array<[string, string]> {
-  const userData = dirname(defaultSessionPath());
+function wmuxBrowserProfiles(env: Record<string, string | undefined>): Array<[string, string]> {
+  const userData = resolveUserDataDir(env, process.platform, os.homedir());
   const out: Array<[string, string]> = [['default', join(userData, 'chrome-agent-profile')]];
   try {
     for (const entry of readdirSync(join(userData, 'chrome-profiles'), { withFileTypes: true })) {
