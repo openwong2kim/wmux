@@ -96,7 +96,7 @@ export function peerPidOf(socket: net.Socket): PeerPid {
 
 /**
  * Whether this process can read peer pids: it connects to a socket of its own
- * and checks that the peer it reads is itself. A packaged build missing
+ * and checks that the peer it reads is itself, by pid and uid. A packaged build missing
  * koffi's binary shows here as unavailable.
  */
 export function selfCheckPeerPid(timeoutMs = 2000): Promise<string | null> {
@@ -120,8 +120,12 @@ export function selfCheckPeerPid(timeoutMs = 2000): Promise<string | null> {
     const server = net.createServer((socket) => {
       const peer = peerPidOf(socket);
       socket.destroy();
+      const ownUid = process.getuid?.();
       if (peer.pid === null) finish(`unavailable (${peer.reason})`);
-      else finish(peer.pid === process.pid ? 'available' : `unavailable (read pid ${peer.pid}, expected ${process.pid})`);
+      else if (peer.pid !== process.pid) finish(`unavailable (read pid ${peer.pid}, expected ${process.pid})`);
+      // The broker refuses a peer without a uid, so a uid it cannot read is no peer read at all.
+      else if (peer.uid !== ownUid) finish(`unavailable (read uid ${String(peer.uid)}, expected ${String(ownUid)})`);
+      else finish('available');
     });
     server.on('error', (err) => finish(`unavailable (${err.message})`));
     server.listen(socketPath, () => {
