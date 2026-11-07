@@ -80,7 +80,7 @@ internal static unsafe class Focus
         var root = Win.Root(foreground);
         if (root != target.Window || Win.EffectivePid(root) != target.Pid)
         {
-            throw new HelperError("window_not_focused", "the target window is not in the foreground; nothing was sent");
+            throw new HelperError("window_not_focused", "the target window is not in the foreground; nothing was sent" + GiveBack.KeysHint(target.Window));
         }
         uint thread = PInvoke.GetWindowThreadProcessId(foreground);
         var info = new GUITHREADINFO { cbSize = (uint)sizeof(GUITHREADINFO) };
@@ -184,7 +184,9 @@ internal static unsafe class Focus
             {
                 try
                 {
+                    GiveBack.NoteOwnInput(call: true);
                     el->SetFocus();
+                    GiveBack.CallDone();
                 }
                 finally
                 {
@@ -416,6 +418,7 @@ internal static unsafe class Actions
             {
                 Input.CountSemantic();
                 legacy->DoDefaultAction();
+                GiveBack.CallDone();
             }
             catch (Exception e) when (e is not HelperError)
             {
@@ -499,6 +502,7 @@ internal static unsafe class Actions
                     Focus.RequireSemantic(target, el, refuse);
                     Input.CountSemantic();
                     invoke->Invoke();
+                    GiveBack.CallDone();
                     return ("pressed through accessibility (Invoke)", false);
                 }
                 catch (Exception e) when (e is not HelperError)
@@ -519,6 +523,7 @@ internal static unsafe class Actions
                 Focus.RequireSemantic(target, el, refuse);
                 Input.CountSemantic();
                 toggle->Toggle();
+                GiveBack.CallDone();
                 return ("toggled through accessibility (Toggle)", false);
             }
             catch (Exception e) when (e is not HelperError)
@@ -538,6 +543,7 @@ internal static unsafe class Actions
                 Focus.RequireSemantic(target, el, refuse);
                 Input.CountSemantic();
                 select->Select();
+                GiveBack.CallDone();
                 return ("selected through accessibility (SelectionItem)", false);
             }
             catch (Exception e) when (e is not HelperError)
@@ -569,6 +575,7 @@ internal static unsafe class Actions
                     Input.CountSemantic();
                     if (collapsed) expand->Expand();
                     else expand->Collapse();
+                    GiveBack.CallDone();
                     return ("expanded or collapsed through accessibility (ExpandCollapse)", false);
                 }
                 catch (Exception e) when (e is not HelperError)
@@ -751,6 +758,7 @@ internal static unsafe class Actions
             {
                 Input.CountSemantic();
                 pattern->SetValue(new BSTR((char*)bstr));
+                GiveBack.CallDone();
             }
             catch (Exception e) when (e is not HelperError)
             {
@@ -879,7 +887,9 @@ internal static unsafe class Actions
                 try
                 {
                     Focus.RequireSemantic(target, el, refuse);
+                    GiveBack.NoteOwnInput(call: true);
                     el->SetFocus();
+                    GiveBack.CallDone();
                 }
                 catch (Exception e) when (e is not HelperError)
                 {
@@ -1125,6 +1135,7 @@ internal static unsafe class Actions
             end->MoveEndpointByRange(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End);
             Input.CountSemantic();
             end->Select();
+            GiveBack.CallDone();
             now = Selection(el);
             if (now == null) return false;
             if (SameRange(end, now)) return true;
@@ -1236,7 +1247,9 @@ internal static unsafe class Actions
         }
         try
         {
+            GiveBack.NoteOwnInput(call: true);
             before->Select();
+            GiveBack.CallDone();
         }
         catch (Exception e) when (e is not HelperError)
         {

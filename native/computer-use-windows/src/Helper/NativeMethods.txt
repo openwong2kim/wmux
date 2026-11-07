@@ -53,6 +53,7 @@ GetAncestor
 WindowFromPoint
 GetWindowRect
 GetCursorPos
+SetCursorPos
 GetSystemMetrics
 DwmGetWindowAttribute
 DWMWINDOWATTRIBUTE

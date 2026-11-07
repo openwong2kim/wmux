@@ -539,6 +539,82 @@ section); that result says `delivery: "foreground"`. A posted one says
   release path; because every batch is a single `SendInput` call, a kill
   practically never leaves anything down.
 
+## Giving the front back
+
+Real input, a UIA pattern call and UIA `SetFocus` all bring the target
+window to the front (Background input, What takes the front). The window
+the user had in front gets it back once the action is done (Core
+`ForegroundReturn`, Helper `GiveBack`, around every input method in
+`Server`).
+
+- **Before the action** (`GiveBack.Begin`): the foreground window, its
+  owner, the cursor, the target process's visible top-level windows, and
+  GetLastInputInfo's tick. Under `foreground: 'allow'`, if the user's own
+  input is younger than a second, the action waits in 50 ms slices for a
+  second of quiet, at most a second in all, then goes on or answers
+  `user_input_active` (`not_delivered`; nothing was sent, and keys are
+  never queued). Under `refuse` nothing takes the front, so it does not
+  wait.
+- **The user's input, told from ours.** SendInput moves GetLastInputInfo,
+  and so does a UIA pattern or `SetFocus` call, which injects a `0xB9` key
+  pair. Each of those notes its own tick (`GiveBack.NoteOwnInput`, with
+  GetLastInputInfo read before the SendInput): a tick up to 50 ms after our
+  SendInput, or during a UIA call and 50 ms after it returns
+  (`GiveBack.CallDone`), is ours; anything later is the user's. Input from before the action began (the
+  tick `Begin` read) is never this action's. A newer tick seen before our
+  next input is remembered, since GetLastInputInfo keeps only the latest.
+  Real input within those 50 ms, or during a UIA call, reads as ours,
+  which errs toward giving the front back. A long batch whose last events
+  are stamped more than 50 ms after SendInput returns reads as the user's,
+  which errs toward leaving the target in front.
+- **After the action**, whether it succeeded or failed: nothing happens
+  unless the foreground window is now the target window or one it owns,
+  or no window at all, and was not before. The foreground window is
+  compared, not the Z order: WinForms activates a covered window without
+  raising it. A UIA call can also deactivate the user's window without
+  the target activating (seen on a WinForms target, about one action in
+  twenty in some runs, with and without this change); the user's window
+  then gets the front back as well, even under `keepFront`, unless the
+  user's own input arrived (they may be switching windows themselves).
+  The note then says no window was given the front, never that the target
+  is in front. The target is left in front, and the
+  note or message says why, when:
+  - the action passed `keepFront: true` (and the target is in front);
+  - the user's own input arrived;
+  - a key or button the helper pressed is still down;
+  - the target thread is in menu or popup-menu mode (`GUI_INMENUMODE`,
+    `GUI_POPUPMENUMODE`, from `GetGUIThreadInfo`);
+  - the target process has a visible top-level window it did not have
+    before (a dropdown, a dialog, a popup menu); tooltips, hover cards and
+    click-through windows (`WS_EX_NOACTIVATE`, `WS_EX_TRANSPARENT`,
+    `tooltips_class32`) do not count;
+  - the previous window is gone, minimized, or runs above the helper's
+    integrity level (or its process cannot be read).
+- **Giving it back:** when the action sent input of its own,
+  `SendMessageTimeout(WM_NULL)` to the target first, at most 200 ms, so it
+  has handled our input (a click or a UIA call can activate it a moment
+  after the call returns); then the checks above, then
+  `SetForegroundWindow` to the previous window. The cursor goes back only
+  if it is still where our last pointer batch left it. The reply goes out
+  then, with a note that the front went back: anything in the target that
+  closes on focus loss (a menu, a command palette, a flyout) may have
+  closed, and `keepFront: true` keeps it open. Windows refuses the change
+  when the helper sent no input of its own (posted input) and the target
+  came forward by itself; the note then says the target is still in front.
+- **Keys after a click.** `pressKey` and `hotkey` never bring a window
+  forward; they need the target in front already. After a click whose
+  front went back, they answer `window_not_focused`, and the message says
+  (once) to click the field that should get the keys with
+  `keepFront: true` first; not to repeat the earlier action, since a button or a check box
+  would act twice. A flow that clicks and then sends keys passes
+  `keepFront: true` on the click.
+- **One re-check**, 300 ms later on a timer, after a give-back or after
+  an action that sent input without moving the front: if the target took
+  the front by itself (Chrome activates after a click, or an activation
+  came late) and the checks still pass, `SetForegroundWindow` once more,
+  silently. A new request, the stop
+  key (`releaseInput`) or shutdown cancels it. It never loops.
+
 ## Agent overlay
 
 Every agent that drives an app gets its own marker, drawn in the colour main

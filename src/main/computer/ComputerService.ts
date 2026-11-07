@@ -265,6 +265,8 @@ export interface ControlParams {
   keys?: string[];
   direction?: ScrollDirection;
   amount?: number;
+  /** Leave the target in front after the action (protocol `keepFront`). */
+  keepFront?: boolean;
 }
 
 let shutDown = false;
@@ -873,7 +875,12 @@ export class ComputerService {
     const marker = this.deps.markers?.markerFor(agent);
     const waiting = marker && { marker, ...target };
     const send = (foreground?: 'allow' | 'refuse'): Promise<ActionResult> =>
-      helper.request(call.method, { ...call.params, ...(marker && { marker }), ...(foreground && { foreground }) } as never) as Promise<ActionResult>;
+      helper.request(call.method, {
+        ...call.params,
+        ...(marker && { marker }),
+        ...(foreground && { foreground }),
+        ...(params.keepFront === true && { keepFront: true }),
+      } as never) as Promise<ActionResult>;
 
     if (!defer) {
       // A helper that cannot defer real input: the single lease of before,
