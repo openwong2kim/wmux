@@ -1774,6 +1774,13 @@ export class ChromeLauncher implements ChromeBackendClient {
    * re-asserts deny every DOWNLOAD_DENY_REASSERT_MS: another client's allow
    * lasts at most one tick, and a download that starts after it is refused
    * outright.
+   *
+   * Each browser context keeps its own behaviour, and download events go to
+   * the session that enabled them. So on the same tick the guard's own session
+   * lists the contexts a client created (Target.getBrowserContexts, which
+   * sees one before it has a page) and denies each with events on. Best
+   * effort: a download in a context created since the last tick is not
+   * covered until the next one.
    */
   private armDownloadGuard(): Promise<void> {
     if (this.downloadGuard?.isOpen()) return Promise.resolve();
@@ -1796,6 +1803,12 @@ export class ChromeLauncher implements ChromeBackendClient {
       },
     });
     const deny = () => guard.send('Browser.setDownloadBehavior', { behavior: 'deny', eventsEnabled: true });
+    const denyContexts = async () => {
+      const listed = (await guard.send('Target.getBrowserContexts')) as { browserContextIds?: unknown } | null;
+      const ids = Array.isArray(listed?.browserContextIds) ? listed.browserContextIds.filter((id): id is string => typeof id === 'string') : [];
+      await Promise.all(ids.map((browserContextId) =>
+        guard.send('Browser.setDownloadBehavior', { behavior: 'deny', browserContextId, eventsEnabled: true }).catch(() => undefined)));
+    };
     guard.on('Browser.downloadWillBegin', (params) => {
       const guid = typeof params.guid === 'string' ? params.guid : '';
       // An operator-approved download (consent): its claimant re-denies itself.
@@ -1805,7 +1818,10 @@ export class ChromeLauncher implements ChromeBackendClient {
       // While a claimant holds the guard it owns the behaviour (and restores
       // deny when it lets go); a stray download is cancelled by guid alone, so
       // it cannot close the window the operator approved.
-      if (!claimant) void deny().catch(() => undefined);
+      if (!claimant) {
+        void deny().catch(() => undefined);
+        void denyContexts().catch(() => undefined);
+      }
     });
     guard.on('Browser.downloadProgress', (params) => {
       for (const listener of this.downloadProgress) listener(params);
@@ -1823,6 +1839,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       // cancelled by guid in the meantime.
       if (this.downloadClaimant) return;
       void deny().catch(() => undefined);
+      void denyContexts().catch(() => undefined);
     }, DOWNLOAD_DENY_REASSERT_MS);
     reassert.unref?.();
     this.downloadGuard = guard;

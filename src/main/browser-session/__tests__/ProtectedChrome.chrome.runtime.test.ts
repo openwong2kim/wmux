@@ -240,6 +240,21 @@ describe('protected Chrome profile (real Chrome)', { timeout: CASE_TIMEOUT_MS },
     await p.close();
   });
 
+  // Best effort on the port: the guard denies a client's context on its next
+  // re-assert, so a download in one created less than a tick ago may still run.
+  it('denies a download in a client-created context once a re-assert has passed', async (ctx) => {
+    if (skipUnless(ctx)) return;
+    const own = await (rigA.browser ?? (await attach(rigA))).newContext({ acceptDownloads: true });
+    const p = await own.newPage();
+    await p.goto(`http://a.test:${port}/download`);
+    await settle(600);
+    const started = p.waitForEvent('download', { timeout: 5_000 }).catch(() => null);
+    await p.click('#d');
+    const download = await started;
+    if (download) expect(await download.failure()).toBe('canceled');
+    await own.close();
+  });
+
   it('runs two protected profiles side by side, each held to its own hosts', async (ctx) => {
     if (skipUnless(ctx)) return;
     const savedProfile = process.env.USERPROFILE;
