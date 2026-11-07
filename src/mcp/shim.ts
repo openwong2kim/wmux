@@ -24,9 +24,10 @@
  * (app launch race) doesn't fail the first agent spawn.
  *
  * The shim asks for the broker's ack before it forwards a byte. A broker that
- * cannot tie the connection to this process (`peer`, `peer-unverified`), or
- * sends no ack, leaves the session to the full server beside this file, run in
- * this same process, like the native launcher (core/wmux-native/src/mcp_shim.rs).
+ * cannot tie the connection to this process closes it before the ack; that,
+ * any other missing ack, or a `peer`/`peer-unverified` refusal leaves the
+ * session to the full server beside this file, run in this same process, like
+ * the native launcher (core/wmux-native/src/mcp_shim.rs).
  */
 import * as net from 'net';
 import * as fs from 'fs';

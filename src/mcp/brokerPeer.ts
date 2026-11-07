@@ -10,7 +10,7 @@
 import { execFile } from 'node:child_process';
 import type { PeerPid } from '../shared/peerPid';
 
-/** Refusal reasons the broker sends in its ack (`{"wmuxBroker":1,"ok":false,"error":…}`). */
+/** Why the broker refused a session. It logs the reason and closes the connection with no ack line. */
 export type PeerRefusal = 'peer' | 'peer-unverified';
 
 export type PeerDecision =

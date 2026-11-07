@@ -298,9 +298,11 @@ function main(): void {
         .then(async (decision) => {
           if (socket.destroyed) return;
           if (!decision.ok) {
+            // Closed with no ack line: every shim generation takes a close
+            // before the ack as "no session" and runs the full bundle. The
+            // reason stays in this log.
             console.error(`[wmux-mcp-broker] peer refused (${decision.reason}): ${decision.detail}`);
-            if (wantsAck) socket.end(brokerAckLine(false, decision.reason), () => socket.destroy());
-            else socket.destroy();
+            socket.destroy();
             return;
           }
           if (claimed.callerPpid !== decision.callerPpid) {

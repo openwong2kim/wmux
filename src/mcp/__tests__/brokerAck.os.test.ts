@@ -4,9 +4,11 @@
 //
 // A shim that sends `ack: 1` reads one `{"wmuxBroker":1,"ok":…}` line as the
 // first bytes of the connection: ok:true once the session is hosted, before any
-// MCP traffic; ok:false on a refusal. A client that does not ask gets the
-// stream exactly as before. The node shim (shim.ts) asks, and leaves a session
-// the broker cannot tie to it to the full server beside it.
+// MCP traffic; ok:false on a wrong token. A session the broker cannot tie to
+// the connecting process is closed with no bytes at all, which every shim
+// generation reads as "closed before ack" and answers with the full bundle. A
+// client that does not ask gets the stream exactly as before. The node shim
+// (shim.ts) asks, and runs the full server beside it on such a close.
 //
 // Isolation: a throwaway home, a data suffix, and the token from
 // WMUX_AUTH_TOKEN (no token file), so nothing here can reach a live wmux.
@@ -274,9 +276,9 @@ describe('broker handshake ack', () => {
     expect(await s.closed).toBe('');
   });
 
-  it.runIf(hostable)('a client with the token that names another pid is refused, with or without ack', async () => {
+  it.runIf(hostable)('a client with the token that names another pid is closed with no bytes, with or without ack', async () => {
     const asked = await open(handshake({ ack: 1, callerPid: process.ppid }));
-    expect(await asked.closed).toBe('{"wmuxBroker":1,"ok":false,"error":"peer"}\n');
+    expect(await asked.closed).toBe('');
     await logged(`peer refused (peer): claimed pid ${process.ppid}, peer ${process.pid}`);
     const silent = await open(handshake({ callerPid: process.ppid }));
     expect(await silent.closed).toBe('');
@@ -321,7 +323,8 @@ describe('broker handshake ack', () => {
 
   it.runIf(isWin)('refuses every session where the OS names no peer (Windows named pipes)', async () => {
     const s = await open(handshake({ ack: 1 }));
-    expect(await s.closed).toBe('{"wmuxBroker":1,"ok":false,"error":"peer-unverified"}\n');
+    expect(await s.closed).toBe('');
+    await logged('peer refused (peer-unverified)');
   });
 });
 
@@ -344,14 +347,15 @@ describe.runIf(hostable)('a broker that cannot read peer pids', () => {
   it('refuses every session, even a true one', async () => {
     await logged('every session is refused', () => log);
     const s = await open(handshake({ ack: 1 }), pipeName(suffix, dir));
-    expect(await s.closed).toBe('{"wmuxBroker":1,"ok":false,"error":"peer-unverified"}\n');
+    expect(await s.closed).toBe('');
+    await logged('peer refused (peer-unverified): peer pids cannot be read in this process', () => log);
   });
 
   it('the node shim it refuses runs the full server beside it, in the same process', async () => {
     const shimDir = fs.mkdtempSync(path.join('/tmp', 'nsh-'));
     try {
       const run = await runShim(buildShim(shimDir), dir, suffix, TOKEN);
-      expect(run.stderr).toContain('[wmux-mcp-shim] broker refused the session: peer-unverified; running the full server');
+      expect(run.stderr).toContain('[wmux-mcp-shim] the broker closed the connection before its ack; running the full server');
       expect(run.stdout).toBe(`FULL SERVER pid=${run.pid}\n`);
     } finally {
       fs.rmSync(shimDir, { recursive: true, force: true });

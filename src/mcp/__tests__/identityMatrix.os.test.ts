@@ -280,8 +280,9 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
     // The broker hosted the shim's session, with the shim's own pid.
     expect(shim.callerPid).toBe(shim.mcpPid);
     expect(shim.stderr).not.toContain('[wmux-mcp-shim]');
-    // The refusal handed the session to the full bundle, under the shim's pid.
-    expect(fallback.stderr).toContain('[wmux-mcp-shim] broker refused the session: peer-unverified');
+    // The broker closed the refused session before its ack, and the shim
+    // handed it to the full bundle, under the shim's own pid.
+    expect(fallback.stderr).toContain('[wmux-mcp-shim] closed before ack');
     expect(fallback.callerPid).toBe(fallback.mcpPid);
     expect(agreed(shim)).toEqual(agreed(bundle));
     expect(agreed(fallback)).toEqual(agreed(bundle));
