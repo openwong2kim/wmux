@@ -247,7 +247,8 @@ export interface ChromeBackendClient {
 /** Whether `binary` is Microsoft Edge (Windows, macOS or Linux spelling). */
 export function isEdgeBinary(binary: string): boolean {
   const name = binary.split(/[\\/]/).pop() ?? '';
-  return /^(msedge(\.exe)?|microsoft edge|microsoft-edge(-stable|-beta|-dev)?)$/i.test(name);
+  // Windows ships every channel as msedge.exe; macOS and Linux name the channel.
+  return /^(msedge(\.exe)?|microsoft edge( beta| dev| canary)?|microsoft-edge(-stable|-beta|-dev|-canary)?)$/i.test(name);
 }
 
 /**

@@ -11,7 +11,12 @@ describe('isEdgeBinary', () => {
       'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
       'C:\\Program Files\\Microsoft\\Edge\\Application\\MSEDGE.EXE',
       '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      '/Applications/Microsoft Edge Beta.app/Contents/MacOS/Microsoft Edge Beta',
+      '/Applications/Microsoft Edge Dev.app/Contents/MacOS/Microsoft Edge Dev',
+      '/Applications/Microsoft Edge Canary.app/Contents/MacOS/Microsoft Edge Canary',
       '/usr/bin/microsoft-edge',
+      '/usr/bin/microsoft-edge-beta',
+      '/usr/bin/microsoft-edge-dev',
       '/usr/bin/microsoft-edge-stable',
       '/opt/microsoft/msedge/msedge',
     ]) expect(isEdgeBinary(p), p).toBe(true);
