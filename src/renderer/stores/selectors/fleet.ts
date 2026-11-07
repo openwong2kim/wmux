@@ -96,6 +96,9 @@ export interface FleetPane {
    * (a remote row keeps `surfaceType: 'remote-terminal'`).
    */
   remote?: { hostId: string; hostLabel: string };
+  /** The host of a remote-terminal row, set even when no agent resolved
+   *  (`remote` absent): the list grouped by device puts it under that host. */
+  remoteHostId?: string;
   /**
    * The local ptyId of the BACKGROUND tab whose attention status won this
    * row's rollup (a background tab awaiting input while the active tab is
@@ -760,6 +763,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         ...(remoteAgent
           ? { remote: { hostId: surf?.remoteHostId ?? '', hostLabel: remoteAgent.hostLabel } }
           : {}),
+        ...(surf?.surfaceType === 'remote-terminal' && surf.remoteHostId ? { remoteHostId: surf.remoteHostId } : {}),
         ...(!remoteAgent && !stashedExited && attentionPty && attentionPty !== ptyId
           ? { attentionPtyId: attentionPty }
           : {}),
@@ -1388,11 +1392,13 @@ export function groupFleetByDevice(
     }
     return d;
   };
+  const attachedLabel = new Map((opts.remoteWorkspaces ?? []).map((r) => [r.hostId, r.hostLabel]));
   for (const section of ['running', 'finished', 'idle'] as const) {
     for (const row of groups[section]) {
-      const remote = row.pane.remote;
-      const d = remote
-        ? device(remote.hostId, railHost.get(remote.hostId)?.label ?? remote.hostLabel, 'connected')
+      // A remote-terminal row whose agent did not resolve still runs on its host.
+      const hostId = row.pane.remote?.hostId || row.pane.remoteHostId;
+      const d = hostId
+        ? device(hostId, railHost.get(hostId)?.label ?? row.pane.remote?.hostLabel ?? attachedLabel.get(hostId) ?? hostId, 'connected')
         : device(LOCAL_PC_ID, '', 'local');
       d[section].push(row);
     }
