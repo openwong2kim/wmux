@@ -482,6 +482,70 @@ describe('loadConfig', () => {
   });
 });
 
+describe('loadConfig — a partial config.json (absent is not garbage)', () => {
+  const write = (obj: unknown): string => {
+    const dir = getWmuxDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const configPath = path.join(dir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify(obj), 'utf-8');
+    return configPath;
+  };
+
+  it('only browser.cdp.enabled = false (as SECURITY.md says): CDP stays off, the rest is the defaults, no stand-in', () => {
+    const configPath = write({ browser: { cdp: { enabled: false } } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const config = loadConfig();
+      expect(isFailClosedConfig(config)).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+      expect(config.browser?.cdp.enabled).toBe(false);
+      const defaults = createDefaultConfig();
+      expect(config.daemon).toEqual(defaults.daemon);
+      expect(config.session).toMatchObject({ defaultShell: defaults.session.defaultShell, bufferSizeMb: defaults.session.bufferSizeMb });
+      expect(config.phoneDecisions).toEqual(defaults.phoneDecisions);
+    } finally {
+      warn.mockRestore();
+    }
+    // A later save (the gate migration) keeps the user's own key.
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).browser).toEqual({ cdp: { enabled: false } });
+  });
+
+  it('a file with only another slice ({ mcp: { mode } }): CDP stays on, no stand-in', () => {
+    write({ mcp: { mode: 'enforce' } });
+    const config = loadConfig();
+    expect(isFailClosedConfig(config)).toBe(false);
+    expect(config.browser?.cdp.enabled).toBe(true);
+  });
+
+  it('a partial daemon section keeps its own keys and gets the missing ones', () => {
+    write({ daemon: { logLevel: 'debug' } });
+    const config = loadConfig();
+    expect(isFailClosedConfig(config)).toBe(false);
+    expect(config.daemon.logLevel).toBe('debug');
+    expect(config.daemon.pipeName).toBe(createDefaultConfig().daemon.pipeName);
+  });
+
+  for (const [what, content] of [
+    ['a wrong-typed daemon.pipeName', { version: 1, daemon: { pipeName: 5 } }],
+    ['a daemon section that is not an object', { daemon: null }],
+    ['a wrong-typed session field', { session: { defaultCols: 'eighty' } }],
+  ] as const) {
+    it(`${what}: still fail-closed, file untouched`, () => {
+      const configPath = write(content);
+      const before = fs.readFileSync(configPath);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const config = loadConfig();
+        expect(isFailClosedConfig(config)).toBe(true);
+        expect(config.browser?.cdp.enabled).toBe(false);
+      } finally {
+        warn.mockRestore();
+      }
+      expect(fs.readFileSync(configPath).equals(before)).toBe(true);
+    });
+  }
+});
+
 describe('saveConfig', () => {
   it('writes config atomically (no .tmp residue)', () => {
     const wmuxDir = getWmuxDir();

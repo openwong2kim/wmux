@@ -551,7 +551,7 @@ function diskConfigProblem(configPath: string): string | null {
     return err instanceof Error ? err.message : String(err);
   }
   try {
-    return configProblem(parseConfigText(raw));
+    return configProblem(fillAbsentRequiredFields(parseConfigText(raw), createDefaultConfig()));
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
   }
@@ -602,6 +602,11 @@ export function loadConfig(): DaemonConfig {
     return unusableConfigFallback(configPath, err instanceof Error ? err.message : String(err));
   }
 
+  // Absent is not garbage: a file holding only the keys someone set (the
+  // documented `browser.cdp.enabled = false`) gets the required fields it
+  // lacks from the defaults. A field present with the wrong type is still
+  // refused below, untouched.
+  parsed = fillAbsentRequiredFields(parsed, defaults);
   const invalid = configProblem(parsed);
   if (invalid !== null) return unusableConfigFallback(configPath, invalid);
   lastUnusableWarning = null;
@@ -850,6 +855,40 @@ function refuseUnsafeSave(config: DaemonConfig, configPath: string): void {
   if (problem !== null) {
     throw new Error(`${configPath} could not be used (${problem}), so wmux does not write over it. Fix the file, then try again.`);
   }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A parsed config.json object with the required fields it LACKS taken from the
+ * defaults: `version`, a missing `daemon` or `session` section, and a
+ * missing key inside either. Every key the file has is kept as it is, wrong
+ * type included, so `configProblem` still refuses a present field that is not
+ * usable. Anything that is not a JSON object is returned unchanged. The result
+ * is used in memory; a later save (a migration) writes the user's own keys
+ * plus these filled ones.
+ */
+export function fillAbsentRequiredFields(parsed: unknown, defaults: DaemonConfig): unknown {
+  if (!isPlainObject(parsed)) return parsed;
+  const out: Record<string, unknown> = { ...parsed };
+  if (out['version'] === undefined) out['version'] = defaults.version;
+  for (const section of ['daemon', 'session'] as const) {
+    const own = out[section];
+    const fallback = defaults[section] as unknown as Record<string, unknown>;
+    if (own === undefined) {
+      out[section] = { ...fallback };
+    } else if (isPlainObject(own)) {
+      const merged: Record<string, unknown> = { ...own };
+      for (const [key, value] of Object.entries(fallback)) {
+        if (merged[key] === undefined) merged[key] = value;
+      }
+      out[section] = merged;
+    }
+    // Present but not an object: left for configProblem to refuse.
+  }
+  return out;
 }
 
 /**
