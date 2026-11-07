@@ -322,13 +322,13 @@ export class CdpPipeMux {
    * The browser context of a frame `client` holds: a target it has a session
    * to, or a child frame Chrome reported on one of its own page sessions. As
    * Chrome named it when that session was attached (Target.attachedToTarget);
-   * undefined when the client doesn't hold the frame or no attach event named
-   * a context.
+   * null when the client holds the frame but no attach event named a context;
+   * undefined only when the client doesn't hold it.
    */
-  contextOfFrame(client: ClientRef, frameId: string): string | undefined {
+  contextOfFrame(client: ClientRef, frameId: string): string | null | undefined {
     if (!(client instanceof Client) || !this.clients.has(client)) return undefined;
-    for (const held of client.targets.values()) if (held.targetId === frameId) return held.browserContextId;
-    for (const [session, frames] of client.frames) if (frames.has(frameId)) return client.targets.get(session)?.browserContextId;
+    for (const held of client.targets.values()) if (held.targetId === frameId) return held.browserContextId ?? null;
+    for (const [session, frames] of client.frames) if (frames.has(frameId)) return client.targets.get(session)?.browserContextId ?? null;
     return undefined;
   }
 

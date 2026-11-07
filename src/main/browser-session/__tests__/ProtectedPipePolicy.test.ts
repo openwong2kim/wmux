@@ -12,8 +12,8 @@ const main: ClientRef = { kind: 'internal', label: 'main' };
 function rig(over: Partial<ProtectedPipeDeps> = {}) {
   const calls: string[] = [];
   const sent: Array<{ to: string; method: string; sessionId?: string }> = [];
-  /** The pages each client holds, with their browser context ('DEFAULT' is Chrome's default context's id). */
-  const pages = new Map<ClientRef, Record<string, string>>();
+  /** The pages each client holds, with their browser context ('DEFAULT' is Chrome's default context's id; null: none named). */
+  const pages = new Map<ClientRef, Record<string, string | null>>();
   const policy = new ProtectedPipePolicy({
     denyContext: async (id) => { calls.push(`deny ${id}`); },
     disposeContext: async (id) => { calls.push(`dispose ${id}`); },
@@ -144,6 +144,16 @@ describe('ProtectedPipePolicy', () => {
     policy.filter(a, { method: 'Browser.setDownloadBehavior', params: { behavior: 'default', browserContextId: 'A' } });
     policy.downloadEvent('Browser.downloadWillBegin', { guid: 'g3', frameId: 'P1' });
     expect(sent).toHaveLength(2);
+  });
+
+  it('a held frame whose context was never named counts as the default context; a frame not held reaches no one', () => {
+    const { policy, sent, pages } = rig();
+    const a = ext('a');
+    pages.set(a, { P0: null });
+    policy.filter(a, { method: 'Browser.setDownloadBehavior', params: { behavior: 'allow', eventsEnabled: true } });
+    policy.downloadEvent('Browser.downloadWillBegin', { guid: 'g1', frameId: 'P0' });
+    policy.downloadEvent('Browser.downloadWillBegin', { guid: 'g2', frameId: 'not-held' });
+    expect(sent).toEqual([{ to: 'a', method: 'Browser.downloadWillBegin' }]);
   });
 
   it('forgets a client that left: what it asked for and what it was told', () => {

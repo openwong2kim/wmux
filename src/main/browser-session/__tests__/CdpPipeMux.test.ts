@@ -264,9 +264,9 @@ describe('CdpPipeMux: routing', () => {
     const [ca, cb] = [ref.get('a') as ClientRef, ref.get('b') as ClientRef];
     expect(mux.contextOfFrame(ca, inA)).toBe('CTX-A');
     expect(mux.contextOfFrame(ca, inDefault)).toBe('DEFAULT');
-    // b holds the page, but no attach event named its context to b.
+    // b holds the page, but no attach event named its context to b: held, unnamed.
     expect(mux.ownsTarget(cb, inA)).toBe(true);
-    expect(mux.contextOfFrame(cb, inA)).toBeUndefined();
+    expect(mux.contextOfFrame(cb, inA)).toBeNull();
     a.client.close();
     expect(mux.contextOfFrame(ca, inA)).toBeUndefined();
     mux.close();
@@ -297,7 +297,7 @@ describe('CdpPipeMux: routing', () => {
     expect(mux.contextOfFrame(ca, 'F2')).toBe('CTX-A');
     // Only frames reported on a client's own session route to it: b holds the
     // page but has no Page events on, so a download in F1 reaches it as before (not at all).
-    expect(mux.contextOfFrame(cb, page)).toBeUndefined();
+    expect(mux.contextOfFrame(cb, page)).toBeNull();
     expect(mux.contextOfFrame(cb, 'F1')).toBeUndefined();
 
     // A long-lived page adding and removing frames: detaching one takes its descendants.

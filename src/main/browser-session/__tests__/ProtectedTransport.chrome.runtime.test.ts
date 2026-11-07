@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Browser, Page } from 'playwright-core';
+import WebSocket from 'ws';
 import { ChromeLauncher, type ChromeProtectionPlan } from '../ChromeLauncher';
 import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy } from '../../../shared/browserHostPolicy';
@@ -106,6 +107,7 @@ const ROWS: Row[] = [
   { id: 'j', what: `a client's new context is denied downloads before the client hears of it (${NEW_CONTEXT_ROUNDS} contexts)` },
   { id: 'k', what: "a download started in a same-process iframe reaches the client's events" },
   { id: 'l', what: 'a command sent through sendMessageToTarget is refused' },
+  { id: 'n', what: 'a raw client with a flat Target.attachToTarget hears of a download, in the default context and in a created one' },
 ];
 const row = (id: string) => ROWS.find((r) => r.id === id) as Row;
 
@@ -166,6 +168,28 @@ async function clickDownload(rig: Rig, p: Page): Promise<{ through: boolean; not
   const landed = dirs.flatMap(payloadFiles).filter((f) => !before.has(f));
   const where = landed.map((f) => (f.startsWith(rig.allowDir) ? 'client download dir' : 'profile download dir')).join(',');
   return { through: failure === null || landed.length > 0, note: `playwright: ${failure ?? 'completed'}; files: ${landed.length}${where ? ` (${where})` : ''}` };
+}
+
+/** A bare CDP client on the profile's endpoint: commands by id, and the events it was sent. */
+async function rawClient(rig: Rig) {
+  const ep = await rig.launcher.endpoint();
+  const url = ep.wsEndpoint ?? ((await (await fetch(`http://127.0.0.1:${ep.cdpPort}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl;
+  const ws = new WebSocket(url);
+  await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject); });
+  const events: Array<{ method: string; sessionId?: string }> = [];
+  const waiting = new Map<number, (m: { result?: Record<string, unknown>; error?: { message: string } }) => void>();
+  ws.on('message', (data) => {
+    const m = JSON.parse(data.toString()) as { id?: number; method?: string; sessionId?: string; result?: Record<string, unknown>; error?: { message: string } };
+    if (typeof m.id === 'number') waiting.get(m.id)?.(m);
+    else if (m.method) events.push({ method: m.method, ...(m.sessionId && { sessionId: m.sessionId }) });
+  });
+  let next = 0;
+  const send = (method: string, params: Record<string, unknown> = {}, sessionId?: string) => new Promise<Record<string, unknown>>((resolve, reject) => {
+    const id = ++next;
+    waiting.set(id, (m) => (m.error ? reject(new Error(m.error.message)) : resolve(m.result ?? {})));
+    ws.send(JSON.stringify({ id, method, params, ...(sessionId && { sessionId }) }));
+  });
+  return { send, events, close: () => ws.close() };
 }
 
 async function freshPage(browser: Browser, url: string): Promise<Page> {
@@ -430,6 +454,34 @@ describe.skipIf(!CHROME).each<Transport>(['port', 'pipe'])('a protected profile 
     }
     record('l', !carried && note.startsWith('refused'), note);
     await browser.close();
+  });
+
+  it('n: a raw client with a flat Target.attachToTarget hears of a download, in the default context and in a created one', { timeout: CASE_TIMEOUT_MS }, async (ctx) => {
+    live(ctx);
+    const c = await rawClient(rig);
+    const heard: string[] = [];
+    try {
+      await c.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: rig.allowDir, eventsEnabled: true });
+      const created = (await c.send('Target.createBrowserContext')).browserContextId as string;
+      await c.send('Browser.setDownloadBehavior', { behavior: 'allow', browserContextId: created, downloadPath: rig.allowDir, eventsEnabled: true });
+      for (const [label, context] of [['default', undefined], ['created', created]] as const) {
+        const { targetId } = await c.send('Target.createTarget', { url: `http://a.test:${port}/download`, ...(context && { browserContextId: context }) });
+        const { sessionId } = await c.send('Target.attachToTarget', { targetId, flatten: true });
+        await vi.waitFor(async () => {
+          const r = await c.send('Runtime.evaluate', { expression: '!!document.getElementById("d")', returnByValue: true }, sessionId as string);
+          expect((r.result as { value?: unknown }).value).toBe(true);
+        }, { timeout: 8_000 });
+        const before = c.events.filter((e) => e.method === 'Browser.downloadWillBegin' && !e.sessionId).length;
+        await c.send('Runtime.evaluate', { expression: 'document.getElementById("d").click()' }, sessionId as string);
+        const got = await vi.waitFor(() => expect(c.events.filter((e) => e.method === 'Browser.downloadWillBegin' && !e.sessionId).length).toBeGreaterThan(before), { timeout: 4_000 })
+          .then(() => true, () => false);
+        if (got) heard.push(label);
+      }
+      await c.send('Target.disposeBrowserContext', { browserContextId: created }).catch(() => undefined);
+    } finally {
+      c.close();
+    }
+    record('n', heard.length === 2, `heard: ${heard.join(', ') || 'none'}`);
   });
 
   // Last: on the port it ends Chrome.

@@ -34,9 +34,10 @@ export interface ProtectedPipeDeps {
   /**
    * The browser context of a frame the client holds (a page it has a session
    * to, or a frame Chrome reported on that page's session), as Chrome named it;
-   * undefined when the client doesn't hold it or it wasn't named.
+   * null when it holds the frame but no context was named, undefined when it
+   * doesn't hold it.
    */
-  contextOf(client: ClientRef, frameId: string): string | undefined;
+  contextOf(client: ClientRef, frameId: string): string | null | undefined;
   /** Send the client a browser-level event on its root or on one of its sessions; false when that is gone. */
   emit(client: ClientRef, method: string, params: Record<string, unknown>, sessionId?: string): boolean;
 }
@@ -163,7 +164,8 @@ export class ProtectedPipePolicy {
     return [...this.listening].flatMap(([client, sessions]) => {
       const context = this.deps.contextOf(client, frameId);
       if (context === undefined) return [];
-      const key = this.created.has(context) ? context : DEFAULT_CONTEXT;
+      // A held frame whose context no attach event named counts as the default context.
+      const key = context !== null && this.created.has(context) ? context : DEFAULT_CONTEXT;
       return [...sessions].filter(([, contexts]) => contexts.has(key)).map(([sessionId]) => ({ client, sessionId }));
     });
   }
