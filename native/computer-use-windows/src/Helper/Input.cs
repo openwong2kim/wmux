@@ -64,6 +64,36 @@ internal static unsafe class Input
         return input;
     }
 
+    /// <summary>
+    /// VK 0xB9 is unassigned: no app or layout maps it to a character or a
+    /// command. UIA injects this pair before it moves the foreground, since
+    /// a process that sent the last input may call SetForegroundWindow.
+    /// </summary>
+    public const ushort NoOpKey = 0xB9;
+
+    /// <summary>
+    /// Sends the no-op key pair (GiveBack: once, to give the front back after
+    /// a target took it by itself). It is the helper's own input. Returns
+    /// whether both events went in; nothing is sent while stopping.
+    /// </summary>
+    public static bool SendNoOpKeyPair()
+    {
+        lock (Lock)
+        {
+            if (stopping) return false;
+            var inputs = new[] { Key(NoOpKey, up: false), Key(NoOpKey, up: true) };
+            uint lastBefore = BackgroundInput.LastInputTick();
+            uint n = PInvoke.SendInput(inputs, sizeof(INPUT));
+            if (n > 0) GiveBack.NoteOwnInput(call: false, lastBefore);
+            if (n == 1)
+            {
+                // The down went in alone: lift it, so nothing stays pressed.
+                PInvoke.SendInput(new[] { Key(NoOpKey, up: true) }, sizeof(INPUT));
+            }
+            return n == 2;
+        }
+    }
+
     private static INPUT Unicode(char unit, bool up)
     {
         var input = new INPUT { type = INPUT_TYPE.INPUT_KEYBOARD };
@@ -147,12 +177,50 @@ internal static unsafe class Input
     public static void CountSemantic()
     {
         lock (Lock) sent++;
+        // The call may inject a key pair (VK 0xB9) that moves GetLastInputInfo.
+        GiveBack.NoteOwnInput(call: true);
+    }
+
+    /// <summary>A key or mouse button this helper pressed is still down.</summary>
+    public static bool AnyHeld
+    {
+        get
+        {
+            lock (Lock) return HeldKeys.Count > 0 || HeldButtons.Count > 0;
+        }
+    }
+
+    /// <summary>The helper is shutting down.</summary>
+    public static bool Stopping
+    {
+        get
+        {
+            lock (Lock) return stopping;
+        }
+    }
+
+    private static System.Drawing.Point? lastPointerEnd;
+
+    /// <summary>Where this action's last pointer batch left the cursor (null: none sent since ForgetPointerEnd).</summary>
+    public static System.Drawing.Point? LastPointerEnd
+    {
+        get
+        {
+            lock (Lock) return lastPointerEnd;
+        }
+    }
+
+    public static void ForgetPointerEnd()
+    {
+        lock (Lock) lastPointerEnd = null;
     }
 
     /// <summary>Takes back CountSemantic for a call that certainly did not run (not supported, disabled).</summary>
     public static void UncountSemantic()
     {
         lock (Lock) sent--;
+        // It injected nothing either: the user's input meanwhile is theirs.
+        GiveBack.CallNotRun();
     }
 
     // MARK: Posting (everything goes through Post)
@@ -199,8 +267,16 @@ internal static unsafe class Input
             foreach (var e in recorded) Record(e);
             if (recorded.Count > 0) Persist();
 
+            // Read before SendInput: the batch's own events are stamped while it runs.
+            uint lastBefore = BackgroundInput.LastInputTick();
             uint sent = PInvoke.SendInput(inputs, sizeof(INPUT));
             Input.sent += sent;
+            if (sent > 0)
+            {
+                GiveBack.NoteOwnInput(call: false, lastBefore);
+                var pointer = events.Take((int)sent).LastOrDefault(e => e.Kind is InputKind.Other or InputKind.Button);
+                if (pointer.Kind is InputKind.Other or InputKind.Button) lastPointerEnd = new System.Drawing.Point((int)Math.Round(pointer.X), (int)Math.Round(pointer.Y));
+            }
             if (sent == inputs.Length)
             {
                 foreach (var e in recorded) Forget(e);

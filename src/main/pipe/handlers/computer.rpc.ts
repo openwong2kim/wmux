@@ -112,6 +112,7 @@ type FieldCheck = (value: unknown) => boolean;
 const isString: FieldCheck = (v) => typeof v === 'string';
 const isNumber: FieldCheck = (v) => typeof v === 'number' && Number.isFinite(v);
 const isStringArray: FieldCheck = (v) => Array.isArray(v) && v.every((x) => typeof x === 'string');
+const isBoolean: FieldCheck = (v) => typeof v === 'boolean';
 const oneOf = (values: readonly string[]): FieldCheck => (v) => typeof v === 'string' && values.includes(v);
 
 /**
@@ -135,6 +136,7 @@ const CONTROL_FIELDS: Record<Exclude<keyof ControlParams, 'action'>, FieldCheck>
   keys: isStringArray,
   direction: oneOf(['up', 'down', 'left', 'right']),
   amount: isNumber,
+  keepFront: isBoolean,
 };
 
 function parseControlParams(params: Record<string, unknown>): ControlParams {

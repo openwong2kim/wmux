@@ -278,7 +278,7 @@ internal static unsafe class BackgroundInput
     /// GetLastInputInfo's tick: it moves with the user's real input (and
     /// SendInput), never with posted messages. 0 when it cannot be read.
     /// </summary>
-    private static uint LastInputTick()
+    public static uint LastInputTick()
     {
         var info = new LASTINPUTINFO { cbSize = (uint)sizeof(LASTINPUTINFO) };
         return PInvoke.GetLastInputInfo(ref info) ? info.dwTime : 0;

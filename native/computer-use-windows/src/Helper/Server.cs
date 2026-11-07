@@ -177,9 +177,13 @@ internal static class Server
             // one, the default marker. It fades 1.5 s after this action unless
             // it acts again first.
             var marker = AgentMarker.FromWire(p.Raw["marker"]);
+            // The window that was in front gets it back afterwards (GiveBack);
+            // under `allow` this may first wait for the user to stop typing.
+            var front = GiveBack.Begin(p, p.String("foreground") == "refuse");
+            JsonNode result;
             try
             {
-                return method switch
+                result = method switch
                 {
                     "click" => Actions.Click(p, marker),
                     "setValue" => Actions.SetValue(p, marker),
@@ -189,10 +193,22 @@ internal static class Server
                     _ => Actions.Scroll(p, marker),
                 };
             }
+            catch (Exception e)
+            {
+                var said = GiveBack.End(front);
+                if (said == null) throw;
+                if (e is HelperError h) throw new HelperError(h.Code, $"{h.Message.TrimEnd('.')}. {said}");
+                throw new HelperError(Uia.ErrorCode(e), $"{Uia.Describe(e)}. {said}");
+            }
             finally
             {
                 Overlay.ScheduleFade(marker.Id);
             }
+            if (GiveBack.End(front) is { } note && result is JsonObject o)
+            {
+                o["note"] = o["note"]?.GetValue<string>() is { } before ? $"{before.TrimEnd('.')}. {note}" : note;
+            }
+            return result;
         }
         switch (method)
         {
@@ -225,7 +241,9 @@ internal static class Server
                 return new JsonObject { ["ok"] = true };
             }
             case "releaseInput":
-                // What main sends on the stop key: the overlay goes at once too.
+                // What main sends on the stop key: the overlay goes at once too,
+                // and so does a pending re-check of the foreground.
+                GiveBack.CancelRecheck();
                 Overlay.Hide();
                 return new JsonObject { ["released"] = Input.ReleaseInput(p) };
             default:
