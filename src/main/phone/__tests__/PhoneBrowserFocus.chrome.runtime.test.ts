@@ -1,10 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { ChromeLauncher } from '../../browser-session/ChromeLauncher';
+import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { createPhoneChromeDeps } from '../PhoneBrowserChrome';
 import { handlePhoneBrowser } from '../PhoneBrowser';
 import { readFocus, watchFocus, type FocusCdp } from '../PhoneBrowserFocus';
@@ -73,6 +71,7 @@ function describeMode(mode: Mode): void {
   let server: http.Server;
   let port = 0;
   let launcher: ChromeLauncher | null = null;
+  let profile: TempChromeProfile | null = null;
   let skipReason: string | null = null;
   let chrome: ReturnType<typeof createPhoneChromeDeps>;
   const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
@@ -81,7 +80,8 @@ function describeMode(mode: Mode): void {
     server = http.createServer(serve);
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     port = (server.address() as AddressInfo).port;
-    const dir = mkdtempSync(join(tmpdir(), 'wmux-focus-chrome-'));
+    profile = tempChromeProfile('wmux-focus-chrome-');
+    const dir = profile.dir;
     const savedProfile = process.env.USERPROFILE;
     if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
     try {
@@ -104,9 +104,11 @@ function describeMode(mode: Mode): void {
   }, 120_000);
 
   afterAll(async () => {
-    await launcher?.dispose();
+    await stopChrome(launcher);
     server?.close();
-  }, 60_000);
+    // After Chrome has gone, launched or not.
+    await profile?.remove();
+  }, CHROME_TEARDOWN_TIMEOUT_MS);
 
   function skipUnless(ctx: { skip: (note?: string) => void }): boolean {
     if (!skipReason) return false;

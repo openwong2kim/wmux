@@ -1,5 +1,11 @@
 import { defineConfig } from 'vitest/config';
+import fs from 'node:fs';
+import { tmpdir } from 'node:os';
 import { hashbangLf } from './scripts/lib/vitest-hashbang-lf.mjs';
+
+// Real-Chrome suites write tens of MB of temp profile each: stop up front on a full disk.
+const free = fs.statfsSync?.(tmpdir()); // Node 18.15+
+if (free && free.bavail * free.bsize < 2 ** 30) throw new Error(`runtime tests: under 1 GiB free in ${tmpdir()}`);
 
 export default defineConfig({
   // A CRLF hashbang line loads (scripts/lib/vitest-hashbang-lf.mjs).

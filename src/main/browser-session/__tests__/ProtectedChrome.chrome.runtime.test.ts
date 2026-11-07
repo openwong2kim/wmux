@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import type { Browser, Page } from 'playwright-core';
@@ -10,7 +9,8 @@ import { ChromeLauncher, type ChromeProtectionPlan } from '../ChromeLauncher';
 import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy, type HostPolicy } from '../../../shared/browserHostPolicy';
 import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
-import { accountDownloads, pinDownloadDir } from '../../../test-utils/chromeDownloads';
+import { accountDownloads } from '../../../test-utils/chromeDownloads';
+import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 
 // ---------------------------------------------------------------------------
 // Protected Chrome profiles against a REAL Chrome, launched by the production
@@ -101,6 +101,7 @@ interface Rig {
   hosts: HostPolicy;
   browser: Browser | null;
   dir: string;
+  profile: TempChromeProfile;
 }
 
 function plan(rig: Rig): ChromeProtectionPlan {
@@ -112,9 +113,9 @@ function plan(rig: Rig): ChromeProtectionPlan {
 }
 
 function makeRig(allow: string[]): Rig {
-  const dir = mkdtempSync(join(tmpdir(), 'wmux-protected-chrome-'));
-  pinDownloadDir(dir);
-  const rig: Rig = { launcher: null as unknown as ChromeLauncher, hosts: { mode: 'allowlist', allow, block: [] }, browser: null, dir };
+  const profile = tempChromeProfile('wmux-protected-chrome-');
+  const dir = profile.dir;
+  const rig: Rig = { launcher: null as unknown as ChromeLauncher, hosts: { mode: 'allowlist', allow, block: [] }, browser: null, dir, profile };
   rig.launcher = new ChromeLauncher(dir, {
     portEnvVar: null,
     profileName: `protected-${allow.join('-') || 'none'}`,
@@ -182,11 +183,16 @@ beforeAll(async () => {
 afterAll(async () => {
   await rigA?.browser?.close().catch(() => undefined);
   await rigB?.browser?.close().catch(() => undefined);
-  await Promise.all([rigA?.launcher.dispose(), rigB?.launcher.dispose()]);
+  await Promise.all([stopChrome(rigA?.launcher), stopChrome(rigB?.launcher)]);
   server?.close();
-  // Every download went to a temp folder: nothing new in the account's own.
-  expect([...accountDownloads(SERVED_FILES)].filter((name) => !accountBefore.has(name))).toEqual([]);
-});
+  try {
+    // Every download went to a temp folder: nothing new in the account's own.
+    expect([...accountDownloads(SERVED_FILES)].filter((name) => !accountBefore.has(name))).toEqual([]);
+  } finally {
+    // After Chrome has gone, launched or not.
+    await Promise.all([rigA?.profile.remove(), rigB?.profile.remove()]);
+  }
+}, CHROME_TEARDOWN_TIMEOUT_MS);
 
 function skipUnless(ctx: { skip: (note?: string) => void }): boolean {
   if (!skipReason) return false;
@@ -294,7 +300,7 @@ describe('protected Chrome profile (real Chrome)', { timeout: CASE_TIMEOUT_MS },
     async function pass(p: Page) {
       const guard = rigA.launcher.consentDownloadGuard();
       if (!guard) throw new Error('no download guard');
-      const dir = mkdtempSync(join(tmpdir(), 'wmux-consent-'));
+      const dir = rigA.profile.scratch('wmux-consent-');
       return openDownloadPass(guard, {
         frameId: await targetIdOf(p),
         approvedHost: 'a.test',

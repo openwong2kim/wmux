@@ -2,14 +2,14 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import type { Browser, Page } from 'playwright-core';
 import WebSocket from 'ws';
 import { ChromeLauncher, type ChromeProtectionPlan } from '../ChromeLauncher';
 import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy } from '../../../shared/browserHostPolicy';
-import { accountDownloads, pinDownloadDir } from '../../../test-utils/chromeDownloads';
+import { accountDownloads } from '../../../test-utils/chromeDownloads';
+import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 
 // ---------------------------------------------------------------------------
 // One protected profile, the same rows on the DevTools port and on the
@@ -113,8 +113,8 @@ const ROWS: Row[] = [
 ];
 const row = (id: string) => ROWS.find((r) => r.id === id) as Row;
 
-/** `dir`: the profile; `allowDir`: where a client asks downloads to go; `downloads`: the profile's own download folder (a temp dir). */
-interface Rig { transport: Transport; launcher: ChromeLauncher; dir: string; allowDir: string; downloads: string; skip: string | null }
+/** `dir`: the profile; `allowDir`: where a client asks downloads to go; `downloads`: the profile's own download folder (a temp dir); `profile` removes all three. */
+interface Rig { transport: Transport; launcher: ChromeLauncher; dir: string; allowDir: string; downloads: string; profile: TempChromeProfile; skip: string | null }
 
 function plan(): ChromeProtectionPlan {
   return {
@@ -124,10 +124,10 @@ function plan(): ChromeProtectionPlan {
 }
 
 async function makeRig(transport: Transport): Promise<Rig> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `wmux-protected-${transport}-`));
-  // Where a download goes when nothing set a path: a temp folder, so no row
-  // ever writes outside the temp dirs.
-  const downloads = pinDownloadDir(dir);
+  // Where a download goes when nothing set a path (profile.downloads): a temp
+  // folder, so no row ever writes outside the temp dirs.
+  const profile = tempChromeProfile(`wmux-protected-${transport}-`);
+  const { dir, downloads } = profile;
   vi.stubEnv('WMUX_CHROME_TRANSPORT', transport === 'pipe' ? 'pipe' : '');
   vi.stubEnv('WMUX_CHROME_PATH', CHROME as string);
   const launcher = new ChromeLauncher(dir, {
@@ -138,8 +138,8 @@ async function makeRig(transport: Transport): Promise<Rig> {
     // what row j checks; PROTECTED_HEADFUL=1 runs with windows, as wmux does.
     extraArgs: [...(process.env.PROTECTED_HEADFUL === '1' ? [] : ['--headless=new']), '--use-mock-keychain', '--password-store=basic'],
   });
-  const allowDir = fs.mkdtempSync(path.join(os.tmpdir(), `wmux-protected-${transport}-allow-`));
-  const rig: Rig = { transport, launcher, dir, allowDir, downloads, skip: null };
+  const allowDir = profile.scratch(`wmux-protected-${transport}-allow-`);
+  const rig: Rig = { transport, launcher, dir, allowDir, downloads, profile, skip: null };
   try {
     await launcher.endpoint();
   } catch (err) {
@@ -213,7 +213,7 @@ async function targetIdOf(p: Page): Promise<string> {
 async function consentPass(rig: Rig, p: Page) {
   const guard = rig.launcher.consentDownloadGuard();
   if (!guard) throw new Error('no download guard');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-consent-'));
+  const dir = rig.profile.scratch('wmux-consent-');
   const pass = await openDownloadPass(guard, {
     frameId: await targetIdOf(p),
     approvedHost: 'a.test',
@@ -223,7 +223,7 @@ async function consentPass(rig: Rig, p: Page) {
     finishTimeoutMs: 15_000,
     join: (d, n) => path.join(d, n),
   });
-  return { pass, dir };
+  return { pass };
 }
 
 /** What the fixture serves as downloads; the account's real Downloads folder is checked for these, read only. */
@@ -260,9 +260,10 @@ describe.skipIf(!CHROME).each<Transport>(['port', 'pipe'])('a protected profile 
 
   afterAll(async () => {
     vi.unstubAllEnvs();
-    await rig?.launcher.dispose();
-    for (const d of [rig?.dir, rig?.allowDir, rig?.downloads]) if (d) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
-  });
+    await stopChrome(rig?.launcher);
+    // After Chrome has gone, launched or not; the consent dirs go with it.
+    await rig?.profile.remove();
+  }, CHROME_TEARDOWN_TIMEOUT_MS);
 
   const live = (ctx: { skip: (note?: string) => void; task: { name: string } }) => {
     if (transport === 'port' && !TABLE_OUT && !PORT_ROWS.has(ctx.task.name.charAt(0))) ctx.skip('run on the port for the table only');
@@ -299,14 +300,13 @@ describe.skipIf(!CHROME).each<Transport>(['port', 'pipe'])('a protected profile 
     live(ctx);
     const browser = await connect(rig);
     const p = await freshPage(browser, `http://a.test:${port}/download`);
-    const { pass, dir } = await consentPass(rig, p);
+    const { pass } = await consentPass(rig, p);
     const second = await connect(rig);
     await second.close();
     await p.click('#d');
     const done = await pass.done.then((d) => d, (err: Error) => ({ error: err.message }));
     const ok = 'path' in done && fs.existsSync(done.path) && fs.readFileSync(done.path, 'utf8').includes(PAYLOAD);
     record('c', ok, ok ? undefined : JSON.stringify(done));
-    fs.rmSync(dir, { recursive: true, force: true });
     await browser.close();
   });
 
@@ -368,7 +368,7 @@ describe.skipIf(!CHROME).each<Transport>(['port', 'pipe'])('a protected profile 
     live(ctx);
     const browser = await connect(rig);
     const p = await freshPage(browser, `http://a.test:${port}/slow-download`);
-    const { pass, dir } = await consentPass(rig, p);
+    const { pass } = await consentPass(rig, p);
     // A client that learns the download's guid and tries to cancel it.
     const spy = await browser.newBrowserCDPSession();
     const guids: string[] = [];
@@ -380,7 +380,6 @@ describe.skipIf(!CHROME).each<Transport>(['port', 'pipe'])('a protected profile 
     const done = await pass.done.then((d) => d, (err: Error) => ({ error: err.message }));
     const ok = 'path' in done && fs.existsSync(done.path);
     record('h', ok, `${guids.length ? 'guid seen' : 'no guid seen'}; ${ok ? 'completed' : JSON.stringify(done)}`);
-    fs.rmSync(dir, { recursive: true, force: true });
     await browser.close();
   });
 
