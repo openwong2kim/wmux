@@ -1,0 +1,80 @@
+name: Chrome pipe probe
+# Drives the installed Chrome and Edge, and Playwright's Chromium build, over
+# --remote-debugging-pipe (fds 3 and 4) the way the dedicated Chrome is
+# spawned, on each platform wmux ships:
+# first answer, a tab, a browser session, exit when the pipe closes, nothing
+# left running on the profile, and a cookie kept across a restart
+# (scripts/probe-chrome-pipe.mjs). The results table is in the job summary.
+#
+# --cold-start-warn: a preinstalled browser's first start on a fresh runner
+# can exceed the start ceiling while its disk loads, so that one start is a
+# warning (annotation and summary row); a warm start and every other check
+# still fail.
+#
+# Runs on pull requests that touch the probe or the dedicated Chrome's code,
+# drafts included, and on demand.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - scripts/probe-chrome-pipe.mjs
+      - scripts/probe-chrome-pipe-verdict.mjs
+      - .github/workflows/chrome-pipe-probe.yml
+      - src/main/browser-session/**
+  workflow_dispatch:
+
+concurrency:
+  group: chrome-pipe-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # A probe takes well under a minute per browser; the cap only stops a hang.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-15, ubuntu-22.04]
+    steps:
+      # Same pins as validate in ci.yml. Node built-ins only: no npm ci.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '>=24.21.0 <25'
+
+      # Chromium: no runner image ships it on all three (Ubuntu only), so
+      # Playwright's build (Chrome for Testing) at the version wmux depends on.
+      # About 30 s; --no-shell skips the headless shell the probe does not run.
+      - name: Install Chromium
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw
+        run: npx -y playwright-core@1.58.2 install chromium --no-shell
+
+      - name: Probe (Windows, macOS)
+        if: runner.os != 'Linux'
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw
+        run: node scripts/probe-chrome-pipe.mjs --require chromium --cold-start-warn --json pipe-probe.json
+
+      # Headed mode needs a display: a virtual one.
+      - name: Probe (Linux)
+        if: runner.os == 'Linux'
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw
+        run: xvfb-run -a node scripts/probe-chrome-pipe.mjs --require chromium --cold-start-warn --json pipe-probe.json
+
+      - name: Upload results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: chrome-pipe-probe-${{ matrix.os }}
+          path: pipe-probe.json
+          if-no-files-found: ignore

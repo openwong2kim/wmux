@@ -71,7 +71,7 @@ const env = {
   ...process.env,
   USERPROFILE: home, HOME: home, HOMEDRIVE: undefined, HOMEPATH: undefined,
   APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
-  WMUX_DATA_SUFFIX: suffix, WMUX_NO_DIALOG: '1',
+  WMUX_DATA_SUFFIX: suffix, WMUX_NO_DIALOG: '1', WMUX_TEST_CDP_PORT: '1',
 };
 delete env.WMUX_DISABLE_CDP;
 fs.mkdirSync(env.APPDATA, { recursive: true });

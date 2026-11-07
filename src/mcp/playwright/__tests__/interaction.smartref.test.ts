@@ -91,7 +91,7 @@ function makePage(nodes: CdpNode[], url = 'https://example.test/a') {
     url: () => page.currentUrl,
     title: async () => 'Page',
     innerText: async () => 'body text',
-    on: () => {},
+    on: () => undefined,
     mainFrame: () => ({ id: 'main' }),
     context: () => ({
       newCDPSession: async () => ({
@@ -104,7 +104,7 @@ function makePage(nodes: CdpNode[], url = 'https://example.test/a') {
     locator: vi.fn(),
     // A real click walks the pointer to the element first, so the fakes carry
     // the shape that approach reads: a viewport, a mouse, and a box per element.
-    mouse: { move: async () => {} },
+    mouse: { move: async () => undefined },
     viewportSize: () => ({ width: 1280, height: 720 }),
     getByRole: (r: string, opts?: { name?: string }) => ({
       count: async () => page.nodes.filter((n) => n.role?.value === r
@@ -142,6 +142,19 @@ describe('browser_click({ smartRef }) on the Playwright lane', () => {
 
     expect(result.isError).toBeUndefined();
     expect(page.clicked).toEqual(['button Row#1']);
+  });
+
+  it('lets smartRef win over ref, and takes a smartRef next to an empty ref', async () => {
+    const page = makePage(tree([
+      { backendId: 40, role: 'button', name: 'Row' },
+      { backendId: 41, role: 'button', name: 'Row' },
+    ]));
+    getPage.mockResolvedValue(page);
+    await getSmartSnapshot(page as never);
+
+    expect((await click({ smartRef: 2, ref: '1', surfaceId: 'surf-1' })).isError).toBeUndefined();
+    expect((await click({ smartRef: 2, ref: '', surfaceId: 'surf-1' })).isError).toBeUndefined();
+    expect(page.clicked).toEqual(['button Row#1', 'button Row#1']);
   });
 
   it('records a REPLAYABLE ref axis, not the getByRole source text', async () => {

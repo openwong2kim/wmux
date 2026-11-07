@@ -13,10 +13,12 @@ import {
   browserScopeKey,
   markDomRefsActive,
   noteFrameRefsForScope,
+  rpcFrameRefsFor,
   resolveRef,
 } from '../snapshot';
 import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../dom-intelligence';
-import { nextRefFor, priorRefDescriptors, recordRefGeneration } from '../refDescriptors';
+import { nextRefFor, priorRefDescriptors, recordRefGeneration, reserveRefs } from '../refDescriptors';
+import { readRpcFrames, type RpcFrameAnswer, type RpcFrameInfo, type RpcFrameRef } from '../rpcFrames';
 import { pageEvaluator, rpcEvaluator } from '../page-eval';
 import { formatSnapshotResult } from '../snapshotDiff';
 import { getSnapshotBaseline, setSnapshotBaseline, snapshotSurfaceKey } from '../snapshotCache';
@@ -24,6 +26,7 @@ import {
   capCaptureText,
   continueSnapshotCapture,
   cursorIgnoredNote,
+  windowBudget,
   windowSnapshotText,
 } from '../snapshotCursor';
 import { captureSnapshotListing } from '../snapshotListing';
@@ -76,6 +79,16 @@ import {
  * because a scoped listing numbers refs inside one subtree — its descriptors
  * describe a different listing from the unscoped one's.
  */
+/** The top document's origin, from the DOM listing's `URL:` line ('' if none). */
+function topListingOrigin(listing: string): string {
+  const line = /^URL: (.*)$/m.exec(listing);
+  try {
+    return line ? new URL(line[1]).origin : '';
+  } catch {
+    return '';
+  }
+}
+
 function domListingKey(scope: BrowserTargetScope, selector: string | undefined): string {
   return `dom:${browserScopeKey(scope)}:${selector ?? ''}`;
 }
@@ -271,8 +284,9 @@ function matchesGlob(url: string, pattern: string): boolean {
  * capture (BrowserCaptureManager) is enabled when a builtin guest attaches, so
  * it covers the whole page life; the engine-side Playwright buffer only exists
  * where main has no guest to watch — a chrome-backend tab. Preferring main's
- * for everything but 'chrome' is what makes a dev build and a packaged build
- * answer browser_console identically: before #1081 a dev build read the
+ * for everything but 'chrome' is what makes browser_console answer the same
+ * whether or not the engine happens to hold a Page for the guest (which depends
+ * on attach order, not on the build): before #1081 a Page meant reading the
  * Playwright buffer, which only started at the first read call.
  *
  * The RPC lane still falls back to the page lane if main cannot serve it (an
@@ -527,6 +541,8 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         }
 
         let text: string;
+        // Refs the RPC listing read inside frames, for the fail-closed guard.
+        let rpcFrameRefs: Map<number, RpcFrameRef> | undefined;
         // Which route served a SCOPED snapshot. Part of the diff key: an a11y
         // subtree and a DOM listing of the same selector are different
         // renderings, so a call that falls back must not diff against a baseline
@@ -616,6 +632,11 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           // via the shared buildDomSnapshotExpression() helper — filter honored,
           // aria noted, same as there (#1066).
           const domKey = domListingKey(scope, undefined);
+          // Frame refs this surface still holds outlive the listing's own
+          // count, which can be dropped: the top document never takes them.
+          let keptPast = 0;
+          for (const ref of rpcFrameRefsFor(browserScopeKey(scope)).keys()) keptPast = Math.max(keptPast, ref + 1);
+          reserveRefs(domKey, 0, keptPast);
           const result = await sendScopedBrowserRpc<{ value: unknown }>('browser.evaluate', scope, {
             expression: buildDomSnapshotExpression(undefined, {
               ...(filter && { filter }),
@@ -627,6 +648,32 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
           // Same URL redaction as the scoped DOM listing above.
           text = redactPasswordParams(payload.text);
           if (payload.entries.length > 0) recordRefGeneration(domKey, 0, payload.entries);
+          // In-process frames, after the top document and never at its cost.
+          // A frame element keeps the number its document gave it last time;
+          // new ones get numbers past every number handed out. Frame numbers
+          // are spent but never kept as top descriptors, so the top document
+          // can never take one.
+          const frames = await readRpcFrames({
+            topText: text,
+            topOrigin: topListingOrigin(text),
+            budget: windowBudget(),
+            nextRef: nextRefFor(domKey, 0),
+            prior: rpcFrameRefsFor(browserScopeKey(scope)),
+            topRefs: new Set(payload.entries.map((e) => e.ref)),
+            listFrames: async () =>
+              (await sendScopedBrowserRpc<{ frames?: RpcFrameInfo[] }>('browser.frames.tree', scope, {})).frames ?? [],
+            // Main builds the frame listing itself; no expression travels.
+            readFrames: (batch, seed, budget) =>
+              sendScopedBrowserRpc<{ frames: RpcFrameAnswer[]; nextRef: number }>('browser.frames.read', scope, {
+                frames: batch.map(({ frame, prior }) => ({ frameId: frame.frameId, loaderId: frame.loaderId, prior })),
+                seed,
+                budget,
+                ...(filter && { filter }),
+              }),
+          });
+          if (frames.text) text += redactPasswordParams(frames.text);
+          reserveRefs(domKey, 0, frames.nextRef);
+          if (frames.refs.size > 0) rpcFrameRefs = frames.refs;
           if (format === 'aria') {
             text = `(note: aria format unavailable — no live page, returning the DOM interactive listing)\n${text}`;
           }
@@ -640,7 +687,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
         // a11y, scoped, DOM listing, RPC — passes through this one handler.
         // A route that mints no frame refs clears the surface, which is what
         // keeps a later DOM snapshot's tags resolvable.
-        noteFrameRefsForScope(browserScopeKey(scope), page ?? null);
+        noteFrameRefsForScope(browserScopeKey(scope), page ?? null, rpcFrameRefs);
 
         // Bound what everything downstream retains. deferTruncation hands back
         // the whole assembled tree, and the aria lane has no interactive strip to
@@ -757,7 +804,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
 
   server.tool(
     'browser_screenshot',
-    'Screenshot the page or one element as a base64-encoded PNG. Requires browser_open first, even if a browser panel is already visible. A viewport capture states ONE scale (image px per viewport CSS px, device pixel ratio and any downscale already folded in) plus a screenshotScale JSON line: click with browser_click imageX/imageY, or divide by that scale yourself. fullPage and element captures are not in click coordinates at all. CSS animations and transitions are frozen for the capture, so two shots of an unchanged page match.',
+    'Screenshot the page or one element as a base64-encoded PNG. Requires browser_open first, even if a browser panel is already visible. A viewport capture states ONE scale (image px per viewport CSS px, device pixel ratio and any downscale already folded in) plus a screenshotScale JSON line: click with browser_click imageX/imageY, or divide by that scale yourself. fullPage and element captures are not in click coordinates at all. CSS animations and transitions are frozen for the capture when a Playwright page is attached, so two shots of an unchanged page match; the in-app browser\'s RPC lane (no page) does not freeze them.',
     BROWSER_SCREENSHOT_SHAPE,
     async ({ fullPage, ref, surfaceId, maxBytes, refs }) => withAutomationLease(deps, surfaceId, async (scope) => {
       const ceiling = clampScreenshotCeilingBytes(maxBytes);
@@ -839,9 +886,35 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             return imageResult(fitted, refs ? `${basis}\n\n${await refsTable(page)}` : basis);
           }
         }
-        // Try Playwright for element-level screenshots (ref)
+        // Element (ref) captures, in the same order as click and fill. With a
+        // Playwright page the snapshot minted accessibility refs and wrote no
+        // data-wmux-ref tags, so the ref is resolved on that page. Without one
+        // (attach order, not build), main crops the guest's own capture to the
+        // tagged element. The chrome backend has no browser.screenshot lane.
+        const refPage = ref ? await engine.getPageForScope(scope).catch(allowScopedRpcFallback) : null;
+        if (ref && !refPage && (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) !== 'chrome') {
+          const selector = `[data-wmux-ref="${sanitizeRef(ref, scope)}"]`;
+          const result = await sendScopedBrowserRpc<{ data: string }>('browser.screenshot', scope, { selector });
+          const fitted = await fitScreenshot(
+            result.data,
+            { maxBytes: ceiling },
+            async (rung) => {
+              const shrunk = await sendScopedBrowserRpc<{ data: string; mimeType?: string }>(
+                'browser.screenshot',
+                scope,
+                { selector, format: 'jpeg', quality: rung.quality, scale: rung.scale },
+              );
+              return shrunk.mimeType === 'image/jpeg' ? shrunk.data : null;
+            },
+          );
+          const basis = coordinateBasis('element', null);
+          return imageResult(
+            fitted,
+            refs ? `${basis}\n\nrefs:true lists boxes for page captures only; omit ref.` : basis,
+          );
+        }
         if (ref) {
-          const page = await engine.getPageForScope(scope);
+          const page = refPage;
           if (page) {
             const el = await resolveRef(page, ref);
             if (!el) {
@@ -861,6 +934,8 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
               refs ? `${basis}\n\nrefs:true lists boxes for page captures only; omit ref.` : basis,
             );
           }
+          // Falling through would answer with the whole viewport and report success.
+          throw new Error(`Could not capture ref="${ref}": the chrome backend did not provide a page for this tab right now. Omit ref to capture the viewport.`);
         }
 
         // Use RPC for fast, reliable screenshots (bypasses Playwright CDP discovery)
@@ -1236,7 +1311,7 @@ export function registerInspectionTools(server: McpServer, deps: BrowserToolDeps
             },
           );
         } else {
-          // RPC fallback (packaged builds): resolve via the data-wmux-ref tag set
+          // RPC fallback (no Playwright page): resolve via the data-wmux-ref tag set
           // by browser_snapshot / browser_smart_snapshot and set the outline inline.
           const safeRef = sanitizeRef(ref, scope);
           const result = await sendScopedBrowserRpc<{ value: string }>('browser.evaluate', scope, {

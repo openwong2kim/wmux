@@ -21,9 +21,12 @@ vi.mock('net', () => ({ connect: connectMock, default: { connect: connectMock } 
 vi.mock('fs');
 
 import * as fs from 'fs';
+import * as path from 'path';
 import {
   canConnectBrokerPipe,
   isolatedInstanceNotice,
+  launcherForTarget,
+  resolveWmuxLauncher,
   resolveWmuxScript,
   selectedProfile,
   selectedTargets,
@@ -142,6 +145,59 @@ describe('resolveWmuxScript', () => {
     existsFor([]); // nothing exists
 
     expect(await resolveWmuxScript()).toBeNull();
+  });
+});
+
+describe('resolveWmuxLauncher / launcherForTarget', () => {
+  const home = '/home/u';
+  const approved = '/home/u/.wmux/mcp/wmux-native';
+  const approves = () => approved;
+  const approvesNothing = () => null;
+  function existsAll() {
+    existsSyncMock.mockImplementation((p: unknown) => /(shim|index|entry)\.js$/.test(String(p)));
+  }
+
+  it('offers the native launcher the app approved when a broker answers, running nothing', async () => {
+    scriptConnect('connect');
+    existsAll();
+    const plan = await resolveWmuxLauncher(home, approves);
+    expect(plan?.launcher).toEqual({ kind: 'native', binary: approved });
+  });
+
+  it('offers native only for a build the app approved', async () => {
+    scriptConnect('connect');
+    existsAll();
+    const plan = await resolveWmuxLauncher(home, approvesNothing);
+    expect(plan?.launcher.kind === 'node' && plan.launcher.script).toMatch(/shim\.js$/);
+    expect(plan?.approvedNative).toBeNull();
+    expect(launcherForTarget(plan!, approved)).toEqual(plan?.launcher);
+  });
+
+  it('from a packaged app\'s CLI (beside app.asar), offers the bundle when the native launcher is not approved, never the shim', async () => {
+    scriptConnect('connect');
+    existsSyncMock.mockImplementation((p: unknown) => /(shim|index|entry)\.js$|app\.asar$/.test(String(p)));
+    const plan = await resolveWmuxLauncher(home, approvesNothing);
+    // The stable copy the app registers, not the versioned one inside the app.
+    expect(plan?.launcher).toEqual({ kind: 'node', script: path.join(home, '.wmux', 'mcp', 'index.js') });
+    expect(existsSyncMock.mock.calls.some(([p]) => String(p).endsWith('shim.js'))).toBe(false);
+    scriptConnect('connect');
+    expect((await resolveWmuxLauncher(home, approves))?.launcher).toEqual({ kind: 'native', binary: approved });
+    // Before the app has made a stable copy, the bundle beside the CLI.
+    existsSyncMock.mockImplementation((p: unknown) => !String(p).startsWith(path.join(home, '.wmux')) && /(shim|index|entry)\.js$|app\.asar$/.test(String(p)));
+    scriptConnect('connect');
+    const first = await resolveWmuxLauncher(home, approvesNothing);
+    expect(first?.launcher.kind === 'node' && first.launcher.script).toMatch(/index\.js$|entry\.js$/);
+    expect(first?.launcher.kind === 'node' && first.launcher.script).not.toBe(path.join(home, '.wmux', 'mcp', 'index.js'));
+  });
+
+  it('with the app closed, keeps an entry already on the approved launcher and writes node elsewhere', async () => {
+    scriptConnect('error');
+    existsAll();
+    const plan = await resolveWmuxLauncher(home, approves);
+    expect(plan?.launcher.kind).toBe('node');
+    expect(launcherForTarget(plan!, approved)).toEqual({ kind: 'native', binary: approved });
+    expect(launcherForTarget(plan!, '/home/u/.wmux/mcp/index.js')).toEqual(plan?.launcher);
+    expect(launcherForTarget(plan!, null)).toEqual(plan?.launcher);
   });
 });
 

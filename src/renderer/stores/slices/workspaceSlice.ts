@@ -7,6 +7,7 @@ import { normalizeStarPromptState } from '../../../shared/starPrompt';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { builtinOwning, effectiveBindings, overridesFromDisabledCombos, sanitizeShortcutOverrides } from '../../../shared/keymap';
 import { normalizeWorkspaceColor, type WorkspaceColorId } from '../../../shared/workspaceColors';
+import { normalizeWorkspaceGroups, resolveWorkspaceGroupId } from '../../../shared/workspaceGroups';
 import type { A2aRemoteSpawnedBy } from '../../../shared/a2aSpawn';
 import { parseRemoteSpawnedBy, type RemoteSpawnedWorkspace } from '../../utils/remoteSpawnedBy';
 import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
@@ -739,6 +740,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // alias the source's.
         nextPaneOrdinal: assignPaneOrdinals(rootPane, 1),
         ...(profile ? { profile } : {}),
+        // #3069 — the copy is listed next to its source, under the same group.
+        ...(src.groupId ? { groupId: src.groupId } : {}),
         // `color` is deliberately NOT carried over (owner decision, 2026-08-17).
         // The tag exists to tell workspaces apart; handing the copy the same one
         // would make the two rows identical at the exact moment they sit next to
@@ -1814,6 +1817,19 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           // did not check task rows) is dropped: here if nesting is already
           // known, else when missions or lineage land (workTaskSlice).
           unpinNestedTasks(state);
+        }
+      }
+      // #3069 — sidebar groups: well-formed entries only, and a workspace keeps
+      // its groupId only while that group exists (a hand-edited or stale id
+      // drops the row back to the top level instead of hiding it).
+      state.workspaceGroups = normalizeWorkspaceGroups(data.workspaceGroups);
+      state.workspaceGroupRenamingId = null;
+      {
+        const groupIds = new Set(state.workspaceGroups.map((g) => g.id));
+        for (const ws of state.workspaces) {
+          const groupId = resolveWorkspaceGroupId(ws.groupId, groupIds);
+          if (groupId) ws.groupId = groupId;
+          else delete ws.groupId;
         }
       }
       state.sidebarAttentionFirst = state.sidebarSortMode === 'attention';

@@ -104,6 +104,8 @@ import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerCodexRpc } from './pipe/handlers/codex.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
+import { registerMcpSessionsRpc } from './pipe/handlers/mcpSessions.rpc';
+import { McpSessionTracker } from './mcp/mcpSessionTracker';
 import { registerComputerRpc } from './pipe/handlers/computer.rpc';
 import { resolvePtyOwnerWorkspace } from './workspace/ptyOwnership';
 import { createFanoutCallerSubmit } from './deck/fanoutCallerSubmit';
@@ -221,7 +223,7 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { setBrokerPidSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
-import { claimCdpPort, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
+import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { registerBrowserPrivateNetworkIpc } from './ipc/handlers/browserPrivateNetwork.handler';
@@ -589,6 +591,7 @@ if (process.platform === 'win32' && app.isPackaged) {
 // config. Closing the port is the single largest same-user surface reduction
 // in the app: CDP only needs a loopback socket, unlike other same-user vectors
 // which need filesystem or process control. See docs/SECURITY.md §3.
+dropDebuggingSwitches(app.commandLine);
 const cdpEnabled =
   process.env.WMUX_DISABLE_CDP !== 'true' &&
   loadConfig().browser?.cdp?.enabled !== false;
@@ -830,6 +833,7 @@ const mcpBrokerSupervisor = new BrokerSupervisor();
 setBrokerPidSource(() => mcpBrokerSupervisor.pid);
 const webviewCdpManager = new WebviewCdpManager(0);
 webviewCdpManager.setCdpFailureReason(cdpEnabled ? 'CDP ownership verification pending' : 'CDP disabled by configuration');
+webviewCdpManager.setCdpDisabled(!cdpEnabled);
 // "Agent is driving" marker + Stop / Take over for in-app browser tabs. Activity
 // is the surface's automation lease count; Stop and Take over end the leases in
 // flight (their holders learn why on the next renew) and stop a navigation.
@@ -1239,6 +1243,14 @@ registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerCodexRpc(rpcRouter, () => mainWindow, () => daemonClient);
 registerPerfRpc(rpcRouter);
+// One tracker: the router counts into it, the summary RPC reads it.
+const mcpSessionTracker = new McpSessionTracker();
+rpcRouter.setMcpSessionSink(mcpSessionTracker);
+registerMcpSessionsRpc(rpcRouter, {
+  brokerEnabled: isMcpBrokerEnabled,
+  brokerStatus: () => mcpBrokerSupervisor.status(),
+  tracker: mcpSessionTracker,
+});
 // Desktop computer use. Built on first call, so an install that never opts in
 // (Settings › Computer use) never constructs it or spawns a helper. Consent rides
 // the approval queue, which is created further down — hence the late binding.
@@ -2474,7 +2486,7 @@ app.on('ready', async () => {
         const { targetInfo } = await localDebugger.sendCommand('Target.getTargetInfo');
         const probe = await probeCdpEndpointWithRetry(cdpPort, targetInfo?.targetId ?? '');
         if (probe.ok) {
-          await webviewCdpManager.setCdpPort(cdpPort);
+          webviewCdpManager.setCdpPort(cdpPort);
           console.log(`[WinMux] CDP listening on port ${cdpPort} (${probe.browser})`);
           retry = false;
         } else {

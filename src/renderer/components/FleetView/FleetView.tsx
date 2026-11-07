@@ -11,6 +11,7 @@ import {
   type FleetPane,
   type FleetRow,
 } from '../../stores/selectors/fleet';
+import { selectDownHostIds, selectOutdatedRemoteKeys } from '../../stores/selectors/pcRail';
 import { selectApprovalInbox } from '../../stores/selectors/approvalInbox';
 import { selectReviewQueue, selectReviewQueueIds, type ReviewQueueEntry } from '../../stores/selectors/reviewQueue';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
@@ -21,7 +22,7 @@ import {
   focusNotificationTarget,
 } from '../../hooks/useNotificationListener';
 import { fleetChangedSinceSeen, type FleetSeenEntry } from '../../stores/slices/uiSlice';
-import { tailForPtyOrDaemon } from '../../utils/terminalTail';
+import { pollTail, tailForPtyOrDaemon } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
 import PresetPicker from '../Sidebar/PresetPicker';
@@ -144,6 +145,8 @@ export default function FleetView() {
   // (the sidebar roster has shown them since #1163). Fleet View is a VIEW; the
   // deck's commandable roster deliberately does not pass this.
   const remoteWorkspaces = useStore((s) => s.remoteWorkspaces);
+  const downHostIds = useStore(selectDownHostIds);
+  const outdatedRemoteKeys = useStore(selectOutdatedRemoteKeys);
 
   // S-C2: tab lives in uiSlice (not FleetView-local) so the A2A / MCP approval
   // modals can suppress themselves while the inbox tab is open (AppLayout delta
@@ -198,12 +201,12 @@ export default function FleetView() {
   const { panes, groups } = useMemo(() => selectFleetBoard({
       workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
       surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
-      commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces,
+      commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds, outdatedRemoteKeys,
       surfaceLastMessage, surfaceOutputAt: useStore.getState().surfaceOutputAt,
       unverifiablePaneMinutes: unverifiableMinutes, usageLimitWaiting,
     }, { now, sortMode: fleetSortMode }), [usageLimitWaiting, workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
     surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
-    commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes,
+    commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds, outdatedRemoteKeys, unverifiableMinutes,
     surfaceLastMessage, now, fleetSortMode]);
   // Every row, unfiltered: where the Hand out… popover reads a pane's state.
   const allRows = useMemo(() => [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle], [groups]);
@@ -518,22 +521,16 @@ export default function FleetView() {
   useEffect(() => {
     setTails({});
     if (!previewPtyId) return;
-    let cancelled = false;
     // A background pane has no renderer buffer: its tail comes from the daemon.
-    const refresh = () => {
-      void tailForPtyOrDaemon(previewPtyId, previewTailLines).then((tail) => {
-        if (cancelled) return;
-        setTails((prev) => {
-          const before = prev[previewPtyId];
-          return before?.length === tail.length && tail.every((line, i) => before[i] === line)
-            ? prev : { [previewPtyId]: tail };
-        });
+    const poll = pollTail((onVia) => tailForPtyOrDaemon(previewPtyId, previewTailLines, onVia), (tail) => {
+      setTails((prev) => {
+        const before = prev[previewPtyId];
+        return before?.length === tail.length && tail.every((line, i) => before[i] === line)
+          ? prev : { [previewPtyId]: tail };
       });
-    };
-    refresh();
-    const id = window.setInterval(refresh, 750);
-    const unsub = onTerminalRegistered(refresh);
-    return () => { cancelled = true; window.clearInterval(id); unsub(); };
+    });
+    const unsub = onTerminalRegistered(poll.refresh);
+    return () => { poll.stop(); unsub(); };
   }, [previewPtyId, previewTailLines]);
 
   // Error rows say what failed: the last error line of each one's terminal,
@@ -767,13 +764,15 @@ export default function FleetView() {
     restoreFocusRef.current = null;
     // worktree:false task: nothing to diff — its result is the folder.
     if (entry.outputDir && !entry.branch) {
-      void window.electronAPI.shell.openPath(entry.outputDir);
+      void window.electronAPI.shell.openPath(entry.outputDir).then((result) => {
+        if (result?.error === 'NOT_FOUND') useStore.getState().pushToast({ level: 'warn', message: t('terminal.openPathNotFound') });
+      });
       setVisible(false);
       return;
     }
     openTaskDiff(entry.taskId, entry.workspaceId, entry.title, entry.ownerWorkspaceId);
     setVisible(false);
-  }, [setVisible]);
+  }, [setVisible, t]);
   const jumpToReviewTask = useCallback((entry: ReviewQueueEntry) => {
     focusNotificationTarget(() => useStore.getState(), { workspaceId: entry.workspaceId });
     finishJump();

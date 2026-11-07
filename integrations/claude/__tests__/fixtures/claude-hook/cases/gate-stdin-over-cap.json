@@ -1,0 +1,62 @@
+{
+  "description": "Stop --gate with stdin over the cap that no longer parses: logged, nothing sent, exit 0.",
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": {
+              "reason": "r"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate"
+      ],
+      "stdin": {
+        "parts": [
+          "{\"session_id\":\"s1\",\"p\":\"",
+          {
+            "repeat": "x",
+            "count": 1048600
+          },
+          "\"}"
+        ]
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "stdin-truncated",
+            "totalBytes": 1048576
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "malformed-stdin",
+            "error": "SyntaxError"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

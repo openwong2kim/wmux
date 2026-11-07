@@ -2,6 +2,7 @@
 // normalize boundary in ./workspaceColors, so the values and the type cannot
 // drift apart.
 import type { WorkspaceColorId } from './workspaceColors';
+import type { WorkspaceGroup } from './workspaceGroups';
 // Type-only import (erased at build). AgentSlug is canonically declared in
 // ./events; the reverse type-only edge (events → types) makes this a type-level
 // cycle, which TypeScript resolves without any runtime import.
@@ -175,6 +176,14 @@ export interface PaneLeaf {
    * so it persists via the `...pane` spread. undefined === false.
    */
   notificationsMuted?: boolean;
+  /**
+   * The terminal-kind tab that last gave up the focus in this leaf. While a
+   * work tab (editor, browser…) holds the focus, the split's terminal column
+   * keeps drawing this tab, so a file opened from the second tab stays beside
+   * it. Layout state like `ordinal`; read only through `splitShownTerminal`,
+   * which ignores it unless it names a terminal-kind tab still in this leaf.
+   */
+  splitTerminalId?: string;
 }
 
 // === Pane Metadata: optional descriptive labels for external tooling ===
@@ -288,6 +297,12 @@ export interface Workspace {
    * tag, which is the default and renders exactly as today.
    */
   color?: WorkspaceColorId;
+  /**
+   * Optional sidebar group (#3069, shared/workspaceGroups.ts): the id of one of
+   * the session's `workspaceGroups`. Display-only — it decides which header
+   * the row is listed under and nothing else. Undefined = top level.
+   */
+  groupId?: string;
   /**
    * P2 — stable workspace number for the `w<wsOrdinal>` prefix of pane auto
    * names. Allocated from the global high-water `nextWorkspaceOrdinal` at
@@ -1090,6 +1105,10 @@ export interface SessionData {
   /** Bookmarked workspaces: a mark the sidebar filter can narrow to. Unlike a
    *  pin it never changes the order. */
   sidebarBookmarkedIds?: string[];
+  /** #3069 — user-defined sidebar groups, in display order. Normalized on load
+   *  (shared/workspaceGroups.ts); a workspace's `groupId` naming no group here
+   *  is dropped. */
+  workspaceGroups?: WorkspaceGroup[];
   /** #1481 — expanded sidebar width in px. Clamped on load. */
   sidebarWidth?: number;
   /** The file tree column, opposite the sidebar: shown, and its width in px (clamped on load). */

@@ -92,7 +92,7 @@ import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
-import { queuedScreenText, queuedTextSnapshot } from './queuedSessionText';
+import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import { HOST_WINDOW_RPC, createHostWindowRpc } from './hostWindowRpc';
@@ -111,7 +111,7 @@ import type { PushTableRouterDeps } from './push/pushTableRouter';
 import { parseBotApprovalPushRows, type BotApprovalPushRow } from '../shared/botApprovalPush';
 import { parseBotPromptPushRows, type BotPromptPushRow } from '../shared/botPromptPush';
 import { readPendingToolUse } from './transcript/pendingToolUse';
-import { STALL_AGENT, StallWatch, lastHumanPrompt, readTranscriptTail, stopAndPrefill } from './transcript/stallWatch';
+import { STALL_AGENT, StallWatch, lastHumanPrompt, readTranscriptTail, spinnerTokenCount, stopAndPrefill } from './transcript/stallWatch';
 import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
 import { StateWriter, scrubPersistedCredentials, detachedTtlHoursFor } from './StateWriter';
 import { sanitizeCredentialEnv, stripCredentialValues } from '../shared/envFilter';
@@ -860,7 +860,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       const keyInputRevision = managed.bridge.getKeyInputRevision();
       const incarnation = managed.meta.incarnationId ?? null;
       const cols = managed.ptyProcess.cols ?? managed.meta.cols;
-      const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot);
+      const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot, { reuse: true });
       if (!frame) return null;
       return {
         rows: frame.rows,
@@ -3128,7 +3128,7 @@ function registerRpcHandlers(
 
   // daemon.attachSession
   pipeServer.onRpc('daemon.attachSession', async (params) => {
-    const p = params as unknown as DaemonSessionIdParams & { promote?: boolean };
+    const p = params as unknown as DaemonSessionIdParams & { promote?: boolean; scrollback?: number };
     if (sessionManager.getPendingRecovery(p.id)) {
       // #2398 — `promote: false` (a pane not on screen) leaves a pending
       // recovery pending: nothing is spawned until the pane is shown.
@@ -3171,7 +3171,7 @@ function registerRpcHandlers(
           cols: live?.meta.cols ?? managed.meta.cols ?? 80,
           rows: live?.meta.rows ?? managed.meta.rows ?? 24,
         };
-      }, () => sessionManager.getSession(p.id)?.bridge.outputModes ?? managed.bridge.outputModes);
+      }, () => sessionManager.getSession(p.id)?.bridge.outputModes ?? managed.bridge.outputModes, p.scrollback);
       sessionPipes.set(p.id, pipe);
 
       // #557: demote a stuck-'attached' session to 'detached' if its authed
@@ -3376,13 +3376,17 @@ function registerRpcHandlers(
   // misses. Never resurrects or mutates the session. Works for live, dead, or
   // suspended sessions (it only reads the ring).
   pipeServer.onRpc('daemon.readSessionText', async (params) => {
-    const p = params as unknown as { id: string; scrollback?: number };
+    const p = params as unknown as { id: string; scrollback?: number; tail?: boolean };
     const managed = sessionManager.getSession(p.id);
     if (!managed) {
       throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     }
     const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 5000, MAX_SCROLLBACK);
-    const outcome = await queuedTextSnapshot(sessionManager, p.id, scrollback);
+    // `tail`: a display-only read (Fleet's preview is the one caller that asks),
+    // answered from the ring's newest bytes when that gives the same rows.
+    const outcome = p.tail === true
+      ? await queuedTextTail(sessionManager, p.id, scrollback, 'fleet')
+      : await queuedTextSnapshot(sessionManager, p.id, scrollback);
     if (!outcome) throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     if (!outcome.ok) {
       log('info', `[readText] session=${p.id} unavailable reason=${outcome.reason}`);
@@ -3397,7 +3401,10 @@ function registerRpcHandlers(
     if (capped.truncated) {
       log('info', `[readText] session=${p.id} response truncated to fit frame budget (${outcome.rows.length} rows)`);
     }
-    return { ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, rowsBelowCursor: outcome.rowsBelowCursor, truncated: capped.truncated };
+    return {
+      ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, rowsBelowCursor: outcome.rowsBelowCursor, truncated: capped.truncated,
+      ...('via' in outcome ? { via: outcome.via } : {}),
+    };
   });
 
   // #2408: how long a session list waits for a recovered pane's screen read.
@@ -3424,7 +3431,7 @@ function registerRpcHandlers(
     }
     const inFlight = sightingReads.get(id);
     if (inFlight || recoveredSighting.get(id)?.at === managed.ringBuffer.totalBytesWritten) return inFlight;
-    const read = renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot)
+    const read = renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot, { reuse: true })
       .then((frame) => {
         if (frame && sessionManager.getSession(id) === managed && recoveredAgentShellIds.has(id)) {
           recoveredSighting.set(id, { at: frame.mark, onScreen: screenShowsLiveAgent(frame.rows, slug) });
@@ -4732,8 +4739,14 @@ function registerRpcHandlers(
       },
       awaitingHuman: (id) => sessionManager.getSession(id)?.bridge.getAgentStatus() === 'awaiting_input'
         || approvalRegistry?.list().pending.some((r) => r.sessionId === id) === true,
+      // An estimate, not a gate: read from the ring's newest bytes when that
+      // gives the whole ring's rows (guardedTailRead.ts). Its inputs are what
+      // the real-data check compares, by count only.
       readScreen: async (id) => {
-        const outcome = await queuedScreenText(sessionManager, id);
+        const outcome = await queuedScreenTail(sessionManager, id, 'stallwatch', (rows) => ({
+          running: screenShowsRunningTurn(rows, STALL_AGENT),
+          token: spinnerTokenCount(rows),
+        }));
         return outcome?.ok ? outcome.rows.map((r) => r.text) : null;
       },
       titleRunning: (id) => titleShowsRunningTurn(sessionManager.getSession(id)?.bridge.getTitle(), STALL_AGENT, Date.now()),
@@ -7800,7 +7813,7 @@ function wireEvents(
       if (ptyId !== id || sessionManager.getSession(id) !== managed) return null;
       const cols = managed.ptyProcess.cols;
       const rows = managed.ptyProcess.rows;
-      const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot);
+      const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot, { reuse: true });
       if (!frame) return null;
       const isCurrent = (): boolean => sessionManager.getSession(id) === managed
         && !managed.bridge.isMuted && managed.ringBuffer.totalBytesWritten === frame.mark
@@ -7814,7 +7827,7 @@ function wireEvents(
     isAwaiting: (id) => sessionManager.getSession(id)?.bridge.isAwaitingHuman() === true,
     eligible: (id) => isClaudeFamilyAgent(paneAgentSlug(id)),
     outputMark: (id) => sessionManager.getSession(id)?.ringBuffer.totalBytesWritten ?? null,
-    render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot),
+    render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot, { reuse: true }),
     clear: (id) => { sessionManager.getSession(id)?.bridge.clearAwaiting('screen-cleared'); },
     holdsPrompt: (id) => approvalRegistry?.list().pending
       // An agent-held (native) decision is not a dialog on this screen.
@@ -7847,7 +7860,7 @@ function wireEvents(
   // after it. A grid narrower than the dialog's footer wraps it beyond what
   // either test can see (#1901), so it is not judged.
   dialogOnScreen = async (sessionId) => {
-    const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot);
+    const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot, { reuse: true });
     if (!frame || frame.rows.every((row) => row.trim().length === 0)) return null;
     if (typeof frame.cols === 'number' && frame.cols < AWAITING_NARROW_DIALOG_COLS) return null;
     return screenShowsActiveDialog(frame.rows) || screenShowsPermissionDialog(frame.rows);
@@ -10181,7 +10194,7 @@ async function main(): Promise<void> {
     // person waits on a nudge, so the read may take longer.
     folderTrustVerdict: (id) => folderTrustState({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, id),
     screenShowsApproval: async (id) => {
-      const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot);
+      const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot, { reuse: true });
       if (!frame || frame.rows.every((row) => !row.trim())) return null;
       return screenShowsAgentDialog(frame.rows);
     },

@@ -89,6 +89,9 @@ describe('ProcessMonitor', () => {
     // Temporarily reduce check interval for test speed
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
+    // kill(0) off Windows sweeps at the no-spawn cadence.
+    const origNativeInterval = (ProcessMonitor as any).NATIVE_CHECK_INTERVAL_MS;
+    Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: 50, configurable: true });
 
     try {
       // Watch a PID that does not exist
@@ -104,6 +107,7 @@ describe('ProcessMonitor', () => {
       }, { timeout: 15000 });
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
+      Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: origNativeInterval, configurable: true });
     }
   }, 20000); // outer it() timeout — must exceed waitFor's 15s budget
 
@@ -113,6 +117,9 @@ describe('ProcessMonitor', () => {
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
+    // kill(0) off Windows sweeps at the no-spawn cadence.
+    const origNativeInterval = (ProcessMonitor as any).NATIVE_CHECK_INTERVAL_MS;
+    Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: 50, configurable: true });
 
     try {
       monitor.watch('sess-1', 99999999, onDead);
@@ -124,6 +131,7 @@ describe('ProcessMonitor', () => {
       expect(onDead).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
+      Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: origNativeInterval, configurable: true });
     }
   });
 
@@ -134,6 +142,9 @@ describe('ProcessMonitor', () => {
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
+    // kill(0) off Windows sweeps at the no-spawn cadence.
+    const origNativeInterval = (ProcessMonitor as any).NATIVE_CHECK_INTERVAL_MS;
+    Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: 50, configurable: true });
 
     try {
       monitor.watch('sess-1', 99999999, onDead1);
@@ -147,6 +158,7 @@ describe('ProcessMonitor', () => {
       expect(onDead2).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
+      Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: origNativeInterval, configurable: true });
     }
   });
 
@@ -156,6 +168,9 @@ describe('ProcessMonitor', () => {
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
+    // kill(0) off Windows sweeps at the no-spawn cadence.
+    const origNativeInterval = (ProcessMonitor as any).NATIVE_CHECK_INTERVAL_MS;
+    Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: 50, configurable: true });
 
     try {
       // Watch current process — should stay alive
@@ -167,6 +182,7 @@ describe('ProcessMonitor', () => {
       expect(onDead).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
+      Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: origNativeInterval, configurable: true });
     }
   });
 
@@ -185,6 +201,9 @@ describe('ProcessMonitor', () => {
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
+    // kill(0) off Windows sweeps at the no-spawn cadence.
+    const origNativeInterval = (ProcessMonitor as any).NATIVE_CHECK_INTERVAL_MS;
+    Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: 50, configurable: true });
 
     try {
       const onDead = vi.fn();
@@ -205,6 +224,7 @@ describe('ProcessMonitor', () => {
       resolveFirst!(new Set([process.pid]));
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
+      Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: origNativeInterval, configurable: true });
       batchSpy.mockRestore();
     }
   });
@@ -227,6 +247,9 @@ describe('ProcessMonitor', () => {
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
+    // kill(0) off Windows sweeps at the no-spawn cadence.
+    const origNativeInterval = (ProcessMonitor as any).NATIVE_CHECK_INTERVAL_MS;
+    Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: 50, configurable: true });
 
     try {
       const onDead1 = vi.fn();
@@ -251,6 +274,7 @@ describe('ProcessMonitor', () => {
       expect(onDead3).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
+      Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: origNativeInterval, configurable: true });
       batchSpy.mockRestore();
       deadSpy.mockRestore();
     }
@@ -267,6 +291,9 @@ describe('ProcessMonitor', () => {
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
+    // kill(0) off Windows sweeps at the no-spawn cadence.
+    const origNativeInterval = (ProcessMonitor as any).NATIVE_CHECK_INTERVAL_MS;
+    Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: 50, configurable: true });
 
     try {
       const onDead = vi.fn();
@@ -277,6 +304,7 @@ describe('ProcessMonitor', () => {
       }, { timeout: 2000 });
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
+      Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: origNativeInterval, configurable: true });
       batchSpy.mockRestore();
       deadSpy.mockRestore();
     }
@@ -300,6 +328,9 @@ describe('ProcessMonitor', () => {
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
+    // kill(0) off Windows sweeps at the no-spawn cadence.
+    const origNativeInterval = (ProcessMonitor as any).NATIVE_CHECK_INTERVAL_MS;
+    Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: 50, configurable: true });
 
     try {
       const onDead = vi.fn();
@@ -314,6 +345,7 @@ describe('ProcessMonitor', () => {
       expect(onDead).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
+      Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: origNativeInterval, configurable: true });
       batchSpy.mockRestore();
       deadSpy.mockRestore();
     }
@@ -330,6 +362,9 @@ describe('ProcessMonitor', () => {
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
     Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: 50, configurable: true });
+    // kill(0) off Windows sweeps at the no-spawn cadence.
+    const origNativeInterval = (ProcessMonitor as any).NATIVE_CHECK_INTERVAL_MS;
+    Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: 50, configurable: true });
 
     try {
       const onDead1 = vi.fn();
@@ -350,6 +385,7 @@ describe('ProcessMonitor', () => {
       expect(onDead2).not.toHaveBeenCalled();
     } finally {
       Object.defineProperty(ProcessMonitor, 'CHECK_INTERVAL_MS', { value: origInterval, configurable: true });
+      Object.defineProperty(ProcessMonitor, 'NATIVE_CHECK_INTERVAL_MS', { value: origNativeInterval, configurable: true });
       batchSpy.mockRestore();
       deadSpy.mockRestore();
     }

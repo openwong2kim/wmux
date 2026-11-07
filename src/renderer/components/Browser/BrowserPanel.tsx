@@ -14,6 +14,7 @@ import { isPrivateSessionReady, privateSessionReady } from '../../utils/privateS
 import { formatElementHandoff, parseElementRect, parseInspectedElement, ELEMENT_STYLE_KEYS, HANDOFF_NOTE_MAX, type InspectedElement } from '../../../shared/browserElementHandoff';
 import { findWorkspaceSurfaceById } from '../../utils/paneTraversal';
 import { findLeaf } from '../../../shared/paneUtils';
+import { splitShownTerminal } from '../Pane/surfaceKinds';
 import { BROWSER_ZOOM_EVENT, stepPageZoom, type BrowserZoomDetail } from '../../../shared/browserZoom';
 import { injectText } from '../AgentToolbar/inject';
 import { IconX } from '../icons';
@@ -79,7 +80,7 @@ export function computeEffectiveVisibility(input: {
 
 /** The hand-off's terminal as [paneId, surfaceId, ptyId, agentName], or null
  *  when this browser's pane shows no terminal with an agent in it. */
-function resolveHandoffTarget(
+export function resolveHandoffTarget(
   s: ReturnType<typeof useStore.getState>,
   workspaceId: string,
   surfaceId: string,
@@ -88,8 +89,7 @@ function resolveHandoffTarget(
   const at = ws ? findWorkspaceSurfaceById(ws, surfaceId) : null;
   const leaf = ws && at && !at.stashed ? findLeaf(ws.rootPane, at.paneId) : null;
   if (!leaf) return null;
-  const terminals = leaf.surfaces.filter((x) => !x.surfaceType || x.surfaceType === 'terminal');
-  const shown = terminals.find((x) => x.id === leaf.activeSurfaceId) ?? terminals[0];
+  const shown = splitShownTerminal(leaf);
   const agent = shown?.ptyId ? s.surfaceAgent[shown.ptyId] : undefined;
   return shown && agent ? [leaf.id, shown.id, shown.ptyId, agent.name] : null;
 }
@@ -517,7 +517,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
         document.addEventListener('click', onClick, true);
         window.__wmuxInspector = { onMove, onClick, overlay, label };
       })();
-    `).catch(() => {});
+    `).catch(() => undefined);
   }, [isReady]);
 
   const removeInspector = useCallback(() => {
@@ -532,7 +532,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
         window.__wmuxInspector.label.remove();
         delete window.__wmuxInspector;
       })();
-    `).catch(() => {});
+    `).catch(() => undefined);
   }, [isReady]);
 
   const handleToggleInspect = useCallback(() => {

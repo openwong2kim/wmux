@@ -11,6 +11,13 @@
 The native Windows `wmux codex` launcher's `codex.relay.prepare` / `codex.relay.close`
 and corresponding `daemon.codex.relay.*` methods are **internal**, outside the
 stable substrate contract. See [the inventory](inventory.md#native-codex-launcher-internal).
+`mcp.sessions.summary` and the `mcpSession` envelope field that feeds it are
+**internal** diagnostics for `wmux doctor`, outside the stable contract too. See
+[the inventory](inventory.md#performance-diagnostics).
+
+`browser.frames.tree`, `browser.frames.read`, and `frameId` / `loaderId` on
+`browser.evaluate` and `browser.click.cdp`, are **experimental** like the rest of the browser surface,
+outside the stable contract. See [the inventory](inventory.md#browser--cdp-surface).
 
 The v3.0 substrate contract is a *subset* of the inventory. This file lists every surface that ships with `stable` guarantees, plus the precise scope of what's guaranteed for each.
 

@@ -1,0 +1,64 @@
+{
+  "description": "Stop --gate with a block that is a string, not an object with a reason: allowed.",
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true,
+            "block": "x"
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop",
+        "--gate"
+      ],
+      "stdin": "{\"session_id\":\"s1\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "ok",
+            "target": "main"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.stop",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1"
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -42,7 +42,7 @@ import { isPlausibleResumeSessionId, launcherStem, tokenize } from './agentResum
 import { EFFORT_TOKEN_RE } from './agentLaunchOptions';
 import { FANOUT_MODEL_RE, codexTrustOverride } from './fanoutPreset';
 import { ORCH_ROLES, ROLE_BINDING_MODEL_MAX, type OrchRole, type WmuxTools } from './orchestratorRole';
-import { ROLE_MODE_ARG_PREFIX, toolSurfaceShellFlags } from './roleSurfaces';
+import { ROLE_MODE_ARG_PREFIX, toolSurfaceShellFlags, type WmuxServerLauncher } from './roleSurfaces';
 import { stripPromptFileArgument } from './promptFileArgument';
 import { BROWSER_TOOL_SURFACE, CORE_TOOL_SURFACE } from './coreSurface';
 import { UNLISTED_TOOLS } from './unlistedTools';
@@ -239,9 +239,10 @@ export function parseCodexToolLevel(value: string): CodexWorkerToolLevel | null 
   return (ORCH_ROLES as readonly string[]).includes(role) ? { tools: 'role', role: role as OrchRole } : null;
 }
 
-/** The `-c` word for a level, with main's own MCP entry; null when it cannot
+/** The `-c` word for a level, with main's own MCP entry (or the launcher the
+ *  worker's codex config runs, whose args it must match); null when it cannot
  *  be written. Pure. */
-function codexToolLevelWord(level: CodexWorkerToolLevel, entry: string | undefined): string | null {
+function codexToolLevelWord(level: CodexWorkerToolLevel, entry: WmuxServerLauncher | undefined): string | null {
   if ('off' in level) return '-c mcp_servers.wmux.enabled=false';
   if (!entry) return null;
   return toolSurfaceShellFlags('codex', level.tools, entry, level.role, '');
@@ -546,7 +547,7 @@ export function buildCodexWorkerLaunchLine(
   parsed: CodexWorkerLine,
   cwd: string,
   writableRoots: readonly string[],
-  opts: { toolApprovals?: { ownerApproved: readonly string[] }; mcpEntry?: string; mcpWords?: readonly string[] } = {},
+  opts: { toolApprovals?: { ownerApproved: readonly string[] }; mcpEntry?: WmuxServerLauncher; mcpWords?: readonly string[] } = {},
 ): string | null {
   const trust = codexTrustOverride(cwd, 'darwin');
   if (!trust || writableRoots.length === 0 || ![cwd, ...writableRoots].every(isGuardablePath)) return null;

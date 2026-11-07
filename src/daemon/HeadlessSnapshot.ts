@@ -47,6 +47,7 @@
  * everything before that marker.
  */
 
+import { noteSnapshotJobEnd, noteSnapshotJobStart } from './screenReadCache';
 import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { applyUnicodeWidthModel } from '../shared/terminalUnicode';
@@ -150,10 +151,13 @@ export function enqueueSnapshotJob<T>(job: () => Promise<T>, coalesceKey?: strin
     const waiting = waitingByKey.get(coalesceKey);
     if (waiting) return waiting as Promise<T>;
   }
+  const queuedAt = performance.now();
   const run: Promise<T> = queueTail.then(() => {
     // Its turn: from here a new request for the key queues afresh.
     if (coalesceKey !== undefined && waitingByKey.get(coalesceKey) === run) waitingByKey.delete(coalesceKey);
-    return job();
+    const startedAt = performance.now();
+    noteSnapshotJobStart(startedAt - queuedAt);
+    return Promise.resolve(job()).finally(() => noteSnapshotJobEnd(performance.now() - startedAt));
   });
   if (coalesceKey !== undefined) waitingByKey.set(coalesceKey, run);
   // The queue must survive a rejected job (a defensive catch keeps one bug

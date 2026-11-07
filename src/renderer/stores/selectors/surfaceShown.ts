@@ -8,7 +8,7 @@
 // multiview grid, or the one the Bots page hosts in its worker panel), and the
 // surface is the one its pane draws — the active tab of a stacked pane, or the
 // terminal column's tab of a terminal/work split whatever side holds the
-// focus. The split's terminal column counts even while the work area is
+// focus (`splitShownTerminal`). The split's terminal column counts even while the work area is
 // expanded over it: it is a background tab of a pane the user is looking at.
 // The window's own state (minimized, behind another app) never counts, so a
 // start-minimized app keeps its active workspace hot.
@@ -18,7 +18,7 @@ import type { PaneLeaf } from '../../../shared/types';
 import { CHATV2_PROVIDER_SESSION_ID } from '../../../shared/chatv2/ipc';
 import { findLeafBySurfaceId } from '../../../shared/paneUtils';
 import { selectWorkerPanelHost } from '../slices/roomSlice';
-import { isTerminalKindSurfaceType, isTerminalSurfaceType, isWorkSurfaceType, pickSplitShownSurfaces } from '../../components/Pane/surfaceKinds';
+import { isTerminalSurfaceType, isWorkSurfaceType, splitShownTerminal } from '../../components/Pane/surfaceKinds';
 import { surfacePtyLifecycle } from '../slices/ptyLifecycleSlice';
 
 type ShownState = Pick<StoreState, 'workspaces' | 'activeWorkspaceId' | 'multiviewIds' | 'appRoute' | 'botsWorkerPanel'>;
@@ -39,9 +39,8 @@ export function isWorkspaceShown(state: ShownState, workspaceId: string): boolea
 /** The surface its leaf draws: the active tab, or the split's terminal column. */
 export function isSurfaceDrawnInLeaf(leaf: PaneLeaf, surfaceId: string): boolean {
   if (leaf.activeSurfaceId === surfaceId) return true;
-  const terminals = leaf.surfaces.filter((s) => isTerminalKindSurfaceType(s.surfaceType));
-  const split = terminals.length > 0 && leaf.surfaces.some((s) => isWorkSurfaceType(s.surfaceType));
-  return split && pickSplitShownSurfaces(terminals, [], leaf.activeSurfaceId).shownTerminalId === surfaceId;
+  const split = leaf.surfaces.some((s) => isWorkSurfaceType(s.surfaceType));
+  return split && splitShownTerminal(leaf)?.id === surfaceId;
 }
 
 /**

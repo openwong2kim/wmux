@@ -1,0 +1,43 @@
+{
+  "description": "Unparsable stdin is logged and nothing is sent.",
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "Stop"
+      ],
+      "stdin": "{\"a\":"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "Stop",
+            "outcome": "malformed-stdin",
+            "error": "SyntaxError"
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

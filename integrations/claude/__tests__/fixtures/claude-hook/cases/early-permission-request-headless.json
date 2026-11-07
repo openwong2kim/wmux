@@ -1,0 +1,49 @@
+{
+  "description": "PermissionRequest without an interactive entrypoint is skipped before stdin.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "PermissionRequest"
+      ],
+      "stdin": {
+        "hold": true
+      }
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "PermissionRequest",
+            "outcome": "permission-request-skipped",
+            "reason": "headless",
+            "entrypoint": null
+          }
+        ],
+        "requests": {}
+      }
+    ]
+  }
+}

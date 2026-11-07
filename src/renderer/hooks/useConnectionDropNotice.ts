@@ -4,6 +4,7 @@ import { t } from '../i18n';
 import type { TailscaleChecklist } from '../../shared/web';
 import { A2A_REDIAL_BACKOFF_MIN_MS } from '../../shared/a2aRemote';
 import { blockingFailure, describeTailnetFailure, hostOfUrl, isTailnetHost, judgeTailnet, readTailscale } from '../components/Remote/tailnetCheck';
+import { isShareHostDown, SHARE_DROP_FAILED_POLLS } from '../stores/selectors/pcRail';
 
 // ─── Drop notice ─────────────────────────────────────────────────────────────
 //
@@ -39,8 +40,8 @@ import { blockingFailure, describeTailnetFailure, hostOfUrl, isTailnetHost, judg
 
 /** The time the first four stream redials take, plus a second for the last one to connect. */
 export const A2A_DROP_GRACE_MS = A2A_REDIAL_BACKOFF_MIN_MS * (1 + 2 + 4 + 8) + 1_000;
-/** Failed polls in a row before a workspace share counts as down. */
-export const SHARE_DROP_FAILED_POLLS = 2;
+/** Failed polls in a row before a workspace share counts as down (the rule lives in selectors/pcRail). */
+export { SHARE_DROP_FAILED_POLLS };
 /** How often the drops are swept, besides on every change of the state they come from. */
 export const DROP_SWEEP_MS = 2_000;
 
@@ -141,8 +142,9 @@ export function connectionsInUse(s: DropSource): ConnectionInUse[] {
   for (const hostId of shareIds) {
     const status = s.pcRailHostStatus[hostId];
     // One failed poll says nothing yet (an error answer even came from a host
-    // that is up): no answer either way until a second one in a row.
-    const down = status === 'unreachable' && (s.pcRailFeeds[hostId]?.failedTicks ?? 0) >= SHARE_DROP_FAILED_POLLS;
+    // that is up): no answer either way until a second one in a row. The
+    // same rule hides that PC's rows from every remote-row reader.
+    const down = isShareHostDown(status, s.pcRailFeeds[hostId]?.failedTicks);
     out.push({
       key: `share:${hostId}`,
       name: s.pcRailHosts.find((h) => h.id === hostId)?.label

@@ -32,10 +32,10 @@ export class ProcessMonitor {
    *  instance via the constructor (config.daemon.livenessIntervalSec). */
   private static readonly CHECK_INTERVAL_MS = 15_000;
 
-  /** Cadence while the native process table serves the batch (Windows): a
-   *  snapshot costs ~10 ms of CPU in-process with no spawn, so the sweep can
-   *  run 5x as often for a fraction of one tasklist run. Overridable via
-   *  config.daemon.nativeLivenessIntervalSec. */
+  /** Cadence of a sweep that spawns nothing: the native process table on
+   *  Windows (a snapshot costs ~10 ms of CPU in-process), and kill(pid, 0) on
+   *  macOS and Linux (one syscall per pid). Either can run 5x as often as a
+   *  tasklist sweep. Overridable via config.daemon.nativeLivenessIntervalSec. */
   private static readonly NATIVE_CHECK_INTERVAL_MS = 3_000;
 
   /** @param intervalMs batch cadence override (config knob); falls back to
@@ -302,12 +302,13 @@ export class ProcessMonitor {
     }
   }
 
-  /** The native cadence while the native table is usable, else the spawn
-   *  cadence. Re-read after every batch: repeated native failures latch the
-   *  table off, and tasklist must not inherit the 3 s cadence. */
+  /** The no-spawn cadence off Windows (kill(0)) and while the native table is
+   *  usable, else the spawn cadence. Re-read after every batch: repeated
+   *  native failures latch the table off, and tasklist must not inherit the
+   *  3 s cadence. */
   private batchPeriod(): number {
     const statics = ProcessMonitor as unknown as { CHECK_INTERVAL_MS: number; NATIVE_CHECK_INTERVAL_MS: number };
-    return nativeProcessTable()
+    return process.platform !== 'win32' || nativeProcessTable()
       ? this.nativeIntervalMs ?? statics.NATIVE_CHECK_INTERVAL_MS
       : this.intervalMs ?? statics.CHECK_INTERVAL_MS;
   }

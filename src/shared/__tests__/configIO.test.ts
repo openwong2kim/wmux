@@ -64,7 +64,7 @@ describe('configIO — TOML surgical write', () => {
     expect(twice).toBe(once);
   });
 
-  it('replaces an existing block (incl. child sub-tables) on path change', () => {
+  it('updates an existing block in place on path change, keeping its child sub-tables', () => {
     const withEnv = `[mcp_servers.wmux]
 command = "node"
 args = ["C:\\\\old\\\\index.js"]
@@ -78,10 +78,82 @@ keep = true
     const out = upsertMcpServer(withEnv, 'toml', 'wmux', 'C:\\new\\index.js');
     const parsed = parseConfig(out, 'toml');
     expect(getMcpServerScript(parsed, 'toml', 'wmux')).toBe('C:\\new\\index.js');
-    // The stale child env sub-table is gone (replaced as part of the block)…
-    expect(out).not.toContain('FOO = "bar"');
-    // …but the unrelated [other] table is preserved.
+    // wmux never writes an env sub-table, so one on disk is the user's: kept…
+    expect(out).toBe(withEnv.replace('C:\\\\old\\\\index.js', 'C:\\\\new\\\\index.js'));
+    // …and so is the unrelated [other] table.
     expect((parsed.other as Record<string, unknown>).keep).toBe(true);
+  });
+
+  it('keeps the user\'s keys, comments and tools.* approvals when the path changes', () => {
+    const approved = `model = "gpt-5.5"
+
+[mcp_servers.wmux] # wmux
+# launched by wmux
+startup_timeout_sec = 30
+command = "node"
+args = [
+  "/old/index.js", # the bundle
+  "--core",
+  "--role=x]",
+]
+tool_timeout_sec = 120
+enabled_tools = ["pane_list", "terminal_read"]
+
+[mcp_servers.wmux.tools.pane_list]
+approval_mode = "approve"
+
+[mcp_servers.wmux.tools.terminal_send]
+approval_mode = "approve"
+
+[other]
+keep = true
+`;
+    const out = upsertMcpServer(approved, 'toml', 'wmux', '/new/index.js');
+    expect(out).toBe(`model = "gpt-5.5"
+
+[mcp_servers.wmux] # wmux
+# launched by wmux
+startup_timeout_sec = 30
+command = "node"
+args = ["/new/index.js", "--core", "--role=x]"]
+tool_timeout_sec = 120
+enabled_tools = ["pane_list", "terminal_read"]
+
+[mcp_servers.wmux.tools.pane_list]
+approval_mode = "approve"
+
+[mcp_servers.wmux.tools.terminal_send]
+approval_mode = "approve"
+
+[other]
+keep = true
+`);
+    const wmux = (parseConfig(out, 'toml').mcp_servers as Record<string, Record<string, unknown>>).wmux;
+    expect(wmux.tools).toEqual({ pane_list: { approval_mode: 'approve' }, terminal_send: { approval_mode: 'approve' } });
+    expect(upsertMcpServer(out, 'toml', 'wmux', '/new/index.js')).toBe(out);
+  });
+
+  it('finds command and args by key, past values that only look like them, and adds them when missing', () => {
+    const odd = `[mcp_servers.wmux]
+note = """
+command = "not a key"
+args = ["nor this"]
+"""
+"command" = 'node'
+cwd = '/tmp/[x'
+
+[mcp_servers.wmux.tools.a]
+approval_mode = "approve"
+`;
+    const out = upsertMcpServer(odd, 'toml', 'wmux', '/new/index.js');
+    const parsed = parseConfig(out, 'toml');
+    const wmux = (parsed.mcp_servers as Record<string, Record<string, unknown>>).wmux;
+    expect(wmux.note).toBe('command = "not a key"\nargs = ["nor this"]\n');
+    expect(wmux.cwd).toBe('/tmp/[x');
+    expect(getMcpServerEntry(parsed, 'toml', 'wmux')).toEqual({ command: 'node', args: ['/new/index.js'] });
+    expect(wmux.tools).toEqual({ a: { approval_mode: 'approve' } });
+    const bare = upsertMcpServer('[mcp_servers.wmux]\nstartup_timeout_sec = 5\n', 'toml', 'wmux', '/n.js');
+    expect(bare).toBe('[mcp_servers.wmux]\ncommand = "node"\nargs = ["/n.js"]\nstartup_timeout_sec = 5\n');
   });
 
   it('removes multiple named blocks, leaving foreign tables intact', () => {
@@ -196,6 +268,103 @@ describe('configIO — read helpers', () => {
     expect(isWmuxOwnedEntry({ command: 'python', args: ['/x.py'] })).toBe(false);
     expect(isWmuxOwnedEntry({ command: 'node', args: [] })).toBe(false);
     expect(isWmuxOwnedEntry(null)).toBe(false);
+  });
+
+  it('isWmuxOwnedEntry recognizes the native launcher shape and rejects look-alikes', () => {
+    expect(isWmuxOwnedEntry({ command: '/Users/u/.wmux/bin/wmux-native', args: ['mcp-shim'] })).toBe(true);
+    expect(isWmuxOwnedEntry({ command: '/Users/u/.wmux/bin/wmux-native', args: ['mcp-shim', '--core', '--role=x'] })).toBe(true);
+    expect(isWmuxOwnedEntry({ command: 'C:\\Users\\u\\.wmux\\bin\\wmux-native.exe', args: ['mcp-shim', '--core'] })).toBe(true);
+    // Another binary, a near name, or a name with no directory.
+    expect(isWmuxOwnedEntry({ command: '/x/wmux-native-evil', args: ['mcp-shim'] })).toBe(false);
+    expect(isWmuxOwnedEntry({ command: '/x/evil-wmux-native', args: ['mcp-shim'] })).toBe(false);
+    expect(isWmuxOwnedEntry({ command: '/x/evilwmux-native', args: ['mcp-shim'] })).toBe(false);
+    expect(isWmuxOwnedEntry({ command: 'C:\\x\\wmux-native.exe.bak', args: ['mcp-shim'] })).toBe(false);
+    expect(isWmuxOwnedEntry({ command: 'wmux-native', args: ['mcp-shim'] })).toBe(false);
+    expect(isWmuxOwnedEntry({ command: '/usr/bin/python3', args: ['mcp-shim'] })).toBe(false);
+    // mcp-shim must be the first argument.
+    expect(isWmuxOwnedEntry({ command: '/x/wmux-native', args: [] })).toBe(false);
+    expect(isWmuxOwnedEntry({ command: '/x/wmux-native', args: ['--core', 'mcp-shim'] })).toBe(false);
+    expect(isWmuxOwnedEntry({ command: '/x/wmux-native', args: ['mcp-shim-x'] })).toBe(false);
+    expect(isWmuxOwnedEntry({ command: '/x/wmux-native', args: ['/x/index.js'] })).toBe(false);
+    expect(isWmuxOwnedEntry({ command: null, args: ['mcp-shim'] })).toBe(false);
+  });
+
+  it('getMcpServerScript reports the binary of a native entry and the script of a node entry', () => {
+    const native = { mcpServers: { wmux: { command: '/Users/u/.wmux/bin/wmux-native', args: ['mcp-shim', '--core'] } } };
+    expect(getMcpServerScript(native, 'json', 'wmux')).toBe('/Users/u/.wmux/bin/wmux-native');
+    const toml = parseConfig('[mcp_servers.wmux]\ncommand = \'C:\\Users\\u\\wmux-native.exe\'\nargs = ["mcp-shim"]\n', 'toml');
+    expect(getMcpServerScript(toml, 'toml', 'wmux')).toBe('C:\\Users\\u\\wmux-native.exe');
+    expect(getMcpServerScript({ mcpServers: { wmux: { command: 'node', args: ['/abs/index.js', '--core'] } } }, 'json', 'wmux')).toBe('/abs/index.js');
+    // A foreign binary that happens to take mcp-shim keeps the old first-arg answer.
+    expect(getMcpServerScript({ mcpServers: { wmux: { command: '/x/other', args: ['mcp-shim'] } } }, 'json', 'wmux')).toBe('mcp-shim');
+  });
+
+  it('reads the profile off a native entry, and a re-registration rewrites it to node keeping its flags', () => {
+    const native = JSON.stringify({ mcpServers: { wmux: { command: '/x/wmux-native', args: ['mcp-shim', '--core', '--future'] } } });
+    expect(entryProfileFlags(getMcpServerEntry(parseConfig(native, 'json'), 'json', 'wmux'))).toEqual(['--core']);
+    const out = parseConfig(upsertMcpServer(native, 'json', 'wmux', '/abs/index.js'), 'json');
+    expect(getMcpServerEntry(out, 'json', 'wmux')).toEqual({ command: 'node', args: ['/abs/index.js', '--core', '--future'] });
+    const toml = '[mcp_servers.wmux]\ncommand = "/x/wmux-native"\nargs = ["mcp-shim", "--core"]\nstartup_timeout_sec = 9\n';
+    expect(upsertMcpServer(toml, 'toml', 'wmux', '/abs/index.js'))
+      .toBe('[mcp_servers.wmux]\ncommand = "node"\nargs = ["/abs/index.js", "--core"]\nstartup_timeout_sec = 9\n');
+  });
+
+  it('round-trips node → native → node in JSON, keeping profile flags and every other token', () => {
+    const native = { kind: 'native' as const, binary: '/Users/u/.wmux/mcp/wmux-native' };
+    const node = JSON.stringify({ mcpServers: { wmux: { command: 'node', args: ['/old/index.js', '--core', '--role=x', '--mine'] } }, other: 1 });
+    const toNative = upsertMcpServer(node, 'json', 'wmux', native);
+    expect(getMcpServerEntry(parseConfig(toNative, 'json'), 'json', 'wmux'))
+      .toEqual({ command: native.binary, args: ['mcp-shim', '--core', '--role=x', '--mine'] });
+    expect(isWmuxOwnedEntry(getMcpServerEntry(parseConfig(toNative, 'json'), 'json', 'wmux'))).toBe(true);
+    expect(upsertMcpServer(toNative, 'json', 'wmux', native)).toBe(toNative);
+    const back = parseConfig(upsertMcpServer(toNative, 'json', 'wmux', '/new/index.js'), 'json');
+    expect(getMcpServerEntry(back, 'json', 'wmux')).toEqual({ command: 'node', args: ['/new/index.js', '--core', '--role=x', '--mine'] });
+    expect(back.other).toBe(1);
+  });
+
+  it('keeps the other keys of a JSON server entry (env, timeout, type) through node → native → node', () => {
+    const native = { kind: 'native' as const, binary: '/Users/u/.wmux/mcp/wmux-native' };
+    const extra = { type: 'stdio', env: { FOO: 'bar' }, timeout: 30000 };
+    const start = JSON.stringify({ mcpServers: { wmux: { ...extra, command: 'node', args: ['/old/index.js', '--core'] } } });
+    const toNative = upsertMcpServer(start, 'json', 'wmux', native);
+    expect(JSON.parse(toNative).mcpServers.wmux).toEqual({ ...extra, command: native.binary, args: ['mcp-shim', '--core'] });
+    const back = upsertMcpServer(toNative, 'json', 'wmux', '/new/index.js');
+    expect(JSON.parse(back).mcpServers.wmux).toEqual({ ...extra, command: 'node', args: ['/new/index.js', '--core'] });
+  });
+
+  it('round-trips node → native → node in TOML, keeping extra keys, comments and child tables', () => {
+    const native = { kind: 'native' as const, binary: 'C:\\Users\\u\\.wmux\\mcp\\wmux-native.exe' };
+    const start = `[mcp_servers.wmux] # wmux
+# launched by wmux
+startup_timeout_sec = 30
+command = "node"
+args = ["C:\\\\old\\\\index.js", "--core", "--role=x"]
+tool_timeout_sec = 120
+
+[mcp_servers.wmux.env]
+FOO = "bar"
+
+[mcp_servers.wmux.tools.pane_list]
+approval_mode = "approve"
+
+[other]
+keep = true
+`;
+    const toNative = upsertMcpServer(start, 'toml', 'wmux', native);
+    expect(toNative).toBe(start
+      .replace('command = "node"', 'command = "C:\\\\Users\\\\u\\\\.wmux\\\\mcp\\\\wmux-native.exe"')
+      .replace('args = ["C:\\\\old\\\\index.js", "--core", "--role=x"]', 'args = ["mcp-shim", "--core", "--role=x"]'));
+    expect(getMcpServerScript(parseConfig(toNative, 'toml'), 'toml', 'wmux')).toBe(native.binary);
+    expect(upsertMcpServer(toNative, 'toml', 'wmux', native)).toBe(toNative);
+    const back = upsertMcpServer(toNative, 'toml', 'wmux', 'C:\\old\\index.js');
+    expect(back).toBe(start);
+  });
+
+  it('writes a native entry with the default profile, or the one asked for', () => {
+    const native = { kind: 'native' as const, binary: '/b/wmux-native' };
+    expect(wmuxMcpEntry(native)).toEqual({ command: '/b/wmux-native', args: ['mcp-shim'] });
+    expect(wmuxMcpEntry(native, 'core')).toEqual({ command: '/b/wmux-native', args: ['mcp-shim', '--core'] });
+    expect(upsertMcpServer('', 'toml', 'wmux', native, 'core')).toBe('[mcp_servers.wmux]\ncommand = "/b/wmux-native"\nargs = ["mcp-shim", "--core"]\n');
   });
 
   it('getMcpServerEntry returns null for absent / malformed', () => {

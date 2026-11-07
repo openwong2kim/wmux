@@ -8,6 +8,10 @@ import { logNotificationFailure } from '../../notification/notificationFailure';
 import { osToastsAllowed } from '../../notification/osToastGate';
 import { IPC } from '../../../shared/constants';
 import { HelpRequests } from '../../browser-session/HelpRequests';
+import { FrameTarget, FrameWorlds, evaluateInFrame, listChildFrames, type CdpSend, type Point as FramePoint } from '../../browser-session/frameAccess';
+import { buildDomSnapshotExpression, readDomSnapshotPayload } from '../../../mcp/playwright/dom-intelligence';
+import type { RefDescriptor } from '../../../mcp/playwright/refDescriptors';
+import { RPC_FRAME_CAP, isFrameGoneError, type RpcFrameAnswer } from '../../../mcp/playwright/rpcFrames';
 import {
   buildHelpHighlightExpression,
   buildHelpProbeExpression,
@@ -148,6 +152,7 @@ import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
 import type { BrowserAgentControl } from '../../browser-session/BrowserAgentControl';
 import { heldBrowserSurfaceRefusal } from './surface.rpc';
 import { agentControlRefusal } from '../../../shared/browserAgentControl';
+import { withDeadline } from '../../pty/portWatch';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -188,9 +193,19 @@ const PROTECTED_GATE_EXEMPT: ReadonlySet<string> = new Set([
  */
 const PROTECTED_DENIED_METHODS: ReadonlyMap<string, string> = new Map([
   ['browser.evaluate', 'running page scripts needs a consent grant on a protected pane'],
+  ['browser.frames.read', 'a protected pane has no builtin browser target'],
   ['browser.cookies', 'cookies of a protected pane are reachable only through browser_cookies, limited to its allowed hosts'],
   ['browser.cdp.target', 'a protected pane has no builtin browser target'],
+  ['browser.dialog.arm', 'a protected pane has no builtin browser target'],
   ['browser.siteGuides.match', 'site guides are off on a protected pane'],
+]);
+
+/** Agent input that can raise a page dialog on the RPC lane. */
+const DIALOG_RAISING_METHODS: ReadonlySet<string> = new Set([
+  'browser.click.cdp',
+  'browser.type.cdp',
+  'browser.press.cdp',
+  'browser.drag.cdp',
 ]);
 
 /**
@@ -927,6 +942,35 @@ function viewInput(wc: WebContents, method: string, params?: Record<string, unkn
   return params;
 }
 
+interface PixelRect { x: number; y: number; width: number; height: number }
+
+/**
+ * A rect in the page's CSS pixels, in the drawn view's pixels instead: the
+ * space webContents.capturePage crops in. The page zoom (Cmd +/-) and a
+ * preset's scale both stretch CSS pixels on screen.
+ */
+function viewRect(wc: WebContents, rect: PixelRect): PixelRect {
+  return scaleRect(rect, pageZoom(wc) * (activePreset.get(wc)?.scale ?? 1));
+}
+
+/** The guest's page zoom (Cmd +/-); 1 when it can't be read. */
+function pageZoom(wc: WebContents): number {
+  const zoom = wc.getZoomFactor?.();
+  return typeof zoom === 'number' && zoom > 0 ? zoom : 1;
+}
+
+/** `rect` times `scale`, rounded outward to whole pixels. */
+function scaleRect(rect: PixelRect, scale: number): PixelRect {
+  const x = Math.floor(rect.x * scale);
+  const y = Math.floor(rect.y * scale);
+  return {
+    x,
+    y,
+    width: Math.ceil((rect.x + rect.width) * scale) - x,
+    height: Math.ceil((rect.y + rect.height) * scale) - y,
+  };
+}
+
 /** Sends one CDP Input event, its points in CSS pixels (viewInput). */
 function sendInput(wc: WebContents, method: string, params: Record<string, unknown>): Promise<unknown> {
   return wc.debugger.sendCommand(method, viewInput(wc, method, params));
@@ -959,6 +1003,209 @@ async function touchTargetPoint(
   );
 }
 
+// ── In-process frames on the builtin webview lane ──────────────────────────
+// One FrameWorlds per guest: its worlds live as long as the guest's documents.
+const frameWorldsByGuest = new WeakMap<WebContents, FrameWorlds>();
+
+function cdpSendOf(wc: WebContents): CdpSend {
+  return (method, params) => wc.debugger.sendCommand(method, params) as Promise<unknown>;
+}
+
+function frameWorldsOf(wc: WebContents): FrameWorlds {
+  let worlds = frameWorldsByGuest.get(wc);
+  if (!worlds) {
+    worlds = new FrameWorlds(cdpSendOf(wc));
+    frameWorldsByGuest.set(wc, worlds);
+  }
+  return worlds;
+}
+
+/** The frame a call names, from its params, or undefined for the top document. */
+function frameParam(params: Record<string, unknown>): { frameId: string; loaderId?: string } | undefined {
+  const frameId = params['frameId'];
+  if (frameId === undefined) return undefined;
+  if (typeof frameId !== 'string' || !frameId) throw new Error('"frameId" must be a non-empty string');
+  // Absent means "the frame's current document"; present must name one, so a
+  // blank value cannot quietly turn the document check off.
+  const loaderId = params['loaderId'];
+  if (loaderId !== undefined && (typeof loaderId !== 'string' || !loaderId)) {
+    throw new Error('"loaderId" must be a non-empty string');
+  }
+  return { frameId, ...(loaderId !== undefined ? { loaderId } : {}) };
+}
+
+/**
+ * How long one browser.frames.read keeps starting frame reads: well inside the
+ * client's 10 s RPC timeout, so a call never outlives the snapshot that asked.
+ */
+export const FRAMES_READ_DEADLINE_MS = 6000;
+/** Earlier refs one frame may name, and the longest role or name in them. */
+const FRAME_PRIOR_CAP = 5000;
+const FRAME_PRIOR_TEXT_CAP = 1000;
+
+interface FramesReadRequest {
+  frames: Array<{ frameId: string; loaderId: string; prior: RefDescriptor[] }>;
+  seed: number;
+  filter?: 'interactive';
+  /** UTF-8 bytes of listing text after which no further frame is read. */
+  budget?: number;
+}
+
+const isCount = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+const isBoundedText = (v: unknown): v is string => typeof v === 'string' && v.length <= FRAME_PRIOR_TEXT_CAP;
+
+/**
+ * browser.frames.read's params, checked field by field. It reads with the one
+ * listing expression main builds; a caller's `expression` is refused, here or
+ * on a frame, so the method can never become a way to run page code.
+ */
+function framesReadParams(params: Record<string, unknown>): FramesReadRequest {
+  const bad = (what: string) => new Error(`browser.frames.read: ${what}`);
+  const noCode = bad('takes no expression; it reads with the listing main builds');
+  if ('expression' in params) throw noCode;
+  const frames = params['frames'];
+  if (!Array.isArray(frames) || frames.length === 0) throw bad('"frames" must be a non-empty array');
+  if (frames.length > RPC_FRAME_CAP) throw bad(`at most ${RPC_FRAME_CAP} frames per call`);
+  if (!isCount(params['seed'])) throw bad('"seed" must be a non-negative integer');
+  const filter = params['filter'];
+  if (filter !== undefined && filter !== 'interactive') throw bad('"filter" must be "interactive" when given');
+  const budget = params['budget'];
+  if (budget !== undefined && !(isCount(budget) && budget > 0)) throw bad('"budget" must be a positive integer when given');
+  return {
+    seed: params['seed'],
+    ...(filter ? { filter } : {}),
+    ...(budget !== undefined ? { budget } : {}),
+    frames: frames.map((raw: unknown) => {
+      if (raw === null || typeof raw !== 'object') throw bad('each frame is {frameId, loaderId, prior?}');
+      const f = raw as Record<string, unknown>;
+      if ('expression' in f) throw noCode;
+      if (typeof f['frameId'] !== 'string' || !f['frameId']) throw bad('"frameId" must be a non-empty string');
+      // Always the document the snapshot listed: the check cannot be left off here.
+      if (typeof f['loaderId'] !== 'string' || !f['loaderId']) throw bad('"loaderId" must be a non-empty string');
+      const prior = f['prior'] ?? [];
+      if (!Array.isArray(prior) || prior.length > FRAME_PRIOR_CAP) throw bad(`"prior" must be an array of at most ${FRAME_PRIOR_CAP}`);
+      return {
+        frameId: f['frameId'],
+        loaderId: f['loaderId'],
+        prior: prior.map((p: unknown) => {
+          const d = (p ?? {}) as Record<string, unknown>;
+          if (!isCount(d['ref']) || !isCount(d['kindIndex']) || !isBoundedText(d['role']) || !isBoundedText(d['name'])) {
+            throw bad('each prior entry is {ref, role, name, kindIndex}');
+          }
+          return { ref: d['ref'], role: d['role'], name: d['name'], kindIndex: d['kindIndex'] };
+        }),
+      };
+    }),
+  };
+}
+
+/**
+ * List each frame's document in its own isolated world, in order, each one
+ * numbering its new elements on from where the previous one stopped. An error
+ * is reduced to its kind: a read's error text can carry page content. Reading
+ * stops at the byte budget, at the deadline, or when the caller has hung up
+ * (an abandoned snapshot must not go on stamping numbers into frames); the
+ * frames left are answered `unread`.
+ */
+async function readFrameListings(
+  wc: WebContents,
+  req: FramesReadRequest,
+  signal: AbortSignal | undefined,
+): Promise<{ frames: RpcFrameAnswer[]; nextRef: number }> {
+  const send = cdpSendOf(wc);
+  const worlds = frameWorldsOf(wc);
+  const deadline = Date.now() + FRAMES_READ_DEADLINE_MS;
+  let seed = req.seed;
+  let spent = 0;
+  const frames: RpcFrameAnswer[] = [];
+  for (const f of req.frames) {
+    if (req.budget !== undefined && spent >= req.budget) {
+      frames.push({ unread: 'budget' });
+      continue;
+    }
+    if (signal?.aborted || Date.now() >= deadline) {
+      frames.push({ unread: 'time' });
+      continue;
+    }
+    // Bounded by the deadline: Chrome stops the script then, the wait ends
+    // then, and a listing that only starts after it touches nothing.
+    const expression = buildDomSnapshotExpression(undefined, {
+      ...(req.filter ? { filter: req.filter } : {}),
+      frame: { seed, prior: f.prior, notAfter: deadline },
+      withEntries: true,
+    });
+    try {
+      const answer = await evaluateInFrame(send, worlds, f.frameId, expression, f.loaderId, deadline - Date.now());
+      if ('unreachable' in answer) {
+        frames.push({ unreachable: true });
+        continue;
+      }
+      if (answer.value === null) {
+        frames.push({ unread: 'time' });
+        continue;
+      }
+      const payload = readDomSnapshotPayload(answer.value);
+      for (const e of payload.entries) if (e.ref + 1 > seed) seed = e.ref + 1;
+      spent += Buffer.byteLength(payload.text, 'utf8');
+      frames.push({ value: answer.value });
+    } catch (err) {
+      frames.push(isFrameGoneError(err) ? { gone: true } : Date.now() >= deadline ? { unread: 'time' } : { failed: true });
+    }
+  }
+  return { frames, nextRef: seed };
+}
+
+/**
+ * Where to press on `selector` inside a frame, after checking the hit.
+ *
+ * The same contract as approachElement, with the check made BEFORE the pointer
+ * moves as well as after: a point that is not on the target is refused rather
+ * than pressed, and one re-resolution is allowed when the target moved while
+ * the pointer walked. `approach: false` (a touchscreen) skips the walk.
+ */
+async function frameTargetPoint(
+  wc: WebContents,
+  webContentsId: number,
+  frame: { frameId: string; loaderId?: string },
+  selector: string,
+  method: string,
+  approach: boolean,
+): Promise<FramePoint> {
+  const send = cdpSendOf(wc);
+  const resolveOnce = async (): Promise<{ target: FrameTarget; point: FramePoint }> => {
+    const target = await FrameTarget.resolve(send, frameWorldsOf(wc), frame.frameId, frame.loaderId, selector);
+    if (target === null) throw new Error(`Element not found in the frame: ${selector}`);
+    if (!(target instanceof FrameTarget)) throw new Error(`${method}: the frame cannot be reached (${target.unreachable})`);
+    const point = await target.point();
+    if (!point) {
+      await target.release();
+      throw new Error(`Element not found in the frame: ${selector} has no area`);
+    }
+    return { target, point };
+  };
+  const refuse = (point: FramePoint) => new Error(
+    `${method}: ${selector} in the frame is not the element at (${Math.round(point.x)}, ${Math.round(point.y)}) ` +
+    `— it is moving, or something is covering it. Refusing to click what is there instead.`,
+  );
+  let { target, point } = await resolveOnce();
+  try {
+    if (!(await target.hits(point))) throw refuse(point);
+    if (!approach) return point;
+    await movePointerTo(wc, webContentsId, point.x, point.y);
+    if (await target.hits(point)) return point;
+  } finally {
+    await target.release();
+  }
+  ({ target, point } = await resolveOnce());
+  try {
+    await movePointerTo(wc, webContentsId, point.x, point.y);
+    if (!(await target.hits(point))) throw refuse(point);
+    return point;
+  } finally {
+    await target.release();
+  }
+}
+
 /** The intermediate points between two positions, step count from the distance. */
 function pointerPath(from: Point, to: Point): Point[] {
   return approachPath(from, to);
@@ -983,7 +1230,8 @@ async function movePointerTo(
   setPointerPosition(wc, webContentsId, { x, y });
 }
 // CDP event capture for browser_console / browser_network / browser_response_body
-// in packaged builds (#106). Lazy: enables domains on first drain call.
+// on the RPC lane, which serves whenever the engine holds no Playwright Page for
+// the guest (#106). Lazy: enables domains on first drain call.
 const captureManager = new BrowserCaptureManager();
 
 /**
@@ -1044,6 +1292,120 @@ const HELP_EVALUATE_TIMEOUT_MS = 2_000;
 const HELP_REVEAL_TIMEOUT_MS = 2_000;
 // Bound for the capturePage fallback — it can hang on exactly the same guests.
 const CAPTURE_PAGE_TIMEOUT_MS = 1_500;
+
+// Bound for measuring the element: an open dialog or a long task blocks it.
+const ELEMENT_MEASURE_TIMEOUT_MS = 2_000;
+
+/** Where one element sits, measured after scrolling it into view. CSS px. */
+interface ElementCaptureBox {
+  /** In the viewport. */
+  rect: PixelRect;
+  /** The same box in document coordinates, which is what a CDP clip takes. */
+  page: PixelRect;
+  /** The viewport, CSS px. */
+  viewport: PixelRect;
+  /** Whether the whole box is in the viewport. */
+  inViewport: boolean;
+}
+
+function contains(outer: PixelRect, inner: PixelRect): boolean {
+  return inner.x >= outer.x && inner.y >= outer.y
+    && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
+}
+
+async function measureElementForCapture(wc: WebContents, selector: string): Promise<ElementCaptureBox> {
+  const answer = await withDeadline(
+    (wc.debugger.sendCommand('Runtime.evaluate', {
+      expression: `(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return { missing: true };
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+        const r = el.getBoundingClientRect();
+        if (!(r.width > 0 && r.height > 0)) return { empty: true };
+        return { x: r.x, y: r.y, width: r.width, height: r.height,
+          scrollX: window.scrollX, scrollY: window.scrollY,
+          vw: window.innerWidth, vh: window.innerHeight };
+      })()`,
+      returnByValue: true,
+    }) as Promise<{
+      result?: { value?: { missing?: true; empty?: true; x?: number; y?: number; width?: number; height?: number;
+        scrollX?: number; scrollY?: number; vw?: number; vh?: number } };
+      exceptionDetails?: { exception?: { description?: string }; text?: string };
+    }>).then((res) => ({ res }), (error: unknown) => ({ error })),
+    ELEMENT_MEASURE_TIMEOUT_MS,
+    null,
+  );
+  if (!answer) {
+    throw new Error(
+      `browser.screenshot: the page did not answer while ${selector} was measured (an open dialog or a busy page blocks it). ` +
+      'Retry once the page is idle, or omit ref to capture the viewport.',
+    );
+  }
+  if ('error' in answer) throw answer.error;
+  const res = answer.res;
+  if (res.exceptionDetails) {
+    throw new Error(`browser.screenshot: invalid selector ${selector}: ${res.exceptionDetails.exception?.description ?? res.exceptionDetails.text ?? 'error'}`);
+  }
+  const v = res.result?.value;
+  if (!v || v.missing) {
+    throw new Error(`browser.screenshot: no element matches ${selector} — the ref may be stale; take a new browser_snapshot.`);
+  }
+  if (v.empty) throw new Error(`browser.screenshot: the element ${selector} has no area to capture.`);
+  const rect = { x: v.x ?? 0, y: v.y ?? 0, width: v.width ?? 0, height: v.height ?? 0 };
+  const viewport = { x: 0, y: 0, width: v.vw ?? 0, height: v.vh ?? 0 };
+  return {
+    rect,
+    page: { ...rect, x: rect.x + (v.scrollX ?? 0), y: rect.y + (v.scrollY ?? 0) },
+    viewport,
+    inViewport: contains(viewport, rect),
+  };
+}
+
+/**
+ * One element's pixels, cropped to its box. Never the viewport: a crop that no
+ * capture path can produce is an error, not a wider picture.
+ */
+async function captureElement(
+  wc: WebContents,
+  selector: string,
+  encode: { jpeg: boolean; quality: number; scale: number },
+): Promise<{ data: string; mimeType?: string }> {
+  const box = await measureElementForCapture(wc, selector);
+  const shot = await withDeadline(
+    wc.debugger.sendCommand('Page.captureScreenshot', {
+      format: 'png',
+      // In zoomed pixels: under page zoom the clip is not in CSS px.
+      clip: { ...scaleRect(box.page, pageZoom(wc)), scale: 1 },
+      // Only for an element that doesn't fit: it resizes the viewport to the
+      // document, which moves fixed and sticky elements and reflows 100vh.
+      ...(!box.inViewport && { captureBeyondViewport: true }),
+    }) as Promise<{ data?: unknown }>,
+    CDP_SCREENSHOT_TIMEOUT_MS,
+    null,
+  );
+  if (shot && typeof shot.data === 'string') {
+    return encode.jpeg ? reencodeCapture(Buffer.from(shot.data, 'base64'), encode.quality, encode.scale) : { data: shot.data };
+  }
+  // #529: the CDP capture hung or failed. capturePage reads back only what is
+  // on screen, so it can stand in only for a box that is entirely there,
+  // judged in the drawn pixels it crops in.
+  const drawn = viewRect(wc, box.rect);
+  const drawnViewport = viewRect(wc, box.viewport);
+  if (!contains(drawnViewport, drawn)) {
+    throw new Error(
+      `browser.screenshot: the capture did not answer and ${selector} does not fit on screen, so it cannot be cropped from the visible area. ` +
+      'Bring the workspace to front and retry, or omit ref to capture the viewport.',
+    );
+  }
+  const image = await withDeadline(wc.capturePage(drawn), CAPTURE_PAGE_TIMEOUT_MS, null);
+  if (image && !image.isEmpty()) {
+    return encode.jpeg ? reencodeNativeImage(image, encode.quality, encode.scale) : { data: image.toPNG().toString('base64') };
+  }
+  throw new Error(
+    'browser.screenshot: the guest is not producing frames (its pane is likely in a hidden workspace — #529). ' +
+    'Bring the workspace to front (workspace.focus / pane_focus) and retry.',
+  );
+}
 /** Longest a browser.lease.renew may park on its lease (`waitMs`), well inside
  *  the lease TTL so the parked call is itself the renewal. */
 const LEASE_WATCH_MAX_MS = 8_000;
@@ -1896,6 +2258,7 @@ export function registerBrowserRpc(
   // already in the buffer by the time it asks. ensure() is idempotent, so the
   // dom-ready re-registration is a no-op. Fire-and-forget: registration must
   // not wait on (or fail with) the CDP domain enable.
+  webviewCdpManager.setDialogNoteSink?.((webContentsId, note) => captureManager.noteDialog(webContentsId, note));
   webviewCdpManager.setCaptureAttach((webContentsId) => {
     void captureManager.ensure(webContentsId).catch(() => {
       // A guest that cannot be captured still automates fine; the drain
@@ -1992,7 +2355,17 @@ export function registerBrowserRpc(
         }
         return handler(params, scope, ctx);
       }
-      return webviewCdpManager.withAutomationLease(resolved, () => handler(params, scope, ctx));
+      return webviewCdpManager.withAutomationLease(resolved, async () => {
+        // A dialog this input raises may use the answer the agent armed for it.
+        const endDispatch = DIALOG_RAISING_METHODS.has(method)
+          ? webviewCdpManager.beginDialogDispatch?.(resolved)
+          : undefined;
+        try {
+          return await handler(params, scope, ctx);
+        } finally {
+          endDispatch?.();
+        }
+      });
     });
   };
 
@@ -3723,9 +4096,10 @@ export function registerBrowserRpc(
         profile: status.profile,
         partition: null,
         persistent: null,
-        // A protected pane's CDP port is never shown to an agent: the port is
-        // an attach primitive that would skip every check the lane applies.
-        port: protectedDecisionOf(ctx) ? null : status.cdpPort,
+        // The port is an attach primitive that would skip every check the lane
+        // applies, so it follows browser.cdp.info's disclosure rule, and a
+        // protected pane never sees it.
+        port: protectedDecisionOf(ctx) || !canDiscloseBrowserAttachInfo(ctx) ? null : status.cdpPort,
         running: status.running,
         // Only the live profile sets liveAttach (running there = remote-debugging
         // reachable), so the agent reads running:false as "enable it at
@@ -3882,14 +4256,16 @@ export function registerBrowserRpc(
       };
     }
 
-    const cdpPort = webviewCdpManager.getCdpPort();
-    if (cdpPort <= 0) {
+    // The user's off switch, not a missing port: with no port up yet, targets
+    // are still real and callers work over the RPC lane.
+    if (webviewCdpManager.isCdpDisabled?.()) {
       throw new Error(
         'CDP remote debugging is unavailable: ' + (webviewCdpManager.getCdpFailureReason?.() ?? 'disabled') + '. ' +
           'Enable it via ~/.wmux/config.json (browser.cdp.enabled = true) and restart wmux, ' +
           'or unset the WMUX_DISABLE_CDP environment variable.',
       );
     }
+    const cdpPort = webviewCdpManager.getCdpPort();
     const discloseAttachInfo = canDiscloseBrowserAttachInfo(ctx);
 
     const listRelevantTargets = () => {
@@ -3936,7 +4312,7 @@ export function registerBrowserRpc(
     }
 
     return {
-      ...(discloseAttachInfo && { cdpPort }),
+      ...(discloseAttachInfo && cdpPort > 0 && { cdpPort }),
       ...(discloseAttachInfo && shellUrl && { shellUrl }),
       // Lets a scoped caller tell "I own no live targets" (empty + scoped) from
       // "legacy main that can't scope" (empty + unscoped). The engine gates its
@@ -3961,12 +4337,19 @@ export function registerBrowserRpc(
 
   /**
    * browser.screenshot
-   * Capture a screenshot of the webview.
-   * params: { surfaceId?: string, fullPage?: boolean }
+   * Capture a screenshot of the webview, or of one element cropped to its box.
+   * params: { surfaceId?: string, fullPage?: boolean, selector?: string }
    */
   registerLeased('browser.screenshot', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const fullPage = params['fullPage'] === true;
+    const selector = params['selector'];
+    if (selector !== undefined && (typeof selector !== 'string' || selector.length === 0 || selector.length > 2048)) {
+      throw new Error('browser.screenshot: "selector" must be a non-empty CSS selector');
+    }
+    if (selector !== undefined && fullPage) {
+      throw new Error('browser.screenshot: "selector" and "fullPage" cannot be combined');
+    }
     // Re-encode knobs (browser_screenshot's downscale ladder). Pixels for this
     // lane exist only here, so the shrink has to happen in the main process;
     // the caller gets mimeType back and treats a missing/png answer as "this
@@ -3980,6 +4363,10 @@ export function registerBrowserRpc(
 
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.screenshot: WebContents unavailable');
+
+    if (typeof selector === 'string') {
+      return captureElement(wc, selector, { jpeg: wantsJpeg, quality, scale });
+    }
 
     // CDP first — it is the only path that supports captureBeyondViewport.
     // But its compositor-path capture is unreliable for <webview> guests
@@ -4054,6 +4441,12 @@ export function registerBrowserRpc(
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.evaluate: WebContents unavailable');
 
+    // A frame is read in its own isolated world, never in the top document:
+    // no executeJavaScript fallback here, which would run in the wrong one.
+    // An unreachable frame (another process) is an answer, not an error.
+    const frame = frameParam(params);
+    if (frame) return evaluateInFrame(cdpSendOf(wc), frameWorldsOf(wc), frame.frameId, expression, frame.loaderId);
+
     // Use CDP Runtime.evaluate for reliable execution (executeJavaScript can fail silently)
     try {
       const cdpResult = await wc.debugger.sendCommand('Runtime.evaluate', {
@@ -4083,9 +4476,46 @@ export function registerBrowserRpc(
   });
 
   /**
+   * browser.frames.tree
+   * The guest's in-process child frames, to depth 5, in tree order: frameId,
+   * loaderId (the document a later call must still find), parent, depth and
+   * origin. The name attribute is the page's own text.
+   * params: { surfaceId?: string }
+   */
+  registerLeased('browser.frames.tree', async (params, scope) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.frames.tree', surfaceId, scope);
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.frames.tree: WebContents unavailable');
+    return { frames: await listChildFrames(cdpSendOf(wc)) };
+  });
+
+  /**
+   * browser.frames.read
+   * List in-process frames' documents for the RPC lane's snapshot, all in one
+   * call: each frame is read in its own isolated world with the DOM listing's
+   * frame mode, which main builds (no caller code runs). An element `prior`
+   * names keeps its number; new ones are numbered on from `seed`, frame after
+   * frame. Each answer is the listing, or unreachable, gone (navigated or
+   * removed) or failed, with no error text, or unread when the byte `budget`
+   * or main's deadline was spent first. At most 20 frames per call.
+   * params: { frames: [{ frameId, loaderId, prior? }], seed, filter?, budget?, surfaceId? }
+   */
+  registerLeased('browser.frames.read', async (params, scope, ctx) => {
+    const req = framesReadParams(params);
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.frames.read', surfaceId, scope);
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.frames.read: WebContents unavailable');
+    return readFrameListings(wc, req, ctx?.signal);
+  });
+
+  /**
    * browser.console.get
-   * Drain captured console messages for the webview (packaged-build fallback for
-   * the MCP browser_console tool, #106). Capture is enabled when the guest
+   * Drain captured console messages for the webview (the RPC lane of the MCP
+   * browser_console tool, #106). Capture is enabled when the guest
    * registers (#1081); ensure() here only covers a guest that registered before
    * the hook existed, or one whose debugger was stolen and dropped.
    * Also returns the collection window (since / missedBefore) so an empty
@@ -4213,7 +4643,9 @@ export function registerBrowserRpc(
   /**
    * browser.click.cdp
    * Click at coordinates or on the focused element via CDP Input events.
-   * params: { x?: number, y?: number, selector?: string, surfaceId?: string }
+   * With frameId (and the loaderId the snapshot saw), the selector is found in
+   * that in-process frame's document and the press point is hit-checked first.
+   * params: { x?: number, y?: number, selector?: string, frameId?: string, loaderId?: string, surfaceId?: string }
    */
   registerLeased('browser.click.cdp', async (params, scope) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
@@ -4232,7 +4664,13 @@ export function registerBrowserRpc(
     // pointer to walk to the target first.
     const touch = touchPresetActive(wc);
 
-    if (selector) {
+    const frame = frameParam(params);
+    if (frame && !selector) throw new Error('browser.click.cdp: "frameId" needs a "selector"');
+    if (frame && selector) {
+      const point = await frameTargetPoint(wc, target.webContentsId, frame, selector, 'browser.click.cdp', !touch);
+      x = point.x;
+      y = point.y;
+    } else if (selector) {
       // Walk the pointer to the target before pressing. A single mouseMoved
       // onto the exact spot, from a pointer that has never been anywhere else,
       // is not what a page sees from a person. The intermediate moves also keep
@@ -4369,6 +4807,20 @@ export function registerBrowserRpc(
   });
 
   /**
+   * browser.dialog.arm
+   * The answer for the next dialog an input of the agent's raises on this tab.
+   * params: { accept: boolean, text?: string, surfaceId?: string }
+   */
+  registerLeased('browser.dialog.arm', async (params, scope) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const target = webviewCdpManager.getTarget(surfaceId, scope);
+    if (!target) throw noTargetError('browser.dialog.arm', surfaceId, scope);
+    const text = typeof params['text'] === 'string' ? params['text'] : undefined;
+    webviewCdpManager.armDialog(target.surfaceId, params['accept'] === true, text);
+    return { armed: true };
+  });
+
+  /**
    * browser.press.cdp
    * Press a keyboard key via CDP Input events.
    * params: { key: string, surfaceId?: string }
@@ -4439,10 +4891,12 @@ export function registerBrowserRpc(
     };
   });
 
-  // ── State handlers (packaged RPC fallback for browser_cookies / _resize /
-  //    _emulate, #111). On packaged builds playwright-core cannot hand the guest
-  //    <webview> back as a Playwright Page, so these tools fall through to CDP
-  //    over the page debugger — the same route browser.evaluate already uses.
+  // ── State handlers (RPC lane for browser_cookies / _resize / _emulate, #111).
+  //    playwright-core hands a guest <webview> back as a Page only when its
+  //    connection predates the guest (the target attaches as a page and turns
+  //    into a webview after); that is attach order, not dev versus packaged.
+  //    Usually there is none, so these tools fall through to CDP over the page
+  //    debugger — the same route browser.evaluate already uses.
   //    browser_storage needs no handler here: it routes through browser.evaluate.
 
   /**
@@ -4594,7 +5048,7 @@ export function registerBrowserRpc(
         // Overriding the coordinates is not enough on its own: navigator.geolocation
         // stays blocked unless the page also holds the geolocation permission. The
         // Playwright path grants it explicitly (context.grantPermissions); mirror
-        // that so the packaged fallback actually emulates location for the common
+        // that so the RPC fallback actually emulates location for the common
         // permission-gated flow. Browser.grantPermissions is a browser-target
         // command and may be unavailable on Electron's page-level debugger, so this
         // is best-effort — the coordinate override still applies if it throws.

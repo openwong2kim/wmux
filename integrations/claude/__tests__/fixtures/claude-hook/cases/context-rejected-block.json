@@ -1,0 +1,68 @@
+{
+  "description": "UserPromptSubmit --context where main rejects (inner ok false) with a block: no block, exit 0.",
+  "endpoints": {
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": false,
+            "block": {
+              "reason": "r"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "UserPromptSubmit",
+        "--context"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"prompt\":\"p\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "UserPromptSubmit",
+            "outcome": "rpc-rejected",
+            "target": "main",
+            "reason": "unknown"
+          }
+        ],
+        "requests": {
+          "main": [
+            {
+              "id": "<request-id>",
+              "method": "hooks.signal",
+              "params": {
+                "kind": "agent.user_prompt_submit",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "cwd": "<sandbox>/cwd",
+                "payload": {
+                  "session_id": "s1",
+                  "prompt": "p"
+                },
+                "ts": "<ts>"
+              },
+              "token": "main-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -11,15 +11,21 @@ import { useStore } from '../stores';
 import { getLeafPanes } from '../../shared/paneUtils';
 import { isPreviewablePath } from '../../shared/filePreview';
 import { isWslShell } from '../../shared/wslTarget';
-import { resolveTerminalFileLink } from '../../shared/terminalFileLink';
+import { namesOtherComputer, resolveTerminalFileLink } from '../../shared/terminalFileLink';
 import { paneWslSession } from './paneForegroundProbe';
 import type { PathLocation } from './pathLinkProvider';
+
+export type OpenFailure = 'remote' | 'viewer-only' | 'not-found';
 
 export interface OpenTerminalFileLinkDeps {
   /** OS opener (Electron shell.openPath, validated in main). */
   openWithOs: (filePath: string) => void;
-  /** Raised when nothing could be opened at all (e.g. an unresolvable relative path). */
-  onFailure: () => void;
+  /**
+   * Raised when nothing was opened: `remote` for a `file:` URL naming another
+   * computer, `viewer-only` for an OSC 8 link the in-app viewer cannot show
+   * (see `viewerOnly`), `not-found` for a path that resolves to nothing.
+   */
+  onFailure: (reason: OpenFailure) => void;
   /**
    * The link came from an OSC 8 hyperlink, whose destination the program
    * controls and the user never saw. It may only open in the in-app viewer:
@@ -58,7 +64,7 @@ export async function openTerminalFileLink(
 ): Promise<void> {
   const platform = window.electronAPI.platform;
   // Every OS-opener fallback below goes through here.
-  const openWithOs = deps.viewerOnly ? () => deps.onFailure() : deps.openWithOs;
+  const openWithOs = deps.viewerOnly ? () => deps.onFailure('viewer-only') : deps.openWithOs;
   const owner = locatePty(ptyId);
   // Read from the session: most tabs' label is 'Terminal' whatever runs in
   // them. A 'WSL' label (a leaf's first tab) also counts, which covers a
@@ -68,12 +74,14 @@ export async function openTerminalFileLink(
     : { wsl: false };
   const inWsl = owner !== null && (session.wsl || isWslShell(owner.shell, platform));
   const distro = session.distro;
+  const localHostName = window.electronAPI.localHostName ?? undefined;
   const link = resolveTerminalFileLink({
     raw,
     hostPlatform: platform,
     shellKind: inWsl ? 'wsl' : 'native',
     distro,
     cwd: owner?.cwd || undefined,
+    localHostName,
   });
 
   if (!link) {
@@ -84,7 +92,7 @@ export async function openTerminalFileLink(
     if (ABSOLUTE.test(raw) && !(platform === 'win32' && raw.startsWith('/'))) {
       openWithOs(raw.replace(/:\d+(?::\d+)?$/, ''));
     } else {
-      deps.onFailure();
+      deps.onFailure(namesOtherComputer(raw, localHostName) ? 'remote' : 'not-found');
     }
     return;
   }

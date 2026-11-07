@@ -6,7 +6,8 @@
 // Per-target rules (see mcpTargets.ts / McpRegistrar.ts header):
 //   - uninstalled agent (config absent + !createIfMissing) → skipped, never created
 //   - malformed config → left untouched (never clobbered)
-//   - foreign entry (a `wmux` key whose command !== node) → left untouched
+//   - foreign entry (a `wmux` key that is neither `node <script>` nor
+//     `<dir>/wmux-native mcp-shim`) → left untouched
 //   - TOML writes are surgical (configIO) so comments / order / quoted keys survive
 //   - all writes atomic (tmp + rename)
 
@@ -31,8 +32,12 @@ import {
   isWmuxOwnedEntry,
   upsertMcpServer,
   wmuxEntryArgs,
+  launcherCommand,
   entryProfileFlags,
   removeMcpServers,
+  nativeLauncherOf,
+  type WmuxLauncher,
+  type WmuxLauncherInput,
   isWmuxOwnedNotify,
   upsertNotifyToml,
   removeNotifyToml,
@@ -163,6 +168,21 @@ export function codexHasWmuxServer(configPath: string): boolean {
   }
 }
 
+/**
+ * The launcher the codex config at `configPath` runs for `wmux`: the native
+ * launcher when its entry is one, else node with `nodeEntry`. A
+ * `-c mcp_servers.wmux.args=…` override replaces the args and keeps the
+ * configured command, so every tool-level override is written for this.
+ */
+export function codexWmuxLauncher(configPath: string, nodeEntry: string): WmuxLauncher {
+  try {
+    const parsed = parseConfig(fs.readFileSync(configPath, 'utf8'), 'toml');
+    const binary = nativeLauncherOf(getMcpServerEntry(parsed, 'toml', WMUX_SERVER_KEY));
+    if (binary) return { kind: 'native', binary };
+  } catch { /* missing or unreadable: the node entry */ }
+  return { kind: 'node', script: nodeEntry };
+}
+
 /** True when the codex config at `configPath` defines a `wmux` server of any
  *  transport (a `command` or a `url`), so a `-c mcp_servers.wmux.*` override
  *  has a server to apply to. Missing / unreadable / malformed → false. */
@@ -222,7 +242,7 @@ export interface RegisterTargetResult {
   skipped: 'absent' | 'malformed' | null;
   /** keys written/updated this call. */
   wrote: string[];
-  /** keys left untouched because a foreign (non-node) entry occupies them. */
+  /** keys left untouched because a foreign (not wmux-owned) entry occupies them. */
   foreign: string[];
   /** The surface the wmux entry carries AFTER this call — what the caller
    *  asked for, or what was preserved. Null when nothing was registered
@@ -231,7 +251,8 @@ export interface RegisterTargetResult {
 }
 
 /**
- * Ensure the `wmux` MCP server points at `wmuxScript` in one target's config.
+ * Ensure the `wmux` MCP server runs `launcher` (a node script, or the native
+ * launcher) in one target's config.
  * `ownedKeys` (optional) tracks keys written this session so a key wmux already
  * owns is updated even if its on-disk shape looks foreign-adjacent.
  *
@@ -242,7 +263,7 @@ export interface RegisterTargetResult {
 export function registerTarget(
   target: McpTarget,
   home: string,
-  wmuxScript: string,
+  launcher: WmuxLauncherInput,
   ownedKeys?: Set<string>,
   profile?: WmuxMcpEntryProfile,
 ): RegisterTargetResult {
@@ -292,7 +313,8 @@ export function registerTarget(
         // "up to date" while an explicit `--profile core|full` sat unapplied.
         // With no explicit profile the desired args preserve the on-disk ones,
         // so this still short-circuits every unchanged boot re-registration.
-        arraysEqual(existing.args, wmuxEntryArgs(wmuxScript, profile, existing))
+        existing.command === launcherCommand(launcher)
+        && arraysEqual(existing.args, wmuxEntryArgs(launcher, profile, existing))
       ) {
         ownedKeys?.add(WMUX_SERVER_KEY); // already up to date
         skip = true;
@@ -303,12 +325,12 @@ export function registerTarget(
     if (!skip) {
       // upsert validates its INPUT and OUTPUT, so an inline-table entry the
       // line-based editor can't target (which would duplicate) throws here.
-      newText = upsertMcpServer(newText, target.format, WMUX_SERVER_KEY, wmuxScript, profile);
+      newText = upsertMcpServer(newText, target.format, WMUX_SERVER_KEY, launcher, profile);
       wrote.push(WMUX_SERVER_KEY);
       ownedKeys?.add(WMUX_SERVER_KEY);
       resultProfile = profileOf({
-        command: 'node',
-        args: wmuxEntryArgs(wmuxScript, profile, existing),
+        command: launcherCommand(launcher),
+        args: wmuxEntryArgs(launcher, profile, existing),
       });
     }
 

@@ -55,6 +55,39 @@ beforeEach(() => {
 });
 
 describe('withAutomationLease lifecycle injection', () => {
+  it('reports a dialog main answered as a [modal] note, not a browser event', async () => {
+    const at = Date.now() - 1000;
+    const queue: unknown[] = [
+      { type: 'dialog', ts: at, dialog: { type: 'confirm', message: 'sure?', answer: 'dismissed', at } },
+    ];
+    mockSendRpc.mockImplementation(queueRouter(queue));
+    const result = await withAutomationLease(deps, 's1', async () => ({
+      content: [{ type: 'text', text: 'tool output' }],
+    }));
+    const text = result.content.map((c: { text: string }) => c.text).join('\n');
+    expect(text).toContain('[modal]');
+    expect(text).toContain('a confirm appeared and was dismissed');
+    expect(text).toContain('"sure?"');
+    expect(text).not.toContain('[browser events]');
+  });
+
+  it('keeps navigation events beside a dialog note', async () => {
+    const at = Date.now();
+    const queue: unknown[] = [
+      { type: 'navigated', url: 'https://a.test/', ts: at },
+      { type: 'dialog', ts: at, dialog: { type: 'alert', message: 'x', answer: 'dismissed', at } },
+    ];
+    mockSendRpc.mockImplementation(queueRouter(queue));
+    const result = await withAutomationLease(deps, 's1', async () => ({
+      content: [{ type: 'text', text: 'tool output' }],
+    }));
+    const text = result.content.map((c: { text: string }) => c.text).join('\n');
+    expect(text).toContain('[modal]');
+    expect(text).toContain('[browser events]');
+    expect(text).toContain('navigated: https://a.test/');
+    expect(text).not.toContain('dialog:');
+  });
+
   it('prepends drained events to a content-shaped result', async () => {
     const queue: unknown[] = [{ type: 'navigated', url: 'https://a.test/', ts: Date.now() - 3000 }];
     mockSendRpc.mockImplementation(queueRouter(queue));

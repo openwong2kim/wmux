@@ -13,6 +13,7 @@ import { initialWindowsAppearance, initialWindowsGlass, markWindowGlass, windows
 import { revealWhenPainted } from './revealWhenPainted';
 import { WINDOW_START_COLORS, startPolarity, startPolarityArg } from '../../shared/windowStartPaint';
 import { startLocaleArgs } from '../../shared/startLocale';
+import { localHostNameArgs } from '../../shared/localHostName';
 import {
   DEFAULT_WINDOW_SIZE,
   MIN_WINDOW_SIZE,
@@ -286,7 +287,8 @@ export function createWindow(
       webviewTag: true,
       // The preload paints the page in this polarity until the theme is set,
       // and the renderer loads the saved language's table before it renders.
-      additionalArguments: [startPolarityArg(polarity), ...startLocaleArgs(opts.locale)],
+      // The host name lets a terminal `file://<this host>/path` link open locally.
+      additionalArguments: [startPolarityArg(polarity), ...startLocaleArgs(opts.locale), ...localHostNameArgs(os.hostname())],
     },
   });
 

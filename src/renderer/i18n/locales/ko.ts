@@ -1299,6 +1299,9 @@ export const ko = {
   'terminal.openPathBlocked': '실행 파일 차단됨 — 부모 폴더만 열림',
   'terminal.openPathFailed': '열 수 없음 — 폴더 위치 표시',
   'terminal.openPathProtected': '자격 증명이 있는 보호된 위치라서 wmux가 열지 않습니다.',
+  'terminal.openPathNotFound': '찾을 수 없음 — 아무것도 열지 않음',
+  'terminal.openPathRemote': '링크를 열지 않음 — 링크로는 이 컴퓨터의 파일만 엽니다',
+  'terminal.openPathViewerOnly': '링크를 열지 않음 — wmux 뷰어로 볼 수 없고, 프로그램이 낸 링크는 wmux 밖에서 열지 않습니다',
   'terminal.bookmarkAdded': '북마크 추가됨',
   'terminal.imeInputRecovered': '한글 입력기에 키 입력이 갇혀 있어 자동으로 복구했습니다',
 
@@ -6171,4 +6174,18 @@ export const ko = {
   'a11y.agent.needsYou': '{tag} {agent}: 확인이 필요합니다',
   'a11y.agent.finished': '{tag} {agent}: 끝났습니다',
   'a11y.agent.error': '{tag} {agent}: 오류로 멈췄습니다',
+  // Sidebar workspace groups (#3069)
+  'sidebar.groups.moveTo': "그룹으로 이동",
+  'sidebar.groups.new': "새 그룹…",
+  'sidebar.groups.removeFrom': "그룹에서 빼기",
+  'sidebar.groups.defaultName': "새 그룹",
+  'sidebar.groups.name': "그룹 이름",
+  'sidebar.groups.menu': "그룹 작업",
+  'sidebar.groups.rename': "이름 바꾸기",
+  'sidebar.groups.collapse': "접기",
+  'sidebar.groups.expand': "펼치기",
+  'sidebar.groups.delete': "그룹 삭제",
+  'sidebar.groups.deleteConfirm': "이 그룹을 삭제할까요? 안의 워크스페이스({count})는 목록으로 돌아가며 열린 채로 유지됩니다.",
+  'sidebar.groups.holdsActive': "열린 워크스페이스 포함",
+  'sidebar.groups.limit': "그룹은 최대 200개까지 만들 수 있습니다.",
 } as const;

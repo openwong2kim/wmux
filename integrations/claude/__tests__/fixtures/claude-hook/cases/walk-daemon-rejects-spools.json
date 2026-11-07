@@ -1,0 +1,103 @@
+{
+  "description": "An inner rejection is logged and a lifecycle signal is spooled for the pane.",
+  "env": {
+    "WMUX_PTY_ID": "pty-1",
+    "WMUX_WORKSPACE_ID": "ws-1"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": false,
+            "reason": "no-workspace-match"
+          }
+        }
+      ]
+    },
+    "main": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "SessionStart"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"cwd\":\"/work/repo\",\"permission_mode\":\"acceptEdits\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "SessionStart",
+            "outcome": "rpc-rejected",
+            "target": "daemon",
+            "reason": "no-workspace-match"
+          },
+          {
+            "bridge": "0.8.1",
+            "hook": "SessionStart",
+            "outcome": "resume-spooled",
+            "ptyId": "pty-1",
+            "sessionId": "s1"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.session_start",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "workspaceId": "ws-1",
+                "ptyId": "pty-1",
+                "cwd": "/work/repo",
+                "payload": {
+                  "session_id": "s1",
+                  "cwd": "/work/repo",
+                  "permission_mode": "acceptEdits",
+                  "permissionMode": "acceptEdits"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        },
+        "spool": {
+          "pty-1.json": {
+            "ptyId": "pty-1",
+            "agent": "claude",
+            "sessionId": "s1",
+            "cwd": "/work/repo",
+            "permissionMode": "acceptEdits",
+            "workspaceId": "ws-1",
+            "ts": "<ts>"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -23,10 +23,18 @@ process and screen evidence for the pane's agent identity.
 | `agent.awaiting_input` | waiting on you (approval prompts only) |
 | `agent.stop` | done / idle |
 
-The flavour table lives in two places that a test keeps identical:
+The flavour table lives in three places that a test keeps identical:
 `src/shared/hooks/hookFlavours.ts` (the installer side: config paths, events to
-register, command form) and `FLAVOURS` in the bridge (the runtime side: event
-map and payload fields). The bridge cannot import from `src/`.
+register, command form), `FLAVOURS` in the bridge (the runtime side: event
+map and payload fields), and `core/wmux-native/flavours.json`, the table of the
+bridge's native twin. The bridge cannot import from `src/`.
+
+`wmux-native` (`core/wmux-native`) is that twin: the same flavours, envelope,
+RPC and exit rules, without starting Node for each event (about 10 ms and
+1.5 MB instead of about 50 ms and 35 MB). It takes the bridge's own arguments
+after its path, `wmux-native "<path>/wmux-hooks-bridge.mjs" <flavour> [<EventName>]`.
+`__tests__/hooksBridgeNative.parity.os.test.ts` holds the two to the same
+envelope bytes and equivalent logs.
 
 ## Rules every flavour follows
 
@@ -53,8 +61,22 @@ names the directory it checked. It never edits a settings file you also edit. A 
 path that wmux did not write is reported and left alone. The plain
 `wmux setup-hooks` run does not touch Copilot.
 
-Each entry uses exec form (`"exec": "node"` plus `"args"`), which Copilot starts
-without a shell. A shell-form command (`node "<path>" <flavour> <Event>`) starts
+Each entry uses exec form (`"exec"` plus `"args"`), which Copilot starts
+without a shell. When the app ships `wmux-native`, the installer writes it
+beside its copy in `~/.wmux/hooks/`, runs it there once (`--version`), and only
+then moves it into place and writes `"exec"` as that copy; otherwise, or if no
+copy runs, `"exec"` is `node`. A refresh whose new build does not run leaves the
+copy in place, and the entries keep running it when it ran before. The verdict
+is recorded by the binary's bytes, so a build is run once; `--reprobe` runs it
+again (after you fix what made it fail). `"args"` is the same in both
+forms (the bridge path, the flavour, the event), so a wmux that predates the
+native bridge still recognises the file as its own. `--status` says which form
+the entries use and why, and never runs the binary. On Windows the binary ships
+only once it is signed.
+
+Only Copilot is installed this way. Kiro hooks are set up by hand (see
+`integrations/kiro/README.md`), and wmux installs no hooks for Gemini or Qwen;
+those keep whatever command you wrote. A shell-form command (`node "<path>" <flavour> <Event>`) starts
 with a bare `node` because PowerShell cannot run a line that begins with a quoted
 token (#1882). Both forms are tested under PowerShell 5.1, cmd and Git Bash in
 `__tests__/hooksBridgeShells.os.test.ts`.

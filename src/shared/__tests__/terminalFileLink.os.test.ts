@@ -65,6 +65,25 @@ describe('resolveTerminalFileLink', () => {
       expect(resolveTerminalFileLink({ ...winNative, raw: 'file://localhost/C:/x.md' })).toEqual({ hostPath: 'C:\\x.md' });
       expect(resolveTerminalFileLink({ ...linux, raw: 'file://LOCALHOST/tmp/x.md' })).toEqual({ hostPath: '/tmp/x.md' });
     });
+    it("accepts this machine's own host name, case-insensitively", () => {
+      expect(resolveTerminalFileLink({ ...linux, localHostName: 'devbox', raw: 'file://devbox/tmp/x.md' })).toEqual({ hostPath: '/tmp/x.md' });
+      expect(resolveTerminalFileLink({ ...linux, localHostName: 'Dev_Box', raw: 'file://dev_box/tmp/x.md' })).toEqual({ hostPath: '/tmp/x.md' });
+      expect(resolveTerminalFileLink({ ...winNative, localHostName: 'DESKTOP-AB12', raw: 'file://desktop-ab12/C:/x.md' })).toEqual({ hostPath: 'C:\\x.md' });
+      expect(resolveTerminalFileLink({ ...winWsl, localHostName: 'DESKTOP-AB12', raw: 'file://DESKTOP-AB12/home/me/x.md#L3' }))
+        .toEqual({ hostPath: '\\\\wsl$\\Ubuntu\\home\\me\\x.md', line: 3 });
+    });
+    it('matches a short host name against the full one, both ways', () => {
+      expect(resolveTerminalFileLink({ ...linux, localHostName: 'devbox.local', raw: 'file://devbox/tmp/x.md' })).toEqual({ hostPath: '/tmp/x.md' });
+      expect(resolveTerminalFileLink({ ...linux, localHostName: 'devbox', raw: 'file://DevBox.lan/tmp/x.md' })).toEqual({ hostPath: '/tmp/x.md' });
+      expect(resolveTerminalFileLink({ ...linux, localHostName: 'devbox.local', raw: 'file://devbox.corp/tmp/x.md' })).toBeNull();
+      expect(resolveTerminalFileLink({ ...linux, localHostName: 'devbox.local', raw: 'file://devbo/tmp/x.md' })).toBeNull();
+      expect(resolveTerminalFileLink({ ...linux, localHostName: 'devbox', raw: 'file://other.devbox/tmp/x.md' })).toBeNull();
+    });
+    it('still refuses another host, and never makes a UNC path from the own host', () => {
+      expect(resolveTerminalFileLink({ ...winNative, localHostName: 'devbox', raw: 'file://other/share/x.md' })).toBeNull();
+      expect(resolveTerminalFileLink({ ...winNative, localHostName: 'devbox', raw: 'file://devbox/share/x.md' })).toBeNull();
+      expect(resolveTerminalFileLink({ ...winNative, localHostName: 'devbox', raw: 'file://devbox//srv/share/x.md' })).toBeNull();
+    });
     it('does not turn an empty-host //server/share path into UNC on a native Windows pane', () => {
       expect(resolveTerminalFileLink({ ...winNative, raw: 'file:////srv/share/x.md' })).toBeNull();
     });

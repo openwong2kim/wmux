@@ -17,12 +17,12 @@ use std::sync::{Arc, Mutex};
 
 /// Loader contract for the opt-in daemon text backend. Bump on incompatible
 /// changes to the exposed snapshot shape or required compatibility policy.
-#[napi]
+#[napi(catch_unwind)]
 pub fn native_core_abi_version() -> u32 {
     1
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn native_core_capabilities() -> Vec<String> {
     vec![
         "text-v1".into(),
@@ -34,12 +34,14 @@ pub fn native_core_capabilities() -> Vec<String> {
         "ansi-v2".into(),
         "ansi-v3".into(),
         "console-owner-v1".into(),
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
         "process-table-v1".into(),
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        "listen-sockets-v1".into(),
     ]
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 #[napi(object)]
 pub struct NativeProcessRow {
     pub pid: u32,
@@ -49,11 +51,11 @@ pub struct NativeProcessRow {
     pub cmdline: Option<String>,
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 pub struct ProcessTableTask {
     with_command_lines: bool,
 }
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
 impl Task for ProcessTableTask {
     type Output = Vec<crate::process_table::ProcessRow>;
     type JsValue = Vec<NativeProcessRow>;
@@ -74,12 +76,74 @@ impl Task for ProcessTableTask {
     }
 }
 
-/// Windows process table off the JS thread. With `with_command_lines`, each
+/// The process table off the JS thread. With `with_command_lines`, each
 /// row also carries its creation time and command line where readable.
-#[cfg(windows)]
-#[napi]
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+#[napi(catch_unwind)]
 pub fn process_table(with_command_lines: bool) -> AsyncTask<ProcessTableTask> {
     AsyncTask::new(ProcessTableTask { with_command_lines })
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[napi(object)]
+pub struct NativeListenSocket {
+    pub pid: u32,
+    pub port: u32,
+    pub address: String,
+    /// 4 or 6.
+    pub family: u32,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[napi(object)]
+pub struct NativePortSnapshot {
+    pub processes: Vec<NativeProcessRow>,
+    pub sockets: Vec<NativeListenSocket>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub struct PortSnapshotTask;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+impl Task for PortSnapshotTask {
+    type Output = crate::process_table::PortSnapshot;
+    type JsValue = NativePortSnapshot;
+    fn compute(&mut self) -> Result<Self::Output> {
+        crate::process_table::port_snapshot().map_err(Error::from_reason)
+    }
+    fn resolve(&mut self, _env: Env, snap: Self::Output) -> Result<Self::JsValue> {
+        Ok(NativePortSnapshot {
+            processes: snap
+                .processes
+                .into_iter()
+                .map(|r| NativeProcessRow {
+                    pid: r.pid,
+                    ppid: r.ppid,
+                    name: r.name,
+                    created: r.created,
+                    cmdline: r.cmdline,
+                })
+                .collect(),
+            sockets: snap
+                .sockets
+                .into_iter()
+                .map(|r| NativeListenSocket {
+                    pid: r.pid,
+                    port: r.port.into(),
+                    address: r.address,
+                    family: r.family.into(),
+                })
+                .collect(),
+        })
+    }
+}
+
+/// PortWatcher's snapshot off the JS thread: the process walk and every
+/// listening TCP socket this user can read, with the pid holding it, from
+/// one walk.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[napi(catch_unwind)]
+pub fn port_snapshot() -> AsyncTask<PortSnapshotTask> {
+    AsyncTask::new(PortSnapshotTask)
 }
 
 struct Size {
@@ -432,7 +496,7 @@ fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: 
 
 #[napi]
 impl NativeTerminal {
-    #[napi(constructor)]
+    #[napi(constructor, catch_unwind)]
     pub fn new(cols: u32, rows: u32, scrollback: u32) -> Result<Self> {
         let size = dimensions(cols, rows)?;
         if scrollback > 100_000 || (rows as u64 + scrollback as u64) * cols as u64 > 4_000_000 {
@@ -454,7 +518,7 @@ impl NativeTerminal {
         })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn feed(&mut self, bytes: Uint8Array) -> Result<()> {
         let term = self
             .term
@@ -471,7 +535,7 @@ impl NativeTerminal {
     /// already refused, so the caller can stop parsing: a control Alacritty
     /// parses differently, or a history past this terminal's cap when the
     /// request asked for more.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool> {
         let term = self
             .term
@@ -494,7 +558,7 @@ impl NativeTerminal {
     }
 
     /// Replay an immutable native ring copy without a full JS Buffer round trip.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn feed_frozen(&mut self, source: &NativeFrozenRing, start: u32, end: u32) -> Result<()> {
         let bytes = source
             .bytes
@@ -508,7 +572,7 @@ impl NativeTerminal {
         Ok(())
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn resize(&mut self, cols: u32, rows: u32) -> Result<()> {
         let size = dimensions(cols, rows)?;
         if (rows as u64 + self.scrollback as u64) * cols as u64 > 4_000_000 {
@@ -551,7 +615,7 @@ impl NativeTerminal {
         Ok(())
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn text_snapshot(&mut self, undimmed: bool) -> Result<NativeTextSnapshot> {
         let term = self
             .term
@@ -621,7 +685,7 @@ impl NativeTerminal {
     /// `requested_scrollback` above this terminal's own limit means the
     /// caller capped the history to bound memory: a history that reached the
     /// cap may have dropped rows the request would have kept.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn ansi_snapshot(&mut self, requested_scrollback: Option<u32>) -> Result<Buffer> {
         let term = self
             .term
@@ -675,7 +739,7 @@ impl NativeTerminal {
         Ok(payload.into())
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
         self.term = None;
         self.parser = Processor::new();
@@ -709,7 +773,7 @@ pub struct NativePty {
 
 #[napi]
 impl NativePty {
-    #[napi(constructor)]
+    #[napi(constructor, catch_unwind)]
     pub fn new(
         command: String,
         args: Vec<String>,
@@ -777,12 +841,12 @@ impl NativePty {
         Ok(result)
     }
 
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn pid(&self) -> u32 {
         self.pid
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read(&mut self) -> Result<NativePtyRead> {
         let receiver = self
             .receiver
@@ -815,7 +879,7 @@ impl NativePty {
 
     /// Small control writes only. A production adapter must move potentially
     /// blocking writes off Node's event loop and implement node-pty's contract.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn write(&mut self, bytes: Uint8Array) -> Result<()> {
         if bytes.len() > 4096 {
             return Err(Error::from_reason(
@@ -829,7 +893,7 @@ impl NativePty {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn resize(&self, cols: u32, rows: u32) -> Result<()> {
         dimensions(cols, rows)?;
         self.master
@@ -844,7 +908,7 @@ impl NativePty {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn try_wait(&mut self) -> Result<Option<u32>> {
         let child = self
             .child
@@ -860,7 +924,7 @@ impl NativePty {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn kill(&mut self) -> Result<AsyncTask<KillPty>> {
         let child = self
             .child
@@ -871,7 +935,7 @@ impl NativePty {
         }))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn close(&mut self) {
         self.receiver.take();
         self.writer.take();
@@ -956,23 +1020,23 @@ pub struct NativeFrozenRing {
 }
 #[napi]
 impl NativeFrozenRing {
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn size(&self) -> u32 {
         self.bytes.len() as u32
     }
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn written_at(&self) -> f64 {
         self.written_at as f64
     }
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn geometry(&self) -> Option<NativeReplayGeometry> {
         replay_geometry(&self.geometry, self.written_at - self.bytes.len() as u64)
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_all(&self) -> Buffer {
         self.bytes.clone().into()
     }
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
         self.bytes = Vec::new();
         self.geometry.clear();
@@ -1009,7 +1073,7 @@ pub struct NativeRing {
 
 #[napi]
 impl NativeRing {
-    #[napi(constructor)]
+    #[napi(constructor, catch_unwind)]
     pub fn new(capacity: u32) -> Result<Self> {
         if capacity == 0 || capacity > 256 * 1024 * 1024 {
             return Err(Error::from_reason("Ring capacity must be 1..256MiB"));
@@ -1024,22 +1088,22 @@ impl NativeRing {
         })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn write(&mut self, bytes: Uint8Array) -> Result<()> {
         self.write_bytes(&bytes)
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn write_chunk(&mut self, chunk: &NativeOutputChunk) -> Result<()> {
         self.write_bytes(&chunk.bytes)
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_all(&self) -> Buffer {
         self.copy_bytes().into()
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn freeze(&mut self) -> NativeFrozenRing {
         self.prune_geometry();
         NativeFrozenRing {
@@ -1049,21 +1113,21 @@ impl NativeRing {
         }
     }
 
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn size(&self) -> u32 {
         self.length as u32
     }
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn allocated_bytes(&self) -> u32 {
         self.bytes.len() as u32
     }
 
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn total_bytes_written(&self) -> f64 {
         self.total_written as f64
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn clear(&mut self) -> Result<()> {
         if self.capacity == 0 {
             return Err(Error::from_reason("Ring disposed"));
@@ -1074,7 +1138,7 @@ impl NativeRing {
         Ok(())
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn note_geometry(&mut self, cols: u32, rows: u32) -> Result<()> {
         if self.capacity == 0 {
             return Err(Error::from_reason("Ring disposed"));
@@ -1099,13 +1163,13 @@ impl NativeRing {
         Ok(())
     }
 
-    #[napi(getter)]
+    #[napi(getter, catch_unwind)]
     pub fn has_geometry_changes(&mut self) -> bool {
         self.prune_geometry();
         self.geometry.len() > 1
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_all_with_geometry(&mut self) -> NativeRingSnapshot {
         self.prune_geometry();
         let start = self.total_written - self.length as u64;
@@ -1132,7 +1196,7 @@ impl NativeRing {
         }
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn dispose(&mut self) {
         self.bytes = Vec::new();
         self.capacity = 0;
@@ -1212,6 +1276,30 @@ impl NativeRing {
             self.geometry.drain(..self.geometry.len() - 256);
         }
     }
+}
+
+/// Test hook for the per-reason parity modules (parity_support.rs): `chunks`
+/// fed the way a snapshot feeds the ring, then whether the feed met a
+/// divergent control.
+#[cfg(test)]
+pub(crate) fn fed_for_test(
+    cols: usize,
+    rows: usize,
+    history: usize,
+    chunks: &[&[u8]],
+) -> (Term<VoidListener>, bool) {
+    let config = Config {
+        scrolling_history: history,
+        ..Config::default()
+    };
+    let mut term = Term::new(config, &Size { cols, rows }, VoidListener);
+    let mut parser: Processor = Processor::new();
+    let mut feed = XtermFeed::default();
+    for chunk in chunks {
+        feed.feed(&mut parser, &mut term, chunk);
+    }
+    parser.advance(&mut term, &feed.held);
+    (term, feed.divergent)
 }
 
 #[cfg(test)]

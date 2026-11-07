@@ -116,9 +116,10 @@ export function registerShellHandlers(): () => void {
   //   • must be an absolute path on the current OS (path.isAbsolute)
   //
   // Behaviour: shell.openPath opens folders in Explorer / Finder and files
-  // with the OS default app. When that fails (missing file, no associated
-  // app, permission denied) we fall back to showItemInFolder so the user
-  // can still locate the target.
+  // with the OS default app. A path that does not exist is not opened and
+  // gives NOT_FOUND. When the open fails (no associated app, permission
+  // denied) we fall back to showItemInFolder so the user can still locate
+  // the target.
   ipcMain.removeHandler(IPC.SHELL_OPEN_PATH);
   ipcMain.handle(IPC.SHELL_OPEN_PATH, wrapHandler(IPC.SHELL_OPEN_PATH, async (_event: Electron.IpcMainInvokeEvent, rawPath: string) => {
     if (typeof rawPath !== 'string') {
@@ -145,11 +146,16 @@ export function registerShellHandlers(): () => void {
       return { ok: false, error: 'BLOCKED_SENSITIVE' };
     }
     const opened = normalized;
+    // Nothing there (the check found no real path): say so, without handing
+    // the OS a path to open or revealing a parent the user did not click.
+    if (target.real === null) {
+      return { ok: false, error: 'NOT_FOUND' };
+    }
     // Block executable extensions — refuse the open and reveal the folder
     // so the user still gets useful feedback without launching code from
     // untrusted PTY content. See BLOCKED_EXTENSIONS for the rationale. A
     // link's own name and its target's both count.
-    if ([normalized, target.real ?? normalized].some((p) => BLOCKED_EXTENSIONS.has(path.extname(p).toLowerCase()))) {
+    if ([normalized, target.real].some((p) => BLOCKED_EXTENSIONS.has(path.extname(p).toLowerCase()))) {
       shell.showItemInFolder(opened);
       return { ok: false, error: 'BLOCKED_EXTENSION' };
     }
@@ -158,10 +164,9 @@ export function registerShellHandlers(): () => void {
     }
     const err = await shell.openPath(opened);
     if (err) {
-      // openPath returns an error string when the file is missing, has no
-      // associated handler, or the OS refused the open. Reveal the parent
-      // folder so the user still gets useful feedback instead of a silent
-      // no-op.
+      // openPath returns an error string when the file has no associated
+      // handler or the OS refused the open. Reveal the parent folder so the
+      // user still gets useful feedback instead of a silent no-op.
       shell.showItemInFolder(opened);
     }
     return { ok: !err, error: err || undefined };

@@ -1,0 +1,19 @@
+[package]
+name = "wmux-native"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Standalone native helpers for wmux, starting with the agent hook bridge"
+license = "MIT"
+
+# No dependencies on purpose: the hook path is spawned once per agent event, so
+# it carries only std, and there is no third-party code to review or notice.
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+# Unwind (not abort): a panic is caught in main so the hook still exits 0.
+panic = "unwind"

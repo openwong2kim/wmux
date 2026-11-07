@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { RingBuffer } from '../RingBuffer';
 import { enqueueSnapshotJob, type TextSnapshotOutcome } from '../HeadlessSnapshot';
 import { queuedScreenText, queuedTextSnapshot, type TextReadSession, type TextReadSessions } from '../queuedSessionText';
+import { resetScreenReadCounters, screenParseCounters, snapshotQueueCounters } from '../screenReadCache';
 
 function session(text: string): TextReadSession {
   const ringBuffer = new RingBuffer(64 * 1024);
@@ -95,5 +96,76 @@ describe('queued screen reads', () => {
     // One job ran per kind of read (screen, text), not one per caller: each
     // job looks its session up once at its turn.
     expect(sessions.lookups - lookupsBeforeTurn).toBe(2);
+  });
+
+  // Pollers re-read a quiet pane many times a second (the chat bridge, the
+  // automation engine, FleetView): while its ring and size have not moved, the
+  // last answer stands without queueing a whole-ring parse again.
+  it('a read of a pane whose ring and size have not moved reuses the last answer without queueing', async () => {
+    const sessions = sessionTable();
+    const pane = session('quiet pane');
+    sessions.map.set('pane-a', pane);
+    const first = await queuedScreenText(sessions, 'pane-a');
+    const queue = holdQueue();
+    // The queue is held, so only a reused answer can settle now.
+    expect(lines(await queuedScreenText(sessions, 'pane-a'))).toEqual(['quiet pane']);
+    expect(await queuedScreenText(sessions, 'pane-a')).toBe(first);
+
+    pane.ringBuffer.write(Buffer.from(' grew'));
+    const grown = queuedScreenText(sessions, 'pane-a');
+    // Resized while the read waits: at its turn it reads at the new size.
+    pane.meta.cols = 100;
+    queue.release();
+    await queue.done;
+    const atTurn = await grown;
+    expect(lines(atTurn)).toEqual(['quiet pane grew']);
+    // Kept under the size it read at, not the size it was asked at: back at
+    // the old size the answer is read again.
+    expect(await queuedScreenText(sessions, 'pane-a')).toBe(atTurn);
+    pane.meta.cols = 80;
+    expect(await queuedScreenText(sessions, 'pane-a')).not.toBe(atTurn);
+  });
+
+  it('counts one parse per read that replayed the ring: not a reused answer, not a joined waiter', async () => {
+    resetScreenReadCounters();
+    const table = sessionTable();
+    table.map.set('s1', session('hello'));
+    const { release, done } = holdQueue();
+    const waiting = [queuedScreenText(table, 's1'), queuedScreenText(table, 's1')];
+    release();
+    await Promise.all([done, ...waiting]);
+    await queuedScreenText(table, 's1');
+    await queuedTextSnapshot(table, 's1', 160);
+    const parses = screenParseCounters();
+    expect(parses.screen.parses).toBe(1);
+    expect(parses.screen.bytes).toBeGreaterThan(0);
+    expect(parses['text<=300'].parses).toBe(1);
+    // The holder and the two parses each took a turn on the queue.
+    const queue = snapshotQueueCounters();
+    expect(queue.jobs).toBe(3);
+    expect(queue.waitMsMax).toBeGreaterThanOrEqual(0);
+    expect(queue.runMsTotal).toBeGreaterThanOrEqual(0);
+  });
+
+  it('a session that took a closed pane\'s id never gets the closed pane\'s kept answer', async () => {
+    const sessions = sessionTable();
+    sessions.map.set('pane-a', session('same bytes'));
+    const old = await queuedScreenText(sessions, 'pane-a');
+    sessions.map.set('pane-a', session('same bytes'));
+    const fresh = await queuedScreenText(sessions, 'pane-a');
+    expect(fresh).not.toBe(old);
+    expect(lines(fresh)).toEqual(['same bytes']);
+  });
+
+  it('a pane whose mode tracker was dropped (its shell exited) reads again', async () => {
+    const sessions = sessionTable();
+    const pane = session('exited shell');
+    const modes = { preamble: () => '' };
+    (pane.bridge as { outputModes: typeof modes | null }).outputModes = modes;
+    sessions.map.set('pane-a', pane);
+    const before = await queuedScreenText(sessions, 'pane-a');
+    expect(await queuedScreenText(sessions, 'pane-a')).toBe(before);
+    (pane.bridge as { outputModes: typeof modes | null }).outputModes = null;
+    expect(await queuedScreenText(sessions, 'pane-a')).not.toBe(before);
   });
 });

@@ -48,6 +48,8 @@ import { usePaneTaskSplit } from './SidebarTaskGroup';
 import { taskNeedsYou } from './sidebarTree';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 import { WORKSPACE_SNOOZE_PRESETS, workspaceSnoozeUntil } from '../../../shared/workspaceSettle';
+import WorkspaceGroupSubmenu from './WorkspaceGroupSubmenu';
+import { workspaceDropMovesRow, workspaceListPart } from './workspaceGroupRows';
 import { sendWorkspaceSettleCommand } from '../../hooks/useWorkspaceSettleBridge';
 import { isOurHandoffDrag, takeHandoffDrop } from '../Git/handoffDrag';
 import { sanitizeDisplayText } from '../../../shared/phoneText';
@@ -401,6 +403,8 @@ function notifyOpenFailed(t: (key: TranslationKey, params?: Record<string, strin
   let message = detail ? `${label}: ${detail}` : label;
   if (detail === 'BLOCKED_SENSITIVE') {
     message = t('terminal.openPathProtected');
+  } else if (detail === 'NOT_FOUND') {
+    message = t('terminal.openPathNotFound');
   } else if (detail === 'PATH_NOT_QUOTABLE') {
     message = `${label}: ${t('workspace.openFailedQuoting')}`;
   } else if (detail?.startsWith('PATH_HAS_ENV_SYNTAX:')) {
@@ -996,6 +1000,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
     return id !== undefined && st.sidebarPinnedIds.includes(id);
   };
 
+  // #3069 — a drop that would leave the row where its group draws it is not
+  // offered: it would promise a move it cannot show (workspaceDropMovesRow).
+  const dropMovesRow = (fromIndex: number) => {
+    const st = useStore.getState();
+    const fromId = st.workspaces[fromIndex]?.id;
+    if (fromId === undefined) return false;
+    const opts = {
+      pinned: st.sidebarPinnedIds,
+      groupOf: (id: string) => st.workspaces.find((w) => w.id === id)?.groupId,
+      groups: st.workspaceGroups,
+    };
+    return workspaceDropMovesRow(workspaceListPart(fromId, opts), workspaceListPart(workspaceId, opts));
+  };
+
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     // An issue / PR dragged from the Git page: this workspace's agent takes it.
     // Not on a read-only row (the web mirror, another computer's list).
@@ -1020,6 +1038,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
     // and external text composers rejected it with 🚫.
     if (reorderFrom === ownIndex()) return;
     if (sortPaused && !draggedRowPinned(reorderFrom)) return;
+    if (!dropMovesRow(reorderFrom)) return;
     e.dataTransfer.dropEffect = 'move';
     const rect = e.currentTarget.getBoundingClientRect();
     const midY = rect.top + rect.height / 2;
@@ -1058,6 +1077,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
     if (fromIndex === index) return;
     // A sorted order only accepts pinned-to-pinned drops.
     if (sortPaused && !draggedRowPinned(fromIndex)) return;
+    if (!dropMovesRow(fromIndex)) return;
 
     // 드롭 위치를 아이템 중간 기준으로 결정
     // 위 절반 → 현재 index 앞으로, 아래 절반 → 현재 index 뒤로
@@ -1785,6 +1805,17 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
           >
             {bookmarked ? t('sidebar.unbookmark') : t('sidebar.bookmark')}
           </button>
+          {/* #3069 — Move to group: where the row is listed, nothing else. A
+              task row rides with its owner, and a pinned row stays in the
+              pinned rows (pinned wins), so neither is filed here. */}
+          {!taskRow && !pinned && (
+            <WorkspaceGroupSubmenu
+              workspaceId={workspaceId}
+              groupId={workspace.groupId}
+              opensLeft={menuPos.x > window.innerWidth * 0.6}
+              onDone={() => setMenuPos(null)}
+            />
+          )}
           {/* Settle / snooze: visibility only — the workspace moves to the
               sidebar's Settled or Snoozed group, nothing is closed. A task row
               rides with its owner, so it has no verbs of its own. */}

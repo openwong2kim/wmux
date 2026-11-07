@@ -216,6 +216,22 @@ export function setCommanderRole(token: string): void {
   COMMANDER_TOKEN = token;
 }
 
+// Live-session count for `wmux doctor`: a single-child server is one session,
+// named by one random id per process. The broker counts its own connections
+// instead, so its process stamps nothing. That is the one guarantee: broker.ts
+// clears the id at startup (setBrokerEnvelopeMode), before it hosts any
+// connection, so no connection-scope check is needed here.
+let MCP_SESSION_ID: string | undefined = crypto.randomBytes(16).toString('hex');
+
+export function setBrokerEnvelopeMode(): void {
+  MCP_SESSION_ID = undefined;
+}
+
+/** The session id this process stamps: its own on a single-child server, none in the broker. */
+export function getMcpSessionId(): string | undefined {
+  return MCP_SESSION_ID;
+}
+
 /** Effective identity for the CURRENT execution context (scope-aware). */
 function currentEnvelopeIdentity(): {
   clientName?: string;
@@ -274,6 +290,8 @@ function attemptRpc(
     // Omitted, never '', when this caller has no known pane.
     const callerPtyId = getCallerPtyId();
     if (callerPtyId !== undefined) envelope.callerPtyId = callerPtyId;
+    const mcpSession = getMcpSessionId();
+    if (mcpSession !== undefined) envelope.mcpSession = mcpSession;
     const request = JSON.stringify(envelope) + '\n';
 
     const socket = typeof target === 'string' ? net.connect(target) : net.connect(target);

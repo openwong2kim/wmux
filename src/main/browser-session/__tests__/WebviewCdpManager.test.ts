@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebviewCdpManager } from '../WebviewCdpManager';
 
-const mockDebugger = { attach: vi.fn(), detach: vi.fn(), sendCommand: vi.fn(async () => ({})) };
+const answerCommands = async (method: string): Promise<unknown> =>
+  method === 'Target.getTargetInfo' ? { targetInfo: { targetId: 'target-abc' } } : {};
+const mockDebugger = { on: vi.fn(), attach: vi.fn(), detach: vi.fn(), sendCommand: vi.fn(answerCommands) };
 const mockWebContents = {
   debugger: mockDebugger,
   isDestroyed: vi.fn(() => false),
@@ -18,18 +20,6 @@ vi.mock('electron', () => ({
   },
 }));
 
-const mockTargets = [
-  {
-    id: 'target-abc',
-    type: 'page',
-    url: 'https://example.com',
-    webSocketDebuggerUrl: 'ws://127.0.0.1:18800/devtools/page/target-abc',
-  },
-];
-global.fetch = vi.fn(() =>
-  Promise.resolve({ json: () => Promise.resolve(mockTargets) } as Response),
-);
-
 describe('WebviewCdpManager', () => {
   let manager: WebviewCdpManager;
 
@@ -38,29 +28,111 @@ describe('WebviewCdpManager', () => {
     manager = new WebviewCdpManager(18800);
   });
 
-  it('keeps local registration while pending and discovers remote targets after verification', async () => {
+  it('registers the real target id whether or not a port is up', async () => {
     manager = new WebviewCdpManager(0);
     manager.setCdpFailureReason('ownership verification pending');
     await manager.register('surface-1', 42);
     expect(manager.getCdpPort()).toBe(0);
     expect(manager.getCdpFailureReason()).toContain('pending');
-    expect(manager.getTarget('surface-1')?.wsUrl).toBe('');
-    expect(mockDebugger.attach).toHaveBeenCalled();
-    expect(mockWebContents.setBackgroundThrottling).toHaveBeenCalledWith(false);
-    expect(global.fetch).not.toHaveBeenCalled();
-    await manager.setCdpPort(18800);
     expect(manager.getTarget('surface-1')?.targetId).toBe('target-abc');
+    expect(mockWebContents.setBackgroundThrottling).toHaveBeenCalledWith(false);
+    manager.setCdpPort(18800);
+    expect(manager.getCdpPort()).toBe(18800);
     expect(manager.getCdpFailureReason()).toBe('');
   });
 
-  it('register attaches debugger and stores session', async () => {
+  it('register attaches the debugger, keeps it attached and stores the session', async () => {
     await manager.register('surface-1', 42);
     expect(mockDebugger.attach).toHaveBeenCalledWith('1.3');
-    expect(global.fetch).toHaveBeenCalledWith('http://127.0.0.1:18800/json');
-    const target = manager.getTarget('surface-1');
-    expect(target).not.toBeNull();
-    expect(target?.targetId).toBe('target-abc');
-    expect(target?.wsUrl).toContain('ws://');
+    expect(mockDebugger.detach).not.toHaveBeenCalled();
+    expect(manager.getTarget('surface-1')?.targetId).toBe('target-abc');
+  });
+
+  describe('page dialogs', () => {
+    const dialogEvent = async (method: string, params: Record<string, unknown>) => {
+      const listener = mockDebugger.on.mock.calls.find(([name]) => name === 'message')?.[1] as
+        (event: unknown, method: string, params: Record<string, unknown>) => void;
+      listener({}, method, params);
+      // The answer waits briefly, for a Playwright page to answer first.
+      await vi.advanceTimersByTimeAsync(600);
+    };
+    const answered = () => mockDebugger.sendCommand.mock.calls.filter(([m]) => m === 'Page.handleJavaScriptDialog');
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('enables the Page domain itself and keeps one listener across re-registration', async () => {
+      await manager.register('surface-1', 42);
+      manager.unregister('surface-1');
+      await manager.register('surface-1', 42);
+      expect(mockDebugger.sendCommand).toHaveBeenCalledWith('Page.enable');
+      expect(mockDebugger.on.mock.calls.filter(([name]) => name === 'message')).toHaveLength(1);
+    });
+
+    it("leaves a person's dialog alone when no lease is held", async () => {
+      await manager.register('surface-1', 42);
+      await dialogEvent('Page.javascriptDialogOpening', { type: 'confirm', message: 'sure?' });
+      expect(answered()).toEqual([]);
+    });
+
+    it('dismisses while a lease is held, and reports it through the sink', async () => {
+      const sink = vi.fn();
+      manager.setDialogNoteSink(sink);
+      await manager.register('surface-1', 42);
+      const gen = manager.acquireAutomationLease('surface-1');
+      await dialogEvent('Page.javascriptDialogOpening', { type: 'alert', message: 'hi' });
+      expect(answered()).toEqual([['Page.handleJavaScriptDialog', { accept: false }]]);
+      expect(sink).toHaveBeenCalledWith(42, expect.objectContaining({ type: 'alert', message: 'hi', answer: 'dismissed' }));
+      manager.releaseAutomationLease('surface-1', gen);
+    });
+
+    it('answers a dialog already open when a lease starts', async () => {
+      await manager.register('surface-1', 42);
+      await dialogEvent('Page.javascriptDialogOpening', { type: 'alert', message: 'timer' });
+      expect(answered()).toEqual([]);
+      const gen = manager.acquireAutomationLease('surface-1');
+      expect(answered()).toHaveLength(1);
+      manager.releaseAutomationLease('surface-1', gen);
+    });
+
+    it('uses an armed answer only during an input dispatch', async () => {
+      await manager.register('surface-1', 42);
+      const gen = manager.acquireAutomationLease('surface-1');
+      manager.armDialog('surface-1', true, 'typed');
+      const end = manager.beginDialogDispatch('surface-1');
+      await dialogEvent('Page.javascriptDialogOpening', { type: 'confirm', message: 'ok?' });
+      end();
+      expect(answered()).toEqual([['Page.handleJavaScriptDialog', { accept: true, promptText: 'typed' }]]);
+      manager.releaseAutomationLease('surface-1', gen);
+    });
+  });
+
+  it("lets a person or agent leave a page whose beforeunload objects, with one listener per guest", async () => {
+    await manager.register('surface-1', 42);
+    await manager.register('surface-1', 42);
+    const listeners = mockWebContents.on.mock.calls.filter(([name]) => name === 'will-prevent-unload');
+    expect(listeners).toHaveLength(1);
+    const preventDefault = vi.fn();
+    (listeners[0][1] as (event: { preventDefault(): void }) => void)({ preventDefault });
+    expect(preventDefault).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a wc- id when the target lookup fails', async () => {
+    mockDebugger.sendCommand.mockImplementation(async (method: string) => {
+      if (method === 'Target.getTargetInfo') throw new Error('gone');
+      return {};
+    });
+    try {
+      await manager.register('surface-1', 42);
+      expect(manager.getTarget('surface-1')?.targetId).toBe('wc-42');
+    } finally {
+      mockDebugger.sendCommand.mockImplementation(answerCommands);
+    }
   });
 
   it('starts console/network capture as soon as a guest registers (#1081)', async () => {
@@ -559,7 +631,7 @@ describe('WebviewCdpManager discard mode (#517 slice C)', () => {
     expect(manager.isDiscarded('s1')).toBe(true);
 
     const awake = manager.ensureAwake('s1');
-    // Let the mocked register()'s async steps (fetch) settle — but do NOT run
+    // Let the mocked register()'s async steps settle — but do NOT run
     // all timers: the re-registered guest is still invisible, so a fresh dwell
     // timer arms immediately and running it would legitimately re-discard.
     await vi.advanceTimersByTimeAsync(100);

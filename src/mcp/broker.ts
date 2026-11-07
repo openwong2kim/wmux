@@ -38,6 +38,8 @@ import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
 import { selfCheckPeerPid } from '../shared/peerPid';
+import { createConnectionReporter, trackConnection, trackToolCalls, type ReportChannel } from './brokerConnectionReporter';
+import { setBrokerEnvelopeMode } from './wmux-client';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -53,6 +55,17 @@ interface ShimHandshake {
   coreMode?: boolean;
   /** Optional `--role=<Role>` value; absent from an older shim (full surface). */
   roleSurface?: string;
+  /** Additive: `1` asks for one broker line, `{"wmuxBroker":1,"ok":…}`, as
+   *  the first bytes on the connection: ok:true once the session's server is
+   *  created, ok:false when it is refused. Absent from shim.ts and older
+   *  shims, which get no such line. */
+  ack?: number;
+}
+
+/** The answer to a handshake that asked for one (`ack: 1`): always the first
+ *  bytes the shim reads. The native shim forwards no stdin until it arrives. */
+function brokerAckLine(ok: boolean, error?: string): string {
+  return JSON.stringify(ok ? { wmuxBroker: 1, ok } : { wmuxBroker: 1, ok, error }) + '\n';
 }
 
 function readAuthToken(): string | undefined {
@@ -76,6 +89,9 @@ function tokenMatches(presented: string | undefined, expected: string): boolean 
 
 let connSeq = 0;
 
+/** Open hosted connections, reported to the supervisor for `wmux doctor`. */
+const connectionReporter = createConnectionReporter(process as unknown as ReportChannel);
+
 /** How long a connection may sit without completing the wmuxShim handshake. */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
@@ -84,6 +100,8 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   const scope: ConnectionScope = createConnectionScope();
 
   const log = (msg: string) => console.error(`[wmux-mcp-broker] #${connId} ${msg}`);
+  // Before the await below: a socket that closes during it is counted closed.
+  trackConnection(socket, connectionReporter);
   log(
     `shim connected pid=${handshake.callerPid} ` +
       `commander=${handshake.commanderMode ? 'yes' : 'no'} ` +
@@ -102,6 +120,8 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   let transport: StdioServerTransport | null = null;
   // Guards the onclose teardown against the re-entry that server.close() causes.
   let connClosed = false;
+  // Ends this connection's tool calls still in flight when it closes.
+  let endToolCalls: () => void = () => undefined;
 
   await runInConnectionScope(scope, async () => {
     const server = createWmuxServer({
@@ -121,8 +141,21 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
 
     // The remaining socket bytes are line-framed MCP JSON-RPC — exactly what
     // StdioServerTransport speaks; it accepts any Readable/Writable pair.
+    // The session's server exists: answer a shim that asked, before connect.
+    // The socket stays paused from the handshake read until the resume() after
+    // this function returns (transport.start() only adds a 'data' listener,
+    // which does not resume an explicitly paused stream), so bytes the shim
+    // sends on the ack wait in the socket until the scope wrappers below are in
+    // place. If connect then rejects, the caller destroys the socket: the shim,
+    // already pumping, exits 1.
+    if (handshake.ack === 1) socket.write(brokerAckLine(true));
+
     transport = new StdioServerTransport(socket, socket);
     await server.connect(transport);
+    // The tool names in flight go to the supervisor, so a crash can say what
+    // it cut off. Wrapped inside the scope wrapper below, so it sees every
+    // message the server does.
+    endToolCalls = trackToolCalls(transport as never, connectionReporter);
 
     // server.connect wired transport.onmessage/onclose/onerror. Re-wrap them
     // so every later dispatch (they fire from socket events, OUTSIDE this
@@ -140,6 +173,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
         if (connClosed) return;
         connClosed = true;
         log('transport closed');
+        endToolCalls();
         // Tear down THIS caller's browser session only. The engine is
         // per-connection (scope.playwright), so no other agent is touched.
         const engine = scope.playwright as PlaywrightEngine | undefined;
@@ -175,6 +209,8 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   };
   socket.on('close', teardown);
   socket.on('end', teardown);
+  // Closed while the session was being set up: no close event is coming.
+  if (socket.destroyed) teardown();
 }
 
 function main(): void {
@@ -182,6 +218,7 @@ function main(): void {
   // a connection scope must fail rather than fall back to a shared registry.
   setReplBrokerMode();
   setBrowserReplBrokerMode();
+  setBrokerEnvelopeMode();
   const expectedToken = readAuthToken();
   if (!expectedToken) {
     console.error('[wmux-mcp-broker] auth token not found; refusing to serve. Is wmux running?');
@@ -230,9 +267,11 @@ function main(): void {
         socket.destroy();
         return;
       }
+      const wantsAck = handshake.ack === 1;
       if (!tokenMatches(handshake.authToken, expectedToken)) {
         console.error('[wmux-mcp-broker] auth failed, dropping connection');
-        socket.destroy();
+        if (wantsAck) socket.end(brokerAckLine(false, 'auth'), () => socket.destroy());
+        else socket.destroy();
         return;
       }
 
@@ -303,6 +342,10 @@ function main(): void {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  // Started by main with an IPC channel: when main goes (a crash, a kill), the
+  // channel closes and the broker goes too, rather than living on without a
+  // supervisor. A broker started by hand has no channel and is unaffected.
+  if (process.send) process.on('disconnect', shutdown);
 }
 
 main();

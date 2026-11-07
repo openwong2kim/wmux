@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { CORE_TOOL_SURFACE } from '../coreSurface';
 import { ORCH_ROLES } from '../orchestratorRole';
 import { UNLISTED_TOOLS_SET } from '../unlistedTools';
-import { ROLE_TOOL_SURFACES, parseRoleArg, roleArgValue } from '../roleSurfaces';
+import { ROLE_TOOL_SURFACES, parseRoleArg, roleArgValue, roleMcpArgv, toolSurfaceShellFlags, wmuxServerArgs } from '../roleSurfaces';
 
 const baseline = JSON.parse(
   readFileSync(path.resolve(__dirname, '../../../scripts/mcp-protocol-baseline.json'), 'utf8'),
@@ -52,5 +52,27 @@ describe('fan-out worker surfaces', () => {
     for (const role of ['Builder', 'Tester'] as const) {
       expect(named.filter((n) => !ROLE_TOOL_SURFACES[role].includes(n))).toEqual([]);
     }
+  });
+});
+
+// A codex `-c mcp_servers.wmux.args=…` override replaces the args and keeps the
+// command the config registered, so with the native launcher registered the
+// args must be the launcher's, not a script path it would take for a command.
+describe('tool-level overrides with the native launcher', () => {
+  const native = { kind: 'native' as const, binary: '/Users/u/.wmux/mcp/wmux-native' };
+  it('writes mcp-shim where a node entry has its script', () => {
+    expect(wmuxServerArgs(native, 'role', 'Reviewer')).toEqual(['mcp-shim', '--role=Reviewer']);
+    expect(wmuxServerArgs(native, 'core')).toEqual(['mcp-shim', '--core']);
+    expect(wmuxServerArgs('/x/index.js', 'core')).toEqual(['/x/index.js', '--core']);
+  });
+  it('codex argv and shell flags carry the launcher\'s args', () => {
+    expect(roleMcpArgv('codex', 'Reviewer', native)).toEqual(['-c', 'mcp_servers.wmux.args=["mcp-shim","--role=Reviewer"]']);
+    expect(toolSurfaceShellFlags('codex', 'core', native, undefined, '')).toBe(`-c "mcp_servers.wmux.args=['mcp-shim','--core']"`);
+  });
+  it('claude\'s --mcp-config names the launcher as the command', () => {
+    const argv = roleMcpArgv('claude', 'Reviewer', native) as string[];
+    expect(JSON.parse(argv[0].replace(/^--mcp-config=/, ''))).toEqual({
+      mcpServers: { wmux: { command: native.binary, args: ['mcp-shim', '--role=Reviewer'] } },
+    });
   });
 });

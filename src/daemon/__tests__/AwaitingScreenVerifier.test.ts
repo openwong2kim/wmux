@@ -1,6 +1,7 @@
 // The awaiting-state screen verifier: a pane stuck at awaiting_input is
 // released once its dialog is gone from the screen on two reads in a row, and
 // never otherwise.
+import { resetScreenReadCounters, screenParseCounters } from '../screenReadCache';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IPty } from 'node-pty';
 import {
@@ -539,6 +540,17 @@ describe('renderPaneScreen', () => {
     expect(seen).toEqual([{ cols: 120, rows: 40 }, { cols: 80, rows: 24 }]);
   });
 
+  it('counts each parse of the ring, a reused frame not at all', async () => {
+    resetScreenReadCounters();
+    const pane = renderablePane();
+    const snapshot = async () => ({ ok: true as const, rows: [{ text: 'x' }] });
+    await renderPaneScreen(() => pane, snapshot);
+    expect(screenParseCounters().pane.parses).toBe(1);
+    await renderPaneScreen(() => pane, snapshot, { reuse: true, tail: false });
+    await renderPaneScreen(() => pane, snapshot, { reuse: true, tail: false });
+    expect(screenParseCounters().pane.parses).toBe(2);
+  });
+
   it('is unreadable when the pane was resized while the render waited', async () => {
     const pane = renderablePane({ ptyProcess: { cols: 100, rows: 30 } });
     const snapshot = async () => {
@@ -677,5 +689,63 @@ describe('AwaitingScreenVerifier end to end', () => {
       verifier.dispose();
       bridge.cleanup();
     }
+  });
+});
+
+// The approval reader polls a pane every 100 ms while an answer lands, and on
+// every keystroke at a prompt: while the ring and size have not moved, the
+// frame read from the whole ring stands, with no ring copy and no parse.
+describe('renderPaneScreen reuse', () => {
+  function countingPane() {
+    const ring = new RingBuffer(4096);
+    ring.write(Buffer.from('prompt'));
+    let copies = 0;
+    const readAllWithGeometry = ring.readAllWithGeometry.bind(ring);
+    const ringBuffer = Object.assign(Object.create(ring) as RingBuffer, {
+      readAllWithGeometry: () => { copies++; return readAllWithGeometry(); },
+    });
+    const pane = renderablePane({ ringBuffer, ptyProcess: { cols: 80, rows: 24 } });
+    return { ring, pane, copies: () => copies };
+  }
+
+  it('reuses the whole-ring frame until bytes arrive or the pane is resized', async () => {
+    const { ring, pane, copies } = countingPane();
+    let parses = 0;
+    const snapshot = async () => { parses++; return { ok: true as const, rows: [{ text: `frame ${parses}` }] }; };
+    const first = await renderPaneScreen(() => pane, snapshot, { reuse: true });
+    expect(await renderPaneScreen(() => pane, snapshot, { reuse: true })).toBe(first);
+    expect([copies(), parses]).toEqual([1, 1]);
+
+    ring.write(Buffer.from('!'));
+    expect((await renderPaneScreen(() => pane, snapshot, { reuse: true }))?.rows).toEqual(['frame 2']);
+    pane.ptyProcess.cols = 100;
+    expect((await renderPaneScreen(() => pane, snapshot, { reuse: true }))?.rows).toEqual(['frame 3']);
+    expect([copies(), parses]).toEqual([3, 3]);
+  });
+
+  it('parses every time for a caller that does not opt in (a fresh snapshot closure per call)', async () => {
+    const { pane, copies } = countingPane();
+    for (let i = 0; i < 3; i++) await renderPaneScreen(() => pane, async () => ({ ok: true as const, rows: [{ text: 'x' }] }));
+    expect(copies()).toBe(3);
+  });
+
+  it('does not reuse a frame read while the ring failed to wake (only its pending bytes)', async () => {
+    const { pane, copies } = countingPane();
+    Object.defineProperty(pane.ringBuffer, 'isHibernated', { get: () => true });
+    const snapshot = async () => ({ ok: true as const, rows: [{ text: 'partial' }] });
+    await renderPaneScreen(() => pane, snapshot, { reuse: true });
+    await renderPaneScreen(() => pane, snapshot, { reuse: true });
+    expect(copies()).toBe(2);
+  });
+
+  it('does not reuse a frame read from the tail after the whole ring ran out of budget', async () => {
+    const { pane } = countingPane();
+    let calls = 0;
+    const snapshot = async () => (++calls % 2 === 1
+      ? { ok: false as const, reason: 'budget' }
+      : { ok: true as const, rows: [{ text: 'tail' }] });
+    expect((await renderPaneScreen(() => pane, snapshot, { reuse: true }))?.rows).toEqual(['tail']);
+    await renderPaneScreen(() => pane, snapshot, { reuse: true });
+    expect(calls).toBe(4);
   });
 });

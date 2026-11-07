@@ -145,7 +145,7 @@ describe('help-card typing is held to the origin the request was made at', () =>
       nativeBounds: async () => ({ width: 1000, height: 728 }),
       scroll: async () => undefined,
       input: (_id: number, operation: () => Promise<RpcResponse>) => operation(),
-      targets: () => [{ surfaceId: 'surf-1', workspaceId: 'ws-1', webContentsId: 1, targetId: 't', wsUrl: 'ws://private' }],
+      targets: () => [{ surfaceId: 'surf-1', workspaceId: 'ws-1', webContentsId: 1, targetId: 't' }],
       page: () => ({ title: 'Pane', url: paneURL }),
       invoke,
     };

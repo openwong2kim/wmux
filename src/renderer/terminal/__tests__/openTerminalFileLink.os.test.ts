@@ -73,12 +73,21 @@ describe('openTerminalFileLink on Windows', () => {
     expect(state.addEditorSurface).toHaveBeenCalledWith('pane1', '\\\\wsl$\\Debian\\home\\me\\a.txt', { workspaceId: 'ws1' });
   });
 
+  it("opens an `ls --hyperlink` URL that names this machine's host", async () => {
+    (window as unknown as { electronAPI: { localHostName: string } }).electronAPI.localHostName = 'DESKTOP-AB12';
+    list.mockResolvedValue([{ id: 'pty1', shell: 'wsl.exe', args: ['-d', 'Debian'] }]);
+    const d = deps();
+    await openTerminalFileLink('file://desktop-ab12/home/me/a.txt', undefined, 'pty1', d);
+    expect(state.addEditorSurface).toHaveBeenCalledWith('pane1', '\\\\wsl$\\Debian\\home\\me\\a.txt', { workspaceId: 'ws1' });
+    expect(d.onFailure).not.toHaveBeenCalled();
+  });
+
   it('never hands a POSIX path from a non-WSL tab to the OS opener', async () => {
     list.mockResolvedValue([{ id: 'pty1', shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' }]);
     const d = deps();
     await openTerminalFileLink('/tmp/x.txt:4', undefined, 'pty1', d);
     expect(d.openWithOs).not.toHaveBeenCalled();
-    expect(d.onFailure).toHaveBeenCalledTimes(1);
+    expect(d.onFailure).toHaveBeenCalledWith('not-found');
     expect(state.addEditorSurface).not.toHaveBeenCalled();
   });
 
@@ -88,5 +97,31 @@ describe('openTerminalFileLink on Windows', () => {
     const d = deps();
     await openTerminalFileLink('C:\\work\\a.txt', undefined, 'pty1', d);
     expect(d.openWithOs).toHaveBeenCalledWith('C:\\work\\a.txt');
+  });
+});
+
+describe('openTerminalFileLink: why nothing opened', () => {
+  it('a file: URL naming another computer says so, not that it is missing', async () => {
+    list.mockResolvedValue([{ id: 'pty1', shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' }]);
+    const d = { ...deps(), viewerOnly: true };
+    await openTerminalFileLink('file://otherhost/share/x.txt', undefined, 'pty1', d);
+    expect(d.openWithOs).not.toHaveBeenCalled();
+    expect(d.onFailure).toHaveBeenCalledWith('remote');
+  });
+
+  it('a malformed file: URL is reported missing, not remote', async () => {
+    list.mockResolvedValue([{ id: 'pty1', shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' }]);
+    const d = deps();
+    await openTerminalFileLink('file:///%E0%A4%A', undefined, 'pty1', d);
+    expect(d.onFailure).toHaveBeenCalledWith('not-found');
+  });
+
+  it('an OSC 8 link the viewer cannot show is not handed to the OS, and says why', async () => {
+    list.mockResolvedValue([{ id: 'pty1', shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' }]);
+    readFile.mockResolvedValue(null);
+    const d = { ...deps(), viewerOnly: true };
+    await openTerminalFileLink('file:///C:/work/missing.txt', undefined, 'pty1', d);
+    expect(d.openWithOs).not.toHaveBeenCalled();
+    expect(d.onFailure).toHaveBeenCalledWith('viewer-only');
   });
 });

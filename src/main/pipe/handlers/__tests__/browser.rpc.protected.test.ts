@@ -14,6 +14,7 @@ import type { BrowserBackendStore } from '../../../browser-session/BrowserBacken
 import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
 import { BROWSER_POLICY_FILE } from '../../../../shared/browserPolicy';
 import { dispatchAsClaimedCaller, paneClaimOn } from './claimedCaller';
+import { FIRST_PARTY_CLIENT_NAMES } from '../../../mcp/firstParty';
 import { __resetProfileNamespaceStoreForTest } from '../../../browser-session/ProfileNamespaceStore';
 
 /**
@@ -208,6 +209,9 @@ describe('protected-pane gate', () => {
     const router = register(profiles, policy);
     for (const [method, extra] of [
       ['browser.evaluate', { expression: '1' }],
+      // Naming a frame reads in another world, not under another rule.
+      ['browser.evaluate', { expression: '1', frameId: 'F1', loaderId: 'L1' }],
+      ['browser.frames.read', { frames: [{ frameId: 'F1', loaderId: 'L1' }], seed: 1 }],
       ['browser.cookies', { action: 'get' }],
       ['browser.cdp.target', {}],
       ['browser.siteGuides.match', { url: 'https://a.test/' }],
@@ -219,10 +223,17 @@ describe('protected-pane gate', () => {
   it('never shows a protected pane its Chrome CDP port', async () => {
     await protectPaneA();
     const router = register(profiles, policy);
-    const status = await call(router, 'browser.session.status', { workspaceId: 'ws-1' }, 'pty-a');
-    expect(status.result).toMatchObject({ profile: 'pa', port: null });
-    const neighbour = await call(router, 'browser.session.status', { workspaceId: 'ws-1' }, 'pty-b');
-    expect(neighbour.result).toMatchObject({ profile: 'default', port: 19000 });
+    // Asked by a caller allowed attach info, so only the pane's protection differs.
+    const status = (callerPtyId: string) => router.dispatch({
+      id: '1',
+      method: 'browser.session.status',
+      params: { workspaceId: 'ws-1' },
+      callerPtyId,
+      clientName: [...FIRST_PARTY_CLIENT_NAMES][0],
+      ...paneClaimOn('ws-1', callerPtyId),
+    } as never, { externalWire: true }) as Promise<{ result?: unknown }>;
+    expect((await status('pty-a')).result).toMatchObject({ profile: 'pa', port: null });
+    expect((await status('pty-b')).result).toMatchObject({ profile: 'default', port: 19000 });
   });
 
   it('never lets a protected pane drive a surface outside its own Chrome', async () => {

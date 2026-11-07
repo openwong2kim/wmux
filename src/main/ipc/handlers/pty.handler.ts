@@ -1,5 +1,5 @@
 import { applyWmuxToolsToCommand, isWmuxToolsHint, locateWmuxMcpEntry } from '../../agents/toolSurfaceLaunch';
-import { codexConfigPath, codexHasWmuxServer } from '../../../shared/mcpRegistration';
+import { codexConfigPath, codexHasWmuxServer, codexWmuxLauncher } from '../../../shared/mcpRegistration';
 import { WSL_RPC_TIMEOUT_MS } from '../../../shared/wsl';
 import { heldReconnectAnswer, promoteOutcome, promoteStartedSession, suspendedReconnectAction } from '../../../shared/suspendedSession';
 import { app, ipcMain, BrowserWindow } from 'electron';
@@ -99,6 +99,7 @@ import { pendingRemovalRefusal } from '../../worktask/pendingWorktreeRemovals';
 import { launchAllowedByChat } from './chatLaunchGuard';
 import { folderTrustLaunchHold, folderTrustLaunchRefusal, forgetFolderTrustPane } from '../../folderTrustCheck';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWording';
+import { attachScrollback } from '../../session/rendererScrollback';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -216,6 +217,7 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   const initialCommand = applyWmuxToolsToCommand(rest.initialCommand, wmuxTools, {
     entry: currentMcpEntry(),
     codexHasWmuxServer: () => codexHasWmuxServer(codexConfigPath(rest.env)),
+    codexLauncher: (entry) => codexWmuxLauncher(codexConfigPath(rest.env), entry),
   });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
   return { ...rest, initialCommand };
@@ -895,7 +897,7 @@ export function registerPTYHandlers(
         if (isWslShell(shell) && createdCwd) effectiveCwd = createdCwd;
 
         // Attach to the session (makes daemon start the SessionPipe server)
-        await daemonClient.rpc('daemon.attachSession', { id: sessionId });
+        await daemonClient.rpc('daemon.attachSession', { id: sessionId, scrollback: attachScrollback() });
 
         // Daemon sessions have no PTYInstance in this process, so the shell would
         // otherwise be unknowable to main — record it for the clipboard handler's
@@ -1971,22 +1973,26 @@ export function registerPTYHandlers(
   // session. Local mode / legacy daemons return { success: false } so the
   // renderer degrades to "skip this pane" exactly as before the feature.
   ipcMain.removeHandler(IPC.PTY_READ_TEXT);
-  ipcMain.handle(IPC.PTY_READ_TEXT, wrapHandler(IPC.PTY_READ_TEXT, async (_event: Electron.IpcMainInvokeEvent, id: string, opts?: { scrollback?: number }) => {
+  ipcMain.handle(IPC.PTY_READ_TEXT, wrapHandler(IPC.PTY_READ_TEXT, async (_event: Electron.IpcMainInvokeEvent, id: string, opts?: { scrollback?: number; tail?: boolean }) => {
     if (!useDaemon || !daemonClient) {
       return { success: false, code: 'local-mode' };
     }
     const scrollback = opts?.scrollback;
     try {
-      const res = await daemonClient.rpc('daemon.readSessionText', { id, scrollback }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
+      const res = await daemonClient.rpc('daemon.readSessionText', { id, scrollback, ...(opts?.tail === true ? { tail: true } : {}) }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
         mode: 'rows' | 'unavailable';
         rows?: Array<{ text: string; wrapped: boolean }>;
         bufferType?: 'normal' | 'alternate';
         rowsBelowCursor?: number;
         truncated?: boolean;
         reason?: string;
+        via?: 'tail' | 'full';
       };
       if (res.mode === 'rows') {
-        return { success: true, rows: res.rows ?? [], bufferType: res.bufferType, rowsBelowCursor: res.rowsBelowCursor, truncated: res.truncated === true };
+        return {
+          success: true, rows: res.rows ?? [], bufferType: res.bufferType, rowsBelowCursor: res.rowsBelowCursor, truncated: res.truncated === true,
+          ...(res.via === 'tail' || res.via === 'full' ? { via: res.via } : {}),
+        };
       }
       return { success: false, code: 'unavailable', reason: res.reason };
     } catch (err) {

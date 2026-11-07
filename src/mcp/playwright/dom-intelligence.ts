@@ -27,10 +27,11 @@ import {
 /**
  * CSS selector for "interactive" elements that get a ref number in DOM-based
  * (RPC) snapshots. Shared between browser_snapshot's RPC fallback (inspection.ts)
- * and getSmartSnapshotViaEval so both tools tag the SAME elements with
- * data-wmux-ref. The numbering BASE differs by design (browser_snapshot is
- * 0-based; smart snapshot is 1-based to match getSmartSnapshot / getLocatorByRef),
- * so refs are not interchangeable across the two tools — only the element set is.
+ * and getSmartSnapshotViaEval so both tools number the SAME elements, each in
+ * its own attribute (`data-wmux-ref`, SMART_REF_ATTRIBUTE). The numbering BASE
+ * differs by design (browser_snapshot is 0-based; smart snapshot is 1-based to
+ * match getSmartSnapshot / getLocatorByRef), so refs are not interchangeable
+ * across the two tools — only the element set is.
  */
 export const INTERACTIVE_SELECTOR =
   'a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"], [role="combobox"], [role="searchbox"], [role="tab"], [contenteditable="true"]';
@@ -78,6 +79,22 @@ export const INTERACTIVE_SELECTOR =
  * the a11y path (issue #1066: the param used to be dropped silently here).
  * The `Page:`/`URL:` header always stays: the auto-diff URL guard in
  * inspection.ts parses the `URL: …` line out of this text.
+ *
+ * Frames: each frame element under the root (`iframe`, `frame`, `object`,
+ * `embed`, `fencedframe`, the root itself, and those inside open shadow roots)
+ * is listed after the interactive elements as one boundary line: its tag, its
+ * name, the origin it points at, "contents not in this snapshot". It is read
+ * from the element, so a cross-site frame is listed like any other. The line
+ * starts with the tag, never the page's `role`, and the location is the origin
+ * plus `/…` for a non-root path: paths, queries and credentials can carry
+ * tokens. Kept under `filter: 'interactive'` too, since a frame may hold the
+ * control the caller is after. At most FRAME_LINE_CAP lines, then one line
+ * counting the rest.
+ *
+ * Page text: every page-derived string goes through pageText (C0/C1 controls
+ * and bidi/format characters dropped, whitespace collapsed), so no page string
+ * can start a line of its own, and a quoted frame name is escaped as well, so
+ * it cannot close its quotes early.
  */
 export interface DomSnapshotEntry {
   ref: number;
@@ -96,6 +113,21 @@ export interface DomSnapshotExpressionOptions {
   stable?: { prior: readonly RefDescriptor[]; nextRef: number };
   /** Return `{ text, entries }` rather than the listing text alone. */
   withEntries?: boolean;
+  /**
+   * List one frame's document, read in place on the RPC lane, with no page
+   * header or frame list of its own (the caller labels the section). An
+   * element `prior` describes (this document's refs from the last listing)
+   * keeps its number; a new one is numbered on from `seed`, which is past
+   * the surface's listing count and every frame ref still kept. The top
+   * document's history is never offered here, so a frame cannot take a number
+   * the top holds.
+   */
+  frame?: {
+    seed: number;
+    prior?: readonly RefDescriptor[];
+    /** Epoch ms after which the listing returns null without touching the page. */
+    notAfter?: number;
+  };
 }
 
 /**
@@ -115,6 +147,26 @@ export function readDomSnapshotPayload(raw: unknown): DomSnapshotPayload {
   };
 }
 
+/** Frame boundary lines per listing; the rest are counted on one line. */
+export const FRAME_LINE_CAP = 50;
+
+/** Ends every frame boundary line. */
+export const FRAME_BOUNDARY_SUFFIX = '(contents not in this snapshot)';
+
+/**
+ * In-page helpers for page-derived text (see buildDomSnapshotExpression). The
+ * controls dropped exclude tab and the line breaks, which collapse to a space
+ * instead, so words either side of a newline stay apart.
+ */
+const PAGE_TEXT_JS = String.raw`
+    const UNSAFE_CHARS = /[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+    const pageText = (s, max) => {
+      const t = String(s == null ? '' : s).replace(UNSAFE_CHARS, '').replace(/\s+/g, ' ').trim();
+      return max === undefined ? t : t.substring(0, max);
+    };
+    const quotedPageText = (s, max) => pageText(s, max).replace(/[\\"]/g, '\\$&');
+`;
+
 export function buildDomSnapshotExpression(
   rootSelector?: string,
   opts?: DomSnapshotExpressionOptions,
@@ -126,10 +178,17 @@ export function buildDomSnapshotExpression(
     const interactiveOnly = ${JSON.stringify(opts?.filter === 'interactive')};
     const withEntries = ${JSON.stringify(opts?.withEntries === true)};
     const assignStableRefs = (${STABLE_REF_ASSIGNMENT_JS});
+    const frameSeed = ${JSON.stringify(opts?.frame ? opts.frame.seed : null)};
+    const framePrior = ${JSON.stringify(opts?.frame?.prior ?? [])};
+    const frameNotAfter = ${JSON.stringify(opts?.frame?.notAfter ?? null)};
     const prior = ${JSON.stringify(opts?.stable?.prior ?? [])};
     const seedNext = ${JSON.stringify(opts?.stable?.nextRef ?? 0)};
+    ${PAGE_TEXT_JS}
     const root = rootSel ? document.querySelector(rootSel) : document;
     if (!root) return withEntries ? { text: ${miss}, entries: [] } : ${miss};
+    // A read that runs after the caller stopped waiting must not stamp refs
+    // nobody will be told about.
+    if (frameNotAfter !== null && Date.now() > frameNotAfter) return null;
     document.querySelectorAll('[data-wmux-ref]').forEach(el => el.removeAttribute('data-wmux-ref'));
     const interactives = [...root.querySelectorAll(sel)].slice(0, 100);
     // The descriptor this lane identifies an element by. Only ever compared
@@ -153,26 +212,27 @@ export function buildDomSnapshotExpression(
     } catch (e) {
       hoverTriggers = new Set();
     }
-    const assigned = assignStableRefs(prior, seedNext, described);
-    const refs = assigned.refs;
+    const refs = frameSeed === null
+      ? assignStableRefs(prior, seedNext, described).refs
+      : assignStableRefs(framePrior, frameSeed, described).refs;
     interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(refs[i])));
-    const title = document.title;
+    const title = pageText(document.title);
     const url = location.href;
-    const lines = ['Page: ' + title, 'URL: ' + url, ''];
+    const lines = frameSeed === null ? ['Page: ' + title, 'URL: ' + url, ''] : [];
     if (rootSel) lines.push('Scope: ' + rootSel, '');
     if (!interactiveOnly) root.querySelectorAll('h1,h2,h3').forEach(h => {
-      lines.push(h.tagName + ': ' + (h.textContent || '').trim().substring(0, 80));
+      lines.push(h.tagName + ': ' + pageText(h.textContent, 80));
     });
-    lines.push('', 'Interactive elements (use ref number for click/fill/type):');
+    if (frameSeed === null) lines.push('', 'Interactive elements (use ref number for click/fill/type):');
     interactives.forEach((el, i) => {
       const tag = el.tagName.toLowerCase();
-      const role = el.getAttribute('role') || '';
-      const text = (el.textContent || '').trim().substring(0, 60);
-      const label = el.getAttribute('aria-label') || '';
-      const name = el.getAttribute('name') || '';
-      const type = el.getAttribute('type') || '';
-      const placeholder = el.getAttribute('placeholder') || '';
-      const href = el.getAttribute('href') || '';
+      const role = pageText(el.getAttribute('role'));
+      const text = pageText(el.textContent, 60);
+      const label = pageText(el.getAttribute('aria-label'));
+      const name = pageText(el.getAttribute('name'));
+      const type = pageText(el.getAttribute('type'));
+      const placeholder = pageText(el.getAttribute('placeholder'));
+      const href = pageText(el.getAttribute('href'), 60);
       let desc = '  [ref=' + refs[i] + '] ' + tag;
       if (type) desc += '[type=' + type + ']';
       if (role) desc += '[role=' + role + ']';
@@ -184,6 +244,55 @@ export function buildDomSnapshotExpression(
       if (hoverTriggers.has(el)) desc += ${JSON.stringify(HAS_SUBMENU_DOM_MARKER)};
       lines.push(desc);
     });
+    // Where a frame points, as an origin: a path, query or credentials can
+    // carry a token, and the boundary is all the caller needs.
+    const FRAME_SELECTOR = 'iframe,frame,object,embed,fencedframe';
+    const originOnly = (raw) => {
+      let u;
+      try { u = new URL(raw, document.baseURI); } catch (e) { return '(invalid location)'; }
+      if (u.protocol === 'http:' || u.protocol === 'https:') return u.origin + (u.pathname && u.pathname !== '/' ? '/…' : '');
+      if (u.protocol === 'about:') return 'about:' + pageText(u.pathname, 20);
+      if (u.protocol === 'file:') return 'file:///…';
+      return u.protocol;
+    };
+    // Where the frame is now when this document may read it (same origin),
+    // else what it was told to load. A loading frame still reads about:blank.
+    const frameLocation = (f) => {
+      if (f.tagName === 'FENCEDFRAME') return 'opaque';
+      let live = '';
+      try {
+        const w = f.contentWindow;
+        live = w && typeof w.location.href === 'string' ? w.location.href : '';
+      } catch (e) {
+        live = '';
+      }
+      if (live && live !== 'about:blank') return originOnly(live);
+      if (f.tagName === 'IFRAME' && f.hasAttribute('srcdoc')) return 'about:srcdoc';
+      const raw = ((f.tagName === 'OBJECT' ? f.getAttribute('data') : f.getAttribute('src')) || '').trim();
+      return raw ? originOnly(raw) : 'about:blank';
+    };
+    const frames = [];
+    const collectFrames = (scope) => {
+      for (const el of scope.querySelectorAll('*')) {
+        if (el.matches(FRAME_SELECTOR)) frames.push(el);
+        if (el.shadowRoot) collectFrames(el.shadowRoot);
+      }
+    };
+    if (root !== document) {
+      if (root.matches(FRAME_SELECTOR)) frames.push(root);
+      if (root.shadowRoot) collectFrames(root.shadowRoot);
+    }
+    collectFrames(root);
+    if (frames.length > 0 && frameSeed === null) {
+      const frameCap = ${JSON.stringify(FRAME_LINE_CAP)};
+      lines.push('', 'Frames (separate documents):');
+      frames.slice(0, frameCap).forEach((f) => {
+        const name = quotedPageText(f.getAttribute('aria-label') || f.getAttribute('title') || f.getAttribute('name'), 80);
+        lines.push('  ' + f.tagName.toLowerCase() + (name ? ' "' + name + '"' : '') + ' -> ' + frameLocation(f)
+          + ' ' + ${JSON.stringify(FRAME_BOUNDARY_SUFFIX)});
+      });
+      if (frames.length > frameCap) lines.push('  (+' + (frames.length - frameCap) + ' more frames not listed)');
+    }
     const text = lines.join('\\n');
     if (!withEntries) return text;
     return {
@@ -912,6 +1021,24 @@ export async function getSmartSnapshot(
 }
 
 /**
+ * The page attribute the RPC lane stamps smart refs into. browser_snapshot
+ * stamps its own numbers into `data-wmux-ref` and strips every one of those on
+ * each scan; a separate attribute keeps the two counts from naming each
+ * other's elements.
+ */
+export const SMART_REF_ATTRIBUTE = 'data-wmux-smart-ref';
+
+/** The selector for the element the RPC lane's smart snapshot numbered `ref`. */
+export function smartRefSelector(ref: number | string): string {
+  return `[${SMART_REF_ATTRIBUTE}="${ref}"]`;
+}
+
+/** Whether a smart element's locator is the RPC lane's stamp rather than a getByRole snippet. */
+function isSmartStampLocator(locator: string): boolean {
+  return locator.startsWith(`[${SMART_REF_ATTRIBUTE}=`);
+}
+
+/**
  * DOM-based smart snapshot for the packaged-build RPC fallback (issue #105).
  *
  * When PlaywrightEngine.getPage() returns null, the CDP accessibility tree used
@@ -924,18 +1051,17 @@ export async function getSmartSnapshot(
  * per-surface descriptor history (#1355), so an element still on the page keeps
  * the number it had and only a new one takes a number after the previous
  * maximum. The identity lives in this process, not in the page — the
- * `data-wmux-ref` attribute is only the stamp that makes a number locatable,
- * and browser_snapshot's RPC fallback still strips every one of those
- * document-wide on each of its own scans (buildDomSnapshotExpression, above).
- * An interleaved browser_snapshot therefore still wipes the STAMPS, which is
- * why browser_smart_snapshot skips diffing on this lane (tools/extraction.ts).
+ * SMART_REF_ATTRIBUTE stamp only makes a number locatable. It is not
+ * browser_snapshot's `data-wmux-ref`, which that tool strips and renumbers on
+ * every scan, so an interleaved browser_snapshot leaves these stamps alone.
+ * Each scan here strips the previous smart stamps first, the page's own
+ * included.
  *
- * Each interactive element is tagged `data-wmux-ref="<ref>"` with the
- * SAME 1-based number, so:
- *   - RPC-mode click: browser_click({smartRef}) -> [data-wmux-ref="<smartRef>"].
- *   - page-mode click after getPage() recovers: getLocatorByRef returns
- *     `[data-wmux-ref="<ref>"]`, which page.locator() resolves against the
- *     attributes this snapshot left in the (same) webview DOM.
+ * Each interactive element is stamped with the SAME 1-based number, so:
+ *   - RPC-mode click: browser_click({smartRef}) -> smartRefSelector(smartRef).
+ *   - page-mode click after getPage() recovers: getLocatorByRef returns that
+ *     selector, which page.locator() resolves against the stamps this
+ *     snapshot left in the (same) webview DOM.
  * elementCache is populated for exactly that second case.
  */
 export async function getSmartSnapshotViaEval(
@@ -955,13 +1081,15 @@ export async function getSmartSnapshotViaEval(
   const prior = priorRefDescriptors(descriptorKey, 1);
   const seedNext = nextRefFor(descriptorKey, 1);
 
-  // Note: the selector + .slice(0, 100) cap + data-wmux-ref tagging mirror
-  // browser_snapshot's RPC fallback (inspection.ts) via INTERACTIVE_SELECTOR.
+  // Note: the selector + .slice(0, 100) cap mirror browser_snapshot's RPC
+  // fallback (inspection.ts) via INTERACTIVE_SELECTOR; the stamp does not.
   const script = `(() => {
     const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
     const max = ${maxContentLength};
     const isPasswordField = ${PASSWORD_FIELD_PREDICATE_JS};
     const redactedPassword = ${JSON.stringify(REDACTED_PASSWORD)};
+    const attr = ${JSON.stringify(SMART_REF_ATTRIBUTE)};
+    document.querySelectorAll('[' + attr + ']').forEach((el) => el.removeAttribute(attr));
     const els = [...document.querySelectorAll(sel)].slice(0, 100);
     const roleFor = (el) => {
       const explicit = el.getAttribute('role');
@@ -992,7 +1120,7 @@ export async function getSmartSnapshotViaEval(
     const assigned = assignStableRefs(${JSON.stringify(prior)}, ${JSON.stringify(seedNext)}, described);
     const elements = els.map((el, i) => {
       const ref = assigned.refs[i];
-      el.setAttribute('data-wmux-ref', String(ref));
+      el.setAttribute(attr, String(ref));
       const name = described[i].name;
       const out = { ref, role: described[i].role, name };
       // el.value is the plaintext for EVERY input type, password included —
@@ -1023,7 +1151,7 @@ export async function getSmartSnapshotViaEval(
     name: e.name,
     ...(e.value !== undefined && { value: e.value }),
     ...(e.description !== undefined && { description: e.description }),
-    locator: `[data-wmux-ref="${e.ref}"]`,
+    locator: smartRefSelector(e.ref),
     // No named-ancestor pass on the RPC lane, and none is needed: this lane
     // records no ref axis (smartRefAxisEntry returns null for its locator).
     context: '',
@@ -1103,6 +1231,15 @@ export function getSmartElementOnPage(ref: number, page: Page | null): IndexedEl
  *
  * Returns `null` if no element carries that ref.
  */
+/**
+ * The surface the latest smart snapshot was taken on. A smartRef's stamp says
+ * nothing about which surface's page carries it, so the RPC lane refuses a
+ * click aimed at any other surface, as the page lane refuses another page.
+ */
+export function smartSnapshotSurface(): string | undefined {
+  return getSnapshotRecord().surfaceId;
+}
+
 export function getLocatorByRef(ref: number): string | null {
   return getSmartElementByRef(ref)?.locator ?? null;
 }
@@ -1125,7 +1262,8 @@ export class StaleSmartRefError extends Error {
   }
 }
 
-const RESNAPSHOT = 'Run browser_smart_snapshot to get current refs.';
+/** The way out a stale smart ref names. */
+export const RESNAPSHOT = 'Run browser_smart_snapshot to get current refs.';
 
 export interface ResolveSmartRefOptions {
   /**
@@ -1141,7 +1279,7 @@ export interface ResolveSmartRefOptions {
  * Resolve a smart ref to a live Playwright locator.
  *
  * The two lanes store two different kinds of locator and only one of them is a
- * selector: the RPC lane's `[data-wmux-ref="N"]` is CSS and goes straight to
+ * selector: the RPC lane's smartRefSelector(N) is CSS and goes straight to
  * `page.locator()`, while the CDP lane's `getByRole('button', { name: 'OK' })`
  * is a source snippet that `page.locator()` cannot parse at all. Rebuild the
  * latter through the real `getByRole` API, pinned with `.nth()` to the instance
@@ -1224,9 +1362,21 @@ export async function resolveSmartRefLocator(
     throw new StaleSmartRefError(`Element with smartRef=${ref} not found. ${RESNAPSHOT}`);
   }
 
-  if (element.locator.startsWith('[data-wmux-ref=')) {
+  if (isSmartStampLocator(element.locator)) {
+    // A stamp names its element only while exactly one carries it: a new
+    // document has none, and cloneNode copies it (the click takes the first).
+    const stamped = page.locator(element.locator);
+    const matches = await stamped.count();
+    if (matches === 0) {
+      throw new StaleSmartRefError(`smartRef=${ref} is stale — the element it named is no longer in the page. ${RESNAPSHOT}`);
+    }
+    if (matches > 1) {
+      throw new StaleSmartRefError(
+        `smartRef=${ref} now names more than one element (the page copied it since the snapshot). ${RESNAPSHOT}`,
+      );
+    }
     if (recovered) options?.notes?.push(recovered);
-    return page.locator(element.locator);
+    return stamped;
   }
 
   const role = element.role as Parameters<Page['getByRole']>[0];
@@ -1301,7 +1451,7 @@ export function smartRefAxisEntry(ref: number): {
   via: 'smart';
 } | null {
   const element = getSmartElementByRef(ref);
-  if (!element || element.locator.startsWith('[data-wmux-ref=')) return null;
+  if (!element || isSmartStampLocator(element.locator)) return null;
   return {
     role: element.role,
     name: element.name,

@@ -1,10 +1,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { ChromeLauncher } from '../../browser-session/ChromeLauncher';
+import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { createPhoneChromeDeps } from '../PhoneBrowserChrome';
 import { createPhoneBrowserStreams, STREAM_LINE_LIMIT, type PhoneBrowserStreams } from '../PhoneBrowserStream';
 import { handlePhoneBrowser } from '../PhoneBrowser';
@@ -85,6 +83,7 @@ function describeMode(mode: Mode): void {
   let server: http.Server;
   let port = 0;
   let launcher: ChromeLauncher | null = null;
+  let profile: TempChromeProfile | null = null;
   let skipReason: string | null = null;
   const pushes: Push[] = [];
   let streams: PhoneBrowserStreams;
@@ -95,11 +94,10 @@ function describeMode(mode: Mode): void {
     server = http.createServer(serve);
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     port = (server.address() as AddressInfo).port;
-    const dir = mkdtempSync(join(tmpdir(), 'wmux-stream-chrome-'));
-    mkdirSync(join(dir, 'Default'), { recursive: true });
-    writeFileSync(join(dir, 'Default', 'Preferences'), JSON.stringify({
-      partition: { per_host_zoom_levels: { x: { localhost: { zoom_level: 1.0, last_modified: '13350000000000000' } } } },
-    }));
+    profile = tempChromeProfile('wmux-stream-chrome-', {
+      preferences: { partition: { per_host_zoom_levels: { x: { localhost: { zoom_level: 1.0, last_modified: '13350000000000000' } } } } },
+    });
+    const dir = profile.dir;
     const savedProfile = process.env.USERPROFILE;
     if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
     try {
@@ -129,9 +127,11 @@ function describeMode(mode: Mode): void {
   afterEach(() => { streams?.stopAll(); });
 
   afterAll(async () => {
-    await launcher?.dispose();
+    await stopChrome(launcher);
     server?.close();
-  }, 60_000);
+    // After Chrome has gone, launched or not.
+    await profile?.remove();
+  }, CHROME_TEARDOWN_TIMEOUT_MS);
 
   function skipUnless(ctx: { skip: (note?: string) => void }): boolean {
     if (!skipReason) return false;
@@ -363,7 +363,7 @@ function describeMode(mode: Mode): void {
       await eventually(async () => (await viewport(surfaceId)).w === desktop.w);
       await mobile(surfaceId, true);
       await eventually(async () => (await viewport(surfaceId)).w === 390);
-      // The stream's session detaching takes its emulation with it.
+      // The stream stopping takes its emulation with it.
       streams.stopAll();
       await eventually(async () => (await viewport(surfaceId)).w === desktop.w);
       expect(await viewport(surfaceId)).toMatchObject({ w: desktop.w, dpr: desktop.dpr });
@@ -416,7 +416,7 @@ function describeMode(mode: Mode): void {
       // The agent applied last: its own.
       await override(700);
       await widthIs(700);
-      // The stream's session detaching: the real size again, the agent's 700 gone too.
+      // The stream stopping: the real size again, the agent's 700 gone too.
       streams.stopAll();
       await widthIs(real);
       // A stream that never applied mobile leaves the agent's override alone.

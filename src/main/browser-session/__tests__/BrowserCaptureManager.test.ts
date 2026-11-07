@@ -245,6 +245,16 @@ describe('BrowserCaptureManager lifecycle', () => {
     expect(cmds).toContain('Network.enable');
   });
 
+  it('carries an answered dialog in the lifecycle drain, once, and drops it for an uncaptured guest', async () => {
+    await mgr.ensure(1);
+    const note = { type: 'alert', message: 'hi', answer: 'dismissed' as const, at: 5 };
+    mgr.noteDialog(1, note);
+    mgr.noteDialog(999, note);
+    expect(mgr.drainLifecycle(1)).toEqual([{ type: 'dialog', ts: 5, dialog: note }]);
+    expect(mgr.drainLifecycle(1)).toEqual([]);
+    expect(mgr.drainLifecycle(999)).toEqual([]);
+  });
+
   it('records main-frame navigations only, collapses consecutive dupes, and drains destructively', async () => {
     await mgr.ensure(1);
     emit(fakeWc!, 'Page.frameNavigated', { frame: { url: 'https://a.test/' } });

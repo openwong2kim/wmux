@@ -28,7 +28,7 @@ vi.mock('../_bridge', () => ({
 
 const SURFACE = {
   surfaceId: 'tab-1', webContentsId: 42,
-  targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/1', workspaceId: 'ws-a',
+  targetId: 'target-1', workspaceId: 'ws-a',
 };
 
 function setup() {
@@ -116,6 +116,23 @@ describe('browser RPC — the user paused or took over the tab', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toContain('BROWSER_USER_IN_CONTROL');
     expect(cdp.withAutomationLease).not.toHaveBeenCalled();
+    expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
+
+    // A frame read or a frame click is held the same way.
+    for (const [method, extra] of [
+      ['browser.evaluate', { expression: '1+1', frameId: 'F1', loaderId: 'L1' }],
+      ['browser.click.cdp', { selector: '[data-wmux-ref="3"]', frameId: 'F1', loaderId: 'L1' }],
+      ['browser.frames.tree', {}],
+      ['browser.frames.read', { frames: [{ frameId: 'F1', loaderId: 'L1' }], seed: 1 }],
+    ] as const) {
+      const held = await router.dispatch({
+        id: `e-${method}`,
+        method,
+        params: { ...extra, surfaceId: SURFACE.surfaceId, workspaceId: 'ws-a' },
+      });
+      expect(held.ok, method).toBe(false);
+      if (!held.ok) expect(held.error).toContain('BROWSER_USER_IN_CONTROL');
+    }
     expect(mockWebContents.debugger.sendCommand).not.toHaveBeenCalled();
 
     control.apply(SURFACE.surfaceId, 'handBack');

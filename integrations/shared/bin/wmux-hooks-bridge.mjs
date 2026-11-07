@@ -78,7 +78,8 @@ const WMUX_CLIENT_NAME = 'wmux-hook-bridge';
 // ----- Flavour table -------------------------------------------------------
 //
 // Mirrored (events, agent, field paths) by COMPAT_HOOK_FLAVOURS in
-// src/shared/hooks/hookFlavours.ts — hookFlavours.lockstep.test.ts fails on any
+// src/shared/hooks/hookFlavours.ts, and whole by core/wmux-native/flavours.json
+// (the native twin of this bridge) — hookFlavours.lockstep.test.ts fails on any
 // drift. `logFile` and `requestPrefix` are runtime-only.
 //
 // `events` maps the dialect's event name to the wmux kind. `when` narrows an

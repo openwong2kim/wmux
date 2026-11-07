@@ -1,0 +1,71 @@
+{
+  "description": "zellij reports its session name.",
+  "env": {
+    "ZELLIJ": "0",
+    "ZELLIJ_SESSION_NAME": "zz"
+  },
+  "endpoints": {
+    "daemon": {
+      "mode": "reply",
+      "lines": [
+        {
+          "id": "$ID",
+          "ok": true,
+          "result": {
+            "ok": true
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "argv": [
+        "SessionStart"
+      ],
+      "stdin": "{\"session_id\":\"s1\",\"cwd\":\"/work/repo\"}"
+    }
+  ],
+  "expect": {
+    "steps": [
+      {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+        "log": [
+          {
+            "bridge": "0.8.1",
+            "hook": "SessionStart",
+            "outcome": "ok",
+            "target": "daemon"
+          }
+        ],
+        "requests": {
+          "daemon": [
+            {
+              "id": "<request-id>",
+              "method": "daemon.hooks.signal",
+              "params": {
+                "kind": "agent.session_start",
+                "agent": "claude",
+                "agentSessionId": "s1",
+                "where": {
+                  "kind": "zellij",
+                  "session": "zz"
+                },
+                "cwd": "/work/repo",
+                "payload": {
+                  "session_id": "s1",
+                  "cwd": "/work/repo"
+                },
+                "ts": "<ts>"
+              },
+              "token": "daemon-token",
+              "clientName": "wmux-hook-bridge"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

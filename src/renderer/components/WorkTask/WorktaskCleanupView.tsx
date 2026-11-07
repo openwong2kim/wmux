@@ -382,7 +382,9 @@ export default function WorktaskCleanupView() {
           level: 'error',
           message: res.error === 'BLOCKED_SENSITIVE'
             ? t('terminal.openPathProtected')
-            : t('worktask.cleanup.openWorktreeFailed', { error: res.error ?? '' }),
+            : res.error === 'NOT_FOUND'
+              ? t('terminal.openPathNotFound')
+              : t('worktask.cleanup.openWorktreeFailed', { error: res.error ?? '' }),
         });
       }
     },

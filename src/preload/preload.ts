@@ -19,6 +19,7 @@ import { EXTERNAL_SESSIONS_IPC, type ExternalSession, type ExternalSessionsApi }
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import { START_POLARITY_STORAGE_KEY, resolveStartPolarity, startPaintCss } from '../shared/windowStartPaint';
 import { startLocaleFromArgv } from '../shared/startLocale';
+import { localHostNameFromArgv } from '../shared/localHostName';
 import { IPC } from '../shared/constants';
 import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
 import type { A2aSpawnAskResult, A2aSpawnOutgoingList, A2aSpawnPolicySetResult, A2aSpawnPolicyV1, A2aSpawnRequestSummary, A2aSpawnUiAsk } from '../shared/a2aSpawn';
@@ -321,6 +322,9 @@ const electronAPI = {
   // The UI locale saved in session.json, or null: index.tsx loads its table
   // before the first render (shared/startLocale.ts).
   startLocale: startLocaleFromArgv(process.argv),
+  // This machine's host name, or null: a terminal `file://<host>/path` link
+  // naming it is local (shared/localHostName.ts).
+  localHostName: localHostNameFromArgv(process.argv),
   // The Windows build number (eg. 19045), or null off Windows / when it cannot
   // be read. xterm needs this SYNCHRONOUSLY at Terminal construction to pick
   // its ConPTY behaviour, so it is a static value here rather than an IPC call.
@@ -470,9 +474,11 @@ const electronAPI = {
     // TASK-9 cold-park — plain-text grid snapshot of a session from the daemon
     // ring (ANSI stripped, rows + wrap flags). Backs the search / readScreen
     // fallback for cold-parked panes that have no renderer xterm buffer.
-    readText: (id: string, opts?: { scrollback?: number }) =>
+    // `tail`: a display-only read the daemon may answer from the ring's newest
+    // bytes; `via` then says whether it did ('tail') or read it all ('full').
+    readText: (id: string, opts?: { scrollback?: number; tail?: boolean }) =>
       ipcRenderer.invoke(IPC.PTY_READ_TEXT, id, opts) as Promise<
-        | { success: true; rows: Array<{ text: string; wrapped: boolean }>; bufferType?: 'normal' | 'alternate'; rowsBelowCursor?: number; truncated?: boolean }
+        | { success: true; rows: Array<{ text: string; wrapped: boolean }>; bufferType?: 'normal' | 'alternate'; rowsBelowCursor?: number; truncated?: boolean; via?: 'tail' | 'full' }
         | { success: false; code: string; reason?: string }
       >,
     onData: (callback: (id: string, data: string, replay: boolean) => void) => {
@@ -556,8 +562,9 @@ const electronAPI = {
     // Open an absolute filesystem path in the OS default app / explorer.
     // Backed by Electron's shell.openPath; main validates the path is
     // absolute, length-capped, and free of NUL bytes. Resolves with
-    // { ok, error? } — on `ok=false` main has already revealed the parent
-    // folder via showItemInFolder, so the renderer typically ignores it.
+    // { ok, error? } — when the open itself failed, main has already
+    // revealed the parent folder via showItemInFolder; 'NOT_FOUND' and
+    // 'BLOCKED_SENSITIVE' reveal nothing, so callers toast those.
     openPath: (filePath: string) =>
       ipcRenderer.invoke(IPC.SHELL_OPEN_PATH, filePath) as Promise<{ ok: boolean; error?: string }>,
     // Detect folder-opening apps available on the system (VS Code, Windows

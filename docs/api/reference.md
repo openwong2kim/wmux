@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v4.14.0 sources.** This file is produced by
+> **Generated from wmux v4.15.0-beta.1 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **316** methods (`ALL_RPC_METHODS` in
+Total: **320** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -108,6 +108,7 @@ Total: **316** methods (`ALL_RPC_METHODS` in
 | `mcp.claimWorkspace` | `workspace.claim` | `workspace` |
 | `mcp.identify` | `null` |  |
 | `mcp.declarePermissions` | `null` |  |
+| `mcp.sessions.summary` | `wmux.internal` |  |
 
 ### `system`
 
@@ -142,6 +143,8 @@ Total: **316** methods (`ALL_RPC_METHODS` in
 | `browser.screenshot` | `browser.screenshot` | `browser` |
 | `browser.evaluate` | `browser.evaluate` | `browser` |
 | `browser.console.get` | `browser.read` | `browser` |
+| `browser.frames.tree` | `browser.read` | `browser` |
+| `browser.frames.read` | `browser.evaluate` | `browser` |
 | `browser.lifecycle.get` | `browser.read` | `browser` |
 | `browser.network.get` | `browser.read` | `browser` |
 | `browser.responseBody.get` | `browser.read` | `browser` |
@@ -150,6 +153,7 @@ Total: **316** methods (`ALL_RPC_METHODS` in
 | `browser.hover.cdp` | `browser.click` | `browser` |
 | `browser.drag.cdp` | `browser.click` | `browser` |
 | `browser.press.cdp` | `browser.type` | `browser` |
+| `browser.dialog.arm` | `browser.click` | `browser` |
 | `browser.cookies` | `browser.cookies` | `browser` |
 | `browser.resize` | `browser.evaluate` | `browser` |
 | `browser.emulate` | `browser.emulate` | `browser` |

@@ -66,7 +66,7 @@ function pipeFor(suffix: string): string {
 const children: ChildProcess[] = [];
 const servers: net.Server[] = [];
 
-function spawnBroker(suffix: string): ChildProcess {
+function spawnBroker(suffix: string, ipc = false): ChildProcess {
   const child = spawn(process.execPath, [BROKER_JS], {
     env: {
       ...process.env,
@@ -78,7 +78,7 @@ function spawnBroker(suffix: string): ChildProcess {
       // supervisor spawns it (Electron binary in RUN_AS_NODE mode).
       ELECTRON_RUN_AS_NODE: '1',
     },
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ipc ? ['ignore', 'ignore', 'pipe', 'ipc'] : ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
   });
   children.push(child);
@@ -143,6 +143,20 @@ afterEach(async () => {
 });
 
 describe.skipIf(!brokerBundleExists)('broker lifecycle (dynamic, real process)', () => {
+  it(
+    'a broker started with an IPC channel exits when its supervisor goes',
+    async () => {
+      const suffix = uniqueSuffix();
+      const pipe = pipeFor(suffix);
+      const broker = spawnBroker(suffix, true);
+      expect(await waitUntil(() => canConnectBrokerPipe(300, pipe), true, 8000)).toBe(true);
+      broker.disconnect();
+      expect(await exitCode(broker, 5000)).toBe(0);
+      expect(await waitUntil(() => canConnectBrokerPipe(300, pipe), false, 5000)).toBe(true);
+    },
+    20000,
+  );
+
   it(
     'real broker makes the pipe connectable, then unconnectable after it dies',
     async () => {

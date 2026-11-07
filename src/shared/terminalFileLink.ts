@@ -8,7 +8,7 @@
  *  - drive / UNC path on a Windows host: passed through, normalised;
  *  - POSIX absolute path in a WSL pane on a Windows host: translated with
  *    `wslPathToHost` (`/mnt/c/x` -> `C:\x`, else `\\wsl$\<distro>\...`);
- *  - `file://` URLs (including `file:///C:/x`; a non-local host is refused);
+ *  - `file://` URLs (including `file:///C:/x`; a host other than this machine is refused);
  *  - `:line` / `:line:col` suffixes (and a `#L12` URL fragment);
  *  - relative paths, joined onto the pane's cwd.
  * Anything else (a POSIX path in a native Windows pane, `~`, a relative path
@@ -29,6 +29,8 @@ export interface TerminalFileLinkInput {
   distro?: string;
   /** The pane's current directory, as the shell reports it. */
   cwd?: string;
+  /** This machine's host name: a `file://<it>/path` URL is local, like `localhost`. */
+  localHostName?: string;
 }
 
 export interface TerminalFileLink {
@@ -79,7 +81,34 @@ function joinSegments(base: string[], rel: string, sep: RegExp): string[] | null
   return out;
 }
 
-function fromFileUrl(raw: string): { path: string; line?: number } | null {
+/**
+ * Whether a URL host names this machine. One side may be the short name and
+ * the other the full one (`devbox` and `devbox.local`), so a short name also
+ * matches the other side's first label. Two different full names do not match.
+ */
+function isOwnHost(host: string, localHostName: string): boolean {
+  const own = localHostName.toLowerCase();
+  if (host === own) return true;
+  const shortOnOneSide = !host.includes('.') || !own.includes('.');
+  return shortOnOneSide && host.split('.')[0] === own.split('.')[0];
+}
+
+function isLocalHost(host: string, localHostName: string | undefined): boolean {
+  return host === '' || host === 'localhost' || (!!localHostName && isOwnHost(host, localHostName));
+}
+
+/** Whether `raw` is a well-formed `file:` URL whose host is another computer. */
+export function namesOtherComputer(raw: string, localHostName: string | undefined): boolean {
+  let url: URL;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return false;
+  }
+  return url.protocol === 'file:' && !isLocalHost(url.hostname.toLowerCase(), localHostName);
+}
+
+function fromFileUrl(raw: string, localHostName: string | undefined): { path: string; line?: number } | null {
   let url: URL;
   try {
     url = new URL(raw);
@@ -95,18 +124,20 @@ function fromFileUrl(raw: string): { path: string; line?: number } | null {
   }
   const frag = /^#L(\d+)/i.exec(url.hash);
   const line = frag ? Number(frag[1]) : undefined;
-  const host = url.hostname;
+  const host = url.hostname.toLowerCase();
   // A remote host would turn into a UNC path (\\host\share), and opening one
   // makes Windows authenticate to that host (NTLM leak). Only local file URLs
-  // are accepted; WSL shares are reached through plain POSIX paths instead.
-  if (host !== '' && host.toLowerCase() !== 'localhost') return null;
+  // are accepted, and the host is dropped: the path below is all that is used.
+  // WSL shares are reached through plain POSIX paths instead. `ls --hyperlink`
+  // names this machine; inside WSL the distro is named after it by default.
+  if (!isLocalHost(host, localHostName)) return null;
   // file:///C:/x -> C:/x
   if (/^\/[A-Za-z]:[\\/]/.test(pathname)) return { path: pathname.slice(1), line };
   return { path: pathname, line };
 }
 
 export function resolveTerminalFileLink(input: TerminalFileLinkInput): TerminalFileLink | null {
-  const { hostPlatform, shellKind, distro, cwd } = input;
+  const { hostPlatform, shellKind, distro, cwd, localHostName } = input;
   let text = input.raw.trim();
   // eslint-disable-next-line no-control-regex
   if (text === '' || /[\x00-\x1f]/.test(text)) return null;
@@ -115,7 +146,7 @@ export function resolveTerminalFileLink(input: TerminalFileLinkInput): TerminalF
   let col: number | undefined;
 
   if (/^file:/i.test(text)) {
-    const parsed = fromFileUrl(text);
+    const parsed = fromFileUrl(text, localHostName);
     if (!parsed) return null;
     text = parsed.path;
     line = parsed.line;

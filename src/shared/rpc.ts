@@ -64,6 +64,13 @@ export interface RpcRequest {
    * that workspace's panes; a PTY outside the scoped workspace is ignored.
    */
   callerPtyId?: string;
+  /**
+   * A single-child MCP server's per-process id (32 hex characters), stamped on
+   * every envelope it sends; broker-hosted calls carry none. Main counts the
+   * distinct ids it saw recently for `wmux doctor`. Measurement only: no
+   * handler reads it for routing or permission.
+   */
+  mcpSession?: string;
 }
 
 /**
@@ -497,6 +504,9 @@ export type RpcMethod =
   // Performance diagnostics (P0-5c) — aggregate reveal-mechanism counters
   // for `wmux doctor --performance`. Read-only, no terminal content.
   | 'perf.status'
+  // Live MCP counts for `wmux doctor`: broker state and connections, recent
+  // single-child sessions. Read-only, counts plus the broker's own pid.
+  | 'mcp.sessions.summary'
   // Desktop computer use (docs/computer-use-design.md). Off unless the user
   // turns it on in Settings › Computer use; `act` is the only input-injecting method.
   | 'computer.capabilities'
@@ -526,6 +536,12 @@ export type RpcMethod =
   | 'browser.screenshot'
   | 'browser.evaluate'
   | 'browser.console.get'
+  // A guest page's in-process child frames (ids, loaderIds, origins), for the
+  // RPC lane's frame-aware snapshot. Read-only.
+  | 'browser.frames.tree'
+  // Those frames' documents as DOM listings, read with an expression main
+  // builds (no caller code). Read-only.
+  | 'browser.frames.read'
   | 'browser.lifecycle.get'
   | 'browser.network.get'
   | 'browser.responseBody.get'
@@ -534,6 +550,7 @@ export type RpcMethod =
   | 'browser.hover.cdp'
   | 'browser.drag.cdp'
   | 'browser.press.cdp'
+  | 'browser.dialog.arm'
   | 'browser.cookies'
   | 'browser.resize'
   | 'browser.emulate'
@@ -887,6 +904,7 @@ export const ALL_RPC_METHODS = [
   'codex.relay.close',
   'system.capabilities',
   'perf.status',
+  'mcp.sessions.summary',
   'computer.capabilities',
   'computer.listApps',
   'computer.listWindows',
@@ -914,6 +932,8 @@ export const ALL_RPC_METHODS = [
   'browser.screenshot',
   'browser.evaluate',
   'browser.console.get',
+  'browser.frames.tree',
+  'browser.frames.read',
   'browser.lifecycle.get',
   'browser.network.get',
   'browser.responseBody.get',
@@ -922,6 +942,7 @@ export const ALL_RPC_METHODS = [
   'browser.hover.cdp',
   'browser.drag.cdp',
   'browser.press.cdp',
+  'browser.dialog.arm',
   'browser.cookies',
   'browser.resize',
   'browser.emulate',

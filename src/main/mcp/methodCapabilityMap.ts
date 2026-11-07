@@ -295,6 +295,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   //     undeclared plugin must not receive it (PR #470 codex review). The CLI
   //     (`wmux doctor`) is unaffected — it rides the WMUX_CLI_METHODS tier.
   'perf.status':         { capability: 'pane.read' },
+  // --- Live MCP counts (`wmux doctor`). No plugin needs them; the CLI reaches
+  //     the method through the WMUX_CLI_METHODS tier.
+  'mcp.sessions.summary': { capability: 'wmux.internal' },
 
   // --- Desktop computer use. Observation and input are separate grants: a
   // screenshot of another app is sensitive, but injecting input into it is a
@@ -348,6 +351,10 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.screenshot':        { capability: 'browser.screenshot', riskClass: 'browser' },
   'browser.evaluate':          { capability: 'browser.evaluate',   riskClass: 'browser' },
   'browser.console.get':       { capability: 'browser.read',       riskClass: 'browser' },
+  'browser.frames.tree':       { capability: 'browser.read',       riskClass: 'browser' },
+  // The frame listing rewrites data-wmux-ref in each frame, as the top
+  // listing does through browser.evaluate: the same capability.
+  'browser.frames.read':       { capability: 'browser.evaluate',   riskClass: 'browser' },
   'browser.lifecycle.get':     { capability: 'browser.read',       riskClass: 'browser' },
   'browser.network.get':       { capability: 'browser.read',       riskClass: 'browser' },
   'browser.responseBody.get':  { capability: 'browser.read',       riskClass: 'browser' },
@@ -356,6 +363,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.hover.cdp':         { capability: 'browser.click', riskClass: 'browser' },
   'browser.drag.cdp':          { capability: 'browser.click', riskClass: 'browser' },
   'browser.press.cdp':         { capability: 'browser.type',  riskClass: 'browser' },
+  'browser.dialog.arm':        { capability: 'browser.click', riskClass: 'browser' },
   // State tools (#111 packaged RPC fallback). resize stays under
   // `browser.evaluate`: a caller that can already run arbitrary JS can resize the
   // viewport through the page, so it grants nothing beyond what browser.evaluate
