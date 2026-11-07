@@ -157,6 +157,15 @@ describe.skipIf(process.platform === 'win32')('selfTestClaudeCopy', () => {
   it('fails on anything else, and says what it printed', async () => {
     expect(await selfTestClaudeCopy(copyWith("echo 'usage: wmux-native'"), 'line 1')).toEqual({ outcome: 'fail', printed: 'usage: wmux-native' });
     expect(await selfTestClaudeCopy(copyWith('exit 3'), 'line 1')).toEqual({ outcome: 'fail', printed: 'nothing (exit 3)' });
+    // Killed (a policy, an OOM kill): the signal, not a clean exit.
+    expect(await selfTestClaudeCopy(copyWith('kill -KILL $$'), 'line 1')).toEqual({ outcome: 'fail', printed: 'nothing (killed by SIGKILL)' });
+  });
+
+  it('tells an answer for another bridge from a failure', async () => {
+    const other = `wmux-claude-hook protocol 1 pin ${'a'.repeat(64)}`;
+    expect(await selfTestClaudeCopy(copyWith(`echo '${other}'`), 'line 1')).toEqual({ outcome: 'other-pin', printed: other });
+    // The same line from a copy that then fails is a failure.
+    expect(await selfTestClaudeCopy(copyWith(`echo '${other}'; exit 1`), 'line 1')).toEqual({ outcome: 'fail', printed: other });
   });
 
   it('says why a copy could not start', async () => {

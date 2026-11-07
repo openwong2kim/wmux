@@ -271,10 +271,11 @@ const REPROBE = 'run `wmux setup-hooks --reprobe`';
 
 function selfTestLine(result: ClaudeSelfTestResult | null): CheckLine {
   const label = 'claude hook self-test';
-  if (!result) return { label, value: 'not run', verdict: 'SKIP', hint: 'this build\'s bridge could not be read' };
+  if (!result) return { label, value: 'not run', verdict: 'SKIP', hint: 'no bridge could be read, beside the copy or in this build' };
   switch (result.outcome) {
     case 'pass': return { label, value: 'passed', verdict: 'OK' };
-    case 'fail': return { label, value: 'failed', verdict: 'FAIL', hint: `the copy printed ${JSON.stringify(result.printed)}, not this build's line; ${REPROBE}` };
+    case 'other-pin': return { label, value: 'runs, pins another bridge', verdict: 'WARN', hint: 'each run hands over to node; `wmux setup-hooks` brings the copy and the bridge in step' };
+    case 'fail': return { label, value: 'failed', verdict: 'FAIL', hint: `the copy printed ${JSON.stringify(result.printed)}, not the expected line; ${REPROBE}` };
     case 'unstartable': return { label, value: 'failed', verdict: 'FAIL', hint: `the copy could not start (${result.error}); ${REPROBE}` };
     case 'timeout': return { label, value: 'no answer in 5 s', verdict: 'WARN', hint: 'a slow antivirus scan is no evidence; run `wmux doctor` again' };
   }
@@ -998,8 +999,10 @@ export async function handleDoctor(args: string[], jsonMode: boolean): Promise<v
       sessions: () => sendRequest('mcp.sessions.summary', {}),
     },
     hooks: () => claudeHookRuntimeReport(defaultHooksPaths()),
+    // Held to the bridge beside the copy, the one its runs hand over to;
+    // this build's when none is there.
     hookSelfTest: async (copy) => {
-      const line = claudeSelfTestLine(defaultHooksPaths().bridgeSource);
+      const line = claudeSelfTestLine(join(dirname(copy), 'wmux-bridge.mjs')) ?? claudeSelfTestLine(defaultHooksPaths().bridgeSource);
       return line ? selfTestClaudeCopy(copy, line) : null;
     },
   };

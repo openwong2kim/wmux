@@ -39,23 +39,39 @@ export function expectationKey(expect: ProbeExpectation): string {
   return 'line' in expect ? expect.line : `contains:${expect.contains}`;
 }
 
+/** A probe's verdict with what the binary printed (trimmed) and, unless it
+ *  exited 0, why not: the spawn error, its exit status or the signal. */
+export interface ProbeRun {
+  verdict: ProbeVerdict;
+  printed: string;
+  failure: string | null;
+}
+
 /** Run `binary args…` and hold its stdout to `expect`. Never throws. */
-export function runProbe(binary: string, args: readonly string[], expect: ProbeExpectation, timeoutMs: number): Promise<ProbeVerdict> {
+export function runProbeDetailed(binary: string, args: readonly string[], expect: ProbeExpectation, timeoutMs: number): Promise<ProbeRun> {
   return new Promise((resolve) => {
     try {
       execFile(binary, [...args], { timeout: timeoutMs, windowsHide: true, encoding: 'utf8' }, (error, stdout) => {
-        if (error && (error as { killed?: boolean }).killed) return resolve('timeout');
+        const out = String(stdout ?? '');
+        const printed = out.trim();
+        const failed = error as { killed?: boolean; code?: unknown; signal?: unknown } | null;
+        if (failed?.killed) return resolve({ verdict: 'timeout', printed, failure: `no answer in ${timeoutMs} ms` });
         // A string code is a spawn error (EACCES, EPERM, EBUSY, ENOENT); an
-        // exit status is a number.
-        if (error && typeof (error as { code?: unknown }).code === 'string') return resolve('unstartable');
-        const out = String(stdout);
-        const met = 'line' in expect ? out.trim() === expect.line : out.includes(expect.contains);
-        resolve(!error && met ? 'pass' : 'fail');
+        // exit status is a number, and a signal leaves it null.
+        if (typeof failed?.code === 'string') return resolve({ verdict: 'unstartable', printed, failure: `${failed.code}: ${(error as Error).message}` });
+        const met = 'line' in expect ? printed === expect.line : out.includes(expect.contains);
+        const failure = !failed ? null : typeof failed.signal === 'string' ? `killed by ${failed.signal}` : `exit ${String(failed.code)}`;
+        resolve({ verdict: !failed && met ? 'pass' : 'fail', printed, failure });
       });
-    } catch {
-      resolve('unstartable');
+    } catch (error) {
+      resolve({ verdict: 'unstartable', printed: '', failure: String(error) });
     }
   });
+}
+
+/** runProbeDetailed's verdict alone. */
+export async function runProbe(binary: string, args: readonly string[], expect: ProbeExpectation, timeoutMs: number): Promise<ProbeVerdict> {
+  return (await runProbeDetailed(binary, args, expect, timeoutMs)).verdict;
 }
 
 // ----- the record ----------------------------------------------------------------

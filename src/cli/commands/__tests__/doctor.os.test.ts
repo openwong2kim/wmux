@@ -530,6 +530,13 @@ describe('buildDoctorReport — the claude hook self-test', () => {
     expect(unstartable.line?.hint).toContain('wmux setup-hooks --reprobe');
   });
 
+  it('an answer for another bridge: it runs, and the runs hand over to node', async () => {
+    const { line, r } = await run({ outcome: 'other-pin', printed: `wmux-claude-hook protocol 1 pin ${'a'.repeat(64)}` });
+    expect(line).toMatchObject({ value: 'runs, pins another bridge', verdict: 'WARN' });
+    expect(line?.hint).not.toContain('--reprobe');
+    expect(r.hooks?.verdict).toBe('WARN');
+  });
+
   it('a timeout reads as no answer, not as failed', async () => {
     const { line } = await run({ outcome: 'timeout' });
     expect(line).toMatchObject({ value: 'no answer in 5 s', verdict: 'WARN' });

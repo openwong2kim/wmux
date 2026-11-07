@@ -11,7 +11,6 @@
 // Unix only: claude-hook does not exist in the Windows build, whose Claude
 // hooks stay on node.
 
-import { execFile } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { writeFileAtomic } from '../mcpRegistration';
@@ -20,6 +19,7 @@ import {
   recordedVerdictOf,
   recordedVerdictsOf,
   runProbe,
+  runProbeDetailed,
   sha256Of,
 } from '../probedNative';
 import { NATIVE_HOOKS_MARKER } from './hookFlavours';
@@ -186,12 +186,16 @@ export function claudeNativeAvailable(bridgeDest: string, bridgeSource: string |
   return platform !== 'win32' && claudeCopyVerdict(bridgeDest, bridgeSource) === 'pass';
 }
 
-/** What a copy's `--self-test` answered, for `wmux doctor`. */
+/** What a copy's `--self-test` answered, for `wmux doctor`. other-pin: a
+ *  well-formed answer for another bridge than the one expected. */
 export type ClaudeSelfTestResult =
   | { outcome: 'pass' }
+  | { outcome: 'other-pin'; printed: string }
   | { outcome: 'fail'; printed: string }
   | { outcome: 'unstartable'; error: string }
   | { outcome: 'timeout' };
+
+const SELF_TEST_ANSWER = /^wmux-claude-hook protocol 1 pin [0-9a-f]{64}$/;
 
 /**
  * Run the copy's `--self-test` once, as `wmux doctor` does: the only place a
@@ -200,20 +204,14 @@ export type ClaudeSelfTestResult =
  * that does not answer within `timeoutMs` proves nothing (a slow antivirus
  * scan). Never throws.
  */
-export function selfTestClaudeCopy(copy: string, line: string, timeoutMs = SELF_TEST_TIMEOUT_MS): Promise<ClaudeSelfTestResult> {
-  return new Promise((resolve) => {
-    try {
-      execFile(copy, ['--self-test'], { timeout: timeoutMs, windowsHide: true, encoding: 'utf8' }, (error, stdout) => {
-        if (error && (error as { killed?: boolean }).killed) return resolve({ outcome: 'timeout' });
-        const code = (error as { code?: unknown } | null)?.code;
-        // A string code is a spawn error (EACCES, ENOENT); a number, the exit status.
-        if (typeof code === 'string') return resolve({ outcome: 'unstartable', error: `${code}: ${(error as Error).message}` });
-        const printed = String(stdout).trim();
-        if (!error && printed === line) return resolve({ outcome: 'pass' });
-        resolve({ outcome: 'fail', printed: printed ? printed.slice(0, 200) : `nothing (exit ${typeof code === 'number' ? code : 0})` });
-      });
-    } catch (error) {
-      resolve({ outcome: 'unstartable', error: String(error) });
-    }
-  });
+export async function selfTestClaudeCopy(copy: string, line: string, timeoutMs = SELF_TEST_TIMEOUT_MS): Promise<ClaudeSelfTestResult> {
+  const run = await runProbeDetailed(copy, ['--self-test'], { line }, timeoutMs);
+  switch (run.verdict) {
+    case 'pass': return { outcome: 'pass' };
+    case 'timeout': return { outcome: 'timeout' };
+    case 'unstartable': return { outcome: 'unstartable', error: run.failure ?? 'could not start' };
+    case 'fail':
+      if (run.failure === null && SELF_TEST_ANSWER.test(run.printed)) return { outcome: 'other-pin', printed: run.printed };
+      return { outcome: 'fail', printed: run.printed ? run.printed.slice(0, 200) : `nothing (${run.failure ?? 'exit 0'})` };
+  }
 }
