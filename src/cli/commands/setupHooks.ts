@@ -279,19 +279,6 @@ function defaultSettingsPath(): string {
   return path.join(os.homedir(), '.claude', 'settings.json');
 }
 
-/**
- * The settings.json an unset-account `claude` started from this environment
- * reads: `$CLAUDE_CONFIG_DIR/settings.json` when that is an absolute folder,
- * else `~/.claude/settings.json`.
- */
-export function primarySettingsPath(
-  env: string | undefined = process.env.CLAUDE_CONFIG_DIR,
-  fallback: string = defaultSettingsPath(),
-): string {
-  const { dir } = envClaudeConfigDir(env);
-  return dir ? path.join(dir, 'settings.json') : fallback;
-}
-
 /** A settings.json that holds wmux's hook entries (or references the bridge). */
 function holdsWmuxHooks(settingsPath: string): boolean {
   const load = loadSettings(settingsPath);
@@ -311,7 +298,8 @@ export interface HookTargetOptions {
    * remove / status: `~/.claude` whenever it exists, so nothing is orphaned.
    */
   action: 'install' | 'remove' | 'status';
-  /** CLAUDE_CONFIG_DIR as this process sees it. */
+  /** CLAUDE_CONFIG_DIR to use. Left out, process.env's is read; passed as
+   *  undefined, there is none (the app passes its probe's answer). */
   env?: string | undefined;
   /** This instance's `~/.wmux<suffix>`, where accounts.json lives. */
   wmuxDir?: string;
@@ -1501,7 +1489,7 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
  * A corrupt settings.json returns FALSE. We cannot prove the gate is there, and
  * a false "armed" reading is exactly the outcome this guard exists to prevent.
  */
-export function isPermissionGateInstalled(settingsPath: string = primarySettingsPath()): boolean {
+export function isPermissionGateInstalled(settingsPath: string = hookTargets({ action: 'status' }).targets[0].settingsPath): boolean {
   const load = loadSettings(settingsPath);
   if (load.corrupted) return false;
   // An active marketplace plugin supplies the gate from its own hooks.json,
@@ -1882,9 +1870,29 @@ function targetJson<T>(r: { target: HookTarget; outcome: T }): { kind: HookTarge
   return { kind: r.target.kind, label: r.target.label, settingsPath: r.target.settingsPath, outcome: r.outcome };
 }
 
+/**
+ * Runs one extra target's step. A throw there (a read-only folder: EACCES,
+ * EPERM, EROFS) becomes that target's failure, so it never stops the others.
+ */
+function contained<T>(target: HookTarget, step: (paths: SetupHooksPaths) => T, failed: (error: string) => T): { target: HookTarget; outcome: T } {
+  try {
+    return { target, outcome: step(target.paths) };
+  } catch (err) {
+    return { target, outcome: failed(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
 /** One extra target's line after the primary's usual report. */
 function printTargetLine(target: HookTarget, summary: string, failed: boolean): void {
   (failed ? console.warn : console.log)(`also ${target.label}: ${summary} (${target.settingsPath})`);
+}
+
+/** An install outcome for a target whose write threw. */
+export function failedInstall(paths: SetupHooksPaths, error: string): InstallOutcome {
+  return {
+    ok: false, settingsPath: paths.settingsPath, bridgeDest: paths.bridgeDest, bridgeSource: paths.bridgeSource,
+    events: [], profile: 'full', bridgeCopied: false, pluginDetected: false, removedForPlugin: 0, warning: null, error,
+  };
 }
 
 function installSummary(o: InstallOutcome): string {
@@ -1984,7 +1992,7 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   // settings.json and never deletes shared scripts or another CLI's config.
   if (remove) {
     const outcome = removeHooks(paths);
-    const rest = others.map((t) => ({ target: t, outcome: removeHooks(t.paths) }));
+    const rest = others.map((t) => contained(t, removeHooks, (error): RemoveOutcome => ({ ok: false, settingsPath: t.settingsPath, settingsExisted: true, removed: 0, error })));
     const ok = outcome.ok && rest.every((r) => r.outcome.ok);
     if (jsonMode) {
       console.log(JSON.stringify({ ...outcome, ok, claudeTargets: [{ target: primary, outcome }, ...rest].map(targetJson) }, null, 2));
@@ -2004,7 +2012,9 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
 
   if (status) {
     const claude = statusHooks(paths);
-    const rest = others.map((t) => ({ target: t, outcome: statusHooks(t.paths) }));
+    const rest = others.flatMap((t) => {
+      try { return [{ target: t, outcome: statusHooks(t.paths) }]; } catch { return []; }
+    });
     const integrations = lifecycle.statusLifecycleIntegrations(lifecyclePaths);
     // Preserve the legacy Claude-only root fields for scripts while exposing
     // the richer per-integration objects alongside them.
@@ -2049,7 +2059,7 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   // not prevent safe Codex/OpenCode installation (and vice versa). Each Claude
   // folder is its own target too: a corrupt account file stops only itself.
   const claude = installHooks(paths, requestedProfile);
-  const rest = others.map((t) => ({ target: t, outcome: installHooks(t.paths, requestedProfile) }));
+  const rest = others.map((t) => contained(t, (p) => installHooks(p, requestedProfile), (error) => failedInstall(t.paths, error)));
   const codexVersionOutput = probeCodexVersion();
   const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths, { codexVersionOutput });
   const opencodeTerminalChat = openCodeTerminalChatIntegration({ ...terminalChatOptions, install: true });

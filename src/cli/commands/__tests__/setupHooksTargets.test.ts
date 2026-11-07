@@ -84,6 +84,7 @@ type TargetRow = { kind: string; settingsPath: string; outcome: { ok?: boolean; 
 describe('setup-hooks with CLAUDE_CONFIG_DIR set', () => {
   it('installs into the env folder and every account, keeps foreign hooks, and is idempotent', async () => {
     const a = path.join(tmp, 'acct-a');
+    fs.mkdirSync(a, { recursive: true });
     writeAccounts([{ name: 'A', configDir: a }, { name: 'X', configDir: path.join(tmp, 'codex'), vendor: 'codex' }]);
     fs.mkdirSync(envDir, { recursive: true });
     fs.writeFileSync(settingsIn(envDir), JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'my-own-stop' }] }] } }), 'utf8');
@@ -161,5 +162,22 @@ describe('the permission gate check (wmux web)', () => {
     expect(isPermissionGateInstalled()).toBe(false);
     expect(installHooks(paths(envDir), 'full').ok).toBe(true);
     expect(isPermissionGateInstalled()).toBe(true);
+  });
+});
+
+describe('a target whose write throws', () => {
+  it('fails only that target: the others are written and the command exits 1 with JSON', async () => {
+    const a = path.join(tmp, 'acct-a');
+    const stuck = path.join(tmp, 'acct-stuck');
+    fs.mkdirSync(a, { recursive: true });
+    // settings.json is a folder here: reading or writing it throws.
+    fs.mkdirSync(path.join(stuck, 'settings.json'), { recursive: true });
+    writeAccounts([{ name: 'stuck', configDir: stuck }, { name: 'A', configDir: a }]);
+    const { json, exit } = await run([]);
+    expect(exit).toBe(1);
+    const rows = json.claudeTargets as TargetRow[];
+    expect(rows.find((r) => r.settingsPath === settingsIn(stuck))?.outcome.ok).toBe(false);
+    expect(hooksIn(envDir)).toBeGreaterThan(0);
+    expect(hooksIn(a)).toBeGreaterThan(0);
   });
 });

@@ -25,26 +25,45 @@ export function parseProbeOutput(stdout: string): string | undefined {
 
 export type ProbeRunner = (shell: string, args: string[], timeoutMs: number) => Promise<string>;
 
-/** Runs the login shell with stdin closed and stderr dropped; resolves with stdout, '' on any failure. */
+/**
+ * Runs the login shell in its own session (detached: no controlling terminal,
+ * so an interactive shell cannot take the tty's foreground from wmux), with
+ * stdin closed and stderr dropped. Resolves with stdout as soon as the marked
+ * line is complete, so an rc-spawned agent that keeps the pipe open cannot
+ * hold the answer back; at the bound with whatever came. Then the whole
+ * process group is killed.
+ */
 const runShell: ProbeRunner = (shell, args, timeoutMs) => new Promise((resolve) => {
   let out = '';
   let settled = false;
-  const done = (value: string) => { if (!settled) { settled = true; resolve(value); } };
+  let child: ReturnType<typeof spawn> | null = null;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    if (child?.pid !== undefined && child.exitCode === null) {
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } }
+    }
+    resolve(out);
+  };
+  const timer = setTimeout(finish, timeoutMs);
+  timer.unref?.();
   try {
-    const child = spawn(shell, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
-    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } done(''); }, timeoutMs);
-    timer.unref?.();
+    child = spawn(shell, args, { stdio: ['ignore', 'pipe', 'ignore'], detached: true, windowsHide: true });
     child.stdout?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => { if (out.length < 64 * 1024) out += chunk; });
-    child.on('error', () => { clearTimeout(timer); done(''); });
-    child.on('close', () => { clearTimeout(timer); done(out); });
+    child.stdout?.on('data', (chunk: string) => {
+      if (out.length < 64 * 1024) out += chunk;
+      const at = out.indexOf(MARK);
+      if (at !== -1 && out.indexOf('\n', at) !== -1) finish();
+    });
+    child.on('error', finish);
+    child.on('close', finish);
   } catch {
-    done('');
+    finish();
   }
 });
 
 let probe: Promise<string | undefined> | null = null;
-let probed: string | undefined;
 
 /**
  * CLAUDE_CONFIG_DIR for the app's own writes: this process's env when set,
@@ -58,24 +77,12 @@ export function claudeConfigDirEnv(runner: ProbeRunner = runShell): Promise<stri
   probe ??= (async () => {
     const shell = process.env.SHELL || '/bin/sh';
     const stdout = await runner(shell, ['-lic', `printf '\\n${MARK}%s\\n' "$CLAUDE_CONFIG_DIR"`], PROBE_TIMEOUT_MS);
-    probed = parseProbeOutput(stdout);
-    return probed;
+    return parseProbeOutput(stdout);
   })();
   return probe;
-}
-
-/** Starts the probe at boot without waiting on it. */
-export function startClaudeConfigDirProbe(): void {
-  void claudeConfigDirEnv();
-}
-
-/** What is known right now, without waiting: this process's env, else a finished probe's answer. */
-export function knownClaudeConfigDirEnv(): string | undefined {
-  return process.env.CLAUDE_CONFIG_DIR?.trim() || probed;
 }
 
 /** Tests only. */
 export function resetClaudeConfigDirProbe(): void {
   probe = null;
-  probed = undefined;
 }

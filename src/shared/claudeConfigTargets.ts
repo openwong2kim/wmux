@@ -121,17 +121,25 @@ export interface ClaudeConfigTargetOptions {
 export function claudeConfigTargets(opts: ClaudeConfigTargetOptions): ClaudeConfigTarget[] {
   const defaultSettings = opts.defaultSettingsPath;
   const defaultDir = path.dirname(defaultSettings);
+  // A folder that is gone (deleted by hand, an unmounted drive) is not
+  // recreated just to hold wmux's hooks.
+  const accounts = (opts.accounts ?? readClaudeAccountTargets(opts.wmuxDir))
+    .filter((a) => !isUncPath(a.configDir) && fs.existsSync(a.configDir));
+  // wmux itself sets CLAUDE_CONFIG_DIR to an account's folder in that
+  // account's panes. Run from there, the env names that account, not the
+  // folder a plain `claude` reads: ~/.claude stays the primary.
+  const accountKeys = new Set(accounts.map((a) => normalizedTargetKey(path.join(a.configDir, 'settings.json'))));
+  const envDir = opts.envDir && !accountKeys.has(normalizedTargetKey(path.join(opts.envDir, 'settings.json'))) ? opts.envDir : null;
   const candidates: ClaudeConfigTarget[] = [];
-  if (opts.envDir) {
-    candidates.push({ kind: 'env', label: `CLAUDE_CONFIG_DIR (${opts.envDir})`, configDir: opts.envDir, settingsPath: path.join(opts.envDir, 'settings.json') });
+  if (envDir) {
+    candidates.push({ kind: 'env', label: `CLAUDE_CONFIG_DIR (${envDir})`, configDir: envDir, settingsPath: path.join(envDir, 'settings.json') });
     if (opts.includeDefault(defaultSettings)) {
       candidates.push({ kind: 'default', label: 'default (~/.claude)', configDir: defaultDir, settingsPath: defaultSettings });
     }
   } else {
     candidates.push({ kind: 'default', label: 'default (~/.claude)', configDir: defaultDir, settingsPath: defaultSettings });
   }
-  for (const account of opts.accounts ?? readClaudeAccountTargets(opts.wmuxDir)) {
-    if (isUncPath(account.configDir)) continue;
+  for (const account of accounts) {
     candidates.push({ kind: 'account', label: `account ${account.label}`, configDir: account.configDir, settingsPath: path.join(account.configDir, 'settings.json') });
   }
   const seen = new Set<string>();

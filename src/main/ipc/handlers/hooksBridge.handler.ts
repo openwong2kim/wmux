@@ -24,7 +24,7 @@ import { wrapHandler } from '../wrapHandler';
 import {
   defaultPaths,
   hookTargets,
-  primarySettingsPath,
+  failedInstall,
   statusHooks,
   installHooks,
   updateHooks,
@@ -34,6 +34,7 @@ import {
   type InstallOutcome,
   type UpdateOutcome,
   type SetupHooksPaths,
+  type HookTarget,
 } from '../../../cli/commands/setupHooks';
 import { getAccountStore, type Account } from '../../account/accountStore';
 import { getWmuxDir } from '../../../daemon/config';
@@ -176,8 +177,19 @@ export function claudeSettingsWriteRefusal(command = 'wmux setup-hooks'): string
  * shell's, asked within its bound), else `~/.claude/settings.json`.
  */
 export async function primaryHookPaths(): Promise<SetupHooksPaths> {
-  const base = defaultPaths();
-  return { ...base, settingsPath: primarySettingsPath(await claudeConfigDirEnv(), base.settingsPath) };
+  return (await appHookTargets('status'))[0].paths;
+}
+
+/** The Claude accounts that keep their own settings.json, from the account store. */
+function claudeAccountDirs(): Array<{ label: string; configDir: string }> {
+  return getAccountStore().listAccounts()
+    .filter((a) => copiesSettingsJson(a.vendor))
+    .map((a) => ({ label: a.name, configDir: a.configDir }));
+}
+
+/** hookTargets as the app sees them: the probed env, the account store, defaultPaths(). */
+async function appHookTargets(action: 'install' | 'status'): Promise<HookTarget[]> {
+  return hookTargets({ action, env: await claudeConfigDirEnv(), wmuxDir: getWmuxDir(), accounts: claudeAccountDirs(), base: defaultPaths() }).targets;
 }
 
 /**
@@ -188,14 +200,13 @@ export async function primaryHookPaths(): Promise<SetupHooksPaths> {
  * others are still written.
  */
 export async function installAllHookTargets(): Promise<InstallOutcome> {
-  const accounts = getAccountStore().listAccounts()
-    .filter((a) => copiesSettingsJson(a.vendor))
-    .map((a) => ({ label: a.name, configDir: a.configDir }));
-  const { targets } = hookTargets({ action: 'install', env: await claudeConfigDirEnv(), wmuxDir: getWmuxDir(), accounts, base: defaultPaths() });
-  const [primary, ...others] = targets;
+  const [primary, ...others] = await appHookTargets('install');
   const outcome = installHooks(primary.paths);
   const failed = others
-    .map((t) => ({ t, o: installHooks(t.paths) }))
+    .map((t) => {
+      // A throw (a read-only folder) is that target's failure, not the call's.
+      try { return { t, o: installHooks(t.paths) }; } catch (err) { return { t, o: failedInstall(t.paths, err instanceof Error ? err.message : String(err)) }; }
+    })
     .filter(({ o }) => !o.ok)
     .map(({ t, o }) => `${t.label}: ${o.error ?? 'failed'}`);
   if (failed.length === 0) return outcome;

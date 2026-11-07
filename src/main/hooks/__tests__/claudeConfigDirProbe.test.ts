@@ -1,7 +1,7 @@
 // @wmux-lane unit
 // process.platform is stubbed and the shell runner is injected: nothing here reaches the OS.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PROBE_TIMEOUT_MS, claudeConfigDirEnv, knownClaudeConfigDirEnv, parseProbeOutput, resetClaudeConfigDirProbe } from '../claudeConfigDirProbe';
+import { PROBE_TIMEOUT_MS, claudeConfigDirEnv, parseProbeOutput, resetClaudeConfigDirProbe } from '../claudeConfigDirProbe';
 
 const realPlatform = process.platform;
 function onPlatform(platform: NodeJS.Platform): void {
@@ -54,7 +54,6 @@ describe('claudeConfigDirEnv', () => {
     expect(shell).toBe('/bin/zsh');
     expect(args[0]).toBe('-lic');
     expect(timeout).toBe(PROBE_TIMEOUT_MS);
-    expect(knownClaudeConfigDirEnv()).toBe('/Users/u/.claude-alt');
   });
 
   it('a shell that fails or times out (the runner gives no output) reads as unset', async () => {
