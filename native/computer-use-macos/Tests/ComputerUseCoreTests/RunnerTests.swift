@@ -12,6 +12,12 @@ final class RunnerPolicyTests: XCTestCase {
         XCTAssertEqual(try RunnerPolicy.parse(["cancel": 7]), .cancel(id: 7))
     }
 
+    func testStartsTheReadOnlyCommandsAndTheAppList() throws {
+        for command in ["snapshot", "find", "get", "is", "list-surfaces", "wait", "list-apps", "version"] {
+            XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": [command], "home": "/tmp/ad"]), command)
+        }
+    }
+
     func testRefusesCommandsOutsideItsList() {
         for command in ["click", "type", "clipboard-get", "batch", "launch", "screenshot", "permissions", "mcp", "skills"] {
             XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": [command], "home": "/tmp/ad"]), command)

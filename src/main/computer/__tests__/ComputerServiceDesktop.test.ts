@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
 import type { AppInfo, HelperMethod, WindowInfo } from '../../../shared/computer/protocol';
-import { ComputerService, DESKTOP_MAX_RUNS, type ComputerAgent, type DesktopDeps, type HelperLike } from '../ComputerService';
+import { ComputerService, DESKTOP_MAX_RUNS, DESKTOP_QUEUE_PER_AGENT, type ComputerAgent, type DesktopDeps, type HelperLike } from '../ComputerService';
 import type { RunnerResult } from '../RunnerProcess';
 
 const textEdit: AppInfo = { id: 'com.apple.TextEdit', name: 'TextEdit', pid: 501, path: '/System/Applications/TextEdit.app' };
@@ -33,7 +33,16 @@ const ok = (command: string, data: Record<string, unknown>): RunnerResult => ({
  * by default a snapshot of the window it was pointed at, refs owned by the
  * app the service vetted.
  */
-function makeService(opts: { answer?: (argv: string[]) => RunnerResult | Promise<RunnerResult>; askPerApp?: boolean; withDesktop?: boolean } = {}) {
+type Listed = { name: string; pid: number; bundle_id?: string };
+const listedTextEdit: Listed = { name: 'TextEdit', pid: textEdit.pid, bundle_id: textEdit.id };
+
+function makeService(opts: {
+  answer?: (argv: string[]) => RunnerResult | Promise<RunnerResult>;
+  /** What `list-apps --app=…` prints on its nth run (from 1). */
+  apps?: (n: number) => Listed[];
+  askPerApp?: boolean;
+  withDesktop?: boolean;
+} = {}) {
   const calls: Array<{ method: HelperMethod; params: unknown }> = [];
   const helper: HelperLike = {
     request: (async (method: HelperMethod, params: Record<string, unknown>) => {
@@ -48,6 +57,7 @@ function makeService(opts: { answer?: (argv: string[]) => RunnerResult | Promise
   };
   const refmaps = new Map<string, string>();
   let seq = 0;
+  let listed = 0;
   const runs: string[][] = [];
   const defaultAnswer = (argv: string[]): RunnerResult => {
     if (argv[0] === 'snapshot' || argv[0] === 'find') {
@@ -64,6 +74,7 @@ function makeService(opts: { answer?: (argv: string[]) => RunnerResult | Promise
   const desktop: DesktopDeps = {
     run: vi.fn(async (argv: string[]) => {
       runs.push(argv);
+      if (argv[0] === 'list-apps') return ok('list-apps', { apps: (opts.apps ?? (() => [listedTextEdit]))(++listed) });
       return (opts.answer ?? defaultAnswer)(argv);
     }),
     readRefmap: vi.fn(async (id: string) => refmaps.get(id) ?? ''),
@@ -184,9 +195,70 @@ describe('ComputerService.desktop', () => {
     await expect(service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit' })).rejects.toMatchObject({ code: 'policy_denied' });
   });
 
-  it('discards a surface list for another pid', async () => {
-    const { service } = makeService({ answer: () => ok('list-surfaces', { pid: 999, surfaces: [{ id: 'w-1', type: 'window', title: 'Vault' }] }) });
+  it('discards a surface list when, after the run, another process has the name', async () => {
+    const { service } = makeService({ apps: (n) => (n === 1 ? [listedTextEdit] : [{ name: 'TextEdit', pid: 999 }]) });
     await expect(service.desktop(AGENT_A, { command: 'list-surfaces', app: 'TextEdit' })).rejects.toMatchObject({ code: 'policy_denied' });
+  });
+
+  it('runs a command that names the app only while the vetted process is the one app by that name, before and after', async () => {
+    const counted = (argv: string[]): RunnerResult => (argv[0] === 'find' ? ok('find', { count: 3 }) : ok(argv[0], {}));
+    // The vetted app quit during the run and a same-named one is alone now.
+    const swapped = makeService({ answer: counted, apps: (n) => (n === 1 ? [listedTextEdit] : [{ name: 'TextEdit', pid: 777 }]) });
+    await expect(swapped.service.desktop(AGENT_A, { command: 'find', app: 'TextEdit', args: { role: 'button', count: true } })).rejects.toMatchObject({ code: 'policy_denied' });
+    // A second app by that name: agent-desktop could pick either.
+    const twin = makeService({ answer: counted, apps: () => [listedTextEdit, { name: 'textedit', pid: 778 }] });
+    await expect(twin.service.desktop(AGENT_A, { command: 'find', app: 'TextEdit', args: { role: 'button', count: true } })).rejects.toMatchObject({ code: 'policy_denied' });
+    expect(twin.runs.map((argv) => argv[0])).toEqual(['list-apps']);
+    // No app by that name, only one whose bundle id is it: agent-desktop would fall back to it.
+    const alias = makeService({ answer: counted, apps: () => [{ name: 'Other', pid: 888, bundle_id: 'TextEdit' }] });
+    await expect(alias.service.desktop(AGENT_A, { command: 'wait', app: 'TextEdit', args: { text: 'Done' } })).rejects.toMatchObject({ code: 'policy_denied' });
+    expect(alias.runs.map((argv) => argv[0])).toEqual(['list-apps']);
+    // The vetted process alone, before and after.
+    const alone = makeService({ answer: counted });
+    await expect(alone.service.desktop(AGENT_A, { command: 'find', app: 'TextEdit', args: { role: 'button', count: true } })).resolves.toMatchObject({ data: { count: 3 } });
+    expect(alone.runs.map((argv) => argv[0])).toEqual(['list-apps', 'find', 'list-apps']);
+  });
+
+  it('drops a snapshot whose refmap a ref command left unreadable or pointing at another process, and discards that reply', async () => {
+    for (const after of [refmapFor(999), '{"inner":']) {
+      const box: { set?: (id: string, text: string) => void } = {};
+      const { service, setRefmap } = makeService({
+        answer: (argv) => {
+          if (argv[0] === 'snapshot') {
+            box.set!('s1', refmapFor(textEdit.pid));
+            return ok('snapshot', { app: 'TextEdit', snapshot_id: 's1', window: { id: 'w-5010' } });
+          }
+          box.set!('s1', after);
+          return ok(argv[0], { value: 'Vault' });
+        },
+      });
+      box.set = setRefmap;
+      await service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit' });
+      await expect(service.desktop(AGENT_A, { command: 'get', args: { ref: '@s1:e1' } })).rejects.toMatchObject({ code: 'policy_denied' });
+      await expect(service.desktop(AGENT_A, { command: 'get', args: { ref: '@s1:e1' } })).rejects.toMatchObject({ code: 'snapshot_unknown' });
+    }
+  });
+
+  it('discards a snapshot whose refmap cannot be read, and keeps none of its refs', async () => {
+    const box: { set?: (id: string, text: string) => void } = {};
+    const { service, setRefmap } = makeService({
+      answer: () => {
+        box.set!('sbad', '{"inner": [');
+        return ok('snapshot', { app: 'TextEdit', snapshot_id: 'sbad', window: { id: 'w-5010' } });
+      },
+    });
+    box.set = setRefmap;
+    await expect(service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit' })).rejects.toMatchObject({ code: 'policy_denied' });
+    await expect(service.desktop(AGENT_A, { command: 'get', args: { ref: '@sbad:e1' } })).rejects.toMatchObject({ code: 'snapshot_unknown' });
+  });
+
+  it('counts runs, not queued calls: one agent\'s backlog does not hold another agent back', async () => {
+    const never = new Promise<RunnerResult>(() => undefined);
+    const { service } = makeService({ answer: (argv) => (argv[1] === '30000' ? never : ok('wait', { waited_ms: 1 })) });
+    const queued = Array.from({ length: 8 }, () => service.desktop(AGENT_A, { command: 'wait', args: { ms: 30_000 } }));
+    for (const call of queued) call.catch(() => undefined);
+    for (const call of queued.slice(DESKTOP_QUEUE_PER_AGENT)) await expect(call).rejects.toMatchObject({ code: 'input_busy' });
+    await expect(service.desktop(AGENT_B, { command: 'wait', args: { ms: 1 } })).resolves.toMatchObject({ data: { waited_ms: 1 } });
   });
 
   it('refuses another agent\'s snapshot', async () => {
@@ -212,8 +284,9 @@ describe('ComputerService.desktop', () => {
   it('passes a value that looks like a flag as one bound argument', async () => {
     const { service, runs } = makeService();
     await service.desktop(AGENT_A, { command: 'find', app: 'TextEdit', args: { name: '--headed' } });
-    expect(runs[0]).toContain('--name=--headed');
-    expect(runs[0]).not.toContain('--headed');
+    const find = runs.find((argv) => argv[0] === 'find')!;
+    expect(find).toContain('--name=--headed');
+    expect(find).not.toContain('--headed');
   });
 
   it('a missing nested binary reads as an unavailable helper', async () => {
@@ -254,6 +327,13 @@ describe('ComputerService.desktop', () => {
       answer: () => ({ exitCode: 1, stdout: JSON.stringify({ version: '2.6', ok: false, command: 'get', error: { code: 'STALE_REF', message: 'ref is stale' } }), stderr: '' }),
     });
     await expect(service.desktop(AGENT_A, { command: 'wait', args: { ms: 1 } })).rejects.toMatchObject({ code: 'element_stale', message: 'ref is stale' });
+  });
+
+  it('maps an upstream code that is a property of every object to internal', async () => {
+    const { service } = makeService({
+      answer: () => ({ exitCode: 1, stdout: JSON.stringify({ version: '2.6', ok: false, command: 'wait', error: { code: 'constructor', message: 'x' } }), stderr: '' }),
+    });
+    await expect(service.desktop(AGENT_A, { command: 'wait', args: { ms: 1 } })).rejects.toMatchObject({ code: 'internal' });
   });
 
   it('ends the runner and forgets every snapshot when computer use is turned off, and on dispose', async () => {

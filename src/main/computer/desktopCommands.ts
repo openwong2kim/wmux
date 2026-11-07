@@ -303,19 +303,19 @@ export function planDesktopCommand(commandValue: unknown, argsValue: unknown): D
 }
 
 /** agent-desktop's error codes, as wmux's. Anything else is `internal`. */
-const UPSTREAM_CODES: Record<string, ConstructorParameters<typeof ComputerError>[0]> = {
-  ELEMENT_NOT_FOUND: 'element_not_found',
-  STALE_REF: 'element_stale',
-  SNAPSHOT_NOT_FOUND: 'snapshot_unknown',
-  APP_NOT_FOUND: 'app_not_found',
-  WINDOW_NOT_FOUND: 'window_not_found',
-  AMBIGUOUS_TARGET: 'invalid_argument',
-  INVALID_ARGS: 'invalid_argument',
-  TIMEOUT: 'timeout',
-  PERM_DENIED: 'permission_missing',
-  ACTION_NOT_SUPPORTED: 'action_not_supported',
-  APP_UNRESPONSIVE: 'timeout',
-};
+const UPSTREAM_CODES = new Map<string, ConstructorParameters<typeof ComputerError>[0]>([
+  ['ELEMENT_NOT_FOUND', 'element_not_found'],
+  ['STALE_REF', 'element_stale'],
+  ['SNAPSHOT_NOT_FOUND', 'snapshot_unknown'],
+  ['APP_NOT_FOUND', 'app_not_found'],
+  ['WINDOW_NOT_FOUND', 'window_not_found'],
+  ['AMBIGUOUS_TARGET', 'invalid_argument'],
+  ['INVALID_ARGS', 'invalid_argument'],
+  ['TIMEOUT', 'timeout'],
+  ['PERM_DENIED', 'permission_missing'],
+  ['ACTION_NOT_SUPPORTED', 'action_not_supported'],
+  ['APP_UNRESPONSIVE', 'timeout'],
+]);
 
 export interface DesktopReply {
   command: string;
@@ -331,7 +331,7 @@ export function parseDesktopReply(stdout: string): DesktopReply {
     throw new ComputerError('internal', 'agent-desktop printed something that is not its JSON reply');
   }
   if (envelope?.ok !== true) {
-    const code = typeof envelope?.error?.code === 'string' ? UPSTREAM_CODES[envelope.error.code] ?? 'internal' : 'internal';
+    const code = typeof envelope?.error?.code === 'string' ? UPSTREAM_CODES.get(envelope.error.code) ?? 'internal' : 'internal';
     const message = typeof envelope?.error?.message === 'string' ? envelope.error.message : 'agent-desktop failed';
     throw new ComputerError(code, message);
   }
@@ -339,9 +339,47 @@ export function parseDesktopReply(stdout: string): DesktopReply {
   return { command: typeof envelope.command === 'string' ? envelope.command : '', data };
 }
 
-/** The pids a snapshot's refmap.json says its refs belong to. */
-export function refmapPids(refmap: string): number[] {
-  const parsed = JSON.parse(refmap) as { inner?: Record<string, { pid?: unknown }> };
-  const inner = parsed?.inner && typeof parsed.inner === 'object' ? parsed.inner : {};
-  return Object.values(inner).map((entry) => (typeof entry?.pid === 'number' ? entry.pid : -1));
+/** The pids a snapshot's refmap.json says its refs belong to; null when it cannot be read as one. */
+export function refmapPids(refmap: string): number[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(refmap);
+  } catch {
+    return null;
+  }
+  const inner = (parsed as { inner?: unknown } | null)?.inner;
+  if (!inner || typeof inner !== 'object' || Array.isArray(inner)) return null;
+  return Object.values(inner).map((entry) => {
+    const pid = (entry as { pid?: unknown } | null)?.pid;
+    return typeof pid === 'number' ? pid : -1;
+  });
+}
+
+/** The apps agent-desktop picks from for `--app=<name>` (it prints every candidate). */
+export const listAppsArgv = (name: string): string[] => ['list-apps', `--app=${name}`];
+
+const BIDI_CONTROLS = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
+const foldName = (text: string): string => text.replace(BIDI_CONTROLS, '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+/**
+ * agent-desktop's display-name match (core app_info.rs `app_name_matches`):
+ * exact after dropping bidi controls, ASCII case folded, or the name plus
+ * ".exe". A bundle id or executable name stands in only when no app matches.
+ */
+export function appNameMatches(actual: string, expected: string): boolean {
+  const want = foldName(expected);
+  const got = foldName(actual);
+  return got === want || (!expected.endsWith('.exe') && got === `${want}.exe`);
+}
+
+/** Pids of the apps a list-apps reply names `name` by display name; null when its inventory is incomplete or unreadable. */
+export function namedPids(reply: DesktopReply, name: string): number[] | null {
+  const apps = reply.data.apps;
+  if (!Array.isArray(apps) || reply.data.complete === false) return null;
+  const pids: number[] = [];
+  for (const app of apps as Array<{ name?: unknown; pid?: unknown } | null>) {
+    if (typeof app?.name !== 'string' || typeof app.pid !== 'number') return null;
+    if (appNameMatches(app.name, name)) pids.push(app.pid);
+  }
+  return pids;
 }

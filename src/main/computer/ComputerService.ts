@@ -61,7 +61,7 @@ import { appBundleSelector } from './appBundleId';
 import { thinTreeReason } from './axFirst';
 import { ForegroundLease, INPUT_LOCK_IDLE_MS, PidLanes, foregroundCertain, type LeaseTicket } from './inputLanes';
 import { createHash } from 'node:crypto';
-import { desktopSchema, parseDesktopReply, planDesktopCommand, refmapPids, type DesktopReply } from './desktopCommands';
+import { desktopSchema, listAppsArgv, namedPids, parseDesktopReply, planDesktopCommand, refmapPids, type DesktopReply } from './desktopCommands';
 import type { RunnerResult } from './RunnerProcess';
 
 export { INPUT_LOCK_IDLE_MS };
@@ -194,8 +194,12 @@ interface DesktopSnapshotRecord {
   expiresAt: number;
 }
 
-/** Desktop runs in flight across all agents; past this a call is refused with input_busy. */
+/** agent-desktop runs in flight across all agents; past this a call is refused with input_busy. */
 export const DESKTOP_MAX_RUNS = 8;
+/** One agent's desktop calls running or waiting their turn; past this a call is refused with input_busy. */
+export const DESKTOP_QUEUE_PER_AGENT = 4;
+/** The runner's deadline for the list-apps run that checks an app name. */
+const LIST_APPS_TIMEOUT_MS = 10_000;
 /** Desktop snapshots remembered at once; the oldest goes first. */
 const DESKTOP_SNAPSHOT_LIMIT = 256;
 /** A snapshot id as agent-desktop prints it; it names a directory, so nothing else is read. */
@@ -265,6 +269,7 @@ export class ComputerService {
   private readonly desktopSnapshots = new Map<string, DesktopSnapshotRecord>();
   /** Each agent's desktop calls, one after another: a run may rewrite a snapshot's refmap the next call checks. */
   private readonly desktopQueues = new Map<string, Promise<unknown>>();
+  private readonly desktopQueued = new Map<string, number>();
   private desktopRuns = 0;
   private readonly grants = new Map<string, boolean>();
   private readonly consentInflight = new Map<string, Promise<ConsentAnswer>>();
@@ -447,18 +452,43 @@ export class ComputerService {
     agent: ComputerAgent,
     params: { command: unknown; args?: unknown; app?: string; window?: string },
   ): Promise<DesktopReply> {
-    if (this.desktopRuns >= DESKTOP_MAX_RUNS) {
-      fail('input_busy', `${DESKTOP_MAX_RUNS} desktop commands are already running; try again when one finishes`);
+    const queued = this.desktopQueued.get(agent.key) ?? 0;
+    if (queued >= DESKTOP_QUEUE_PER_AGENT) {
+      fail('input_busy', `${DESKTOP_QUEUE_PER_AGENT} desktop commands of this agent are already queued; try again when one finishes`);
     }
-    this.desktopRuns += 1;
+    this.desktopQueued.set(agent.key, queued + 1);
     const previous = this.desktopQueues.get(agent.key) ?? Promise.resolve();
     const call = previous.catch(() => undefined).then(() => this.desktopNow(agent, params));
     const settled = call.catch(() => undefined).finally(() => {
-      this.desktopRuns -= 1;
+      const left = (this.desktopQueued.get(agent.key) ?? 1) - 1;
+      if (left > 0) this.desktopQueued.set(agent.key, left);
+      else this.desktopQueued.delete(agent.key);
       if (this.desktopQueues.get(agent.key) === settled) this.desktopQueues.delete(agent.key);
     });
     this.desktopQueues.set(agent.key, settled);
     return call;
+  }
+
+  /** One agent-desktop run, counted against DESKTOP_MAX_RUNS while it is in flight. */
+  private async desktopRun(desktop: DesktopDeps, argv: string[], timeoutMs: number, generation: number): Promise<DesktopReply> {
+    if (this.desktopRuns >= DESKTOP_MAX_RUNS) {
+      fail('input_busy', `${DESKTOP_MAX_RUNS} desktop commands are already running; try again when one finishes`);
+    }
+    this.desktopRuns += 1;
+    let result: RunnerResult;
+    try {
+      result = await desktop.run(argv, timeoutMs);
+    } finally {
+      this.desktopRuns -= 1;
+    }
+    this.assertCurrent(generation);
+    return parseDesktopReply(result.stdout);
+  }
+
+  /** Whether the vetted process is the only app agent-desktop takes for its display name. */
+  private async soleByName(desktop: DesktopDeps, app: AppInfo, generation: number): Promise<boolean> {
+    const pids = namedPids(await this.desktopRun(desktop, listAppsArgv(app.name), LIST_APPS_TIMEOUT_MS, generation), app.name);
+    return pids !== null && pids.length === 1 && pids[0] === app.pid;
   }
 
   private async desktopNow(
@@ -477,7 +507,9 @@ export class ComputerService {
     const used = plan.refs.map((r) => ({ id: r.snapshotId, record: this.checkDesktopSnapshot(agent, r.snapshotId, now) }));
     if (used.length > 0) {
       const { app, window } = used[0].record;
-      if (used.some((u) => u.record.app.pid !== app.pid)) fail('invalid_argument', 'the refs of one call must come from snapshots of one app');
+      if (used.some((u) => u.record.app.pid !== app.pid || u.record.window.id !== window.id)) {
+        fail('invalid_argument', 'the refs of one call must come from snapshots of one window');
+      }
       target = { app, window };
       await this.vet(agent, app, window, generation);
       for (const u of used) {
@@ -497,23 +529,48 @@ export class ComputerService {
       target = resolved;
     }
 
-    const result = await desktop.run(plan.argv(target && { appName: target.app.name, windowId: target.window.id }), plan.timeoutMs);
-    this.assertCurrent(generation);
-    const reply = parseDesktopReply(result.stdout);
+    // Without a ref, agent-desktop finds the app by display name. A snapshot
+    // is tied to the vetted process by its refmap and window; any other
+    // reply by that name naming the vetted process alone, before the run
+    // and after it.
+    const byName = target && used.length === 0 && plan.command !== 'snapshot' ? target.app : null;
+    if (byName && !(await this.soleByName(desktop, byName, generation))) {
+      fail('policy_denied', `${byName.name} is not the only app by that name (or it quit), so agent-desktop cannot be pointed at the one wmux checked`);
+    }
+    const reply = await this.desktopRun(desktop, plan.argv(target && { appName: target.app.name, windowId: target.window.id }), plan.timeoutMs, generation);
     if (!target) return reply;
 
     const discard = (): never =>
       fail('policy_denied', `agent-desktop answered for something other than ${target.app.name}; its reply was discarded`);
-    if (reply.data.pid !== undefined && reply.data.pid !== target.app.pid) discard();
+    if (byName && !(await this.soleByName(desktop, byName, generation))) discard();
     const window = reply.data.window as { id?: unknown } | undefined;
     if (plan.checksWindow && window?.id !== `w-${target.window.id}`) discard();
     const snapshotId = reply.data.snapshot_id;
+
+    // agent-desktop may rewrite a snapshot's refmap when it resolves a ref:
+    // its refs must still be the snapshot's app's, and what this agent's own
+    // run left is what the next call compares with.
+    for (const u of used) {
+      if (u.id === snapshotId) continue;
+      const record = this.desktopSnapshots.get(u.id);
+      if (!record) continue;
+      const refmap = await desktop.readRefmap(u.id);
+      this.assertCurrent(generation);
+      const pids = refmapPids(refmap);
+      if (!pids || pids.some((pid) => pid !== record.app.pid)) {
+        this.desktopSnapshots.delete(u.id);
+        discard();
+      }
+      record.refmapHash = sha256(refmap);
+    }
+
     if (snapshotId !== undefined) {
       if (typeof snapshotId !== 'string' || !DESKTOP_SNAPSHOT_ID.test(snapshotId)) discard();
       const refmap = await desktop.readRefmap(snapshotId as string);
       this.assertCurrent(generation);
       if (refmap) {
-        if (refmapPids(refmap).some((pid) => pid !== target.app.pid)) discard();
+        const pids = refmapPids(refmap);
+        if (!pids || pids.some((pid) => pid !== target.app.pid)) discard();
       } else {
         // No refmap to prove whose refs these are: only a reply that lists no
         // refs, or a snapshot of the window checked above, is kept.
@@ -533,13 +590,6 @@ export class ComputerService {
         refmapHash: sha256(refmap),
         expiresAt: now + SNAPSHOT_TTL_MS,
       });
-    }
-    // agent-desktop may write a snapshot's refmap when it resolves a ref;
-    // what this agent's own run left is what the next call compares with.
-    for (const u of used) {
-      if (u.id === snapshotId) continue;
-      const record = this.desktopSnapshots.get(u.id);
-      if (record) record.refmapHash = sha256(await desktop.readRefmap(u.id));
     }
     return reply;
   }

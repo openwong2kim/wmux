@@ -33,8 +33,9 @@ public enum RunnerMessage: Equatable {
 
 public enum RunnerPolicy {
     /// The commands the runner starts. main decides what an agent may ask for;
-    /// this list is the runner's own floor under it.
-    public static let commands: Set<String> = ["snapshot", "find", "get", "is", "list-surfaces", "wait", "version"]
+    /// this list is the runner's own floor under it. main runs list-apps
+    /// itself, to check which app a display name picks.
+    public static let commands: Set<String> = ["snapshot", "find", "get", "is", "list-surfaces", "wait", "list-apps", "version"]
 
     /// Global options the runner never passes on, whatever main sends.
     static let refusedOptions: [String] = ["--headed", "--trace", "--debug", "--screenshot"]
