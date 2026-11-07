@@ -13,6 +13,7 @@ IUIAutomationInvokePattern
 IUIAutomationTogglePattern
 IUIAutomationExpandCollapsePattern
 IUIAutomationSelectionItemPattern
+IUIAutomationLegacyIAccessiblePattern
 IUIAutomationTextPattern
 IUIAutomationTextRange
 IUIAutomationTextRangeArray

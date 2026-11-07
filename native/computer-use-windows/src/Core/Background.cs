@@ -441,6 +441,27 @@ public static class Background
     public static bool PatternCallAllowed(bool refuseForeground, bool targetInFront) => !refuseForeground || targetInFront;
 
     /// <summary>
+    /// Whether the click ladder first tries LegacyIAccessible DoDefaultAction:
+    /// only where every other pattern call would answer needs_foreground, that
+    /// is under `refuse` with the target not in front. Measured on Windows 11
+    /// (WinForms, Electron, Chrome, Calculator) with the target covered:
+    /// DoDefaultAction never took the foreground, while Invoke, Toggle,
+    /// SelectionItem, ExpandCollapse, Scroll and UIA SetFocus each did.
+    /// </summary>
+    public static bool DefaultActionFirst(bool refuseForeground, bool targetInFront) => refuseForeground && !targetInFront;
+
+    /// <summary>
+    /// Whether an element's default action is a press: a button, hyperlink,
+    /// menu item, check box or radio button with a non-empty default action.
+    /// A list, tree or data item's default action is often the double-click
+    /// action, which opens things, so those never take this rung.
+    /// </summary>
+    public static bool DefaultActionIsPress(int controlType, string? defaultAction) =>
+        !string.IsNullOrWhiteSpace(defaultAction) && controlType is ButtonType or CheckBoxType or HyperlinkType or MenuItemType or RadioButtonType;
+
+    private const int ButtonType = 50000, CheckBoxType = 50002, HyperlinkType = 50005, MenuItemType = 50011, RadioButtonType = 50013;
+
+    /// <summary>
     /// After the background attempt. `refuseForeground`: main sent
     /// `foreground: 'refuse'`. `sentDuringAction`: the helper's sent counter
     /// moved since the action began. needs_foreground is answered only when
