@@ -1,8 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Browser, Page } from 'playwright-core';
 import { ChromeLauncher } from '../ChromeLauncher';
@@ -10,7 +9,8 @@ import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy } from '../../../shared/browserHostPolicy';
 import { canonicalUrlHost } from '../../pipe/handlers/browserConsent.rpc';
 import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
-import { accountDownloads, pinDownloadDir } from '../../../test-utils/chromeDownloads';
+import { accountDownloads } from '../../../test-utils/chromeDownloads';
+import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
 // The approved download against a REAL protected Chrome (production launcher,
@@ -21,6 +21,7 @@ import { deliberateSleep } from '../../../test-utils/waitFor';
 let server: http.Server;
 let port = 0;
 let launcher: ChromeLauncher;
+let profile: TempChromeProfile | null = null;
 let browser: Browser | null = null;
 let skipReason: string | null = null;
 
@@ -68,8 +69,8 @@ beforeAll(async () => {
   server = http.createServer(serve);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   port = (server.address() as AddressInfo).port;
-  const dir = mkdtempSync(join(tmpdir(), 'wmux-consent-chrome-'));
-  pinDownloadDir(dir);
+  profile = tempChromeProfile('wmux-consent-chrome-');
+  const dir = profile.dir;
   launcher = new ChromeLauncher(dir, {
     portEnvVar: null,
     profileName: 'consent-download',
@@ -97,11 +98,16 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await browser?.close().catch(() => undefined);
-  await launcher?.dispose();
+  await stopChrome(launcher);
   server?.close();
-  // Every download went to a temp folder: nothing new in the account's own.
-  expect([...accountDownloads(SERVED_FILES)].filter((name) => !accountBefore.has(name))).toEqual([]);
-});
+  try {
+    // Every download went to a temp folder: nothing new in the account's own.
+    expect([...accountDownloads(SERVED_FILES)].filter((name) => !accountBefore.has(name))).toEqual([]);
+  } finally {
+    // After Chrome has gone, launched or not.
+    await profile?.remove();
+  }
+}, CHROME_TEARDOWN_TIMEOUT_MS);
 
 describe('approved download (real Chrome)', { timeout: 60_000 }, () => {
   it('lets exactly the approved tab’s first download through, then denies again', async (ctx) => {
@@ -121,7 +127,7 @@ describe('approved download (real Chrome)', { timeout: 60_000 }, () => {
     await engineDeny.send('Browser.setDownloadBehavior', { behavior: 'deny' });
     const guard = launcher.consentDownloadGuard();
     expect(guard).not.toBeNull();
-    const dir = mkdtempSync(join(tmpdir(), 'wmux-consent-dl-'));
+    const dir = profile!.scratch('wmux-consent-dl-');
     const pass = await openDownloadPass(guard!, {
       frameId: await targetIdOf(approved),
       approvedHost: 'a.test',

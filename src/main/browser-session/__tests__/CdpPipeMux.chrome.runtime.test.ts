@@ -10,8 +10,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chromium, type Browser } from 'playwright-core';
@@ -19,6 +17,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { CdpPipeMux } from '../CdpPipeMux';
 import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
 import { ChromeLauncher } from '../ChromeLauncher';
+import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 
 const CHROME = process.env.CHROME_PATH;
 
@@ -26,9 +25,13 @@ interface Started { child: ChildProcess; profile: string; mux: CdpPipeMux; endpo
 const started: Started[] = [];
 const browsers: Browser[] = [];
 const relays: WebSocketServer[] = [];
+/** Every temp profile a test made, removed after its Chrome is gone, launched or not. */
+const profiles: TempChromeProfile[] = [];
 
 async function startChrome(): Promise<Started> {
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pipe-chrome-'));
+  const temp = tempChromeProfile('wmux-pipe-chrome-');
+  profiles.push(temp);
+  const profile = temp.dir;
   const child = spawn(CHROME as string, [
     '--remote-debugging-pipe',
     `--user-data-dir=${profile}`,
@@ -43,7 +46,16 @@ async function startChrome(): Promise<Started> {
   ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
   const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
   const mux = new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable);
-  const endpoint = await CdpPipeEndpoint.open(mux);
+  let endpoint: CdpPipeEndpoint;
+  try {
+    endpoint = await CdpPipeEndpoint.open(mux);
+  } catch (err) {
+    // Not in `started`, so nothing else would stop it before its profile goes.
+    mux.close();
+    child.kill('SIGKILL');
+    await exited;
+    throw err;
+  }
   const s = { child, profile, mux, endpoint, exited };
   started.push(s);
   return s;
@@ -101,10 +113,13 @@ afterEach(async () => {
     await s.endpoint.close();
     s.mux.close();
     const gone = await Promise.race([s.exited.then(() => true), new Promise((r) => setTimeout(() => r(false), 5_000))]);
-    if (!gone) s.child.kill('SIGKILL');
-    fs.rmSync(s.profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    if (!gone) {
+      s.child.kill('SIGKILL');
+      await s.exited;
+    }
   }
-});
+  await Promise.all(profiles.splice(0).map((p) => p.remove()));
+}, CHROME_TEARDOWN_TIMEOUT_MS);
 
 describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
   it('Playwright connects over CDP through the endpoint and drives a page', async () => {
@@ -172,7 +187,9 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
   it.skipIf(process.platform === 'win32')('a pipe Chrome that stops (SIGSTOP) is let go at the third failed check, killed, and a new one starts on its profile', async () => {
     vi.stubEnv('WMUX_CHROME_TRANSPORT', 'pipe');
     vi.stubEnv('WMUX_CHROME_PATH', CHROME as string);
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pipe-stopped-'));
+    const temp = tempChromeProfile('wmux-pipe-stopped-');
+    profiles.push(temp);
+    const dir = temp.dir;
     const launcher = new ChromeLauncher(dir, { portEnvVar: null, extraArgs: ['--headless=new', '--use-mock-keychain', '--password-store=basic'] });
     try {
       const first = (await launcher.endpoint()).wsEndpoint as string;
@@ -197,8 +214,7 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
     } finally {
       // Graceful: Chrome is gone, and done writing, before its profile is removed.
       for (const b of browsers.splice(0)) await b.close().catch(() => undefined);
-      await launcher.dispose();
-      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+      await stopChrome(launcher);
     }
   }, 120_000);
 });
