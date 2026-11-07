@@ -3,7 +3,7 @@
 //! shows for the same bytes; the rendered comparison is in
 //! src/daemon/__tests__/RustAnsiParity.test.ts.
 
-use crate::parity_support::{fed, history, screen};
+use crate::parity_support::{cursor, fed, history, screen};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
@@ -65,4 +65,49 @@ fn a_linefeed_at_the_bottom_still_scrolls_into_history() {
     let fed = fed(10, 3, 100, &["1\r\n2\r\n3\x1b[H\x1b[M\x1b[3;1Hx\r\ny"]);
     assert_eq!(history(&fed.term), ["2"]);
     assert_eq!(screen(&fed.term), ["3", "x", "y"]);
+}
+
+#[test]
+fn su_scrolls_the_screen_in_place() {
+    let fed = fed(10, 3, 100, &["1\r\n2\r\n3\x1b[2S"]);
+    assert!(!fed.divergent);
+    assert!(history(&fed.term).is_empty());
+    assert_eq!(screen(&fed.term), ["3", "", ""]);
+    assert_eq!(cursor(&fed.term), (2, 1));
+}
+
+#[test]
+fn su_keeps_the_history_already_there() {
+    let fed = fed(10, 3, 100, &["1\r\n2\r\n3\r\n4\r\n5\x1b[1S"]);
+    assert_eq!(history(&fed.term), ["1", "2"]);
+    assert_eq!(screen(&fed.term), ["4", "5", ""]);
+}
+
+#[test]
+fn su_moves_only_the_region() {
+    let fed = fed(10, 5, 100, &["1\r\n2\r\n3\r\n4\r\n5\x1b[2;4r\x1b[1S"]);
+    assert_eq!(screen(&fed.term), ["1", "3", "4", "", "5"]);
+    assert!(history(&fed.term).is_empty());
+}
+
+#[test]
+fn su_past_the_region_clears_it() {
+    let fed = fed(10, 5, 100, &["1\r\n2\r\n3\r\n4\r\n5\x1b[1;4r\x1b[9S"]);
+    assert_eq!(screen(&fed.term), ["", "", "", "", "5"]);
+    assert!(history(&fed.term).is_empty());
+}
+
+#[test]
+fn su_clears_with_the_erase_colour() {
+    let fed = fed(10, 3, 100, &["1\x1b[44m\x1b[S"]);
+    assert_eq!(
+        fed.term.grid()[Line(2)][Column(0)].bg,
+        Color::Named(NamedColor::Blue)
+    );
+}
+
+#[test]
+fn sd_spelled_with_caret_stays_divergent() {
+    // vte does not dispatch `CSI ^`, which xterm reads as SD.
+    assert!(fed(10, 3, 100, &["x\x1b[1^"]).divergent);
 }

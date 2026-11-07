@@ -369,7 +369,7 @@ fn sgr_divergent(params: &str) -> bool {
 /// Controls whose parse differs between Alacritty and xterm, so a replay of
 /// Alacritty's grid cannot match xterm's (RustAnsiParity.test.ts measures
 /// each): charset designators other than ASCII, selective erase, SL/SR,
-/// DECIC/DECDC, DECSTR, SU (Alacritty keeps the rows in history), ED 1/2
+/// DECIC/DECDC, DECSTR, SD spelled `CSI ^` (vte ignores it), ED 1/2
 /// spelled other than `CSI 1 J` / `CSI 2 J`, the modes 9, 20, 45, 47, 66,
 /// 1047 and 1048, and SGR 21/53 or malformed colors. `sequence` is complete.
 pub(crate) fn divergent(sequence: &[u8]) -> bool {
@@ -411,8 +411,8 @@ fn csi_divergent(rest: &[u8]) -> bool {
     match (private, intermediates, last) {
         (Some(b'?'), b"", b'J' | b'K') => true,
         (None, b" ", b'@' | b'A') | (None, b"'", b'}' | b'~') | (None, b"!", b'p') => true,
-        // SU keeps rows in Alacritty's history; Alacritty ignores SD as `CSI ^`.
-        (None, b"", b'S' | b'^') => true,
+        // vte does not dispatch SD spelled `CSI ^`, which xterm runs.
+        (None, b"", b'^') => true,
         (Some(b'?'), b"", b'h' | b'l') => {
             let mut modes = params.split(';').map(number);
             // vte leaves a synchronized update only on exactly `CSI ? 2026 l`.
@@ -547,6 +547,7 @@ mod tests {
             "\x1b[38;5;53m\x1b[48;2;53;55;6m\x1b[38:2::53:55:5m",
             "\x1b[?1049h\x1b[?2004h\x1b[?1006h\x1b[4h\x1b[0J\x1b[J\x1b[3J",
             "\x1b[2T\x1b[?2;1S",
+            "\x1b[S\x1b[2S",
         ] {
             assert!(classify(text).iter().all(|d| !d), "{text:?}");
         }
@@ -570,7 +571,6 @@ mod tests {
             "\x1b[2'}",
             "\x1b['~",
             "\x1b[!p",
-            "\x1b[2S",
             "\x1b[20h",
             "\x1b[?9h",
             "\x1b[?1;45h",
