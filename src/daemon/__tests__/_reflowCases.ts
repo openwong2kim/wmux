@@ -33,6 +33,36 @@ function script(name: string, start: [number, number], parts: Array<string | [nu
 const prompt = '$ ';
 
 export const reflowCases: Case[] = [
+  // Narrower with no history: xterm moves the cursor down into the room
+  // below, one row per row the reflow adds, dropping the bottom row.
+  script('narrow-room-no-history', [80, 24], [`${rows(3, 70)}\r\n${prompt}`, [40, 24]]),
+  // The room runs out partway; the rest goes to history.
+  script('narrow-room-exhausted', [80, 24], [`${rows(18, 70)}\r\n${prompt}`, [40, 24]]),
+  // History already there: both scroll into it.
+  script('narrow-history-room-below', [80, 24], [`${rows(40, 20)}\x1b[2J\x1b[H${rows(3, 70)}\r\n${prompt}`, [40, 24]]),
+  // A font zoom-in: fewer rows and columns at once.
+  script('zoomin-room', [100, 30], [`${rows(6, 90)}\r\n${prompt}`, [80, 24]]),
+  // The rows phase uses up the room below before the columns shrink.
+  script('zoomin-room-consumed-by-rows', [80, 24], [`${rows(21, 70)}\r\n${prompt}`, [60, 20]]),
+  // A zoom-out unwraps rows written narrow.
+  script('zoomout-unwrap', [40, 20], [`${rows(5, 70)}\r\n${prompt}`, [80, 24]]),
+  // Fullwidth cells across the wrap edge, narrower, then back.
+  script('wide-edge-narrow', [80, 24], [`${'한'.repeat(50)}\r\n${prompt}`, [39, 24]]),
+  script('wide-edge', [80, 24], [`${'한'.repeat(50)}\r\n${prompt}`, [39, 24], [80, 24]]),
+  // History at the cap, narrower.
+  script('narrow-at-cap', [80, 24], [`${rows(150, 70)}\r\n${prompt}`, [40, 24]]),
+  // No history, but the reflow adds more rows than the room and the cap hold.
+  script('narrow-no-history-past-cap', [80, 24], [`${rows(20, 79)}\r\n${prompt}`, [8, 24]]),
+  // Rows below the cursor that fit the new width do not reflow.
+  script('narrow-below-cursor-short', [80, 24], [`${rows(4, 30)}\x1b[2H`, [40, 24]]),
+  // A cursor saved before a narrowing with room below, restored after it.
+  script('saved-cursor-narrow', [80, 24], [`${rows(3, 70)}\r\n${prompt}\x1b7`, [40, 24], '\x1b8Z']),
+  // A paragraph below the cursor reflows: xterm moves its cursor row as if
+  // the rows were above it, off its content. Refused.
+  script('reflow-below-cursor', [80, 24], [`${rows(4, 70)}\x1b[2H`, [40, 24]], 'xterm'),
+  script('narrow-history-below-cursor', [80, 24], [`${rows(40, 20)}\r\n${rows(6, 70)}\x1b[19H`, [40, 24]], 'xterm'),
+  script('widen-below-cursor', [40, 24], [`${rows(4, 70)}\x1b[2H`, [80, 24]], 'xterm'),
+  script('widen-history-below-cursor', [40, 24], [`${rows(40, 20)}\r\n${rows(6, 70)}\x1b[13H`, [80, 24]], 'xterm'),
   // More rows with history while the cursor is mid-screen: xterm adds blank
   // rows below and pulls nothing from history (Buffer.ts:196-221).
   script('zoomout-history-cursor-mid', [80, 24], [`${rows(40, 20)}\x1b[8H${prompt}`, [100, 30]]),

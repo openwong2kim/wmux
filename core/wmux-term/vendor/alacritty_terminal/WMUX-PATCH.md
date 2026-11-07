@@ -23,6 +23,14 @@ Local changes:
   below the cursor and history and both cursors stay put. Upstream always pulled
   `min(history, added)` rows. The window is rotated rather than scrolled, so no
   history row is dropped at the scrollback cap.
+- `src/grid/resize.rs` `shrink_columns`: after the reflow, the cursor row
+  follows xterm's rule rather than its content (`Buffer.ts` `_reflowSmaller`,
+  the viewport adjustment at lines 466-486 in 6.1.0-beta.336). With no history,
+  every added row moves the cursor down one row while there is room below,
+  dropping the bottom row; the rest goes to history, kept past the cap by the
+  rows dropped. With history, the cursor row stays. The saved cursor moves down
+  with the room used. `native_core.rs` refuses a resize that reflows a paragraph
+  below the cursor's, where xterm moves its cursor row off its content.
 
 - `src/term/cell.rs` uses the remaining u16 flag bit for SGR blink;
   `src/term/mod.rs` retains SGR 5, ignores SGR 6 like xterm, and clears blink on SGR 25/reset. This keeps

@@ -175,9 +175,9 @@ const many = Array.from({ length: 30 }, (_, i) => `row ${i} ${'x'.repeat(i % 50)
 const resizes: Case[] = [
   // vte holds bytes inside a synchronized update; xterm parsed them at 80.
   resized('resize-in-sync-update', '\x1b[?2026h\x1b[1;70HX', [80, 12], [40, 12]),
-  // Refused by the native terminal: Alacritty's reflow scrolls rows above the
-  // cursor into history where xterm moves the cursor down.
-  resized('narrow-cursor-high', `line before the box\r\n${box}`, [80, 12], [40, 12], 'xterm'),
+  // Rows a narrower reflow adds above the cursor with no history: xterm moves
+  // the cursor down into the room below, and so does the native terminal.
+  resized('narrow-cursor-high', `line before the box\r\n${box}`, [80, 12], [40, 12]),
   resized('narrow-cursor-low', many, [80, 12], [40, 12]),
   resized('widen-after-wrap', many, [40, 12], [80, 12]),
   resized('fewer-rows', many, [80, 12], [80, 6]),

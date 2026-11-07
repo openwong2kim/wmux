@@ -3,7 +3,7 @@
 
 use crate::native_output::NativeOutputChunk;
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
@@ -200,6 +200,27 @@ pub struct NativeTerminal {
     /// The alternate screen was narrowed since the main screen was last seen
     /// at a resize; widening it would bring back cells only xterm kept.
     alt_narrowed: bool,
+}
+
+/// Whether a resize to `cols` reflows a row below the cursor's paragraph on
+/// this grid: a soft-wrapped row there, either way, or narrower, a row with
+/// content past the new width.
+fn reflows_below_cursor<T: GridCell>(grid: &Grid<T>, cols: usize) -> bool {
+    let old = grid.columns();
+    if cols == old {
+        return false;
+    }
+    let last = Column(old - 1);
+    let lines = grid.screen_lines() as i32;
+    let mut y = grid.cursor.point.line.0;
+    while y + 1 < lines && grid[Line(y)][last].flags().contains(Flags::WRAPLINE) {
+        y += 1;
+    }
+    ((y + 1)..lines).any(|y| {
+        let row = &grid[Line(y)];
+        row[last].flags().contains(Flags::WRAPLINE)
+            || (cols < old && (cols..old).any(|x| !row[Column(x)].is_empty()))
+    })
 }
 
 /// The longest unfinished sequence `feed_xterm` holds for its next bytes.
@@ -617,14 +638,6 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // Rows a narrower reflow adds above the cursor go into Alacritty's
-        // history even with room below; xterm moves the cursor down instead.
-        let before = |term: &Term<VoidListener>| {
-            [term.grid(), term.inactive_grid()].map(|grid| {
-                let room = grid.cursor.point.line.0 + 1 < grid.screen_lines() as i32;
-                (grid.history_size(), room)
-            })
-        };
         // vte holds bytes back inside a synchronized update; xterm parsed them
         // at the old size. Apply them first, then re-enter the update.
         let synchronized = self.parser.sync_timeout().pending_timeout();
@@ -656,19 +669,22 @@ impl NativeTerminal {
         } else {
             self.alt_narrowed = false;
         }
-        let start = before(term);
+        // A paragraph below the cursor's that reflows: xterm moves its cursor
+        // row by the rows that adds or removes as if they were above it, off
+        // the cursor's content, where Alacritty keeps the cursor on it.
+        let primary = if term.mode().contains(TermMode::ALT_SCREEN) {
+            term.inactive_grid()
+        } else {
+            term.grid()
+        };
+        if reflows_below_cursor(primary, cols as usize) {
+            self.refusal.get_or_insert(
+                "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
+            );
+        }
         term.resize(size);
-        let end = before(term);
         if synchronized {
             self.parser.advance(term, b"\x1b[?2026h");
-        }
-        if start
-            .iter()
-            .zip(end.iter())
-            .any(|(&(history, room), &(after, _))| room && after > history)
-        {
-            self.refusal
-                .get_or_insert("unsupported-reflow: a resize scrolled rows xterm keeps on screen");
         }
         Ok(())
     }
@@ -1364,7 +1380,7 @@ pub(crate) fn fed_for_test(
 mod tests {
     use super::{Size, XtermFeed};
     use alacritty_terminal::event::VoidListener;
-    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::{Processor, Timeout};
