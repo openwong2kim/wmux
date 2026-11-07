@@ -679,7 +679,8 @@ describe('PlaywrightEngine reuse of an attached page', () => {
       detach: vi.fn().mockResolvedValue(undefined),
     });
     const ctx = {
-      pages: vi.fn().mockImplementation(() => (guestUp ? [shellPage, guestPage] : [shellPage])),
+      // Like Playwright: a closed Page is no longer listed.
+      pages: vi.fn().mockImplementation(() => (guestUp && !closed ? [shellPage, guestPage] : [shellPage])),
       newCDPSession: vi.fn().mockImplementation(async (p: FakePage) => {
         if (p === guestPage) {
           guestSessions++;
@@ -816,13 +817,12 @@ describe('PlaywrightEngine reuse of an attached page', () => {
     expect(dropListeners).toEqual([]);
   });
 
-  it('a closed Page is not reused', async () => {
+  it('a closed Page is never handed out again', async () => {
     const engine = await engineFor();
     await lookup(engine);
-    const matched = guestSessions;
     closed = true;
-    await lookup(engine);
-    expect(guestSessions).toBeGreaterThan(matched); // matched again
+    const again = await lookup(engine);
+    expect(again.page).toBeNull();
   });
 
   it('a Page that appears while a match is running is not missed', async () => {
@@ -841,6 +841,7 @@ describe('PlaywrightEngine reuse of an attached page', () => {
     const engine = await engineFor();
     guestUp = false;
     let settled = false;
+    let waitedMs = 100;
     const done = priv(engine).getPage().then(() => { settled = true; });
     await vi.advanceTimersByTimeAsync(100); // inside attempt 1's wait
     connected = false;
@@ -851,8 +852,13 @@ describe('PlaywrightEngine reuse of an attached page', () => {
     expect(pageListeners).toEqual([]);
     expect(dropListeners).toEqual([]);
     connected = true;
-    for (let i = 0; i < 400 && !settled; i++) await vi.advanceTimersByTimeAsync(10);
+    for (let i = 0; i < 400 && !settled; i++) {
+      await vi.advanceTimersByTimeAsync(10);
+      waitedMs += 10;
+    }
     await done;
+    // 2,500 ms when every wait runs out its bound (see above); 400 less here.
+    expect(waitedMs).toBeLessThanOrEqual(2_200);
   });
 });
 

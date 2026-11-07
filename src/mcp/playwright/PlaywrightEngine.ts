@@ -424,7 +424,7 @@ export class PlaywrightEngine {
    */
   private async matchPinnedPage(pages: Page[], targetId: string, url: string): Promise<Page | null> {
     // A Page already proven to be this target is returned without a probe.
-    const proven = pages.find((p) => this.targetOfPage.get(p) === targetId && !p.isClosed());
+    const proven = pages.find((p) => this.targetOfPage.get(p) === targetId);
     if (proven) return proven;
     const byUrl = pages.filter((p) => p.url() === url);
     const candidates = byUrl.length > 0 ? byUrl : pages;
@@ -738,23 +738,43 @@ export class PlaywrightEngine {
   }
 
   /**
-   * Run `match` now, and again whenever Playwright reports a new Page, until it
-   * finds one, `boundMs` has passed, or the connection drops. Replaces a fixed
-   * wait after an attach: a Page that already exists is returned at once.
-   * When the first match finds nothing, listening starts and the pages are
-   * matched again before any wait, so a Page that appeared meanwhile is not
-   * missed.
+   * Find the Page of a target just attached: match the pages there are now,
+   * then each Page that appears after, until one matches, `boundMs` has passed,
+   * or the connection drops. Replaces a fixed wait after an attach: a Page
+   * that already exists is returned at once. Each Page is matched once:
+   * listening starts after the first match, and any Page that appeared during
+   * it is matched next, before any wait. The bound ends with one last look,
+   * which also covers a Page in a context created during the wait.
+   *
+   * Strict surface targeting (#517): with an explicit surfaceId, the Page must
+   * be proven to be `targetId` (URL only narrows the candidates); without one,
+   * any non-shell Page.
    */
-  private async waitForMatchingPage(
-    match: (pages: Page[]) => Promise<Page | null> | Page | null,
+  private async waitForAttachedPage(
+    surfaceId: string | undefined,
+    targetId: string,
+    url: string,
     boundMs: number,
-  ): Promise<Page | null> {
+  ): Promise<{ page: Page | null; pageCount: number }> {
     const browser = this.browser;
-    if (!browser) return null;
+    let pageCount = 0;
+    if (!browser) return { page: null, pageCount };
     const deadline = Date.now() + boundMs;
-    const first = await match(this.getAllPages());
-    if (first) return first;
-    if (this.browser !== browser || !browser.isConnected()) return null;
+    const seen = new Set<Page>();
+    const matchNew = async (): Promise<Page | null> => {
+      const all = this.getAllPages();
+      pageCount = all.length;
+      const fresh = all.filter((p) => !seen.has(p));
+      for (const p of fresh) seen.add(p);
+      if (fresh.length === 0) return null;
+      return surfaceId
+        ? this.matchPinnedPage(fresh, targetId, url)
+        : fresh.find((p) => !this.isShellPage(p.url())) ?? null;
+    };
+    const dropped = () => this.browser !== browser || !browser.isConnected();
+
+    const first = await matchNew();
+    if (first || dropped()) return { page: first, pageCount };
     let changed = false;
     let wake: (() => void) | null = null;
     const onChange = () => {
@@ -767,24 +787,22 @@ export class PlaywrightEngine {
     try {
       for (;;) {
         changed = false;
-        const page = await match(this.getAllPages());
-        if (page) return page;
-        if (this.browser !== browser || !browser.isConnected()) return null;
+        const page = await matchNew();
+        if (page || dropped()) return { page, pageCount };
         const left = deadline - Date.now();
-        if (left <= 0) return null;
-        if (!changed) {
-          await new Promise<void>((resolve) => {
-            const timer = setTimeout(() => {
-              wake = null;
-              resolve();
-            }, left);
-            wake = () => {
-              clearTimeout(timer);
-              wake = null;
-              resolve();
-            };
-          });
-        }
+        if (left <= 0) return { page: null, pageCount };
+        if (changed) continue;
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            wake = null;
+            resolve();
+          }, left);
+          wake = () => {
+            clearTimeout(timer);
+            wake = null;
+            resolve();
+          };
+        });
       }
     } finally {
       for (const c of contexts) c.off('page', onChange);
@@ -1582,20 +1600,15 @@ export class PlaywrightEngine {
           console.error(`[PlaywrightEngine] Attached to target ${webviewTarget.targetId}`);
         }
 
-        // Strict surface targeting (#517): with an explicit surfaceId, match
-        // the attached page by the pinned targetId (URL only as an unambiguous
-        // fallback) instead of "any non-shell page". The Page may exist already
-        // (a target Playwright attached itself, or one proven on an earlier
-        // call, which matches without a probe) or appear shortly after the
-        // attach, so match now and on each new Page, within the bound.
-        const target = webviewTarget;
-        let pageCount = 0;
-        const matchedPage = await this.waitForMatchingPage((pages) => {
-          pageCount = pages.length;
-          return surfaceId
-            ? this.matchPinnedPage(pages, target.targetId, target.url)
-            : pages.find((p) => !this.isShellPage(p.url())) ?? null;
-        }, POST_ATTACH_PAGE_WAIT_MS);
+        // The Page may exist already (a target Playwright attached itself, or
+        // one proven on an earlier call, which matches without a probe) or
+        // appear shortly after the attach (see waitForAttachedPage).
+        const { page: matchedPage, pageCount } = await this.waitForAttachedPage(
+          surfaceId,
+          webviewTarget.targetId,
+          webviewTarget.url,
+          POST_ATTACH_PAGE_WAIT_MS,
+        );
         console.error(`[PlaywrightEngine] After attach: ${pageCount} pages`);
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page after attach: ${matchedPage.url()}`);
@@ -1689,17 +1702,13 @@ export class PlaywrightEngine {
 
         console.error(`[PlaywrightEngine] Attached to target ${jsonTarget.id} via /json`);
 
-        // Strict surface targeting (#517): pinned surface matches by targetId
-        // (URL only when unambiguous) — never "any non-shell page". Wait a
-        // little for Playwright to process the attached target.
-        let pageCount = 0;
-        const target = jsonTarget;
-        const matchedPage = await this.waitForMatchingPage((pages) => {
-          pageCount = pages.length;
-          return surfaceId
-            ? this.matchPinnedPage(pages, target.id, target.url)
-            : pages.find((p) => !this.isShellPage(p.url())) ?? null;
-        }, JSON_ATTACH_PAGE_WAIT_MS);
+        // Give Playwright a little time to process the attached target.
+        const { page: matchedPage, pageCount } = await this.waitForAttachedPage(
+          surfaceId,
+          jsonTarget.id,
+          jsonTarget.url,
+          JSON_ATTACH_PAGE_WAIT_MS,
+        );
         console.error(`[PlaywrightEngine] After /json attach: ${pageCount} pages`);
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page via /json attach: ${matchedPage.url()}`);
