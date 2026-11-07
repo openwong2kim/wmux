@@ -403,6 +403,12 @@ impl XtermFeed {
                             self.mouse = if set { protocol } else { 0 };
                         }
                         Some(47 | 1047 | 1049) => {
+                            if set && !self.alt_screen {
+                                // xterm's alternate screen starts with its own
+                                // full region; Alacritty keeps one region, so
+                                // the alternate screen inherits the main one's.
+                                self.divergent |= self.main_margins;
+                            }
                             if !set && self.alt_screen {
                                 // xterm clears the alternate screen's region on
                                 // leaving it; Alacritty keeps one region for
@@ -1612,6 +1618,23 @@ mod tests {
             ("c".into(), "d".into(), String::new())
         );
         assert!(feed.divergent);
+    }
+
+    #[test]
+    fn alacritty_carries_the_main_region_into_the_alternate_screen() {
+        // xterm's alternate screen scrolls in full and ends with a, b, c;
+        // Alacritty keeps rows 1-2 as the region, so LF on row 3 stays there.
+        let chunks = ["\x1b[1;2r\x1b[?1049h\x1b[3;1Ha\r\nb\r\nc"];
+        let (term, _, feed) = feed_with(&chunks);
+        assert_eq!(
+            (row(&term, 0), row(&term, 1), row(&term, 2)),
+            (String::new(), String::new(), "c".into())
+        );
+        assert!(feed.divergent);
+        // A region the alternate screen sets for itself is no divergence.
+        assert!(!feed_with(&["\x1b[?1049h\x1b[1;2r"]).2.divergent);
+        // Nor is the full region it starts with when the main screen has one.
+        assert!(!feed_with(&["\x1b[1;3r\x1b[?1049h"]).2.divergent);
     }
 
     #[test]
