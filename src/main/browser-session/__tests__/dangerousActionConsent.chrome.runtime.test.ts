@@ -10,6 +10,7 @@ import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy } from '../../../shared/browserHostPolicy';
 import { canonicalUrlHost } from '../../pipe/handlers/browserConsent.rpc';
 import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
+import { accountDownloads, pinDownloadDir } from '../../../test-utils/chromeDownloads';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
 // The approved download against a REAL protected Chrome (production launcher,
@@ -58,11 +59,17 @@ async function targetIdOf(p: Page): Promise<string> {
   }
 }
 
+/** What the fixture serves as downloads; the account's real Downloads folder is checked for these, read only. */
+const SERVED_FILES = ['file.bin', 'slow.bin'];
+let accountBefore = new Set<string>();
+
 beforeAll(async () => {
+  accountBefore = accountDownloads(SERVED_FILES);
   server = http.createServer(serve);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   port = (server.address() as AddressInfo).port;
   const dir = mkdtempSync(join(tmpdir(), 'wmux-consent-chrome-'));
+  pinDownloadDir(dir);
   launcher = new ChromeLauncher(dir, {
     portEnvVar: null,
     profileName: 'consent-download',
@@ -92,6 +99,8 @@ afterAll(async () => {
   await browser?.close().catch(() => undefined);
   await launcher?.dispose();
   server?.close();
+  // Every download went to a temp folder: nothing new in the account's own.
+  expect([...accountDownloads(SERVED_FILES)].filter((name) => !accountBefore.has(name))).toEqual([]);
 });
 
 describe('approved download (real Chrome)', { timeout: 60_000 }, () => {
