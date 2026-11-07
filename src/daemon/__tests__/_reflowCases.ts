@@ -57,3 +57,16 @@ export const reflowCases: Case[] = [
   // wrapped there, so still native.
   script('alt-after-main-narrow', [80, 24], [`${rows(3, 30)}`, [40, 24], `\x1b[?1049h\x1b[H${rows(2, 30)}`, [80, 24]]),
 ];
+
+/**
+ * Known gaps: Rust still answers these and differs from xterm. Each test
+ * asserts the divergence, so it fails, and moves to `reflowCases`, once the
+ * fix it names lands.
+ */
+export const knownGaps: Case[] = [
+  // xterm counts a printed space as content and wraps a padded row's spaces
+  // onto the next row when narrower; Alacritty cannot tell a printed space
+  // from a blank cell and drops them. Fixed by S0's print-time marker for
+  // printed blanks (after its charset PR).
+  script('trailing-spaces', [80, 24], [`x${' '.repeat(60)}\r\n${prompt}`, [40, 24]]),
+];
