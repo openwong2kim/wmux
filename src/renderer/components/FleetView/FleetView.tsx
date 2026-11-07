@@ -6,7 +6,7 @@ import { usageWindowsText } from '../StatusBar/UsageWidget';
 import {
   selectFleetBoard,
   groupFleetByDevice,
-  withoutUnreachableHosts,
+  selectDownHostAway,
   selectHookRunningByPtyId,
   selectUnverifiablePaneMinutes,
   fleetTargetPtyId,
@@ -177,14 +177,16 @@ export default function FleetView() {
   const fleetGroupBy = useStore((s) => s.fleetGroupBy);
   const setFleetGroupBy = useStore((s) => s.setFleetGroupBy);
   // The paired PCs in the rail's order, flattened to primitives (id, name,
-  // offline, last answer while offline) so a poll tick that only moves a
-  // live host's fetch time does not re-render Fleet. Read in both groupings:
-  // an unreachable PC's rows leave the list either way.
-  const deviceHostCells = useStore(useShallow((s) => s.pcRailHosts.flatMap((h) => {
-    const status = s.pcRailHostStatus[h.id] ?? 'reachable';
-    const offline = status !== 'connected' && status !== 'reachable';
-    return [h.id, h.label, offline, offline ? s.pcRailFeeds[h.id]?.fetchedAt ?? null : null];
-  })));
+  // down, last answer while down) so a poll tick that only moves a live
+  // host's fetch time does not re-render Fleet. Down is the drop notice's
+  // rule (selectDownHostIds), so the head turns Disconnected on its tick.
+  const deviceHostCells = useStore(useShallow((s) => {
+    const down = selectDownHostIds(s);
+    return s.pcRailHosts.flatMap((h) => {
+      const offline = down.has(h.id);
+      return [h.id, h.label, offline, offline ? s.pcRailFeeds[h.id]?.fetchedAt ?? null : null];
+    });
+  }));
   const deviceHosts = useMemo(() => {
     const out: FleetDeviceHost[] = [];
     for (let i = 0; i < deviceHostCells.length; i += 4) {
@@ -230,7 +232,7 @@ export default function FleetView() {
   // fleet.triage RPC also calls, so what an agent is told matches this screen.
   // The output stamp moves on every chunk, so it is read on the minute tick
   // (`now`) rather than subscribed; elapsed time is minute-granular anyway.
-  const { panes, groups: boardGroups } = useMemo(() => selectFleetBoard({
+  const { panes, groups } = useMemo(() => selectFleetBoard({
       workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
       surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
       commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds, outdatedRemoteKeys,
@@ -240,11 +242,9 @@ export default function FleetView() {
     surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
     commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds, outdatedRemoteKeys, unverifiableMinutes,
     surfaceLastMessage, now, fleetSortMode]);
-  // A PC the rail cannot reach: Open on its rows could not reach it, so they
-  // leave every section and chip until it answers; `away` counts them for its
-  // device head. fleet_triage and the rail badge still read the board.
-  const offlineHostIds = useMemo(() => new Set(deviceHosts.filter((h) => h.offline).map((h) => h.id)), [deviceHosts]);
-  const { groups, away } = useMemo(() => withoutUnreachableHosts(boardGroups, offlineHostIds), [boardGroups, offlineHostIds]);
+  // What each PC the rail calls down last had, for its device head's note.
+  // Its rows are already off the board, as they are for fleet_triage.
+  const away = useMemo(() => selectDownHostAway({ workspaces, remoteWorkspaces, downHostIds }), [workspaces, remoteWorkspaces, downHostIds]);
   // Every row, unfiltered: where the Hand out… popover reads a pane's state.
   const allRows = useMemo(() => [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle], [groups]);
   // On close (unmount), remember what each pane's status was, so the next open

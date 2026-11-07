@@ -173,19 +173,30 @@ describe('FleetView — the list grouped by device', () => {
     await flushRaf();
     expect(heads().map((h) => h.dataset.fleetDeviceHead)).toEqual(['local', 'host-b']);
     expect(headText(heads()[1])).toBe('office | Online · Running 1 | ');
-    act(() => useStore.setState({ pcRailHostStatus: { 'host-b': 'connected', 'host-off': 'unreachable' } }));
+    act(() => useStore.setState({
+      pcRailHostStatus: { 'host-b': 'connected', 'host-off': 'unreachable' },
+      pcRailFeeds: { 'host-off': { workspaces: [], fetchedAt: null, failedTicks: 2 } },
+    }));
     await flushRaf();
     expect(heads().map(headText)).toContain('home | Disconnected | ');
   });
 
   it('a PC the rail cannot reach leaves the list and the chips in both groupings, and comes back when it answers', async () => {
-    act(() => useStore.setState({
-      pcRailHosts: [{ id: 'host-b', label: 'beta' }],
+    const railTick = (failedTicks: number) => act(() => useStore.setState({
       pcRailHostStatus: { 'host-b': 'unreachable' },
+      pcRailFeeds: { 'host-b': { workspaces: [], fetchedAt: null, failedTicks } },
     }));
+    act(() => useStore.setState({ pcRailHosts: [{ id: 'host-b', label: 'beta' }] }));
+    railTick(1);
     mount();
     await flushRaf();
     const cards = () => [...container.querySelectorAll<HTMLElement>('[data-fleet-card]')].map((el) => el.dataset.workspaceId).sort();
+    // One missed poll is not down: the rows stay, and there is no note.
+    expect(cards()).toEqual(['ws-1', 'ws-2', 'ws-b', 'ws-c']);
+    expect(note('host-b')).toBeNull();
+    // The second, the drop notice's tick: the rows leave and the head says what it had.
+    railTick(2);
+    await flushRaf();
     // Beta's asking row is not on top, and its running row is not listed.
     expect(cards()).toEqual(['ws-1', 'ws-2']);
     expect(chip('attention')).toContain('1');
@@ -197,7 +208,10 @@ describe('FleetView — the list grouped by device', () => {
     await flushRaf();
     expect(cards()).toEqual(['ws-1', 'ws-2']);
     // It answers: the rows are back at once, in either grouping.
-    act(() => useStore.setState({ pcRailHostStatus: { 'host-b': 'connected' } }));
+    act(() => useStore.setState({
+      pcRailHostStatus: { 'host-b': 'connected' },
+      pcRailFeeds: { 'host-b': { workspaces: [], fetchedAt: 2, failedTicks: 0 } },
+    }));
     await flushRaf();
     expect(cards()).toEqual(['ws-1', 'ws-2', 'ws-b', 'ws-c']);
     expect(chip('attention')).toContain('2');
