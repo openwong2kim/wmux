@@ -17,6 +17,12 @@ Local changes:
   wmux's xterm configuration. Other paragraphs retain upstream reflow. Shrinking
   clamps the cursor and clears pending wrap. Clipped fullwidth cells are retained
   to match xterm; the ANSI serializer explicitly refuses an unrepresentable edge.
+- `src/grid/resize.rs` `grow_lines`: more rows pull history rows down only while
+  the cursor is on the bottom row, as xterm does (`Buffer.ts` `resize`, the rows
+  grow branch, lines 196-221 in 6.1.0-beta.336). Otherwise blank rows are added
+  below the cursor and history and both cursors stay put. Upstream always pulled
+  `min(history, added)` rows. The window is rotated rather than scrolled, so no
+  history row is dropped at the scrollback cap.
 
 - `src/term/cell.rs` uses the remaining u16 flag bit for SGR blink;
   `src/term/mod.rs` retains SGR 5, ignores SGR 6 like xterm, and clears blink on SGR 25/reset. This keeps
