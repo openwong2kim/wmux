@@ -483,8 +483,12 @@ interface RpcTarget {
   frame: RpcFrameRef | null;
 }
 
-/** A ref as an RpcTarget. `frames: 'allow'` lets a frame ref through (click, type, fill). */
-function rpcRefTarget(ref: string, scope: BrowserTargetScope, opts?: { frames?: 'allow' }): RpcTarget {
+/**
+ * A ref as an RpcTarget. `frames: 'allow'` lets a frame ref through (click,
+ * type, fill); `frames: 'ignore'` is for a smartRef, whose number is not in
+ * the frame-ref store's number space at all.
+ */
+function rpcRefTarget(ref: string, scope: BrowserTargetScope, opts?: { frames?: 'allow' | 'ignore' }): RpcTarget {
   const safeRef = sanitizeRef(ref, scope, opts);
   const key = browserScopeKey(scope);
   // isOutstandingFrameRef first: it is the cheap answer for the usual top-document ref.
@@ -545,8 +549,14 @@ async function sendForTarget<T>(
  * Exported so other tool modules that interpolate a ref into injected JS
  * (e.g. browser_highlight in inspection.ts) reuse the same guard.
  */
-export function sanitizeRef(ref: string, scope: BrowserTargetScope, opts?: { frames?: 'allow' }): string {
+export function sanitizeRef(ref: string, scope: BrowserTargetScope, opts?: { frames?: 'allow' | 'ignore' }): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw badArgs(`Invalid ref: "${ref}"`);
+  // A smartRef is numbered by browser_smart_snapshot's own count
+  // (rpcSmartDescriptorKey), which nothing keeps apart from the numbers
+  // browser_snapshot gives frame elements, so the frame-ref store says
+  // nothing about it. Its selector is only ever run in the top document,
+  // where no frame element carries a tag.
+  if (opts?.frames === 'ignore') return ref;
   // Every `[data-wmux-ref]` resolution in the tool layer — RPC click, fill,
   // hover, drag, select, scroll, scroll-into-view, the password probe, and
   // browser_highlight — passes through here first, which makes this the one
@@ -731,8 +741,8 @@ async function rpcClick(
   smart = false,
 ): Promise<'touch' | 'mouse'> {
   // Use CDP click: first get element coordinates via JS, then dispatch mouse events.
-  // A smartRef has its own number space, so it never resolves as a frame ref.
-  const target = rpcRefTarget(ref, scope, smart ? undefined : { frames: 'allow' });
+  // A smartRef never resolves as a frame ref: see sanitizeRef's 'ignore'.
+  const target = rpcRefTarget(ref, scope, { frames: smart ? 'ignore' : 'allow' });
   // The handler decides between a tap and a press — it is the side that knows
   // whether a device preset with a touchscreen is on this WebContents — and
   // names which one it sent.
