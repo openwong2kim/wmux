@@ -265,7 +265,14 @@ describe('Edge profile account line', () => {
     });
     const report = await buildDoctorReport(deps);
     const line = report.environment.lines.find((l) => l.label === 'Edge profile account');
-    expect(line).toEqual({ label: 'Edge profile account', value: 'signed in (default)', verdict: 'WARN', hint: EDGE_SIGNED_IN_HINT });
+    expect(line).toEqual({
+      label: 'Edge profile account',
+      value: 'signed in (default)',
+      verdict: 'WARN',
+      hint: "wmux's Edge profile is signed in to a Microsoft account, so agents using it carry that sign-in. " +
+        "If you didn't sign it in yourself, sign it out in edge://settings/profiles.",
+    });
+    expect(line?.hint).toBe(EDGE_SIGNED_IN_HINT);
     expect(JSON.stringify(report)).not.toMatch(/example\.com|0003BFFD|Test User/);
   });
 

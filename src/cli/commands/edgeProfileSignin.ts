@@ -49,5 +49,5 @@ export function edgeProfileDirs(localStateText: string | null): string[] {
 
 /** The `wmux doctor` hint for a signed-in profile. Names no email and no account id. */
 export const EDGE_SIGNED_IN_HINT =
-  "wmux's Edge profile is signed in to a Microsoft account (an automatic sign-in from before this version); " +
-  "agents using it carry that account's sign-in. Sign it out in edge://settings/profiles if you don't want that.";
+  "wmux's Edge profile is signed in to a Microsoft account, so agents using it carry that sign-in. " +
+  "If you didn't sign it in yourself, sign it out in edge://settings/profiles.";
