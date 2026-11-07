@@ -102,6 +102,13 @@ interface CdpInfoResponse {
    */
   wsEndpoint?: string;
   /**
+   * A dedicated Chrome on a debugging pipe: the relay's endpoint and the header
+   * that lets this caller connect once (a one-time token). Present only when
+   * asked for with `relay: true`, which ensureConnected does only when it is
+   * about to connect. Never logged or kept past the connect.
+   */
+  relay?: CdpRelay;
+  /**
    * Live Chrome only: the write-scope policy in force (the agent-window
    * policy). 'agent' means writes are confined to the workspace's own tabs plus
    * lent ones; 'all' is the operator opt-out that restores full write exposure.
@@ -122,6 +129,19 @@ interface CdpInfoResponse {
   /** The policy epoch the protected pane's connection is good for. */
   policyEpoch?: number;
   targets: CdpTargetInfo[];
+}
+
+/** A relay connect: where, and the one-time header that lets this connection in. */
+interface CdpRelay {
+  endpoint: string;
+  headers: Record<string, string>;
+}
+
+function isRelay(value: unknown): value is CdpRelay {
+  const relay = value as CdpRelay | null;
+  return typeof relay?.endpoint === 'string'
+    && typeof relay.headers === 'object' && relay.headers !== null
+    && Object.values(relay.headers).every((v) => typeof v === 'string');
 }
 
 const MAX_CONNECT_RETRIES = 3;
@@ -431,21 +451,24 @@ export class PlaywrightEngine {
     return null;
   }
 
-  async connect(cdpPortOrWsEndpoint: number | string): Promise<void> {
+  async connect(cdpPortOrWsEndpoint: number | string | CdpRelay): Promise<void> {
     // Ports build the HTTP endpoint (dedicated instances, Electron); a ws://
     // string (live-Chrome attach) passes through verbatim — connectOverCDP
-    // accepts both. The short-circuit keys on the resolved endpoint.
+    // accepts both. The short-circuit keys on the resolved endpoint. A relay
+    // connect never short-circuits: one relay endpoint serves every Chrome on
+    // a pipe, so it can't tell them apart; ensureConnected decided to connect.
+    const relay = typeof cdpPortOrWsEndpoint === 'object' ? cdpPortOrWsEndpoint : null;
     const isPort = typeof cdpPortOrWsEndpoint === 'number';
-    const endpoint = isPort ? `http://localhost:${cdpPortOrWsEndpoint}` : cdpPortOrWsEndpoint;
+    const endpoint = relay ? relay.endpoint : isPort ? `http://localhost:${cdpPortOrWsEndpoint}` : (cdpPortOrWsEndpoint as string);
     const samePort = isPort && this.cdpPort === cdpPortOrWsEndpoint;
-    const sameWs = !isPort && this.cdpPort === null && this.connectedEndpoint === endpoint;
+    const sameWs = !isPort && !relay && this.cdpPort === null && this.connectedEndpoint === endpoint;
     if (this.browser && (samePort || sameWs) && this.browser.isConnected()) {
       return;
     }
     await this.disconnect();
     // B0: first real use — initialize playwright-core's module graph now.
     const { chromium } = loadPlaywright();
-    const browser = await this.connectOverCdp(chromium, endpoint, isPort ? cdpPortOrWsEndpoint : null);
+    const browser = await this.connectOverCdp(chromium, endpoint, isPort ? (cdpPortOrWsEndpoint as number) : null, relay?.headers);
     // The user may have stopped this op while the attach was in flight; the
     // Stop's disconnect ran before there was a browser to drop. Do not keep
     // a connection the stopped op would go on to drive.
@@ -457,9 +480,9 @@ export class PlaywrightEngine {
     this.browser = browser;
     // cdpPort stays null on ws connections: findViaJsonEndpoint (HTTP /json)
     // has no surface to talk to there and is gated on this.cdpPort.
-    this.cdpPort = isPort ? cdpPortOrWsEndpoint : null;
+    this.cdpPort = isPort ? (cdpPortOrWsEndpoint as number) : null;
     this.connectedEndpoint = endpoint;
-    console.error(`[PlaywrightEngine] Connected to CDP at ${isPort ? `port ${cdpPortOrWsEndpoint}` : 'ws endpoint'}`);
+    console.error(`[PlaywrightEngine] Connected to CDP at ${isPort ? `port ${cdpPortOrWsEndpoint}` : relay ? 'the pipe relay' : 'ws endpoint'}`);
 
     // Enable auto-attach so Electron webview targets become discoverable as Playwright pages.
     // Without this, <webview> tags in Electron are separate renderer processes that
@@ -495,9 +518,10 @@ export class PlaywrightEngine {
     chromium: ReturnType<typeof loadPlaywright>['chromium'],
     endpoint: string,
     cdpPort: number | null,
+    headers?: Record<string, string>,
   ): Promise<Browser> {
     try {
-      return await chromium.connectOverCDP(endpoint);
+      return await (headers ? chromium.connectOverCDP(endpoint, { headers }) : chromium.connectOverCDP(endpoint));
     } catch (err) {
       if (cdpPort === null || !/Browser context management is not supported/.test(String(err))) throw err;
     }
@@ -600,11 +624,15 @@ export class PlaywrightEngine {
     }
 
     let lastError: unknown = null;
+    // A relay token is minted on every call that asks for one: ask only when
+    // about to connect. A live connection's check asks without, and asks again
+    // only if it has to reconnect to a Chrome on the pipe.
+    let askRelay = !reusable;
     for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
       try {
         const info = (await sendRpc(
           'browser.cdp.info',
-          workspaceId ? { workspaceId } : {},
+          { ...(workspaceId && { workspaceId }), ...(askRelay && { relay: true }) },
         )) as CdpInfoResponse;
         this.cacheShellUrl(info);
         const profile = typeof info.profile === 'string' ? info.profile : undefined;
@@ -624,6 +652,13 @@ export class PlaywrightEngine {
         }
         // Same (workspace, profile, policy epoch): keep the live connection.
         if (reusable && profile === this.connectedProfile && policyEpoch === this.connectedPolicyEpoch) return;
+        // A Chrome on the pipe (no port, no live endpoint): ask again for a
+        // token, and decide on that answer, which may name another profile.
+        if (!askRelay && typeof info.wsEndpoint !== 'string' && typeof info.cdpPort !== 'number') {
+          askRelay = true;
+          attempt--;
+          continue;
+        }
         // The profile moved, or a protected pane's policy changed: drop the old
         // browser and every Page cached on it, even if the endpoint looks the
         // same, so nothing keeps driving under the previous terms.
@@ -632,6 +667,15 @@ export class PlaywrightEngine {
           && (profile !== this.connectedProfile || policyEpoch !== this.connectedPolicyEpoch)
         ) {
           await this.disconnect();
+        }
+        // A Chrome on the pipe is reached through the relay, with this call's token.
+        if (isRelay(info.relay)) {
+          await this.connect({ endpoint: info.relay.endpoint, headers: info.relay.headers });
+          this.connectedWorkspaceId = workspaceId;
+          this.connectedProfile = profile;
+          this.connectedPolicyEpoch = policyEpoch;
+          if (policyEpoch !== undefined) await this.denyDownloads();
+          return;
         }
         // Live-Chrome attach reports a ws endpoint instead of a port.
         if (typeof info.wsEndpoint === 'string' && info.wsEndpoint.startsWith('ws')) {

@@ -299,7 +299,8 @@ describe('PlaywrightEngine CDP session lifecycle', () => {
       'browser.cdp.info did not disclose a usable CDP endpoint to this caller',
     );
     expect(mockSendRpc).toHaveBeenCalledTimes(1);
-    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-caller' });
+    // About to connect, so it asks for a relay token too.
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-caller', relay: true });
     expect(mockConnectOverCDP).not.toHaveBeenCalled();
   });
 
@@ -1466,8 +1467,8 @@ describe('PlaywrightEngine read-path workspace scoping — scoped cdp.info (#580
       workspaceId: 'ws-B',
       openerKey: expect.any(String),
     }, CHROME_START_RPC_TIMEOUT_MS);
-    // And it asked main to scope the target list to the caller.
-    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-B' });
+    // And it asked main to scope the target list to the caller (connecting, so with a relay ask).
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-B', relay: true });
     expect(opened).toBe(true);
   }, 15_000);
 
@@ -1899,6 +1900,99 @@ describe('PlaywrightEngine live-Chrome ws endpoint (Phase 3)', () => {
   });
 });
 
+
+describe('PlaywrightEngine pipe relay (C3)', () => {
+  const RELAY = 'ws+unix:///tmp/wmux-cdp-abc123/r.sock:/devtools/browser/relay';
+  let minted = 0;
+  /** cdp.info for a Chrome on the pipe: a fresh token only when asked for one. */
+  const pipeInfo = (profile: string) => (params?: { relay?: boolean }) => ({
+    workspaceBackend: 'chrome',
+    targetsScoped: true,
+    targets: [],
+    profile,
+    ...(params?.relay && { relay: { endpoint: RELAY, headers: { Authorization: `Bearer tok-${++minted}` } } }),
+  });
+  const cdpInfoCalls = () => mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.cdp.info').map((c) => c[1]);
+
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    __resetSurfaceRoutingForTesting();
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+    minted = 0;
+  });
+
+  it('connects through the relay with its one-time header, preferring it over a port', async () => {
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) =>
+      Promise.resolve(method === 'browser.cdp.info' ? { ...pipeInfo('p1')(params), cdpPort: 9222 } : {}),
+    );
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+    await PlaywrightEngine.getInstance().ensureConnected('ws-a');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+    expect(mockConnectOverCDP).toHaveBeenCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-1' } });
+  });
+
+  it('a check on a live connection asks for no token, and the connection is kept', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    await engine.ensureConnected('ws-a');
+    await engine.ensureConnected('ws-a');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }, { workspaceId: 'ws-a' }, { workspaceId: 'ws-a' }]);
+    expect(minted).toBe(1);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rebind asks again for a token and decides on that answer, even when it names yet another profile', async () => {
+    const answers = [pipeInfo('p1'), pipeInfo('p2'), pipeInfo('p3')];
+    let at = 0;
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) =>
+      Promise.resolve(method === 'browser.cdp.info' ? answers[Math.min(at++, answers.length - 1)](params) : {}),
+    );
+    const first = makeFakeBrowser([]);
+    const second = makeFakeBrowser([]);
+    mockConnectOverCDP.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    // The check (no token) says p2; the token-bearing answer says p3: p3 it is.
+    await engine.ensureConnected('ws-a');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }, { workspaceId: 'ws-a' }, { workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(2);
+    expect(mockConnectOverCDP).toHaveBeenLastCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-2' } });
+    expect((engine as unknown as { connectedProfile?: string }).connectedProfile).toBe('p3');
+    expect(first.close).toHaveBeenCalled();
+  });
+
+  it('a Chrome on the pipe that does not disclose a relay to this caller fails at once, without retrying', async () => {
+    mockSendRpc.mockImplementation((method: string) => Promise.resolve(method === 'browser.cdp.info' ? { workspaceBackend: 'chrome', targets: [], profile: 'p1' } : {}));
+    await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('did not disclose a usable CDP endpoint');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
+  });
+
+  it('a refused relay connect is retried with a fresh token, and no token reaches the log', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    mockConnectOverCDP.mockRejectedValue(new Error(`browserType.connectOverCDP: WebSocket error: ${RELAY} 401 Unauthorized`));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    try {
+      const failing = PlaywrightEngine.getInstance().ensureConnected('ws-a').then(() => null, (err: Error) => err);
+      await vi.runAllTimersAsync();
+      const err = await failing;
+      expect(err?.message).toBe('[PlaywrightEngine] Failed to connect after 3 attempts');
+    } finally {
+      vi.useRealTimers();
+    }
+    const tokens = mockConnectOverCDP.mock.calls.map((c) => (c[1] as { headers: { Authorization: string } }).headers.Authorization);
+    expect(tokens).toEqual(['Bearer tok-1', 'Bearer tok-2', 'Bearer tok-3']);
+    for (const call of logged.mock.calls) expect(JSON.stringify(call)).not.toMatch(/tok-\d/);
+    logged.mockRestore();
+  });
+});
 
 // ── Chrome-backend lifecycle mirror (dogfood P1: inline events went silent) ─
 describe('PlaywrightEngine lifecycle mirror (chrome backend)', () => {
