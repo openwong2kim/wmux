@@ -2,12 +2,13 @@ import { performance } from 'node:perf_hooks';
 import type { Readable, Writable } from 'node:stream';
 import type { CdpConnection, CdpEventHandler } from './CdpSocket';
 import type { CdpPipeDiagnostics } from '../../shared/memoryDiagnostics';
+import { CdpPipeStallWatch, STALL_MS, type WatchedClient } from './CdpPipeStallWatch';
 
 // ---------------------------------------------------------------------------
 // One debugging pipe (`--remote-debugging-pipe`: the browser reads fd 3 and
 // writes fd 4, one JSON message per NUL-terminated frame) shared by several
 // clients: main's own connections (the launcher's watcher, download guard,
-// probes) and external ones (CdpPipeEndpoint).
+// probes) and external ones (CdpPipeRelay).
 //
 // Ownership, not broadcast:
 //  - Every client gets a browser session of its own (Target.attachToBrowserTarget),
@@ -26,6 +27,8 @@ import type { CdpPipeDiagnostics } from '../../shared/memoryDiagnostics';
 //  - The mux's own commands use ids from MUX_ID_BASE up; their replies are
 //    consumed here and never reach a client (a client that sees an id it never
 //    sent may fail on it).
+//  - A target waiting for an external client that stopped answering is let go
+//    for that client, on evidence only (CdpPipeStallWatch, C2c).
 //  - Targets themselves stay visible to every client, as on the port: target
 //    discovery and Target.getTargets are browser-wide. A TargetGrant (C3's
 //    caller identity with C2b's rules) narrows that per client when given.
@@ -81,8 +84,19 @@ export interface ClientCommand {
   sessionId?: string;
 }
 
+/**
+ * Who an external client connected as: what browser.cdp.info resolved for the
+ * caller its relay token was minted for. Carried on the client for a
+ * TargetGrant to judge by; nothing narrows on it yet.
+ */
+export interface CallerIdentity {
+  readonly workspaceId?: string;
+  readonly profile?: string;
+  readonly protectedEpoch?: number;
+}
+
 /** A client as a filter or hook sees it. */
-export interface ClientRef { readonly kind: 'internal' | 'external'; readonly label: string }
+export interface ClientRef { readonly kind: 'internal' | 'external'; readonly label: string; readonly identity?: CallerIdentity }
 
 /**
  * What a filter does with a client's command: refuse it (the client gets the
@@ -165,16 +179,16 @@ export type TargetGrant = (client: ClientRef, targetId: string) => boolean;
 /** Shown by `wmux doctor --performance` (perf.status). */
 export type CdpPipeCounters = CdpPipeDiagnostics;
 
-const totals: Required<CdpPipeCounters> = { frames: 0, bytes: 0, parseMsTotal: 0, parseMsMax: 0, largestFrameBytes: 0, dropped: {}, refused: 0, absorbed: {}, refusals: {} };
+const totals: Required<CdpPipeCounters> = { frames: 0, bytes: 0, parseMsTotal: 0, parseMsMax: 0, largestFrameBytes: 0, dropped: {}, refused: 0, absorbed: {}, refusals: {}, watchdog: {} };
 
 /** Copies of the counters across every mux, for the app's diagnostics. */
 export function cdpPipeCounters(): CdpPipeCounters {
-  return { ...totals, dropped: { ...totals.dropped }, absorbed: { ...totals.absorbed }, refusals: { ...totals.refusals } };
+  return { ...totals, dropped: { ...totals.dropped }, absorbed: { ...totals.absorbed }, refusals: { ...totals.refusals }, watchdog: { ...totals.watchdog } };
 }
 
 /** Tests only. */
 export function resetCdpPipeCounters(): void {
-  Object.assign(totals, { frames: 0, bytes: 0, parseMsTotal: 0, parseMsMax: 0, largestFrameBytes: 0, dropped: {}, refused: 0, absorbed: {}, refusals: {} });
+  Object.assign(totals, { frames: 0, bytes: 0, parseMsTotal: 0, parseMsMax: 0, largestFrameBytes: 0, dropped: {}, refused: 0, absorbed: {}, refusals: {}, watchdog: {} });
 }
 
 function bump(record: Record<string, number>, key: string): void {
@@ -242,6 +256,9 @@ interface Pending {
 
 /** One client of the mux: its browser session and the sessions it owns. */
 abstract class Client {
+  /** For the stall watch (external clients on a WebSocket only). */
+  readonly ping?: () => void;
+  readonly drain?: () => { buffered: number; flushed: number };
   browserSession: string | null = null;
   /** Browser sessions the client attached itself (Target.attachToBrowserTarget), beside the mux's. */
   readonly ownBrowserSessions = new Set<string>();
@@ -279,6 +296,7 @@ export class CdpPipeMux {
   private nextOwnId = MUX_ID_BASE;
   private carry: Buffer[] = [];
   private open = true;
+  private readonly watch: CdpPipeStallWatch;
 
   constructor(
     private readonly toBrowser: Writable,
@@ -294,8 +312,16 @@ export class CdpPipeMux {
       targetGrant?: TargetGrant;
       /** A client left (closed, or dropped); called once, after it is detached. */
       onClientGone?: (client: ClientRef) => void;
+      /** How long a waiting target waits on a client with no sign of life (C2c); tests shorten it. */
+      stallMs?: number;
     } = {},
   ) {
+    this.watch = new CdpPipeStallWatch({
+      stallMs: opts.stallMs ?? STALL_MS,
+      // The mux's own command: its reply is consumed here, whoever has gone since.
+      resume: (session) => { this.ownCommand('Runtime.runIfWaitingForDebugger', {}, session).catch(() => undefined); },
+      count: (reason) => bump(totals.watchdog, reason),
+    });
     fromBrowser.on('data', (chunk: Buffer) => this.onData(chunk));
     const end = () => this.end('connection closed');
     fromBrowser.once('end', end);
@@ -318,12 +344,22 @@ export class CdpPipeMux {
    * returned `receive` takes each frame it sends. `close` ends it and frees
    * every session it owned.
    */
-  attachExternal(label: string, send: (text: string) => void, onGone: (reason: string) => void): { receive: (text: string) => void; close: () => void } {
-    const client = new ExternalClient(label, send, onGone);
+  attachExternal(
+    label: string,
+    send: (text: string) => void,
+    onGone: (reason: string) => void,
+    /**
+     * For the stall watch: a WebSocket ping (its answer goes to the returned
+     * `pong`) and the socket's backlog. `identity`: who the client connected as.
+     */
+    watched: WatchedClient & { identity?: CallerIdentity } = {},
+  ): { receive: (text: string) => void; close: () => void; pong: () => void } {
+    const client = new ExternalClient(label, send, onGone, watched);
     this.clients.add(client);
     return {
       receive: (text) => this.fromExternal(client, text),
       close: () => this.release(client, 'closed'),
+      pong: () => this.watch.pong(client),
     };
   }
 
@@ -413,6 +449,8 @@ export class CdpPipeMux {
     if (this.nextClientCommandId >= MUX_ID_BASE) this.nextClientCommandId = 1;
     const targetId = command.method === 'Target.attachToTarget' && typeof target === 'string' ? { targetId: target } : {};
     this.pending.set(id, { client, clientId, method: command.method, ...targetId });
+    // Only a resume that goes to the browser ends the watch on that session.
+    if (command.method === 'Runtime.runIfWaitingForDebugger' && command.sessionId !== undefined) this.watch.resumed(client, command.sessionId);
     this.write({ id, method: command.method, params: command.params, sessionId: session });
   }
 
@@ -439,6 +477,7 @@ export class CdpPipeMux {
     client.ownBrowserSessions.clear();
     client.browserSession = null;
     client.attaching = null;
+    this.watch.forget(client);
     for (const [id, p] of this.pending) if (p.client === client) this.pending.delete(id);
   }
 
@@ -491,6 +530,7 @@ export class CdpPipeMux {
 
   private fromExternal(client: Client, text: string): void {
     if (client.closed) return;
+    this.watch.frame(client);
     let frame: Frame;
     try {
       frame = JSON.parse(text) as Frame;
@@ -638,6 +678,9 @@ export class CdpPipeMux {
       const child = (frame.params as { sessionId?: unknown } | undefined)?.sessionId;
       if (typeof child === 'string') {
         this.adopt(owner, child);
+        if (owner.kind === 'external' && (frame.params as { waitingForDebugger?: unknown }).waitingForDebugger === true && this.owner.get(child) === owner) {
+          this.watch.waiting(owner, child);
+        }
         const info = (frame.params as { targetInfo?: { targetId?: unknown; browserContextId?: unknown } } | undefined)?.targetInfo;
         if (typeof info?.targetId === 'string' && this.owner.get(child) === owner) {
           owner.targets.set(child, { targetId: info.targetId, ...(typeof info.browserContextId === 'string' && { browserContextId: info.browserContextId }) });
@@ -654,6 +697,7 @@ export class CdpPipeMux {
         owner.targets.delete(child);
         owner.frames.delete(child);
         owner.ownBrowserSessions.delete(child);
+        this.watch.detached(owner, child);
       }
     }
   }
@@ -663,6 +707,7 @@ export class CdpPipeMux {
     this.open = false;
     for (const waiter of this.own.values()) waiter.reject(new Error(reason));
     this.own.clear();
+    this.watch.close();
     for (const client of [...this.clients]) {
       const hadSession = client.browserSession !== null;
       this.detachClient(client);
@@ -692,9 +737,22 @@ function withoutSession(frame: Frame, text: string, session: string | null): str
 }
 
 class ExternalClient extends Client {
-  constructor(label: string, private readonly sendText: (text: string) => void, private readonly onGone: (reason: string) => void) {
+  constructor(
+    label: string,
+    private readonly sendText: (text: string) => void,
+    private readonly onGone: (reason: string) => void,
+    watched: WatchedClient & { identity?: CallerIdentity },
+  ) {
     super('external', label);
+    this.ping = watched.ping;
+    this.drain = watched.drain;
+    this.identity = watched.identity;
   }
+
+  readonly identity?: CallerIdentity;
+
+  override readonly ping?: () => void;
+  override readonly drain?: () => { buffered: number; flushed: number };
 
   reply(clientId: number, frame: Frame, text: string): void {
     // The browser session is the client's root: it never sees that session's id.

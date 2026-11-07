@@ -73,6 +73,10 @@ describe('memory diagnostics', () => {
     expect(renderMemoryDiagnostics({ ...memory, cdpPipe: ruled }, undefined, { available: false, reason: 'n/a' }))
       .toContain("by rule: refused ends-shared-browser 1; answered without the browser download-behavior 3");
     expect(isAppMemoryDiagnostics({ ...memory, cdpPipe: { ...cdpPipe, absorbed: { x: -1 } } })).toBe(false);
+    const watched = { ...cdpPipe, watchdog: { armed: 4, fired: 1 } };
+    expect(isAppMemoryDiagnostics({ ...memory, cdpPipe: watched })).toBe(true);
+    expect(renderMemoryDiagnostics({ ...memory, cdpPipe: watched }, undefined, { available: false, reason: 'n/a' })).toContain('stall watch: armed 4, fired 1');
+    expect(isAppMemoryDiagnostics({ ...memory, cdpPipe: { ...cdpPipe, watchdog: { fired: 'x' } } })).toBe(false);
     for (const bad of [{ ...cdpPipe, frames: -1 }, { ...cdpPipe, dropped: null }, { ...cdpPipe, dropped: { x: 'y' } }, { ...cdpPipe, refused: undefined }]) {
       expect(isAppMemoryDiagnostics({ mainPid: 1, processes: [], cdpPipe: bad })).toBe(false);
     }

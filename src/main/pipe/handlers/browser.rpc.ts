@@ -4196,6 +4196,11 @@ export function registerBrowserRpc(
    * server-pinned callers, and source-qualified first-party wire clients.
    * Approved third-party and legacy callers still receive target metadata, but
    * not the primitive that bypasses the tool-layer capability and lease checks.
+   *
+   * A dedicated Chrome on a debugging pipe has no port: a caller that may
+   * attach and asks with `relay: true` (the engine, only when it is about to
+   * connect) gets `relay`, the relay's endpoint and a one-time token for it,
+   * minted for this caller on every such call.
    */
   router.register('browser.cdp.info', async (params, ctx) => {
     // Refuse before disclosing anything, including whether CDP is enabled.
@@ -4217,9 +4222,21 @@ export function registerBrowserRpc(
       // match; a random user tab still never becomes the default pin).
       const chromeTargets = await launcher.cdpInfoTargets(callerWorkspaceId || undefined);
       const disclose = canDiscloseBrowserAttachInfo(ctx);
+      const decision = protectedDecisionOf(ctx);
+      const relay = disclose && ep.piped && params.relay === true && launcher.relayGrant
+        ? await launcher.relayGrant({
+          ...(callerWorkspaceId && { workspaceId: callerWorkspaceId }),
+          profile: chrome.profile,
+          ...(decision && { protectedEpoch: decision.epoch }),
+        })
+        : undefined;
       return {
         ...(disclose && ep.cdpPort !== undefined && { cdpPort: ep.cdpPort }),
         ...(disclose && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
+        ...(relay && { relay }),
+        // Reached through the relay: an engine checking a live connection asks
+        // again with relay: true only when this is set.
+        ...(disclose && ep.piped && { piped: true }),
         ...(callerWorkspaceId && { targetsScoped: true }),
         workspaceBackend: 'chrome' as const,
         // The profile this caller resolved to (its pane's own, its workspace's,
@@ -4229,7 +4246,7 @@ export function registerBrowserRpc(
         // Protected panes: the policy epoch this connection is good for. The
         // engine drops its connection (and every cached Page) when it moves,
         // which is how a rebind or a protection change reaches the MCP lane.
-        ...(protectedDecisionOf(ctx) && { protected: true, policyEpoch: protectedDecisionOf(ctx)?.epoch }),
+        ...(decision && { protected: true, policyEpoch: decision.epoch }),
         // Live only: the write-scope policy in force, so the MCP lane can apply
         // the SAME gate on the writes it drives over CDP without main seeing
         // them. Disclosed unconditionally, unlike wsEndpoint/cdpPort — it is a
