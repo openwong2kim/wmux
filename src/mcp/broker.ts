@@ -37,7 +37,8 @@ import {
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
-import { selfCheckPeerPid } from '../shared/peerPid';
+import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
+import { decidePeer } from './brokerPeer';
 import { createConnectionReporter, trackConnection, trackToolCalls, type ReportChannel } from './brokerConnectionReporter';
 import { setBrokerEnvelopeMode } from './wmux-client';
 
@@ -103,7 +104,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   // Before the await below: a socket that closes during it is counted closed.
   trackConnection(socket, connectionReporter);
   log(
-    `shim connected pid=${handshake.callerPid} ` +
+    `shim connected pid=${handshake.callerPid} ppid=${handshake.callerPpid} ` +
       `commander=${handshake.commanderMode ? 'yes' : 'no'} ` +
       // The server's own "--core ignored" warning goes to the DAEMON's stderr
       // on this path, not the agent host's, so record the requested flags here
@@ -226,8 +227,14 @@ function main(): void {
   }
 
   const pipeName = getMcpBrokerPipeName();
+  // Sessions are hosted only for a peer the OS names (src/mcp/brokerPeer.ts);
+  // a process that cannot read peer pids refuses every session.
+  const peerSelfCheck = selfCheckPeerPid();
+  const ownUid = typeof process.getuid === 'function' ? process.getuid() : null;
 
   const server = net.createServer((socket) => {
+    // Read here, before anything else can close and reuse the descriptor.
+    const peer = peerPidOf(socket);
     // Accumulate until the handshake line; hand the remainder back to the
     // socket so the MCP transport sees a clean stream from byte 0.
     let buffer = Buffer.alloc(0);
@@ -276,8 +283,21 @@ function main(): void {
       }
 
       const rest = buffer.subarray(nl + 1);
-      hostConnection(socket, handshake)
-        .then(() => {
+      const claimed = handshake;
+      peerSelfCheck
+        .then((verdict) => decidePeer({ selfCheckOk: verdict === 'available', peer, claimedPid: claimed.callerPid, ownUid }))
+        .then(async (decision) => {
+          if (socket.destroyed) return;
+          if (!decision.ok) {
+            console.error(`[wmux-mcp-broker] peer refused (${decision.reason}): ${decision.detail}`);
+            if (wantsAck) socket.end(brokerAckLine(false, decision.reason), () => socket.destroy());
+            else socket.destroy();
+            return;
+          }
+          if (claimed.callerPpid !== decision.callerPpid) {
+            console.error(`[wmux-mcp-broker] callerPpid ${String(claimed.callerPpid)} differs from the OS parent ${decision.callerPpid}; using the OS parent`);
+          }
+          await hostConnection(socket, { ...claimed, callerPid: decision.callerPid, callerPpid: decision.callerPpid });
           // Replay any MCP bytes that arrived glued to the handshake, then
           // resume flow into the transport's data listener.
           if (rest.length > 0) socket.unshift(rest);
@@ -334,7 +354,9 @@ function main(): void {
   server.listen(pipeName, () => {
     console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid}`);
   });
-  void selfCheckPeerPid().then((verdict) => { if (verdict) console.error(`[wmux-mcp-broker] peer-pid: ${verdict}`); });
+  void peerSelfCheck.then((verdict) => {
+    console.error(`[wmux-mcp-broker] peer-pid: ${verdict ?? 'unavailable (no peer pids on this platform)'}${verdict === 'available' ? '' : '; every session is refused'}`);
+  });
 
   const shutdown = () => {
     server.close();
