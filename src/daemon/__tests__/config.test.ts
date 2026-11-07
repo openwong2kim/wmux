@@ -1,3 +1,4 @@
+// @wmux-lane unit — 'win32' here is a stubbed process.platform; the locked-file reads are mocked fs calls.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -142,6 +143,72 @@ describe('loadConfig', () => {
         expect(fs.existsSync(configPath + '.tmp')).toBe(false);
       });
     }
+
+    describe('a config.json Windows reports as locked', () => {
+      const realPlatform = process.platform;
+      const setPlatform = (p: string): void => { Object.defineProperty(process, 'platform', { value: p }); };
+      afterEach(() => {
+        setPlatform(realPlatform);
+        vi.restoreAllMocks();
+      });
+      function writeGood(): string {
+        const wmuxDir = getWmuxDir();
+        fs.mkdirSync(wmuxDir, { recursive: true });
+        const configPath = path.join(wmuxDir, 'config.json');
+        fs.writeFileSync(configPath, JSON.stringify({ ...createDefaultConfig(), browser: { cdp: { enabled: false } } }), 'utf-8');
+        return configPath;
+      }
+      function lockFor(configPath: string, times: number, code = 'EBUSY') {
+        const real = fs.readFileSync;
+        let left = times;
+        return vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+          if (file === configPath && left > 0) {
+            left--;
+            throw Object.assign(new Error(`${code}: resource busy or locked, open '${configPath}'`), { code });
+          }
+          return (real as (...a: unknown[]) => unknown)(file, ...rest);
+        }) as typeof fs.readFileSync);
+      }
+      const readsOf = (spy: ReturnType<typeof lockFor>, configPath: string): number =>
+        spy.mock.calls.filter((c) => c[0] === configPath).length;
+
+      it('on Windows, a brief EBUSY is read again and the file is used', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const spy = lockFor(configPath, 2);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const config = loadConfig();
+        expect(isFailClosedConfig(config)).toBe(false);
+        expect(config.browser?.cdp.enabled).toBe(false); // the file's own value
+        expect(warn).not.toHaveBeenCalled();
+        expect(readsOf(spy, configPath)).toBe(3);
+      });
+
+      it('on Windows, a lock that outlasts three tries gives the stand-in', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const spy = lockFor(configPath, 10, 'EPERM');
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        expect(isFailClosedConfig(loadConfig())).toBe(true);
+        expect(readsOf(spy, configPath)).toBe(3);
+        expect(String(warn.mock.calls[0][0])).toContain('EPERM');
+      });
+
+      it('elsewhere, and for a parse failure, there is no second read', () => {
+        setPlatform('linux');
+        const configPath = writeGood();
+        const spy = lockFor(configPath, 1);
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        expect(isFailClosedConfig(loadConfig())).toBe(true);
+        expect(readsOf(spy, configPath)).toBe(1);
+
+        setPlatform('win32');
+        fs.writeFileSync(configPath, '{ not json', 'utf-8');
+        spy.mockClear();
+        expect(isFailClosedConfig(loadConfig())).toBe(true);
+        expect(readsOf(spy, configPath)).toBe(1);
+      });
+    });
 
     function writeGarbage(): string {
       const wmuxDir = getWmuxDir();

@@ -459,6 +459,33 @@ function unusableConfigFallback(configPath: string, reason: string): DaemonConfi
   return failClosedConfig(`${configPath} could not be used (${reason})`);
 }
 
+/** Read attempts for a config.json that Windows reports as locked. */
+export const CONFIG_READ_ATTEMPTS = 3;
+const CONFIG_READ_RETRY_MS = 100;
+/** What an antivirus scanner or indexer holding the file briefly looks like on Windows. */
+const LOCKED_FILE_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+
+/**
+ * Read config.json. On Windows a file that is locked for a moment (an
+ * antivirus scan, the search indexer) is tried again, up to
+ * CONFIG_READ_ATTEMPTS times about 100 ms apart, before loadConfig gives up
+ * on it: otherwise one unlucky boot would run the whole session with CDP off.
+ * Only those read errors are retried; a file that reads but doesn't parse or
+ * validate is answered at once.
+ */
+function readConfigFile(configPath: string): string {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return fs.readFileSync(configPath, 'utf-8');
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (process.platform !== 'win32' || !LOCKED_FILE_CODES.has(code) || attempt >= CONFIG_READ_ATTEMPTS) throw err;
+      // loadConfig is synchronous; a short blocking wait, only on this path.
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, CONFIG_READ_RETRY_MS);
+    }
+  }
+}
+
 /**
  * Why the config.json on disk could not be used, or null when it is usable or
  * absent. A JSON parse with the same reviver, then `configProblem`.
@@ -506,7 +533,7 @@ export function loadConfig(): DaemonConfig {
 
   let raw: string;
   try {
-    raw = fs.readFileSync(configPath, 'utf-8');
+    raw = readConfigFile(configPath);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       lastUnusableWarning = null;
