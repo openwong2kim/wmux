@@ -285,15 +285,19 @@ section); that result says `delivery: "foreground"`. A posted one says
   - `scroll` up or down: one `WM_MOUSEWHEEL` per notch (`WHEEL_DELTA`,
     the point in screen coordinates, no key or button state), posted to the
     window a click at the point would hit, with the same receiver checks as
-    a posted click. Only an `Edit` or a `RichEdit` class
-    (`RichEdit20W`, `RICHEDIT50W`, `RichEditD2DPT`) gets it; a Chromium
-    or Electron window, and any other class, goes the real way. A
-    WinForms `RichTextBox` registers its own class
-    (`WindowsForms10.RichEdit20W.*`), so it goes the real way too, as it
-    does for posted clicks and keys. Verified when the control's first
-    visible line (`EM_GETFIRSTVISIBLELINE`, read before posting and again
-    for up to 300 ms) moved the way the wheel turned; a control already at
-    that end, or one that does not answer, is `unverified`. `scroll`
+    a posted click. Only a multiline (`ES_MULTILINE`) `Edit` or
+    `RichEdit` class (`RichEdit20W`, `RICHEDIT50W`, `RichEditD2DPT`)
+    gets it: a single-line `Edit` hands the wheel to its parent (a combo
+    box would change its selection). A Chromium or Electron window, and any
+    other class, goes the real way. A WinForms `RichTextBox` registers its
+    own class (`WindowsForms10.RichEdit20W.*`), so it goes the real way
+    too, as it does for posted clicks and keys. `RichEditD2DPT` (Notepad)
+    was not measured with the wheel. The control's first visible line and
+    line count (`EM_GETFIRSTVISIBLELINE`, `EM_GETLINECOUNT`) are read
+    before posting; a control that does not answer in time goes the real
+    way. Verified when, within 300 ms, the first visible line moved the way
+    the wheel turned and the line count stayed (a log that grows can scroll
+    by itself); a control already at that end is `unverified`. `scroll`
     left or right is always the real way (`WM_MOUSEHWHEEL` was not
     measured).
 
@@ -321,6 +325,8 @@ section); that result says `delivery: "foreground"`. A posted one says
     | `Edit`, down | `refuse` | `background`, `verified` (3/3) | 0 → 9 → 18 → 27 | unchanged |
     | `Edit` at the top, up | `allow` | `background`, `unverified` (2/2) | 0 → 0 | unchanged |
     | `RICHEDIT50W`, down then up | `allow`, `refuse` | `background`, `verified` (5/5) | 0 → 27 → 9 | unchanged |
+    | `RichEdit20W`, down then up | `allow`, `refuse` | `background`, `verified` (5/5) | 0 → 27 → 9 | unchanged |
+    | single-line `Edit`, down | `refuse` | `needs_foreground`, nothing sent | 0 → 0 | unchanged |
     | `Edit`, right | `refuse` | `needs_foreground`, nothing sent | 0 → 0 | unchanged |
     | WinForms `RichTextBox`, list box, Electron | `refuse` | `needs_foreground`, nothing sent | unchanged | unchanged |
     | WinForms `RichTextBox`, Electron | `allow` | `foreground` (real input, as before) | `RichTextBox` 0 → 27; Electron not read | target came to the front; cursor back |
@@ -349,7 +355,7 @@ section); that result says `delivery: "foreground"`. A posted one says
   value before with exactly the typed text inserted (the same rule as real
   input, but read from the target field, not the system focus); for
   `scroll`, the control's first visible line moved the way the wheel
-  turned. Clicks and keys are `unverified`.
+  turned and its line count stayed. Clicks and keys are `unverified`.
 - **Our side effects.** The cursor position and the foreground window are
   read before posting and again at least 60 ms after it. If the cursor now
   sits on the target point and did not before, or the foreground window
@@ -864,7 +870,7 @@ node native\computer-use-windows\probe.mjs <exe> getAppState '{"app":"notepad","
     text field of each: the text lands, the results say
     `delivery: "background"`, and the mouse pointer, the window in front and
     the focused control of the covering app do not change. `scroll` down
-    then up over a multiline `Edit` or `RichEdit` control of a covered
+    then up over a multiline `Edit` or raw `RichEdit` control of a covered
     window comes back `delivery: "background"` and `verified`, with the
     same pointer, front window and focus. A right click, a double click,
     `scroll` over Chrome or Electron, `scroll` left or right and a

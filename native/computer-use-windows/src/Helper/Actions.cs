@@ -709,7 +709,7 @@ internal static unsafe class Actions
     {
         var next = Background.Next(posted, refuseForeground, Input.Sent != sentAtStart);
         // Refusals that depend on the target's state are logged; what the
-        // action asks for (a chord, the wheel) never posts, so it is not.
+        // action asks for (a chord, a horizontal wheel) never posts, so it is not.
         if (next is AfterAttempt.RealInput or AfterAttempt.NeedsForeground && !Background.IsActionRefusal(posted.Refusal))
         {
             var why = Background.Describe(posted.Refusal);

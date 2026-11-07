@@ -53,6 +53,7 @@ public enum BackgroundRefusal
     PopupAtPoint,
     UnsupportedFramework,
     WheelUnsupported,
+    NotAnswering,
     ChromiumNeedsClick,
     NotATextControl,
     SecretField,
@@ -90,8 +91,13 @@ public readonly record struct BackgroundRequest(InputAction Action, int Button =
 /// <param name="ChildrenTruncated">A window on the way had more children than the walk reads, so the receiver may be wrong.</param>
 /// <param name="WindowDpi">GetDpiForWindow of the receiver (or of the target window, when it already differs); 0 when unread.</param>
 /// <param name="MonitorDpi">The effective DPI of the monitor at the point; 0 when unread.</param>
+/// <param name="Multiline">For `scroll`: the receiver has ES_MULTILINE. A single-line Edit hands the wheel to its parent (a combo box would change its selection).</param>
+/// <param name="ScrollUnread">For `scroll`: the receiver did not answer where it is scrolled to, so a posted wheel could not be read back.</param>
 public readonly record struct Receiver(string ClassName, bool InTargetProcess, bool InClientArea = true, bool PopupAtPoint = false, bool TextControl = false, bool Secret = false, bool HitTestFailed = false,
-    bool ChildrenTruncated = false, uint WindowDpi = 96, uint MonitorDpi = 96);
+    bool ChildrenTruncated = false, uint WindowDpi = 96, uint MonitorDpi = 96, bool Multiline = false, bool ScrollUnread = false);
+
+/// <summary>Where an Edit or RichEdit control is scrolled to: its first visible line and its line count (null: unanswered).</summary>
+public readonly record struct ScrollPosition(int? FirstLine, int? LineCount);
 
 /// <summary>A plan: refused, or post (a click first, then keys, or a click alone, or keys alone).</summary>
 public readonly record struct BackgroundPlan(BackgroundRefusal Refusal, bool ClickFirst, bool Keys)
@@ -239,13 +245,15 @@ public static class Background
     }
 
     /// <summary>
-    /// The window classes a posted vertical wheel goes to: the plain Edit
-    /// control and the RichEdit family, where it was measured to scroll a
-    /// covered window (6/6 each, nothing taken from the user). Chromium and
-    /// Electron ignore it while covered (0/6 each), so they keep real input.
+    /// The window classes a posted vertical wheel goes to: those posted input
+    /// goes to, less Chromium and Electron, which ignore it while covered
+    /// (0/6 each). A covered Edit, RichEdit20W and RICHEDIT50W scrolled with
+    /// nothing taken from the user; RichEditD2DPT (Notepad) was not measured.
     /// </summary>
-    public static bool AcceptsPostedWheel(string className) =>
-        className.StartsWith("RichEdit", StringComparison.OrdinalIgnoreCase) || IsPlainEdit(className);
+    public static bool AcceptsPostedWheel(string className) => AcceptsPostedInput(className) && !IsChromiumWidget(className);
+
+    /// <summary>ES_MULTILINE (Edit and RichEdit).</summary>
+    public const uint EsMultiline = 0x0004;
 
     /// <summary>ES_PASSWORD: an Edit control that masks what is typed.</summary>
     public const uint EsPassword = 0x0020;
@@ -377,7 +385,8 @@ public static class Background
                 // same checks; its notches are the plan's pointer step.
                 refusal = PointerReceiverRefusal(receiver);
                 if (refusal != BackgroundRefusal.None) return BackgroundPlan.Refuse(refusal);
-                if (!AcceptsPostedWheel(receiver!.Value.ClassName)) return BackgroundPlan.Refuse(BackgroundRefusal.WheelUnsupported);
+                if (!AcceptsPostedWheel(receiver!.Value.ClassName) || !receiver.Value.Multiline) return BackgroundPlan.Refuse(BackgroundRefusal.WheelUnsupported);
+                if (receiver.Value.ScrollUnread) return BackgroundPlan.Refuse(BackgroundRefusal.NotAnswering);
                 return new(BackgroundRefusal.None, true, false);
             case InputAction.Type when request.HasField:
                 // The field is clicked first, always: Chromium drops posted
@@ -595,7 +604,8 @@ public static class Background
         BackgroundRefusal.NoFocusedControl => "the target has no focused control to post keys to",
         BackgroundRefusal.PopupAtPoint => "a popup or menu of the target is at that point",
         BackgroundRefusal.UnsupportedFramework => "that window is not one posted input is known to work with",
-        BackgroundRefusal.WheelUnsupported => "a posted wheel is known to scroll only Edit and RichEdit controls",
+        BackgroundRefusal.WheelUnsupported => "a posted wheel is known to scroll only multiline Edit and RichEdit controls",
+        BackgroundRefusal.NotAnswering => "the control at that point did not answer in time",
         BackgroundRefusal.ChromiumNeedsClick => "a Chromium-based app takes posted keys only after a posted click; pass the field's index",
         BackgroundRefusal.NotATextControl => "the focused control is not a plain text control",
         BackgroundRefusal.SecretField => "the field is a password field, or wmux could not tell",
@@ -637,11 +647,13 @@ public static class Background
 
     /// <summary>
     /// The wheel's read-back: the control's first visible line moved the way
-    /// it turned (up: an earlier line). Unread on either side, or not moved
-    /// (already at the end), is not confirmed.
+    /// it turned (up: an earlier line) and its text kept its line count, so
+    /// the move is not a log that grew and scrolled by itself. Unread on
+    /// either side, or not moved (already at the end), is not confirmed.
     /// </summary>
-    public static bool WheelScrolled(int? lineBefore, int? lineAfter, bool up) =>
-        lineBefore is { } b && lineAfter is { } a && (up ? a < b : a > b);
+    public static bool WheelScrolled(ScrollPosition before, ScrollPosition after, bool up) =>
+        before.FirstLine is { } b && after.FirstLine is { } a && (up ? a < b : a > b)
+        && before.LineCount is { } nb && after.LineCount == nb;
 
     /// <summary>
     /// WM_KEYDOWN / WM_KEYUP lParam: repeat count 1, the scan code in bits

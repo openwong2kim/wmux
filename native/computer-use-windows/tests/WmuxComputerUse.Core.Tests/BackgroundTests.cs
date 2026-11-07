@@ -53,6 +53,8 @@ public class BackgroundTests
         { "horizontal scroll", Normal, new(InputAction.Scroll, Horizontal: true), Win32Edit, BackgroundRefusal.Scroll },
         { "scroll over Chromium", Normal, new(InputAction.Scroll), Chromium, BackgroundRefusal.WheelUnsupported },
         { "scroll over a button", Normal, new(InputAction.Scroll), new Receiver("Button", InTargetProcess: true), BackgroundRefusal.UnsupportedFramework },
+        { "scroll over a single-line Edit", Normal, new(InputAction.Scroll), Win32Edit with { Multiline = false }, BackgroundRefusal.WheelUnsupported },
+        { "scroll over a control that did not say where it is", Normal, new(InputAction.Scroll), Win32Edit with { Multiline = true, ScrollUnread = true }, BackgroundRefusal.NotAnswering },
         { "scroll on a scroll bar", Normal, new(InputAction.Scroll), Win32Edit with { InClientArea = false }, BackgroundRefusal.NonClientArea },
         { "scroll under a popup", Normal, new(InputAction.Scroll), Win32Edit with { PopupAtPoint = true }, BackgroundRefusal.PopupAtPoint },
         { "scroll with nothing at the point", Normal, new(InputAction.Scroll), null, BackgroundRefusal.NoReceiver },
@@ -138,7 +140,7 @@ public class BackgroundTests
     [InlineData("RichEditD2DPT")]
     public void AVerticalWheelOverAnEditOrRichEditIsPostedAsThePointerStep(string className)
     {
-        var plan = Background.Plan(Normal, new(InputAction.Scroll), new Receiver(className, InTargetProcess: true));
+        var plan = Background.Plan(Normal, new(InputAction.Scroll), new Receiver(className, InTargetProcess: true, Multiline: true));
         Assert.False(plan.Refused);
         Assert.True(plan.ClickFirst);
         Assert.False(plan.Keys);
@@ -194,7 +196,16 @@ public class BackgroundTests
     [InlineData(0, null, false, false)]
     public void TheWheelIsConfirmedOnlyByTheFirstLineMovingItsWay(int? before, int? after, bool up, bool confirmed)
     {
-        Assert.Equal(confirmed, Background.WheelScrolled(before, after, up));
+        Assert.Equal(confirmed, Background.WheelScrolled(new(before, 300), new(after, 300), up));
+    }
+
+    [Theory]
+    [InlineData(300, 301)]  // a log that grew and scrolled by itself
+    [InlineData(300, null)] // the count went unanswered after
+    [InlineData(null, 300)] // or before
+    public void AMoveWithTheLineCountChangedOrUnreadIsNotConfirmed(int? countBefore, int? countAfter)
+    {
+        Assert.False(Background.WheelScrolled(new(120, countBefore), new(121, countAfter), up: false));
     }
 
     [Fact]
