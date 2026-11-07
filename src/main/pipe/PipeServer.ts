@@ -166,10 +166,10 @@ export class PipeServer {
     // On Unix, remove stale socket file before listening
     if (process.platform !== 'win32') {
       try {
-        const stat = require('fs').lstatSync(pipeName);
+        const stat = fs.lstatSync(pipeName);
         // Only remove if it's a socket (not a symlink to something else)
         if (stat.isSocket()) {
-          require('fs').unlinkSync(pipeName);
+          fs.unlinkSync(pipeName);
         } else {
           console.warn(`[PipeServer] ${pipeName} exists but is not a socket — skipping removal`);
         }
@@ -205,9 +205,9 @@ export class PipeServer {
         if (process.platform !== 'win32') {
           const stopPipeName = getPipeName();
           try {
-            const stat = require('fs').lstatSync(stopPipeName);
+            const stat = fs.lstatSync(stopPipeName);
             if (stat.isSocket()) {
-              require('fs').unlinkSync(stopPipeName);
+              fs.unlinkSync(stopPipeName);
             } else {
               console.warn(`[PipeServer] ${stopPipeName} exists but is not a socket — skipping removal`);
             }
