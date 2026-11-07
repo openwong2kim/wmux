@@ -29,6 +29,7 @@ vi.mock('../PlaywrightEngine', () => ({
 
 import { registerInspectionTools } from '../tools/inspection';
 import { registerInteractionTools } from '../tools/interaction';
+import { registerExtractionTools } from '../tools/extraction';
 import { ActionRing } from '../../browser-replay/actionRing';
 import { createConnectionScope, runInConnectionScope } from '../../connectionScope';
 import { clearRefDescriptors, MAX_SURFACES } from '../refDescriptors';
@@ -44,6 +45,7 @@ const server = { tool: (name: string, _d: string, _s: unknown, h: ToolHandler) =
 const deps = { resolveWorkspaceId: vi.fn(async () => 'ws-test'), actionRing: new ActionRing() } as never;
 registerInspectionTools(server, deps);
 registerInteractionTools(server, deps);
+registerExtractionTools(server, deps);
 const tool = (name: string) => tools.get(name) as ToolHandler;
 const textOf = (r: ToolResult) => r.content.map((c) => c.text ?? '').join('\n');
 
@@ -173,10 +175,17 @@ describe('in-process frames on the RPC lane', () => {
   it('clicks a smartRef in the top document even when a frame ref holds the same number', async () => {
     answer();
     await tool('browser_snapshot')({});
+    // The smart snapshot's own listing numbers the top button 1.
+    answer({
+      'browser.evaluate': (p) => String(p.expression).includes('data-wmux-smart-ref')
+        ? { value: { url: 'https://top.test/cart', title: 'Shop', content: '', elements: [{ ref: 1, role: 'button', name: 'Top' }] } }
+        : { value: TOP },
+    });
+    await tool('browser_smart_snapshot')({});
     // ref=1 is the frame's field; smartRef 1 comes from the smart snapshot's own count.
     const res = await tool('browser_click')({ smartRef: 1 });
     expect(res.isError).toBeFalsy();
-    expect(calls('browser.click.cdp').at(-1)).toEqual(expect.objectContaining({ selector: '[data-wmux-ref="1"]' }));
+    expect(calls('browser.click.cdp').at(-1)).toEqual(expect.objectContaining({ selector: '[data-wmux-smart-ref="1"]' }));
     expect(calls('browser.click.cdp').at(-1)).not.toHaveProperty('frameId');
   });
 
