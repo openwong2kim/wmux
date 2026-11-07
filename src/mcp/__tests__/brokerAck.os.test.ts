@@ -4,11 +4,19 @@
 //
 // A shim that sends `ack: 1` reads one `{"wmuxBroker":1,"ok":…}` line as the
 // first bytes of the connection: ok:true once the session is hosted, before any
-// MCP traffic; ok:false on a refusal. A shim that does not ask (shim.ts) gets
-// the stream exactly as before.
+// MCP traffic; ok:false on a wrong token. A session the broker cannot tie to
+// the connecting process is closed with no bytes at all, which every shim
+// generation reads as "closed before ack" and answers with the full bundle. A
+// client that does not ask gets the stream exactly as before. The node shim
+// (shim.ts) asks, and runs the full server beside it on such a close.
 //
 // Isolation: a throwaway home, a data suffix, and the token from
 // WMUX_AUTH_TOKEN (no token file), so nothing here can reach a live wmux.
+//
+// The broker hosts a session only for the peer the OS names (brokerPeer.ts):
+// this test process connects, so its own pid and parent are the true ones.
+// koffi resolves through NODE_PATH, as it does beside the packaged bundle.
+// Windows named pipes give no peer pid, so there every session is refused.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
@@ -31,11 +39,13 @@ const INITIALIZE = JSON.stringify({
 
 let home = '';
 let broker: ChildProcess | null = null;
+let brokerLog = '';
+const hostable = !isWin;
 
-function pipeName(): string {
+function pipeName(suffix = SUFFIX, dir = home): string {
   return isWin
-    ? `\\\\.\\pipe\\wmux-mcpb${SUFFIX}-${os.userInfo().username || 'default'}`
-    : `${home}/.wmux-mcpb${SUFFIX}.sock`;
+    ? `\\\\.\\pipe\\wmux-mcpb${suffix}-${os.userInfo().username || 'default'}`
+    : `${dir}/.wmux-mcpb${suffix}.sock`;
 }
 
 function handshake(extra: Record<string, unknown>, token = TOKEN): string {
@@ -62,9 +72,9 @@ interface Session {
   socket: net.Socket;
 }
 
-function open(line: string): Promise<Session> {
+function open(line: string, pipe = pipeName()): Promise<Session> {
   return new Promise((resolve, reject) => {
-    const socket = net.connect(pipeName());
+    const socket = net.connect(pipe);
     let buf = '';
     const waiters: (() => void)[] = [];
     socket.setEncoding('utf8');
@@ -94,47 +104,109 @@ function open(line: string): Promise<Session> {
   });
 }
 
+/** Build the broker from source into `dir` and start it on `suffix`; resolves once it listens. */
+async function startBroker(dir: string, suffix: string, withKoffi: boolean, onLog: (text: string) => void): Promise<ChildProcess> {
+  const outfile = path.join(dir, 'broker.cjs');
+  buildSync({
+    entryPoints: [path.join(REPO_ROOT, 'src', 'mcp', 'broker.ts')],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    outfile,
+    external: ['electron', 'chromium-bidi', 'playwright-core', 'koffi'],
+    define: { __WMUX_MCP_VERSION__: JSON.stringify('0.0.0-test') },
+    logLevel: 'error',
+  });
+  const env: NodeJS.ProcessEnv = { HOME: dir, USERPROFILE: dir, WMUX_DATA_SUFFIX: suffix, WMUX_AUTH_TOKEN: TOKEN };
+  for (const keep of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR']) {
+    if (process.env[keep] !== undefined) env[keep] = process.env[keep];
+  }
+  // The bundle sits outside the repository: koffi is found only through NODE_PATH.
+  if (withKoffi) env.NODE_PATH = path.join(REPO_ROOT, 'node_modules');
+  const child = spawn(process.execPath, [outfile], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+  await new Promise<void>((resolve, reject) => {
+    let log = '';
+    const timer = setTimeout(() => reject(new Error(`broker did not listen: ${log}`)), 20_000);
+    child.stderr?.on('data', (d) => {
+      log += d;
+      onLog(String(d));
+      if (log.includes('listening on')) { clearTimeout(timer); resolve(); }
+    });
+    child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`broker exited ${code}: ${log}`)); });
+  });
+  return child;
+}
+
+async function stopBroker(child: ChildProcess | null): Promise<void> {
+  if (child && child.exitCode === null) {
+    const gone = new Promise((r) => child.once('exit', r));
+    child.kill();
+    await gone;
+  }
+}
+
+/** Build the node shim from source into `dir`, beside a stand-in full server
+ *  (index.js) that names the process it runs in. */
+function buildShim(dir: string): string {
+  const outfile = path.join(dir, 'shim.js');
+  buildSync({
+    entryPoints: [path.join(REPO_ROOT, 'src', 'mcp', 'shim.ts')],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    outfile,
+    logLevel: 'error',
+  });
+  fs.writeFileSync(path.join(dir, 'index.js'), "process.stdout.write('FULL SERVER pid=' + process.pid + '\\n');\n");
+  return outfile;
+}
+
+/** Run the node shim against the broker on `suffix` in `dir`; `input` goes to its
+ *  stdin once `ready` is in its stdout (or at once), then stdin ends. */
+function runShim(shim: string, dir: string, suffix: string, token: string, input = '', ready = ''):
+  Promise<{ pid: number; code: number | null; stdout: string; stderr: string }> {
+  const env: NodeJS.ProcessEnv = { HOME: dir, USERPROFILE: dir, WMUX_DATA_SUFFIX: suffix, WMUX_AUTH_TOKEN: token };
+  for (const keep of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR']) {
+    if (process.env[keep] !== undefined) env[keep] = process.env[keep];
+  }
+  const child = spawn(process.execPath, [shim], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  let sent = false;
+  const send = () => { if (!sent) { sent = true; child.stdin?.write(input); } };
+  child.stdout?.on('data', (d) => {
+    stdout += d;
+    if (ready && stdout.includes(ready)) child.stdin?.end();
+  });
+  child.stderr?.on('data', (d) => { stderr += d; });
+  send();
+  if (!ready) child.stdin?.end();
+  const timer = setTimeout(() => child.kill(), 20_000);
+  return new Promise((resolve) => child.once('exit', (code) => {
+    clearTimeout(timer);
+    resolve({ pid: child.pid ?? -1, code, stdout, stderr });
+  }));
+}
+
+/** Wait until the broker's log holds `text`. */
+async function logged(text: string, read: () => string = () => brokerLog): Promise<void> {
+  for (let i = 0; i < 100 && !read().includes(text); i++) await new Promise((r) => setTimeout(r, 50));
+  expect(read()).toContain(text);
+}
+
 describe('broker handshake ack', () => {
   beforeAll(async () => {
     home = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'bak-'));
-    const outfile = path.join(home, 'broker.cjs');
-    buildSync({
-      entryPoints: [path.join(REPO_ROOT, 'src', 'mcp', 'broker.ts')],
-      bundle: true,
-      platform: 'node',
-      format: 'cjs',
-      outfile,
-      external: ['electron', 'chromium-bidi', 'playwright-core', 'koffi'],
-      define: { __WMUX_MCP_VERSION__: JSON.stringify('0.0.0-test') },
-      logLevel: 'error',
-    });
-    const env: NodeJS.ProcessEnv = { HOME: home, USERPROFILE: home, WMUX_DATA_SUFFIX: SUFFIX, WMUX_AUTH_TOKEN: TOKEN };
-    for (const keep of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR']) {
-      if (process.env[keep] !== undefined) env[keep] = process.env[keep];
-    }
-    const child = spawn(process.execPath, [outfile], { env, stdio: ['ignore', 'ignore', 'pipe'] });
-    broker = child;
-    await new Promise<void>((resolve, reject) => {
-      let log = '';
-      const timer = setTimeout(() => reject(new Error(`broker did not listen: ${log}`)), 20_000);
-      child.stderr?.on('data', (d) => {
-        log += d;
-        if (log.includes('listening on')) { clearTimeout(timer); resolve(); }
-      });
-      child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`broker exited ${code}: ${log}`)); });
-    });
+    broker = await startBroker(home, SUFFIX, true, (text) => { brokerLog += text; });
+    if (hostable) await logged('peer-pid: available');
   }, 60_000);
 
   afterAll(async () => {
-    if (broker && broker.exitCode === null) {
-      const gone = new Promise((r) => broker?.once('exit', r));
-      broker.kill();
-      await gone;
-    }
+    await stopBroker(broker);
     if (home) fs.rmSync(home, { recursive: true, force: true });
   });
 
-  it('ack: 1 gets {"wmuxBroker":1,"ok":true} first, then MCP traffic', async () => {
+  it.runIf(hostable)('ack: 1 gets {"wmuxBroker":1,"ok":true} first, then MCP traffic', async () => {
     const s = await open(handshake({ ack: 1 }));
     const [first] = await s.lines(1);
     expect(first).toBe('{"wmuxBroker":1,"ok":true}');
@@ -144,7 +216,7 @@ describe('broker handshake ack', () => {
     s.socket.destroy();
   });
 
-  it('writes no MCP bytes before the ack, even for a request sent with the handshake', async () => {
+  it.runIf(hostable)('writes no MCP bytes before the ack, even for a request sent with the handshake', async () => {
     const s = await open(handshake({ ack: 1 }) + INITIALIZE + '\n');
     const [first, reply] = await s.lines(2);
     expect(first).toBe('{"wmuxBroker":1,"ok":true}');
@@ -157,7 +229,7 @@ describe('broker handshake ack', () => {
   // arrives must all be served, in order, and inside the connection scope:
   // repl_sessions fails ("no MCP connection scope is active") when a request
   // is handled outside it.
-  it('requests sent on the ack are all served, inside the connection scope', async () => {
+  it.runIf(hostable)('requests sent on the ack are all served, inside the connection scope', async () => {
     const s = await open(handshake({ ack: 1 }));
     const [first] = await s.lines(1);
     expect(first).toBe('{"wmuxBroker":1,"ok":true}');
@@ -175,7 +247,7 @@ describe('broker handshake ack', () => {
     s.socket.destroy();
   });
 
-  it('no ack field: the stream is MCP traffic from the first byte', async () => {
+  it.runIf(hostable)('no ack field: the stream is MCP traffic from the first byte', async () => {
     const s = await open(handshake({}));
     s.socket.write(INITIALIZE + '\n');
     const [first] = await s.lines(1);
@@ -184,7 +256,7 @@ describe('broker handshake ack', () => {
     s.socket.destroy();
   });
 
-  it('only ack: 1 asks for it (true or 2 do not)', async () => {
+  it.runIf(hostable)('only ack: 1 asks for it (true or 2 do not)', async () => {
     for (const ack of [true, 2]) {
       const s = await open(handshake({ ack }));
       s.socket.write(INITIALIZE + '\n');
@@ -202,5 +274,91 @@ describe('broker handshake ack', () => {
   it('a wrong token without ack is dropped with no bytes, as before', async () => {
     const s = await open(handshake({}, 'wrong-token'));
     expect(await s.closed).toBe('');
+  });
+
+  it.runIf(hostable)('a client with the token that names another pid is closed with no bytes, with or without ack', async () => {
+    const asked = await open(handshake({ ack: 1, callerPid: process.ppid }));
+    expect(await asked.closed).toBe('');
+    await logged(`peer refused (peer): claimed pid ${process.ppid}, peer ${process.pid}`);
+    const silent = await open(handshake({ callerPid: process.ppid }));
+    expect(await silent.closed).toBe('');
+  });
+
+  it.runIf(hostable)('a hosted session takes its parent pid from the OS, not the handshake', async () => {
+    // Only what the broker logs for this connection counts.
+    const from = brokerLog.length;
+    const since = () => brokerLog.slice(from);
+    const s = await open(handshake({ ack: 1, callerPpid: 1 }));
+    const [first] = await s.lines(1);
+    expect(first).toBe('{"wmuxBroker":1,"ok":true}');
+    await logged(`callerPpid 1 differs from the OS parent ${process.ppid}`, since);
+    await logged(`shim connected pid=${process.pid} ppid=${process.ppid} `, since);
+    expect(since()).not.toContain('ppid=1 ');
+    s.socket.destroy();
+  });
+
+  it.runIf(hostable)('the node shim is hosted by a broker that reads its pid', async () => {
+    const dir = fs.mkdtempSync(path.join('/tmp', 'nsh-'));
+    try {
+      const run = await runShim(buildShim(dir), home, SUFFIX, TOKEN, INITIALIZE + '\n', '"serverInfo"');
+      expect(JSON.parse(run.stdout.split('\n')[0])).toMatchObject({ id: 1, result: { serverInfo: { name: 'wmux' } } });
+      expect(run.stdout).not.toContain('FULL SERVER');
+      expect(run.code).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the node shim ends on a wrong token and runs no full server', async () => {
+    const dir = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'nsh-'));
+    try {
+      const run = await runShim(buildShim(dir), home, SUFFIX, 'wrong-token');
+      expect(run.stderr).toContain('[wmux-mcp-shim] broker refused the session: auth');
+      expect(run.stdout).not.toContain('FULL SERVER');
+      expect(run.code).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(isWin)('refuses every session where the OS names no peer (Windows named pipes)', async () => {
+    const s = await open(handshake({ ack: 1 }));
+    expect(await s.closed).toBe('');
+    await logged('peer refused (peer-unverified)');
+  });
+});
+
+describe.runIf(hostable)('a broker that cannot read peer pids', () => {
+  const suffix = `-brokernokoffi-${process.pid}`;
+  let dir = '';
+  let child: ChildProcess | null = null;
+  let log = '';
+
+  beforeAll(async () => {
+    dir = fs.mkdtempSync(path.join('/tmp', 'bnk-'));
+    child = await startBroker(dir, suffix, false, (text) => { log += text; });
+  }, 60_000);
+
+  afterAll(async () => {
+    await stopBroker(child);
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('refuses every session, even a true one', async () => {
+    await logged('every session is refused', () => log);
+    const s = await open(handshake({ ack: 1 }), pipeName(suffix, dir));
+    expect(await s.closed).toBe('');
+    await logged('peer refused (peer-unverified): peer pids cannot be read in this process', () => log);
+  });
+
+  it('the node shim it refuses runs the full server beside it, in the same process', async () => {
+    const shimDir = fs.mkdtempSync(path.join('/tmp', 'nsh-'));
+    try {
+      const run = await runShim(buildShim(shimDir), dir, suffix, TOKEN);
+      expect(run.stderr).toContain('[wmux-mcp-shim] the broker closed the connection before its ack; running the full server');
+      expect(run.stdout).toBe(`FULL SERVER pid=${run.pid}\n`);
+    } finally {
+      fs.rmSync(shimDir, { recursive: true, force: true });
+    }
   });
 });

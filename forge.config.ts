@@ -366,8 +366,9 @@ const config: ForgeConfig = {
       const koromixSrc = path.join(__dirname, 'node_modules', '@koromix', koromixName);
       const koffiPresent = fs.existsSync(koffiSrc) && fs.existsSync(koromixSrc);
       if (wantKoffi && !koffiPresent && koffiPlatform !== 'win32') {
-        // Peer pids are measured only so far; without koffi each process logs
-        // "peer-pid: unavailable" at startup instead of failing the package.
+        // Main and the daemon only log peer pids, so for them this is a
+        // warning; the MCP broker decides on them, and step 5b below fails the
+        // package without koffi.
         console.warn(`[postPackage] koffi prebuilt missing (${koffiSrc} / ${koromixSrc}) — peer pids will be unavailable in this ${koffiPlatform}-${koffiArch} package.`);
       }
       if (wantKoffi && !koffiPresent && koffiPlatform === 'win32') {
@@ -501,11 +502,18 @@ const config: ForgeConfig = {
         copyKoffiInto(path.join(cliBundleDir, 'node_modules'));
       }
 
-      // 5b. The MCP broker runs the peer pid self-check (src/shared/peerPid.ts).
+      // 5b. The MCP broker hosts a session only for a peer the OS names
+      // (src/mcp/brokerPeer.ts), read through koffi; without it the broker
+      // refuses every session. Windows named pipes give no peer pid yet.
       if (koffiPlatform !== 'win32') {
         const mcpBundleDir = path.join(resourcesDir, 'mcp-bundle');
-        if (fs.existsSync(mcpBundleDir)) copyKoffiInto(path.join(mcpBundleDir, 'node_modules'));
-        else console.warn(`[postPackage] no mcp-bundle at ${mcpBundleDir}: the MCP broker's peer pid self-check will report unavailable`);
+        if (!fs.existsSync(mcpBundleDir)) {
+          throw new Error(`[postPackage] ${mcpBundleDir} missing — run \`npm run build:mcp\` before packaging.`);
+        }
+        if (!koffiPresent) {
+          throw new Error(`[postPackage] koffi prebuilt missing (${koffiSrc} / ${koromixSrc}) — the MCP broker would refuse every session in this ${koffiPlatform}-${koffiArch} package.`);
+        }
+        copyKoffiInto(path.join(mcpBundleDir, 'node_modules'));
       }
 
       // 6. Remove .ps1 files from resources — NuGet 2.8 treats PowerShell files

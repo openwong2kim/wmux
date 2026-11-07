@@ -1313,6 +1313,37 @@ fn a_refusal_starts_no_fallback() {
     );
 }
 
+/// A broker that could not tie the connection to the shim refuses with
+/// `peer` or `peer-unverified`: the full bundle serves the session instead,
+/// including the request the host sent while the shim waited for the ack.
+#[test]
+fn a_peer_refusal_falls_back_to_the_full_bundle() {
+    for reason in ["peer", "peer-unverified"] {
+        let sb = Sandbox::new();
+        sb.write_token("tok");
+        let Some(install) = Install::new(&sb, Layout::Marked) else {
+            return;
+        };
+        let listener = stub::bind(&sb.pipe());
+        let mut child = spawn(&mut install.shim(&sb, &[])).expect("spawn shim");
+        let err = lines(child.stderr.take().unwrap());
+        let out = lines(child.stdout.take().unwrap());
+        let mut stdin = child.stdin.take().unwrap();
+        let mut conn = listener.accept(WAIT);
+        read_line(&mut conn);
+        let line = format!("{{\"wmuxBroker\":1,\"ok\":false,\"error\":\"{reason}\"}}\n");
+        conn.write_all(line.as_bytes()).unwrap();
+        drop(conn);
+        serves(&mut stdin, &out, false);
+        assert_eq!(
+            recv_line_with(&err, "[wmux-mcp-shim]"),
+            format!("[wmux-mcp-shim] broker refused the session: {reason}"),
+        );
+        child.kill().expect("kill the shim's pid");
+        let _ = child.wait();
+    }
+}
+
 /// A close before the ack falls back; each layout finds its bundle.
 fn falls_back_on_an_early_close(install: &Install, sb: &Sandbox, want: &str) {
     let listener = stub::bind(&sb.pipe());
