@@ -2654,6 +2654,49 @@ html[data-glass] .wmux-frame-row > .wmux-shell-body {
   border: 0;
   border-radius: 0;
 }
+/* An opaque window draws that curve over the panes instead of clipping them
+ * to it. On macOS a rounded clip whose corners differ makes Chromium mask the
+ * whole column in window-sized GPU surfaces (~220 MB at 17 panes, DPR 2), so
+ * the column clips square: ::before lays the sheet's tone outside the curve
+ * and the panes' base under the hairline, ::after draws the hairline. Under
+ * window glass the curve shows the material, which only the clip can leave. */
+html:not([data-glass]) .wmux-shell-body:not([data-sidebar="hidden"]) .wmux-main-column {
+  border-width: 0;
+  border-radius: 0;
+  padding-left: 1px;
+}
+html:not([data-glass]) .wmux-shell-body:not([data-sidebar="hidden"]) .wmux-main-column::before,
+html:not([data-glass]) .wmux-shell-body:not([data-sidebar="hidden"]) .wmux-main-column::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--sheet-radius);
+  border-left: 1px solid var(--sheet-edge);
+  border-radius: var(--sheet-radius) 0 0 var(--sheet-radius);
+  pointer-events: none;
+  z-index: 30;
+}
+html:not([data-glass]) .wmux-shell-body:not([data-sidebar="hidden"]) .wmux-main-column::before {
+  border-left-color: var(--bg-base);
+  box-shadow: 0 calc(-1 * var(--sheet-radius)) var(--bg-mantle), 0 var(--sheet-radius) var(--bg-mantle);
+}
+html:not([data-glass]) .wmux-shell-body.flex-row-reverse:not([data-sidebar="hidden"]) .wmux-main-column {
+  padding-left: 0;
+  padding-right: 1px;
+}
+html:not([data-glass]) .wmux-shell-body.flex-row-reverse:not([data-sidebar="hidden"]) .wmux-main-column::before,
+html:not([data-glass]) .wmux-shell-body.flex-row-reverse:not([data-sidebar="hidden"]) .wmux-main-column::after {
+  left: auto;
+  right: 0;
+  border-left: 0;
+  border-right: 1px solid var(--sheet-edge);
+  border-radius: 0 var(--sheet-radius) var(--sheet-radius) 0;
+}
+html:not([data-glass]) .wmux-shell-body.flex-row-reverse:not([data-sidebar="hidden"]) .wmux-main-column::before {
+  border-right-color: var(--bg-base);
+}
 .wmux-shell-body .wmux-sidebar { box-shadow: none !important; }
 .wmux-shell-body,
 .wmux-shell-body.flex-row-reverse { background: var(--bg-mantle); }
