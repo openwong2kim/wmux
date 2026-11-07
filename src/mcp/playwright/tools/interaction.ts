@@ -15,6 +15,7 @@ import {
   getSmartElementOnPage,
   resolveSmartRefLocator,
   smartRefAxisEntry,
+  smartRefSelector,
 } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
 import type { RpcFrameRef } from '../rpcFrames';
@@ -555,7 +556,7 @@ export function sanitizeRef(ref: string, scope: BrowserTargetScope, opts?: { fra
   // Every `[data-wmux-ref]` resolution in the tool layer — RPC click, fill,
   // hover, drag, select, scroll, scroll-into-view, the password probe, and
   // browser_highlight — passes through here first, except a smartRef click,
-  // which is not in the frame-ref number space (see rpcClick). That makes this
+  // which has its own attribute and number space (see rpcClick). That makes this
   // the one place a frame ref can be stopped before it reaches a selector that can
   // only ever match a main-document element. Fail closed: a frame ref has no
   // data-attr representation at all, so attempting it either finds nothing or,
@@ -738,14 +739,13 @@ async function rpcClick(
 ): Promise<'touch' | 'mouse'> {
   // Use CDP click: first get element coordinates via JS, then dispatch mouse events.
   // A smartRef is numbered by browser_smart_snapshot's own count
-  // (rpcSmartDescriptorKey), which nothing keeps apart from the numbers
-  // browser_snapshot gives frame elements, so the frame-ref store says
-  // nothing about it: it gets the ref syntax check only, and the top
-  // document, where no frame element carries a tag.
+  // (rpcSmartDescriptorKey) and stamped in its own attribute, so the frame-ref
+  // store says nothing about it: it gets the ref syntax check only, and the
+  // top document, where no frame element carries a stamp.
   let target: RpcTarget;
   if (smart) {
     assertRefSyntax(ref);
-    target = { selector: `[data-wmux-ref="${ref}"]`, frame: null };
+    target = { selector: smartRefSelector(ref), frame: null };
   } else {
     target = rpcRefTarget(ref, scope, { frames: 'allow' });
   }
@@ -938,13 +938,9 @@ async function resolveTypeTarget(
  * Its only addressing mode is a selector, so a ref becomes the `data-wmux-ref`
  * tag the snapshot wrote and a caller's own selector is passed through.
  *
- * A smartRef gets NO rendering, deliberately. `data-wmux-ref` tags are written
- * by browser_snapshot; browser_smart_snapshot keeps its own, differently
- * numbered ref space and tags nothing. Rendering smartRef=61 as
- * `[data-wmux-ref="61"]` therefore names either nothing at all or — worse, when
- * a browser_snapshot ran earlier — whatever unrelated element that snapshot
- * happened to number 61. An error naming the limit is the only honest answer
- * this lane has.
+ * A smartRef is not accepted here. browser_smart_snapshot stamps its numbers
+ * in its own attribute (smartRefSelector), and only browser_click resolves
+ * them on this lane (rpcClick); the typing tools take a ref or a selector.
  */
 function rpcSelectorFor(addr: RefAddress, scope: BrowserTargetScope): RpcTarget {
   if (addr.selector !== undefined) {
@@ -954,9 +950,8 @@ function rpcSelectorFor(addr: RefAddress, scope: BrowserTargetScope): RpcTarget 
   if (addr.ref === undefined) {
     throw taggedFailure(
       'not_supported',
-      `smartRef=${addr.smartRef} cannot be used on this transport: browser_smart_snapshot refs ` +
-        'are not tagged into the page, and this surface has no live Chrome page to resolve them ' +
-        'against. Use a ref from browser_snapshot, or a CSS selector.',
+      `smartRef=${addr.smartRef} cannot be used on this transport: without a live Chrome page ` +
+        'this tool takes a ref from browser_snapshot, or a CSS selector.',
     );
   }
   return rpcRefTarget(addr.ref, scope, { frames: 'allow' });
@@ -1623,8 +1618,9 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
 
         // RPC fallback
         if (!ref && smartRef === undefined) throw badArgs('Either ref or smartRef must be provided.');
-        const resolvedRef = ref ?? String(smartRef);
-        const rpcDispatch = await effect.dispatch(() => rpcClick(resolvedRef, scope, double, ref === undefined));
+        // smartRef takes priority over ref, as on the Playwright lane above.
+        const resolvedRef = smartRef !== undefined ? String(smartRef) : (ref as string);
+        const rpcDispatch = await effect.dispatch(() => rpcClick(resolvedRef, scope, double, smartRef !== undefined));
         recordAction(deps, { scope, tool: 'browser_click', page: null, ref: resolvedRef });
         return withEffectTrailer(
           {

@@ -28,7 +28,7 @@ describe('buildDomSnapshotExpression', () => {
 });
 
 describe('getSmartSnapshotViaEval', () => {
-  it('maps the evaluator payload into a SmartSnapshot with data-wmux-ref locators', async () => {
+  it('maps the evaluator payload into a SmartSnapshot with smart-ref stamp locators', async () => {
     const evaluate = vi.fn().mockResolvedValue({
       url: 'https://x.test/',
       title: 'X',
@@ -52,24 +52,25 @@ describe('getSmartSnapshotViaEval', () => {
       context: '', own: '', sameNameIndex: 0, sameNameTotal: 1, roleIndex: 0, roleTotal: 1,
     };
     expect(snap.elements).toEqual([
-      { ref: 1, role: 'button', name: 'OK', locator: '[data-wmux-ref="1"]', ...inert },
+      { ref: 1, role: 'button', name: 'OK', locator: '[data-wmux-smart-ref="1"]', ...inert },
       {
         ref: 2,
         role: 'textbox',
         name: 'Search',
         value: 'q',
         description: 'main search',
-        locator: '[data-wmux-ref="2"]',
+        locator: '[data-wmux-smart-ref="2"]',
         ...inert,
       },
     ]);
   });
 
-  it('injects a 1-based, data-wmux-ref-tagging script using the shared selector', async () => {
+  it('injects a 1-based script stamping its own attribute, using the shared selector', async () => {
     const evaluate = vi.fn().mockResolvedValue({ url: '', title: '', content: '', elements: [] });
     await getSmartSnapshotViaEval(evaluate);
     const script = evaluate.mock.calls[0][0] as string;
-    expect(script).toContain('data-wmux-ref');
+    expect(script).toContain('data-wmux-smart-ref');
+    expect(script).not.toContain('data-wmux-ref"');
     // The numbering now comes from the shared stable-ref assignment, seeded
     // 1-based to match getSmartSnapshot / getLocatorByRef (#1355).
     expect(script).toContain('assignStableRefs');
@@ -88,8 +89,8 @@ describe('getSmartSnapshotViaEval', () => {
     });
     await getSmartSnapshotViaEval(evaluate);
     // The cache must hold a CSS-selector locator that page.locator() can resolve
-    // against the data-wmux-ref attributes the snapshot left in the DOM.
-    expect(getLocatorByRef(1)).toBe('[data-wmux-ref="1"]');
+    // against the smart-ref stamps the snapshot left in the DOM.
+    expect(getLocatorByRef(1)).toBe('[data-wmux-smart-ref="1"]');
     expect(getLocatorByRef(2)).toBeNull();
   });
 

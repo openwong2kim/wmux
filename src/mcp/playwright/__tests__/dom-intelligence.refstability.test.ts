@@ -587,7 +587,7 @@ describe('replay axis for a smart ref', () => {
     await getSmartSnapshotViaEval(evaluate as never);
 
     expect(smartRefAxisEntry(1)).toBeNull();
-    expect(getLocatorByRef(1)).toBe('[data-wmux-ref="1"]');
+    expect(getLocatorByRef(1)).toBe('[data-wmux-smart-ref="1"]');
   });
 });
 
@@ -669,8 +669,8 @@ describe('RPC lane keeps positional refs', () => {
   it('resolves a smart ref through the data attribute it tagged', async () => {
     clearElementCache();
     clearRefDescriptors();
-    // Identity cannot be held here: browser_snapshot's RPC fallback strips
-    // data-wmux-ref document-wide and renumbers from 0 on each of its scans.
+    // The stamp is the smart lane's own attribute, not browser_snapshot's
+    // data-wmux-ref, which that tool strips and renumbers on each scan.
     const evaluate = async () => ({
       url: 'https://example.test/a',
       title: 'Page',
@@ -685,6 +685,6 @@ describe('RPC lane keeps positional refs', () => {
 
     // No page was captured on this lane, so any page may resolve the selector.
     const page = makePage(tree([]));
-    expect(await resolveSmartRefLocator(page, 2)).toBe('[data-wmux-ref="2"]');
+    expect(await resolveSmartRefLocator(page, 2)).toBe('[data-wmux-smart-ref="2"]');
   });
 });

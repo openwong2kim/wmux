@@ -176,7 +176,7 @@ describe('in-process frames on the RPC lane', () => {
     // ref=1 is the frame's field; smartRef 1 comes from the smart snapshot's own count.
     const res = await tool('browser_click')({ smartRef: 1 });
     expect(res.isError).toBeFalsy();
-    expect(calls('browser.click.cdp').at(-1)).toEqual(expect.objectContaining({ selector: '[data-wmux-ref="1"]' }));
+    expect(calls('browser.click.cdp').at(-1)).toEqual(expect.objectContaining({ selector: '[data-wmux-smart-ref="1"]' }));
     expect(calls('browser.click.cdp').at(-1)).not.toHaveProperty('frameId');
   });
 
