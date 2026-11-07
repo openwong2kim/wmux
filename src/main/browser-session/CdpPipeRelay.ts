@@ -45,6 +45,8 @@ const MAX_INBOUND_BYTES = 32 * 1024 * 1024;
 const HEADER_TIMEOUT_MS = 5_000;
 /** Connections not yet upgraded the listener takes on top of every Chrome's cap. */
 const PRE_AUTH_ROOM = 8;
+/** Said once when a platform with Unix sockets has to serve on TCP. Names no endpoint, port, path or token. */
+export const RELAY_TCP_FALLBACK_LINE = '[CdpPipeRelay] no private socket dir; serving on loopback TCP';
 
 /** What browser.cdp.info hands a caller: where to connect, and the header that lets it. */
 export interface RelayGrant {
@@ -250,6 +252,8 @@ export class CdpPipeRelay {
         removeRelaySocketDir(place.dir);
       }
     }
+    // Windows serves on TCP by design; elsewhere it means no root could hold a private socket.
+    if (process.platform !== 'win32') console.warn(RELAY_TCP_FALLBACK_LINE);
     const server = this.makeServer();
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);

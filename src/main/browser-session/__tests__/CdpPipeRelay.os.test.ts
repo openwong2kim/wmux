@@ -9,7 +9,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { CdpPipeMux, cdpPipeCounters, resetCdpPipeCounters, type ClientRef } from '../CdpPipeMux';
-import { CdpPipeRelay, RELAY_PATH, type RelayGrant, type RelayOptions } from '../CdpPipeRelay';
+import { CdpPipeRelay, RELAY_PATH, RELAY_TCP_FALLBACK_LINE, type RelayGrant, type RelayOptions } from '../CdpPipeRelay';
 import { RELAY_DIR_PREFIX, sweepDeadRelayDirs, verifyRelaySocket } from '../relaySocket';
 import { FakeBrowser } from './fakePipeBrowser';
 import { deliberateSleep } from '../../../test-utils/waitFor';
@@ -137,6 +137,31 @@ describe('CdpPipeRelay', () => {
 
     const tcp = await setup({ roots: [nonAscii, long, open] });
     expect((await tcp.route.grant({})).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+  });
+
+  it.skipIf(!posix)('says once, naming nothing, when no socket root works and it serves on loopback TCP; says nothing when the socket works', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const said = () => warn.mock.calls.map((call) => call.map(String).join(' '));
+    const open = path.join(testRoot(), 'open');
+    fs.mkdirSync(open);
+    fs.chmodSync(open, 0o777);
+    const tcp = await setup({ roots: [open] });
+    const grant = await tcp.route.grant({});
+    expect(grant.endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    // The grant still works, and a second one says nothing more.
+    (await dial(grant)).close();
+    await tcp.route.grant({});
+    expect(said().filter((line) => line === RELAY_TCP_FALLBACK_LINE)).toHaveLength(1);
+    for (const line of said()) {
+      expect(line).not.toContain(new URL(grant.endpoint).port);
+      expect(line).not.toContain(grant.endpoint);
+      expect(line).not.toContain(open);
+    }
+
+    warn.mockClear();
+    const unix = await setup();
+    expect((await unix.route.grant({})).endpoint.startsWith('ws+unix://')).toBe(true);
+    expect(said()).not.toContain(RELAY_TCP_FALLBACK_LINE);
   });
 
   it.skipIf(!posix)('takes a socket only while its dir and the socket are this user\'s and closed to everyone else', () => {
