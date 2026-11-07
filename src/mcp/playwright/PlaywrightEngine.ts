@@ -267,16 +267,21 @@ export class PlaywrightEngine {
    * the target was found and attached, and Playwright still had no Page for it.
    * An in-app tab's guest on Windows is one when the tab existed before the
    * connection was made. A later lookup that finds such a target goes straight
-   * to the RPC lane instead of repeating the ~4 s retry loop.
+   * to the RPC lane instead of repeating the ~4 s retry loop, unless
+   * Playwright has a Page for it by then.
    *
    * Kept across the reconnects the retry loop makes itself: those reach the
    * same targets after they exist, which gives no Page either, and clearing
    * there let one tab's first lookup wipe what another tab had learned.
-   * Cleared by any other disconnect (an explicit one, a profile or policy
-   * change, a failed connection check), so the target is tried again there.
-   * Ids that no longer appear in the target list are dropped as they go.
+   * Cleared by any other disconnect of a live connection (an explicit one, a
+   * failed connection check), and whenever the endpoint, profile or policy
+   * epoch differs from the one it was learned under (unpageableScope), so the
+   * target is tried again there. Ids that no longer appear in the target list
+   * are dropped as they go.
    */
   private unpageableTargets = new Set<string>();
+  /** The connection terms unpageableTargets was learned under. */
+  private unpageableScope: string | undefined;
   /** Bumped whenever unpageableTargets is cleared, so a lookup that spanned a
    *  clear does not record into the new connection's memory. */
   private unpageableEpoch = 0;
@@ -545,6 +550,17 @@ export class PlaywrightEngine {
     if (url) await fetch(url).catch(() => { /* already gone */ });
   }
 
+  private forgetUnpageable(): void {
+    this.unpageableTargets.clear();
+    this.unpageableScope = undefined;
+    this.unpageableEpoch++;
+  }
+
+  /** The terms of the live connection, as far as unpageableTargets cares. */
+  private connectionScope(): string {
+    return JSON.stringify([this.connectedEndpoint, this.connectedProfile ?? null, this.connectedPolicyEpoch ?? null]);
+  }
+
   /**
    * @param retryReconnect the page lookup's own retry is reconnecting: keep
    *   unpageableTargets (see there). Any other disconnect of a live connection
@@ -554,10 +570,7 @@ export class PlaywrightEngine {
     const b = this.browser;
     const s = this.autoAttachSession;
     this.browser = null;
-    if (b && !retryReconnect && this.unpageableTargets.size > 0) {
-      this.unpageableTargets.clear();
-      this.unpageableEpoch++;
-    }
+    if (b && !retryReconnect) this.forgetUnpageable();
     this.cdpPort = null;
     this.connectedEndpoint = null;
     this.autoAttachSession = null;
@@ -1233,14 +1246,18 @@ export class PlaywrightEngine {
     let surfaceProvenByAutoOpen = false;
 
     const opSignal = currentBrowserOpSignal();
-    // What the target-domain strategy saw on the latest attempt, and on each
-    // finished one: a target is remembered only when every attempt saw it unpaged.
+    // What the target-domain strategy saw on the latest attempt. `agreed` is the
+    // target every finished attempt saw unpaged, or null once one did not: a
+    // target is remembered only when all of them agree.
     const probe: TargetProbe = {};
-    const unpagedSeen: Array<string | undefined> = [];
+    let agreed: string | null | undefined;
+    const agree = () => {
+      agreed = probe.unpaged && (agreed === undefined || agreed === probe.unpaged) ? probe.unpaged : null;
+    };
     const epochAtStart = this.unpageableEpoch;
     for (let attempt = 1; attempt <= PAGE_FIND_RETRIES; attempt++) {
       opSignal?.throwIfAborted();
-      if (attempt > 1) unpagedSeen.push(probe.unpaged);
+      if (attempt > 1) agree();
       probe.unpaged = undefined;
       probe.knownUnpageable = undefined;
       try {
@@ -1261,8 +1278,6 @@ export class PlaywrightEngine {
             probe,
           );
           if (page) return page;
-          // Already seen unpageable on this connection: no retries, the RPC lane serves it.
-          if (probe.knownUnpageable) return null;
         }
 
         // Strategy 2 (was 1): fall back to the first existing page that isn't
@@ -1290,6 +1305,10 @@ export class PlaywrightEngine {
             return safePage;
           }
         }
+
+        // Already seen unpageable (see unpageableTargets): no /json attach, no
+        // retries; the RPC lane serves the call.
+        if (probe.knownUnpageable) return null;
 
         // Strategy 3: Use /json endpoint + match registered targets
         if (this.cdpPort) {
@@ -1397,17 +1416,15 @@ export class PlaywrightEngine {
     // Every attempt found the same target and attached, and still got no Page:
     // remember it, so later lookups skip the retries. Not when a disconnect
     // cleared the memory meanwhile: that connection is not the one probed.
-    unpagedSeen.push(probe.unpaged);
-    const unpaged = unpagedSeen[0];
-    if (
-      unpaged
-      && unpagedSeen.length === PAGE_FIND_RETRIES
-      && unpagedSeen.every((id) => id === unpaged)
-      && this.browser
-      && this.unpageableEpoch === epochAtStart
-    ) {
-      this.unpageableTargets.add(unpaged);
-      console.error(`[PlaywrightEngine] Target ${unpaged} gives no page; later calls use the RPC lane at once`);
+    agree();
+    if (agreed && this.browser && this.unpageableEpoch === epochAtStart) {
+      const scope = this.connectionScope();
+      if (this.unpageableScope !== scope) {
+        this.unpageableTargets.clear();
+        this.unpageableScope = scope;
+      }
+      this.unpageableTargets.add(agreed);
+      console.error(`[PlaywrightEngine] Target ${agreed} gives no page; later calls use the RPC lane at once`);
     }
     this.playwrightFailed.add(ctx.key);
     // Auto-reset after 10s so subsequent browser.open calls get a fresh chance.
@@ -1508,7 +1525,13 @@ export class PlaywrightEngine {
 
         console.error(`[PlaywrightEngine] CDP targets: ${targetInfos.map(t => `${t.type}:${t.url.substring(0, 40)}`).join(', ')}`);
 
-        // Forget remembered targets that are gone (their tab was closed).
+        // Forget everything learned under other connection terms (another
+        // endpoint, profile or policy epoch, which the lookup's own reconnect
+        // can bring), and the targets that are gone (their tab was closed).
+        if (this.unpageableTargets.size > 0 && this.unpageableScope !== this.connectionScope()) {
+          this.unpageableTargets.clear();
+          this.unpageableScope = undefined;
+        }
         if (this.unpageableTargets.size > 0) {
           const live = new Set(targetInfos.map((t) => t.targetId));
           for (const id of this.unpageableTargets) if (!live.has(id)) this.unpageableTargets.delete(id);
@@ -1567,8 +1590,18 @@ export class PlaywrightEngine {
 
         console.error(`[PlaywrightEngine] Found webview target: ${webviewTarget.targetId} url=${webviewTarget.url}`);
 
-        // Seen unpageable on this connection already: say so, skip the attach and its wait.
+        // Seen unpageable already: skip the attach and its wait. If Playwright
+        // has made a Page for it since, use that and forget the target.
         if (this.unpageableTargets.has(webviewTarget.targetId)) {
+          const pages = this.getAllPages();
+          const late = surfaceId
+            ? await this.matchPinnedPage(pages, webviewTarget.targetId, webviewTarget.url)
+            : pages.find((p) => !this.isShellPage(p.url()));
+          if (late) {
+            this.unpageableTargets.delete(webviewTarget.targetId);
+            console.error(`[PlaywrightEngine] Found page for a target that gave none before: ${late.url()}`);
+            return late;
+          }
           probe.knownUnpageable = true;
           return null;
         }

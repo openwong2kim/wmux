@@ -648,9 +648,17 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
   /** Target.getTargets calls left to answer with no targets (a target not up yet). */
   let hiddenListings = 0;
   let connects = 0;
+  /** The profile browser.cdp.info reports for the pane. */
+  let profile = 'p1';
+  /** A Page Playwright has for wc-1 (null: none, the Windows shape). */
+  let guestPage: FakePage | null = null;
 
   function rig() {
     const shellPage: FakePage = { url: vi.fn().mockReturnValue(shellUrl), context: vi.fn() };
+    const guestSession = {
+      send: vi.fn().mockResolvedValue({ targetInfo: { targetId: 'wc-1' } }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
     const session = {
       send: vi.fn().mockImplementation((method: string) => {
         if (method === 'Target.getTargets') {
@@ -668,8 +676,12 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
       detach: vi.fn().mockResolvedValue(undefined),
     };
     const ctx = {
-      pages: vi.fn().mockReturnValue([shellPage]),
-      newCDPSession: vi.fn().mockImplementation(async () => session),
+      pages: vi.fn().mockImplementation(() => {
+        if (!guestPage) return [shellPage];
+        guestPage.context.mockReturnValue(ctx);
+        return [shellPage, guestPage];
+      }),
+      newCDPSession: vi.fn().mockImplementation(async (p?: FakePage) => (p && p === guestPage ? guestSession : session)),
     };
     shellPage.context.mockReturnValue(ctx);
     const browser = {
@@ -688,6 +700,7 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
         return Promise.resolve({
           cdpPort: 9222,
           shellUrl,
+          profile,
           ...(ws && { targetsScoped: true }),
           targets: [{ surfaceId: 'surf-A', targetId, workspaceId: 'ws-A' }],
         });
@@ -696,8 +709,14 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     });
   }
 
-  /** getPage with the clock run forward until it settles (its waits are timers). */
-  async function lookup(engine: PlaywrightEngine): Promise<{ page: FakePage | null; waitedMs: number; connects: number }> {
+  /**
+   * getPage with the clock run forward until it settles (its waits are timers).
+   * `during` runs once, `atMs` into the lookup (inside attempt 1's wait).
+   */
+  async function lookup(
+    engine: PlaywrightEngine,
+    during?: { atMs: number; run: () => Promise<void> | void },
+  ): Promise<{ page: FakePage | null; waitedMs: number; connects: number }> {
     const before = connects;
     let settled = false;
     let page: FakePage | null = null;
@@ -706,6 +725,7 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     for (let i = 0; i < 200 && !settled; i++) {
       await vi.advanceTimersByTimeAsync(50);
       waitedMs += 50;
+      if (during && waitedMs === during.atMs) await during.run();
     }
     await done;
     // Past the 10 s failure latch, so the next lookup reaches discovery again.
@@ -725,6 +745,8 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     listed = new Set();
     hiddenListings = 0;
     connects = 0;
+    profile = 'p1';
+    guestPage = null;
     vi.useFakeTimers();
     // No /json endpoint: findViaJsonEndpoint must not reach a real port 9222.
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('no /json here')));
@@ -739,7 +761,7 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     const engine = PlaywrightEngine.getInstance();
     (engine as unknown as { setWorkspaceIdResolver(r: () => Promise<string>): void })
       .setWorkspaceIdResolver(async () => 'ws-A');
-    await engine.connect(9222);
+    await engine.ensureConnected('ws-A');
     return engine;
   }
 
@@ -771,7 +793,7 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     const engine = await engineFor();
     await lookup(engine);
     await engine.disconnect();
-    await engine.connect(9222);
+    await engine.ensureConnected('ws-A');
     const again = await lookup(engine);
     expect(again.page).toBeNull();
     expect(again.connects).toBe(2);
@@ -807,6 +829,33 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     listed.delete('wc-1');
     targetId = 'wc-2';
     await lookup(engine);
+    expect(remembered(engine)).toEqual(['wc-2']);
+  });
+
+  it('a Page Playwright makes later for a remembered target is used, and the target forgotten', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    const later = await lookup(engine);
+    expect(later.page).toBe(guestPage);
+    expect(later.connects).toBe(0);
+    expect(later.waitedMs).toBeLessThanOrEqual(50);
+    expect(remembered(engine)).toEqual([]);
+  });
+
+  it('a disconnect during a lookup keeps its target from being remembered', async () => {
+    const engine = await engineFor();
+    const first = await lookup(engine, { atMs: 300, run: () => engine.disconnect() });
+    expect(first.page).toBeNull();
+    expect(remembered(engine)).toEqual([]);
+  });
+
+  it("a profile change met by the lookup's own reconnect drops what the old profile taught", async () => {
+    const engine = await engineFor();
+    await lookup(engine); // wc-1 learned under p1
+    expect(remembered(engine)).toEqual(['wc-1']);
+    targetId = 'wc-2';
+    await lookup(engine, { atMs: 300, run: () => { profile = 'p2'; } });
     expect(remembered(engine)).toEqual(['wc-2']);
   });
 });
