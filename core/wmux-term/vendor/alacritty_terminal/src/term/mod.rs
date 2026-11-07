@@ -794,6 +794,23 @@ impl<T> Term<T> {
         self.mark_fully_damaged();
     }
 
+    /// wmux: the region from `origin` moves up in place, as xterm.js's
+    /// deleteLines runs; unlike `scroll_up_relative`, nothing enters history
+    /// when the region starts at the top row.
+    fn scroll_up_in_place(&mut self, origin: Line, lines: usize) {
+        let lines = cmp::min(lines, (self.scroll_region.end - origin).0 as usize);
+        let region = origin..self.scroll_region.end;
+
+        self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
+        self.grid.scroll_up_in_place(&region, lines);
+
+        let line = &mut self.vi_mode_cursor.point.line;
+        if region.start <= *line && region.end > *line {
+            *line = cmp::max(*line - lines, region.start);
+        }
+        self.mark_fully_damaged();
+    }
+
     fn deccolm(&mut self)
     where
         T: EventListener,
@@ -1520,7 +1537,7 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Deleting {lines} lines");
 
         if lines > 0 && self.scroll_region.contains(&origin) {
-            self.scroll_up_relative(origin, lines);
+            self.scroll_up_in_place(origin, lines);
         }
     }
 

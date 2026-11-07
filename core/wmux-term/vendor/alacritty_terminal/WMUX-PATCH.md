@@ -26,6 +26,11 @@ Local changes:
   `DEFAULT_ATTR_DATA` blanks), where upstream used the current background.
   Reverse index at the top margin keeps the erase colour (xterm.js
   `reverseIndex`), so it now calls `scroll_down_relative` directly.
+- `src/term/mod.rs` deletes lines (DL, `CSI Ps M`) in place, as xterm.js's
+  `InputHandler.deleteLines` does (it splices rows within the scroll region
+  and never touches scrollback). Upstream rotated the deleted rows into
+  history when the region started at the top row. `src/grid/mod.rs` adds
+  `scroll_up_in_place` for it; linefeed still scrolls into history.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.
