@@ -74,11 +74,6 @@ export class BrokerSupervisor {
     this.startTimeOf = opts.startTimeOf ?? processStartTime;
   }
 
-  /** The running broker's pid, for telling its relayed calls apart (peer pid measurement). */
-  get pid(): number | null {
-    return this.child?.pid ?? null;
-  }
-
   /**
    * The broker this supervisor spawned: its pid, and the start time the OS
    * reported for it right after the spawn (null when that could not be read).
