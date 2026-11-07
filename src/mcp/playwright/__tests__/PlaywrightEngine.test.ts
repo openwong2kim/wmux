@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /*
  * Regression tests for the CDP session lifecycle in PlaywrightEngine.
@@ -647,6 +647,137 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
  * B's. That is the same "two agents, one default" confusion this routing
  * exists to end, one layer down.
  */
+describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', () => {
+  // The guest's target is listed and already attached, but Playwright never
+  // has a Page for it: the shape logged for every in-app tab on Windows.
+  const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+  let targetId = 'wc-1';
+  let connects = 0;
+
+  function rig() {
+    const shellPage: FakePage = { url: vi.fn().mockReturnValue(shellUrl), context: vi.fn() };
+    const session = {
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') {
+          return Promise.resolve({
+            targetInfos: [{ targetId, type: 'webview', title: '', url: 'http://127.0.0.1:1/', attached: true }],
+          });
+        }
+        return Promise.resolve({});
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const ctx = {
+      pages: vi.fn().mockReturnValue([shellPage]),
+      newCDPSession: vi.fn().mockImplementation(async () => session),
+    };
+    shellPage.context.mockReturnValue(ctx);
+    const browser = {
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => session),
+      contexts: vi.fn().mockReturnValue([ctx]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockConnectOverCDP.mockImplementation(async () => {
+      connects++;
+      return browser;
+    });
+    mockSendRpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === 'browser.cdp.info') {
+        const ws = (params as { workspaceId?: string } | undefined)?.workspaceId;
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl,
+          ...(ws && { targetsScoped: true }),
+          targets: [{ surfaceId: 'surf-A', targetId, workspaceId: 'ws-A' }],
+        });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  /** getPage with the clock run forward until it settles (its waits are timers). */
+  async function lookup(engine: PlaywrightEngine): Promise<{ page: FakePage | null; waitedMs: number }> {
+    let settled = false;
+    let page: FakePage | null = null;
+    const done = priv(engine).getPage().then((p) => { page = p; settled = true; });
+    let waitedMs = 0;
+    for (let i = 0; i < 200 && !settled; i++) {
+      await vi.advanceTimersByTimeAsync(50);
+      waitedMs += 50;
+    }
+    await done;
+    return { page, waitedMs };
+  }
+
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    __resetSurfaceRoutingForTesting();
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+    targetId = 'wc-1';
+    connects = 0;
+    vi.useFakeTimers();
+    // No /json endpoint: findViaJsonEndpoint must not reach a real port 9222.
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('no /json here')));
+    rig();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function engineFor(): Promise<PlaywrightEngine> {
+    const engine = PlaywrightEngine.getInstance();
+    (engine as unknown as { setWorkspaceIdResolver(r: () => Promise<string>): void })
+      .setWorkspaceIdResolver(async () => 'ws-A');
+    await engine.connect(9222);
+    return engine;
+  }
+
+  it('the first lookup still makes every attempt; a later one on the same target makes none', async () => {
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    const connectsAfterFirst = connects;
+    expect(connectsAfterFirst).toBe(3); // the connect, then a reconnect after attempts 1 and 2
+    expect(first.waitedMs).toBeGreaterThanOrEqual(2_000);
+
+    // Past the old 10 s latch: before this change the whole retry loop ran again here.
+    await vi.advanceTimersByTimeAsync(11_000);
+    const second = await lookup(engine);
+    expect(second.page).toBeNull(); // the RPC lane serves the call, as before
+    expect(connects).toBe(connectsAfterFirst);
+    expect(second.waitedMs).toBeLessThanOrEqual(50);
+  });
+
+  it('a new target is tried again', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    await vi.advanceTimersByTimeAsync(11_000);
+    targetId = 'wc-2';
+    const before = connects;
+    const again = await lookup(engine);
+    expect(again.page).toBeNull();
+    expect(connects).toBe(before + 2);
+    expect(again.waitedMs).toBeGreaterThanOrEqual(2_000);
+  });
+
+  it('a new connection tries the same target again', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    await vi.advanceTimersByTimeAsync(11_000);
+    await engine.disconnect();
+    await engine.connect(9222);
+    const before = connects;
+    const again = await lookup(engine);
+    expect(again.page).toBeNull();
+    expect(connects).toBe(before + 2);
+    expect(again.waitedMs).toBeGreaterThanOrEqual(2_000);
+  });
+
+});
+
 describe('PlaywrightEngine selection keys', () => {
   interface KeyInternals {
     resolveSelectionContext(

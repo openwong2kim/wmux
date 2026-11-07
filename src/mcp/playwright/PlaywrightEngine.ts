@@ -127,6 +127,14 @@ interface CdpInfoResponse {
 const MAX_CONNECT_RETRIES = 3;
 const RETRY_DELAY_MS = 800;
 const PAGE_FIND_RETRIES = 3;
+
+/** What one target-domain lookup saw, for the retry loop around it. */
+interface TargetProbe {
+  /** The target was found and attached, and Playwright gave no Page for it. */
+  unpaged?: string;
+  /** The target was already known unpageable on this connection; nothing was tried. */
+  knownUnpageable?: boolean;
+}
 const PAGE_FIND_DELAY_MS = 500;
 const CDP_ATTACH_INFO_UNAVAILABLE_MESSAGE =
   '[PlaywrightEngine] browser.cdp.info did not disclose a usable CDP endpoint to this caller';
@@ -254,6 +262,16 @@ export class PlaywrightEngine {
    *  per-workspace decision, so a single shared boolean would let one
    *  workspace's auto-open suppress another workspace's own. */
   private autoOpenAttempted = new Set<string>();
+  /**
+   * Targets this connection has been seen unable to give a Page for: a full
+   * page lookup found the target and attached, and Playwright still had no Page
+   * for it. An in-app tab's guest on Windows is one (its target is already
+   * attached and turns from page to webview within a millisecond, so Playwright
+   * never keeps a Page for it). A later lookup that finds such a target goes
+   * straight to the RPC lane instead of repeating the ~4 s retry loop. Cleared
+   * with the connection (disconnect), so a new connection tries again.
+   */
+  private unpageableTargets = new Set<string>();
   /** In-flight getPage promises, keyed by selection context (#554). A single
    *  shared lock returned one caller's page (or auto-open) to a concurrent
    *  caller in a DIFFERENT workspace — a cross-workspace read. Keying by
@@ -523,6 +541,8 @@ export class PlaywrightEngine {
     const b = this.browser;
     const s = this.autoAttachSession;
     this.browser = null;
+    // What this connection could not page, a new one may (see unpageableTargets).
+    this.unpageableTargets.clear();
     this.cdpPort = null;
     this.connectedEndpoint = null;
     this.autoAttachSession = null;
@@ -1198,8 +1218,12 @@ export class PlaywrightEngine {
     let surfaceProvenByAutoOpen = false;
 
     const opSignal = currentBrowserOpSignal();
+    // What the target-domain strategy saw on the latest attempt.
+    const probe: TargetProbe = {};
     for (let attempt = 1; attempt <= PAGE_FIND_RETRIES; attempt++) {
       opSignal?.throwIfAborted();
+      probe.unpaged = undefined;
+      probe.knownUnpageable = undefined;
       try {
         // Strategies 1-3 locate an EXISTING page. When the caller's workspace
         // is known to own no surface (#554), every one of them can only return
@@ -1215,8 +1239,11 @@ export class PlaywrightEngine {
             surfaceId,
             ctx.workspaceId,
             surfaceProvenByAutoOpen,
+            probe,
           );
           if (page) return page;
+          // Already seen unpageable on this connection: no retries, the RPC lane serves it.
+          if (probe.knownUnpageable) return null;
         }
 
         // Strategy 2 (was 1): fall back to the first existing page that isn't
@@ -1348,6 +1375,12 @@ export class PlaywrightEngine {
     }
 
     console.error('[PlaywrightEngine] No webview page found after all retries — marking as temporarily failed');
+    // The last attempt found the target and attached, and still got no Page:
+    // remember that for this connection, so later lookups skip the retries.
+    if (probe.unpaged && this.browser) {
+      this.unpageableTargets.add(probe.unpaged);
+      console.error(`[PlaywrightEngine] Target ${probe.unpaged} gives no page on this connection; later calls use the RPC lane at once`);
+    }
     this.playwrightFailed.add(ctx.key);
     // Auto-reset after 10s so subsequent browser.open calls get a fresh chance.
     // Without this, one early failure permanently blocks this context's page
@@ -1412,6 +1445,7 @@ export class PlaywrightEngine {
     surfaceId?: string,
     workspaceId?: string,
     surfaceProvenByAutoOpen = false,
+    probe: TargetProbe = {},
   ): Promise<Page | null> {
     if (!this.browser) return null;
 
@@ -1499,6 +1533,12 @@ export class PlaywrightEngine {
 
         console.error(`[PlaywrightEngine] Found webview target: ${webviewTarget.targetId} url=${webviewTarget.url}`);
 
+        // Seen unpageable on this connection already: say so, skip the attach and its wait.
+        if (this.unpageableTargets.has(webviewTarget.targetId)) {
+          probe.knownUnpageable = true;
+          return null;
+        }
+
         // Try to attach to the target and get a page
         // Attach with flatten:true creates a session in the current connection
         if (!webviewTarget.attached) {
@@ -1528,6 +1568,7 @@ export class PlaywrightEngine {
         // If pages still empty, try creating a new CDP connection specifically to the webview
         // by reconnecting — this forces Playwright to re-discover all targets
         console.error('[PlaywrightEngine] Attach did not create a page, will retry with reconnect');
+        probe.unpaged = webviewTarget.targetId;
         return null;
       } finally {
         // Detach the probe session so it doesn't accumulate in Playwright's
