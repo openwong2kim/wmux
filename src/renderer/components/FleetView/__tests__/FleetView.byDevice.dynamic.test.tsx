@@ -221,6 +221,28 @@ describe('FleetView — the list grouped by device', () => {
     expect(heads().map(headText)[1]).toBe('beta | Online · Running 1 | ');
   });
 
+  it('a PC that refused this computer has a row-less Needs pairing head and a link to the Remote page', async () => {
+    act(() => useStore.setState((s) => ({
+      pcRailHosts: [{ id: 'host-b', label: 'beta' }],
+      pcRailHostStatus: { 'host-b': 'needs-repair' },
+      pcRailFeeds: { 'host-b': { workspaces: [], fetchedAt: null, failedTicks: 1 } },
+      remoteWorkspaces: s.remoteWorkspaces.map((w) => (w.hostId === 'host-b'
+        ? { ...w, stale: true, staleReason: 'refused' as const, authRejected: true } : w)),
+    })));
+    mount();
+    await flushRaf();
+    const cards = [...container.querySelectorAll<HTMLElement>('[data-fleet-card]')].map((el) => el.dataset.workspaceId).sort();
+    expect(cards).toEqual(['ws-1', 'ws-2']);
+    const head = heads().find((h) => h.dataset.fleetDeviceHead === 'host-b')!;
+    expect(head.dataset.deviceState).toBe('needs-repair');
+    expect(headText(head)).toBe('beta | Needs pairing | ');
+    expect(note('host-b')).toBe('It can\'t be reached until it\'s paired again on the Remote page.');
+    const link = container.querySelector<HTMLButtonElement>('[data-fleet-device-note="host-b"] [data-fleet-key="fleet:device-repair:host-b"]')!;
+    expect(link.textContent).toBe('Remote page');
+    act(() => link.click());
+    expect(useStore.getState().appRoute).toBe('remote');
+  });
+
   it('a search narrows each device and drops the row-less head', async () => {
     mount();
     await flushRaf();

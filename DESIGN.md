@@ -2890,10 +2890,17 @@ differently in the two places, and in the order `fleet_triage` returns.
     a Needs you row from it does not go on top. By device its head reads
     `Disconnected · 3h ago` (the age only once this run has seen it answer),
     then one muted line: `Last seen 3 panes, 1 needed you. They show here
-    again when it reconnects.` The rows are back as soon as it answers. A PC
-    whose attachments here are all stale gets the same head, counting its
-    last snapshot. fleet_triage, the rail badge and phones still count those
-    rows for now (a follow-up: the attachment going stale).
+    again when it reconnects.` (every pane it had, agent or plain shell; the
+    needed-you count is agents only). It turns Disconnected on the tick the
+    "Lost the connection" notice fires, never on one missed poll, and the rows
+    are back as soon as it answers. A PC whose attachments here are all stale
+    gets the same head, counting its last snapshot. fleet_triage and the rail
+    badge drop the same rows.
+  - **A PC that needs pairing** (it refused this computer's credential): the
+    same row-less head, hollow ring and muted text, no status colour,
+    `Needs pairing · 3h ago`, then one muted line: `It can't be reached until
+    it's paired again on the Remote page.`, where Remote page is a quiet
+    underlined text link to that page (an option in the keyboard order).
   - A search or a filter narrows each device and drops row-less heads; with no
     agents at all the page stays the empty call to action. A device with
     nothing to draw has no head. Keyboard order is the drawn order. No map,

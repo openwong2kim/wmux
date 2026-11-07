@@ -23,7 +23,7 @@ const remote = (ptyId: string, hostId: string, hostLabel: string, overrides: Par
   pane(ptyId, { surfaceType: 'remote-terminal', remote: { hostId, hostLabel }, ...overrides });
 const ids = (rows: FleetRow[]) => rows.map((row) => row.pane.ptyId);
 const host = (id: string, label: string, over: Partial<FleetDeviceHost> = {}): FleetDeviceHost =>
-  ({ id, label, offline: false, lastSeenAt: null, ...over });
+  ({ id, label, offline: false, needsRepair: false, lastSeenAt: null, ...over });
 
 describe('groupFleetByDevice', () => {
   const panes = [
@@ -142,6 +142,19 @@ describe('groupFleetByDevice', () => {
     const [row] = selectFleetPanes({ workspaces: [ws], surfaceAgentStatus: {}, surfaceActivity: {}, remoteWorkspaces: [] });
     expect(row).toMatchObject({ surfaceType: 'remote-terminal', remoteHostId: 'host-x' });
     expect(row.remote).toBeUndefined();
+  });
+
+  it('a PC that refused this computer (needs pairing) keeps a row-less head while it has panes here', () => {
+    const groups = groupFleetPanes([pane('l')]);
+    const remoteWorkspaces = [{ hostId: 'host-r', hostLabel: 'r', stale: true, panes: [{ sessionId: 'a', agentName: 'Codex' }] }];
+    const hosts = [host('host-r', 'office', { needsRepair: true, lastSeenAt: 5_000 }), host('host-q', 'quiet', { needsRepair: true })];
+    const byDevice = groupFleetByDevice(groups, { remoteWorkspaces, hosts, includeDisconnected: true });
+    // host-q has nothing here, so no head.
+    expect(byDevice.devices.map((d) => [d.id, d.state])).toEqual([[LOCAL_PC_ID, 'local'], ['host-r', 'needs-repair']]);
+    expect(byDevice.devices[1]).toMatchObject({ label: 'office', lastSeenAt: 5_000, running: [], finished: [], idle: [] });
+    expect(byDevice.devices[1].lastSeen).toBeUndefined();
+    // A search or a filter drops row-less heads.
+    expect(groupFleetByDevice(groups, { remoteWorkspaces, hosts }).devices.map((d) => d.id)).toEqual([LOCAL_PC_ID]);
   });
 
   it('a PC the rail calls down: its head notes every pane it last had, on the toast\'s tick', () => {

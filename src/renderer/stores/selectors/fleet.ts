@@ -1449,9 +1449,10 @@ export interface FleetDeviceGroup {
   /** The host's label; '' for this computer (the UI names it). */
   label: string;
   /** 'disconnected': the PC rail does not reach the host. It has no rows;
-   *  `lastSeen` says what it had. */
-  state: 'local' | 'connected' | 'disconnected';
-  /** Disconnected only: when the host last answered, or null when not known. */
+   *  `lastSeen` says what it had. 'needs-repair': the host refused this
+   *  computer's credential; it has no rows until it is paired again. */
+  state: 'local' | 'connected' | 'disconnected' | 'needs-repair';
+  /** Disconnected or needs-repair: when the host last answered, or null when not known. */
   lastSeenAt?: number | null;
   /** Disconnected only: the panes it last had here. */
   lastSeen?: FleetAwayCounts;
@@ -1470,8 +1471,10 @@ export interface FleetDeviceGroups {
 export interface FleetDeviceHost {
   id: string;
   label: string;
-  /** False while the rail's last poll reached it. */
+  /** True once the rail calls it down (selectDownHostIds). */
   offline: boolean;
+  /** It refused this computer's credential (the rail's needs-repair). */
+  needsRepair: boolean;
   /** When it last answered, or null when not known. */
   lastSeenAt: number | null;
 }
@@ -1483,7 +1486,8 @@ export interface FleetDeviceHost {
  * computer comes first, then the hosts in the rail's order, then any other
  * host by label; a host the rail knows carries the rail's name. While
  * `includeDisconnected` is set, a PC the rail cannot reach keeps a row-less
- * head when it had rows (`away`) or every attachment from it is stale; a
+ * head when it had rows (`away`) or every attachment from it is stale, and a
+ * PC that needs pairing again keeps one while it has attachments here; a
  * device with no rows is otherwise not drawn.
  */
 export function groupFleetByDevice(
@@ -1536,6 +1540,12 @@ export function groupFleetByDevice(
         if (p.agentName && p.agentStatus === 'awaiting_input') counts.neededYou++;
       }
       snapshot.set(r.hostId, counts);
+    }
+    // Refused this computer: its rows are gone until it is paired again.
+    for (const host of opts.hosts ?? []) {
+      if (!host.needsRepair || byId.has(host.id)) continue;
+      if (!(opts.remoteWorkspaces ?? []).some((r) => r.hostId === host.id)) continue;
+      device(host.id, host.label, 'needs-repair').lastSeenAt = host.lastSeenAt;
     }
     for (const [hostId, counts] of snapshot) {
       // A stale attachment on a host the rail still reaches is a workspace
