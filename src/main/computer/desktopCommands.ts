@@ -7,12 +7,16 @@
 // is passed as `--flag=value`, so a value can never be read as another flag.
 
 import { ComputerError } from '../../shared/computer/errors';
-import { DESKTOP_COMMANDS } from '../../shared/computer/protocol';
+import { DESKTOP_ACTION_COMMANDS, DESKTOP_COMMANDS } from '../../shared/computer/protocol';
 
-export { DESKTOP_COMMANDS };
+export { DESKTOP_ACTION_COMMANDS, DESKTOP_COMMANDS };
 export type DesktopCommand = (typeof DESKTOP_COMMANDS)[number];
+export type DesktopActionCommand = (typeof DESKTOP_ACTION_COMMANDS)[number];
+type AnyDesktopCommand = DesktopCommand | DesktopActionCommand;
 
 export const DESKTOP_SURFACES = ['window', 'menu', 'sheet', 'popover', 'alert'] as const;
+export type DesktopSurface = (typeof DESKTOP_SURFACES)[number];
+const SCROLL_DIRECTIONS = ['up', 'down', 'left', 'right'] as const;
 const GET_PROPERTIES = ['text', 'value', 'title', 'bounds', 'role', 'states'] as const;
 const IS_PROPERTIES = ['visible', 'enabled', 'checked', 'focused', 'expanded', 'selected'] as const;
 const WAIT_PREDICATES = ['exists', 'enabled', 'visible', 'value'] as const;
@@ -47,11 +51,23 @@ export interface DesktopPlan {
   checksWindow: boolean;
   /** The runner's deadline for this run. */
   timeoutMs: number;
+  /** The surface of the snapshot a snapshot or find run makes (a --root run keeps its root's); null for other commands. */
+  surface: DesktopSurface | null;
   /** The argv for agent-desktop, given the vetted target's display name and window id. */
   argv(target: { appName: string; windowId: string } | null): string[];
 }
 
-const SCHEMAS: Record<DesktopCommand, string> = {
+/** A ref action: always one ref from a snapshot, never an app or a window by name. */
+export interface DesktopActionPlan {
+  command: DesktopActionCommand;
+  ref: DesktopRef;
+  timeoutMs: number;
+  /** What the on-screen marker shows the action as. */
+  marker: 'click' | 'scroll';
+  argv: string[];
+}
+
+const SCHEMAS: Record<AnyDesktopCommand, string> = {
   snapshot:
     'snapshot args: { surface?: window|menu|sheet|popover|alert, root?: ref, maxDepth?: 1-30, interactiveOnly?: boolean, compact?: boolean, skeleton?: boolean, includeBounds?: boolean, timeoutMs?: number } (with app, and window from listWindows)',
   find:
@@ -61,6 +77,15 @@ const SCHEMAS: Record<DesktopCommand, string> = {
   'list-surfaces': 'list-surfaces args: {} (with app)',
   wait:
     'wait args: exactly one of { element: ref, predicate?: exists|enabled|visible|value, value?: string } | { text: string, count?: number } | { menu: true } | { menuClosed: true } | { ms: number }, plus timeout?: number up to 30000 (text and menu waits need app)',
+  click: 'click args: { ref: "@<snapshot>:eN" } (a ref from a window snapshot or find)',
+  focus: 'focus args: { ref }',
+  select: 'select args: { ref, value: string } (the option to pick)',
+  toggle: 'toggle args: { ref }',
+  check: 'check args: { ref }',
+  uncheck: 'uncheck args: { ref }',
+  expand: 'expand args: { ref }',
+  collapse: 'collapse args: { ref }',
+  scroll: 'scroll args: { ref, direction?: up|down|left|right, amount?: 1-50 }',
 };
 
 /** The arg schema of a command, for an error that tells the agent how to call it. */
@@ -68,7 +93,7 @@ export function desktopSchema(command: DesktopCommand): string {
   return SCHEMAS[command];
 }
 
-function bad(command: DesktopCommand, problem: string): never {
+function bad(command: AnyDesktopCommand, problem: string): never {
   throw new ComputerError('invalid_argument', `${problem}. ${SCHEMAS[command]}`);
 }
 
@@ -87,7 +112,7 @@ export function parseDesktopRef(value: unknown): DesktopRef {
 class Args {
   private readonly seen = new Set<string>();
 
-  constructor(private readonly command: DesktopCommand, private readonly raw: Record<string, unknown>) {}
+  constructor(private readonly command: AnyDesktopCommand, private readonly raw: Record<string, unknown>) {}
 
   private take(key: string): unknown {
     this.seen.add(key);
@@ -150,6 +175,9 @@ const scopeArgs = (target: { appName: string; windowId: string } | null, withWin
 };
 
 export function planDesktopCommand(commandValue: unknown, argsValue: unknown): DesktopPlan {
+  if (typeof commandValue === 'string' && (DESKTOP_ACTION_COMMANDS as readonly string[]).includes(commandValue)) {
+    throw new ComputerError('invalid_argument', `${commandValue} is an action, not an observation; it is sent as an input action`);
+  }
   if (typeof commandValue !== 'string' || !(DESKTOP_COMMANDS as readonly string[]).includes(commandValue)) {
     throw new ComputerError(
       'invalid_argument',
@@ -179,6 +207,7 @@ export function planDesktopCommand(commandValue: unknown, argsValue: unknown): D
         refs: root ? [root] : [],
         checksWindow: (surface ?? 'window') === 'window',
         timeoutMs: (timeoutMs ?? 3_000) + RUN_SLACK_MS,
+        surface: surface ?? 'window',
         argv: (target) => [
           'snapshot',
           ...scopeArgs(target, true),
@@ -223,6 +252,7 @@ export function planDesktopCommand(commandValue: unknown, argsValue: unknown): D
         refs: root ? [root] : [],
         checksWindow: false,
         timeoutMs: (timeoutMs ?? 5_000) + RUN_SLACK_MS,
+        surface: surface ?? 'window',
         argv: (target) => [
           'find',
           ...scopeArgs(target, true),
@@ -252,12 +282,13 @@ export function planDesktopCommand(commandValue: unknown, argsValue: unknown): D
         refs: [ref],
         checksWindow: false,
         timeoutMs: 5_000 + RUN_SLACK_MS,
+        surface: null,
         argv: () => [command, ref.ref, ...flag('property', property)],
       };
     }
     case 'list-surfaces': {
       a.done();
-      return { command, scope: 'app', refs: [], checksWindow: false, timeoutMs: 5_000 + RUN_SLACK_MS, argv: (target) => ['list-surfaces', ...scopeArgs(target, false)] };
+      return { command, scope: 'app', refs: [], checksWindow: false, timeoutMs: 5_000 + RUN_SLACK_MS, surface: null, argv: (target) => ['list-surfaces', ...scopeArgs(target, false)] };
     }
     case 'wait': {
       const element = a.ref('element');
@@ -283,6 +314,7 @@ export function planDesktopCommand(commandValue: unknown, argsValue: unknown): D
         refs: element ? [element] : [],
         checksWindow: false,
         timeoutMs: deadline + RUN_SLACK_MS,
+        surface: null,
         argv: (target) => {
           if (ms !== undefined) return ['wait', String(ms)];
           return [
@@ -302,6 +334,41 @@ export function planDesktopCommand(commandValue: unknown, argsValue: unknown): D
   }
 }
 
+/** A ref action's runner deadline: upstream waits up to 5 s for the ref, plus process start and output. */
+const ACTION_TIMEOUT_MS = 5_000 + RUN_SLACK_MS;
+
+/**
+ * Plans a ref action. Only the commands in DESKTOP_ACTION_COMMANDS; an
+ * observation command is refused here as an action is refused by
+ * planDesktopCommand. Every action names one ref and nothing else that picks
+ * a target.
+ */
+export function planDesktopAction(commandValue: unknown, argsValue: unknown): DesktopActionPlan {
+  if (typeof commandValue !== 'string' || !(DESKTOP_ACTION_COMMANDS as readonly string[]).includes(commandValue)) {
+    throw new ComputerError(
+      'invalid_argument',
+      `desktop action must be one of ${DESKTOP_ACTION_COMMANDS.join(', ')}; got ${JSON.stringify(commandValue)}`,
+    );
+  }
+  const command = commandValue as DesktopActionCommand;
+  if (argsValue !== undefined && (typeof argsValue !== 'object' || argsValue === null || Array.isArray(argsValue))) {
+    bad(command, 'args must be an object');
+  }
+  const a = new Args(command, (argsValue ?? {}) as Record<string, unknown>);
+  const ref = a.ref('ref');
+  const value = command === 'select' ? a.str('value') : undefined;
+  const direction = command === 'scroll' ? a.oneOf('direction', SCROLL_DIRECTIONS) : undefined;
+  const amount = command === 'scroll' ? a.int('amount', 1, 50) : undefined;
+  a.done();
+  if (!ref) bad(command, 'ref is required');
+  if (command === 'select' && value === undefined) bad(command, 'value is required');
+  const argv = command === 'select'
+    // The option text goes after "--", so it is never read as a flag.
+    ? ['select', ref.ref, '--', value as string]
+    : [command, ref.ref, ...flag('direction', direction), ...flag('amount', amount)];
+  return { command, ref, timeoutMs: ACTION_TIMEOUT_MS, marker: command === 'scroll' ? 'scroll' : 'click', argv };
+}
+
 /** agent-desktop's error codes, as wmux's. Anything else is `internal`. */
 const UPSTREAM_CODES = new Map<string, ConstructorParameters<typeof ComputerError>[0]>([
   ['ELEMENT_NOT_FOUND', 'element_not_found'],
@@ -315,6 +382,8 @@ const UPSTREAM_CODES = new Map<string, ConstructorParameters<typeof ComputerErro
   ['PERM_DENIED', 'permission_missing'],
   ['ACTION_NOT_SUPPORTED', 'action_not_supported'],
   ['APP_UNRESPONSIVE', 'timeout'],
+  // A headless run that would need the pointer or the foreground: final, never retried in front.
+  ['POLICY_DENIED', 'action_not_supported'],
 ]);
 
 export interface DesktopReply {
@@ -322,9 +391,19 @@ export interface DesktopReply {
   data: Record<string, unknown>;
 }
 
-/** The JSON envelope agent-desktop prints, or the ComputerError its failure maps to. */
-export function parseDesktopReply(stdout: string): DesktopReply {
-  let envelope: { ok?: unknown; command?: unknown; data?: unknown; error?: { code?: unknown; message?: unknown } };
+/**
+ * The JSON envelope agent-desktop prints, or the ComputerError its failure
+ * maps to. For an action, the error also says whether it went out:
+ * `not_delivered` only when agent-desktop says so, `delivered_unverified`
+ * otherwise.
+ */
+export function parseDesktopReply(stdout: string, opts: { action?: boolean } = {}): DesktopReply {
+  let envelope: {
+    ok?: unknown;
+    command?: unknown;
+    data?: unknown;
+    error?: { code?: unknown; message?: unknown; disposition?: { delivery?: unknown } };
+  };
   try {
     envelope = JSON.parse(stdout.trim()) as typeof envelope;
   } catch {
@@ -333,7 +412,8 @@ export function parseDesktopReply(stdout: string): DesktopReply {
   if (envelope?.ok !== true) {
     const code = typeof envelope?.error?.code === 'string' ? UPSTREAM_CODES.get(envelope.error.code) ?? 'internal' : 'internal';
     const message = typeof envelope?.error?.message === 'string' ? envelope.error.message : 'agent-desktop failed';
-    throw new ComputerError(code, message);
+    if (!opts.action) throw new ComputerError(code, message);
+    throw new ComputerError(code, message, envelope?.error?.disposition?.delivery === 'not_delivered' ? 'not_delivered' : 'delivered_unverified');
   }
   const data = envelope.data && typeof envelope.data === 'object' && !Array.isArray(envelope.data) ? (envelope.data as Record<string, unknown>) : {};
   return { command: typeof envelope.command === 'string' ? envelope.command : '', data };
@@ -354,6 +434,50 @@ export function refmapPids(refmap: string): number[] | null {
     return typeof pid === 'number' ? pid : -1;
   });
 }
+
+/** What a ref's refmap entry must keep from snapshot time on: which element, of which process, and its states. */
+export interface PinnedEntry {
+  token: string | null;
+  role: string | null;
+  pid: number | null;
+  instance: string | null;
+  states: string[] | null;
+}
+
+/** Each ref's pinned fields, by its key in refmap.json ("@e3"); null when the file cannot be read as a refmap. */
+export function refmapEntries(refmap: string): Map<string, PinnedEntry> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(refmap);
+  } catch {
+    return null;
+  }
+  const inner = (parsed as { inner?: unknown } | null)?.inner;
+  if (!inner || typeof inner !== 'object' || Array.isArray(inner)) return null;
+  const out = new Map<string, PinnedEntry>();
+  for (const [key, raw] of Object.entries(inner)) {
+    const e = (raw ?? {}) as Record<string, unknown>;
+    const str = (v: unknown) => (typeof v === 'string' ? v : null);
+    out.set(key, {
+      token: str(e.retained_object),
+      role: str(e.role),
+      pid: typeof e.pid === 'number' ? e.pid : null,
+      instance: str(e.process_instance),
+      // agent-desktop leaves an empty list out (ref_capabilities.rs); anything but a list of strings is unreadable.
+      states: e.states === undefined ? [] : Array.isArray(e.states) && e.states.every((x) => typeof x === 'string') ? (e.states as string[]) : null,
+    });
+  }
+  return out;
+}
+
+/** Whether two pinned entries name the same element in the same state. */
+export function samePinned(a: PinnedEntry, b: PinnedEntry): boolean {
+  return a.token === b.token && a.role === b.role && a.pid === b.pid && a.instance === b.instance
+    && JSON.stringify(a.states) === JSON.stringify(b.states);
+}
+
+/** A ref's key in its snapshot's refmap.json: "@s2gy5:e7" is "@e7". */
+export const refmapKey = (ref: DesktopRef): string => `@${ref.ref.slice(ref.ref.lastIndexOf(':') + 1)}`;
 
 /** The apps agent-desktop picks from for `--app=<name>` (it prints every candidate). */
 export const listAppsArgv = (name: string): string[] => ['list-apps', `--app=${name}`];
