@@ -111,6 +111,48 @@ for (const mode of MODES) {
       }
     });
 
+    it('refuses a removed frame read through its cached world, even while the page still holds its window', async (ctx) => {
+      if (h.skipUnless(ctx)) return;
+      const page = (await h.browser().newPage()) as Page;
+      try {
+        await page.goto(h.origin(), { waitUntil: 'load' });
+        await loaded(page);
+        const cdp = await sessionOf(page);
+        // Every Runtime.evaluate's context and whether Chrome refused it.
+        const evals: Array<{ contextId: unknown; refusal: string | null }> = [];
+        const send: CdpSend = async (method, params) => {
+          if (method !== 'Runtime.evaluate') return cdp(method, params);
+          const entry = { contextId: (params as { contextId?: unknown } | undefined)?.contextId, refusal: null as string | null };
+          evals.push(entry);
+          try {
+            return await cdp(method, params);
+          } catch (err) {
+            entry.refusal = err instanceof Error ? err.message : String(err);
+            throw err;
+          }
+        };
+        const worlds = new FrameWorlds(send);
+        const inner = (await listChildFrames(send)).find((f) => f.name === 'checkout')!;
+        // Cache the world for this exact document.
+        expect(await evaluateInFrame(send, worlds, inner.frameId, '1', inner.loaderId)).toEqual({ value: 1 });
+        expect(evals).toHaveLength(1);
+        const cachedContext = evals[0].contextId;
+        expect(typeof cachedContext).toBe('number');
+        // Remove the iframe but keep its window reachable from the page.
+        await page.evaluate(() => {
+          const frame = document.getElementById('inner') as HTMLIFrameElement;
+          (window as unknown as { keptFrameWindow: unknown }).keptFrameWindow = frame.contentWindow;
+          frame.remove();
+        });
+        await expect(evaluateInFrame(send, worlds, inner.frameId, '1', inner.loaderId)).rejects.toThrow(/^FRAME_GONE/);
+        // The cached world was tried and Chrome no longer knew it: it went with the document.
+        const retried = evals.slice(1).find((e) => e.contextId === cachedContext);
+        expect(retried?.refusal).toMatch(/Cannot find context|context with specified id|Execution context was destroyed/i);
+      } finally {
+        await page.close();
+      }
+    });
+
     it('stops a frame read at its timeout, and still answers one that finishes in time', async (ctx) => {
       if (h.skipUnless(ctx)) return;
       const page = (await h.browser().newPage()) as Page;

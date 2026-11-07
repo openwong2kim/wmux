@@ -540,17 +540,23 @@ async function sendForTarget<T>(
   }
 }
 
+/** A ref may only be letters, digits, `_` and `-`: it is interpolated into selectors and scripts. */
+function assertRefSyntax(ref: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw badArgs(`Invalid ref: "${ref}"`);
+}
+
 /**
  * Sanitize ref to prevent injection in CSS selectors / JS template literals.
  * Exported so other tool modules that interpolate a ref into injected JS
  * (e.g. browser_highlight in inspection.ts) reuse the same guard.
  */
 export function sanitizeRef(ref: string, scope: BrowserTargetScope, opts?: { frames?: 'allow' }): string {
-  if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw badArgs(`Invalid ref: "${ref}"`);
+  assertRefSyntax(ref);
   // Every `[data-wmux-ref]` resolution in the tool layer — RPC click, fill,
   // hover, drag, select, scroll, scroll-into-view, the password probe, and
-  // browser_highlight — passes through here first, which makes this the one
-  // place a frame ref can be stopped before it reaches a selector that can
+  // browser_highlight — passes through here first, except a smartRef click,
+  // which is not in the frame-ref number space (see rpcClick). That makes this
+  // the one place a frame ref can be stopped before it reaches a selector that can
   // only ever match a main-document element. Fail closed: a frame ref has no
   // data-attr representation at all, so attempting it either finds nothing or,
   // worse, finds whatever a previous DOM snapshot tagged with that number.
@@ -731,8 +737,18 @@ async function rpcClick(
   smart = false,
 ): Promise<'touch' | 'mouse'> {
   // Use CDP click: first get element coordinates via JS, then dispatch mouse events.
-  // A smartRef has its own number space, so it never resolves as a frame ref.
-  const target = rpcRefTarget(ref, scope, smart ? undefined : { frames: 'allow' });
+  // A smartRef is numbered by browser_smart_snapshot's own count
+  // (rpcSmartDescriptorKey), which nothing keeps apart from the numbers
+  // browser_snapshot gives frame elements, so the frame-ref store says
+  // nothing about it: it gets the ref syntax check only, and the top
+  // document, where no frame element carries a tag.
+  let target: RpcTarget;
+  if (smart) {
+    assertRefSyntax(ref);
+    target = { selector: `[data-wmux-ref="${ref}"]`, frame: null };
+  } else {
+    target = rpcRefTarget(ref, scope, { frames: 'allow' });
+  }
   // The handler decides between a tap and a press — it is the side that knows
   // whether a device preset with a touchscreen is on this WebContents — and
   // names which one it sent.
