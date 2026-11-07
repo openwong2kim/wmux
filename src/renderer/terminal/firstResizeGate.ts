@@ -54,6 +54,10 @@ export interface FirstResizeGate {
   dispose(): void;
 }
 
+/** Re-check interval when no frame comes: a window that is not painting (behind
+ *  another one at startup) runs no frame callbacks, but its timers still run. */
+export const FIRST_RESIZE_GATE_POLL_MS = 50;
+
 /** About one webfont load on a cold start; past it the pane goes with what it measured. */
 export const FIRST_RESIZE_GATE_BOUND_MS = 500;
 
@@ -65,6 +69,7 @@ export function createFirstResizeGate(
 ): FirstResizeGate {
   let isOpen = false;
   let frame: number | null = null;
+  let poll: ReturnType<typeof setTimeout> | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let resolve!: (outcome: FirstResizeGateOutcome) => void;
   const opened = new Promise<FirstResizeGateOutcome>((r) => { resolve = r; });
@@ -73,6 +78,7 @@ export function createFirstResizeGate(
     if (isOpen) return;
     isOpen = true;
     if (frame !== null) { deps.cancelFrame(frame); frame = null; }
+    if (poll !== null) { deps.clearTimer(poll); poll = null; }
     if (timer !== null) { deps.clearTimer(timer); timer = null; }
     resolve(outcome);
   };
@@ -82,13 +88,16 @@ export function createFirstResizeGate(
     open('immediate');
   } else {
     let previous: string | null = null;
+    // Next frame or next poll, whichever comes first.
     const check = () => {
-      frame = null;
+      if (frame !== null) { deps.cancelFrame(frame); frame = null; }
+      if (poll !== null) { deps.clearTimer(poll); poll = null; }
       const ready = deps.fontReady() && !deps.rendererPending();
       const now = deps.proposal();
       if (ready && now !== null && now === previous) { open('settled'); return; }
       previous = ready ? now : null;
       frame = deps.requestFrame(check);
+      poll = deps.setTimer(check, FIRST_RESIZE_GATE_POLL_MS);
     };
     timer = deps.setTimer(() => {
       timer = null;

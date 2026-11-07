@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createFirstResizeGate, primaryFontLoaded, type FirstResizeGateDeps } from '../firstResizeGate';
+import { createFirstResizeGate, primaryFontLoaded, FIRST_RESIZE_GATE_POLL_MS, type FirstResizeGateDeps } from '../firstResizeGate';
 
 /** A pane whose font, renderer and fitted size the test moves frame by frame. */
 function rig(initial: { shown?: boolean; font?: boolean; webglPending?: boolean; size?: string | null } = {}) {
@@ -79,6 +79,19 @@ describe('createFirstResizeGate', () => {
       vi.advanceTimersByTime(500);
       expect(gate.isOpen).toBe(true);
       await expect(gate.opened).resolves.toBe('bound');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('settles on timer polls when no frame comes (a window behind another one)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { state, deps } = rig({ font: true, webglPending: false, size: '118x44' });
+      const gate = createFirstResizeGate(deps, 500);
+      expect(gate.isOpen).toBe(false);
+      vi.advanceTimersByTime(FIRST_RESIZE_GATE_POLL_MS);
+      expect(gate.isOpen).toBe(true);
+      await expect(gate.opened).resolves.toBe('settled');
+      expect(state.size).toBe('118x44');
     } finally { vi.useRealTimers(); }
   });
 
