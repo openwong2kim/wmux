@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { checkPeer, decidePeer, osParentPid, type PeerCheckInput } from '../brokerPeer';
+import fs from 'node:fs';
+import path from 'node:path';
+import { checkPeer, decidePeer, osParentPid, PARENT_READ_TIMEOUT_MS, type PeerCheckInput } from '../brokerPeer';
 
 const ok: PeerCheckInput = { selfCheckOk: true, peer: { pid: 4242, uid: 501 }, claimedPid: 4242, ownUid: 501 };
 
@@ -58,5 +60,18 @@ describe.runIf(process.platform !== 'win32')('osParentPid', () => {
 
   it('has no answer for a pid that does not exist', async () => {
     expect(await osParentPid(2 ** 22 + 12345)).toBeNull();
+  });
+});
+
+describe('the time the broker takes to decide', () => {
+  it('stays under the native shim\'s ack deadline, self-check and parent read together', () => {
+    const repo = path.resolve(__dirname, '..', '..', '..');
+    const shim = fs.readFileSync(path.join(repo, 'core', 'wmux-native', 'src', 'mcp_shim.rs'), 'utf8');
+    const peerPid = fs.readFileSync(path.join(repo, 'src', 'shared', 'peerPid.ts'), 'utf8');
+    const deadlineMs = Number(/const ACK_DEADLINE: Duration = Duration::from_secs\((\d+)\);/.exec(shim)?.[1]) * 1000;
+    const selfCheckMs = Number(/export function selfCheckPeerPid\(timeoutMs = (\d+)\)/.exec(peerPid)?.[1]);
+    expect(deadlineMs).toBeGreaterThan(0);
+    expect(selfCheckMs).toBeGreaterThan(0);
+    expect(selfCheckMs + PARENT_READ_TIMEOUT_MS).toBeLessThan(deadlineMs);
   });
 });

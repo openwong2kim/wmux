@@ -41,11 +41,17 @@ export function checkPeer(input: PeerCheckInput): PeerDecision {
   return { ok: true, callerPid: peer.pid };
 }
 
+/**
+ * How long the broker waits for a peer's parent pid. With the self-check's own
+ * 2 s this stays under the native shim's 5 s ack deadline.
+ */
+export const PARENT_READ_TIMEOUT_MS = 1500;
+
 /** The parent of a live pid, as the OS reports it; null when it cannot be read. */
 export function osParentPid(pid: number): Promise<number | null> {
   if (process.platform === 'win32') return Promise.resolve(null);
   return new Promise((resolve) => {
-    execFile('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 }, (err, stdout) => {
+    execFile('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: PARENT_READ_TIMEOUT_MS }, (err, stdout) => {
       const ppid = err ? NaN : Number.parseInt(stdout.trim(), 10);
       resolve(Number.isInteger(ppid) && ppid > 0 ? ppid : null);
     });
