@@ -598,13 +598,19 @@ the user had in front gets it back once the action is done (Core
   after the call returns); then the checks above, then
   `SetForegroundWindow` to the previous window, only if its handle still
   names the same window (the pid and class `Begin` saw), and the
-  foreground is read back before the note says it went back. The cursor goes back only
-  if it is still where our last pointer batch left it. The reply goes out
+  foreground is read back before the note says it went back. The cursor
+  goes back only if it is still where our last pointer batch left it. The
+  reply goes out
   then, with a note that the front went back: anything in the target that
   closes on focus loss (a menu, a command palette, a flyout) may have
   closed, and `keepFront: true` keeps it open. Windows refuses the change
   when the helper sent no input of its own (posted input) and the target
-  came forward by itself; the note then says the target is still in front.
+  came forward by itself (a posted click on a covered Chrome window). The
+  helper then sends the no-op key pair UIA sends before it moves the
+  foreground (`VK 0xB9`, which no app or layout maps to anything), once
+  per action and only if no user input arrived since the action began, and
+  tries once more. The pair is the helper's own input. If that is refused
+  too, the note says the target is still in front.
 - **Keys after a click.** Under `allow`, `pressKey`, `hotkey` and `type`
   without an index bring a target that is not in front forward themselves
   (`Focus.BringForwardForKeys`: `SetForegroundWindow`, so activation gives
@@ -633,10 +639,9 @@ the user had in front gets it back once the action is done (Core
   elements, but every press answers `element_stale`, and the message says
   why and to ask the user to bring the window up. Keys still work: they
   bring the window forward themselves. A posted click on a covered Chrome
-  window makes Chrome come forward by itself; the helper sent no input of
-  its own, so Windows refuses the give-back and the note says the target
-  is still in front. So a fully covered Chromium window cannot be driven by
-  element in the background.
+  window makes Chrome come forward by itself; the give-back takes the
+  no-op key pair above. So a fully covered Chromium window cannot be driven
+  by element in the background.
 - **One re-check**, 300 ms later on a timer, after a give-back or after
   an action that sent input without moving the front: if the target took
   the front by itself (Chrome activates after a click, or an activation

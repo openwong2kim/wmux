@@ -64,6 +64,36 @@ internal static unsafe class Input
         return input;
     }
 
+    /// <summary>
+    /// VK 0xB9 is unassigned: no app or layout maps it to a character or a
+    /// command. UIA injects this pair before it moves the foreground, since
+    /// a process that sent the last input may call SetForegroundWindow.
+    /// </summary>
+    public const ushort NoOpKey = 0xB9;
+
+    /// <summary>
+    /// Sends the no-op key pair (GiveBack: once, to give the front back after
+    /// a target took it by itself). It is the helper's own input. Returns
+    /// whether both events went in; nothing is sent while stopping.
+    /// </summary>
+    public static bool SendNoOpKeyPair()
+    {
+        lock (Lock)
+        {
+            if (stopping) return false;
+            var inputs = new[] { Key(NoOpKey, up: false), Key(NoOpKey, up: true) };
+            uint lastBefore = BackgroundInput.LastInputTick();
+            uint n = PInvoke.SendInput(inputs, sizeof(INPUT));
+            if (n > 0) GiveBack.NoteOwnInput(call: false, lastBefore);
+            if (n == 1)
+            {
+                // The down went in alone: lift it, so nothing stays pressed.
+                PInvoke.SendInput(new[] { Key(NoOpKey, up: true) }, sizeof(INPUT));
+            }
+            return n == 2;
+        }
+    }
+
     private static INPUT Unicode(char unit, bool up)
     {
         var input = new INPUT { type = INPUT_TYPE.INPUT_KEYBOARD };
