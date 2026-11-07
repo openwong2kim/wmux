@@ -540,6 +540,27 @@ export function selectHookRunningByPtyId(state: FleetSelectorState): Record<stri
   return out;
 }
 
+/**
+ * Whether a remote-terminal row can't be opened, so it doesn't show, agent or
+ * anonymous: its host is down (the rail's rule), refused this computer, or
+ * answered without the workspace holding the session. One unanswered round is
+ * none of these: the row keeps its last snapshot until the rail calls it down.
+ */
+function remoteRowUnopenable(
+  remoteWorkspaces: AttachedRemoteWorkspace[] | undefined,
+  hostId: string,
+  sessionId: string | undefined,
+  down: ReadonlySet<string> | undefined,
+): boolean {
+  if (down?.has(hostId)) return true;
+  if (!remoteWorkspaces) return false;
+  const onHost = remoteWorkspaces.filter((r) => r.hostId === hostId);
+  if (onHost.some((r) => r.stale && r.staleReason === 'refused')) return true;
+  if (!sessionId) return false;
+  const holding = onHost.filter((r) => r.panes.some((p) => p.sessionId === sessionId));
+  return holding.length > 0 && holding.every((r) => r.stale && r.staleReason === 'gone');
+}
+
 /** The PCs whose remote rows leave (see FleetSelectorState.downHostIds). */
 export function fleetDownHostIds(state: FleetSelectorState): ReadonlySet<string> | undefined {
   if (state.downHostIds) return state.downHostIds;
@@ -566,10 +587,12 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         ? pickStashedRepresentativeSurface(leaf, state.surfaceAgent ?? {})
         : (isWorkSurfaceType(active?.surfaceType) && splitShownTerminal(leaf)) || active;
       const ptyId = surf?.ptyId ?? '';
-      // A remote row of a PC the rail calls down leaves, with or without an
-      // agent: the drop notice has told the user, and a plain remote shell
-      // there is no more reachable than an agent.
-      if (surf?.surfaceType === 'remote-terminal' && surf.remoteHostId && down?.has(surf.remoteHostId)) continue;
+      // A remote row that can't be opened leaves, with or without an agent: a
+      // plain remote shell there is no more reachable than an agent.
+      if (
+        surf?.surfaceType === 'remote-terminal' && surf.remoteHostId
+        && remoteRowUnopenable(state.remoteWorkspaces, surf.remoteHostId, surf.remoteSessionId, down)
+      ) continue;
       // #1343 — a remote-terminal surface has ptyId '' by contract and is
       // invisible to every local PTY-keyed map below, so without this it lands
       // as an anonymous idle card. Resolve it against the attached host mirror

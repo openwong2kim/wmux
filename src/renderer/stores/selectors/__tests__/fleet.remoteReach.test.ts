@@ -2,7 +2,7 @@
 // leave every reader of remote rows on the same tick the drop notice fires
 // (two failed polls in a row), never on one miss, and come back on the first
 // good round. A refused credential or a workspace gone from a host that
-// answered hides them at once.
+// answered hides them at once: a row that can't be opened doesn't show.
 import { describe, it, expect } from 'vitest';
 import { useStore, type StoreState } from '../../index';
 import { selectFleetBoard, selectFleetSectionCounts } from '../fleet';
@@ -81,6 +81,19 @@ describe('remote rows follow the rail\'s down rule', () => {
       expect(selectFleetSectionCounts(s).needsYou, reason).toBe(0);
       expect(selectFleetBoard(s, { now: 10, sortMode: 'attention' }).groups.needsYou, reason).toEqual([]);
     }
+  });
+
+  // A row that can't be opened doesn't show, agent or anonymous.
+  it('a refused credential drops that host\'s plain remote shells on the same tick as its agents', () => {
+    const s = at({ status: 'needs-repair', failed: 1 }, { stale: true, staleReason: 'refused', authRejected: true });
+    expect(paneIds(s)).toEqual([]);
+    expect(triagePanes(s)).toEqual([]);
+  });
+
+  it('a workspace gone from a host that answered drops its plain remote shells on the same tick as its agents', () => {
+    const s = at({ status: 'reachable', failed: 0 }, { stale: true, staleReason: 'gone' });
+    expect(paneIds(s)).toEqual([]);
+    expect(triagePanes(s)).toEqual([]);
   });
 
   it('the drop notice and the row gate agree at every tick', () => {
