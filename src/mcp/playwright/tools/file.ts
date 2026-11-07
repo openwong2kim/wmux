@@ -1068,23 +1068,18 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
         // Asked once: it picks the no-page path and says whether prompt exists here.
         // Unknown (an older main, CDP off) adds no prompt note either way.
-        const backend = await Promise.resolve()
-          .then(() => engine.resolveWorkspaceBackend(scope.workspaceId))
-          .catch(() => undefined);
-        const inAppTab = backend === 'builtin';
-        // prompt text can never be used on an in-app tab: it is not armed there.
-        const armedText = inAppTab ? undefined : text;
+        const inAppTab = (await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'builtin';
         if (page) {
           armDialogAnswer(
             page,
             modalScopeKey(scope.workspaceId, scope.surfaceId),
             await resolveDialogOwner(page, scope.workspaceId),
             accept,
-            armedText,
+            text,
           );
         } else if (inAppTab) {
           // No Playwright page on this tab: main answers its dialogs.
-          await sendScopedBrowserRpc('browser.dialog.arm', scope, { accept, ...(armedText !== undefined && { text: armedText }) });
+          await sendScopedBrowserRpc('browser.dialog.arm', scope, { accept, ...(text !== undefined && { text }) });
         } else {
           throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -1097,7 +1092,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         const promptNote = !inAppTab
           ? ''
           : text !== undefined
-            ? ` The text was not armed: ${PROMPT_ON_IN_APP_TABS}`
+            ? ` The text won't be used here: ${PROMPT_ON_IN_APP_TABS}`
             : ` This doesn't apply to prompt: ${PROMPT_ON_IN_APP_TABS}`;
         return withEffectTrailer(
           {
