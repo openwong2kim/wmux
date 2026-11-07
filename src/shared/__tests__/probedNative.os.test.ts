@@ -9,9 +9,11 @@ import {
   PROBE_LOCK,
   lockDir,
   PROBE_RECORD,
+  expectationKey,
   prepareProbedNative,
   probeKey,
   recordedProbe,
+  runProbe,
   sha256Of,
   type ProbeVerdict,
   type ProbedNativeOptions,
@@ -175,6 +177,72 @@ describe('prepareProbedNative', () => {
     fs.writeFileSync(path.join(dir, PROBE_RECORD), JSON.stringify({ version: 1, verdicts: { [sha256Of(fs.readFileSync(source))]: 'pass' } }));
     await prepare();
     expect(probed).toHaveLength(2);
+  });
+});
+
+describe('runProbe — what a pass is', () => {
+  const printing = (text: string) => ['-e', `process.stdout.write(${JSON.stringify(text)})`];
+
+  it('an exact line, or output that contains a text', async () => {
+    const out = 'wmux-native 4.15.0\nwmux-managed: native-hooks\n';
+    expect(await runProbe(process.execPath, printing(out), { contains: 'wmux-managed: native-hooks' }, 10_000)).toBe('pass');
+    expect(await runProbe(process.execPath, printing(out), { line: 'wmux-managed: native-hooks' }, 10_000)).toBe('fail');
+    expect(await runProbe(process.execPath, printing('protocol 1\n'), { line: 'protocol 1' }, 10_000)).toBe('pass');
+    expect(await runProbe(process.execPath, printing('usage: wmux-native'), { contains: 'wmux-managed: native-hooks' }, 10_000)).toBe('fail');
+  });
+
+  it('keys a line as itself (the keys recorded so far stay valid) and a contained text apart from any line', () => {
+    expect(expectationKey({ line: 'protocol 1' })).toBe('protocol 1');
+    expect(expectationKey({ contains: 'protocol 1' })).not.toBe('protocol 1');
+  });
+});
+
+describe('prepareProbedNative — reprobe', () => {
+  it('probes again bytes recorded as failing, and records the new verdict', async () => {
+    ship('good v1');
+    const fail = async (binary: string): Promise<ProbeVerdict> => { probed.push(binary); return 'fail'; };
+    expect(await prepare({ probe: fail })).toMatchObject({ binary: null });
+    expect(await prepare()).toMatchObject({ binary: null, reason: 'recorded as failing' });
+    expect(probed).toHaveLength(1);
+    expect(await prepare({ reprobe: true })).toEqual({ binary: dest() });
+    expect(probed).toHaveLength(2);
+    expect(recordedProbe(dir, keyOf('good v1'))).toBe('pass');
+  });
+
+  it('probes again bytes already in place with a recorded pass', async () => {
+    ship('good v1');
+    await prepare();
+    const fail = async (binary: string): Promise<ProbeVerdict> => { probed.push(binary); return 'fail'; };
+    expect(await prepare({ reprobe: true, probe: fail })).toMatchObject({ binary: null, reason: 'self-test failed' });
+    expect(probed).toEqual([probed[0], dest()]);
+    expect(recordedProbe(dir, keyOf('good v1'))).toBe('fail');
+  });
+});
+
+describe('prepareProbedNative — a reprobe that proves nothing', () => {
+  it('a timeout leaves the recorded verdict, and what it offers, as they were', async () => {
+    ship('good v1');
+    await prepare();
+    expect(await prepare({ reprobe: true, probe: async () => 'timeout' })).toEqual({ binary: dest() });
+    expect(recordedProbe(dir, keyOf('good v1'))).toBe('pass');
+    ship('good v2');
+    await prepare({ probe: async () => 'fail' });
+    expect(await prepare({ reprobe: true, probe: async () => 'timeout' })).toMatchObject({ binary: dest(), reason: 'recorded as failing; the installed copy stays' });
+    expect(recordedProbe(dir, keyOf('good v2'))).toBe('fail');
+    expect(fs.readFileSync(dest(), 'utf8')).toBe('good v1 wmux-managed: native-hooks');
+  });
+
+  // A home that turned noexec after the copy passed: `--reprobe` is what the
+  // person runs, and a copy that cannot start must not be offered on the
+  // strength of the old pass, nor kept trusted for the next plain install.
+  it('a copy that cannot start: nothing offered, the recorded pass forgotten, nothing recorded, and the next run probes again', async () => {
+    ship('good v1');
+    await prepare();
+    expect(await prepare({ reprobe: true, probe: async () => 'unstartable' })).toEqual({ binary: null, reason: 'self-test could not start' });
+    expect(recordedProbe(dir, keyOf('good v1'))).toBeUndefined();
+    const before = probed.length;
+    expect(await prepare()).toEqual({ binary: dest() });
+    expect(probed).toHaveLength(before + 1);
   });
 });
 

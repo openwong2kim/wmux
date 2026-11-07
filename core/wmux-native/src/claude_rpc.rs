@@ -893,26 +893,17 @@ mod tests {
         (d, path)
     }
 
+    /// walk-refused-retries-then-advances, on a real socket: a refused
+    /// connect is a retryable connect-error. The retry schedule itself (100
+    /// then 250 ms, never past the deadline) is held in rpc.rs's tests on an
+    /// injected clock, so no wall-clock budget decides it here.
     #[test]
-    fn a_refused_connect_is_retried_after_100_and_250_ms() {
-        // walk-refused-retries-then-advances
+    fn a_refused_connect_is_a_retryable_connect_error() {
         let (d, path) = refused("refused");
         assert_eq!(
             text(&send(&path, &request(10), 2000)),
             r#"{"ok":false,"error":"connect-error","detail":"ECONNREFUSED","retryable":true}"#
         );
-        let (result, took, attempts) = with_retry(&path, &request(10), 2000);
-        assert_eq!(
-            text(&result),
-            r#"{"ok":false,"error":"connect-error","detail":"ECONNREFUSED","retryable":true}"#
-        );
-        // Three attempts with 100 and 250 ms slept between them.
-        assert_eq!(attempts, 3);
-        assert!(took >= Duration::from_millis(350), "{took:?}");
-        // A backoff that would cross the deadline is not slept: one retry only.
-        let (_, took, attempts) = with_retry(&path, &request(10), 200);
-        assert_eq!(attempts, 2);
-        assert!(took >= Duration::from_millis(100), "{took:?}");
         let _ = std::fs::remove_dir_all(d);
     }
 
