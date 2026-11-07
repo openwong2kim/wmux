@@ -10,8 +10,10 @@
 // only log it next to what a call claimed. Windows named pipes and the
 // loopback TCP fallback have no answer here yet (null).
 //
-// The pid is the one that connected; a process that inherits the socket, or a
-// pid reused after the peer exits, is not distinguished.
+// Linux SO_PEERCRED names the process that connected. macOS LOCAL_PEERPID
+// names the socket's last_pid, the last process to use the peer's end. Neither
+// tells apart a process that inherited the socket, or a pid reused after the
+// peer exits.
 
 import net from 'node:net';
 import os from 'node:os';
