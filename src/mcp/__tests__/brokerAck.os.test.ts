@@ -4,8 +4,9 @@
 //
 // A shim that sends `ack: 1` reads one `{"wmuxBroker":1,"ok":…}` line as the
 // first bytes of the connection: ok:true once the session is hosted, before any
-// MCP traffic; ok:false on a refusal. A shim that does not ask (shim.ts) gets
-// the stream exactly as before.
+// MCP traffic; ok:false on a refusal. A client that does not ask gets the
+// stream exactly as before. The node shim (shim.ts) asks, and leaves a session
+// the broker cannot tie to it to the full server beside it.
 //
 // Isolation: a throwaway home, a data suffix, and the token from
 // WMUX_AUTH_TOKEN (no token file), so nothing here can reach a live wmux.
@@ -142,6 +143,49 @@ async function stopBroker(child: ChildProcess | null): Promise<void> {
   }
 }
 
+/** Build the node shim from source into `dir`, beside a stand-in full server
+ *  (index.js) that names the process it runs in. */
+function buildShim(dir: string): string {
+  const outfile = path.join(dir, 'shim.js');
+  buildSync({
+    entryPoints: [path.join(REPO_ROOT, 'src', 'mcp', 'shim.ts')],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    outfile,
+    logLevel: 'error',
+  });
+  fs.writeFileSync(path.join(dir, 'index.js'), "process.stdout.write('FULL SERVER pid=' + process.pid + '\\n');\n");
+  return outfile;
+}
+
+/** Run the node shim against the broker on `suffix` in `dir`; `input` goes to its
+ *  stdin once `ready` is in its stdout (or at once), then stdin ends. */
+function runShim(shim: string, dir: string, suffix: string, token: string, input = '', ready = ''):
+  Promise<{ pid: number; code: number | null; stdout: string; stderr: string }> {
+  const env: NodeJS.ProcessEnv = { HOME: dir, USERPROFILE: dir, WMUX_DATA_SUFFIX: suffix, WMUX_AUTH_TOKEN: token };
+  for (const keep of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR']) {
+    if (process.env[keep] !== undefined) env[keep] = process.env[keep];
+  }
+  const child = spawn(process.execPath, [shim], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  let sent = false;
+  const send = () => { if (!sent) { sent = true; child.stdin?.write(input); } };
+  child.stdout?.on('data', (d) => {
+    stdout += d;
+    if (ready && stdout.includes(ready)) child.stdin?.end();
+  });
+  child.stderr?.on('data', (d) => { stderr += d; });
+  send();
+  if (!ready) child.stdin?.end();
+  const timer = setTimeout(() => child.kill(), 20_000);
+  return new Promise((resolve) => child.once('exit', (code) => {
+    clearTimeout(timer);
+    resolve({ pid: child.pid ?? -1, code, stdout, stderr });
+  }));
+}
+
 /** Wait until the broker's log holds `text`. */
 async function logged(text: string, read: () => string = () => brokerLog): Promise<void> {
   for (let i = 0; i < 100 && !read().includes(text); i++) await new Promise((r) => setTimeout(r, 50));
@@ -251,6 +295,30 @@ describe('broker handshake ack', () => {
     s.socket.destroy();
   });
 
+  it.runIf(hostable)('the node shim is hosted by a broker that reads its pid', async () => {
+    const dir = fs.mkdtempSync(path.join('/tmp', 'nsh-'));
+    try {
+      const run = await runShim(buildShim(dir), home, SUFFIX, TOKEN, INITIALIZE + '\n', '"serverInfo"');
+      expect(JSON.parse(run.stdout.split('\n')[0])).toMatchObject({ id: 1, result: { serverInfo: { name: 'wmux' } } });
+      expect(run.stdout).not.toContain('FULL SERVER');
+      expect(run.code).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the node shim ends on a wrong token and runs no full server', async () => {
+    const dir = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'nsh-'));
+    try {
+      const run = await runShim(buildShim(dir), home, SUFFIX, 'wrong-token');
+      expect(run.stderr).toContain('[wmux-mcp-shim] broker refused the session: auth');
+      expect(run.stdout).not.toContain('FULL SERVER');
+      expect(run.code).toBe(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(isWin)('refuses every session where the OS names no peer (Windows named pipes)', async () => {
     const s = await open(handshake({ ack: 1 }));
     expect(await s.closed).toBe('{"wmuxBroker":1,"ok":false,"error":"peer-unverified"}\n');
@@ -277,5 +345,16 @@ describe.runIf(hostable)('a broker that cannot read peer pids', () => {
     await logged('every session is refused', () => log);
     const s = await open(handshake({ ack: 1 }), pipeName(suffix, dir));
     expect(await s.closed).toBe('{"wmuxBroker":1,"ok":false,"error":"peer-unverified"}\n');
+  });
+
+  it('the node shim it refuses runs the full server beside it, in the same process', async () => {
+    const shimDir = fs.mkdtempSync(path.join('/tmp', 'nsh-'));
+    try {
+      const run = await runShim(buildShim(shimDir), dir, suffix, TOKEN);
+      expect(run.stderr).toContain('[wmux-mcp-shim] broker refused the session: peer-unverified; running the full server');
+      expect(run.stdout).toBe(`FULL SERVER pid=${run.pid}\n`);
+    } finally {
+      fs.rmSync(shimDir, { recursive: true, force: true });
+    }
   });
 });
