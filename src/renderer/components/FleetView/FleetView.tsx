@@ -6,6 +6,7 @@ import { usageWindowsText } from '../StatusBar/UsageWidget';
 import {
   selectFleetBoard,
   groupFleetByDevice,
+  withoutUnreachableHosts,
   selectHookRunningByPtyId,
   selectUnverifiablePaneMinutes,
   fleetTargetPtyId,
@@ -96,7 +97,6 @@ const BOARD_HEAD_KEY: Record<BoardColumn, string> = {
 const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
 /** Roving key of the collapsed "Finished N" row. */
 const FINISHED_TOGGLE_KEY = 'fleet:finished-toggle';
-const NO_CELLS: (string | number | boolean | null)[] = [];
 /** Roving key of one device's collapsed "Finished N" or "Idle N" row. */
 const deviceToggleKey = (kind: 'finished' | 'idle', deviceId: string) => `fleet:${kind}-toggle:${deviceId}`;
 /** Roving key of the collapsed "To hand out N" row. */
@@ -173,14 +173,15 @@ export default function FleetView() {
   // the session. The board always groups by status.
   const fleetGroupBy = useStore((s) => s.fleetGroupBy);
   const setFleetGroupBy = useStore((s) => s.setFleetGroupBy);
-  // Grouped by device: the paired PCs in the rail's order, flattened to
-  // primitives (id, name, offline, last answer while offline) so a poll tick
-  // that only moves a live host's fetch time does not re-render Fleet.
-  const deviceHostCells = useStore(useShallow((s) => (s.fleetGroupBy !== 'device' ? NO_CELLS : s.pcRailHosts.flatMap((h) => {
+  // The paired PCs in the rail's order, flattened to primitives (id, name,
+  // offline, last answer while offline) so a poll tick that only moves a
+  // live host's fetch time does not re-render Fleet. Read in both groupings:
+  // an unreachable PC's rows leave the list either way.
+  const deviceHostCells = useStore(useShallow((s) => s.pcRailHosts.flatMap((h) => {
     const status = s.pcRailHostStatus[h.id] ?? 'reachable';
     const offline = status !== 'connected' && status !== 'reachable';
     return [h.id, h.label, offline, offline ? s.pcRailFeeds[h.id]?.fetchedAt ?? null : null];
-  }))));
+  })));
   const deviceHosts = useMemo(() => {
     const out: FleetDeviceHost[] = [];
     for (let i = 0; i < deviceHostCells.length; i += 4) {
@@ -226,7 +227,7 @@ export default function FleetView() {
   // fleet.triage RPC also calls, so what an agent is told matches this screen.
   // The output stamp moves on every chunk, so it is read on the minute tick
   // (`now`) rather than subscribed; elapsed time is minute-granular anyway.
-  const { panes, groups } = useMemo(() => selectFleetBoard({
+  const { panes, groups: boardGroups } = useMemo(() => selectFleetBoard({
       workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
       surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
       commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces,
@@ -236,6 +237,11 @@ export default function FleetView() {
     surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
     commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes,
     surfaceLastMessage, now, fleetSortMode]);
+  // A PC the rail cannot reach: Open on its rows could not reach it, so they
+  // leave every section and chip until it answers; `away` counts them for its
+  // device head. fleet_triage and the rail badge still read the board.
+  const offlineHostIds = useMemo(() => new Set(deviceHosts.filter((h) => h.offline).map((h) => h.id)), [deviceHosts]);
+  const { groups, away } = useMemo(() => withoutUnreachableHosts(boardGroups, offlineHostIds), [boardGroups, offlineHostIds]);
   // Every row, unfiltered: where the Hand out… popover reads a pane's state.
   const allRows = useMemo(() => [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle], [groups]);
   // On close (unmount), remember what each pane's status was, so the next open
@@ -326,8 +332,9 @@ export default function FleetView() {
     : groupFleetByDevice(visibleGroups, {
       remoteWorkspaces,
       hosts: deviceHosts,
+      away,
       includeDisconnected: filter === 'all' && !query.trim(),
-    })), [fleetLayout, fleetGroupBy, filter, query, visibleGroups, remoteWorkspaces, deviceHosts]);
+    })), [fleetLayout, fleetGroupBy, filter, query, visibleGroups, remoteWorkspaces, deviceHosts, away]);
   // Each device folds its Finished and Idle rows on its own; until toggled
   // there, a device follows the status list's fold.
   const deviceFolds = useStore((s) => s.fleetDeviceFolds);
@@ -464,11 +471,12 @@ export default function FleetView() {
     ...visibleGroups.needsYou.map((row) => row.pane.paneId),
     ...attentionTickets.map((ticket) => ticketKey(ticket.id)),
     ...visibleReview.map((entry) => reviewRowKey(entry.workspaceId)),
+    // A device's fold buttons sit in its head, before its rows.
     ...(byDevice ? byDevice.devices.flatMap((device) => [
-      ...device.running.map((row) => row.pane.paneId),
       ...(device.finished.length > 0 && !finishedForced ? [deviceToggleKey('finished', device.id)] : []),
-      ...(deviceFoldOpen('finished', device.id) ? device.finished.map((row) => row.pane.paneId) : []),
       ...(device.idle.length > 0 && !idleForced ? [deviceToggleKey('idle', device.id)] : []),
+      ...device.running.map((row) => row.pane.paneId),
+      ...(deviceFoldOpen('finished', device.id) ? device.finished.map((row) => row.pane.paneId) : []),
       ...(deviceFoldOpen('idle', device.id) ? device.idle.map((row) => row.pane.paneId) : []),
     ]) : [
       ...(finishedToggleShown ? [FINISHED_TOGGLE_KEY] : []),
@@ -1542,9 +1550,9 @@ export default function FleetView() {
   // A folded "Finished N" / "Idle N" row that expands, or a plain head while
   // a search or a filter forces its rows open.
   const foldRow = (kind: 'finished' | 'idle', key: string, rows: FleetRow[], open: boolean, forced: boolean,
-    onToggle: () => void, deviceId?: string) => {
+    onToggle: () => void) => {
     const summary = kind === 'finished' ? finishedSummaryOf(rows) : idleSummaryOf(rows);
-    const reactKey = deviceId === undefined ? `section:${kind}` : `section:${kind}:${deviceId}`;
+    const reactKey = `section:${kind}`;
     return forced ? (
       <div key={reactKey} role="presentation" className="wmux-fleet-section-header" data-fleet-section={kind}>{summary}</div>
     ) : (
@@ -1568,29 +1576,66 @@ export default function FleetView() {
       </button>
     );
   };
-  // A device's head: its name, its state and its counts, in sentence case.
-  // Needs you rows are not counted here: Needs you is their one count.
+  // A device's head: a status dot (grey, or a hollow ring once the PC is
+  // out of reach), its name, its state and its running count, then on the
+  // right its Finished and Idle folds as buttons ("Idle 2 folded"). Needs you
+  // rows are not counted here: Needs you is their one count. A disconnected
+  // PC lists no rows; a note says what it last had.
+  const deviceFoldButton = (kind: 'finished' | 'idle', device: FleetDeviceGroup) => {
+    const rows = device[kind];
+    if (rows.length === 0) return null;
+    const summary = t(kind === 'finished' ? 'fleet.section.finished' : 'fleet.section.idle', { count: rows.length });
+    if (kind === 'finished' ? finishedForced : idleForced) return <span className="wmux-fleet-device-fold is-static">{summary}</span>;
+    const key = deviceToggleKey(kind, device.id);
+    const open = deviceFoldOpen(kind, device.id);
+    return (
+      <button
+        type="button"
+        role="option"
+        aria-selected={focusedKey === key}
+        aria-expanded={open}
+        tabIndex={focusedKey === key ? 0 : -1}
+        className="wmux-fleet-device-fold"
+        data-fleet-section={kind}
+        data-fleet-finished-toggle={kind === 'finished' || undefined}
+        data-fleet-idle-toggle={kind === 'idle' || undefined}
+        data-fleet-key={key}
+        onFocus={() => setFocusedPaneId(key)}
+        onClick={() => toggleDeviceFold(kind, device.id)}
+      >
+        <span>{open ? summary : t('fleet.device.folded', { summary })}</span>
+        <span className="wmux-fleet-idle-chevron" aria-hidden="true"><IconChevron size={12} /></span>
+      </button>
+    );
+  };
   const deviceHead = (device: FleetDeviceGroup) => {
     const name = device.id === LOCAL_PC_ID ? t('pcRail.thisComputer') : device.label;
-    const away = device.lastSeenAt != null ? Math.max(0, now - device.lastSeenAt) : undefined;
+    const ago = device.lastSeenAt != null ? Math.max(0, now - device.lastSeenAt) : undefined;
     const state = device.state === 'connected' ? t('pcRail.online')
       : device.state === 'disconnected'
-        ? (away !== undefined && away >= IDLE_SHOW_AFTER_MS
-          ? t('fleet.device.disconnectedAgo', { age: formatIdle(away) }) : t('fleet.device.disconnected'))
+        ? (ago !== undefined && ago >= IDLE_SHOW_AFTER_MS
+          ? t('fleet.device.disconnectedAgo', { age: formatIdle(ago) }) : t('fleet.device.disconnected'))
         : '';
-    const meta = [
-      state,
-      device.running.length > 0 ? t('fleet.device.running', { count: device.running.length }) : '',
-      device.finished.length > 0 ? t('fleet.section.finished', { count: device.finished.length }) : '',
-      device.idle.length > 0 ? t('fleet.section.idle', { count: device.idle.length }) : '',
-    ].filter(Boolean).join(' · ');
-    return (
+    const meta = [state, device.running.length > 0 ? t('fleet.device.running', { count: device.running.length }) : '']
+      .filter(Boolean).join(' · ');
+    const seen = device.lastSeen;
+    const note = !seen || seen.panes === 0 ? ''
+      : seen.neededYou > 0
+        ? t(seen.panes === 1 ? 'fleet.device.awayOneNeeded' : 'fleet.device.awayNeeded', { count: seen.panes, needed: seen.neededYou })
+        : t(seen.panes === 1 ? 'fleet.device.awayOne' : 'fleet.device.away', { count: seen.panes });
+    return [
       <div key={`device:${device.id}`} role="presentation" className="wmux-fleet-section-header wmux-fleet-device-head"
         data-fleet-device-head={device.id} data-device-state={device.state}>
+        <span className="wmux-fleet-device-dot" aria-hidden="true" />
         <span className="wmux-fleet-device-name">{name}</span>
         {meta && <span className="wmux-fleet-device-meta">{meta}</span>}
-      </div>
-    );
+        <span className="wmux-fleet-device-folds">
+          {deviceFoldButton('finished', device)}
+          {deviceFoldButton('idle', device)}
+        </span>
+      </div>,
+      ...(note ? [<p key={`device-note:${device.id}`} role="presentation" className="wmux-fleet-device-note" data-fleet-device-note={device.id}>{note}</p>] : []),
+    ];
   };
   const toggleDeviceFold = (kind: 'finished' | 'idle', deviceId: string) =>
     setDeviceFold(`${kind}:${deviceId}`, !deviceFoldOpen(kind, deviceId));
@@ -1830,16 +1875,13 @@ export default function FleetView() {
                   sectionHead('review', visibleReview.length),
                   ...visibleReview.map(renderReview),
                 ]),
-                // Grouped by device: each device's head, its running rows, then
-                // its Finished and Idle folds. Keyboard order is this order.
+                // Grouped by device: each device's head (its folds on the
+                // right), its running rows, then its open folds' rows.
+                // Keyboard order is this order.
                 ...(byDevice ? byDevice.devices.flatMap((device) => [
-                  deviceHead(device),
+                  ...deviceHead(device),
                   ...device.running.map(renderDeviceRow),
-                  ...(device.finished.length === 0 ? [] : [foldRow('finished', deviceToggleKey('finished', device.id), device.finished,
-                    deviceFoldOpen('finished', device.id), finishedForced, () => toggleDeviceFold('finished', device.id), device.id)]),
                   ...(deviceFoldOpen('finished', device.id) ? device.finished.map(renderDeviceRow) : []),
-                  ...(device.idle.length === 0 ? [] : [foldRow('idle', deviceToggleKey('idle', device.id), device.idle,
-                    deviceFoldOpen('idle', device.id), idleForced, () => toggleDeviceFold('idle', device.id), device.id)]),
                   ...(deviceFoldOpen('idle', device.id) ? device.idle.map(renderDeviceRow) : []),
                 ]) : [
                   ...(visibleGroups.finished.length === 0 ? [] : [foldRow('finished', FINISHED_TOGGLE_KEY, visibleGroups.finished,

@@ -2862,25 +2862,39 @@ differently in the two places, and in the order `fleet_triage` returns.
   The list remains the default.
 - **Group by device (list only, owner decision 2026-11-07):** a Group by
   Status | Device switch in the header, shown only with the list (not on the
-  Tickets filter) and saved with the session; Status is the default and draws the sections above. The
-  board always groups by status. By device, Needs you stays one section on
-  top across every device, each row naming its device in its context line
-  (This computer, or the PC's name, in place of the "@host" glyph), so the one count is unchanged (chip,
-  head and rail badge); Final reports and Ready to review stay where they are.
-  Every other row goes under its device: This computer first, then the paired
-  PCs in the PC rail's order, under the rail's name. A device head is sentence-case 12px text, its
-  name in `--text-main`, then its state and counts muted (`Online · Running 2
-  · Idle 1`); no dot, since a device is not a status. Under a head come its
-  running rows, then its Finished and Idle folds, each folding on its own
-  (kept while the app runs, like the status list's); a row under its own
-  device's head drops the "@host" glyph. A PC the rail cannot reach reads
-  `Disconnected · 3h ago` in its head (the age only while this run has seen
-  it answer), over whatever rows it last reported; with every attachment here
-  stale it keeps that head with no rows. A search or a filter
-  narrows each device and drops those heads, and with no agents at all the
-  page stays the empty call to action. A device with nothing to draw has no
-  head. Keyboard order is the drawn order. No
-  map, connecting lines, per-device colours or boxes around a device.
+  Tickets filter) and saved with the session; Status is the default and
+  draws the sections above. The board always groups by status. By device,
+  Needs you stays one section on top across every device, each row naming
+  its device in its context line (This computer, or the PC's name, in place
+  of the "@host" glyph), so the one count is unchanged (chip, head and rail
+  badge); Final reports and Ready to review stay where they are. Every other
+  row goes under its device: This computer first, then the paired PCs in the
+  PC rail's order, under the rail's name.
+  - **Device head:** sentence-case 12px text. An 8px dot before the name,
+    `--text-muted`: filled while the PC is reached, a hollow ring (a border,
+    so it survives forced-colors) once it is not; a device is not a status,
+    so never a status colour, and no per-device colour. Then the name in
+    `--text-main`, its state and running count muted (`Online · Running 2`),
+    and on the right its folds as buttons, `Finished 1 folded` and `Idle 2
+    folded` (`Idle 2` while open, the chevron turned): no second row repeats
+    a count. Each button is the fold's option in the keyboard order, with
+    its `aria-expanded`; open folds list their rows after the running rows.
+    Folds are per device and kept while the app runs, like the status
+    list's; a search or a status filter shows the rows and the count as plain
+    text. A row under its own device's head drops the "@host" glyph.
+  - **A PC out of reach** (the rail cannot reach it): its rows leave the page,
+    from both groupings and the chips, since Open on them could not reach it;
+    a Needs you row from it does not go on top. By device its head reads
+    `Disconnected · 3h ago` (the age only once this run has seen it answer),
+    then one muted line: `Last seen 3 panes, 1 needed you. They show here
+    again when it reconnects.` The rows are back as soon as it answers. A PC
+    whose attachments here are all stale gets the same head, counting its
+    last snapshot. fleet_triage, the rail badge and phones still count those
+    rows for now (a follow-up: the attachment going stale).
+  - A search or a filter narrows each device and drops row-less heads; with no
+    agents at all the page stays the empty call to action. A device with
+    nothing to draw has no head. Keyboard order is the drawn order. No map,
+    connecting lines, per-device colours or boxes around a device.
 - **Tickets:** Moa's delegated work, one row per job — a hand-off waiting for
   its click, or a WorkLink with its A2A task. A chat message is never a
   ticket. States: Queued, Working, Needs your decision (yellow), Done
