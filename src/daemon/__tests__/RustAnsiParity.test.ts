@@ -30,6 +30,28 @@ const accepted: Case[] = [
   synthetic('osc8-styles', '\x1b]8;;http://x\x07\x1b[1mbold\x1b[0mplain\x1b]8;;\x07 no'),
   synthetic('osc8-open-tail', 'a\x1b]8;id=k;http://y\x07open'),
   synthetic('osc8-alt', '\x1b]8;;http://n\x07nn\x1b[?1049h\x1b]8;;http://a\x07aa'),
+  // DEC line drawing in G0/G1, as xterm.js maps it (`_` stays itself).
+  synthetic('designate-dec', '\x1b(0' + Array.from({ length: 32 }, (_, i) => String.fromCharCode(0x5f + i)).join('') + '\x1b(B', 'rust', 40),
+  synthetic('smacs-box', '\x1b(0lqqk\x1b(B\r\n\x1b(0x\x1b(B  \x1b(0x\x1b(B\r\n\x1b(0mqqj\x1b(B'),
+  synthetic('smacs-open-at-end', 'ab\x1b(0lqk'),
+  synthetic('dec-sgr', '\x1b[31m\x1b(0lqk\x1b(B\x1b[0m'),
+  synthetic('dec-wide', '\x1b(0q\ud55cq\x1b(B'),
+  synthetic('dec-wrap', '\x1b(0' + 'q'.repeat(24) + '\x1b(B'),
+  synthetic('rep-after-dec', '\x1b(0q\x1b[3b\x1b(Bx'),
+  synthetic('tab-under-dec', '\x1b(0a\tb\x1b(B'),
+  synthetic('designate-dec-twice', '\x1b(0\x1b(0q\x1b(B\x1b(Bq'),
+  synthetic('ris-dec', '\x1b(0q\x1bcq'),
+  synthetic('so-si-dec', '\x1b)0\x0elqk\x0fabc'),
+  synthetic('so-open-at-end', '\x1b)0\x0elqk'),
+  synthetic('g1-designate-only', '\x1b)0qx'),
+  // DECSC/DECRC and the alternate screen save the designations and the shift.
+  synthetic('so-dec-decsc', '\x1b)0\x0e\x1b7\x0fq\x1b8q'),
+  synthetic('decsc-designation', '\x1b(0\x1b7\x1b(Bq\x1b8q'),
+  synthetic('decrc-unsaved-dec', '\x1b(0\x1b8q'),
+  synthetic('decrc-unsaved-so', '\x1b)0\x0e\x1b8q'),
+  synthetic('alt-1049-designation', '\x1b(0\x1b[?1049hq\x1b(Bq\x1b[?1049lq'),
+  synthetic('alt-1049-so', '\x1b)0\x1b[?1049h\x0eq\x1b[?1049lq'),
+  synthetic('alt-1049-si-inside', '\x1b)0\x0e\x1b[?1049hq\x0fq\x1b[?1049lq'),
   // SO/SI and ASCII designation: with only ASCII designated, shifts are no-ops.
   synthetic('so-si', '\x0eabc\x0fdef'),
   synthetic('designate-ascii', '\x1b(B\x1b)Babc\x0e\x1b[mx\x0f'),
@@ -102,10 +124,8 @@ const refused: Case[] = [
   synthetic('decaln', 'ab\x1b[2;3H\x1b#8', 'xterm'),
   synthetic('sd-caret', '1\r\n2\r\n3\x1b[1^x', 'xterm'),
   synthetic('ed2-embedded-c0', '1\r\n2\r\n3\x1b[2\x00Jx', 'xterm'),
-  synthetic('designate-dec', '\x1b(0' + Array.from({ length: 32 }, (_, i) => String.fromCharCode(0x5f + i)).join('') + '\x1b(B', 'xterm', 40),
   synthetic('designate-uk', '\x1b(A#x\x1b(B#', 'xterm'),
   synthetic('designate-g2', '\x1b*0\x1bnlq\x1b(Bz', 'xterm'),
-  synthetic('so-dec-decsc', '\x1b)0\x0e\x1b7\x0fq\x1b8q', 'xterm'),
   synthetic('overline', '\x1b[53mover\x1b[55mno', 'xterm'),
   synthetic('sgr-21', '\x1b[21mx\x1b[24my', 'xterm'),
   synthetic('c1', 'a\u009b31mred', 'xterm'),
@@ -250,7 +270,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
   });
 
   it('refuses a divergent control that arrives on the live tee, split from the history', async () => {
-    const tee = () => { const queue = [[Buffer.from('0lqk')], [Buffer.from('\x1b(Bok')]]; return () => queue.shift() ?? []; };
+    const tee = () => { const queue = [[Buffer.from('A#')], [Buffer.from('\x1b(Bok')]]; return () => queue.shift() ?? []; };
     const req: SnapshotRequest = { cols: 20, rows: 6, scrollback: 100, initial: Buffer.from('hello\x1b(') };
     vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
     const reference = await generateSnapshotUnqueued({ ...req, drainQueue: tee() });
