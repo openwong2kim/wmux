@@ -1,3 +1,6 @@
+// @wmux-lane unit
+// The platform is passed in: "win32" here selects a branch of pure decisions,
+// so running on Windows cannot change the result.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RpcContext } from '../../../../shared/rpc';
 import {
