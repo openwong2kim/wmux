@@ -14,7 +14,8 @@ import { accountDownloads, pinDownloadDir } from '../../../test-utils/chromeDown
 // One protected profile, the same rows on the DevTools port and on the
 // debugging pipe, against a real Chrome launched by the production
 // ChromeLauncher behind the production proxy, with real Playwright clients.
-// A row holds when the protection holds. Every pipe row is asserted, and so
+// A row holds when the protection holds. Every pipe row is asserted except
+// REPORTED_ROWS (a known difference from the port, recorded for C4), and so
 // are the port rows that hold there too (PORT_ROWS); the others run on the
 // port only when the table is asked for, and are recorded, not asserted.
 //
@@ -32,6 +33,8 @@ const CHROME = process.env.CHROME_PATH;
 const TABLE_OUT = process.env.PROTECTED_TABLE_OUT;
 /** The rows that hold on the port as well; only these are run and asserted there by default. */
 const PORT_ROWS = new Set(['a', 'b', 'd']);
+/** Pipe rows recorded, not asserted: known differences from the port (scripts/probe-protected-transport.mjs names them too). */
+const REPORTED_ROWS = new Set(['k']);
 /** How many contexts row j creates, each with a download started as soon as it exists. */
 const NEW_CONTEXT_ROUNDS = 20;
 const CASE_TIMEOUT_MS = 60_000;
@@ -49,6 +52,8 @@ function serve(req: http.IncomingMessage, res: http.ServerResponse): void {
     res.end(`<!doctype html><html><body>${b}</body></html>`);
   };
   if (req.url?.endsWith('/download')) return html('<a id="d" href="/file.bin">file</a>');
+  // Same origin, so the frame stays in the page's process.
+  if (req.url?.endsWith('/iframe-download')) return html('<iframe id="f" src="/download"></iframe>');
   // Starts its download as it loads.
   if (req.url?.includes('/download-now')) return html('<a id="d" href="/file.bin">file</a><script>document.getElementById("d").click()</script>');
   if (req.url?.endsWith('/slow-download')) return html('<a id="d" href="/slow.bin">file</a>');
@@ -102,6 +107,8 @@ const ROWS: Row[] = [
   { id: 'h', what: "a client's Browser.cancelDownload does not cancel an approved download" },
   { id: 'i', what: "a client's Browser.close does not end the shared Chrome" },
   { id: 'j', what: `a client's new context is denied downloads before the client hears of it (${NEW_CONTEXT_ROUNDS} contexts)` },
+  { id: 'k', what: "a download started in a same-process iframe reaches the client's events" },
+  { id: 'l', what: 'a command sent through sendMessageToTarget is refused' },
 ];
 const row = (id: string) => ROWS.find((r) => r.id === id) as Row;
 
@@ -216,12 +223,12 @@ afterAll(async () => {
 
 describe.skipIf(!CHROME).each<Transport>(['port', 'pipe'])('a protected profile on the %s', (transport) => {
   let rig: Rig;
-  /** Record the row for this transport; asserted on the pipe, and on the port for PORT_ROWS. */
+  /** Record the row for this transport; asserted on the pipe (but REPORTED_ROWS), and on the port for PORT_ROWS. */
   const record = (id: string, holds: boolean, note?: string) => {
     const r = row(id);
     r[transport] = holds;
     if (note) r.note = { ...r.note, [transport]: note };
-    if (transport === 'pipe' || PORT_ROWS.has(id)) expect(holds, `row ${id} on the ${transport}: ${r.what}; ${note ?? ''}`).toBe(true);
+    if ((transport === 'pipe' && !REPORTED_ROWS.has(id)) || (transport === 'port' && PORT_ROWS.has(id))) expect(holds, `row ${id} on the ${transport}: ${r.what}; ${note ?? ''}`).toBe(true);
   };
 
   beforeAll(async () => {
@@ -392,6 +399,39 @@ describe.skipIf(!CHROME).each<Transport>(['port', 'pipe'])('a protected profile 
     record('j', deniedFirst === NEW_CONTEXT_ROUNDS && landed.length === 0,
       `denied before the reply: ${deniedFirst}/${NEW_CONTEXT_ROUNDS}; completed: ${landed.length}/${NEW_CONTEXT_ROUNDS}`);
     for (const browserContextId of contexts) await s.send('Target.disposeBrowserContext', { browserContextId }).catch(() => undefined);
+    await browser.close();
+  });
+
+  it('k: a download started in a same-process iframe reaches the client\'s events', { timeout: CASE_TIMEOUT_MS }, async (ctx) => {
+    live(ctx);
+    const browser = await connect(rig);
+    const p = await freshPage(browser, `http://a.test:${port}/iframe-download`);
+    const heard = p.waitForEvent('download', { timeout: 4_000 }).then(() => true, () => false);
+    await p.frameLocator('#f').locator('#d').click();
+    const seen = await heard;
+    record('k', seen, seen ? 'download event seen' : 'no download event');
+    await browser.close();
+  });
+
+  it('l: a command sent through sendMessageToTarget is refused', { timeout: CASE_TIMEOUT_MS }, async (ctx) => {
+    live(ctx);
+    const browser = await connect(rig);
+    const p = await freshPage(browser, `http://a.test:${port}/page`);
+    const targetId = await targetIdOf(p);
+    const s = await browser.newBrowserCDPSession();
+    let carried = false;
+    s.on('Target.receivedMessageFromTarget', () => { carried = true; });
+    let note: string;
+    try {
+      // A harmless command, carried inside another: only whether it gets through is checked.
+      const { sessionId } = (await s.send('Target.attachToTarget', { targetId, flatten: false })) as { sessionId: string };
+      await s.send('Target.sendMessageToTarget', { sessionId, message: JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: '1' } }) });
+      await settle(500);
+      note = carried ? 'carried' : 'sent, no answer';
+    } catch (err) {
+      note = `refused: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    record('l', !carried && note.startsWith('refused'), note);
     await browser.close();
   });
 
