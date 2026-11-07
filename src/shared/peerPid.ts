@@ -2,11 +2,12 @@
 //
 // A pipe call names its caller (a pid, a pty, a workspace) in its own fields,
 // and nothing ties those fields to the process that sent them. The kernel
-// knows which process connected: macOS answers LOCAL_PEERPID and Linux
-// SO_PEERCRED for a unix socket. This reads that answer through koffi.
+// knows which process connected: macOS answers LOCAL_PEERPID (and getpeereid
+// for its uid) and Linux SO_PEERCRED for a unix socket. This reads that answer
+// through koffi.
 //
-// Measurement only for now: callers log what it returns next to what the
-// call claimed, and nothing decides on it. Windows named pipes and the
+// The MCP broker decides on it (src/mcp/brokerPeer.ts); main and the daemon
+// only log it next to what a call claimed. Windows named pipes and the
 // loopback TCP fallback have no answer here yet (null).
 //
 // The pid is the one that connected; a process that inherits the socket, or a
@@ -23,6 +24,7 @@ export type PeerPid =
   | { pid: null; reason: string };
 
 type GetSockOpt = (fd: number, level: number, name: number, value: Buffer, length: Buffer) => number;
+type GetPeerEid = (fd: number, uid: Buffer, gid: Buffer) => number;
 
 // darwin <sys/un.h>: SOL_LOCAL 0, LOCAL_PEERPID 0x002 (pid_t).
 // linux <asm/socket.h>: SOL_SOCKET 1, SO_PEERCRED 17 (struct ucred { pid; uid; gid }).
@@ -32,6 +34,8 @@ const OPTION: Partial<Record<NodeJS.Platform, { lib: string; level: number; name
 };
 
 let getsockopt: GetSockOpt | { reason: string } | undefined;
+// darwin only: LOCAL_PEERPID carries no uid, getpeereid does.
+let getpeereid: GetPeerEid | undefined;
 
 function loadGetSockOpt(): GetSockOpt | { reason: string } {
   if (getsockopt) return getsockopt;
@@ -41,11 +45,25 @@ function loadGetSockOpt(): GetSockOpt | { reason: string } {
     // Runtime require, external to every bundle (its binary sits beside the package).
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const koffi = require('koffi') as { load(name: string): { func(name: string, result: string, args: string[]): unknown } };
-    getsockopt = koffi.load(option.lib).func('getsockopt', 'int', ['int', 'int', 'int', 'void *', 'void *']) as GetSockOpt;
+    const lib = koffi.load(option.lib);
+    getsockopt = lib.func('getsockopt', 'int', ['int', 'int', 'int', 'void *', 'void *']) as GetSockOpt;
+    if (process.platform === 'darwin') getpeereid = lib.func('getpeereid', 'int', ['int', 'void *', 'void *']) as GetPeerEid;
   } catch (err) {
     getsockopt = { reason: `koffi unavailable: ${err instanceof Error ? err.message : String(err)}` };
   }
   return getsockopt;
+}
+
+/** The peer's uid on darwin, or undefined when it cannot be read. */
+function darwinPeerUid(fd: number): number | undefined {
+  if (!getpeereid) return undefined;
+  const uid = Buffer.alloc(4);
+  const gid = Buffer.alloc(4);
+  try {
+    return getpeereid(fd, uid, gid) === 0 ? uid.readUInt32LE(0) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -71,7 +89,9 @@ export function peerPidOf(socket: net.Socket): PeerPid {
   const pid = value.readInt32LE(0);
   // 0: a peer outside this pid namespace (Linux).
   if (pid <= 0) return { pid: null, reason: 'no peer pid' };
-  return process.platform === 'linux' ? { pid, uid: value.readUInt32LE(4) } : { pid };
+  if (process.platform === 'linux') return { pid, uid: value.readUInt32LE(4) };
+  const uid = darwinPeerUid(fd);
+  return uid === undefined ? { pid } : { pid, uid };
 }
 
 /**

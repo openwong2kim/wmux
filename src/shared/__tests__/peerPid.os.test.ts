@@ -39,7 +39,7 @@ describe.runIf(supported)('peerPidOf on a unix socket', () => {
     children.push(child);
     const read = await peer;
     expect(read.pid).toBe(child.pid);
-    if (process.platform === 'linux') expect(read).toMatchObject({ uid: process.getuid?.() });
+    expect(read).toMatchObject({ uid: process.getuid?.() });
   });
 
   it('names this process when it connects to itself', async () => {
