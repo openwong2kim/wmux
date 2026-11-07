@@ -105,16 +105,65 @@ final class ChildGateTests: XCTestCase {
         }
     }
 
-    func testAChildReplacedAfterTheCheckIsRefused() throws {
-        let path = try adHocChild()
-        // A requirement this ad-hoc copy meets, so the pin is what decides.
-        let gate = try ChildGate(path: path, requirement: #"identifier "com.electron.wmux.agent-desktop""#)
-        XCTAssertNoThrow(try gate.checkBeforeSpawn())
-        let swapped = dir.appendingPathComponent("swapped").path
-        try FileManager.default.copyItem(atPath: path, toPath: swapped)
-        XCTAssertEqual(rename(swapped, path), 0)
-        XCTAssertThrowsError(try gate.checkBeforeSpawn()) { error in
-            XCTAssertTrue((error as? RunnerProblem)?.message.contains("changed") ?? false)
+    /// A program that writes `tag` to the file named by its first argument.
+    private func program(_ tag: String, identifier: String = ChildGate.childIdentifier) throws -> String {
+        let src = dir.appendingPathComponent("\(tag).c").path
+        let bin = dir.appendingPathComponent(tag).path
+        try #"#include <stdio.h>\#nint main(int c, char **v) { FILE *f = fopen(v[1], "w"); if (!f) return 1; fputs("\#(tag)", f); fclose(f); return 0; }\#n"#.write(toFile: src, atomically: true, encoding: .utf8)
+        for (tool, args) in [("/usr/bin/cc", ["-arch", "arm64", "-o", bin, src]), ("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", identifier, bin])] {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: tool)
+            p.arguments = args
+            p.standardError = FileHandle.nullDevice
+            try p.run()
+            p.waitUntilExit()
+            XCTAssertEqual(p.terminationStatus, 0, tool)
         }
+        return bin
+    }
+
+    /// Spawns through the gate with no file actions and waits for the child.
+    private func spawnAndWait(_ gate: ChildGate, marker: String) throws -> Int32 {
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        let pid = try gate.spawnChecked(argv: [marker], environment: [:], fileActions: &actions)
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+        return status
+    }
+
+    func testTheCheckedBinaryRuns() throws {
+        let path = dir.appendingPathComponent("agent-desktop").path
+        try FileManager.default.copyItem(atPath: try program("checked"), toPath: path)
+        let gate = try ChildGate(path: path, requirement: nil)
+        let marker = dir.appendingPathComponent("ran").path
+        XCTAssertEqual(try spawnAndWait(gate, marker: marker), 0)
+        XCTAssertEqual(try String(contentsOfFile: marker, encoding: .utf8), "checked")
+    }
+
+    func testABinarySwappedAfterTheCheckNeverRuns() throws {
+        let path = dir.appendingPathComponent("agent-desktop").path
+        try FileManager.default.copyItem(atPath: try program("checked"), toPath: path)
+        let swapped = try program("swapped")
+        let gate = try ChildGate(path: path, requirement: nil)
+        XCTAssertNoThrow(try gate.checkBeforeSpawn())
+        // Between the check and the spawn: the file at the path is replaced.
+        XCTAssertEqual(rename(swapped, path), 0)
+        let marker = dir.appendingPathComponent("ran").path
+        XCTAssertThrowsError(try spawnAndWait(gate, marker: marker)) { error in
+            XCTAssertTrue((error as? RunnerProblem)?.message.contains("not the binary that was checked") ?? false, "\(error)")
+        }
+        // Killed while suspended: it never reached main().
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker))
+    }
+
+    func testAReplacedBinaryIsCheckedAgainBeforeTheNextSpawn() throws {
+        let path = dir.appendingPathComponent("agent-desktop").path
+        try FileManager.default.copyItem(atPath: try program("checked"), toPath: path)
+        let other = try program("other", identifier: "com.example.other")
+        let gate = try ChildGate(path: path, requirement: #"identifier "com.electron.wmux.agent-desktop""#)
+        XCTAssertEqual(rename(other, path), 0)
+        XCTAssertThrowsError(try gate.checkBeforeSpawn())
     }
 }

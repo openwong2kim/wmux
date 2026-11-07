@@ -46,6 +46,8 @@ enum Runner {
         }
 
         signal(SIGPIPE, SIG_IGN)
+        // main closed the pipe: nothing reads the replies, so nothing may run.
+        Wire.onOutputClosed = { killAllAndExit() }
         var sources: [DispatchSourceSignal] = []
         for sig in [SIGTERM, SIGINT, SIGHUP] {
             signal(sig, SIG_IGN)
@@ -117,16 +119,9 @@ enum Runner {
             canceled.remove(request.id)
             lock.unlock()
         }
-        let gate = self.gate
-        let problem = gateProblem
-        var checked: RunnerProblem?
-        if let gate {
-            gateLock.lock()
-            do { try gate.checkBeforeSpawn() } catch let p as RunnerProblem { checked = p } catch { checked = RunnerProblem("internal", "\(error)") }
-            gateLock.unlock()
+        guard let gate = self.gate, gateProblem == nil else {
+            return fail(request.id, gateProblem ?? RunnerProblem("helper_unavailable", "the desktop component is unavailable"))
         }
-        guard let gate, problem == nil else { return fail(request.id, problem ?? RunnerProblem("helper_unavailable", "the desktop component is unavailable")) }
-        if let checked { return fail(request.id, checked) }
 
         var out: [Int32] = [0, 0]
         var err: [Int32] = [0, 0]
@@ -139,37 +134,31 @@ enum Runner {
         posix_spawn_file_actions_adddup2(&actions, out[1], 1)
         posix_spawn_file_actions_adddup2(&actions, err[1], 2)
 
-        var attr: posix_spawnattr_t?
-        posix_spawnattr_init(&attr)
-        defer { posix_spawnattr_destroy(&attr) }
-        // Default signal dispositions (this process ignores SIGPIPE and the
-        // termination signals); no inherited descriptors beyond the three
-        // above. The child stays in this process's group.
-        var defaults = sigset_t()
-        sigfillset(&defaults)
-        posix_spawnattr_setsigdefault(&attr, &defaults)
-        var empty = sigset_t()
-        sigemptyset(&empty)
-        posix_spawnattr_setsigmask(&attr, &empty)
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT))
-
+        // Checked and started under the gate's own lock (the check may hash
+        // the binary; a cancel must not wait behind it). The child stays in
+        // this process's group.
         let env = RunnerPolicy.environment(home: request.home, inherited: ProcessInfo.processInfo.environment)
-        let argv = [gate.path] + request.argv
-        let cArgv = argv.map { strdup($0) } + [nil]
-        let cEnv = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
-        defer {
-            cArgv.forEach { free($0) }
-            cEnv.forEach { free($0) }
+        var spawned: Result<pid_t, RunnerProblem>
+        gateLock.lock()
+        do {
+            try gate.checkBeforeSpawn()
+            spawned = .success(try gate.spawnChecked(argv: request.argv, environment: env, fileActions: &actions))
+        } catch let p as RunnerProblem {
+            spawned = .failure(p)
+        } catch {
+            spawned = .failure(RunnerProblem("internal", "\(error)"))
         }
-
-        var pid: pid_t = 0
-        let rc = posix_spawn(&pid, gate.path, &actions, &attr, cArgv, cEnv)
+        gateLock.unlock()
         close(out[1])
         close(err[1])
-        guard rc == 0 else {
+        let pid: pid_t
+        switch spawned {
+        case .success(let started):
+            pid = started
+        case .failure(let problem):
             close(out[0])
             close(err[0])
-            return fail(request.id, RunnerProblem("helper_unavailable", "the desktop component could not start (\(String(cString: strerror(rc))))"))
+            return fail(request.id, problem)
         }
 
         lock.lock()

@@ -95,11 +95,13 @@ public enum RunnerPolicy {
 /// Which agent-desktop binary the runner may start.
 ///
 /// A helper signed by the wmux team starts only a binary signed by the same
-/// team with agent-desktop's identifier, checked when the runner starts and
-/// again before every spawn, with the file's identity pinned in between. A
-/// helper that is not team-signed is a dev build, which starts what the
-/// developer built. The helper's own signature decides, never an argument,
-/// a path or the environment.
+/// team with agent-desktop's identifier. The file is checked when the runner
+/// starts and again whenever its identity changes; every process is started
+/// suspended and runs only if it is running the code that was checked (and,
+/// under a team-signed helper, meets the requirement). A helper that is not
+/// team-signed is a dev build, which starts what the developer built. The
+/// helper's own signature decides, never an argument, a path or the
+/// environment.
 public final class ChildGate {
     public static let teamID = "8RGHH2F237"
     public static let helperIdentifier = "com.electron.wmux.computer-use"
@@ -124,51 +126,128 @@ public final class ChildGate {
     public let path: String
     private let requirement: String?
     private var pinned: FileIdentity?
+    /// The code directory hash of the binary as last checked: the process a
+    /// spawn starts must be running exactly this code.
+    private var pinnedHash: Data?
 
     /// Throws `helper_unavailable` when the binary is missing or, under a
     /// requirement, does not meet it.
     public init(path: String, requirement: String?) throws {
         self.path = path
         self.requirement = requirement
-        pinned = try check()
+        try check()
     }
 
-    /// Run before every spawn: the file must still be the one checked, and
-    /// still meet the requirement.
+    /// Run before every spawn. The file is checked again only when its
+    /// identity changed since the last check; the started process is what
+    /// spawnChecked verifies either way.
     public func checkBeforeSpawn() throws {
-        guard requirement != nil else {
-            guard FileIdentity(path: path) != nil else { throw ChildGate.missing }
-            return
-        }
         guard let now = FileIdentity(path: path) else { throw ChildGate.missing }
-        guard now == pinned else {
-            throw RunnerProblem("helper_unavailable", "the desktop component changed after it was checked")
+        if now != pinned { try check() }
+    }
+
+    /// Starts the binary suspended, checks the code the new process is
+    /// running (the pinned code directory hash, and the requirement under a
+    /// team-signed helper), and only then lets it run. A process that fails
+    /// is killed and reaped before it executes an instruction of its own.
+    public func spawnChecked(
+        argv: [String],
+        environment: [String: String],
+        fileActions: UnsafePointer<posix_spawn_file_actions_t?>
+    ) throws -> pid_t {
+        guard let expected = pinnedHash else { throw ChildGate.missing }
+        var attr: posix_spawnattr_t?
+        posix_spawnattr_init(&attr)
+        defer { posix_spawnattr_destroy(&attr) }
+        // Default signal dispositions (the runner ignores SIGPIPE and the
+        // termination signals); no inherited descriptors beyond the file
+        // actions; stopped before its first instruction.
+        var defaults = sigset_t()
+        sigfillset(&defaults)
+        posix_spawnattr_setsigdefault(&attr, &defaults)
+        var empty = sigset_t()
+        sigemptyset(&empty)
+        posix_spawnattr_setsigmask(&attr, &empty)
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_START_SUSPENDED))
+
+        let cArgv = ([path] + argv).map { strdup($0) } + [nil]
+        let cEnv = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer {
+            cArgv.forEach { free($0) }
+            cEnv.forEach { free($0) }
         }
-        pinned = try check()
+        var pid: pid_t = 0
+        let rc = posix_spawn(&pid, path, fileActions, &attr, cArgv, cEnv)
+        guard rc == 0 else {
+            throw RunnerProblem("helper_unavailable", "the desktop component could not start (\(String(cString: strerror(rc))))")
+        }
+        if let refusal = ChildGate.refusal(pid: pid, expectedHash: expected, requirement: requirement) {
+            kill(pid, SIGKILL)
+            var status: Int32 = 0
+            while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+            throw RunnerProblem("helper_unavailable", refusal)
+        }
+        kill(pid, SIGCONT)
+        return pid
     }
 
     private static let missing = RunnerProblem("helper_unavailable", "the desktop component is missing from this wmux build")
 
-    private func check() throws -> FileIdentity? {
+    /// Why the suspended process `pid` may not run, or nil.
+    static func refusal(pid: pid_t, expectedHash: Data, requirement: String?) -> String? {
+        var code: SecCode?
+        let attrs = [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary
+        guard SecCodeCopyGuestWithAttributes(nil, attrs, [], &code) == errSecSuccess, let code else {
+            return "the started desktop component could not be examined"
+        }
+        if let requirement {
+            var req: SecRequirement?
+            guard SecRequirementCreateWithString(requirement as CFString, [], &req) == errSecSuccess, let req,
+                  SecCodeCheckValidity(code, [], req) == errSecSuccess else {
+                return "the started desktop component does not meet its code requirement"
+            }
+        }
+        // The kernel's record of the code it loaded, not the file on disk.
+        guard codeHash(unsafeBitCast(code, to: SecStaticCode.self), flags: SecCSFlags(rawValue: kSecCSDynamicInformation)) == expectedHash else {
+            return "the started desktop component is not the binary that was checked"
+        }
+        return nil
+    }
+
+    static func codeHash(_ code: SecStaticCode, flags: SecCSFlags) -> Data? {
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(code, flags, &info) == errSecSuccess,
+              let dict = info as? [String: Any] else { return nil }
+        return dict[kSecCodeInfoUnique as String] as? Data
+    }
+
+    /// Checks the file and pins its identity and code directory hash.
+    private func check() throws {
         guard let before = FileIdentity(path: path) else { throw ChildGate.missing }
-        guard let requirement else { return before }
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(URL(fileURLWithPath: path) as CFURL, [], &code) == errSecSuccess, let code else {
             throw RunnerProblem("helper_unavailable", "the desktop component could not be examined")
         }
-        var req: SecRequirement?
-        guard SecRequirementCreateWithString(requirement as CFString, [], &req) == errSecSuccess, let req else {
-            throw RunnerProblem("helper_unavailable", "the desktop component requirement did not parse")
+        if let requirement {
+            var req: SecRequirement?
+            guard SecRequirementCreateWithString(requirement as CFString, [], &req) == errSecSuccess, let req else {
+                throw RunnerProblem("helper_unavailable", "the desktop component requirement did not parse")
+            }
+            let status = SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate), req)
+            guard status == errSecSuccess else {
+                throw RunnerProblem("helper_unavailable", "the desktop component failed its code-signature check (OSStatus \(status))")
+            }
         }
-        let status = SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate), req)
-        guard status == errSecSuccess else {
-            throw RunnerProblem("helper_unavailable", "the desktop component failed its code-signature check (OSStatus \(status))")
+        // Linker-signed at the least, so every build has one.
+        guard let hash = ChildGate.codeHash(code, flags: []) else {
+            throw RunnerProblem("helper_unavailable", "the desktop component carries no code signature")
         }
         // The file judged must be the file pinned.
         guard FileIdentity(path: path) == before else {
             throw RunnerProblem("helper_unavailable", "the desktop component changed while it was being checked")
         }
-        return before
+        pinned = before
+        pinnedHash = hash
     }
 
     private static func satisfies(_ code: SecCode, _ requirement: String) -> Bool {
