@@ -120,10 +120,18 @@ function describeMode(mode: Mode): void {
     return reply.result?.value;
   };
 
-  /** A tab of `workspaceId` on the fixture page, loaded and in front. */
+  /**
+   * A tab of `workspaceId` on the fixture page, loaded and in front. The tab's
+   * first document is an empty one that is `complete` too, so the page is the
+   * one at this URL.
+   */
   async function open(workspaceId: string): Promise<string> {
-    const { surfaceId } = await running().openTab(`http://127.0.0.1:${port}/`, workspaceId);
-    await eventually(async () => (await evaluate(surfaceId, 'document.readyState').catch(() => null)) === 'complete');
+    const url = `http://127.0.0.1:${port}/`;
+    const { surfaceId } = await running().openTab(url, workspaceId);
+    await eventually(async () => {
+      const page = await evaluate(surfaceId, '[location.href, document.readyState]').catch(() => null) as [string, string] | null;
+      return page?.[0] === url && page[1] === 'complete';
+    });
     return surfaceId;
   }
 
