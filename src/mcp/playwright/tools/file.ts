@@ -95,6 +95,14 @@ export const BROWSER_WAIT_FOR_DOWNLOAD_SHAPE = {
   surfaceId: optionalSurfaceId,
 };
 
+/**
+ * In-app tabs are Electron guests, and Electron has no prompt(): the call throws
+ * in the page ("prompt() is not supported.") and no dialog opens, so an armed
+ * answer never meets one. A Chrome-backend tab shows a real prompt, which an
+ * armed answer and its text do answer.
+ */
+const PROMPT_ON_IN_APP_TABS = "prompt isn't available on in-app tabs; the page sees an error instead of a dialog.";
+
 const BROWSER_DIALOG_SHAPE = {
   accept: z
     .boolean()
@@ -1052,23 +1060,31 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_dialog',
-    'Pre-register the answer for the NEXT dialog (alert, confirm, or, on a Chrome-backend tab, prompt) that one of your actions opens on a tab you opened, within 30s. prompt isn\'t available on in-app tabs; the page sees an error. Without it a dialog is dismissed and reported as a [modal] note; leaving a page (beforeunload) is always accepted. Refused on tabs the user owns or lent.' + EFFECT_TRAILER_NOTE,
+    `Pre-register the answer for the NEXT dialog (alert, confirm, or, on a Chrome-backend tab, prompt) that one of your actions opens on a tab you opened, within 30s. ${PROMPT_ON_IN_APP_TABS} Without it a dialog is dismissed and reported as a [modal] note; leaving a page (beforeunload) is always accepted. Refused on tabs the user owns or lent.` + EFFECT_TRAILER_NOTE,
     BROWSER_DIALOG_SHAPE,
     async ({ accept, text, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
         // Answering a dialog (accept/dismiss, and prompt text) acts on the page.
         const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
+        // Asked once: it picks the no-page path and says whether prompt exists here.
+        // Unknown (an older main, CDP off) adds no prompt note either way.
+        const backend = await Promise.resolve()
+          .then(() => engine.resolveWorkspaceBackend(scope.workspaceId))
+          .catch(() => undefined);
+        const inAppTab = backend === 'builtin';
+        // prompt text can never be used on an in-app tab: it is not armed there.
+        const armedText = inAppTab ? undefined : text;
         if (page) {
           armDialogAnswer(
             page,
             modalScopeKey(scope.workspaceId, scope.surfaceId),
             await resolveDialogOwner(page, scope.workspaceId),
             accept,
-            text,
+            armedText,
           );
-        } else if ((await engine.resolveWorkspaceBackend(scope.workspaceId)) === 'builtin') {
+        } else if (inAppTab) {
           // No Playwright page on this tab: main answers its dialogs.
-          await sendScopedBrowserRpc('browser.dialog.arm', scope, { accept, ...(text !== undefined && { text }) });
+          await sendScopedBrowserRpc('browser.dialog.arm', scope, { accept, ...(armedText !== undefined && { text: armedText }) });
         } else {
           throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
@@ -1078,19 +1094,11 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         effect.begin();
 
         const action = accept ? 'accepted' : 'dismissed';
-        // In-app tabs are Electron guests, and Electron has no prompt(): the call
-        // throws in the page ("prompt() is not supported") and no dialog opens,
-        // so an armed answer never meets one. A Chrome-backend tab shows a real
-        // prompt, which this answer (and its text) does answer.
-        const backend = await Promise.resolve()
-          .then(() => engine.resolveWorkspaceBackend(scope.workspaceId))
-          .catch(() => undefined);
-        const inAppTab = backend !== 'chrome';
         const promptNote = !inAppTab
           ? ''
           : text !== undefined
-            ? ' The text applies to nothing here: prompt isn\'t available on in-app tabs; the page sees an error instead of a dialog.'
-            : ' This doesn\'t apply to prompt: it isn\'t available on in-app tabs; the page sees an error instead of a dialog.';
+            ? ` The text was not armed: ${PROMPT_ON_IN_APP_TABS}`
+            : ` This doesn't apply to prompt: ${PROMPT_ON_IN_APP_TABS}`;
         return withEffectTrailer(
           {
             content: [

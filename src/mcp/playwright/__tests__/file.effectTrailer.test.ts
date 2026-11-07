@@ -149,7 +149,7 @@ describe('browser_dialog effect trailer', () => {
     try {
       getPage.mockResolvedValue(makePage());
       const result = await dialog({ accept: true });
-      expect(text(result)).toContain("Next dialog will be accepted. This doesn't apply to prompt: it isn't available on in-app tabs");
+      expect(text(result)).toContain("Next dialog will be accepted. This doesn't apply to prompt: prompt isn't available on in-app tabs");
     } finally {
       backend.value = 'chrome';
     }
