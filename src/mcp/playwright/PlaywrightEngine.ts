@@ -138,10 +138,10 @@ interface TargetProbe {
   /** The target was already known unpageable; nothing was tried. */
   knownUnpageable?: boolean;
   /**
-   * The unpaged target is a webview that was attached before this lookup
-   * touched it. Playwright gives no Page for that shape on a reconnect either
-   * (a new connection to an existing in-app tab never gets one), so the
-   * lookup stops after the attempt that saw it.
+   * The unpaged target is a webview that existed when this connection was
+   * made (targetsAtConnect). Playwright gives no Page for that shape on a
+   * reconnect either (a new connection to an existing in-app tab never gets
+   * one), so the lookup stops after the attempt that saw it.
    */
   attachedWebview?: boolean;
 }
@@ -292,6 +292,18 @@ export class PlaywrightEngine {
   /** Bumped whenever unpageableTargets is cleared, so a lookup that spanned a
    *  clear does not record into the new connection's memory. */
   private unpageableEpoch = 0;
+  /** The Pages there were when a target was last remembered: the late-Page
+   *  check only probes Pages that came after. */
+  private pagesAtRemember = new WeakSet<Page>();
+  /**
+   * The target ids listed when the current connection was made. A webview
+   * among them existed before this connection, and Playwright gives no Page
+   * for such a target (a new connection to an existing in-app tab never gets
+   * one), so a lookup that finds it unpaged stops after that attempt. Note
+   * `attached` can't tell this: main's own debugger attaches every in-app
+   * guest. Empty when the listing failed, which never stops a lookup early.
+   */
+  private targetsAtConnect = new Set<string>();
   /** In-flight getPage promises, keyed by selection context (#554). A single
    *  shared lock returned one caller's page (or auto-open) to a concurrent
    *  caller in a DIFFERENT workspace — a cross-workspace read. Keying by
@@ -504,6 +516,15 @@ export class PlaywrightEngine {
     // don't appear in browser.contexts().pages().
     try {
       const session = await this.browser.newBrowserCDPSession();
+      // The targets this connection found already there (see targetsAtConnect).
+      try {
+        const { targetInfos } = (await session.send('Target.getTargets')) as {
+          targetInfos?: Array<{ targetId: string }>;
+        };
+        this.targetsAtConnect = new Set((targetInfos ?? []).map((t) => t.targetId));
+      } catch {
+        this.targetsAtConnect = new Set();
+      }
       await session.send('Target.setAutoAttach', {
         autoAttach: true,
         waitForDebuggerOnStart: false,
@@ -569,6 +590,21 @@ export class PlaywrightEngine {
   }
 
   /**
+   * The page lookup's own reconnect between attempts: keeps unpageableTargets,
+   * unless no new connection comes of it, when what it learned has no
+   * connection behind it any more.
+   */
+  private async reconnectForRetry(workspaceId: string | undefined): Promise<void> {
+    await this.disconnect(true);
+    try {
+      await this.ensureConnected(workspaceId);
+    } catch (err) {
+      this.forgetUnpageable();
+      throw err;
+    }
+  }
+
+  /**
    * @param retryReconnect the page lookup's own retry is reconnecting: keep
    *   unpageableTargets (see there). Any other disconnect of a live connection
    *   clears it.
@@ -578,6 +614,7 @@ export class PlaywrightEngine {
     const s = this.autoAttachSession;
     this.browser = null;
     if (b && !retryReconnect) this.forgetUnpageable();
+    this.targetsAtConnect = new Set();
     this.cdpPort = null;
     this.connectedEndpoint = null;
     this.autoAttachSession = null;
@@ -1347,8 +1384,7 @@ export class PlaywrightEngine {
               this.autoOpenAttempted.add(ctx.key);
               // Wait for the webview to register its CDP target
               await sleep(2000);
-              await this.disconnect(true);
-              await this.ensureConnected(ctx.workspaceId);
+              await this.reconnectForRetry(ctx.workspaceId);
               // Pin the surface we just opened (#554) — otherwise
               // callerHasNoSurface keeps skipping Strategies 1-3 and the new
               // page is never found.
@@ -1394,9 +1430,9 @@ export class PlaywrightEngine {
           }
         }
 
-        // An already-attached webview that gave no Page won't give one after a
-        // reconnect either: stop here, and remember it below.
-        if (probe.unpaged && probe.attachedWebview) {
+        // A webview that existed before this connection and gave no Page won't
+        // give one after a reconnect either: stop here, and remember it below.
+        if (probe.unpaged && probe.attachedWebview && attempt < PAGE_FIND_RETRIES) {
           stoppedEarly = true;
           break;
         }
@@ -1405,8 +1441,7 @@ export class PlaywrightEngine {
           console.error(`[PlaywrightEngine] No page found, reconnecting... (${attempt}/${PAGE_FIND_RETRIES})`);
           await sleep(PAGE_FIND_DELAY_MS);
           opSignal?.throwIfAborted();
-          await this.disconnect(true);
-          await this.ensureConnected(ctx.workspaceId);
+          await this.reconnectForRetry(ctx.workspaceId);
         }
       } catch (err) {
         if (isWorkspaceScopeUnresolvedError(err)) throw err;
@@ -1422,8 +1457,7 @@ export class PlaywrightEngine {
         if (attempt < PAGE_FIND_RETRIES) {
           await sleep(PAGE_FIND_DELAY_MS);
           opSignal?.throwIfAborted();
-          await this.disconnect(true);
-          await this.ensureConnected(ctx.workspaceId);
+          await this.reconnectForRetry(ctx.workspaceId);
         }
       }
     }
@@ -1443,6 +1477,7 @@ export class PlaywrightEngine {
         this.unpageableScope = scope;
       }
       this.unpageableTargets.add(agreed);
+      for (const p of this.getAllPages()) this.pagesAtRemember.add(p);
       console.error(`[PlaywrightEngine] Target ${agreed} gives no page; later calls use the RPC lane at once`);
     }
     this.playwrightFailed.add(ctx.key);
@@ -1610,12 +1645,15 @@ export class PlaywrightEngine {
         console.error(`[PlaywrightEngine] Found webview target: ${webviewTarget.targetId} url=${webviewTarget.url}`);
 
         // Seen unpageable already: skip the attach and its wait. If Playwright
-        // has made a Page for it since, use that and forget the target.
+        // has made a Page for it since, use that and forget the target. Only
+        // Pages newer than the last remembering are probed, and only for a
+        // pinned surface (without one, the non-shell fallback runs anyway).
         if (this.unpageableTargets.has(webviewTarget.targetId)) {
-          const pages = this.getAllPages();
-          const late = surfaceId
-            ? await this.matchPinnedPage(pages, webviewTarget.targetId, webviewTarget.url)
-            : pages.find((p) => !this.isShellPage(p.url()));
+          const fresh = this.getAllPages().filter((p) => !this.pagesAtRemember.has(p));
+          const late = surfaceId && fresh.length > 0
+            ? await this.matchPinnedPage(fresh, webviewTarget.targetId, webviewTarget.url)
+            : null;
+          for (const p of fresh) if (p !== late) this.pagesAtRemember.add(p);
           if (late) {
             this.unpageableTargets.delete(webviewTarget.targetId);
             console.error(`[PlaywrightEngine] Found page for a target that gave none before: ${late.url()}`);
@@ -1655,7 +1693,7 @@ export class PlaywrightEngine {
         // by reconnecting — this forces Playwright to re-discover all targets
         console.error('[PlaywrightEngine] Attach did not create a page, will retry with reconnect');
         probe.unpaged = webviewTarget.targetId;
-        probe.attachedWebview = webviewTarget.type === 'webview' && webviewTarget.attached;
+        probe.attachedWebview = webviewTarget.type === 'webview' && this.targetsAtConnect.has(webviewTarget.targetId);
         return null;
       } finally {
         // Detach the probe session so it doesn't accumulate in Playwright's
