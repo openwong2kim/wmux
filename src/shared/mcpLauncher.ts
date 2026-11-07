@@ -27,7 +27,7 @@ export type SelfTestVerdict = ProbeVerdict;
 
 /** Run the native launcher's self-test. Never throws. */
 export function runNativeSelfTest(binary: string, timeoutMs = NATIVE_SELF_TEST_TIMEOUT_MS): Promise<SelfTestVerdict> {
-  return runProbe(binary, ['mcp-shim', '--self-test'], NATIVE_SELF_TEST_LINE, timeoutMs);
+  return runProbe(binary, ['mcp-shim', '--self-test'], { line: NATIVE_SELF_TEST_LINE }, timeoutMs);
 }
 
 /** Where the native launcher lives inside the stable MCP directory. */

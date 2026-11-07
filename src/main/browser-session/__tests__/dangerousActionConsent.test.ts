@@ -354,6 +354,7 @@ describe('openDownloadPass', () => {
   function fakeGuard() {
     const sent: Array<[string, Record<string, unknown>]> = [];
     let claimant: ((p: Record<string, unknown>) => boolean) | null = null;
+    let reassert: (() => Promise<unknown>) | null = null;
     const progress = new Set<(p: Record<string, unknown>) => void>();
     const closed = new Set<() => void>();
     const tab = { url: 'http://a.test/files' };
@@ -367,11 +368,14 @@ describe('openDownloadPass', () => {
         closed.add(fn);
         return () => closed.delete(fn);
       },
-      claim: (fn) => {
+      claim: (fn, again) => {
         if (claimant) return null;
         claimant = fn;
+        reassert = again ?? null;
         return () => {
-          if (claimant === fn) claimant = null;
+          if (claimant !== fn) return;
+          claimant = null;
+          reassert = null;
         };
       },
       onProgress: (fn) => {
@@ -386,6 +390,8 @@ describe('openDownloadPass', () => {
       begin: (p: Record<string, unknown>) => claimant?.(p) === true,
       progress: (p: Record<string, unknown>) => progress.forEach((l) => l(p)),
       claimed: () => claimant !== null,
+      /** What the guard's re-assert tick does while the pass holds it. */
+      tick: () => reassert?.(),
       tab,
       close: () => closed.forEach((l) => l()),
     };
@@ -407,6 +413,28 @@ describe('openDownloadPass', () => {
     g.progress({ guid: 'g1', state: 'completed' });
     await expect(pass.done).resolves.toEqual({ url: 'http://a.test/f', suggestedFilename: 'f.bin', path: '/tmp/x/g1' });
     expect(g.claimed()).toBe(false);
+  });
+
+  it('the guard\'s tick re-asserts the pass\'s own behaviour: allow until its download is under way, deny after, nothing once it is done', async () => {
+    const g = fakeGuard();
+    const pass = await openDownloadPass(g.guard, opts);
+    const behaviors = () => g.sent.filter(([m]) => m === 'Browser.setDownloadBehavior').map(([, p]) => p);
+    await g.tick();
+    expect(behaviors().at(-1)).toEqual({ behavior: 'allowAndName', downloadPath: '/tmp/x', eventsEnabled: true });
+    g.begin({ guid: 'g1', frameId: 'T1' });
+    // Begun, not yet under way: still the pass's allow (a deny here can cancel it under load).
+    await g.tick();
+    expect(behaviors().at(-1)?.behavior).toBe('allowAndName');
+    g.progress({ guid: 'g1', state: 'inProgress' });
+    await g.tick();
+    expect(behaviors().at(-1)).toEqual({ behavior: 'deny', eventsEnabled: true });
+    // A second download is still cancelled by guid, never kept.
+    expect(g.begin({ guid: 'g2', frameId: 'T1' })).toBe(false);
+    g.progress({ guid: 'g1', state: 'completed' });
+    await pass.done;
+    const count = behaviors().length;
+    await g.tick();
+    expect(behaviors()).toHaveLength(count);
   });
 
   it('no download in time: refused, claim released, deny restored', async () => {

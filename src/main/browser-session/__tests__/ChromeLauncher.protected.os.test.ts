@@ -28,6 +28,8 @@ const { spawnMock, state, sockets } = vi.hoisted(() => ({
     probeDelayMs: 0,
     reportErrorPage: false,
     onBrowserClose: null as (() => void) | null,
+    /** What Target.getBrowserContexts lists: the contexts clients created. */
+    browserContexts: [] as string[],
   },
   sockets: [] as Array<{ sent: Array<{ method: string; params: unknown }>; closed: boolean }>,
 }));
@@ -67,6 +69,7 @@ vi.mock('../CdpSocket', () => ({
     async send(method: string, params: unknown = {}) {
       this.rec.sent.push({ method, params });
       if (method === 'Browser.close') state.onBrowserClose?.();
+      if (method === 'Target.getBrowserContexts') return { browserContextIds: [...state.browserContexts] };
       if (method === 'Browser.setDownloadBehavior' && state.onGuardArm) {
         const hook = state.onGuardArm;
         state.onGuardArm = null;
@@ -172,6 +175,7 @@ beforeEach(() => {
   state.holdList = null;
   state.holdPut = null;
   state.onlyRestored = false;
+  state.browserContexts = [];
   sockets.length = 0;
   dead.clear();
   nextPort = 18001;
@@ -310,6 +314,43 @@ describe('ChromeLauncher — protected profiles', () => {
     expect(launcher.isProtected()).toBe(true);
     await launcher.dispose({ immediate: true });
   }, 15_000);
+
+  it('the download guard also denies each context a client created, on its own session, on each re-assert', async () => {
+    state.browserContexts = ['CTX-1'];
+    spawnWritesPortFile(makeChild());
+    const launcher = new ChromeLauncher('/tmp/prot-ctx', { protection: () => denyAll });
+    await launcher.ensureRunning();
+    const guard = sockets.find((x) => x.sent[0]?.method === 'Browser.setDownloadBehavior');
+    const contextDenies = () => (guard?.sent ?? []).filter((m) => m.method === 'Browser.setDownloadBehavior' && (m.params as { browserContextId?: string }).browserContextId);
+    await vi.waitFor(() => expect(contextDenies().length).toBeGreaterThan(0), { timeout: 5_000 });
+    expect(contextDenies()).toContainEqual(
+      { method: 'Browser.setDownloadBehavior', params: { behavior: 'deny', browserContextId: 'CTX-1', eventsEnabled: true } },
+    );
+    // A context created later is denied on a later re-assert.
+    state.browserContexts = ['CTX-1', 'CTX-2'];
+    await vi.waitFor(() => expect(contextDenies().some((m) => (m.params as { browserContextId: string }).browserContextId === 'CTX-2')).toBe(true), { timeout: 5_000 });
+    // All of it on the guard's own session: no other socket asked for the contexts.
+    expect(sockets.filter((x) => x !== guard && x.sent.some((m) => m.method === 'Target.getBrowserContexts'))).toEqual([]);
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('while a consent pass holds the guard, the tick re-asserts the pass\'s behaviour instead of its own deny', async () => {
+    spawnWritesPortFile(makeChild());
+    const launcher = new ChromeLauncher('/tmp/prot-claim', { protection: () => denyAll });
+    await launcher.ensureRunning();
+    const guard = sockets.find((x) => x.sent[0]?.method === 'Browser.setDownloadBehavior');
+    const reassert = vi.fn(async () => undefined);
+    const release = launcher.consentDownloadGuard()?.claim(() => false, reassert);
+    const denies = () => (guard?.sent ?? []).filter((m) => m.method === 'Browser.setDownloadBehavior').length;
+    const before = denies();
+    await vi.waitFor(() => expect(reassert.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
+    expect(denies()).toBe(before);
+    release?.();
+    const calls = reassert.mock.calls.length;
+    await vi.waitFor(() => expect(denies()).toBeGreaterThan(before), { timeout: 5_000 });
+    expect(reassert.mock.calls.length).toBe(calls);
+    await launcher.dispose({ immediate: true });
+  });
 
   it('concurrent callers re-arm one download guard, not two', async () => {
     spawnWritesPortFile(makeChild());

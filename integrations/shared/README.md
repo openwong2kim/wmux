@@ -62,12 +62,17 @@ path that wmux did not write is reported and left alone. The plain
 `wmux setup-hooks` run does not touch Copilot.
 
 Each entry uses exec form (`"exec"` plus `"args"`), which Copilot starts
-without a shell. When the app ships `wmux-native`, the installer copies it to
-`~/.wmux/hooks/`, runs it once, and writes `"exec"` as that copy; otherwise, or
-if the copy does not run, `"exec"` is `node`. `"args"` is the same in both
+without a shell. When the app ships `wmux-native`, the installer writes it
+beside its copy in `~/.wmux/hooks/`, runs it there once (`--version`), and only
+then moves it into place and writes `"exec"` as that copy; otherwise, or if no
+copy runs, `"exec"` is `node`. A refresh whose new build does not run leaves the
+copy in place, and the entries keep running it when it ran before. The verdict
+is recorded by the binary's bytes, so a build is run once; `--reprobe` runs it
+again (after you fix what made it fail). `"args"` is the same in both
 forms (the bridge path, the flavour, the event), so a wmux that predates the
 native bridge still recognises the file as its own. `--status` says which form
-the entries use and why. On Windows the binary ships only once it is signed.
+the entries use and why, and never runs the binary. On Windows the binary ships
+only once it is signed.
 
 Only Copilot is installed this way. Kiro hooks are set up by hand (see
 `integrations/kiro/README.md`), and wmux installs no hooks for Gemini or Qwen;

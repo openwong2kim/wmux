@@ -65,6 +65,12 @@ OTHER AGENTS (opt-in; touches only that CLI's hook config)
                    ~/.copilot/hooks/wmux.json ($COPILOT_HOME/hooks/wmux.json
                    when COPILOT_HOME is set; run it with the same COPILOT_HOME
                    Copilot uses) and never edits your settings.
+  --reprobe        With --agent, on install: run the native hook bridge's
+                   check again for a build already recorded as failing it (or
+                   passing it). If the copy cannot be started at all (a home
+                   turned noexec), the hooks go back to node and its old pass
+                   is forgotten, so later installs check it again; a check
+                   that times out leaves the recorded verdict as it was.
 
 WSL (opt-in; touches only that distribution's Claude settings)
   --wsl [<distro>] [--uninstall]
@@ -1699,7 +1705,7 @@ function printCodexHooksStatus(status: {
 // ----- Dispatch -----------------------------------------------------------
 
 /**
- * `wmux setup-hooks --agent <flavour> [--remove | --status]` — the shared
+ * `wmux setup-hooks --agent <flavour> [--remove | --status | --reprobe]` — the shared
  * Claude-compatible hook bridge for one CLI (#1904). Only flavours with a wired
  * installer are accepted; the rest are documented in
  * integrations/shared/README.md and set up by hand.
@@ -1722,9 +1728,16 @@ async function handleCompatAgentHooks(
     process.exit(1);
     return;
   }
-  const unknown = args.filter((a, i) => i !== agentIndex && i !== agentIndex + 1 && a !== '--remove' && a !== '--status');
+  const known = new Set(['--remove', '--status', '--reprobe']);
+  const unknown = args.filter((a, i) => i !== agentIndex && i !== agentIndex + 1 && !known.has(a));
   if (unknown.length > 0) {
     console.error(`Unknown argument(s) with --agent: ${unknown.join(', ')}. Run 'wmux setup-hooks --help' for usage.`);
+    process.exit(1);
+    return;
+  }
+  const reprobe = args.includes('--reprobe');
+  if (reprobe && (mode.remove || mode.status)) {
+    console.error('--reprobe goes with an install, not with --remove or --status.');
     process.exit(1);
     return;
   }
@@ -1763,7 +1776,7 @@ async function handleCompatAgentHooks(
     if (!outcome.ok) process.exit(1);
     return;
   }
-  const outcome = installer.installCompatHooks(flavour, paths);
+  const outcome = await installer.installCompatHooks(flavour, paths, { reprobe });
   if (jsonMode) {
     console.log(JSON.stringify(outcome, null, 2));
   } else {

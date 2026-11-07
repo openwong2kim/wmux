@@ -377,7 +377,12 @@ export class DangerousActionConsent {
 //   3. any download from another tab, a subframe or a popup, or a second one
 //      from the same tab, is cancelled by the guard as before;
 //   4. deny is restored on every exit: kept, cancelled, timed out before it
-//      started, finished, failed, or the guard went away.
+//      started, finished, failed, or the guard went away;
+//   5. while the pass holds the guard, the guard's re-assert tick asks the
+//      pass for its own behaviour (allowAndName into its directory until its
+//      download is under way, deny after), with events on: another connection
+//      attaching, or leaving, can't take the approved download's behaviour or
+//      its events away for longer than one tick.
 // ---------------------------------------------------------------------------
 
 /** What the approved download produced. */
@@ -398,7 +403,8 @@ export interface DownloadPass {
 /** The guard surface a pass needs (ChromeLauncher.consentDownloadGuard()). */
 export interface DownloadGuardPort {
   send(method: string, params: Record<string, unknown>): Promise<unknown>;
-  claim(claimant: (params: Record<string, unknown>) => boolean): (() => void) | null;
+  /** `reassert`: called on the guard's re-assert tick while this claim holds, in place of the guard's own deny. */
+  claim(claimant: (params: Record<string, unknown>) => boolean, reassert?: () => Promise<unknown>): (() => void) | null;
   onProgress(listener: (params: Record<string, unknown>) => void): () => void;
   onClose(listener: () => void): () => void;
 }
@@ -436,6 +442,10 @@ export async function openDownloadPass(
 ): Promise<DownloadPass> {
   const deny = () =>
     guard.send('Browser.setDownloadBehavior', { behavior: 'deny', eventsEnabled: true }).catch(() => undefined);
+  const allow = () =>
+    guard.send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: opts.dir, eventsEnabled: true });
+  /** The kept download reported progress: deny is back. */
+  let underWay = false;
   let state: 'waiting' | 'running' | 'settled' = 'waiting';
   let guid = '';
   let url = '';
@@ -507,6 +517,10 @@ export async function openDownloadPass(
       }
     });
     return true;
+  }, () => {
+    // What this pass would have set at this point, on the guard's session.
+    if (state === 'settled') return Promise.resolve();
+    return underWay ? deny() : allow();
   });
   if (!release) {
     throw new ConsentRefusal(
@@ -514,7 +528,6 @@ export async function openDownloadPass(
       policyDeniedMessage(CONSENT_METHOD, 'another approved download is still running on this pane; wait for it to finish'),
     );
   }
-  let underWay = false;
   offClose = guard.onClose(() => settle({ error: "the protected browser's download guard went away" }));
   offProgress = guard.onProgress((params) => {
     if (!guid || params.guid !== guid) return;
@@ -526,11 +539,7 @@ export async function openDownloadPass(
     else if (params.state === 'canceled') settle({ error: 'the approved download was cancelled' });
   });
   try {
-    await guard.send('Browser.setDownloadBehavior', {
-      behavior: 'allowAndName',
-      downloadPath: opts.dir,
-      eventsEnabled: true,
-    });
+    await allow();
   } catch {
     settle({ error: "the protected browser's download guard is not ready" });
     throw new ConsentRefusal(

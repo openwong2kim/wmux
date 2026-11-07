@@ -123,7 +123,7 @@ function signalFor(ptyId: string): Received | undefined {
 describe('copilot exec form (no shell)', () => {
   it('the installed entry runs the bridge and delivers the signal', async () => {
     const paths = resolveCompatHookPaths(home, REPO_ROOT);
-    expect(installCompatHooks('copilot', paths).ok).toBe(true);
+    expect((await installCompatHooks('copilot', paths)).ok).toBe(true);
     const file = JSON.parse(fs.readFileSync(path.join(home, '.copilot', 'hooks', 'wmux.json'), 'utf8'));
     for (const event of Object.keys(file.hooks)) {
       const [leaf] = file.hooks[event];
@@ -140,9 +140,9 @@ describe('copilot exec form (no shell)', () => {
 
 describe('shell form under every host shell', () => {
   let bridge: string;
-  beforeAll(() => {
+  beforeAll(async () => {
     const paths = resolveCompatHookPaths(home, REPO_ROOT);
-    installCompatHooks('copilot', paths);
+    await installCompatHooks('copilot', paths);
     bridge = paths.bridge.destinationPath;
     expect(bridge).toContain(' ');
   });
