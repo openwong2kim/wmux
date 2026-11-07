@@ -2,7 +2,7 @@
 // the one owner of its session or command id, or nowhere. A client addresses
 // only its own sessions, whatever shape a forged id takes.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CdpPipeMux, MUX_ID_BASE, cdpPipeCounters, resetCdpPipeCounters } from '../CdpPipeMux';
+import { CdpPipeMux, MUX_ID_BASE, cdpPipeCounters, resetCdpPipeCounters, type ClientRef } from '../CdpPipeMux';
 import { FakeBrowser } from './fakePipeBrowser';
 
 function setup(opts: ConstructorParameters<typeof CdpPipeMux>[2] = {}) {
@@ -180,11 +180,116 @@ describe('CdpPipeMux: routing', () => {
     mux.close();
   });
 
-  it('a filter (the place for method blocks) refuses a command before it reaches the browser', async () => {
-    const { browser, mux } = setup({ filter: (_client, command) => (command.method === 'Browser.close' ? { code: -32000, message: 'refused' } : null) });
+  it('a filter refuses or answers a command itself, before it reaches the browser, and counts each by reason', async () => {
+    const { browser, mux } = setup({
+      filter: (_client, command) => {
+        if (command.method === 'Test.refuse') return { refuse: { code: -32000, message: 'refused' }, reason: 'test-refuse' };
+        if (command.method === 'Test.answer') return { absorb: { answered: true }, reason: 'test-answer' };
+        return null;
+      },
+    });
     const a = external(mux, 'a');
-    expect((await a.replyTo(a.send('Browser.close'))).error).toEqual({ code: -32000, message: 'refused' });
-    expect(browser.received.some((c) => c.method === 'Browser.close')).toBe(false);
+    expect((await a.replyTo(a.send('Test.refuse', { secret: 'p' }))).error).toEqual({ code: -32000, message: 'refused' });
+    const answered = a.send('Test.answer');
+    expect(await a.replyTo(answered)).toEqual({ id: answered, result: { answered: true } });
+    // On a session the client holds, the answer comes back on that session.
+    const page = (await a.replyTo(a.send('Target.attachToTarget', { targetId: 'T0', flatten: true }))).result?.sessionId as string;
+    const onPage = a.send('Test.answer', {}, page);
+    expect(await a.replyTo(onPage)).toEqual({ id: onPage, result: { answered: true }, sessionId: page });
+    // On one it doesn't, the session check comes first.
+    expect((await a.replyTo(a.send('Test.answer', {}, 'S-not-mine'))).error?.code).toBe(-32001);
+    expect((await a.replyTo(a.send('Browser.getVersion'))).result).toEqual({ echo: 'Browser.getVersion' });
+    expect(browser.received.map((c) => c.method)).not.toContain('Test.refuse');
+    expect(browser.received.map((c) => c.method)).not.toContain('Test.answer');
+    const counters = cdpPipeCounters();
+    expect(counters.refusals).toEqual({ 'test-refuse': 1 });
+    expect(counters.absorbed).toEqual({ 'test-answer': 2 });
+    // Counted by reason only: no params.
+    expect(JSON.stringify(counters)).not.toContain('secret');
+    mux.close();
+  });
+
+  it('Browser.close and the crash commands from an external client are refused on every profile; main\'s own connection still sends them', async () => {
+    const { browser, mux } = setup();
+    const a = external(mux, 'a');
+    for (const method of ['Browser.close', 'Browser.crash', 'Browser.crashGpuProcess']) {
+      expect((await a.replyTo(a.send(method))).error).toEqual({ code: -32000, message: `${method} is not available to this client` });
+    }
+    expect(browser.received.some((c) => c.method.startsWith('Browser.c'))).toBe(false);
+    expect(cdpPipeCounters().refusals).toEqual({ 'ends-shared-browser': 3 });
+    expect(cdpPipeCounters().refused).toBe(3);
+    const own = mux.connect({ label: 'main' });
+    await expect(own.send('Browser.close')).resolves.toEqual({ echo: 'Browser.close' });
+    mux.close();
+  });
+
+  it('a reply hook holds the client\'s reply until it settles, and turns a failure into an error reply', async () => {
+    let release: (error: { code: number; message: string } | null) => void = () => undefined;
+    const seen: Array<{ method: string; result: Record<string, unknown> }> = [];
+    const { mux } = setup({
+      beforeReply: (_client, method, result) => {
+        if (method === 'Test.throws') throw new Error('hook failed');
+        if (method !== 'Test.held') return null;
+        seen.push({ method, result });
+        return new Promise((resolve) => { release = resolve; });
+      },
+    });
+    const a = external(mux, 'a');
+    const held = a.send('Test.held');
+    await vi.waitFor(() => expect(seen).toHaveLength(1), { timeout: 5_000 });
+    expect(seen[0]).toEqual({ method: 'Test.held', result: { echo: 'Test.held' } });
+    // Other traffic is not held behind it.
+    expect((await a.replyTo(a.send('Browser.getVersion'))).result).toEqual({ echo: 'Browser.getVersion' });
+    expect(a.inbox.some((m) => m.id === held)).toBe(false);
+    release(null);
+    expect(await a.replyTo(held)).toEqual({ id: held, result: { echo: 'Test.held' } });
+
+    const failed = a.send('Test.held');
+    await vi.waitFor(() => expect(seen).toHaveLength(2), { timeout: 5_000 });
+    release({ code: -32000, message: 'not ready' });
+    expect((await a.replyTo(failed)).error).toEqual({ code: -32000, message: 'not ready' });
+    // A hook that throws answers the same way, and the frames after it still route.
+    expect((await a.replyTo(a.send('Test.throws'))).error).toEqual({ code: -32000, message: 'hook failed' });
+    expect((await a.replyTo(a.send('Browser.getVersion'))).result).toEqual({ echo: 'Browser.getVersion' });
+    // On a session the client holds, the error comes back on that session.
+    const page = (await a.replyTo(a.send('Target.attachToTarget', { targetId: 'T0', flatten: true }))).result?.sessionId as string;
+    const onPage = a.send('Test.held', {}, page);
+    await vi.waitFor(() => expect(seen).toHaveLength(3), { timeout: 5_000 });
+    release({ code: -32000, message: 'not ready' });
+    expect(await a.replyTo(onPage)).toEqual({ id: onPage, error: { code: -32000, message: 'not ready' }, sessionId: page });
+    expect(cdpPipeCounters().refusals).toEqual({ 'Test.held-after': 2, 'Test.throws-after': 1 });
+    expect(cdpPipeCounters().refused).toBe(3);
+    mux.close();
+  });
+
+  it('knows which pages a client holds, and sends a browser-level event to that client only', async () => {
+    // The filter sees each client's ref with its first command.
+    const ref = new Map<string, ClientRef>();
+    const { mux } = setup({ filter: (client) => { ref.set(client.label, client); return null; } });
+    const a = external(mux, 'a');
+    const b = external(mux, 'b');
+    const ta = (await a.replyTo(a.send('Target.createTarget', { url: 'http://a/' }))).result?.targetId as string;
+    const tb = (await b.replyTo(b.send('Target.createTarget', { url: 'http://b/' }))).result?.targetId as string;
+    await a.replyTo(a.send('Target.attachToTarget', { targetId: ta, flatten: true }));
+    await b.replyTo(b.send('Target.attachToTarget', { targetId: ta, flatten: true }));
+    const [ca, cb] = [ref.get('a') as ClientRef, ref.get('b') as ClientRef];
+    expect(mux.ownsTarget(ca, ta)).toBe(true);
+    expect(mux.ownsTarget(ca, tb)).toBe(false);
+    expect(mux.ownsTarget(cb, ta)).toBe(true);
+    expect(mux.ownsTarget(cb, tb)).toBe(false);
+
+    expect(mux.emitEvent(ca, 'Browser.downloadWillBegin', { guid: 'g' })).toBe(true);
+    await vi.waitFor(() => expect(a.inbox.some((m) => m.method === 'Browser.downloadWillBegin')).toBe(true), { timeout: 5_000 });
+    expect(b.inbox.some((m) => m.method === 'Browser.downloadWillBegin')).toBe(false);
+    // On a session it holds, and not on one it doesn't.
+    const held = (b.inbox.find((m) => (m.result as { sessionId?: string } | undefined)?.sessionId) as { result: { sessionId: string } }).result.sessionId;
+    expect(mux.emitEvent(cb, 'Browser.downloadProgress', { guid: 'g' }, held)).toBe(true);
+    expect(mux.emitEvent(ca, 'Browser.downloadProgress', { guid: 'g' }, held)).toBe(false);
+    await vi.waitFor(() => expect(b.inbox.find((m) => m.method === 'Browser.downloadProgress')?.sessionId).toBe(held), { timeout: 5_000 });
+    expect(a.inbox.some((m) => m.method === 'Browser.downloadProgress')).toBe(false);
+    a.client.close();
+    expect(mux.ownsTarget(ca, ta)).toBe(false);
+    expect(mux.emitEvent(ca, 'Browser.downloadWillBegin', { guid: 'g' })).toBe(false);
     mux.close();
   });
 });

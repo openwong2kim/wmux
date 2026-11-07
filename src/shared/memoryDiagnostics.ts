@@ -109,6 +109,10 @@ export interface CdpPipeDiagnostics {
   dropped: Record<string, number>;
   /** Client commands refused (a session the client does not own, a malformed command). */
   refused: number;
+  /** Client commands answered without reaching the browser, by reason. Absent from older builds. */
+  absorbed?: Record<string, number>;
+  /** Refusals by a profile's rules, by reason. Absent from older builds. */
+  refusals?: Record<string, number>;
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -155,10 +159,16 @@ function tailReadCounters(value: unknown): boolean {
     record(value.mismatches) && counters(value.mismatches, Object.keys(value.mismatches));
 }
 
+/** Absent, or a record of non-negative counts. */
+function countsByReason(value: unknown): boolean {
+  return value === undefined || (record(value) && counters(value, Object.keys(value)));
+}
+
 export function isAppMemoryDiagnostics(value: unknown): value is AppMemoryDiagnostics {
   return record(value) && counters(value, ['mainPid']) && Array.isArray(value.processes) &&
     value.processes.every((p: unknown) => record(p) && typeof p.type === 'string' && counters(p, ['pid', 'workingSetBytes'])) &&
     (value.cdpPipe === undefined || (record(value.cdpPipe) &&
       counters(value.cdpPipe, ['frames', 'bytes', 'parseMsTotal', 'parseMsMax', 'largestFrameBytes', 'refused']) &&
-      record(value.cdpPipe.dropped) && counters(value.cdpPipe.dropped, Object.keys(value.cdpPipe.dropped))));
+      record(value.cdpPipe.dropped) && counters(value.cdpPipe.dropped, Object.keys(value.cdpPipe.dropped)) &&
+      countsByReason(value.cdpPipe.absorbed) && countsByReason(value.cdpPipe.refusals)));
 }

@@ -101,6 +101,10 @@ export function renderMemoryDiagnostics(
     lines.push(`  Chrome debugging pipe: ${p.frames} frames, ${mib(p.bytes)}; parse ${p.parseMsTotal.toFixed(1)} ms in all, ` +
       `slowest frame ${p.parseMsMax.toFixed(1)} ms, largest ${mib(p.largestFrameBytes)}; ` +
       `${Object.values(p.dropped).reduce((a, b) => a + b, 0)} dropped${dropped ? ` (${dropped})` : ''}, ${p.refused} commands refused`);
+    const byReason = (counts?: Record<string, number>) => Object.entries(counts ?? {}).sort((x, y) => y[1] - x[1]).map(([why, n]) => `${why} ${n}`).join(', ');
+    if (byReason(p.refusals) || byReason(p.absorbed)) {
+      lines.push(`    by rule: refused ${byReason(p.refusals) || 'none'}; answered without the browser ${byReason(p.absorbed) || 'none'}`);
+    }
   }
   if (daemon) {
     lines.push(`  daemon RSS: ${mib(daemon.rssBytes)}; JS heap used: ${mib(daemon.heapUsedBytes)}; external: ${mib(daemon.externalBytes)}; ArrayBuffers: ${mib(daemon.arrayBuffersBytes)}`);

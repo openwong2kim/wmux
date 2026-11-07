@@ -81,11 +81,31 @@ export interface ClientCommand {
   sessionId?: string;
 }
 
+/** A client as a filter or hook sees it. */
+export interface ClientRef { readonly kind: 'internal' | 'external'; readonly label: string }
+
 /**
- * A place for C2b's method blocks and download ownership. Returns an error to
- * refuse a command; nothing is refused here yet.
+ * What a filter does with a client's command: refuse it (the client gets the
+ * error), absorb it (the client gets the result, the browser gets nothing),
+ * or let it through (null). `reason` is what the counters show; the command's
+ * params are never recorded.
  */
-export type ClientCommandFilter = (client: { kind: 'internal' | 'external'; label: string }, command: ClientCommand) => { code: number; message: string } | null;
+export type FilterAnswer =
+  | { refuse: { code: number; message: string }; reason: string }
+  | { absorb: Record<string, unknown>; reason: string }
+  | null;
+
+/** Method blocks and download ownership for a profile (ProtectedPipePolicy). */
+export type ClientCommandFilter = (client: ClientRef, command: ClientCommand) => FilterAnswer;
+
+/**
+ * Runs on a successful reply to a client's command before the client sees
+ * it. An error it returns (or throws) becomes the client's answer instead.
+ */
+export type BeforeReply = (client: ClientRef, method: string, result: Record<string, unknown>) => Promise<{ code: number; message: string } | null> | null;
+
+/** Refused from every external client: one client ending or crashing the browser every client shares. */
+const ENDS_SHARED_BROWSER = new Set(['Browser.close', 'Browser.crash', 'Browser.crashGpuProcess']);
 
 /**
  * Whether `client` may see and address the target `targetId`: C3's caller
@@ -105,16 +125,16 @@ export type TargetGrant = (client: { kind: 'internal' | 'external'; label: strin
 /** Shown by `wmux doctor --performance` (perf.status). */
 export type CdpPipeCounters = CdpPipeDiagnostics;
 
-const totals: CdpPipeCounters = { frames: 0, bytes: 0, parseMsTotal: 0, parseMsMax: 0, largestFrameBytes: 0, dropped: {}, refused: 0 };
+const totals: Required<CdpPipeCounters> = { frames: 0, bytes: 0, parseMsTotal: 0, parseMsMax: 0, largestFrameBytes: 0, dropped: {}, refused: 0, absorbed: {}, refusals: {} };
 
 /** Copies of the counters across every mux, for the app's diagnostics. */
 export function cdpPipeCounters(): CdpPipeCounters {
-  return { ...totals, dropped: { ...totals.dropped } };
+  return { ...totals, dropped: { ...totals.dropped }, absorbed: { ...totals.absorbed }, refusals: { ...totals.refusals } };
 }
 
 /** Tests only. */
 export function resetCdpPipeCounters(): void {
-  Object.assign(totals, { frames: 0, bytes: 0, parseMsTotal: 0, parseMsMax: 0, largestFrameBytes: 0, dropped: {}, refused: 0 });
+  Object.assign(totals, { frames: 0, bytes: 0, parseMsTotal: 0, parseMsMax: 0, largestFrameBytes: 0, dropped: {}, refused: 0, absorbed: {}, refusals: {} });
 }
 
 function bump(record: Record<string, number>, key: string): void {
@@ -126,6 +146,8 @@ interface Pending {
   /** The id the client sent (external) or its waiter (internal). */
   clientId: number;
   method: string;
+  /** Target.attachToTarget's target, recorded with the session its reply names. */
+  targetId?: string;
 }
 
 /** One client of the mux: its browser session and the sessions it owns. */
@@ -136,6 +158,8 @@ abstract class Client {
   /** In flight: the mux's attachToBrowserTarget for this client. */
   attaching: Promise<string> | null = null;
   readonly owned = new Set<string>();
+  /** The target each owned page session is attached to. */
+  readonly targets = new Map<string, string>();
   closed = false;
   /** Bumped by every detach, so an attach that lands after a close is not published. */
   epoch = 0;
@@ -168,6 +192,8 @@ export class CdpPipeMux {
       onClose?: () => void;
       /** C2b. */
       filter?: ClientCommandFilter;
+      /** C2b. */
+      beforeReply?: BeforeReply;
       /** C3 and C2b. */
       targetGrant?: TargetGrant;
     } = {},
@@ -203,6 +229,36 @@ export class CdpPipeMux {
     };
   }
 
+  /** Whether `client` is still attached. */
+  isAttached(client: ClientRef): boolean {
+    return client instanceof Client && !client.closed && this.clients.has(client);
+  }
+
+  /** Whether `client` holds a session on the target `targetId` (a page it attached to). */
+  ownsTarget(client: ClientRef, targetId: string): boolean {
+    if (!(client instanceof Client) || !this.clients.has(client)) return false;
+    for (const held of client.targets.values()) if (held === targetId) return true;
+    return false;
+  }
+
+  /** Send a command on the pipe's root session as the mux itself; rejects with the browser's error. */
+  command(method: string, params: Record<string, unknown>): Promise<unknown> {
+    return this.ownCommand(method, params).then((frame) => frame.result);
+  }
+
+  /**
+   * Send `client` a browser-level event: on its root (its own browser session,
+   * as it sees it), or on `sessionId`, a session it holds. False when the client
+   * or that session is gone.
+   */
+  emitEvent(client: ClientRef, method: string, params: Record<string, unknown>, sessionId?: string): boolean {
+    if (!(client instanceof Client) || client.closed || !this.clients.has(client)) return false;
+    if (sessionId !== undefined && !client.owned.has(sessionId)) return false;
+    const frame = { method, params, ...(sessionId !== undefined && { sessionId }) };
+    client.event(frame, JSON.stringify(frame));
+    return true;
+  }
+
   /** Close the pipe. The browser exits when it reads the end of its input. */
   close(): void {
     this.toBrowser.end();
@@ -217,18 +273,30 @@ export class CdpPipeMux {
 
   /** @internal Send a command for `client`, opening its browser session first. */
   async submit(client: Client, clientId: number, command: ClientCommand): Promise<void> {
-    const refusal = this.opts.filter?.(client, command) ?? null;
-    if (refusal) {
-      totals.refused++;
-      client.reply(clientId, { id: clientId, error: refusal }, JSON.stringify({ id: clientId, error: refusal }));
-      return;
-    }
-    const session = command.sessionId ?? (await this.browserSessionOf(client));
     if (command.sessionId !== undefined && !client.owned.has(command.sessionId)) {
       totals.refused++;
       client.reply(clientId, { id: clientId, error: UNKNOWN_SESSION }, JSON.stringify({ id: clientId, error: UNKNOWN_SESSION }));
       return;
     }
+    // An answer given here goes back on the session the command came on.
+    const on = command.sessionId !== undefined ? { sessionId: command.sessionId } : {};
+    const answer: FilterAnswer = client.kind === 'external' && ENDS_SHARED_BROWSER.has(command.method)
+      ? { refuse: { code: -32000, message: `${command.method} is not available to this client` }, reason: 'ends-shared-browser' }
+      : this.opts.filter?.(client, command) ?? null;
+    if (answer && 'refuse' in answer) {
+      totals.refused++;
+      bump(totals.refusals, answer.reason);
+      const frame = { id: clientId, error: answer.refuse, ...on };
+      client.reply(clientId, frame, JSON.stringify(frame));
+      return;
+    }
+    if (answer) {
+      bump(totals.absorbed, answer.reason);
+      const frame = { id: clientId, result: answer.absorb, ...on };
+      client.reply(clientId, frame, JSON.stringify(frame));
+      return;
+    }
+    const session = command.sessionId ?? (await this.browserSessionOf(client));
     const named = command.params.sessionId;
     if (PARAM_SESSION_METHODS.has(command.method) && named !== undefined && (typeof named !== 'string' || !client.owned.has(named))) {
       totals.refused++;
@@ -244,7 +312,8 @@ export class CdpPipeMux {
     if (client.closed || !this.open) return;
     const id = this.nextClientCommandId++;
     if (this.nextClientCommandId >= MUX_ID_BASE) this.nextClientCommandId = 1;
-    this.pending.set(id, { client, clientId, method: command.method });
+    const targetId = command.method === 'Target.attachToTarget' && typeof target === 'string' ? { targetId: target } : {};
+    this.pending.set(id, { client, clientId, method: command.method, ...targetId });
     this.write({ id, method: command.method, params: command.params, sessionId: session });
   }
 
@@ -265,6 +334,7 @@ export class CdpPipeMux {
     client.epoch++;
     for (const session of client.owned) this.owner.delete(session);
     client.owned.clear();
+    client.targets.clear();
     client.ownBrowserSessions.clear();
     client.browserSession = null;
     client.attaching = null;
@@ -399,6 +469,9 @@ export class CdpPipeMux {
         const session = (frame.result as { sessionId?: unknown } | undefined)?.sessionId;
         if (typeof session === 'string') {
           this.adopt(job.client, session);
+          if (job.targetId !== undefined && this.owner.get(session) === job.client) {
+            job.client.targets.set(session, job.targetId);
+          }
           if (job.method === 'Target.attachToBrowserTarget' && this.owner.get(session) === job.client) job.client.ownBrowserSessions.add(session);
         }
       }
@@ -409,6 +482,29 @@ export class CdpPipeMux {
           job.client.reply(job.clientId, shown, JSON.stringify(shown));
           return;
         }
+      }
+      let hook: ReturnType<BeforeReply> = null;
+      if (!frame.error && this.opts.beforeReply) {
+        try {
+          hook = this.opts.beforeReply(job.client, job.method, (frame.result as Record<string, unknown> | undefined) ?? {});
+        } catch (err) {
+          hook = Promise.reject(err);
+        }
+      }
+      if (hook) {
+        // The client hears its answer only once the hook is done.
+        void hook.catch((err: unknown) => ({ code: -32000, message: err instanceof Error ? err.message : String(err) })).then((error) => {
+          if (job.client.closed) return;
+          if (error) {
+            totals.refused++;
+            bump(totals.refusals, `${job.method}-after`);
+            const refused = { id: job.clientId, error, ...(frame.sessionId !== undefined && { sessionId: frame.sessionId }) };
+            job.client.reply(job.clientId, refused, JSON.stringify(refused));
+          } else {
+            job.client.reply(job.clientId, frame, text);
+          }
+        });
+        return;
       }
       job.client.reply(job.clientId, frame, text);
       return;
@@ -438,7 +534,11 @@ export class CdpPipeMux {
     }
     if (frame.method === 'Target.attachedToTarget') {
       const child = (frame.params as { sessionId?: unknown } | undefined)?.sessionId;
-      if (typeof child === 'string') this.adopt(owner, child);
+      if (typeof child === 'string') {
+        this.adopt(owner, child);
+        const target = (frame.params as { targetInfo?: { targetId?: unknown } } | undefined)?.targetInfo?.targetId;
+        if (typeof target === 'string' && this.owner.get(child) === owner) owner.targets.set(child, target);
+      }
     }
     owner.event(frame, text);
     if (frame.method === 'Target.detachedFromTarget') {
@@ -446,6 +546,7 @@ export class CdpPipeMux {
       if (typeof child === 'string' && this.owner.get(child) === owner && child !== owner.browserSession) {
         this.owner.delete(child);
         owner.owned.delete(child);
+        owner.targets.delete(child);
         owner.ownBrowserSessions.delete(child);
       }
     }
