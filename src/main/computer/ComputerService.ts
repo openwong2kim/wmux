@@ -693,8 +693,8 @@ export class ComputerService {
     if (entry.states?.includes('secure')) fail('policy_denied', 'that element is a password field; desktop actions do not act on it');
     // A password field reads as an ordinary text field by its role, so its
     // states decide, and only when a snapshot that read the whole tree
-    // recorded them readably.
-    if (entry.role === 'textfield' && (!record.complete || entry.states === null)) {
+    // recorded them readably. An unreadable role could be a text field too.
+    if ((entry.role === 'textfield' || entry.role === null) && (!record.complete || entry.states === null)) {
       fail('policy_denied', 'wmux cannot tell whether that text field is a password field (an incomplete snapshot, or unreadable states); take a new snapshot');
     }
   }
