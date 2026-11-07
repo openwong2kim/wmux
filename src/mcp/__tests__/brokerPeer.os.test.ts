@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { psPath } from '../../shared/psPath';
+import { pickPs, psPath } from '../../shared/psPath';
 import { checkPeer, decidePeer, osParentPid, PARENT_READ_TIMEOUT_MS, retryingSelfCheck, type PeerCheckInput } from '../brokerPeer';
 
 const ok: PeerCheckInput = { selfCheckOk: true, peer: { pid: 4242, uid: 501 }, claimedPid: 4242, ownUid: 501 };
@@ -55,11 +55,18 @@ describe('decidePeer', () => {
 });
 
 describe.runIf(process.platform === 'darwin' || process.platform === 'linux')('psPath', () => {
-  it('names an absolute ps that exists', () => {
+  it('names an absolute ps that exists here', () => {
     const ps = psPath();
     expect(path.isAbsolute(ps)).toBe(true);
     expect(fs.existsSync(ps)).toBe(true);
     expect(process.platform === 'darwin' ? ['/bin/ps'] : ['/bin/ps', '/usr/bin/ps']).toContain(ps);
+  });
+
+  it('takes the first path that exists, and PATH where neither does', () => {
+    expect(pickPs('linux', (p) => p === '/usr/bin/ps')).toBe('/usr/bin/ps');
+    expect(pickPs('linux', () => true)).toBe('/bin/ps');
+    expect(pickPs('darwin', (p) => p === '/usr/bin/ps')).toBe('ps');
+    expect(pickPs('linux', () => false)).toBe('ps');
   });
 });
 
