@@ -44,7 +44,10 @@ public enum RunnerPolicy {
     /// window, a root or a surface).
     static let actionCommands: Set<String> = ["click", "focus", "select", "toggle", "check", "uncheck", "expand", "collapse", "scroll"]
 
-    static let refPattern = try! NSRegularExpression(pattern: "^@[a-z0-9]{1,64}:e[1-9][0-9]{0,8}$")
+    // \A and \z: ICU's ^ and $ also match around a trailing newline.
+    static let refPattern = try! NSRegularExpression(pattern: "\\A@[a-z0-9]{1,64}:e[1-9][0-9]{0,8}\\z")
+    static let scrollDirections: Set<String> = ["up", "down", "left", "right"]
+    static let amountPattern = try! NSRegularExpression(pattern: "\\A(?:[1-9]|[1-4][0-9]|50)\\z")
 
     /// Global options the runner never passes on, whatever main sends.
     static let refusedOptions: [String] = ["--headed", "--trace", "--debug", "--screenshot"]
@@ -71,8 +74,9 @@ public enum RunnerPolicy {
         guard commands.contains(command) else {
             throw RunnerProblem("invalid_argument", "the runner does not start \(command)")
         }
-        // After "--" everything is a value (select's option text), never an option.
-        for arg in argv.prefix(while: { $0 != "--" }) where refusedOptions.contains(where: { arg == $0 || arg.hasPrefix($0 + "=") || arg.hasPrefix($0 + "-") }) {
+        // Only select's option text, after its "--", is a value rather than an option.
+        let scanned = command == "select" ? Array(argv.prefix(while: { $0 != "--" })) : argv
+        for arg in scanned where refusedOptions.contains(where: { arg == $0 || arg.hasPrefix($0 + "=") || arg.hasPrefix($0 + "-") }) {
             throw RunnerProblem("invalid_argument", "the runner does not pass \(arg)")
         }
         if actionCommands.contains(command) { try checkAction(command, argv) }
@@ -87,7 +91,7 @@ public enum RunnerPolicy {
     /// An action's argv: the command, a ref, then only that command's own
     /// arguments (select's value after "--", scroll's direction and amount).
     static func checkAction(_ command: String, _ argv: [String]) throws {
-        guard argv.count >= 2, refPattern.firstMatch(in: argv[1], range: NSRange(argv[1].startIndex..., in: argv[1])) != nil else {
+        guard argv.count >= 2, matches(refPattern, argv[1]) else {
             throw RunnerProblem("invalid_argument", "\(command) takes a ref (@<snapshot>:eN) as its first argument")
         }
         let rest = Array(argv.dropFirst(2))
@@ -96,13 +100,22 @@ public enum RunnerPolicy {
         case "select":
             allowed = rest.count == 2 && rest[0] == "--"
         case "scroll":
-            allowed = rest.allSatisfy { $0.hasPrefix("--direction=") || $0.hasPrefix("--amount=") }
+            // At most one direction and one amount, each a value agent-desktop takes.
+            let directions = rest.filter { $0.hasPrefix("--direction=") }
+            let amounts = rest.filter { $0.hasPrefix("--amount=") }
+            allowed = directions.count + amounts.count == rest.count && directions.count <= 1 && amounts.count <= 1
+                && directions.allSatisfy { scrollDirections.contains(String($0.dropFirst("--direction=".count))) }
+                && amounts.allSatisfy { matches(amountPattern, String($0.dropFirst("--amount=".count))) }
         default:
             allowed = rest.isEmpty
         }
         guard allowed else {
             throw RunnerProblem("invalid_argument", "the runner does not pass \(rest.joined(separator: " ")) to \(command)")
         }
+    }
+
+    static func matches(_ pattern: NSRegularExpression, _ text: String) -> Bool {
+        pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
     /// The child's whole environment: a fixed PATH, the person's HOME, TMPDIR
