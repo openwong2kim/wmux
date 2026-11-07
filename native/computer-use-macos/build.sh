@@ -17,6 +17,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 IDENTIFIER="com.electron.wmux.computer-use"
+AGENT_DESKTOP_IDENTIFIER="com.electron.wmux.agent-desktop"
 APP_NAME="wmux Computer Use.app"
 IDENTITY="${WMUX_COMPUTER_USE_IDENTITY:--}"
 # A release helper runs only under signed wmux (Sources/wmux-computer-use/Parent.swift).
@@ -43,10 +44,25 @@ echo "[computer-use-macos] swift build (release, arm64)"
 swift build --package-path "$HERE" -c release --arch arm64 --product wmux-computer-use ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
 BIN="$(swift build --package-path "$HERE" -c release --arch arm64 --show-bin-path ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"})/wmux-computer-use"
 
+# agent-desktop (native/agent-desktop, vendored; see its VENDOR.md), which the
+# helper's runner mode starts. Built inside its own tree so its
+# rust-toolchain.toml picks the compiler; rustup installs that toolchain and
+# the arm64 target when they are missing.
+AGENT_DESKTOP_SRC="$ROOT/native/agent-desktop"
+echo "[computer-use-macos] cargo build agent-desktop (release, arm64)"
+(
+  cd "$AGENT_DESKTOP_SRC"
+  rustup toolchain install --no-self-update
+  rustup target add aarch64-apple-darwin
+  cargo build --locked --release -p agent-desktop --target aarch64-apple-darwin
+)
+AGENT_DESKTOP_BIN="$AGENT_DESKTOP_SRC/target/aarch64-apple-darwin/release/agent-desktop"
+
 APP="$HERE/dist/$APP_NAME"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/wmux-computer-use"
+cp "$AGENT_DESKTOP_BIN" "$APP/Contents/MacOS/agent-desktop"
 sed "s/__VERSION__/$VERSION/g" "$HERE/Support/Info.plist" > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
@@ -68,18 +84,24 @@ else
   echo "[computer-use-macos] signing with $IDENTITY"
   TIMESTAMP="--timestamp"
 fi
-# The bundle has no nested code: signing it signs the executable and seals
-# Info.plist and the icon with it.
+# Inside-out: the nested agent-desktop binary first, with the same identity,
+# hardened runtime, no entitlements and the identifier the runner requires of
+# it (Runner.swift, ChildGate). Signing the bundle then signs the executable
+# and seals Info.plist, the icon and the nested binary with it.
+codesign --force --sign "$IDENTITY" --options runtime "$TIMESTAMP" \
+  --identifier "$AGENT_DESKTOP_IDENTIFIER" "$APP/Contents/MacOS/agent-desktop"
 codesign --force --sign "$IDENTITY" --options runtime "$TIMESTAMP" \
   --identifier "$IDENTIFIER" "$APP"
 codesign --verify --strict --verbose=1 "$APP"
 
-ENTITLEMENTS="$(codesign -d --entitlements - "$APP" 2>/dev/null || true)"
-if [ -n "$ENTITLEMENTS" ]; then
-  echo "[computer-use-macos] the helper must carry no entitlements, found:" >&2
-  echo "$ENTITLEMENTS" >&2
-  exit 1
-fi
+for CODE in "$APP" "$APP/Contents/MacOS/agent-desktop"; do
+  ENTITLEMENTS="$(codesign -d --entitlements - "$CODE" 2>/dev/null || true)"
+  if [ -n "$ENTITLEMENTS" ]; then
+    echo "[computer-use-macos] $CODE must carry no entitlements, found:" >&2
+    echo "$ENTITLEMENTS" >&2
+    exit 1
+  fi
+done
 
 STAGE="$ROOT/dist/computer-use-macos"
 rm -rf "$STAGE"
