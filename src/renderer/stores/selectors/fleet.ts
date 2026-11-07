@@ -579,7 +579,9 @@ export function fleetOutdatedRemoteKeys(state: FleetSelectorState): ReadonlySet<
 }
 
 /** The PCs whose remote rows leave (see FleetSelectorState.downHostIds). */
-export function fleetDownHostIds(state: FleetSelectorState): ReadonlySet<string> | undefined {
+export function fleetDownHostIds(
+  state: Pick<FleetSelectorState, 'downHostIds' | 'pcRailHostStatus' | 'pcRailFeeds'>,
+): ReadonlySet<string> | undefined {
   if (state.downHostIds) return state.downHostIds;
   const { pcRailHostStatus, pcRailFeeds } = state;
   return pcRailHostStatus && pcRailFeeds ? selectDownHostIds({ pcRailHostStatus, pcRailFeeds }) : undefined;
@@ -1410,30 +1412,36 @@ function rowHostId(row: FleetRow): string | undefined {
 }
 
 /**
- * The Fleet page's rows without those of PCs the rail cannot reach: Open on
- * one could not reach its PC, so they leave every section (and so the chips)
- * until it answers again, when they are back. `away` counts what each such
- * PC had, for its device head's note. The groups come back unchanged (same
- * object) when no row is dropped.
+ * What each PC the rail calls down last had here, for its device head's note:
+ * the remote agent panes on it by their last snapshot, and how many of them
+ * needed you. Those rows never reach the board (selectFleetPanes drops a down
+ * host's rows), so this counts them from the same inputs, on the same tick
+ * the drop notice fires (selectDownHostIds). Empty while no host is down.
  */
-export function withoutUnreachableHosts(
-  groups: FleetGroups,
-  offlineHostIds: ReadonlySet<string>,
-): { groups: FleetGroups; away: Record<string, FleetAwayCounts> } {
+export function selectDownHostAway(
+  state: Pick<FleetSelectorState, 'workspaces' | 'remoteWorkspaces' | 'downHostIds' | 'pcRailHostStatus' | 'pcRailFeeds'>,
+): Record<string, FleetAwayCounts> {
   const away: Record<string, FleetAwayCounts> = {};
-  if (offlineHostIds.size === 0) return { groups, away };
-  let dropped = false;
-  const keep = (section: FleetSection) => groups[section].filter((row) => {
-    const hostId = rowHostId(row);
-    if (!hostId || !offlineHostIds.has(hostId)) return true;
-    const counts = (away[hostId] ??= { panes: 0, neededYou: 0 });
-    counts.panes++;
-    if (section === 'needsYou') counts.neededYou++;
-    dropped = true;
-    return false;
-  });
-  const next: FleetGroups = { needsYou: keep('needsYou'), finished: keep('finished'), running: keep('running'), idle: keep('idle') };
-  return { groups: dropped ? next : groups, away };
+  const down = fleetDownHostIds(state);
+  if (!down || down.size === 0) return away;
+  for (const ws of state.workspaces) {
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
+      let hostId: string | undefined;
+      let neededYou = false;
+      for (const s of leaf.surfaces) {
+        if (s.surfaceType !== 'remote-terminal' || !s.remoteHostId || !down.has(s.remoteHostId)) continue;
+        const agent = resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId);
+        if (!agent) continue;
+        hostId ??= s.remoteHostId;
+        if (agent.status === 'awaiting_input') neededYou = true;
+      }
+      if (!hostId) continue;
+      const counts = (away[hostId] ??= { panes: 0, neededYou: 0 });
+      counts.panes++;
+      if (neededYou) counts.neededYou++;
+    }
+  }
+  return away;
 }
 
 /** One device's part of the list grouped by device: everything but Needs you. */
@@ -1471,8 +1479,8 @@ export interface FleetDeviceHost {
 }
 
 /**
- * The list grouped by device, over rows already without unreachable PCs
- * (`withoutUnreachableHosts`). Needs you stays one section; every other row
+ * The list grouped by device, over the board's rows (a PC the rail calls down
+ * has none there; `away` is selectDownHostAway). Needs you stays one section; every other row
  * goes under its device, in the order the status grouping gave it. This
  * computer comes first, then the hosts in the rail's order, then any other
  * host by label; a host the rail knows carries the rail's name. While
