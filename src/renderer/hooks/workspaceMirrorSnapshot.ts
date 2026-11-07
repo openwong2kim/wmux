@@ -170,7 +170,7 @@ export function buildFleetSnapshots(state: FleetSnapshotState, ts: number): Flee
   // `remoteWorkspaces` has to be explicit — a type that merely omits the field
   // does not strip it at runtime. The rail's down rule goes with it: this
   // view never resolved a remote row, so it keeps them as it always has.
-  const localOnly = { ...state, remoteWorkspaces: undefined, downHostIds: undefined, pcRailHostStatus: undefined, pcRailFeeds: undefined };
+  const localOnly = { ...state, remoteWorkspaces: undefined, downHostIds: undefined, outdatedRemoteKeys: undefined, pcRailHostStatus: undefined, pcRailFeeds: undefined };
   for (const p of selectFleetPanes(localOnly)) derivedByPane.set(p.paneId, p);
   // Attention-stripped base status per leaf: the same selector with no retained
   // attention statuses collapses each pane to running/idle (its non-attention

@@ -1330,6 +1330,38 @@ describe('useRemoteAttachmentsLifecycle — main-driven poll cadence (#1391)', (
     unmount();
   });
 
+  // A slept host the rail hears from first: its attachment is backed off for
+  // minutes, so without this the rows would wait out that backoff.
+  it('the rail hearing a backed-off host again refreshes its attachment now', async () => {
+    vi.useFakeTimers();
+    installElectronApi({ mainTick: true, listFails: true });
+    mount();
+    seedAttached([{ sessionId: 'a' }]);
+    await settle();
+    for (const wait of [11_000, 21_000]) {
+      await act(async () => { tickCb?.(); await Promise.resolve(); });
+      await settle();
+      await act(async () => { await vi.advanceTimersByTimeAsync(wait); });
+    }
+    await act(async () => { tickCb?.(); await Promise.resolve(); });
+    await settle();
+    expect(useStore.getState().remoteWorkspaces[0].staleSince).toBeTypeOf('number');
+    api.workspacesList.mockClear();
+    await act(async () => { tickCb?.(); await Promise.resolve(); });
+    await settle();
+    expect(api.workspacesList, 'still backed off').not.toHaveBeenCalled();
+
+    act(() => {
+      useStore.getState().applyPcRailFeedEvent({
+        type: 'feed', hostId: 'h1', at: Date.now(), ok: true, listRequestedAt: Date.now(),
+        response: { workspaces: [] },
+      });
+    });
+    await settle();
+    expect(api.workspacesList).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
   it('falls back to a renderer interval when the subscribe REJECTS', async () => {
     vi.useFakeTimers();
     // The route exists (so the member check passes) but main has no handler.

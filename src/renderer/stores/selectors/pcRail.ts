@@ -44,6 +44,30 @@ let downMemo: { ids: ReadonlySet<string> } | null = null;
  * while its members are unchanged, so a poll tick that only moves a fetch time
  * does not look like a change to a memoized reader.
  */
+const NO_KEYS: ReadonlySet<string> = NO_HOSTS;
+let outdatedMemo: { keys: ReadonlySet<string> } | null = null;
+
+/**
+ * Attachment keys whose kept snapshot is outdated: stale for want of an
+ * answer, yet the rail has had a good answer from their host since. The rail
+ * and the attachment poll run on separate clocks (after a sleep the poll may
+ * be backed off for minutes), so the rail's last good contact, not its failed
+ * count, decides. The Set keeps its identity while the result is unchanged.
+ */
+export function selectOutdatedRemoteKeys(s: Pick<StoreState, 'remoteWorkspaces' | 'pcRailFeeds'>): ReadonlySet<string> {
+  const keys: string[] = [];
+  for (const w of s.remoteWorkspaces) {
+    if (!w.stale || w.staleReason !== 'unanswered') continue;
+    const heardAt = s.pcRailFeeds[w.hostId]?.fetchedAt;
+    if (typeof heardAt === 'number' && heardAt > (w.staleSince ?? 0)) keys.push(w.key);
+  }
+  const prev = outdatedMemo?.keys ?? NO_KEYS;
+  if (keys.length === prev.size && keys.every((k) => prev.has(k))) return prev;
+  const out: ReadonlySet<string> = keys.length === 0 ? NO_KEYS : new Set(keys);
+  outdatedMemo = { keys: out };
+  return out;
+}
+
 export function selectDownHostIds(s: Pick<StoreState, 'pcRailHostStatus' | 'pcRailFeeds'>): ReadonlySet<string> {
   const down: string[] = [];
   for (const [hostId, status] of Object.entries(s.pcRailHostStatus)) {

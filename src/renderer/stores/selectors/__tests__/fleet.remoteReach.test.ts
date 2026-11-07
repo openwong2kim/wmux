@@ -30,15 +30,15 @@ function attachment(over: Partial<AttachedRemoteWorkspace> = {}): AttachedRemote
     ...over,
   };
 }
-/** One rail tick's state for the host: its status and failed polls, and the attachment as the poll left it. */
-function at(rail: { status?: RemoteHostStatus; failed?: number }, att: Partial<AttachedRemoteWorkspace> = {}): StoreState {
+/** One rail tick's state for the host: its status, failed polls and last good answer, and the attachment as the poll left it. */
+function at(rail: { status?: RemoteHostStatus; failed?: number; heardAt?: number }, att: Partial<AttachedRemoteWorkspace> = {}): StoreState {
   return {
     ...useStore.getInitialState(),
     workspaces: [ws],
     remoteWorkspaces: [attachment(att)],
     pcRailHosts: [{ id: HOST, label: 'office' }],
     pcRailHostStatus: rail.status ? { [HOST]: rail.status } : {},
-    pcRailFeeds: rail.status ? { [HOST]: { workspaces: [], fetchedAt: 1, failedTicks: rail.failed ?? 0 } } : {},
+    pcRailFeeds: rail.status ? { [HOST]: { workspaces: [], fetchedAt: rail.heardAt ?? 1, failedTicks: rail.failed ?? 0 } } : {},
   } as StoreState;
 }
 const paneIds = (s: StoreState) => {
@@ -58,12 +58,12 @@ describe('remote rows follow the rail\'s down rule', () => {
   });
 
   it('one missed round keeps the rows (with their last status); the second drops agent and shell rows everywhere', () => {
-    const oneMiss = at({ status: 'unreachable', failed: 1 }, { stale: true, staleReason: 'unanswered' });
+    const oneMiss = at({ status: 'unreachable', failed: 1 }, { stale: true, staleReason: 'unanswered', staleSince: 5 });
     expect(paneIds(oneMiss)).toEqual(['p-agent', 'p-shell']);
     expect(selectFleetSectionCounts(oneMiss).needsYou).toBe(1);
     expect(triagePanes(oneMiss)).toEqual(['p-agent', 'p-shell']);
 
-    const twoMisses = at({ status: 'unreachable', failed: 2 }, { stale: true, staleReason: 'unanswered' });
+    const twoMisses = at({ status: 'unreachable', failed: 2 }, { stale: true, staleReason: 'unanswered', staleSince: 5 });
     expect(paneIds(twoMisses)).toEqual([]);
     expect(selectFleetSectionCounts(twoMisses).needsYou).toBe(0);
     expect(triagePanes(twoMisses)).toEqual([]);
@@ -96,15 +96,59 @@ describe('remote rows follow the rail\'s down rule', () => {
     expect(triagePanes(s)).toEqual([]);
   });
 
+  // The rail and the attachment poll run on separate clocks: after a sleep the
+  // rail can answer while the attachment poll is still backed off. A kept
+  // snapshot is the last thing the host said only until the rail hears from it.
+  it('a long sleep: once the rail hears the host again, no pre-sleep status shows as current', () => {
+    const live = (s: StoreState) => {
+      const g = selectFleetBoard(s, { now: 1_000, sortMode: 'attention' }).groups;
+      const r = buildFleetTriage(s, { includeIdle: true }, 1_000);
+      return {
+        needsYou: selectFleetSectionCounts(s).needsYou + g.needsYou.length + r.needsYou.length,
+        running: selectFleetSectionCounts(s).running + g.running.length + r.running.length,
+      };
+    };
+    const asleep = { stale: true, staleReason: 'unanswered' as const, staleSince: 110 };
+    // Before the sleep: the agent needs you.
+    expect(live(at({ status: 'reachable', failed: 0, heardAt: 100 }, {})).needsYou).toBeGreaterThan(0);
+    // One missed round: the last snapshot is kept (the rail has not heard from the host since).
+    expect(live(at({ status: 'unreachable', failed: 1, heardAt: 100 }, asleep)).needsYou).toBeGreaterThan(0);
+    // Down for a while, then the rail answers first while the attachment poll is backed off.
+    const ticks: Array<Parameters<typeof at>[0]> = [
+      { status: 'unreachable', failed: 2, heardAt: 100 },
+      { status: 'unreachable', failed: 30, heardAt: 100 },
+      { status: 'reachable', failed: 0, heardAt: 400 },
+      { status: 'reachable', failed: 0, heardAt: 410 },
+      { status: 'unreachable', failed: 1, heardAt: 410 },
+    ];
+    for (const [i, rail] of ticks.entries()) {
+      expect(live(at(rail, asleep)), `tick ${i}`).toEqual({ needsYou: 0, running: 0 });
+    }
+    // The attachment refreshes: what the host says now is shown.
+    const now = at({ status: 'reachable', failed: 0, heardAt: 420 }, {
+      stale: false,
+      panes: [{ sessionId: 'sess-agent', agentName: 'Codex', agentStatus: 'running' }, { sessionId: 'sess-shell' }],
+    });
+    expect(live(now).running).toBeGreaterThan(0);
+  });
+
+  it('the clocks can disagree either way: the rail answering after the miss decides, not its failed count', () => {
+    const asleep = { stale: true, staleReason: 'unanswered' as const, staleSince: 110 };
+    // Rail reachable, but its last answer predates the miss: the snapshot is still the latest word.
+    expect(selectFleetSectionCounts(at({ status: 'reachable', failed: 0, heardAt: 100 }, asleep)).needsYou).toBe(1);
+    // Rail answered after the miss, then missed once itself: the snapshot is outdated.
+    expect(selectFleetSectionCounts(at({ status: 'unreachable', failed: 1, heardAt: 120 }, asleep)).needsYou).toBe(0);
+  });
+
   it('the drop notice and the row gate agree at every tick', () => {
     // fail, fail, fail, answer, fail, answer
     const ticks: Array<[RemoteHostStatus, number, Partial<AttachedRemoteWorkspace>]> = [
       ['reachable', 0, { stale: false }],
-      ['unreachable', 1, { stale: true, staleReason: 'unanswered' }],
-      ['unreachable', 2, { stale: true, staleReason: 'unanswered' }],
-      ['unreachable', 3, { stale: true, staleReason: 'unanswered' }],
+      ['unreachable', 1, { stale: true, staleReason: 'unanswered', staleSince: 5 }],
+      ['unreachable', 2, { stale: true, staleReason: 'unanswered', staleSince: 5 }],
+      ['unreachable', 3, { stale: true, staleReason: 'unanswered', staleSince: 5 }],
       ['reachable', 0, { stale: false }],
-      ['unreachable', 1, { stale: true, staleReason: 'unanswered' }],
+      ['unreachable', 1, { stale: true, staleReason: 'unanswered', staleSince: 5 }],
       ['reachable', 0, { stale: false }],
     ];
     for (const [i, [status, failed, att]] of ticks.entries()) {
@@ -118,8 +162,8 @@ describe('remote rows follow the rail\'s down rule', () => {
 
   it('the sidebar roster drops the agent on the same tick', () => {
     const roster = (s: StoreState) => selectWorkspaceAgentRoster(s, 'ws-1').rows.length;
-    expect(roster(at({ status: 'unreachable', failed: 1 }, { stale: true, staleReason: 'unanswered' }))).toBe(1);
-    expect(roster(at({ status: 'unreachable', failed: 2 }, { stale: true, staleReason: 'unanswered' }))).toBe(0);
+    expect(roster(at({ status: 'unreachable', failed: 1 }, { stale: true, staleReason: 'unanswered', staleSince: 5 }))).toBe(1);
+    expect(roster(at({ status: 'unreachable', failed: 2 }, { stale: true, staleReason: 'unanswered', staleSince: 5 }))).toBe(0);
     expect(roster(at({ status: 'reachable', failed: 0 }, { stale: false }))).toBe(1);
   });
 });

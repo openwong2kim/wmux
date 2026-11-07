@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore, type StoreState } from '../../stores';
 import { createWorkspaceAgentRosterSelector, type WorkspaceAgentRosterRow } from '../../stores/selectors/workspaceAgentRoster';
 import { selectFleetBoard, selectHookRunningByPtyId, selectUnverifiablePaneMinutes, type FleetRow } from '../../stores/selectors/fleet';
-import { selectDownHostIds } from '../../stores/selectors/pcRail';
+import { selectDownHostIds, selectOutdatedRemoteKeys } from '../../stores/selectors/pcRail';
 import { useT } from '../../hooks/useT';
 import { focusNotificationTarget } from '../../hooks/useNotificationListener';
 import { renderSentence } from '../../i18n/renderSentence';
@@ -89,6 +89,7 @@ function useFleetRows(enabled: boolean, now: number): readonly FleetRow[] {
     agentAliveByPtyId: s.agentAliveByPtyId,
     remoteWorkspaces: s.remoteWorkspaces,
     downHostIds: selectDownHostIds(s),
+    outdatedRemoteKeys: selectOutdatedRemoteKeys(s),
     surfaceLastMessage: s.surfaceLastMessage,
     usageLimitWaiting: s.usageLimitWaiting,
   } : null)));

@@ -10,7 +10,7 @@ import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear, IconCornerUpLeft } from '../icons';
 import { selectFleetPanes, type FleetPane } from '../../stores/selectors/fleet';
-import { selectDownHostIds } from '../../stores/selectors/pcRail';
+import { selectDownHostIds, selectOutdatedRemoteKeys } from '../../stores/selectors/pcRail';
 import { selectOwnerWorkspaces } from '../Sidebar/botTasks';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { FOCUS_RING } from '../focusRing';
@@ -176,6 +176,7 @@ export default function StatusBar() {
         surfacePendingQuestion: s.surfacePendingQuestion,
         remoteWorkspaces: s.remoteWorkspaces,
         downHostIds: selectDownHostIds(s),
+        outdatedRemoteKeys: selectOutdatedRemoteKeys(s),
         usageLimitWaiting: s.usageLimitWaiting,
       }).filter((p) => isFleetAgentRow(p));
       return {

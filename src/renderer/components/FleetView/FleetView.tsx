@@ -11,7 +11,7 @@ import {
   type FleetPane,
   type FleetRow,
 } from '../../stores/selectors/fleet';
-import { selectDownHostIds } from '../../stores/selectors/pcRail';
+import { selectDownHostIds, selectOutdatedRemoteKeys } from '../../stores/selectors/pcRail';
 import { selectApprovalInbox } from '../../stores/selectors/approvalInbox';
 import { selectReviewQueue, selectReviewQueueIds, type ReviewQueueEntry } from '../../stores/selectors/reviewQueue';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
@@ -146,6 +146,7 @@ export default function FleetView() {
   // deck's commandable roster deliberately does not pass this.
   const remoteWorkspaces = useStore((s) => s.remoteWorkspaces);
   const downHostIds = useStore(selectDownHostIds);
+  const outdatedRemoteKeys = useStore(selectOutdatedRemoteKeys);
 
   // S-C2: tab lives in uiSlice (not FleetView-local) so the A2A / MCP approval
   // modals can suppress themselves while the inbox tab is open (AppLayout delta
@@ -200,12 +201,12 @@ export default function FleetView() {
   const { panes, groups } = useMemo(() => selectFleetBoard({
       workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
       surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
-      commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds,
+      commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds, outdatedRemoteKeys,
       surfaceLastMessage, surfaceOutputAt: useStore.getState().surfaceOutputAt,
       unverifiablePaneMinutes: unverifiableMinutes, usageLimitWaiting,
     }, { now, sortMode: fleetSortMode }), [usageLimitWaiting, workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
     surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
-    commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds, unverifiableMinutes,
+    commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds, outdatedRemoteKeys, unverifiableMinutes,
     surfaceLastMessage, now, fleetSortMode]);
   // Every row, unfiltered: where the Hand out… popover reads a pane's state.
   const allRows = useMemo(() => [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle], [groups]);

@@ -44,6 +44,10 @@ export interface AttachedRemoteWorkspace {
    *  not serve this computer (credential rejected, or HTTPS needed). Unset
    *  while `stale` is false. */
   staleReason?: RemoteStaleReason;
+  /** When the entry went stale (epoch ms, memory only). An `unanswered`
+   *  snapshot is the host's last word only until the rail hears from that
+   *  host after this moment (see selectOutdatedRemoteKeys). */
+  staleSince?: number;
   /** The host answered 401: it no longer accepts this computer's credential.
    *  Implies `stale`, but unlike a sleeping laptop it will not heal on its
    *  own — the row says so and offers to pair again. Cleared by the next
@@ -409,6 +413,7 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
       entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
     }
     if (entry.staleReason !== undefined) delete entry.staleReason;
+    if (entry.staleSince !== undefined) delete entry.staleSince;
     if (entry.authRejected) entry.authRejected = false;
   }),
 
@@ -417,6 +422,7 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
     if (!entry) return;
     if (!stale) {
       if (entry.staleReason !== undefined) delete entry.staleReason;
+      if (entry.staleSince !== undefined) delete entry.staleSince;
     } else if (reason !== undefined && entry.staleReason !== reason) {
       entry.staleReason = reason;
     }
@@ -424,6 +430,7 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
     // `false`, and treating that as a real transition would bump the epoch —
     // and tear down live streams — on the very first successful fetch.
     const wasStale = entry.stale === true;
+    if (stale && !wasStale) entry.staleSince = Date.now();
     if (wasStale === stale) return;
     entry.stale = stale;
     if (!stale) entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;

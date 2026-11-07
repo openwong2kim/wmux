@@ -10,6 +10,7 @@ import type {
 } from '../../shared/remoteHosts';
 import type { Workspace } from '../../shared/types';
 import type { RemoteStaleReason } from '../stores/slices/remoteWorkspacesSlice';
+import { selectOutdatedRemoteKeys } from '../stores/selectors/pcRail';
 
 // ─── Remote attachment lifecycle ─────────────────────────────────────────────
 //
@@ -382,6 +383,27 @@ export function useRemoteAttachmentsLifecycle(): void {
     }
     void refreshHosts(false);
   }, [attachedHosts, refreshHosts]);
+
+  // The rail heard from a host whose attachment went stale for want of an
+  // answer: the host is back, so lift that host's backoff deadline and ask
+  // now, instead of serving nothing for up to BACKOFF_MAX_MS after a sleep.
+  // Fires once per entry as it becomes outdated, so a host that keeps
+  // answering the rail but not this poll still climbs its ladder.
+  useEffect(() => {
+    let seen = selectOutdatedRemoteKeys(useStore.getState());
+    return useStore.subscribe((state) => {
+      const outdated = selectOutdatedRemoteKeys(state);
+      if (outdated === seen) return;
+      const fresh = state.remoteWorkspaces.filter((w) => outdated.has(w.key) && !seen.has(w.key));
+      seen = outdated;
+      if (fresh.length === 0) return;
+      for (const { hostId } of fresh) {
+        const entry = backoff.current.get(hostId);
+        if (entry && !entry.authRejected && !entry.insecure && !hostsInFlight.current.has(hostId)) entry.nextAttemptAt = 0;
+      }
+      void refreshHosts(false);
+    });
+  }, [refreshHosts]);
 
   // ① Boot restore — once per renderer lifetime.
   useEffect(() => {

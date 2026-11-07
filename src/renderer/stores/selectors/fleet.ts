@@ -7,7 +7,7 @@ import { isShadowWorkspaceId } from '../../../shared/pcRail';
 import { isWorkSurfaceType, splitShownTerminal } from '../../components/Pane/surfaceKinds';
 import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
-import { selectDownHostIds } from './pcRail';
+import { selectDownHostIds, selectOutdatedRemoteKeys } from './pcRail';
 import { flattenAgentText } from '../../../shared/assistantPreview';
 import type { WorkTask } from '../../../shared/workTask';
 
@@ -189,6 +189,10 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    *  agent or not. A consumer passing an explicit object supplies this; one
    *  passing the live store is read through the two rail fields below. */
   downHostIds?: ReadonlySet<string>;
+  /** Attachment keys whose kept snapshot the rail has outdated
+   *  (`selectOutdatedRemoteKeys`): they resolve no agent. Supplied like
+   *  `downHostIds`. */
+  outdatedRemoteKeys?: ReadonlySet<string>;
   pcRailHostStatus?: StoreState['pcRailHostStatus'];
   pcRailFeeds?: StoreState['pcRailFeeds'];
   /** ptyId → the agent's last reported message (the Fleet row's one-line
@@ -211,19 +215,22 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
  *     status is frozen at the last good poll, and counting it would report a
  *     disconnected agent as live (or as needing you) indefinitely. One
  *     unanswered round is not down yet, so that entry keeps its last
- *     snapshot; an entry the host answered without (gone) or refused resolves
- *     nothing at once, as it will not heal by itself.
+ *     snapshot, until the rail hears from the host after it went stale
+ *     (`outdatedKeys`): then the snapshot is no longer the host's last word.
+ *     An entry the host answered without (gone) or refused resolves nothing
+ *     at once, as it will not heal by itself.
  */
 export function resolveRemoteAgent(
   remoteWorkspaces: AttachedRemoteWorkspace[] | undefined,
   hostId: string | undefined,
   sessionId: string | undefined,
   downHostIds?: ReadonlySet<string>,
+  outdatedKeys?: ReadonlySet<string>,
 ): { agentName: string; status: AgentStatus; hostLabel: string } | undefined {
   if (!remoteWorkspaces || !hostId || !sessionId || downHostIds?.has(hostId)) return undefined;
   const attached = remoteWorkspaces.find(
     (r) => r.hostId === hostId
-      && (!r.stale || r.staleReason === 'unanswered')
+      && (!r.stale || (r.staleReason === 'unanswered' && !outdatedKeys?.has(r.key)))
       && r.panes.some((p) => p.sessionId === sessionId),
   );
   const pane = attached?.panes.find((p) => p.sessionId === sessionId);
@@ -561,6 +568,13 @@ function remoteRowUnopenable(
   return holding.length > 0 && holding.every((r) => r.stale && r.staleReason === 'gone');
 }
 
+/** Attachments the rail has outdated (see FleetSelectorState.outdatedRemoteKeys). */
+export function fleetOutdatedRemoteKeys(state: FleetSelectorState): ReadonlySet<string> | undefined {
+  if (state.outdatedRemoteKeys) return state.outdatedRemoteKeys;
+  const { remoteWorkspaces, pcRailFeeds } = state;
+  return remoteWorkspaces && pcRailFeeds ? selectOutdatedRemoteKeys({ remoteWorkspaces, pcRailFeeds }) : undefined;
+}
+
 /** The PCs whose remote rows leave (see FleetSelectorState.downHostIds). */
 export function fleetDownHostIds(state: FleetSelectorState): ReadonlySet<string> | undefined {
   if (state.downHostIds) return state.downHostIds;
@@ -571,6 +585,7 @@ export function fleetDownHostIds(state: FleetSelectorState): ReadonlySet<string>
 export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
   const result: FleetPane[] = [];
   const down = fleetDownHostIds(state);
+  const outdated = fleetOutdatedRemoteKeys(state);
   for (const ws of state.workspaces) {
     const wsMeta = ws.metadata;
     // Workspace-wide (#977): a stashed agent is off-screen, not off-duty.
@@ -605,7 +620,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // through the rollup below.
       const remoteAgent =
         surf?.surfaceType === 'remote-terminal'
-          ? resolveRemoteAgent(state.remoteWorkspaces, surf.remoteHostId, surf.remoteSessionId, down)
+          ? resolveRemoteAgent(state.remoteWorkspaces, surf.remoteHostId, surf.remoteSessionId, down, outdated)
           : undefined;
       // The orchestrator's own brain pty is never a fleet member. It should
       // never reach a surface at all (pty.list filters it), so this is the
@@ -634,7 +649,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
           // surface) and nowhere else — the exact split this issue exists to
           // close, just one tab deeper.
           const rs = s.surfaceType === 'remote-terminal'
-            ? resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId, down)?.status
+            ? resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId, down, outdated)?.status
             : undefined;
           if (rs && (remoteAttention === undefined || STATUS_RANK[rs] < STATUS_RANK[remoteAttention])) {
             remoteAttention = rs;
@@ -1462,6 +1477,7 @@ function fleetBoardPanes(
     hookRunningByPtyId,
     remoteWorkspaces: state.remoteWorkspaces,
     downHostIds: fleetDownHostIds(state),
+    outdatedRemoteKeys: fleetOutdatedRemoteKeys(state),
   }).map((pane) => ({
     ...pane,
     agentName: surfaceAgent[pane.ptyId]?.name || pane.agentName,
@@ -1502,7 +1518,7 @@ export function selectFleetSectionCounts(state: FleetBoardState): FleetSectionCo
     state.workspaces, state.surfaceAgentStatus, state.surfaceActivity, state.paneLabel,
     state.supervisionByPtyId, state.surfaceAgent, state.surfacePendingQuestion, state.surfaceActivityAt,
     state.surfaceTurnOpenAt, state.commandRunningByPtyId, state.agentAliveByPtyId, state.remoteWorkspaces,
-    state.usageLimitWaiting, state.surfaceShellPrompt, fleetDownHostIds(state),
+    state.usageLimitWaiting, state.surfaceShellPrompt, fleetDownHostIds(state), fleetOutdatedRemoteKeys(state),
   ];
   const memo = sectionCountsMemo;
   if (memo && inputs.every((value, i) => Object.is(value, memo.inputs[i]))
