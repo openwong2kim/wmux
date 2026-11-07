@@ -68,6 +68,14 @@ describe('browser_dialog with no Playwright page', () => {
     expect(armCalls()).toEqual([]);
   });
 
+  it("says the armed answer doesn't apply to prompt on an in-app tab, and that its text answers nothing there", async () => {
+    getPage.mockResolvedValue(null);
+    const plain = await dialog({ accept: true, surfaceId: 's1' });
+    expect(plain.content[0].text).toContain("This doesn't apply to prompt: it isn't available on in-app tabs; the page sees an error instead of a dialog.");
+    const withText = await dialog({ accept: true, text: 'typed', surfaceId: 's1' });
+    expect(withText.content[0].text).toContain("The text applies to nothing here: prompt isn't available on in-app tabs");
+  });
+
   it('reports a refusal from main', async () => {
     getPage.mockResolvedValue(null);
     mockSendRpc.mockImplementation(async (method: string) => {

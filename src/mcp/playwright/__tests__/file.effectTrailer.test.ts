@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSendRpc, getPage, resolveRef } = vi.hoisted(() => ({
+const { mockSendRpc, getPage, resolveRef, backend } = vi.hoisted(() => ({
   mockSendRpc: vi.fn(),
   getPage: vi.fn(),
   resolveRef: vi.fn(),
+  backend: { value: 'chrome' },
 }));
 
 vi.mock('../../wmux-client', () => ({
@@ -17,7 +18,8 @@ vi.mock('../../wmux-client', () => ({
 }));
 
 vi.mock('../PlaywrightEngine', () => ({
-  PlaywrightEngine: { getInstance: () => ({ getPageForScope: getPage }) },
+  // A Chrome-backend tab unless a test says otherwise: its arm reply carries no in-app prompt note.
+  PlaywrightEngine: { getInstance: () => ({ getPageForScope: getPage, resolveWorkspaceBackend: async () => backend.value }) },
 }));
 
 vi.mock('../snapshot', () => ({ resolveRef }));
@@ -140,6 +142,17 @@ describe('browser_dialog effect trailer', () => {
       'Dialog handler set. Next dialog will be accepted.\n\neffect_state: committed',
     );
     expect(page.on).toHaveBeenCalledWith('dialog', expect.any(Function));
+  });
+
+  it('on an in-app tab with a Playwright page, says prompt is not covered', async () => {
+    backend.value = 'builtin';
+    try {
+      getPage.mockResolvedValue(makePage());
+      const result = await dialog({ accept: true });
+      expect(text(result)).toContain("Next dialog will be accepted. This doesn't apply to prompt: it isn't available on in-app tabs");
+    } finally {
+      backend.value = 'chrome';
+    }
   });
 });
 

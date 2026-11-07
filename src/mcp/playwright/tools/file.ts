@@ -102,7 +102,7 @@ const BROWSER_DIALOG_SHAPE = {
   text: z
     .string()
     .optional()
-    .describe('Text for a prompt dialog.'),
+    .describe('Text for a prompt dialog (Chrome-backend tabs only).'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -1052,7 +1052,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_dialog',
-    'Pre-register the answer for the NEXT dialog (alert, confirm, prompt) that one of your actions opens on a tab you opened, within 30s. Without it a dialog is dismissed and reported as a [modal] note; leaving a page (beforeunload) is always accepted. Refused on tabs the user owns or lent.' + EFFECT_TRAILER_NOTE,
+    'Pre-register the answer for the NEXT dialog (alert, confirm, or, on a Chrome-backend tab, prompt) that one of your actions opens on a tab you opened, within 30s. prompt isn\'t available on in-app tabs; the page sees an error. Without it a dialog is dismissed and reported as a [modal] note; leaving a page (beforeunload) is always accepted. Refused on tabs the user owns or lent.' + EFFECT_TRAILER_NOTE,
     BROWSER_DIALOG_SHAPE,
     async ({ accept, text, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
@@ -1078,12 +1078,25 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         effect.begin();
 
         const action = accept ? 'accepted' : 'dismissed';
+        // In-app tabs are Electron guests, and Electron has no prompt(): the call
+        // throws in the page ("prompt() is not supported") and no dialog opens,
+        // so an armed answer never meets one. A Chrome-backend tab shows a real
+        // prompt, which this answer (and its text) does answer.
+        const backend = await Promise.resolve()
+          .then(() => engine.resolveWorkspaceBackend(scope.workspaceId))
+          .catch(() => undefined);
+        const inAppTab = backend !== 'chrome';
+        const promptNote = !inAppTab
+          ? ''
+          : text !== undefined
+            ? ' The text applies to nothing here: prompt isn\'t available on in-app tabs; the page sees an error instead of a dialog.'
+            : ' This doesn\'t apply to prompt: it isn\'t available on in-app tabs; the page sees an error instead of a dialog.';
         return withEffectTrailer(
           {
             content: [
               {
                 type: 'text' as const,
-                text: `Dialog handler set. Next dialog will be ${action}.`,
+                text: `Dialog handler set. Next dialog will be ${action}.${promptNote}`,
               },
             ],
           },
