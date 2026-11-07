@@ -879,6 +879,9 @@ export interface ArchivedWorkspace {
 /** The Fleet page's layout: the attention list, or the same rows as a four-column board. */
 export type FleetLayout = 'list' | 'board';
 
+/** How the Fleet list groups the rows below Needs you: by status (default) or by device. */
+export type FleetGroupBy = 'status' | 'device';
+
 /** One app window's slice of the session. A workspace belongs to exactly one
  *  window. Bounds live in window-state.json, not here. */
 export interface SessionWindow {
@@ -1141,6 +1144,8 @@ export interface SessionData {
   claudeResumeOnStart?: boolean;
   /** How the Fleet page lays out its agents: one list (default) or a four-column board. */
   fleetLayout?: FleetLayout;
+  /** How the Fleet list groups its rows: by status (default) or by device. */
+  fleetGroupBy?: FleetGroupBy;
   /** Categories whose surface actions are suppressed (#516). */
   mutedNotificationCategories?: NotificationCategory[];
   customKeybindings?: CustomKeybinding[];

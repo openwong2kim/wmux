@@ -178,6 +178,10 @@ describe('AppLayout — axis A session-save invariants', () => {
     expect(source).toMatch(/fleetLayout:\s*state\.fleetLayout/);
   });
 
+  it('persists the Fleet list grouping (status or device)', () => {
+    expect(source).toMatch(/fleetGroupBy:\s*state\.fleetGroupBy/);
+  });
+
   // Fix B — cap-skipped suspended promote. Boot recovery honours a session cap,
   // so a workspace beyond the cap came back with its ptyId absent and reconcile
   // destructively cleared it (losing the pane's scrollback and identity). The

@@ -129,6 +129,7 @@ import {
   type NotificationCategory,
   type AgentStatus,
   type FleetLayout,
+  type FleetGroupBy,
   type ChatViewAskAgent,
   type ChatViewFirstAsk,
   BUILTIN_TEMPLATES,
@@ -282,6 +283,10 @@ export interface UISlice {
   // a four-column board. Saved with the session (buildSessionData).
   fleetLayout: FleetLayout;
   setFleetLayout: (layout: FleetLayout) => void;
+  // The Fleet list's grouping below Needs you: by status (default) or by
+  // device. The board always groups by status. Saved with the session.
+  fleetGroupBy: FleetGroupBy;
+  setFleetGroupBy: (groupBy: FleetGroupBy) => void;
 
 
   // Fleet attention board — whether the Idle section shows its rows or stays
@@ -1394,6 +1399,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setFleetLayout: (layout) => set((state) => {
     state.fleetLayout = layout;
+  }),
+
+  fleetGroupBy: 'status',
+
+  setFleetGroupBy: (groupBy) => set((state) => {
+    state.fleetGroupBy = groupBy;
   }),
 
   fleetIdleExpanded: false,
