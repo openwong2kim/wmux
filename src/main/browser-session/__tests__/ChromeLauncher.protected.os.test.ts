@@ -334,6 +334,24 @@ describe('ChromeLauncher — protected profiles', () => {
     await launcher.dispose({ immediate: true });
   });
 
+  it('while a consent pass holds the guard, the tick re-asserts the pass\'s behaviour instead of its own deny', async () => {
+    spawnWritesPortFile(makeChild());
+    const launcher = new ChromeLauncher('/tmp/prot-claim', { protection: () => denyAll });
+    await launcher.ensureRunning();
+    const guard = sockets.find((x) => x.sent[0]?.method === 'Browser.setDownloadBehavior');
+    const reassert = vi.fn(async () => undefined);
+    const release = launcher.consentDownloadGuard()?.claim(() => false, reassert);
+    const denies = () => (guard?.sent ?? []).filter((m) => m.method === 'Browser.setDownloadBehavior').length;
+    const before = denies();
+    await vi.waitFor(() => expect(reassert.mock.calls.length).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
+    expect(denies()).toBe(before);
+    release?.();
+    const calls = reassert.mock.calls.length;
+    await vi.waitFor(() => expect(denies()).toBeGreaterThan(before), { timeout: 5_000 });
+    expect(reassert.mock.calls.length).toBe(calls);
+    await launcher.dispose({ immediate: true });
+  });
+
   it('concurrent callers re-arm one download guard, not two', async () => {
     spawnWritesPortFile(makeChild());
     const launcher = new ChromeLauncher('/tmp/prot-f', { protection: () => denyAll });
