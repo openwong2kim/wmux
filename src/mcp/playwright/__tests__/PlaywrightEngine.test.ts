@@ -636,22 +636,17 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
   }, 20_000);
 });
 
-/*
- * Selection-context keys, per connection.
- *
- * The in-flight page lock, the fast-fail latch and the auto-open latch all
- * hang off the selection key. It used to be `ws:<workspace>` whenever the
- * caller named no surface — one key for every connection in the workspace — so
- * connection B could be handed A's in-flight page promise, A's discovery
- * failure fast-failed B for ten seconds, and A's one-shot auto-open suppressed
- * B's. That is the same "two agents, one default" confusion this routing
- * exists to end, one layer down.
- */
 describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', () => {
   // The guest's target is listed and already attached, but Playwright never
-  // has a Page for it: the shape logged for every in-app tab on Windows.
+  // has a Page for it: the shape logged for every in-app tab on Windows when
+  // the tab existed before the engine connected.
   const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+  /** The tab the caller's pane resolves to (what browser.cdp.info registers). */
   let targetId = 'wc-1';
+  /** Every target the browser lists. */
+  let listed: Set<string>;
+  /** Target.getTargets calls left to answer with no targets (a target not up yet). */
+  let hiddenListings = 0;
   let connects = 0;
 
   function rig() {
@@ -659,8 +654,13 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     const session = {
       send: vi.fn().mockImplementation((method: string) => {
         if (method === 'Target.getTargets') {
+          listed.add(targetId);
+          if (hiddenListings > 0) {
+            hiddenListings--;
+            return Promise.resolve({ targetInfos: [] });
+          }
           return Promise.resolve({
-            targetInfos: [{ targetId, type: 'webview', title: '', url: 'http://127.0.0.1:1/', attached: true }],
+            targetInfos: [...listed].map((id) => ({ targetId: id, type: 'webview', title: '', url: 'http://127.0.0.1:1/', attached: true })),
           });
         }
         return Promise.resolve({});
@@ -697,7 +697,8 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
   }
 
   /** getPage with the clock run forward until it settles (its waits are timers). */
-  async function lookup(engine: PlaywrightEngine): Promise<{ page: FakePage | null; waitedMs: number }> {
+  async function lookup(engine: PlaywrightEngine): Promise<{ page: FakePage | null; waitedMs: number; connects: number }> {
+    const before = connects;
     let settled = false;
     let page: FakePage | null = null;
     const done = priv(engine).getPage().then((p) => { page = p; settled = true; });
@@ -707,8 +708,13 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
       waitedMs += 50;
     }
     await done;
-    return { page, waitedMs };
+    // Past the 10 s failure latch, so the next lookup reaches discovery again.
+    await vi.advanceTimersByTimeAsync(11_000);
+    return { page, waitedMs, connects: connects - before };
   }
+
+  const remembered = (engine: PlaywrightEngine) =>
+    [...(engine as unknown as { unpageableTargets: Set<string> }).unpageableTargets];
 
   beforeEach(() => {
     (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
@@ -716,6 +722,8 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     mockSendRpc.mockReset();
     mockConnectOverCDP.mockReset();
     targetId = 'wc-1';
+    listed = new Set();
+    hiddenListings = 0;
     connects = 0;
     vi.useFakeTimers();
     // No /json endpoint: findViaJsonEndpoint must not reach a real port 9222.
@@ -739,45 +747,81 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     const engine = await engineFor();
     const first = await lookup(engine);
     expect(first.page).toBeNull();
-    const connectsAfterFirst = connects;
-    expect(connectsAfterFirst).toBe(3); // the connect, then a reconnect after attempts 1 and 2
+    expect(first.connects).toBe(2); // a reconnect after attempts 1 and 2
     expect(first.waitedMs).toBeGreaterThanOrEqual(2_000);
 
     // Past the old 10 s latch: before this change the whole retry loop ran again here.
-    await vi.advanceTimersByTimeAsync(11_000);
     const second = await lookup(engine);
     expect(second.page).toBeNull(); // the RPC lane serves the call, as before
-    expect(connects).toBe(connectsAfterFirst);
+    expect(second.connects).toBe(0);
     expect(second.waitedMs).toBeLessThanOrEqual(50);
   });
 
   it('a new target is tried again', async () => {
     const engine = await engineFor();
     await lookup(engine);
-    await vi.advanceTimersByTimeAsync(11_000);
     targetId = 'wc-2';
-    const before = connects;
     const again = await lookup(engine);
     expect(again.page).toBeNull();
-    expect(connects).toBe(before + 2);
+    expect(again.connects).toBe(2);
     expect(again.waitedMs).toBeGreaterThanOrEqual(2_000);
   });
 
   it('a new connection tries the same target again', async () => {
     const engine = await engineFor();
     await lookup(engine);
-    await vi.advanceTimersByTimeAsync(11_000);
     await engine.disconnect();
     await engine.connect(9222);
-    const before = connects;
     const again = await lookup(engine);
     expect(again.page).toBeNull();
-    expect(connects).toBe(before + 2);
+    expect(again.connects).toBe(2);
     expect(again.waitedMs).toBeGreaterThanOrEqual(2_000);
   });
 
+  it("another tab's first lookup, with its reconnects, keeps what was learned about the first tab", async () => {
+    const engine = await engineFor();
+    await lookup(engine); // wc-1 remembered
+    targetId = 'wc-2';
+    await lookup(engine); // the full loop for wc-2, reconnecting twice
+    expect(remembered(engine).sort()).toEqual(['wc-1', 'wc-2']);
+    targetId = 'wc-1';
+    const back = await lookup(engine);
+    expect(back.connects).toBe(0);
+    expect(back.waitedMs).toBeLessThanOrEqual(50);
+  });
+
+  it('a target that was not up on every attempt is not remembered', async () => {
+    const engine = await engineFor();
+    hiddenListings = 1; // attempt 1 finds no target
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    expect(remembered(engine)).toEqual([]);
+    const second = await lookup(engine);
+    expect(second.connects).toBe(2); // tried in full again, and remembered now
+    expect(remembered(engine)).toEqual(['wc-1']);
+  });
+
+  it('a closed tab is forgotten', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    listed.delete('wc-1');
+    targetId = 'wc-2';
+    await lookup(engine);
+    expect(remembered(engine)).toEqual(['wc-2']);
+  });
 });
 
+/*
+ * Selection-context keys, per connection.
+ *
+ * The in-flight page lock, the fast-fail latch and the auto-open latch all
+ * hang off the selection key. It used to be `ws:<workspace>` whenever the
+ * caller named no surface — one key for every connection in the workspace — so
+ * connection B could be handed A's in-flight page promise, A's discovery
+ * failure fast-failed B for ten seconds, and A's one-shot auto-open suppressed
+ * B's. That is the same "two agents, one default" confusion this routing
+ * exists to end, one layer down.
+ */
 describe('PlaywrightEngine selection keys', () => {
   interface KeyInternals {
     resolveSelectionContext(
