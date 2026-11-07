@@ -9,6 +9,7 @@ import type {
   RemoteWorkspaceSummary,
 } from '../../shared/remoteHosts';
 import type { Workspace } from '../../shared/types';
+import type { RemoteStaleReason } from '../stores/slices/remoteWorkspacesSlice';
 
 // ─── Remote attachment lifecycle ─────────────────────────────────────────────
 //
@@ -159,6 +160,12 @@ function applyHostResult(hostId: string, result: HostResult): void {
   if (result.ok) useStore.getState().setRemoteHostInsecure(hostId, false);
   else if (result.insecure) useStore.getState().setRemoteHostInsecure(hostId, true);
   const attached = useStore.getState().remoteWorkspaces.filter((w) => w.hostId === hostId);
+  // Why a row goes stale: an answer without it means gone; a refusal will
+  // not heal by itself; no answer may be one missed round (Fleet waits for
+  // the rail to call the PC down before hiding its rows).
+  const staleReason: RemoteStaleReason = result.ok
+    ? 'gone'
+    : result.authRejected || result.insecure ? 'refused' : 'unanswered';
   for (const w of attached) {
     const found = result.ok
       ? result.workspaces.find((ws) => ws?.id === w.workspaceId)
@@ -166,7 +173,7 @@ function applyHostResult(hostId: string, result: HostResult): void {
     // No workspace, or a malformed one — keep the row, flag it, and let the
     // user decide. Dropping it would be silent data loss.
     if (!found || !Array.isArray(found.panes)) {
-      useStore.getState().setRemoteWorkspaceStale(w.key, true);
+      useStore.getState().setRemoteWorkspaceStale(w.key, true, staleReason);
       continue;
     }
     const panes: RemotePaneSummary[] = found.panes;

@@ -203,6 +203,8 @@ describe('useRemoteAttachmentsLifecycle — boot restore', () => {
     const entries = useStore.getState().remoteWorkspaces;
     expect(entries).toHaveLength(1);
     expect(entries[0].stale).toBe(true);
+    // No answer: the rail's down rule, not this flag, decides when its rows go.
+    expect(entries[0].staleReason).toBe('unanswered');
     expect(entries[0].panes).toEqual([]);
     unmount();
   });
@@ -217,6 +219,8 @@ describe('useRemoteAttachmentsLifecycle — boot restore', () => {
 
     expect(useStore.getState().remoteWorkspaces).toHaveLength(1);
     expect(useStore.getState().remoteWorkspaces[0].stale).toBe(true);
+    // The host answered without it: gone, its rows go at once.
+    expect(useStore.getState().remoteWorkspaces[0].staleReason).toBe('gone');
     unmount();
   });
 
@@ -1182,6 +1186,8 @@ describe('useRemoteAttachmentsLifecycle — main-driven poll cadence (#1391)', (
     await act(async () => { tickCb?.(); await Promise.resolve(); });
     await settle();
     expect(useStore.getState().remoteWorkspaces.every((w) => w.authRejected)).toBe(true);
+    // A refused credential hides the rows at once, like a gone workspace.
+    expect(useStore.getState().remoteWorkspaces.every((w) => w.stale && w.staleReason === 'refused')).toBe(true);
     api.workspacesList.mockClear();
 
     for (let i = 0; i < 6; i++) {

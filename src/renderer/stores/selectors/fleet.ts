@@ -7,6 +7,7 @@ import { isShadowWorkspaceId } from '../../../shared/pcRail';
 import { isWorkSurfaceType, splitShownTerminal } from '../../components/Pane/surfaceKinds';
 import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
+import { selectDownHostIds } from './pcRail';
 import { flattenAgentText } from '../../../shared/assistantPreview';
 import type { WorkTask } from '../../../shared/workTask';
 
@@ -183,6 +184,13 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    * with an empty ptyId. See FleetPane.remote.
    */
   remoteWorkspaces?: AttachedRemoteWorkspace[];
+  /** Paired PCs the rail calls down (`selectDownHostIds`, the rule the
+   *  "Lost the connection" notice uses): their remote-terminal rows leave,
+   *  agent or not. A consumer passing an explicit object supplies this; one
+   *  passing the live store is read through the two rail fields below. */
+  downHostIds?: ReadonlySet<string>;
+  pcRailHostStatus?: StoreState['pcRailHostStatus'];
+  pcRailFeeds?: StoreState['pcRailFeeds'];
   /** ptyId → the agent's last reported message (the Fleet row's one-line
    *  detail for finished and idle turns). Optional so existing fixtures stay
    *  terse; the live store always provides it. */
@@ -199,19 +207,24 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
  *   - Search EVERY entry on the host, not just the first: multiple attached
  *     workspaces per host are supported (the dedup key is hostId:workspaceId),
  *     so a session in the host's second workspace must still resolve.
- *   - A STALE entry (host unreachable) keeps its last pane snapshot for the
- *     mirror, but its agent status is frozen at the last successful poll —
- *     counting it would report a disconnected agent as live (or as needing
- *     you) indefinitely. No live metadata, no agent.
+ *   - A host the rail calls down (`downHostIds`) resolves nothing: its agent
+ *     status is frozen at the last good poll, and counting it would report a
+ *     disconnected agent as live (or as needing you) indefinitely. One
+ *     unanswered round is not down yet, so that entry keeps its last
+ *     snapshot; an entry the host answered without (gone) or refused resolves
+ *     nothing at once, as it will not heal by itself.
  */
 export function resolveRemoteAgent(
   remoteWorkspaces: AttachedRemoteWorkspace[] | undefined,
   hostId: string | undefined,
   sessionId: string | undefined,
+  downHostIds?: ReadonlySet<string>,
 ): { agentName: string; status: AgentStatus; hostLabel: string } | undefined {
-  if (!remoteWorkspaces || !hostId || !sessionId) return undefined;
+  if (!remoteWorkspaces || !hostId || !sessionId || downHostIds?.has(hostId)) return undefined;
   const attached = remoteWorkspaces.find(
-    (r) => r.hostId === hostId && !r.stale && r.panes.some((p) => p.sessionId === sessionId),
+    (r) => r.hostId === hostId
+      && (!r.stale || r.staleReason === 'unanswered')
+      && r.panes.some((p) => p.sessionId === sessionId),
   );
   const pane = attached?.panes.find((p) => p.sessionId === sessionId);
   if (!pane?.agentName) return undefined;
@@ -527,8 +540,16 @@ export function selectHookRunningByPtyId(state: FleetSelectorState): Record<stri
   return out;
 }
 
+/** The PCs whose remote rows leave (see FleetSelectorState.downHostIds). */
+export function fleetDownHostIds(state: FleetSelectorState): ReadonlySet<string> | undefined {
+  if (state.downHostIds) return state.downHostIds;
+  const { pcRailHostStatus, pcRailFeeds } = state;
+  return pcRailHostStatus && pcRailFeeds ? selectDownHostIds({ pcRailHostStatus, pcRailFeeds }) : undefined;
+}
+
 export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
   const result: FleetPane[] = [];
+  const down = fleetDownHostIds(state);
   for (const ws of state.workspaces) {
     const wsMeta = ws.metadata;
     // Workspace-wide (#977): a stashed agent is off-screen, not off-duty.
@@ -545,6 +566,10 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         ? pickStashedRepresentativeSurface(leaf, state.surfaceAgent ?? {})
         : (isWorkSurfaceType(active?.surfaceType) && splitShownTerminal(leaf)) || active;
       const ptyId = surf?.ptyId ?? '';
+      // A remote row of a PC the rail calls down leaves, with or without an
+      // agent: the drop notice has told the user, and a plain remote shell
+      // there is no more reachable than an agent.
+      if (surf?.surfaceType === 'remote-terminal' && surf.remoteHostId && down?.has(surf.remoteHostId)) continue;
       // #1343 — a remote-terminal surface has ptyId '' by contract and is
       // invisible to every local PTY-keyed map below, so without this it lands
       // as an anonymous idle card. Resolve it against the attached host mirror
@@ -557,7 +582,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // through the rollup below.
       const remoteAgent =
         surf?.surfaceType === 'remote-terminal'
-          ? resolveRemoteAgent(state.remoteWorkspaces, surf.remoteHostId, surf.remoteSessionId)
+          ? resolveRemoteAgent(state.remoteWorkspaces, surf.remoteHostId, surf.remoteSessionId, down)
           : undefined;
       // The orchestrator's own brain pty is never a fleet member. It should
       // never reach a surface at all (pty.list filters it), so this is the
@@ -586,7 +611,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
           // surface) and nowhere else — the exact split this issue exists to
           // close, just one tab deeper.
           const rs = s.surfaceType === 'remote-terminal'
-            ? resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId)?.status
+            ? resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId, down)?.status
             : undefined;
           if (rs && (remoteAttention === undefined || STATUS_RANK[rs] < STATUS_RANK[remoteAttention])) {
             remoteAttention = rs;
@@ -1413,6 +1438,7 @@ function fleetBoardPanes(
     agentAliveByPtyId: state.agentAliveByPtyId,
     hookRunningByPtyId,
     remoteWorkspaces: state.remoteWorkspaces,
+    downHostIds: fleetDownHostIds(state),
   }).map((pane) => ({
     ...pane,
     agentName: surfaceAgent[pane.ptyId]?.name || pane.agentName,
@@ -1453,7 +1479,7 @@ export function selectFleetSectionCounts(state: FleetBoardState): FleetSectionCo
     state.workspaces, state.surfaceAgentStatus, state.surfaceActivity, state.paneLabel,
     state.supervisionByPtyId, state.surfaceAgent, state.surfacePendingQuestion, state.surfaceActivityAt,
     state.surfaceTurnOpenAt, state.commandRunningByPtyId, state.agentAliveByPtyId, state.remoteWorkspaces,
-    state.usageLimitWaiting, state.surfaceShellPrompt,
+    state.usageLimitWaiting, state.surfaceShellPrompt, fleetDownHostIds(state),
   ];
   const memo = sectionCountsMemo;
   if (memo && inputs.every((value, i) => Object.is(value, memo.inputs[i]))
