@@ -542,6 +542,16 @@ describe('ComputerService.desktopAct', () => {
     const d = await snapshotOf(unreadable.service);
     await expect(unreadable.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${d}:e1` } })).rejects.toMatchObject({ code: 'policy_denied' });
 
+    // Neither role nor states readable: it could be a password field.
+    const unknown = makeService({ refmap: refmapOf({ '@e1': { pid: textEdit.pid, retained_object: 'tok-1', role: 7, states: 'x' } }) });
+    const f = await snapshotOf(unknown.service);
+    await expect(unknown.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${f}:e1` } })).rejects.toMatchObject({ code: 'policy_denied' });
+    expect(unknown.runs.some((argv) => argv[0] === 'focus')).toBe(false);
+    // An unreadable role from an incomplete snapshot is refused too.
+    const partialUnknown = makeService({ refmap: refmapOf({ '@e1': { pid: textEdit.pid, retained_object: 'tok-1' } }), snapshotData: { complete: false } });
+    const g = await snapshotOf(partialUnknown.service);
+    await expect(partialUnknown.service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${g}:e1` } })).rejects.toMatchObject({ code: 'policy_denied' });
+
     // agent-desktop leaves an empty state list out: a plain text field.
     const plain = makeService({ refmap: refmapOf({ '@e1': { pid: textEdit.pid, retained_object: 'tok-1', role: 'textfield' } }) });
     const e = await snapshotOf(plain.service);
