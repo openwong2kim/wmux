@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { Fragment, useEffect, useMemo, useState, useCallback, useRef, type ReactNode } from 'react';
+import { renderSentence } from '../../i18n/renderSentence';
 import { useStore } from '../../stores';
 import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../hooks/useT';
@@ -100,6 +101,7 @@ const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
 const FINISHED_TOGGLE_KEY = 'fleet:finished-toggle';
 /** Roving key of one device's collapsed "Finished N" or "Idle N" row. */
 const deviceToggleKey = (kind: 'finished' | 'idle', deviceId: string) => `fleet:${kind}-toggle:${deviceId}`;
+const deviceRepairKey = (deviceId: string) => `fleet:device-repair:${deviceId}`;
 /** Roving key of the collapsed "To hand out N" row. */
 const HAND_OUT_TOGGLE_KEY = 'fleet:hand-out-toggle';
 /** Roving key of the list's "Add a task…" row. */
@@ -177,24 +179,26 @@ export default function FleetView() {
   const fleetGroupBy = useStore((s) => s.fleetGroupBy);
   const setFleetGroupBy = useStore((s) => s.setFleetGroupBy);
   // The paired PCs in the rail's order, flattened to primitives (id, name,
-  // down, last answer while down) so a poll tick that only moves a live
-  // host's fetch time does not re-render Fleet. Down is the drop notice's
-  // rule (selectDownHostIds), so the head turns Disconnected on its tick.
+  // down, needs pairing, last answer while either) so a poll tick that only
+  // moves a live host's fetch time does not re-render Fleet. Down is the drop
+  // notice's rule (selectDownHostIds), so the head turns Disconnected on its tick.
   const deviceHostCells = useStore(useShallow((s) => {
     const down = selectDownHostIds(s);
     return s.pcRailHosts.flatMap((h) => {
       const offline = down.has(h.id);
-      return [h.id, h.label, offline, offline ? s.pcRailFeeds[h.id]?.fetchedAt ?? null : null];
+      const needsRepair = !offline && s.pcRailHostStatus[h.id] === 'needs-repair';
+      return [h.id, h.label, offline, needsRepair, offline || needsRepair ? s.pcRailFeeds[h.id]?.fetchedAt ?? null : null];
     });
   }));
   const deviceHosts = useMemo(() => {
     const out: FleetDeviceHost[] = [];
-    for (let i = 0; i < deviceHostCells.length; i += 4) {
+    for (let i = 0; i < deviceHostCells.length; i += 5) {
       out.push({
         id: deviceHostCells[i] as string,
         label: deviceHostCells[i + 1] as string,
         offline: deviceHostCells[i + 2] as boolean,
-        lastSeenAt: deviceHostCells[i + 3] as number | null,
+        needsRepair: deviceHostCells[i + 3] as boolean,
+        lastSeenAt: deviceHostCells[i + 4] as number | null,
       });
     }
     return out;
@@ -474,8 +478,10 @@ export default function FleetView() {
     ...visibleGroups.needsYou.map((row) => row.pane.paneId),
     ...attentionTickets.map((ticket) => ticketKey(ticket.id)),
     ...visibleReview.map((entry) => reviewRowKey(entry.workspaceId)),
-    // A device's fold buttons sit in its head, before its rows.
+    // A device's fold buttons sit in its head, before its rows; a PC that
+    // needs pairing has its note's Remote page link instead.
     ...(byDevice ? byDevice.devices.flatMap((device) => [
+      ...(device.state === 'needs-repair' ? [deviceRepairKey(device.id)] : []),
       ...(device.finished.length > 0 && !finishedForced ? [deviceToggleKey('finished', device.id)] : []),
       ...(device.idle.length > 0 && !idleForced ? [deviceToggleKey('idle', device.id)] : []),
       ...device.running.map((row) => row.pane.paneId),
@@ -1614,15 +1620,35 @@ export default function FleetView() {
   const deviceHead = (device: FleetDeviceGroup) => {
     const name = device.id === LOCAL_PC_ID ? t('pcRail.thisComputer') : device.label;
     const ago = device.lastSeenAt != null ? Math.max(0, now - device.lastSeenAt) : undefined;
+    const aged = ago !== undefined && ago >= IDLE_SHOW_AFTER_MS;
     const state = device.state === 'connected' ? t('pcRail.online')
       : device.state === 'disconnected'
-        ? (ago !== undefined && ago >= IDLE_SHOW_AFTER_MS
-          ? t('fleet.device.disconnectedAgo', { age: formatIdle(ago) }) : t('fleet.device.disconnected'))
-        : '';
+        ? (aged ? t('fleet.device.disconnectedAgo', { age: formatIdle(ago) }) : t('fleet.device.disconnected'))
+        : device.state === 'needs-repair'
+          ? (aged ? t('fleet.device.needsRepairAgo', { age: formatIdle(ago) }) : t('fleet.device.needsRepair'))
+          : '';
     const meta = [state, device.running.length > 0 ? t('fleet.device.running', { count: device.running.length }) : '']
       .filter(Boolean).join(' · ');
     const seen = device.lastSeen;
-    const note = !seen || seen.panes === 0 ? ''
+    const repairKey = deviceRepairKey(device.id);
+    const note: ReactNode = device.state === 'needs-repair'
+      ? renderSentence(t('fleet.device.needsRepairNote'), {
+        link: (
+          <button
+            type="button"
+            role="option"
+            aria-selected={focusedKey === repairKey}
+            tabIndex={focusedKey === repairKey ? 0 : -1}
+            className="wmux-fleet-device-link"
+            data-fleet-key={repairKey}
+            onFocus={() => setFocusedPaneId(repairKey)}
+            onClick={() => useStore.getState().setAppRoute('remote')}
+          >
+            {t('fleet.device.remotePage')}
+          </button>
+        ),
+      })
+      : !seen || seen.panes === 0 ? ''
       : seen.neededYou > 0
         ? t(seen.panes === 1 ? 'fleet.device.awayOneNeeded' : 'fleet.device.awayNeeded', { count: seen.panes, needed: seen.neededYou })
         : t(seen.panes === 1 ? 'fleet.device.awayOne' : 'fleet.device.away', { count: seen.panes });
