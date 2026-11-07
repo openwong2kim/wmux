@@ -100,6 +100,8 @@ afterEach(() => {
 
 const settle = (ms = 80) => act(async () => { await deliberateSleep(ms, 'lets frames and the gate run under act; callers assert after it'); });
 
+let remount: (key: string) => Promise<void> = async () => undefined;
+
 async function mount(ptyId: string) {
   const { useTerminal } = await import('../useTerminal');
   // What a fit would give now: the fallback font's grid first.
@@ -118,8 +120,13 @@ async function mount(ptyId: string) {
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
-  await act(async () => { root!.render(<Harness />); });
+  await act(async () => { root!.render(<Harness key="first" />); });
   await settle();
+  // A pane-tree restructure: the leaf unmounts and remounts in one commit.
+  remount = async (key: string) => {
+    await act(async () => { root!.render(<Harness key={key} />); });
+    await settle();
+  };
   return { size, jobs };
 }
 
@@ -168,6 +175,22 @@ describe('useTerminal first PTY resize waits for the grid the pane keeps', { tim
     // attach stood down: the ring is not replayed twice.
     expect(sizesFor('p-gate-raced')).toContain('118x44');
     expect(reconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('a layout change while the gate waits disposes the pane (no park), and the fresh mount attaches', async () => {
+    const log = vi.spyOn(console, 'log');
+    const { size, jobs } = await mount('p-gate-remount');
+    expect(reconnect).not.toHaveBeenCalled();
+
+    await remount('second');
+    expect(log.mock.calls.some(([line]) => String(line).includes('ptyId=p-gate-remount teardown=disposed reason=first-resize-pending'))).toBe(true);
+
+    font.loaded = true;
+    Object.assign(size, { cols: 118, rows: 44 });
+    await act(async () => { jobs.at(-1)!(); });
+    await settle();
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(sizesFor('p-gate-remount')).toEqual(['118x44']);
   });
 
   it('goes with the measured size once the bound passes when the font never loads', async () => {

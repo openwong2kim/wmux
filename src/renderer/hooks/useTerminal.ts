@@ -4322,6 +4322,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // the Retry banner, so it would be stuck unattached; dispose instead
         // and let the fresh mount reattach.
         : reconnectPendingRef.current ? 'reconnect-pending'
+        // The mount's own attach is still waiting on its first-resize gate.
+        // It dies with this run, and the adopting mount skips active-at-mount,
+        // so the pane would end up with no session pipe: dispose instead and
+        // let the fresh mount attach.
+        : firstResizeGate && !firstResizeGate.isOpen ? 'first-resize-pending'
         // Two live instances on one ptyId (the fast unmount→remount ordering
         // the WebGL pool note describes): if the registry no longer points at
         // us, a later mount already owns this pane and ours is the stale copy.
