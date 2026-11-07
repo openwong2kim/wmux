@@ -9,6 +9,7 @@
 
 import { execFile } from 'node:child_process';
 import type { PeerPid } from '../shared/peerPid';
+import { psPath } from '../shared/psPath';
 
 /** Why the broker refused a session. It logs the reason and closes the connection with no ack line. */
 export type PeerRefusal = 'peer' | 'peer-unverified';
@@ -51,7 +52,7 @@ export const PARENT_READ_TIMEOUT_MS = 1500;
 export function osParentPid(pid: number): Promise<number | null> {
   if (process.platform === 'win32') return Promise.resolve(null);
   return new Promise((resolve) => {
-    execFile('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: PARENT_READ_TIMEOUT_MS }, (err, stdout) => {
+    execFile(psPath(), ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: PARENT_READ_TIMEOUT_MS }, (err, stdout) => {
       const ppid = err ? NaN : Number.parseInt(stdout.trim(), 10);
       resolve(Number.isInteger(ppid) && ppid > 0 ? ppid : null);
     });

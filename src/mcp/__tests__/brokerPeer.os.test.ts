@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { psPath } from '../../shared/psPath';
 import { checkPeer, decidePeer, osParentPid, PARENT_READ_TIMEOUT_MS, retryingSelfCheck, type PeerCheckInput } from '../brokerPeer';
 
 const ok: PeerCheckInput = { selfCheckOk: true, peer: { pid: 4242, uid: 501 }, claimedPid: 4242, ownUid: 501 };
@@ -50,6 +51,15 @@ describe('decidePeer', () => {
     const parentOf = vi.fn(async () => 77);
     expect(await decidePeer({ ...ok, claimedPid: 1 }, parentOf)).toMatchObject({ ok: false, reason: 'peer' });
     expect(parentOf).not.toHaveBeenCalled();
+  });
+});
+
+describe.runIf(process.platform === 'darwin' || process.platform === 'linux')('psPath', () => {
+  it('names an absolute ps that exists', () => {
+    const ps = psPath();
+    expect(path.isAbsolute(ps)).toBe(true);
+    expect(fs.existsSync(ps)).toBe(true);
+    expect(process.platform === 'darwin' ? ['/bin/ps'] : ['/bin/ps', '/usr/bin/ps']).toContain(ps);
   });
 });
 
