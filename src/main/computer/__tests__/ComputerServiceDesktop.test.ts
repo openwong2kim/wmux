@@ -314,6 +314,13 @@ describe('ComputerService.desktop', () => {
     await expect(service.desktop(AGENT_A, { command: 'get', args: { ref: 'e5' } })).rejects.toThrow(/a ref looks like "@s2gy5:e7"/);
   });
 
+  it('refuses a root together with a surface other than window, before anything runs', async () => {
+    const { service, desktop } = makeService();
+    await expect(service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit', args: { root: '@s1:e1', surface: 'menu' } })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringMatching(/root cannot be combined/) });
+    await expect(service.desktop(AGENT_A, { command: 'find', app: 'TextEdit', args: { root: '@s1:e1', surface: 'sheet', name: 'OK' } })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringMatching(/root cannot be combined/) });
+    expect(desktop.run).not.toHaveBeenCalled();
+  });
+
   it('passes a value that looks like a flag as one bound argument', async () => {
     const { service, runs } = makeService();
     await service.desktop(AGENT_A, { command: 'find', app: 'TextEdit', args: { name: '--headed' } });
