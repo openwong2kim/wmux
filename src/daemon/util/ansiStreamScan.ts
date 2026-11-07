@@ -138,11 +138,22 @@ export class PartialSequenceTracker {
 const REGEX_CARRY_CHARS = 16;
 
 // eslint-disable-next-line no-control-regex
-const MARGIN_RE = /\x1b(?:\[([0-9;]*)r|\[!p|c)/g;
+const MARGIN_RE = /\x1b(?:\[([0-9;]*)r|\[!p|c|\[\?([0-9;]*)([hl]))/g;
 
+/** Private modes that switch xterm to the alternate screen. */
+const ALT_SCREEN_MODES = new Set([47, 1047, 1049]);
+
+/**
+ * DECSTBM margins in effect on either screen. xterm keeps them per buffer:
+ * DECSTBM and DECSTR change the active screen's, leaving the alternate
+ * screen clears its own, and the main screen's outlives it. The snapshot
+ * restores neither, so a region on either one skips it.
+ */
 export class MarginTracker {
   private carry = '';
-  private _active = false;
+  private main = false;
+  private alt = false;
+  private altActive = false;
 
   /** `rows`: the screen height the chunk is parsed at. */
   feed(chunk: string, rows: number): void {
@@ -152,9 +163,17 @@ export class MarginTracker {
     while ((m = MARGIN_RE.exec(text)) !== null) {
       // Wholly inside the carry: applied by the previous feed, at its rows.
       if (m.index + m[0].length <= this.carry.length) continue;
-      if (m[1] === undefined) {
-        // RIS (ESC c) or DECSTR (CSI ! p) reset margins to full screen.
-        this._active = false;
+      if (m[0] === '\x1bc') {
+        // RIS: both screens reset, on the main one.
+        this.main = this.alt = this.altActive = false;
+      } else if (m[3] !== undefined) {
+        if (m[2].split(';').some((mode) => ALT_SCREEN_MODES.has(Number(mode)))) {
+          if (m[3] === 'l') this.alt = false;
+          this.altActive = m[3] === 'h';
+        }
+      } else if (m[1] === undefined) {
+        // DECSTR (CSI ! p) resets the active screen's margins.
+        this.setActive(false);
       } else {
         // DECSTBM as xterm's setScrollRegion reads it: top defaults to 1,
         // bottom to the rows, 0 is the default, a bottom past the screen is
@@ -163,14 +182,19 @@ export class MarginTracker {
         const [p0, p1] = m[1].split(';').map((p) => Number(p || '0'));
         const top = p0 || 1;
         const bottom = !p1 || p1 > rows ? rows : p1;
-        if (bottom > top) this._active = top !== 1 || bottom !== rows;
+        if (bottom > top) this.setActive(top !== 1 || bottom !== rows);
       }
     }
     this.carry = text.slice(-REGEX_CARRY_CHARS);
   }
 
+  private setActive(narrowed: boolean): void {
+    if (this.altActive) this.alt = narrowed;
+    else this.main = narrowed;
+  }
+
   get active(): boolean {
-    return this._active;
+    return this.main || this.alt;
   }
 }
 
