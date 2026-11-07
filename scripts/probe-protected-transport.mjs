@@ -14,7 +14,6 @@
  * downloads in a new context by default).
  * Exits 1 when a browser that was found fails a pipe row, the pipe holds less
  * than the port on any row, or the suite did not finish; 2 on a bad argument.
- * REPORTED_ROWS are known differences from the port: printed, never failed on.
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -26,8 +25,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUITE = 'src/main/browser-session/__tests__/ProtectedTransport.chrome.runtime.test.ts';
 const SUITE_TIMEOUT_MS = 15 * 60_000;
 
-/** Rows the suite records but does not assert on the pipe (REPORTED_ROWS there): known differences from the port. */
-const REPORTED_ROWS = new Set(['k']);
 const USAGE = 'usage: node scripts/probe-protected-transport.mjs [--browser chrome|edge|<path>]... [--headful] [--json out.json]';
 
 function usageError(message) {
@@ -105,11 +102,8 @@ for (const name of wanted) {
     const notes = ['port', 'pipe'].filter((t) => r.note?.[t]).map((t) => `${t}: ${r.note[t]}`).join('; ');
     console.log(`| ${r.id} | ${r.what} | ${cell(r.port)} | ${cell(r.pipe)} | ${notes} |`);
   }
-  const counted = table.rows.filter((r) => !REPORTED_ROWS.has(r.id));
-  const pipeShort = counted.filter((r) => r.pipe !== true).map((r) => r.id);
-  const weaker = counted.filter((r) => r.port === true && r.pipe !== true).map((r) => r.id);
-  const reported = table.rows.filter((r) => REPORTED_ROWS.has(r.id) && r.pipe !== true).map((r) => r.id);
-  if (reported.length) console.log(`known differences from the port, reported only: ${reported.join(', ')}`);
+  const pipeShort = table.rows.filter((r) => r.pipe !== true).map((r) => r.id);
+  const weaker = table.rows.filter((r) => r.port === true && r.pipe !== true).map((r) => r.id);
   if (pipeShort.length || weaker.length || run.status !== 0) {
     failed = true;
     console.log(`pipe rows not holding: ${pipeShort.join(', ') || 'none'}; pipe weaker than the port: ${weaker.join(', ') || 'none'}; suite exit ${run.status}`);

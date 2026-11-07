@@ -262,13 +262,67 @@ describe('CdpPipeMux: routing', () => {
     await vi.waitFor(() => expect(a.inbox.filter((m) => m.method === 'Target.attachedToTarget')).toHaveLength(2), { timeout: 5_000 });
     await b.replyTo(b.send('Target.attachToTarget', { targetId: inA, flatten: true }));
     const [ca, cb] = [ref.get('a') as ClientRef, ref.get('b') as ClientRef];
-    expect(mux.contextOfTarget(ca, inA)).toBe('CTX-A');
-    expect(mux.contextOfTarget(ca, inDefault)).toBe('DEFAULT');
+    expect(mux.contextOfFrame(ca, inA)).toBe('CTX-A');
+    expect(mux.contextOfFrame(ca, inDefault)).toBe('DEFAULT');
     // b holds the page, but no attach event named its context to b.
     expect(mux.ownsTarget(cb, inA)).toBe(true);
-    expect(mux.contextOfTarget(cb, inA)).toBeUndefined();
+    expect(mux.contextOfFrame(cb, inA)).toBeUndefined();
     a.client.close();
-    expect(mux.contextOfTarget(ca, inA)).toBeUndefined();
+    expect(mux.contextOfFrame(ca, inA)).toBeUndefined();
+    mux.close();
+  });
+
+  it('routes a frame in a page\'s process to the client whose own page session reported it, and stays bounded', async () => {
+    const ref = new Map<string, ClientRef>();
+    const { browser, mux } = setup({ filter: (client) => { ref.set(client.label, client); return null; } });
+    const a = external(mux, 'a');
+    const b = external(mux, 'b');
+    await a.replyTo(a.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }));
+    const page = (await a.replyTo(a.send('Target.createTarget', { url: 'http://a/', browserContextId: 'CTX-A' }))).result?.targetId as string;
+    await vi.waitFor(() => expect(a.inbox.some((m) => m.method === 'Target.attachedToTarget')).toBe(true), { timeout: 5_000 });
+    const session = (a.inbox.find((m) => m.method === 'Target.attachedToTarget')?.params as { sessionId: string }).sessionId;
+    // b holds the same page on a session of its own, with no Page events on.
+    await b.replyTo(b.send('Target.attachToTarget', { targetId: page, flatten: true }));
+    const [ca, cb] = [ref.get('a') as ClientRef, ref.get('b') as ClientRef];
+    const frames = () => (ca as unknown as { frames: Map<string, Map<string, string>> }).frames;
+    const relay = async (method: string, params: Record<string, unknown>) => {
+      const seen = a.inbox.length;
+      browser.event(session, method, params);
+      await vi.waitFor(() => expect(a.inbox.length).toBeGreaterThan(seen), { timeout: 5_000 });
+    };
+
+    await relay('Page.frameAttached', { frameId: 'F1', parentFrameId: page });
+    await relay('Page.frameAttached', { frameId: 'F2', parentFrameId: 'F1' });
+    expect(mux.contextOfFrame(ca, 'F1')).toBe('CTX-A');
+    expect(mux.contextOfFrame(ca, 'F2')).toBe('CTX-A');
+    // Only frames reported on a client's own session route to it: b holds the
+    // page but has no Page events on, so a download in F1 reaches it as before (not at all).
+    expect(mux.contextOfFrame(cb, page)).toBeUndefined();
+    expect(mux.contextOfFrame(cb, 'F1')).toBeUndefined();
+
+    // A long-lived page adding and removing frames: detaching one takes its descendants.
+    for (let n = 0; n < 50; n++) {
+      await relay('Page.frameAttached', { frameId: `L${n}`, parentFrameId: page });
+      await relay('Page.frameAttached', { frameId: `L${n}-child`, parentFrameId: `L${n}` });
+      await relay('Page.frameDetached', { frameId: `L${n}`, reason: 'remove' });
+    }
+    expect(frames().get(session)?.size).toBe(2);
+    await relay('Page.frameDetached', { frameId: 'F1', reason: 'remove' });
+    expect(frames().size).toBe(0);
+    expect(mux.contextOfFrame(ca, 'F2')).toBeUndefined();
+
+    // A main-frame navigation starts the page over; a child's navigation is a frame of the page.
+    await relay('Page.frameNavigated', { frame: { id: 'N1', parentId: page }, type: 'Navigation' });
+    expect(mux.contextOfFrame(ca, 'N1')).toBe('CTX-A');
+    await relay('Page.frameNavigated', { frame: { id: page }, type: 'Navigation' });
+    expect(frames().size).toBe(0);
+
+    // The session ending takes its frames.
+    await relay('Page.frameAttached', { frameId: 'F3', parentFrameId: page });
+    expect(frames().size).toBe(1);
+    const aBrowserSession = browser.received.find((c) => c.method === 'Target.setAutoAttach')?.sessionId as string;
+    browser.event(aBrowserSession, 'Target.detachedFromTarget', { sessionId: session });
+    await vi.waitFor(() => expect(frames().size).toBe(0), { timeout: 5_000 });
     mux.close();
   });
 

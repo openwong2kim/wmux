@@ -31,10 +31,11 @@ export interface ProtectedPipeDeps {
   /** Close a browser context main could not deny downloads in, without the guard. */
   disposeContext(browserContextId: string): Promise<unknown>;
   /**
-   * The browser context of a page the client holds a session on, as Chrome
-   * named it; undefined when the client doesn't hold it or it wasn't named.
+   * The browser context of a frame the client holds (a page it has a session
+   * to, or a frame Chrome reported on that page's session), as Chrome named it;
+   * undefined when the client doesn't hold it or it wasn't named.
    */
-  contextOf(client: ClientRef, targetId: string): string | undefined;
+  contextOf(client: ClientRef, frameId: string): string | undefined;
   /** Send the client a browser-level event on its root or on one of its sessions; false when that is gone. */
   emit(client: ClientRef, method: string, params: Record<string, unknown>, sessionId?: string): boolean;
 }
@@ -120,10 +121,11 @@ export class ProtectedPipePolicy {
 
   /**
    * A download event the guard's session saw. downloadWillBegin goes to each
-   * client session that asked for download events in the context of the page
-   * the download began in, and holds that page (its frameId is the page's
-   * target id); one that began elsewhere goes to no one. downloadProgress
-   * follows the sessions told of its begin.
+   * client session that asked for download events in the context of the frame
+   * the download began in, and holds that frame: the page itself, or a frame
+   * in its process that Chrome reported on the client's own page session. One
+   * that began elsewhere goes to no one. downloadProgress follows the sessions
+   * told of its begin.
    */
   downloadEvent(method: string, params: Record<string, unknown>): void {
     const guid = typeof params.guid === 'string' ? params.guid : '';

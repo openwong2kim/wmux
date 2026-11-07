@@ -1880,7 +1880,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       denyContext: (browserContextId) => onGuard('Browser.setDownloadBehavior', contextDeny(browserContextId)),
       disposeContext: (browserContextId) =>
         mux()?.command('Target.disposeBrowserContext', { browserContextId }) ?? Promise.reject(new Error(PROTECTION_NOT_READY)),
-      contextOf: (client, targetId) => mux()?.contextOfTarget(client, targetId),
+      contextOf: (client, frameId) => mux()?.contextOfFrame(client, frameId),
       emit: (client, method, params, sessionId) => mux()?.emitEvent(client, method, params, sessionId) ?? false,
     });
   }

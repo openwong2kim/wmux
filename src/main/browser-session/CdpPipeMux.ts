@@ -176,6 +176,33 @@ function refuseTo(client: Client, clientId: number, error: { code: number; messa
   client.reply(clientId, frame, JSON.stringify(frame));
 }
 
+/**
+ * Keep a page session's child frames as Chrome reports them: attached and
+ * navigated frames are added, a detached frame goes with its descendants, and
+ * a main-frame navigation starts the page over.
+ */
+function trackFrames(client: Client, session: string, method: string, params: unknown): void {
+  const p = params as { frameId?: unknown; parentFrameId?: unknown; frame?: { id?: unknown; parentId?: unknown } } | undefined;
+  let frames = client.frames.get(session);
+  if (method === 'Page.frameAttached' && typeof p?.frameId === 'string' && typeof p.parentFrameId === 'string') {
+    if (!frames) client.frames.set(session, (frames = new Map()));
+    frames.set(p.frameId, p.parentFrameId);
+  } else if (method === 'Page.frameNavigated' && typeof p?.frame?.id === 'string') {
+    if (typeof p.frame.parentId !== 'string') { client.frames.delete(session); return; }
+    if (!frames) client.frames.set(session, (frames = new Map()));
+    frames.set(p.frame.id, p.frame.parentId);
+  } else if (method === 'Page.frameDetached' && typeof p?.frameId === 'string' && frames) {
+    const gone = new Set([p.frameId]);
+    // Descendants, whatever order they were added in.
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const [id, parent] of frames) if (!gone.has(id) && gone.has(parent)) { gone.add(id); grew = true; }
+    }
+    for (const id of gone) frames.delete(id);
+    if (!frames.size) client.frames.delete(session);
+  }
+}
+
 interface Pending {
   client: Client;
   /** The id the client sent (external) or its waiter (internal). */
@@ -195,6 +222,12 @@ abstract class Client {
   readonly owned = new Set<string>();
   /** The target each owned page session is attached to, with its browser context when Chrome named it. */
   readonly targets = new Map<string, { targetId: string; browserContextId?: string }>();
+  /**
+   * The child frames Chrome reported on each owned page session (Page events,
+   * as the client enabled them), frame id to parent frame id: a frame in the
+   * page's process that is not a target of its own.
+   */
+  readonly frames = new Map<string, Map<string, string>>();
   closed = false;
   /** Bumped by every detach, so an attach that lands after a close is not published. */
   epoch = 0;
@@ -274,13 +307,16 @@ export class CdpPipeMux {
   }
 
   /**
-   * The browser context of a target `client` holds, as Chrome named it when the
-   * client's session to it was attached (Target.attachedToTarget); undefined
-   * when the client doesn't hold it or no attach event named one.
+   * The browser context of a frame `client` holds: a target it has a session
+   * to, or a child frame Chrome reported on one of its own page sessions. As
+   * Chrome named it when that session was attached (Target.attachedToTarget);
+   * undefined when the client doesn't hold the frame or no attach event named
+   * a context.
    */
-  contextOfTarget(client: ClientRef, targetId: string): string | undefined {
+  contextOfFrame(client: ClientRef, frameId: string): string | undefined {
     if (!(client instanceof Client) || !this.clients.has(client)) return undefined;
-    for (const held of client.targets.values()) if (held.targetId === targetId && held.browserContextId) return held.browserContextId;
+    for (const held of client.targets.values()) if (held.targetId === frameId) return held.browserContextId;
+    for (const [session, frames] of client.frames) if (frames.has(frameId)) return client.targets.get(session)?.browserContextId;
     return undefined;
   }
 
@@ -371,6 +407,7 @@ export class CdpPipeMux {
     for (const session of client.owned) this.owner.delete(session);
     client.owned.clear();
     client.targets.clear();
+    client.frames.clear();
     client.ownBrowserSessions.clear();
     client.browserSession = null;
     client.attaching = null;
@@ -574,6 +611,7 @@ export class CdpPipeMux {
         }
       }
     }
+    if (owner.targets.has(frame.sessionId)) trackFrames(owner, frame.sessionId, frame.method, frame.params);
     owner.event(frame, text);
     if (frame.method === 'Target.detachedFromTarget') {
       const child = (frame.params as { sessionId?: unknown } | undefined)?.sessionId;
@@ -581,6 +619,7 @@ export class CdpPipeMux {
         this.owner.delete(child);
         owner.owned.delete(child);
         owner.targets.delete(child);
+        owner.frames.delete(child);
         owner.ownBrowserSessions.delete(child);
       }
     }

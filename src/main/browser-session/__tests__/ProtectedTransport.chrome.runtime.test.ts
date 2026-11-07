@@ -14,8 +14,7 @@ import { accountDownloads, pinDownloadDir } from '../../../test-utils/chromeDown
 // One protected profile, the same rows on the DevTools port and on the
 // debugging pipe, against a real Chrome launched by the production
 // ChromeLauncher behind the production proxy, with real Playwright clients.
-// A row holds when the protection holds. Every pipe row is asserted except
-// REPORTED_ROWS (a known difference from the port, recorded for C4), and so
+// A row holds when the protection holds. Every pipe row is asserted, and so
 // are the port rows that hold there too (PORT_ROWS); the others run on the
 // port only when the table is asked for, and are recorded, not asserted.
 //
@@ -33,8 +32,6 @@ const CHROME = process.env.CHROME_PATH;
 const TABLE_OUT = process.env.PROTECTED_TABLE_OUT;
 /** The rows that hold on the port as well; only these are run and asserted there by default. */
 const PORT_ROWS = new Set(['a', 'b', 'd']);
-/** Pipe rows recorded, not asserted: known differences from the port (scripts/probe-protected-transport.mjs names them too). */
-const REPORTED_ROWS = new Set(['k']);
 /** How many contexts row j creates, each with a download started as soon as it exists. */
 const NEW_CONTEXT_ROUNDS = 20;
 const CASE_TIMEOUT_MS = 60_000;
@@ -223,12 +220,12 @@ afterAll(async () => {
 
 describe.skipIf(!CHROME).each<Transport>(['port', 'pipe'])('a protected profile on the %s', (transport) => {
   let rig: Rig;
-  /** Record the row for this transport; asserted on the pipe (but REPORTED_ROWS), and on the port for PORT_ROWS. */
+  /** Record the row for this transport; asserted on the pipe, and on the port for PORT_ROWS. */
   const record = (id: string, holds: boolean, note?: string) => {
     const r = row(id);
     r[transport] = holds;
     if (note) r.note = { ...r.note, [transport]: note };
-    if ((transport === 'pipe' && !REPORTED_ROWS.has(id)) || (transport === 'port' && PORT_ROWS.has(id))) expect(holds, `row ${id} on the ${transport}: ${r.what}; ${note ?? ''}`).toBe(true);
+    if (transport === 'pipe' || PORT_ROWS.has(id)) expect(holds, `row ${id} on the ${transport}: ${r.what}; ${note ?? ''}`).toBe(true);
   };
 
   beforeAll(async () => {
