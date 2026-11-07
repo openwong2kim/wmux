@@ -65,6 +65,9 @@ describe.skipIf(!LAST_RELEASE_CLI)('the last release against native entries', ()
     expect(fs.existsSync(LAST_RELEASE_CLI as string)).toBe(true);
   });
 
+  // A release that writes the native form itself reads entries whose copy is
+  // not there as outdated, each hook (Update puts them back on node), with
+  // every feature on: still its own.
   it('--status reads them as its own, every hook present', () => {
     writeNative();
     const status = JSON.parse(lastRelease(['--status', '--json'])) as {
@@ -74,7 +77,8 @@ describe.skipIf(!LAST_RELEASE_CLI)('the last release against native entries', ()
     };
     expect(status.installedEvents).toEqual(expect.arrayContaining(['Stop', 'StopFailure', 'SubagentStop', 'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PermissionRequest', 'Notification']));
     for (const [name, feature] of Object.entries(status.features)) expect(feature.state, name).toBe('ok');
-    for (const hook of status.hooks ?? []) expect(hook.state, hook.label).toBe('ok');
+    // Never missing: installedEvents above lists them, so none is foreign.
+    for (const hook of status.hooks ?? []) expect(['ok', 'outdated'], hook.label).toContain(hook.state);
   });
 
   it('setup-hooks replaces them with its node form and keeps the user\'s entries', () => {
