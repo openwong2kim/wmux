@@ -71,7 +71,8 @@ public enum RunnerPolicy {
         guard commands.contains(command) else {
             throw RunnerProblem("invalid_argument", "the runner does not start \(command)")
         }
-        for arg in argv where refusedOptions.contains(where: { arg == $0 || arg.hasPrefix($0 + "=") || arg.hasPrefix($0 + "-") }) {
+        // After "--" everything is a value (select's option text), never an option.
+        for arg in argv.prefix(while: { $0 != "--" }) where refusedOptions.contains(where: { arg == $0 || arg.hasPrefix($0 + "=") || arg.hasPrefix($0 + "-") }) {
             throw RunnerProblem("invalid_argument", "the runner does not pass \(arg)")
         }
         if actionCommands.contains(command) { try checkAction(command, argv) }

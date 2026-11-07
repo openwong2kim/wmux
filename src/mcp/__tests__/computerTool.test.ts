@@ -335,6 +335,16 @@ describe('computer MCP tool', () => {
     ]]);
   });
 
+  it('refuses a desktop action with its arguments outside args, before calling main', async () => {
+    enabled.value = true;
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'scroll', args: { ref: '@s1:e1' }, direction: 'up', amount: 10 } });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect((res as { content: Array<{ text: string }> }).content[0].text).toMatch(/takes its arguments in args, not direction, amount[\s\S]*not_delivered/);
+    expect(computerCalls()).toEqual([]);
+  });
+
   it('reports a desktop action whose pipe broke as possibly delivered', async () => {
     enabled.value = true;
     mockSendRpc.mockImplementation(async (method: string) => {
