@@ -13,6 +13,7 @@ import {
   __resetWorkspaceClaimTrustForTesting,
   lookupWorkspaceClaim,
 } from '../../../workspace/workspaceClaimTrust';
+import { resetPeerPidClaimLog, setBrokerPidSource } from '../peerPidShadow';
 
 // Hoisted handles so the module mocks can read values set per-test.
 const { sendToRendererMock, dirRef, accountsRef } = vi.hoisted(() => ({
@@ -1054,5 +1055,130 @@ describe('a2a.resolve.identity — a pid-map hit must be the session\'s current 
 
     expect(rpc).toHaveBeenCalledTimes(2);
     expect(result.entries.map((e) => e.pid).sort()).toEqual(['6780', '7644']);
+  });
+});
+
+describe('a2a.resolve.identity — claims checked against the connection\'s peer', () => {
+  // Two panes: daemon-shell (shell 49076) and daemon-other (shell 50000).
+  // 39876 and 60002 run in daemon-shell, 60001 in daemon-other, 70001 in none.
+  const tree = new Map<number, number>([
+    [39876, 49076], [60002, 49076], [49076, 1],
+    [60001, 50000], [50000, 1],
+    [70001, 1],
+  ]);
+  type PeerResult = ResolveResult & {
+    workspaceToken?: string;
+    threadClaim?: { ptyId: string };
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetWorkspaceClaimTrustForTesting();
+    resetPeerPidClaimLog();
+    dirRef.current = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pidmap-peer-'));
+    fs.writeFileSync(path.join(dirRef.current, '49076'), 'daemon-shell');
+    fs.writeFileSync(path.join(dirRef.current, '50000'), 'daemon-other');
+    sendToRendererMock.mockImplementation(
+      (_w: unknown, method: string, p: { ptyId: string }) =>
+        Promise.resolve({
+          workspaceId: method !== 'input.findOwnerWorkspace'
+            ? null
+            : p.ptyId === 'daemon-shell' ? 'ws-live' : p.ptyId === 'daemon-other' ? 'ws-other' : null,
+        }),
+    );
+  });
+  afterEach(() => {
+    resetPeerPidClaimLog();
+    try { fs.rmSync(dirRef.current, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  function peerRouter(): RpcRouter {
+    const router = new RpcRouter();
+    registerA2aRpc(router, () => fakeWindow, makeWorker(), {
+      snapshot: async () => ({ ppidByPid: tree, listeners: [] }),
+      createdAt: () => null,
+      classifyCodexCaller: async () => 'shared-server',
+    });
+    return router;
+  }
+
+  async function resolveAs(router: RpcRouter, params: Record<string, unknown>, peerPid?: number): Promise<PeerResult> {
+    const res = await router.dispatch(
+      { id: 'pp', method: 'a2a.resolve.identity', params },
+      { firstParty: true, ...(peerPid !== undefined && { peerPid }) },
+    );
+    expect(res.ok).toBe(true);
+    return (res as { result: PeerResult }).result;
+  }
+
+  it('keeps the claim when the peer is the claimed pid, or another process in the same pane', async () => {
+    for (const peer of [39876, 60002]) {
+      const result = await resolveAs(peerRouter(), { callerPid: 39876 }, peer);
+      expect(result.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+      expect(typeof result.workspaceToken).toBe('string');
+    }
+  });
+
+  it('refuses a claim on a pane other than the peer\'s, and logs it', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const result = await resolveAs(peerRouter(), { callerPid: 39876 }, 60001);
+      expect(result.resolved).toBeNull();
+      expect(result.workspaceToken).toBeUndefined();
+      // The client-side walk still gets the live entries.
+      expect(result.entries.map((e) => e.ptyId).sort()).toEqual(['daemon-other', 'daemon-shell']);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('[peer-pid] callerPid 39876 refused pane "daemon-shell"'));
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('keeps today\'s answer when the peer is in no pane, its table cannot be read, or no peer was read', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const outside = await resolveAs(peerRouter(), { callerPid: 39876 }, 70001);
+      expect(outside.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+      // 99999 is in no snapshot: the walk cannot run, which is logged apart.
+      const unread = await resolveAs(peerRouter(), { callerPid: 39876 }, 99999);
+      expect(unread.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('could not be walked in time'));
+      const none = await resolveAs(peerRouter(), { callerPid: 39876 });
+      expect(none.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('does not check a call relayed by the MCP broker', async () => {
+    setBrokerPidSource(() => 60001);
+    const result = await resolveAs(peerRouter(), { callerPid: 39876 }, 60001);
+    expect(result.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+  });
+
+  it('refuses a Codex thread claim on a pane other than the peer\'s', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-peer-'));
+    const threadId = '019a0000-0000-7000-8000-0000000000dd';
+    const digest = (v: string) => createHash('sha256').update(v).digest('hex');
+    const dir = path.join(home, 'wmux-thread-owners');
+    fs.mkdirSync(dir, { recursive: true });
+    const suffix = process.env.WMUX_DATA_SUFFIX || '';
+    const env = {
+      WMUX_PTY_ID: 'daemon-shell', WMUX_WORKSPACE_ID: 'ws-frozen', WMUX_SURFACE_ID: '', WMUX_DATA_SUFFIX: suffix,
+      WMUX_PIPE_NAME: '', WMUX_HOOKS_TO_MAIN: '',
+    };
+    fs.writeFileSync(path.join(dir, `thread-${digest(threadId)}.json`), JSON.stringify({ version: 1, id: threadId, env, nonce: 'n3' }));
+    fs.writeFileSync(path.join(dir, `pane-${digest(JSON.stringify([suffix, 'daemon-shell']))}.json`), JSON.stringify({ id: threadId, nonce: 'n3' }));
+    const previous = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = home;
+    try {
+      const params = { codexThreadId: threadId, codexCallerPid: 4242 };
+      expect((await resolveAs(peerRouter(), params, 4242)).threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
+      expect((await resolveAs(peerRouter(), params, 70001)).threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
+      expect((await resolveAs(peerRouter(), params, 60001)).threadClaim).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

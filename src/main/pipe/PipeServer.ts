@@ -277,8 +277,8 @@ export class PipeServer {
 
   /**
    * Read the peer's pid now, in the connection callback, before the fd can be
-   * closed and reused. Measurement only: handlers see it as ctx.peerPid and
-   * nothing decides on it yet.
+   * closed and reused. Handlers see it as ctx.peerPid; a2a.resolve.identity
+   * checks pane claims against it.
    */
   private notePeerPid(socket: net.Socket): void {
     // Named pipes have no peer pid to read here.
