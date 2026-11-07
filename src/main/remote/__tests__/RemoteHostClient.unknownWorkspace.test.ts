@@ -30,6 +30,13 @@ describe('RemoteHostClient.createWorkspace — a workspace the host does not kno
     expect((err as Error).message).toBe(detail);
   });
 
+  it('reads the code only on the host\'s own 400', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 500, body: null, json: async () => ({ error: 'unknown-workspace-id' }) }) as unknown as Response);
+    const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+    const err = await client.createWorkspace('remote-pane-x').then(() => null, (e: unknown) => e);
+    expect(isRemoteUnknownWorkspace(err)).toBe(false);
+  });
+
   it('leaves any other refusal an ordinary error', async () => {
     const fetchImpl = vi.fn(async () => badRequest({ error: 'invalid-workspace-id', detail: 'workspaceId must match ^[A-Za-z0-9_-]{1,64}$' }));
     const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);

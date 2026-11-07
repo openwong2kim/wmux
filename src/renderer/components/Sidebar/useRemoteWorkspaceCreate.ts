@@ -3,6 +3,7 @@ import { useStore } from '../../stores';
 import { selectPcRailFeedStale } from '../../stores/selectors/pcRail';
 import { isPcRailHostOnline } from '../../../shared/pcRail';
 import { t } from '../../i18n';
+import { noWorkspaceGrantMessage } from '../Remote/noWorkspaceGrant';
 import type { PcRailBridge } from '../../../preload/preload';
 
 /** How long to wait for the new workspace's row before leaving it to the list. */
@@ -69,7 +70,9 @@ export function useRemoteWorkspaceCreate(hostId: string | null): {
         if (!res.ok) {
           releaseName();
           if (res.reason === 'auth-rejected') useStore.getState().setRemoteHostAuthRejected(hostId, true);
-          useStore.getState().pushToast({ message: t('remote.createWorkspaceFailed', { error: res.error }), level: 'error' });
+          const pc = useStore.getState().pcRailHosts.find((h) => h.id === hostId)?.label ?? hostId;
+          const message = noWorkspaceGrantMessage(t, res.reason, pc) ?? t('remote.createWorkspaceFailed', { error: res.error });
+          useStore.getState().pushToast({ message, level: 'error' });
           return;
         }
       } catch (err) {

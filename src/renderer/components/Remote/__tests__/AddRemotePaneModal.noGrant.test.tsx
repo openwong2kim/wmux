@@ -22,7 +22,9 @@ const HOST: RemoteHostPublic = {
   addedAt: 1,
   allowInput: true,
 };
-const DETAIL = 'no live pane is running in that workspace — the daemon can only verify a workspace id it can see on a running session.';
+// The host's whole detail (WebTerminalServer.rejectWorkspaceId).
+const DETAIL = 'no live pane is running in that workspace — the daemon can only verify a ' +
+  'workspace id it can see on a running session. Omit workspaceId to spawn outside a workspace.';
 
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;

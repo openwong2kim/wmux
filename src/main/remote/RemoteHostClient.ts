@@ -471,11 +471,10 @@ export class RemoteHostClient implements RemotePaneEvents {
   /**
    * Bootstrap the first pane of a NEW workspace on this host (#1001). Mints
    * no id itself — the caller (the renderer, which owns the workspace
-   * registry today) supplies `workspaceId`, and this is the operator-Bearer
-   * request `WebTerminalServer.rejectWorkspaceId` lets mint an unknown id
-   * for: `RemoteHost.token` is always the operator credential (parsed from
-   * the pasted wmux-web URL or the pair exchange — see remoteHosts.ts), never
-   * a paired device's, so every call through this client already qualifies.
+   * registry today) supplies `workspaceId`. `WebTerminalServer.rejectWorkspaceId`
+   * lets a new id through for the operator credential or a pairing with the
+   * workspace grant; any other pairing gets `unknown-workspace-id`, thrown
+   * here as RemoteUnknownWorkspaceError.
    *
    * Returns the new pane's `sessionId` on success — the caller attaches to
    * it the same way `REMOTE_PANE_ATTACH` attaches to any other remote pane.
@@ -495,7 +494,7 @@ export class RemoteHostClient implements RemotePaneEvents {
       const body = await readErrorBody(res);
       if (isCredentialRejection(res.status, body)) throw this.rejected('createWorkspace');
       const message = errorMessage(body, `createWorkspace failed: HTTP ${res.status}`);
-      if (body?.error === 'unknown-workspace-id') throw new RemoteUnknownWorkspaceError(message);
+      if (res.status === 400 && body?.error === 'unknown-workspace-id') throw new RemoteUnknownWorkspaceError(message);
       throw new Error(message);
     }
     let body: unknown;
