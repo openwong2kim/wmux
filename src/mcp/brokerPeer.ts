@@ -79,16 +79,18 @@ export async function decidePeer(
 export const SELF_CHECK_RETRY_MS = [1000, 2000, 5000, 15000, 30000];
 
 export interface PeerSelfCheck {
-  /** The latest verdict; a session that arrives while a check runs waits for it. */
+  /** The latest verdict. A session that arrives while a check runs waits for
+   *  it; one that finds the last check failed starts a check and waits for that. */
   verdict(): Promise<string | null>;
+  /** No check starts after this. */
   stop(): void;
 }
 
 /**
  * The broker's peer self-check, run again with backoff for as long as it is
- * not available (a transient EMFILE, say). A null verdict (no peer pids on
- * this platform) is final. `onVerdict` sees every verdict with its attempt
- * number, from 1.
+ * not available (a transient EMFILE, say), and at once when a session finds it
+ * failed. A null verdict (no peer pids on this platform) is final. `onVerdict`
+ * sees every verdict with its attempt number, from 1.
  */
 export function retryingSelfCheck(
   run: () => Promise<string | null>,
@@ -97,14 +99,22 @@ export function retryingSelfCheck(
 ): PeerSelfCheck {
   let attempt = 0;
   let timer: NodeJS.Timeout | undefined;
+  let running = false;
+  let failed = false;
+  let stopped = false;
   let current: Promise<string | null>;
   const start = (): void => {
+    clearTimeout(timer);
+    running = true;
     const n = ++attempt;
-    current = run()
+    current = Promise.resolve()
+      .then(run)
       .catch((err: unknown) => `unavailable (${err instanceof Error ? err.message : String(err)})`)
       .then((verdict) => {
+        running = false;
+        failed = verdict !== 'available' && verdict !== null;
         onVerdict(verdict, n);
-        if (verdict !== 'available' && verdict !== null) {
+        if (failed && !stopped) {
           timer = setTimeout(start, delays[Math.min(n - 1, delays.length - 1)]);
           timer.unref?.();
         }
@@ -112,5 +122,14 @@ export function retryingSelfCheck(
       });
   };
   start();
-  return { verdict: () => current, stop: () => clearTimeout(timer) };
+  return {
+    verdict: () => {
+      if (failed && !running && !stopped) start();
+      return current;
+    },
+    stop: () => {
+      stopped = true;
+      clearTimeout(timer);
+    },
+  };
 }

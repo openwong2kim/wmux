@@ -105,12 +105,52 @@ describe('retryingSelfCheck', () => {
       await vi.advanceTimersByTimeAsync(999);
       expect(run).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(1);
-      expect(await check.verdict()).toBe('unavailable (listen EINVAL)');
-      await vi.advanceTimersByTimeAsync(2000);
+      expect(seen.at(-1)).toEqual(['unavailable (listen EINVAL)', 2]);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(run).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(seen.at(-1)).toEqual(['available', 3]);
       expect(await check.verdict()).toBe('available');
       await vi.advanceTimersByTimeAsync(60_000);
       expect(run).toHaveBeenCalledTimes(3);
       expect(seen).toEqual([['unavailable (EMFILE)', 1], ['unavailable (listen EINVAL)', 2], ['available', 3]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('checks at once for a session that finds the last check failed, without waiting out the backoff', async () => {
+    vi.useFakeTimers();
+    try {
+      const verdicts = ['unavailable (self-check timed out)', 'available'];
+      const run = vi.fn(async () => verdicts.shift() ?? 'never');
+      const check = retryingSelfCheck(run, () => undefined, [30_000]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(run).toHaveBeenCalledTimes(1);
+      // A session a second later: a new check, not the stale verdict.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await check.verdict()).toBe('available');
+      expect(run).toHaveBeenCalledTimes(2);
+      // The backoff timer it replaced does not fire a third check.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts nothing after stop, even when a running check then fails', async () => {
+    vi.useFakeTimers();
+    try {
+      let finish: (v: string) => void = () => undefined;
+      const run = vi.fn(() => new Promise<string | null>((r) => { finish = r; }));
+      const check = retryingSelfCheck(run, () => undefined, [10]);
+      await vi.advanceTimersByTimeAsync(0);
+      check.stop();
+      finish('unavailable (EMFILE)');
+      expect(await check.verdict()).toBe('unavailable (EMFILE)');
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(run).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
