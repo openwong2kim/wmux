@@ -306,11 +306,13 @@ function noOwnSurfaceError(foreignSurfaces = 0): Error {
  * Send a browser RPC whose target must be constrained to one workspace.
  * Scope is a required argument and wins over caller-supplied params, making it
  * impossible for a fallback helper to silently omit or override workspaceId.
+ * `timeoutMs` replaces the client's default wait, for a call main bounds itself.
  */
 export async function sendScopedBrowserRpc<T = unknown>(
   method: RpcMethod,
   scope: BrowserTargetScope,
   params: Record<string, unknown> = {},
+  timeoutMs?: number,
 ): Promise<T> {
   assertBrowserTargetScope(scope);
   const scopedParams: Record<string, unknown> = {
@@ -325,7 +327,7 @@ export async function sendScopedBrowserRpc<T = unknown>(
   else delete scopedParams.surfaceId;
   let result: unknown;
   try {
-    result = await sendRpc(method, scopedParams);
+    result = timeoutMs === undefined ? await sendRpc(method, scopedParams) : await sendRpc(method, scopedParams, timeoutMs);
   } catch (err) {
     throw browserCallRefusal(err) ?? err;
   }
