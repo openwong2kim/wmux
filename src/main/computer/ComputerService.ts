@@ -60,6 +60,9 @@ import type { AgentMarkers } from './agentMarkers';
 import { appBundleSelector } from './appBundleId';
 import { thinTreeReason } from './axFirst';
 import { ForegroundLease, INPUT_LOCK_IDLE_MS, PidLanes, foregroundCertain, type LeaseTicket } from './inputLanes';
+import { createHash } from 'node:crypto';
+import { desktopSchema, parseDesktopReply, planDesktopCommand, refmapPids, type DesktopReply } from './desktopCommands';
+import type { RunnerResult } from './RunnerProcess';
 
 export { INPUT_LOCK_IDLE_MS };
 
@@ -165,7 +168,33 @@ export interface ComputerServiceDeps {
   onControl?: (event: { agent: ComputerAgent; action: ComputerControlAction; window: WindowInfo }) => void;
   /** Each agent's colour and name on screen; without it input carries no marker. */
   markers?: AgentMarkers;
+  /**
+   * The nested agent-desktop binary, through the helper's runner mode
+   * (RunnerProcess.ts). Absent where there is none (every OS but macOS).
+   */
+  desktop?: DesktopDeps;
 }
+
+export interface DesktopDeps {
+  run(argv: string[], timeoutMs: number): Promise<RunnerResult>;
+  /** A snapshot's refmap.json in agent-desktop's state directory; '' when it has none. */
+  readRefmap(snapshotId: string): Promise<string>;
+  /** Kills every run in flight (the stop key). */
+  abort(): void;
+}
+
+interface DesktopSnapshotRecord {
+  agentKey: string;
+  app: AppInfo;
+  window: WindowInfo;
+  /** SHA-256 of the snapshot's refmap.json as it stood after the last run this agent made. */
+  refmapHash: string;
+  expiresAt: number;
+}
+
+/** A snapshot id as agent-desktop prints it; it names a directory, so nothing else is read. */
+const DESKTOP_SNAPSHOT_ID = /^[a-z0-9]{1,64}$/;
+const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
 interface SnapshotRecord {
   agentKey: string;
@@ -227,6 +256,7 @@ export class ComputerService {
   private readonly deps: ComputerServiceDeps;
   private helper: HelperLike | null = null;
   private readonly snapshots = new Map<string, SnapshotRecord>();
+  private readonly desktopSnapshots = new Map<string, DesktopSnapshotRecord>();
   private readonly grants = new Map<string, boolean>();
   private readonly consentInflight = new Map<string, Promise<ConsentAnswer>>();
   /** Aborted (and replaced) by every stop: withdraws the open consent prompts. */
@@ -394,6 +424,92 @@ export class ComputerService {
       expiresAt: this.now() + SNAPSHOT_TTL_MS,
     });
     return { ...state, mode, ...(screenshotAdded && { screenshotAdded }) };
+  }
+
+  /**
+   * A read-only agent-desktop command (desktopCommands.ts), on the same
+   * terms as getAppState: the app is resolved by the helper and vetted
+   * (blocklist, consent) before anything runs, and a ref is accepted only
+   * from a snapshot this agent took, whose refmap is unchanged since. The
+   * reply must be for the vetted process and window, or it is discarded.
+   */
+  async desktop(
+    agent: ComputerAgent,
+    params: { command: unknown; args?: unknown; app?: string; window?: string },
+  ): Promise<DesktopReply> {
+    const helper = this.ensureReady();
+    const desktop = this.deps.desktop;
+    if (!desktop) fail('unsupported_platform', `desktop commands are not available on ${this.deps.platform ?? process.platform}`);
+    const plan = planDesktopCommand(params.command, params.args);
+    const generation = this.generation;
+    const now = this.now();
+    if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
+
+    let target: { app: AppInfo; window: WindowInfo } | null = null;
+    const used = plan.refs.map((r) => ({ id: r.snapshotId, record: this.checkDesktopSnapshot(agent, r.snapshotId, now) }));
+    if (used.length > 0) {
+      const { app, window } = used[0].record;
+      if (used.some((u) => u.record.app.pid !== app.pid)) fail('invalid_argument', 'the refs of one call must come from snapshots of one app');
+      target = { app, window };
+      await this.vet(agent, app, window, generation);
+      for (const u of used) {
+        const refmap = await desktop.readRefmap(u.id);
+        this.assertCurrent(generation);
+        if (sha256(refmap) !== u.record.refmapHash) {
+          this.desktopSnapshots.delete(u.id);
+          fail('snapshot_unknown', `snapshot ${u.id} changed since it was taken; take a new one with command "snapshot"`);
+        }
+      }
+    } else if (plan.scope === 'window' || plan.scope === 'app') {
+      if (!params.app) fail('invalid_argument', `${plan.command} needs app. ${desktopSchema(plan.command)}`);
+      const resolved = await helper.request('resolveTarget', { app: params.app, ...(params.window && { window: params.window }) });
+      this.assertCurrent(generation);
+      await this.vet(agent, resolved.app, resolved.window, generation);
+      assertConsistent(resolved.app, resolved.window);
+      target = resolved;
+    }
+
+    const result = await desktop.run(plan.argv(target && { appName: target.app.name, windowId: target.window.id }), plan.timeoutMs);
+    this.assertCurrent(generation);
+    const reply = parseDesktopReply(result.stdout);
+    if (!target) return reply;
+
+    const discard = (): never =>
+      fail('policy_denied', `agent-desktop answered for something other than ${target.app.name}; its reply was discarded`);
+    if (reply.data.pid !== undefined && reply.data.pid !== target.app.pid) discard();
+    const window = reply.data.window as { id?: unknown } | undefined;
+    if (plan.checksWindow && window?.id !== `w-${target.window.id}`) discard();
+    const snapshotId = reply.data.snapshot_id;
+    if (snapshotId !== undefined) {
+      if (typeof snapshotId !== 'string' || !DESKTOP_SNAPSHOT_ID.test(snapshotId)) discard();
+      const refmap = await desktop.readRefmap(snapshotId as string);
+      this.assertCurrent(generation);
+      if (refmap && refmapPids(refmap).some((pid) => pid !== target.app.pid)) discard();
+      this.desktopSnapshots.set(snapshotId as string, {
+        agentKey: agent.key,
+        app: target.app,
+        window: target.window,
+        refmapHash: sha256(refmap),
+        expiresAt: now + SNAPSHOT_TTL_MS,
+      });
+    }
+    // agent-desktop may write a snapshot's refmap when it resolves a ref;
+    // what this agent's own run left is what the next call compares with.
+    for (const u of used) {
+      if (u.id === snapshotId) continue;
+      const record = this.desktopSnapshots.get(u.id);
+      if (record) record.refmapHash = sha256(await desktop.readRefmap(u.id));
+    }
+    return reply;
+  }
+
+  private checkDesktopSnapshot(agent: ComputerAgent, snapshotId: string, now: number): DesktopSnapshotRecord {
+    const record = this.desktopSnapshots.get(snapshotId);
+    if (!record || record.expiresAt < now) {
+      fail('snapshot_unknown', `snapshot ${snapshotId} is unknown or expired; take one with command "snapshot" on that app`);
+    }
+    if (record.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
+    return record;
   }
 
   private async observe(
@@ -765,6 +881,7 @@ export class ComputerService {
     // no markerClear is needed (or could reach it: a request now would start
     // a fresh helper).
     this.helper?.abort('stopped by the user');
+    this.deps.desktop?.abort();
     this.lease.clear();
     // Every action still waiting for its app's slot ends `aborted` without
     // reaching the helper.
@@ -785,7 +902,9 @@ export class ComputerService {
     this.withdrawConsentPrompts();
     this.helper?.dispose();
     this.helper = null;
+    this.deps.desktop?.abort();
     this.snapshots.clear();
+    this.desktopSnapshots.clear();
   }
 
   private withdrawConsentPrompts(): void {
