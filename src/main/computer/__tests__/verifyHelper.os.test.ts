@@ -1,4 +1,5 @@
-import { promises as fs } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { promises as fs, mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -14,6 +15,7 @@ import {
 
 const BUNDLE = '/Applications/wmux.app/Contents/Resources/computer-use-macos/wmux Computer Use.app';
 const EXE = `${BUNDLE}/Contents/MacOS/wmux-computer-use`;
+const NESTED = `${BUNDLE}/Contents/MacOS/agent-desktop`;
 
 interface FakeSignature {
   signed: boolean;
@@ -32,6 +34,8 @@ function fakeCodesign(sig: FakeSignature): RunCodesign & { calls: string[][] } {
     calls.push([...args]);
     expect(args).toContain(`-R=${HELPER_REQUIREMENT}`);
     expect(args).toContain('--strict');
+    // Without --deep the bundle's seal does not open the nested binary's pages.
+    expect(args).toContain('--deep');
     expect(args[args.length - 1]).toBe(BUNDLE);
     if (!sig.signed) return { code: 1, stderr: `${BUNDLE}: code object is not signed at all\n` };
     if (sig.team !== '8RGHH2F237' || sig.identifier !== 'com.electron.wmux.computer-use') {
@@ -42,7 +46,7 @@ function fakeCodesign(sig: FakeSignature): RunCodesign & { calls: string[][] } {
   return Object.assign(run, { calls });
 }
 
-const verifier = (sig: FakeSignature, fileIdentity = async () => 'dev:ino:1') => {
+const verifier = (sig: FakeSignature, fileIdentity: (p: string) => Promise<string> = async () => 'dev:ino:1') => {
   const runCodesign = fakeCodesign(sig);
   return { verify: createHelperVerifier({ platform: 'darwin', isPackaged: true, runCodesign, fileIdentity }), runCodesign };
 };
@@ -105,6 +109,38 @@ describe('computer-use helper signature check', () => {
     expect(runCodesign.calls).toHaveLength(1);
     identity = 'dev:ino2:1'; // the binary was replaced
     await verify(EXE);
+    expect(runCodesign.calls).toHaveLength(2);
+  });
+
+  it('checks again when the nested agent-desktop binary changes, though the helper did not', async () => {
+    const identities: Record<string, string> = { [EXE]: 'dev:ino:1', [NESTED]: 'dev:nested:1' };
+    const { verify, runCodesign } = verifier(
+      { signed: true, team: '8RGHH2F237', identifier: 'com.electron.wmux.computer-use' },
+      async (p: string) => identities[p] ?? 'absent',
+    );
+    await verify(EXE);
+    await verify(EXE);
+    expect(runCodesign.calls).toHaveLength(1);
+    identities[NESTED] = 'dev:nested2:1'; // the nested binary was replaced
+    await verify(EXE);
+    expect(runCodesign.calls).toHaveLength(2);
+  });
+
+  it('refuses when the nested binary is swapped while codesign ran, and does not cache that', async () => {
+    const identities: Record<string, string> = { [EXE]: 'dev:ino:1', [NESTED]: 'dev:nested:1' };
+    const runCodesign = fakeCodesign({ signed: true, team: '8RGHH2F237', identifier: 'com.electron.wmux.computer-use' });
+    const verify = createHelperVerifier({
+      platform: 'darwin',
+      isPackaged: true,
+      fileIdentity: async (p) => identities[p] ?? 'absent',
+      runCodesign: async (args) => {
+        const result = await runCodesign(args);
+        identities[NESTED] = 'dev:nested2:1';
+        return result;
+      },
+    });
+    expect((await refusal(verify(EXE))).message).toContain('changed');
+    await expect(verify(EXE)).resolves.toBeUndefined();
     expect(runCodesign.calls).toHaveLength(2);
   });
 
@@ -338,5 +374,38 @@ describe('Windows pin check for Settings', () => {
     file.digest = BAD;
     expect(await check(WIN_EXE)).toBe('ok');
     expect((await refusal(verify(WIN_EXE))).message).toContain('does not match');
+  });
+});
+
+// The real codesign, on a helper-shaped bundle built here and signed ad-hoc
+// like build.sh signs it. Ad-hoc never meets the team requirement (exit 3);
+// what matters is that a tampered nested binary is reported as a broken
+// signature (exit 1), which only a --deep check sees.
+describe.skipIf(process.platform !== 'darwin')('helper signature check against the real codesign', () => {
+  function bundle(): { exe: string; nested: string } {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'vh-'));
+    const app = path.join(dir, 'wmux Computer Use.app');
+    mkdirSync(path.join(app, 'Contents/MacOS'), { recursive: true });
+    const src = path.join(dir, 'main.c');
+    writeFileSync(src, 'int main(void) { return 0; }\n');
+    const exe = path.join(app, 'Contents/MacOS/wmux-computer-use');
+    const nested = path.join(app, 'Contents/MacOS/agent-desktop');
+    execFileSync('cc', ['-arch', 'arm64', '-o', exe, src]);
+    execFileSync('cc', ['-arch', 'arm64', '-o', nested, src]);
+    writeFileSync(path.join(app, 'Contents/Info.plist'), '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0"><dict><key>CFBundleExecutable</key><string>wmux-computer-use</string><key>CFBundleIdentifier</key><string>com.electron.wmux.computer-use</string></dict></plist>\n');
+    execFileSync('codesign', ['--force', '--sign', '-', '--identifier', 'com.electron.wmux.agent-desktop', nested], { stdio: 'pipe' });
+    execFileSync('codesign', ['--force', '--sign', '-', '--identifier', 'com.electron.wmux.computer-use', app], { stdio: 'pipe' });
+    return { exe, nested };
+  }
+
+  it('reports a tampered nested binary as a broken signature, not only as an unmet requirement', async () => {
+    const intact = bundle();
+    const tampered = bundle();
+    const bytes = readFileSync(tampered.nested);
+    bytes[0x3000] ^= 0xff; // a code page, not the unhashed signature blob at the end
+    writeFileSync(tampered.nested, bytes);
+    const verify = createHelperVerifier({ platform: 'darwin', isPackaged: true });
+    expect((await refusal(verify(intact.exe))).message).toContain('satisfy');
+    expect((await refusal(verify(tampered.exe))).message).toMatch(/invalid signature|modified/);
   });
 });

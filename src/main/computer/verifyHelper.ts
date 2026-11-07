@@ -207,8 +207,9 @@ export function createWindowsPinCheck(opts: {
 /**
  * Returns `verify(exePath)`, which resolves when the helper may be spawned and
  * rejects with `helper_unavailable` otherwise. macOS verdicts are cached by path and
- * file identity (device, inode, size, ctime), so the codesign call (tens of ms) runs once per helper
- * binary, not per spawn.
+ * the file identity (device, inode, size, ctime) of the helper and of the
+ * agent-desktop binary nested beside it, so the codesign call (tens of ms)
+ * runs once per pair of binaries, not per spawn.
  */
 export function createHelperVerifier(opts: HelperVerifierOptions): (exePath: string) => Promise<void> {
   const runCodesign = opts.runCodesign ?? runCodesignDefault;
@@ -232,21 +233,28 @@ export function createHelperVerifier(opts: HelperVerifierOptions): (exePath: str
     } catch {
       throw new ComputerError('helper_unavailable', 'the computer-use helper is missing from this wmux build');
     }
+    // The nested agent-desktop binary is part of the verdict: replacing it
+    // alone must trigger a fresh check. A bundle without one keys on 'absent'.
+    const nestedPath = `${bundle}/Contents/MacOS/agent-desktop`;
+    const nestedIdentity = async (): Promise<string> => readIdentity(nestedPath).catch(() => 'absent');
+    const nested = await nestedIdentity();
 
-    const key = `${exePath}\u0000${identity}`;
+    const key = `${exePath}\u0000${identity}\u0000${nested}`;
     let failure = cache.get(key);
     if (failure === undefined) {
-      // The bundle, not the bare binary, so Info.plist is covered by the seal.
-      const { code, stderr } = await runCodesign(['--verify', '--strict', `-R=${HELPER_REQUIREMENT}`, bundle]);
-      // The file codesign judged must be the file we spawn: a swap during the
-      // check fails it, and that verdict is not cached.
+      // The bundle, not the bare binary, so Info.plist is covered by the seal;
+      // --deep, so the nested binary's own code is checked too (the bundle's
+      // seal alone does not open its pages).
+      const { code, stderr } = await runCodesign(['--verify', '--strict', '--deep', `-R=${HELPER_REQUIREMENT}`, bundle]);
+      // The files codesign judged must be the files we spawn: a swap during
+      // the check fails it, and that verdict is not cached.
       let after: string | null = null;
       try {
         after = await readIdentity(exePath);
       } catch {
         // Gone or unreadable now; refused below.
       }
-      if (after !== identity) {
+      if (after !== identity || (await nestedIdentity()) !== nested) {
         throw new ComputerError('helper_unavailable', 'the computer-use helper changed while its signature was being checked');
       }
       failure = code === 0 ? null : (stderr.trim().split('\n')[0] || `codesign exited with ${code}`);
