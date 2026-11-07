@@ -1,3 +1,6 @@
+// @wmux-lane unit
+// Reads build and source files as text: "win32" appears only in a regex over
+// forge.config.ts, so Windows cannot change the result.
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
