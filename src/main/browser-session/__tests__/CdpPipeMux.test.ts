@@ -326,6 +326,21 @@ describe('CdpPipeMux: routing', () => {
     mux.close();
   });
 
+  it('commands that add to what the browser offers are refused from an external client on every profile', async () => {
+    const { browser, mux } = setup();
+    const a = external(mux, 'a');
+    const refused = ['Tethering.bind', 'Tethering.unbind', 'Extensions.loadUnpacked', 'Extensions.getExtensions', 'Extensions.setStorageItems',
+      'PWA.install', 'PWA.launch', 'PWA.launchFilesInApp', 'Target.openDevTools', 'Target.setRemoteLocations'];
+    for (const method of refused) {
+      expect((await a.replyTo(a.send(method, {}))).error, method).toEqual({ code: -32000, message: `${method} is not available to this client` });
+    }
+    expect(browser.received.filter((c) => refused.includes(c.method))).toEqual([]);
+    expect(cdpPipeCounters().refusals).toEqual({ 'browser-surface': refused.length });
+    // Reading an app's state is not one of them.
+    expect((await a.replyTo(a.send('PWA.getOsAppState', { manifestId: 'm' }))).result).toEqual({ echo: 'PWA.getOsAppState' });
+    mux.close();
+  });
+
   it('tells its owner when a client leaves, once', async () => {
     const gone: string[] = [];
     const { mux } = setup({ onClientGone: (client) => gone.push(client.label) });

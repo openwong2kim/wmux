@@ -10,7 +10,8 @@ import type { BeforeReply, ClientCommandFilter, ClientRef, ReplyError } from './
 // the contexts it asked for.
 // Browser contexts a client creates are denied on the guard's session before
 // the client hears the new context's id. Context options that change where a
-// context's traffic goes, or what it may reach, are refused.
+// context's traffic goes, or what it may reach, are refused, and so is
+// choosing a Bluetooth or USB device for a page's request.
 //
 // Internal clients (main's own connections: the guard, consent, the watcher)
 // are never filtered. Unprotected profiles get no policy at all.
@@ -76,6 +77,8 @@ export class ProtectedPipePolicy {
         return { absorb: {}, reason: 'page-download-behavior' };
       case 'Browser.cancelDownload':
         return { absorb: {}, reason: 'cancel-download' };
+      case 'DeviceAccess.selectPrompt':
+        return { refuse: policyDenied('choosing a device for a page'), reason: 'device-access' };
       case 'Target.createBrowserContext':
         return REFUSED_CONTEXT_OPTIONS.some((option) => command.params[option] !== undefined)
           ? { refuse: policyDenied('this browser context option'), reason: 'context-options' }

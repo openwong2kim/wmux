@@ -111,6 +111,17 @@ export interface ReplyError { code: number; message: string; reason?: string }
 const ENDS_SHARED_BROWSER = new Set(['Browser.close', 'Browser.crash', 'Browser.crashGpuProcess']);
 
 /**
+ * Refused from every external client: commands that add to what the browser
+ * offers beyond the client's own pages (a forwarded port, extensions,
+ * installed web apps, a DevTools window, remote target discovery).
+ */
+function changesBrowserSurface(method: string): boolean {
+  if (method.startsWith('Extensions.')) return true;
+  if (method.startsWith('PWA.')) return method !== 'PWA.getOsAppState';
+  return method === 'Tethering.bind' || method === 'Tethering.unbind' || method === 'Target.openDevTools' || method === 'Target.setRemoteLocations';
+}
+
+/**
  * Rules that hold for every external client on every profile. A rule sees a
  * command's own method only, so a channel that carries protocol messages
  * inside another command is refused rather than read: sendMessageToTarget,
@@ -120,6 +131,7 @@ const ENDS_SHARED_BROWSER = new Set(['Browser.close', 'Browser.crash', 'Browser.
 function externalRule(command: ClientCommand): FilterAnswer {
   const refuse = (what: string, reason: string): FilterAnswer => ({ refuse: { code: -32000, message: `${what} is not available to this client` }, reason });
   if (ENDS_SHARED_BROWSER.has(command.method)) return refuse(command.method, 'ends-shared-browser');
+  if (changesBrowserSurface(command.method)) return refuse(command.method, 'browser-surface');
   switch (command.method) {
     case 'Target.sendMessageToTarget':
     case 'Target.exposeDevToolsProtocol':

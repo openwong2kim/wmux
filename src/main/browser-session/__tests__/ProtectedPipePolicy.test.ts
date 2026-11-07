@@ -32,6 +32,9 @@ describe('ProtectedPipePolicy', () => {
     expect(policy.filter(a, { method: 'Page.setDownloadBehavior', params: { behavior: 'allow' } })).toEqual({ absorb: {}, reason: 'page-download-behavior' });
     expect(policy.filter(a, { method: 'Browser.cancelDownload', params: { guid: 'g' } })).toEqual({ absorb: {}, reason: 'cancel-download' });
     expect(policy.filter(main, { method: 'Browser.setDownloadBehavior', params: { behavior: 'deny' } })).toBeNull();
+    // Choosing a device for a page's request is refused on a protected profile.
+    const device = policy.filter(a, { method: 'DeviceAccess.selectPrompt', params: { id: 'p', deviceId: 'd' } });
+    expect(device && 'refuse' in device && device.reason).toBe('device-access');
     expect(policy.filter(a, { method: 'Page.navigate', params: { url: 'http://a.test/' } })).toBeNull();
   });
 
