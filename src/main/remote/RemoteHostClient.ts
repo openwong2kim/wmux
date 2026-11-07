@@ -122,6 +122,24 @@ export function isRemoteInsecureTransport(err: unknown): err is RemoteInsecureTr
   return err instanceof RemoteInsecureTransportError;
 }
 
+/**
+ * The host refused a new pane's workspace id: none of its live panes carries
+ * it, and this computer's pairing may not start a workspace there
+ * (`WebTerminalServer.rejectWorkspaceId`). The message keeps the host's own
+ * wording for logs; the dialog shows its own text for the reason.
+ */
+export class RemoteUnknownWorkspaceError extends Error {
+  readonly reason = 'unknown-workspace-id' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'RemoteUnknownWorkspaceError';
+  }
+}
+
+export function isRemoteUnknownWorkspace(err: unknown): err is RemoteUnknownWorkspaceError {
+  return err instanceof RemoteUnknownWorkspaceError;
+}
+
 /** The `error` values the host's web server puts on a credential 401. */
 const HOST_CREDENTIAL_ERRORS: ReadonlySet<string> = new Set(['unauthorized', 'authorization-expired']);
 
@@ -476,7 +494,9 @@ export class RemoteHostClient implements RemotePaneEvents {
     if (!res.ok) {
       const body = await readErrorBody(res);
       if (isCredentialRejection(res.status, body)) throw this.rejected('createWorkspace');
-      throw new Error(errorMessage(body, `createWorkspace failed: HTTP ${res.status}`));
+      const message = errorMessage(body, `createWorkspace failed: HTTP ${res.status}`);
+      if (body?.error === 'unknown-workspace-id') throw new RemoteUnknownWorkspaceError(message);
+      throw new Error(message);
     }
     let body: unknown;
     try {
