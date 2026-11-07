@@ -297,8 +297,14 @@ describe('guarded tail: a reader stops trying a tail that keeps missing', () => 
   it(`a repainting pane stops paying for the tail after ${TAIL_MISS_CAP} misses, with the same answer`, async () => {
     const s = repaintRing();
     const reads = [];
-    for (let i = 0; i < TAIL_MISS_CAP + 2; i++) reads.push(await read(s));
+    let tailMsBeforeSkips = 0;
+    for (let i = 0; i < TAIL_MISS_CAP + 2; i++) {
+      if (i === TAIL_MISS_CAP) tailMsBeforeSkips = tailReadCounters().stallwatch.tailMsTotal;
+      reads.push(await read(s));
+    }
     expect(reads.map((r) => r.parses)).toEqual([...Array(TAIL_MISS_CAP).fill(2), 1, 1]);
+    // Skips stay out of the tail average's time, as they do out of its count.
+    expect(tailReadCounters().stallwatch.tailMsTotal).toBe(tailMsBeforeSkips);
     expect(reads.every((r) => r.via === 'full')).toBe(true);
     expect(tailReadCounters().stallwatch).toMatchObject({ reads: TAIL_MISS_CAP + 2, skipped: 2, fallbacks: { 'unknown-visible': TAIL_MISS_CAP } });
     const skippedAnswer = await guardedTailRead(s, { site: 'stallwatch', parse: (initial) => generateTextSnapshotUnqueued({ cols: COLS, rows: ROWS, scrollback: 0, initial }) });

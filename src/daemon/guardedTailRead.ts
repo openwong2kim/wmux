@@ -139,9 +139,14 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
 
   /** The whole ring's answer: after a fallback for `reason`, or (none) a capped reader's skip. */
   const fallback = async (reason: TailFallbackReason | null): Promise<TailOutcome> => {
-    if (reason) bump(c.fallbacks, reason);
-    else c.skipped = (c.skipped ?? 0) + 1;
-    time(c, 'tailMs', performance.now() - started);
+    // A skip tried no tail: its time stays out of the tail average, whose
+    // count leaves skips out too.
+    if (reason) {
+      bump(c.fallbacks, reason);
+      time(c, 'tailMs', performance.now() - started);
+    } else {
+      c.skipped = (c.skipped ?? 0) + 1;
+    }
     const at = performance.now();
     const answer = await options.parse(full);
     time(c, 'fallbackMs', performance.now() - at);
