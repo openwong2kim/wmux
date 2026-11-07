@@ -53,7 +53,8 @@ describe('agent-desktop home', () => {
     await expect(clearDesktopSnapshots(path.join(tmp(), 'absent'))).resolves.toBeUndefined();
   });
 
-  it('creates the home private, and tightens an existing one', async () => {
+  // POSIX modes; agent-desktop runs on macOS only.
+  it.skipIf(process.platform === 'win32')('creates the home private, and tightens an existing one', async () => {
     const home = path.join(tmp(), 'agent-desktop');
     await prepareDesktopHome(home);
     expect(fs.statSync(home).mode & 0o777).toBe(0o700);
