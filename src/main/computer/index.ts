@@ -25,7 +25,7 @@ import { isPermissionOp, requestHelperPermissions, resetHelperPermissions, revea
 import { ComputerService, computerUseShutDown, markComputerUseShutDown, type ConsentRequester, type DesktopDeps, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
 import { RunnerProcess } from './RunnerProcess';
-import { clearDesktopSnapshots, prepareDesktopHome } from './desktopHome';
+import { clearDesktopSnapshots, endDesktopRunner, prepareDesktopHome } from './desktopHome';
 import { StopKey } from './stopKey';
 import { createHelperVerifier, createWindowsPinCheck } from './verifyHelper';
 import { WINDOWS_HELPER_PIN, effectiveHelperStatus, helperUnsignedNotice } from './helperPin';
@@ -198,9 +198,9 @@ function desktopDeps(helperPath: string): DesktopDeps | undefined {
     abort: () => runner?.abort(),
     // The runner goes with its process group, then the saved snapshots.
     dispose: () => {
-      runner?.dispose();
+      const ending = runner;
       runner = null;
-      void clearDesktopSnapshots(home).catch((err: unknown) => console.warn(`[computer] ${String(err)}`));
+      void endDesktopRunner(ending, home).catch((err: unknown) => console.warn(`[computer] ${String(err)}`));
     },
   };
 }

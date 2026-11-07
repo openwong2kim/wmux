@@ -53,7 +53,7 @@ beforeAll(() => {
 
 afterEach(() => {
   received.length = 0;
-  for (const r of runners.splice(0)) r.dispose();
+  for (const r of runners.splice(0)) void r.dispose();
   // The whole group, while the runner is unreaped: a failed test must not
   // leave a child behind.
   for (const c of spawned.splice(0)) {
@@ -249,15 +249,19 @@ describe.skipIf(process.platform === 'win32')('RunnerProcess', () => {
     await expect(r.run(['fail'], { home: '/tmp/ad', timeoutMs: 5000 })).rejects.toMatchObject({ code: 'helper_unavailable' });
   });
 
-  it('dispose ends the runner, which takes its children with it', async () => {
-    const r = runner();
+  it('dispose ends the runner, which takes its children with it, and resolves once it has exited', async () => {
+    const r = runner({ env: () => ({ ...process.env, SLOW_EOF_MS: '400' }) });
     await r.run(['echo'], { home: '/tmp/ad', timeoutMs: 5000 });
     const pid = startedPid(spawned[0]);
     const hung = r.run(['hang'], { home: '/tmp/ad', timeoutMs: 30_000 });
     const child = await pid;
-    r.dispose();
+    let disposed = false;
+    const disposing = r.dispose().then(() => { disposed = true; });
     await expect(hung).rejects.toMatchObject({ code: 'aborted' });
-    await until(() => !alive(child) && (spawned[0].exitCode !== null || spawned[0].signalCode !== null));
+    expect(disposed).toBe(false);
+    await disposing;
+    expect(spawned[0].exitCode !== null || spawned[0].signalCode !== null).toBe(true);
+    await until(() => !alive(child));
     await expect(r.run(['echo'], { home: '/tmp/ad', timeoutMs: 5000 })).rejects.toMatchObject({ code: 'shutting_down' });
   });
 

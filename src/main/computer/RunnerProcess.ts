@@ -91,6 +91,8 @@ export class RunnerProcess {
   private generation = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
+  /** dispose() callers waiting for the last runner to exit. */
+  private readonly exitWaiters: Array<() => void> = [];
 
   constructor(opts: RunnerProcessOptions) {
     this.opts = opts;
@@ -136,10 +138,15 @@ export class RunnerProcess {
     }
   }
 
-  dispose(): void {
+  /** Ends every runner; resolves once each has exited, its children with it. */
+  async dispose(): Promise<void> {
     this.disposed = true;
     this.abort();
     this.stop();
+    // A runner still starting is ended once it has said hello.
+    await this.starting?.then(() => this.stop(), () => undefined);
+    if (this.runners.size === 0) return;
+    await new Promise<void>((resolve) => this.exitWaiters.push(resolve));
   }
 
   private settle(id: number, outcome: RunnerResult | ComputerError): void {
@@ -322,6 +329,7 @@ export class RunnerProcess {
     const exited = [...this.runners].find((r) => r.child === child);
     if (!exited) return;
     this.runners.delete(exited);
+    if (this.runners.size === 0) for (const resolve of this.exitWaiters.splice(0)) resolve();
     // This runner's cancels only: another runner's stay armed.
     for (const timer of exited.cancelling.values()) clearTimeout(timer);
     if (this.running !== exited) return;

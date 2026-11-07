@@ -1,8 +1,8 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { clearDesktopSnapshots, prepareDesktopHome } from '../desktopHome';
+import { describe, expect, it, vi } from 'vitest';
+import { clearDesktopSnapshots, endDesktopRunner, prepareDesktopHome } from '../desktopHome';
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'adhome-'));
 
@@ -31,6 +31,22 @@ describe('agent-desktop home', () => {
     fs.symlinkSync(elsewhere, home);
     await clearDesktopSnapshots(home);
     expect(fs.existsSync(path.join(elsewhere, 'snapshots', 's1', 'refmap.json'))).toBe(true);
+  });
+
+  it('clears again once the runner has exited, taking a snapshot a dying child wrote after the first clear', async () => {
+    const home = path.join(tmp(), 'agent-desktop');
+    await prepareDesktopHome(home);
+    seed(home);
+    let exit: () => void = () => undefined;
+    const runner = { dispose: () => new Promise<void>((resolve) => { exit = resolve; }) };
+    const ending = endDesktopRunner(runner, home);
+    await vi.waitFor(() => expect(fs.existsSync(path.join(home, 'snapshots'))).toBe(false), { timeout: 5_000 });
+    // The child, still dying, writes one more snapshot; then the runner's exit arrives.
+    seed(home);
+    exit();
+    await ending;
+    expect(fs.existsSync(path.join(home, 'snapshots'))).toBe(false);
+    expect(fs.existsSync(path.join(home, 'latest_snapshot_id'))).toBe(false);
   });
 
   it('is a no-op when there is no home yet', async () => {

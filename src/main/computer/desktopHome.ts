@@ -18,6 +18,19 @@ export async function prepareDesktopHome(home: string): Promise<void> {
   await fs.chmod(home, 0o700);
 }
 
+/**
+ * Ends the runner and removes the saved snapshots, now and again once the
+ * runner has exited: a child still dying when the first clear ran may have
+ * written one more.
+ */
+export async function endDesktopRunner(runner: { dispose(): Promise<void> } | null, home: string): Promise<void> {
+  const exited = runner?.dispose();
+  await clearDesktopSnapshots(home);
+  if (!exited) return;
+  await exited;
+  await clearDesktopSnapshots(home);
+}
+
 /** Removes agent-desktop's saved snapshots from `home`. */
 export async function clearDesktopSnapshots(home: string): Promise<void> {
   let stat;
