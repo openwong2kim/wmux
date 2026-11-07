@@ -140,4 +140,12 @@ describe('groupFleetByDevice', () => {
     expect(row).toMatchObject({ surfaceType: 'remote-terminal', remoteHostId: 'host-x' });
     expect(row.remote).toBeUndefined();
   });
+
+  it('a host the rail cannot reach reads disconnected even while its last rows still resolve', () => {
+    const byDevice = groupFleetByDevice(groupFleetPanes([remote('r', 'host-x', 'x')]), {
+      hosts: [host('host-x', 'x', { offline: true, lastSeenAt: 2_000 })],
+    });
+    expect(byDevice.devices[0]).toMatchObject({ id: 'host-x', state: 'disconnected', lastSeenAt: 2_000 });
+    expect(ids(byDevice.devices[0].idle)).toEqual(['r']);
+  });
 });

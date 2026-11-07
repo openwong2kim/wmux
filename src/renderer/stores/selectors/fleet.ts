@@ -1339,8 +1339,8 @@ export interface FleetDeviceGroup {
   id: string;
   /** The host's label; '' for this computer (the UI names it). */
   label: string;
-  /** 'disconnected': the PC rail does not reach the host and every attachment
-   *  from it is stale, so it has no rows. */
+  /** 'disconnected': the PC rail does not reach the host. Its rows, if any,
+   *  are the last ones it reported; with every attachment stale it has none. */
   state: 'local' | 'connected' | 'disconnected';
   /** Disconnected only: when the host last answered, or null when not known. */
   lastSeenAt?: number | null;
@@ -1412,6 +1412,15 @@ export function groupFleetByDevice(
       const host = railHost.get(r.hostId);
       if (live.has(r.hostId) || byId.has(r.hostId) || (host && !host.offline)) continue;
       device(r.hostId, host?.label ?? r.hostLabel, 'disconnected').lastSeenAt = host?.lastSeenAt ?? null;
+    }
+  }
+  // A host the rail cannot reach is disconnected even while its last rows
+  // still resolve: the head says so rather than Online.
+  for (const d of byId.values()) {
+    const host = railHost.get(d.id);
+    if (d.state === 'connected' && host?.offline) {
+      d.state = 'disconnected';
+      d.lastSeenAt = host.lastSeenAt;
     }
   }
   const order = new Map((opts.hosts ?? []).map((host, i) => [host.id, i]));

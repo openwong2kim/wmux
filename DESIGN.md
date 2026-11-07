@@ -2873,9 +2873,10 @@ differently in the two places, and in the order `fleet_triage` returns.
   · Idle 1`); no dot, since a device is not a status. Under a head come its
   running rows, then its Finished and Idle folds, each folding on its own
   (kept while the app runs, like the status list's); a row under its own
-  device's head drops the "@host" glyph. A PC the rail cannot reach whose
-  attachments here are all stale keeps a row-less head (`Disconnected · 3h
-  ago`, the age only while this run has seen it answer); a search or a filter
+  device's head drops the "@host" glyph. A PC the rail cannot reach reads
+  `Disconnected · 3h ago` in its head (the age only while this run has seen
+  it answer), over whatever rows it last reported; with every attachment here
+  stale it keeps that head with no rows. A search or a filter
   narrows each device and drops those heads, and with no agents at all the
   page stays the empty call to action. A device with nothing to draw has no
   head. Keyboard order is the drawn order. No
