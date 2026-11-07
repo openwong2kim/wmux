@@ -177,10 +177,11 @@ describe('loadConfig', () => {
         expect(config.browser?.cdp.enabled).toBe(false);
         expect(config.phoneDecisions).toEqual({ native: false, stepwise: false });
         expect(config.channels?.trashTtlHours).toBe(0);
-        // Nothing irreversible on a stand-in: sessions are kept for a year.
+        // The live reapers keep detached and suspended sessions for a year.
         expect(config.session.detachedTtlHours).toBe(24 * 365);
         expect(config.session.suspendedTtlHours).toBe(24 * 365);
-        expect(config.session.deadSessionTtlHours).toBe(24 * 365);
+        // Stamped into each new session at create time, so left at the default.
+        expect(config.session.deadSessionTtlHours).toBe(defaults.session.deadSessionTtlHours);
         expect(config.lanlink?.enabled).toBe(false);
         expect(config.a2aRemote).toEqual(defaults.a2aRemote);
         expect(config.notifySinks).toEqual([]);
@@ -238,7 +239,7 @@ describe('loadConfig', () => {
       expect(fs.readFileSync(configPath).equals(onDisk)).toBe(true);
     });
 
-    it('a config loaded while the file was good still saves after a later failed load', () => {
+    it('a config loaded while the file was good does not write over it while it is broken, and does once it is fixed', () => {
       const wmuxDir = getWmuxDir();
       fs.mkdirSync(wmuxDir, { recursive: true });
       const configPath = path.join(wmuxDir, 'config.json');
@@ -252,6 +253,12 @@ describe('loadConfig', () => {
         warn.mockRestore();
       }
       good.daemon.logLevel = 'debug';
+      // The broken file may be an edit in progress: both savers refuse.
+      expect(() => saveConfigOrThrow(good)).toThrow(configPath);
+      expect(() => saveConfig(good)).toThrow(configPath);
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe('{ half-written');
+      // Not sticky: once the file is usable again the same object saves.
+      fs.writeFileSync(configPath, JSON.stringify(createDefaultConfig()), 'utf-8');
       expect(() => saveConfigOrThrow(good)).not.toThrow();
       expect(loadConfig().daemon.logLevel).toBe('debug');
     });
@@ -270,7 +277,8 @@ describe('loadConfig', () => {
           handleGate(action, [...args], true);
           const reply = JSON.parse(String(log.mock.calls[0][0]));
           expect(reply.ok).toBe(false);
-          expect(reply.error).toContain('config.json could not be used');
+          expect(reply.error).toContain(`${configPath} could not be used`);
+          expect(reply.enforcedGatedTools).toEqual(createDefaultConfig().gate?.gatedTools);
           expect(process.exitCode).toBe(1);
         }
       } finally {

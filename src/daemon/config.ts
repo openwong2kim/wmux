@@ -391,13 +391,19 @@ export function resetGateMigrationSaveFailure(): void {
 const FAIL_CLOSED = Symbol('wmux.config.failClosed');
 
 /**
- * True for the stand-in `loadConfig` returns when config.json exists but
- * cannot be used. Saving one is refused, whenever it is tried: a process that
- * started on a stand-in keeps it until it restarts, and writing it would
- * replace the user's file (perhaps fixed by then) with defaults.
+ * Why config.json could not be used, for the stand-in `loadConfig` returned
+ * then; undefined for any other config. Saving a stand-in is refused,
+ * whenever it is tried: a process that started on one keeps it until it
+ * restarts, and writing it would replace the user's file (perhaps fixed by
+ * then) with defaults.
  */
+export function failClosedReason(config: DaemonConfig): string | undefined {
+  const reason = (config as unknown as Record<symbol, unknown>)[FAIL_CLOSED];
+  return typeof reason === 'string' ? reason : undefined;
+}
+
 export function isFailClosedConfig(config: DaemonConfig): boolean {
-  return (config as unknown as Record<symbol, unknown>)[FAIL_CLOSED] === true;
+  return failClosedReason(config) !== undefined;
 }
 
 /** The last unusable-file warning, so the daemon (which loads on every hook signal) logs it once. */
@@ -417,24 +423,24 @@ export function resetUnusableConfigWarning(): void {
  * - `phoneDecisions` → both channels off (the defaults are on); approvals
  *   then take the plain decline path a daemon without the channels serves.
  *
- * Nothing irreversible runs on a stand-in either, since the file may have
- * kept for longer what the defaults delete: the channel trash is kept
- * (`trashTtlHours` 0), and detached, suspended and dead sessions are kept
- * for a year rather than 8 h, 7 days and 24 h.
+ * The live reapers delete nothing the file may have kept for longer either:
+ * the channel trash is kept (`trashTtlHours` 0), and detached and suspended
+ * sessions for a year rather than 8 h and 7 days. (`deadSessionTtlHours` is
+ * left alone: it is stamped into each new session's metadata at create time,
+ * so a stand-in value would outlive the stand-in.)
  *
  * The rest already default to the closed side: `lanlink` and `a2aRemote` are
  * off, `notifySinks` is empty. `gate` gates the default high-risk tools; tools
  * the file added to it cannot be known from a file that cannot be read.
  */
-function failClosedConfig(): DaemonConfig {
+function failClosedConfig(reason: string): DaemonConfig {
   const config = createDefaultConfig();
   config.browser = { cdp: { enabled: false } };
   config.phoneDecisions = { native: false, stepwise: false };
   config.channels = { ...(config.channels as ChannelRetentionConfig), trashTtlHours: 0 };
   config.session.detachedTtlHours = DETACHED_TTL_CAP_HOURS;
   config.session.suspendedTtlHours = SUSPENDED_TTL_CAP_HOURS;
-  config.session.deadSessionTtlHours = 24 * 365;
-  (config as unknown as Record<symbol, unknown>)[FAIL_CLOSED] = true;
+  (config as unknown as Record<symbol, unknown>)[FAIL_CLOSED] = reason;
   return config;
 }
 
@@ -445,11 +451,40 @@ function failClosedConfig(): DaemonConfig {
 function unusableConfigFallback(configPath: string, reason: string): DaemonConfig {
   const warning =
     `[daemon/config] ${configPath} could not be used (${reason}). It is left unchanged; ` +
-    'until it is fixed, wmux runs with its defaults, with browser CDP and phone decisions ' +
-    'off, and deletes no sessions or trash.';
+    'until it is fixed, wmux runs with its defaults, with browser CDP and phone decisions off, ' +
+    'and keeps detached and suspended sessions and the channel trash. CDP comes back on the ' +
+    'first start after the fix.';
   if (warning !== lastUnusableWarning) console.warn(warning);
   lastUnusableWarning = warning;
-  return failClosedConfig();
+  return failClosedConfig(`${configPath} could not be used (${reason})`);
+}
+
+/**
+ * Why the config.json on disk could not be used, or null when it is usable or
+ * absent. A JSON parse with the same reviver, then `configProblem`.
+ */
+function diskConfigProblem(configPath: string): string | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(configPath, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    return err instanceof Error ? err.message : String(err);
+  }
+  try {
+    return configProblem(parseConfigText(raw));
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** JSON.parse of config.json text: BOM stripped, prototype-pollution guard. */
+function parseConfigText(raw: string): unknown {
+  return JSON.parse(stripBom(raw), (key, value) => {
+    // Prototype pollution guard (mirrors SessionManager pattern)
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+    return value;
+  });
 }
 
 /**
@@ -483,11 +518,7 @@ export function loadConfig(): DaemonConfig {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripBom(raw), (key, value) => {
-      // Prototype pollution guard (mirrors SessionManager pattern)
-      if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
-      return value;
-    });
+    parsed = parseConfigText(raw);
   } catch (err) {
     return unusableConfigFallback(configPath, err instanceof Error ? err.message : String(err));
   }
@@ -679,14 +710,15 @@ export function loadConfig(): DaemonConfig {
 
 /** Atomic write: .tmp then rename (mirrors SessionManager pattern) */
 export function saveConfig(config: DaemonConfig): void {
-  // Saving a stand-in throws like a directory that cannot be created: both are
+  const configPath = getConfigPath();
+  // A refused save throws like a directory that cannot be created: both are
   // the caller's to report, never a write failure to log and move past.
-  refuseFailClosed(config, getConfigPath());
+  refuseUnsafeSave(config, configPath);
   // A directory that cannot be created still throws, as it always did.
-  const dir = path.dirname(getConfigPath());
+  const dir = path.dirname(configPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   try {
-    saveConfigOrThrow(config);
+    writeConfigFile(config, configPath);
   } catch (err) {
     console.error('[daemon/config] Failed to save config:', err);
   }
@@ -698,7 +730,11 @@ export function saveConfig(config: DaemonConfig): void {
  */
 export function saveConfigOrThrow(config: DaemonConfig): void {
   const configPath = getConfigPath();
-  refuseFailClosed(config, configPath);
+  refuseUnsafeSave(config, configPath);
+  writeConfigFile(config, configPath);
+}
+
+function writeConfigFile(config: DaemonConfig, configPath: string): void {
   const tmpPath = configPath + '.tmp';
   const dir = path.dirname(configPath);
 
@@ -720,13 +756,21 @@ export function saveConfigOrThrow(config: DaemonConfig): void {
   }
 }
 
-/** Throws for a fail-closed stand-in: it must never replace the file it stands in for. */
-function refuseFailClosed(config: DaemonConfig, configPath: string): void {
-  if (!isFailClosedConfig(config)) return;
-  throw new Error(
-    `wmux started while ${configPath} could not be used, so it does not write over that file. ` +
-      'Fix the file, restart wmux, then try again.',
-  );
+/**
+ * A config.json that cannot be used is never written over: not with a
+ * fail-closed stand-in (whatever the file holds by now), and not with any
+ * other config while the file on disk is the unusable one, which may be an
+ * edit in progress. Checked at save time, so a file fixed since saves again.
+ */
+function refuseUnsafeSave(config: DaemonConfig, configPath: string): void {
+  const standIn = failClosedReason(config);
+  if (standIn !== undefined) {
+    throw new Error(`wmux started while ${standIn}, so it does not write over that file. Fix the file, restart wmux, then try again.`);
+  }
+  const problem = diskConfigProblem(configPath);
+  if (problem !== null) {
+    throw new Error(`${configPath} could not be used (${problem}), so wmux does not write over it. Fix the file, then try again.`);
+  }
 }
 
 /**

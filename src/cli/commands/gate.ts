@@ -3,36 +3,43 @@
 // slice per signal (HookIngest.gateConfig is a getter), so changes take effect
 // on the next tool call without a daemon restart.
 
-import { isFailClosedConfig, loadConfig, saveConfigOrThrow } from '../../daemon/config';
+import { failClosedReason, loadConfig, saveConfigOrThrow } from '../../daemon/config';
 import { DEFAULT_GATED_TOOLS } from '../../daemon/approvals/gateConfig';
+
+/** Report a gate command that did nothing, and exit non-zero. */
+function fail(message: string, jsonMode: boolean, extra: Record<string, unknown> = {}): void {
+  if (jsonMode) console.log(JSON.stringify({ ok: false, error: message, ...extra }));
+  else console.error(`Error: ${message}`);
+  process.exitCode = 1;
+}
 
 /**
  * Write the edited config. A config.json that wmux could not use is never
- * written over (see loadConfig), so say so and exit non-zero rather than
- * report a change that did not land.
+ * written over (see loadConfig), so say so rather than report a change that
+ * did not land.
  */
 function persist(config: ReturnType<typeof loadConfig>, jsonMode: boolean): boolean {
   try {
     saveConfigOrThrow(config);
     return true;
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (jsonMode) console.log(JSON.stringify({ ok: false, error: message }));
-    else console.error(`Error: ${message}`);
-    process.exitCode = 1;
+    fail(err instanceof Error ? err.message : String(err), jsonMode);
     return false;
   }
 }
 
 export function handleGate(action: string, args: string[], jsonMode: boolean): void {
   const config = loadConfig();
-  // The list a stand-in carries is the defaults, not the user's: neither show
-  // it as theirs nor answer "already there" from it.
-  if (isFailClosedConfig(config)) {
-    const message = 'config.json could not be used (see the warning above), so the gate list in it is unknown. Fix the file, then try again.';
-    if (jsonMode) console.log(JSON.stringify({ ok: false, error: message }));
-    else console.error(`Error: ${message}`);
-    process.exitCode = 1;
+  // A stand-in's list is the defaults, not the user's: neither show it as
+  // theirs nor answer "already there" from it. Say what is gated meanwhile.
+  const standIn = failClosedReason(config);
+  if (standIn !== undefined) {
+    const enforced = config.gate?.gatedTools ?? [...DEFAULT_GATED_TOOLS];
+    fail(
+      `${standIn}, so the gate list in it is unknown. Until it is fixed, the default list is gated: ${enforced.join(', ')}. Fix the file, then try again.`,
+      jsonMode,
+      { enforcedGatedTools: enforced },
+    );
     return;
   }
   const gatedTools = config.gate?.gatedTools ?? [...DEFAULT_GATED_TOOLS];
