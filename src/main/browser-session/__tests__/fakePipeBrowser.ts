@@ -18,6 +18,8 @@ export class FakeBrowser {
   readonly sessions = new Set<string>();
   readonly autoAttach = new Set<string>();
   readonly targets: Array<{ targetId: string; title: string; url: string }> = [];
+  /** What Page.getFrameTree answers, when set. */
+  frameTree: unknown = null;
 
   constructor() {
     this.fromMux.on('data', (chunk: Buffer) => {
@@ -74,7 +76,8 @@ export class FakeBrowser {
         for (const parent of this.autoAttach) {
           const child = `C${++this.n}`;
           this.sessions.add(child);
-          this.event(parent, 'Target.attachedToTarget', { sessionId: child, targetInfo: { targetId, type: 'page' }, waitingForDebugger: false });
+          const browserContextId = typeof c.params.browserContextId === 'string' ? c.params.browserContextId : 'DEFAULT';
+          this.event(parent, 'Target.attachedToTarget', { sessionId: child, targetInfo: { targetId, type: 'page', browserContextId }, waitingForDebugger: false });
         }
         return;
       }
@@ -91,6 +94,9 @@ export class FakeBrowser {
         return;
       case 'Target.getTargets':
         this.reply(c, `"result":{"targetInfos":${JSON.stringify(this.targets.map((t) => ({ targetId: t.targetId, type: 'page', title: t.title, url: t.url, attached: false })))}}`);
+        return;
+      case 'Page.getFrameTree':
+        this.reply(c, this.frameTree ? `"result":{"frameTree":${JSON.stringify(this.frameTree)}}` : `"result":{"echo":"Page.getFrameTree"}`);
         return;
       case 'Target.closeTarget':
       case 'Target.activateTarget':

@@ -68,6 +68,11 @@ describe('memory diagnostics', () => {
     const text = renderMemoryDiagnostics(memory, undefined, { available: false, reason: 'n/a' });
     expect(text).toContain('Chrome debugging pipe: 1200 frames, 3.0 MiB; parse 2.5 ms in all, slowest frame 0.8 ms, largest 1.0 MiB; 7 dropped (root-event 5, unknown-session 2), 1 commands refused');
     expect(renderMemoryDiagnostics({ mainPid: 1, processes: [] }, undefined, { available: false, reason: 'n/a' })).not.toContain('debugging pipe');
+    const ruled = { ...cdpPipe, absorbed: { 'download-behavior': 3 }, refusals: { 'ends-shared-browser': 1 } };
+    expect(isAppMemoryDiagnostics({ ...memory, cdpPipe: ruled })).toBe(true);
+    expect(renderMemoryDiagnostics({ ...memory, cdpPipe: ruled }, undefined, { available: false, reason: 'n/a' }))
+      .toContain("by rule: refused ends-shared-browser 1; answered without the browser download-behavior 3");
+    expect(isAppMemoryDiagnostics({ ...memory, cdpPipe: { ...cdpPipe, absorbed: { x: -1 } } })).toBe(false);
     for (const bad of [{ ...cdpPipe, frames: -1 }, { ...cdpPipe, dropped: null }, { ...cdpPipe, dropped: { x: 'y' } }, { ...cdpPipe, refused: undefined }]) {
       expect(isAppMemoryDiagnostics({ mainPid: 1, processes: [], cdpPipe: bad })).toBe(false);
     }

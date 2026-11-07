@@ -6,7 +6,8 @@ import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurf
 import type { CdpConnection } from './CdpSocket';
 import type { Readable, Writable } from 'node:stream';
 import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTransport';
-import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux } from './CdpPipeMux';
+import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type ClientRef } from './CdpPipeMux';
+import { ProtectedPipePolicy } from './ProtectedPipePolicy';
 import { CdpPipeEndpoint } from './CdpPipeEndpoint';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
@@ -365,6 +366,9 @@ export interface ConsentDownloadGuard {
 /** A protected profile could not be brought up under its enforcement. */
 export const PROTECTION_NOT_READY = 'policy_denied: the protected browser could not be started under its site policy';
 
+/** The download guard's deny for one browser context, with its download events on the guard's session. */
+const contextDeny = (browserContextId: string) => ({ behavior: 'deny', browserContextId, eventsEnabled: true });
+
 /** Mint a stable surface id. Mirrors shared/types.ts `generateId('chrome')`;
  *  kept local so main's browser-session layer does not pull in the shared
  *  types barrel (and everything it drags along) for one line. */
@@ -476,7 +480,12 @@ export class ChromeLauncher implements ChromeBackendClient {
    * external clients dial for it, opened on the first endpoint() call. Both
    * go with the Chrome (onChildGone).
    */
-  private piped: { readonly mux: CdpPipeMux; endpoint: Promise<CdpPipeEndpoint> | null } | null = null;
+  private piped: {
+    readonly mux: CdpPipeMux;
+    /** A protected profile's rules for the pipe's clients; null when unprotected. */
+    readonly policy: ProtectedPipePolicy | null;
+    endpoint: Promise<CdpPipeEndpoint> | null;
+  } | null = null;
   /** Pipe mode: liveness checks failed in a row, and when the last one counted ended. */
   private pingMisses = { count: 0, lastEnd: 0 };
   /** Pipe mode: a Chrome let go and still on its way out. The next launch waits for it. */
@@ -1783,7 +1792,9 @@ export class ChromeLauncher implements ChromeBackendClient {
    * lists the contexts a client created (Target.getBrowserContexts, which
    * sees one before it has a page) and denies each with events on. Best
    * effort: a download in a context created since the last tick is not
-   * covered until the next one.
+   * covered until the next one. On the pipe, a protected profile's policy
+   * denies a client's new context before the client hears of it
+   * (ProtectedPipePolicy).
    */
   private armDownloadGuard(): Promise<void> {
     if (this.downloadGuard?.isOpen()) return Promise.resolve();
@@ -1810,9 +1821,10 @@ export class ChromeLauncher implements ChromeBackendClient {
       const listed = (await guard.send('Target.getBrowserContexts')) as { browserContextIds?: unknown } | null;
       const ids = Array.isArray(listed?.browserContextIds) ? listed.browserContextIds.filter((id): id is string => typeof id === 'string') : [];
       await Promise.all(ids.map((browserContextId) =>
-        guard.send('Browser.setDownloadBehavior', { behavior: 'deny', browserContextId, eventsEnabled: true }).catch(() => undefined)));
+        guard.send('Browser.setDownloadBehavior', contextDeny(browserContextId)).catch(() => undefined)));
     };
     guard.on('Browser.downloadWillBegin', (params) => {
+      this.piped?.policy?.downloadEvent('Browser.downloadWillBegin', params);
       const guid = typeof params.guid === 'string' ? params.guid : '';
       // An operator-approved download (consent): its claimant re-denies itself.
       const claimant = this.downloadClaimant;
@@ -1827,6 +1839,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       }
     });
     guard.on('Browser.downloadProgress', (params) => {
+      this.piped?.policy?.downloadEvent('Browser.downloadProgress', params);
       for (const listener of this.downloadProgress) listener(params);
     });
     try {
@@ -1850,6 +1863,26 @@ export class ChromeLauncher implements ChromeBackendClient {
     }, DOWNLOAD_DENY_REASSERT_MS);
     reassert.unref?.();
     this.downloadGuard = guard;
+  }
+
+  /**
+   * A protected profile's rules for its pipe's clients. A context a client
+   * creates is denied on the download guard's own session, so the deny and the
+   * download events stay with the guard after the client leaves. One the guard
+   * can't deny is closed over the pipe itself instead of handed out.
+   */
+  private protectedPipePolicy(mux: () => CdpPipeMux | null): ProtectedPipePolicy {
+    const onGuard = (method: string, params: Record<string, unknown>) => {
+      const guard = this.downloadGuard;
+      return guard?.isOpen() ? guard.send(method, params) : Promise.reject(new Error(PROTECTION_NOT_READY));
+    };
+    return new ProtectedPipePolicy({
+      denyContext: (browserContextId) => onGuard('Browser.setDownloadBehavior', contextDeny(browserContextId)),
+      disposeContext: (browserContextId) =>
+        mux()?.command('Target.disposeBrowserContext', { browserContextId }) ?? Promise.reject(new Error(PROTECTION_NOT_READY)),
+      contextOf: (client, frameId) => mux()?.contextOfFrame(client, frameId),
+      emit: (client, method, params, sessionId) => mux()?.emitEvent(client, method, params, sessionId) ?? false,
+    });
   }
 
   /** The browser-level CDP endpoint `transport` names; not-ready when absent. */
@@ -1985,11 +2018,6 @@ export class ChromeLauncher implements ChromeBackendClient {
     // is not what this one will ask for.
     this.blocked.clear();
     const pipe = chromeTransportKind() === 'pipe';
-    // A protected profile stays on the port until the pipe has its ownership
-    // rules (C2b): refused before anything touches the profile.
-    if (plan && pipe) {
-      throw new Error(`policy_denied: the protected browser profile "${this.profileName}" can't start with WMUX_CHROME_TRANSPORT=pipe`);
-    }
     // A Chrome let go still holds the profile until it exits: wait for it, bounded.
     if (this.exiting) {
       const { child, exited } = this.exiting;
@@ -2083,7 +2111,9 @@ export class ChromeLauncher implements ChromeBackendClient {
 
     this.child = child;
     // The pipe ends with the process; one that breaks first ends it too.
-    const mux = pipe
+    let mux: CdpPipeMux | null = null;
+    const policy = pipe && plan ? this.protectedPipePolicy(() => mux) : null;
+    mux = pipe
       ? new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable, {
         onClose: () => {
           if (this.child !== child) return;
@@ -2091,9 +2121,10 @@ export class ChromeLauncher implements ChromeBackendClient {
             child.kill();
           } catch { /* already gone */ }
         },
+        ...(policy && { filter: policy.filter, beforeReply: policy.beforeReply, onClientGone: (client: ClientRef) => policy.forget(client) }),
       })
       : null;
-    this.piped = mux ? { mux, endpoint: null } : null;
+    this.piped = mux ? { mux, policy, endpoint: null } : null;
     const piped = mux ? pipeTransport(mux) : null;
 
     // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
