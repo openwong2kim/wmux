@@ -56,7 +56,7 @@ final class RunnerPolicyTests: XCTestCase {
         // select: one value, after "--", and nothing else.
         XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["select", "@s2:e7", "--", String(repeating: "가", count: 1365)], "home": "/tmp/ad"]))
         for argv in [["select", "@s2:e7", "Large"], ["select", "@s2:e7", "--app=X", "--", "Large"], ["select", "@s2:e7", "--", "Large", "Small"],
-                     ["select", "@s2:e7", "--", ""], ["select", "@s2:e7", "--", String(repeating: "x", count: 4097)]] {
+                     ["select", "@s2:e7", "--", ""], ["select", "@s2:e7", "--", String(repeating: "x", count: 4097)], ["select", "@s2:e7", "--", "\0Large"]] {
             XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": argv, "home": "/tmp/ad"]), argv.joined(separator: " "))
         }
     }
@@ -65,6 +65,7 @@ final class RunnerPolicyTests: XCTestCase {
         for arg in ["--headed", "--trace", "--trace=/tmp/t", "--trace-strict", "--debug", "--screenshot", "--screenshot=/tmp/x.png"] {
             XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["snapshot", arg], "home": "/tmp/ad"]), arg)
         }
+        XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["get", "@s2:e7\0", "--property=value"], "home": "/tmp/ad"]))
         // A read gets no "--" exemption: everything is scanned.
         XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["snapshot", "--", "--headed"], "home": "/tmp/ad"]))
     }
