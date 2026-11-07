@@ -53,6 +53,35 @@ describe('createFirstResizeGate', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('waits on to the renderer bound when the font is in but the WebGL build is still queued', async () => {
+    vi.useFakeTimers();
+    try {
+      const { state, deps, frame } = rig({ font: true });
+      const gate = createFirstResizeGate(deps, 500, 1000);
+      frame();
+      vi.advanceTimersByTime(500);
+      expect(gate.isOpen).toBe(false);
+      vi.advanceTimersByTime(499);
+      expect(gate.isOpen).toBe(false);
+      vi.advanceTimersByTime(1);
+      expect(gate.isOpen).toBe(true);
+      await expect(gate.opened).resolves.toBe('bound');
+      expect(state.webglPending).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps the font bound when the font is not in, whatever the renderer', async () => {
+    vi.useFakeTimers();
+    try {
+      const { deps, frame } = rig();
+      const gate = createFirstResizeGate(deps, 500, 1000);
+      frame();
+      vi.advanceTimersByTime(500);
+      expect(gate.isOpen).toBe(true);
+      await expect(gate.opened).resolves.toBe('bound');
+    } finally { vi.useRealTimers(); }
+  });
+
   it('opens at once for a pane mounted hidden', async () => {
     const { deps, frames } = rig({ shown: false });
     const gate = createFirstResizeGate(deps, 500);

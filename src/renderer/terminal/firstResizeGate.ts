@@ -17,8 +17,11 @@
  * - the terminal's own font is loaded;
  * - no WebGL upgrade is still due;
  * - the fitted size has held for one more frame.
- * It also opens when the bound passes, whatever the state, so a font that
- * never loads cannot stall a reattach. A pane that cannot measure itself at
+ * It also opens when the bound passes, so a font that never loads cannot
+ * stall a reattach. A pane whose font is in but whose WebGL build is still
+ * queued (a multi-pane restore builds one per frame) waits up to a longer
+ * renderer bound: it stays hidden until that build anyway
+ * (WEBGL_UPGRADE_HIDE_MAX_MS), so the wait shows nothing. A pane that cannot measure itself at
  * mount (a background workspace, a container still being laid out) opens at
  * once: it makes no mount-time fit, so it has no wrong size to send, and its
  * reattach must not wait on a font it is not drawing yet.
@@ -54,7 +57,12 @@ export interface FirstResizeGate {
 /** About one webfont load on a cold start; past it the pane goes with what it measured. */
 export const FIRST_RESIZE_GATE_BOUND_MS = 500;
 
-export function createFirstResizeGate(deps: FirstResizeGateDeps, boundMs = FIRST_RESIZE_GATE_BOUND_MS): FirstResizeGate {
+export function createFirstResizeGate(
+  deps: FirstResizeGateDeps,
+  boundMs = FIRST_RESIZE_GATE_BOUND_MS,
+  /** Total wait, from creation, for a pane whose font is in but whose WebGL build is still due. */
+  rendererBoundMs = boundMs,
+): FirstResizeGate {
   let isOpen = false;
   let frame: number | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -82,7 +90,15 @@ export function createFirstResizeGate(deps: FirstResizeGateDeps, boundMs = FIRST
       previous = ready ? now : null;
       frame = deps.requestFrame(check);
     };
-    timer = deps.setTimer(() => { timer = null; open('bound'); }, boundMs);
+    timer = deps.setTimer(() => {
+      timer = null;
+      const rest = rendererBoundMs - boundMs;
+      if (rest > 0 && deps.fontReady() && deps.rendererPending()) {
+        timer = deps.setTimer(() => { timer = null; open('bound'); }, rest);
+        return;
+      }
+      open('bound');
+    }, boundMs);
     check();
   }
 

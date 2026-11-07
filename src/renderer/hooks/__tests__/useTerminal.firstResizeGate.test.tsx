@@ -31,6 +31,8 @@ vi.mock('@xterm/addon-webgl', () => ({
 }));
 
 const unsub = () => () => undefined;
+/** The pane's daemon:connected listener, fired by hand. */
+let daemonConnected: (() => void) | null = null;
 const resize = vi.fn(async (_id: string, _cols: number, _rows: number) => undefined);
 const reconnect = vi.fn(async () => ({ success: true }));
 /** What document.fonts.check answers for the terminal's own font. */
@@ -51,7 +53,7 @@ beforeAll(() => {
         write: vi.fn(async () => undefined),
         list: vi.fn(async () => []),
       },
-      daemon: { onConnected: unsub },
+      daemon: { onConnected: (cb: () => void) => { daemonConnected = cb; return () => undefined; } },
       shell: { openPath: vi.fn(async () => ({ ok: true })) },
     },
   });
@@ -148,6 +150,24 @@ describe('useTerminal first PTY resize waits for the grid the pane keeps', { tim
     expect(sizesFor('p-gate-settled')).toEqual(['118x44']);
     expect(reconnect).toHaveBeenCalledTimes(1);
     expect(resize.mock.invocationCallOrder[0]).toBeLessThan(reconnect.mock.invocationCallOrder[0]);
+  });
+
+  it('does not attach a second time when another attach ran while the gate was closed', async () => {
+    const { size, jobs } = await mount('p-gate-raced');
+    expect(reconnect).not.toHaveBeenCalled();
+    // A daemon generation connects inside the window: that attach runs now.
+    await act(async () => { daemonConnected?.(); });
+    await settle();
+    expect(reconnect).toHaveBeenCalledTimes(1);
+
+    font.loaded = true;
+    Object.assign(size, { cols: 118, rows: 44 });
+    await act(async () => { jobs.at(-1)!(); });
+    await settle();
+    // The gate opened (the pane sent its size) and the deferred at-mount
+    // attach stood down: the ring is not replayed twice.
+    expect(sizesFor('p-gate-raced')).toContain('118x44');
+    expect(reconnect).toHaveBeenCalledTimes(1);
   });
 
   it('goes with the measured size once the bound passes when the font never loads', async () => {
