@@ -5,7 +5,7 @@ import { createSheetTracker, SHEET_RETRY_WINDOW_MS } from '../dialogSheets';
 import {
   createWin32BoxPort,
   hwnd32,
-  UNOWNED_QUIET_MS,
+  LOOKING_MS,
   MSAA_BUDGET_MS,
   readAccChildren,
   ROLE_STATICTEXT,
@@ -218,14 +218,16 @@ describe('the Windows box port with the tracker', () => {
 });
 
 describe('the Windows rules that unowned boxes and labels add', () => {
-  it("an unowned box from before a window's first look is never that window's", () => {
+  it("another window's unowned box is never this window's, however much later this window looks", () => {
     const r = rig();
     const tabA = r.host();
     const tabB = r.host();
-    // Window B shows an unowned confirm a person hasn't answered.
-    const persons = r.show({ owner: 0n, children: confirmKids('Continue?') });
-    r.advance(UNOWNED_QUIET_MS + 1);
-    // Window A's first dialog has the same text; its own box isn't up yet on the first look.
+    // Window B's dialog opens while B already has a box up: its box is unowned.
+    r.tracker.trackOpening('b', tabB, 'Continue?', 'confirm');
+    const bBox = r.show({ owner: 0n, children: confirmKids('Continue?') });
+    r.settle();
+    // Well past B's looks, window A opens the same text; A's own box isn't up yet.
+    r.advance(LOOKING_MS * 3);
     r.tracker.trackOpening('a', tabA, 'Continue?', 'confirm');
     r.settle();
     r.advance(1_100);
@@ -233,11 +235,11 @@ describe('the Windows rules that unowned boxes and labels add', () => {
     r.tracker.closeIfStale('a');
     r.settle();
     expect(r.posted).toEqual([]);
-    expect(r.showing(persons)).toBe(true);
-    void tabB;
+    expect(r.showing(bBox)).toBe(true);
+    expect(r.port.list(tabA).map((b) => b.hwnd)).not.toContain(bBox.hwnd);
   });
 
-  it('two windows looking at once never list unowned boxes', () => {
+  it('an unowned box first seen while two windows look belongs to neither, for good', () => {
     const r = rig();
     const tabA = r.host();
     const tabB = r.host();
@@ -246,10 +248,22 @@ describe('the Windows rules that unowned boxes and labels add', () => {
     r.show({ owner: 0n, children: confirmKids('Continue?') });
     expect(r.port.list(tabA)).toEqual([]);
     expect(r.port.list(tabB)).toEqual([]);
-    r.advance(UNOWNED_QUIET_MS + 1);
-    r.port.list(tabA);
-    r.advance(1);
-    expect(r.port.list(tabA)).toHaveLength(1);
+    // It never moves to a window later, so it can't come back to one as new.
+    r.advance(LOOKING_MS * 3);
+    expect(r.port.list(tabA)).toEqual([]);
+  });
+
+  it('a claimed unowned box still closes when another window is looking at the time', () => {
+    const r = rig();
+    const tabA = r.host();
+    const tabB = r.host();
+    r.tracker.trackOpening('a', tabA, 'hello', 'alert');
+    const box = r.show({ owner: 0n, children: alertKids('hello') });
+    r.settle();
+    r.port.list(tabB); // window B starts looking
+    r.tracker.closeIfStale('a');
+    r.settle();
+    expect(r.posted).toEqual([box.hwnd]);
   });
 
   it("a box with the page's text but its own two buttons is never closed", () => {
@@ -322,7 +336,8 @@ describe('createWin32BoxPort', () => {
     const tab = r.host();
     const box = r.show({ owner: r.hwndOf(tab), children: alertKids('m') });
     const firstKey = r.port.key(r.port.list(tab)[0]);
-    // Windows hides owned popups while the owner is minimized: same box, same key.
+    // Windows hides owned popups while the owner is minimized. The port reads no
+    // visibility at all, so the box keeps its key while hidden.
     box.visible = false;
     expect(r.port.key(r.port.list(tab)[0])).toBe(firstKey);
     box.visible = true;
@@ -361,7 +376,9 @@ function fakeCom(boxes: number) {
   let slowFor = 0;
   let clock = 0;
   const kidsOf = new Map<number, Array<{ role: number; name: string }>>();
+  let answering = true;
   const com: ComCalls<number> = {
+    answering: () => answering,
     fromWindow: () => {
       const o = take();
       const n = boxes % 2 === 0 ? 2 : 3;
@@ -387,7 +404,7 @@ function fakeCom(boxes: number) {
       refs.set(o, n);
     },
   };
-  return { com, live, failOn, setSlow: (ms: number) => { slowFor = ms; }, now: () => clock };
+  return { com, live, failOn, setSlow: (ms: number) => { slowFor = ms; }, now: () => clock, setAnswering: (v: boolean) => { answering = v; } };
 }
 
 describe('readAccChildren', () => {
@@ -418,6 +435,13 @@ describe('readAccChildren', () => {
     readAccChildren(com, 1n, MSAA_BUDGET_MS, f.now, (err) => { errors.push(err); });
     expect(errors).toHaveLength(1);
     expect(released.length).toBeGreaterThan(1);
+  });
+
+  it("stops when the box's thread no longer answers, releasing what it took", () => {
+    const f = fakeCom(2);
+    f.setAnswering(false);
+    expect(() => readAccChildren(f.com, 1n, MSAA_BUDGET_MS, f.now)).toThrow('did not answer');
+    expect(f.live()).toBe(0);
   });
 
   it('gives up past its budget', () => {

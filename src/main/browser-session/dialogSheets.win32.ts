@@ -13,8 +13,8 @@
 //
 // The first box is owned by the tab's window and disables it; a box opened
 // while one is up is unowned. Unowned boxes belong to no window, so they are
-// listed for a window only when nothing else could have meant them: they are
-// newer than that window's first look, and no other window is looking.
+// given to a window the first time they are seen, and only when that window
+// is the one looking for its boxes then; otherwise to none.
 
 import type { BrowserWindow } from 'electron';
 import type { SheetPort, SheetShape } from './dialogSheets';
@@ -64,11 +64,10 @@ export const ROLE_PUSHBUTTON = 43;
 export const MSAA_BUDGET_MS = 50;
 
 /**
- * Another window looked for its boxes this recently: an unowned box could be
- * its, so neither window lists unowned boxes. A little over the tracker's
- * retry window, which is how long an opening keeps looking.
+ * How long after a look a window counts as looking for its boxes: a little
+ * over the tracker's retry window, which is how long an opening keeps looking.
  */
-export const UNOWNED_QUIET_MS = 1_500;
+export const LOOKING_MS = 1_500;
 
 /** Window handles are 32-bit values; GetWindow and the native handle may differ in sign extension. */
 export const hwnd32 = (value: bigint | number): bigint => BigInt.asUintN(32, BigInt(value));
@@ -77,12 +76,19 @@ export function createWin32BoxPort(win: Win32Calls): SheetPort<BrowserWindow, Wi
   /** First-seen order of every TaskDialog of this process, hidden ones included. */
   const serials = new Map<bigint, number>();
   let nextSerial = 1;
-  /** Per window: the first serial its first look could call new, and when it last looked. */
-  const hosts = new Map<bigint, { since: number; lookedAt: number }>();
-  /** Each box's shape from its last read, by key. */
+  /** When each window last looked for its boxes. */
+  const lookedAt = new Map<bigint, number>();
+  /**
+   * An unowned box's window, fixed the first time the box is seen: the one
+   * window looking then, or null for good when more than one was (or none).
+   * A box's window never changes after that, so it neither moves between
+   * windows nor drops out of one window's list and comes back as new.
+   */
+  const unownedWindow = new Map<string, bigint | null>();
+  /** Each box's shape from its last look, by key. */
   const shapes = new Map<string, SheetShape>();
-  /** Keys of the claimed boxes. */
-  const claimed = new Set<string>();
+  /** The shape each claimed box had when it was claimed, by key. */
+  const claimed = new Map<string, SheetShape>();
 
   const keyOf = (box: Win32Box): string => `${box.hwnd}:${box.serial}`;
 
@@ -100,10 +106,13 @@ export function createWin32BoxPort(win: Win32Calls): SheetPort<BrowserWindow, Wi
       found.push({ hwnd, owner: win.ownerOf(hwnd) });
     }
     const present = new Set(found.map((f) => f.hwnd));
-    // A handle seen again after it was gone is a new box.
-    for (const hwnd of [...serials.keys()]) {
+    // A handle seen again after it was gone is a new box: forget the old one.
+    for (const [hwnd, serial] of [...serials]) {
       if (present.has(hwnd)) continue;
-      for (const key of [...shapes.keys()]) if (key.startsWith(`${hwnd}:`)) shapes.delete(key);
+      const key = keyOf({ hwnd, serial });
+      shapes.delete(key);
+      unownedWindow.delete(key);
+      claimed.delete(key);
       serials.delete(hwnd);
     }
     // Boxes new to this look are numbered bottom of the Z order first: a box
@@ -114,8 +123,8 @@ export function createWin32BoxPort(win: Win32Calls): SheetPort<BrowserWindow, Wi
       .sort((a, b) => a.box.serial - b.box.serial);
   };
 
-  /** Read a box's shape over MSAA. A look remembers it; the check before closing does not. */
-  const readShape = (box: Win32Box, remember = true): SheetShape => {
+  /** Read a box's shape over MSAA. */
+  const readShape = (box: Win32Box): SheetShape => {
     const content = win.childOfClass(box.hwnd, 'DirectUIHWND');
     if (content === 0n) throw new Error('the box has no DirectUIHWND');
     const common = win.commonLabels();
@@ -131,9 +140,7 @@ export function createWin32BoxPort(win: Win32Calls): SheetPort<BrowserWindow, Wi
       // box: an extra text keeps it from matching.
       else texts.push(`\u0000role ${child.role}`);
     }
-    const shape = { texts, buttons };
-    if (remember) shapes.set(keyOf(box), shape);
-    return shape;
+    return { texts, buttons };
   };
 
   const same = (a: SheetShape, b: SheetShape): boolean => JSON.stringify(a) === JSON.stringify(b);
@@ -142,36 +149,37 @@ export function createWin32BoxPort(win: Win32Calls): SheetPort<BrowserWindow, Wi
     list: (host) => {
       const hostHwnd = win.hostOf(host);
       const now = win.now();
+      lookedAt.set(hostHwnd, now);
+      for (const [h, t] of [...lookedAt]) if (now - t > 60 * LOOKING_MS) lookedAt.delete(h);
+      const looking = [...lookedAt].filter(([, t]) => now - t < LOOKING_MS).map(([h]) => h);
       const boxes = ourBoxes();
-      let state = hosts.get(hostHwnd);
-      if (!state) {
-        state = { since: nextSerial, lookedAt: now };
-        hosts.set(hostHwnd, state);
+      for (const { box, owner } of boxes) {
+        const key = keyOf(box);
+        if (owner === 0n && !unownedWindow.has(key)) unownedWindow.set(key, looking.length === 1 ? looking[0] : null);
       }
-      const othersLooking = [...hosts].some(([h, s]) => h !== hostHwnd && now - s.lookedAt < UNOWNED_QUIET_MS);
-      state.lookedAt = now;
-      const since = state.since;
       return boxes
-        .filter(({ box, owner }) =>
-          owner === hostHwnd || (owner === 0n && !othersLooking && box.serial >= since))
+        .filter(({ box, owner }) => owner === hostHwnd || (owner === 0n && unownedWindow.get(keyOf(box)) === hostHwnd))
         .map(({ box }) => box);
     },
     key: keyOf,
-    shape: (box) => readShape(box),
+    shape: (box) => {
+      const shape = readShape(box);
+      shapes.set(keyOf(box), shape);
+      return shape;
+    },
     retain: (box) => {
-      if (!shapes.has(keyOf(box))) readShape(box);
-      claimed.add(keyOf(box));
+      const key = keyOf(box);
+      claimed.set(key, shapes.get(key) ?? readShape(box));
     },
     release: (box) => {
       claimed.delete(keyOf(box));
     },
     endLater: (_host, box) => {
       // The tracker has just listed it. Close only the box that was claimed, and
-      // only while it still reads as it did when it was.
-      const key = keyOf(box);
-      const was = shapes.get(key);
-      if (!claimed.has(key) || !was) throw new Error('the box was not claimed');
-      if (!same(readShape(box, false), was)) throw new Error('the box changed since it was claimed');
+      // only while it still reads as it did when it was claimed.
+      const was = claimed.get(keyOf(box));
+      if (!was) throw new Error('the box was not claimed');
+      if (!same(readShape(box), was)) throw new Error('the box changed since it was claimed');
       if (!win.postClose(box.hwnd)) throw new Error('PostMessage(WM_CLOSE) failed');
     },
   };
@@ -188,6 +196,13 @@ export type ComChild<O> = { kind: 'object'; dispatch: O } | { kind: 'element'; i
 export interface ComCalls<O> {
   /** The window's client IAccessible; null when there is none or its thread didn't answer in time. */
   fromWindow(hwnd: bigint, timeoutMs: number): O | null;
+  /**
+   * Whether the box's thread answers a message within the time left. The calls
+   * below are COM calls into that thread with no timeout of their own; this is
+   * asked before each one, so a thread that stops answering costs at most the
+   * call already in flight.
+   */
+  answering(hwnd: bigint, timeoutMs: number): boolean;
   childCount(acc: O): number;
   /**
    * AccessibleChildren. Every returned object is a reference the caller
@@ -219,7 +234,9 @@ export function readAccChildren<O>(
 ): AccChild[] {
   const started = now();
   const within = (what: string): void => {
-    if (now() - started > budgetMs) throw new Error(`MSAA read took over ${budgetMs} ms (at ${what})`);
+    const left = budgetMs - (now() - started);
+    if (left <= 0) throw new Error(`MSAA read took over ${budgetMs} ms (at ${what})`);
+    if (!com.answering(hwnd, left)) throw new Error(`the box's thread did not answer (at ${what})`);
   };
   const root = com.fromWindow(hwnd, budgetMs);
   if (root === null) throw new Error('no MSAA object for the box, or its thread did not answer in time');
@@ -274,7 +291,9 @@ interface Koffi {
   address(pointer: unknown): bigint;
 }
 
-const OBJID_CLIENT = 0xfffffffc;
+/** A LONG: passed sign-extended, as servers compare lParam with it. */
+const OBJID_CLIENT = -4;
+const WM_NULL = 0x0000;
 const GW_OWNER = 4;
 const WM_CLOSE = 0x0010;
 const WM_GETOBJECT = 0x003d;
@@ -342,6 +361,10 @@ export function loadWin32(): Win32Calls {
       const hr = ObjectFromLresult(lresult[0], IID_IAccessible, 0n, out);
       return Number(hr) >= 0 && !isNull(out[0]) ? out[0] : null;
     },
+    answering: (hwnd, timeoutMs) => {
+      const result: bigint[] = [0n];
+      return Boolean(Number(SendMessageTimeoutW(hwnd, WM_NULL, 0n, 0n, SMTO_ABORTIFHUNG, Math.max(1, Math.round(timeoutMs)), result)));
+    },
     childCount: (acc) => {
       const out = [0];
       ok(koffi.call(method(acc, SLOT_CHILD_COUNT), GetChildCount, acc, out), 'get_accChildCount');
@@ -354,12 +377,27 @@ export function loadWin32(): Win32Calls {
         ok(AccessibleChildren(acc, 0, count, buf, got), 'AccessibleChildren');
         if (got[0] === 0) return [];
         const items = koffi.decode(buf, VARIANT_PTR, got[0]) as Array<{ vt: number; val: unknown }>;
-        return items.map((item): ComChild<unknown> => {
-          if (item.vt === VT_DISPATCH && !isNull(item.val)) return { kind: 'object', dispatch: item.val };
-          if (item.vt === VT_I4) return { kind: 'element', id: Number(koffi.address(item.val) & 0xffffffffn) };
-          // A null dispatch, or a type AccessibleChildren doesn't document: an element no match accepts.
-          return { kind: 'element', id: -1 };
-        });
+        const out: Array<ComChild<unknown>> = [];
+        try {
+          for (const item of items) {
+            if (item.vt === VT_DISPATCH && !isNull(item.val)) out.push({ kind: 'object', dispatch: item.val });
+            else if (item.vt === VT_I4) out.push({ kind: 'element', id: isNull(item.val) ? 0 : Number(koffi.address(item.val) & 0xffffffffn) });
+            // A null dispatch, or a type AccessibleChildren doesn't document: an element no match accepts.
+            else out.push({ kind: 'element', id: -1 });
+          }
+        } catch (err) {
+          // Every dispatch in the array is a reference this call took: give them back.
+          for (const item of items) {
+            if (item.vt !== VT_DISPATCH) continue;
+            try {
+              release(item.val);
+            } catch {
+              // The read fails anyway; the next release is still tried.
+            }
+          }
+          throw err;
+        }
+        return out;
       } finally {
         koffi.free(buf);
       }
