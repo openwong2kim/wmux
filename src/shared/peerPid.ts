@@ -2,15 +2,19 @@
 //
 // A pipe call names its caller (a pid, a pty, a workspace) in its own fields,
 // and nothing ties those fields to the process that sent them. The kernel
-// knows which process connected: macOS answers LOCAL_PEERPID and Linux
-// SO_PEERCRED for a unix socket. This reads that answer through koffi.
+// knows which process connected: macOS answers LOCAL_PEERPID (and getpeereid
+// for its uid) and Linux SO_PEERCRED for a unix socket. This reads that answer
+// through koffi.
 //
-// Callers log what it returns next to what the call claimed, and
-// a2a.resolve.identity checks pane claims against it. Windows named pipes and
-// the loopback TCP fallback have no answer here yet (null).
+// The MCP broker decides on it (src/mcp/brokerPeer.ts), a2a.resolve.identity
+// checks pane claims against it, and the daemon logs it next to what a call
+// claimed. Windows named pipes and the loopback TCP fallback have no answer
+// here yet (null).
 //
-// The pid is the one that connected; a process that inherits the socket, or a
-// pid reused after the peer exits, is not distinguished.
+// Linux SO_PEERCRED names the process that connected. macOS LOCAL_PEERPID
+// names the socket's last_pid, the last process to use the peer's end. Neither
+// tells apart a process that inherited the socket, or a pid reused after the
+// peer exits.
 
 import net from 'node:net';
 import os from 'node:os';
@@ -23,6 +27,7 @@ export type PeerPid =
   | { pid: null; reason: string };
 
 type GetSockOpt = (fd: number, level: number, name: number, value: Buffer, length: Buffer) => number;
+type GetPeerEid = (fd: number, uid: Buffer, gid: Buffer) => number;
 
 // darwin <sys/un.h>: SOL_LOCAL 0, LOCAL_PEERPID 0x002 (pid_t).
 // linux <asm/socket.h>: SOL_SOCKET 1, SO_PEERCRED 17 (struct ucred { pid; uid; gid }).
@@ -32,6 +37,8 @@ const OPTION: Partial<Record<NodeJS.Platform, { lib: string; level: number; name
 };
 
 let getsockopt: GetSockOpt | { reason: string } | undefined;
+// darwin only: LOCAL_PEERPID carries no uid, getpeereid does.
+let getpeereid: GetPeerEid | undefined;
 
 function loadGetSockOpt(): GetSockOpt | { reason: string } {
   if (getsockopt) return getsockopt;
@@ -41,11 +48,25 @@ function loadGetSockOpt(): GetSockOpt | { reason: string } {
     // Runtime require, external to every bundle (its binary sits beside the package).
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const koffi = require('koffi') as { load(name: string): { func(name: string, result: string, args: string[]): unknown } };
-    getsockopt = koffi.load(option.lib).func('getsockopt', 'int', ['int', 'int', 'int', 'void *', 'void *']) as GetSockOpt;
+    const lib = koffi.load(option.lib);
+    getsockopt = lib.func('getsockopt', 'int', ['int', 'int', 'int', 'void *', 'void *']) as GetSockOpt;
+    if (process.platform === 'darwin') getpeereid = lib.func('getpeereid', 'int', ['int', 'void *', 'void *']) as GetPeerEid;
   } catch (err) {
     getsockopt = { reason: `koffi unavailable: ${err instanceof Error ? err.message : String(err)}` };
   }
   return getsockopt;
+}
+
+/** The peer's uid on darwin, or undefined when it cannot be read. */
+function darwinPeerUid(fd: number): number | undefined {
+  if (!getpeereid) return undefined;
+  const uid = Buffer.alloc(4);
+  const gid = Buffer.alloc(4);
+  try {
+    return getpeereid(fd, uid, gid) === 0 ? uid.readUInt32LE(0) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -71,19 +92,26 @@ export function peerPidOf(socket: net.Socket): PeerPid {
   const pid = value.readInt32LE(0);
   // 0: a peer outside this pid namespace (Linux).
   if (pid <= 0) return { pid: null, reason: 'no peer pid' };
-  return process.platform === 'linux' ? { pid, uid: value.readUInt32LE(4) } : { pid };
+  if (process.platform === 'linux') return { pid, uid: value.readUInt32LE(4) };
+  const uid = darwinPeerUid(fd);
+  return uid === undefined ? { pid } : { pid, uid };
 }
 
 /**
  * Whether this process can read peer pids: it connects to a socket of its own
- * and checks that the peer it reads is itself. A packaged build missing
- * koffi's binary shows here as unavailable.
+ * and checks that the peer it reads is itself, by pid and uid. A packaged build missing
+ * koffi's binary shows here as unavailable. The socket is a fresh name in the
+ * temp directory, or `socketPath` when given: a file already there is removed
+ * first, so a caller that names one path keeps a single file however often it
+ * checks.
  */
-export function selfCheckPeerPid(timeoutMs = 2000): Promise<string | null> {
+export function selfCheckPeerPid(timeoutMs = 2000, socketPath?: string): Promise<string | null> {
   // Windows named pipes have no peer pid here: nothing to check or log.
   if (process.platform === 'win32') return Promise.resolve(null);
   if (!OPTION[process.platform]) return Promise.resolve(`unavailable (unsupported platform ${process.platform})`);
-  const socketPath = path.join(os.tmpdir(), `wmux-peer-${process.pid}-${crypto.randomBytes(4).toString('hex')}.sock`);
+  const at = socketPath ?? path.join(os.tmpdir(), `wmux-peer-${process.pid}-${crypto.randomBytes(4).toString('hex')}.sock`);
+  // A file that cannot be removed shows up as the listen error below.
+  if (socketPath) try { fs.rmSync(socketPath, { force: true }); } catch { /* listen reports it */ }
   return new Promise((resolve) => {
     let settled = false;
     let client: net.Socket | undefined;
@@ -94,18 +122,22 @@ export function selfCheckPeerPid(timeoutMs = 2000): Promise<string | null> {
       clearTimeout(timer);
       client?.destroy();
       server.close();
-      fs.rm(socketPath, { force: true }, () => undefined);
+      fs.rm(at, { force: true }, () => undefined);
       resolve(verdict);
     };
     const server = net.createServer((socket) => {
       const peer = peerPidOf(socket);
       socket.destroy();
+      const ownUid = process.getuid?.();
       if (peer.pid === null) finish(`unavailable (${peer.reason})`);
-      else finish(peer.pid === process.pid ? 'available' : `unavailable (read pid ${peer.pid}, expected ${process.pid})`);
+      else if (peer.pid !== process.pid) finish(`unavailable (read pid ${peer.pid}, expected ${process.pid})`);
+      // The broker refuses a peer without a uid, so a uid it cannot read is no peer read at all.
+      else if (peer.uid !== ownUid) finish(`unavailable (read uid ${String(peer.uid)}, expected ${String(ownUid)})`);
+      else finish('available');
     });
     server.on('error', (err) => finish(`unavailable (${err.message})`));
-    server.listen(socketPath, () => {
-      client = net.connect(socketPath);
+    server.listen(at, () => {
+      client = net.connect(at);
       client.on('error', (err) => finish(`unavailable (${err.message})`));
     });
   });
