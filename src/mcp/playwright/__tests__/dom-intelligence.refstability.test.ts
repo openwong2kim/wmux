@@ -116,7 +116,8 @@ function makePage(nodes: CdpNode[], url = 'https://example.test/a') {
     }),
     locator: (selector: string) => {
       page.picked.push(selector);
-      return selector as never;
+      // A stamp selector's live match count comes from liveCounts too (default 1).
+      return { selector, count: async () => page.liveCounts.get(selector) ?? 1 } as never;
     },
     getByRole: (r: string, opts?: { name?: string; exact?: boolean }) => {
       page.queries.push({ role: r, ...(opts?.name !== undefined && { name: opts.name }), ...(opts?.exact !== undefined && { exact: opts.exact }) });
@@ -685,6 +686,26 @@ describe('RPC lane keeps positional refs', () => {
 
     // No page was captured on this lane, so any page may resolve the selector.
     const page = makePage(tree([]));
-    expect(await resolveSmartRefLocator(page, 2)).toBe('[data-wmux-smart-ref="2"]');
+    expect(await resolveSmartRefLocator(page, 2)).toMatchObject({ selector: '[data-wmux-smart-ref="2"]' });
+  });
+
+  it('reports a stale ref when a page appears and the stamp is gone or copied', async () => {
+    clearElementCache();
+    clearRefDescriptors();
+    const evaluate = async () => ({
+      url: 'https://example.test/a',
+      title: 'Page',
+      content: '',
+      elements: [{ ref: 1, role: 'button', name: 'OK' }],
+    });
+    await getSmartSnapshotViaEval(evaluate as never);
+    // getPage() turned null -> page after a navigation: the new document carries no stamp.
+    const page = makePage(tree([]), 'https://example.test/b');
+    page.liveCounts.set('[data-wmux-smart-ref="1"]', 0);
+    await expect(resolveSmartRefLocator(page, 1)).rejects.toBeInstanceOf(StaleSmartRefError);
+    await expect(resolveSmartRefLocator(page, 1)).rejects.toThrow(/no longer in the page/);
+    // The page copied the stamped element: two matches, and the click would take the first.
+    page.liveCounts.set('[data-wmux-smart-ref="1"]', 2);
+    await expect(resolveSmartRefLocator(page, 1)).rejects.toThrow(/more than one element/);
   });
 });

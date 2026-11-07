@@ -129,6 +129,37 @@ describe('browser_click({ smartRef }) on the RPC lane', () => {
     expect(clicked).toEqual([]);
   });
 
+  it('refuses a smartRef whose stamp the page copied onto another element', async () => {
+    document.body.innerHTML = PAGE;
+    const listing = textOf(await tool('browser_smart_snapshot')({}));
+    const del = smartRefOf(listing, 'Delete');
+    // cloneNode copies attributes, the stamp included; the copy comes first.
+    const original = document.getElementById('delete') as HTMLElement;
+    const copy = original.cloneNode(true) as HTMLElement;
+    copy.id = 'copy';
+    document.body.insertBefore(copy, document.body.firstChild);
+    const res = await tool('browser_click')({ smartRef: del });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/smartRef=\d+ now names more than one element.*browser_smart_snapshot/s);
+    expect(clicked).toEqual([]);
+  });
+
+  it('refuses a smartRef from a smart snapshot of another surface', async () => {
+    document.body.innerHTML = PAGE;
+    const listing = textOf(await tool('browser_smart_snapshot')({ surfaceId: 'surface-a' }));
+    const del = smartRefOf(listing, 'Delete');
+    // Surface B's page shares this test's one DOM, so A's stamp is there to be
+    // pressed: only the surface check stands between the click and it.
+    const res = await tool('browser_click')({ smartRef: del, surfaceId: 'surface-b' });
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toMatch(/smartRef=\d+ was taken on another surface.*browser_smart_snapshot/s);
+    expect(clicked).toEqual([]);
+    // The surface it was taken on still takes it.
+    const same = await tool('browser_click')({ smartRef: del, surfaceId: 'surface-a' });
+    expect(same.isError).toBeFalsy();
+    expect(clicked).toEqual(['delete']);
+  });
+
   it('lets smartRef win over ref, and takes a smartRef next to an empty ref', async () => {
     document.body.innerHTML = PAGE;
     await tool('browser_snapshot')({});

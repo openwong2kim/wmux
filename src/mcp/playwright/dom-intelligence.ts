@@ -1231,6 +1231,15 @@ export function getSmartElementOnPage(ref: number, page: Page | null): IndexedEl
  *
  * Returns `null` if no element carries that ref.
  */
+/**
+ * The surface the latest smart snapshot was taken on. A smartRef's stamp says
+ * nothing about which surface's page carries it, so the RPC lane refuses a
+ * click aimed at any other surface, as the page lane refuses another page.
+ */
+export function smartSnapshotSurface(): string | undefined {
+  return getSnapshotRecord().surfaceId;
+}
+
 export function getLocatorByRef(ref: number): string | null {
   return getSmartElementByRef(ref)?.locator ?? null;
 }
@@ -1354,8 +1363,20 @@ export async function resolveSmartRefLocator(
   }
 
   if (isSmartStampLocator(element.locator)) {
+    // A stamp names its element only while exactly one carries it: a new
+    // document has none, and cloneNode copies it (the click takes the first).
+    const stamped = page.locator(element.locator);
+    const matches = await stamped.count();
+    if (matches === 0) {
+      throw new StaleSmartRefError(`smartRef=${ref} is stale — the element it named is no longer in the page. ${RESNAPSHOT}`);
+    }
+    if (matches > 1) {
+      throw new StaleSmartRefError(
+        `smartRef=${ref} now names more than one element (the page copied it since the snapshot). ${RESNAPSHOT}`,
+      );
+    }
     if (recovered) options?.notes?.push(recovered);
-    return page.locator(element.locator);
+    return stamped;
   }
 
   const role = element.role as Parameters<Page['getByRole']>[0];

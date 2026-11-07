@@ -16,6 +16,7 @@ import {
   resolveSmartRefLocator,
   smartRefAxisEntry,
   smartRefSelector,
+  smartSnapshotSurface,
   RESNAPSHOT as SMART_RESNAPSHOT,
 } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
@@ -752,7 +753,20 @@ async function rpcClick(
     if (getLocatorByRef(Number(ref)) !== selector) {
       throw taggedFailure('ref_not_found', `smartRef=${ref} is stale or was not listed by browser_smart_snapshot here. ${SMART_RESNAPSHOT}`);
     }
+    // Another surface's page can carry the same number, stamped by an older
+    // smart snapshot there; only the surface this one was taken on takes it.
+    if (smartSnapshotSurface() !== scope.surfaceId) {
+      throw taggedFailure('ref_not_found', `smartRef=${ref} was taken on another surface than this click targets. Run browser_smart_snapshot on this surface to get current refs.`);
+    }
     target = { selector, frame: null };
+    // cloneNode copies the stamp, and the click takes the first match: press
+    // only while the stamp still names exactly one element.
+    const counted = await sendForTarget<{ value?: unknown }>('browser.evaluate', scope, target, {
+      expression: `document.querySelectorAll(${JSON.stringify(selector)}).length`,
+    });
+    if (typeof counted?.value === 'number' && counted.value > 1) {
+      throw taggedFailure('ref_not_found', `smartRef=${ref} now names more than one element (the page copied it since the snapshot). ${SMART_RESNAPSHOT}`);
+    }
   } else {
     target = rpcRefTarget(ref, scope, { frames: 'allow' });
   }
