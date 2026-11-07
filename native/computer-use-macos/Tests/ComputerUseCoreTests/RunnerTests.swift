@@ -13,7 +13,7 @@ final class RunnerPolicyTests: XCTestCase {
     }
 
     func testRefusesCommandsOutsideItsList() {
-        for command in ["click", "type", "clipboard-get", "batch", "launch", "screenshot", "permissions", "mcp"] {
+        for command in ["click", "type", "clipboard-get", "batch", "launch", "screenshot", "permissions", "mcp", "skills"] {
             XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": [command], "home": "/tmp/ad"]), command)
         }
     }
