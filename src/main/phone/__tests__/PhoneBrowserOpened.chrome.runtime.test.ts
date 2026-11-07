@@ -1,10 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { ChromeLauncher } from '../../browser-session/ChromeLauncher';
+import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { createPhoneChromeDeps } from '../PhoneBrowserChrome';
 import { handlePhoneBrowser } from '../PhoneBrowser';
 import { MODES, requiredOnThisRunner, type Mode } from '../../../test-utils/realBrowserHarness';
@@ -54,6 +52,7 @@ function describeMode(mode: Mode): void {
   let server: http.Server;
   let port = 0;
   let launcher: ChromeLauncher | null = null;
+  let profile: TempChromeProfile | null = null;
   let skipReason: string | null = null;
   let chrome: ReturnType<typeof createPhoneChromeDeps>;
   const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
@@ -62,7 +61,8 @@ function describeMode(mode: Mode): void {
     server = http.createServer(serve);
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     port = (server.address() as AddressInfo).port;
-    const dir = mkdtempSync(join(tmpdir(), 'wmux-opened-chrome-'));
+    profile = tempChromeProfile('wmux-opened-chrome-');
+    const dir = profile.dir;
     const savedProfile = process.env.USERPROFILE;
     if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
     try {
@@ -86,9 +86,11 @@ function describeMode(mode: Mode): void {
   }, 120_000);
 
   afterAll(async () => {
-    await launcher?.dispose();
+    await stopChrome(launcher);
     server?.close();
-  }, 60_000);
+    // After Chrome has gone, launched or not.
+    await profile?.remove();
+  }, CHROME_TEARDOWN_TIMEOUT_MS);
 
   function skipUnless(ctx: { skip: (note?: string) => void }): boolean {
     if (!skipReason) return false;
@@ -120,10 +122,18 @@ function describeMode(mode: Mode): void {
     return reply.result?.value;
   };
 
-  /** A tab of `workspaceId` on the fixture page, loaded and in front. */
+  /**
+   * A tab of `workspaceId` on the fixture page, loaded and in front. The tab's
+   * first document is an empty one that is `complete` too, so the page is the
+   * one at this URL.
+   */
   async function open(workspaceId: string): Promise<string> {
-    const { surfaceId } = await running().openTab(`http://127.0.0.1:${port}/`, workspaceId);
-    await eventually(async () => (await evaluate(surfaceId, 'document.readyState').catch(() => null)) === 'complete');
+    const url = `http://127.0.0.1:${port}/`;
+    const { surfaceId } = await running().openTab(url, workspaceId);
+    await eventually(async () => {
+      const page = await evaluate(surfaceId, '[location.href, document.readyState]').catch(() => null) as [string, string] | null;
+      return page?.[0] === url && page[1] === 'complete';
+    });
     return surfaceId;
   }
 

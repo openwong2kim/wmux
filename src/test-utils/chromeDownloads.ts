@@ -4,20 +4,27 @@ import path from 'node:path';
 
 /**
  * Point a test profile's default download folder at a new temp dir, and
- * return that dir. Call it before the profile's Chrome starts.
+ * return that dir. Call it before the profile's Chrome starts. `preferences`
+ * are other Preferences the profile starts with.
  *
  * Chrome on macOS and Windows takes its default Downloads folder from the
  * account, not from HOME, so the isolated test HOME does not keep a download
  * with no path set out of the account's real Downloads folder. A pinned
  * folder does.
  */
-export function pinDownloadDir(profileDir: string): string {
+export function pinDownloadDir(profileDir: string, preferences: Record<string, unknown> = {}): string {
   const downloads = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-test-downloads-'));
-  fs.mkdirSync(path.join(profileDir, 'Default'), { recursive: true });
-  fs.writeFileSync(
-    path.join(profileDir, 'Default', 'Preferences'),
-    JSON.stringify({ download: { default_directory: downloads, prompt_for_download: false } }),
-  );
+  try {
+    fs.mkdirSync(path.join(profileDir, 'Default'), { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, 'Default', 'Preferences'),
+      JSON.stringify({ ...preferences, download: { default_directory: downloads, prompt_for_download: false } }),
+    );
+  } catch (err) {
+    // The caller never learns this dir's name, so it can't remove it.
+    fs.rmSync(downloads, { recursive: true, force: true });
+    throw err;
+  }
   return downloads;
 }
 

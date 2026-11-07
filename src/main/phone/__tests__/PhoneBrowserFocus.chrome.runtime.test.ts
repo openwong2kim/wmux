@@ -1,10 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { ChromeLauncher } from '../../browser-session/ChromeLauncher';
+import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { createPhoneChromeDeps } from '../PhoneBrowserChrome';
 import { handlePhoneBrowser } from '../PhoneBrowser';
 import { readFocus, watchFocus, type FocusCdp } from '../PhoneBrowserFocus';
@@ -21,6 +19,13 @@ import { deliberateSleep } from '../../../test-utils/waitFor';
 // ---------------------------------------------------------------------------
 
 const CASE_TIMEOUT_MS = 60_000;
+/**
+ * How long the test page takes to arrive. A new tab shows its first document,
+ * an empty one that is already `complete`, until the page commits: on a
+ * loaded runner that took long enough for a test to act on the empty one. The
+ * page is always slow here, so a test that doesn't wait for it fails every run.
+ */
+const PAGE_DELAY_MS = 300;
 
 /** The same page on the other loopback name: another site, so a cross-origin frame. */
 function otherOrigin(host: string): string {
@@ -33,13 +38,13 @@ function serve(req: http.IncomingMessage, res: http.ServerResponse): void {
   res.writeHead(200, { 'content-type': 'text/html' });
   if (path === '/inner') return void res.end('<!doctype html><body style="margin:0"><input id="in" type="search" style="width:200px;height:30px"></body>');
   if (path === '/other') return void res.end('<!doctype html><body><p>other page</p></body>');
-  res.end('<!doctype html><html><body style="margin:0">'
+  setTimeout(() => res.end('<!doctype html><html><body style="margin:0">'
     + '<style>input,button,textarea,.f{display:block;width:240px;height:36px;margin:6px;box-sizing:border-box}iframe{display:block;width:260px;height:44px;margin:6px}</style>'
     + '<input id="t" name="card" value="4111" placeholder="Card number"><input id="p" type="password" value="hunter2"><button id="b">go</button>'
     + '<textarea id="ta"></textarea><div id="ce" class="f" contenteditable="true">edit</div><div id="host" class="f"></div><input id="ro" readonly>'
     + `<iframe id="same" src="/inner"></iframe><iframe id="cross" src="http://${otherOrigin(host)}/inner"></iframe>`
     + '<script>document.getElementById("host").attachShadow({ mode: "open" }).innerHTML = \'<input id="sh" type="email">\';</script>'
-    + '</body></html>');
+    + '</body></html>'), PAGE_DELAY_MS);
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -66,6 +71,7 @@ function describeMode(mode: Mode): void {
   let server: http.Server;
   let port = 0;
   let launcher: ChromeLauncher | null = null;
+  let profile: TempChromeProfile | null = null;
   let skipReason: string | null = null;
   let chrome: ReturnType<typeof createPhoneChromeDeps>;
   const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
@@ -74,7 +80,8 @@ function describeMode(mode: Mode): void {
     server = http.createServer(serve);
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
     port = (server.address() as AddressInfo).port;
-    const dir = mkdtempSync(join(tmpdir(), 'wmux-focus-chrome-'));
+    profile = tempChromeProfile('wmux-focus-chrome-');
+    const dir = profile.dir;
     const savedProfile = process.env.USERPROFILE;
     if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
     try {
@@ -97,9 +104,11 @@ function describeMode(mode: Mode): void {
   }, 120_000);
 
   afterAll(async () => {
-    await launcher?.dispose();
+    await stopChrome(launcher);
     server?.close();
-  }, 60_000);
+    // After Chrome has gone, launched or not.
+    await profile?.remove();
+  }, CHROME_TEARDOWN_TIMEOUT_MS);
 
   function skipUnless(ctx: { skip: (note?: string) => void }): boolean {
     if (!skipReason) return false;
@@ -120,10 +129,15 @@ function describeMode(mode: Mode): void {
     chrome,
   });
 
-  /** Opens a tab of `ws-1` and waits for its page, frames included, to load. */
+  /**
+   * Opens a tab of `ws-1` and waits for its page, frames included, to load:
+   * the page itself, not the empty first document a new tab starts with,
+   * which is `complete` before the page has even arrived.
+   */
   async function open(path: string): Promise<string> {
     const { surfaceId } = await launcher!.openTab(`http://127.0.0.1:${port}${path}`, 'ws-1');
-    await eventually(async () => (await evaluate(surfaceId, 'document.readyState').catch(() => null)) === 'complete', 10_000);
+    const loaded = `${path}|complete`;
+    await eventually(async () => (await evaluate(surfaceId, 'location.pathname + "|" + document.readyState').catch(() => null)) === loaded, 10_000);
     return surfaceId;
   }
   /** The page's own (main-world) script. */
