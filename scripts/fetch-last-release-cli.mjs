@@ -20,7 +20,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AssetNotFound, fetchNewestPublished, stableReleases } from './lib/last-release.mjs';
+import { AssetNotFound, fetchNewestPublished, outputDir, stableReleases } from './lib/last-release.mjs';
 
 const REPO = 'openwong2kim/wmux';
 
@@ -71,8 +71,7 @@ async function fetchRelease(release, out) {
 }
 
 async function main() {
-  const out = process.argv[2];
-  if (!out) throw new Error('usage: node scripts/fetch-last-release-cli.mjs <out dir>');
+  const out = outputDir(process.argv[2]);
   const cli = await fetchNewestPublished(releasesToTry(), (release) => fetchRelease(release, out), (line) => console.error(line));
   process.stdout.write(`${cli}\n`);
 }

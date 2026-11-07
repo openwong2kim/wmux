@@ -1,6 +1,15 @@
 // The downgrade test's release (scripts/fetch-last-release-cli.mjs), apart
 // from the script so a test can import it.
 
+import path from 'node:path';
+
+/** The output directory argument, absolute: the printed CLI path is used
+ *  from another cwd (the downgrade test runs it in a temp home). */
+export function outputDir(arg, cwd = process.cwd()) {
+  if (!arg) throw new Error('usage: node scripts/fetch-last-release-cli.mjs <out dir>');
+  return path.resolve(cwd, arg);
+}
+
 /** The stable releases among `tags`, as `X.Y.Z`, newest first. */
 export function stableReleases(tags) {
   const releases = tags

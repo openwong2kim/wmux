@@ -1,7 +1,8 @@
 // The downgrade test's release: the newest stable `vX.Y.Z` tag, picked at run
 // time so it follows every release without a step of its own.
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { AssetNotFound, fetchNewestPublished, stableReleases } from '../lib/last-release.mjs';
+import { AssetNotFound, fetchNewestPublished, outputDir, stableReleases } from '../lib/last-release.mjs';
 
 describe('stableReleases', () => {
   it('lists vX.Y.Z newest first by number, prereleases and other tags left out', () => {
@@ -50,5 +51,21 @@ describe('fetchNewestPublished', () => {
     await expect(fetchNewestPublished(['4.15.0', '4.14.0'], broken, log)).rejects.toThrow('SHA-256 mismatch');
     expect(tried).toEqual(['4.15.0']);
     await expect(fetchNewestPublished(['4.15.0'], async () => { throw new AssetNotFound('HTTP 404'); }, log)).rejects.toThrow('HTTP 404');
+  });
+});
+
+describe('outputDir', () => {
+  it('is absolute for a relative argument, so the printed CLI path works from any cwd', () => {
+    const cwd = path.resolve('/work/checkout');
+    expect(outputDir('last-release', cwd)).toBe(path.join(cwd, 'last-release'));
+    expect(outputDir('../x', cwd)).toBe(path.resolve(cwd, '..', 'x'));
+    expect(path.isAbsolute(outputDir('rel'))).toBe(true);
+    const absolute = path.resolve('/runner/temp/last-release');
+    expect(outputDir(absolute, cwd)).toBe(absolute);
+  });
+
+  it('still requires the argument', () => {
+    expect(() => outputDir(undefined)).toThrow(/usage: node scripts\/fetch-last-release-cli\.mjs <out dir>/);
+    expect(() => outputDir('')).toThrow(/usage/);
   });
 });
