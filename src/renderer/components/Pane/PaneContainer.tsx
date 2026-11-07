@@ -5,6 +5,7 @@ import type { Pane as PaneType, Workspace } from '../../../shared/types';
 import { findLeaf } from '../../../shared/paneUtils';
 import { useStore } from '../../stores';
 import PaneComponent from './Pane';
+import { DialogHost, useHasDialogHost } from '../ui/dialogHost';
 
 /**
  * How far around a divider's 1px line the library lets the pointer grab it
@@ -103,7 +104,19 @@ interface PaneContainerProps {
   isZoomHidden?: boolean;
 }
 
-export default function PaneContainer({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = false }: PaneContainerProps) {
+/**
+ * The panes of one workspace. The outermost container also keeps the dialog
+ * host (ui/dialogHost): each pane root is its own stacking context, so a
+ * dialog a pane opens renders there, out of the panes, and hides while the
+ * workspace does.
+ */
+export default function PaneContainer(props: PaneContainerProps) {
+  const nested = useHasDialogHost();
+  const tree = <PaneTree {...props} />;
+  return nested ? tree : <DialogHost visible={props.isWorkspaceVisible ?? true}>{tree}</DialogHost>;
+}
+
+function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = false }: PaneContainerProps) {
   const activePaneId = useStore((s) => {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     return ws?.activePaneId || '';
