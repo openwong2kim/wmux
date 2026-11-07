@@ -151,6 +151,8 @@ type RpcDispatchOptions = (
   peerPid?: number;
   /** That peer's start time, read with its pid (PipeServer, shared/processStartTime.ts). */
   peerStartedAt?: string;
+  /** The request came over the loopback TCP fallback (PipeServer, Windows). */
+  viaTcp?: true;
 };
 
 export class RpcRouter {
@@ -405,6 +407,7 @@ export class RpcRouter {
       // The connection's peer as the OS reports it, from PipeServer only.
       ...(opts?.peerPid !== undefined && { peerPid: opts.peerPid }),
       ...(opts?.peerStartedAt !== undefined && { peerStartedAt: opts.peerStartedAt }),
+      ...(opts?.viaTcp && { viaTcp: true as const }),
       clientName:
         typeof request.clientName === 'string' && request.clientName.trim().length > 0
           ? request.clientName.trim()

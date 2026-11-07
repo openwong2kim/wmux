@@ -33,6 +33,8 @@ export class PipeServer {
   private readonly peerPids = new Map<net.Socket, number>();
   /** Each peer's start time (shared/processStartTime.ts), read with its pid. */
   private readonly peerStartedAts = new Map<net.Socket, string>();
+  /** Connections accepted by the loopback TCP fallback (Windows). */
+  private readonly tcpSockets = new Set<net.Socket>();
   /** Why peer pids were unavailable, each logged once. */
   private readonly peerPidMisses = new Set<string>();
   /**
@@ -238,9 +240,11 @@ export class PipeServer {
     this.tcpServer = net.createServer((socket) => {
       if (!this.admitConnection(socket)) return;
       this.connectedSockets.add(socket);
+      this.tcpSockets.add(socket);
       socket.on('close', () => {
         this.connectedSockets.delete(socket);
         this.rateLimits.delete(socket);
+        this.tcpSockets.delete(socket);
       });
       this.handleConnection(socket);
     });
@@ -441,6 +445,7 @@ export class PipeServer {
         ...(signal ? { signal } : {}),
         ...(this.peerPids.has(socket) ? { peerPid: this.peerPids.get(socket) } : {}),
         ...(this.peerStartedAts.has(socket) ? { peerStartedAt: this.peerStartedAts.get(socket) } : {}),
+        ...(this.tcpSockets.has(socket) ? { viaTcp: true as const } : {}),
       })
       .then((response) => {
         if (!socket.destroyed) {

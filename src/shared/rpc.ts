@@ -272,6 +272,8 @@ export interface RpcContext {
    * PipeServer, and absent when it could not be read.
    */
   peerStartedAt?: string;
+  /** Set only by PipeServer for a request that came over the loopback TCP fallback (Windows). */
+  viaTcp?: true;
   clientName?: string;
   clientVersion?: string;
   /**

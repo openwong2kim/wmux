@@ -13,7 +13,21 @@ import {
   __resetWorkspaceClaimTrustForTesting,
   lookupWorkspaceClaim,
 } from '../../../workspace/workspaceClaimTrust';
-import { resetPeerPidClaimLog, setBrokerPidSource } from '../peerPidShadow';
+import { resetClaimChecks, setBrokerIdentitySource, setClaimStartTimeSource } from '../peerPidShadow';
+
+// Claims are taken only from the process they name (peerPidShadow.checkClaim).
+// These tests are about the walk, so each dispatch comes from the claimed pid
+// itself, with a start time that still matches.
+beforeEach(() => {
+  resetClaimChecks();
+  setClaimStartTimeSource(() => 1n);
+});
+
+/** The connection a call naming `params`' pid would come over: from that process. */
+function fromClaimedPid(params: Record<string, unknown>): Parameters<RpcRouter['dispatch']>[1] {
+  const pid = params.callerPid ?? params.codexCallerPid;
+  return typeof pid === 'number' ? { externalWire: true, peerPid: pid, peerStartedAt: '1' } : undefined;
+}
 
 // Hoisted handles so the module mocks can read values set per-test.
 const { sendToRendererMock, dirRef, accountsRef } = vi.hoisted(() => ({
@@ -242,7 +256,7 @@ function setupRouterWithSnapshot(
 }
 
 async function dispatchResolve(router: RpcRouter, params: Record<string, unknown>): Promise<ResolveResult> {
-  const res = await router.dispatch({ id: 'rp', method: 'a2a.resolve.identity', params });
+  const res = await router.dispatch({ id: 'rp', method: 'a2a.resolve.identity', params }, fromClaimedPid(params));
   expect(res.ok).toBe(true);
   return (res as { result: ResolveResult }).result;
 }
@@ -757,6 +771,14 @@ describe('a2a.resolve.identity — scheduled runs with a browser identity', () =
     expect(lookupWorkspaceClaim(res.workspaceToken)).toEqual({ kind: 'bound', workspaceId: 'ws-1', ptyId: 'auto-r1', browserOnly: true });
   });
 
+  it('a caller whose connection is another process gets no run claim', async () => {
+    const r = setupRouterWithSnapshot(new Map<number, number>([[39876, 25020], [25020, 49076], [49076, 1]]));
+    const res = await r.dispatch({ id: 'rp', method: 'a2a.resolve.identity', params: { callerPid: 39876 } }, { externalWire: true, peerPid: 11111, peerStartedAt: '1' });
+    const result = (res as { result: ResolveResult & { workspaceToken?: string } }).result;
+    expect(result.resolved).toBeNull();
+    expect(result.workspaceToken).toBeUndefined();
+  });
+
   it('a caller under no identity run gets no claim', async () => {
     const res = await router(new Map<number, number>([[11111, 22222], [22222, 1], [49076, 1]]), 11111);
     expect(res.resolved).toBeNull();
@@ -790,7 +812,7 @@ describe('a2a.resolve.identity — scheduled runs with a browser identity', () =
 
   async function router(ppidByPid: Map<number, number>, callerPid = 39876) {
     const r = setupRouterWithSnapshot(ppidByPid);
-    const res = await r.dispatch({ id: 'rp', method: 'a2a.resolve.identity', params: { callerPid } });
+    const res = await r.dispatch({ id: 'rp', method: 'a2a.resolve.identity', params: { callerPid } }, fromClaimedPid({ callerPid }));
     expect(res.ok).toBe(true);
     return (res as { result: ResolveResult & { workspaceToken?: string } }).result;
   }
@@ -1058,14 +1080,15 @@ describe('a2a.resolve.identity — a pid-map hit must be the session\'s current 
   });
 });
 
-describe('a2a.resolve.identity — claims checked against the connection\'s peer', () => {
+describe('a2a.resolve.identity — a claim is taken only from the process it names', () => {
   // Two panes: daemon-shell (shell 49076) and daemon-other (shell 50000).
-  // 39876 and 60002 run in daemon-shell, 60001 in daemon-other, 70001 in none.
+  // 39876 and 60002 run in daemon-shell, 60001 in daemon-other.
   const tree = new Map<number, number>([
     [39876, 49076], [60002, 49076], [49076, 1],
     [60001, 50000], [50000, 1],
-    [70001, 1],
   ]);
+  // Start times as the OS would report them now.
+  const started = new Map<number, bigint>([[39876, 100n], [60002, 200n], [60001, 300n], [777, 900n]]);
   type PeerResult = ResolveResult & {
     workspaceToken?: string;
     threadClaim?: { ptyId: string };
@@ -1074,7 +1097,7 @@ describe('a2a.resolve.identity — claims checked against the connection\'s peer
   beforeEach(() => {
     vi.clearAllMocks();
     __resetWorkspaceClaimTrustForTesting();
-    resetPeerPidClaimLog();
+    setClaimStartTimeSource((pid) => started.get(pid) ?? null);
     dirRef.current = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pidmap-peer-'));
     fs.writeFileSync(path.join(dirRef.current, '49076'), 'daemon-shell');
     fs.writeFileSync(path.join(dirRef.current, '50000'), 'daemon-other');
@@ -1088,7 +1111,6 @@ describe('a2a.resolve.identity — claims checked against the connection\'s peer
     );
   });
   afterEach(() => {
-    resetPeerPidClaimLog();
     try { fs.rmSync(dirRef.current, { recursive: true, force: true }); } catch { /* best-effort */ }
   });
 
@@ -1102,60 +1124,67 @@ describe('a2a.resolve.identity — claims checked against the connection\'s peer
     return router;
   }
 
-  async function resolveAs(router: RpcRouter, params: Record<string, unknown>, peerPid?: number): Promise<PeerResult> {
-    const res = await router.dispatch(
+  /** Dispatch over a connection whose OS peer is `peer` (pid, and the start time read at accept). */
+  async function resolveAs(params: Record<string, unknown>, peer?: { pid: number; startedAt?: string }): Promise<PeerResult> {
+    const res = await peerRouter().dispatch(
       { id: 'pp', method: 'a2a.resolve.identity', params },
-      { firstParty: true, ...(peerPid !== undefined && { peerPid }) },
+      { externalWire: true, ...(peer && { peerPid: peer.pid }), ...(peer?.startedAt !== undefined && { peerStartedAt: peer.startedAt }) },
     );
     expect(res.ok).toBe(true);
     return (res as { result: PeerResult }).result;
   }
 
-  it('keeps the claim when the peer is the claimed pid, or another process in the same pane', async () => {
-    for (const peer of [39876, 60002]) {
-      const result = await resolveAs(peerRouter(), { callerPid: 39876 }, peer);
-      expect(result.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
-      expect(typeof result.workspaceToken).toBe('string');
-    }
+  const live = { workspaceId: 'ws-live', ptyId: 'daemon-shell' };
+
+  it('takes the claim from the process it names, with the start time read at accept', async () => {
+    const result = await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' });
+    expect(result.resolved).toEqual(live);
+    expect(typeof result.workspaceToken).toBe('string');
   });
 
-  it('refuses a claim on a pane other than the peer\'s, and logs it', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    try {
-      const result = await resolveAs(peerRouter(), { callerPid: 39876 }, 60001);
-      expect(result.resolved).toBeNull();
-      expect(result.workspaceToken).toBeUndefined();
-      // The client-side walk still gets the live entries.
+  it('takes the broker\'s claim for the pid it names, when the broker is the one main spawned', async () => {
+    setBrokerIdentitySource(() => ({ pid: 777, startedAt: '900' }));
+    const result = await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '900' });
+    expect(result.resolved).toEqual(live);
+    expect(typeof result.workspaceToken).toBe('string');
+  });
+
+  it('refuses a claim from another process in the same pane, and in another pane', async () => {
+    for (const peer of [60002, 60001]) {
+      const result = await resolveAs({ callerPid: 39876 }, { pid: peer, startedAt: String(started.get(peer)) });
+      expect(result.resolved, String(peer)).toBeNull();
+      expect(result.workspaceToken, String(peer)).toBeUndefined();
+      // The caller's own walk still gets the live entries.
       expect(result.entries.map((e) => e.ptyId).sort()).toEqual(['daemon-other', 'daemon-shell']);
-      expect(log).toHaveBeenCalledWith(expect.stringContaining('[peer-pid] callerPid 39876 refused pane "daemon-shell"'));
-    } finally {
-      log.mockRestore();
     }
   });
 
-  it('keeps today\'s answer when the peer is in no pane, its table cannot be read, or no peer was read', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    try {
-      const outside = await resolveAs(peerRouter(), { callerPid: 39876 }, 70001);
-      expect(outside.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
-      // 99999 is in no snapshot: the walk cannot run, which is logged apart.
-      const unread = await resolveAs(peerRouter(), { callerPid: 39876 }, 99999);
-      expect(unread.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
-      expect(log).toHaveBeenCalledWith(expect.stringContaining('could not be walked in time'));
-      const none = await resolveAs(peerRouter(), { callerPid: 39876 });
-      expect(none.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
-    } finally {
-      log.mockRestore();
-    }
+  it('refuses a claim whose pid now belongs to a process that started later', async () => {
+    const result = await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '99' });
+    expect(result.resolved).toBeNull();
+    expect(result.workspaceToken).toBeUndefined();
   });
 
-  it('does not check a call relayed by the MCP broker', async () => {
-    setBrokerPidSource(() => 60001);
-    const result = await resolveAs(peerRouter(), { callerPid: 39876 }, 60001);
-    expect(result.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+  it('refuses a claim when the start time was not read at accept, or cannot be read now', async () => {
+    expect((await resolveAs({ callerPid: 39876 }, { pid: 39876 })).resolved).toBeNull();
+    setClaimStartTimeSource(() => null);
+    expect((await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' })).resolved).toBeNull();
   });
 
-  it('refuses a Codex thread claim on a pane other than the peer\'s', async () => {
+  it('refuses a claim over a connection with no peer pid', async () => {
+    const result = await resolveAs({ callerPid: 39876 });
+    expect(result.resolved).toBeNull();
+    expect(result.workspaceToken).toBeUndefined();
+  });
+
+  it('refuses a claim from the broker\'s pid with another start time, or with none recorded', async () => {
+    setBrokerIdentitySource(() => ({ pid: 777, startedAt: '900' }));
+    expect((await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '901' })).resolved).toBeNull();
+    setBrokerIdentitySource(() => ({ pid: 777, startedAt: null }));
+    expect((await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '900' })).resolved).toBeNull();
+  });
+
+  it('refuses a Codex thread claim unless it comes from the process it names', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-peer-'));
     const threadId = '019a0000-0000-7000-8000-0000000000dd';
     const digest = (v: string) => createHash('sha256').update(v).digest('hex');
@@ -1171,14 +1200,23 @@ describe('a2a.resolve.identity — claims checked against the connection\'s peer
     const previous = process.env.CODEX_HOME;
     process.env.CODEX_HOME = home;
     try {
-      const params = { codexThreadId: threadId, codexCallerPid: 4242 };
-      expect((await resolveAs(peerRouter(), params, 4242)).threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
-      expect((await resolveAs(peerRouter(), params, 70001)).threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
-      expect((await resolveAs(peerRouter(), params, 60001)).threadClaim).toBeUndefined();
+      const params = { codexThreadId: threadId, codexCallerPid: 60002 };
+      expect((await resolveAs(params, { pid: 60002, startedAt: '200' })).threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
+      setBrokerIdentitySource(() => ({ pid: 777, startedAt: '900' }));
+      expect((await resolveAs(params, { pid: 777, startedAt: '900' })).threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
+      // Another process, even in the same pane, and no peer at all.
+      expect((await resolveAs(params, { pid: 39876, startedAt: '100' })).threadClaim).toBeUndefined();
+      expect((await resolveAs(params)).threadClaim).toBeUndefined();
     } finally {
       if (previous === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previous;
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it('takes a claim as sent on Windows, where no peer pid is read', async () => {
+    const { checkClaim } = await import('../peerPidShadow');
+    const ctx = { firstParty: true } as Parameters<typeof checkClaim>[1];
+    expect(checkClaim('callerPid', ctx, 39876, { platform: 'win32', log: () => undefined })).toEqual({ ok: true, via: 'unchecked' });
   });
 });

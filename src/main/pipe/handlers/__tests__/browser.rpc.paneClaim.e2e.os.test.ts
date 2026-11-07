@@ -18,6 +18,7 @@ import { registerA2aRpc } from '../a2a.rpc';
 import { registerBrowserRpc } from '../browser.rpc';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import { __resetWorkspaceClaimTrustForTesting } from '../../../workspace/workspaceClaimTrust';
+import { processStartTime } from '../../../../shared/processStartTime';
 
 const { sendToRendererMock, dirRef } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
@@ -119,12 +120,15 @@ describe.skipIf(process.platform === 'win32')('pane claim from a real process-tr
     );
   });
 
+  /** The connection the agent's own claim comes over: its pid and start time, as PipeServer reads them. */
+  const fromAgent = () => ({ externalWire: true as const, peerPid: agentPid, peerStartedAt: String(processStartTime(agentPid)) });
+
   it('walks to the pane, mints a pane claim, and a browser call carrying it is accepted', async () => {
     const { router, getTarget } = makeRouter();
 
     const identity = await router.dispatch(
       { id: 'id-1', method: 'a2a.resolve.identity', params: { callerPid: agentPid }, clientName: 'claude-code' },
-      { externalWire: true },
+      fromAgent(),
     );
     expect(identity.ok).toBe(true);
     const result = (identity as { result: { resolved: unknown; workspaceToken?: string } }).result;
@@ -134,7 +138,7 @@ describe.skipIf(process.platform === 'win32')('pane claim from a real process-tr
     // A repeat walk of the same pane reuses the live claim.
     const again = await router.dispatch(
       { id: 'id-2', method: 'a2a.resolve.identity', params: { callerPid: agentPid }, clientName: 'claude-code' },
-      { externalWire: true },
+      fromAgent(),
     );
     expect((again as { result: { workspaceToken?: string } }).result.workspaceToken).toBe(result.workspaceToken);
 
