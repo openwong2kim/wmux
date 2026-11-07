@@ -210,9 +210,15 @@ interface DesktopSnapshotRecord {
   refmapHash: string;
   /** Each ref's element, process and states as the snapshot recorded them; a later run may not change them. */
   pinned: Map<string, PinnedEntry>;
-  /** The surface the snapshot was taken of; actions take refs from a window snapshot only. */
-  surface: DesktopSurface;
-  /** Whether agent-desktop read the whole tree (a textfield's states are trusted only then). */
+  /**
+   * The surface the snapshot was taken of; null when the command that made it
+   * names none (a wait). Actions take refs from a window snapshot only.
+   */
+  surface: DesktopSurface | null;
+  /**
+   * Whether agent-desktop said it read the whole tree, for this run and every
+   * run this snapshot was drilled from (a textfield's states are trusted only then).
+   */
   complete: boolean;
   expiresAt: number;
 }
@@ -487,7 +493,7 @@ export class ComputerService {
       const sent = { requested: false, done: false };
       try {
         const result = await this.dispatchDesktopAction(agent, params, sent);
-        return { ...result, disposition: result.verification === 'verified' ? 'delivered' : 'delivered_unverified' };
+        return { ...result, disposition: result.disposition ?? (result.verification === 'verified' ? 'delivered' : 'delivered_unverified') };
       } catch (err) {
         throw inputActionError(err, sent.requested, sent.done);
       }
@@ -629,6 +635,8 @@ export class ComputerService {
         if (record.expiresAt < now || this.desktopSnapshots.size >= DESKTOP_SNAPSHOT_LIMIT) this.desktopSnapshots.delete(id);
         else break;
       }
+      // A --root run rewrites its root's snapshot in place and keeps its other refs.
+      const prior = this.desktopSnapshots.get(snapshotId as string);
       this.desktopSnapshots.set(snapshotId as string, {
         agentKey: agent.key,
         app: target.app,
@@ -636,8 +644,8 @@ export class ComputerService {
         refmapHash: sha256(refmap),
         pinned: (refmap && refmapEntries(refmap)) || new Map(),
         // A --root run is of the surface its root came from.
-        surface: used[0]?.record.surface ?? plan.surface ?? 'window',
-        complete: reply.data.complete !== false,
+        surface: used.length > 0 ? used[0].record.surface : plan.surface,
+        complete: reply.data.complete === true && used.every((u) => u.record.complete) && (prior?.complete ?? true),
         expiresAt: now + SNAPSHOT_TTL_MS,
       });
     }
@@ -652,8 +660,7 @@ export class ComputerService {
    */
   private keepSnapshotAfterRun(id: string, record: DesktopSnapshotRecord, refmap: string): boolean {
     const entries = refmapEntries(refmap);
-    const pids = refmapPids(refmap);
-    const intact = entries !== null && pids !== null && pids.every((pid) => pid === record.app.pid)
+    const intact = entries !== null && [...entries.values()].every((e) => e.pid === record.app.pid)
       && [...record.pinned].every(([key, pin]) => {
         const entry = entries.get(key);
         return entry !== undefined && samePinned(entry, pin);
@@ -707,7 +714,7 @@ export class ComputerService {
     const { ref } = plan;
     const record = this.checkDesktopSnapshot(agent, ref.snapshotId, this.now());
     if (record.surface !== 'window') {
-      fail('invalid_argument', `actions take refs from a snapshot of a window; ${ref.ref} comes from a ${record.surface} snapshot`);
+      fail('invalid_argument', `actions take refs from a snapshot or find of a window; ${ref.ref} comes from ${record.surface ? `a ${record.surface} snapshot` : 'a wait'}`);
     }
     await this.vet(agent, record.app, record.window, generation);
     this.assertCurrent(generation);
@@ -724,19 +731,37 @@ export class ComputerService {
         fail('snapshot_unknown', `consent for ${current.app.name} is not given for this agent any more; take a snapshot to ask again`);
       }
       await this.checkActionRef(desktop, ref, current, generation);
+      // Refused before the rate slot and the marker, which only a run that starts may take.
+      if (this.desktopRuns >= DESKTOP_MAX_RUNS) {
+        fail('input_busy', `${DESKTOP_MAX_RUNS} desktop commands are already running; try again when one finishes`);
+      }
       this.checkRate(agent.key, now);
       this.deps.onControl?.({ agent, action: plan.marker, window: current.window });
-      const reply = await this.desktopRun(desktop, plan.argv, plan.timeoutMs, generation, {
-        onStarted: () => {
-          sent.requested = true;
-        },
-      });
+      let reply: DesktopReply;
+      try {
+        reply = await this.desktopRun(desktop, plan.argv, plan.timeoutMs, generation, {
+          onStarted: () => {
+            sent.requested = true;
+          },
+        });
+      } catch (err) {
+        // A stop or a timeout can settle the run before the runner's
+        // "started" line is read, while agent-desktop is already running.
+        if (err instanceof ComputerError && (err.code === 'aborted' || err.code === 'timeout')) sent.requested = true;
+        throw err;
+      }
       sent.done = true;
+      const delivery = (reply.data.disposition as { delivery?: unknown } | undefined)?.delivery;
       const refmap = await desktop.readRefmap(ref.snapshotId);
-      if (!this.keepSnapshotAfterRun(ref.snapshotId, current, refmap)) {
+      if (refmap === '') {
+        // agent-desktop pruned the snapshot (another run saved newer ones): it is gone, not changed.
+        this.desktopSnapshots.delete(ref.snapshotId);
+      } else if (!this.keepSnapshotAfterRun(ref.snapshotId, current, refmap)) {
         fail('policy_denied', `snapshot ${ref.snapshotId} changed during the action; take a new snapshot`);
       }
-      const delivery = (reply.data.disposition as { delivery?: unknown } | undefined)?.delivery;
+      this.assertCurrent(generation);
+      // agent-desktop found the element already as asked and sent nothing (check on a checked box).
+      if (delivery === 'not_delivered') return { method: 'accessibility', verification: 'verified', delivery: 'background', disposition: 'not_delivered' };
       return { method: 'accessibility', verification: delivery === 'delivered_verified' ? 'verified' : 'unverified', delivery: 'background' };
     } finally {
       release();

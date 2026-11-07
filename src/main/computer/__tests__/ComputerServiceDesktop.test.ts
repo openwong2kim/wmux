@@ -78,7 +78,7 @@ function makeService(opts: {
       refmaps.set(id, opts.refmap ?? refmapFor(textEdit.pid));
       // A find reply names no window (agent-desktop find_live.rs).
       if (argv[0] === 'find') return ok('find', { matches: [{ ref_id: `@${id}:e1`, name: 'Save' }], snapshot_id: id, total_matches: 1, truncated: false });
-      return ok('snapshot', { app: 'TextEdit', snapshot_id: id, window: { id: windowId, title: 'Untitled' }, tree: {}, ...opts.snapshotData });
+      return ok('snapshot', { app: 'TextEdit', snapshot_id: id, window: { id: windowId, title: 'Untitled' }, tree: {}, complete: true, ...opts.snapshotData });
     }
     if (argv[0] === 'list-surfaces') return ok('list-surfaces', { pid: textEdit.pid, surfaces: [] });
     return ok(argv[0], { value: 'Hello' });
@@ -535,6 +535,79 @@ describe('ComputerService.desktopAct', () => {
     const whole = makeService({ refmap: refmapOf({ '@e1': entry({ role: 'textfield' }) }) });
     const c = await snapshotOf(whole.service);
     await expect(whole.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${c}:e1` } })).resolves.toMatchObject({ delivery: 'background' });
+  });
+
+  it('trusts a text field only when every read behind its snapshot was complete', async () => {
+    // A drill (--root) answers complete for its subtree and keeps the rest of an incomplete snapshot.
+    const box: { set?: (id: string, text: string) => void } = {};
+    const field = refmapOf({ '@e1': entry({ role: 'group' }), '@e2': entry({ role: 'textfield', retained_object: 'tok-2' }) });
+    const drilled = makeService({
+      answer: (argv) => {
+        box.set!('s1', field);
+        const root = argv.some((a) => a.startsWith('--root='));
+        return ok('snapshot', { app: 'TextEdit', snapshot_id: 's1', window: { id: 'w-5010' }, complete: root });
+      },
+    });
+    box.set = drilled.setRefmap;
+    await drilled.service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit' });
+    await drilled.service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit', args: { root: '@s1:e1' } });
+    await expect(drilled.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: '@s1:e2' } })).rejects.toMatchObject({ code: 'policy_denied' });
+
+    // find names no completeness: its text fields are not trusted, its buttons are.
+    const found = makeService({ refmap: refmapOf({ '@e1': entry({ role: 'textfield' }), '@e2': entry({ retained_object: 'tok-2' }) }) });
+    const id = (await found.service.desktop(AGENT_A, { command: 'find', app: 'TextEdit', args: { name: 'Save' } })).data.snapshot_id as string;
+    await expect(found.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${id}:e1` } })).rejects.toMatchObject({ code: 'policy_denied' });
+    await expect(found.service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e2` } })).resolves.toMatchObject({ delivery: 'background' });
+  });
+
+  it('takes no refs from a snapshot a wait made, whose window and surface nothing checked', async () => {
+    const box: { set?: (id: string, text: string) => void } = {};
+    const { service, runs, setRefmap } = makeService({
+      answer: (argv) => {
+        box.set!('sw', oneButton);
+        return ok(argv[0], { found: true, ref: '@sw:e1', snapshot_id: 'sw' });
+      },
+    });
+    box.set = setRefmap;
+    await service.desktop(AGENT_A, { command: 'wait', app: 'TextEdit', args: { text: 'OK' } });
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: '@sw:e1' } })).rejects.toMatchObject({ code: 'invalid_argument', disposition: 'not_delivered' });
+    expect(runs.some((argv) => argv[0] === 'click')).toBe(false);
+  });
+
+  it('reports an action agent-desktop found already done as not delivered', async () => {
+    const { service } = makeService({ refmap: oneButton, act: () => ok('check', { disposition: { delivery: 'not_delivered' } }) });
+    const id = await snapshotOf(service);
+    await expect(service.desktopAct(AGENT_A, { command: 'check', args: { ref: `@${id}:e1` } })).resolves.toMatchObject({ verification: 'verified', disposition: 'not_delivered' });
+  });
+
+  it('keeps the result of an action whose snapshot agent-desktop pruned meanwhile, and forgets the snapshot', async () => {
+    const box: { set?: (id: string, text: string) => void; id?: string } = {};
+    const { service, setRefmap } = makeService({
+      refmap: oneButton,
+      act: () => {
+        box.set!(box.id!, '');
+        return ok('click', { disposition: { delivery: 'delivered_verified' } });
+      },
+    });
+    box.set = setRefmap;
+    box.id = await snapshotOf(service);
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${box.id}:e1` } })).resolves.toMatchObject({ verification: 'verified', disposition: 'delivered' });
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${box.id}:e1` } })).rejects.toMatchObject({ code: 'snapshot_unknown' });
+  });
+
+  it('a stop that lands before the runner reported the start still reports the action possibly delivered', async () => {
+    let release: ((r: RunnerResult) => void) | null = null;
+    const { service } = makeService({
+      refmap: oneButton,
+      neverStarts: true,
+      act: () => new Promise<RunnerResult>((r) => { release = r; }),
+    });
+    const id = await snapshotOf(service);
+    const pending = service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e1` } });
+    await vi.waitFor(() => expect(release).not.toBeNull(), { timeout: 5_000 });
+    service.abort();
+    release!(ok('click', {}));
+    await expect(pending).rejects.toMatchObject({ code: 'aborted', disposition: 'delivered_unverified' });
   });
 
   it('takes refs from window snapshots only', async () => {

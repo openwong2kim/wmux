@@ -29,6 +29,8 @@ final class RunnerPolicyTests: XCTestCase {
             XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": [command, "@s2gy5:e7"], "home": "/tmp/ad"]), command)
         }
         XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["select", "@s2gy5:e7", "--", "Large"], "home": "/tmp/ad"]))
+        // An option text that looks like a refused option is a value after "--".
+        XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["select", "@s2gy5:e7", "--", "--debug-level"], "home": "/tmp/ad"]))
         XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["scroll", "@s2gy5:e7", "--direction=down", "--amount=3"], "home": "/tmp/ad"]))
     }
 
