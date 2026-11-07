@@ -329,6 +329,28 @@ describe('CdpPipeRelay', () => {
     if ('path' in place) expect(fs.existsSync(path.dirname(place.path))).toBe(false);
   });
 
+  it('Playwright refused by the relay, for a wrong token or for room, gets an error that names no token', async () => {
+    const { chromium } = await import('playwright-core');
+    const { route } = await setup({ maxClientsPerChrome: 1 });
+    const held = await dial(await route.grant({}));
+    const grant = await route.grant({});
+    const token = grant.headers.Authorization.slice('Bearer '.length);
+    const refused = async (headers: Record<string, string>) => {
+      const err = await chromium.connectOverCDP(grant.endpoint, { headers, timeout: 5_000 }).then(() => null, (e: Error) => e);
+      expect(err).not.toBeNull();
+      return (err as Error).message;
+    };
+    const wrong = await refused({ Authorization: 'Bearer forged-token-value' });
+    const noRoom = await refused({ ...grant.headers });
+    expect(wrong).toMatch(/401/);
+    expect(noRoom).toMatch(/503/);
+    for (const message of [wrong, noRoom]) {
+      expect(message).not.toContain('forged-token-value');
+      expect(message).not.toContain(token);
+    }
+    held.close();
+  });
+
   it('never writes its endpoint or a token to the console', async () => {
     const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => undefined));
     const { relay, route } = await setup();

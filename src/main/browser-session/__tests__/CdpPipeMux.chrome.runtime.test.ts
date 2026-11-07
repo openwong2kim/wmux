@@ -10,14 +10,16 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chromium, type Browser } from 'playwright-core';
 import WebSocket, { WebSocketServer } from 'ws';
-import { CdpPipeMux } from '../CdpPipeMux';
+import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
 import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
-import type { CallerIdentity } from '../CdpPipeMux';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 
 const CHROME = process.env.CHROME_PATH;
@@ -187,6 +189,27 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
     expect(await pageB.evaluate(() => document.title)).toBe('B');
     expect(await b.contexts()[0].pages().length).toBeGreaterThan(0);
   }, 60_000);
+
+  it('the MCP bundle\'s Playwright, as build-mcp.js builds it, drives a page through the relay; a wrong token is refused', async () => {
+    const require = createRequire(__filename);
+    const { buildPlaywrightChunk } = require('../../../../scripts/lib/playwright-chunk.cjs') as { buildPlaywrightChunk: (dir: string) => Promise<string> };
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pw-chunk-'));
+    try {
+      const bundled = require(await buildPlaywrightChunk(out)) as typeof import('playwright-core');
+      const s = await startChrome();
+      const grant = await s.route.grant({ workspaceId: 'ws-a' });
+      // A Unix socket wherever the OS has them: the path the MCP lane takes.
+      if (process.platform !== 'win32') expect(grant.endpoint.startsWith('ws+unix://')).toBe(true);
+      const browser = await bundled.chromium.connectOverCDP(grant.endpoint, { headers: { ...grant.headers } });
+      browsers.push(browser as unknown as Browser);
+      const page = await browser.contexts()[0].newPage();
+      await page.goto('data:text/html,<title>bundled</title>');
+      expect(await page.title()).toBe('bundled');
+      await expect(bundled.chromium.connectOverCDP(grant.endpoint, { headers: { Authorization: 'Bearer forged' }, timeout: 5_000 })).rejects.toThrow(/401/);
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it('Chrome exits on the pipe closing, with no process or lock file left', async () => {
     const s = await startChrome();
