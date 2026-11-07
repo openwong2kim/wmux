@@ -209,7 +209,20 @@ internal static unsafe class GiveBack
                 (uint)ForegroundReturn.InputHandledTimeoutMs, &ignored);
         }
         var decision = Decide(scope);
-        if (decision == ReturnDecision.Return && !ReturnFront(scope)) decision = ReturnDecision.ReturnRefused;
+        if (decision == ReturnDecision.Return && !ReturnFront(scope))
+        {
+            decision = ReturnDecision.ReturnRefused;
+            // The target took the front by itself (posted input: the helper
+            // sent nothing, so Windows refuses it the foreground change).
+            // Once, and only while no user input arrived since the action
+            // began (Decide checks it again): send the no-op key pair UIA
+            // sends for the same reason, then try once more.
+            if (Decide(scope) == ReturnDecision.Return && Input.SendNoOpKeyPair())
+            {
+                Wire.Log("foreground: refused; retrying after the no-op key pair");
+                if (Decide(scope) == ReturnDecision.Return && ReturnFront(scope)) decision = ReturnDecision.Return;
+            }
+        }
         // An activation later than the round trip still gets the one re-check.
         else if (decision == ReturnDecision.NotNeeded && sent && !scope.Refuse) ScheduleRecheck(scope);
         if (decision != ReturnDecision.NotNeeded)

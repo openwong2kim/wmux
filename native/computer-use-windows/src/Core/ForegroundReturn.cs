@@ -10,7 +10,8 @@ public enum ReturnDecision
     /// <summary>
     /// The front should have gone back, but Windows refused the change: the
     /// helper sent no input of its own (posted input), so it may not set the
-    /// foreground.
+    /// foreground. GiveBack retries once after the no-op key pair; this is
+    /// what is left when that was refused too.
     /// </summary>
     ReturnRefused,
     /// <summary>The action asked to keep the target in front (`keepFront`).</summary>
