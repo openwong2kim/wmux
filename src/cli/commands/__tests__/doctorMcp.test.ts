@@ -178,3 +178,60 @@ describe('doctor mcp section', () => {
     expect(s.lines.at(-1)).toMatchObject({ label: 'live sessions', value: 'unavailable (the app is not running)' });
   });
 });
+
+describe('doctor identity section', () => {
+  const withIdentity = (identity: unknown) => deps({ sessions: () => Promise.resolve({ id: '1', ok: true, result: { ...summary, identity } }) });
+  const zero = { 'no-peer': 0, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0 };
+  const lines = async (identity: unknown) => {
+    const section = (await buildMcpSection(withIdentity(identity))).identity;
+    return section && Object.fromEntries(section.lines.map((l) => [l.label, l]));
+  };
+
+  it('shows the counts main reports, by reason, from the claims it refused', async () => {
+    const { checkClaim, identitySummary, notePeerReadCheck, resetClaimChecks, setClaimStartTimeSource } = await import('../../../main/pipe/handlers/peerPidShadow');
+    resetClaimChecks();
+    try {
+      notePeerReadCheck('available');
+      setClaimStartTimeSource(() => 5n);
+      const quiet = { platform: 'darwin' as const, log: () => undefined };
+      const ctx = (peerPid?: number, peerStartedAt?: string) => ({ externalWire: true, ...(peerPid && { peerPid }), ...(peerStartedAt && { peerStartedAt }) }) as never;
+      checkClaim('callerPid', ctx(), 10, quiet);
+      checkClaim('callerPid', ctx(11, '5'), 10, quiet);
+      checkClaim('callerPid', ctx(11, '5'), 10, quiet);
+      checkClaim('callerPid', ctx(10, '4'), 10, quiet);
+      checkClaim('callerPid', ctx(10, '5'), 10, quiet);
+      const byLabel = await lines(identitySummary('darwin'));
+      expect(byLabel?.['peer read']).toMatchObject({ value: 'ok', verdict: 'OK' });
+      expect(byLabel?.['start times']).toMatchObject({ value: 'ok', verdict: 'OK' });
+      expect(byLabel?.['refused claims']).toMatchObject({ value: 'no-peer 1, other-pid 2, restarted 1', verdict: 'WARN' });
+      expect(byLabel).not.toHaveProperty('claims over TCP');
+    } finally {
+      resetClaimChecks();
+    }
+  });
+
+  it('tells a peer read that is down apart from refused callers', async () => {
+    const byLabel = await lines({ peerRead: { state: 'unavailable', reason: 'koffi unavailable: no binary' }, startTimes: 'ok', refusals: { ...zero, 'no-peer': 4 } });
+    expect(byLabel?.['peer read']).toMatchObject({ value: 'unavailable (koffi unavailable: no binary)', verdict: 'WARN' });
+    expect(byLabel?.['peer read'].hint).toMatch(/every pid claim is refused/);
+    expect(byLabel?.['refused claims']).toMatchObject({ value: 'no-peer 4', verdict: 'WARN' });
+  });
+
+  it('reports no refusals as OK, and an unchecked read as skipped', async () => {
+    const byLabel = await lines({ peerRead: { state: 'unknown' }, startTimes: 'ok', refusals: zero });
+    expect(byLabel?.['peer read']).toMatchObject({ value: 'not checked yet', verdict: 'SKIP' });
+    expect(byLabel?.['refused claims']).toMatchObject({ value: 'none', verdict: 'OK' });
+  });
+
+  it('shows claims over TCP on Windows only, where no peer is read', async () => {
+    const byLabel = await lines({ peerRead: { state: 'not-read' }, startTimes: 'not-read', refusals: zero, tcpClaims: 7 });
+    expect(byLabel?.['peer read']).toMatchObject({ verdict: 'OK' });
+    expect(byLabel).not.toHaveProperty('start times');
+    expect(byLabel?.['claims over TCP']).toMatchObject({ value: '7', verdict: 'OK' });
+  });
+
+  it('has no section for an app that does not report it, or reports another shape', async () => {
+    expect((await buildMcpSection(deps())).identity).toBeUndefined();
+    expect(await lines({ peerRead: { state: 'ok' }, startTimes: 'ok', refusals: { 'no-peer': 'x' } })).toBeUndefined();
+  });
+});

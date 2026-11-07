@@ -53,6 +53,7 @@ import { readAllTargetStatuses, type TargetRegStatus } from '../../shared/mcpReg
 import { NATIVE_SELF_TEST_LINE } from '../../shared/mcpLauncher';
 import { fileSha256, probeKey, recordedProbe } from '../../shared/probedNative';
 import { BROKER_TOOL_NAME_RE, type McpSessionsSummary } from '../../shared/mcpSessions';
+import { CLAIM_REFUSALS, type IdentityClaimsSummary } from '../../shared/identityClaims';
 import { homeRelative } from '../../shared/homeRelative';
 
 // --- public report model -----------------------------------------------------
@@ -102,6 +103,8 @@ export interface DoctorReport {
   logs: { verdict: Verdict; lines: CheckLine[] };
   /** Present when the run was given MCP deps (the CLI always is). */
   mcp?: { verdict: Verdict; lines: CheckLine[] };
+  /** How main takes pid claims, from the same summary as the mcp section. */
+  identity?: { verdict: Verdict; lines: CheckLine[] };
 }
 
 // --- injected dependencies (the seam unit tests substitute) ------------------
@@ -229,7 +232,9 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
   const bootPhases = buildBootPhases(deps, ping);
   const avHint = buildAvHint(bootPhases);
   const logs = buildLogs(deps);
-  const mcp = deps.mcp ? await buildMcpSection(deps.mcp, appPipeReachable) : undefined;
+  const built = deps.mcp ? await buildMcpSection(deps.mcp, appPipeReachable) : undefined;
+  const mcp = built && { verdict: built.verdict, lines: built.lines };
+  const identity = built?.identity;
 
   const overall = worst([
     environment.verdict,
@@ -238,9 +243,10 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
     avHint.verdict,
     logs.verdict,
     ...(mcp ? [mcp.verdict] : []),
+    ...(identity ? [identity.verdict] : []),
   ]);
 
-  return { overall, environment, daemon, bootPhases, avHint, logs, ...(mcp ? { mcp } : {}) };
+  return { overall, environment, daemon, bootPhases, avHint, logs, ...(mcp ? { mcp } : {}), ...(identity ? { identity } : {}) };
 }
 
 function buildEnvironment(
@@ -575,10 +581,56 @@ export function recordedNativeVerdict(binary: string): 'pass' | 'fail' | undefin
   return hash ? recordedProbe(dirname(binary), probeKey(hash, NATIVE_SELF_TEST_LINE)) : undefined;
 }
 
+function isIdentitySummary(v: unknown): v is IdentityClaimsSummary {
+  const o = v as { peerRead?: { state?: unknown; reason?: unknown }; startTimes?: unknown; refusals?: Record<string, unknown>; tcpClaims?: unknown } | null;
+  return !!o && typeof o === 'object'
+    && ['ok', 'unavailable', 'unknown', 'not-read'].includes(String(o.peerRead?.state))
+    && (o.peerRead?.reason === undefined || typeof o.peerRead.reason === 'string')
+    && ['ok', 'unavailable', 'not-read'].includes(String(o.startTimes))
+    && !!o.refusals && CLAIM_REFUSALS.every((r) => typeof o.refusals?.[r] === 'number')
+    && (o.tcpClaims === undefined || typeof o.tcpClaims === 'number');
+}
+
+/**
+ * The identity section: whether main can tie pid claims to the processes that
+ * send them, and how many it has not taken, by reason. A report of tools
+ * acting in the wrong workspace reads here first: a refused caller falls back
+ * to its own walk.
+ */
+export function buildIdentitySection(id: IdentityClaimsSummary): { verdict: Verdict; lines: CheckLine[] } {
+  const lines: CheckLine[] = [];
+  const down = 'While this lasts every pid claim is refused, so agents fall back to their own walk.';
+  if (id.peerRead.state === 'not-read') {
+    lines.push({ label: 'peer read', value: 'not read on this OS; claims are taken as sent', verdict: 'OK' });
+  } else if (id.peerRead.state === 'ok') {
+    lines.push({ label: 'peer read', value: 'ok', verdict: 'OK' });
+  } else if (id.peerRead.state === 'unknown') {
+    lines.push({ label: 'peer read', value: 'not checked yet', verdict: 'SKIP' });
+  } else {
+    lines.push({ label: 'peer read', value: `unavailable (${id.peerRead.reason ?? 'no reason given'})`, verdict: 'WARN', hint: down });
+  }
+  if (id.startTimes === 'unavailable') {
+    lines.push({ label: 'start times', value: 'unavailable', verdict: 'WARN', hint: down });
+  } else if (id.startTimes === 'ok') {
+    lines.push({ label: 'start times', value: 'ok', verdict: 'OK' });
+  }
+  const refused = CLAIM_REFUSALS.filter((r) => id.refusals[r] > 0);
+  lines.push(refused.length === 0
+    ? { label: 'refused claims', value: 'none', verdict: 'OK' }
+    : {
+      label: 'refused claims',
+      value: refused.map((r) => `${r} ${id.refusals[r]}`).join(', '),
+      verdict: 'WARN',
+      hint: 'These callers got no pane claim and used their own walk. other-pid: the call came from another process than the one it named. no-peer or start-unread with the lines above unavailable: main\'s reading is down, not the caller.',
+    });
+  if (id.tcpClaims !== undefined) lines.push({ label: 'claims over TCP', value: String(id.tcpClaims), verdict: 'OK' });
+  return { verdict: worst(lines.map((l) => l.verdict)), lines };
+}
+
 export async function buildMcpSection(
   deps: McpDoctorDeps,
   appPipeReachable = true,
-): Promise<{ verdict: Verdict; lines: CheckLine[] }> {
+): Promise<{ verdict: Verdict; lines: CheckLine[]; identity?: { verdict: Verdict; lines: CheckLine[] } }> {
   const targets = deps.targets();
   // Agents usually share one native copy: hash it once per run.
   const verdicts = new Map<string, 'pass' | 'fail' | undefined>();
@@ -618,7 +670,8 @@ export async function buildMcpSection(
   } else {
     lines.push({ label: 'live sessions', value: `unavailable (${skipReason})`, verdict: 'SKIP' });
   }
-  return { verdict: worst(lines.map((l) => l.verdict)), lines };
+  const identity = summary && isIdentitySummary(summary.identity) ? buildIdentitySection(summary.identity) : undefined;
+  return { verdict: worst(lines.map((l) => l.verdict)), lines, ...(identity && { identity }) };
 }
 
 // --- performance section (--performance, P0-5c) -------------------------------
@@ -915,6 +968,7 @@ export function renderReport(report: DoctorReport): string {
   out.push('');
 
   if (report.mcp) section('mcp', report.mcp.verdict, report.mcp.lines);
+  if (report.identity) section('identity', report.identity.verdict, report.identity.lines);
   section('antivirus tax hint', report.avHint.verdict, report.avHint.lines);
   section('logs', report.logs.verdict, report.logs.lines);
 
