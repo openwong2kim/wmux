@@ -46,6 +46,10 @@ jobs:
         run: cargo test --manifest-path core/wmux-term/Cargo.toml --no-default-features --locked
       - name: Native core unit tests
         run: cargo test --manifest-path core/wmux-term/Cargo.toml --features native-core --locked
+      # The vendored crate is not a workspace member (it has dev-dependencies),
+      # so its own tests run from its manifest, against its own lock.
+      - name: Vendored Alacritty unit tests
+        run: cargo test --manifest-path core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked
       - run: npm run test:terminal-core -- --report=native-terminal-report.json
       # Electron 42 dropped its postinstall download: `npm ci` leaves no binary
       # under node_modules/electron/dist, so fetch it before `npx electron`.

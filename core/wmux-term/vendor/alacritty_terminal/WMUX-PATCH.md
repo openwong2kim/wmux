@@ -57,6 +57,11 @@ Local changes:
   Upstream capped at the row width and then cleared the last `count` cells,
   so a count past the line end also cleared cells left of the cursor.
 
+`Cargo.lock` locks the crate's own test build (its dev-dependency, serde_json,
+keeps it out of the wmux-term workspace). It keeps wmux-term's versions for every
+shared dependency. CI runs `cargo test --manifest-path
+core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
+
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.
 Run both `scripts/rust-terminal-core-bench.mjs --verify-only` (with an output path
