@@ -38,7 +38,8 @@ function nativeBinary(): string | null {
   return candidates.find((c): c is string => !!c && fs.existsSync(c)) ?? null;
 }
 const NATIVE = isWin ? null : nativeBinary();
-if (!NATIVE && process.env.WMUX_REQUIRE_NATIVE_HOOKS) throw new Error('identity matrix: no wmux-native binary (set WMUX_NATIVE_HOOKS_BIN)');
+// Windows runs none of it (the describe below skips there), so it needs no binary.
+if (!isWin && !NATIVE && process.env.WMUX_REQUIRE_NATIVE_HOOKS) throw new Error('identity matrix: no wmux-native binary (set WMUX_NATIVE_HOOKS_BIN)');
 
 interface Recorded { method: string; params: Record<string, unknown>; commanderToken?: unknown; callerPtyId?: unknown }
 
