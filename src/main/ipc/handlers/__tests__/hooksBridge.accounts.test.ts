@@ -10,14 +10,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { ipcMain } from 'electron';
 import { IPC } from '../../../../shared/constants';
-import { installHooks, statusHooks, type SetupHooksPaths } from '../../../../cli/commands/setupHooks';
+import { installHooks, statusHooks, removeHooks, type InstallOutcome, type SetupHooksPaths } from '../../../../cli/commands/setupHooks';
 import type { Account } from '../../../account/accountStore';
-import { accountHookDrift, registerHooksBridgeHandlers } from '../hooksBridge.handler';
+import { accountHookDrift, installHooksIntoNewAccount, registerHooksBridgeHandlers } from '../hooksBridge.handler';
 
 vi.mock('electron', () => ({
   app: { isPackaged: true },
   ipcMain: { removeHandler: vi.fn(), handle: vi.fn() },
 }));
+// CLAUDE_CONFIG_DIR unset: no login-shell probe from a test, and the default
+// folder is the one defaultPaths() names.
+vi.mock('../../../hooks/claudeConfigDirProbe', () => ({ claudeConfigDirEnv: async () => undefined }));
 
 const accounts = vi.hoisted(() => ({ list: [] as Account[], base: null as SetupHooksPaths | null }));
 vi.mock('../../../account/accountStore', () => ({
@@ -139,5 +142,51 @@ describe('account folders in the hook-set check', () => {
     await expect(update({}, 'alias')).rejects.toThrow(/not listed/);
     await expect(update({}, 'b')).rejects.toThrow(/not listed/);
     expect(fs.readFileSync(path.join(real, 'settings.json'), 'utf8')).toBe(before);
+  });
+});
+
+describe('Install covers every Claude folder (CLAUDE_CONFIG_DIR unset)', () => {
+  const hooksIn = (dir: string) => statusHooks({ ...base, settingsPath: path.join(dir, 'settings.json') }).installedEvents.length;
+
+  it('writes the default folder and every Claude account folder; a Codex account is left alone', async () => {
+    const a = path.join(tmp, 'acct-a');
+    const b = path.join(tmp, 'acct-b');
+    const codex = path.join(tmp, 'codex-c');
+    for (const dir of [a, b, codex]) fs.mkdirSync(dir, { recursive: true });
+    accounts.list = [account('a', a), account('b', b), account('c', codex, 'codex')];
+    const out = await handlerFor(IPC.HOOKS_BRIDGE_INSTALL)({}) as InstallOutcome;
+    expect(out.ok).toBe(true);
+    expect(out.settingsPath).toBe(base.settingsPath);
+    expect(hooksIn(a)).toBeGreaterThan(0);
+    expect(hooksIn(b)).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(codex, 'settings.json'))).toBe(false);
+  });
+
+  it('one corrupt account file fails only itself: the others are written, the result names it', async () => {
+    const a = path.join(tmp, 'acct-a');
+    const bad = path.join(tmp, 'acct-bad');
+    fs.mkdirSync(a, { recursive: true });
+    fs.mkdirSync(bad, { recursive: true });
+    fs.writeFileSync(path.join(bad, 'settings.json'), '{ not json', 'utf8');
+    accounts.list = [account('a', a), account('bad', bad)];
+    const out = await handlerFor(IPC.HOOKS_BRIDGE_INSTALL)({}) as InstallOutcome;
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('acct bad');
+    expect(hooksIn(a)).toBeGreaterThan(0);
+    expect(fs.readFileSync(path.join(bad, 'settings.json'), 'utf8')).toBe('{ not json');
+  });
+
+  it('a new account folder gets the hooks when the default folder has them, and not otherwise', async () => {
+    const fresh = path.join(tmp, 'acct-new');
+    fs.mkdirSync(fresh, { recursive: true });
+    const out = await installHooksIntoNewAccount(fresh);
+    expect(out?.ok).toBe(true);
+    expect(hooksIn(fresh)).toBeGreaterThan(0);
+
+    removeHooks(base);
+    const other = path.join(tmp, 'acct-new-2');
+    fs.mkdirSync(other, { recursive: true });
+    expect(await installHooksIntoNewAccount(other)).toBeNull();
+    expect(fs.existsSync(path.join(other, 'settings.json'))).toBe(false);
   });
 });

@@ -6,6 +6,7 @@ import { spawnSync } from 'child_process';
 import { writeJsonAtomic } from '../../shared/settingsFile';
 import { dataSuffix } from '../../shared/constants';
 import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
+import { claudeConfigTargets, envClaudeConfigDir, type ClaudeConfigTarget } from '../../shared/claudeConfigTargets';
 
 /**
  * `wmux setup-hooks` — install the wmux ↔ Claude Code hook bridge directly into
@@ -49,6 +50,12 @@ ACTIONS (mutually exclusive; default = install)
                For Codex hooks this includes the trust verdict: WRITTEN (block
                in place, Codex silently runs nothing until you approve it) vs
                ACTIVE (the bridge has actually fired).
+
+CLAUDE CODE FOLDERS
+  Claude hooks go to every folder a claude can run with: $CLAUDE_CONFIG_DIR
+  when it is set (else ~/.claude), and each Claude account added in wmux.
+  With CLAUDE_CONFIG_DIR set, ~/.claude is kept current only if it already
+  has wmux hooks; --remove and --status cover it whenever it exists.
 
 HOOK PROFILE (install only; mutually exclusive)
   --signals-only  Install the lifecycle signals and the approval card WITHOUT
@@ -267,9 +274,69 @@ export interface SetupHooksPaths {
   bridgeSource: string | null;
 }
 
-/** `~/.claude/settings.json` — the only path a gate-presence check needs. */
+/** `~/.claude/settings.json`: Claude's settings when CLAUDE_CONFIG_DIR is unset. */
 function defaultSettingsPath(): string {
   return path.join(os.homedir(), '.claude', 'settings.json');
+}
+
+/**
+ * The settings.json an unset-account `claude` started from this environment
+ * reads: `$CLAUDE_CONFIG_DIR/settings.json` when that is an absolute folder,
+ * else `~/.claude/settings.json`.
+ */
+export function primarySettingsPath(
+  env: string | undefined = process.env.CLAUDE_CONFIG_DIR,
+  fallback: string = defaultSettingsPath(),
+): string {
+  const { dir } = envClaudeConfigDir(env);
+  return dir ? path.join(dir, 'settings.json') : fallback;
+}
+
+/** A settings.json that holds wmux's hook entries (or references the bridge). */
+function holdsWmuxHooks(settingsPath: string): boolean {
+  const load = loadSettings(settingsPath);
+  if (!load.exists || load.corrupted) return false;
+  return installedSpecsIn(load.settings).size > 0 || settingsReferenceBridge(load.settings);
+}
+
+/** One Claude config folder a command acts on, with the paths it uses there. */
+export interface HookTarget extends ClaudeConfigTarget {
+  paths: SetupHooksPaths;
+}
+
+export interface HookTargetOptions {
+  /**
+   * install: the primary folder and every account, plus `~/.claude` when the
+   * env points elsewhere and it already holds wmux's entries (kept current).
+   * remove / status: `~/.claude` whenever it exists, so nothing is orphaned.
+   */
+  action: 'install' | 'remove' | 'status';
+  /** CLAUDE_CONFIG_DIR as this process sees it. */
+  env?: string | undefined;
+  /** This instance's `~/.wmux<suffix>`, where accounts.json lives. */
+  wmuxDir?: string;
+  /** The Claude accounts when the caller holds them (main's account store). */
+  accounts?: ReadonlyArray<{ label: string; configDir: string }>;
+  base?: SetupHooksPaths;
+}
+
+/**
+ * Every Claude config folder a command acts on, primary first (see
+ * claudeConfigTargets): the env folder or `~/.claude`, then each account.
+ * `envRefused` explains a CLAUDE_CONFIG_DIR that was left out.
+ */
+export function hookTargets(opts: HookTargetOptions): { targets: HookTarget[]; envRefused: string | null } {
+  const base = opts.base ?? defaultPaths();
+  const { dir, refused } = envClaudeConfigDir('env' in opts ? opts.env : process.env.CLAUDE_CONFIG_DIR);
+  const targets = claudeConfigTargets({
+    envDir: dir,
+    // ~/.claude as the base names it: a caller's (or a test's) own paths.
+    defaultSettingsPath: base.settingsPath,
+    wmuxDir: opts.wmuxDir ?? path.join(os.homedir(), `.wmux${dataSuffix()}`),
+    accounts: opts.accounts,
+    includeDefault: opts.action === 'install' ? holdsWmuxHooks : (settingsPath) => fs.existsSync(settingsPath),
+  });
+  return { targets: targets.map((t) => ({ ...t, paths: { ...base, settingsPath: t.settingsPath } })), envRefused: refused };
 }
 
 export function defaultPaths(): SetupHooksPaths {
@@ -1045,6 +1112,20 @@ export function refreshHookBridgeAtBoot(paths: SetupHooksPaths): BridgeRefreshOu
   return refreshHookBridge(paths);
 }
 
+/**
+ * One bridge file serves every Claude folder, so the boot refresh runs when
+ * ANY of them references it: the first target whose answer is not
+ * 'not-installed' decides.
+ */
+export function refreshHookBridgeAtBootFor(targets: ReadonlyArray<{ paths: SetupHooksPaths }>): BridgeRefreshOutcome | 'isolated' {
+  let outcome: BridgeRefreshOutcome | 'isolated' = 'not-installed';
+  for (const t of targets) {
+    outcome = refreshHookBridgeAtBoot(t.paths);
+    if (outcome !== 'not-installed') break;
+  }
+  return outcome;
+}
+
 // ----- Remove -------------------------------------------------------------
 
 export interface RemoveOutcome {
@@ -1420,7 +1501,7 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
  * A corrupt settings.json returns FALSE. We cannot prove the gate is there, and
  * a false "armed" reading is exactly the outcome this guard exists to prevent.
  */
-export function isPermissionGateInstalled(settingsPath: string = defaultSettingsPath()): boolean {
+export function isPermissionGateInstalled(settingsPath: string = primarySettingsPath()): boolean {
   const load = loadSettings(settingsPath);
   if (load.corrupted) return false;
   // An active marketplace plugin supplies the gate from its own hooks.json,
@@ -1796,6 +1877,28 @@ async function handleCompatAgentHooks(
   if (!outcome.ok) process.exit(1);
 }
 
+/** A target and its outcome, for --json: which folder, why it was a target, what happened. */
+function targetJson<T>(r: { target: HookTarget; outcome: T }): { kind: HookTarget['kind']; label: string; settingsPath: string; outcome: T } {
+  return { kind: r.target.kind, label: r.target.label, settingsPath: r.target.settingsPath, outcome: r.outcome };
+}
+
+/** One extra target's line after the primary's usual report. */
+function printTargetLine(target: HookTarget, summary: string, failed: boolean): void {
+  (failed ? console.warn : console.log)(`also ${target.label}: ${summary} (${target.settingsPath})`);
+}
+
+function installSummary(o: InstallOutcome): string {
+  if (!o.ok) return `FAILED: ${o.error ?? 'unknown error'}`;
+  return o.events.length ? `hooks installed (${o.events.length} events, ${o.profile})` : 'nothing to write';
+}
+
+function statusSummary(o: StatusOutcome): string {
+  if (o.settingsCorrupted) return 'settings.json is not valid JSON';
+  if (!o.settingsExists) return 'no settings.json';
+  if (o.installedEvents.length === 0) return 'wmux hooks NOT installed';
+  return `wmux hooks installed (${o.installedEvents.length} events, ${o.profile}${o.updateAvailable ? ', update available' : ''})`;
+}
+
 export async function handleSetupHooks(args: string[], jsonMode: boolean): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(HELP_TEXT);
@@ -1869,14 +1972,29 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
     return;
   }
 
-  const paths = defaultPaths();
+  // Every Claude config folder a claude can run with: CLAUDE_CONFIG_DIR (or
+  // ~/.claude), then each registered account. The first is the primary, whose
+  // outcome keeps the historical top-level fields; `claudeTargets` lists all.
+  const { targets, envRefused } = hookTargets({ action: remove ? 'remove' : status ? 'status' : 'install' });
+  if (envRefused) console.error(`warning: ${envRefused}`);
+  const [primary, ...others] = targets;
+  const paths = primary.paths;
 
   // Preserve the historical --remove contract: it only edits Claude's
   // settings.json and never deletes shared scripts or another CLI's config.
   if (remove) {
     const outcome = removeHooks(paths);
-    printRemove(outcome, jsonMode);
-    if (!outcome.ok) process.exit(1);
+    const rest = others.map((t) => ({ target: t, outcome: removeHooks(t.paths) }));
+    const ok = outcome.ok && rest.every((r) => r.outcome.ok);
+    if (jsonMode) {
+      console.log(JSON.stringify({ ...outcome, ok, claudeTargets: [{ target: primary, outcome }, ...rest].map(targetJson) }, null, 2));
+    } else {
+      printRemove(outcome, false);
+      for (const r of rest) {
+        printTargetLine(r.target, r.outcome.ok ? `removed ${r.outcome.removed} wmux hook group(s)` : `FAILED: ${r.outcome.error}`, !r.outcome.ok);
+      }
+    }
+    if (!ok) process.exit(1);
     return;
   }
 
@@ -1886,15 +2004,18 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
 
   if (status) {
     const claude = statusHooks(paths);
+    const rest = others.map((t) => ({ target: t, outcome: statusHooks(t.paths) }));
     const integrations = lifecycle.statusLifecycleIntegrations(lifecyclePaths);
     // Preserve the legacy Claude-only root fields for scripts while exposing
     // the richer per-integration objects alongside them.
     const opencodeTerminalChat = openCodeTerminalChatIntegration(terminalChatOptions);
-    const outcome = { ...claude, claude, ...integrations, opencodeTerminalChat };
+    const claudeTargets = [{ target: primary, outcome: claude }, ...rest].map(targetJson);
+    const outcome = { ...claude, claude, claudeTargets, ...integrations, opencodeTerminalChat };
     if (jsonMode) {
       console.log(JSON.stringify(outcome, null, 2));
     } else {
       printStatus(claude, false);
+      for (const r of rest) printTargetLine(r.target, statusSummary(r.outcome), r.outcome.settingsCorrupted);
       printAssetStatus('codex bridge', integrations.codexBridge);
       if (!integrations.codexNotify.configExists) {
         console.log(`codex notify: Codex config not found (${integrations.codexNotify.configPath})`);
@@ -1925,8 +2046,10 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   }
 
   // Run each integration independently so a corrupt Claude settings file does
-  // not prevent safe Codex/OpenCode installation (and vice versa).
+  // not prevent safe Codex/OpenCode installation (and vice versa). Each Claude
+  // folder is its own target too: a corrupt account file stops only itself.
   const claude = installHooks(paths, requestedProfile);
+  const rest = others.map((t) => ({ target: t, outcome: installHooks(t.paths, requestedProfile) }));
   const codexVersionOutput = probeCodexVersion();
   const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths, { codexVersionOutput });
   const opencodeTerminalChat = openCodeTerminalChatIntegration({ ...terminalChatOptions, install: true });
@@ -1934,13 +2057,15 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
     ...claude,
     ...integrations,
     opencodeTerminalChat,
-    ok: claude.ok && integrations.ok,
+    ok: claude.ok && rest.every((r) => r.outcome.ok) && integrations.ok,
     claude,
+    claudeTargets: [{ target: primary, outcome: claude }, ...rest].map(targetJson),
   };
   if (jsonMode) {
     console.log(JSON.stringify(outcome, null, 2));
   } else {
     printInstall(claude, false);
+    for (const r of rest) printTargetLine(r.target, installSummary(r.outcome), !r.outcome.ok);
     printAssetInstall('codex bridge', integrations.codexBridge);
     if (!integrations.codexNotify) {
       console.warn('codex notify: not registered because the bridge could not be installed safely');

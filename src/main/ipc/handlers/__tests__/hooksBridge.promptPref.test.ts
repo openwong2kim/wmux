@@ -16,6 +16,9 @@ import { IPC } from '../../../../shared/constants';
 vi.mock('electron', () => ({
   ipcMain: { removeHandler: vi.fn(), handle: vi.fn() },
 }));
+// CLAUDE_CONFIG_DIR unset: no login-shell probe from a test, and the default
+// folder is the one defaultPaths() names.
+vi.mock('../../../hooks/claudeConfigDirProbe', () => ({ claudeConfigDirEnv: async () => undefined }));
 
 const store = vi.hoisted(() => ({ suppressed: false }));
 const setSpy = vi.hoisted(() => vi.fn());

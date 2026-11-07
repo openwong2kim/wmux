@@ -297,8 +297,11 @@ import {
 } from '../cli/commands/setupStatusline';
 import {
   refreshHookBridgeAtBoot,
+  refreshHookBridgeAtBootFor,
+  hookTargets,
   defaultPaths as defaultHooksPaths,
 } from '../cli/commands/setupHooks';
+import { claudeConfigDirEnv } from './hooks/claudeConfigDirProbe';
 import { refreshWslHookAtBoot } from '../shared/wslGlobalHook';
 import { findWslClaudeBridge } from '../shared/wslIntegration';
 import { detectStalePluginGates } from './hooks/stalePluginGate';
@@ -2325,10 +2328,27 @@ app.on('ready', async () => {
       } catch (err) {
         console.warn('[statusline] script refresh failed (non-fatal):', err);
       }
-      try {
-        const br = refreshHookBridgeAtBoot(defaultHooksPaths());
+      // One bridge file serves every Claude folder; it is refreshed when any
+      // of them references it: ~/.claude and the accounts now, the
+      // CLAUDE_CONFIG_DIR folder once the login-shell probe has answered.
+      const logBridge = (br: ReturnType<typeof refreshHookBridgeAtBoot>) => {
         if (br === 'refreshed' || br === 'isolated') logLine('info', 'main', `hook bridge refresh: ${br}`);
         else if (br === 'failed' || br === 'no-source') logLine('warn', 'main', `hook bridge refresh: ${br}`);
+      };
+      try {
+        const base = defaultHooksPaths();
+        const br = refreshHookBridgeAtBootFor(hookTargets({ action: 'install', env: undefined, wmuxDir: getWmuxDir(), base }).targets);
+        logBridge(br);
+        // Asked once per boot, in the background (macOS/Linux; Windows reads
+        // its own env): the in-app install awaits the same answer.
+        void claudeConfigDirEnv().then((env) => {
+          if (!env || br !== 'not-installed') return;
+          try {
+            logBridge(refreshHookBridgeAtBootFor(hookTargets({ action: 'install', env, wmuxDir: getWmuxDir(), base }).targets.filter((t) => t.kind === 'env')));
+          } catch (err) {
+            console.warn('[hooks] bridge refresh failed (non-fatal):', err);
+          }
+        });
       } catch (err) {
         console.warn('[hooks] bridge refresh failed (non-fatal):', err);
       }
