@@ -68,6 +68,15 @@ jobs:
       # Stub WMUX_RUST_SNAPSHOT_MODULE, which WMUX_TERMINAL_CORE_MODULE would override.
       - name: Opt-in snapshot module contracts
         run: npx vitest run src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/AnsiSnapshotBackend.test.ts src/daemon/__tests__/RustSnapshot.test.ts
+      # The unit lane has no built module, so these suites skip there. Here the
+      # module is built: name it and require it, so a missing module fails
+      # instead of skipping. The arguments are filters: a suite that is not in
+      # the tree yet is picked up once it lands.
+      - name: Rust snapshot parity with xterm (built module required)
+        run: npx vitest run RustAnsiParity RustMarginParity RustReflowParity
+        env:
+          WMUX_REQUIRE_RUST_CORE: '1'
+          WMUX_RUST_SNAPSHOT_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
       - name: Output interpretation contracts
         run: npx vitest run src/daemon/__tests__/OutputInterpreter.test.ts src/daemon/util/__tests__/outputModeTracker.test.ts src/main/pty/__tests__/OscParser.test.ts
       - name: Retain native verification evidence
