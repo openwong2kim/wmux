@@ -4,6 +4,8 @@ import type { BrowserWindow } from 'electron';
 import { createSheetTracker, SHEET_RETRY_WINDOW_MS } from '../dialogSheets';
 import {
   createWin32BoxPort,
+  hwnd32,
+  UNOWNED_QUIET_MS,
   MSAA_BUDGET_MS,
   readAccChildren,
   ROLE_STATICTEXT,
@@ -46,6 +48,7 @@ function rig() {
   const timers: Array<() => void> = [];
   const logs: string[] = [];
   let clock = 0;
+  let labels: { ok: string; cancel: string } | null = { ok: '확인', cancel: '취소' };
 
   const host = (): BrowserWindow => {
     const h = { id: hosts.size + 1 } as unknown as BrowserWindow;
@@ -60,7 +63,6 @@ function rig() {
     // Z order: the newest on top.
     dialogWindows: () => [...boxes].reverse().map((b) => b.hwnd),
     pidOf: (hwnd) => find(hwnd)?.pid ?? 0,
-    isVisible: (hwnd) => find(hwnd)?.visible ?? false,
     ownerOf: (hwnd) => find(hwnd)?.owner ?? 0n,
     childOfClass: (hwnd, cls) => {
       const box = find(hwnd);
@@ -72,7 +74,9 @@ function rig() {
       if (!box || box.unreadable) throw new Error('MSAA read failed');
       return box.children.map((c) => ({ ...c }));
     },
+    commonLabels: () => labels,
     hostOf: hwndOf,
+    now: () => clock,
     postClose: (hwnd) => {
       posted.push(hwnd);
       // WM_CLOSE is handled on the box's own loop, a moment later.
@@ -102,7 +106,7 @@ function rig() {
     for (let i = 0; i < 50 && timers.length; i++) timers.splice(0, timers.length).forEach((t) => t());
   };
   const showing = (b: FakeBox): boolean => boxes.includes(b);
-  return { win, port, tracker, host, hwndOf, show, settle, showing, posted, logs, advance: (ms: number) => { clock += ms; } };
+  return { win, port, tracker, host, hwndOf, show, settle, showing, posted, logs, advance: (ms: number) => { clock += ms; }, setLabels: (l: typeof labels) => { labels = l; } };
 }
 
 describe('the Windows box port with the tracker', () => {
@@ -213,50 +217,130 @@ describe('the Windows box port with the tracker', () => {
   });
 });
 
+describe('the Windows rules that unowned boxes and labels add', () => {
+  it("an unowned box from before a window's first look is never that window's", () => {
+    const r = rig();
+    const tabA = r.host();
+    const tabB = r.host();
+    // Window B shows an unowned confirm a person hasn't answered.
+    const persons = r.show({ owner: 0n, children: confirmKids('Continue?') });
+    r.advance(UNOWNED_QUIET_MS + 1);
+    // Window A's first dialog has the same text; its own box isn't up yet on the first look.
+    r.tracker.trackOpening('a', tabA, 'Continue?', 'confirm');
+    r.settle();
+    r.advance(1_100);
+    r.settle();
+    r.tracker.closeIfStale('a');
+    r.settle();
+    expect(r.posted).toEqual([]);
+    expect(r.showing(persons)).toBe(true);
+    void tabB;
+  });
+
+  it('two windows looking at once never list unowned boxes', () => {
+    const r = rig();
+    const tabA = r.host();
+    const tabB = r.host();
+    r.port.list(tabA);
+    r.port.list(tabB);
+    r.show({ owner: 0n, children: confirmKids('Continue?') });
+    expect(r.port.list(tabA)).toEqual([]);
+    expect(r.port.list(tabB)).toEqual([]);
+    r.advance(UNOWNED_QUIET_MS + 1);
+    r.port.list(tabA);
+    r.advance(1);
+    expect(r.port.list(tabA)).toHaveLength(1);
+  });
+
+  it("a box with the page's text but its own two buttons is never closed", () => {
+    const r = rig();
+    const tab = r.host();
+    r.tracker.trackOpening('s1', tab, 'Restart to update?', 'confirm');
+    const wmuxBox = r.show({ owner: r.hwndOf(tab), children: [text('Restart to update?'), button('Restart'), button('Later')] });
+    r.settle();
+    r.tracker.closeIfStale('s1');
+    r.settle();
+    expect(r.posted).toEqual([]);
+    expect(r.showing(wmuxBox)).toBe(true);
+  });
+
+  it("when the system's OK and Cancel labels can't be read, nothing is claimed", () => {
+    const r = rig();
+    r.setLabels(null);
+    const tab = r.host();
+    r.tracker.trackOpening('s1', tab, 'hello', 'alert');
+    const box = r.show({ owner: r.hwndOf(tab), children: alertKids('hello') });
+    r.settle();
+    r.tracker.closeIfStale('s1');
+    r.settle();
+    expect(r.posted).toEqual([]);
+    expect(r.showing(box)).toBe(true);
+  });
+
+  it('window handles compare as 32-bit values', () => {
+    expect(hwnd32(-2_147_482_872n)).toBe(0x80000308n);
+    expect(hwnd32(0xffff_ffff_8000_0308n)).toBe(0x80000308n);
+    expect(hwnd32(0x1234)).toBe(0x1234n);
+  });
+});
+
 describe('createWin32BoxPort', () => {
-  it("lists only this process's visible TaskDialogs owned by the window or by nobody, oldest first", () => {
+  it("lists this process's TaskDialogs owned by the window, or unowned and newer than its first look, oldest first", () => {
     const r = rig();
     const tab = r.host();
     const otherWindow = r.host();
+    r.port.list(tab); // the window's first look: unowned boxes from before it are never its
     const a = r.show({ owner: r.hwndOf(tab), children: alertKids('a') });
     r.show({ owner: r.hwndOf(tab), children: alertKids('other pid'), pid: 7 });
-    r.show({ owner: r.hwndOf(tab), children: alertKids('hidden'), visible: false });
     r.show({ owner: r.hwndOf(tab), children: alertKids('classic'), classic: true });
     r.show({ owner: r.hwndOf(otherWindow), children: alertKids('other window') });
     const b = r.show({ owner: 0n, children: alertKids('b') });
     expect(r.port.list(tab).map((x) => x.hwnd)).toEqual([a.hwnd, b.hwnd]);
   });
 
-  it('reports a page box by button count, never by its localized labels', () => {
+  it("reports a common button as OK or Cancel by the system's localized label", () => {
     const r = rig();
     const tab = r.host();
+    r.port.list(tab);
     const one = r.show({ owner: 0n, children: alertKids('m') });
     const two = r.show({ owner: 0n, children: confirmKids('m') });
     const [b1, b2] = r.port.list(tab);
     expect(one.hwnd).toBe(b1.hwnd);
     expect(two.hwnd).toBe(b2.hwnd);
     expect(r.port.shape(b1)).toEqual({ texts: ['m'], buttons: ['OK'] });
-    expect(r.port.shape(b2)).toEqual({ texts: ['m'], buttons: ['Cancel', 'OK'] });
+    expect(r.port.shape(b2)).toEqual({ texts: ['m'], buttons: ['OK', 'Cancel'] });
+    // Custom labels stay themselves; unknown system labels match nothing.
+    const custom = r.show({ owner: 0n, children: [text('m'), button('Restart'), button('Later')] });
+    const customBox = r.port.list(tab).find((b) => b.hwnd === custom.hwnd);
+    expect(customBox && r.port.shape(customBox).buttons).toEqual(['Restart', 'Later']);
+    r.setLabels(null);
+    expect(r.port.shape(b1).buttons).toEqual(['확인']);
   });
 
-  it('a window handle reused by a new box is a new key', () => {
+  it('a window handle reused by a new box is a new key; a box hidden and shown again is not', () => {
     const r = rig();
     const tab = r.host();
-    const box = r.show({ owner: 0n, children: alertKids('m') });
+    const box = r.show({ owner: r.hwndOf(tab), children: alertKids('m') });
     const firstKey = r.port.key(r.port.list(tab)[0]);
-    r.port.list(tab);
-    // Gone for one look, then the same handle shows another box.
+    // Windows hides owned popups while the owner is minimized: same box, same key.
     box.visible = false;
-    r.port.list(tab);
+    expect(r.port.key(r.port.list(tab)[0])).toBe(firstKey);
     box.visible = true;
+    expect(r.port.key(r.port.list(tab)[0])).toBe(firstKey);
+    // Gone for one look, then the same handle shows another box.
+    box.pid = 0;
+    r.port.list(tab);
+    box.pid = OUR_PID;
     expect(r.port.key(r.port.list(tab)[0])).not.toBe(firstKey);
   });
 
   it('endLater posts WM_CLOSE only to the claimed box, still showing and unchanged', () => {
     const r = rig();
     const tab = r.host();
+    r.port.list(tab);
     const box = r.show({ owner: 0n, children: alertKids('m') });
     const [listed] = r.port.list(tab);
+    r.port.shape(listed);
     expect(() => r.port.endLater(tab, listed)).toThrow('not claimed');
     r.port.retain(listed);
     box.children = alertKids('changed');
@@ -324,6 +408,16 @@ describe('readAccChildren', () => {
     }
     expect(failures).toBe(75);
     expect(f.live()).toBe(0);
+  });
+
+  it('one release that throws does not stop the others', () => {
+    const f = fakeCom(2);
+    const released: number[] = [];
+    const errors: unknown[] = [];
+    const com = { ...f.com, release: (o: number) => { released.push(o); if (o === 1) throw new Error('boom'); f.com.release(o); } };
+    readAccChildren(com, 1n, MSAA_BUDGET_MS, f.now, (err) => { errors.push(err); });
+    expect(errors).toHaveLength(1);
+    expect(released.length).toBeGreaterThan(1);
   });
 
   it('gives up past its budget', () => {

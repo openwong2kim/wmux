@@ -3,21 +3,23 @@
 // dialogSheets.ts holds the rules.
 //
 // Electron shows a page's alert and confirm as a TaskDialog: a top-level
-// `#32770` window of this process with a `DirectUIHWND` child. Its message and
-// its buttons live in DirectUI, so no window text or control id carries them;
-// MSAA does: the DirectUIHWND client's children are the message (static text)
-// and one window per button. Button labels are localized ("확인", "취소"), so
-// the port reports a page dialog's buttons by count and leaves the rules to
-// match on the exact message.
+// `#32770` window of this process with a `DirectUIHWND` child, run on
+// Electron's own dialog thread. Its message and buttons live in DirectUI, so
+// no window text or control id carries them; MSAA does: the DirectUIHWND
+// client's children are the message (static text) and one window per button.
+// A page dialog's buttons are TaskDialog common buttons, whose labels are the
+// system's localized OK and Cancel (user32 MB_GetString); a box whose labels
+// are anything else is reported as it is and never matches.
 //
 // The first box is owned by the tab's window and disables it; a box opened
-// while one is up is unowned. Both are listed for a window, so each can be
-// claimed by its own dialog.
+// while one is up is unowned. Unowned boxes belong to no window, so they are
+// listed for a window only when nothing else could have meant them: they are
+// newer than that window's first look, and no other window is looking.
 
 import type { BrowserWindow } from 'electron';
 import type { SheetPort, SheetShape } from './dialogSheets';
 
-/** A box: its window and the order this port first saw it in. */
+/** A box: its window handle and the order this port first saw it in. */
 export interface Win32Box {
   readonly hwnd: bigint;
   readonly serial: number;
@@ -32,19 +34,22 @@ export interface AccChild {
 /** The user32 and MSAA calls the port makes. A fake stands in for it in tests. */
 export interface Win32Calls {
   ownPid(): number;
-  /** Top-level `#32770` windows, top of the Z order first. */
+  /** Top-level `#32770` windows, top of the Z order first. Handles as 32-bit values. */
   dialogWindows(): bigint[];
   pidOf(hwnd: bigint): number;
-  isVisible(hwnd: bigint): boolean;
-  /** GW_OWNER; 0n for none. */
+  /** GW_OWNER as a 32-bit value; 0n for none. */
   ownerOf(hwnd: bigint): bigint;
   /** The first child window of a class; 0n for none. */
   childOfClass(hwnd: bigint, className: string): bigint;
   /** The DirectUIHWND client's children through MSAA. Throws when they can't be read in time. */
   accChildren(hwnd: bigint, budgetMs: number): AccChild[];
+  /** The system's localized OK and Cancel labels; null when unknown. */
+  commonLabels(): { ok: string; cancel: string } | null;
+  /** The tab window's handle as a 32-bit value. */
   hostOf(host: BrowserWindow): bigint;
-  /** PostMessage(WM_CLOSE). Never SendMessage: the box closes from its own loop. */
+  /** PostMessage(WM_CLOSE). Never SendMessage: the box closes on its own thread. */
   postClose(hwnd: bigint): boolean;
+  now(): number;
 }
 
 /** MSAA roles a TaskDialog's DirectUI shows. */
@@ -54,37 +59,53 @@ export const ROLE_PUSHBUTTON = 43;
 
 /**
  * The whole MSAA read of one box stays under this, or it is abandoned and the
- * box stays: it runs on main's thread, inside the box's own modal loop.
+ * box stays: the calls are made from main's thread to the box's thread.
  */
 export const MSAA_BUDGET_MS = 50;
 
-/** What Electron puts on a page dialog's box, by button count (alert: OK; confirm: OK, Cancel). */
-const PAGE_BUTTONS_BY_COUNT: Readonly<Record<number, readonly string[]>> = {
-  1: ['OK'],
-  2: ['Cancel', 'OK'],
-};
+/**
+ * Another window looked for its boxes this recently: an unowned box could be
+ * its, so neither window lists unowned boxes. A little over the tracker's
+ * retry window, which is how long an opening keeps looking.
+ */
+export const UNOWNED_QUIET_MS = 1_500;
+
+/** Window handles are 32-bit values; GetWindow and the native handle may differ in sign extension. */
+export const hwnd32 = (value: bigint | number): bigint => BigInt.asUintN(32, BigInt(value));
 
 export function createWin32BoxPort(win: Win32Calls): SheetPort<BrowserWindow, Win32Box> {
-  /** First-seen order of every box of this process now showing. */
+  /** First-seen order of every TaskDialog of this process, hidden ones included. */
   const serials = new Map<bigint, number>();
   let nextSerial = 1;
-  /** The shape a claimed box had, checked again before it is closed. */
-  const claimed = new Map<string, string>();
+  /** Per window: the first serial its first look could call new, and when it last looked. */
+  const hosts = new Map<bigint, { since: number; lookedAt: number }>();
+  /** Each box's shape from its last read, by key. */
+  const shapes = new Map<string, SheetShape>();
+  /** Keys of the claimed boxes. */
+  const claimed = new Set<string>();
 
   const keyOf = (box: Win32Box): string => `${box.hwnd}:${box.serial}`;
 
-  /** Every visible TaskDialog of this process, oldest first. Forgets boxes that are gone. */
+  /**
+   * Every TaskDialog of this process, oldest first. Hidden ones count too:
+   * Windows hides owned popups while the owner is minimized, and a box must not
+   * come back as a new one after a restore.
+   */
   const ourBoxes = (): Array<{ box: Win32Box; owner: bigint }> => {
     const pid = win.ownPid();
     const found: Array<{ hwnd: bigint; owner: bigint }> = [];
     for (const hwnd of win.dialogWindows()) {
-      if (win.pidOf(hwnd) !== pid || !win.isVisible(hwnd)) continue;
+      if (win.pidOf(hwnd) !== pid) continue;
       if (win.childOfClass(hwnd, 'DirectUIHWND') === 0n) continue;
       found.push({ hwnd, owner: win.ownerOf(hwnd) });
     }
-    const showing = new Set(found.map((f) => f.hwnd));
-    // A window handle seen again after it was gone is a new box.
-    for (const hwnd of [...serials.keys()]) if (!showing.has(hwnd)) serials.delete(hwnd);
+    const present = new Set(found.map((f) => f.hwnd));
+    // A handle seen again after it was gone is a new box.
+    for (const hwnd of [...serials.keys()]) {
+      if (present.has(hwnd)) continue;
+      for (const key of [...shapes.keys()]) if (key.startsWith(`${hwnd}:`)) shapes.delete(key);
+      serials.delete(hwnd);
+    }
     // Boxes new to this look are numbered bottom of the Z order first: a box
     // opened later shows above the ones before it.
     for (const f of [...found].reverse()) if (!serials.has(f.hwnd)) serials.set(f.hwnd, nextSerial++);
@@ -93,45 +114,64 @@ export function createWin32BoxPort(win: Win32Calls): SheetPort<BrowserWindow, Wi
       .sort((a, b) => a.box.serial - b.box.serial);
   };
 
-  const shape = (box: Win32Box): SheetShape => {
+  /** Read a box's shape over MSAA. A look remembers it; the check before closing does not. */
+  const readShape = (box: Win32Box, remember = true): SheetShape => {
     const content = win.childOfClass(box.hwnd, 'DirectUIHWND');
     if (content === 0n) throw new Error('the box has no DirectUIHWND');
+    const common = win.commonLabels();
     const texts: string[] = [];
-    const labels: string[] = [];
+    const buttons: string[] = [];
     for (const child of win.accChildren(content, MSAA_BUDGET_MS)) {
       if (child.role === ROLE_STATICTEXT) texts.push(child.name);
-      else if (child.role === ROLE_WINDOW || child.role === ROLE_PUSHBUTTON) labels.push(child.name);
+      else if (child.role === ROLE_WINDOW || child.role === ROLE_PUSHBUTTON) {
+        // A common button reads as the rules' OK and Cancel; any other label stays itself.
+        buttons.push(common && child.name === common.ok ? 'OK' : common && child.name === common.cancel ? 'Cancel' : child.name);
+      }
       // Anything else (a checkbox, an expander, a link) is not on a page dialog's
       // box: an extra text keeps it from matching.
       else texts.push(`\u0000role ${child.role}`);
     }
-    const buttons = PAGE_BUTTONS_BY_COUNT[labels.length];
-    return { texts, buttons: buttons ? [...buttons] : labels };
+    const shape = { texts, buttons };
+    if (remember) shapes.set(keyOf(box), shape);
+    return shape;
   };
 
-  const shapeText = (s: SheetShape): string => JSON.stringify(s);
+  const same = (a: SheetShape, b: SheetShape): boolean => JSON.stringify(a) === JSON.stringify(b);
 
   return {
     list: (host) => {
       const hostHwnd = win.hostOf(host);
-      return ourBoxes()
-        .filter(({ owner }) => owner === hostHwnd || owner === 0n)
+      const now = win.now();
+      const boxes = ourBoxes();
+      let state = hosts.get(hostHwnd);
+      if (!state) {
+        state = { since: nextSerial, lookedAt: now };
+        hosts.set(hostHwnd, state);
+      }
+      const othersLooking = [...hosts].some(([h, s]) => h !== hostHwnd && now - s.lookedAt < UNOWNED_QUIET_MS);
+      state.lookedAt = now;
+      const since = state.since;
+      return boxes
+        .filter(({ box, owner }) =>
+          owner === hostHwnd || (owner === 0n && !othersLooking && box.serial >= since))
         .map(({ box }) => box);
     },
     key: keyOf,
-    shape,
+    shape: (box) => readShape(box),
     retain: (box) => {
-      claimed.set(keyOf(box), shapeText(shape(box)));
+      if (!shapes.has(keyOf(box))) readShape(box);
+      claimed.add(keyOf(box));
     },
     release: (box) => {
       claimed.delete(keyOf(box));
     },
     endLater: (_host, box) => {
-      // Only the box that was claimed, still showing and still the same box.
-      const was = claimed.get(keyOf(box));
-      if (was === undefined) throw new Error('the box was not claimed');
-      if (!ourBoxes().some((b) => keyOf(b.box) === keyOf(box))) return;
-      if (shapeText(shape(box)) !== was) throw new Error('the box changed since it was claimed');
+      // The tracker has just listed it. Close only the box that was claimed, and
+      // only while it still reads as it did when it was.
+      const key = keyOf(box);
+      const was = shapes.get(key);
+      if (!claimed.has(key) || !was) throw new Error('the box was not claimed');
+      if (!same(readShape(box, false), was)) throw new Error('the box changed since it was claimed');
       if (!win.postClose(box.hwnd)) throw new Error('PostMessage(WM_CLOSE) failed');
     },
   };
@@ -146,10 +186,13 @@ export type ComChild<O> = { kind: 'object'; dispatch: O } | { kind: 'element'; i
 
 /** The COM calls the reader makes. A fake counts references in tests. */
 export interface ComCalls<O> {
-  /** AccessibleObjectFromWindow(OBJID_CLIENT); null when there is none. */
-  fromWindow(hwnd: bigint): O | null;
+  /** The window's client IAccessible; null when there is none or its thread didn't answer in time. */
+  fromWindow(hwnd: bigint, timeoutMs: number): O | null;
   childCount(acc: O): number;
-  /** AccessibleChildren. Every returned object is a reference the caller releases. */
+  /**
+   * AccessibleChildren. Every returned object is a reference the caller
+   * releases; on a throw, the implementation has released what it took.
+   */
   children(acc: O, count: number): Array<ComChild<O>>;
   /** QueryInterface(IID_IAccessible); null when it isn't one. Doesn't release `dispatch`. */
   asAccessible(dispatch: O): O | null;
@@ -163,18 +206,26 @@ const MAX_CHILDREN = 16;
 
 /**
  * The client children of `hwnd`, one level deep: role and name each. Every
- * reference taken is released on every path. Past `budgetMs` (checked after
- * each call) or `MAX_CHILDREN`, the read is abandoned and throws.
+ * reference taken is released on every path, each release on its own. Past
+ * `budgetMs` (checked after each call; the first call itself is bounded by
+ * it) or `MAX_CHILDREN`, the read is abandoned and throws.
  */
-export function readAccChildren<O>(com: ComCalls<O>, hwnd: bigint, budgetMs: number, now: () => number): AccChild[] {
+export function readAccChildren<O>(
+  com: ComCalls<O>,
+  hwnd: bigint,
+  budgetMs: number,
+  now: () => number,
+  onReleaseError: (err: unknown) => void = () => undefined,
+): AccChild[] {
   const started = now();
   const within = (what: string): void => {
     if (now() - started > budgetMs) throw new Error(`MSAA read took over ${budgetMs} ms (at ${what})`);
   };
-  const root = com.fromWindow(hwnd);
-  if (root === null) throw new Error('no MSAA object for the box');
+  const root = com.fromWindow(hwnd, budgetMs);
+  if (root === null) throw new Error('no MSAA object for the box, or its thread did not answer in time');
   const held: O[] = [root];
   try {
+    within('fromWindow');
     const count = com.childCount(root);
     within('childCount');
     if (count > MAX_CHILDREN) throw new Error(`${count} MSAA children`);
@@ -195,7 +246,13 @@ export function readAccChildren<O>(com: ComCalls<O>, hwnd: bigint, budgetMs: num
     }
     return out;
   } finally {
-    for (const obj of held) com.release(obj);
+    for (const obj of held) {
+      try {
+        com.release(obj);
+      } catch (err) {
+        onReleaseError(err);
+      }
+    }
   }
 }
 
@@ -211,7 +268,7 @@ interface Koffi {
   array(type: string, n: number): unknown;
   proto(signature: string): unknown;
   call(fn: unknown, proto: unknown, ...args: unknown[]): unknown;
-  decode(value: unknown, offsetOrType: unknown, type?: unknown, len?: number): unknown;
+  decode(value: unknown, offsetOrType: unknown, typeOrLen?: unknown, len?: number): unknown;
   alloc(type: unknown, n: number): unknown;
   free(value: unknown): void;
   address(pointer: unknown): bigint;
@@ -220,6 +277,8 @@ interface Koffi {
 const OBJID_CLIENT = 0xfffffffc;
 const GW_OWNER = 4;
 const WM_CLOSE = 0x0010;
+const WM_GETOBJECT = 0x003d;
+const SMTO_ABORTIFHUNG = 0x0002;
 const VT_I4 = 3;
 const VT_DISPATCH = 9;
 
@@ -234,18 +293,18 @@ export function loadWin32(): Win32Calls {
 
   const FindWindowExW = user32.func('intptr __stdcall FindWindowExW(intptr parent, intptr after, const char16_t *cls, const char16_t *title)');
   const GetWindowThreadProcessId = user32.func('uint32 __stdcall GetWindowThreadProcessId(intptr hwnd, _Out_ uint32 *pid)');
-  const IsWindowVisible = user32.func('bool __stdcall IsWindowVisible(intptr hwnd)');
   const GetWindow = user32.func('intptr __stdcall GetWindow(intptr hwnd, uint32 cmd)');
   const PostMessageW = user32.func('bool __stdcall PostMessageW(intptr hwnd, uint32 msg, uintptr wparam, intptr lparam)');
+  const SendMessageTimeoutW = user32.func('intptr __stdcall SendMessageTimeoutW(intptr hwnd, uint32 msg, uintptr wparam, intptr lparam, uint32 flags, uint32 timeout, _Out_ uintptr *result)');
+  const MB_GetString = user32.func('const char16_t * __stdcall MB_GetString(uint32 button)');
 
-  const GUID = koffi.struct('WmuxGuid', { d1: 'uint32', d2: 'uint16', d3: 'uint16', d4: koffi.array('uint8', 8) });
-  // VARIANT is 24 bytes on x64: vt, three reserved words, then the value.
-  const VARIANT = koffi.struct('WmuxVariant', { vt: 'uint16', r1: 'uint16', r2: 'uint16', r3: 'uint16', val: 'uint64', pad: 'uint64' });
-  // Named for the protos below, which pass it by value.
-  void VARIANT;
-  void GUID;
+  // Named for the protos below, which pass a VARIANT by value (24 bytes on x64:
+  // vt, three reserved words, then the value).
+  koffi.struct('WmuxGuid', { d1: 'uint32', d2: 'uint16', d3: 'uint16', d4: koffi.array('uint8', 8) });
+  koffi.struct('WmuxVariant', { vt: 'uint16', r1: 'uint16', r2: 'uint16', r3: 'uint16', val: 'uint64', pad: 'uint64' });
+  // The same layout with the value read as a pointer, for AccessibleChildren's output.
   const VARIANT_PTR = koffi.struct('WmuxVariantPtr', { vt: 'uint16', r1: 'uint16', r2: 'uint16', r3: 'uint16', val: 'void *', pad: 'uint64' });
-  const AccessibleObjectFromWindow = oleacc.func('long __stdcall AccessibleObjectFromWindow(intptr hwnd, uint32 id, WmuxGuid *riid, _Out_ void **ppv)');
+  const ObjectFromLresult = oleacc.func('long __stdcall ObjectFromLresult(uintptr result, WmuxGuid *riid, uintptr wparam, _Out_ void **ppv)');
   const AccessibleChildren = oleacc.func('long __stdcall AccessibleChildren(void *acc, int32 start, int32 count, void *children, _Out_ int32 *obtained)');
   const SysFreeString = oleaut32.func('void __stdcall SysFreeString(void *bstr)');
 
@@ -267,12 +326,21 @@ export function loadWin32(): Win32Calls {
   const ok = (hr: unknown, what: string): void => {
     if (Number(hr) < 0) throw new Error(`${what} failed (0x${(Number(hr) >>> 0).toString(16)})`);
   };
+  const isNull = (p: unknown): boolean => !p || koffi.address(p) === 0n;
+  const release = (obj: unknown): void => {
+    if (!isNull(obj)) koffi.call(method(obj, SLOT_RELEASE), Release, obj);
+  };
 
   const com: ComCalls<unknown> = {
-    fromWindow: (hwnd) => {
+    fromWindow: (hwnd, timeoutMs) => {
+      // Not AccessibleObjectFromWindow: its WM_GETOBJECT is an untimed SendMessage
+      // to the box's thread. This one gives up if that thread doesn't answer.
+      const lresult: bigint[] = [0n];
+      const answered = SendMessageTimeoutW(hwnd, WM_GETOBJECT, 0n, OBJID_CLIENT, SMTO_ABORTIFHUNG, timeoutMs, lresult);
+      if (!Number(answered) || !lresult[0]) return null;
       const out: unknown[] = [null];
-      const hr = AccessibleObjectFromWindow(hwnd, OBJID_CLIENT, IID_IAccessible, out);
-      return Number(hr) >= 0 && out[0] ? out[0] : null;
+      const hr = ObjectFromLresult(lresult[0], IID_IAccessible, 0n, out);
+      return Number(hr) >= 0 && !isNull(out[0]) ? out[0] : null;
     },
     childCount: (acc) => {
       const out = [0];
@@ -285,11 +353,11 @@ export function loadWin32(): Win32Calls {
         const got = [0];
         ok(AccessibleChildren(acc, 0, count, buf, got), 'AccessibleChildren');
         if (got[0] === 0) return [];
-        const items = koffi.decode(buf, koffi.array(VARIANT_PTR as unknown as string, got[0])) as Array<{ vt: number; val: unknown }>;
+        const items = koffi.decode(buf, VARIANT_PTR, got[0]) as Array<{ vt: number; val: unknown }>;
         return items.map((item): ComChild<unknown> => {
-          if (item.vt === VT_DISPATCH) return { kind: 'object', dispatch: item.val };
+          if (item.vt === VT_DISPATCH && !isNull(item.val)) return { kind: 'object', dispatch: item.val };
           if (item.vt === VT_I4) return { kind: 'element', id: Number(koffi.address(item.val) & 0xffffffffn) };
-          // Nothing else is documented for AccessibleChildren; report it as an element no match accepts.
+          // A null dispatch, or a type AccessibleChildren doesn't document: an element no match accepts.
           return { kind: 'element', id: -1 };
         });
       } finally {
@@ -299,7 +367,7 @@ export function loadWin32(): Win32Calls {
     asAccessible: (dispatch) => {
       const out: unknown[] = [null];
       const hr = koffi.call(method(dispatch, SLOT_QUERY_INTERFACE), QueryInterface, dispatch, IID_IAccessible, out);
-      return Number(hr) >= 0 && out[0] ? out[0] : null;
+      return Number(hr) >= 0 && !isNull(out[0]) ? out[0] : null;
     },
     role: (acc, childId) => {
       const out: { val?: unknown } = {};
@@ -309,18 +377,17 @@ export function loadWin32(): Win32Calls {
     name: (acc, childId) => {
       const out: unknown[] = [null];
       ok(koffi.call(method(acc, SLOT_NAME), GetName, acc, childVariant(childId), out), 'get_accName');
-      if (!out[0]) return '';
+      if (isNull(out[0])) return '';
       try {
         return String(koffi.decode(out[0], 'char16_t', -1));
       } finally {
         SysFreeString(out[0]);
       }
     },
-    release: (obj) => {
-      koffi.call(method(obj, SLOT_RELEASE), Release, obj);
-    },
+    release,
   };
 
+  let labels: { ok: string; cancel: string } | null | undefined;
   return {
     ownPid: () => process.pid,
     dialogWindows: () => {
@@ -328,7 +395,7 @@ export function loadWin32(): Win32Calls {
       let after = 0n;
       // Top-level windows of the dialog class, in Z order; bounded in case the list changes under us.
       for (let i = 0; i < 256; i++) {
-        after = BigInt(FindWindowExW(0n, after, '#32770', null) as bigint | number);
+        after = hwnd32(FindWindowExW(0n, after, '#32770', null) as bigint | number);
         if (after === 0n) break;
         out.push(after);
       }
@@ -339,22 +406,35 @@ export function loadWin32(): Win32Calls {
       GetWindowThreadProcessId(hwnd, pid);
       return pid[0];
     },
-    isVisible: (hwnd) => Boolean(IsWindowVisible(hwnd)),
-    ownerOf: (hwnd) => BigInt(GetWindow(hwnd, GW_OWNER) as bigint | number),
-    childOfClass: (hwnd, className) => BigInt(FindWindowExW(hwnd, 0n, className, null) as bigint | number),
+    ownerOf: (hwnd) => hwnd32(GetWindow(hwnd, GW_OWNER) as bigint | number),
+    childOfClass: (hwnd, className) => hwnd32(FindWindowExW(hwnd, 0n, className, null) as bigint | number),
     accChildren: (hwnd, budgetMs) => {
-      // It runs on main's thread, inside the box's modal loop: log what each read costs.
+      // Cross-thread COM on main's thread: log what each read costs.
       const started = performance.now();
       let outcome = 'failed';
       try {
-        const kids = readAccChildren(com, hwnd, budgetMs, () => performance.now());
+        const kids = readAccChildren(com, hwnd, budgetMs, () => performance.now(), (err) => {
+          console.warn(`[dialog-sheets] MSAA release failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
         outcome = `${kids.length} children`;
         return kids;
       } finally {
         console.log(`[dialog-sheets] MSAA read: ${outcome} in ${(performance.now() - started).toFixed(2)} ms`);
       }
     },
-    hostOf: (host) => host.getNativeWindowHandle().readBigUInt64LE(0),
+    commonLabels: () => {
+      if (labels === undefined) {
+        // MB_GetString(0) and (1): the localized OK and Cancel that common buttons show.
+        const okLabel = MB_GetString(0);
+        const cancelLabel = MB_GetString(1);
+        labels = typeof okLabel === 'string' && typeof cancelLabel === 'string' && okLabel && cancelLabel
+          ? { ok: okLabel, cancel: cancelLabel }
+          : null;
+      }
+      return labels;
+    },
+    hostOf: (host) => hwnd32(host.getNativeWindowHandle().readBigUInt64LE(0)),
     postClose: (hwnd) => Boolean(PostMessageW(hwnd, WM_CLOSE, 0n, 0n)),
+    now: () => Date.now(),
   };
 }
