@@ -306,10 +306,11 @@ pub(crate) fn sequence_len(data: &[u8]) -> Option<usize> {
     }
 }
 
-/// A C1 control as a UTF-8 code point: xterm executes it, Alacritty prints it.
-pub(crate) fn has_c1(data: &[u8]) -> bool {
+/// Where the first C1 control starts, as a UTF-8 code point: xterm executes
+/// it, Alacritty prints it.
+pub(crate) fn c1_at(data: &[u8]) -> Option<usize> {
     data.windows(2)
-        .any(|pair| pair[0] == 0xc2 && (0x80..=0x9f).contains(&pair[1]))
+        .position(|pair| pair[0] == 0xc2 && (0x80..=0x9f).contains(&pair[1]))
 }
 
 /// A parameter as xterm reads it: empty is 0, anything else not a number.
@@ -517,7 +518,7 @@ mod tests {
         serialize(&term, true)
     }
 
-    use super::{divergent, has_c1, sequence_len};
+    use super::{c1_at, divergent, sequence_len};
 
     fn classify(text: &str) -> Vec<bool> {
         let bytes = text.as_bytes();
@@ -550,7 +551,7 @@ mod tests {
         ] {
             assert!(classify(text).iter().all(|d| !d), "{text:?}");
         }
-        assert!(!has_c1("\u{2733}\u{d55c}".as_bytes()));
+        assert!(c1_at("\u{2733}\u{d55c}".as_bytes()).is_none());
     }
 
     #[test]
@@ -609,7 +610,7 @@ mod tests {
             let found = classify(text);
             assert!(found.iter().any(|&d| d), "{text:?}");
         }
-        assert!(has_c1("a\u{9b}31m".as_bytes()));
+        assert_eq!(c1_at("a\u{9b}31m".as_bytes()), Some(1));
     }
 
     #[test]
