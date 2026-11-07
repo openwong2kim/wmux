@@ -194,6 +194,9 @@ export class RunnerProcess {
       child.stdin.on('error', (err) => this.log(`stdin error: ${err.message}`));
       child.stderr.on('data', (chunk: string) => this.log(chunk.trimEnd()));
       child.stdout.on('data', (chunk: string) => {
+        // Only the new chunk is searched for a line end: a reply of several
+        // megabytes arrives in many chunks.
+        const searchFrom = buffer.length;
         buffer += chunk;
         if (buffer.length > MAX_LINE_BYTES) {
           buffer = '';
@@ -201,7 +204,7 @@ export class RunnerProcess {
           child.kill('SIGKILL');
           return;
         }
-        let newline = buffer.indexOf('\n');
+        let newline = buffer.indexOf('\n', searchFrom);
         while (newline !== -1) {
           const line = buffer.slice(0, newline).trim();
           buffer = buffer.slice(newline + 1);
