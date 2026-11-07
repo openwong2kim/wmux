@@ -201,6 +201,7 @@ export function planDesktopCommand(commandValue: unknown, argsValue: unknown): D
       const includeBounds = a.bool('includeBounds');
       const timeoutMs = a.int('timeoutMs', 100, TRAVERSAL_MAX_MS);
       a.done();
+      rootStaysOnItsSurface(command, root, surface);
       return {
         command,
         scope: 'window',
@@ -242,6 +243,7 @@ export function planDesktopCommand(commandValue: unknown, argsValue: unknown): D
       const count = a.bool('count');
       const timeoutMs = a.int('timeoutMs', 100, TRAVERSAL_MAX_MS);
       a.done();
+      rootStaysOnItsSurface(command, root, surface);
       if (Object.values(filters).every((v) => v === undefined) && !states?.length) bad(command, 'find needs a filter');
       if ([first, last, nth !== undefined, limit !== undefined, count].filter(Boolean).length > 1) {
         bad(command, 'first, last, nth, limit and count exclude each other');
@@ -367,6 +369,14 @@ export function planDesktopAction(commandValue: unknown, argsValue: unknown): De
     ? ['select', ref.ref, '--', value as string]
     : [command, ref.ref, ...flag('direction', direction), ...flag('amount', amount)];
   return { command, ref, timeoutMs: ACTION_TIMEOUT_MS, marker: command === 'scroll' ? 'scroll' : 'click', argv };
+}
+
+/**
+ * A --root run is recorded as the surface its root's snapshot was of, so it
+ * may not name another surface: menu refs would be recorded as a window's.
+ */
+function rootStaysOnItsSurface(command: DesktopCommand, root: DesktopRef | undefined, surface: DesktopSurface | undefined): void {
+  if (root && surface !== undefined && surface !== 'window') bad(command, 'root cannot be combined with a surface other than window');
 }
 
 /** agent-desktop's error codes, as wmux's. Anything else is `internal`. */
