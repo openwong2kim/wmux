@@ -194,8 +194,9 @@ describe.skipIf(process.platform === 'win32')('isPermissionGateInstalled with th
     expect(isPermissionGateInstalled(paths.settingsPath)).toBe(true);
   });
 
-  // A decision is answered by the node bridge the copy hands over to: with
-  // no bridge beside it, nothing can answer.
+  // With the bridge gone the install is broken (`wmux setup-hooks` restores
+  // it), so the gate is not counted, though the copy would still answer
+  // natively.
   it('is false when no bridge is beside a copy that passed', async () => {
     shipNative(goodLine());
     await installHooksWithNative(paths, undefined, { suffixed: false });
