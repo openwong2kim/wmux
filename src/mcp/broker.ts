@@ -37,7 +37,7 @@ import {
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
-import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
+import { peerPidOf, selfCheckPeerPid, SELF_CHECK_TIMED_OUT } from '../shared/peerPid';
 import { decidePeer } from './brokerPeer';
 import { createConnectionReporter, trackConnection, trackToolCalls, type ReportChannel } from './brokerConnectionReporter';
 import { setBrokerEnvelopeMode } from './wmux-client';
@@ -229,7 +229,7 @@ function main(): void {
   const pipeName = getMcpBrokerPipeName();
   // Sessions are hosted only for a peer the OS names (src/mcp/brokerPeer.ts);
   // a process that cannot read peer pids refuses every session.
-  const peerSelfCheck = selfCheckPeerPid();
+  let peerSelfCheck = selfCheckPeerPid();
   const ownUid = typeof process.getuid === 'function' ? process.getuid() : null;
 
   const server = net.createServer((socket) => {
@@ -284,8 +284,17 @@ function main(): void {
 
       const rest = buffer.subarray(nl + 1);
       const claimed = handshake;
-      peerSelfCheck
-        .then((verdict) => decidePeer({ selfCheckOk: verdict === 'available', peer, claimedPid: claimed.callerPid, ownUid }))
+      const selfCheck = peerSelfCheck;
+      selfCheck
+        .then((verdict) => {
+          // A check that ran out of time says nothing about this platform:
+          // run it again for the sessions after this one.
+          if (verdict === SELF_CHECK_TIMED_OUT && peerSelfCheck === selfCheck) {
+            peerSelfCheck = selfCheckPeerPid();
+            void peerSelfCheck.then((again) => console.error(`[wmux-mcp-broker] peer-pid (checked again): ${again ?? 'unavailable'}`));
+          }
+          return decidePeer({ selfCheckOk: verdict === 'available', peer, claimedPid: claimed.callerPid, ownUid });
+        })
         .then(async (decision) => {
           if (socket.destroyed) return;
           if (!decision.ok) {

@@ -99,6 +99,9 @@ export function peerPidOf(socket: net.Socket): PeerPid {
  * and checks that the peer it reads is itself, by pid and uid. A packaged build missing
  * koffi's binary shows here as unavailable.
  */
+/** The self-check verdict for a check that ran out of time, not one that failed. */
+export const SELF_CHECK_TIMED_OUT = 'unavailable (self-check timed out)';
+
 export function selfCheckPeerPid(timeoutMs = 2000): Promise<string | null> {
   // Windows named pipes have no peer pid here: nothing to check or log.
   if (process.platform === 'win32') return Promise.resolve(null);
@@ -107,7 +110,7 @@ export function selfCheckPeerPid(timeoutMs = 2000): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
     let client: net.Socket | undefined;
-    const timer = setTimeout(() => finish('unavailable (self-check timed out)'), timeoutMs);
+    const timer = setTimeout(() => finish(SELF_CHECK_TIMED_OUT), timeoutMs);
     const finish = (verdict: string): void => {
       if (settled) return;
       settled = true;
