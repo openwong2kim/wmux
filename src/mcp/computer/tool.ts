@@ -79,7 +79,7 @@ const COMPUTER_SHAPE = {
   amount: z.number().int().min(1).max(50).optional(),
   command: z.enum([...DESKTOP_COMMANDS, ...DESKTOP_ACTION_COMMANDS]).optional().describe('desktop (macOS): getAppState stays the loop. In a large or scrolled window, find first: it reaches elements off screen and returns only the matching refs; then get or is on a ref. snapshot returns the whole tree, so use it only for a layout you don\'t know. snapshot, find and list-surfaces need app; get and is take a ref (@<snapshot>:eN). The other commands act on args.ref from a window snapshot or find, in the background; select also takes args.value, scroll args.direction and args.amount.'),
   args: z.record(z.string(), z.unknown()).optional().describe('desktop: that command\'s arguments; a wrong one returns its schema.'),
-  keepFront: z.boolean().optional().describe('Input actions (Windows): keep the target window in front afterwards. By default the window the user had in front gets it back, which closes a menu, palette or flyout that dismisses on focus loss; set this for flows that need one to stay open, and on a click that keys (pressKey, hotkey) will follow.'),
+  keepFront: z.boolean().optional().describe('Input actions (Windows): keep the target window in front afterwards. By default the window the user had in front gets it back, which closes a menu, palette or flyout that dismisses on focus loss; set this for flows that need one to stay open.'),
 };
 
 /**

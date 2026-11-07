@@ -70,16 +70,27 @@ public static class ForegroundReturn
     /// <summary>The bound of the WM_NULL round trip that lets the target handle our input before the front goes back.</summary>
     public const int InputHandledTimeoutMs = 200;
 
+    /// <summary>
+    /// How long the front stays with a Chromium window after keys were sent to
+    /// it (GiveBack.KeysSent): its renderer handles them after WM_NULL comes
+    /// back. Measured on Chrome and Electron (docs/computer-use-windows.md).
+    /// </summary>
+    public const int ChromiumKeySettleMs = 150;
+
     /// <summary>When the one re-check runs after the front went back (the target may take it back after a click).</summary>
     public const int RecheckMs = 300;
 
     /// <summary>
-    /// How long after our own SendInput a GetLastInputInfo tick still counts
-    /// as ours: the system stamps an injected event when it handles it, a few
-    /// milliseconds after SendInput returns. Real input inside this window
-    /// reads as ours, which errs toward giving the front back.
+    /// How long after our own SendInput (or a UIA call's return) a
+    /// GetLastInputInfo tick still counts as ours. SendInput's events are
+    /// stamped while it runs (traced: the tick read right after it equals the
+    /// clock), so this only covers one 15.6 ms tick of the clock. Kept short:
+    /// key presses a few tens of milliseconds apart must not hide the user's
+    /// typing between them. Real input inside it reads as ours, which errs
+    /// toward giving the front back; a batch stamped later than this reads as
+    /// the user's, which errs toward leaving the target in front.
     /// </summary>
-    public const int OwnInputSlackMs = 50;
+    public const int OwnInputSlackMs = 20;
 
     /// <summary>
     /// The order is the order of the reasons a result names: the first that

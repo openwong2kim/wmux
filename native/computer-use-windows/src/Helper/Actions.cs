@@ -80,7 +80,7 @@ internal static unsafe class Focus
         var root = Win.Root(foreground);
         if (root != target.Window || Win.EffectivePid(root) != target.Pid)
         {
-            throw new HelperError("window_not_focused", "the target window is not in the foreground; nothing was sent" + GiveBack.KeysHint(target.Window));
+            throw new HelperError("window_not_focused", "the target window is not in the foreground; nothing was sent");
         }
         uint thread = PInvoke.GetWindowThreadProcessId(foreground);
         var info = new GUITHREADINFO { cbSize = (uint)sizeof(GUITHREADINFO) };
@@ -228,6 +228,85 @@ internal static unsafe class Focus
     public static bool InFront(ControlTarget target) => Win.InTargetWindow(Win.Root(PInvoke.GetForegroundWindow()), target.Window, target.Pid);
 
     /// <summary>
+    /// Under `allow`, a keyboard action (pressKey, hotkey, type without an
+    /// index) on a target that is not in front brings it forward first, as a
+    /// click does: UIA SetFocus on its window (activation gives keyboard
+    /// focus back to the control that had it), then SetForegroundWindow.
+    /// Keys go out only once the target is in front with keyboard focus
+    /// inside it (KeyboardPreflight, and again right before SendInput), so
+    /// they can never land in another window; if Windows refuses the change,
+    /// the action fails and nothing is sent. GiveBack then returns the front.
+    /// </summary>
+    public static void BringForwardForKeys(ControlTarget target)
+    {
+        InputDesktop.Require();
+        RequireShown(target);
+        RequireNotElevated(target);
+        if (KeyboardReady(target, out _)) return;
+        // SetForegroundWindow first: activation gives focus back to the
+        // control that had it. UIA SetFocus on the window element would move
+        // Chromium's focus to the document root, so it is only the fallback
+        // (it carries the foreground right a background process lacks).
+        PInvoke.SetForegroundWindow(target.Window);
+        if (!InFront(target))
+        {
+            try
+            {
+                var el = Uia.Automation->ElementFromHandle(target.Window);
+                if (el != null)
+                {
+                    try
+                    {
+                        GiveBack.NoteOwnInput(call: true);
+                        el->SetFocus();
+                        GiveBack.CallDone();
+                    }
+                    finally
+                    {
+                        el->Release();
+                    }
+                }
+            }
+            catch (Exception e) when (e is not HelperError)
+            {
+            }
+            if (!InFront(target)) PInvoke.SetForegroundWindow(target.Window);
+        }
+        // Activation hands keyboard focus back to the control that had it a
+        // moment later: WinForms moves it from the form to its ActiveControl,
+        // and Chromium restores the focused element in the page through its
+        // renderer, so the first key after activation can be lost. The focus
+        // must read the same twice, both the window (Win32) and the element
+        // (UIA), before the keys go out.
+        for (int i = 0; i < 10; i++)
+        {
+            if (KeyboardReady(target, out var first))
+            {
+                var element = Uia.FocusedRuntimeId();
+                Sta.Sleep(50);
+                if (KeyboardReady(target, out var again) && again == first && element.Length > 0
+                    && Uia.FocusedRuntimeId().AsSpan().SequenceEqual(element)) return;
+            }
+            Sta.Sleep(50);
+        }
+        throw new HelperError("window_not_focused", "the target window could not be brought to the front with keyboard focus (Windows may have refused the change); nothing was sent");
+    }
+
+    private static bool KeyboardReady(ControlTarget target, out HWND focus)
+    {
+        try
+        {
+            focus = KeyboardPreflight(target);
+            return true;
+        }
+        catch (HelperError)
+        {
+            focus = HWND.Null;
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Before every UIA pattern call (Invoke, Toggle, SetValue, SetFocus…).
     /// A pattern call is not input, but it brings a covered target window to
     /// the front (Core Background.PatternCallAllowed), so it is foreground
@@ -276,8 +355,20 @@ internal static unsafe class Focus
         // A popup the target window owns (a menu flyout) counts as inside it.
         if (pid != target.Pid || !Win.InTargetWindow(top, target.Window, target.Pid))
         {
-            throw new HelperError("element_stale", "the element is no longer in the target window");
+            throw new HelperError("element_stale", "the element is no longer in the target window" + CoveredChromiumHint(target));
         }
+    }
+
+    /// <summary>
+    /// Chromium (Chrome, Edge, Electron, VS Code) drops a window's page from
+    /// accessibility while the window is fully covered (its native occlusion
+    /// tracking), so every element of the last snapshot reads as gone. Say so,
+    /// and what works instead, rather than only "the element went away".
+    /// </summary>
+    private static string CoveredChromiumHint(ControlTarget target)
+    {
+        if (!Win.ClassName(target.Window).StartsWith("Chrome_WidgetWin", StringComparison.Ordinal) || InFront(target)) return "";
+        return ". This is a Chromium window (Chrome, Edge, Electron, VS Code) behind other windows: Chromium stops exposing a fully covered window's page to accessibility, so its elements cannot be pressed in the background. Ask the user to bring the window up, then call getAppState again; keys (pressKey, hotkey, type without an index) still bring it forward themselves";
     }
 }
 
@@ -931,6 +1022,7 @@ internal static unsafe class Actions
                 if (Verified(result)) Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target));
                 return result;
             }
+            if (!refuse) Focus.BringForwardForKeys(target);
         }
 
         // The marker's caret lookup is UIA work, so it comes before the
@@ -1281,6 +1373,7 @@ internal static unsafe class Actions
         Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret);
         var posted = BackgroundInput.Key(target, keyName, repeat, 0, "pressKey");
         if (AfterBackground("pressKey", posted, refuse, sentAtStart) is { } result) return result;
+        if (!refuse) Focus.BringForwardForKeys(target);
         for (int n = 0; n < repeat; n++)
         {
             if (n > 0) Sta.Sleep(4);
@@ -1296,6 +1389,7 @@ internal static unsafe class Actions
                 throw new HelperError(e.Code, $"{e.Message} (after {n} of {repeat} presses; the rest were not sent)");
             }
         }
+        GiveBack.KeysSent(target.Window);
         return Result("synthetic", false, "foreground");
     }
 
@@ -1314,10 +1408,12 @@ internal static unsafe class Actions
         // Posted keys carry no modifier state, so a chord is always real input.
         var posted = BackgroundInput.Key(target, keyName, 1, mods.Count, "hotkey");
         if (AfterBackground("hotkey", posted, refuse, sentAtStart) is { } result) return result;
+        if (!refuse) Focus.BringForwardForKeys(target);
         var keyPreflight = Focus.RequireKeyboard(target);
         // "using your keyboard" once the check passed; a posted command, not UIA.
         Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret, realInput: true);
         Input.Tap(key, mods, keyPreflight);
+        GiveBack.KeysSent(target.Window);
         return Result("synthetic", false, "foreground");
     }
 
