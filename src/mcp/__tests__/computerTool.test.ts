@@ -15,7 +15,16 @@ vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => e
 
 import { createWmuxServer } from '../index';
 import { encodeComputerErrorMessage } from '../../shared/computer/errors';
-import type { AppInfo, HelperMethod, WindowInfo } from '../../shared/computer/protocol';
+import {
+  COMPUTER_CONSENT_DEADLINE_MS,
+  DESKTOP_LIST_APPS_TIMEOUT_MS,
+  DESKTOP_RUN_GRACE_MS,
+  DESKTOP_RUN_MAX_MS,
+  type AppInfo,
+  type HelperMethod,
+  type WindowInfo,
+} from '../../shared/computer/protocol';
+import { DESKTOP_TIMEOUT_MS } from '../computer/tool';
 import type { RpcContext } from '../../shared/rpc';
 import type { RpcRouter } from '../../main/pipe/RpcRouter';
 import { registerComputerRpc } from '../../main/pipe/handlers/computer.rpc';
@@ -309,6 +318,43 @@ describe('computer MCP tool', () => {
     await client.close();
     expect(res.isError).toBe(true);
     expect(computerCalls()).toEqual([]);
+  });
+
+  it('waits for desktop longer than the consent prompt, both name checks and the longest run together', async () => {
+    enabled.value = true;
+    reply = () => ({ command: 'wait', data: { found: true } });
+    const client = await connect();
+    await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'wait', app: 'TextEdit', args: { text: 'Done', timeout: 30_000 } } });
+    await client.close();
+    const timeout = computerCalls()[0][2] as number;
+    expect(timeout).toBe(DESKTOP_TIMEOUT_MS);
+    const worstRun = COMPUTER_CONSENT_DEADLINE_MS + 2 * (DESKTOP_LIST_APPS_TIMEOUT_MS + DESKTOP_RUN_GRACE_MS) + DESKTOP_RUN_MAX_MS + DESKTOP_RUN_GRACE_MS;
+    expect(timeout).toBeGreaterThan(worstRun);
+  });
+
+  it('keeps every other action\'s pipe timeout', async () => {
+    enabled.value = true;
+    reply = (method) => (method === 'computer.getAppState'
+      ? {
+        snapshotId: 's7',
+        app: { id: 'np', name: 'Notepad', pid: 1, path: 'np.exe' },
+        window: { id: 'w1', appId: 'np', pid: 1, title: 'notes', bounds: { x: 0, y: 0, width: 1, height: 1 } },
+        tree: '0 window notes',
+        screenshotStatus: { status: 'skipped' },
+      }
+      : method === 'computer.listApps' ? { apps: [] } : { method: 'synthetic', verification: 'unverified' });
+    const client = await connect();
+    await client.callTool({ name: 'computer', arguments: { action: 'listApps' } });
+    await client.callTool({ name: 'computer', arguments: { action: 'getAppState', app: 'Notepad' } });
+    await client.callTool({ name: 'computer', arguments: { action: 'click', snapshotId: 's7', index: 1 } });
+    await client.callTool({ name: 'computer', arguments: { action: 'openApp', app: 'TextEdit' } });
+    await client.close();
+    expect(computerCalls().map((c) => [c[0], c[2]])).toEqual([
+      ['computer.listApps', 20_000],
+      ['computer.getAppState', 140_000],
+      ['computer.act', 140_000],
+      ['computer.act', 140_000],
+    ]);
   });
 
   it('refuses list-apps, which only main runs, as a desktop command from an agent', async () => {

@@ -53,6 +53,14 @@ export const COMPUTER_OBSERVE_ACTIONS = ['capabilities', 'listApps', 'listWindow
  * main validates each one's args (src/main/computer/desktopCommands.ts).
  */
 export const DESKTOP_COMMANDS = ['snapshot', 'find', 'get', 'is', 'list-surfaces', 'wait'] as const;
+/** Longest single agent-desktop run; the runner cuts a longer request to this. */
+export const DESKTOP_RUN_MAX_MS = 35_000;
+/** What main waits beyond a run's own deadline for the runner's answer. */
+export const DESKTOP_RUN_GRACE_MS = 5_000;
+/** The list-apps run that checks an app name, before and after a command that names it. */
+export const DESKTOP_LIST_APPS_TIMEOUT_MS = 10_000;
+/** How long the per-app consent prompt waits for the person. */
+export const COMPUTER_CONSENT_DEADLINE_MS = 120_000;
 export const COMPUTER_CONTROL_ACTIONS = ['openApp', 'click', 'setValue', 'type', 'pressKey', 'hotkey', 'scroll'] as const;
 
 /**

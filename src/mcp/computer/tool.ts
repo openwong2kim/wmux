@@ -14,6 +14,9 @@ import { formatComputerError, parseComputerErrorMessage, type ActionDisposition 
 import {
   COMPUTER_ACTIONS,
   DESKTOP_COMMANDS,
+  DESKTOP_LIST_APPS_TIMEOUT_MS,
+  DESKTOP_RUN_GRACE_MS,
+  DESKTOP_RUN_MAX_MS,
   MODIFIERS,
   OBSERVATION_MODES,
   isControlAction,
@@ -28,6 +31,13 @@ import { defineWmuxTool, registerWmuxTools, type RegisterWmuxToolsOptions } from
  * helper's own deadline; the person may be reading the dialog.
  */
 const CONSENT_AWARE_TIMEOUT_MS = 140_000;
+/**
+ * The desktop action: the consent prompt (above), then for a command that
+ * names its app the list-apps check before and after it, and the command
+ * itself, each with the runner's grace (ComputerService.desktopNow).
+ */
+export const DESKTOP_TIMEOUT_MS =
+  CONSENT_AWARE_TIMEOUT_MS + 2 * (DESKTOP_LIST_APPS_TIMEOUT_MS + DESKTOP_RUN_GRACE_MS) + DESKTOP_RUN_MAX_MS + DESKTOP_RUN_GRACE_MS;
 const QUICK_TIMEOUT_MS = 20_000;
 
 const OBSERVATION_ONLY_KEYS: ReadonlySet<string> = new Set(['app', 'window', 'mode', 'command', 'args']);
@@ -155,7 +165,7 @@ export function createComputerTool(rpc: ComputerRpc) {
             const reply = (await rpc(
               'computer.getAppState',
               { desktop: { command: input.command, args: input.args }, app: input.app, window: input.window },
-              CONSENT_AWARE_TIMEOUT_MS,
+              DESKTOP_TIMEOUT_MS,
             )) as { data?: unknown };
             return { content: [{ type: 'text', text: JSON.stringify(reply.data ?? {}) }] };
           }

@@ -20,6 +20,7 @@
 
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { ComputerError, isComputerErrorCode } from '../../shared/computer/errors';
+import { DESKTOP_RUN_GRACE_MS, DESKTOP_RUN_MAX_MS } from '../../shared/computer/protocol';
 
 export interface RunnerResult {
   /** The child's exit code, or undefined when a signal ended it. */
@@ -48,10 +49,10 @@ export interface RunnerProcessOptions {
 }
 
 /** Longest run a caller may ask for; the runner caps it the same way. */
-export const RUNNER_MAX_TIMEOUT_MS = 35_000;
+export const RUNNER_MAX_TIMEOUT_MS = DESKTOP_RUN_MAX_MS;
 const HELLO_TIMEOUT_MS = 10_000;
 const IDLE_EXIT_MS = 60_000;
-const GRACE_MS = 5_000;
+const GRACE_MS = DESKTOP_RUN_GRACE_MS;
 /** The child output the runner passes on (Runner.swift RunnerPolicy.maxOutputBytes). */
 export const RUNNER_MAX_OUTPUT_BYTES = 8 << 20;
 /**

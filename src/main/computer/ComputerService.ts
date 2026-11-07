@@ -30,6 +30,7 @@ import {
 } from '../../shared/computer/blocklist';
 import {
   COMPUTER_CONTROL_ACTIONS,
+  DESKTOP_LIST_APPS_TIMEOUT_MS,
   MODIFIERS,
   OBSERVATION_MODES,
   SNAPSHOT_TTL_MS,
@@ -198,8 +199,6 @@ interface DesktopSnapshotRecord {
 export const DESKTOP_MAX_RUNS = 8;
 /** One agent's desktop calls running or waiting their turn; past this a call is refused with input_busy. */
 export const DESKTOP_QUEUE_PER_AGENT = 4;
-/** The runner's deadline for the list-apps run that checks an app name. */
-const LIST_APPS_TIMEOUT_MS = 10_000;
 /** Desktop snapshots remembered at once; the oldest goes first. */
 const DESKTOP_SNAPSHOT_LIMIT = 256;
 /** A snapshot id as agent-desktop prints it; it names a directory, so nothing else is read. */
@@ -487,7 +486,7 @@ export class ComputerService {
 
   /** Whether the vetted process is the only app agent-desktop takes for its display name. */
   private async soleByName(desktop: DesktopDeps, app: AppInfo, generation: number): Promise<boolean> {
-    const pids = namedPids(await this.desktopRun(desktop, listAppsArgv(app.name), LIST_APPS_TIMEOUT_MS, generation), app.name);
+    const pids = namedPids(await this.desktopRun(desktop, listAppsArgv(app.name), DESKTOP_LIST_APPS_TIMEOUT_MS, generation), app.name);
     return pids !== null && pids.length === 1 && pids[0] === app.pid;
   }
 
