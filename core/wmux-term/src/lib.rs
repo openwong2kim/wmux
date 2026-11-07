@@ -34,6 +34,14 @@ mod native_core;
 mod native_serialize;
 
 #[cfg(all(
+    test,
+    feature = "native-core",
+    feature = "bindings",
+    not(target_arch = "wasm32")
+))]
+mod parity_support;
+
+#[cfg(all(
     feature = "native-core",
     feature = "bindings",
     not(target_arch = "wasm32")

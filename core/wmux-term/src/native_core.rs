@@ -1278,6 +1278,30 @@ impl NativeRing {
     }
 }
 
+/// Test hook for the per-reason parity modules (parity_support.rs): `chunks`
+/// fed the way a snapshot feeds the ring, then whether the feed met a
+/// divergent control.
+#[cfg(test)]
+pub(crate) fn fed_for_test(
+    cols: usize,
+    rows: usize,
+    history: usize,
+    chunks: &[&[u8]],
+) -> (Term<VoidListener>, bool) {
+    let config = Config {
+        scrolling_history: history,
+        ..Config::default()
+    };
+    let mut term = Term::new(config, &Size { cols, rows }, VoidListener);
+    let mut parser: Processor = Processor::new();
+    let mut feed = XtermFeed::default();
+    for chunk in chunks {
+        feed.feed(&mut parser, &mut term, chunk);
+    }
+    parser.advance(&mut term, &feed.held);
+    (term, feed.divergent)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Size, XtermFeed};
