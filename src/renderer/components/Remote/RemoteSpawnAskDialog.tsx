@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useCallback, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { finalizeSpawnPrompt } from '../../../shared/a2aSpawnPrompt';
@@ -285,7 +286,9 @@ export default function RemoteSpawnAskDialog({ place, pcName, onClose, handoff }
     }
   }, [place.hostId, agent, root, sub, text, pending, hours, end, requestKey, pcName, onClose, t]);
 
-  return (
+  // Portalled: a pane root is its own stacking context (Pane.tsx `isolate`),
+  // so a dialog left inside it would sit under the panes painted after it.
+  return createPortal(
     <RemoteSpawnAskDialogView
       pcName={pcName}
       place={place}
@@ -310,6 +313,7 @@ export default function RemoteSpawnAskDialog({ place, pcName, onClose, handoff }
       pendingMasked={pending.masked}
       reviewing={reviewing}
       {...(handoff ? { handoff: { masked: handoff.masked, leftOut: handoff.leftOut }, maxHours: handoff.hours } : {})}
-    />
+    />,
+    document.body,
   );
 }

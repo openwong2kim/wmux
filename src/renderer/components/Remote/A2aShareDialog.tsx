@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { A2A_FEATURE_LINK_OFFER, type A2aLinkOfferRecordV1, type A2aLinkRecordV1, type A2aPeerRecordV1 } from '../../../shared/a2aRemote';
@@ -214,7 +215,9 @@ export default function A2aShareDialog({ workspaceId, paneId, onClose }: A2aShar
     }
   }, [api, existing]);
 
-  return (
+  // Portalled: a pane root is its own stacking context (Pane.tsx `isolate`),
+  // so a dialog left inside it would sit under the panes painted after it.
+  return createPortal(
     <A2aShareDialogView
       paneName={pane.name}
       {...(pane.agent ? { agent: pane.agent } : {})}
@@ -235,6 +238,7 @@ export default function A2aShareDialog({ workspaceId, paneId, onClose }: A2aShar
       onWithdraw={() => void onWithdraw()}
       onClose={onClose}
       t={t}
-    />
+    />,
+    document.body,
   );
 }

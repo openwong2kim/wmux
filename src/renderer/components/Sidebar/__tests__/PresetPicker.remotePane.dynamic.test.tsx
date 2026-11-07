@@ -104,7 +104,7 @@ function mountPicker(onClose = vi.fn()): void {
 }
 
 function buttonByText(text: string): HTMLButtonElement {
-  const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes(text));
+  const button = Array.from(document.body.querySelectorAll('button')).find((b) => b.textContent?.includes(text));
   if (!button) throw new Error(`no button containing "${text}"`);
   return button;
 }
@@ -126,7 +126,7 @@ const pressEscape = (): void => {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 };
 const clickBackdrop = (): void => {
-  const backdrop = container.querySelector('.ui-dialog')?.parentElement;
+  const backdrop = document.querySelector('.ui-dialog')?.parentElement;
   if (!backdrop) throw new Error('no dialog backdrop');
   backdrop.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
 };
@@ -229,7 +229,7 @@ describe('PresetPicker — local vs. remote for a new pane (#1323)', () => {
     act(() => remoteRow().click());
     await flush();
 
-    const dialog = container.querySelector('.ui-dialog');
+    const dialog = document.querySelector('.ui-dialog');
     expect(dialog).not.toBeNull();
     expect(dialog?.textContent).toContain('Empty — remote');
     // Nothing is created until a host is picked.
@@ -266,7 +266,7 @@ describe('PresetPicker — local vs. remote for a new pane (#1323)', () => {
     // The dialog closed itself after creating (onCreated runs before
     // onClose), and the picker went with it.
     expect(onClose).toHaveBeenCalled();
-    expect(container.querySelector('.ui-dialog')).toBeNull();
+    expect(document.querySelector('.ui-dialog')).toBeNull();
   });
 
   it('a failed mint creates no workspace', async () => {
@@ -280,7 +280,7 @@ describe('PresetPicker — local vs. remote for a new pane (#1323)', () => {
 
     expect(useStore.getState().workspaces).toHaveLength(1);
     expect(ptyCreate).not.toHaveBeenCalled();
-    expect(container.textContent).toContain('host refused');
+    expect(document.body.textContent).toContain('host refused');
   });
 
   // The modal reports the mint whenever the host answers (up to the request
@@ -304,7 +304,7 @@ describe('PresetPicker — local vs. remote for a new pane (#1323)', () => {
     act(() => dismiss());
     await flush();
     expect(onClose).toHaveBeenCalled();
-    expect(container.querySelector('.ui-dialog')).toBeNull();
+    expect(document.querySelector('.ui-dialog')).toBeNull();
 
     await act(async () => mint.resolve({ ok: true, sessionId: 'sess-late' }));
     await flush();
@@ -348,7 +348,7 @@ describe('PresetPicker — local vs. remote for a new pane (#1323)', () => {
     await act(async () => cancelled.resolve({ ok: true, sessionId: 'sess-cancelled' }));
     await flush();
     // The retry's dialog is still up, waiting on its own answer.
-    expect(container.querySelector('.ui-dialog')).not.toBeNull();
+    expect(document.querySelector('.ui-dialog')).not.toBeNull();
 
     await act(async () => retried.resolve({ ok: true, sessionId: 'sess-retry' }));
     await flush();
@@ -361,7 +361,7 @@ describe('PresetPicker — local vs. remote for a new pane (#1323)', () => {
     expect(created.rootPane.surfaces.map((s) => s.remoteSessionId)).toEqual(['sess-retry']);
     expect(sessionClose).toHaveBeenCalledTimes(1);
     expect(sessionClose).toHaveBeenCalledWith('host-1', 'sess-cancelled');
-    expect(container.querySelector('.ui-dialog')).toBeNull();
+    expect(document.querySelector('.ui-dialog')).toBeNull();
   });
 
   it('a retry after a cancelled mint ends with one workspace, holding the retry’s session', async () => {

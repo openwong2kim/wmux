@@ -13,18 +13,22 @@ import { act } from 'react';
 import AddRemotePaneModal from '../AddRemotePaneModal';
 import type { RemoteHostPublic } from '../../../../shared/remoteHosts';
 
+// The dialog portals into document.body, so a test that does not unmount
+// would leave its buttons there for the next one: afterEach unmounts all.
+const mounted = new Set<() => void>();
+
 function render(ui: React.ReactElement) {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => root.render(ui));
-  return {
-    container,
-    unmount: () => {
-      act(() => root.unmount());
-      container.remove();
-    },
+  const unmount = () => {
+    if (!mounted.delete(unmount)) return;
+    act(() => root.unmount());
+    container.remove();
   };
+  mounted.add(unmount);
+  return { container, unmount };
 }
 
 async function flush(ticks = 8) {
@@ -45,19 +49,20 @@ const HOST: RemoteHostPublic = {
 
 describe('AddRemotePaneModal', () => {
   afterEach(() => {
+    for (const unmount of [...mounted]) unmount();
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
   });
 
   it('does not strand the host button disabled when window.electronAPI.remote is missing', async () => {
     delete (window as unknown as { electronAPI?: unknown }).electronAPI;
-    const { container, unmount } = render(
+    const { unmount } = render(
       <AddRemotePaneModal onClose={() => { /* noop */ }} onCreated={() => { /* noop */ }} />,
     );
     // Manually seed the host list — hostsList() itself is unreachable with no
     // bridge, but pick()'s guard is what's under test here, not the loader.
     await flush();
 
-    const btn = container.querySelector('button');
+    const btn = document.body.querySelector('button');
     if (btn) {
       act(() => { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
       await flush();
@@ -81,12 +86,12 @@ describe('AddRemotePaneModal', () => {
       },
     };
 
-    const { container } = render(
+    render(
       <AddRemotePaneModal onClose={() => { /* noop */ }} onCreated={() => { /* noop */ }} />,
     );
     await flush();
 
-    const btn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('office-mac'));
+    const btn = Array.from(document.body.querySelectorAll('button')).find((b) => b.textContent?.includes('office-mac'));
     expect(btn).toBeTruthy();
     if (!btn) return;
 
@@ -113,10 +118,10 @@ describe('AddRemotePaneModal', () => {
       },
     };
 
-    const { container } = render(<AddRemotePaneModal onClose={onClose} onCreated={onCreated} />);
+    render(<AddRemotePaneModal onClose={onClose} onCreated={onCreated} />);
     await flush();
 
-    const btn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('office-mac'));
+    const btn = Array.from(document.body.querySelectorAll('button')).find((b) => b.textContent?.includes('office-mac'));
     expect(btn).toBeTruthy();
     if (!btn) return;
     await act(async () => {
@@ -159,11 +164,11 @@ describe('AddRemotePaneModal', () => {
     (window as unknown as { electronAPI: unknown }).electronAPI = {
       remote: { hostsList: vi.fn().mockResolvedValue([]), workspaceCreate: vi.fn() },
     };
-    const { container, unmount } = render(
+    const { unmount } = render(
       <AddRemotePaneModal onClose={() => { /* noop */ }} onCreated={() => { /* noop */ }} title="Split right — remote" />,
     );
     await flush();
-    expect(container.textContent).toContain('Split right — remote');
+    expect(document.body.textContent).toContain('Split right — remote');
     unmount();
   });
 });
