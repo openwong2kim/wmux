@@ -657,6 +657,60 @@ describe('chrome backend browser.close', () => {
   });
 });
 
+describe('browser.cdp.info for a Chrome on the debugging pipe (relay)', () => {
+  const grant = { endpoint: 'ws+unix:///tmp/wmux-cdp-abc123/r.sock:/devtools/browser/relay', headers: { Authorization: 'Bearer t' } };
+  function pipedRegistry(endpoint: { piped?: true; cdpPort?: number } = { piped: true }) {
+    const launcher = {
+      endpoint: vi.fn(async () => endpoint),
+      relayGrant: vi.fn(async () => grant),
+      cdpInfoTargets: vi.fn(async () => []),
+      dispose: vi.fn(),
+    };
+    const registry = {
+      profileFor: vi.fn(() => 'work'),
+      hasPaneBindings: vi.fn(() => false),
+      isPaneBound: vi.fn(() => false),
+      forProfile: vi.fn(() => launcher),
+      ownerOfSurface: vi.fn(() => null),
+      disposeAll: vi.fn(),
+    };
+    return { launcher, registry };
+  }
+  const ask = (router: RpcRouter, params: Record<string, unknown>, disclosed: boolean) => router.dispatch({
+    id: '1', method: 'browser.cdp.info', params, ...(disclosed && { clientName: [...FIRST_PARTY_CLIENT_NAMES][0] }), ...claimOn('ws-1'),
+  } as never, { externalWire: true }).then((r) => (r as { result?: Record<string, unknown> }).result ?? {});
+
+  it('mints a relay token only for a caller that may attach and asks for one, for a Chrome on the pipe', async () => {
+    const { launcher, registry } = pipedRegistry();
+    const { router } = register({ backend: 'chrome', launcher: registry });
+
+    const asked = await ask(router, { workspaceId: 'ws-1', relay: true }, true);
+    expect(asked.relay).toEqual(grant);
+    expect(launcher.relayGrant).toHaveBeenCalledTimes(1);
+    expect(launcher.relayGrant).toHaveBeenCalledWith({ workspaceId: 'ws-1', profile: 'work' });
+    // A Chrome on the pipe has no port and no ws endpoint to hand out.
+    expect(asked.cdpPort).toBeUndefined();
+    expect(asked.wsEndpoint).toBeUndefined();
+
+    const notAsked = await ask(router, { workspaceId: 'ws-1' }, true);
+    const undisclosed = await ask(router, { workspaceId: 'ws-1', relay: true }, false);
+    for (const answer of [notAsked, undisclosed]) {
+      expect(answer.relay).toBeUndefined();
+      expect(answer.workspaceBackend).toBe('chrome');
+    }
+    expect(launcher.relayGrant).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Chrome on a port keeps its cdpPort and mints nothing, asked or not', async () => {
+    const { launcher, registry } = pipedRegistry({ cdpPort: 52931 });
+    const { router } = register({ backend: 'chrome', launcher: registry });
+    const answer = await ask(router, { workspaceId: 'ws-1', relay: true }, true);
+    expect(answer.cdpPort).toBe(52931);
+    expect(answer.relay).toBeUndefined();
+    expect(launcher.relayGrant).not.toHaveBeenCalled();
+  });
+});
+
 describe('browser.session.status backend reporting', () => {
   it('shows the Chrome port only to a caller browser.cdp.info would show it to', async () => {
     const { router } = register({ backend: 'chrome', launcher: makeFakeRegistry() });

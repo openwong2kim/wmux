@@ -4196,6 +4196,11 @@ export function registerBrowserRpc(
    * server-pinned callers, and source-qualified first-party wire clients.
    * Approved third-party and legacy callers still receive target metadata, but
    * not the primitive that bypasses the tool-layer capability and lease checks.
+   *
+   * A dedicated Chrome on a debugging pipe has no port: a caller that may
+   * attach and asks with `relay: true` (the engine, only when it is about to
+   * connect) gets `relay`, the relay's endpoint and a one-time token for it,
+   * minted for this caller on every such call.
    */
   router.register('browser.cdp.info', async (params, ctx) => {
     // Refuse before disclosing anything, including whether CDP is enabled.
@@ -4217,9 +4222,18 @@ export function registerBrowserRpc(
       // match; a random user tab still never becomes the default pin).
       const chromeTargets = await launcher.cdpInfoTargets(callerWorkspaceId || undefined);
       const disclose = canDiscloseBrowserAttachInfo(ctx);
+      const decision = protectedDecisionOf(ctx);
+      const relay = disclose && ep.piped && params.relay === true && launcher.relayGrant
+        ? await launcher.relayGrant({
+          ...(callerWorkspaceId && { workspaceId: callerWorkspaceId }),
+          profile: chrome.profile,
+          ...(decision && { protectedEpoch: decision.epoch }),
+        })
+        : undefined;
       return {
         ...(disclose && ep.cdpPort !== undefined && { cdpPort: ep.cdpPort }),
         ...(disclose && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
+        ...(relay && { relay }),
         ...(callerWorkspaceId && { targetsScoped: true }),
         workspaceBackend: 'chrome' as const,
         // The profile this caller resolved to (its pane's own, its workspace's,
