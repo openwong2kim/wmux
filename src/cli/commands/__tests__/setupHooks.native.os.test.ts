@@ -303,6 +303,17 @@ describe.skipIf(process.platform === 'win32')('claudeHookRuntimeReport: the stat
     expect(state()).toMatchObject({ state: 'node-missing', severity: 'warn' });
   });
 
+  // New bytes in place with no record (a hand copy, a record cleared): not
+  // known to fail, nor to hand over; the self-test checks them.
+  it('a copy with no recorded self-test: native, unchecked, and how to check it', async () => {
+    await installNative();
+    fs.appendFileSync(copy, '# other bytes\n');
+    const report = state();
+    expect(report).toMatchObject({ state: 'native', severity: 'warn' });
+    expect(report.detail).toMatch(/no self-test is recorded/);
+    expect(report.detail).toContain('wmux setup-hooks --reprobe');
+  });
+
   it('a bridge the copy does not pin, and the kill switch: a hand-over to node, or native runs with no node', async () => {
     await installNative();
     fs.writeFileSync(paths.bridgeDest, '// an older bridge\n');

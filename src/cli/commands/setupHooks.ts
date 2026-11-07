@@ -1612,6 +1612,7 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
 /**
  * How the Claude hook entries run, for `wmux doctor` and `setup-hooks --status`:
  *   native        the copy, which passed its self-test for the bridge beside it
+ *                 (warn: no bridge beside it, or no self-test recorded)
  *   node          `node <bridge>` (the copy, when it passes, is an Update away)
  *   runtime-node  node, as ~/.wmux/hooks/claude-runtime says
  *   windows       node: Windows has no native Claude hook
@@ -1699,6 +1700,9 @@ export function claudeHookRuntimeReport(
     return report('node-missing', 'warn', `native-disabled is set beside ${copy}, but ${why}: the runs stay native`);
   }
   if (judged === 'pass') return report('native', 'ok', `native: ${copy}`);
+  if (judged === 'unchecked') {
+    return report('native', 'warn', `native: ${copy}, but no self-test is recorded for these bytes; \`wmux setup-hooks --reprobe\` checks it`);
+  }
   if (judged === 'no-bridge') {
     return report('native', 'warn', `native: ${copy}, with no bridge beside it: nothing can hand the runs over to node; \`wmux setup-hooks\` puts it back`);
   }
