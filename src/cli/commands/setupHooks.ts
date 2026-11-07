@@ -1206,16 +1206,22 @@ export type NativeCopyRefreshOutcome =
   | 'not-installed' // no copy of wmux's there: nothing is installed at boot
   | 'no-source'     // this build ships none
   | 'runtime-node'  // ~/.wmux/hooks/claude-runtime says node: the copy is not run; an install refreshes it
+  | 'not-in-use'    // no native entry names the copy: an install refreshes it
+  | 'stale-bridge'  // the bridge refresh did not leave this build's bridge in place, so a new copy would pin a bridge that is not there
   | 'isolated';     // WMUX_DATA_SUFFIX set: the copy is the installed wmux's
 
 /**
  * Bring the copy the Claude entries run up to the shipped build at boot, as
- * refreshHookBridge does for the bridge beside it (call this after it, so a
- * new copy meets the new bridge it pins). Only a copy wmux installed is
- * refreshed, through the same stage, probe and swap as an install; it never
- * writes settings.json, and never installs a copy where there is none.
+ * refreshHookBridge does for the bridge beside it. Call this after it, with
+ * its outcome: a new copy pins this build's bridge, so it is refreshed only
+ * once that bridge is in place. Only a copy wmux installed and native entries
+ * name is refreshed, through the same stage, probe and swap as an install; it
+ * never writes settings.json, and never installs a copy where there is none.
  */
-export async function refreshClaudeNativeAtBoot(paths: SetupHooksPaths): Promise<NativeCopyRefreshOutcome> {
+export async function refreshClaudeNativeAtBoot(
+  paths: SetupHooksPaths,
+  bridge: BridgeRefreshOutcome | 'isolated',
+): Promise<NativeCopyRefreshOutcome> {
   if (dataSuffix() !== '') return 'isolated';
   const copy = claudeHookCopyPath(paths.bridgeDest);
   let before: Buffer;
@@ -1227,6 +1233,9 @@ export async function refreshClaudeNativeAtBoot(paths: SetupHooksPaths): Promise
   if (!before.includes(Buffer.from(NATIVE_HOOKS_MARKER))) return 'not-installed';
   if (!paths.nativeSource || !fs.existsSync(paths.nativeSource)) return 'no-source';
   if (readClaudeRuntime(path.dirname(paths.bridgeDest)) === 'node') return 'runtime-node';
+  const load = loadSettings(paths.settingsPath);
+  if (load.corrupted || !wmuxLeaves(load.settings).some((leaf) => leafForm(leaf) === 'native' && nativeLeafCopy(leaf) === copy)) return 'not-in-use';
+  if (bridge !== 'refreshed' && bridge !== 'up-to-date') return 'stale-bridge';
   const plan = await planClaudeNative(paths, { suffixed: false });
   let after: Buffer | null = null;
   try { after = fs.readFileSync(copy); } catch { /* reported as kept */ }
@@ -1639,6 +1648,16 @@ export interface ClaudeHookRuntimeReport {
   copy?: string;
 }
 
+/** Every wmux leaf in settings.json's hooks. */
+function wmuxLeaves(settings: Record<string, unknown>): unknown[] {
+  const hooks = settings.hooks;
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return [];
+  return Object.values(hooks as Record<string, unknown>)
+    .filter(Array.isArray)
+    .flatMap((groups) => (groups as unknown[]).filter(isWmuxGroup))
+    .flatMap((g) => ((g as HookGroup).hooks as unknown[]).filter(isWmuxLeaf));
+}
+
 /** True when `node` is an executable file on this PATH. */
 export function nodeOnPath(env: NodeJS.ProcessEnv = process.env): boolean {
   const names = process.platform === 'win32' ? ['node.exe'] : ['node'];
@@ -1665,13 +1684,7 @@ export function claudeHookRuntimeReport(
   } = {},
 ): ClaudeHookRuntimeReport {
   const platform = opts.platform ?? process.platform;
-  const hooks = (opts.settings ?? loadSettings(paths.settingsPath).settings).hooks;
-  const leaves = hooks && typeof hooks === 'object' && !Array.isArray(hooks)
-    ? Object.values(hooks as Record<string, unknown>)
-      .filter(Array.isArray)
-      .flatMap((groups) => (groups as unknown[]).filter(isWmuxGroup))
-      .flatMap((g) => ((g as HookGroup).hooks as unknown[]).filter(isWmuxLeaf))
-    : [];
+  const leaves = wmuxLeaves(opts.settings ?? loadSettings(paths.settingsPath).settings);
   const native = leaves.filter((leaf) => leafForm(leaf) === 'native');
   const named = native.length > 0 ? nativeLeafCopy(native[0]) : null;
   const report = (state: ClaudeHookRuntimeState, severity: ClaudeHookRuntimeReport['severity'], detail: string): ClaudeHookRuntimeReport =>

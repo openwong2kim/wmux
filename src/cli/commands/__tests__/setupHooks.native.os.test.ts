@@ -209,9 +209,9 @@ describe.skipIf(process.platform === 'win32')('refreshClaudeNativeAtBoot', () =>
     shipNative(goodLine());
     await installHooksWithNative(paths, undefined, { suffixed: false });
     const before = settingsSnapshot();
-    expect(await refreshClaudeNativeAtBoot(paths)).toBe('up-to-date');
+    expect(await refreshClaudeNativeAtBoot(paths, 'up-to-date')).toBe('up-to-date');
     fs.appendFileSync(paths.nativeSource as string, '# the next release\n');
-    expect(await refreshClaudeNativeAtBoot(paths)).toBe('refreshed');
+    expect(await refreshClaudeNativeAtBoot(paths, 'up-to-date')).toBe('refreshed');
     expect(fs.readFileSync(copy).equals(fs.readFileSync(paths.nativeSource as string))).toBe(true);
     expect(settingsSnapshot()).toEqual(before);
   });
@@ -222,19 +222,36 @@ describe.skipIf(process.platform === 'win32')('refreshClaudeNativeAtBoot', () =>
     await installHooksWithNative(paths, undefined, { suffixed: false });
     const working = fs.readFileSync(copy);
     shipNative('wmux-claude-hook protocol 2 pin x');
-    expect(await refreshClaudeNativeAtBoot(paths)).toBe('kept');
+    expect(await refreshClaudeNativeAtBoot(paths, 'up-to-date')).toBe('kept');
     expect(fs.readFileSync(copy).equals(working)).toBe(true);
   });
 
   it('installs nothing where there is no copy, or a file wmux did not write', async () => {
     vi.stubEnv('WMUX_DATA_SUFFIX', '');
     shipNative(goodLine());
-    expect(await refreshClaudeNativeAtBoot(paths)).toBe('not-installed');
+    expect(await refreshClaudeNativeAtBoot(paths, 'up-to-date')).toBe('not-installed');
     expect(fs.existsSync(copy)).toBe(false);
     fs.mkdirSync(path.dirname(copy), { recursive: true });
     fs.writeFileSync(copy, 'someone else\'s program');
-    expect(await refreshClaudeNativeAtBoot(paths)).toBe('not-installed');
+    expect(await refreshClaudeNativeAtBoot(paths, 'up-to-date')).toBe('not-installed');
     expect(fs.readFileSync(copy, 'utf8')).toBe('someone else\'s program');
+  });
+
+  // A new copy pins this build's bridge: with that bridge not in place, or
+  // no native entry naming the copy, the probe is not run at all.
+  it('leaves the copy alone while the bridge is stale or no native entry names it', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    const working = fs.readFileSync(copy);
+    fs.appendFileSync(paths.nativeSource as string, '# the next release\n');
+    for (const bridge of ['failed', 'no-source'] as const) {
+      expect(await refreshClaudeNativeAtBoot(paths, bridge)).toBe('stale-bridge');
+    }
+    installHooks(paths);
+    expect(commands().every((c) => c.startsWith('node '))).toBe(true);
+    expect(await refreshClaudeNativeAtBoot(paths, 'refreshed')).toBe('not-in-use');
+    expect(fs.readFileSync(copy).equals(working)).toBe(true);
   });
 
   it('touches nothing from an isolated instance', async () => {
@@ -243,7 +260,7 @@ describe.skipIf(process.platform === 'win32')('refreshClaudeNativeAtBoot', () =>
     const working = fs.readFileSync(copy);
     fs.appendFileSync(paths.nativeSource as string, '# the next release\n');
     vi.stubEnv('WMUX_DATA_SUFFIX', '-dogfood');
-    expect(await refreshClaudeNativeAtBoot(paths)).toBe('isolated');
+    expect(await refreshClaudeNativeAtBoot(paths, 'up-to-date')).toBe('isolated');
     expect(fs.readFileSync(copy).equals(working)).toBe(true);
   });
 });

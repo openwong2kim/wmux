@@ -2332,9 +2332,9 @@ app.on('ready', async () => {
         if (br === 'refreshed' || br === 'isolated') logLine('info', 'main', `hook bridge refresh: ${br}`);
         else if (br === 'failed' || br === 'no-source') logLine('warn', 'main', `hook bridge refresh: ${br}`);
         // After the bridge: a new copy pins the new bridge. Never writes settings.
-        void refreshClaudeNativeAtBoot(hooksPaths).then((nr) => {
+        void refreshClaudeNativeAtBoot(hooksPaths, br).then((nr) => {
           if (nr === 'refreshed') logLine('info', 'main', `claude hook copy refresh: ${nr}`);
-          else if (nr === 'kept') logLine('warn', 'main', `claude hook copy refresh: ${nr}`);
+          else if (nr === 'kept' || nr === 'stale-bridge') logLine('warn', 'main', `claude hook copy refresh: ${nr}`);
         }, (err: unknown) => console.warn('[hooks] claude hook copy refresh failed (non-fatal):', err));
       } catch (err) {
         console.warn('[hooks] bridge refresh failed (non-fatal):', err);
