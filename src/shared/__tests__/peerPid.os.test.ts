@@ -60,13 +60,16 @@ describe.runIf(supported)('peerPidOf on a unix socket', () => {
     expect(await selfCheckPeerPid()).toBe('available');
   });
 
-  it('binds its self-check socket in the directory it is given', async () => {
+  it('binds its self-check socket at the path it is given, over a stale file', async () => {
     const short = fs.mkdtempSync(path.join('/tmp', 'psc-'));
+    const at = path.join(short, 'b.pc');
     try {
-      expect(await selfCheckPeerPid(2000, short)).toBe('available');
+      fs.writeFileSync(at, 'left by a broker that was killed');
+      expect(await selfCheckPeerPid(2000, at)).toBe('available');
+      expect(await selfCheckPeerPid(2000, at)).toBe('available');
       // Nothing is left behind, and a directory that is not there is where it failed.
       expect(fs.readdirSync(short)).toEqual([]);
-      expect(await selfCheckPeerPid(2000, path.join(short, 'missing'))).toMatch(/^unavailable \(listen E[A-Z]+: .*\/missing\/\.wmux-peer-/);
+      expect(await selfCheckPeerPid(2000, path.join(short, 'missing', 'b.pc'))).toMatch(/^unavailable \(listen E[A-Z]+: .*\/missing\/b\.pc/);
     } finally {
       fs.rmSync(short, { recursive: true, force: true });
     }

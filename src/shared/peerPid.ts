@@ -99,15 +99,18 @@ export function peerPidOf(socket: net.Socket): PeerPid {
 /**
  * Whether this process can read peer pids: it connects to a socket of its own
  * and checks that the peer it reads is itself, by pid and uid. A packaged build missing
- * koffi's binary shows here as unavailable. The socket is bound in `dir`, so
- * a caller with a socket directory of its own keeps the path as short as its
- * own socket's.
+ * koffi's binary shows here as unavailable. The socket is a fresh name in the
+ * temp directory, or `socketPath` when given: a file already there is removed
+ * first, so a caller that names one path keeps a single file however often it
+ * checks.
  */
-export function selfCheckPeerPid(timeoutMs = 2000, dir = os.tmpdir()): Promise<string | null> {
+export function selfCheckPeerPid(timeoutMs = 2000, socketPath?: string): Promise<string | null> {
   // Windows named pipes have no peer pid here: nothing to check or log.
   if (process.platform === 'win32') return Promise.resolve(null);
   if (!OPTION[process.platform]) return Promise.resolve(`unavailable (unsupported platform ${process.platform})`);
-  const socketPath = path.join(dir, `.wmux-peer-${process.pid}-${crypto.randomBytes(4).toString('hex')}.sock`);
+  const at = socketPath ?? path.join(os.tmpdir(), `wmux-peer-${process.pid}-${crypto.randomBytes(4).toString('hex')}.sock`);
+  // A file that cannot be removed shows up as the listen error below.
+  if (socketPath) try { fs.rmSync(socketPath, { force: true }); } catch { /* listen reports it */ }
   return new Promise((resolve) => {
     let settled = false;
     let client: net.Socket | undefined;
@@ -118,7 +121,7 @@ export function selfCheckPeerPid(timeoutMs = 2000, dir = os.tmpdir()): Promise<s
       clearTimeout(timer);
       client?.destroy();
       server.close();
-      fs.rm(socketPath, { force: true }, () => undefined);
+      fs.rm(at, { force: true }, () => undefined);
       resolve(verdict);
     };
     const server = net.createServer((socket) => {
@@ -132,8 +135,8 @@ export function selfCheckPeerPid(timeoutMs = 2000, dir = os.tmpdir()): Promise<s
       else finish('available');
     });
     server.on('error', (err) => finish(`unavailable (${err.message})`));
-    server.listen(socketPath, () => {
-      client = net.connect(socketPath);
+    server.listen(at, () => {
+      client = net.connect(at);
       client.on('error', (err) => finish(`unavailable (${err.message})`));
     });
   });

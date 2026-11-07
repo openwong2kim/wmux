@@ -230,10 +230,11 @@ function main(): void {
   const pipeName = getMcpBrokerPipeName();
   // Sessions are hosted only for a peer the OS names (src/mcp/brokerPeer.ts);
   // while this process cannot read peer pids it refuses every session, and it
-  // checks again with backoff. The check's socket sits beside the broker's.
+  // checks again with backoff. The check's socket sits beside the broker's,
+  // under a name no longer than the broker socket's own.
   let lastVerdict: string | null | undefined;
   const peerSelfCheck = retryingSelfCheck(
-    () => selfCheckPeerPid(undefined, path.dirname(pipeName)),
+    () => selfCheckPeerPid(undefined, path.join(path.dirname(pipeName), `${path.basename(pipeName, '.sock')}.pc`)),
     (verdict, attempt) => {
       if (attempt > 1 && verdict === lastVerdict) return;
       lastVerdict = verdict;
