@@ -10,6 +10,9 @@ import {
   type DaemonPingResult,
 } from '../doctor';
 import type { RpcResponse } from '../../../shared/rpc';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { EDGE_SIGNED_IN_HINT } from '../../../shared/edgeProfileSignin';
 
 // ---- fixtures ----------------------------------------------------------------
 
@@ -113,6 +116,29 @@ function makeDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
 }
 
 // ---- worst() algebra ---------------------------------------------------------
+
+describe('Edge profile account line', () => {
+  const signedInPrefs = readFileSync(join(__dirname, '..', '..', '..', 'shared', '__tests__', 'fixtures', 'edge-signed-in.Preferences.json'), 'utf8');
+  const profiles: Array<[string, string]> = [['default', '/ud/chrome-agent-profile'], ['work', '/ud/chrome-profiles/work']];
+
+  it('warns, naming the signed-in profile but never the account', async () => {
+    const files: Record<string, string> = { [join('/ud/chrome-agent-profile', 'Default', 'Preferences')]: signedInPrefs };
+    const base = makeDeps();
+    const deps = makeDeps({
+      browserProfiles: () => profiles,
+      readTextFile: vi.fn((p: string) => files[p] ?? base.readTextFile(p)),
+    });
+    const report = await buildDoctorReport(deps);
+    const line = report.environment.lines.find((l) => l.label === 'Edge profile account');
+    expect(line).toEqual({ label: 'Edge profile account', value: 'signed in (default)', verdict: 'WARN', hint: EDGE_SIGNED_IN_HINT });
+    expect(JSON.stringify(report)).not.toMatch(/example\.com|0003BFFD|Test User/);
+  });
+
+  it('adds no line when no wmux profile is signed in', async () => {
+    const report = await buildDoctorReport(makeDeps({ browserProfiles: () => profiles }));
+    expect(report.environment.lines.some((l) => l.label === 'Edge profile account')).toBe(false);
+  });
+});
 
 describe('worst', () => {
   it('returns OK for an empty list', () => {
