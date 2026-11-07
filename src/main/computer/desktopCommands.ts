@@ -69,9 +69,9 @@ export interface DesktopActionPlan {
 
 const SCHEMAS: Record<AnyDesktopCommand, string> = {
   snapshot:
-    'snapshot args: { surface?: window|menu|sheet|popover|alert, root?: ref, maxDepth?: 1-30, interactiveOnly?: boolean, compact?: boolean, skeleton?: boolean, includeBounds?: boolean, timeoutMs?: number } (with app, and window from listWindows)',
+    'snapshot args: { surface?: window|menu|sheet|popover|alert, root?: ref, maxDepth?: 1-30, interactiveOnly?: boolean, compact?: boolean, skeleton?: boolean, includeBounds?: boolean, timeoutMs?: number }; root takes no surface but window (with app, and window from listWindows)',
   find:
-    'find args: { role?, name?, value?, text?, description?, nativeId?: string, exact?: boolean, state?: string[], surface?, root?: ref, first?|last?: boolean, nth?|limit?: number, count?: boolean, timeoutMs?: number }; at least one of role, name, value, text, description, nativeId, state (with app)',
+    'find args: { role?, name?, value?, text?, description?, nativeId?: string, exact?: boolean, state?: string[], surface?, root?: ref, first?|last?: boolean, nth?|limit?: number, count?: boolean, timeoutMs?: number }; at least one of role, name, value, text, description, nativeId, state; root takes no surface but window (with app)',
   get: 'get args: { ref: "@<snapshot>:eN", property?: text|value|title|bounds|role|states }',
   is: 'is args: { ref: "@<snapshot>:eN", property?: visible|enabled|checked|focused|expanded|selected }',
   'list-surfaces': 'list-surfaces args: {} (with app)',
@@ -374,6 +374,8 @@ export function planDesktopAction(commandValue: unknown, argsValue: unknown): De
 /**
  * A --root run is recorded as the surface its root's snapshot was of, so it
  * may not name another surface: menu refs would be recorded as a window's.
+ * agent-desktop refuses the same combination (surface_scope.rs); wmux checks
+ * it first so that what it records never depends on that.
  */
 function rootStaysOnItsSurface(command: DesktopCommand, root: DesktopRef | undefined, surface: DesktopSurface | undefined): void {
   if (root && surface !== undefined && surface !== 'window') bad(command, 'root cannot be combined with a surface other than window');

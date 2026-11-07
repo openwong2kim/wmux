@@ -319,6 +319,9 @@ describe('ComputerService.desktop', () => {
     await expect(service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit', args: { root: '@s1:e1', surface: 'menu' } })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringMatching(/root cannot be combined/) });
     await expect(service.desktop(AGENT_A, { command: 'find', app: 'TextEdit', args: { root: '@s1:e1', surface: 'sheet', name: 'OK' } })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringMatching(/root cannot be combined/) });
     expect(desktop.run).not.toHaveBeenCalled();
+    // A root with surface window is what agent-desktop takes: it runs.
+    const id = await snapshotOf(service);
+    await expect(service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit', args: { root: `@${id}:e1`, surface: 'window' } })).resolves.toBeTruthy();
   });
 
   it('passes a value that looks like a flag as one bound argument', async () => {
@@ -542,13 +545,13 @@ describe('ComputerService.desktopAct', () => {
     const d = await snapshotOf(unreadable.service);
     await expect(unreadable.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${d}:e1` } })).rejects.toMatchObject({ code: 'policy_denied' });
 
-    // Neither role nor states readable: it could be a password field.
-    const unknown = makeService({ refmap: refmapOf({ '@e1': { pid: textEdit.pid, retained_object: 'tok-1', role: 7, states: 'x' } }) });
+    // A role agent-desktop could not read is written "unknown"; with unreadable states it could be a password field.
+    const unknown = makeService({ refmap: refmapOf({ '@e1': { pid: textEdit.pid, retained_object: 'tok-1', role: 'unknown', states: 'x' } }) });
     const f = await snapshotOf(unknown.service);
     await expect(unknown.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${f}:e1` } })).rejects.toMatchObject({ code: 'policy_denied' });
     expect(unknown.runs.some((argv) => argv[0] === 'focus')).toBe(false);
     // An unreadable role from an incomplete snapshot is refused too.
-    const partialUnknown = makeService({ refmap: refmapOf({ '@e1': { pid: textEdit.pid, retained_object: 'tok-1' } }), snapshotData: { complete: false } });
+    const partialUnknown = makeService({ refmap: refmapOf({ '@e1': { pid: textEdit.pid, retained_object: 'tok-1', role: 'unknown' } }), snapshotData: { complete: false } });
     const g = await snapshotOf(partialUnknown.service);
     await expect(partialUnknown.service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${g}:e1` } })).rejects.toMatchObject({ code: 'policy_denied' });
 
