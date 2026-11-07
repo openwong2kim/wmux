@@ -47,8 +47,8 @@ public enum RunnerPolicy {
     // \A and \z: ICU's ^ and $ also match around a trailing newline.
     static let refPattern = try! NSRegularExpression(pattern: "\\A@[a-z0-9]{1,64}:e[1-9][0-9]{0,8}\\z")
     static let maxSelectValueBytes = 4096
-    static let scrollDirections: Set<String> = ["up", "down", "left", "right"]
-    static let amountPattern = try! NSRegularExpression(pattern: "\\A(?:[1-9]|[1-4][0-9]|50)\\z")
+    static let directionPattern = try! NSRegularExpression(pattern: "\\A--direction=(?:up|down|left|right)\\z")
+    static let amountPattern = try! NSRegularExpression(pattern: "\\A--amount=(?:[1-9]|[1-4][0-9]|50)\\z")
 
     /// Global options the runner never passes on, whatever main sends.
     static let refusedOptions: [String] = ["--headed", "--trace", "--debug", "--screenshot"]
@@ -71,6 +71,10 @@ public enum RunnerPolicy {
         }
         guard let argv = object["argv"] as? [String], let command = argv.first else {
             throw RunnerProblem("invalid_argument", "argv must be a non-empty array of strings")
+        }
+        // A NUL would cut the argument short at spawn.
+        guard !argv.contains(where: { $0.contains("\0") }) else {
+            throw RunnerProblem("invalid_argument", "argv must not contain NUL")
         }
         guard commands.contains(command) else {
             throw RunnerProblem("invalid_argument", "the runner does not start \(command)")
@@ -96,23 +100,26 @@ public enum RunnerPolicy {
             throw RunnerProblem("invalid_argument", "\(command) takes a ref (@<snapshot>:eN) as its first argument")
         }
         let rest = Array(argv.dropFirst(2))
-        let allowed: Bool
         switch command {
         case "select":
             // main caps the value at 512 characters; 4 KB of UTF-8 is the runner's own ceiling.
-            allowed = rest.count == 2 && rest[0] == "--" && !rest[1].isEmpty && rest[1].utf8.count <= maxSelectValueBytes
+            guard rest.count == 2, rest[0] == "--" else {
+                throw RunnerProblem("invalid_argument", "select takes exactly one value, after \"--\"")
+            }
+            guard !rest[1].isEmpty, rest[1].utf8.count <= maxSelectValueBytes else {
+                throw RunnerProblem("invalid_argument", "select's value must be 1 to \(maxSelectValueBytes) bytes")
+            }
         case "scroll":
             // At most one direction and one amount, each a value agent-desktop takes.
-            let directions = rest.filter { $0.hasPrefix("--direction=") }
-            let amounts = rest.filter { $0.hasPrefix("--amount=") }
-            allowed = directions.count + amounts.count == rest.count && directions.count <= 1 && amounts.count <= 1
-                && directions.allSatisfy { scrollDirections.contains(String($0.dropFirst("--direction=".count))) }
-                && amounts.allSatisfy { matches(amountPattern, String($0.dropFirst("--amount=".count))) }
+            let directions = rest.filter { matches(directionPattern, $0) }.count
+            let amounts = rest.filter { matches(amountPattern, $0) }.count
+            guard directions + amounts == rest.count, directions <= 1, amounts <= 1 else {
+                throw RunnerProblem("invalid_argument", "the runner does not pass \(rest.joined(separator: " ")) to scroll")
+            }
         default:
-            allowed = rest.isEmpty
-        }
-        guard allowed else {
-            throw RunnerProblem("invalid_argument", "the runner does not pass \(rest.joined(separator: " ")) to \(command)")
+            guard rest.isEmpty else {
+                throw RunnerProblem("invalid_argument", "the runner does not pass \(rest.joined(separator: " ")) to \(command)")
+            }
         }
     }
 
