@@ -846,13 +846,18 @@ export async function updateHooksWithNative(paths: SetupHooksPaths, opts: Claude
   return updateHooks(paths, plan);
 }
 
+/** True when the marketplace plugin is installed and not disabled: it
+ *  registers the hooks then, and install and update write no entries. */
+function pluginOwnsHooks(settingsPath: string, settings: Record<string, unknown>): boolean {
+  return detectPluginViaManifest(settingsPath) && !isPluginExplicitlyDisabled(settings);
+}
+
 /** False when an install would write no entries (settings.json corrupt, or
  *  the plugin owns the hooks): then no copy is made or run. Read again by
  *  the install itself, which decides. */
 function willWriteEntries(paths: SetupHooksPaths): boolean {
   const load = loadSettings(paths.settingsPath);
-  if (load.corrupted) return false;
-  return !(detectPluginViaManifest(paths.settingsPath) && !isPluginExplicitlyDisabled(load.settings));
+  return !load.corrupted && !pluginOwnsHooks(paths.settingsPath, load.settings);
 }
 
 /**
@@ -910,7 +915,7 @@ export function installHooks(
   //    foreign hooks are preserved. An installed-but-DISABLED plugin loads no
   //    hooks, so it must NOT short-circuit — the settings.json entries are the
   //    only live installation in that case (codex review).
-  if (detectPluginViaManifest(paths.settingsPath) && !isPluginExplicitlyDisabled(settings)) {
+  if (pluginOwnsHooks(paths.settingsPath, settings)) {
     const removedForPlugin = stripWmuxHooks(settings);
     if (removedForPlugin > 0) {
       writeJsonAtomic(paths.settingsPath, settings);
@@ -1013,7 +1018,7 @@ export function updateHooks(paths: SetupHooksPaths, native: ClaudeNativePlan | n
   }
   const settings = load.settings;
   // The plugin owns the hooks then; settings.json entries would double them.
-  if (detectPluginViaManifest(paths.settingsPath) && !isPluginExplicitlyDisabled(settings)) {
+  if (pluginOwnsHooks(paths.settingsPath, settings)) {
     return { ...base, ok: true };
   }
   const { profile, hooks: rows } = hookSetStatus(settings, form);
@@ -1677,7 +1682,7 @@ export function claudeHookRuntimeReport(
   opts: {
     platform?: NodeJS.Platform;
     hasNode?: () => boolean;
-    /** What statusHooks already read, so nothing is read or hashed twice. */
+    /** What statusHooks already read, so settings.json is not read twice. */
     settings?: Record<string, unknown>;
     nativeAvailable?: boolean;
     runtime?: ClaudeHookRuntime;
