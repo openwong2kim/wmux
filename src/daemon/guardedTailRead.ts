@@ -152,7 +152,7 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   const run = missRun(session, options.site);
   if (run && run.misses >= TAIL_MISS_CAP && !retriesTail(run, cols, rows, writtenAt)) {
     // Capped: straight to the whole ring, without the scan or the tail parse.
-    c.skipped++;
+    c.skipped = (c.skipped ?? 0) + 1;
     time(c, 'tailMs', performance.now() - started);
     const at = performance.now();
     const answer = await options.parse(full);
