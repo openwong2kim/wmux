@@ -8,9 +8,10 @@
 //   node scripts/fetch-last-release-cli.mjs <out dir>
 //
 // The release is the newest `vX.Y.Z` tag in this checkout (no prerelease), so
-// the test follows each release without a step of its own; WMUX_LAST_RELEASE
-// (`4.14.0`) names another for a local run. No tag at all is an error: CI
-// fetches the tags for this job.
+// the test follows each release without a step of its own. While that tag's
+// assets are still being built (HTTP 404), the release before it is used.
+// WMUX_LAST_RELEASE (`4.14.0`) names another for a local run, with no
+// fallback. No tag at all is an error: CI fetches the tags for this job.
 //
 // Prints the path of the bundle's index.js (WMUX_LAST_RELEASE_CLI).
 
@@ -19,34 +20,34 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { latestRelease } from './lib/last-release.mjs';
+import { AssetNotFound, fetchNewestPublished, stableReleases } from './lib/last-release.mjs';
 
 const REPO = 'openwong2kim/wmux';
 
-function resolveRelease() {
+/** The releases to try, newest first. */
+function releasesToTry() {
   const override = process.env.WMUX_LAST_RELEASE?.trim();
   if (override) {
     if (!/^\d+\.\d+\.\d+$/.test(override)) throw new Error(`WMUX_LAST_RELEASE must be X.Y.Z, not ${JSON.stringify(override)}`);
-    return override;
+    return [override];
   }
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const tags = execFileSync('git', ['tag', '--list', 'v*'], { cwd: root, encoding: 'utf8' }).split('\n');
-  const release = latestRelease(tags);
-  if (!release) throw new Error('no vX.Y.Z release tag in this checkout: fetch the tags first, or set WMUX_LAST_RELEASE');
-  return release;
+  const releases = stableReleases(tags);
+  if (releases.length === 0) throw new Error('no vX.Y.Z release tag in this checkout: fetch the tags first, or set WMUX_LAST_RELEASE');
+  return releases;
 }
 
 async function download(release, name) {
   const url = `https://github.com/${REPO}/releases/download/v${release}/${name}`;
   const response = await fetch(url, { redirect: 'follow' });
+  if (response.status === 404) throw new AssetNotFound(`${url}: HTTP 404`);
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
   return Buffer.from(await response.arrayBuffer());
 }
 
-async function main() {
-  const out = process.argv[2];
-  if (!out) throw new Error('usage: node scripts/fetch-last-release-cli.mjs <out dir>');
-  const release = resolveRelease();
+/** Download, check and extract one release's CLI bundle; its index.js. */
+async function fetchRelease(release, out) {
   const asset = `wmux-server-${release}-linux-x64.tar.gz`;
   const bundle = `${release}/resources/cli-bundle`;
   const downloads = path.join(out, 'download');
@@ -66,6 +67,13 @@ async function main() {
   const cli = path.join(extracted, bundle, 'index.js');
   if (!fs.existsSync(cli)) throw new Error(`${asset} has no ${bundle}/index.js`);
   console.error(`last release: ${release}`);
+  return cli;
+}
+
+async function main() {
+  const out = process.argv[2];
+  if (!out) throw new Error('usage: node scripts/fetch-last-release-cli.mjs <out dir>');
+  const cli = await fetchNewestPublished(releasesToTry(), (release) => fetchRelease(release, out), (line) => console.error(line));
   process.stdout.write(`${cli}\n`);
 }
 
