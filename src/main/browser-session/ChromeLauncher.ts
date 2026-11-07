@@ -244,6 +244,47 @@ export interface ChromeBackendClient {
   dispose(): void | Promise<void>;
 }
 
+/** Whether `binary` is Microsoft Edge (Windows, macOS or Linux spelling). */
+export function isEdgeBinary(binary: string): boolean {
+  const name = binary.split(/[\\/]/).pop() ?? '';
+  return /^(msedge(\.exe)?|microsoft edge|microsoft-edge(-stable|-beta|-dev)?)$/i.test(name);
+}
+
+/**
+ * Flags every Edge wmux starts gets, dedicated and protected profiles alike.
+ * On a PC signed in with a Microsoft or work account, Edge signs a fresh
+ * profile in by itself and opens an edge://sync-confirmation-dialog/ target
+ * that Target.closeTarget cannot close. The agent's browser must never sign in
+ * to or sync with the user's account: msImplicitSignin stops the sign-in, and
+ * --disable-sync stops a profile signed in before this from syncing.
+ */
+export function edgeArgs(binary: string): string[] {
+  return isEdgeBinary(binary) ? ['--disable-features=msImplicitSignin', '--disable-sync'] : [];
+}
+
+/**
+ * One `--disable-features` switch holding every feature the list disables, at
+ * the place of the first: Chromium honours only one of several such switches.
+ */
+export function mergeDisableFeatures(args: string[]): string[] {
+  const prefix = '--disable-features=';
+  const features: string[] = [];
+  for (const arg of args) {
+    if (!arg.startsWith(prefix)) continue;
+    for (const f of arg.slice(prefix.length).split(',')) if (f && !features.includes(f)) features.push(f);
+  }
+  let placed = false;
+  const out: string[] = [];
+  for (const arg of args) {
+    if (!arg.startsWith(prefix)) out.push(arg);
+    else if (!placed) {
+      placed = true;
+      if (features.length) out.push(prefix + features.join(','));
+    }
+  }
+  return out;
+}
+
 /** Candidate binary paths per platform, first match wins. */
 function discoverChromeBinary(): string | null {
   const envPath = process.env.WMUX_CHROME_PATH;
@@ -2071,7 +2112,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.assertOpen();
     const child = spawn(
       binary,
-      [
+      mergeDisableFeatures([
         `--user-data-dir=${this.userDataDir}`,
         ...(pipe
           ? ['--remote-debugging-pipe']
@@ -2092,8 +2133,10 @@ export class ChromeLauncher implements ChromeBackendClient {
         // The tabs it brings back are closed below (closeRestoredTabs).
         '--restore-last-session',
         ...protectedArgs,
+        // Edge: no implicit sign-in to the user's account, no sync.
+        ...edgeArgs(binary),
         ...this.extraArgs,
-      ],
+      ]),
       // The pipe: Chrome reads fd 3 and writes fd 4.
       { stdio: pipe ? ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] : 'ignore' },
     );
