@@ -15,6 +15,8 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { RemoteAttachmentDescriptor, RemotePaneSummary } from '../../../shared/remoteHosts';
 
+export type RemoteStaleReason = 'unanswered' | 'gone' | 'refused';
+
 export interface AttachedRemoteWorkspace {
   key: string;                    // `${hostId}:${workspaceId}` — selection + dedup key
   hostId: string;
@@ -35,6 +37,17 @@ export interface AttachedRemoteWorkspace {
    *  because a laptop slept would be silent data loss — it just renders
    *  disconnected until a refresh succeeds or the user detaches. */
   stale?: boolean;
+  /** Why the entry went stale, kept in memory only (never in the descriptor).
+   *  `unanswered`: the host did not answer, which may be one missed round, so
+   *  Fleet keeps its rows until the rail calls the PC down. `gone`: the host
+   *  answered without this workspace. `refused`: the host answered but will
+   *  not serve this computer (credential rejected, or HTTPS needed). Unset
+   *  while `stale` is false. */
+  staleReason?: RemoteStaleReason;
+  /** When the entry went stale (epoch ms, memory only). An `unanswered`
+   *  snapshot is the host's last word only until the rail hears from that
+   *  host after this moment (see selectOutdatedRemoteKeys). */
+  staleSince?: number;
   /** The host answered 401: it no longer accepts this computer's credential.
    *  Implies `stale`, but unlike a sleeping laptop it will not heal on its
    *  own — the row says so and offers to pair again. Cleared by the next
@@ -186,8 +199,9 @@ export interface RemoteWorkspacesSlice {
    * when nothing changed. `name` follows the remote when the fetch carries
    * one, so a workspace renamed on the other machine renames here too. */
   setRemoteWorkspacePanes: (key: string, panes: RemotePaneSummary[], name?: string) => void;
-  /** Marks the entry unreachable (or reachable again) without dropping it. */
-  setRemoteWorkspaceStale: (key: string, stale: boolean) => void;
+  /** Marks the entry unreachable (or reachable again) without dropping it,
+   *  recording why when it goes stale. */
+  setRemoteWorkspaceStale: (key: string, stale: boolean, reason?: RemoteStaleReason) => void;
   /** Flags (or clears) every row on `hostId` as refused by the host — see
    *  `AttachedRemoteWorkspace.authRejected`. */
   setRemoteHostAuthRejected: (hostId: string, rejected: boolean) => void;
@@ -398,16 +412,25 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
       entry.stale = false;
       entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
     }
+    if (entry.staleReason !== undefined) delete entry.staleReason;
+    if (entry.staleSince !== undefined) delete entry.staleSince;
     if (entry.authRejected) entry.authRejected = false;
   }),
 
-  setRemoteWorkspaceStale: (key, stale) => set((state: StoreState) => {
+  setRemoteWorkspaceStale: (key, stale, reason) => set((state: StoreState) => {
     const entry = state.remoteWorkspaces.find((r: AttachedRemoteWorkspace) => r.key === key);
     if (!entry) return;
+    if (!stale) {
+      if (entry.staleReason !== undefined) delete entry.staleReason;
+      if (entry.staleSince !== undefined) delete entry.staleSince;
+    } else if (reason !== undefined && entry.staleReason !== reason) {
+      entry.staleReason = reason;
+    }
     // Normalise before comparing: a never-flagged entry has `undefined`, not
     // `false`, and treating that as a real transition would bump the epoch —
     // and tear down live streams — on the very first successful fetch.
     const wasStale = entry.stale === true;
+    if (stale && !wasStale) entry.staleSince = Date.now();
     if (wasStale === stale) return;
     entry.stale = stale;
     if (!stale) entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
