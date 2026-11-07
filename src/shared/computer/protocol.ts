@@ -46,7 +46,13 @@ export const HELPER_IDLE_EXIT_MS = 5 * 60_000;
 
 // === Agent-facing actions ===
 
-export const COMPUTER_OBSERVE_ACTIONS = ['capabilities', 'listApps', 'listWindows', 'getAppState'] as const;
+export const COMPUTER_OBSERVE_ACTIONS = ['capabilities', 'listApps', 'listWindows', 'getAppState', 'desktop'] as const;
+
+/**
+ * The read-only agent-desktop commands the `desktop` action takes (macOS);
+ * main validates each one's args (src/main/computer/desktopCommands.ts).
+ */
+export const DESKTOP_COMMANDS = ['snapshot', 'find', 'get', 'is', 'list-surfaces', 'wait'] as const;
 export const COMPUTER_CONTROL_ACTIONS = ['openApp', 'click', 'setValue', 'type', 'pressKey', 'hotkey', 'scroll'] as const;
 
 /**

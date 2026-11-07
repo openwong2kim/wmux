@@ -21,6 +21,13 @@ export const HELPER_TEAM_ID = '8RGHH2F237';
 export const HELPER_SIGNING_ID = 'com.electron.wmux.computer-use';
 export const HELPER_REQUIREMENT =
   `anchor apple generic and certificate leaf[subject.OU] = "${HELPER_TEAM_ID}" and identifier "${HELPER_SIGNING_ID}"`;
+/**
+ * The agent-desktop binary nested in the macOS helper bundle. The helper's
+ * runner mode (native/computer-use-macos Runner.swift, ChildGate) holds a
+ * team-signed helper to starting only a binary signed by the same team with
+ * this identifier; build.sh signs it so.
+ */
+export const AGENT_DESKTOP_SIGNING_ID = 'com.electron.wmux.agent-desktop';
 
 /** Absolute path: a PATH lookup inside a security check is a hijack vector. */
 const CODESIGN = '/usr/bin/codesign';
