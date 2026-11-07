@@ -618,10 +618,11 @@ export function buildIdentitySection(id: IdentityClaimsSummary): { verdict: Verd
   lines.push(refused.length === 0
     ? { label: 'refused claims', value: 'none', verdict: 'OK' }
     : {
+      // Counts since the app started, so they inform rather than warn.
       label: 'refused claims',
       value: refused.map((r) => `${r} ${id.refusals[r]}`).join(', '),
-      verdict: 'WARN',
-      hint: 'These callers got no pane claim and used their own walk. other-pid: the call came from another process than the one it named. no-peer or start-unread with the lines above unavailable: main\'s reading is down, not the caller.',
+      verdict: 'OK',
+      hint: 'These callers got no pane claim and used their own walk. other-pid: the call came from another process than the one it named, or from one in another pid namespace (a container). no-peer or start-unread with the lines above unavailable: main\'s reading is down, not the caller.',
     });
   if (id.tcpClaims !== undefined) lines.push({ label: 'claims over TCP', value: String(id.tcpClaims), verdict: 'OK' });
   return { verdict: worst(lines.map((l) => l.verdict)), lines };

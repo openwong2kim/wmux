@@ -203,7 +203,8 @@ describe('doctor identity section', () => {
       const byLabel = await lines(identitySummary('darwin'));
       expect(byLabel?.['peer read']).toMatchObject({ value: 'ok', verdict: 'OK' });
       expect(byLabel?.['start times']).toMatchObject({ value: 'ok', verdict: 'OK' });
-      expect(byLabel?.['refused claims']).toMatchObject({ value: 'no-peer 1, other-pid 2, restarted 1', verdict: 'WARN' });
+      // Counts since the app started: they inform, they do not raise the verdict.
+      expect(byLabel?.['refused claims']).toMatchObject({ value: 'no-peer 1, other-pid 2, restarted 1', verdict: 'OK' });
       expect(byLabel).not.toHaveProperty('claims over TCP');
     } finally {
       resetClaimChecks();
@@ -214,7 +215,7 @@ describe('doctor identity section', () => {
     const byLabel = await lines({ peerRead: { state: 'unavailable', reason: 'koffi unavailable: no binary' }, startTimes: 'ok', refusals: { ...zero, 'no-peer': 4 } });
     expect(byLabel?.['peer read']).toMatchObject({ value: 'unavailable (koffi unavailable: no binary)', verdict: 'WARN' });
     expect(byLabel?.['peer read'].hint).toMatch(/every pid claim is refused/);
-    expect(byLabel?.['refused claims']).toMatchObject({ value: 'no-peer 4', verdict: 'WARN' });
+    expect(byLabel?.['refused claims']).toMatchObject({ value: 'no-peer 4', verdict: 'OK' });
   });
 
   it('reports no refusals as OK, and an unchecked read as skipped', async () => {
