@@ -108,6 +108,17 @@ export function registerComputerRpc(
   }, 'required'));
 
   router.register('computer.act', wrap('computer.act', (params, agent): Promise<unknown> => {
+    // A desktop ref action: the `desktop` field is read first and travels
+    // alone (besides the identity), so no other control field can ride on it.
+    if (params.desktop !== undefined) {
+      const desktop = params.desktop as { command?: unknown; args?: unknown } | null;
+      if (typeof desktop !== 'object' || desktop === null || Array.isArray(desktop)) {
+        throw new ComputerError('invalid_argument', 'desktop must be an object with command and args');
+      }
+      const extra = Object.keys(params).filter((k) => k !== 'desktop' && k !== 'senderPtyId' && k !== 'callerInstance' && params[k] !== undefined);
+      if (extra.length > 0) throw new ComputerError('invalid_argument', `a desktop action takes no ${extra.join(', ')}`);
+      return getService().desktopAct(agent, { command: desktop.command, args: desktop.args });
+    }
     if (typeof params.action !== 'string' || !isControlAction(params.action)) {
       throw new ComputerError('invalid_argument', `action must be one of ${COMPUTER_CONTROL_ACTIONS.join(', ')}`);
     }
