@@ -540,16 +540,22 @@ async function sendForTarget<T>(
   }
 }
 
+/** A ref may only be letters, digits, `_` and `-`: it is interpolated into selectors and scripts. */
+function assertRefSyntax(ref: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw badArgs(`Invalid ref: "${ref}"`);
+}
+
 /**
  * Sanitize ref to prevent injection in CSS selectors / JS template literals.
  * Exported so other tool modules that interpolate a ref into injected JS
  * (e.g. browser_highlight in inspection.ts) reuse the same guard.
  */
 export function sanitizeRef(ref: string, scope: BrowserTargetScope, opts?: { frames?: 'allow' }): string {
-  if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw badArgs(`Invalid ref: "${ref}"`);
+  assertRefSyntax(ref);
   // Every `[data-wmux-ref]` resolution in the tool layer — RPC click, fill,
   // hover, drag, select, scroll, scroll-into-view, the password probe, and
-  // browser_highlight — passes through here first, which makes this the one
+  // browser_highlight — passes through here first (the one exception is a
+  // smartRef click, see rpcClick), which makes this the one
   // place a frame ref can be stopped before it reaches a selector that can
   // only ever match a main-document element. Fail closed: a frame ref has no
   // data-attr representation at all, so attempting it either finds nothing or,
@@ -738,7 +744,7 @@ async function rpcClick(
   // document, where no frame element carries a tag.
   let target: RpcTarget;
   if (smart) {
-    if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw badArgs(`Invalid ref: "${ref}"`);
+    assertRefSyntax(ref);
     target = { selector: `[data-wmux-ref="${ref}"]`, frame: null };
   } else {
     target = rpcRefTarget(ref, scope, { frames: 'allow' });
