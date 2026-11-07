@@ -612,9 +612,6 @@ fn after_cancel(completed: bool, n: u32, error: Option<i32>) -> std::io::Result<
     }
 }
 
-/// The broker did not take the session. Nothing was forwarded yet, so the
-/// full bundle gets the session from the host's first byte. The caller has
-/// dropped the connection.
 /// A refusal the full bundle can still serve: the broker could not tie the
 /// connection to this process (`peer`, `peer-unverified`). The bundle talks to
 /// main directly, so main sees it as its own peer. Any other refusal (`auth`)
@@ -623,6 +620,9 @@ fn refusal_falls_back(why: &str) -> bool {
     why == "peer" || why == "peer-unverified"
 }
 
+/// The broker did not take the session. Nothing was forwarded yet, so the
+/// full bundle gets the session from the host's first byte. The caller has
+/// dropped the connection.
 fn no_session(why: &str, raw: &[OsString]) -> ! {
     say(&format!("{PREFIX} {why}"));
     fallback::run_full_bundle(raw)
