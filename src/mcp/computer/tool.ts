@@ -13,6 +13,7 @@ import type { RpcMethod } from '../../shared/rpc';
 import { formatComputerError, parseComputerErrorMessage, type ActionDisposition } from '../../shared/computer/errors';
 import {
   COMPUTER_ACTIONS,
+  DESKTOP_ACTION_COMMANDS,
   DESKTOP_COMMANDS,
   DESKTOP_LIST_APPS_TIMEOUT_MS,
   DESKTOP_RUN_GRACE_MS,
@@ -74,7 +75,7 @@ const COMPUTER_SHAPE = {
   keys: z.array(z.string()).optional().describe('hotkey: modifiers (ctrl, alt, shift, meta/cmd) plus one pressKey key, e.g. ["ctrl","s"].'),
   direction: z.enum(['up', 'down', 'left', 'right']).optional(),
   amount: z.number().int().min(1).max(50).optional(),
-  command: z.enum(DESKTOP_COMMANDS).optional().describe('desktop (macOS, read-only): getAppState stays the loop. In a large or scrolled window, find first: it reaches elements off screen and returns only the matching refs; then get or is on a ref. snapshot returns the whole tree, so use it only for a layout you don\'t know. snapshot, find and list-surfaces need app; get and is take a ref (@<snapshot>:eN).'),
+  command: z.enum([...DESKTOP_COMMANDS, ...DESKTOP_ACTION_COMMANDS]).optional().describe('desktop (macOS): getAppState stays the loop. In a large or scrolled window, find first: it reaches elements off screen and returns only the matching refs; then get or is on a ref. snapshot returns the whole tree, so use it only for a layout you don\'t know. snapshot, find and list-surfaces need app; get and is take a ref (@<snapshot>:eN). The other commands act on args.ref from a window snapshot or find, in the background; select also takes value, scroll direction and amount.'),
   args: z.record(z.string(), z.unknown()).optional().describe('desktop: that command\'s arguments; a wrong one returns its schema.'),
 };
 
@@ -162,6 +163,12 @@ export function createComputerTool(rpc: ComputerRpc) {
             return renderAppState(state);
           }
           case 'desktop': {
+            if ((DESKTOP_ACTION_COMMANDS as readonly string[]).includes(input.command ?? '')) {
+              // A ref action is an input action: computer.act, never the read path.
+              sent = true;
+              const result = (await rpc('computer.act', { desktop: { command: input.command, args: input.args } }, DESKTOP_TIMEOUT_MS)) as ActionResult;
+              return renderActionResult(result);
+            }
             const reply = (await rpc(
               'computer.getAppState',
               { desktop: { command: input.command, args: input.args }, app: input.app, window: input.window },
@@ -183,7 +190,7 @@ export function createComputerTool(rpc: ComputerRpc) {
           }
         }
       } catch (err) {
-        return errorResult(err, isControlAction(input.action) ? (sent ? 'delivered_unverified' : 'not_delivered') : undefined);
+        return errorResult(err, sent || isControlAction(input.action) ? (sent ? 'delivered_unverified' : 'not_delivered') : undefined);
       }
     },
   });
