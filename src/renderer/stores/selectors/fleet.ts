@@ -1329,6 +1329,82 @@ export function groupFleetPanes(panes: FleetPane[], ctx: FleetGroupContext = {})
   return groups;
 }
 
+/** The device id of this computer's rows (a host id is never this). */
+export const FLEET_LOCAL_DEVICE = 'local';
+
+/** One device's part of the list grouped by device: everything but Needs you. */
+export interface FleetDeviceGroup {
+  /** FLEET_LOCAL_DEVICE, or the remote host's id. */
+  id: string;
+  /** The host's label; '' for this computer (the UI names it). */
+  label: string;
+  /** 'disconnected': every attachment from the host is stale, so it has no rows. */
+  state: 'local' | 'connected' | 'disconnected';
+  /** Disconnected only: when the host last answered, or null when not known. */
+  lastSeenAt?: number | null;
+  running: FleetRow[];
+  finished: FleetRow[];
+  idle: FleetRow[];
+}
+
+export interface FleetDeviceGroups {
+  /** Unchanged: one section across every device, so its count stays one count. */
+  needsYou: FleetRow[];
+  devices: FleetDeviceGroup[];
+}
+
+/**
+ * The list grouped by device. Needs you stays one section; every other row
+ * goes under its device, in the order the status grouping gave it. This
+ * computer comes first, then the hosts in `hostOrder` (the PC rail's order),
+ * then any other host by label. A host whose attachments are all stale keeps a
+ * row-less head while `includeDisconnected` is set; a device with no rows is
+ * otherwise not drawn.
+ */
+export function groupFleetByDevice(
+  groups: FleetGroups,
+  opts: {
+    remoteWorkspaces?: readonly Pick<AttachedRemoteWorkspace, 'hostId' | 'hostLabel' | 'stale'>[];
+    hostOrder?: readonly string[];
+    lastSeenAt?: Readonly<Record<string, number | null>>;
+    includeDisconnected?: boolean;
+  } = {},
+): FleetDeviceGroups {
+  const byId = new Map<string, FleetDeviceGroup>();
+  const device = (id: string, label: string, state: FleetDeviceGroup['state']): FleetDeviceGroup => {
+    let d = byId.get(id);
+    if (!d) {
+      d = { id, label, state, running: [], finished: [], idle: [] };
+      byId.set(id, d);
+    }
+    return d;
+  };
+  for (const section of ['running', 'finished', 'idle'] as const) {
+    for (const row of groups[section]) {
+      const remote = row.pane.remote;
+      const d = remote ? device(remote.hostId, remote.hostLabel, 'connected') : device(FLEET_LOCAL_DEVICE, '', 'local');
+      d[section].push(row);
+    }
+  }
+  if (opts.includeDisconnected) {
+    const live = new Set<string>();
+    for (const r of opts.remoteWorkspaces ?? []) if (!r.stale) live.add(r.hostId);
+    for (const r of opts.remoteWorkspaces ?? []) {
+      if (live.has(r.hostId) || byId.has(r.hostId)) continue;
+      device(r.hostId, r.hostLabel, 'disconnected').lastSeenAt = opts.lastSeenAt?.[r.hostId] ?? null;
+    }
+  }
+  const order = new Map((opts.hostOrder ?? []).map((id, i) => [id, i]));
+  const remotes = [...byId.values()].filter((d) => d.id !== FLEET_LOCAL_DEVICE).sort((a, b) => {
+    const ai = order.get(a.id) ?? Infinity;
+    const bi = order.get(b.id) ?? Infinity;
+    if (ai !== bi) return ai - bi;
+    return a.label.localeCompare(b.label) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  });
+  const local = byId.get(FLEET_LOCAL_DEVICE);
+  return { needsYou: groups.needsYou, devices: local ? [local, ...remotes] : remotes };
+}
+
 /** A terminal title that names only the program (an agent CLI, a shell or a
  *  multiplexer), never a task. The shells are the ones ShellDetector offers,
  *  under its names ("Git Bash", "PowerShell 7", "Command Prompt", "WSL") and
