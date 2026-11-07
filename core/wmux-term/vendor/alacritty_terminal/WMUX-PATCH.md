@@ -31,6 +31,13 @@ Local changes:
   rows dropped. With history, the cursor row stays. The saved cursor moves down
   with the room used. `native_core.rs` refuses a resize that reflows a paragraph
   below the cursor's, where xterm moves its cursor row off its content.
+- `src/grid/tests.rs`: upstream's `shrink_reflow`, `shrink_reflow_twice`,
+  `shrink_reflow_empty_cell_inside_line`, `grow_reflow` and
+  `grow_reflow_multiline` leave the cursor at 0,0, inside the paragraph they
+  resize, and expected it reflowed. They now expect xterm's result: the
+  cursor's paragraph is not reflowed (`reflowCursorLine` false, `Buffer.ts`
+  lines 391-397 and `BufferReflow.ts` lines 45-52). `shrink_reflow_cursor_below`
+  and `grow_reflow_cursor_below` keep a reflow case with the cursor outside it.
 
 - `src/term/cell.rs` uses the remaining u16 flag bit for SGR blink;
   `src/term/mod.rs` retains SGR 5, ignores SGR 6 like xterm, and clears blink on SGR 25/reset. This keeps
