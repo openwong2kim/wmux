@@ -1566,10 +1566,12 @@ impl<T: EventListener> Handler for Term<T> {
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
 
-        // Ensure deleting within terminal bounds.
-        let count = cmp::min(count, columns);
-
         let start = cursor.point.column.0;
+
+        // wmux: at most the cells right of the cursor, as xterm.js's
+        // deleteChars; capping at the row width cleared cells before it.
+        let count = cmp::min(count, columns - start);
+
         let end = cmp::min(start + count, columns - 1);
         let num_cells = columns - end;
 

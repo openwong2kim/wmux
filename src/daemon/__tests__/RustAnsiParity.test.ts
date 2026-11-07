@@ -136,6 +136,9 @@ const others: Case[] = [
   synthetic('cnl-cpl', 'a\r\nb\x1b[Fc\x1b[2Ed'),
   synthetic('hpa-vpa', '\x1b[5`a\x1b[3db'),
   synthetic('ich-dch-ech', 'abcdef\x1b[1;2H\x1b[2@\x1b[1P\x1b[2X'),
+  // DCH past the line end clears from the cursor only (xterm.js deleteChars).
+  synthetic('dch-past-line-end', 'abcdef\x1b[1;5H\x1b[44m\x1b[30P\x1b[0m'),
+  synthetic('dch-past-line-end-full-row', 'abcdefghijklmnopqrst\x1b[1;18H\x1b[9P'),
   synthetic('il-dl', '1\r\n2\r\n3\x1b[2;1H\x1b[L\x1b[2M'),
   // SD fills with default attributes in xterm; IL and RI with the erase colour.
   synthetic('sd-bg', '1\r\n2\r\n3\x1b[44m\x1b[1T\x1b[0mx'),

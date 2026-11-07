@@ -31,6 +31,10 @@ Local changes:
   and never touches scrollback). Upstream rotated the deleted rows into
   history when the region started at the top row. `src/grid/mod.rs` adds
   `scroll_up_in_place` for it; linefeed still scrolls into history.
+- `src/term/mod.rs` caps DCH (`CSI Ps P`) at the cells right of the cursor,
+  as xterm.js's `InputHandler.deleteChars` (`BufferLine.deleteCells`) does.
+  Upstream capped at the row width and then cleared the last `count` cells,
+  so a count past the line end also cleared cells left of the cursor.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.

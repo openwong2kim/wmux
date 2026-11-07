@@ -50,6 +50,14 @@ mod parity_support;
 mod scroll_parity;
 
 #[cfg(all(
+    test,
+    feature = "native-core",
+    feature = "bindings",
+    not(target_arch = "wasm32")
+))]
+mod edit_parity;
+
+#[cfg(all(
     feature = "native-core",
     feature = "bindings",
     not(target_arch = "wasm32")
