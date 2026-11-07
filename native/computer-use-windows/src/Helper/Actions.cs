@@ -284,7 +284,9 @@ internal static unsafe class Focus
             {
                 var element = Uia.FocusedRuntimeId();
                 Sta.Sleep(50);
-                if (KeyboardReady(target, out var again) && again == first && element.Length > 0
+                // No UIA focus element (an empty runtime id) both times: the
+                // two equal HWND reads decide.
+                if (KeyboardReady(target, out var again) && again == first
                     && Uia.FocusedRuntimeId().AsSpan().SequenceEqual(element)) return;
             }
             Sta.Sleep(50);

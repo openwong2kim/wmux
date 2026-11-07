@@ -24,25 +24,8 @@ internal static unsafe class GiveBack
 {
     private static readonly object Lock = new();
 
-    // Our own input: the tick of the last event we injected, and whether it
-    // was a UIA call whose action is still running (its injected key arrives
-    // during the call, so every tick up to the end of the action counts as
-    // ours; End closes that window).
-    private static uint ownTick;
-    private static bool haveOwn;
-    private static bool callOpen;
-
-    // Set when a tick newer than our own input is seen before our next one:
-    // GetLastInputInfo keeps only the latest tick, so the user's input in the
-    // middle of an action would otherwise be hidden by ours after it.
-    private static bool userSeen;
-
-    // GetLastInputInfo's tick when the running action began: input before it
-    // (between two actions) is never this action's.
-    private static uint actionSince;
-
-    // The running action sent input of its own (SendInput or a UIA call).
-    private static bool actionSent;
+    // Our own input, told from the user's (Core OwnInputLedger).
+    private static readonly OwnInputLedger Own = new();
 
     // Keys went to a Chromium window: when the front may go back.
     private static long keysSettleUntil;
@@ -58,7 +41,6 @@ internal static unsafe class GiveBack
         return BackgroundInput.LastInputTick();
     }
 
-    private static uint? OwnUntil(uint now) => ForegroundReturn.OwnUntil(haveOwn ? ownTick : null, callOpen, now);
 
     /// <summary>
     /// Right before (a UIA call) or right after (SendInput) the helper injects
@@ -69,16 +51,13 @@ internal static unsafe class GiveBack
     /// </summary>
     public static void NoteOwnInput(bool call, uint? lastBefore = null)
     {
-        lock (Lock)
-        {
-            uint now = Now;
-            uint last = lastBefore ?? LastInput();
-            if (!callOpen && ForegroundReturn.UserInputAfter(last, actionSince, OwnUntil(now))) userSeen = true;
-            ownTick = now;
-            haveOwn = true;
-            callOpen = call;
-            actionSent = true;
-        }
+        lock (Lock) Own.Note(call, Now, lastBefore ?? LastInput());
+    }
+
+    /// <summary>The UIA call just noted certainly did not run (Input.UncountSemantic).</summary>
+    public static void CallNotRun()
+    {
+        lock (Lock) Own.UndoCall();
     }
 
     /// <summary>
@@ -102,14 +81,7 @@ internal static unsafe class GiveBack
     /// </summary>
     public static void CallDone()
     {
-        lock (Lock)
-        {
-            if (haveOwn && callOpen)
-            {
-                ownTick = Now;
-                callOpen = false;
-            }
-        }
+        lock (Lock) Own.CallDone(Now);
     }
 
     /// <summary>What Begin read before the action; End decides from it.</summary>
@@ -117,6 +89,8 @@ internal static unsafe class GiveBack
     {
         public bool Active;
         public HWND Previous;
+        public uint PreviousPid;
+        public string PreviousClass = "";
         public HWND Target;
         public uint TargetPid;
         public bool KeepFront;
@@ -149,22 +123,24 @@ internal static unsafe class GiveBack
         Input.ForgetPointerEnd();
         lock (Lock)
         {
-            userSeen = false;
-            actionSent = false;
             keysSettleUntil = 0;
-            scope.Since = actionSince = LastInput();
+            scope.Since = LastInput();
+            Own.BeginAction(scope.Since);
         }
         scope.Previous = Win.Root(PInvoke.GetForegroundWindow());
         scope.Target = target.Window;
         scope.TargetPid = target.Pid;
         // The user already had the target in front: nothing to give back.
         if (scope.Previous == HWND.Null || Win.InTargetWindow(scope.Previous, target.Window, target.Pid)) return scope;
+        scope.PreviousPid = Win.OwnerPid(scope.Previous);
+        scope.PreviousClass = Win.ClassName(scope.Previous);
         scope.KeepFront = KeepFront(p);
         scope.Refuse = refuseForeground;
         if (PInvoke.GetCursorPos(out var cursor)) scope.CursorBefore = cursor;
+        uint thread = PInvoke.GetWindowThreadProcessId(target.Window);
         foreach (var h in Win.TopLevelWindows())
         {
-            if (CountsAsWindow(h, target.Pid)) scope.TargetWindowsBefore.Add(h);
+            if (CountsAsWindow(h, target.Pid, thread)) scope.TargetWindowsBefore.Add(h);
         }
         scope.Active = true;
         return scope;
@@ -188,7 +164,7 @@ internal static unsafe class GiveBack
             lock (Lock)
             {
                 uint now = Now, last = LastInput();
-                age = last == 0 || !ForegroundReturn.UserInputAfter(last, unchecked(now - (uint)ForegroundReturn.QuietMs), OwnUntil(now))
+                age = last == 0 || !ForegroundReturn.UserInputAfter(last, unchecked(now - (uint)ForegroundReturn.QuietMs), Own.OwnUntil(now))
                     ? null
                     : unchecked(now - last);
             }
@@ -220,7 +196,7 @@ internal static unsafe class GiveBack
         long settle;
         lock (Lock)
         {
-            sent = actionSent;
+            sent = Own.ActionSent;
             settle = keysSettleUntil - Environment.TickCount64;
         }
         if (settle > 0) Sta.Sleep((int)settle);
@@ -251,11 +227,12 @@ internal static unsafe class GiveBack
         if (previousInTarget || !(foregroundInTarget || foreground == HWND.Null)) return ReturnDecision.NotNeeded;
         uint now = Now;
         bool userInput;
-        lock (Lock) userInput = userSeen || ForegroundReturn.UserInputAfter(LastInput(), scope.Since, OwnUntil(now));
+        lock (Lock) userInput = Own.UserInputSince(scope.Since, LastInput(), now);
         bool newWindow = false;
+        uint thread = PInvoke.GetWindowThreadProcessId(target.Window);
         foreach (var h in Win.TopLevelWindows())
         {
-            if (CountsAsWindow(h, target.Pid) && !scope.TargetWindowsBefore.Contains(h))
+            if (CountsAsWindow(h, target.Pid, thread) && !scope.TargetWindowsBefore.Contains(h))
             {
                 newWindow = true;
                 break;
@@ -270,7 +247,7 @@ internal static unsafe class GiveBack
             InputHeld: Input.AnyHeld,
             MenuMode: InMenuMode(target.Window),
             NewTargetWindow: newWindow,
-            PreviousAlive: PInvoke.IsWindow(scope.Previous),
+            PreviousAlive: PreviousIsSame(scope),
             PreviousMinimized: PInvoke.IsIconic(scope.Previous),
             PreviousElevated: Integrity.IsAboveSelf(Win.OwnerPid(scope.Previous))));
     }
@@ -279,13 +256,30 @@ internal static unsafe class GiveBack
     /// A visible top-level window of the target process that can take the
     /// front. A tooltip, a hover card or a click-through overlay
     /// (WS_EX_NOACTIVATE, WS_EX_TRANSPARENT) is not "a window the action
-    /// opened"; a dropdown list or a popup menu is.
+    /// opened"; a dropdown list or a popup menu is. Only windows of the
+    /// target's GUI thread count (a UWP frame's thread is its frame host's).
     /// </summary>
-    private static bool CountsAsWindow(HWND h, uint pid)
+    private static bool CountsAsWindow(HWND h, uint pid, uint thread)
     {
         if (!PInvoke.IsWindowVisible(h) || (Win.OwnerPid(h) != pid && Win.EffectivePid(h) != pid)) return false;
+        if (thread != 0 && PInvoke.GetWindowThreadProcessId(h) != thread) return false;
         var ex = (WINDOW_EX_STYLE)(uint)PInvoke.GetWindowLongPtr(h, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
         return (ex & (WINDOW_EX_STYLE.WS_EX_NOACTIVATE | WINDOW_EX_STYLE.WS_EX_TRANSPARENT)) == 0 && Win.ClassName(h) != "tooltips_class32";
+    }
+
+    /// <summary>The previous window is still the window Begin saw: its handle was not reused.</summary>
+    private static bool PreviousIsSame(Scope scope) =>
+        PInvoke.IsWindow(scope.Previous) && Win.OwnerPid(scope.Previous) == scope.PreviousPid && Win.ClassName(scope.Previous) == scope.PreviousClass;
+
+    /// <summary>
+    /// SetForegroundWindow's return is not proof: the foreground is read
+    /// back, once more a clock tick later if it has not settled yet.
+    /// </summary>
+    private static bool PreviousInFront(Scope scope)
+    {
+        if (Win.Root(PInvoke.GetForegroundWindow()) == scope.Previous) return true;
+        Sta.Sleep(16);
+        return Win.Root(PInvoke.GetForegroundWindow()) == scope.Previous;
     }
 
     private static ReturnDecision Decide(Scope scope) =>
@@ -308,7 +302,8 @@ internal static unsafe class GiveBack
     {
         // Refused when the helper sent no input of its own (posted input) and
         // the target came forward by itself: say so instead of claiming it.
-        if (!PInvoke.SetForegroundWindow(scope.Previous)) return false;
+        // A handle that now names another window is never raised.
+        if (!PreviousIsSame(scope) || !PInvoke.SetForegroundWindow(scope.Previous) || !PreviousInFront(scope)) return false;
         var leftAt = Input.LastPointerEnd;
         if (scope.CursorBefore is { } before && leftAt is { } at && PInvoke.GetCursorPos(out var now)
             && Math.Abs(now.X - at.X) <= 1 && Math.Abs(now.Y - at.Y) <= 1 && (now.X != before.X || now.Y != before.Y))
@@ -347,7 +342,7 @@ internal static unsafe class GiveBack
                     lock (Lock)
                     {
                         if (mine != generation) return;
-                        if (decision == ReturnDecision.Return) PInvoke.SetForegroundWindow(scope.Previous);
+                        if (decision == ReturnDecision.Return && PreviousIsSame(scope)) PInvoke.SetForegroundWindow(scope.Previous);
                     }
                     if (decision == ReturnDecision.Return) Wire.Log("foreground: returned again after the target took it back");
                 }
