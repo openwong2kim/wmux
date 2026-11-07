@@ -111,6 +111,29 @@ for (const mode of MODES) {
       }
     });
 
+    it('refuses a removed frame read through its cached world, even while the page still holds its window', async (ctx) => {
+      if (h.skipUnless(ctx)) return;
+      const page = (await h.browser().newPage()) as Page;
+      try {
+        await page.goto(h.origin(), { waitUntil: 'load' });
+        await loaded(page);
+        const send = await sessionOf(page);
+        const worlds = new FrameWorlds(send);
+        const inner = (await listChildFrames(send)).find((f) => f.name === 'checkout')!;
+        // Cache the world for this exact document.
+        expect(await evaluateInFrame(send, worlds, inner.frameId, '1', inner.loaderId)).toEqual({ value: 1 });
+        // Remove the iframe but keep its window reachable from the page.
+        await page.evaluate(() => {
+          const frame = document.getElementById('inner') as HTMLIFrameElement;
+          (window as unknown as { keptFrameWindow: unknown }).keptFrameWindow = frame.contentWindow;
+          frame.remove();
+        });
+        await expect(evaluateInFrame(send, worlds, inner.frameId, '1', inner.loaderId)).rejects.toThrow(/^FRAME_GONE/);
+      } finally {
+        await page.close();
+      }
+    });
+
     it('stops a frame read at its timeout, and still answers one that finishes in time', async (ctx) => {
       if (h.skipUnless(ctx)) return;
       const page = (await h.browser().newPage()) as Page;
