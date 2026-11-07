@@ -37,6 +37,8 @@ vi.mock('node:fs', async (orig) => {
 
 import { ChromeLauncher, chromeSaid, chromeTransportKind } from '../ChromeLauncher';
 import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
+import { CDP_PIPE_COMMAND_TIMEOUT_MS } from '../CdpPipeMux';
+import { CHROME_START_CEILING_MS } from '../../../shared/chromeStart';
 
 type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; stderr: PassThrough; killed: boolean; exitCode: number | null; signalCode: string | null; signals: string[] };
 
@@ -378,11 +380,13 @@ describe('ChromeLauncher over a debugging pipe', () => {
     // What Chrome on Windows says when it refuses remote debugging, then noise.
     child.stderr.write('DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.\r\n');
     child.stderr.write('Created TensorFlow Lite XNNPACK delegate for CPU.\r\n');
-    await vi.advanceTimersByTimeAsync(42_000);
+    // Past the start ceiling, plus the last attempt's own command timeout.
+    await vi.advanceTimersByTimeAsync(CHROME_START_CEILING_MS + CDP_PIPE_COMMAND_TIMEOUT_MS + 2_000);
     const message = await outcome;
     expect(message).toContain('ChromeLauncher: CDP endpoint did not become ready in time');
     expect(message).toContain('last error: ChromeLauncher: Browser.getVersion timed out');
-    expect(message).toContain('Chrome said: DevTools remote debugging requires a non-default data directory');
+    expect(message).toContain('Chrome said: DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir. | Created TensorFlow Lite');
+    await launcher.dispose({ immediate: true });
   });
 
   it('gives Chrome the childEnv test seam as its whole environment', async () => {
@@ -394,25 +398,6 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(opts.env).toBe(env);
     await launcher.dispose({ immediate: true });
   });
-});
-
-describe('chromeSaid', () => {
-  it('keeps the last few non-empty lines, one each', () => {
-    expect(chromeSaid('a\r\n\r\nb\nc\nd\n')).toBe('b | c | d');
-    expect(chromeSaid('only\n', 3)).toBe('only');
-  });
-
-  it('is null when Chrome said nothing', () => {
-    expect(chromeSaid('')).toBeNull();
-    expect(chromeSaid('\r\n  \n')).toBeNull();
-  });
-
-  it('keeps the newest part of a long line', () => {
-    const said = chromeSaid(`${'x'.repeat(500)}END`, 3, 50) as string;
-    expect(said).toHaveLength(51);
-    expect(said.startsWith('…')).toBe(true);
-    expect(said.endsWith('END')).toBe(true);
-  });
 
   it('quits through Browser.close on the pipe', async () => {
     const { chrome, child } = spawnPipeChrome();
@@ -421,5 +406,29 @@ describe('chromeSaid', () => {
     await launcher.dispose();
     expect(chrome.received.some((c) => c.method === 'Browser.close')).toBe(true);
     expect(child.killed).toBe(false);
+  });
+});
+
+describe('chromeSaid', () => {
+  it('keeps the last few non-empty lines, one each', () => {
+    expect(chromeSaid('a\r\n\r\nb\nc\nd\n')).toBe('b | c | d');
+    expect(chromeSaid('only\n')).toBe('only');
+  });
+
+  it('is null when Chrome said nothing', () => {
+    expect(chromeSaid('')).toBeNull();
+    expect(chromeSaid('\r\n  \n')).toBeNull();
+  });
+
+  it('keeps the newest part of a long line', () => {
+    const said = chromeSaid(`${'x'.repeat(500)}END`, [], 3, 50) as string;
+    expect(said).toHaveLength(51);
+    expect(said.startsWith('…')).toBe(true);
+    expect(said.endsWith('END')).toBe(true);
+  });
+
+  it('writes a home folder as ~, in any case, and ignores an empty one', () => {
+    const said = chromeSaid('[1:2:ERROR] cannot open C:\\Users\\someone\\AppData\\x and c:\\users\\someone\\y\n', ['C:\\Users\\someone', '']);
+    expect(said).toBe('[1:2:ERROR] cannot open ~\\AppData\\x and ~\\y');
   });
 });

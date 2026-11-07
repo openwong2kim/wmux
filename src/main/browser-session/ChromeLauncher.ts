@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
 import type { CdpConnection } from './CdpSocket';
@@ -60,19 +61,25 @@ const READY_TIMEOUT_MS = 10_000;
  */
 const READY_STARTING_MS = CHROME_START_CEILING_MS;
 const READY_POLL_MS = 250;
-/** Chrome's stderr kept for a failed start's message (bytes, the newest). */
+/** Chrome's stderr kept for a failed start's message (characters, the newest). */
 const STARTUP_STDERR_TAIL = 4096;
+/** How long a failed start waits for the rest of stderr after Chrome exited. */
+const STDERR_END_WAIT_MS = 500;
 
 /**
  * What Chrome last said on stderr, for a failed start's message: its last few
- * non-empty lines, one line each. A refused start is often only said there:
+ * non-empty lines, one line each, with each of `homes` written as `~` (the
+ * message reaches logs and agents). A refused start is often only said there:
  * "DevTools remote debugging requires a non-default data directory" leaves the
  * pipe silent and writes no DevToolsActivePort, which otherwise reads as a
  * timeout.
  */
-export function chromeSaid(stderr: string, lines = 3, max = 400): string | null {
-  const said = stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(-lines).join(' | ');
+export function chromeSaid(stderr: string, homes: string[] = [], lines = 3, max = 400): string | null {
+  let said = stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(-lines).join(' | ');
   if (!said) return null;
+  for (const home of [...homes].sort((a, b) => b.length - a.length)) {
+    if (home) said = said.split(new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')).join('~');
+  }
   return said.length > max ? `…${said.slice(-max)}` : said;
 }
 /**
@@ -567,8 +574,6 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly protection: (() => ChromeProtectionPlan | null) | undefined;
   private readonly extraArgs: string[];
   private readonly childEnv: NodeJS.ProcessEnv | undefined;
-  /** The newest STARTUP_STDERR_TAIL characters the last spawned Chrome wrote to stderr. */
-  private stderrTail: { text: string } = { text: '' };
   /** Whether the running instance was launched behind the proxy. */
   private launchedProtected = false;
   /** False until a protected launch's download guard holds and the tabs
@@ -2128,21 +2133,32 @@ export class ChromeLauncher implements ChromeBackendClient {
       },
     );
     // Drained for the child's whole life (a full pipe would block Chrome's
-    // logging); only the last few lines are kept.
-    // Per spawn: 'exit' can come before the last of stderr, and a failed start
-    // must still read what this child said.
-    const tail = { text: '' };
-    this.stderrTail = tail;
-    child.stderr?.on('data', (chunk: Buffer) => {
-      tail.text = (tail.text + chunk.toString('utf8')).slice(-STARTUP_STDERR_TAIL);
-    });
-    // A broken stderr pipe is never a reason to fail; unhandled, it would throw.
-    child.stderr?.on('error', () => undefined);
-    /** Why a start failed, for the error: the last startup error and what Chrome said. */
+    // logging); only the newest STARTUP_STDERR_TAIL characters are kept.
+    let stderrTail = '';
+    const stderr = child.stderr;
+    // 'exit' can come before the last of stderr: a failed start waits, bounded, for its end.
+    const stderrEnded = stderr
+      ? new Promise<void>((resolve) => {
+        stderr.once('end', resolve);
+        stderr.once('close', resolve);
+      })
+      : Promise.resolve();
+    if (stderr) {
+      stderr.setEncoding('utf8'); // a character split across reads stays whole
+      stderr.on('data', (text: string) => {
+        stderrTail = (stderrTail + text).slice(-STARTUP_STDERR_TAIL);
+      });
+      // A broken stderr pipe is never a reason to fail; unhandled, it would throw.
+      stderr.on('error', () => undefined);
+    }
+    /** The last probe that failed: what a start that ran out of time ran into. */
     let lastStartError: string | null = null;
-    const startFailure = (what: string): Error => {
-      const said = chromeSaid(tail.text);
-      const detail = [lastStartError && `last error: ${lastStartError}`, said && `Chrome said: ${said}`].filter(Boolean).join('; ');
+    /** Why a start failed: what Chrome said on stderr, and on a timeout the last probe error. */
+    const startFailure = async (what: string, withProbe: boolean): Promise<Error> => {
+      await Promise.race([stderrEnded, new Promise((r) => setTimeout(r, STDERR_END_WAIT_MS))]);
+      const homes = [homedir(), this.childEnv?.USERPROFILE, this.childEnv?.HOME, process.env.USERPROFILE, process.env.HOME];
+      const said = chromeSaid(stderrTail, homes.filter((h): h is string => !!h));
+      const detail = [withProbe && lastStartError && `last error: ${lastStartError}`, said && `Chrome said: ${said}`].filter(Boolean).join('; ');
       return new Error(detail ? `ChromeLauncher: ${what} (${detail})` : `ChromeLauncher: ${what}`);
     };
 
@@ -2181,7 +2197,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     const startedAt = Date.now();
     let toldStarting = false;
     for (;;) {
-      if (gone) throw startFailure('Chrome exited during startup');
+      if (gone) throw await startFailure('Chrome exited during startup', false);
       let candidate = pinned;
       if (candidate === null && !piped) {
         const fresh = this.readPortFile();
@@ -2242,7 +2258,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           child.kill();
         } catch { /* already gone */ }
         this.onChildGone();
-        throw startFailure('CDP endpoint did not become ready in time');
+        throw await startFailure('CDP endpoint did not become ready in time', true);
       }
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
     }

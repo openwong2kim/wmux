@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { PassThrough } from 'node:stream';
 
 // The launcher's ready state, seen through its public reads. A candidate
 // endpoint being probed counts as running, as it did with cdpPort; a probe
@@ -114,6 +115,32 @@ describe('ChromeLauncher ready state', () => {
     await expect(launcher.ensureRunning()).rejects.toThrow('Chrome exited during startup');
     expect(atSpawn).toEqual({ running: false, port: null });
     expect(seen(launcher)).toEqual({ running: false, port: null });
+  });
+
+  it('quotes what a port Chrome said before it exited, even when stderr ends after the exit', async () => {
+    const launcher = new ChromeLauncher('/tmp/refused-profile');
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+    spawnMock.mockImplementationOnce(() => {
+      const child = new EventEmitter() as FakeChild & { stderr: PassThrough };
+      child.kill = () => undefined;
+      child.stderr = new PassThrough();
+      // Windows Chrome refusing remote debugging: it exits, and its stderr is read after.
+      setTimeout(() => {
+        child.emit('exit', 0);
+        setTimeout(() => {
+          child.stderr.end('DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.\r\n');
+        }, 20);
+      }, 0);
+      return child;
+    });
+
+    const message = await launcher.ensureRunning().then(() => null, (err: Error) => err.message);
+    const [, , opts] = spawnMock.mock.calls[0] as [string, string[], { stdio: unknown }];
+    expect(opts.stdio).toEqual(['ignore', 'ignore', 'pipe']);
+    expect(message).toContain('ChromeLauncher: Chrome exited during startup');
+    expect(message).toContain('Chrome said: DevTools remote debugging requires a non-default data directory');
+    // An exit is not explained by a probe that failed before it.
+    expect(message).not.toContain('last error');
   });
 
   it('reports nothing when the launched Chrome exits while its first probe is in flight', async () => {
