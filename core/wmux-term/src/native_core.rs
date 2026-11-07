@@ -197,6 +197,9 @@ pub struct NativeTerminal {
     feed: XtermFeed,
     /// Why the ANSI snapshot of this stream cannot match xterm's.
     refusal: Option<&'static str>,
+    /// The alternate screen was narrowed since the main screen was last seen
+    /// at a resize; widening it would bring back cells only xterm kept.
+    alt_narrowed: bool,
 }
 
 /// The longest unfinished sequence `feed_xterm` holds for its next bytes.
@@ -515,6 +518,7 @@ impl NativeTerminal {
             scrollback,
             feed: XtermFeed::default(),
             refusal: None,
+            alt_narrowed: false,
         })
     }
 
@@ -597,6 +601,31 @@ impl NativeTerminal {
         let synchronized = self.parser.sync_timeout().pending_timeout();
         if synchronized {
             self.parser.stop_sync(term);
+        }
+        // xterm never reflows or cuts the alternate screen: its rows keep
+        // their cells and wrap flags across a resize, where Alacritty cuts the
+        // cells and drops the flags. Refuse what that loses: a width change
+        // with a soft-wrapped row on screen, or widening after a narrowing.
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            let grid = term.grid();
+            let old = grid.columns();
+            if old != cols as usize {
+                let wrapped = (0..grid.screen_lines() as i32).any(|y| {
+                    grid[Line(y)][Column(old - 1)]
+                        .flags
+                        .contains(Flags::WRAPLINE)
+                });
+                if wrapped || (cols as usize > old && self.alt_narrowed) {
+                    self.refusal.get_or_insert(
+                        "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
+                    );
+                }
+                if (cols as usize) < old {
+                    self.alt_narrowed = true;
+                }
+            }
+        } else {
+            self.alt_narrowed = false;
         }
         let start = before(term);
         term.resize(size);

@@ -43,4 +43,17 @@ export const reflowCases: Case[] = [
   // History at the scrollback cap: more rows lose no history row, either way.
   script('more-rows-at-cap-cursor-mid', [80, 24], [`${rows(150, 20)}\x1b[8H${prompt}`, [80, 30]]),
   script('more-rows-at-cap-cursor-bottom', [80, 24], [`${rows(150, 20)}\r\n${prompt}`, [80, 30]]),
+  // The alternate screen narrowed, then widened: xterm never cut its rows, so
+  // the cells come back; Alacritty cut them. Refused until that is fixed.
+  script('alt-narrow-widen', [80, 24], [`n\x1b[?1049h${rows(3, 70)}`, [40, 24], [80, 24]], 'xterm'),
+  // Widening alone hides nothing: still native.
+  script('alt-widen', [40, 24], [`n\x1b[?1049h${rows(3, 30)}`, [80, 24]]),
+  // Soft-wrapped rows on the alternate screen keep their wrap flag in xterm
+  // across any width change; Alacritty drops it. Refused until fixed.
+  script('alt-wrapped-widen', [40, 24], [`\x1b[?1049h${rows(2, 70)}`, [80, 24]], 'xterm'),
+  script('alt-wrapped-narrow', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24]], 'xterm'),
+  // Narrowed on the main screen (short rows, nothing reflows), then into a
+  // fresh alternate screen with short rows, and wider: nothing was cut or
+  // wrapped there, so still native.
+  script('alt-after-main-narrow', [80, 24], [`${rows(3, 30)}`, [40, 24], `\x1b[?1049h\x1b[H${rows(2, 30)}`, [80, 24]]),
 ];
