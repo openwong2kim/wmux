@@ -447,6 +447,14 @@ describe('ComputerService.desktopAct', () => {
     expect(runs.at(-1)).toEqual(['scroll', `@${id}:e1`, '--direction=down', '--amount=3']);
   });
 
+  it('caps a select value like the other string arguments, before anything runs', async () => {
+    const { service, runs } = makeService({ refmap: oneButton });
+    const id = await snapshotOf(service);
+    await expect(service.desktopAct(AGENT_A, { command: 'select', args: { ref: `@${id}:e1`, value: 'x'.repeat(513) } })).rejects.toMatchObject({ code: 'invalid_argument', disposition: 'not_delivered' });
+    expect(runs.some((argv) => argv[0] === 'select')).toBe(false);
+    await expect(service.desktopAct(AGENT_A, { command: 'select', args: { ref: `@${id}:e1`, value: 'x'.repeat(512) } })).resolves.toMatchObject({ delivery: 'background' });
+  });
+
   it('reports verified only when agent-desktop verified the effect', async () => {
     const { service } = makeService({ refmap: oneButton, act: () => ok('click', { disposition: { delivery: 'delivered_verified' } }) });
     const id = await snapshotOf(service);

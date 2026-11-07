@@ -46,6 +46,7 @@ public enum RunnerPolicy {
 
     // \A and \z: ICU's ^ and $ also match around a trailing newline.
     static let refPattern = try! NSRegularExpression(pattern: "\\A@[a-z0-9]{1,64}:e[1-9][0-9]{0,8}\\z")
+    static let maxSelectValueBytes = 4096
     static let scrollDirections: Set<String> = ["up", "down", "left", "right"]
     static let amountPattern = try! NSRegularExpression(pattern: "\\A(?:[1-9]|[1-4][0-9]|50)\\z")
 
@@ -98,7 +99,8 @@ public enum RunnerPolicy {
         let allowed: Bool
         switch command {
         case "select":
-            allowed = rest.count == 2 && rest[0] == "--"
+            // main caps the value at 512 characters; 4 KB of UTF-8 is the runner's own ceiling.
+            allowed = rest.count == 2 && rest[0] == "--" && !rest[1].isEmpty && rest[1].utf8.count <= maxSelectValueBytes
         case "scroll":
             // At most one direction and one amount, each a value agent-desktop takes.
             let directions = rest.filter { $0.hasPrefix("--direction=") }

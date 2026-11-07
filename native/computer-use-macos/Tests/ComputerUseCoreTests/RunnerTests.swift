@@ -54,7 +54,9 @@ final class RunnerPolicyTests: XCTestCase {
             XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["scroll", "@s2:e7"] + extra, "home": "/tmp/ad"]), extra.joined(separator: " "))
         }
         // select: one value, after "--", and nothing else.
-        for argv in [["select", "@s2:e7", "Large"], ["select", "@s2:e7", "--app=X", "--", "Large"], ["select", "@s2:e7", "--", "Large", "Small"]] {
+        XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["select", "@s2:e7", "--", String(repeating: "가", count: 1365)], "home": "/tmp/ad"]))
+        for argv in [["select", "@s2:e7", "Large"], ["select", "@s2:e7", "--app=X", "--", "Large"], ["select", "@s2:e7", "--", "Large", "Small"],
+                     ["select", "@s2:e7", "--", ""], ["select", "@s2:e7", "--", String(repeating: "x", count: 4097)]] {
             XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": argv, "home": "/tmp/ad"]), argv.joined(separator: " "))
         }
     }
