@@ -36,6 +36,11 @@ export interface AddRemotePaneModalProps {
  * Dropping the id (the original behaviour) left every pane this modal created
  * permanently agent-less in the sidebar roster and in `pane_list` (#1322).
  */
+/** A host as its row names it. */
+function hostName(h: RemoteHostPublic): string {
+  return h.label || (h.ssh?.alias ?? h.origin);
+}
+
 export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRemotePaneModalProps) {
   const t = useT();
   const [hosts, setHosts] = useState<RemoteHostPublic[] | null>(null);
@@ -70,6 +75,11 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
       if (res.ok) {
         onCreated(hostId, res.sessionId, freshId);
         onClose();
+      } else if (res.reason === 'unknown-workspace-id') {
+        // The host's own English detail never reaches the dialog: this
+        // pairing may not start panes there, and opening what runs does work.
+        const host = hosts?.find((h) => h.id === hostId);
+        setError(t('remote.newPaneNoWorkspaceGrant', { name: host ? hostName(host) : hostId }));
       } else {
         setError(res.error);
       }
@@ -103,7 +113,7 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
               >
                 <span className="ui-row-icon" aria-hidden="true"><IconRemoteDevices size={14} /></span>
                 <span className="ui-row-text">
-                  <span className="ui-row-title truncate">{h.label || (h.ssh?.alias ?? h.origin)}</span>
+                  <span className="ui-row-title truncate">{hostName(h)}</span>
                   {h.label && h.label !== (h.ssh?.alias ?? h.origin) && (
                     <span className="ui-row-detail font-mono truncate">{h.ssh?.alias ?? h.origin}</span>
                   )}
