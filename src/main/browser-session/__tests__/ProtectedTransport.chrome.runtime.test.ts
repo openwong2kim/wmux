@@ -8,6 +8,7 @@ import type { Browser, Page } from 'playwright-core';
 import { ChromeLauncher, type ChromeProtectionPlan } from '../ChromeLauncher';
 import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy } from '../../../shared/browserHostPolicy';
+import { accountDownloads, pinDownloadDir } from '../../../test-utils/chromeDownloads';
 
 // ---------------------------------------------------------------------------
 // One protected profile, the same rows on the DevTools port and on the
@@ -116,12 +117,9 @@ function plan(): ChromeProtectionPlan {
 
 async function makeRig(transport: Transport): Promise<Rig> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `wmux-protected-${transport}-`));
-  // Where a download goes when nothing set a path. Chrome on macOS resolves the
-  // default Downloads folder from the account, not HOME, so the profile names a
-  // temp one: no row ever writes outside the temp dirs.
-  const downloads = fs.mkdtempSync(path.join(os.tmpdir(), `wmux-protected-${transport}-downloads-`));
-  fs.mkdirSync(path.join(dir, 'Default'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'Default', 'Preferences'), JSON.stringify({ download: { default_directory: downloads, prompt_for_download: false } }));
+  // Where a download goes when nothing set a path: a temp folder, so no row
+  // ever writes outside the temp dirs.
+  const downloads = pinDownloadDir(dir);
   vi.stubEnv('WMUX_CHROME_TRANSPORT', transport === 'pipe' ? 'pipe' : '');
   vi.stubEnv('WMUX_CHROME_PATH', CHROME as string);
   const launcher = new ChromeLauncher(dir, {
@@ -198,7 +196,12 @@ async function consentPass(rig: Rig, p: Page) {
   return { pass, dir };
 }
 
+/** What the fixture serves as downloads; the account's real Downloads folder is checked for these, read only. */
+const SERVED_FILES = ['file.bin', 'slow.bin'];
+let accountBefore = new Set<string>();
+
 beforeAll(async () => {
+  accountBefore = accountDownloads(SERVED_FILES);
   server = http.createServer(serve);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   port = (server.address() as AddressInfo).port;
@@ -207,6 +210,8 @@ beforeAll(async () => {
 afterAll(async () => {
   server?.close();
   if (TABLE_OUT) fs.writeFileSync(TABLE_OUT, JSON.stringify({ chrome: CHROME, platform: `${process.platform}-${process.arch}`, rows: ROWS }, null, 2));
+  // Every download went to a temp folder: nothing new in the account's own.
+  expect([...accountDownloads(SERVED_FILES)].filter((name) => !accountBefore.has(name))).toEqual([]);
 });
 
 describe.skipIf(!CHROME).each<Transport>(['port', 'pipe'])('a protected profile on the %s', (transport) => {
