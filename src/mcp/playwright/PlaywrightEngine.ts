@@ -130,6 +130,8 @@ const PAGE_FIND_RETRIES = 3;
 const PAGE_FIND_DELAY_MS = 500;
 /** The longest a lookup waits for Playwright to produce the Page of a target it attached. */
 const POST_ATTACH_PAGE_WAIT_MS = 500;
+/** The same, after the /json fallback's explicit attach. */
+const JSON_ATTACH_PAGE_WAIT_MS = 200;
 const CDP_ATTACH_INFO_UNAVAILABLE_MESSAGE =
   '[PlaywrightEngine] browser.cdp.info did not disclose a usable CDP endpoint to this caller';
 
@@ -257,13 +259,13 @@ export class PlaywrightEngine {
    *  workspace's auto-open suppress another workspace's own. */
   private autoOpenAttempted = new Set<string>();
   /**
-   * The Page found for a target on this connection, by target id. The next
-   * lookup that selects the same target uses it as long as it is open, instead
-   * of re-matching it after a wait. Only consulted after the target was
-   * selected for the caller, so scoping is unchanged. A Page belongs to its
-   * connection, so this is cleared with it (disconnect).
+   * The CDP target id each Page was proven to be (matchPinnedPage's
+   * Target.getTargetInfo probe). A Page's target never changes, so the next
+   * pinned lookup takes a proven Page without probing again. Keyed weakly by
+   * the Page itself: a closed Page or a dropped connection's Pages need no
+   * clearing, and only a probe ever fills it, never a URL heuristic.
    */
-  private pageByTarget = new Map<string, Page>();
+  private targetOfPage = new WeakMap<Page, string>();
   /** In-flight getPage promises, keyed by selection context (#554). A single
    *  shared lock returned one caller's page (or auto-open) to a concurrent
    *  caller in a DIFFERENT workspace — a cross-workspace read. Keying by
@@ -421,6 +423,9 @@ export class PlaywrightEngine {
    * the same URL. A target that cannot be proven → null.
    */
   private async matchPinnedPage(pages: Page[], targetId: string, url: string): Promise<Page | null> {
+    // A Page already proven to be this target is returned without a probe.
+    const proven = pages.find((p) => this.targetOfPage.get(p) === targetId && !p.isClosed());
+    if (proven) return proven;
     const byUrl = pages.filter((p) => p.url() === url);
     const candidates = byUrl.length > 0 ? byUrl : pages;
     for (const p of candidates) {
@@ -430,7 +435,10 @@ export class PlaywrightEngine {
           const { targetInfo } = (await session.send('Target.getTargetInfo')) as {
             targetInfo: { targetId: string };
           };
-          if (targetInfo?.targetId === targetId) return p;
+          if (targetInfo?.targetId === targetId) {
+            this.targetOfPage.set(p, targetId);
+            return p;
+          }
         } finally {
           await session.detach().catch(() => { /* best-effort */ });
         }
@@ -533,7 +541,6 @@ export class PlaywrightEngine {
     const b = this.browser;
     const s = this.autoAttachSession;
     this.browser = null;
-    this.pageByTarget.clear();
     this.cdpPort = null;
     this.connectedEndpoint = null;
     this.autoAttachSession = null;
@@ -731,36 +738,58 @@ export class PlaywrightEngine {
   }
 
   /**
-   * Run `match` now, and again after each new Page Playwright reports, until it
-   * finds one or `boundMs` has passed. Replaces a fixed wait after an attach:
-   * a Page that already exists is returned at once.
+   * Run `match` now, and again whenever Playwright reports a new Page, until it
+   * finds one, `boundMs` has passed, or the connection drops. Replaces a fixed
+   * wait after an attach: a Page that already exists is returned at once.
+   * When the first match finds nothing, listening starts and the pages are
+   * matched again before any wait, so a Page that appeared meanwhile is not
+   * missed.
    */
   private async waitForMatchingPage(
     match: (pages: Page[]) => Promise<Page | null> | Page | null,
     boundMs: number,
   ): Promise<Page | null> {
+    const browser = this.browser;
+    if (!browser) return null;
     const deadline = Date.now() + boundMs;
-    for (;;) {
-      const page = await match(this.getAllPages());
-      if (page) return page;
-      const left = deadline - Date.now();
-      if (left <= 0 || !this.browser) return null;
-      await this.nextPageEvent(left);
+    const first = await match(this.getAllPages());
+    if (first) return first;
+    if (this.browser !== browser || !browser.isConnected()) return null;
+    let changed = false;
+    let wake: (() => void) | null = null;
+    const onChange = () => {
+      changed = true;
+      wake?.();
+    };
+    const contexts = browser.contexts();
+    for (const c of contexts) c.on('page', onChange);
+    browser.on('disconnected', onChange);
+    try {
+      for (;;) {
+        changed = false;
+        const page = await match(this.getAllPages());
+        if (page) return page;
+        if (this.browser !== browser || !browser.isConnected()) return null;
+        const left = deadline - Date.now();
+        if (left <= 0) return null;
+        if (!changed) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+              wake = null;
+              resolve();
+            }, left);
+            wake = () => {
+              clearTimeout(timer);
+              wake = null;
+              resolve();
+            };
+          });
+        }
+      }
+    } finally {
+      for (const c of contexts) c.off('page', onChange);
+      browser.off('disconnected', onChange);
     }
-  }
-
-  /** Resolves on the next 'page' event of any current context, or after `ms`. */
-  private nextPageEvent(ms: number): Promise<void> {
-    const contexts = this.browser?.contexts() ?? [];
-    return new Promise((resolve) => {
-      const done = () => {
-        clearTimeout(timer);
-        for (const c of contexts) c.off('page', done);
-        resolve();
-      };
-      const timer = setTimeout(done, ms);
-      for (const c of contexts) c.on('page', done);
-    });
   }
 
   /**
@@ -1543,11 +1572,6 @@ export class PlaywrightEngine {
 
         console.error(`[PlaywrightEngine] Found webview target: ${webviewTarget.targetId} url=${webviewTarget.url}`);
 
-        // The Page found for this target earlier on this connection, if still open.
-        const known = this.pageByTarget.get(webviewTarget.targetId);
-        if (known && !known.isClosed()) return known;
-        this.pageByTarget.delete(webviewTarget.targetId);
-
         // Try to attach to the target and get a page
         // Attach with flatten:true creates a session in the current connection
         if (!webviewTarget.attached) {
@@ -1561,7 +1585,8 @@ export class PlaywrightEngine {
         // Strict surface targeting (#517): with an explicit surfaceId, match
         // the attached page by the pinned targetId (URL only as an unambiguous
         // fallback) instead of "any non-shell page". The Page may exist already
-        // (a target Playwright attached itself) or appear shortly after the
+        // (a target Playwright attached itself, or one proven on an earlier
+        // call, which matches without a probe) or appear shortly after the
         // attach, so match now and on each new Page, within the bound.
         const target = webviewTarget;
         let pageCount = 0;
@@ -1574,7 +1599,6 @@ export class PlaywrightEngine {
         console.error(`[PlaywrightEngine] After attach: ${pageCount} pages`);
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page after attach: ${matchedPage.url()}`);
-          this.pageByTarget.set(target.targetId, matchedPage);
           return matchedPage;
         }
 
@@ -1665,17 +1689,18 @@ export class PlaywrightEngine {
 
         console.error(`[PlaywrightEngine] Attached to target ${jsonTarget.id} via /json`);
 
-        // Brief wait for Playwright to process the attached target
-        await sleep(200);
-
-        const pages = this.getAllPages();
-        console.error(`[PlaywrightEngine] After /json attach: ${pages.length} pages`);
-
         // Strict surface targeting (#517): pinned surface matches by targetId
-        // (URL only when unambiguous) — never "any non-shell page".
-        const matchedPage = surfaceId
-          ? await this.matchPinnedPage(pages, jsonTarget.id, jsonTarget.url)
-          : pages.find((p) => !this.isShellPage(p.url()));
+        // (URL only when unambiguous) — never "any non-shell page". Wait a
+        // little for Playwright to process the attached target.
+        let pageCount = 0;
+        const target = jsonTarget;
+        const matchedPage = await this.waitForMatchingPage((pages) => {
+          pageCount = pages.length;
+          return surfaceId
+            ? this.matchPinnedPage(pages, target.id, target.url)
+            : pages.find((p) => !this.isShellPage(p.url())) ?? null;
+        }, JSON_ATTACH_PAGE_WAIT_MS);
+        console.error(`[PlaywrightEngine] After /json attach: ${pageCount} pages`);
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page via /json attach: ${matchedPage.url()}`);
           return matchedPage;

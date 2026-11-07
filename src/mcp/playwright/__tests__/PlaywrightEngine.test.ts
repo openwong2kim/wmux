@@ -645,6 +645,10 @@ describe('PlaywrightEngine reuse of an attached page', () => {
   /** Whether Playwright has the guest's Page yet. */
   let guestUp = true;
   let pageListeners: Array<() => void> = [];
+  let dropListeners: Array<() => void> = [];
+  /** Runs once while the shell page is being probed (a match in progress). */
+  let duringShellProbe: (() => void) | null = null;
+  let connected = true;
   let guestSessions = 0;
   let connects = 0;
   let shellPage: FakePage & { isClosed: ReturnType<typeof vi.fn> };
@@ -662,7 +666,16 @@ describe('PlaywrightEngine reuse of an attached page', () => {
       detach: vi.fn().mockResolvedValue(undefined),
     };
     const pageSession = (targetId: string) => ({
-      send: vi.fn().mockImplementation((method: string) => (method === 'Target.getTargets' ? browserSession.send(method) : Promise.resolve({ targetInfo: { targetId } }))),
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') return browserSession.send(method);
+        if (targetId === 'shell') {
+          // matchPinnedPage probing the shell: a match is in progress.
+          const run = duringShellProbe;
+          duringShellProbe = null;
+          run?.();
+        }
+        return Promise.resolve({ targetInfo: { targetId } });
+      }),
       detach: vi.fn().mockResolvedValue(undefined),
     });
     const ctx = {
@@ -680,7 +693,9 @@ describe('PlaywrightEngine reuse of an attached page', () => {
     shellPage.context.mockReturnValue(ctx);
     guestPage.context.mockReturnValue(ctx);
     const browser = {
-      isConnected: vi.fn().mockReturnValue(true),
+      isConnected: vi.fn(() => connected),
+      on: vi.fn((event: string, fn: () => void) => { if (event === 'disconnected') dropListeners.push(fn); }),
+      off: vi.fn((event: string, fn: () => void) => { dropListeners = dropListeners.filter((l) => l !== fn); }),
       newBrowserCDPSession: vi.fn().mockImplementation(async () => browserSession),
       contexts: vi.fn().mockReturnValue([ctx]),
       close: vi.fn().mockResolvedValue(undefined),
@@ -733,6 +748,9 @@ describe('PlaywrightEngine reuse of an attached page', () => {
     closed = false;
     guestUp = true;
     pageListeners = [];
+    dropListeners = [];
+    duringShellProbe = null;
+    connected = true;
     guestSessions = 0;
     connects = 0;
     vi.useFakeTimers();
@@ -786,12 +804,16 @@ describe('PlaywrightEngine reuse of an attached page', () => {
     expect(pageListeners).toEqual([]); // every listener removed
   });
 
-  it('with no Page, the wait is still bounded to 500 ms per attempt and leaves no listener', async () => {
+  it('with no Page, each wait is bounded and leaves no listener', async () => {
     const engine = await engineFor();
     guestUp = false;
     const first = await lookup(engine);
     expect(first.page).toBeNull();
+    // 3 attempts × the 500 ms bound, plus the 2 × 500 ms reconnect pauses.
+    expect(first.waitedMs).toBeGreaterThanOrEqual(2_400);
+    expect(first.waitedMs).toBeLessThanOrEqual(2_700);
     expect(pageListeners).toEqual([]);
+    expect(dropListeners).toEqual([]);
   });
 
   it('a closed Page is not reused', async () => {
@@ -803,14 +825,34 @@ describe('PlaywrightEngine reuse of an attached page', () => {
     expect(guestSessions).toBeGreaterThan(matched); // matched again
   });
 
-  it('a disconnect drops the reused Page', async () => {
+  it('a Page that appears while a match is running is not missed', async () => {
     const engine = await engineFor();
-    await lookup(engine);
-    const matched = guestSessions;
-    await engine.disconnect();
-    await engine.ensureConnected('ws-A');
-    await lookup(engine);
-    expect(guestSessions).toBeGreaterThan(matched);
+    guestUp = false;
+    duringShellProbe = () => {
+      guestUp = true;
+      for (const l of [...pageListeners]) l();
+    };
+    const first = await lookup(engine);
+    expect(first.page).toBe(guestPage);
+    expect(first.waitedMs).toBeLessThan(100);
+  });
+
+  it('the connection dropping ends the wait at once', async () => {
+    const engine = await engineFor();
+    guestUp = false;
+    let settled = false;
+    const done = priv(engine).getPage().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(100); // inside attempt 1's wait
+    connected = false;
+    for (const l of [...dropListeners]) l();
+    await vi.advanceTimersByTimeAsync(0);
+    // The wait ended without running out its 500 ms; the lookup carries on
+    // with its own retry pause from here.
+    expect(pageListeners).toEqual([]);
+    expect(dropListeners).toEqual([]);
+    connected = true;
+    for (let i = 0; i < 400 && !settled; i++) await vi.advanceTimersByTimeAsync(10);
+    await done;
   });
 });
 
