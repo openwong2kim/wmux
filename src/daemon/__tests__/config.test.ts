@@ -234,6 +234,63 @@ describe('loadConfig', () => {
         expect(real(configPath).equals(before)).toBe(true);
       });
 
+      it('a file that is locked, gone, then back (delete and recreate) is read', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const real = fs.readFileSync;
+        let n = 0;
+        vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+          if (file === configPath && ++n <= 2) {
+            const code = n === 1 ? 'EPERM' : 'ENOENT';
+            throw Object.assign(new Error(`${code}: open '${configPath}'`), { code });
+          }
+          return (real as (...a: unknown[]) => unknown)(file, ...rest);
+        }) as typeof fs.readFileSync);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const config = loadConfig();
+        expect(isFailClosedConfig(config)).toBe(false);
+        expect(config.browser?.cdp.enabled).toBe(false);
+        expect(warn).not.toHaveBeenCalled();
+      });
+
+      it('on Windows, a config.json that is simply missing is still created with the defaults', () => {
+        setPlatform('win32');
+        const configPath = path.join(getWmuxDir(), 'config.json');
+        const config = loadConfig();
+        expect(isFailClosedConfig(config)).toBe(false);
+        expect(fs.existsSync(configPath)).toBe(true);
+        expect(waits).toEqual([]);
+      });
+
+      it('after a locked streak, a missing file is "being replaced" once, then created with the defaults', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const spy = lockFor(configPath, CONFIG_READ_ATTEMPTS, 'EPERM');
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        expect(isFailClosedConfig(loadConfig())).toBe(true); // the streak starts
+        spy.mockRestore();
+        fs.rmSync(configPath);
+        expect(isFailClosedConfig(loadConfig())).toBe(true); // gone right after a lock
+        expect(fs.existsSync(configPath)).toBe(false);
+        expect(String(warn.mock.calls.at(-1)?.[0])).toContain('being replaced');
+        expect(isFailClosedConfig(loadConfig())).toBe(false); // really missing
+        expect(fs.existsSync(configPath)).toBe(true);
+      });
+
+      it('a save during a locked streak reads once, with no wait', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const good = loadConfig();
+        const spy = lockFor(configPath, 100, 'EPERM');
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        loadConfig(); // the streak starts
+        spy.mockClear();
+        waits.length = 0;
+        expect(() => saveConfigOrThrow(good)).toThrow('EPERM');
+        expect(readsOf(spy, configPath)).toBe(1);
+        expect(waits).toEqual([]);
+      });
+
       it('a save waits out a brief lock instead of refusing', () => {
         setPlatform('win32');
         const configPath = writeGood();

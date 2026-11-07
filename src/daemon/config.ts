@@ -465,14 +465,15 @@ const CONFIG_READ_RETRY_MS = 100;
 /** What an antivirus scanner or indexer holding the file briefly looks like on Windows. */
 const LOCKED_FILE_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
 
-/** Blocking wait between read attempts (the readers are synchronous). Test seam. */
-let configReadSleep = (ms: number): void => {
+/** Blocking wait between read attempts (the readers are synchronous). */
+const blockingSleep = (ms: number): void => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 };
+let configReadSleep = blockingSleep;
 
 /** Test seam: replace the wait between read attempts; no argument restores it. */
 export function setConfigReadSleepForTest(sleep?: (ms: number) => void): void {
-  configReadSleep = sleep ?? ((ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); });
+  configReadSleep = sleep ?? blockingSleep;
 }
 
 /**
@@ -488,26 +489,30 @@ export function resetConfigReadStreaks(): void {
   lockedStreak.clear();
 }
 
-/** A read that failed after the file had been there: it must not count as missing. */
+/** A file that was locked and then gone: being replaced, not missing. */
 class VanishedWhileLocked extends Error {
   readonly code = 'EVANISHED';
 }
 
 /**
  * Read config.json. On Windows a file that is locked for a moment (an
- * antivirus scan, the search indexer) is tried again, up to
- * CONFIG_READ_ATTEMPTS times about 100 ms apart, so one unlucky boot doesn't
- * run the whole session with CDP off, and a save isn't refused over it. Only
- * those read errors are retried; a file that reads but doesn't parse or
- * validate is answered at once.
+ * antivirus scan, the search indexer) is read up to CONFIG_READ_ATTEMPTS
+ * times about 100 ms apart, so one unlucky boot doesn't run the whole session
+ * with CDP off, and a save isn't refused over it. Only those read errors are
+ * retried; a file that reads but doesn't parse or validate is answered at once.
  *
- * ENOENT means "missing" only on the first attempt. After a lock it is a
- * file being replaced (an editor that saves by delete and recreate holds it
- * delete-pending, which reads as EPERM), and treating it as missing would
- * write the defaults into the middle of that save.
+ * ENOENT after a lock is a file being replaced: an editor that saves by
+ * delete and recreate leaves it delete-pending, which reads as EPERM. The
+ * remaining attempts wait for the new file; if it isn't there by then, the
+ * read fails as "being replaced" rather than "missing", which would write the
+ * defaults into the middle of that save. The same holds for the first read
+ * after a locked streak, once: the streak ends there, so a file that really
+ * was deleted is created with the defaults on the load after.
  */
 function readConfigFile(configPath: string): string {
-  const attempts = process.platform === 'win32' && !lockedStreak.has(configPath) ? CONFIG_READ_ATTEMPTS : 1;
+  const inStreak = lockedStreak.has(configPath);
+  const attempts = process.platform === 'win32' && !inStreak ? CONFIG_READ_ATTEMPTS : 1;
+  let wasLocked = inStreak;
   for (let attempt = 1; ; attempt++) {
     try {
       const raw = fs.readFileSync(configPath, 'utf-8');
@@ -515,11 +520,16 @@ function readConfigFile(configPath: string): string {
       return raw;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code ?? '';
-      if (code === 'ENOENT' && attempt > 1) {
-        throw new VanishedWhileLocked(`${configPath} was locked, then gone: it is being replaced`);
-      }
-      if (process.platform !== 'win32' || !LOCKED_FILE_CODES.has(code)) throw err;
+      const vanished = code === 'ENOENT' && wasLocked;
+      if (!vanished && (process.platform !== 'win32' || !LOCKED_FILE_CODES.has(code))) throw err;
+      wasLocked = true;
       if (attempt >= attempts) {
+        if (vanished) {
+          lockedStreak.delete(configPath);
+          throw new VanishedWhileLocked(
+            `${configPath} was locked, then gone: it was being replaced while wmux read it; restart wmux if browser automation stays off`,
+          );
+        }
         lockedStreak.add(configPath);
         throw err;
       }
