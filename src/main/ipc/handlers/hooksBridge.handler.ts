@@ -207,20 +207,24 @@ export const SHELL_ENV_UNREAD_WARNING =
  * that fails turns the result's ok off and names itself in the error; the
  * others are still written.
  */
+/** A throw (a read-only folder) is that target's failure, not the call's: the primary's included. */
+function installOrFail(paths: SetupHooksPaths): InstallOutcome {
+  try { return installHooks(paths); } catch (err) { return failedInstall(paths, err instanceof Error ? err.message : String(err)); }
+}
+
 export async function installAllHookTargets(): Promise<InstallOutcome> {
   // A user-started install waits longer for the shell than boot does, and
   // says so when it still got no answer rather than reporting a plain success.
   const env = await readClaudeConfigDirEnv({ timeoutMs: INSTALL_PROBE_TIMEOUT_MS });
   const [primary, ...others] = targetsFor('install', env.value);
-  const installed = installHooks(primary.paths);
+  const installed = installOrFail(primary.paths);
   const outcome = env.read
     ? installed
     : { ...installed, warning: [installed.warning, SHELL_ENV_UNREAD_WARNING].filter(Boolean).join(' ') };
   if (!env.read) console.warn(`[hooksBridge] ${SHELL_ENV_UNREAD_WARNING}`);
   const failed = others
     .map((t) => {
-      // A throw (a read-only folder) is that target's failure, not the call's.
-      try { return { t, o: installHooks(t.paths) }; } catch (err) { return { t, o: failedInstall(t.paths, err instanceof Error ? err.message : String(err)) }; }
+      return { t, o: installOrFail(t.paths) };
     })
     .filter(({ o }) => !o.ok)
     .map(({ t, o }) => `${t.label}: ${o.error ?? 'failed'}`);

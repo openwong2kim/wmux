@@ -6,6 +6,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { ipcMain } from 'electron';
@@ -200,6 +201,34 @@ describe('Install covers every Claude folder (CLAUDE_CONFIG_DIR unset)', () => {
     expect(second.settingsPath).toBe(path.join(envDir, 'settings.json'));
     expect(second.warning).toBeNull();
     expect(hooksIn(envDir)).toBeGreaterThan(0);
+  });
+
+  it('a primary folder whose install throws fails only itself: the accounts are still written', async () => {
+    const envDir = path.join(tmp, 'cfg-env');
+    fs.mkdirSync(envDir, { recursive: true });
+    const a = path.join(tmp, 'acct-a');
+    fs.mkdirSync(a, { recursive: true });
+    accounts.list = [account('a', a)];
+    probe.reads = [{ value: envDir, read: true }];
+    // A throw from the primary's install, simulated at its first file access.
+    const primarySettings = path.join(envDir, 'settings.json');
+    const realExists = fs.existsSync;
+    vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
+      if (String(p) === primarySettings) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      return realExists(p);
+    });
+    syncBuiltinESMExports();
+    let out: InstallOutcome;
+    try {
+      out = await handlerFor(IPC.HOOKS_BRIDGE_INSTALL)({}) as InstallOutcome;
+    } finally {
+      vi.mocked(fs.existsSync).mockRestore();
+      syncBuiltinESMExports();
+    }
+    expect(out.ok).toBe(false);
+    expect(out.settingsPath).toBe(path.join(envDir, 'settings.json'));
+    expect(out.error).toContain('EACCES');
+    expect(hooksIn(a)).toBeGreaterThan(0);
   });
 
   it('a new account folder gets the hooks when the default folder has them, and not otherwise', async () => {

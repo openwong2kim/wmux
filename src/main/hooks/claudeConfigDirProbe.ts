@@ -63,7 +63,9 @@ const runShell: ProbeRunner = (shell, args, timeoutMs) => new Promise((resolve) 
     if (settled) return;
     settled = true;
     clearTimeout(timer);
-    if (child?.pid !== undefined && child.exitCode === null) {
+    // Even after the shell exits: a job its rc files started in the background
+    // stays in its group.
+    if (child?.pid !== undefined) {
       try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } }
     }
     resolve(out);
