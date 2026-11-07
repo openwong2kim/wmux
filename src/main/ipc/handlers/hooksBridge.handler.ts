@@ -24,8 +24,8 @@ import { wrapHandler } from '../wrapHandler';
 import {
   defaultPaths,
   statusHooks,
-  installHooks,
-  updateHooks,
+  installHooksWithNative,
+  updateHooksWithNative,
   allowFanoutWorkerTools,
   type AllowWorkerToolsOutcome,
   type StatusOutcome,
@@ -201,7 +201,7 @@ export function registerHooksBridgeHandlers(): void {
           error: refusal,
         };
       }
-      return installHooks(paths);
+      return installHooksWithNative(paths);
     }),
   );
 
@@ -212,7 +212,7 @@ export function registerHooksBridgeHandlers(): void {
       const paths = defaultPaths();
       const refusal = claudeSettingsWriteRefusal();
       if (refusal) return { ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: refusal };
-      return updateHooks(paths);
+      return updateHooksWithNative(paths);
     }),
   );
 
@@ -237,7 +237,7 @@ export function registerHooksBridgeHandlers(): void {
       if (!computeInstalled(statusHooks(paths))) throw new Error('HOOKS_BRIDGE_UPDATE_ACCOUNT: no wmux hooks in that account to update');
       const refusal = claudeSettingsWriteRefusal();
       if (refusal) return { ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: refusal };
-      return updateHooks(paths);
+      return updateHooksWithNative(paths);
     }),
   );
 

@@ -51,3 +51,9 @@ scripts/__tests__/hashbangLf.test.mjs
 # Every script that launches the app and reads its CDP port from the app log
 # sets the test harness opt-in (WMUX_TEST_CDP_PORT=1); it scans scripts/.
 scripts/__tests__/testCdpOptIn.guard.test.mjs
+
+# The native hook bridge's packaging contract: every native-hooks.yml step is
+# gated on its relevance check, and RELEVANT names what the bridge depends on.
+# It reads the workflow, main.rs and hookFlavours.ts as text, so a workflow
+# edit is not a change it imports.
+scripts/__tests__/buildNativeHooks.os.test.mjs
