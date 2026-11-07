@@ -31,6 +31,17 @@ export const TAIL_CHECK_INTERVAL_MS = 10 * 60_000;
 /** and at most this often across panes, so a daemon start doesn't stack one extra whole-ring parse per pane. */
 export const TAIL_CHECK_SPACING_MS = 10_000;
 
+/**
+ * After this many tail misses in a row on a session (a tail parse that left a
+ * visible cell unknown, or failed), that reader stops trying the tail there.
+ * A Claude Code pane repaints its static rows by position, so they sit before
+ * the cut and every tail read misses: each read paid the tail parse and then
+ * the whole ring's. A stopgap until each reader asks for only the rows it needs.
+ */
+export const TAIL_MISS_CAP = 3;
+/** A capped reader tries the tail once more after this long with no new output. */
+export const TAIL_QUIET_RETRY_MS = 60_000;
+
 export type TailSite = 'fleet' | 'stallwatch';
 export type TailFallbackReason = TailHazard | 'no-modes' | 'unknown-visible' | 'tail-failed';
 /** `via` says which replay answered: the tail, or the whole ring. */
@@ -52,6 +63,31 @@ export interface GuardedTailOptions {
 }
 
 const scans = new WeakMap<GuardedTailSession, TailHazardScan>();
+/** Per session and reader: misses in a row, and the pane as it was at the last one. */
+interface MissRun { misses: number; cols: number; rows: number; writtenAt: number; at: number }
+const missRuns = new WeakMap<GuardedTailSession, Map<TailSite, MissRun>>();
+
+function missRun(session: GuardedTailSession, site: TailSite): MissRun | undefined {
+  return missRuns.get(session)?.get(site);
+}
+
+function noteMiss(session: GuardedTailSession, site: TailSite, cols: number, rows: number, writtenAt: number): void {
+  let bySite = missRuns.get(session);
+  if (!bySite) missRuns.set(session, (bySite = new Map()));
+  const run = bySite.get(site);
+  bySite.set(site, { misses: (run?.misses ?? 0) + 1, cols, rows, writtenAt, at: Date.now() });
+}
+
+/**
+ * Whether a capped reader tries the tail again: the pane was resized, the tail
+ * window has turned over (a whole tail's worth of new bytes), or the pane has
+ * been quiet for a long stretch since the last miss.
+ */
+function retriesTail(run: MissRun, cols: number, rows: number, writtenAt: number): boolean {
+  if (cols !== run.cols || rows !== run.rows) return true;
+  if (writtenAt - run.writtenAt >= TAIL_BYTES) return true;
+  return writtenAt === run.writtenAt && Date.now() - run.at >= TAIL_QUIET_RETRY_MS;
+}
 const lastCheck = new WeakMap<GuardedTailSession, number>();
 let lastAnyCheck = Number.NEGATIVE_INFINITY;
 const counters = new Map<TailSite, TailReadCounters>();
@@ -60,7 +96,7 @@ function siteCounters(site: TailSite): TailReadCounters {
   let c = counters.get(site);
   if (!c) {
     counters.set(site, (c = {
-      reads: 0, served: 0, whole: 0, fallbacks: {}, tailMsTotal: 0, tailMsMax: 0, fallbackMsTotal: 0, fallbackMsMax: 0,
+      reads: 0, served: 0, whole: 0, fallbacks: {}, skipped: 0, tailMsTotal: 0, tailMsMax: 0, fallbackMsTotal: 0, fallbackMsMax: 0,
       ringCopyMsTotal: 0, ringCopyMsMax: 0, scanMsTotal: 0, scanMsMax: 0, scanBytes: 0, checks: 0, mismatches: {},
     }));
   }
@@ -113,6 +149,17 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   }
   if (!modes) return fallback('no-modes');
 
+  const run = missRun(session, options.site);
+  if (run && run.misses >= TAIL_MISS_CAP && !retriesTail(run, cols, rows, writtenAt)) {
+    // Capped: straight to the whole ring, without the scan or the tail parse.
+    c.skipped++;
+    time(c, 'tailMs', performance.now() - started);
+    const at = performance.now();
+    const answer = await options.parse(full);
+    time(c, 'fallbackMs', performance.now() - at);
+    return { ...answer, via: 'full' };
+  }
+
   const scanStarted = performance.now();
   let scan = scans.get(session);
   if (!scan) scans.set(session, (scan = new TailHazardScan()));
@@ -128,8 +175,11 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
     { cols, rows },
   );
   const tail = await options.parse(replay);
-  if (!tail.ok) return fallback('tail-failed');
-  if (tail.rows.some((row) => row.text.includes(UNKNOWN_CELL))) return fallback('unknown-visible');
+  if (!tail.ok || tail.rows.some((row) => row.text.includes(UNKNOWN_CELL))) {
+    noteMiss(session, options.site, cols, rows, writtenAt);
+    return fallback(tail.ok ? 'unknown-visible' : 'tail-failed');
+  }
+  missRuns.get(session)?.delete(options.site);
   c.served++;
   time(c, 'tailMs', performance.now() - started);
 

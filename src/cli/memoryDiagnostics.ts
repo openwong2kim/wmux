@@ -144,9 +144,12 @@ export function renderMemoryDiagnostics(
       const fallbacks = Object.values(c.fallbacks).reduce((sum, n) => sum + n, 0);
       const reasons = Object.entries(c.fallbacks).sort((x, y) => y[1] - x[1]).map(([reason, n]) => `${reason} ${n}`).join(', ');
       const avg = (total: number, n: number) => ms(total / Math.max(n, 1));
-      lines.push(`  ${site} tail reads: ${c.served} served, ${c.whole} whole ring fit, ${fallbacks} fell back${reasons ? ` (${reasons})` : ''}; ` +
+      const skipped = c.skipped ?? 0;
+      const misses = (c.fallbacks['unknown-visible'] ?? 0) + (c.fallbacks['tail-failed'] ?? 0);
+      lines.push(`  ${site} tail reads: ${c.served} served, ${c.whole} whole ring fit, ${fallbacks} fell back${reasons ? ` (${reasons})` : ''}, ` +
+        `${misses} missed after a tail parse, ${skipped} skipped the tail after repeated misses; ` +
         `tail avg ${avg(c.tailMsTotal, c.reads)} (ring copy ${avg(c.ringCopyMsTotal, c.reads)}, scan ${avg(c.scanMsTotal, c.reads)}), ` +
-        `fallback avg ${avg(c.fallbackMsTotal, fallbacks)} (max ${ms(c.fallbackMsMax)})`);
+        `whole-ring avg ${avg(c.fallbackMsTotal, fallbacks + skipped)} (max ${ms(c.fallbackMsMax)})`);
       if (c.checks) {
         const mismatches = Object.entries(c.mismatches).filter(([key]) => key !== 'any').map(([key, n]) => `${key} ${n}`).join(', ');
         lines.push(`    checked against the whole ring: ${c.checks}, ${c.mismatches.any ?? 0} differed${mismatches ? ` (${mismatches})` : ''}`);

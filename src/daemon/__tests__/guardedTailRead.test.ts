@@ -8,7 +8,8 @@ import { OutputModeTracker } from '../util/outputModeTracker';
 import { generateTextSnapshotUnqueued, type TextSnapshotOutcome } from '../HeadlessSnapshot';
 import { UNKNOWN_CELL, tailCut, withUnknownCells } from '../sessionTextReplay';
 import {
-  TAIL_BYTES, TAIL_CHECK_INTERVAL_MS, TAIL_CHECK_SPACING_MS, guardedTailRead, resetTailReadCounters, tailReadCounters, type GuardedTailSession,
+  TAIL_BYTES, TAIL_CHECK_INTERVAL_MS, TAIL_CHECK_SPACING_MS, TAIL_MISS_CAP, TAIL_QUIET_RETRY_MS, guardedTailRead, resetTailReadCounters, tailReadCounters,
+  type GuardedTailSession,
 } from '../guardedTailRead';
 import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail, type TextReadSession } from '../queuedSessionText';
 
@@ -270,5 +271,93 @@ describe('guarded tail: cost and the real-data check', () => {
     vi.setSystemTime(Date.now() + TAIL_CHECK_SPACING_MS);
     for (const pane of panes) await guardedTailRead(pane, { site: 'stallwatch', parse });
     expect(tailReadCounters().stallwatch).toMatchObject({ served: 4, checks: 2 });
+  });
+});
+
+describe('guarded tail: a reader stops trying a tail that keeps missing', () => {
+  /** A Claude-style screen: static rows painted once by position, then only a status cell repaints. */
+  const repaintRing = () => {
+    const ticks = Array.from({ length: 30_000 }, (_, t) => `[1;60H${String(t).padStart(8, '0')}`);
+    return session(['[?1049h[2J', ...Array.from({ length: ROWS }, (_, r) => `[${r + 1};1Hrow ${r}`), ...ticks]);
+  };
+  const counting = () => {
+    const calls: number[] = [];
+    return {
+      calls,
+      parse: (initial: Buffer) => { calls.push(initial.length); return generateTextSnapshotUnqueued({ cols: COLS, rows: ROWS, scrollback: 0, initial }); },
+    };
+  };
+  /** Parses per read: 2 = tail tried and missed, 1 = straight to the whole ring (or served). */
+  const read = async (s: GuardedTailSession, site: 'stallwatch' | 'fleet' = 'stallwatch') => {
+    const { calls, parse } = counting();
+    const answer = await guardedTailRead(s, { site, parse });
+    return { via: answer.via, parses: calls.length };
+  };
+
+  it(`a repainting pane stops paying for the tail after ${TAIL_MISS_CAP} misses, with the same answer`, async () => {
+    const s = repaintRing();
+    const reads = [];
+    for (let i = 0; i < TAIL_MISS_CAP + 2; i++) reads.push(await read(s));
+    expect(reads.map((r) => r.parses)).toEqual([...Array(TAIL_MISS_CAP).fill(2), 1, 1]);
+    expect(reads.every((r) => r.via === 'full')).toBe(true);
+    expect(tailReadCounters().stallwatch).toMatchObject({ reads: TAIL_MISS_CAP + 2, skipped: 2, fallbacks: { 'unknown-visible': TAIL_MISS_CAP } });
+    const skippedAnswer = await guardedTailRead(s, { site: 'stallwatch', parse: (initial) => generateTextSnapshotUnqueued({ cols: COLS, rows: ROWS, scrollback: 0, initial }) });
+    expect(texts(skippedAnswer)).toEqual(texts(await queuedScreenText(table(s as TextReadSession), 'pane')));
+  });
+
+  it('a plain shell pane keeps being served by the tail', async () => {
+    const s = session(pages('', (i) => `[1;1Hrow ${i}`));
+    const reads = [];
+    for (let i = 0; i < TAIL_MISS_CAP + 3; i++) reads.push(await read(s));
+    expect(reads.every((r) => r.via === 'tail')).toBe(true);
+    expect(tailReadCounters().stallwatch).toMatchObject({ skipped: 0, fallbacks: {} });
+  });
+
+  it('counts per reader: Fleet keeps trying while StallWatch is capped', async () => {
+    const s = repaintRing();
+    for (let i = 0; i < TAIL_MISS_CAP; i++) await read(s, 'stallwatch');
+    expect((await read(s, 'stallwatch')).parses).toBe(1);
+    expect((await read(s, 'fleet')).parses).toBe(2);
+  });
+
+  it('tries the tail again after a resize', async () => {
+    const s = repaintRing();
+    for (let i = 0; i < TAIL_MISS_CAP; i++) await read(s);
+    expect((await read(s)).parses).toBe(1);
+    (s.meta as { cols: number }).cols = COLS + 1;
+    expect((await read(s)).parses).toBe(2);
+    expect((await read(s)).parses).toBe(1);
+  });
+
+  it('tries the tail again once a whole tail of new output has arrived', async () => {
+    const s = repaintRing();
+    for (let i = 0; i < TAIL_MISS_CAP; i++) await read(s);
+    const more = Array.from({ length: 15_000 }, (_, t) => `[1;60H${String(t).padStart(8, '9')}`).join('');
+    s.ringBuffer.write(Buffer.from(more.slice(0, TAIL_BYTES / 2)));
+    expect((await read(s)).parses).toBe(1);
+    s.ringBuffer.write(Buffer.from(more.slice(0, TAIL_BYTES / 2 + 1)));
+    expect((await read(s)).parses).toBe(2);
+  });
+
+  it('tries the tail again after a long quiet stretch', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-08T00:00:00Z'));
+    const s = repaintRing();
+    for (let i = 0; i < TAIL_MISS_CAP; i++) await read(s);
+    vi.setSystemTime(Date.now() + TAIL_QUIET_RETRY_MS - 1);
+    expect((await read(s)).parses).toBe(1);
+    vi.setSystemTime(Date.now() + 1);
+    expect((await read(s)).parses).toBe(2);
+  });
+
+  it('a tail served again clears the run', async () => {
+    const s = repaintRing();
+    for (let i = 0; i < TAIL_MISS_CAP; i++) await read(s);
+    // The app clears and redraws every row: the tail knows the whole screen again.
+    s.ringBuffer.write(Buffer.from(`[2J${Array.from({ length: ROWS }, (_, r) => `[${r + 1};1Hnew ${r}`).join('')}`));
+    (s.meta as { cols: number }).cols = COLS + 1;
+    expect((await read(s)).via).toBe('tail'); // plus the once-per-10-minutes whole-ring check
+    (s.meta as { cols: number }).cols = COLS;
+    expect((await read(s)).via).toBe('tail');
   });
 });
