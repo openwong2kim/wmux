@@ -193,6 +193,30 @@ describe.skipIf(process.platform === 'win32')('isPermissionGateInstalled with th
     fs.writeFileSync(paths.bridgeDest, '// another bridge\n');
     expect(isPermissionGateInstalled(paths.settingsPath)).toBe(true);
   });
+
+  // A decision is answered by the node bridge the copy hands over to: with
+  // no bridge beside it, nothing can answer.
+  it('is false when no bridge is beside a copy that passed', async () => {
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    fs.unlinkSync(paths.bridgeDest);
+    expect(isPermissionGateInstalled(paths.settingsPath)).toBe(false);
+  });
+
+  // Bytes with no recorded self-test: not known to run, so the guard warns.
+  it('is false for a copy with no recorded self-test', async () => {
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    fs.appendFileSync(copy, '# other bytes\n');
+    expect(isPermissionGateInstalled(paths.settingsPath)).toBe(false);
+  });
+
+  it('is false for a copy that passed but can no longer be executed', async () => {
+    shipNative(goodLine());
+    await installHooksWithNative(paths, undefined, { suffixed: false });
+    fs.chmodSync(copy, 0o600);
+    expect(isPermissionGateInstalled(paths.settingsPath)).toBe(false);
+  });
 });
 
 // An app update ships a new binary: the copy the entries run follows it at

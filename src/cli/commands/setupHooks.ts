@@ -1763,18 +1763,26 @@ export function isPermissionGateInstalled(settingsPath: string = defaultSettings
   const leaves = groups
     .filter((g) => isEffectiveWmuxGroupForSpec(g, PERMISSION_GATE_SPEC))
     .flatMap((g) => ((g as HookGroup).hooks as unknown[]).filter((leaf) => isWmuxLeafWithTail(leaf, PERMISSION_GATE_SPEC)));
-  // A native leaf whose copy is gone, or recorded as failing its self-test for
-  // the bridge beside it, raises nothing. One hash of the copy per call: this
-  // runs once, as `wmux web` starts.
+  // A native leaf counts only when its copy is known to run, itself or by
+  // handing over to the node bridge beside it, which answers the decision.
+  // One hash of the copy per call: this runs once, as `wmux web` starts.
   return leaves.some((leaf) => leafForm(leaf) === 'node' || nativeLeafRuns(leaf));
 }
 
-/** The copy a native leaf names exists and has not only failed its
- *  self-test: it runs the hook, or hands it over to node. Runs nothing. */
+/** The copy a native leaf names can be executed and passed its self-test,
+ *  for the bridge beside it or another (a run then hands over to that
+ *  bridge). No bridge beside it, or no recorded self-test, does not count.
+ *  Runs nothing. */
 function nativeLeafRuns(leaf: unknown): boolean {
   const copy = nativeLeafCopy(leaf);
-  const judged = copy ? judgeClaudeCopy(copy) : 'missing';
-  return judged !== 'missing' && judged !== 'fail';
+  if (!copy) return false;
+  try {
+    fs.accessSync(copy, fs.constants.X_OK);
+  } catch {
+    return false;
+  }
+  const judged = judgeClaudeCopy(copy);
+  return judged === 'pass' || judged === 'pin-mismatch';
 }
 
 // ----- Printing -----------------------------------------------------------
