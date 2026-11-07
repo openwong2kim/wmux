@@ -10,6 +10,7 @@ import { ChromeLauncher, type ChromeProtectionPlan } from '../ChromeLauncher';
 import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy, type HostPolicy } from '../../../shared/browserHostPolicy';
 import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
+import { accountDownloads, pinDownloadDir } from '../../../test-utils/chromeDownloads';
 
 // ---------------------------------------------------------------------------
 // Protected Chrome profiles against a REAL Chrome, launched by the production
@@ -112,6 +113,7 @@ function plan(rig: Rig): ChromeProtectionPlan {
 
 function makeRig(allow: string[]): Rig {
   const dir = mkdtempSync(join(tmpdir(), 'wmux-protected-chrome-'));
+  pinDownloadDir(dir);
   const rig: Rig = { launcher: null as unknown as ChromeLauncher, hosts: { mode: 'allowlist', allow, block: [] }, browser: null, dir };
   rig.launcher = new ChromeLauncher(dir, {
     portEnvVar: null,
@@ -151,8 +153,12 @@ let rigA: Rig;
 let rigB: Rig;
 let skipReason: string | null = null;
 const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
+/** What the fixture serves as downloads; the account's real Downloads folder is checked for these, read only. */
+const SERVED_FILES = ['file.bin', 'slow.bin'];
+let accountBefore = new Set<string>();
 
 beforeAll(async () => {
+  accountBefore = accountDownloads(SERVED_FILES);
   server = http.createServer(serve);
   const wss = new WebSocketServer({ server });
   wss.on('connection', (_s, req) => hits.push(`${hostOf(req)} ws-connected`));
@@ -178,6 +184,8 @@ afterAll(async () => {
   await rigB?.browser?.close().catch(() => undefined);
   await Promise.all([rigA?.launcher.dispose(), rigB?.launcher.dispose()]);
   server?.close();
+  // Every download went to a temp folder: nothing new in the account's own.
+  expect([...accountDownloads(SERVED_FILES)].filter((name) => !accountBefore.has(name))).toEqual([]);
 });
 
 function skipUnless(ctx: { skip: (note?: string) => void }): boolean {
