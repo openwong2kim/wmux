@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { checkPeer, decidePeer, osParentPid, PARENT_READ_TIMEOUT_MS, type PeerCheckInput } from '../brokerPeer';
+import { checkPeer, decidePeer, osParentPid, PARENT_READ_TIMEOUT_MS, retryingSelfCheck, type PeerCheckInput } from '../brokerPeer';
 
 const ok: PeerCheckInput = { selfCheckOk: true, peer: { pid: 4242, uid: 501 }, claimedPid: 4242, ownUid: 501 };
 
@@ -69,9 +69,61 @@ describe('the time the broker takes to decide', () => {
     const shim = fs.readFileSync(path.join(repo, 'core', 'wmux-native', 'src', 'mcp_shim.rs'), 'utf8');
     const peerPid = fs.readFileSync(path.join(repo, 'src', 'shared', 'peerPid.ts'), 'utf8');
     const deadlineMs = Number(/const ACK_DEADLINE: Duration = Duration::from_secs\((\d+)\);/.exec(shim)?.[1]) * 1000;
-    const selfCheckMs = Number(/export function selfCheckPeerPid\(timeoutMs = (\d+)\)/.exec(peerPid)?.[1]);
+    const selfCheckMs = Number(/export function selfCheckPeerPid\(timeoutMs = (\d+)[,)]/.exec(peerPid)?.[1]);
     expect(deadlineMs).toBeGreaterThan(0);
     expect(selfCheckMs).toBeGreaterThan(0);
     expect(selfCheckMs + PARENT_READ_TIMEOUT_MS).toBeLessThan(deadlineMs);
+  });
+});
+
+describe('retryingSelfCheck', () => {
+  it('checks again with backoff until a transient failure recovers, then stops', async () => {
+    vi.useFakeTimers();
+    try {
+      const verdicts = ['unavailable (EMFILE)', 'unavailable (listen EINVAL)', 'available'];
+      const run = vi.fn(async () => verdicts.shift() ?? 'never');
+      const seen: [string | null, number][] = [];
+      const check = retryingSelfCheck(run, (v, n) => seen.push([v, n]), [1000, 2000]);
+      expect(await check.verdict()).toBe('unavailable (EMFILE)');
+      await vi.advanceTimersByTimeAsync(999);
+      expect(run).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await check.verdict()).toBe('unavailable (listen EINVAL)');
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(await check.verdict()).toBe('available');
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(run).toHaveBeenCalledTimes(3);
+      expect(seen).toEqual([['unavailable (EMFILE)', 1], ['unavailable (listen EINVAL)', 2], ['available', 3]]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('takes a platform with no peer pids as final', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn(async () => null);
+      const check = retryingSelfCheck(run, () => undefined, [10]);
+      expect(await check.verdict()).toBeNull();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(run).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('turns a check that throws into a verdict and keeps checking', async () => {
+    vi.useFakeTimers();
+    try {
+      const run = vi.fn<() => Promise<string | null>>()
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValue('available');
+      const check = retryingSelfCheck(run, () => undefined, [10]);
+      expect(await check.verdict()).toBe('unavailable (boom)');
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await check.verdict()).toBe('available');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -26,6 +26,7 @@
 import '../shared/exeSearchGuard';
 import * as net from 'net';
 import * as fs from 'fs';
+import * as path from 'path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { getMcpBrokerPipeName, getAuthTokenPath } from '../shared/constants';
 import { createWmuxServer } from './index';
@@ -37,8 +38,8 @@ import {
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
-import { peerPidOf, selfCheckPeerPid, SELF_CHECK_TIMED_OUT } from '../shared/peerPid';
-import { decidePeer } from './brokerPeer';
+import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
+import { decidePeer, retryingSelfCheck } from './brokerPeer';
 import { createConnectionReporter, trackConnection, trackToolCalls, type ReportChannel } from './brokerConnectionReporter';
 import { setBrokerEnvelopeMode } from './wmux-client';
 
@@ -228,8 +229,17 @@ function main(): void {
 
   const pipeName = getMcpBrokerPipeName();
   // Sessions are hosted only for a peer the OS names (src/mcp/brokerPeer.ts);
-  // a process that cannot read peer pids refuses every session.
-  let peerSelfCheck = selfCheckPeerPid();
+  // while this process cannot read peer pids it refuses every session, and it
+  // checks again with backoff. The check's socket sits beside the broker's.
+  let lastVerdict: string | null | undefined;
+  const peerSelfCheck = retryingSelfCheck(
+    () => selfCheckPeerPid(undefined, path.dirname(pipeName)),
+    (verdict, attempt) => {
+      if (attempt > 1 && verdict === lastVerdict) return;
+      lastVerdict = verdict;
+      console.error(`[wmux-mcp-broker] peer-pid${attempt > 1 ? ` (check ${attempt})` : ''}: ${verdict ?? 'unavailable (no peer pids on this platform)'}${verdict === 'available' ? '' : '; every session is refused'}`);
+    },
+  );
   const ownUid = typeof process.getuid === 'function' ? process.getuid() : null;
 
   const server = net.createServer((socket) => {
@@ -284,17 +294,8 @@ function main(): void {
 
       const rest = buffer.subarray(nl + 1);
       const claimed = handshake;
-      const selfCheck = peerSelfCheck;
-      selfCheck
-        .then((verdict) => {
-          // A check that ran out of time says nothing about this platform:
-          // run it again for the sessions after this one.
-          if (verdict === SELF_CHECK_TIMED_OUT && peerSelfCheck === selfCheck) {
-            peerSelfCheck = selfCheckPeerPid();
-            void peerSelfCheck.then((again) => console.error(`[wmux-mcp-broker] peer-pid (checked again): ${again ?? 'unavailable'}`));
-          }
-          return decidePeer({ selfCheckOk: verdict === 'available', peer, claimedPid: claimed.callerPid, ownUid });
-        })
+      peerSelfCheck.verdict()
+        .then((verdict) => decidePeer({ selfCheckOk: verdict === 'available', peer, claimedPid: claimed.callerPid, ownUid }))
         .then(async (decision) => {
           if (socket.destroyed) return;
           if (!decision.ok) {
@@ -365,11 +366,9 @@ function main(): void {
   server.listen(pipeName, () => {
     console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid}`);
   });
-  void peerSelfCheck.then((verdict) => {
-    console.error(`[wmux-mcp-broker] peer-pid: ${verdict ?? 'unavailable (no peer pids on this platform)'}${verdict === 'available' ? '' : '; every session is refused'}`);
-  });
 
   const shutdown = () => {
+    peerSelfCheck.stop();
     server.close();
     process.exit(0);
   };

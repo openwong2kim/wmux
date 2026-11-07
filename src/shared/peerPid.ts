@@ -97,20 +97,19 @@ export function peerPidOf(socket: net.Socket): PeerPid {
 /**
  * Whether this process can read peer pids: it connects to a socket of its own
  * and checks that the peer it reads is itself, by pid and uid. A packaged build missing
- * koffi's binary shows here as unavailable.
+ * koffi's binary shows here as unavailable. The socket is bound in `dir`, so
+ * a caller with a socket directory of its own keeps the path as short as its
+ * own socket's.
  */
-/** The self-check verdict for a check that ran out of time, not one that failed. */
-export const SELF_CHECK_TIMED_OUT = 'unavailable (self-check timed out)';
-
-export function selfCheckPeerPid(timeoutMs = 2000): Promise<string | null> {
+export function selfCheckPeerPid(timeoutMs = 2000, dir = os.tmpdir()): Promise<string | null> {
   // Windows named pipes have no peer pid here: nothing to check or log.
   if (process.platform === 'win32') return Promise.resolve(null);
   if (!OPTION[process.platform]) return Promise.resolve(`unavailable (unsupported platform ${process.platform})`);
-  const socketPath = path.join(os.tmpdir(), `wmux-peer-${process.pid}-${crypto.randomBytes(4).toString('hex')}.sock`);
+  const socketPath = path.join(dir, `.wmux-peer-${process.pid}-${crypto.randomBytes(4).toString('hex')}.sock`);
   return new Promise((resolve) => {
     let settled = false;
     let client: net.Socket | undefined;
-    const timer = setTimeout(() => finish(SELF_CHECK_TIMED_OUT), timeoutMs);
+    const timer = setTimeout(() => finish('unavailable (self-check timed out)'), timeoutMs);
     const finish = (verdict: string): void => {
       if (settled) return;
       settled = true;

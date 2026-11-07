@@ -1,6 +1,7 @@
 // The OS's answer for who connected to a unix socket (shared/peerPid.ts),
 // read against real sockets and a real child process.
 import { afterEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -57,6 +58,18 @@ describe.runIf(supported)('peerPidOf on a unix socket', () => {
 
   it('passes its startup self-check', async () => {
     expect(await selfCheckPeerPid()).toBe('available');
+  });
+
+  it('binds its self-check socket in the directory it is given', async () => {
+    const short = fs.mkdtempSync(path.join('/tmp', 'psc-'));
+    try {
+      expect(await selfCheckPeerPid(2000, short)).toBe('available');
+      // Nothing is left behind, and a directory that is not there is where it failed.
+      expect(fs.readdirSync(short)).toEqual([]);
+      expect(await selfCheckPeerPid(2000, path.join(short, 'missing'))).toMatch(/^unavailable \(listen E[A-Z]+: .*\/missing\/\.wmux-peer-/);
+    } finally {
+      fs.rmSync(short, { recursive: true, force: true });
+    }
   });
 });
 

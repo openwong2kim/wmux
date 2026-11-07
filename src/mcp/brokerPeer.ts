@@ -73,3 +73,43 @@ export async function decidePeer(
   if (callerPpid === null) return { ok: false, reason: 'peer-unverified', detail: `no parent pid for peer ${checked.callerPid}` };
   return { ok: true, callerPid: checked.callerPid, callerPpid };
 }
+
+/** The waits between self-checks after one that did not come back available. */
+export const SELF_CHECK_RETRY_MS = [1000, 2000, 5000, 15000, 30000];
+
+export interface PeerSelfCheck {
+  /** The latest verdict; a session that arrives while a check runs waits for it. */
+  verdict(): Promise<string | null>;
+  stop(): void;
+}
+
+/**
+ * The broker's peer self-check, run again with backoff for as long as it is
+ * not available (a transient EMFILE, say). A null verdict (no peer pids on
+ * this platform) is final. `onVerdict` sees every verdict with its attempt
+ * number, from 1.
+ */
+export function retryingSelfCheck(
+  run: () => Promise<string | null>,
+  onVerdict: (verdict: string | null, attempt: number) => void,
+  delays: readonly number[] = SELF_CHECK_RETRY_MS,
+): PeerSelfCheck {
+  let attempt = 0;
+  let timer: NodeJS.Timeout | undefined;
+  let current: Promise<string | null>;
+  const start = (): void => {
+    const n = ++attempt;
+    current = run()
+      .catch((err: unknown) => `unavailable (${err instanceof Error ? err.message : String(err)})`)
+      .then((verdict) => {
+        onVerdict(verdict, n);
+        if (verdict !== 'available' && verdict !== null) {
+          timer = setTimeout(start, delays[Math.min(n - 1, delays.length - 1)]);
+          timer.unref?.();
+        }
+        return verdict;
+      });
+  };
+  start();
+  return { verdict: () => current, stop: () => clearTimeout(timer) };
+}
