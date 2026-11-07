@@ -3,7 +3,7 @@ import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../.
 import { stashedPaneLiveness } from '../../../shared/paneStash';
 import { isBrainPtyId } from '../../../shared/constants';
 import { remoteAgentKey } from '../../../shared/remoteHosts';
-import { isShadowWorkspaceId } from '../../../shared/pcRail';
+import { isShadowWorkspaceId, LOCAL_PC_ID } from '../../../shared/pcRail';
 import { isWorkSurfaceType, splitShownTerminal } from '../../components/Pane/surfaceKinds';
 import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
@@ -97,6 +97,9 @@ export interface FleetPane {
    * (a remote row keeps `surfaceType: 'remote-terminal'`).
    */
   remote?: { hostId: string; hostLabel: string };
+  /** The host of a remote-terminal row, set even when no agent resolved
+   *  (`remote` absent): the list grouped by device puts it under that host. */
+  remoteHostId?: string;
   /**
    * The local ptyId of the BACKGROUND tab whose attention status won this
    * row's rollup (a background tab awaiting input while the active tab is
@@ -576,7 +579,9 @@ export function fleetOutdatedRemoteKeys(state: FleetSelectorState): ReadonlySet<
 }
 
 /** The PCs whose remote rows leave (see FleetSelectorState.downHostIds). */
-export function fleetDownHostIds(state: FleetSelectorState): ReadonlySet<string> | undefined {
+export function fleetDownHostIds(
+  state: Pick<FleetSelectorState, 'downHostIds' | 'pcRailHostStatus' | 'pcRailFeeds'>,
+): ReadonlySet<string> | undefined {
   if (state.downHostIds) return state.downHostIds;
   const { pcRailHostStatus, pcRailFeeds } = state;
   return pcRailHostStatus && pcRailFeeds ? selectDownHostIds({ pcRailHostStatus, pcRailFeeds }) : undefined;
@@ -823,6 +828,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         ...(remoteAgent
           ? { remote: { hostId: surf?.remoteHostId ?? '', hostLabel: remoteAgent.hostLabel } }
           : {}),
+        ...(surf?.surfaceType === 'remote-terminal' && surf.remoteHostId ? { remoteHostId: surf.remoteHostId } : {}),
         ...(!remoteAgent && !stashedExited && attentionPty && attentionPty !== ptyId
           ? { attentionPtyId: attentionPty }
           : {}),
@@ -1390,6 +1396,167 @@ export function groupFleetPanes(panes: FleetPane[], ctx: FleetGroupContext = {})
     groups.idle.sort(compare);
   }
   return groups;
+}
+
+/** What a PC the rail cannot reach last had on the list. */
+export interface FleetAwayCounts {
+  panes: number;
+  /** Of those, the ones in Needs you. */
+  neededYou: number;
+}
+
+/** The host a row runs on, or undefined for this computer. A remote-terminal
+ *  row whose agent did not resolve still runs on its host. */
+function rowHostId(row: FleetRow): string | undefined {
+  return row.pane.remote?.hostId || row.pane.remoteHostId || undefined;
+}
+
+/**
+ * What each PC the rail calls down last had here, for its device head's note:
+ * the remote agent panes on it by their last snapshot, and how many of them
+ * needed you. Those rows never reach the board (selectFleetPanes drops a down
+ * host's rows), so this counts them from the same inputs, on the same tick
+ * the drop notice fires (selectDownHostIds). Empty while no host is down.
+ */
+export function selectDownHostAway(
+  state: Pick<FleetSelectorState, 'workspaces' | 'remoteWorkspaces' | 'downHostIds' | 'pcRailHostStatus' | 'pcRailFeeds'>,
+): Record<string, FleetAwayCounts> {
+  const away: Record<string, FleetAwayCounts> = {};
+  const down = fleetDownHostIds(state);
+  if (!down || down.size === 0) return away;
+  for (const ws of state.workspaces) {
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
+      let hostId: string | undefined;
+      let neededYou = false;
+      for (const s of leaf.surfaces) {
+        if (s.surfaceType !== 'remote-terminal' || !s.remoteHostId || !down.has(s.remoteHostId)) continue;
+        const agent = resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId);
+        if (!agent) continue;
+        hostId ??= s.remoteHostId;
+        if (agent.status === 'awaiting_input') neededYou = true;
+      }
+      if (!hostId) continue;
+      const counts = (away[hostId] ??= { panes: 0, neededYou: 0 });
+      counts.panes++;
+      if (neededYou) counts.neededYou++;
+    }
+  }
+  return away;
+}
+
+/** One device's part of the list grouped by device: everything but Needs you. */
+export interface FleetDeviceGroup {
+  /** LOCAL_PC_ID, or the remote host's id. */
+  id: string;
+  /** The host's label; '' for this computer (the UI names it). */
+  label: string;
+  /** 'disconnected': the PC rail does not reach the host. It has no rows;
+   *  `lastSeen` says what it had. */
+  state: 'local' | 'connected' | 'disconnected';
+  /** Disconnected only: when the host last answered, or null when not known. */
+  lastSeenAt?: number | null;
+  /** Disconnected only: the panes it last had here. */
+  lastSeen?: FleetAwayCounts;
+  running: FleetRow[];
+  finished: FleetRow[];
+  idle: FleetRow[];
+}
+
+export interface FleetDeviceGroups {
+  /** Unchanged: one section across every device, so its count stays one count. */
+  needsYou: FleetRow[];
+  devices: FleetDeviceGroup[];
+}
+
+/** What the grouping reads of one paired PC from the rail, in the rail's order. */
+export interface FleetDeviceHost {
+  id: string;
+  label: string;
+  /** False while the rail's last poll reached it. */
+  offline: boolean;
+  /** When it last answered, or null when not known. */
+  lastSeenAt: number | null;
+}
+
+/**
+ * The list grouped by device, over the board's rows (a PC the rail calls down
+ * has none there; `away` is selectDownHostAway). Needs you stays one section; every other row
+ * goes under its device, in the order the status grouping gave it. This
+ * computer comes first, then the hosts in the rail's order, then any other
+ * host by label; a host the rail knows carries the rail's name. While
+ * `includeDisconnected` is set, a PC the rail cannot reach keeps a row-less
+ * head when it had rows (`away`) or every attachment from it is stale; a
+ * device with no rows is otherwise not drawn.
+ */
+export function groupFleetByDevice(
+  groups: FleetGroups,
+  opts: {
+    remoteWorkspaces?: readonly Pick<AttachedRemoteWorkspace, 'hostId' | 'hostLabel' | 'stale' | 'panes'>[];
+    hosts?: readonly FleetDeviceHost[];
+    away?: Readonly<Record<string, FleetAwayCounts>>;
+    includeDisconnected?: boolean;
+  } = {},
+): FleetDeviceGroups {
+  const railHost = new Map((opts.hosts ?? []).map((host) => [host.id, host]));
+  const byId = new Map<string, FleetDeviceGroup>();
+  const device = (id: string, label: string, state: FleetDeviceGroup['state']): FleetDeviceGroup => {
+    let d = byId.get(id);
+    if (!d) {
+      d = { id, label, state, running: [], finished: [], idle: [] };
+      byId.set(id, d);
+    }
+    return d;
+  };
+  const attachedLabel = new Map((opts.remoteWorkspaces ?? []).map((r) => [r.hostId, r.hostLabel]));
+  for (const section of ['running', 'finished', 'idle'] as const) {
+    for (const row of groups[section]) {
+      const hostId = rowHostId(row);
+      const d = hostId
+        ? device(hostId, railHost.get(hostId)?.label ?? row.pane.remote?.hostLabel ?? attachedLabel.get(hostId) ?? hostId, 'connected')
+        : device(LOCAL_PC_ID, '', 'local');
+      d[section].push(row);
+    }
+  }
+  if (opts.includeDisconnected) {
+    const disconnected = (hostId: string, label: string, lastSeen: FleetAwayCounts) => {
+      const d = device(hostId, railHost.get(hostId)?.label ?? label, 'disconnected');
+      d.lastSeenAt = railHost.get(hostId)?.lastSeenAt ?? null;
+      d.lastSeen = lastSeen;
+    };
+    for (const [hostId, counts] of Object.entries(opts.away ?? {})) {
+      if (!byId.has(hostId)) disconnected(hostId, attachedLabel.get(hostId) ?? hostId, counts);
+    }
+    // Every attachment stale (the PC slept before this run saw its rows):
+    // the last snapshot's agent panes are what it had.
+    const live = new Set<string>();
+    const snapshot = new Map<string, FleetAwayCounts>();
+    for (const r of opts.remoteWorkspaces ?? []) {
+      if (!r.stale) { live.add(r.hostId); continue; }
+      const counts = snapshot.get(r.hostId) ?? { panes: 0, neededYou: 0 };
+      for (const p of r.panes) {
+        if (!p.agentName) continue;
+        counts.panes++;
+        if (p.agentStatus === 'awaiting_input') counts.neededYou++;
+      }
+      snapshot.set(r.hostId, counts);
+    }
+    for (const [hostId, counts] of snapshot) {
+      // A stale attachment on a host the rail still reaches is a workspace
+      // gone from it, not a disconnected PC.
+      const host = railHost.get(hostId);
+      if (live.has(hostId) || byId.has(hostId) || (host && !host.offline)) continue;
+      disconnected(hostId, attachedLabel.get(hostId) ?? hostId, counts);
+    }
+  }
+  const order = new Map((opts.hosts ?? []).map((host, i) => [host.id, i]));
+  const remotes = [...byId.values()].filter((d) => d.id !== LOCAL_PC_ID).sort((a, b) => {
+    const ai = order.get(a.id) ?? Infinity;
+    const bi = order.get(b.id) ?? Infinity;
+    if (ai !== bi) return ai - bi;
+    return a.label.localeCompare(b.label) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  });
+  const local = byId.get(LOCAL_PC_ID);
+  return { needsYou: groups.needsYou, devices: local ? [local, ...remotes] : remotes };
 }
 
 /** A terminal title that names only the program (an agent CLI, a shell or a

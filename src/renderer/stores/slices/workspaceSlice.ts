@@ -1909,6 +1909,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (data.fleetLayout === 'list' || data.fleetLayout === 'board') {
         state.fleetLayout = data.fleetLayout;
       }
+      if (data.fleetGroupBy === 'status' || data.fleetGroupBy === 'device') {
+        state.fleetGroupBy = data.fleetGroupBy;
+      }
       // Whitelisted like everything else a hand-editable, cross-version
       // session file carries: only configurable actions (they have a Settings
       // row to undo the change from) and combos the matcher can press.
