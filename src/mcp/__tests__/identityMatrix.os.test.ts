@@ -88,17 +88,17 @@ class StubMain {
 interface World { home: string; suffix: string; main: StubMain; broker: ChildProcess; log: () => string }
 
 const HOST_SOURCE = String.raw`
-// A stand-in agent host: runs the MCP command (or, with spec.forge, talks to
-// a forging shim), initializes, lists tools, then on "go" asks a2a_whoami
-// and repl_run, prints what it got, and on "done" ends.
+// A stand-in agent host: runs the MCP command (or, with spec.claimShim, talks
+// to a shim that names its own parent pid), initializes, lists tools, then on
+// "go" asks a2a_whoami and repl_run, prints what it got, and on "done" ends.
 const { spawn } = require('child_process');
 const net = require('net');
 const readline = require('readline');
 const spec = JSON.parse(process.argv[2]);
-if (spec.forgeShim) {
+if (spec.claimShim) {
   // A shim that names a false parent: handshake, drop the ack line, then pump.
-  const sock = net.connect(spec.forgeShim.pipe);
-  sock.write(JSON.stringify({ wmuxShim: 1, authToken: spec.forgeShim.token, callerPid: process.pid, callerPpid: spec.forgeShim.ppid, ack: 1 }) + '\n');
+  const sock = net.connect(spec.claimShim.pipe);
+  sock.write(JSON.stringify({ wmuxShim: 1, authToken: spec.claimShim.token, callerPid: process.pid, callerPpid: spec.claimShim.ppid, ack: 1 }) + '\n');
   let head = Buffer.alloc(0);
   const onHead = (d) => {
     head = Buffer.concat([head, d]);
@@ -205,15 +205,15 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
   interface Outcome { tools: string[]; whoami: string; replRefused: boolean; callerParentIsHost: boolean; mcpPid: number; callerPid: unknown; calls: Recorded[]; stderr: string }
 
   /** Run one host through one chain; the host's own pid is planted as pane pty-host in ws-host. */
-  async function run(chain: Chain, c: Case, forge?: { ppid: number }): Promise<Outcome> {
+  async function run(chain: Chain, c: Case, claim?: { ppid: number }): Promise<Outcome> {
     const world = chain === 'fallback' ? blindWorld : peerWorld;
     world.main.calls.length = 0;
     world.main.panes.clear();
     world.main.protectedPane = c.protectedPane === true;
     const env: Record<string, string> = { PATH: process.env.PATH ?? '', HOME: world.home, WMUX_DATA_SUFFIX: world.suffix, NODE_PATH: path.join(REPO_ROOT, 'node_modules'), ...(c.env ?? {}) };
-    const spec = forge
+    const spec = claim
       ? { clientName: c.clientName, cmd: process.execPath, env,
-        args: [hostScript, JSON.stringify({ forgeShim: { pipe: path.join(world.home, `.wmux-mcpb${world.suffix}.sock`), token: TOKEN, ppid: forge.ppid } })] }
+        args: [hostScript, JSON.stringify({ claimShim: { pipe: path.join(world.home, `.wmux-mcpb${world.suffix}.sock`), token: TOKEN, ppid: claim.ppid } })] }
       : chain === 'bundle'
         ? { clientName: c.clientName, cmd: process.execPath, args: [path.join(res, 'mcp-bundle', 'index.js'), ...(c.args ?? [])], env }
         : { clientName: c.clientName, cmd: path.join(res, 'native-hooks', 'wmux-native'), args: ['mcp-shim', ...(c.args ?? [])], env };
