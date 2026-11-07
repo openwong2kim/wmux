@@ -587,12 +587,25 @@ describe('ComputerService input lanes: accessibility actions on a Windows helper
     vi.useRealTimers();
   });
 
-  const ACCESSIBILITY: Array<{ name: string; params: (snapshotId: string) => ControlParams }> = [
+  // Actions the Windows helper may keep in the background, depending on the target.
+  const HELPER_DECIDES: Array<{ name: string; params: (snapshotId: string) => ControlParams }> = [
     { name: 'an index click', params: (snapshotId) => ({ action: 'click', snapshotId, index: 0 }) },
     { name: 'setValue', params: (snapshotId) => ({ action: 'setValue', snapshotId, index: 0, value: 'v' }) },
+    { name: 'a vertical scroll', params: (snapshotId) => ({ action: 'scroll', snapshotId, index: 0, direction: 'up' }) },
   ];
 
-  it.each(ACCESSIBILITY)('sends $name with refuse and takes no lease while the helper keeps it in the background', async ({ params }) => {
+  it('sends a horizontal scroll with allow under the lease', async () => {
+    const { service, pending, controlCalls, done } = makeService(true, 'win32');
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const scroll = service.control(AGENT_A, { action: 'scroll', snapshotId: a.snapshotId, index: 0, direction: 'right' });
+    await settle();
+    expect(controlCalls.map((c) => [c.method, c.params.foreground])).toEqual([['scroll', 'allow']]);
+    expect(service.inputHolder()).toBe('agent A');
+    done(oldest(pending), 'foreground');
+    expect((await withinDeadline(scroll)).delivery).toBe('foreground');
+  });
+
+  it.each(HELPER_DECIDES)('sends $name with refuse and takes no lease while the helper keeps it in the background', async ({ params }) => {
     const { service, pending, controlCalls, done } = makeService(true, 'win32');
     const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
     const action = service.control(AGENT_A, params(a.snapshotId));
@@ -604,7 +617,7 @@ describe('ComputerService input lanes: accessibility actions on a Windows helper
     expect(service.inputHolder()).toBeNull();
   });
 
-  it.each(ACCESSIBILITY)('re-sends $name under the lease when the helper says the covered target needs the foreground', async ({ params }) => {
+  it.each(HELPER_DECIDES)('re-sends $name under the lease when the helper says the covered target needs the foreground', async ({ params }) => {
     const { service, pending, controlCalls, done, needsForeground } = makeService(true, 'win32');
     const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
     const action = service.control(AGENT_A, params(a.snapshotId));
@@ -618,7 +631,7 @@ describe('ComputerService input lanes: accessibility actions on a Windows helper
     expect((await withinDeadline(action)).delivery).toBe('foreground');
   });
 
-  it.each(ACCESSIBILITY)('ends $name input_busy, not_delivered, when it needs the foreground another agent holds', async ({ params }) => {
+  it.each(HELPER_DECIDES)('ends $name input_busy, not_delivered, when it needs the foreground another agent holds', async ({ params }) => {
     const { service, pending, controlCalls, done, needsForeground } = makeService(true, 'win32');
     const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
     const b = await service.getAppState(AGENT_B, { app: 'Paint' });

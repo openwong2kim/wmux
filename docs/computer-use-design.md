@@ -340,10 +340,12 @@ snapshot is the v1.1 token saver.
     their slot they take the lease, at once or `input_busy`. Which actions
     those are follows the helper's OS (`foregroundCertain(req, os)`), so
     each list is its own helper's refusals that depend on the action alone:
-    - Windows, row for row the Windows helper's own refusals: scroll, a
-      button other than left, a click with modifiers or more than one
-      click, a hotkey with modifiers, and `type` text with a control
-      character other than one trailing newline.
+    - Windows, row for row the Windows helper's own refusals: a scroll
+      left or right, a button other than left, a click with modifiers or
+      more than one click, a hotkey with modifiers, and `type` text with
+      a control character other than one trailing newline. A scroll up or
+      down goes with `refuse`: the helper posts it to an Edit or RichEdit
+      control and answers `needs_foreground` for any other window.
     - macOS, the rows of the macOS helper's `foregroundReason` that depend
       on the action alone: a button other than left, and more than two
       clicks. A scroll, a double click, a click or hotkey with modifiers

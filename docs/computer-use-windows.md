@@ -280,8 +280,50 @@ section); that result says `delivery: "foreground"`. A posted one says
     focus (to the next field of a page, or through a dialog) so the rest
     would land where no check was made. Only one trailing newline is
     posted: a trailing `\n` (backslash, n) types Enter in the same action.
-  - `hotkey` with modifiers and `scroll`: always the real way (a chord
-    cannot be posted; `WM_MOUSEWHEEL` was not measured).
+  - `hotkey` with modifiers: always the real way (a chord cannot be
+    posted).
+  - `scroll` up or down: one `WM_MOUSEWHEEL` per notch (`WHEEL_DELTA`,
+    the point in screen coordinates, no key or button state), posted to the
+    window a click at the point would hit, with the same receiver checks as
+    a posted click. Only an `Edit` or a `RichEdit` class
+    (`RichEdit20W`, `RICHEDIT50W`, `RichEditD2DPT`) gets it; a Chromium
+    or Electron window, and any other class, goes the real way. A
+    WinForms `RichTextBox` registers its own class
+    (`WindowsForms10.RichEdit20W.*`), so it goes the real way too, as it
+    does for posted clicks and keys. Verified when the control's first
+    visible line (`EM_GETFIRSTVISIBLELINE`, read before posting and again
+    for up to 300 ms) moved the way the wheel turned; a control already at
+    that end, or one that does not answer, is `unverified`. `scroll`
+    left or right is always the real way (`WM_MOUSEHWHEEL` was not
+    measured).
+
+    Posted `WM_MOUSEWHEEL` (3 notches down) to the window a posted click
+    would hit, with the target covered by another window, 6 calls each:
+
+    | Target window class | Scrolled | Foreground taken | Raised | Cursor moved |
+    | --- | --- | --- | --- | --- |
+    | `Edit` (raw Win32, multiline) | 6/6 | 0 | 0 | 0 |
+    | WinForms `RichTextBox` (a `RichEdit20W` superclass) | 6/6 | 0 | 0 | 0 |
+    | Electron 42, scrollable `div` | 0/6 | 0 | 0 | 0 |
+    | Chrome 157, scrollable `div` | 0/6 | 0 | 0 | 0 |
+
+    Chromium ignores it while covered (the same post with the target in
+    front scrolls, 4/4), so Chromium and Electron keep real input. Neither
+    page had a child window at the point, so the post went to the top-level
+    `Chrome_WidgetWin_1`.
+
+    The helper's own `scroll` on a covered window (3 notches, by element
+    index):
+
+    | Target | `foreground` | Result | First visible line | Front window, cursor |
+    | --- | --- | --- | --- | --- |
+    | `Edit`, down then up | `allow` | `background`, `verified` (5/5) | 0 → 9 → 18 → 27 → 18 → 9 | unchanged |
+    | `Edit`, down | `refuse` | `background`, `verified` (3/3) | 0 → 9 → 18 → 27 | unchanged |
+    | `Edit` at the top, up | `allow` | `background`, `unverified` (2/2) | 0 → 0 | unchanged |
+    | `RICHEDIT50W`, down then up | `allow`, `refuse` | `background`, `verified` (5/5) | 0 → 27 → 9 | unchanged |
+    | `Edit`, right | `refuse` | `needs_foreground`, nothing sent | 0 → 0 | unchanged |
+    | WinForms `RichTextBox`, list box, Electron | `refuse` | `needs_foreground`, nothing sent | unchanged | unchanged |
+    | WinForms `RichTextBox`, Electron | `allow` | `foreground` (real input, as before) | `RichTextBox` 0 → 27; Electron not read | target came to the front; cursor back |
   - `setValue` and the UIA click ladder are not input, but their pattern
     calls (Invoke, Toggle, SelectionItem, ExpandCollapse, Value) bring a
     covered target window to the front (the table below). DoDefaultAction,
@@ -305,8 +347,9 @@ section); that result says `delivery: "foreground"`. A posted one says
   app acted on it. A posted action is `unverified` (`delivered_unverified`)
   unless a re-read confirms it: for `type`, the field's UIA value is the
   value before with exactly the typed text inserted (the same rule as real
-  input, but read from the target field, not the system focus). Clicks and
-  keys are `unverified`.
+  input, but read from the target field, not the system focus); for
+  `scroll`, the control's first visible line moved the way the wheel
+  turned. Clicks and keys are `unverified`.
 - **Our side effects.** The cursor position and the foreground window are
   read before posting and again at least 60 ms after it. If the cursor now
   sits on the target point and did not before, or the foreground window
@@ -341,7 +384,9 @@ section); that result says `delivery: "foreground"`. A posted one says
   with nothing posted and the sent counter unchanged since the action
   began becomes `needs_foreground`; a stop after posting started (no focus
   after the click, the field moved, the keys refused) keeps its own answer.
-  `scroll` and a `hotkey` with modifiers answer `needs_foreground` at once.
+  A `scroll` left or right and a `hotkey` with modifiers answer
+  `needs_foreground` at once; a `scroll` up or down over a window that does
+  not take the posted wheel answers it after the receiver checks.
   The pattern calls of `setValue` and the UIA click ladder take the front
   from a covered target's owner, so they are foreground input (Core
   `Background.PatternCallAllowed`). Under `refuse` one is made only when
@@ -464,7 +509,7 @@ section); that result says `delivery: "foreground"`. A posted one says
   virtual desktop) gets no real input at all: it could take a click or keys
   only by being shown, given the foreground or switched to, so the answer
   is `window_not_focused` before anything is done to it.
-- The user's cursor: a `scroll` notch moves the cursor to the point (a real
+- The user's cursor: a real `scroll` notch moves the cursor to the point (a real
   wheel event goes to the window under the cursor), turns the wheel and
   moves the cursor back to where it was before the scroll (read under the
   input lock before the first notch), each notch one `SendInput` call, so
@@ -818,9 +863,13 @@ node native\computer-use-windows\probe.mjs <exe> getAppState '{"app":"notepad","
     with another app. `click` an element and `type` with an index into a
     text field of each: the text lands, the results say
     `delivery: "background"`, and the mouse pointer, the window in front and
-    the focused control of the covering app do not change. A right click,
-    a double click, `scroll` and a `hotkey` with modifiers come back
-    `delivery: "foreground"` (real input, as before). The helper's stderr
+    the focused control of the covering app do not change. `scroll` down
+    then up over a multiline `Edit` or `RichEdit` control of a covered
+    window comes back `delivery: "background"` and `verified`, with the
+    same pointer, front window and focus. A right click, a double click,
+    `scroll` over Chrome or Electron, `scroll` left or right and a
+    `hotkey` with modifiers come back `delivery: "foreground"` (real
+    input, as before). The helper's stderr
     names why a click or typing that could have been posted was not.
 
 ### 4. Explorer windows

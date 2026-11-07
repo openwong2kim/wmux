@@ -138,7 +138,11 @@ describe('PidLanes', () => {
 describe('foregroundCertain', () => {
   // Windows: one row per row of Core Background.ActionRefusal, plus openApp (main only).
   it.each([
-    ['scroll: always', { action: 'scroll' as const }, true],
+    ['scroll: left', { action: 'scroll' as const, direction: 'left' as const }, true],
+    ['scroll: right', { action: 'scroll' as const, direction: 'right' as const }, true],
+    ['scroll: down (the helper decides)', { action: 'scroll' as const, direction: 'down' as const }, false],
+    ['scroll: up (the helper decides)', { action: 'scroll' as const, direction: 'up' as const }, false],
+    ['scroll: direction left out (down)', { action: 'scroll' as const }, false],
     ['click: right button', { action: 'click' as const, button: 'right' as const }, true],
     ['click: middle button', { action: 'click' as const, button: 'middle' as const }, true],
     ['click: modifiers', { action: 'click' as const, modifiers: ['ctrl' as const] }, true],

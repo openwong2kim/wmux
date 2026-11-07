@@ -1452,8 +1452,13 @@ internal static unsafe class Actions
             _ => throw new HelperError("invalid_argument", "direction must be up, down, left or right"),
         };
         var (x, y, _) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
-        // Always real input: WM_MOUSEWHEEL was not measured (Core Background.ActionRefusal).
-        AfterBackground("scroll", BackgroundOutcome.Refused(BackgroundRefusal.Scroll), refuse, sentAtStart);
+        // The agent's pointer moves to the point (Overlay.cs: a posted command, no wait).
+        Overlay.Show(marker, MarkerVerb.Scrolling, target, (x, y));
+        // A vertical wheel over an Edit or RichEdit control is posted
+        // (BackgroundInput.Scroll); anything else is real input, as before.
+        Input.ThrowIfStopping();
+        var posted = BackgroundInput.Scroll(target, x, y, amount, up: dy > 0, horizontal: dx != 0);
+        if (AfterBackground("scroll", posted, refuse, sentAtStart) is { } result) return result;
         // The preflight re-runs the hit-test before every notch: a window that
         // moves over the point mid-scroll must not receive the rest.
         var preflight = Focus.RequirePointer(target, x, y);

@@ -8,7 +8,7 @@
 // effects. A refusal posts nothing, and the action then sends the same input
 // as real input (the foreground path in Actions.cs). What the action itself
 // asks for (Background.ActionRefusal) is decided before any window state is
-// read, so a chord or a scroll costs no cross-process call.
+// read, so a chord or a horizontal scroll costs no cross-process call.
 //
 // The receiver of a click is the child a real click at the point would hit:
 // from the target window down, the topmost child in z-order that is visible,
@@ -47,6 +47,9 @@ internal static unsafe class BackgroundInput
     private const int EditControlType = 50004;
     private const int HasKeyboardFocusProperty = 30008;
     private const uint WmNcHitTest = 0x0084;
+    private const uint EmGetFirstVisibleLine = 0x00CE;
+    /// <summary>How long the control may take to show the posted wheel's scroll.</summary>
+    private const int WheelSettleMs = 300;
     private const nint HtTransparent = -1;
 
     private static readonly Guid ClsidVirtualDesktopManager = new(0xAA509086, 0x5CA9, 0x4C25, 0x8F, 0x95, 0x58, 0x9D, 0x3C, 0x07, 0xB4, 0x8A);
@@ -72,6 +75,41 @@ internal static unsafe class BackgroundInput
         return Run(plan, target, (x, y),
             click: () => Post(at!.Value, Background.Click(at.Value.ClientX, at.Value.ClientY)),
             keys: null, readBack: () => false);
+    }
+
+    /// <summary>
+    /// `notches` of the vertical wheel posted as WM_MOUSEWHEEL to the window
+    /// a click at the point would hit, only an Edit or RichEdit control (the
+    /// measured ones), with the same receiver checks as a posted click.
+    /// Verified when the control's first visible line moved the way the
+    /// wheel turned. A horizontal wheel, and anything else, is refused
+    /// before posting.
+    /// </summary>
+    public static BackgroundOutcome Scroll(ControlTarget target, double x, double y, int notches, bool up, bool horizontal)
+    {
+        var request = new BackgroundRequest(InputAction.Scroll, Horizontal: horizontal);
+        var early = Background.ActionRefusal(request);
+        if (early != BackgroundRefusal.None) return BackgroundOutcome.Refused(early);
+        var window = WindowState(target);
+        Target? at = Background.WindowRefusal(window) == BackgroundRefusal.None ? AtPoint(target, x, y, secrecy: false) : null;
+        var plan = Background.Plan(window, request, at?.Info);
+        if (plan.Refused) return Run(plan, target, null, null, null, () => false);
+        var to = at!.Value;
+        var screen = (X: (int)Math.Round(x), Y: (int)Math.Round(y));
+        int? before = FirstVisibleLine(to.Hwnd);
+        return Run(plan, target, (x, y),
+            click: () => Post(to, Background.Wheel(screen.X, screen.Y, notches, up)),
+            keys: null,
+            readBack: () => before != null && Poll.Until(() => Background.WheelScrolled(before, FirstVisibleLine(to.Hwnd), up),
+                WheelSettleMs, () => Environment.TickCount64, Sta.Sleep));
+    }
+
+    /// <summary>EM_GETFIRSTVISIBLELINE of an Edit or RichEdit control; null when it did not answer in time.</summary>
+    private static int? FirstVisibleLine(HWND hwnd)
+    {
+        nuint line;
+        if (PInvoke.SendMessageTimeout(hwnd, EmGetFirstVisibleLine, 0, 0, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, HitTestTimeoutMs, &line) == 0) return null;
+        return (int)line;
     }
 
     private static int Post(Target to, IReadOnlyList<PostedMessage> messages) => Input.PostMessages(to.Hwnd, to.Pid, to.Tid, messages);

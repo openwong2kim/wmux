@@ -50,7 +50,13 @@ public class BackgroundTests
         { "middle button", Normal, LeftClick with { Button = 2 }, Win32Edit, BackgroundRefusal.Button },
         { "click with modifiers", Normal, LeftClick with { Modifiers = 1 }, Win32Edit, BackgroundRefusal.Modifiers },
         { "double click", Normal, LeftClick with { ClickCount = 2 }, Win32Edit, BackgroundRefusal.MultiClick },
-        { "scroll", Normal, new(InputAction.Scroll), Win32Edit, BackgroundRefusal.Scroll },
+        { "horizontal scroll", Normal, new(InputAction.Scroll, Horizontal: true), Win32Edit, BackgroundRefusal.Scroll },
+        { "scroll over Chromium", Normal, new(InputAction.Scroll), Chromium, BackgroundRefusal.WheelUnsupported },
+        { "scroll over a button", Normal, new(InputAction.Scroll), new Receiver("Button", InTargetProcess: true), BackgroundRefusal.UnsupportedFramework },
+        { "scroll on a scroll bar", Normal, new(InputAction.Scroll), Win32Edit with { InClientArea = false }, BackgroundRefusal.NonClientArea },
+        { "scroll under a popup", Normal, new(InputAction.Scroll), Win32Edit with { PopupAtPoint = true }, BackgroundRefusal.PopupAtPoint },
+        { "scroll with nothing at the point", Normal, new(InputAction.Scroll), null, BackgroundRefusal.NoReceiver },
+        { "scroll on a minimized window", Normal with { Iconic = true }, new(InputAction.Scroll), Win32Edit, BackgroundRefusal.Minimized },
         { "hotkey chord", Normal, new(InputAction.Hotkey, Modifiers: 2), Win32Edit, BackgroundRefusal.Chord },
         { "text with a Tab", Normal, FieldTyping with { Text = "user\tpass" }, Chromium, BackgroundRefusal.FocusMovingText },
         { "text with an inner newline", Normal, new(InputAction.Type, Text: "a\nb"), Win32Edit, BackgroundRefusal.FocusMovingText },
@@ -104,7 +110,6 @@ public class BackgroundTests
     }
 
     [Theory]
-    [InlineData(InputAction.Scroll, 0, 1, 0, BackgroundRefusal.Scroll)]
     [InlineData(InputAction.Click, 1, 1, 0, BackgroundRefusal.Button)]
     [InlineData(InputAction.Click, 0, 2, 0, BackgroundRefusal.MultiClick)]
     [InlineData(InputAction.Click, 0, 1, 1, BackgroundRefusal.Modifiers)]
@@ -119,8 +124,83 @@ public class BackgroundTests
     }
 
     [Fact]
+    public void AHorizontalWheelIsDecidedBeforeAnyWindowState()
+    {
+        var request = new BackgroundRequest(InputAction.Scroll, Horizontal: true);
+        Assert.Equal(BackgroundRefusal.Scroll, Background.ActionRefusal(request));
+        Assert.Equal(BackgroundRefusal.Scroll, Background.Plan(Normal with { Iconic = true }, request, null).Refusal);
+    }
+
+    [Theory]
+    [InlineData("Edit")]
+    [InlineData("RichEdit20W")]
+    [InlineData("RICHEDIT50W")]
+    [InlineData("RichEditD2DPT")]
+    public void AVerticalWheelOverAnEditOrRichEditIsPostedAsThePointerStep(string className)
+    {
+        var plan = Background.Plan(Normal, new(InputAction.Scroll), new Receiver(className, InTargetProcess: true));
+        Assert.False(plan.Refused);
+        Assert.True(plan.ClickFirst);
+        Assert.False(plan.Keys);
+        // Posted and not read back as scrolled: delivered, unverified, no fall back.
+        var (outcome, posted, readBack) = Run(plan, posts: 3, confirmed: false);
+        Assert.True(posted);
+        Assert.True(readBack);
+        Assert.Equal(Disposition.DeliveredUnverified, outcome.Disposition);
+        Assert.False(outcome.FallBack);
+        Assert.Equal("background", outcome.Delivery);
+        // Read back as scrolled: verified.
+        Assert.Equal(Disposition.Delivered, Run(plan, confirmed: true).Outcome.Disposition);
+    }
+
+    [Theory]
+    [InlineData("Edit", true)]
+    [InlineData("edit", true)]
+    [InlineData("RichEdit20A", true)]
+    [InlineData("RichEditD2DPT", true)]
+    [InlineData(Background.ChromiumWidgetClass, false)]
+    [InlineData("Chrome_WidgetWin_1", false)]
+    [InlineData("Button", false)]
+    [InlineData("", false)]
+    public void ThePostedWheelIsLimitedToEditAndRichEdit(string className, bool accepts)
+    {
+        Assert.Equal(accepts, Background.AcceptsPostedWheel(className));
+    }
+
+    [Fact]
+    public void WheelNotchesCarryTheDeltaAndTheScreenPoint()
+    {
+        var down = Background.Wheel(-5, 700, 3, up: false);
+        Assert.Equal(3, down.Count);
+        Assert.All(down, m =>
+        {
+            Assert.Equal(Background.WmMouseWheel, m.Msg);
+            // High word: -120 as a signed 16-bit value; low word: no keys or buttons.
+            Assert.Equal(-Background.WheelDelta, (short)(ushort)(m.WParam >> 16));
+            Assert.Equal(0u, (uint)(m.WParam & 0xFFFF));
+            Assert.Equal(-5, (short)(ushort)((ulong)m.LParam & 0xFFFF));
+            Assert.Equal(700, (short)(ushort)(((ulong)m.LParam >> 16) & 0xFFFF));
+        });
+        var up = Assert.Single(Background.Wheel(10, 20, 1, up: true));
+        Assert.Equal(Background.WheelDelta, (short)(ushort)(up.WParam >> 16));
+    }
+
+    [Theory]
+    [InlineData(0, 3, false, true)]
+    [InlineData(10, 7, true, true)]
+    [InlineData(10, 10, false, false)] // already at the end: not confirmed
+    [InlineData(10, 12, true, false)]  // moved the other way
+    [InlineData(null, 3, false, false)]
+    [InlineData(0, null, false, false)]
+    public void TheWheelIsConfirmedOnlyByTheFirstLineMovingItsWay(int? before, int? after, bool up, bool confirmed)
+    {
+        Assert.Equal(confirmed, Background.WheelScrolled(before, after, up));
+    }
+
+    [Fact]
     public void PlainKeysAndClicksHaveNoActionRefusal()
     {
+        Assert.Equal(BackgroundRefusal.None, Background.ActionRefusal(new(InputAction.Scroll)));
         Assert.Equal(BackgroundRefusal.None, Background.ActionRefusal(LeftClick));
         Assert.Equal(BackgroundRefusal.None, Background.ActionRefusal(new(InputAction.PressKey)));
         Assert.Equal(BackgroundRefusal.None, Background.ActionRefusal(new(InputAction.Hotkey)));
@@ -606,6 +686,7 @@ public class BackgroundTests
     {
         BackgroundRefusal.Chord, BackgroundRefusal.Scroll, BackgroundRefusal.Button, BackgroundRefusal.Minimized,
         BackgroundRefusal.DpiMismatch, BackgroundRefusal.ChromiumNeedsClick, BackgroundRefusal.FocusMoved, BackgroundRefusal.NothingPosted,
+        BackgroundRefusal.WheelUnsupported,
     };
 
     [Theory]
@@ -660,7 +741,7 @@ public class BackgroundTests
         // Every refusal ActionRefusal gives is one, and no target-state refusal is.
         var requests = new BackgroundRequest[]
         {
-            new(InputAction.Scroll), new(InputAction.Click, Button: 1), new(InputAction.Click, Modifiers: 1),
+            new(InputAction.Scroll, Horizontal: true), new(InputAction.Click, Button: 1), new(InputAction.Click, Modifiers: 1),
             new(InputAction.Click, ClickCount: 2), new(InputAction.Hotkey, Modifiers: 1), new(InputAction.Type, Text: "a\tb"),
         };
         var fromAction = requests.Select(Background.ActionRefusal).ToHashSet();
