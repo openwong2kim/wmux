@@ -1218,6 +1218,16 @@ export function assertNotLiveWmuxPath(p: string): void {
   }
 }
 
+/**
+ * `<getWmuxHomeDir()>/mcp-broker-off`: present while the shared MCP broker is
+ * off (its crash-loop breaker tripped). The native launcher checks it before
+ * dialling and goes straight to its own server (core/wmux-native mcp_shim.rs
+ * builds the same path).
+ */
+export function getMcpBrokerOffMarkerPath(): string {
+  return `${getWmuxHomeDir()}/mcp-broker-off`;
+}
+
 // wmux user home directory — root for plugin-trust.json, pid-map/, and other
 // substrate state that needs to survive across wmux restarts. Single source
 // of truth so callers don't reimplement the USERPROFILE/HOME dance.

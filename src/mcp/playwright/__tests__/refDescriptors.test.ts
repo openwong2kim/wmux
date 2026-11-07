@@ -8,6 +8,7 @@ import {
   priorRefDescriptors,
   recordRefGeneration,
   recoveredRefNote,
+  reserveRefs,
   uniqueDescriptorMatch,
 } from '../refDescriptors';
 
@@ -56,6 +57,15 @@ describe('assignStableRefs', () => {
     const out = assignStableRefs(prior, 4, [el('button', 'Row'), el('button', 'Row')]);
     expect(new Set(out.refs).size).toBe(2);
     expect(out.refs).toEqual([3, 4]);
+  });
+
+  it('numbers a new element past every number the history holds, even with a seed behind it', () => {
+    const prior = [{ ref: 5, role: 'input', name: 'cc', kindIndex: 0 }];
+    const out = assignStableRefs(prior, 1, [el('input', 'cc'), el('input', 'added')]);
+    expect(out.refs).toEqual([5, 6]);
+    expect(out.nextRef).toBe(7);
+    const edge = assignStableRefs([{ ref: Number.MAX_SAFE_INTEGER, role: 'input', name: 'x', kindIndex: 0 }], 1, [el('input', 'a'), el('input', 'b')]);
+    expect(edge.refs).toEqual([1, 2]);
   });
 });
 
@@ -108,6 +118,17 @@ describe('per-surface history', () => {
       expect(describeRetiredRef('s', g)?.name).toBe(`Gen ${g}`);
     }
     expect(priorRefDescriptors('s', 0)).toHaveLength(DESCRIPTOR_GENERATIONS);
+  });
+
+  // Frame refs on the RPC lane: spent, but never offered for stable reuse, so
+  // the top document can never take a number a frame element had.
+  it('spends numbers without remembering them as descriptors', () => {
+    recordRefGeneration('s', 0, [{ ref: 3, role: 'button', name: 'Pay' }]);
+    reserveRefs('s', 0, 40);
+    expect(nextRefFor('s', 0)).toBe(40);
+    expect(priorRefDescriptors('s', 0).map((d) => d.ref)).toEqual([3]);
+    reserveRefs('s', 0, 10);
+    expect(nextRefFor('s', 0)).toBe(40);
   });
 
   it('answers with the newest generation that carried a ref', () => {

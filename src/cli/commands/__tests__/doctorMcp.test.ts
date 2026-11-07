@@ -94,8 +94,8 @@ describe('doctor mcp section', () => {
   });
 
   describe('a broker that is on but down', () => {
-    const down = async (downReason: unknown, kinds: string[]) => {
-      const result = { ...summary, broker: { ...summary.broker, running: false, pid: null, uptimeS: null, downReason } };
+    const down = async (downReason: unknown, kinds: string[], extra: Record<string, unknown> = {}) => {
+      const result = { ...summary, broker: { ...summary.broker, running: false, pid: null, uptimeS: null, downReason, ...extra } };
       const targets = () => kinds.map((k, i) => target(`t${i}`, `${HOME}/.wmux/mcp/${k}`));
       const s = await buildMcpSection(deps({ targets, sessions: () => Promise.resolve({ id: '1', ok: true, result }) }));
       return s.lines.find((l) => l.label === 'broker') as { value: string; verdict: string; hint?: string };
@@ -105,6 +105,14 @@ describe('doctor mcp section', () => {
       const line = await down('restarting', ['wmux-native']);
       expect(line).toMatchObject({ verdict: 'WARN', value: 'not running: restarting after an exit (crash exits 1, spawn failures 3)' });
       expect(line.hint).toMatch(/restarts it/);
+      expect(line.hint).toMatch(/native launcher start the full bundle themselves/);
+    });
+
+    it('says a crash loop keeps it off until wmux restarts, and which tools the last crash cut off', async () => {
+      const line = await down('crash-loop', ['wmux-native'], { lastCrashTools: ['browser_click', 'a b/../x'] });
+      expect(line).toMatchObject({ verdict: 'WARN', value: 'not running: it kept failing (crash exits 1, spawn failures 3), off until wmux restarts' });
+      expect(line.hint).toMatch(/Last crash during: browser_click\./);
+      expect(line.hint).not.toMatch(/a b/);
       expect(line.hint).toMatch(/native launcher start the full bundle themselves/);
     });
 
