@@ -5,7 +5,6 @@
 // with the handoff note typed in, never sent; this tab keeps its session.
 // The note is previewed here with its length, and an unsent draft goes along
 // only when the owner ticks it.
-import { createPortal } from 'react-dom';
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -73,9 +72,7 @@ export default function ContinueInAgentDialog({ ptyId, workspaceId, paneId, cwd,
   const targets = (setup.statuses ?? []).filter((s) => s.readiness === 'ready' && s.agent !== slug);
   const note = facts ? handoffNoteText(fromAgent, facts, { carryDraft }) : undefined;
 
-  // Portalled: a pane root is its own stacking context (Pane.tsx `isolate`),
-  // so a dialog left inside it would sit under the panes painted after it.
-  return createPortal(
+  return (
     <Dialog onClose={onClose} width={400} data-testid="continue-in-agent-dialog">
       <DialogHeader title={t('usageLimit.continueInAgentTitle')} description={t('handoff.dialogDescription')} closeLabel={t('handoff.close')} />
       <DialogBody className="flex flex-col gap-3">
@@ -112,7 +109,6 @@ export default function ContinueInAgentDialog({ ptyId, workspaceId, paneId, cwd,
         )}
         {note !== undefined && <HandoffNotePreview note={note} />}
       </DialogBody>
-    </Dialog>,
-    document.body,
+    </Dialog>
   );
 }

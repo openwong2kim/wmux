@@ -1,4 +1,3 @@
-import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import Dialog, { DialogBody, DialogHeader } from '../ui/Dialog';
@@ -83,9 +82,7 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
 
   // Escape and the backdrop close it (ui/Dialog) — until #1140 the backdrop
   // click was the only way out of this dialog.
-  // Portalled: a pane root is its own stacking context (Pane.tsx `isolate`),
-  // so a dialog left inside it would sit under the panes painted after it.
-  return createPortal(
+  return (
     <Dialog onClose={onClose} closeOnBackdrop width={380} zIndexClassName="z-[var(--z-modal)]">
       <DialogHeader title={title ?? t('pane.newRemote')} />
       <DialogBody className="!gap-3">
@@ -117,7 +114,6 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
           </div>
         )}
       </DialogBody>
-    </Dialog>,
-    document.body,
+    </Dialog>
   );
 }

@@ -1,4 +1,3 @@
-import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -473,9 +472,7 @@ export default function A2aLinkDialog({ local: fixed, initialHostId, offer, onCl
     }
   }, [api, hostId, selected, local, end.kind, workspaceId, paneId, myRemote, send, receive]);
 
-  // Portalled: a pane root is its own stacking context (Pane.tsx `isolate`),
-  // so a dialog left inside it would sit under the panes painted after it.
-  return createPortal(
+  return (
     <A2aLinkDialogView
       localKind={end.kind}
       localName={end.kind === 'brain' ? t('a2aLink.thisMoa') : local.found ? `${local.workspaceName} / ${local.label}` : paneId}
@@ -498,7 +495,6 @@ export default function A2aLinkDialog({ local: fixed, initialHostId, offer, onCl
       {...(offer ? { offer: { pc: hosts.find((h) => h.hostId === offer.hostId)?.name ?? '', outbound: offer.allow.outbound, inbound: offer.allow.inbound } } : {})}
       {...(localChoices ? { localChoices, localKey: localKey ?? '', onPickLocal: (key: string) => { setTouched(true); setPickedKey(key); } } : {})}
       t={t}
-    />,
-    document.body,
+    />
   );
 }
