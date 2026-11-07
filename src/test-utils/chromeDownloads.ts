@@ -14,11 +14,17 @@ import path from 'node:path';
  */
 export function pinDownloadDir(profileDir: string, preferences: Record<string, unknown> = {}): string {
   const downloads = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-test-downloads-'));
-  fs.mkdirSync(path.join(profileDir, 'Default'), { recursive: true });
-  fs.writeFileSync(
-    path.join(profileDir, 'Default', 'Preferences'),
-    JSON.stringify({ ...preferences, download: { default_directory: downloads, prompt_for_download: false } }),
-  );
+  try {
+    fs.mkdirSync(path.join(profileDir, 'Default'), { recursive: true });
+    fs.writeFileSync(
+      path.join(profileDir, 'Default', 'Preferences'),
+      JSON.stringify({ ...preferences, download: { default_directory: downloads, prompt_for_download: false } }),
+    );
+  } catch (err) {
+    // The caller never learns this dir's name, so it can't remove it.
+    fs.rmSync(downloads, { recursive: true, force: true });
+    throw err;
+  }
   return downloads;
 }
 

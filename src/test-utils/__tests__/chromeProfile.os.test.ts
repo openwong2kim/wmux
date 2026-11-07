@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ChromeLauncher } from '../../main/browser-session/ChromeLauncher';
 import { stopChrome, tempChromeProfile } from '../chromeProfile';
 
@@ -17,6 +17,24 @@ describe('tempChromeProfile', () => {
 
     await profile.remove();
     expect([profile.dir, profile.downloads, scratch].filter((d) => fs.existsSync(d))).toEqual([]);
+  });
+
+  it('leaves no dir behind when setting up the profile fails', () => {
+    const made: string[] = [];
+    const real = fs.mkdtempSync.bind(fs);
+    const spy = vi.spyOn(fs, 'mkdtempSync').mockImplementation(((prefix: string) => {
+      const dir = real(prefix);
+      made.push(dir);
+      return dir;
+    }) as typeof fs.mkdtempSync);
+    try {
+      // A BigInt can't be written as JSON: the Preferences write fails once both dirs exist.
+      expect(() => tempChromeProfile('wmux-profile-test-', { preferences: { bad: BigInt(1) } })).toThrow(/BigInt/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(made).toHaveLength(2);
+    expect(made.filter((d) => fs.existsSync(d))).toEqual([]);
   });
 });
 

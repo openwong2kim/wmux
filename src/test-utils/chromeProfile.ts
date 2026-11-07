@@ -36,9 +36,15 @@ const EXIT_WAIT_MS = 5_000;
 
 export function tempChromeProfile(prefix: string, opts: { preferences?: Record<string, unknown> } = {}): TempChromeProfile {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const owned = [dir];
-  const downloads = pinDownloadDir(dir, opts.preferences);
-  owned.push(downloads);
+  let downloads: string;
+  try {
+    downloads = pinDownloadDir(dir, opts.preferences);
+  } catch (err) {
+    // No profile reaches the caller, so nothing else would remove the dir.
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  const owned = [dir, downloads];
   return {
     dir,
     downloads,
