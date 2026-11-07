@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { groupFleetByDevice, groupFleetPanes, type FleetDeviceHost, type FleetPane, type FleetRow } from '../fleet';
+import { groupFleetByDevice, groupFleetPanes, selectFleetPanes, type FleetDeviceHost, type FleetPane, type FleetRow } from '../fleet';
+import type { Workspace } from '../../../../shared/types';
 import { LOCAL_PC_ID } from '../../../../shared/pcRail';
 
 function pane(ptyId: string, overrides: Partial<FleetPane> = {}): FleetPane {
@@ -114,5 +115,29 @@ describe('groupFleetByDevice', () => {
       hosts: [host('host-x', 'office')],
     });
     expect(byDevice.devices[0]).toMatchObject({ id: 'host-x', label: 'office' });
+  });
+
+  it('a remote pane with no agent resolved still sits under its host, not this computer', () => {
+    const shell = pane('', { surfaceType: 'remote-terminal', remoteHostId: 'host-x', paneId: 'p-shell' });
+    const byDevice = groupFleetByDevice(groupFleetPanes([pane('l'), shell]), {
+      remoteWorkspaces: [{ hostId: 'host-x', hostLabel: 'x-snapshot', stale: false }],
+    });
+    expect(byDevice.devices.map((d) => [d.id, d.label, d.idle.map((row) => row.pane.paneId)])).toEqual([
+      [LOCAL_PC_ID, '', ['p-l']],
+      ['host-x', 'x-snapshot', ['p-shell']],
+    ]);
+  });
+
+  it('selectFleetPanes names the host of a remote-terminal row even when no agent resolved', () => {
+    const ws: Workspace = {
+      id: 'ws-r', name: 'r', activePaneId: 'p-r',
+      rootPane: {
+        id: 'p-r', type: 'leaf', activeSurfaceId: 's-r',
+        surfaces: [{ id: 's-r', ptyId: '', title: 'shell', shell: 'zsh', cwd: '', surfaceType: 'remote-terminal', remoteHostId: 'host-x', remoteSessionId: 'sess-1' }],
+      },
+    };
+    const [row] = selectFleetPanes({ workspaces: [ws], surfaceAgentStatus: {}, surfaceActivity: {}, remoteWorkspaces: [] });
+    expect(row).toMatchObject({ surfaceType: 'remote-terminal', remoteHostId: 'host-x' });
+    expect(row.remote).toBeUndefined();
   });
 });
