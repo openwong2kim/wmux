@@ -13,6 +13,7 @@ import type { RpcMethod } from '../../shared/rpc';
 import { formatComputerError, parseComputerErrorMessage, type ActionDisposition } from '../../shared/computer/errors';
 import {
   COMPUTER_ACTIONS,
+  DESKTOP_COMMANDS,
   MODIFIERS,
   OBSERVATION_MODES,
   isControlAction,
@@ -29,7 +30,7 @@ import { defineWmuxTool, registerWmuxTools, type RegisterWmuxToolsOptions } from
 const CONSENT_AWARE_TIMEOUT_MS = 140_000;
 const QUICK_TIMEOUT_MS = 20_000;
 
-const OBSERVATION_ONLY_KEYS: ReadonlySet<string> = new Set(['app', 'window', 'mode']);
+const OBSERVATION_ONLY_KEYS: ReadonlySet<string> = new Set(['app', 'window', 'mode', 'command', 'args']);
 
 export type ComputerRpc = (method: RpcMethod, params: Record<string, unknown>, timeoutMs: number) => Promise<unknown>;
 
@@ -63,6 +64,8 @@ const COMPUTER_SHAPE = {
   keys: z.array(z.string()).optional().describe('hotkey: modifiers (ctrl, alt, shift, meta/cmd) plus one pressKey key, e.g. ["ctrl","s"].'),
   direction: z.enum(['up', 'down', 'left', 'right']).optional(),
   amount: z.number().int().min(1).max(50).optional(),
+  command: z.enum(DESKTOP_COMMANDS).optional().describe('desktop (macOS, read-only): getAppState stays the loop; use desktop to search or drill large trees, read menus and sheets, or wait for an element. snapshot, find and list-surfaces need app; get and is take a ref (@<snapshot>:eN) from a snapshot or find reply.'),
+  args: z.record(z.string(), z.unknown()).optional().describe('desktop: that command\'s arguments; a wrong one returns its schema.'),
 };
 
 /**
@@ -147,6 +150,14 @@ export function createComputerTool(rpc: ComputerRpc) {
               CONSENT_AWARE_TIMEOUT_MS,
             )) as ObservedAppState;
             return renderAppState(state);
+          }
+          case 'desktop': {
+            const reply = (await rpc(
+              'computer.getAppState',
+              { desktop: { command: input.command, args: input.args }, app: input.app, window: input.window },
+              CONSENT_AWARE_TIMEOUT_MS,
+            )) as { data?: unknown };
+            return { content: [{ type: 'text', text: JSON.stringify(reply.data ?? {}) }] };
           }
           case 'openApp':
             // Addressed by selector, not snapshot; launching can take a while.

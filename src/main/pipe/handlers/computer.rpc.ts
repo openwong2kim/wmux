@@ -82,7 +82,21 @@ export function registerComputerRpc(
   router.register('computer.listWindows', wrap('computer.listWindows', (params, agent) =>
     getService().listWindows(agent, typeof params.app === 'string' ? params.app : undefined), 'optional'));
 
-  router.register('computer.getAppState', wrap('computer.getAppState', (params, agent) => {
+  router.register('computer.getAppState', wrap('computer.getAppState', (params, agent): Promise<unknown> => {
+    // The `desktop` action: a read-only agent-desktop command, observed under
+    // this method's name so every rule keyed on it applies unchanged.
+    if (params.desktop !== undefined) {
+      const desktop = params.desktop as { command?: unknown; args?: unknown } | null;
+      if (typeof desktop !== 'object' || desktop === null || Array.isArray(desktop)) {
+        throw new ComputerError('invalid_argument', 'desktop must be an object with command and args');
+      }
+      return getService().desktop(agent, {
+        command: desktop.command,
+        args: desktop.args,
+        ...(typeof params.app === 'string' && params.app.length > 0 && { app: params.app }),
+        ...(typeof params.window === 'string' && { window: params.window }),
+      });
+    }
     if (typeof params.app !== 'string' || params.app.length === 0) {
       throw new ComputerError('invalid_argument', 'app is required');
     }

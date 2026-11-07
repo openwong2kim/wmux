@@ -284,6 +284,43 @@ describe('computer MCP tool', () => {
     expect(text.length).toBeLessThanOrEqual(778);
   });
 
+  it('sends desktop to computer.getAppState with its command and args, and answers with the data', async () => {
+    enabled.value = true;
+    reply = () => ({ command: 'find', data: { snapshot_id: 's9', matches: [{ ref_id: '@s9:e1', name: 'Save' }] } });
+    const client = await connect();
+    const res = await client.callTool({
+      name: 'computer',
+      arguments: { action: 'desktop', command: 'find', app: 'TextEdit', args: { name: 'Save', first: true } },
+    });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect((res.content as Array<{ text: string }>)[0].text).toBe('{"snapshot_id":"s9","matches":[{"ref_id":"@s9:e1","name":"Save"}]}');
+    expect(computerCalls()).toEqual([[
+      'computer.getAppState',
+      { desktop: { command: 'find', args: { name: 'Save', first: true } }, app: 'TextEdit', window: undefined, callerInstance: expect.stringMatching(UUID_RE) },
+      expect.any(Number),
+    ]]);
+  });
+
+  it('refuses a desktop command outside the read-only list before calling main', async () => {
+    enabled.value = true;
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'click', args: { ref: '@s1:e1' } } });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect(computerCalls()).toEqual([]);
+  });
+
+  it('keeps desktop fields out of input actions', async () => {
+    enabled.value = true;
+    reply = () => ({ method: 'synthetic', verification: 'unverified' });
+    const client = await connect();
+    await client.callTool({ name: 'computer', arguments: { action: 'click', snapshotId: 's1', index: 2, command: 'get', args: {} } });
+    await client.close();
+    expect(computerCalls()[0][1]).not.toHaveProperty('command');
+    expect(computerCalls()[0][1]).not.toHaveProperty('args');
+  });
+
   it('rejects unknown options instead of silently dropping them', async () => {
     enabled.value = true;
     const client = await connect();
