@@ -285,14 +285,15 @@ section); that result says `delivery: "foreground"`. A posted one says
   - `scroll` up or down: one `WM_MOUSEWHEEL` per notch (`WHEEL_DELTA`,
     the point in screen coordinates, no key or button state), posted to the
     window a click at the point would hit, with the same receiver checks as
-    a posted click. Only a multiline (`ES_MULTILINE`) `Edit` or
-    `RichEdit` class (`RichEdit20W`, `RICHEDIT50W`, `RichEditD2DPT`)
-    gets it: a single-line `Edit` hands the wheel to its parent (a combo
-    box would change its selection). A Chromium or Electron window, and any
-    other class, goes the real way. A WinForms `RichTextBox` registers its
-    own class (`WindowsForms10.RichEdit20W.*`), so it goes the real way
-    too, as it does for posted clicks and keys. `RichEditD2DPT` (Notepad)
-    was not measured with the wheel. The control's first visible line and
+    a posted click. Only the classes it was measured to scroll get it, and
+    only multiline (`ES_MULTILINE`): `Edit`, `RichEdit20W` and
+    `RICHEDIT50W`. A single-line `Edit` hands the wheel to its parent (a
+    combo box would change its selection). A Chromium or Electron window,
+    and any other class, goes the real way. So does `RichEditD2DPT`
+    (Notepad's own RichEdit, not a system class), which was not measured
+    with the wheel, and a WinForms `RichTextBox`, which registers its own
+    class (`WindowsForms10.RichEdit20W.*`), as it does for posted clicks
+    and keys. The control's first visible line and
     line count (`EM_GETFIRSTVISIBLELINE`, `EM_GETLINECOUNT`) are read
     before posting; a control that does not answer in time goes the real
     way. Verified when, within 300 ms, the first visible line moved the way
@@ -327,6 +328,7 @@ section); that result says `delivery: "foreground"`. A posted one says
     | `RICHEDIT50W`, down then up | `allow`, `refuse` | `background`, `verified` (5/5) | 0 → 27 → 9 | unchanged |
     | `RichEdit20W`, down then up | `allow`, `refuse` | `background`, `verified` (5/5) | 0 → 27 → 9 | unchanged |
     | single-line `Edit`, down | `refuse` | `needs_foreground`, nothing sent | 0 → 0 | unchanged |
+    | `RichEditD2DPT` (Notepad) | | not measured: real input | | |
     | `Edit`, right | `refuse` | `needs_foreground`, nothing sent | 0 → 0 | unchanged |
     | WinForms `RichTextBox`, list box, Electron | `refuse` | `needs_foreground`, nothing sent | unchanged | unchanged |
     | WinForms `RichTextBox`, Electron | `allow` | `foreground` (real input, as before) | `RichTextBox` 0 → 27; Electron not read | target came to the front; cursor back |

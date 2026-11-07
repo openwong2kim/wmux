@@ -344,8 +344,9 @@ snapshot is the v1.1 token saver.
       left or right, a button other than left, a click with modifiers or
       more than one click, a hotkey with modifiers, and `type` text with
       a control character other than one trailing newline. A scroll up or
-      down goes with `refuse`: the helper posts it to a multiline Edit or RichEdit
-      control and answers `needs_foreground` for any other window.
+      down goes with `refuse`: the helper posts it to a multiline Edit,
+      RichEdit20W or RICHEDIT50W control and answers `needs_foreground`
+      for any other window.
     - macOS, the rows of the macOS helper's `foregroundReason` that depend
       on the action alone: a button other than left, and more than two
       clicks. A scroll, a double click, a click or hotkey with modifiers

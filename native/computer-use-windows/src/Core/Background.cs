@@ -245,12 +245,18 @@ public static class Background
     }
 
     /// <summary>
-    /// The window classes a posted vertical wheel goes to: those posted input
-    /// goes to, less Chromium and Electron, which ignore it while covered
-    /// (0/6 each). A covered Edit, RichEdit20W and RICHEDIT50W scrolled with
-    /// nothing taken from the user; RichEditD2DPT (Notepad) was not measured.
+    /// The window classes a posted vertical wheel goes to: only those it was
+    /// measured to scroll while covered, with nothing taken from the user:
+    /// the plain Edit, RichEdit20W and RICHEDIT50W. Chromium and Electron
+    /// ignore it while covered (0/6 each). RichEditD2DPT (Notepad's own
+    /// RichEdit, not a system class) was not measured, and a control that
+    /// ignored the wheel would end unverified where real input would have
+    /// scrolled, so it keeps real input.
     /// </summary>
-    public static bool AcceptsPostedWheel(string className) => AcceptsPostedInput(className) && !IsChromiumWidget(className);
+    public static bool AcceptsPostedWheel(string className) =>
+        IsPlainEdit(className)
+        || string.Equals(className, "RichEdit20W", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(className, "RICHEDIT50W", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>ES_MULTILINE (Edit and RichEdit).</summary>
     public const uint EsMultiline = 0x0004;

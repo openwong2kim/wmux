@@ -53,6 +53,7 @@ public class BackgroundTests
         { "horizontal scroll", Normal, new(InputAction.Scroll, Horizontal: true), Win32Edit, BackgroundRefusal.Scroll },
         { "scroll over Chromium", Normal, new(InputAction.Scroll), Chromium, BackgroundRefusal.WheelUnsupported },
         { "scroll over a button", Normal, new(InputAction.Scroll), new Receiver("Button", InTargetProcess: true), BackgroundRefusal.UnsupportedFramework },
+        { "scroll over Notepad's RichEdit", Normal, new(InputAction.Scroll), new Receiver("RichEditD2DPT", InTargetProcess: true, Multiline: true), BackgroundRefusal.WheelUnsupported },
         { "scroll over a single-line Edit", Normal, new(InputAction.Scroll), Win32Edit with { Multiline = false }, BackgroundRefusal.WheelUnsupported },
         { "scroll over a control that did not say where it is", Normal, new(InputAction.Scroll), Win32Edit with { Multiline = true, ScrollUnread = true }, BackgroundRefusal.NotAnswering },
         { "scroll on a scroll bar", Normal, new(InputAction.Scroll), Win32Edit with { InClientArea = false }, BackgroundRefusal.NonClientArea },
@@ -137,7 +138,6 @@ public class BackgroundTests
     [InlineData("Edit")]
     [InlineData("RichEdit20W")]
     [InlineData("RICHEDIT50W")]
-    [InlineData("RichEditD2DPT")]
     public void AVerticalWheelOverAnEditOrRichEditIsPostedAsThePointerStep(string className)
     {
         var plan = Background.Plan(Normal, new(InputAction.Scroll), new Receiver(className, InTargetProcess: true, Multiline: true));
@@ -158,13 +158,15 @@ public class BackgroundTests
     [Theory]
     [InlineData("Edit", true)]
     [InlineData("edit", true)]
-    [InlineData("RichEdit20A", true)]
-    [InlineData("RichEditD2DPT", true)]
+    [InlineData("richedit50w", true)]
+    [InlineData("RichEdit20W", true)]
+    [InlineData("RichEdit20A", false)]
+    [InlineData("RichEditD2DPT", false)] // Notepad's own class: not measured with the wheel
     [InlineData(Background.ChromiumWidgetClass, false)]
     [InlineData("Chrome_WidgetWin_1", false)]
     [InlineData("Button", false)]
     [InlineData("", false)]
-    public void ThePostedWheelIsLimitedToEditAndRichEdit(string className, bool accepts)
+    public void ThePostedWheelIsLimitedToTheMeasuredClasses(string className, bool accepts)
     {
         Assert.Equal(accepts, Background.AcceptsPostedWheel(className));
     }
