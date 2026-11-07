@@ -18,9 +18,43 @@ import {
   type PcRailPersisted,
   type PcRailWorkspaceRow,
 } from '../../../shared/pcRail';
-import { remoteAttachmentKey } from '../../../shared/remoteHosts';
+import { remoteAttachmentKey, type RemoteHostStatus } from '../../../shared/remoteHosts';
 
 const NO_ATTENTION: PcRailAttentionCounts = Object.freeze({ needsYou: 0, finished: 0 });
+
+/** Failed rail polls in a row before a paired PC counts as down. */
+export const SHARE_DROP_FAILED_POLLS = 2;
+
+/**
+ * Whether a paired PC is down: the rail's own status says unreachable and it
+ * has missed this many polls in a row. One failed poll says nothing yet (an
+ * error answer even comes from a host that is up). A PC with no status yet
+ * has not answered its first round and is not down. The one rule for "this PC
+ * is gone": the drop notice and every reader of remote rows ask this.
+ */
+export function isShareHostDown(status: RemoteHostStatus | undefined, failedTicks: number | undefined): boolean {
+  return status === 'unreachable' && (failedTicks ?? 0) >= SHARE_DROP_FAILED_POLLS;
+}
+
+const NO_HOSTS: ReadonlySet<string> = Object.freeze(new Set<string>()) as ReadonlySet<string>;
+let downMemo: { ids: ReadonlySet<string> } | null = null;
+
+/**
+ * The paired PCs that are down by `isShareHostDown`. The same Set comes back
+ * while its members are unchanged, so a poll tick that only moves a fetch time
+ * does not look like a change to a memoized reader.
+ */
+export function selectDownHostIds(s: Pick<StoreState, 'pcRailHostStatus' | 'pcRailFeeds'>): ReadonlySet<string> {
+  const down: string[] = [];
+  for (const [hostId, status] of Object.entries(s.pcRailHostStatus)) {
+    if (isShareHostDown(status, s.pcRailFeeds[hostId]?.failedTicks)) down.push(hostId);
+  }
+  const prev = downMemo?.ids ?? NO_HOSTS;
+  if (down.length === prev.size && down.every((id) => prev.has(id))) return prev;
+  const ids: ReadonlySet<string> = down.length === 0 ? NO_HOSTS : new Set(down);
+  downMemo = { ids };
+  return ids;
+}
 const NO_ROWS: readonly PcRailWorkspaceRow[] = Object.freeze([]);
 
 /**
