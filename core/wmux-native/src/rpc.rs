@@ -184,12 +184,41 @@ impl LineBuffer {
 /// One request on one pipe: `(pipe, line, id, deadline) -> outcome`.
 pub type SendFn = fn(&str, &str, &[u16], Instant) -> Json;
 
+/// Where the retry reads the time and sleeps: the system clock, or a test's.
+pub trait RetryClock {
+    fn now(&self) -> Instant;
+    fn sleep(&self, d: Duration);
+}
+
+pub struct SystemClock;
+
+impl RetryClock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    fn sleep(&self, d: Duration) {
+        std::thread::sleep(d)
+    }
+}
+
 /// sendRpcWithRetry: retry a transient connect failure inside the deadline.
 pub fn send_rpc_with_retry(send: SendFn, pipe: &str, line: &str, id: &[u16], deadline: Instant) -> Json {
+    send_rpc_with_retry_on(&SystemClock, send, pipe, line, id, deadline)
+}
+
+/// send_rpc_with_retry on `clock`.
+fn send_rpc_with_retry_on(
+    clock: &impl RetryClock,
+    send: SendFn,
+    pipe: &str,
+    line: &str,
+    id: &[u16],
+    deadline: Instant,
+) -> Json {
     let mut attempt = 0;
     let mut last = failure("timeout", None, None);
     loop {
-        if Instant::now() >= deadline {
+        if clock.now() >= deadline {
             return last;
         }
         last = send(pipe, line, id, deadline);
@@ -206,10 +235,10 @@ pub fn send_rpc_with_retry(send: SendFn, pipe: &str, line: &str, id: &[u16], dea
         }
         let backoff = Duration::from_millis(CONNECT_RETRY_BACKOFFS_MS[attempt]);
         attempt += 1;
-        if Instant::now() + backoff >= deadline {
+        if clock.now() + backoff >= deadline {
             return last;
         }
-        std::thread::sleep(backoff);
+        clock.sleep(backoff);
     }
 }
 
@@ -439,6 +468,98 @@ mod transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    /// A clock that moves only when the retry sleeps or a send takes time.
+    struct Fake {
+        now: Instant,
+        send_cost: Duration,
+        detail: &'static str,
+        retryable: bool,
+        sends: usize,
+        slept: Vec<u64>,
+    }
+
+    thread_local! {
+        static FAKE: RefCell<Option<Fake>> = const { RefCell::new(None) };
+    }
+
+    fn fake<R>(f: impl FnOnce(&mut Fake) -> R) -> R {
+        FAKE.with(|c| f(c.borrow_mut().as_mut().expect("fake clock set")))
+    }
+
+    struct FakeClock;
+
+    impl RetryClock for FakeClock {
+        fn now(&self) -> Instant {
+            fake(|f| f.now)
+        }
+        fn sleep(&self, d: Duration) {
+            fake(|f| {
+                f.slept.push(d.as_millis() as u64);
+                f.now += d;
+            })
+        }
+    }
+
+    /// A connect that fails as configured, taking `send_cost` of fake time.
+    fn failing_send(_pipe: &str, _line: &str, _id: &[u16], _deadline: Instant) -> Json {
+        fake(|f| {
+            f.sends += 1;
+            f.now += f.send_cost;
+            failure("connect-error", Some(f.detail.into()), Some(f.retryable))
+        })
+    }
+
+    /// The retry over a failing connect: (sends, backoffs slept in ms).
+    fn retried(deadline_ms: u64, send_cost_ms: u64, detail: &'static str, retryable: bool) -> (usize, Vec<u64>) {
+        let start = Instant::now();
+        FAKE.with(|c| {
+            *c.borrow_mut() = Some(Fake {
+                now: start,
+                send_cost: Duration::from_millis(send_cost_ms),
+                detail,
+                retryable,
+                sends: 0,
+                slept: Vec::new(),
+            })
+        });
+        let deadline = start + Duration::from_millis(deadline_ms);
+        let result = send_rpc_with_retry_on(&FakeClock, failing_send, "p", "l", &js::js("1"), deadline);
+        let (sends, slept) = fake(|f| (f.sends, std::mem::take(&mut f.slept)));
+        // The last connect's failure, or the walk's timeout when none was sent.
+        let error = if sends == 0 { "timeout" } else { "connect-error" };
+        assert_eq!(result.get("error").and_then(Json::as_str), Some(&js::js(error)));
+        (sends, slept)
+    }
+
+    #[test]
+    fn a_transient_connect_is_retried_after_100_then_250_ms_inside_the_deadline() {
+        assert_eq!(retried(2000, 0, "ECONNREFUSED", true), (3, vec![100, 250]));
+        // The second backoff would end past a 200 ms deadline: one retry.
+        assert_eq!(retried(200, 0, "ECONNREFUSED", true), (2, vec![100]));
+        // A first attempt that used half of it: the first backoff would reach
+        // the deadline (it is not slept when it ends at or past it).
+        assert_eq!(retried(200, 100, "ECONNREFUSED", true), (1, vec![]));
+        assert_eq!(retried(200, 99, "ECONNREFUSED", true), (2, vec![100]));
+        // Every transient code alike.
+        for code in TRANSIENT_CONNECT_CODES {
+            assert_eq!(retried(2000, 0, code, true), (3, vec![100, 250]), "{code}");
+        }
+    }
+
+    #[test]
+    fn an_absent_pipe_or_a_failure_after_the_write_is_not_retried() {
+        // No socket file: nothing to wait for (the walk moves on, retryable).
+        assert_eq!(retried(2000, 0, "ENOENT", true), (1, vec![]));
+        // The request may have been delivered: never sent twice.
+        assert_eq!(retried(2000, 0, "ECONNRESET", false), (1, vec![]));
+    }
+
+    #[test]
+    fn the_retry_sends_nothing_once_the_deadline_is_spent() {
+        assert_eq!(retried(0, 0, "ECONNREFUSED", true), (0, vec![]));
+    }
 
     #[test]
     fn line_buffer_slices_lines_across_chunks() {
