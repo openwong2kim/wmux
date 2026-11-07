@@ -102,10 +102,38 @@ export type ClientCommandFilter = (client: ClientRef, command: ClientCommand) =>
  * Runs on a successful reply to a client's command before the client sees
  * it. An error it returns (or throws) becomes the client's answer instead.
  */
-export type BeforeReply = (client: ClientRef, method: string, result: Record<string, unknown>) => Promise<{ code: number; message: string } | null> | null;
+export type BeforeReply = (client: ClientRef, method: string, result: Record<string, unknown>) => Promise<ReplyError | null> | null;
+
+/** An error answer; `reason` names it in the counters (default: `<method>-after`). */
+export interface ReplyError { code: number; message: string; reason?: string }
 
 /** Refused from every external client: one client ending or crashing the browser every client shares. */
 const ENDS_SHARED_BROWSER = new Set(['Browser.close', 'Browser.crash', 'Browser.crashGpuProcess']);
+
+/**
+ * Rules that hold for every external client on every profile. A rule sees a
+ * command's own method only, so a channel that carries protocol messages
+ * inside another command is refused rather than read: sendMessageToTarget,
+ * a page's protocol binding, and the non-flat sessions that use them (Chrome
+ * defaults `flatten` to false; Playwright always sends true).
+ */
+function externalRule(command: ClientCommand): FilterAnswer {
+  const refuse = (what: string, reason: string): FilterAnswer => ({ refuse: { code: -32000, message: `${what} is not available to this client` }, reason });
+  if (ENDS_SHARED_BROWSER.has(command.method)) return refuse(command.method, 'ends-shared-browser');
+  switch (command.method) {
+    case 'Target.sendMessageToTarget':
+    case 'Target.exposeDevToolsProtocol':
+      return refuse(command.method, 'unsupported-channel');
+    case 'Target.attachToTarget':
+      return command.params.flatten === true ? null : refuse(`${command.method} without flatten`, 'unsupported-channel');
+    case 'Target.setAutoAttach':
+      return command.params.autoAttach === true && command.params.flatten !== true
+        ? refuse(`${command.method} without flatten`, 'unsupported-channel')
+        : null;
+    default:
+      return null;
+  }
+}
 
 /**
  * Whether `client` may see and address the target `targetId`: C3's caller
@@ -120,7 +148,7 @@ const ENDS_SHARED_BROWSER = new Set(['Browser.close', 'Browser.crash', 'Browser.
  * What attaches on a page session the client already owns (a granted page's
  * frames and workers) follows that page and is not checked again, by design.
  */
-export type TargetGrant = (client: { kind: 'internal' | 'external'; label: string }, targetId: string) => boolean;
+export type TargetGrant = (client: ClientRef, targetId: string) => boolean;
 
 /** Shown by `wmux doctor --performance` (perf.status). */
 export type CdpPipeCounters = CdpPipeDiagnostics;
@@ -141,6 +169,13 @@ function bump(record: Record<string, number>, key: string): void {
   record[key] = (record[key] ?? 0) + 1;
 }
 
+/** Answer a client's command with an error (counted as refused), on `sessionId` when it came on one. */
+function refuseTo(client: Client, clientId: number, error: { code: number; message: string }, sessionId?: string): void {
+  totals.refused++;
+  const frame = { id: clientId, error, ...(sessionId !== undefined && { sessionId }) };
+  client.reply(clientId, frame, JSON.stringify(frame));
+}
+
 interface Pending {
   client: Client;
   /** The id the client sent (external) or its waiter (internal). */
@@ -158,8 +193,8 @@ abstract class Client {
   /** In flight: the mux's attachToBrowserTarget for this client. */
   attaching: Promise<string> | null = null;
   readonly owned = new Set<string>();
-  /** The target each owned page session is attached to. */
-  readonly targets = new Map<string, string>();
+  /** The target each owned page session is attached to, with its browser context when Chrome named it. */
+  readonly targets = new Map<string, { targetId: string; browserContextId?: string }>();
   closed = false;
   /** Bumped by every detach, so an attach that lands after a close is not published. */
   epoch = 0;
@@ -196,6 +231,8 @@ export class CdpPipeMux {
       beforeReply?: BeforeReply;
       /** C3 and C2b. */
       targetGrant?: TargetGrant;
+      /** A client left (closed, or dropped); called once, after it is detached. */
+      onClientGone?: (client: ClientRef) => void;
     } = {},
   ) {
     fromBrowser.on('data', (chunk: Buffer) => this.onData(chunk));
@@ -229,16 +266,22 @@ export class CdpPipeMux {
     };
   }
 
-  /** Whether `client` is still attached. */
-  isAttached(client: ClientRef): boolean {
-    return client instanceof Client && !client.closed && this.clients.has(client);
-  }
-
   /** Whether `client` holds a session on the target `targetId` (a page it attached to). */
   ownsTarget(client: ClientRef, targetId: string): boolean {
     if (!(client instanceof Client) || !this.clients.has(client)) return false;
-    for (const held of client.targets.values()) if (held === targetId) return true;
+    for (const held of client.targets.values()) if (held.targetId === targetId) return true;
     return false;
+  }
+
+  /**
+   * The browser context of a target `client` holds, as Chrome named it when the
+   * client's session to it was attached (Target.attachedToTarget); undefined
+   * when the client doesn't hold it or no attach event named one.
+   */
+  contextOfTarget(client: ClientRef, targetId: string): string | undefined {
+    if (!(client instanceof Client) || !this.clients.has(client)) return undefined;
+    for (const held of client.targets.values()) if (held.targetId === targetId && held.browserContextId) return held.browserContextId;
+    return undefined;
   }
 
   /** Send a command on the pipe's root session as the mux itself; rejects with the browser's error. */
@@ -274,39 +317,31 @@ export class CdpPipeMux {
   /** @internal Send a command for `client`, opening its browser session first. */
   async submit(client: Client, clientId: number, command: ClientCommand): Promise<void> {
     if (command.sessionId !== undefined && !client.owned.has(command.sessionId)) {
-      totals.refused++;
-      client.reply(clientId, { id: clientId, error: UNKNOWN_SESSION }, JSON.stringify({ id: clientId, error: UNKNOWN_SESSION }));
+      refuseTo(client, clientId, UNKNOWN_SESSION);
       return;
     }
-    // An answer given here goes back on the session the command came on.
-    const on = command.sessionId !== undefined ? { sessionId: command.sessionId } : {};
-    const answer: FilterAnswer = client.kind === 'external' && ENDS_SHARED_BROWSER.has(command.method)
-      ? { refuse: { code: -32000, message: `${command.method} is not available to this client` }, reason: 'ends-shared-browser' }
-      : this.opts.filter?.(client, command) ?? null;
+    const answer: FilterAnswer = (client.kind === 'external' ? externalRule(command) : null) ?? this.opts.filter?.(client, command) ?? null;
     if (answer && 'refuse' in answer) {
-      totals.refused++;
       bump(totals.refusals, answer.reason);
-      const frame = { id: clientId, error: answer.refuse, ...on };
-      client.reply(clientId, frame, JSON.stringify(frame));
+      // An answer given here goes back on the session the command came on.
+      refuseTo(client, clientId, answer.refuse, command.sessionId);
       return;
     }
     if (answer) {
       bump(totals.absorbed, answer.reason);
-      const frame = { id: clientId, result: answer.absorb, ...on };
+      const frame = { id: clientId, result: answer.absorb, ...(command.sessionId !== undefined && { sessionId: command.sessionId }) };
       client.reply(clientId, frame, JSON.stringify(frame));
       return;
     }
     const session = command.sessionId ?? (await this.browserSessionOf(client));
     const named = command.params.sessionId;
     if (PARAM_SESSION_METHODS.has(command.method) && named !== undefined && (typeof named !== 'string' || !client.owned.has(named))) {
-      totals.refused++;
-      client.reply(clientId, { id: clientId, error: UNKNOWN_PARAM_SESSION }, JSON.stringify({ id: clientId, error: UNKNOWN_PARAM_SESSION }));
+      refuseTo(client, clientId, UNKNOWN_PARAM_SESSION);
       return;
     }
     const target = command.params.targetId;
     if (typeof target === 'string' && !this.granted(client, target)) {
-      totals.refused++;
-      client.reply(clientId, { id: clientId, error: UNKNOWN_TARGET }, JSON.stringify({ id: clientId, error: UNKNOWN_TARGET }));
+      refuseTo(client, clientId, UNKNOWN_TARGET);
       return;
     }
     if (client.closed || !this.open) return;
@@ -326,6 +361,7 @@ export class CdpPipeMux {
     client.closed = true;
     if (session && this.open) this.ownCommand('Target.detachFromTarget', { sessionId: session }).catch(() => undefined);
     client.gone(reason, session !== null);
+    this.opts.onClientGone?.(client);
     return true;
   }
 
@@ -402,10 +438,7 @@ export class CdpPipeMux {
       totals.refused++;
       return;
     }
-    const refuse = (error: { code: number; message: string }) => {
-      totals.refused++;
-      client.reply(id, { id, error }, JSON.stringify({ id, error }));
-    };
+    const refuse = (error: { code: number; message: string }) => refuseTo(client, id, error);
     if (typeof frame.method !== 'string') { refuse({ code: -32600, message: "Message must have string 'method' property" }); return; }
     if (frame.params !== undefined && (frame.params === null || typeof frame.params !== 'object' || Array.isArray(frame.params))) {
       refuse({ code: -32602, message: 'Invalid parameters' });
@@ -470,7 +503,7 @@ export class CdpPipeMux {
         if (typeof session === 'string') {
           this.adopt(job.client, session);
           if (job.targetId !== undefined && this.owner.get(session) === job.client) {
-            job.client.targets.set(session, job.targetId);
+            if (!job.client.targets.has(session)) job.client.targets.set(session, { targetId: job.targetId });
           }
           if (job.method === 'Target.attachToBrowserTarget' && this.owner.get(session) === job.client) job.client.ownBrowserSessions.add(session);
         }
@@ -493,13 +526,12 @@ export class CdpPipeMux {
       }
       if (hook) {
         // The client hears its answer only once the hook is done.
-        void hook.catch((err: unknown) => ({ code: -32000, message: err instanceof Error ? err.message : String(err) })).then((error) => {
+        void hook.catch((err: unknown): ReplyError => ({ code: -32000, message: err instanceof Error ? err.message : String(err) })).then((error) => {
           if (job.client.closed) return;
           if (error) {
-            totals.refused++;
-            bump(totals.refusals, `${job.method}-after`);
-            const refused = { id: job.clientId, error, ...(frame.sessionId !== undefined && { sessionId: frame.sessionId }) };
-            job.client.reply(job.clientId, refused, JSON.stringify(refused));
+            const { reason, ...answer } = error;
+            bump(totals.refusals, reason ?? `${job.method}-after`);
+            refuseTo(job.client, job.clientId, answer, typeof frame.sessionId === 'string' ? frame.sessionId : undefined);
           } else {
             job.client.reply(job.clientId, frame, text);
           }
@@ -536,8 +568,10 @@ export class CdpPipeMux {
       const child = (frame.params as { sessionId?: unknown } | undefined)?.sessionId;
       if (typeof child === 'string') {
         this.adopt(owner, child);
-        const target = (frame.params as { targetInfo?: { targetId?: unknown } } | undefined)?.targetInfo?.targetId;
-        if (typeof target === 'string' && this.owner.get(child) === owner) owner.targets.set(child, target);
+        const info = (frame.params as { targetInfo?: { targetId?: unknown; browserContextId?: unknown } } | undefined)?.targetInfo;
+        if (typeof info?.targetId === 'string' && this.owner.get(child) === owner) {
+          owner.targets.set(child, { targetId: info.targetId, ...(typeof info.browserContextId === 'string' && { browserContextId: info.browserContextId }) });
+        }
       }
     }
     owner.event(frame, text);

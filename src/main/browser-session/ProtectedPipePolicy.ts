@@ -1,4 +1,4 @@
-import type { BeforeReply, ClientCommandFilter, ClientRef } from './CdpPipeMux';
+import type { BeforeReply, ClientCommandFilter, ClientRef, ReplyError } from './CdpPipeMux';
 
 // ---------------------------------------------------------------------------
 // A protected profile's rules for the clients of its debugging pipe (C2b).
@@ -6,7 +6,8 @@ import type { BeforeReply, ClientCommandFilter, ClientRef } from './CdpPipeMux';
 // the download behaviour Chrome sees. A client's own setting is answered and
 // recorded, never forwarded, so neither its allow nor Chrome resetting the
 // behaviour when it leaves reaches the browser; the download events it asked
-// for come from the guard's session instead, and only for pages it holds.
+// for come from the guard's session instead, and only for pages it holds in
+// the contexts it asked for.
 // Browser contexts a client creates are denied on the guard's session before
 // the client hears the new context's id. Context options that change where a
 // context's traffic goes, or what it may reach, are refused.
@@ -29,10 +30,11 @@ export interface ProtectedPipeDeps {
   denyContext(browserContextId: string): Promise<unknown>;
   /** Close a browser context main could not deny downloads in, without the guard. */
   disposeContext(browserContextId: string): Promise<unknown>;
-  /** Whether the client is still attached. */
-  attached(client: ClientRef): boolean;
-  /** Whether the client holds a session on the target (a page it attached to). */
-  ownsTarget(client: ClientRef, targetId: string): boolean;
+  /**
+   * The browser context of a page the client holds a session on, as Chrome
+   * named it; undefined when the client doesn't hold it or it wasn't named.
+   */
+  contextOf(client: ClientRef, targetId: string): string | undefined;
   /** Send the client a browser-level event on its root or on one of its sessions; false when that is gone. */
   emit(client: ClientRef, method: string, params: Record<string, unknown>, sessionId?: string): boolean;
 }
@@ -40,18 +42,26 @@ export interface ProtectedPipeDeps {
 /** A client, and the session it asked on (undefined: its root). */
 interface Listener { readonly client: ClientRef; readonly sessionId: string | undefined }
 
+/** The key for the default browser context: Browser.setDownloadBehavior without a browserContextId. */
+const DEFAULT_CONTEXT = '';
+
 export class ProtectedPipePolicy {
   /**
    * Who asked for download events with their own Browser.setDownloadBehavior:
-   * by client, by the session it asked on, the contexts it asked for ('' for
-   * the call that named none). Chrome keeps eventsEnabled per context, so
-   * turning it off for one leaves the others.
+   * by client, by the session it asked on, the contexts it asked for
+   * (DEFAULT_CONTEXT for the call that named none). Chrome keeps eventsEnabled
+   * per context, so turning it off for one leaves the others.
    */
   private readonly listening = new Map<ClientRef, Map<string | undefined, Set<string>>>();
   /** Who was told a download began, by its guid, for the progress that follows. */
   private readonly told = new Map<string, Listener[]>();
-  /** Denies of clients' new contexts not yet answered. */
+  /** Every browser context created over the pipe; a page in any other is in the default context. */
+  private readonly created = new Set<string>();
+  /** New contexts' deny (and, when it fails, close) not yet settled. */
   private readonly denying = new Set<Promise<unknown>>();
+  /** Contexts that could be neither denied nor closed; denied again before any list names them. */
+  private readonly unguarded = new Set<string>();
+  private warned = false;
 
   constructor(private readonly deps: ProtectedPipeDeps) {}
 
@@ -76,44 +86,52 @@ export class ProtectedPipePolicy {
 
   /**
    * A client's new browser context is denied downloads before the client hears
-   * of it. A context list is held while such a deny is in flight, so no client
-   * learns the new id from it first.
+   * of it. A context list is held while such a deny (or the close that follows
+   * a failed one) is in flight, and until any context that could be neither
+   * denied nor closed is denied.
    */
   readonly beforeReply: BeforeReply = (client, method, result) => {
+    if (method === 'Target.createBrowserContext' && typeof result.browserContextId === 'string') this.created.add(result.browserContextId);
     if (client.kind !== 'external') return null;
     if (method === 'Target.getBrowserContexts') {
-      return this.denying.size ? Promise.allSettled([...this.denying]).then(() => null) : null;
+      return this.denying.size || this.unguarded.size ? this.listHeld(result) : null;
     }
     if (method !== 'Target.createBrowserContext') return null;
     const id = result.browserContextId;
     if (typeof id !== 'string') return Promise.resolve(policyDenied('a browser context without an id'));
-    const deny = this.deps.denyContext(id);
-    this.denying.add(deny);
-    const done = () => { this.denying.delete(deny); };
-    return deny.then(
-      () => { done(); return null; },
-      () => this.deps.disposeContext(id).catch(() => undefined).then(() => { done(); return policyDenied('a new browser context'); }),
+    const settled = this.deps.denyContext(id).then(
+      () => null,
+      () => this.deps.disposeContext(id).then(
+        () => policyDenied('a new browser context'),
+        () => {
+          this.unguarded.add(id);
+          if (!this.warned) {
+            this.warned = true;
+            console.warn('[ProtectedPipePolicy] a new browser context could be neither denied downloads nor closed; it is denied again before it is listed');
+          }
+          return { ...policyDenied('a new browser context'), reason: 'context-unguarded' };
+        },
+      ),
     );
+    this.denying.add(settled);
+    void settled.then(() => this.denying.delete(settled));
+    return settled;
   };
 
   /**
    * A download event the guard's session saw. downloadWillBegin goes to each
-   * client that asked for download events and holds the page it began in (its
-   * frameId is that page's target id); one that began elsewhere goes to no one.
-   * downloadProgress follows the clients told of its begin.
+   * client session that asked for download events in the context of the page
+   * the download began in, and holds that page (its frameId is the page's
+   * target id); one that began elsewhere goes to no one. downloadProgress
+   * follows the sessions told of its begin.
    */
   downloadEvent(method: string, params: Record<string, unknown>): void {
     const guid = typeof params.guid === 'string' ? params.guid : '';
     if (!guid) return;
     let to: Listener[];
     if (method === 'Browser.downloadWillBegin') {
-      this.forgetGone();
       const frameId = params.frameId;
-      to = typeof frameId === 'string'
-        ? [...this.listening]
-          .filter(([client]) => this.deps.ownsTarget(client, frameId))
-          .flatMap(([client, sessions]) => [...sessions.keys()].map((sessionId) => ({ client, sessionId })))
-        : [];
+      to = typeof frameId === 'string' ? this.listenersFor(frameId) : [];
       if (to.length) this.told.set(guid, to);
     } else if (method === 'Browser.downloadProgress') {
       to = this.told.get(guid) ?? [];
@@ -122,13 +140,47 @@ export class ProtectedPipePolicy {
       return;
     }
     for (const { client, sessionId } of to) {
-      if (!this.deps.emit(client, method, params, sessionId)) this.listening.get(client)?.delete(sessionId);
+      if (!this.deps.emit(client, method, params, sessionId)) this.stopListening(client, sessionId);
     }
   }
 
+  /** A client left: what it asked for and what it was told go with it. */
+  forget(client: ClientRef): void {
+    this.listening.delete(client);
+    for (const [guid, listeners] of this.told) {
+      const kept = listeners.filter((l) => l.client !== client);
+      if (kept.length) this.told.set(guid, kept);
+      else this.told.delete(guid);
+    }
+  }
+
+  private listenersFor(frameId: string): Listener[] {
+    return [...this.listening].flatMap(([client, sessions]) => {
+      const context = this.deps.contextOf(client, frameId);
+      if (context === undefined) return [];
+      const key = this.created.has(context) ? context : DEFAULT_CONTEXT;
+      return [...sessions].filter(([, contexts]) => contexts.has(key)).map(([sessionId]) => ({ client, sessionId }));
+    });
+  }
+
+  private async listHeld(result: Record<string, unknown>): Promise<ReplyError | null> {
+    await Promise.allSettled([...this.denying]);
+    const listed = Array.isArray(result.browserContextIds) ? result.browserContextIds : [];
+    for (const id of [...this.unguarded]) {
+      // Not listed: it is gone.
+      if (!listed.includes(id)) { this.unguarded.delete(id); continue; }
+      try {
+        await this.deps.denyContext(id);
+        this.unguarded.delete(id);
+      } catch {
+        return { ...policyDenied('the browser context list'), reason: 'context-unguarded' };
+      }
+    }
+    return null;
+  }
+
   private listen(client: ClientRef, sessionId: string | undefined, params: Record<string, unknown>): void {
-    this.forgetGone();
-    const context = typeof params.browserContextId === 'string' ? params.browserContextId : '';
+    const context = typeof params.browserContextId === 'string' ? params.browserContextId : DEFAULT_CONTEXT;
     const sessions = this.listening.get(client) ?? new Map<string | undefined, Set<string>>();
     const contexts = sessions.get(sessionId) ?? new Set<string>();
     if (params.eventsEnabled === true) contexts.add(context);
@@ -139,8 +191,10 @@ export class ProtectedPipePolicy {
     else this.listening.delete(client);
   }
 
-  /** Clients that have left are dropped, with what they asked for. */
-  private forgetGone(): void {
-    for (const client of this.listening.keys()) if (!this.deps.attached(client)) this.listening.delete(client);
+  private stopListening(client: ClientRef, sessionId: string | undefined): void {
+    const sessions = this.listening.get(client);
+    if (!sessions) return;
+    sessions.delete(sessionId);
+    if (!sessions.size) this.listening.delete(client);
   }
 }

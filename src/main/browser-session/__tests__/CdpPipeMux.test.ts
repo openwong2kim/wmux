@@ -223,6 +223,66 @@ describe('CdpPipeMux: routing', () => {
     mux.close();
   });
 
+  it('a channel that carries protocol messages inside another command is refused from an external client; flat sessions work', async () => {
+    const { browser, mux } = setup();
+    const a = external(mux, 'a');
+    const refused = [
+      ['Target.sendMessageToTarget', { sessionId: 'S', message: '{"id":1,"method":"Browser.close"}' }],
+      ['Target.exposeDevToolsProtocol', { targetId: 'T0' }],
+      ['Target.attachToTarget', { targetId: 'T0' }],
+      ['Target.attachToTarget', { targetId: 'T0', flatten: false }],
+      ['Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false }],
+      ['Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: false }],
+    ] as const;
+    for (const [method, params] of refused) {
+      const reply = await a.replyTo(a.send(method, params));
+      expect(reply.error?.code, method).toBe(-32000);
+      expect(reply.error?.message).toMatch(/is not available to this client$/);
+    }
+    expect(browser.received.some((c) => c.method === 'Target.sendMessageToTarget' || c.method === 'Target.exposeDevToolsProtocol')).toBe(false);
+    expect(browser.received.filter((c) => c.method === 'Target.attachToTarget' || c.method === 'Target.setAutoAttach')).toEqual([]);
+    expect(cdpPipeCounters().refusals).toEqual({ 'unsupported-channel': refused.length });
+    // Flat, as Playwright sends them, and turning auto-attach off, go through.
+    expect((await a.replyTo(a.send('Target.attachToTarget', { targetId: 'T0', flatten: true }))).result?.sessionId).toEqual(expect.any(String));
+    expect((await a.replyTo(a.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }))).error).toBeUndefined();
+    expect((await a.replyTo(a.send('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false }))).error).toBeUndefined();
+    // Main's own connection is not held to these rules.
+    await expect(mux.connect({ label: 'main' }).send('Target.exposeDevToolsProtocol', { targetId: 'T0' })).resolves.toEqual({ echo: 'Target.exposeDevToolsProtocol' });
+    mux.close();
+  });
+
+  it('knows the browser context of a page a client was attached to, as Chrome named it', async () => {
+    const ref = new Map<string, ClientRef>();
+    const { mux } = setup({ filter: (client) => { ref.set(client.label, client); return null; } });
+    const a = external(mux, 'a');
+    const b = external(mux, 'b');
+    await a.replyTo(a.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }));
+    const inA = (await a.replyTo(a.send('Target.createTarget', { url: 'http://a/', browserContextId: 'CTX-A' }))).result?.targetId as string;
+    const inDefault = (await a.replyTo(a.send('Target.createTarget', { url: 'http://a/2' }))).result?.targetId as string;
+    await vi.waitFor(() => expect(a.inbox.filter((m) => m.method === 'Target.attachedToTarget')).toHaveLength(2), { timeout: 5_000 });
+    await b.replyTo(b.send('Target.attachToTarget', { targetId: inA, flatten: true }));
+    const [ca, cb] = [ref.get('a') as ClientRef, ref.get('b') as ClientRef];
+    expect(mux.contextOfTarget(ca, inA)).toBe('CTX-A');
+    expect(mux.contextOfTarget(ca, inDefault)).toBe('DEFAULT');
+    // b holds the page, but no attach event named its context to b.
+    expect(mux.ownsTarget(cb, inA)).toBe(true);
+    expect(mux.contextOfTarget(cb, inA)).toBeUndefined();
+    a.client.close();
+    expect(mux.contextOfTarget(ca, inA)).toBeUndefined();
+    mux.close();
+  });
+
+  it('tells its owner when a client leaves, once', async () => {
+    const gone: string[] = [];
+    const { mux } = setup({ onClientGone: (client) => gone.push(client.label) });
+    const a = external(mux, 'a');
+    await a.replyTo(a.send('Browser.getVersion'));
+    a.client.close();
+    a.client.close();
+    expect(gone).toEqual(['a']);
+    mux.close();
+  });
+
   it('a reply hook holds the client\'s reply until it settles, and turns a failure into an error reply', async () => {
     let release: (error: { code: number; message: string } | null) => void = () => undefined;
     const seen: Array<{ method: string; result: Record<string, unknown> }> = [];
@@ -428,11 +488,13 @@ describe('CdpPipeMux: forged sessions are refused in every shape', () => {
 
   it('a session named in params is checked for the commands that act on one', async () => {
     const { browser, mux, a, b, aChild, mainChild } = await twoClientsAndMain();
-    for (const method of ['Target.detachFromTarget', 'Target.sendMessageToTarget']) {
-      for (const named of [aChild, mainChild, 7]) {
-        const reply = await b.replyTo(b.send(method, { sessionId: named, message: '{}' }));
-        expect(reply.error, `${method} ${named}`).toEqual({ code: -32602, message: 'No session with given id' });
-      }
+    for (const named of [aChild, mainChild, 7]) {
+      const reply = await b.replyTo(b.send('Target.detachFromTarget', { sessionId: named }));
+      expect(reply.error, `${named}`).toEqual({ code: -32602, message: 'No session with given id' });
+    }
+    // sendMessageToTarget is refused from an external client before any session is looked at.
+    for (const named of [aChild, mainChild, 7]) {
+      expect((await b.replyTo(b.send('Target.sendMessageToTarget', { sessionId: named, message: '{}' }))).error?.code).toBe(-32000);
     }
     expect(browser.received.some((c) => c.method === 'Target.sendMessageToTarget')).toBe(false);
     // Its own child: allowed.

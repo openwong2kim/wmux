@@ -74,7 +74,8 @@ export class FakeBrowser {
         for (const parent of this.autoAttach) {
           const child = `C${++this.n}`;
           this.sessions.add(child);
-          this.event(parent, 'Target.attachedToTarget', { sessionId: child, targetInfo: { targetId, type: 'page' }, waitingForDebugger: false });
+          const browserContextId = typeof c.params.browserContextId === 'string' ? c.params.browserContextId : 'DEFAULT';
+          this.event(parent, 'Target.attachedToTarget', { sessionId: child, targetInfo: { targetId, type: 'page', browserContextId }, waitingForDebugger: false });
         }
         return;
       }

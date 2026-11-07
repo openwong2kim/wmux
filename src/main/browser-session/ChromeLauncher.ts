@@ -6,7 +6,7 @@ import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurf
 import type { CdpConnection } from './CdpSocket';
 import type { Readable, Writable } from 'node:stream';
 import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTransport';
-import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux } from './CdpPipeMux';
+import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type ClientRef } from './CdpPipeMux';
 import { ProtectedPipePolicy } from './ProtectedPipePolicy';
 import { CdpPipeEndpoint } from './CdpPipeEndpoint';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
@@ -364,10 +364,10 @@ export interface ConsentDownloadGuard {
 }
 
 /** A protected profile could not be brought up under its enforcement. */
+export const PROTECTION_NOT_READY = 'policy_denied: the protected browser could not be started under its site policy';
+
 /** The download guard's deny for one browser context, with its download events on the guard's session. */
 const contextDeny = (browserContextId: string) => ({ behavior: 'deny', browserContextId, eventsEnabled: true });
-
-export const PROTECTION_NOT_READY = 'policy_denied: the protected browser could not be started under its site policy';
 
 /** Mint a stable surface id. Mirrors shared/types.ts `generateId('chrome')`;
  *  kept local so main's browser-session layer does not pull in the shared
@@ -1880,8 +1880,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       denyContext: (browserContextId) => onGuard('Browser.setDownloadBehavior', contextDeny(browserContextId)),
       disposeContext: (browserContextId) =>
         mux()?.command('Target.disposeBrowserContext', { browserContextId }) ?? Promise.reject(new Error(PROTECTION_NOT_READY)),
-      attached: (client) => mux()?.isAttached(client) ?? false,
-      ownsTarget: (client, targetId) => mux()?.ownsTarget(client, targetId) ?? false,
+      contextOf: (client, targetId) => mux()?.contextOfTarget(client, targetId),
       emit: (client, method, params, sessionId) => mux()?.emitEvent(client, method, params, sessionId) ?? false,
     });
   }
@@ -2122,7 +2121,7 @@ export class ChromeLauncher implements ChromeBackendClient {
             child.kill();
           } catch { /* already gone */ }
         },
-        ...(policy && { filter: policy.filter, beforeReply: policy.beforeReply }),
+        ...(policy && { filter: policy.filter, beforeReply: policy.beforeReply, onClientGone: (client: ClientRef) => policy.forget(client) }),
       })
       : null;
     this.piped = mux ? { mux, policy, endpoint: null } : null;
