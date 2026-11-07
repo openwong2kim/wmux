@@ -15,6 +15,9 @@ import {
   resetGateMigrationSaveFailure,
   resetUnusableConfigWarning,
   isFailClosedConfig,
+  CONFIG_READ_ATTEMPTS,
+  setConfigReadSleepForTest,
+  resetConfigReadStreaks,
 } from '../config';
 import {
   DESKTOP_PRESENCE_STALE_AFTER_MS,
@@ -147,8 +150,15 @@ describe('loadConfig', () => {
     describe('a config.json Windows reports as locked', () => {
       const realPlatform = process.platform;
       const setPlatform = (p: string): void => { Object.defineProperty(process, 'platform', { value: p }); };
+      const waits: number[] = [];
+      beforeEach(() => {
+        waits.length = 0;
+        setConfigReadSleepForTest((ms) => { waits.push(ms); });
+      });
       afterEach(() => {
         setPlatform(realPlatform);
+        setConfigReadSleepForTest();
+        resetConfigReadStreaks();
         vi.restoreAllMocks();
       });
       function writeGood(): string {
@@ -182,16 +192,57 @@ describe('loadConfig', () => {
         expect(config.browser?.cdp.enabled).toBe(false); // the file's own value
         expect(warn).not.toHaveBeenCalled();
         expect(readsOf(spy, configPath)).toBe(3);
+        expect(waits).toEqual([100, 100]);
       });
 
-      it('on Windows, a lock that outlasts three tries gives the stand-in', () => {
+      it('on Windows, a lock that outlasts every try gives the stand-in, and later loads try once', () => {
         setPlatform('win32');
         const configPath = writeGood();
-        const spy = lockFor(configPath, 10, 'EPERM');
+        const spy = lockFor(configPath, 100, 'EPERM');
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
         expect(isFailClosedConfig(loadConfig())).toBe(true);
-        expect(readsOf(spy, configPath)).toBe(3);
+        expect(readsOf(spy, configPath)).toBe(CONFIG_READ_ATTEMPTS);
         expect(String(warn.mock.calls[0][0])).toContain('EPERM');
+        // A lock that doesn't clear (a deny-read ACL reads as EPERM too) must not
+        // cost every hook signal the full wait: the streak reads once per load.
+        spy.mockClear();
+        waits.length = 0;
+        loadConfig();
+        loadConfig();
+        expect(readsOf(spy, configPath)).toBe(2);
+        expect(waits).toEqual([]);
+      });
+
+      it('a file that is locked and then gone is being replaced: no defaults are written over it', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const real = fs.readFileSync;
+        let n = 0;
+        vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+          if (file === configPath) {
+            n++;
+            const code = n === 1 ? 'EPERM' : 'ENOENT';
+            throw Object.assign(new Error(`${code}: open '${configPath}'`), { code });
+          }
+          return (real as (...a: unknown[]) => unknown)(file, ...rest);
+        }) as typeof fs.readFileSync);
+        const before = real(configPath);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const config = loadConfig();
+        expect(isFailClosedConfig(config)).toBe(true);
+        expect(String(warn.mock.calls[0][0])).toContain('being replaced');
+        expect(real(configPath).equals(before)).toBe(true);
+      });
+
+      it('a save waits out a brief lock instead of refusing', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const good = loadConfig();
+        lockFor(configPath, 2);
+        good.daemon.logLevel = 'debug';
+        expect(() => saveConfigOrThrow(good)).not.toThrow();
+        vi.restoreAllMocks();
+        expect(loadConfig().daemon.logLevel).toBe('debug');
       });
 
       it('elsewhere, and for a parse failure, there is no second read', () => {

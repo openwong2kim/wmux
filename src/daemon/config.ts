@@ -465,23 +465,65 @@ const CONFIG_READ_RETRY_MS = 100;
 /** What an antivirus scanner or indexer holding the file briefly looks like on Windows. */
 const LOCKED_FILE_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
 
+/** Blocking wait between read attempts (the readers are synchronous). Test seam. */
+let configReadSleep = (ms: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
+/** Test seam: replace the wait between read attempts; no argument restores it. */
+export function setConfigReadSleepForTest(sleep?: (ms: number) => void): void {
+  configReadSleep = sleep ?? ((ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); });
+}
+
+/**
+ * Paths whose last read ended locked. The daemon loads config.json on every
+ * hook signal, so a lock that does not clear (a deny-read ACL reads as EPERM
+ * too) must not cost every call the full wait: once a streak of attempts
+ * ends locked, later reads try once, until one succeeds.
+ */
+const lockedStreak = new Set<string>();
+
+/** Test seam: forget locked-read streaks. */
+export function resetConfigReadStreaks(): void {
+  lockedStreak.clear();
+}
+
+/** A read that failed after the file had been there: it must not count as missing. */
+class VanishedWhileLocked extends Error {
+  readonly code = 'EVANISHED';
+}
+
 /**
  * Read config.json. On Windows a file that is locked for a moment (an
  * antivirus scan, the search indexer) is tried again, up to
- * CONFIG_READ_ATTEMPTS times about 100 ms apart, before loadConfig gives up
- * on it: otherwise one unlucky boot would run the whole session with CDP off.
- * Only those read errors are retried; a file that reads but doesn't parse or
+ * CONFIG_READ_ATTEMPTS times about 100 ms apart, so one unlucky boot doesn't
+ * run the whole session with CDP off, and a save isn't refused over it. Only
+ * those read errors are retried; a file that reads but doesn't parse or
  * validate is answered at once.
+ *
+ * ENOENT means "missing" only on the first attempt. After a lock it is a
+ * file being replaced (an editor that saves by delete and recreate holds it
+ * delete-pending, which reads as EPERM), and treating it as missing would
+ * write the defaults into the middle of that save.
  */
 function readConfigFile(configPath: string): string {
+  const attempts = process.platform === 'win32' && !lockedStreak.has(configPath) ? CONFIG_READ_ATTEMPTS : 1;
   for (let attempt = 1; ; attempt++) {
     try {
-      return fs.readFileSync(configPath, 'utf-8');
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      lockedStreak.delete(configPath);
+      return raw;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code ?? '';
-      if (process.platform !== 'win32' || !LOCKED_FILE_CODES.has(code) || attempt >= CONFIG_READ_ATTEMPTS) throw err;
-      // loadConfig is synchronous; a short blocking wait, only on this path.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, CONFIG_READ_RETRY_MS);
+      if (code === 'ENOENT' && attempt > 1) {
+        throw new VanishedWhileLocked(`${configPath} was locked, then gone: it is being replaced`);
+      }
+      if (process.platform !== 'win32' || !LOCKED_FILE_CODES.has(code)) throw err;
+      if (attempt >= attempts) {
+        lockedStreak.add(configPath);
+        throw err;
+      }
+      configReadSleep(CONFIG_READ_RETRY_MS);
     }
   }
 }
@@ -493,7 +535,7 @@ function readConfigFile(configPath: string): string {
 function diskConfigProblem(configPath: string): string | null {
   let raw: string;
   try {
-    raw = fs.readFileSync(configPath, 'utf-8');
+    raw = readConfigFile(configPath);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
     return err instanceof Error ? err.message : String(err);
