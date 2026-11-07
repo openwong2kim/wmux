@@ -42,6 +42,8 @@ export interface RunnerProcessOptions {
   graceMs?: number;
   /** How long the runner has to acknowledge a cancel before main ends it. */
   cancelGraceMs?: number;
+  /** Awaited at the start of every run (the state directory); a stop during it cancels the run. */
+  prepare?: () => Promise<void>;
   log?: (message: string) => void;
 }
 
@@ -50,12 +52,20 @@ export const RUNNER_MAX_TIMEOUT_MS = 35_000;
 const HELLO_TIMEOUT_MS = 10_000;
 const IDLE_EXIT_MS = 60_000;
 const GRACE_MS = 5_000;
-/** A reply carries up to 8 MB of child output, JSON-escaped. */
-const MAX_LINE_BYTES = 32 << 20;
+/** The child output the runner passes on (Runner.swift RunnerPolicy.maxOutputBytes). */
+export const RUNNER_MAX_OUTPUT_BYTES = 8 << 20;
+/**
+ * The longest reply line: JSON escapes a control character as six bytes
+ * (\u00XX), so the output cap times six, plus the 16 KB of stderr (escaped
+ * too) and the envelope.
+ */
+export const RUNNER_MAX_LINE_BYTES = RUNNER_MAX_OUTPUT_BYTES * 6 + (16 << 10) * 6 + (64 << 10);
 
 interface Pending {
   resolve: (result: RunnerResult) => void;
   reject: (error: ComputerError) => void;
+  /** The runner the request was written to. */
+  running: Running;
   /** The runner answered this run itself, so there is nothing to cancel. */
   answered?: boolean;
   timer: ReturnType<typeof setTimeout>;
@@ -63,7 +73,8 @@ interface Pending {
 
 interface Running {
   child: ChildProcessWithoutNullStreams;
-  ready: boolean;
+  /** Cancels sent to this runner and not yet acknowledged, each with the timer that ends it. */
+  cancelling: Map<number, ReturnType<typeof setTimeout>>;
 }
 
 const CANCEL_GRACE_MS = 2_000;
@@ -71,11 +82,13 @@ const CANCEL_GRACE_MS = 2_000;
 export class RunnerProcess {
   private readonly opts: RunnerProcessOptions;
   private running: Running | null = null;
+  /** Every runner not yet seen to exit, the current one and any still winding down. */
+  private readonly runners = new Set<Running>();
   private starting: Promise<Running> | null = null;
   private readonly pending = new Map<number, Pending>();
-  /** Cancels sent and not yet acknowledged, with the timer that ends an unresponsive runner. */
-  private readonly cancelling = new Map<number, ReturnType<typeof setTimeout>>();
   private nextId = 1;
+  /** Bumped by abort(): a run that started before it never reaches the runner. */
+  private generation = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
@@ -89,8 +102,16 @@ export class RunnerProcess {
 
   /** Runs agent-desktop with `argv` and resolves with what it printed. */
   async run(argv: readonly string[], options: { home: string; timeoutMs: number }): Promise<RunnerResult> {
-    if (this.disposed) throw new ComputerError('shutting_down', 'computer use is shutting down');
+    const generation = this.generation;
+    const current = () => {
+      if (this.disposed) throw new ComputerError('shutting_down', 'computer use is shutting down');
+      if (generation !== this.generation) throw new ComputerError('aborted', 'stopped by the user');
+    };
+    current();
+    await this.opts.prepare?.();
+    current();
     const running = await this.ensureRunning();
+    current();
     const id = this.nextId++;
     const timeoutMs = Math.min(Math.max(1, Math.floor(options.timeoutMs)), RUNNER_MAX_TIMEOUT_MS);
     this.disarmIdle();
@@ -98,13 +119,18 @@ export class RunnerProcess {
       const timer = setTimeout(() => {
         this.settle(id, new ComputerError('timeout', `agent-desktop did not answer within ${timeoutMs} ms`));
       }, timeoutMs + (this.opts.graceMs ?? GRACE_MS));
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, running, timer });
       this.write(running, { id, argv: [...argv], timeoutMs, home: options.home });
     });
   }
 
-  /** Stops every run: kills each child's group now and fails its call with `aborted`. */
+  /**
+   * Stops every run: each call fails with `aborted` now, the runner is told
+   * to cancel its child, and a run still on its way (preparing, or waiting
+   * for the runner to start) is never sent.
+   */
   abort(): void {
+    this.generation += 1;
     for (const id of [...this.pending.keys()]) {
       this.settle(id, new ComputerError('aborted', 'stopped by the user'));
     }
@@ -124,15 +150,15 @@ export class RunnerProcess {
     if (outcome instanceof ComputerError) {
       // A run that ends here early: the runner kills its child. If it does
       // not acknowledge in time, it is unresponsive and goes with its group.
-      if (this.running && !p.answered) {
-        const running = this.running;
+      const running = p.running;
+      if (!p.answered && running.child.exitCode === null && running.child.signalCode === null) {
         this.write(running, { cancel: id });
         const timer = setTimeout(() => {
-          this.cancelling.delete(id);
+          running.cancelling.delete(id);
           this.log(`the runner did not acknowledge cancel ${id}; ending it`);
           this.killRunner(running.child);
         }, this.opts.cancelGraceMs ?? CANCEL_GRACE_MS);
-        this.cancelling.set(id, timer);
+        running.cancelling.set(id, timer);
       }
       p.reject(outcome);
     } else {
@@ -195,7 +221,7 @@ export class RunnerProcess {
         clearTimeout(helloTimer);
         if (settled) return;
         settled = true;
-        child.kill('SIGKILL');
+        this.killRunner(child);
         reject(new ComputerError('helper_unavailable', message));
       };
 
@@ -208,10 +234,10 @@ export class RunnerProcess {
         // megabytes arrives in many chunks.
         const searchFrom = buffer.length;
         buffer += chunk;
-        if (buffer.length > MAX_LINE_BYTES) {
+        if (buffer.length > RUNNER_MAX_LINE_BYTES) {
           buffer = '';
           this.log('oversized line; stopping the runner');
-          child.kill('SIGKILL');
+          this.killRunner(child);
           return;
         }
         let newline = buffer.indexOf('\n', searchFrom);
@@ -229,13 +255,14 @@ export class RunnerProcess {
           if (!settled && message.runner === 1) {
             clearTimeout(helloTimer);
             settled = true;
-            const running: Running = { child, ready: message.ready === true };
+            const running: Running = { child, cancelling: new Map() };
             this.running = running;
+            this.runners.add(running);
             this.armIdle();
             resolve(running);
             continue;
           }
-          this.onMessage(message);
+          this.onMessage(message, child);
         }
       });
       child.on('error', (err) => {
@@ -249,17 +276,18 @@ export class RunnerProcess {
     });
   }
 
-  private onMessage(message: Record<string, unknown>): void {
+  private onMessage(message: Record<string, unknown>, from: ChildProcessWithoutNullStreams): void {
     const id = typeof message.id === 'number' ? message.id : undefined;
     if (id === undefined) return;
-    // Any answer for a canceled run acknowledges the cancel.
-    const acknowledged = this.cancelling.get(id);
-    if (acknowledged && message.event !== 'started') {
+    // Any answer for a canceled run acknowledges the cancel, from the runner it went to.
+    const running = [...this.runners].find((r) => r.child === from);
+    const acknowledged = running?.cancelling.get(id);
+    if (running && acknowledged && message.event !== 'started') {
       clearTimeout(acknowledged);
-      this.cancelling.delete(id);
+      running.cancelling.delete(id);
     }
     const p = this.pending.get(id);
-    if (!p) return;
+    if (!p || p.running.child !== from) return;
     if (message.event === 'started') return;
     if (message.ok === true) {
       this.settle(id, {
@@ -291,9 +319,12 @@ export class RunnerProcess {
   }
 
   private onExit(child: ChildProcessWithoutNullStreams): void {
-    for (const timer of this.cancelling.values()) clearTimeout(timer);
-    this.cancelling.clear();
-    if (this.running?.child !== child) return;
+    const exited = [...this.runners].find((r) => r.child === child);
+    if (!exited) return;
+    this.runners.delete(exited);
+    // This runner's cancels only: another runner's stay armed.
+    for (const timer of exited.cancelling.values()) clearTimeout(timer);
+    if (this.running !== exited) return;
     this.running = null;
     this.disarmIdle();
     for (const id of [...this.pending.keys()]) {

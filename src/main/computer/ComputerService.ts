@@ -181,6 +181,8 @@ export interface DesktopDeps {
   readRefmap(snapshotId: string): Promise<string>;
   /** Kills every run in flight (the stop key). */
   abort(): void;
+  /** Ends the runner and removes the snapshots agent-desktop saved (quit, or computer use turned off). */
+  dispose(): void;
 }
 
 interface DesktopSnapshotRecord {
@@ -298,6 +300,7 @@ export class ComputerService {
     if (!this.deps.isEnabled()) {
       // Turned off, possibly by editing the file by hand: give the chord back.
       this.deps.stopKey.release();
+      this.endDesktop();
       fail('turned_off', 'computer use is turned off. The user turns it on in Settings › Computer use');
     }
     if (!this.deps.createHelper) {
@@ -940,8 +943,19 @@ export class ComputerService {
     this.withdrawConsentPrompts();
     this.helper?.dispose();
     this.helper = null;
-    this.deps.desktop?.abort();
     this.snapshots.clear();
+    this.endDesktop();
+  }
+
+  /** Computer use was turned off: stop everything, then end the desktop runner and its snapshots. */
+  turnedOff(): void {
+    if (this.disposed) return;
+    this.abort();
+    this.endDesktop();
+  }
+
+  private endDesktop(): void {
+    this.deps.desktop?.dispose();
     this.desktopSnapshots.clear();
   }
 

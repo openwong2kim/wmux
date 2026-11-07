@@ -68,10 +68,12 @@ function makeService(opts: { answer?: (argv: string[]) => RunnerResult | Promise
     }),
     readRefmap: vi.fn(async (id: string) => refmaps.get(id) ?? ''),
     abort: vi.fn(),
+    dispose: vi.fn(),
   };
   const consent = vi.fn(async () => 'approved' as const);
+  let enabled = true;
   const service = new ComputerService({
-    isEnabled: () => true,
+    isEnabled: () => enabled,
     askPerApp: () => opts.askPerApp ?? true,
     createHelper: () => helper,
     requestConsent: consent,
@@ -80,7 +82,11 @@ function makeService(opts: { answer?: (argv: string[]) => RunnerResult | Promise
     platform: 'darwin',
     ...(opts.withDesktop !== false && { desktop }),
   });
-  return { service, calls, desktop, refmaps, runs, consent, setRefmap: (id: string, text: string) => refmaps.set(id, text) };
+  return {
+    service, calls, desktop, refmaps, runs, consent,
+    setRefmap: (id: string, text: string) => refmaps.set(id, text),
+    setEnabled: (on: boolean) => { enabled = on; },
+  };
 }
 
 const snapshotOf = async (service: ComputerService, agent = AGENT_A) =>
@@ -248,5 +254,24 @@ describe('ComputerService.desktop', () => {
       answer: () => ({ exitCode: 1, stdout: JSON.stringify({ version: '2.6', ok: false, command: 'get', error: { code: 'STALE_REF', message: 'ref is stale' } }), stderr: '' }),
     });
     await expect(service.desktop(AGENT_A, { command: 'wait', args: { ms: 1 } })).rejects.toMatchObject({ code: 'element_stale', message: 'ref is stale' });
+  });
+
+  it('ends the runner and forgets every snapshot when computer use is turned off, and on dispose', async () => {
+    const { service, desktop } = makeService();
+    const id = await snapshotOf(service);
+    service.turnedOff();
+    expect(desktop.dispose).toHaveBeenCalledTimes(1);
+    await expect(service.desktop(AGENT_A, { command: 'get', args: { ref: `@${id}:e1` } })).rejects.toMatchObject({ code: 'aborted' });
+
+    const other = makeService();
+    const kept = await snapshotOf(other.service);
+    other.setEnabled(false);
+    await expect(other.service.desktop(AGENT_A, { command: 'get', args: { ref: `@${kept}:e1` } })).rejects.toMatchObject({ code: 'turned_off' });
+    expect(other.desktop.dispose).toHaveBeenCalled();
+    other.setEnabled(true);
+    await expect(other.service.desktop(AGENT_A, { command: 'get', args: { ref: `@${kept}:e1` } })).rejects.toMatchObject({ code: 'snapshot_unknown' });
+
+    service.dispose();
+    expect(desktop.dispose).toHaveBeenCalledTimes(2);
   });
 });

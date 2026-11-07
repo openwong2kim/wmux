@@ -25,6 +25,7 @@ import { isPermissionOp, requestHelperPermissions, resetHelperPermissions, revea
 import { ComputerService, computerUseShutDown, markComputerUseShutDown, type ConsentRequester, type DesktopDeps, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
 import { RunnerProcess } from './RunnerProcess';
+import { clearDesktopSnapshots, prepareDesktopHome } from './desktopHome';
 import { StopKey } from './stopKey';
 import { createHelperVerifier, createWindowsPinCheck } from './verifyHelper';
 import { WINDOWS_HELPER_PIN, effectiveHelperStatus, helperUnsignedNotice } from './helperPin';
@@ -175,14 +176,17 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
 function desktopDeps(helperPath: string): DesktopDeps | undefined {
   if (process.platform !== 'darwin') return undefined;
   const home = path.join(getWmuxHomeDir(), 'agent-desktop');
+  // Snapshots a previous run left: no record of them survives, only the files.
+  void clearDesktopSnapshots(home).catch((err: unknown) => console.warn(`[computer] ${String(err)}`));
   let runner: RunnerProcess | null = null;
-  const current = () => runner ??= new RunnerProcess({ command: helperPath, verify: verifyHelper, log: (m) => console.warn(m) });
+  const current = () => runner ??= new RunnerProcess({
+    command: helperPath,
+    verify: verifyHelper,
+    prepare: () => prepareDesktopHome(home),
+    log: (m) => console.warn(m),
+  });
   return {
-    run: async (argv, timeoutMs) => {
-      await fs.promises.mkdir(home, { recursive: true, mode: 0o700 });
-      await fs.promises.chmod(home, 0o700);
-      return current().run(argv, { home, timeoutMs });
-    },
+    run: (argv, timeoutMs) => current().run(argv, { home, timeoutMs }),
     readRefmap: async (snapshotId) => {
       try {
         return await fs.promises.readFile(path.join(home, 'snapshots', snapshotId, 'refmap.json'), 'utf8');
@@ -192,6 +196,12 @@ function desktopDeps(helperPath: string): DesktopDeps | undefined {
       }
     },
     abort: () => runner?.abort(),
+    // The runner goes with its process group, then the saved snapshots.
+    dispose: () => {
+      runner?.dispose();
+      runner = null;
+      void clearDesktopSnapshots(home).catch((err: unknown) => console.warn(`[computer] ${String(err)}`));
+    },
   };
 }
 
@@ -475,7 +485,7 @@ export function registerComputerUseIpc(
     } catch (err) {
       return snapshot(err instanceof Error ? err.message : String(err));
     }
-    if (patch.enabled === false) getExistingService()?.abort();
+    if (patch.enabled === false) getExistingService()?.turnedOff();
     // A running helper draws (or stops drawing) the cursor and halo now; one
     // started later reads the setting on its hello.
     if (readComputerUseOverlay() !== overlayBefore) {
