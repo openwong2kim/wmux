@@ -596,7 +596,9 @@ the user had in front gets it back once the action is done (Core
   `SendMessageTimeout(WM_NULL)` to the target first, at most 200 ms, so it
   has handled our input (a click or a UIA call can activate it a moment
   after the call returns); then the checks above, then
-  `SetForegroundWindow` to the previous window. The cursor goes back only
+  `SetForegroundWindow` to the previous window, only if its handle still
+  names the same window (the pid and class `Begin` saw), and the
+  foreground is read back before the note says it went back. The cursor goes back only
   if it is still where our last pointer batch left it. The reply goes out
   then, with a note that the front went back: anything in the target that
   closes on focus loss (a menu, a command palette, a flyout) may have

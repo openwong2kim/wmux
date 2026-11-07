@@ -189,6 +189,8 @@ internal static unsafe class Input
     public static void UncountSemantic()
     {
         lock (Lock) sent--;
+        // It injected nothing either: the user's input meanwhile is theirs.
+        GiveBack.CallNotRun();
     }
 
     // MARK: Posting (everything goes through Post)
