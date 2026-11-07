@@ -44,33 +44,14 @@ internal static unsafe class GiveBack
     // The running action sent input of its own (SendInput or a UIA call).
     private static bool actionSent;
 
+    // Keys went to a Chromium window: when the front may go back.
+    private static long keysSettleUntil;
+
     // The one pending re-check; a new request or a stop cancels it.
     private static int generation;
     private static Timer? recheck;
 
-    // The window the front was last given back from (cleared when an action
-    // leaves a window in front): keys sent to it next are refused, and the
-    // refusal says how to keep it in front.
-    private static HWND returnedFrom;
-
     private static uint Now => (uint)Environment.TickCount;
-
-    /// <summary>
-    /// For the keyboard refusal: when the front went back from this window
-    /// after the previous action, say how to get it in front for keys. Not by
-    /// repeating that action: a button or a check box would act twice.
-    /// </summary>
-    public static string KeysHint(HWND target)
-    {
-        lock (Lock)
-        {
-            if (returnedFrom == HWND.Null || returnedFrom != target) return "";
-            // Once: if the next try cannot bring the window forward either
-            // (posted under refuse), repeating the hint would loop.
-            returnedFrom = HWND.Null;
-            return ". The front went back to the user's window after your previous action on it. Click the field that should get the keys with keepFront: true first (not a button, which would act again), then send them";
-        }
-    }
 
     private static uint LastInput()
     {
@@ -99,6 +80,21 @@ internal static unsafe class GiveBack
             actionSent = true;
         }
     }
+
+    /// <summary>
+    /// Keys (pressKey, hotkey) went to the target. Chromium hands them to a
+    /// renderer process, which handles them after SendInput and after the
+    /// browser window answers WM_NULL; a window that loses the front first
+    /// drops them. There is no Win32 signal for the renderer being done, so
+    /// the give-back waits ForegroundReturn.ChromiumKeySettleMs (measured;
+    /// docs/computer-use-windows.md, Keys after a click).
+    /// </summary>
+    public static void KeysSent(HWND window)
+    {
+        if (!Win.ClassName(window).StartsWith("Chrome_WidgetWin", StringComparison.Ordinal)) return;
+        lock (Lock) keysSettleUntil = Environment.TickCount64 + ForegroundReturn.ChromiumKeySettleMs;
+    }
+
 
     /// <summary>
     /// A UIA call returned: its key pair has arrived, and input after the
@@ -155,6 +151,7 @@ internal static unsafe class GiveBack
         {
             userSeen = false;
             actionSent = false;
+            keysSettleUntil = 0;
             scope.Since = actionSince = LastInput();
         }
         scope.Previous = Win.Root(PInvoke.GetForegroundWindow());
@@ -220,7 +217,13 @@ internal static unsafe class GiveBack
         CallDone();
         if (!scope.Active) return null;
         bool sent;
-        lock (Lock) sent = actionSent;
+        long settle;
+        lock (Lock)
+        {
+            sent = actionSent;
+            settle = keysSettleUntil - Environment.TickCount64;
+        }
+        if (settle > 0) Sta.Sleep((int)settle);
         if (sent && !scope.Refuse)
         {
             // Let the target handle our input first: a click or a UIA call can
@@ -236,7 +239,6 @@ internal static unsafe class GiveBack
         if (decision != ReturnDecision.NotNeeded)
         {
             Wire.Log($"foreground: {decision}");
-            lock (Lock) returnedFrom = decision == ReturnDecision.Return ? scope.Target : HWND.Null;
         }
         return ForegroundReturn.Describe(decision, PInvoke.GetForegroundWindow() == HWND.Null);
     }
@@ -345,7 +347,7 @@ internal static unsafe class GiveBack
                     lock (Lock)
                     {
                         if (mine != generation) return;
-                        if (decision == ReturnDecision.Return && PInvoke.SetForegroundWindow(scope.Previous)) returnedFrom = scope.Target;
+                        if (decision == ReturnDecision.Return) PInvoke.SetForegroundWindow(scope.Previous);
                     }
                     if (decision == ReturnDecision.Return) Wire.Log("foreground: returned again after the target took it back");
                 }

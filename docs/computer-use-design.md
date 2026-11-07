@@ -222,8 +222,10 @@ snapshot is the v1.1 token saver.
   target to the front, the window the user had in front gets it back,
   unless the user's own input arrived, a menu or new window is open, input
   is held, or the action passed `keepFront: true` (for a palette or flyout
-  that closes on focus loss, or a click that keys will follow). Under `allow` an action first waits up to a
-  second while the user is typing, then answers `user_input_active`
+  that closes on focus loss). Keyboard actions under `allow` bring the
+  target forward themselves, as a click does, and give it back the same
+  way. Under `allow` an action first waits up to a second while the user
+  is typing, then answers `user_input_active`
   (`not_delivered`; main passes it on as is, with no lease waiting).
   Details: `docs/computer-use-windows.md`, Giving the front back.
 - **`setValue` is in v1.** It bypasses the IME, so it is the right path for
