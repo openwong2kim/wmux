@@ -103,6 +103,8 @@ describe('FleetView — the list grouped by device', () => {
     const needsYou = [...container.querySelectorAll<HTMLElement>('[data-fleet-card][data-status="awaiting_input"]')];
     expect(needsYou).toHaveLength(2);
     expect(needsYou.map((el) => el.querySelector('[data-fleet-device]')?.textContent).sort()).toEqual(['This computer', 'beta']);
+    // Named in words, so not again as the "@host" glyph.
+    expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-b"] [data-fleet-remote]')).toBeNull();
     // The Needs you head counts both, once; no device head counts them again.
     expect(container.querySelector('[data-fleet-section="needsYou"] .wmux-board-col-count')?.textContent).toBe('2');
     expect(heads().map((h) => h.dataset.fleetDeviceHead)).toEqual(['local', 'host-b', 'host-off']);
@@ -127,6 +129,34 @@ describe('FleetView — the list grouped by device', () => {
     }
     expect(visited).toEqual(drawn);
     expect(drawn).toContain('fleet:idle-toggle:local');
+  });
+
+  it('keeps a device\'s fold when Fleet is closed and opened again', async () => {
+    mount();
+    await flushRaf();
+    const toggle = () => container.querySelector<HTMLButtonElement>('[data-fleet-key="fleet:idle-toggle:local"]')!;
+    expect(toggle().getAttribute('aria-expanded')).toBe('false');
+    act(() => toggle().click());
+    act(() => { root.unmount(); });
+    container.remove();
+    mount();
+    await flushRaf();
+    expect(toggle().getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-3"]')).not.toBeNull();
+  });
+
+  it('a PC the rail still reaches is not drawn as disconnected, and a host carries the rail\'s name', async () => {
+    act(() => useStore.setState({
+      pcRailHosts: [{ id: 'host-b', label: 'office' }, { id: 'host-off', label: 'home' }],
+      pcRailHostStatus: { 'host-b': 'connected', 'host-off': 'connected' },
+    }));
+    mount();
+    await flushRaf();
+    expect(heads().map((h) => h.dataset.fleetDeviceHead)).toEqual(['local', 'host-b']);
+    expect(heads()[1].textContent).toBe('officeOnline · Running 1');
+    act(() => useStore.setState({ pcRailHostStatus: { 'host-b': 'connected', 'host-off': 'unreachable' } }));
+    await flushRaf();
+    expect(heads().map((h) => h.textContent)).toContain('homeDisconnected');
   });
 
   it('a search narrows each device and drops the row-less head', async () => {

@@ -6,18 +6,18 @@ import { usageWindowsText } from '../StatusBar/UsageWidget';
 import {
   selectFleetBoard,
   groupFleetByDevice,
-  FLEET_LOCAL_DEVICE,
   selectHookRunningByPtyId,
   selectUnverifiablePaneMinutes,
   fleetTargetPtyId,
   type FleetDeviceGroup,
+  type FleetDeviceHost,
   type FleetPane,
   type FleetRow,
 } from '../../stores/selectors/fleet';
 import { selectApprovalInbox } from '../../stores/selectors/approvalInbox';
 import { selectReviewQueue, selectReviewQueueIds, type ReviewQueueEntry } from '../../stores/selectors/reviewQueue';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
-import { selectPcRailHosts } from '../../stores/selectors/pcRail';
+import { LOCAL_PC_ID } from '../../../shared/pcRail';
 import { resolveInboxItem } from '../../utils/resolveInboxItem';
 import {
   focusPaneByPtyId,
@@ -96,6 +96,7 @@ const BOARD_HEAD_KEY: Record<BoardColumn, string> = {
 const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
 /** Roving key of the collapsed "Finished N" row. */
 const FINISHED_TOGGLE_KEY = 'fleet:finished-toggle';
+const NO_CELLS: (string | number | boolean | null)[] = [];
 /** Roving key of one device's collapsed "Finished N" or "Idle N" row. */
 const deviceToggleKey = (kind: 'finished' | 'idle', deviceId: string) => `fleet:${kind}-toggle:${deviceId}`;
 /** Roving key of the collapsed "To hand out N" row. */
@@ -172,8 +173,26 @@ export default function FleetView() {
   // the session. The board always groups by status.
   const fleetGroupBy = useStore((s) => s.fleetGroupBy);
   const setFleetGroupBy = useStore((s) => s.setFleetGroupBy);
-  // The paired PCs in the rail's order, with when each last answered.
-  const pcRailHosts = useStore(selectPcRailHosts);
+  // Grouped by device: the paired PCs in the rail's order, flattened to
+  // primitives (id, name, offline, last answer while offline) so a poll tick
+  // that only moves a live host's fetch time does not re-render Fleet.
+  const deviceHostCells = useStore(useShallow((s) => (s.fleetGroupBy !== 'device' ? NO_CELLS : s.pcRailHosts.flatMap((h) => {
+    const status = s.pcRailHostStatus[h.id] ?? 'reachable';
+    const offline = status !== 'connected' && status !== 'reachable';
+    return [h.id, h.label, offline, offline ? s.pcRailFeeds[h.id]?.fetchedAt ?? null : null];
+  }))));
+  const deviceHosts = useMemo(() => {
+    const out: FleetDeviceHost[] = [];
+    for (let i = 0; i < deviceHostCells.length; i += 4) {
+      out.push({
+        id: deviceHostCells[i] as string,
+        label: deviceHostCells[i + 1] as string,
+        offline: deviceHostCells[i + 2] as boolean,
+        lastSeenAt: deviceHostCells[i + 3] as number | null,
+      });
+    }
+    return out;
+  }, [deviceHostCells]);
 
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -306,13 +325,13 @@ export default function FleetView() {
   const byDevice = useMemo(() => (fleetLayout !== 'list' || fleetGroupBy !== 'device' || filter === 'tickets' ? null
     : groupFleetByDevice(visibleGroups, {
       remoteWorkspaces,
-      hostOrder: pcRailHosts.map((host) => host.id),
-      lastSeenAt: Object.fromEntries(pcRailHosts.map((host) => [host.id, host.lastSeenAt])),
+      hosts: deviceHosts,
       includeDisconnected: filter === 'all' && !query.trim(),
-    })), [fleetLayout, fleetGroupBy, filter, query, visibleGroups, remoteWorkspaces, pcRailHosts]);
+    })), [fleetLayout, fleetGroupBy, filter, query, visibleGroups, remoteWorkspaces, deviceHosts]);
   // Each device folds its Finished and Idle rows on its own; until toggled
   // there, a device follows the status list's fold.
-  const [deviceFolds, setDeviceFolds] = useState<Record<string, boolean>>({});
+  const deviceFolds = useStore((s) => s.fleetDeviceFolds);
+  const setDeviceFold = useStore((s) => s.setFleetDeviceFold);
   const deviceFoldOpen = useCallback((kind: 'finished' | 'idle', deviceId: string) => (kind === 'finished'
     ? finishedForced || (deviceFolds[`${kind}:${deviceId}`] ?? finishedExpanded)
     : idleForced || (deviceFolds[`${kind}:${deviceId}`] ?? fleetIdleExpanded)),
@@ -881,8 +900,10 @@ export default function FleetView() {
     const idleRow = ws && !review && !paneRow && !finishedRow ? groups.idle.find(localRow) : undefined;
     const key = review ? reviewRowKey(review.workspaceId) : (paneRow ?? finishedRow ?? idleRow)?.pane.paneId ?? null;
     if (key) {
-      if (finishedRow) setFinishedExpanded(true);
-      if (idleRow) setFleetIdleExpanded(true);
+      // The row is this computer's: open its device fold too, which a fold
+      // toggled there would otherwise keep shut.
+      if (finishedRow) { setFinishedExpanded(true); setDeviceFold(`finished:${LOCAL_PC_ID}`, true); }
+      if (idleRow) { setFleetIdleExpanded(true); setDeviceFold(`idle:${LOCAL_PC_ID}`, true); }
       setPinnedTask(null);
       setFocusedPaneId(key);
     } else {
@@ -897,7 +918,7 @@ export default function FleetView() {
       focusActiveItemRef.current();
     });
   }, [fleetFocusTask, missionsByWorkspace, groups, reviewQueue, settledIds, focusedKey, setFleetFocusTask, setTab, setFleetIdleExpanded,
-    setFinishedExpanded]);
+    setFinishedExpanded, setDeviceFold]);
 
 
   // The ⋮ menu that is open, if any (its close function), so Escape closes the
@@ -1331,9 +1352,14 @@ export default function FleetView() {
   };
 
   const renderRow = (row: FleetRow) => renderRowAt(row, {});
-  // Grouped by device: a Needs you row names its device; a row under its own
-  // device's head does not repeat it.
-  const renderNamedRow = (row: FleetRow) => renderRowAt(row, { device: row.pane.remote?.hostLabel ?? t('pcRail.thisComputer') });
+  // Grouped by device: a Needs you row names its device in words (so not
+  // again as the "@host" glyph); a row under its own device's head does not
+  // repeat it at all.
+  const renderNamedRow = (row: FleetRow) => {
+    const remote = row.pane.remote;
+    const name = remote ? deviceHosts.find((h) => h.id === remote.hostId)?.label ?? remote.hostLabel : t('pcRail.thisComputer');
+    return renderRowAt(row, { device: name, hideHost: true });
+  };
   const renderDeviceRow = (row: FleetRow) => renderRowAt(row, { hideHost: true });
   const renderRowAt = (row: FleetRow, place: { device?: string; hideHost?: boolean }) => {
     const card = row.pane;
@@ -1545,7 +1571,7 @@ export default function FleetView() {
   // A device's head: its name, its state and its counts, in sentence case.
   // Needs you rows are not counted here: Needs you is their one count.
   const deviceHead = (device: FleetDeviceGroup) => {
-    const name = device.id === FLEET_LOCAL_DEVICE ? t('pcRail.thisComputer') : device.label;
+    const name = device.id === LOCAL_PC_ID ? t('pcRail.thisComputer') : device.label;
     const away = device.lastSeenAt != null ? Math.max(0, now - device.lastSeenAt) : undefined;
     const state = device.state === 'connected' ? t('pcRail.online')
       : device.state === 'disconnected'
@@ -1566,10 +1592,8 @@ export default function FleetView() {
       </div>
     );
   };
-  const toggleDeviceFold = (kind: 'finished' | 'idle', deviceId: string) => {
-    const open = deviceFoldOpen(kind, deviceId);
-    setDeviceFolds((folds) => ({ ...folds, [`${kind}:${deviceId}`]: !open }));
-  };
+  const toggleDeviceFold = (kind: 'finished' | 'idle', deviceId: string) =>
+    setDeviceFold(`${kind}:${deviceId}`, !deviceFoldOpen(kind, deviceId));
 
   const kbd = (keys: string, label: string) => (
     <span className="wmux-board-key"><kbd>{keys}</kbd>{label}</span>
@@ -1658,8 +1682,9 @@ export default function FleetView() {
             ]}
           />
         )}
-        {/* The list only: the board's columns are the statuses. */}
-        {tab === 'fleet' && fleetLayout === 'list' && (
+        {/* The list only (the board's columns are the statuses), and not
+            on the Tickets filter, which lists tickets, not agents. */}
+        {tab === 'fleet' && fleetLayout === 'list' && filter !== 'tickets' && (
           <>
           <span className="wmux-fleet-group-label" aria-hidden="true">{t('fleet.groupBy.label')}</span>
           <SegmentedControl

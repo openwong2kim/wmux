@@ -3,7 +3,7 @@ import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../.
 import { stashedPaneLiveness } from '../../../shared/paneStash';
 import { isBrainPtyId } from '../../../shared/constants';
 import { remoteAgentKey } from '../../../shared/remoteHosts';
-import { isShadowWorkspaceId } from '../../../shared/pcRail';
+import { isShadowWorkspaceId, LOCAL_PC_ID } from '../../../shared/pcRail';
 import { isWorkSurfaceType, splitShownTerminal } from '../../components/Pane/surfaceKinds';
 import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
@@ -1329,16 +1329,14 @@ export function groupFleetPanes(panes: FleetPane[], ctx: FleetGroupContext = {})
   return groups;
 }
 
-/** The device id of this computer's rows (a host id is never this). */
-export const FLEET_LOCAL_DEVICE = 'local';
-
 /** One device's part of the list grouped by device: everything but Needs you. */
 export interface FleetDeviceGroup {
-  /** FLEET_LOCAL_DEVICE, or the remote host's id. */
+  /** LOCAL_PC_ID, or the remote host's id. */
   id: string;
   /** The host's label; '' for this computer (the UI names it). */
   label: string;
-  /** 'disconnected': every attachment from the host is stale, so it has no rows. */
+  /** 'disconnected': the PC rail does not reach the host and every attachment
+   *  from it is stale, so it has no rows. */
   state: 'local' | 'connected' | 'disconnected';
   /** Disconnected only: when the host last answered, or null when not known. */
   lastSeenAt?: number | null;
@@ -1353,23 +1351,34 @@ export interface FleetDeviceGroups {
   devices: FleetDeviceGroup[];
 }
 
+/** What the grouping reads of one paired PC from the rail, in the rail's order. */
+export interface FleetDeviceHost {
+  id: string;
+  label: string;
+  /** False while the rail's last poll reached it. */
+  offline: boolean;
+  /** When it last answered, or null when not known. */
+  lastSeenAt: number | null;
+}
+
 /**
  * The list grouped by device. Needs you stays one section; every other row
  * goes under its device, in the order the status grouping gave it. This
- * computer comes first, then the hosts in `hostOrder` (the PC rail's order),
- * then any other host by label. A host whose attachments are all stale keeps a
- * row-less head while `includeDisconnected` is set; a device with no rows is
- * otherwise not drawn.
+ * computer comes first, then the hosts in the rail's order, then any other
+ * host by label; a host the rail knows carries the rail's name. A host the
+ * rail cannot reach whose attachments are all stale keeps a row-less head
+ * while `includeDisconnected` is set; a device with no rows is otherwise not
+ * drawn.
  */
 export function groupFleetByDevice(
   groups: FleetGroups,
   opts: {
     remoteWorkspaces?: readonly Pick<AttachedRemoteWorkspace, 'hostId' | 'hostLabel' | 'stale'>[];
-    hostOrder?: readonly string[];
-    lastSeenAt?: Readonly<Record<string, number | null>>;
+    hosts?: readonly FleetDeviceHost[];
     includeDisconnected?: boolean;
   } = {},
 ): FleetDeviceGroups {
+  const railHost = new Map((opts.hosts ?? []).map((host) => [host.id, host]));
   const byId = new Map<string, FleetDeviceGroup>();
   const device = (id: string, label: string, state: FleetDeviceGroup['state']): FleetDeviceGroup => {
     let d = byId.get(id);
@@ -1382,7 +1391,9 @@ export function groupFleetByDevice(
   for (const section of ['running', 'finished', 'idle'] as const) {
     for (const row of groups[section]) {
       const remote = row.pane.remote;
-      const d = remote ? device(remote.hostId, remote.hostLabel, 'connected') : device(FLEET_LOCAL_DEVICE, '', 'local');
+      const d = remote
+        ? device(remote.hostId, railHost.get(remote.hostId)?.label ?? remote.hostLabel, 'connected')
+        : device(LOCAL_PC_ID, '', 'local');
       d[section].push(row);
     }
   }
@@ -1390,18 +1401,21 @@ export function groupFleetByDevice(
     const live = new Set<string>();
     for (const r of opts.remoteWorkspaces ?? []) if (!r.stale) live.add(r.hostId);
     for (const r of opts.remoteWorkspaces ?? []) {
-      if (live.has(r.hostId) || byId.has(r.hostId)) continue;
-      device(r.hostId, r.hostLabel, 'disconnected').lastSeenAt = opts.lastSeenAt?.[r.hostId] ?? null;
+      // A stale attachment on a host the rail still reaches is a workspace
+      // gone from it, not a disconnected PC.
+      const host = railHost.get(r.hostId);
+      if (live.has(r.hostId) || byId.has(r.hostId) || (host && !host.offline)) continue;
+      device(r.hostId, host?.label ?? r.hostLabel, 'disconnected').lastSeenAt = host?.lastSeenAt ?? null;
     }
   }
-  const order = new Map((opts.hostOrder ?? []).map((id, i) => [id, i]));
-  const remotes = [...byId.values()].filter((d) => d.id !== FLEET_LOCAL_DEVICE).sort((a, b) => {
+  const order = new Map((opts.hosts ?? []).map((host, i) => [host.id, i]));
+  const remotes = [...byId.values()].filter((d) => d.id !== LOCAL_PC_ID).sort((a, b) => {
     const ai = order.get(a.id) ?? Infinity;
     const bi = order.get(b.id) ?? Infinity;
     if (ai !== bi) return ai - bi;
     return a.label.localeCompare(b.label) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   });
-  const local = byId.get(FLEET_LOCAL_DEVICE);
+  const local = byId.get(LOCAL_PC_ID);
   return { needsYou: groups.needsYou, devices: local ? [local, ...remotes] : remotes };
 }
 
