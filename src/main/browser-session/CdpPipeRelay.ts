@@ -128,6 +128,8 @@ export class CdpPipeRelay {
   private listener: Listener | null = null;
   private binding: Promise<Listener> | null = null;
   private swept = false;
+  /** The background sweep of dirs left by processes that are gone (tests wait on it). */
+  sweeping: Promise<void> = Promise.resolve();
   private closed = false;
 
   constructor(opts: RelayOptions = {}) {
@@ -175,6 +177,7 @@ export class CdpPipeRelay {
     this.wss.close();
     const binding = this.binding;
     if (binding) await binding.catch(() => undefined);
+    await this.sweeping;
     const listener = this.listener;
     this.listener = null;
     if (listener) await this.retire(listener, true);
@@ -203,8 +206,10 @@ export class CdpPipeRelay {
     this.listener = null;
     if (stale) void this.retire(stale, false);
     if (!this.swept) {
+      // In the background: the first token does not wait on probing leftovers.
+      // A dir this process makes names its own pid, so the sweep never takes it.
       this.swept = true;
-      for (const root of this.roots) await sweepDeadRelayDirs(root);
+      this.sweeping = Promise.all(this.roots.map((root) => sweepDeadRelayDirs(root))).then(() => undefined, () => undefined);
     }
     const listener = await this.listen();
     if (this.closed) {

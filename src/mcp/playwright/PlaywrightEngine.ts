@@ -108,6 +108,8 @@ interface CdpInfoResponse {
    * about to connect. Never logged or kept past the connect.
    */
   relay?: CdpRelay;
+  /** A dedicated Chrome on a debugging pipe, which this caller may reach through the relay. */
+  piped?: boolean;
   /**
    * Live Chrome only: the write-scope policy in force (the agent-window
    * policy). 'agent' means writes are confined to the workspace's own tabs plus
@@ -652,9 +654,9 @@ export class PlaywrightEngine {
         }
         // Same (workspace, profile, policy epoch): keep the live connection.
         if (reusable && profile === this.connectedProfile && policyEpoch === this.connectedPolicyEpoch) return;
-        // A Chrome on the pipe (no port, no live endpoint): ask again for a
-        // token, and decide on that answer, which may name another profile.
-        if (!askRelay && typeof info.wsEndpoint !== 'string' && typeof info.cdpPort !== 'number') {
+        // A Chrome on the pipe: ask again for a token, and decide on that
+        // answer, which may name another profile.
+        if (!askRelay && info.piped === true) {
           askRelay = true;
           attempt--;
           continue;

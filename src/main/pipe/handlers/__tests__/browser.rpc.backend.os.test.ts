@@ -686,6 +686,7 @@ describe('browser.cdp.info for a Chrome on the debugging pipe (relay)', () => {
 
     const asked = await ask(router, { workspaceId: 'ws-1', relay: true }, true);
     expect(asked.relay).toEqual(grant);
+    expect(asked.piped).toBe(true);
     expect(launcher.relayGrant).toHaveBeenCalledTimes(1);
     expect(launcher.relayGrant).toHaveBeenCalledWith({ workspaceId: 'ws-1', profile: 'work' });
     // A Chrome on the pipe has no port and no ws endpoint to hand out.
@@ -694,6 +695,8 @@ describe('browser.cdp.info for a Chrome on the debugging pipe (relay)', () => {
 
     const notAsked = await ask(router, { workspaceId: 'ws-1' }, true);
     const undisclosed = await ask(router, { workspaceId: 'ws-1', relay: true }, false);
+    expect(notAsked.piped).toBe(true);
+    expect(undisclosed.piped).toBeUndefined();
     for (const answer of [notAsked, undisclosed]) {
       expect(answer.relay).toBeUndefined();
       expect(answer.workspaceBackend).toBe('chrome');
@@ -707,6 +710,7 @@ describe('browser.cdp.info for a Chrome on the debugging pipe (relay)', () => {
     const answer = await ask(router, { workspaceId: 'ws-1', relay: true }, true);
     expect(answer.cdpPort).toBe(52931);
     expect(answer.relay).toBeUndefined();
+    expect(answer.piped).toBeUndefined();
     expect(launcher.relayGrant).not.toHaveBeenCalled();
   });
 });

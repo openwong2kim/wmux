@@ -1910,6 +1910,7 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     targetsScoped: true,
     targets: [],
     profile,
+    piped: true,
     ...(params?.relay && { relay: { endpoint: RELAY, headers: { Authorization: `Bearer tok-${++minted}` } } }),
   });
   const cdpInfoCalls = () => mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.cdp.info').map((c) => c[1]);
@@ -1964,6 +1965,19 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     expect(mockConnectOverCDP).toHaveBeenLastCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-2' } });
     expect((engine as unknown as { connectedProfile?: string }).connectedProfile).toBe('p3');
     expect(first.close).toHaveBeenCalled();
+  });
+
+  it('a rebind answer that names no pipe is not asked about again', async () => {
+    let at = 0;
+    // Then main stops disclosing anything to this caller: no port, no relay, no pipe.
+    mockSendRpc.mockImplementation((method: string) =>
+      Promise.resolve(method === 'browser.cdp.info' ? { workspaceBackend: 'chrome', targets: [], ...(at++ === 0 ? { profile: 'p1', cdpPort: 9222 } : { profile: 'p2' }) } : {}),
+    );
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    await expect(engine.ensureConnected('ws-a')).rejects.toThrow('did not disclose a usable CDP endpoint');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }, { workspaceId: 'ws-a' }]);
   });
 
   it('a Chrome on the pipe that does not disclose a relay to this caller fails at once, without retrying', async () => {

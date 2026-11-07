@@ -426,6 +426,7 @@ describe.skipIf(!posix)('CdpPipeRelay: leftover socket dirs', () => {
     const b = await setup({ roots: [root] });
     const grantB = await b.route.grant({});
     expect(grantB.endpoint).not.toBe(grantA.endpoint);
+    await b.relay.sweeping;
     expect(fs.existsSync(dead)).toBe(false);
     expect(verifyRelaySocket({ dir: dirA, socketPath: path.join(dirA, 'r.sock') })).not.toBeNull();
     expect(await request(wsA, { id: 3, method: 'Browser.getVersion' })).toEqual({ id: 3, result: { echo: 'Browser.getVersion' } });

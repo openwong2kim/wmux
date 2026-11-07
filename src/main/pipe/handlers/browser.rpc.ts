@@ -4234,6 +4234,9 @@ export function registerBrowserRpc(
         ...(disclose && ep.cdpPort !== undefined && { cdpPort: ep.cdpPort }),
         ...(disclose && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
         ...(relay && { relay }),
+        // Reached through the relay: an engine checking a live connection asks
+        // again with relay: true only when this is set.
+        ...(disclose && ep.piped && { piped: true }),
         ...(callerWorkspaceId && { targetsScoped: true }),
         workspaceBackend: 'chrome' as const,
         // The profile this caller resolved to (its pane's own, its workspace's,
@@ -4243,7 +4246,7 @@ export function registerBrowserRpc(
         // Protected panes: the policy epoch this connection is good for. The
         // engine drops its connection (and every cached Page) when it moves,
         // which is how a rebind or a protection change reaches the MCP lane.
-        ...(protectedDecisionOf(ctx) && { protected: true, policyEpoch: protectedDecisionOf(ctx)?.epoch }),
+        ...(decision && { protected: true, policyEpoch: decision.epoch }),
         // Live only: the write-scope policy in force, so the MCP lane can apply
         // the SAME gate on the writes it drives over CDP without main seeing
         // them. Disclosed unconditionally, unlike wsEndpoint/cdpPort — it is a

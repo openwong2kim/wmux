@@ -2747,7 +2747,10 @@ export class ChromeLauncherRegistry {
     // Socket close only — never touches the user's Chrome process.
     this.live?.dispose();
     this.live = null;
-    await Promise.all(stopping);
-    await closePipeRelay();
+    try {
+      await Promise.all(stopping);
+    } finally {
+      await closePipeRelay();
+    }
   }
 }
