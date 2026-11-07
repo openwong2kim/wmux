@@ -7,10 +7,14 @@
 // work, but a desktop `wait` blocks for seconds and must neither hold up other
 // calls nor take the helper down when it runs long.
 //
-//   - Every child runs in its own process group, whose id the runner reports
-//     (`started`). A stop or a timeout kills that group from here and tells
-//     the runner to cancel; the runner itself stays up.
-//   - The runner exits on stdin EOF (idle, dispose) and kills its children
+//   - The runner is started as the leader of its own process group, and its
+//     children stay in that group. A stop or a timeout asks the runner to
+//     cancel the run; only the runner kills a child, since only it knows the
+//     child is unreaped. Main never kills a pid or group it was told about.
+//   - A runner that does not acknowledge a cancel in time is taken down with
+//     its whole group: main may name that group because the runner is its own
+//     unreaped child, so the id cannot have been reused.
+//   - The runner exits on stdin EOF (idle, dispose) and kills its group
 //     first, so nothing it started outlives wmux.
 //   - Late replies for a request that already settled are ignored.
 
@@ -36,8 +40,8 @@ export interface RunnerProcessOptions {
   idleExitMs?: number;
   /** Added to a run's own timeout before main gives up on the runner's answer. */
   graceMs?: number;
-  /** Kills a child's process group; injectable for tests. */
-  killGroup?: (pgid: number) => void;
+  /** How long the runner has to acknowledge a cancel before main ends it. */
+  cancelGraceMs?: number;
   log?: (message: string) => void;
 }
 
@@ -52,7 +56,8 @@ const MAX_LINE_BYTES = 32 << 20;
 interface Pending {
   resolve: (result: RunnerResult) => void;
   reject: (error: ComputerError) => void;
-  pgid?: number;
+  /** The runner answered this run itself, so there is nothing to cancel. */
+  answered?: boolean;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -61,19 +66,15 @@ interface Running {
   ready: boolean;
 }
 
-const killGroupDefault = (pgid: number): void => {
-  try {
-    process.kill(-pgid, 'SIGKILL');
-  } catch {
-    // Gone already.
-  }
-};
+const CANCEL_GRACE_MS = 2_000;
 
 export class RunnerProcess {
   private readonly opts: RunnerProcessOptions;
   private running: Running | null = null;
   private starting: Promise<Running> | null = null;
   private readonly pending = new Map<number, Pending>();
+  /** Cancels sent and not yet acknowledged, with the timer that ends an unresponsive runner. */
+  private readonly cancelling = new Map<number, ReturnType<typeof setTimeout>>();
   private nextId = 1;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
@@ -121,10 +122,18 @@ export class RunnerProcess {
     this.pending.delete(id);
     clearTimeout(p.timer);
     if (outcome instanceof ComputerError) {
-      // A run that ends here early takes its child with it; the runner is
-      // told too, for a child it has not reported yet.
-      if (p.pgid !== undefined) (this.opts.killGroup ?? killGroupDefault)(p.pgid);
-      if (this.running) this.write(this.running, { cancel: id });
+      // A run that ends here early: the runner kills its child. If it does
+      // not acknowledge in time, it is unresponsive and goes with its group.
+      if (this.running && !p.answered) {
+        const running = this.running;
+        this.write(running, { cancel: id });
+        const timer = setTimeout(() => {
+          this.cancelling.delete(id);
+          this.log(`the runner did not acknowledge cancel ${id}; ending it`);
+          this.killRunner(running.child);
+        }, this.opts.cancelGraceMs ?? CANCEL_GRACE_MS);
+        this.cancelling.set(id, timer);
+      }
       p.reject(outcome);
     } else {
       p.resolve(outcome);
@@ -170,7 +179,8 @@ export class RunnerProcess {
   private async start(): Promise<Running> {
     await this.opts.verify?.(this.opts.command);
     if (this.disposed) throw new ComputerError('shutting_down', 'computer use is shutting down');
-    const spawnFn: SpawnRunner = this.opts.spawn ?? ((cmd, args) => nodeSpawn(cmd, [...args], { stdio: 'pipe' }));
+    // detached: the runner leads a process group of its own, which holds its children.
+    const spawnFn: SpawnRunner = this.opts.spawn ?? ((cmd, args) => nodeSpawn(cmd, [...args], { stdio: 'pipe', detached: true }));
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawnFn(this.opts.command, ['--runner']);
@@ -242,12 +252,15 @@ export class RunnerProcess {
   private onMessage(message: Record<string, unknown>): void {
     const id = typeof message.id === 'number' ? message.id : undefined;
     if (id === undefined) return;
+    // Any answer for a canceled run acknowledges the cancel.
+    const acknowledged = this.cancelling.get(id);
+    if (acknowledged && message.event !== 'started') {
+      clearTimeout(acknowledged);
+      this.cancelling.delete(id);
+    }
     const p = this.pending.get(id);
     if (!p) return;
-    if (message.event === 'started') {
-      if (typeof message.pid === 'number' && message.pid > 1) p.pgid = message.pid;
-      return;
-    }
+    if (message.event === 'started') return;
     if (message.ok === true) {
       this.settle(id, {
         ...(typeof message.exitCode === 'number' && { exitCode: message.exitCode }),
@@ -259,12 +272,27 @@ export class RunnerProcess {
     }
     const error = (message.error ?? {}) as { code?: unknown; message?: unknown };
     const code = isComputerErrorCode(error.code) ? error.code : 'internal';
-    // The child is gone already; nothing to kill.
-    p.pgid = undefined;
+    p.answered = true;
     this.settle(id, new ComputerError(code, typeof error.message === 'string' ? error.message : 'agent-desktop failed'));
   }
 
+  /**
+   * Ends an unresponsive runner and every child in its group. Only while the
+   * runner is unreaped (no exit seen), so its pid, the group's id, is still
+   * its own.
+   */
+  private killRunner(child: ChildProcessWithoutNullStreams): void {
+    if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return;
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      child.kill('SIGKILL');
+    }
+  }
+
   private onExit(child: ChildProcessWithoutNullStreams): void {
+    for (const timer of this.cancelling.values()) clearTimeout(timer);
+    this.cancelling.clear();
     if (this.running?.child !== child) return;
     this.running = null;
     this.disarmIdle();

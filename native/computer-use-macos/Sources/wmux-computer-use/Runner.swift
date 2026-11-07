@@ -7,12 +7,17 @@
 //   main → {"id":1,"argv":["snapshot",…],"timeoutMs":5000,"home":"/…"}
 //   main → {"cancel":1}
 //   ← {"runner":1,"ready":true}                          once, at start
-//   ← {"id":1,"event":"started","pid":123}               the child's pid = its process group
+//   ← {"id":1,"event":"started","pid":123}               the child's pid
 //   ← {"id":1,"ok":true,"exitCode":0,"stdout":"…","stderr":"…"}
 //   ← {"id":1,"ok":false,"error":{"code":"…","message":"…"}}
 //
-// Every child runs in its own process group. A cancel, a timeout or too much
-// output kills that group; stdin EOF or SIGTERM kills every group, then exits.
+// Children stay in the runner's process group, which main starts the runner
+// as the leader of (RunnerProcess.ts). A cancel, a timeout or too much output
+// kills that child, which only this process may name: it has not reaped it,
+// so its pid cannot have been reused. stdin EOF or SIGTERM kills the whole
+// group, children and anything they started included, and with it the
+// runner. If the runner stops answering, main kills the same group, which it
+// may name for the same reason: it has not reaped the runner.
 
 import ComputerUseCore
 import Darwin
@@ -85,14 +90,19 @@ enum Runner {
         if active.contains(id) { canceled.insert(id) }
         let pid = children[id]
         lock.unlock()
-        if let pid { kill(-pid, SIGKILL) }
+        if let pid { kill(pid, SIGKILL) }
     }
 
     private static func killAllAndExit() -> Never {
         lock.lock()
         let pids = Array(children.values)
         lock.unlock()
-        for pid in pids { kill(-pid, SIGKILL) }
+        // Leader of its own group (main's spawn): the group goes at once, this
+        // process last. Otherwise (started by hand) only its own children.
+        if getpgrp() == getpid() {
+            kill(0, SIGKILL)
+        }
+        for pid in pids { kill(pid, SIGKILL) }
         exit(0)
     }
 
@@ -132,17 +142,16 @@ enum Runner {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }
-        // Own process group (pgid = pid); default signal dispositions (this
-        // process ignores SIGPIPE and the termination signals); no inherited
-        // descriptors beyond the three above.
-        posix_spawnattr_setpgroup(&attr, 0)
+        // Default signal dispositions (this process ignores SIGPIPE and the
+        // termination signals); no inherited descriptors beyond the three
+        // above. The child stays in this process's group.
         var defaults = sigset_t()
         sigfillset(&defaults)
         posix_spawnattr_setsigdefault(&attr, &defaults)
         var empty = sigset_t()
         sigemptyset(&empty)
         posix_spawnattr_setsigmask(&attr, &empty)
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT))
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_CLOEXEC_DEFAULT))
 
         let env = RunnerPolicy.environment(home: request.home, inherited: ProcessInfo.processInfo.environment)
         let argv = [gate.path] + request.argv
@@ -167,22 +176,24 @@ enum Runner {
         children[request.id] = pid
         let canceledEarly = canceled.contains(request.id)
         lock.unlock()
-        if canceledEarly { kill(-pid, SIGKILL) }
+        if canceledEarly { kill(pid, SIGKILL) }
         Wire.send(["id": request.id, "event": "started", "pid": Int(pid)], id: request.id)
 
-        let outcome = collect(out: out[0], err: err[0], pid: pid, deadline: DispatchTime.now() + .milliseconds(request.timeoutMs))
+        let outcome = collect(id: request.id, out: out[0], err: err[0], pid: pid, deadline: DispatchTime.now() + .milliseconds(request.timeoutMs))
         close(out[0])
         close(err[0])
 
-        var status: Int32 = 0
-        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
-        // Anything the child left in its group goes with it.
-        kill(-pid, SIGKILL)
-
+        // Wait for the exit without reaping (WNOWAIT): until the child is
+        // taken out of `children`, a cancel may still kill(pid), and an
+        // unreaped pid cannot belong to anyone else.
+        var info = siginfo_t()
+        while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) < 0 && errno == EINTR {}
         lock.lock()
         children[request.id] = nil
         let wasCanceled = canceled.contains(request.id)
         lock.unlock()
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
 
         if wasCanceled { return fail(request.id, RunnerProblem("aborted", "the run was stopped")) }
         switch outcome.end {
@@ -190,6 +201,8 @@ enum Runner {
             return fail(request.id, RunnerProblem("timeout", "agent-desktop did not finish within \(request.timeoutMs) ms"))
         case .tooMuchOutput:
             return fail(request.id, RunnerProblem("internal", "agent-desktop wrote more than \(RunnerPolicy.maxOutputBytes) bytes"))
+        case .canceled:
+            return fail(request.id, RunnerProblem("aborted", "the run was stopped"))
         case .finished:
             break
         }
@@ -207,23 +220,31 @@ enum Runner {
         Wire.send(reply, id: request.id)
     }
 
-    private enum End { case finished, timedOut, tooMuchOutput }
+    private enum End { case finished, timedOut, tooMuchOutput, canceled }
 
-    /// Reads both pipes until EOF, the deadline or the output cap; kills the
-    /// child's group on the last two.
-    private static func collect(out: Int32, err: Int32, pid: pid_t, deadline: DispatchTime) -> (stdout: Data, stderr: Data, end: End) {
+    /// Reads both pipes until EOF, the deadline, the output cap or a cancel;
+    /// kills the child on the last three. A cancel ends the read at once:
+    /// anything the child started may still hold the pipes open.
+    private static func collect(id: Int, out: Int32, err: Int32, pid: pid_t, deadline: DispatchTime) -> (stdout: Data, stderr: Data, end: End) {
         var stdout = Data()
         var stderr = Data()
         var fds = [pollfd(fd: out, events: Int16(POLLIN), revents: 0), pollfd(fd: err, events: Int16(POLLIN), revents: 0)]
         var open = 2
         var buffer = [UInt8](repeating: 0, count: 64 << 10)
         while open > 0 {
+            lock.lock()
+            let isCanceled = canceled.contains(id)
+            lock.unlock()
+            if isCanceled {
+                kill(pid, SIGKILL)
+                return (stdout, stderr, .canceled)
+            }
             let now = DispatchTime.now()
             guard now < deadline else {
-                kill(-pid, SIGKILL)
+                kill(pid, SIGKILL)
                 return (stdout, stderr, .timedOut)
             }
-            let waitMs = Int32(min((deadline.uptimeNanoseconds - now.uptimeNanoseconds) / 1_000_000 + 1, 1_000))
+            let waitMs = Int32(min((deadline.uptimeNanoseconds - now.uptimeNanoseconds) / 1_000_000 + 1, 100))
             let n = poll(&fds, nfds_t(fds.count), waitMs)
             if n < 0 {
                 if errno == EINTR { continue }
@@ -239,7 +260,7 @@ enum Runner {
                 if i == 0 {
                     stdout.append(contentsOf: buffer[0..<count])
                     if stdout.count > RunnerPolicy.maxOutputBytes {
-                        kill(-pid, SIGKILL)
+                        kill(pid, SIGKILL)
                         return (stdout, stderr, .tooMuchOutput)
                     }
                 } else if stderr.count < RunnerPolicy.maxErrorBytes {
