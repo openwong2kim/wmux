@@ -6,6 +6,11 @@ name: Chrome pipe probe
 # left running on the profile, and a cookie kept across a restart
 # (scripts/probe-chrome-pipe.mjs). The results table is in the job summary.
 #
+# --cold-start-warn: a preinstalled browser's first start on a fresh runner
+# can exceed the start ceiling while its disk loads, so that one start is a
+# warning (annotation and summary row); a warm start and every other check
+# still fail.
+#
 # Runs on pull requests that touch the probe or the dedicated Chrome's code,
 # drafts included, and on demand.
 on:
@@ -13,6 +18,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - scripts/probe-chrome-pipe.mjs
+      - scripts/probe-chrome-pipe-verdict.mjs
       - .github/workflows/chrome-pipe-probe.yml
       - src/main/browser-session/**
   workflow_dispatch:
@@ -56,14 +62,14 @@ jobs:
         if: runner.os != 'Linux'
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw
-        run: node scripts/probe-chrome-pipe.mjs --require chromium --json pipe-probe.json
+        run: node scripts/probe-chrome-pipe.mjs --require chromium --cold-start-warn --json pipe-probe.json
 
       # Headed mode needs a display: a virtual one.
       - name: Probe (Linux)
         if: runner.os == 'Linux'
         env:
           PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/pw
-        run: xvfb-run -a node scripts/probe-chrome-pipe.mjs --require chromium --json pipe-probe.json
+        run: xvfb-run -a node scripts/probe-chrome-pipe.mjs --require chromium --cold-start-warn --json pipe-probe.json
 
       - name: Upload results
         if: ${{ !cancelled() }}
