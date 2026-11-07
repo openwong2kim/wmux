@@ -1413,8 +1413,8 @@ function rowHostId(row: FleetRow): string | undefined {
 
 /**
  * What each PC the rail calls down last had here, for its device head's note:
- * the remote agent panes on it by their last snapshot, and how many of them
- * needed you. Those rows never reach the board (selectFleetPanes drops a down
+ * every remote pane on it (agent or plain shell), and how many of them were
+ * agents asking for you by their last snapshot. Those rows never reach the board (selectFleetPanes drops a down
  * host's rows), so this counts them from the same inputs, on the same tick
  * the drop notice fires (selectDownHostIds). Empty while no host is down.
  */
@@ -1430,10 +1430,8 @@ export function selectDownHostAway(
       let neededYou = false;
       for (const s of leaf.surfaces) {
         if (s.surfaceType !== 'remote-terminal' || !s.remoteHostId || !down.has(s.remoteHostId)) continue;
-        const agent = resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId);
-        if (!agent) continue;
         hostId ??= s.remoteHostId;
-        if (agent.status === 'awaiting_input') neededYou = true;
+        if (resolveRemoteAgent(state.remoteWorkspaces, s.remoteHostId, s.remoteSessionId)?.status === 'awaiting_input') neededYou = true;
       }
       if (!hostId) continue;
       const counts = (away[hostId] ??= { panes: 0, neededYou: 0 });
@@ -1527,16 +1525,15 @@ export function groupFleetByDevice(
       if (!byId.has(hostId)) disconnected(hostId, attachedLabel.get(hostId) ?? hostId, counts);
     }
     // Every attachment stale (the PC slept before this run saw its rows):
-    // the last snapshot's agent panes are what it had.
+    // the last snapshot's panes are what it had.
     const live = new Set<string>();
     const snapshot = new Map<string, FleetAwayCounts>();
     for (const r of opts.remoteWorkspaces ?? []) {
       if (!r.stale) { live.add(r.hostId); continue; }
       const counts = snapshot.get(r.hostId) ?? { panes: 0, neededYou: 0 };
       for (const p of r.panes) {
-        if (!p.agentName) continue;
         counts.panes++;
-        if (p.agentStatus === 'awaiting_input') counts.neededYou++;
+        if (p.agentName && p.agentStatus === 'awaiting_input') counts.neededYou++;
       }
       snapshot.set(r.hostId, counts);
     }

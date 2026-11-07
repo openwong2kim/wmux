@@ -86,8 +86,8 @@ describe('groupFleetByDevice', () => {
     expect(byDevice.devices.map((d) => d.id)).toEqual([LOCAL_PC_ID, 'host-off']);
     expect(byDevice.devices[1]).toMatchObject({
       label: 'office', state: 'disconnected', lastSeenAt: 1_000, running: [], finished: [], idle: [],
-      // The last snapshot's agent panes (a plain shell is not one).
-      lastSeen: { panes: 2, neededYou: 1 },
+      // Every pane in the last snapshot, plain shell included; one agent asked.
+      lastSeen: { panes: 3, neededYou: 1 },
     });
     // Not in the rail (or not polled yet): still a head, no age.
     expect(groupFleetByDevice(groups, { remoteWorkspaces, includeDisconnected: true }).devices[1].lastSeenAt).toBeNull();
@@ -144,7 +144,7 @@ describe('groupFleetByDevice', () => {
     expect(row.remote).toBeUndefined();
   });
 
-  it('a PC the rail calls down: its head notes the agent panes it last had, on the toast\'s tick', () => {
+  it('a PC the rail calls down: its head notes every pane it last had, on the toast\'s tick', () => {
     const remoteWs = (id: string, sessionId: string): Workspace => ({
       id, name: id, activePaneId: `p-${id}`,
       rootPane: {
@@ -173,14 +173,15 @@ describe('groupFleetByDevice', () => {
     // The second miss, the drop notice's tick: no rows, and the note counts its agents.
     expect(selectFleetPanes(at(2))).toEqual([]);
     const away = selectDownHostAway(at(2));
-    expect(away).toEqual({ 'host-x': { panes: 2, neededYou: 1 } });
+    // Every pane it had, plain shell included; only the asking agent needed you.
+    expect(away).toEqual({ 'host-x': { panes: 3, neededYou: 1 } });
     const byDevice = groupFleetByDevice(groupFleetPanes([pane('l', { agentStatus: 'running' })]), {
       remoteWorkspaces, hosts: [host('host-x', 'x', { offline: true, lastSeenAt: 1 })], away, includeDisconnected: true,
     });
     expect(byDevice.devices.map((d) => [d.id, d.state, d.running.length + d.idle.length])).toEqual([
       [LOCAL_PC_ID, 'local', 1], ['host-x', 'disconnected', 0],
     ]);
-    expect(byDevice.devices[1]).toMatchObject({ lastSeenAt: 1, lastSeen: { panes: 2, neededYou: 1 } });
+    expect(byDevice.devices[1]).toMatchObject({ lastSeenAt: 1, lastSeen: { panes: 3, neededYou: 1 } });
     // It answers: no note.
     expect(selectDownHostAway({ ...at(0), pcRailHostStatus: { 'host-x': 'reachable' as const } })).toEqual({});
   });
