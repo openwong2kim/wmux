@@ -64,7 +64,7 @@ const COMPUTER_SHAPE = {
   keys: z.array(z.string()).optional().describe('hotkey: modifiers (ctrl, alt, shift, meta/cmd) plus one pressKey key, e.g. ["ctrl","s"].'),
   direction: z.enum(['up', 'down', 'left', 'right']).optional(),
   amount: z.number().int().min(1).max(50).optional(),
-  command: z.enum(DESKTOP_COMMANDS).optional().describe('desktop (macOS, read-only): getAppState stays the loop; use desktop to search or drill large trees, read menus and sheets, or wait for an element. snapshot, find and list-surfaces need app; get and is take a ref (@<snapshot>:eN) from a snapshot or find reply.'),
+  command: z.enum(DESKTOP_COMMANDS).optional().describe('desktop (macOS, read-only): getAppState stays the loop. In a large or scrolled window, find first: it reaches elements off screen and returns only the matching refs; then get or is on a ref. snapshot returns the whole tree, so use it only for a layout you don\'t know. snapshot, find and list-surfaces need app; get and is take a ref (@<snapshot>:eN).'),
   args: z.record(z.string(), z.unknown()).optional().describe('desktop: that command\'s arguments; a wrong one returns its schema.'),
 };
 
