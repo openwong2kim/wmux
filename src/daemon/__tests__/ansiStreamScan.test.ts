@@ -202,6 +202,17 @@ describe('MarginTracker', () => {
     t.feed('\x1b[?1049l', ROWS);
     expect(t.active).toBe(false);
   });
+  // xterm and Alacritty reset the margins of both screens on a resize.
+  it('is reset on both screens by a resize', () => {
+    const t = new MarginTracker();
+    t.feed('\x1b[2;10r\x1b[?1049h\x1b[3;9r', ROWS);
+    t.resize();
+    expect(t.active).toBe(false);
+    t.feed('\x1b[?1049l', ROWS);
+    expect(t.active).toBe(false);
+    t.feed('\x1b[2;10r', ROWS);
+    expect(t.active).toBe(true);
+  });
 });
 
 describe('SgrMouseEncodingTracker', () => {

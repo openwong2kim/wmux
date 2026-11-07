@@ -146,8 +146,8 @@ const ALT_SCREEN_MODES = new Set([47, 1047, 1049]);
 /**
  * DECSTBM margins in effect on either screen. xterm keeps them per buffer:
  * DECSTBM and DECSTR change the active screen's, leaving the alternate
- * screen clears its own, and the main screen's outlives it. The snapshot
- * restores neither, so a region on either one skips it.
+ * screen clears its own, the main screen's outlives it, and a resize resets
+ * both. The snapshot restores neither, so a region on either one skips it.
  */
 export class MarginTracker {
   private carry = '';
@@ -186,6 +186,11 @@ export class MarginTracker {
       }
     }
     this.carry = text.slice(-REGEX_CARRY_CHARS);
+  }
+
+  /** The screen size changed: xterm resets both screens' margins. */
+  resize(): void {
+    this.main = this.alt = false;
   }
 
   private setActive(narrowed: boolean): void {

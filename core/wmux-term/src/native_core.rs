@@ -714,6 +714,11 @@ impl NativeTerminal {
                 "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
             );
         }
+        // Both terminals reset the margins of both screens on a size change.
+        if term.columns() != size.columns() || term.screen_lines() != size.screen_lines() {
+            self.feed.main_margins = false;
+            self.feed.alt_margins = false;
+        }
         term.resize(size);
         if synchronized {
             self.parser.advance(term, b"\x1b[?2026h");

@@ -437,6 +437,8 @@ async function generateXtermInner(req: SnapshotRequest): Promise<SnapshotOutcome
 
     const partialTail = new PartialSequenceTracker();
     const margins = new MarginTracker();
+    // Fires only on a real size change, as xterm then resets the margins.
+    terminal.onResize(() => margins.resize());
     const sgrMouse = new SgrMouseEncodingTracker();
     const cursor = new CursorVisibilityTracker();
     // Bytes at a chunk tail that form an incomplete UTF-8 char — carried into
