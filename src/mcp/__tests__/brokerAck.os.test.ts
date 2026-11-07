@@ -239,11 +239,15 @@ describe('broker handshake ack', () => {
   });
 
   it.runIf(hostable)('a hosted session takes its parent pid from the OS, not the handshake', async () => {
+    // Only what the broker logs for this connection counts.
+    const from = brokerLog.length;
+    const since = () => brokerLog.slice(from);
     const s = await open(handshake({ ack: 1, callerPpid: 1 }));
     const [first] = await s.lines(1);
     expect(first).toBe('{"wmuxBroker":1,"ok":true}');
-    await logged(`callerPpid 1 differs from the OS parent ${process.ppid}`);
-    await logged(`shim connected pid=${process.pid} ppid=${process.ppid} `);
+    await logged(`callerPpid 1 differs from the OS parent ${process.ppid}`, since);
+    await logged(`shim connected pid=${process.pid} ppid=${process.ppid} `, since);
+    expect(since()).not.toContain('ppid=1 ');
     s.socket.destroy();
   });
 
