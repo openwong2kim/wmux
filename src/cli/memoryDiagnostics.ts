@@ -148,7 +148,7 @@ export function renderMemoryDiagnostics(
       const misses = (c.fallbacks['unknown-visible'] ?? 0) + (c.fallbacks['tail-failed'] ?? 0);
       lines.push(`  ${site} tail reads: ${c.served} served, ${c.whole} whole ring fit, ${fallbacks} fell back${reasons ? ` (${reasons})` : ''}, ` +
         `${misses} missed after a tail parse, ${skipped} skipped the tail after repeated misses; ` +
-        `tail avg ${avg(c.tailMsTotal, c.reads)} (ring copy ${avg(c.ringCopyMsTotal, c.reads)}, scan ${avg(c.scanMsTotal, c.reads)}), ` +
+        `tail avg ${avg(c.tailMsTotal, c.reads - skipped)} (ring copy ${avg(c.ringCopyMsTotal, c.reads)}, scan ${avg(c.scanMsTotal, c.reads - skipped)}), ` +
         `whole-ring avg ${avg(c.fallbackMsTotal, fallbacks + skipped)} (max ${ms(c.fallbackMsMax)})`);
       if (c.checks) {
         const mismatches = Object.entries(c.mismatches).filter(([key]) => key !== 'any').map(([key, n]) => `${key} ${n}`).join(', ');

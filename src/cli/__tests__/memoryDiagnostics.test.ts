@@ -132,7 +132,7 @@ describe('memory diagnostics', () => {
     const text = renderMemoryDiagnostics(undefined, daemon, { available: false, reason: 'n/a' });
     expect(text).toContain('fleet tail reads: 6 served, 1 whole ring fit, 3 fell back (unknown-visible 2, margins 1), ' +
       '2 missed after a tail parse, 2 skipped the tail after repeated misses; ' +
-      'tail avg 3.0 ms (ring copy 1.0 ms, scan 0.3 ms), whole-ring avg 90 ms (max 100 ms)');
+      'tail avg 3.6 ms (ring copy 1.0 ms, scan 0.4 ms), whole-ring avg 90 ms (max 100 ms)');
     // A daemon from before the miss cap sends no `skipped`: read as none.
     const { skipped: _skipped, ...older } = fleet;
     expect(renderMemoryDiagnostics(undefined, { ...daemon, tailReads: { fleet: older } }, { available: false, reason: 'n/a' }))

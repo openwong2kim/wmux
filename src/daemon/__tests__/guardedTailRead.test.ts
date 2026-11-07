@@ -339,15 +339,46 @@ describe('guarded tail: a reader stops trying a tail that keeps missing', () => 
     expect((await read(s)).parses).toBe(2);
   });
 
-  it('tries the tail again after a long quiet stretch', async () => {
+  it('tries the tail again when output resumes after a long quiet stretch, not while it stays quiet', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-08T00:00:00Z'));
     const s = repaintRing();
+    const tick = (t: number) => s.ringBuffer.write(Buffer.from(`[1;60H${String(t).padStart(8, '7')}`));
     for (let i = 0; i < TAIL_MISS_CAP; i++) await read(s);
-    vi.setSystemTime(Date.now() + TAIL_QUIET_RETRY_MS - 1);
+    // Output keeps moving: no retry.
+    vi.setSystemTime(Date.now() + 1_000);
+    tick(1);
     expect((await read(s)).parses).toBe(1);
-    vi.setSystemTime(Date.now() + 1);
+    // Quiet for the whole stretch: reading again would only miss again.
+    vi.setSystemTime(Date.now() + TAIL_QUIET_RETRY_MS);
+    expect((await read(s)).parses).toBe(1);
+    // Output resumes after it: the app may have redrawn, so try once.
+    tick(2);
     expect((await read(s)).parses).toBe(2);
+    tick(3);
+    expect((await read(s)).parses).toBe(1);
+  });
+
+  it('a failed tail parse (a budget timeout under load) is not a miss', async () => {
+    const s = repaintRing();
+    let n = 0;
+    const failingTail = (initial: Buffer) => (n++ % 2 === 0
+      ? Promise.resolve({ ok: false as const, reason: 'budget' as const })
+      : generateTextSnapshotUnqueued({ cols: COLS, rows: ROWS, scrollback: 0, initial }));
+    for (let i = 0; i < TAIL_MISS_CAP + 1; i++) await guardedTailRead(s, { site: 'stallwatch', parse: failingTail as never });
+    expect(tailReadCounters().stallwatch).toMatchObject({ skipped: 0, fallbacks: { 'tail-failed': TAIL_MISS_CAP + 1 } });
+  });
+
+  it('counts each request variant apart: a deep-history read does not cap the screen read', async () => {
+    const s = repaintRing();
+    const { parse } = counting();
+    for (let i = 0; i < TAIL_MISS_CAP; i++) await guardedTailRead(s, { site: 'fleet', variant: 'scrollback:5000', parse });
+    const deep = counting();
+    await guardedTailRead(s, { site: 'fleet', variant: 'scrollback:5000', parse: deep.parse });
+    expect(deep.calls).toHaveLength(1);
+    const screen = counting();
+    await guardedTailRead(s, { site: 'fleet', variant: 'scrollback:0', parse: screen.parse });
+    expect(screen.calls).toHaveLength(2);
   });
 
   it('a tail served again clears the run', async () => {
