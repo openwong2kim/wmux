@@ -91,6 +91,25 @@ export function checkClaim(
   return String(now) === ctx.peerStartedAt ? { ok: true, via: 'same' } : refuse(kind, 'restarted', ctx, log);
 }
 
+/**
+ * Whether a claim checkClaim took is still good when it is minted, after the
+ * handler's awaits: a claim taken from the process itself needs that pid's
+ * start time unchanged since accept (otherwise it is refused and counted).
+ */
+export function claimStillHeld(
+  kind: string,
+  ctx: RpcContext | undefined,
+  claimedPid: number,
+  verdict: ClaimVerdict,
+  log: (line: string) => void = (line) => console.log(line),
+): boolean {
+  if (!verdict.ok || verdict.via !== 'same') return verdict.ok;
+  const now = startTimeOf(claimedPid);
+  if (now !== null && String(now) === ctx?.peerStartedAt) return true;
+  refuse(kind, now === null ? 'start-unread' : 'restarted', ctx, log);
+  return false;
+}
+
 /** main's startup peer read check (selfCheckPeerPid): null where the OS gives none. */
 export function notePeerReadCheck(verdict: string | null): void {
   if (verdict === null) peerRead = { state: 'not-read' };

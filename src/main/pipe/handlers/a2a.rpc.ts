@@ -53,7 +53,7 @@ import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFr
 import { getHandOutStore, type HandOutStore } from '../../handOut/handOutStore';
 import { isHandOutId } from '../../../shared/handOut';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
-import { checkClaim } from './peerPidShadow';
+import { checkClaim, claimStillHeld } from './peerPidShadow';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
   isRemoteWorkspaceId,
@@ -882,7 +882,8 @@ export function registerA2aRpc(
     // (peerPidShadow.checkClaim). A claim not taken gets no walk and no claim;
     // `entries` still go back for the caller's own walk.
     const callerPid = normalizeCallerPid((params as { callerPid?: unknown }).callerPid);
-    const callerRefused = callerPid != null && !checkClaim('callerPid', ctx, callerPid).ok;
+    const callerVerdict = callerPid != null ? checkClaim('callerPid', ctx, callerPid) : null;
+    const callerRefused = callerVerdict !== null && !callerVerdict.ok;
     // Start the snapshot CONCURRENTLY and bound the wait (at the walk below) to the
     // RPC budget: it feeds only the final walk, so it must never delay — or, past
     // the client's ~10s RPC deadline, SINK — the legacy mappings/entries fallback
@@ -979,7 +980,7 @@ export function registerA2aRpc(
     // below (claimTokenForPane, the thread claim) take these entries as proof
     // that the pane's shell is live.
     const claimParams = params as { codexThreadId?: unknown; hintedPtyId?: unknown };
-    const mayMintClaim = callerPid != null || claimParams.codexThreadId !== undefined || claimParams.hintedPtyId !== undefined;
+    const mayMintClaim = (callerPid != null && !callerRefused) || claimParams.codexThreadId !== undefined || claimParams.hintedPtyId !== undefined;
     const scannedEntries = [...entries];
     const scannedMappings = { ...mappings };
     const applyLiveEntries = (live: typeof entries): void => {
@@ -1142,6 +1143,12 @@ export function registerA2aRpc(
       const confirmed = await confirmEntriesConnection();
       if (!stillConfirmed(confirmed)) resolved = null;
     }
+    // The walk and the checks above awaited: the claimed process must still be
+    // the one the connection came from when its claim is minted.
+    if (resolved && callerPid != null && callerVerdict && !claimStillHeld('callerPid', ctx, callerPid, callerVerdict)) {
+      resolved = null;
+      runClaim = null;
+    }
     const workspaceToken = resolved ? (runClaim ?? claimTokenForPane(resolved.workspaceId, resolved.ptyId)) : null;
     // A call from a shared Codex app-server names its thread instead: the pane
     // comes from the thread's owner record (written by wmux's Codex hooks from
@@ -1153,17 +1160,21 @@ export function registerA2aRpc(
       const codexCallerPid = normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid);
       // The thread claim rests on codexCallerPid being the shared server's
       // child, so that pid is held to the same check as callerPid.
-      const codexTaken = codexCallerPid != null && checkClaim('codexCallerPid', ctx, codexCallerPid).ok;
-      const sharedServerChild = codexTaken && await isSharedServerChild(codexCallerPid);
+      // One call that names the same pid for both is checked (and counted) once.
+      const codexVerdict = codexCallerPid == null ? null
+        : codexCallerPid === callerPid && callerVerdict ? callerVerdict : checkClaim('codexCallerPid', ctx, codexCallerPid);
+      const sharedServerChild = codexVerdict !== null && codexVerdict.ok && await isSharedServerChild(codexCallerPid);
       const confirmed = await confirmEntriesConnection();
-      if (stillConfirmed(confirmed)) threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
+      if (stillConfirmed(confirmed) && codexCallerPid != null && codexVerdict && claimStillHeld('codexCallerPid', ctx, codexCallerPid, codexVerdict)) {
+        threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
+      }
     }
     // The walk missed but the caller's env names a pane. Main says whether
     // that pane is live, and attests it only when the daemon follows a live
     // agent inside it from WSL — the one pane kind whose processes main cannot
     // walk. A name that is not a live pane (a scheduled run's `auto-` session,
     // which belongs to no workspace) is reported as such, never as a pane.
-    const hintedPane = resolved || callerRefused
+    const hintedPane = resolved
       ? null
       : await resolveHintedPane((params as { hintedPtyId?: unknown }).hintedPtyId, entries, confirmEntriesConnection);
     return {

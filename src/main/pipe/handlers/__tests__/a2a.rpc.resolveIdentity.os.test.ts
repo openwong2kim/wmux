@@ -1171,10 +1171,25 @@ describe('a2a.resolve.identity — a claim is taken only from the process it nam
     expect((await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' })).resolved).toBeNull();
   });
 
-  it('refuses a claim over a connection with no peer pid', async () => {
-    const result = await resolveAs({ callerPid: 39876 });
+  it('refuses a claim over a connection with no peer pid, and still says whether the hinted pane is live', async () => {
+    const result = await resolveAs({ callerPid: 39876, hintedPtyId: 'daemon-shell' });
     expect(result.resolved).toBeNull();
     expect(result.workspaceToken).toBeUndefined();
+    expect(result).toHaveProperty('hintedPane');
+  });
+
+  it('refuses a claim whose process changed between the check and the mint', async () => {
+    let reads = 0;
+    setClaimStartTimeSource((pid) => (pid === 39876 ? (reads++ === 0 ? 100n : 101n) : null));
+    const result = await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' });
+    expect(result.resolved).toBeNull();
+    expect(result.workspaceToken).toBeUndefined();
+  });
+
+  it('counts one refusal for a call that names the same pid as caller and Codex caller', async () => {
+    const { identitySummary } = await import('../peerPidShadow');
+    await resolveAs({ callerPid: 39876, codexThreadId: '019a0000-0000-7000-8000-0000000000ee', codexCallerPid: 39876 });
+    expect(identitySummary('darwin').refusals['no-peer']).toBe(1);
   });
 
   it('refuses a claim from the broker\'s pid with another start time, or with none recorded', async () => {

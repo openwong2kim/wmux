@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RpcContext } from '../../../../shared/rpc';
 import {
   checkClaim,
+  claimStillHeld,
   identitySummary,
   notePeerReadCheck,
   resetClaimChecks,
@@ -68,6 +69,23 @@ describe('checkClaim', () => {
     for (const [line] of log.mock.calls) expect(line).not.toMatch(/39876|60001/);
     for (let i = 0; i < 100; i++) checkClaim('callerPid', wire(1), 2, { platform: 'darwin', log: (l) => log(l) });
     expect(log.mock.calls.length).toBeLessThanOrEqual(64);
+  });
+});
+
+describe('claimStillHeld', () => {
+  it('holds a claim from the process itself only while its start time is unchanged', () => {
+    const verdict = checkClaim('callerPid', wire(100, '10'), 100, quiet);
+    expect(claimStillHeld('callerPid', wire(100, '10'), 100, verdict, () => undefined)).toBe(true);
+    setClaimStartTimeSource(() => 11n);
+    expect(claimStillHeld('callerPid', wire(100, '10'), 100, verdict, () => undefined)).toBe(false);
+    setClaimStartTimeSource(() => null);
+    expect(claimStillHeld('callerPid', wire(100, '10'), 100, verdict, () => undefined)).toBe(false);
+    expect(identitySummary('darwin').refusals).toMatchObject({ restarted: 1, 'start-unread': 1 });
+  });
+
+  it('holds a broker claim as taken, and never a refused one', () => {
+    expect(claimStillHeld('callerPid', wire(500, '50'), 4242, { ok: true, via: 'broker' }, () => undefined)).toBe(true);
+    expect(claimStillHeld('callerPid', wire(), 100, { ok: false, reason: 'no-peer' }, () => undefined)).toBe(false);
   });
 });
 
