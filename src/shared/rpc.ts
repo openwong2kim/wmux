@@ -266,6 +266,12 @@ export interface RpcContext {
    * names, and a2a.resolve.identity checks pane claims against it.
    */
   peerPid?: number;
+  /**
+   * The start time of the process `peerPid` named when the connection was
+   * accepted (shared/processStartTime.ts), as a decimal string. Set only by
+   * PipeServer, and absent when it could not be read.
+   */
+  peerStartedAt?: string;
   clientName?: string;
   clientVersion?: string;
   /**

@@ -149,6 +149,8 @@ type RpcDispatchOptions = (
   isCurrent?: () => boolean;
   /** The pid the OS reports for the connection's peer (PipeServer, shared/peerPid.ts). */
   peerPid?: number;
+  /** That peer's start time, read with its pid (PipeServer, shared/processStartTime.ts). */
+  peerStartedAt?: string;
 };
 
 export class RpcRouter {
@@ -402,6 +404,7 @@ export class RpcRouter {
       ...(hostedWorkspace !== undefined && { hostedWorkspace }),
       // The connection's peer as the OS reports it, from PipeServer only.
       ...(opts?.peerPid !== undefined && { peerPid: opts.peerPid }),
+      ...(opts?.peerStartedAt !== undefined && { peerStartedAt: opts.peerStartedAt }),
       clientName:
         typeof request.clientName === 'string' && request.clientName.trim().length > 0
           ? request.clientName.trim()

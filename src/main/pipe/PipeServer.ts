@@ -6,6 +6,7 @@ import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../../shared/se
 import type { RpcRequest } from '../../shared/rpc';
 import { RpcRouter } from './RpcRouter';
 import { peerPidOf } from '../../shared/peerPid';
+import { processStartTime } from '../../shared/processStartTime';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -30,6 +31,8 @@ export class PipeServer {
   private readonly connectedSockets = new Set<net.Socket>();
   /** The pid the OS reports for each socket's peer, where it reports one (shared/peerPid.ts). */
   private readonly peerPids = new Map<net.Socket, number>();
+  /** Each peer's start time (shared/processStartTime.ts), read with its pid. */
+  private readonly peerStartedAts = new Map<net.Socket, string>();
   /** Why peer pids were unavailable, each logged once. */
   private readonly peerPidMisses = new Set<string>();
   /**
@@ -134,6 +137,7 @@ export class PipeServer {
         this.connectedSockets.delete(socket);
         this.rateLimits.delete(socket);
         this.peerPids.delete(socket);
+        this.peerStartedAts.delete(socket);
       });
       this.handleConnection(socket);
     });
@@ -277,8 +281,9 @@ export class PipeServer {
 
   /**
    * Read the peer's pid now, in the connection callback, before the fd can be
-   * closed and reused. Handlers see it as ctx.peerPid; a2a.resolve.identity
-   * checks pane claims against it.
+   * closed and reused, and that process's start time with it. Handlers see
+   * them as ctx.peerPid and ctx.peerStartedAt; a2a.resolve.identity checks
+   * claims against them.
    */
   private notePeerPid(socket: net.Socket): void {
     // Named pipes have no peer pid to read here.
@@ -292,6 +297,8 @@ export class PipeServer {
       return;
     }
     this.peerPids.set(socket, peer.pid);
+    const startedAt = processStartTime(peer.pid);
+    if (startedAt !== null) this.peerStartedAts.set(socket, String(startedAt));
     // Linux only: SO_PEERCRED carries the uid, macOS's LOCAL_PEERPID does not.
     const ownUid = process.getuid?.();
     if (peer.uid !== undefined && ownUid !== undefined && peer.uid !== ownUid && !this.peerPidMisses.has('uid')) {
@@ -433,6 +440,7 @@ export class PipeServer {
         externalWire: true,
         ...(signal ? { signal } : {}),
         ...(this.peerPids.has(socket) ? { peerPid: this.peerPids.get(socket) } : {}),
+        ...(this.peerStartedAts.has(socket) ? { peerStartedAt: this.peerStartedAts.get(socket) } : {}),
       })
       .then((response) => {
         if (!socket.destroyed) {
