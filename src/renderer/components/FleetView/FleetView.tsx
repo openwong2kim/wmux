@@ -15,6 +15,7 @@ import {
   type FleetPane,
   type FleetRow,
 } from '../../stores/selectors/fleet';
+import { selectDownHostIds, selectOutdatedRemoteKeys } from '../../stores/selectors/pcRail';
 import { selectApprovalInbox } from '../../stores/selectors/approvalInbox';
 import { selectReviewQueue, selectReviewQueueIds, type ReviewQueueEntry } from '../../stores/selectors/reviewQueue';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
@@ -151,6 +152,8 @@ export default function FleetView() {
   // (the sidebar roster has shown them since #1163). Fleet View is a VIEW; the
   // deck's commandable roster deliberately does not pass this.
   const remoteWorkspaces = useStore((s) => s.remoteWorkspaces);
+  const downHostIds = useStore(selectDownHostIds);
+  const outdatedRemoteKeys = useStore(selectOutdatedRemoteKeys);
 
   // S-C2: tab lives in uiSlice (not FleetView-local) so the A2A / MCP approval
   // modals can suppress themselves while the inbox tab is open (AppLayout delta
@@ -230,12 +233,12 @@ export default function FleetView() {
   const { panes, groups: boardGroups } = useMemo(() => selectFleetBoard({
       workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
       surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
-      commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces,
+      commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds, outdatedRemoteKeys,
       surfaceLastMessage, surfaceOutputAt: useStore.getState().surfaceOutputAt,
       unverifiablePaneMinutes: unverifiableMinutes, usageLimitWaiting,
     }, { now, sortMode: fleetSortMode }), [usageLimitWaiting, workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
     surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
-    commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes,
+    commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, downHostIds, outdatedRemoteKeys, unverifiableMinutes,
     surfaceLastMessage, now, fleetSortMode]);
   // A PC the rail cannot reach: Open on its rows could not reach it, so they
   // leave every section and chip until it answers; `away` counts them for its
