@@ -12,11 +12,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../Pane', async () => {
   const { default: Dialog, DialogHeader } = await import('../../ui/Dialog');
+  const { getLeafPanes } = await import('../../../../shared/paneUtils');
   return {
-    // A pane root as Pane.tsx renders one; the first leaf has a dialog open.
-    default: ({ pane, workspace }: { pane: { id: string }; workspace: { rootPane: { children?: Array<{ id: string }> } } }) =>
+    // A pane root as Pane.tsx renders one; each workspace's first leaf has a dialog open.
+    default: ({ pane, workspace }: { pane: { id: string }; workspace: { rootPane: Parameters<typeof getLeafPanes>[0] } }) =>
       React.createElement('div', { 'data-leaf': pane.id, className: 'relative isolate' },
-        workspace.rootPane.children?.[0]?.id === pane.id
+        getLeafPanes(workspace.rootPane)[0]?.id === pane.id
           ? React.createElement(Dialog, { onClose: () => undefined },
             React.createElement(DialogHeader, { title: 'Opened from a pane' }))
           : null),
@@ -24,7 +25,9 @@ vi.mock('../Pane', async () => {
 });
 
 import PaneContainer from '../PaneContainer';
-import { DialogHost } from '../../ui/dialogHost';
+import { DialogHost, DialogLayer } from '../../ui/dialogHost';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import AddRemotePaneModal from '../../Remote/AddRemotePaneModal';
 import A2aLinkDialog from '../../Remote/A2aLinkDialog';
 import A2aShareDialog from '../../Remote/A2aShareDialog';
@@ -71,7 +74,7 @@ const ws = () => {
 describe('PaneContainer keeps a dialog host beside the panes', () => {
   it('a dialog opened inside a pane renders outside every pane root, inside the workspace slot', () => {
     const before = ws();
-    useStore.getState().splitPane(before.rootPane.id, 'horizontal', before.id);
+    if (before.rootPane.type === 'leaf') useStore.getState().splitPane(before.rootPane.id, 'horizontal', before.id);
     const w = ws();
     const s = mount(<PaneContainer pane={w.rootPane} workspace={w} />);
     const dialog = s.querySelector('[role="dialog"]');
@@ -86,6 +89,61 @@ describe('PaneContainer keeps a dialog host beside the panes', () => {
     const hosts = s.querySelectorAll<HTMLElement>('[data-dialog-host]');
     expect(hosts).toHaveLength(1);
     expect(hosts[0].style.isolation).toBe('isolate');
+  });
+});
+
+describe('the workspace viewport keeps one dialog layer over every tile', () => {
+  const twoWorkspaces = () => {
+    if (useStore.getState().workspaces.length < 2) useStore.getState().addWorkspace('second');
+    return useStore.getState().workspaces.slice(0, 2);
+  };
+
+  // Multiview: each tile mounts its own PaneContainer. The dialog a pane in
+  // the first tile opens must not sit in a context of that tile's own, under
+  // the next tile and the agent toolbar (z-20) rendered after it.
+  it('a dialog from the first tile renders in the shared layer, after every tile and the toolbar', () => {
+    const [a, b] = twoWorkspaces();
+    const s = mount(
+      <>
+        <DialogLayer>
+          <div data-tile="a"><PaneContainer pane={a.rootPane} workspace={a} /></div>
+          <div data-tile="b"><PaneContainer pane={b.rootPane} workspace={b} /></div>
+        </DialogLayer>
+        <div data-toolbar="" className="absolute inset-0 z-20" />
+      </>,
+    );
+    const dialog = s.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    const layer = s.querySelector<HTMLElement>('[data-dialog-layer]');
+    expect(layer?.contains(dialog), 'in the shared layer').toBe(true);
+    for (const tile of s.querySelectorAll('[data-tile]')) expect(tile.contains(dialog), 'outside every tile').toBe(false);
+    expect(layer?.style.zIndex).toBe('var(--z-pane-dialog)');
+    // One host per pane tree, all inside the layer.
+    expect(layer?.querySelectorAll('[data-dialog-host]')).toHaveLength(2);
+  });
+
+  it('sits over the agent toolbar and under a rail page', () => {
+    const root = path.resolve(__dirname, '../../../../..');
+    const read = (p: string) => fs.readFileSync(path.join(root, p), 'utf8');
+    const layer = Number(/--z-pane-dialog:\s*(\d+)/.exec(read('src/renderer/styles/globals.css'))?.[1]);
+    const toolbar = Number(/className="absolute inset-0 z-(\d+) pointer-events-none"/.exec(read('src/renderer/components/AgentToolbar/ToolbarHost.tsx'))?.[1]);
+    const railPage = Number(/\.wmux-page \{[^}]*z-index:\s*(\d+)/.exec(read('src/renderer/styles/ui.css'))?.[1]);
+    expect(layer).toBeGreaterThan(toolbar);
+    expect(layer).toBeLessThan(railPage);
+  });
+
+  // Single view: every workspace stays mounted, the inactive ones hidden. A
+  // dialog hides with the workspace that opened it, not with the layer.
+  it('hides a dialog while its workspace is not the one shown', () => {
+    const [a, b] = twoWorkspaces();
+    const s = mount(
+      <DialogLayer>
+        <PaneContainer pane={a.rootPane} workspace={a} isWorkspaceVisible={false} />
+        <PaneContainer pane={b.rootPane} workspace={b} isWorkspaceVisible />
+      </DialogLayer>,
+    );
+    const host = s.querySelector('[role="dialog"]')?.closest<HTMLElement>('[data-dialog-host]');
+    expect(host?.style.display).toBe('none');
   });
 });
 

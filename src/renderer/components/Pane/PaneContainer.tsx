@@ -105,15 +105,15 @@ interface PaneContainerProps {
 }
 
 /**
- * The panes of one workspace. The outermost container also holds the dialog
+ * The panes of one workspace. The outermost container also keeps the dialog
  * host (ui/dialogHost): each pane root is its own stacking context, so a
- * dialog a pane opens renders there, beside the panes, and still hides with
- * the workspace.
+ * dialog a pane opens renders there, out of the panes, and hides while the
+ * workspace does.
  */
 export default function PaneContainer(props: PaneContainerProps) {
   const nested = useHasDialogHost();
   const tree = <PaneTree {...props} />;
-  return nested ? tree : <DialogHost>{tree}</DialogHost>;
+  return nested ? tree : <DialogHost visible={props.isWorkspaceVisible ?? true}>{tree}</DialogHost>;
 }
 
 function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = false }: PaneContainerProps) {
