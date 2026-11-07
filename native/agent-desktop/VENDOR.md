@@ -9,9 +9,13 @@ computer-use helper bundle. This file is the only one wmux added.
 - Upstream commit: `b43ac4f6e892ef608f8851428613c4009f0e84c7` (version 1.2.0)
 - Kept, byte for byte: `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`,
   `clippy.toml`, `deny.toml`, `LICENSE`, `README.md`, `.gitignore`, `crates/`,
-  `src/`
+  `src/`, `skills/`
+- `skills/` is Markdown only. It is kept because
+  `crates/core/src/commands/skills.rs` embeds it with `include_str!` (for
+  upstream's `skills` command, which wmux never runs), so the source builds
+  without being modified.
 - Left out (not needed to build the binary): `assets/`, `probes/`,
-  `skills/`, `AGENTS.md`, `.agents/`, `.claude`, `.github/`, `.githooks/`,
+  `AGENTS.md`, `.agents/`, `.claude`, `.github/`, `.githooks/`,
   `.gitleaks.toml`, `.gitleaksignore`, `.gitattributes`, `apps/`,
   `benchmarks/`, `docs/`, `npm/`, `scripts/`, `tests/`, `CHANGELOG.md`,
   `CONCEPTS.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`,
@@ -21,7 +25,9 @@ Build (from this directory; `rust-toolchain.toml` pins the toolchain):
 
     cargo build --locked --release -p agent-desktop
 
-`native/computer-use-macos/build.sh` runs that build and signs the result.
+`native/computer-use-macos/build.sh` runs that build (for arm64) and signs the
+result. The binary is built at upstream's default minimum macOS version; the
+helper bundle it ships in still requires macOS 14 (its Info.plist).
 
 ## Updating
 
