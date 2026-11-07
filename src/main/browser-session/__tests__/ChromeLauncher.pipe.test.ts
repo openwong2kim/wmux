@@ -427,8 +427,26 @@ describe('chromeSaid', () => {
     expect(said.endsWith('END')).toBe(true);
   });
 
-  it('writes a home folder as ~, in any case, and ignores an empty one', () => {
-    const said = chromeSaid('[1:2:ERROR] cannot open C:\\Users\\someone\\AppData\\x and c:\\users\\someone\\y\n', ['C:\\Users\\someone', '']);
-    expect(said).toBe('[1:2:ERROR] cannot open ~\\AppData\\x and ~\\y');
+  it('writes a home folder as ~ in its backslash, forward-slash, file URL and JSON-escaped spellings', () => {
+    const home = 'C:\\Users\\someone';
+    expect(chromeSaid('cannot open C:\\Users\\someone\\AppData\\x\n', [home])).toBe('cannot open ~\\AppData\\x');
+    expect(chromeSaid('Failed to load file:///C:/Users/someone/a.html\n', [home])).toBe('Failed to load file:///~/a.html');
+    expect(chromeSaid('{"path":"C:\\\\Users\\\\someone\\\\x"}\n', [home])).toBe('{"path":"~\\\\x"}');
+    expect(chromeSaid('at /home/someone/.config and /home/someone\n', ['/home/someone/'])).toBe('at ~/.config and ~');
+  });
+
+  it('masks a home only where the path ends there', () => {
+    expect(chromeSaid('C:\\Users\\someoneelse\\x\n', ['C:\\Users\\someone'])).toBe('C:\\Users\\someoneelse\\x');
+  });
+
+  it('skips a root-like or empty home', () => {
+    const text = '/usr/lib/chromium/chrome: error while loading C:\\x\n';
+    expect(chromeSaid(text, ['/', 'C:\\', 'C:', ''])).toBe('/usr/lib/chromium/chrome: error while loading C:\\x');
+  });
+
+  it('never splits a character outside the BMP when it cuts', () => {
+    const said = chromeSaid(`${'😀'.repeat(60)}\n`, [], 3, 50) as string;
+    expect(Array.from(said)).toHaveLength(51);
+    expect(said).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
   });
 });

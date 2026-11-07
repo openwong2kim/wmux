@@ -77,10 +77,32 @@ const STDERR_END_WAIT_MS = 500;
 export function chromeSaid(stderr: string, homes: string[] = [], lines = 3, max = 400): string | null {
   let said = stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(-lines).join(' | ');
   if (!said) return null;
-  for (const home of [...homes].sort((a, b) => b.length - a.length)) {
-    if (home) said = said.split(new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')).join('~');
+  said = maskHomes(said, homes);
+  // Cut by code points, so a character outside the BMP is never split.
+  const chars = Array.from(said);
+  return chars.length > max ? `…${chars.slice(-max).join('')}` : said;
+}
+
+/**
+ * Each home folder as `~`, in its backslash, forward-slash and JSON-escaped
+ * spellings, and only where the path ends there (so `C:\Users\ann` never eats
+ * the start of `C:\Users\anna`). A root-like home (`/`, `C:\`) is skipped.
+ * Case-insensitive on Windows only.
+ */
+function maskHomes(text: string, homes: string[]): string {
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const spellings = new Set<string>();
+  for (const raw of homes) {
+    const home = raw.replace(/[\\/]+$/, '');
+    if (/^([A-Za-z]:)?[\\/]*$/.test(home)) continue;
+    spellings.add(home);
+    spellings.add(home.replace(/\\/g, '/'));
+    spellings.add(home.replace(/\\/g, '\\\\'));
   }
-  return said.length > max ? `…${said.slice(-max)}` : said;
+  const ordered = [...spellings].sort((a, b) => b.length - a.length);
+  if (ordered.length === 0) return text;
+  const pattern = new RegExp(`(${ordered.map(escape).join('|')})(?=[\\\\/\\s"'\`)\\]:;,|]|$)`, process.platform === 'win32' ? 'gi' : 'g');
+  return text.replace(pattern, '~');
 }
 /**
  * Pipe mode: liveness checks that must fail in a row before the launcher lets
@@ -2146,18 +2168,33 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (stderr) {
       stderr.setEncoding('utf8'); // a character split across reads stays whole
       stderr.on('data', (text: string) => {
-        stderrTail = (stderrTail + text).slice(-STARTUP_STDERR_TAIL);
+        const joined = stderrTail + text;
+        if (joined.length <= STARTUP_STDERR_TAIL) {
+          stderrTail = joined;
+          return;
+        }
+        // Over the cap: keep the newest whole lines only. A cut line could hold
+        // half a home path that maskHomes would no longer recognise.
+        const cut = joined.slice(-STARTUP_STDERR_TAIL);
+        const nl = cut.indexOf('\n');
+        stderrTail = nl === -1 ? '' : cut.slice(nl + 1);
       });
       // A broken stderr pipe is never a reason to fail; unhandled, it would throw.
       stderr.on('error', () => undefined);
     }
     /** The last probe that failed: what a start that ran out of time ran into. */
     let lastStartError: string | null = null;
-    /** Why a start failed: what Chrome said on stderr, and on a timeout the last probe error. */
-    const startFailure = async (what: string, withProbe: boolean): Promise<Error> => {
-      await Promise.race([stderrEnded, new Promise((r) => setTimeout(r, STDERR_END_WAIT_MS))]);
+    /**
+     * Why a start failed: what Chrome said on stderr, and the last probe error
+     * on a timeout, or on an exit Chrome said nothing about.
+     */
+    const startFailure = async (what: string, timedOut: boolean): Promise<Error> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([stderrEnded, new Promise((r) => { timer = setTimeout(r, STDERR_END_WAIT_MS); })]);
+      clearTimeout(timer);
       const homes = [homedir(), this.childEnv?.USERPROFILE, this.childEnv?.HOME, process.env.USERPROFILE, process.env.HOME];
       const said = chromeSaid(stderrTail, homes.filter((h): h is string => !!h));
+      const withProbe = timedOut || !said;
       const detail = [withProbe && lastStartError && `last error: ${lastStartError}`, said && `Chrome said: ${said}`].filter(Boolean).join('; ');
       return new Error(detail ? `ChromeLauncher: ${what} (${detail})` : `ChromeLauncher: ${what}`);
     };

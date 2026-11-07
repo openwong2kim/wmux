@@ -143,6 +143,25 @@ describe('ChromeLauncher ready state', () => {
     expect(message).not.toContain('last error');
   });
 
+  it('does not wait long on a stderr that never ends after the exit', async () => {
+    const launcher = new ChromeLauncher('/tmp/held-profile');
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+    spawnMock.mockImplementationOnce(() => {
+      const child = new EventEmitter() as FakeChild & { stderr: PassThrough };
+      child.kill = () => undefined;
+      // A helper process still holds the handle: stderr stays open.
+      child.stderr = new PassThrough();
+      setTimeout(() => child.emit('exit', 1), 0);
+      return child;
+    });
+
+    const started = Date.now();
+    const message = await launcher.ensureRunning().then(() => null, (err: Error) => err.message);
+    expect(message).toBe('ChromeLauncher: Chrome exited during startup');
+    // The bounded wait (500 ms), not a hang.
+    expect(Date.now() - started).toBeLessThan(3_000);
+  });
+
   it('reports nothing when the launched Chrome exits while its first probe is in flight', async () => {
     const launcher = new ChromeLauncher('/tmp/exit-profile');
     const child = spawnWithPort('/tmp/exit-profile', 9555);
