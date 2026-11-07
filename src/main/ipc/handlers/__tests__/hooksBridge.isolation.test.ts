@@ -28,7 +28,11 @@ vi.mock('electron', () => ({
 }));
 // CLAUDE_CONFIG_DIR unset: no login-shell probe from a test, and the default
 // folder is the one defaultPaths() names.
-vi.mock('../../../hooks/claudeConfigDirProbe', () => ({ claudeConfigDirEnv: async () => undefined }));
+vi.mock('../../../hooks/claudeConfigDirProbe', () => ({
+  INSTALL_PROBE_TIMEOUT_MS: 5000,
+  claudeConfigDirEnv: async () => undefined,
+  readClaudeConfigDirEnv: async () => ({ value: undefined, read: true }),
+}));
 vi.mock('../../../account/accountStore', () => ({
   getAccountStore: () => ({ listAccounts: () => state.list }),
 }));

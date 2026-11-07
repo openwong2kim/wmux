@@ -5,6 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -179,5 +180,49 @@ describe('a target whose write throws', () => {
     expect(rows.find((r) => r.settingsPath === settingsIn(stuck))?.outcome.ok).toBe(false);
     expect(hooksIn(envDir)).toBeGreaterThan(0);
     expect(hooksIn(a)).toBeGreaterThan(0);
+  });
+
+  it('reports the profile the run asked for on the failed target', async () => {
+    const stuck = path.join(tmp, 'acct-stuck');
+    fs.mkdirSync(path.join(stuck, 'settings.json'), { recursive: true });
+    writeAccounts([{ name: 'stuck', configDir: stuck }]);
+    const { json, exit } = await run(['--signals-only']);
+    expect(exit).toBe(1);
+    const row = (json.claudeTargets as Array<TargetRow & { outcome: { profile?: string } }>)
+      .find((r) => r.settingsPath === settingsIn(stuck));
+    expect(row?.outcome).toMatchObject({ ok: false, profile: 'signals-only' });
+  });
+
+  it('--status keeps a folder whose check throws, as failed with its error, and exits 1', async () => {
+    const a = path.join(tmp, 'acct-a');
+    const stuck = path.join(tmp, 'acct-stuck');
+    fs.mkdirSync(a, { recursive: true });
+    fs.mkdirSync(stuck, { recursive: true });
+    writeAccounts([{ name: 'stuck', configDir: stuck }, { name: 'A', configDir: a }]);
+    // An unreadable file reads as corrupt; a throw is anything else that goes
+    // wrong in the check, simulated at its first file access.
+    const realExists = fs.existsSync;
+    vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
+      if (String(p) === settingsIn(stuck)) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      return realExists(p);
+    });
+    syncBuiltinESMExports();
+    const { json, exit } = await run(['--status']);
+    vi.mocked(fs.existsSync).mockRestore();
+    syncBuiltinESMExports();
+    expect(exit).toBe(1);
+    const rows = json.claudeTargets as TargetRow[];
+    expect(rows.map((r) => r.settingsPath)).toEqual([settingsIn(envDir), settingsIn(stuck), settingsIn(a)]);
+    expect(rows[1].outcome).toMatchObject({ ok: false, error: 'EACCES: permission denied' });
+  });
+
+  it('--status exits 1 for a corrupt account file, as install does', async () => {
+    const bad = path.join(tmp, 'acct-bad');
+    fs.mkdirSync(bad, { recursive: true });
+    fs.writeFileSync(settingsIn(bad), '{ not json', 'utf8');
+    writeAccounts([{ name: 'bad', configDir: bad }]);
+    const { json, exit } = await run(['--status']);
+    expect(exit).toBe(1);
+    expect((json.claudeTargets as Array<{ outcome: { settingsCorrupted?: boolean } }>)[1].outcome.settingsCorrupted).toBe(true);
   });
 });

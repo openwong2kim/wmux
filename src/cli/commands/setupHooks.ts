@@ -1887,11 +1887,11 @@ function printTargetLine(target: HookTarget, summary: string, failed: boolean): 
   (failed ? console.warn : console.log)(`also ${target.label}: ${summary} (${target.settingsPath})`);
 }
 
-/** An install outcome for a target whose write threw. */
-export function failedInstall(paths: SetupHooksPaths, error: string): InstallOutcome {
+/** An install outcome for a target whose write threw, on the profile the run asked for. */
+export function failedInstall(paths: SetupHooksPaths, error: string, profile: HookProfile = 'full'): InstallOutcome {
   return {
     ok: false, settingsPath: paths.settingsPath, bridgeDest: paths.bridgeDest, bridgeSource: paths.bridgeSource,
-    events: [], profile: 'full', bridgeCopied: false, pluginDetected: false, removedForPlugin: 0, warning: null, error,
+    events: [], profile, bridgeCopied: false, pluginDetected: false, removedForPlugin: 0, warning: null, error,
   };
 }
 
@@ -1900,7 +1900,13 @@ function installSummary(o: InstallOutcome): string {
   return o.events.length ? `hooks installed (${o.events.length} events, ${o.profile})` : 'nothing to write';
 }
 
-function statusSummary(o: StatusOutcome): string {
+/** An extra target's status: its outcome, or why it could not be read (an unreadable folder). */
+export type TargetStatus = StatusOutcome | { ok: false; settingsPath: string; error: string };
+
+const statusFailed = (o: TargetStatus): o is Extract<TargetStatus, { error: string }> => 'error' in o;
+
+function statusSummary(o: TargetStatus): string {
+  if (statusFailed(o)) return `FAILED: ${o.error}`;
   if (o.settingsCorrupted) return 'settings.json is not valid JSON';
   if (!o.settingsExists) return 'no settings.json';
   if (o.installedEvents.length === 0) return 'wmux hooks NOT installed';
@@ -2012,9 +2018,7 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
 
   if (status) {
     const claude = statusHooks(paths);
-    const rest = others.flatMap((t) => {
-      try { return [{ target: t, outcome: statusHooks(t.paths) }]; } catch { return []; }
-    });
+    const rest = others.map((t) => contained<TargetStatus>(t, statusHooks, (error) => ({ ok: false, settingsPath: t.settingsPath, error })));
     const integrations = lifecycle.statusLifecycleIntegrations(lifecyclePaths);
     // Preserve the legacy Claude-only root fields for scripts while exposing
     // the richer per-integration objects alongside them.
@@ -2025,7 +2029,7 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
       console.log(JSON.stringify(outcome, null, 2));
     } else {
       printStatus(claude, false);
-      for (const r of rest) printTargetLine(r.target, statusSummary(r.outcome), r.outcome.settingsCorrupted);
+      for (const r of rest) printTargetLine(r.target, statusSummary(r.outcome), statusFailed(r.outcome) || r.outcome.settingsCorrupted);
       printAssetStatus('codex bridge', integrations.codexBridge);
       if (!integrations.codexNotify.configExists) {
         console.log(`codex notify: Codex config not found (${integrations.codexNotify.configPath})`);
@@ -2048,10 +2052,11 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
       printAssetStatus('codex hooks bridge', integrations.codexHooksBridge);
       printCodexHooksStatus(integrations.codexHooks);
     }
-    // Keep the existing scripted contract: status is non-zero only when the
-    // Claude settings file is corrupt, not merely because an optional CLI is
-    // absent or a user-owned integration occupies its slot.
-    if (claude.settingsCorrupted) process.exit(1);
+    // Keep the existing scripted contract: status is non-zero only when a
+    // Claude settings file is corrupt or could not be read, not merely because
+    // an optional CLI is absent or a user-owned integration occupies its slot.
+    // Every Claude folder counts, as it does for install and remove.
+    if (claude.settingsCorrupted || rest.some((r) => statusFailed(r.outcome) || r.outcome.settingsCorrupted)) process.exit(1);
     return;
   }
 
@@ -2059,7 +2064,7 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   // not prevent safe Codex/OpenCode installation (and vice versa). Each Claude
   // folder is its own target too: a corrupt account file stops only itself.
   const claude = installHooks(paths, requestedProfile);
-  const rest = others.map((t) => contained(t, (p) => installHooks(p, requestedProfile), (error) => failedInstall(t.paths, error)));
+  const rest = others.map((t) => contained(t, (p) => installHooks(p, requestedProfile), (error) => failedInstall(t.paths, error, requestedProfile)));
   const codexVersionOutput = probeCodexVersion();
   const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths, { codexVersionOutput });
   const opencodeTerminalChat = openCodeTerminalChatIntegration({ ...terminalChatOptions, install: true });

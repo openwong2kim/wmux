@@ -18,9 +18,15 @@ vi.mock('electron', () => ({
   app: { isPackaged: true },
   ipcMain: { removeHandler: vi.fn(), handle: vi.fn() },
 }));
-// CLAUDE_CONFIG_DIR unset: no login-shell probe from a test, and the default
-// folder is the one defaultPaths() names.
-vi.mock('../../../hooks/claudeConfigDirProbe', () => ({ claudeConfigDirEnv: async () => undefined }));
+// No login-shell probe from a test. By default CLAUDE_CONFIG_DIR reads as
+// unset, so the default folder is the one defaultPaths() names; a test can
+// queue what the Install's read of the shell returns.
+const probe = vi.hoisted(() => ({ reads: [] as Array<{ value: string | undefined; read: boolean }> }));
+vi.mock('../../../hooks/claudeConfigDirProbe', () => ({
+  INSTALL_PROBE_TIMEOUT_MS: 5000,
+  claudeConfigDirEnv: async () => undefined,
+  readClaudeConfigDirEnv: async () => probe.reads.shift() ?? { value: undefined, read: true },
+}));
 
 const accounts = vi.hoisted(() => ({ list: [] as Account[], base: null as SetupHooksPaths | null }));
 vi.mock('../../../account/accountStore', () => ({
@@ -60,6 +66,7 @@ beforeEach(() => {
   expect(installHooks(base).ok).toBe(true);
   accounts.base = base;
   accounts.list = [];
+  probe.reads = [];
   vi.mocked(ipcMain.handle).mockClear();
   // A packaged, unsuffixed instance: the only one these handlers write from.
   vi.stubEnv('WMUX_DATA_SUFFIX', '');
@@ -174,6 +181,25 @@ describe('Install covers every Claude folder (CLAUDE_CONFIG_DIR unset)', () => {
     expect(out.error).toContain('acct bad');
     expect(hooksIn(a)).toBeGreaterThan(0);
     expect(fs.readFileSync(path.join(bad, 'settings.json'), 'utf8')).toBe('{ not json');
+  });
+
+  it('a shell that never answered is said, not hidden; once it answers, the env folder is written', async () => {
+    const envDir = path.join(tmp, 'cfg-env');
+    fs.mkdirSync(envDir, { recursive: true });
+    probe.reads = [{ value: undefined, read: false }, { value: envDir, read: true }];
+    const install = handlerFor(IPC.HOOKS_BRIDGE_INSTALL);
+
+    const first = await install({}) as InstallOutcome;
+    expect(first.ok).toBe(true);
+    expect(first.settingsPath).toBe(base.settingsPath);
+    expect(first.warning).toContain('Could not read CLAUDE_CONFIG_DIR');
+    expect(fs.existsSync(path.join(envDir, 'settings.json'))).toBe(false);
+
+    const second = await install({}) as InstallOutcome;
+    expect(second.ok).toBe(true);
+    expect(second.settingsPath).toBe(path.join(envDir, 'settings.json'));
+    expect(second.warning).toBeNull();
+    expect(hooksIn(envDir)).toBeGreaterThan(0);
   });
 
   it('a new account folder gets the hooks when the default folder has them, and not otherwise', async () => {

@@ -38,7 +38,7 @@ import {
 } from '../../../cli/commands/setupHooks';
 import { getAccountStore, type Account } from '../../account/accountStore';
 import { getWmuxDir } from '../../../daemon/config';
-import { claudeConfigDirEnv } from '../../hooks/claudeConfigDirProbe';
+import { INSTALL_PROBE_TIMEOUT_MS, claudeConfigDirEnv, readClaudeConfigDirEnv } from '../../hooks/claudeConfigDirProbe';
 import { copiesSettingsJson } from '../../account/accountProvision';
 import {
   loadHooksPromptPreference,
@@ -189,8 +189,16 @@ function claudeAccountDirs(): Array<{ label: string; configDir: string }> {
 
 /** hookTargets as the app sees them: the probed env, the account store, defaultPaths(). */
 async function appHookTargets(action: 'install' | 'status'): Promise<HookTarget[]> {
-  return hookTargets({ action, env: await claudeConfigDirEnv(), wmuxDir: getWmuxDir(), accounts: claudeAccountDirs(), base: defaultPaths() }).targets;
+  return targetsFor(action, await claudeConfigDirEnv());
 }
+
+function targetsFor(action: 'install' | 'status', env: string | undefined): HookTarget[] {
+  return hookTargets({ action, env, wmuxDir: getWmuxDir(), accounts: claudeAccountDirs(), base: defaultPaths() }).targets;
+}
+
+/** Said when the login shell never answered, so its CLAUDE_CONFIG_DIR is unknown. */
+export const SHELL_ENV_UNREAD_WARNING =
+  "Could not read CLAUDE_CONFIG_DIR from your login shell, so only ~/.claude and the Claude accounts were written. If you set it in your shell profile, run 'wmux setup-hooks' in a terminal.";
 
 /**
  * Install into every Claude folder a claude can run with (hookTargets): the
@@ -200,8 +208,15 @@ async function appHookTargets(action: 'install' | 'status'): Promise<HookTarget[
  * others are still written.
  */
 export async function installAllHookTargets(): Promise<InstallOutcome> {
-  const [primary, ...others] = await appHookTargets('install');
-  const outcome = installHooks(primary.paths);
+  // A user-started install waits longer for the shell than boot does, and
+  // says so when it still got no answer rather than reporting a plain success.
+  const env = await readClaudeConfigDirEnv({ timeoutMs: INSTALL_PROBE_TIMEOUT_MS });
+  const [primary, ...others] = targetsFor('install', env.value);
+  const installed = installHooks(primary.paths);
+  const outcome = env.read
+    ? installed
+    : { ...installed, warning: [installed.warning, SHELL_ENV_UNREAD_WARNING].filter(Boolean).join(' ') };
+  if (!env.read) console.warn(`[hooksBridge] ${SHELL_ENV_UNREAD_WARNING}`);
   const failed = others
     .map((t) => {
       // A throw (a read-only folder) is that target's failure, not the call's.
@@ -246,9 +261,9 @@ export function registerHooksBridgeHandlers(): void {
   ipcMain.handle(
     IPC.HOOKS_BRIDGE_INSTALL,
     wrapHandler(IPC.HOOKS_BRIDGE_INSTALL, async (): Promise<InstallOutcome> => {
-      const paths = await primaryHookPaths();
       const refusal = claudeSettingsWriteRefusal();
       if (refusal) {
+        const paths = await primaryHookPaths();
         return {
           ok: false,
           settingsPath: paths.settingsPath,
