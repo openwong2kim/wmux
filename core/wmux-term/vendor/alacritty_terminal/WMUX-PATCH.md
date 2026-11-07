@@ -21,6 +21,11 @@ Local changes:
 - `src/term/cell.rs` uses the remaining u16 flag bit for SGR blink;
   `src/term/mod.rs` retains SGR 5, ignores SGR 6 like xterm, and clears blink on SGR 25/reset. This keeps
   the 24-byte cell layout while allowing native ANSI replay to preserve blink.
+- `src/term/mod.rs` fills the rows SD (`CSI Ps T`) inserts with default
+  attributes, as xterm.js's `InputHandler.scrollDown` does (it inserts
+  `DEFAULT_ATTR_DATA` blanks), where upstream used the current background.
+  Reverse index at the top margin keeps the erase colour (xterm.js
+  `reverseIndex`), so it now calls `scroll_down_relative` directly.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.

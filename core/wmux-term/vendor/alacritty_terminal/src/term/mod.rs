@@ -1494,8 +1494,12 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn scroll_down(&mut self, lines: usize) {
+        // wmux: SD (`CSI T`) fills with default attributes, as xterm.js's
+        // scrollDown does; IL and RI keep the erase colour.
+        let template = mem::take(&mut self.grid.cursor.template);
         let origin = self.scroll_region.start;
         self.scroll_down_relative(origin, lines);
+        self.grid.cursor.template = template;
     }
 
     #[inline]
@@ -1867,7 +1871,8 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Reversing index");
         // If cursor is at the top.
         if self.grid.cursor.point.line == self.scroll_region.start {
-            self.scroll_down(1);
+            // wmux: not `scroll_down`, which is SD's default-attribute fill.
+            self.scroll_down_relative(self.scroll_region.start, 1);
         } else {
             self.damage_cursor();
             self.grid.cursor.point.line = cmp::max(self.grid.cursor.point.line - 1, Line(0));

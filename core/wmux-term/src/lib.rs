@@ -42,6 +42,14 @@ mod native_serialize;
 mod parity_support;
 
 #[cfg(all(
+    test,
+    feature = "native-core",
+    feature = "bindings",
+    not(target_arch = "wasm32")
+))]
+mod scroll_parity;
+
+#[cfg(all(
     feature = "native-core",
     feature = "bindings",
     not(target_arch = "wasm32")

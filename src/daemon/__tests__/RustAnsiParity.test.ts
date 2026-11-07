@@ -137,6 +137,11 @@ const others: Case[] = [
   synthetic('hpa-vpa', '\x1b[5`a\x1b[3db'),
   synthetic('ich-dch-ech', 'abcdef\x1b[1;2H\x1b[2@\x1b[1P\x1b[2X'),
   synthetic('il-dl', '1\r\n2\r\n3\x1b[2;1H\x1b[L\x1b[2M'),
+  // SD fills with default attributes in xterm; IL and RI with the erase colour.
+  synthetic('sd-bg', '1\r\n2\r\n3\x1b[44m\x1b[1T\x1b[0mx'),
+  synthetic('sd-region-bg', '1\r\n2\r\n3\r\n4\x1b[2;4r\x1b[44m\x1b[2T\x1b[0m\x1b[rx'),
+  synthetic('il-bg', '1\r\n2\x1b[44m\x1b[H\x1b[L\x1b[0mx'),
+  synthetic('ri-top-bg', '1\r\n2\x1b[44m\x1b[H\x1bM\x1b[0mx'),
   synthetic('ed3', '1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\x1b[3J'),
   // ED 2 erases in place in xterm; Alacritty scrolls the screen into history.
   synthetic('ed2-primary', '1\r\n2\r\n3\x1b[2Jx'),
