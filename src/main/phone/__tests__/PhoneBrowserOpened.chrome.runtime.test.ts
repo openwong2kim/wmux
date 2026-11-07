@@ -3,6 +3,7 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { ChromeLauncher } from '../../browser-session/ChromeLauncher';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
+import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 import { createPhoneChromeDeps } from '../PhoneBrowserChrome';
 import { handlePhoneBrowser } from '../PhoneBrowser';
 import { MODES, requiredOnThisRunner, type Mode } from '../../../test-utils/realBrowserHarness';
@@ -55,7 +56,6 @@ function describeMode(mode: Mode): void {
   let profile: TempChromeProfile | null = null;
   let skipReason: string | null = null;
   let chrome: ReturnType<typeof createPhoneChromeDeps>;
-  const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
 
   beforeAll(async () => {
     server = http.createServer(serve);
@@ -63,19 +63,17 @@ function describeMode(mode: Mode): void {
     port = (server.address() as AddressInfo).port;
     profile = tempChromeProfile('wmux-opened-chrome-');
     const dir = profile.dir;
-    const savedProfile = process.env.USERPROFILE;
-    if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
     try {
       launcher = new ChromeLauncher(dir, {
         portEnvVar: null,
         profileName: `opened-${mode.name}`,
         extraArgs: [...(mode.headless ? ['--headless=new'] : []), '--use-mock-keychain', '--password-store=basic'],
+        // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
+        childEnv: realProfileBrowserEnv(),
       });
       await launcher.ensureRunning();
     } catch (err) {
       skipReason = `Chrome could not be launched here: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
-    } finally {
-      if (process.platform === 'win32') process.env.USERPROFILE = savedProfile;
     }
     const own = launcher;
     chrome = createPhoneChromeDeps({

@@ -3,6 +3,7 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { ChromeLauncher } from '../../browser-session/ChromeLauncher';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
+import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 import { createPhoneChromeDeps } from '../PhoneBrowserChrome';
 import { createPhoneBrowserStreams, STREAM_LINE_LIMIT, type PhoneBrowserStreams } from '../PhoneBrowserStream';
 import { handlePhoneBrowser } from '../PhoneBrowser';
@@ -88,7 +89,6 @@ function describeMode(mode: Mode): void {
   const pushes: Push[] = [];
   let streams: PhoneBrowserStreams;
   let chrome: ReturnType<typeof createPhoneChromeDeps>;
-  const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
 
   beforeAll(async () => {
     server = http.createServer(serve);
@@ -98,19 +98,17 @@ function describeMode(mode: Mode): void {
       preferences: { partition: { per_host_zoom_levels: { x: { localhost: { zoom_level: 1.0, last_modified: '13350000000000000' } } } } },
     });
     const dir = profile.dir;
-    const savedProfile = process.env.USERPROFILE;
-    if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
     try {
       launcher = new ChromeLauncher(dir, {
         portEnvVar: null,
         profileName: `stream-${mode.name}`,
         extraArgs: [...(mode.headless ? ['--headless=new'] : []), '--use-mock-keychain', '--password-store=basic'],
+        // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
+        childEnv: realProfileBrowserEnv(),
       });
       await launcher.ensureRunning();
     } catch (err) {
       skipReason = `Chrome could not be launched here: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
-    } finally {
-      if (process.platform === 'win32') process.env.USERPROFILE = savedProfile;
     }
     const own = launcher;
     chrome = createPhoneChromeDeps({

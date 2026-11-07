@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { PassThrough } from 'node:stream';
 import WebSocket from 'ws';
 import { FakeBrowser, type Command } from './fakePipeBrowser';
 
@@ -34,10 +35,10 @@ vi.mock('node:fs', async (orig) => {
   };
 });
 
-import { ChromeLauncher, chromeTransportKind } from '../ChromeLauncher';
+import { ChromeLauncher, chromeSaid, chromeTransportKind } from '../ChromeLauncher';
 import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
 
-type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; killed: boolean; exitCode: number | null; signalCode: string | null; signals: string[] };
+type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; stderr: PassThrough; killed: boolean; exitCode: number | null; signalCode: string | null; signals: string[] };
 
 /** A browser that exits (and closes its pipe) on Browser.close. */
 class PipeChrome extends FakeBrowser {
@@ -93,7 +94,8 @@ function spawnPipeChrome<T extends PipeChrome = PipeChrome>(
   child.signalCode = null;
   child.signals = [];
   const chrome = new Kind(child);
-  child.stdio = [null, null, null, chrome.fromMux, chrome.toMux];
+  child.stderr = new PassThrough();
+  child.stdio = [null, null, child.stderr, chrome.fromMux, chrome.toMux];
   child.kill = (signal = 'SIGTERM') => {
     child.signals.push(signal);
     child.killed = true;
@@ -136,7 +138,10 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(args.some((a) => a.startsWith('--remote-debugging-port'))).toBe(false);
     expect(args).not.toContain('--remote-allow-origins=*');
     expect(args).toContain('--disable-blink-features=AutomationControlled');
-    expect(opts.stdio).toEqual(['ignore', 'ignore', 'ignore', 'pipe', 'pipe']);
+    // stderr is read, so a failed start can quote Chrome.
+    expect(opts.stdio).toEqual(['ignore', 'ignore', 'pipe', 'pipe', 'pipe']);
+    // No childEnv: the child inherits process.env, as before.
+    expect(opts).not.toHaveProperty('env');
     expect(chrome.received.find((c) => c.method === 'Browser.getVersion')).toBeDefined();
     // Nothing went to a port.
     expect(fetchMock).not.toHaveBeenCalled();
@@ -361,6 +366,52 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await failed;
     expect(child.killed).toBe(true);
     expect(launcher.isRunning()).toBe(false);
+  });
+
+  it('a start that fails says why: the last startup error and what Chrome wrote on stderr', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { child } = spawnPipeChrome(SlowPipeChrome);
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    const launched = launcher.endpoint();
+    const outcome = launched.then(() => null, (err: Error) => err.message);
+    // What Chrome on Windows says when it refuses remote debugging, then noise.
+    child.stderr.write('DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.\r\n');
+    child.stderr.write('Created TensorFlow Lite XNNPACK delegate for CPU.\r\n');
+    await vi.advanceTimersByTimeAsync(42_000);
+    const message = await outcome;
+    expect(message).toContain('ChromeLauncher: CDP endpoint did not become ready in time');
+    expect(message).toContain('last error: ChromeLauncher: Browser.getVersion timed out');
+    expect(message).toContain('Chrome said: DevTools remote debugging requires a non-default data directory');
+  });
+
+  it('gives Chrome the childEnv test seam as its whole environment', async () => {
+    spawnPipeChrome();
+    const env = { PATH: '/bin', USERPROFILE: 'C:\\Users\\someone' };
+    const launcher = new ChromeLauncher('/tmp/pipe-profile', { childEnv: env });
+    await launcher.endpoint();
+    const [, , opts] = spawnMock.mock.calls[0] as [string, string[], { env?: NodeJS.ProcessEnv }];
+    expect(opts.env).toBe(env);
+    await launcher.dispose({ immediate: true });
+  });
+});
+
+describe('chromeSaid', () => {
+  it('keeps the last few non-empty lines, one each', () => {
+    expect(chromeSaid('a\r\n\r\nb\nc\nd\n')).toBe('b | c | d');
+    expect(chromeSaid('only\n', 3)).toBe('only');
+  });
+
+  it('is null when Chrome said nothing', () => {
+    expect(chromeSaid('')).toBeNull();
+    expect(chromeSaid('\r\n  \n')).toBeNull();
+  });
+
+  it('keeps the newest part of a long line', () => {
+    const said = chromeSaid(`${'x'.repeat(500)}END`, 3, 50) as string;
+    expect(said).toHaveLength(51);
+    expect(said.startsWith('…')).toBe(true);
+    expect(said.endsWith('END')).toBe(true);
   });
 
   it('quits through Browser.close on the pipe', async () => {
