@@ -131,6 +131,15 @@ describe.skipIf(process.platform === 'win32')('RunnerProcess', () => {
     expect(result).toEqual({ exitCode: 0, stdout: '["echo","snapshot"]', stderr: '' });
   });
 
+  it('reports a run as started when the runner started its child, and not for a run it refused', async () => {
+    const r = runner();
+    let started = 0;
+    await r.run(['echo', 'click'], { home: '/tmp/ad', timeoutMs: 5000, onStarted: () => { started += 1; } });
+    expect(started).toBe(1);
+    await expect(r.run(['fail'], { home: '/tmp/ad', timeoutMs: 5000, onStarted: () => { started += 1; } })).rejects.toMatchObject({ code: 'helper_unavailable' });
+    expect(started).toBe(1);
+  });
+
   it('runs several at once; a long one does not hold up a short one', async () => {
     const r = runner();
     const slow = r.run(['slow', '400'], { home: '/tmp/ad', timeoutMs: 5000 });

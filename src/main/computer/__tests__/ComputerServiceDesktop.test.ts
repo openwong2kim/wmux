@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
 import type { AppInfo, HelperMethod, WindowInfo } from '../../../shared/computer/protocol';
-import { ComputerService, DESKTOP_MAX_RUNS, DESKTOP_QUEUE_PER_AGENT, type ComputerAgent, type DesktopDeps, type HelperLike } from '../ComputerService';
+import { deliberateSleep } from '../../../test-utils/waitFor';
+import { CONTROL_RATE_PER_MINUTE, ComputerService, DESKTOP_MAX_RUNS, DESKTOP_QUEUE_PER_AGENT, type ComputerAgent, type DesktopDeps, type HelperLike } from '../ComputerService';
 import type { RunnerResult } from '../RunnerProcess';
 
 const textEdit: AppInfo = { id: 'com.apple.TextEdit', name: 'TextEdit', pid: 501, path: '/System/Applications/TextEdit.app' };
@@ -17,6 +18,9 @@ const targets: Record<string, { app: AppInfo; window: WindowInfo }> = {
   TextEdit: { app: textEdit, window: win(textEdit) },
   KeePassXC: { app: keepass, window: win(keepass) },
 };
+
+const ACTIONS = ['click', 'focus', 'select', 'toggle', 'check', 'uncheck', 'expand', 'collapse', 'scroll'] as const;
+const ACTION_SET: ReadonlySet<string> = new Set(ACTIONS);
 
 const AGENT_A: ComputerAgent = { key: 'agent-a', label: 'agent-a' };
 const AGENT_B: ComputerAgent = { key: 'agent-b', label: 'agent-b' };
@@ -42,6 +46,14 @@ function makeService(opts: {
   apps?: (n: number) => Listed[];
   askPerApp?: boolean;
   withDesktop?: boolean;
+  /** The refmap a snapshot or find writes; by default two bare entries of TextEdit's. */
+  refmap?: string;
+  /** Extra fields of a snapshot's data (complete). */
+  snapshotData?: Record<string, unknown>;
+  /** The runner never reports a run as started (it failed before spawning). */
+  neverStarts?: boolean;
+  /** What a ref action prints; the default answer covers everything else. */
+  act?: (argv: string[]) => RunnerResult | Promise<RunnerResult>;
 } = {}) {
   const calls: Array<{ method: HelperMethod; params: unknown }> = [];
   const helper: HelperLike = {
@@ -63,18 +75,20 @@ function makeService(opts: {
     if (argv[0] === 'snapshot' || argv[0] === 'find') {
       const id = `s${++seq}`;
       const windowId = argv.find((a) => a.startsWith('--window-id='))?.slice('--window-id='.length);
-      refmaps.set(id, refmapFor(textEdit.pid));
+      refmaps.set(id, opts.refmap ?? refmapFor(textEdit.pid));
       // A find reply names no window (agent-desktop find_live.rs).
       if (argv[0] === 'find') return ok('find', { matches: [{ ref_id: `@${id}:e1`, name: 'Save' }], snapshot_id: id, total_matches: 1, truncated: false });
-      return ok('snapshot', { app: 'TextEdit', snapshot_id: id, window: { id: windowId, title: 'Untitled' }, tree: {} });
+      return ok('snapshot', { app: 'TextEdit', snapshot_id: id, window: { id: windowId, title: 'Untitled' }, tree: {}, ...opts.snapshotData });
     }
     if (argv[0] === 'list-surfaces') return ok('list-surfaces', { pid: textEdit.pid, surfaces: [] });
     return ok(argv[0], { value: 'Hello' });
   };
   const desktop: DesktopDeps = {
-    run: vi.fn(async (argv: string[]) => {
+    run: vi.fn(async (argv: string[], _timeoutMs: number, onStarted?: () => void) => {
       runs.push(argv);
+      if (!opts.neverStarts) onStarted?.();
       if (argv[0] === 'list-apps') return ok('list-apps', { apps: (opts.apps ?? (() => [listedTextEdit]))(++listed) });
+      if (opts.act && ACTION_SET.has(argv[0])) return opts.act(argv);
       return (opts.answer ?? defaultAnswer)(argv);
     }),
     readRefmap: vi.fn(async (id: string) => refmaps.get(id) ?? ''),
@@ -165,7 +179,7 @@ describe('ComputerService.desktop', () => {
         if (argv[0] === 'wait') {
           // agent-desktop re-identifies the element and rewrites the refmap
           // while the wait is still running.
-          setRefmap('s1', JSON.stringify({ inner: { '@e1': { pid: textEdit.pid, healed: true } }, counter: 1 }));
+          setRefmap('s1', JSON.stringify({ inner: { '@e1': { pid: textEdit.pid, healed: true }, '@e2': { pid: textEdit.pid } }, counter: 2 }));
           await new Promise<void>((r) => { releaseWait = r; });
           return ok('wait', { found: true });
         }
@@ -288,7 +302,7 @@ describe('ComputerService.desktop', () => {
 
   it('refuses commands outside the read-only list, naming the list', async () => {
     const { service, desktop } = makeService();
-    for (const command of ['click', 'type', 'clipboard-get', 'batch', 'screenshot', 'launch', 'skills']) {
+    for (const command of ['type', 'clipboard-get', 'batch', 'screenshot', 'launch', 'skills']) {
       await expect(service.desktop(AGENT_A, { command, app: 'TextEdit' })).rejects.toThrow(/must be one of snapshot, find, get, is, list-surfaces, wait/);
     }
     expect(desktop.run).not.toHaveBeenCalled();
@@ -372,5 +386,205 @@ describe('ComputerService.desktop', () => {
 
     service.dispose();
     expect(desktop.dispose).toHaveBeenCalledTimes(2);
+  });
+});
+
+
+/** A refmap entry as agent-desktop writes it, with the fields wmux pins. */
+const entry = (over: Record<string, unknown> = {}) => ({
+  pid: textEdit.pid, retained_object: 'tok-1', role: 'button', process_instance: 'inst-1', states: ['enabled'], ...over,
+});
+const refmapOf = (inner: Record<string, unknown>) => JSON.stringify({ inner, counter: Object.keys(inner).length });
+const failed = (command: string, code: string, delivery?: string): RunnerResult => ({
+  exitCode: 1,
+  stdout: JSON.stringify({ version: '2.6', ok: false, command, error: { code, message: `${code} happened`, ...(delivery && { disposition: { delivery } }) } }),
+  stderr: '',
+});
+const oneButton = refmapOf({ '@e1': entry() });
+
+describe('ComputerService.desktopAct', () => {
+  it('refuses every action on the read path before anything runs', async () => {
+    const { service, desktop } = makeService();
+    for (const command of ACTIONS) {
+      await expect(service.desktop(AGENT_A, { command, args: { ref: '@s1:e1' } })).rejects.toMatchObject({ code: 'invalid_argument', message: expect.stringMatching(/is an action, not an observation/) });
+    }
+    expect(desktop.run).not.toHaveBeenCalled();
+  });
+
+  it('refuses a read on the action path before anything runs, as not delivered', async () => {
+    const { service, desktop } = makeService();
+    for (const command of ['get', 'snapshot', 'wait', 'type']) {
+      await expect(service.desktopAct(AGENT_A, { command, args: { ref: '@s1:e1' } })).rejects.toMatchObject({ code: 'invalid_argument', disposition: 'not_delivered' });
+    }
+    expect(desktop.run).not.toHaveBeenCalled();
+  });
+
+  it('acts on a ref of the agent\'s window snapshot in the background, with no lease, and reports it unverified', async () => {
+    const { service, runs, calls } = makeService({ refmap: oneButton });
+    const id = await snapshotOf(service);
+    const result = await service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e1` } });
+    expect(result).toEqual({ method: 'accessibility', verification: 'unverified', delivery: 'background', disposition: 'delivered_unverified' });
+    expect(runs.at(-1)).toEqual(['click', `@${id}:e1`]);
+    // Only the target was resolved: no lease, no foreground, no helper input.
+    expect(calls.map((c) => c.method)).toEqual(['resolveTarget']);
+    // The snapshot is still good for the next action.
+    await expect(service.desktopAct(AGENT_A, { command: 'toggle', args: { ref: `@${id}:e1` } })).resolves.toMatchObject({ delivery: 'background' });
+  });
+
+  it('binds a select value after "--" and passes the scroll flags', async () => {
+    const { service, runs } = makeService({ refmap: oneButton });
+    const id = await snapshotOf(service);
+    await service.desktopAct(AGENT_A, { command: 'select', args: { ref: `@${id}:e1`, value: '--app=Other' } });
+    expect(runs.at(-1)).toEqual(['select', `@${id}:e1`, '--', '--app=Other']);
+    await service.desktopAct(AGENT_A, { command: 'scroll', args: { ref: `@${id}:e1`, direction: 'down', amount: 3 } });
+    expect(runs.at(-1)).toEqual(['scroll', `@${id}:e1`, '--direction=down', '--amount=3']);
+  });
+
+  it('reports verified only when agent-desktop verified the effect', async () => {
+    const { service } = makeService({ refmap: oneButton, act: () => ok('click', { disposition: { delivery: 'delivered_verified' } }) });
+    const id = await snapshotOf(service);
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e1` } })).resolves.toMatchObject({ verification: 'verified', disposition: 'delivered' });
+  });
+
+  it('a failure after the run started is possibly delivered unless agent-desktop says it sent nothing; none is re-run', async () => {
+    for (const [reply, code, disposition] of [
+      [failed('click', 'ACTION_FAILED'), 'internal', 'delivered_unverified'],
+      [failed('click', 'TIMEOUT'), 'timeout', 'delivered_unverified'],
+      [failed('click', 'ACTION_FAILED', 'delivery_uncertain'), 'internal', 'delivered_unverified'],
+      [failed('click', 'STALE_REF', 'not_delivered'), 'element_stale', 'not_delivered'],
+      // A headless refusal (it would need the pointer or the foreground): final.
+      [failed('click', 'POLICY_DENIED', 'not_delivered'), 'action_not_supported', 'not_delivered'],
+    ] as const) {
+      const { service, runs, calls } = makeService({ refmap: oneButton, act: () => reply });
+      const id = await snapshotOf(service);
+      await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e1` } })).rejects.toMatchObject({ code, disposition });
+      expect(runs.filter((argv) => argv[0] === 'click')).toHaveLength(1);
+      expect(calls.map((c) => c.method)).toEqual(['resolveTarget']);
+    }
+  });
+
+  it('a runner timeout after the start is possibly delivered; a failure before the start was not delivered', async () => {
+    const timedOut = makeService({ refmap: oneButton, act: () => { throw new ComputerError('timeout', 'agent-desktop did not answer'); } });
+    const a = await snapshotOf(timedOut.service);
+    await expect(timedOut.service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${a}:e1` } })).rejects.toMatchObject({ code: 'timeout', disposition: 'delivered_unverified' });
+
+    const unstarted = makeService({ refmap: oneButton, neverStarts: true, act: () => { throw new ComputerError('helper_unavailable', 'missing'); } });
+    const b = await snapshotOf(unstarted.service);
+    await expect(unstarted.service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${b}:e1` } })).rejects.toMatchObject({ code: 'helper_unavailable', disposition: 'not_delivered' });
+  });
+
+  it('a stop during the action kills it, reports it possibly delivered, and a late reply is not used', async () => {
+    let release: (r: RunnerResult) => void = () => undefined;
+    const { service, desktop } = makeService({ refmap: oneButton, act: () => new Promise<RunnerResult>((r) => { release = r; }) });
+    const id = await snapshotOf(service);
+    const pending = service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e1` } });
+    await vi.waitFor(() => expect((desktop.run as ReturnType<typeof vi.fn>).mock.calls.some(([argv]) => argv[0] === 'click')).toBe(true), { timeout: 5_000 });
+    service.abort();
+    expect(desktop.abort).toHaveBeenCalled();
+    release(ok('click', {}));
+    await expect(pending).rejects.toMatchObject({ code: 'aborted', disposition: 'delivered_unverified' });
+  });
+
+  it('refuses a ref whose snapshot or entry changed before the action, sending nothing', async () => {
+    for (const changed of [refmapOf({ '@e1': entry({ role: 'textfield' }) }), refmapOf({ '@e1': entry({ retained_object: 'tok-2' }) }), refmapOf({ '@e1': entry({ pid: 999 }) })]) {
+      const { service, runs, setRefmap } = makeService({ refmap: oneButton });
+      const id = await snapshotOf(service);
+      setRefmap(id, changed);
+      await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e1` } })).rejects.toMatchObject({ code: 'snapshot_unknown', disposition: 'not_delivered' });
+      expect(runs.some((argv) => argv[0] === 'click')).toBe(false);
+      // The snapshot is gone, for reads too.
+      await expect(service.desktop(AGENT_A, { command: 'get', args: { ref: `@${id}:e1` } })).rejects.toMatchObject({ code: 'snapshot_unknown' });
+    }
+  });
+
+  it('drops the snapshot when the action left any pinned entry changed, and reports the action possibly delivered', async () => {
+    const box: { set?: (id: string, text: string) => void; id?: string } = {};
+    const { service, setRefmap } = makeService({
+      refmap: refmapOf({ '@e1': entry(), '@e2': entry({ retained_object: 'tok-2' }) }),
+      act: () => {
+        // The action re-identified another element under @e2.
+        box.set!(box.id!, refmapOf({ '@e1': entry(), '@e2': entry({ retained_object: 'tok-9' }) }));
+        return ok('click', {});
+      },
+    });
+    box.set = setRefmap;
+    box.id = await snapshotOf(service);
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${box.id}:e1` } })).rejects.toMatchObject({ code: 'policy_denied', disposition: 'delivered_unverified' });
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${box.id}:e2` } })).rejects.toMatchObject({ code: 'snapshot_unknown', disposition: 'not_delivered' });
+  });
+
+  it('never acts on a password field, nor on a text field from an incomplete snapshot', async () => {
+    const secure = makeService({ refmap: refmapOf({ '@e1': entry({ role: 'textfield', states: ['enabled', 'secure'] }) }) });
+    const a = await snapshotOf(secure.service);
+    await expect(secure.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${a}:e1` } })).rejects.toMatchObject({ code: 'policy_denied', disposition: 'not_delivered' });
+    expect(secure.runs.some((argv) => argv[0] === 'focus')).toBe(false);
+
+    const partial = makeService({ refmap: refmapOf({ '@e1': entry({ role: 'textfield' }) }), snapshotData: { complete: false } });
+    const b = await snapshotOf(partial.service);
+    await expect(partial.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${b}:e1` } })).rejects.toMatchObject({ code: 'policy_denied' });
+
+    const unreadable = makeService({ refmap: refmapOf({ '@e1': entry({ role: 'textfield', states: 'secure' }) }) });
+    const d = await snapshotOf(unreadable.service);
+    await expect(unreadable.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${d}:e1` } })).rejects.toMatchObject({ code: 'policy_denied' });
+
+    // agent-desktop leaves an empty state list out: a plain text field.
+    const plain = makeService({ refmap: refmapOf({ '@e1': { pid: textEdit.pid, retained_object: 'tok-1', role: 'textfield' } }) });
+    const e = await snapshotOf(plain.service);
+    await expect(plain.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${e}:e1` } })).resolves.toMatchObject({ delivery: 'background' });
+
+    const whole = makeService({ refmap: refmapOf({ '@e1': entry({ role: 'textfield' }) }) });
+    const c = await snapshotOf(whole.service);
+    await expect(whole.service.desktopAct(AGENT_A, { command: 'focus', args: { ref: `@${c}:e1` } })).resolves.toMatchObject({ delivery: 'background' });
+  });
+
+  it('takes refs from window snapshots only', async () => {
+    const { service, runs } = makeService({ refmap: oneButton });
+    const id = (await service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit', args: { surface: 'menu' } })).data.snapshot_id as string;
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e1` } })).rejects.toMatchObject({ code: 'invalid_argument', disposition: 'not_delivered' });
+    expect(runs.some((argv) => argv[0] === 'click')).toBe(false);
+  });
+
+  it('refuses a forged ref, an unknown snapshot and another agent\'s snapshot', async () => {
+    const { service, runs } = makeService({ refmap: oneButton });
+    const id = await snapshotOf(service, AGENT_A);
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e9` } })).rejects.toMatchObject({ code: 'snapshot_unknown' });
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: '@nope:e1' } })).rejects.toMatchObject({ code: 'snapshot_unknown' });
+    await expect(service.desktopAct(AGENT_B, { command: 'click', args: { ref: `@${id}:e1` } })).rejects.toMatchObject({ code: 'snapshot_unknown' });
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: 'e1' } })).rejects.toMatchObject({ code: 'invalid_argument' });
+    expect(runs.some((argv) => argv[0] === 'click')).toBe(false);
+  });
+
+  it('counts against the input actions\' rate cap', async () => {
+    const { service } = makeService({ refmap: oneButton });
+    const id = await snapshotOf(service);
+    for (let i = 0; i < CONTROL_RATE_PER_MINUTE; i += 1) await service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e1` } });
+    await expect(service.desktopAct(AGENT_A, { command: 'click', args: { ref: `@${id}:e1` } })).rejects.toMatchObject({ code: 'input_busy', disposition: 'not_delivered' });
+  });
+
+  it('waits in the agent\'s desktop queue: an action queued behind a running wait starts after it', async () => {
+    let releaseWait: (() => void) | null = null;
+    const box: { set?: (id: string, text: string) => void } = {};
+    const { service, runs, setRefmap } = makeService({
+      act: () => ok('click', {}),
+      answer: async (argv) => {
+        if (argv[0] === 'snapshot') {
+          box.set!('s1', oneButton);
+          return ok('snapshot', { app: 'TextEdit', snapshot_id: 's1', window: { id: 'w-5010' } });
+        }
+        await new Promise<void>((r) => { releaseWait = r; });
+        return ok('wait', { found: true });
+      },
+    });
+    box.set = setRefmap;
+    await snapshotOf(service);
+    const waiting = service.desktop(AGENT_A, { command: 'wait', args: { element: '@s1:e1' } });
+    await vi.waitFor(() => expect(releaseWait).not.toBeNull(), { timeout: 5_000 });
+    const clicking = service.desktopAct(AGENT_A, { command: 'click', args: { ref: '@s1:e1' } });
+    await deliberateSleep(20, 'proving an absence: the click must not start while the wait holds the queue');
+    expect(runs.some((argv) => argv[0] === 'click')).toBe(false);
+    releaseWait!();
+    await expect(waiting).resolves.toMatchObject({ data: { found: true } });
+    await expect(clicking).resolves.toMatchObject({ delivery: 'background' });
+    expect(runs.map((argv) => argv[0]).slice(-2)).toEqual(['wait', 'click']);
   });
 });
