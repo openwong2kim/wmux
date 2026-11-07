@@ -311,6 +311,15 @@ describe('computer MCP tool', () => {
     expect(computerCalls()).toEqual([]);
   });
 
+  it('refuses list-apps, which only main runs, as a desktop command from an agent', async () => {
+    enabled.value = true;
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'list-apps', app: 'TextEdit' } });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect(computerCalls()).toEqual([]);
+  });
+
   it('keeps desktop fields out of input actions', async () => {
     enabled.value = true;
     reply = () => ({ method: 'synthetic', verification: 'unverified' });

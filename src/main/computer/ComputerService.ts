@@ -543,6 +543,8 @@ export class ComputerService {
     const discard = (): never =>
       fail('policy_denied', `agent-desktop answered for something other than ${target.app.name}; its reply was discarded`);
     if (byName && !(await this.soleByName(desktop, byName, generation))) discard();
+    // A reply that names its process must name the vetted one, bracket or not.
+    if (reply.data.pid !== undefined && reply.data.pid !== target.app.pid) discard();
     const window = reply.data.window as { id?: unknown } | undefined;
     if (plan.checksWindow && window?.id !== `w-${target.window.id}`) discard();
     const snapshotId = reply.data.snapshot_id;

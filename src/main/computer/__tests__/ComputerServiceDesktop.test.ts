@@ -200,6 +200,25 @@ describe('ComputerService.desktop', () => {
     await expect(service.desktop(AGENT_A, { command: 'list-surfaces', app: 'TextEdit' })).rejects.toMatchObject({ code: 'policy_denied' });
   });
 
+  it('discards a reply that names another process even when the name check before and after is clean', async () => {
+    const { service, runs } = makeService({ answer: () => ok('list-surfaces', { pid: 999, surfaces: [{ id: 'w-1', type: 'window', title: 'Vault' }] }) });
+    await expect(service.desktop(AGENT_A, { command: 'list-surfaces', app: 'TextEdit' })).rejects.toMatchObject({ code: 'policy_denied' });
+    expect(runs.map((argv) => argv[0])).toEqual(['list-apps', 'list-surfaces', 'list-apps']);
+  });
+
+  it('keeps a snapshot of a window with nothing to press, whose refmap lists no refs', async () => {
+    // What agent-desktop wrote for a borderless window holding one label (measured).
+    const box: { set?: (id: string, text: string) => void } = {};
+    const { service, setRefmap } = makeService({
+      answer: () => {
+        box.set!('sempty', '{"inner":{},"counter":0}');
+        return ok('snapshot', { app: 'TextEdit', snapshot_id: 'sempty', ref_count: 0, window: { id: 'w-5010' }, tree: { role: 'window' } });
+      },
+    });
+    box.set = setRefmap;
+    await expect(service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit' })).resolves.toMatchObject({ data: { snapshot_id: 'sempty' } });
+  });
+
   it('runs a command that names the app only while the vetted process is the one app by that name, before and after', async () => {
     const counted = (argv: string[]): RunnerResult => (argv[0] === 'find' ? ok('find', { count: 3 }) : ok(argv[0], {}));
     // The vetted app quit during the run and a same-named one is alone now.
