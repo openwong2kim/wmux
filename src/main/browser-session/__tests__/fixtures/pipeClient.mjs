@@ -5,6 +5,8 @@
 //   eval        evaluate on the first page               -> "ok eval <value>"
 //   big <n>     n evaluations each returning ~1 MB       -> "ok big"
 //   page+big    page and big 8 at once (frames in flight) -> "ok page+big"
+//   chatty <kb> the first page logs <kb> KB to the console every 10 ms, a
+//               steady stream of events toward this client -> "ok chatty"
 // Page errors and unhandled rejections print "error <message>".
 import readline from 'node:readline';
 import { chromium } from 'playwright-core';
@@ -35,5 +37,6 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   else if (command === 'eval') done(first.evaluate(() => document.title), 'eval');
   else if (command === 'big') done(big(Number(arg) || 1), 'big');
   else if (command === 'page+big') done(Promise.all([openPage(), big(8)]).then(() => undefined), 'page+big');
+  else if (command === 'chatty') done(first.evaluate((kb) => { const line = 'x'.repeat(kb * 1024); setInterval(() => console.log(line), 10); }, Number(arg) || 16), 'chatty');
 });
 say('ready');

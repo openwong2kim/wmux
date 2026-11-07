@@ -96,7 +96,8 @@ afterEach(async () => {
 });
 
 describe.skipIf(!CHROME)('the pipe\'s stall watch, real Chrome', () => {
-  it('a stopped client no longer holds another client\'s new tab, and works again once resumed', { timeout: 60_000 }, async () => {
+  // SIGSTOP and SIGCONT: none on Windows.
+  it.skipIf(process.platform === 'win32')('a stopped client no longer holds another client\'s new tab, and works again once resumed', { timeout: 60_000 }, async () => {
     const { endpoint } = await start();
     const a = await spawnClient(endpoint.url);
     process.kill(a.proc.pid as number, 'SIGSTOP');
@@ -117,6 +118,35 @@ describe.skipIf(!CHROME)('the pipe\'s stall watch, real Chrome', () => {
     expect(await a.ask('eval')).toBe('ok eval first');
     expect(await a.ask('page')).toBe('ok page');
     expect(a.lines.filter((l) => l.startsWith('error'))).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('a stopped client with a backlog, and events still coming its way, is let go within a few periods', { timeout: 90_000 }, async () => {
+    const { endpoint, mux } = await start();
+    const a = await spawnClient(endpoint.url);
+    // The endpoint's view of A's socket (only A is attached yet).
+    const drainOf = () => {
+      const clients = [...(mux as unknown as { clients: Set<{ drain?: () => { buffered: number; flushed: number } }> }).clients];
+      return clients.find((c) => c.drain)?.drain?.() ?? { buffered: 0, flushed: 0 };
+    };
+    // A steady stream toward A (its page's console, ~3 MB/s), then A stops:
+    // what the socket can take, it takes, and the rest waits in the endpoint.
+    expect(await a.ask('chatty 32')).toBe('ok chatty');
+    process.kill(a.proc.pid as number, 'SIGSTOP');
+    const backlogBy = performance.now() + 20_000;
+    while (drainOf().buffered < (4 << 20) && performance.now() < backlogBy) await new Promise((r) => setTimeout(r, 50));
+    const atArm = drainOf();
+    expect(atArm.buffered, 'a backlog of at least 4 MB waits for A').toBeGreaterThanOrEqual(4 << 20);
+    const b = await chromium.connectOverCDP(endpoint.url);
+    browsers.push(b);
+    const started = performance.now();
+    const page = await b.contexts()[0].newPage();
+    await page.goto('data:text/html,<title>b</title>');
+    const tookMs = performance.now() - started;
+    const counters = cdpPipeCounters().watchdog;
+    const after = drainOf();
+    console.log(`[watchdog] B's new tab with A stopped behind a backlog: ${Math.round(tookMs)} ms; backlog ${atArm.buffered} -> ${after.buffered} B, flushed +${after.flushed - atArm.flushed} B; counters ${JSON.stringify(counters)}`);
+    expect(fired()).toBeGreaterThanOrEqual(1);
+    expect(tookMs).toBeLessThan(5 * STALL_MS);
   });
 
   it(`a healthy client is never taken for stopped: ${ROUNDS} new pages, main blocked ${BLOCK_MS} ms after each arm, large frames in flight`, { timeout: 180_000 }, async () => {
