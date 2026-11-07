@@ -1,7 +1,7 @@
 name: Native terminal core
 on:
   pull_request:
-    paths: ['core/wmux-term/**', 'src/daemon/**', 'src/shared/**', 'src/main/pty/**', 'src/main/ipc/handlers/*terminalCore*', 'src/renderer/components/Settings/**', 'bench/native-core-verify.ts', 'bench/native-interpreter-verify.ts', 'bench/fixtures/**', 'scripts/*native*', 'scripts/lib/native-terminal-targets.mjs', 'scripts/*rust*', 'scripts/__tests__/generateRustUnicode11.os.test.mjs', 'scripts/__tests__/nativeTerminalPackage.os.test.mjs', '.github/workflows/release.yml', 'forge.config.ts', 'package.json', 'package-lock.json', '.github/workflows/native-terminal-core.yml', '.github/workflows/rust-engine-daemon.yml', 'vitest.rust-engine.config.ts', 'src/test-utils/requireRustEngine.ts']
+    paths: ['core/wmux-term/**', 'src/daemon/**', 'src/shared/**', 'src/main/pty/**', 'src/main/ipc/handlers/*terminalCore*', 'src/renderer/components/Settings/**', 'bench/native-core-verify.ts', 'bench/native-interpreter-verify.ts', 'bench/fixtures/**', 'scripts/*native*', 'scripts/lib/native-terminal-targets.mjs', 'scripts/*rust*', 'scripts/__tests__/generateRustUnicode11.os.test.mjs', 'scripts/__tests__/nativeTerminalPackage.os.test.mjs', '.github/workflows/release.yml', 'forge.config.ts', 'package.json', 'package-lock.json', '.github/workflows/native-terminal-core.yml', '.github/workflows/rust-engine-daemon.yml', 'vitest.rust-engine.config.ts', 'src/test-utils/requireRustEngine.ts', 'core/harness/corpus/**', 'src/renderer/terminal/__tests__/fixtures/**']
   workflow_dispatch:
     inputs:
       soak:
@@ -68,6 +68,21 @@ jobs:
       # Stub WMUX_RUST_SNAPSHOT_MODULE, which WMUX_TERMINAL_CORE_MODULE would override.
       - name: Opt-in snapshot module contracts
         run: npx vitest run src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/AnsiSnapshotBackend.test.ts src/daemon/__tests__/RustSnapshot.test.ts
+      # The unit lane builds no module, so on CI these suites skip there. Here
+      # the module is built: name it and require it, so a missing module fails
+      # instead of skipping. Every Rust*Parity suite in the tree runs, so a new
+      # or renamed one cannot drop out. Linux is left out: the linux-rust-daemon
+      # job below already runs them with the built module required.
+      - name: Rust snapshot parity with xterm (built module required)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          suites=(src/daemon/__tests__/Rust*Parity.test.ts)
+          [ -e "${suites[0]}" ] || { echo "no Rust*Parity suite found"; exit 1; }
+          npx vitest run "${suites[@]}"
+        env:
+          WMUX_REQUIRE_RUST_CORE: '1'
+          WMUX_RUST_SNAPSHOT_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
       - name: Output interpretation contracts
         run: npx vitest run src/daemon/__tests__/OutputInterpreter.test.ts src/daemon/util/__tests__/outputModeTracker.test.ts src/main/pty/__tests__/OscParser.test.ts
       - name: Retain native verification evidence
