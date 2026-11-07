@@ -1,5 +1,5 @@
 import { createContext, useContext, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 /**
  * Where a Dialog opened from inside a pane renders. A pane root is its own
@@ -23,16 +23,20 @@ export function useHasDialogHost(): boolean {
 }
 
 /**
- * Provide a dialog host for everything below. The host element is an empty
- * `display: contents` sibling of the children, so it adds no box to the
- * layout; a dialog's root is `position: fixed` and sizes to the viewport.
+ * Provide a dialog host for everything below. The host element is a sibling
+ * after the children with no size of its own (a dialog's root is
+ * `position: fixed` and sizes to the viewport). It is its own stacking
+ * context at the panes' level: what it holds paints above the panes before
+ * it, and under whatever covers them, as a rail page does.
  */
+const HOST_STYLE: CSSProperties = { position: 'absolute', top: 0, left: 0, width: 0, height: 0, isolation: 'isolate' };
+
 export function DialogHost({ children }: { children: ReactNode }) {
   const [host, setHost] = useState<HTMLElement | null>(null);
   return (
     <DialogHostContext.Provider value={host}>
       {children}
-      <div ref={setHost} style={{ display: 'contents' }} data-dialog-host="" />
+      <div ref={setHost} style={HOST_STYLE} data-dialog-host="" />
     </DialogHostContext.Provider>
   );
 }

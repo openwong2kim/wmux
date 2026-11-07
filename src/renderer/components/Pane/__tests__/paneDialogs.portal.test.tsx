@@ -81,8 +81,11 @@ describe('PaneContainer keeps a dialog host beside the panes', () => {
     for (const leaf of leaves) {
       expect(leaf.contains(dialog), `outside pane ${leaf.getAttribute('data-leaf')}`).toBe(false);
     }
-    // One host for the whole tree, not one per split.
-    expect(s.querySelectorAll('[data-dialog-host]')).toHaveLength(1);
+    // One host for the whole tree, not one per split, and its own stacking
+    // context at the panes' level: a rail page that covers the panes covers it.
+    const hosts = s.querySelectorAll<HTMLElement>('[data-dialog-host]');
+    expect(hosts).toHaveLength(1);
+    expect(hosts[0].style.isolation).toBe('isolate');
   });
 });
 
