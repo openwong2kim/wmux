@@ -6,6 +6,7 @@ import { findLeaf } from '../../../shared/paneUtils';
 import { useStore } from '../../stores';
 import PaneComponent from './Pane';
 import { DialogHost, useHasDialogHost } from '../ui/dialogHost';
+import { childCorners } from './paneCorners';
 
 /**
  * How far around a divider's 1px line the library lets the pointer grab it
@@ -112,6 +113,9 @@ interface PaneContainerProps {
    *  render tree — the global zoomedPaneId alone cannot tell whether a pane
    *  in a DIFFERENT (still visible) workspace tree is affected. */
   isZoomHidden?: boolean;
+  /** The workspace column's corners this subtree reaches (paneCorners.ts);
+   *  set only for the active single-view workspace. */
+  corners?: string;
 }
 
 /**
@@ -126,7 +130,7 @@ export default function PaneContainer(props: PaneContainerProps) {
   return nested ? tree : <DialogHost visible={props.isWorkspaceVisible ?? true}>{tree}</DialogHost>;
 }
 
-function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = false }: PaneContainerProps) {
+function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = false, corners }: PaneContainerProps) {
   const activePaneId = useStore((s) => {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     return ws?.activePaneId || '';
@@ -338,6 +342,7 @@ function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = f
         isActive={pane.id === activePaneId}
         isWorkspaceVisible={isWorkspaceVisible}
         isZoomHidden={isZoomHidden}
+        corners={corners}
       />
     );
   }
@@ -347,6 +352,7 @@ function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = f
   // Zoom only affects this branch when the zoomed leaf lives somewhere below
   // it; a zoomed pane in another workspace (or none) leaves rendering as-is.
   const zoomInSubtree = zoomedPaneId !== null && findLeaf(pane, zoomedPaneId) !== null;
+  const shown = pane.children.map((child) => !zoomInSubtree || findLeaf(child, zoomedPaneId) !== null);
 
   return (
     <Group
@@ -363,7 +369,7 @@ function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = f
         // spread onto the Panel's OUTER flex-item div (className would land
         // on the inner one), and the globals.css rule beats the library's
         // inline display with !important.
-        const zoomHidden = zoomInSubtree && findLeaf(child, zoomedPaneId) === null;
+        const zoomHidden = !shown[i];
         return (
           <Fragment key={child.id}>
             {i > 0 && (
@@ -392,6 +398,7 @@ function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = f
                 workspace={workspace}
                 isWorkspaceVisible={isWorkspaceVisible}
                 isZoomHidden={isZoomHidden || zoomHidden}
+                corners={childCorners(corners ?? '', orientation, i, shown)}
               />
             </Panel>
           </Fragment>

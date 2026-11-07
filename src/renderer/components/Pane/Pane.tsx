@@ -67,6 +67,8 @@ interface PaneProps {
   isWorkspaceVisible?: boolean;
   /** This leaf is hidden because another pane in ITS tree is zoomed (#517). */
   isZoomHidden?: boolean;
+  /** The workspace column's corners this pane reaches (paneCorners.ts). */
+  corners?: string;
 }
 
 /**
@@ -488,7 +490,7 @@ export function planAutoResume(args: {
   return args.wasRunning === true ? `${line} "${AUTO_RESUME_CONTINUE_PROMPT}"` : line;
 }
 
-export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true, isZoomHidden = false }: PaneProps) {
+export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true, isZoomHidden = false, corners }: PaneProps) {
   const t = useT();
   const { invoke: ipcInvoke } = useIpc();
   const [flashing, setFlashing] = useState(false);
@@ -1104,6 +1106,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // inside the tile it started in under multiview.
         'data-pane-root': pane.id,
         'data-pane-workspace': workspace.id,
+        // Glass rounds a corner pane's own boxes (ui.css) only when it shows a
+        // plain terminal: other surfaces paint their own corners, so the
+        // column keeps its clip for them.
+        'data-corner': corners && !splitMode && isTerminalSurfaceType(activeSurfaceType) ? corners : undefined,
       }}
       onClick={handleClick}
       data-onboarding-target="pane-area"
