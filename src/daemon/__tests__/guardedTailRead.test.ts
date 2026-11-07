@@ -277,8 +277,8 @@ describe('guarded tail: cost and the real-data check', () => {
 describe('guarded tail: a reader stops trying a tail that keeps missing', () => {
   /** A Claude-style screen: static rows painted once by position, then only a status cell repaints. */
   const repaintRing = () => {
-    const ticks = Array.from({ length: 30_000 }, (_, t) => `[1;60H${String(t).padStart(8, '0')}`);
-    return session(['[?1049h[2J', ...Array.from({ length: ROWS }, (_, r) => `[${r + 1};1Hrow ${r}`), ...ticks]);
+    const ticks = Array.from({ length: 30_000 }, (_, t) => `\x1b[1;60H${String(t).padStart(8, '0')}`);
+    return session(['\x1b[?1049h\x1b[2J', ...Array.from({ length: ROWS }, (_, r) => `\x1b[${r + 1};1Hrow ${r}`), ...ticks]);
   };
   const counting = () => {
     const calls: number[] = [];
@@ -306,7 +306,7 @@ describe('guarded tail: a reader stops trying a tail that keeps missing', () => 
   });
 
   it('a plain shell pane keeps being served by the tail', async () => {
-    const s = session(pages('', (i) => `[1;1Hrow ${i}`));
+    const s = session(pages('', (i) => `\x1b[1;1Hrow ${i}`));
     const reads = [];
     for (let i = 0; i < TAIL_MISS_CAP + 3; i++) reads.push(await read(s));
     expect(reads.every((r) => r.via === 'tail')).toBe(true);
@@ -332,7 +332,7 @@ describe('guarded tail: a reader stops trying a tail that keeps missing', () => 
   it('tries the tail again once a whole tail of new output has arrived', async () => {
     const s = repaintRing();
     for (let i = 0; i < TAIL_MISS_CAP; i++) await read(s);
-    const more = Array.from({ length: 15_000 }, (_, t) => `[1;60H${String(t).padStart(8, '9')}`).join('');
+    const more = Array.from({ length: 15_000 }, (_, t) => `\x1b[1;60H${String(t).padStart(8, '9')}`).join('');
     s.ringBuffer.write(Buffer.from(more.slice(0, TAIL_BYTES / 2)));
     expect((await read(s)).parses).toBe(1);
     s.ringBuffer.write(Buffer.from(more.slice(0, TAIL_BYTES / 2 + 1)));
@@ -343,7 +343,7 @@ describe('guarded tail: a reader stops trying a tail that keeps missing', () => 
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-08T00:00:00Z'));
     const s = repaintRing();
-    const tick = (t: number) => s.ringBuffer.write(Buffer.from(`[1;60H${String(t).padStart(8, '7')}`));
+    const tick = (t: number) => s.ringBuffer.write(Buffer.from(`\x1b[1;60H${String(t).padStart(8, '7')}`));
     for (let i = 0; i < TAIL_MISS_CAP; i++) await read(s);
     // Output keeps moving: no retry.
     vi.setSystemTime(Date.now() + 1_000);
@@ -385,7 +385,7 @@ describe('guarded tail: a reader stops trying a tail that keeps missing', () => 
     const s = repaintRing();
     for (let i = 0; i < TAIL_MISS_CAP; i++) await read(s);
     // The app clears and redraws every row: the tail knows the whole screen again.
-    s.ringBuffer.write(Buffer.from(`[2J${Array.from({ length: ROWS }, (_, r) => `[${r + 1};1Hnew ${r}`).join('')}`));
+    s.ringBuffer.write(Buffer.from(`\x1b[2J${Array.from({ length: ROWS }, (_, r) => `\x1b[${r + 1};1Hnew ${r}`).join('')}`));
     (s.meta as { cols: number }).cols = COLS + 1;
     expect((await read(s)).via).toBe('tail'); // plus the once-per-10-minutes whole-ring check
     (s.meta as { cols: number }).cols = COLS;
