@@ -8,7 +8,9 @@
  *   - spawn with the pipe and a fresh temporary profile, and time the first
  *     Browser.getVersion answer (the first spawn of each browser is marked
  *     cold: its install may still be on a cold disk). Past the launcher's
- *     start ceiling the run fails;
+ *     start ceiling the run fails, except a preinstalled browser's cold
+ *     start under --cold-start-warn, which is a warning (see
+ *     probe-chrome-pipe-verdict.mjs);
  *   - open about:blank (Target.createTarget) and a browser session
  *     (Target.attachToBrowserTarget);
  *   - write a persistent cookie, close the pipe, and time the exit;
@@ -20,7 +22,7 @@
  *   - list lock files left;
  *   - start again on the same profile and read the cookie back.
  *
- * Usage: node scripts/probe-chrome-pipe.mjs [--browser chrome|edge|chromium|<path>]... [--require <name>]... [--headless-only] [--json out.json]
+ * Usage: node scripts/probe-chrome-pipe.mjs [--browser chrome|edge|chromium|<path>]... [--require <name>]... [--headless-only] [--cold-start-warn] [--json out.json]
  * `chromium` is Playwright's build, installed by `playwright-core install
  * chromium` into PLAYWRIGHT_BROWSERS_PATH.
  * Exits non-zero when a browser that was found fails a step, or a --require'd
@@ -31,6 +33,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { LAUNCHER_START_CEILING_MS, probeVerdict } from './probe-chrome-pipe-verdict.mjs';
 
 const args = process.argv.slice(2);
 const wanted = [];
@@ -38,8 +41,11 @@ const wanted = [];
 const required = new Set();
 let jsonOut = null;
 let headlessOnly = false;
+/** CI only: a preinstalled browser's cold start past the ceiling warns instead of failing. */
+let coldStartWarn = false;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--browser') wanted.push(args[++i]);
+  else if (args[i] === '--cold-start-warn') coldStartWarn = true;
   else if (args[i] === '--require') required.add(args[++i]);
   else if (args[i] === '--headless-only') headlessOnly = true;
   else if (args[i] === '--json') jsonOut = args[++i];
@@ -47,8 +53,6 @@ for (let i = 0; i < args.length; i++) {
 if (wanted.length === 0) wanted.push('chrome', 'edge', 'chromium');
 
 const STEP_TIMEOUT_MS = 30_000;
-/** CHROME_START_CEILING_MS in src/shared/chromeStart.ts: how long the launcher waits on a Chrome to start. */
-const LAUNCHER_START_CEILING_MS = 30_000;
 /** The first answer is waited on past that ceiling, so a slow start is measured rather than cut off. */
 const FIRST_ANSWER_TIMEOUT_MS = 60_000;
 const EXIT_TIMEOUT_MS = 5_000;
@@ -196,7 +200,8 @@ function launch(binary, profile, headless) {
 
 const COOKIE = { name: 'wmux_pipe_probe', value: 'kept', domain: 'probe.invalid', path: '/', expires: Math.floor(Date.now() / 1000) + 86_400 };
 
-async function probe(binary, headless, cold) {
+/** `preinstalled`: a browser the machine came with (chrome, edge), not one the probe installed. */
+async function probe(binary, headless, cold, preinstalled) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pipe-probe-'));
   const result = { binary, headless, cold, platform: `${process.platform}-${process.arch}`, ok: false };
   let browser = launch(binary, profile, headless);
@@ -227,8 +232,9 @@ async function probe(binary, headless, cold) {
     result.cookieKept = cookies.some((c) => c.name === COOKIE.name && c.value === COOKIE.value);
     result.secondExitMs = await browser.closePipe();
     if (result.secondExitMs === null) browser.kill();
-    result.ok = result.withinLauncherCeiling && result.target && result.browserSession && result.eofExitMs !== null &&
-      result.processesLeft?.length === 0 && result.cookieKept === true && result.secondExitMs !== null;
+    const verdict = probeVerdict(result, { coldStartWarn, preinstalled });
+    result.ok = verdict.ok;
+    if (verdict.warning) result.warning = verdict.warning;
   } catch (err) {
     result.error = err instanceof Error ? err.message : String(err);
     browser.kill();
@@ -258,12 +264,13 @@ for (const name of wanted) {
       results.push({ browser: name, binary, headless, skipped: 'no DISPLAY' });
       continue;
     }
-    results.push({ browser: name, ...(await probe(binary, headless, cold)) });
+    results.push({ browser: name, ...(await probe(binary, headless, cold, name === 'chrome' || name === 'edge')) });
     cold = false;
   }
 }
 
 for (const r of results) console.log(JSON.stringify(r));
+for (const r of results) if (r.warning) console.log(`::warning title=Pipe probe (${r.browser})::${r.warning}`);
 if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify(results, null, 2));
 if (process.env.GITHUB_STEP_SUMMARY) {
   const names = (list) => (list ? list.map((p) => `${p.pid} ${p.name}`).join(', ') || 'none' : 'query failed');
@@ -271,7 +278,7 @@ if (process.env.GITHUB_STEP_SUMMARY) {
     ? `| ${r.browser} | — | ${r.required ? 'FAIL: required, not installed' : 'not installed'} | | | | | | |`
     : r.skipped
       ? `| ${r.browser} | headed | skipped: ${r.skipped} | | | | | | |`
-      : `| ${r.browser} | ${r.headless ? 'headless' : 'headed'}${r.cold ? ' (cold)' : ''} | ${r.ok ? 'ok' : `FAIL${r.error ? `: ${r.error}` : ''}`} | ${r.product ?? ''} | ${r.firstAnswerMs ?? ''} | ${r.eofExitMs ?? 'no exit'} | ${names(r.processesAtExit)}${r.processesGoneAfterMs ? ` (gone after ${r.processesGoneAfterMs} ms)` : ''} | ${names(r.processesLeft)} ${JSON.stringify(r.lockFilesLeft ?? [])} | ${r.cookieKept ?? ''} |`;
+      : `| ${r.browser} | ${r.headless ? 'headless' : 'headed'}${r.cold ? ' (cold)' : ''} | ${r.ok ? (r.warning ? `ok, warning: ${r.warning}` : 'ok') : `FAIL${r.error ? `: ${r.error}` : ''}`} | ${r.product ?? ''} | ${r.firstAnswerMs ?? ''} | ${r.eofExitMs ?? 'no exit'} | ${names(r.processesAtExit)}${r.processesGoneAfterMs ? ` (gone after ${r.processesGoneAfterMs} ms)` : ''} | ${names(r.processesLeft)} ${JSON.stringify(r.lockFilesLeft ?? [])} | ${r.cookieKept ?? ''} |`;
   fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, [
     `### Pipe probe (${process.platform}-${process.arch})`,
     '| browser | mode | result | product | first answer ms | EOF exit ms | processes at exit | left after the deadline / lock files | cookie kept |',
