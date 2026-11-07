@@ -105,6 +105,12 @@ final class TreeTests: XCTestCase {
         XCTAssertFalse(isSensitive(subrole: nil, name: "Search"))
     }
 
+    // The rule `type` refuses a focused field by (Focus.isSecure): a password
+    // field focused by a desktop ref action, with no label at all, still counts.
+    func testAnUnlabelledPasswordFieldIsSensitive() {
+        XCTAssertTrue(isSensitive(subrole: "AXSecureTextField", name: ""))
+    }
+
     func testPreviewCollapsesWhitespaceAndCaps() {
         XCTAssertEqual(preview("a\n\tb   c"), "a b c")
         let long = String(repeating: "x", count: 200)

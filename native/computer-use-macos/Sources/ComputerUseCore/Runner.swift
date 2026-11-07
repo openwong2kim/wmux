@@ -35,7 +35,16 @@ public enum RunnerPolicy {
     /// The commands the runner starts. main decides what an agent may ask for;
     /// this list is the runner's own floor under it. main runs list-apps
     /// itself, to check which app a display name picks.
-    public static let commands: Set<String> = ["snapshot", "find", "get", "is", "list-surfaces", "wait", "list-apps", "version"]
+    public static let commands: Set<String> = readCommands.union(actionCommands)
+
+    static let readCommands: Set<String> = ["snapshot", "find", "get", "is", "list-surfaces", "wait", "list-apps", "version"]
+
+    /// The ref actions: each acts on one element of a snapshot, named by its
+    /// ref, and takes nothing that could point it anywhere else (an app, a
+    /// window, a root or a surface).
+    static let actionCommands: Set<String> = ["click", "focus", "select", "toggle", "check", "uncheck", "expand", "collapse", "scroll"]
+
+    static let refPattern = try! NSRegularExpression(pattern: "^@[a-z0-9]{1,64}:e[1-9][0-9]{0,8}$")
 
     /// Global options the runner never passes on, whatever main sends.
     static let refusedOptions: [String] = ["--headed", "--trace", "--debug", "--screenshot"]
@@ -65,12 +74,34 @@ public enum RunnerPolicy {
         for arg in argv where refusedOptions.contains(where: { arg == $0 || arg.hasPrefix($0 + "=") || arg.hasPrefix($0 + "-") }) {
             throw RunnerProblem("invalid_argument", "the runner does not pass \(arg)")
         }
+        if actionCommands.contains(command) { try checkAction(command, argv) }
         guard let home = object["home"] as? String, isPlainAbsolutePath(home) else {
             throw RunnerProblem("invalid_argument", "home must be an absolute path")
         }
         let requested = (object["timeoutMs"] as? NSNumber)?.intValue ?? maxTimeoutMs
         let timeoutMs = min(max(requested, 1), maxTimeoutMs)
         return .run(RunRequest(id: idNumber.intValue, argv: argv, timeoutMs: timeoutMs, home: home))
+    }
+
+    /// An action's argv: the command, a ref, then only that command's own
+    /// arguments (select's value after "--", scroll's direction and amount).
+    static func checkAction(_ command: String, _ argv: [String]) throws {
+        guard argv.count >= 2, refPattern.firstMatch(in: argv[1], range: NSRange(argv[1].startIndex..., in: argv[1])) != nil else {
+            throw RunnerProblem("invalid_argument", "\(command) takes a ref (@<snapshot>:eN) as its first argument")
+        }
+        let rest = Array(argv.dropFirst(2))
+        let allowed: Bool
+        switch command {
+        case "select":
+            allowed = rest.count == 2 && rest[0] == "--"
+        case "scroll":
+            allowed = rest.allSatisfy { $0.hasPrefix("--direction=") || $0.hasPrefix("--amount=") }
+        default:
+            allowed = rest.isEmpty
+        }
+        guard allowed else {
+            throw RunnerProblem("invalid_argument", "the runner does not pass \(rest.joined(separator: " ")) to \(command)")
+        }
     }
 
     /// The child's whole environment: a fixed PATH, the person's HOME, TMPDIR
