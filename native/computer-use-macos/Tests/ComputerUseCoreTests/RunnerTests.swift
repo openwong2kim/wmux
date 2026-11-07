@@ -19,8 +19,33 @@ final class RunnerPolicyTests: XCTestCase {
     }
 
     func testRefusesCommandsOutsideItsList() {
-        for command in ["click", "type", "clipboard-get", "batch", "launch", "screenshot", "permissions", "mcp", "skills"] {
+        for command in ["type", "clipboard-get", "batch", "launch", "screenshot", "permissions", "mcp", "skills", "scroll-to", "double-click"] {
             XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": [command], "home": "/tmp/ad"]), command)
+        }
+    }
+
+    func testStartsTheRefActionsOnARefAlone() throws {
+        for command in ["click", "focus", "toggle", "check", "uncheck", "expand", "collapse"] {
+            XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": [command, "@s2gy5:e7"], "home": "/tmp/ad"]), command)
+        }
+        XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["select", "@s2gy5:e7", "--", "Large"], "home": "/tmp/ad"]))
+        XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["scroll", "@s2gy5:e7", "--direction=down", "--amount=3"], "home": "/tmp/ad"]))
+    }
+
+    func testRefusesAnActionWithoutARef() {
+        for argv in [["click"], ["click", "e7"], ["click", "@S2:e7"], ["click", "@s2:e0"], ["click", "--app=TextEdit"], ["select", "Large"]] {
+            XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": argv, "home": "/tmp/ad"]), argv.joined(separator: " "))
+        }
+    }
+
+    func testRefusesAnActionPointedAnywhereElse() {
+        for extra in [["--app=TextEdit"], ["--app", "TextEdit"], ["--window-id=w-1"], ["--root=@s2:e1"], ["--surface=menu"], ["--pid=1"], ["@s2:e8"]] {
+            XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["click", "@s2:e7"] + extra, "home": "/tmp/ad"]), extra.joined(separator: " "))
+            XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["scroll", "@s2:e7"] + extra, "home": "/tmp/ad"]), extra.joined(separator: " "))
+        }
+        // select: one value, after "--", and nothing else.
+        for argv in [["select", "@s2:e7", "Large"], ["select", "@s2:e7", "--app=X", "--", "Large"], ["select", "@s2:e7", "--", "Large", "Small"]] {
+            XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": argv, "home": "/tmp/ad"]), argv.joined(separator: " "))
         }
     }
 
