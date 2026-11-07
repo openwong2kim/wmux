@@ -192,6 +192,10 @@ interface DesktopSnapshotRecord {
   expiresAt: number;
 }
 
+/** Desktop runs in flight across all agents; past this a call is refused with input_busy. */
+export const DESKTOP_MAX_RUNS = 8;
+/** Desktop snapshots remembered at once; the oldest goes first. */
+const DESKTOP_SNAPSHOT_LIMIT = 256;
 /** A snapshot id as agent-desktop prints it; it names a directory, so nothing else is read. */
 const DESKTOP_SNAPSHOT_ID = /^[a-z0-9]{1,64}$/;
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
@@ -257,6 +261,9 @@ export class ComputerService {
   private helper: HelperLike | null = null;
   private readonly snapshots = new Map<string, SnapshotRecord>();
   private readonly desktopSnapshots = new Map<string, DesktopSnapshotRecord>();
+  /** Each agent's desktop calls, one after another: a run may rewrite a snapshot's refmap the next call checks. */
+  private readonly desktopQueues = new Map<string, Promise<unknown>>();
+  private desktopRuns = 0;
   private readonly grants = new Map<string, boolean>();
   private readonly consentInflight = new Map<string, Promise<ConsentAnswer>>();
   /** Aborted (and replaced) by every stop: withdraws the open consent prompts. */
@@ -437,6 +444,24 @@ export class ComputerService {
     agent: ComputerAgent,
     params: { command: unknown; args?: unknown; app?: string; window?: string },
   ): Promise<DesktopReply> {
+    if (this.desktopRuns >= DESKTOP_MAX_RUNS) {
+      fail('input_busy', `${DESKTOP_MAX_RUNS} desktop commands are already running; try again when one finishes`);
+    }
+    this.desktopRuns += 1;
+    const previous = this.desktopQueues.get(agent.key) ?? Promise.resolve();
+    const call = previous.catch(() => undefined).then(() => this.desktopNow(agent, params));
+    const settled = call.catch(() => undefined).finally(() => {
+      this.desktopRuns -= 1;
+      if (this.desktopQueues.get(agent.key) === settled) this.desktopQueues.delete(agent.key);
+    });
+    this.desktopQueues.set(agent.key, settled);
+    return call;
+  }
+
+  private async desktopNow(
+    agent: ComputerAgent,
+    params: { command: unknown; args?: unknown; app?: string; window?: string },
+  ): Promise<DesktopReply> {
     const helper = this.ensureReady();
     const desktop = this.deps.desktop;
     if (!desktop) fail('unsupported_platform', `desktop commands are not available on ${this.deps.platform ?? process.platform}`);
@@ -484,7 +509,20 @@ export class ComputerService {
       if (typeof snapshotId !== 'string' || !DESKTOP_SNAPSHOT_ID.test(snapshotId)) discard();
       const refmap = await desktop.readRefmap(snapshotId as string);
       this.assertCurrent(generation);
-      if (refmap && refmapPids(refmap).some((pid) => pid !== target.app.pid)) discard();
+      if (refmap) {
+        if (refmapPids(refmap).some((pid) => pid !== target.app.pid)) discard();
+      } else {
+        // No refmap to prove whose refs these are: only a reply that lists no
+        // refs, or a snapshot of the window checked above, is kept.
+        const listsRefs = plan.command === 'find'
+          ? (Array.isArray(reply.data.matches) && reply.data.matches.length > 0) || reply.data.match !== undefined
+          : !plan.checksWindow;
+        if (listsRefs) discard();
+      }
+      for (const [id, record] of this.desktopSnapshots) {
+        if (record.expiresAt < now || this.desktopSnapshots.size >= DESKTOP_SNAPSHOT_LIMIT) this.desktopSnapshots.delete(id);
+        else break;
+      }
       this.desktopSnapshots.set(snapshotId as string, {
         agentKey: agent.key,
         app: target.app,

@@ -20,6 +20,11 @@ import Foundation
 
 enum Runner {
     private static let lock = NSLock()
+    /// Taken for the child check alone, which hashes the binary: a cancel
+    /// must not wait behind it.
+    private static let gateLock = NSLock()
+    /// Requests accepted and not yet answered; only these can be canceled.
+    private static var active: Set<Int> = []
     private static var children: [Int: pid_t] = [:]
     private static var canceled: Set<Int> = []
     private static var gate: ChildGate?
@@ -64,6 +69,9 @@ enum Runner {
             case .cancel(let id):
                 cancel(id)
             case .run(let request):
+                lock.lock()
+                active.insert(request.id)
+                lock.unlock()
                 DispatchQueue.global(qos: .userInitiated).async { execute(request) }
             }
         }
@@ -73,7 +81,8 @@ enum Runner {
 
     private static func cancel(_ id: Int) {
         lock.lock()
-        canceled.insert(id)
+        // A cancel for a run that already answered (or never came) is dropped.
+        if active.contains(id) { canceled.insert(id) }
         let pid = children[id]
         lock.unlock()
         if let pid { kill(-pid, SIGKILL) }
@@ -92,14 +101,20 @@ enum Runner {
     }
 
     private static func execute(_ request: RunRequest) {
-        lock.lock()
+        defer {
+            lock.lock()
+            active.remove(request.id)
+            canceled.remove(request.id)
+            lock.unlock()
+        }
         let gate = self.gate
         let problem = gateProblem
         var checked: RunnerProblem?
         if let gate {
+            gateLock.lock()
             do { try gate.checkBeforeSpawn() } catch let p as RunnerProblem { checked = p } catch { checked = RunnerProblem("internal", "\(error)") }
+            gateLock.unlock()
         }
-        lock.unlock()
         guard let gate, problem == nil else { return fail(request.id, problem ?? RunnerProblem("helper_unavailable", "the desktop component is unavailable")) }
         if let checked { return fail(request.id, checked) }
 
@@ -166,7 +181,7 @@ enum Runner {
 
         lock.lock()
         children[request.id] = nil
-        let wasCanceled = canceled.remove(request.id) != nil
+        let wasCanceled = canceled.contains(request.id)
         lock.unlock()
 
         if wasCanceled { return fail(request.id, RunnerProblem("aborted", "the run was stopped")) }

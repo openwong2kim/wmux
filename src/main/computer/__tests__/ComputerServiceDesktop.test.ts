@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
 import type { AppInfo, HelperMethod, WindowInfo } from '../../../shared/computer/protocol';
-import { ComputerService, type ComputerAgent, type DesktopDeps, type HelperLike } from '../ComputerService';
+import { ComputerService, DESKTOP_MAX_RUNS, type ComputerAgent, type DesktopDeps, type HelperLike } from '../ComputerService';
 import type { RunnerResult } from '../RunnerProcess';
 
 const textEdit: AppInfo = { id: 'com.apple.TextEdit', name: 'TextEdit', pid: 501, path: '/System/Applications/TextEdit.app' };
@@ -54,7 +54,9 @@ function makeService(opts: { answer?: (argv: string[]) => RunnerResult | Promise
       const id = `s${++seq}`;
       const windowId = argv.find((a) => a.startsWith('--window-id='))?.slice('--window-id='.length);
       refmaps.set(id, refmapFor(textEdit.pid));
-      return ok(argv[0], { app: 'TextEdit', snapshot_id: id, window: { id: windowId, title: 'Untitled' }, tree: {} });
+      // A find reply names no window (agent-desktop find_live.rs).
+      if (argv[0] === 'find') return ok('find', { matches: [{ ref_id: `@${id}:e1`, name: 'Save' }], snapshot_id: id, total_matches: 1, truncated: false });
+      return ok('snapshot', { app: 'TextEdit', snapshot_id: id, window: { id: windowId, title: 'Untitled' }, tree: {} });
     }
     if (argv[0] === 'list-surfaces') return ok('list-surfaces', { pid: textEdit.pid, surfaces: [] });
     return ok(argv[0], { value: 'Hello' });
@@ -119,6 +121,56 @@ describe('ComputerService.desktop', () => {
     setRefmap('sdecoy', refmapFor(999));
     await expect(service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit' })).rejects.toMatchObject({ code: 'policy_denied' });
     await expect(service.desktop(AGENT_A, { command: 'get', args: { ref: '@sdecoy:e1' } })).rejects.toMatchObject({ code: 'snapshot_unknown' });
+  });
+
+  it('keeps a find reply, which names no window, when its refs are the vetted app\'s', async () => {
+    const { service } = makeService();
+    const found = await service.desktop(AGENT_A, { command: 'find', app: 'TextEdit', args: { name: 'Save' } });
+    const ref = (found.data.matches as Array<{ ref_id: string }>)[0].ref_id;
+    await expect(service.desktop(AGENT_A, { command: 'get', args: { ref } })).resolves.toBeTruthy();
+  });
+
+  it('discards refs whose refmap is missing, unless the window itself was checked', async () => {
+    const answer = (argv: string[]): RunnerResult => ok('snapshot', { app: 'TextEdit', snapshot_id: 'snomap', window: { id: argv.includes('--surface=menu') ? 'w-1' : 'w-5010' } });
+    const { service } = makeService({ answer });
+    await expect(service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit', args: { surface: 'menu' } })).rejects.toMatchObject({ code: 'policy_denied' });
+    await expect(service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit' })).resolves.toBeTruthy();
+  });
+
+  it('runs one agent\'s calls one after another, so a run that rewrites a refmap does not spoil the next call', async () => {
+    let releaseWait: (() => void) | null = null;
+    const { service, setRefmap, refmaps } = makeService({
+      answer: async (argv) => {
+        if (argv[0] === 'snapshot') {
+          refmaps.set('s1', refmapFor(textEdit.pid));
+          return ok('snapshot', { app: 'TextEdit', snapshot_id: 's1', window: { id: 'w-5010' } });
+        }
+        if (argv[0] === 'wait') {
+          // agent-desktop re-identifies the element and rewrites the refmap
+          // while the wait is still running.
+          setRefmap('s1', JSON.stringify({ inner: { '@e1': { pid: textEdit.pid, healed: true } }, counter: 1 }));
+          await new Promise<void>((r) => { releaseWait = r; });
+          return ok('wait', { found: true });
+        }
+        return ok(argv[0], { value: 'x' });
+      },
+    });
+    await service.desktop(AGENT_A, { command: 'snapshot', app: 'TextEdit' });
+    const waiting = service.desktop(AGENT_A, { command: 'wait', args: { element: '@s1:e1' } });
+    // The wait is running and has rewritten the refmap; the get comes now.
+    await vi.waitFor(() => expect(releaseWait).not.toBeNull(), { timeout: 5_000 });
+    const getting = service.desktop(AGENT_A, { command: 'get', args: { ref: '@s1:e1' } });
+    releaseWait!();
+    await expect(waiting).resolves.toMatchObject({ data: { found: true } });
+    await expect(getting).resolves.toMatchObject({ data: { value: 'x' } });
+  });
+
+  it('refuses a call past the limit of desktop runs in flight', async () => {
+    const never = new Promise<RunnerResult>(() => undefined);
+    const { service } = makeService({ answer: () => never });
+    const agents = Array.from({ length: DESKTOP_MAX_RUNS }, (_, i) => ({ key: `agent-${i}`, label: `agent-${i}` }));
+    for (const a of agents) void service.desktop(a, { command: 'wait', args: { ms: 30_000 } });
+    await expect(service.desktop(AGENT_A, { command: 'wait', args: { ms: 10 } })).rejects.toMatchObject({ code: 'input_busy' });
   });
 
   it('discards a snapshot of another window than the vetted one', async () => {

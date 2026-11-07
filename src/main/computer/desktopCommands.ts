@@ -43,7 +43,7 @@ export interface DesktopPlan {
   scope: DesktopScope;
   /** Refs the call names; each must come from a snapshot this agent took. */
   refs: DesktopRef[];
-  /** The reply's window must be the vetted window (a window-surface snapshot or find). */
+  /** The reply's window must be the vetted window (a window-surface snapshot; find replies name none). */
   checksWindow: boolean;
   /** The runner's deadline for this run. */
   timeoutMs: number;
@@ -221,7 +221,7 @@ export function planDesktopCommand(commandValue: unknown, argsValue: unknown): D
         command,
         scope: 'window',
         refs: root ? [root] : [],
-        checksWindow: (surface ?? 'window') === 'window',
+        checksWindow: false,
         timeoutMs: (timeoutMs ?? 5_000) + RUN_SLACK_MS,
         argv: (target) => [
           'find',
