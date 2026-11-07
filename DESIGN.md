@@ -2875,10 +2875,13 @@ differently in the two places, and in the order `fleet_triage` returns.
     so it survives forced-colors) once it is not; a device is not a status,
     so never a status colour, and no per-device colour. Then the name in
     `--text-main`, its state and running count muted (`Online · Running 2`),
-    and on the right its folds as buttons, `Finished 1 folded` and `Idle 2
-    folded` (`Idle 2` while open, the chevron turned): no second row repeats
-    a count. Each button is the fold's option in the keyboard order, with
-    its `aria-expanded`; open folds list their rows after the running rows.
+    and on the right its folds as plain text of the same weight open or
+    closed, `Finished 1 folded ›` and `Idle 2 folded ›` (`Idle 2` while
+    open, the chevron turned): no second row repeats a count. A fold has no
+    fill, border or radius of its own; hover, selection and focus light the
+    head as a row (the fold row's fill and 2px ring), so there is one
+    boundary. Each fold is an option in the keyboard order, with its
+    `aria-expanded`; open folds list their rows after the running rows.
     Folds are per device and kept while the app runs, like the status
     list's; a search or a status filter shows the rows and the count as plain
     text. A row under its own device's head drops the "@host" glyph.

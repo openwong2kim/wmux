@@ -1205,17 +1205,24 @@ button.wmux-ws-group-head:hover { background: var(--hover-fill); color: var(--te
 .wmux-board .wmux-fleet-quiet { padding: 4px 20px 2px; }
 .wmux-board .wmux-fleet-section-header { display: flex; align-items: center; gap: 7px; padding: 14px 8px 4px; font-size: 12px; font-weight: 500; letter-spacing: normal; text-transform: none; color: var(--text-sub); }
 /* Fleet grouped by device: the device's name, then its state and counts, muted. No dot (a device is not a status). */
-.wmux-board .wmux-fleet-device-head { gap: 8px; padding-top: 18px; color: var(--text-main); }
+/* Space above as margin, so the head lit as a row is padded evenly. */
+.wmux-board .wmux-fleet-device-head { gap: 8px; margin-top: 10px; padding-top: 6px; padding-bottom: 6px; color: var(--text-main); }
 /* 8px, grey while the PC is reached, a hollow ring (a border, so it survives forced-colors) once it is not. */
 .wmux-fleet-device-dot { flex: none; width: 8px; height: 8px; border-radius: 9999px; background: var(--text-muted); }
 .wmux-fleet-device-head[data-device-state="disconnected"] .wmux-fleet-device-dot { background: transparent; border: 1.5px solid var(--text-muted); }
 .wmux-fleet-device-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-fleet-device-meta { flex-shrink: 0; font-weight: 400; color: var(--text-muted); }
-.wmux-fleet-device-folds { display: flex; gap: 4px; margin-left: auto; }
-.wmux-fleet-device-fold { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 6px; font-size: 12px; font-weight: 400; color: var(--text-sub); outline: none; }
+/* The folds are plain text on the head, open or closed: no fill, border or
+ * radius of their own. Hover, selection and focus light the head as the
+ * row it is (the fold row's fill and 2px ring), so there is one boundary. */
+.wmux-fleet-device-folds { display: flex; gap: 12px; margin-left: auto; }
+.wmux-fleet-device-fold { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; font-size: 12px; font-weight: 400; color: var(--text-sub); outline: none; }
 .wmux-fleet-device-fold.is-static { color: var(--text-muted); }
-button.wmux-fleet-device-fold:hover, button.wmux-fleet-device-fold[aria-selected="true"] { background: var(--hover-fill); color: var(--text-main); }
-button.wmux-fleet-device-fold:focus-visible { outline: 2px solid var(--accent) !important; outline-offset: -2px; }
+.wmux-board .wmux-fleet-device-head { border-radius: 8px; }
+.wmux-board .wmux-fleet-device-head:has(button.wmux-fleet-device-fold:hover),
+.wmux-board .wmux-fleet-device-head:has(button.wmux-fleet-device-fold[aria-selected="true"]) { background: var(--hover-fill); }
+.wmux-board .wmux-fleet-device-head:has(button.wmux-fleet-device-fold:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+button.wmux-fleet-device-fold:hover, button.wmux-fleet-device-fold[aria-selected="true"] { color: var(--text-main); }
 .wmux-fleet-device-fold[aria-expanded="true"] .wmux-fleet-idle-chevron { transform: rotate(90deg); }
 .wmux-fleet-device-note { padding: 2px 8px 4px 24px; font-size: 12px; color: var(--text-muted); }
 .wmux-fleet-group-label { font-size: 12px; color: var(--text-muted); }
