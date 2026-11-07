@@ -64,6 +64,25 @@ async function pausedFor(browser: FakeBrowser, a: ReturnType<typeof client>, b: 
   return { session: (a.inbox[i].params as { sessionId: string }).sessionId, at: a.arrived[i] };
 }
 
+/**
+ * "Nothing fired yet" for `session`, checked half a period after its attach
+ * reached `a` (when the watch armed), not after a poll noticed it. A runner
+ * already past the period skips only this check, and says so.
+ */
+async function noResumeYet(browser: FakeBrowser, a: ReturnType<typeof client>, session: string): Promise<void> {
+  const i = a.inbox.findIndex((m) => m.method === 'Target.attachedToTarget' && (m.params as { sessionId: string }).sessionId === session);
+  const attachAt = a.arrived[i];
+  const wait = attachAt + STALL / 2 - performance.now();
+  if (wait > 0) await deliberateSleep(wait, 'well inside the period');
+  const seen = resumes(browser, session);
+  const late = performance.now() - (attachAt + STALL);
+  if (late >= 0) {
+    console.warn(`[stall-early-check-skipped] the runner was ${Math.round(late)} ms past the attach's period`);
+    return;
+  }
+  expect(seen).toEqual([]);
+}
+
 const resumes = (browser: FakeBrowser, session: string) => browser.received.filter((c) => c.method === 'Runtime.runIfWaitingForDebugger' && c.sessionId === session);
 
 afterEach(() => resetCdpPipeCounters());
@@ -232,8 +251,7 @@ describe('CdpPipeStallWatch, through the mux', () => {
     b.send('Target.createTarget', { url: 'about:blank' });
     await vi.waitFor(() => expect(paused()).toHaveLength(3), { timeout: 5_000 });
     const third = paused()[2];
-    await deliberateSleep(STALL / 2, 'well inside the period');
-    expect(resumes(browser, third)).toEqual([]);
+    await noResumeYet(browser, a, third);
     await vi.waitFor(() => expect(resumes(browser, third)).toHaveLength(1), { timeout: 5_000 });
     expect(cdpPipeCounters().watchdog).toMatchObject({ armed: 2, fired: 2, 'resumed-while-stalled': 1 });
     mux.close();
@@ -254,8 +272,7 @@ describe('CdpPipeStallWatch, through the mux', () => {
     a.pong();
     b.send('Target.createTarget', { url: 'about:blank' });
     await vi.waitFor(() => expect(paused()).toHaveLength(3), { timeout: 5_000 });
-    await deliberateSleep(STALL / 2, 'well inside the period');
-    expect(resumes(browser, paused()[2])).toEqual([]);
+    await noResumeYet(browser, a, paused()[2]);
     mux.close();
   });
 
