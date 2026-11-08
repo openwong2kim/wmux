@@ -197,9 +197,9 @@ pub struct NativeTerminal {
     feed: XtermFeed,
     /// Why the ANSI snapshot of this stream cannot match xterm's.
     refusal: Option<&'static str>,
-    /// The alternate screen was narrowed since the main screen was last seen
-    /// at a resize; widening it would bring back cells only xterm kept.
-    alt_narrowed: bool,
+    /// The narrowest width the alternate screen was cut to over written
+    /// cells, while it is still the active screen (see alt_width_cut).
+    alt_cut: Option<usize>,
 }
 
 /// Whether a resize to `cols` reflows a row below the cursor's paragraph on
@@ -266,6 +266,9 @@ struct XtermFeed {
     shifted: bool,
     /// A control Alacritty parses differently from xterm.
     divergent: bool,
+    /// The alternate screen was left (?47, ?1047 or ?1049 reset, or RIS)
+    /// since the last resize: xterm dropped the cells it kept past a cut.
+    alt_left: bool,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -367,6 +370,7 @@ impl XtermFeed {
             self.main_margins = false;
             self.alt_margins = false;
             self.alt_screen = false;
+            self.alt_left = true;
             self.sgr_pixels = false;
             self.sgr_mouse = false;
             self.mouse = 0;
@@ -403,6 +407,9 @@ impl XtermFeed {
                             self.mouse = if set { protocol } else { 0 };
                         }
                         Some(47 | 1047 | 1049) => {
+                            if !set {
+                                self.alt_left = true;
+                            }
                             if set && !self.alt_screen {
                                 // xterm's alternate screen starts with its own
                                 // full region; Alacritty keeps one region, so
@@ -606,7 +613,7 @@ impl NativeTerminal {
             scrollback,
             feed: XtermFeed::default(),
             refusal: None,
-            alt_narrowed: false,
+            alt_cut: None,
         })
     }
 
@@ -684,28 +691,40 @@ impl NativeTerminal {
         }
         // xterm never reflows or cuts the alternate screen: its rows keep
         // their cells and wrap flags across a resize, where Alacritty cuts the
-        // cells and drops the flags. Refuse what that loses: a width change
-        // with a soft-wrapped row on screen, or widening after a narrowing.
+        // cells and drops the flags. A width change with a soft-wrapped row on
+        // screen loses the flags. xterm also shows the kept cells again when
+        // it widens, so only a widen past a cut over written cells can differ
+        // (a snapshot at the narrow width shows the same cells either way): the
+        // cut is remembered and a later widen on the same screen refuses.
+        // Leaving the alternate screen drops xterm's kept cells too.
+        if std::mem::take(&mut self.feed.alt_left) {
+            self.alt_cut = None;
+        }
         if term.mode().contains(TermMode::ALT_SCREEN) {
             let grid = term.grid();
             let old = grid.columns();
-            if old != cols as usize {
-                let wrapped = (0..grid.screen_lines() as i32).any(|y| {
+            if old != cols as usize
+                && (0..grid.screen_lines() as i32).any(|y| {
                     grid[Line(y)][Column(old - 1)]
                         .flags
                         .contains(Flags::WRAPLINE)
-                });
-                if wrapped || (cols as usize > old && self.alt_narrowed) {
-                    self.refusal.get_or_insert(
-                        "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
-                    );
-                }
-                if (cols as usize) < old {
-                    self.alt_narrowed = true;
-                }
+                })
+            {
+                self.refusal.get_or_insert(
+                    "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
+                );
+            }
+            if self.alt_cut.is_some_and(|cut| cols as usize > cut) {
+                self.refusal.get_or_insert(
+                    "unsupported-alt-width: the alternate screen widened over cells it was cut to",
+                );
+            }
+            if alt_width_cut(term, cols as usize) {
+                let cut = cols as usize;
+                self.alt_cut = Some(self.alt_cut.map_or(cut, |c| c.min(cut)));
             }
         } else {
-            self.alt_narrowed = false;
+            self.alt_cut = None;
         }
         // A paragraph below the cursor's that reflows: xterm moves its cursor
         // row by the rows that adds or removes as if they were above it, off
@@ -1186,6 +1205,8 @@ pub struct NativeRing {
     write_pos: usize,
     total_written: u64,
     geometry: Vec<GeometryMark>,
+    /// The newest mark is provisional: the next mark replaces it.
+    geometry_tail_provisional: bool,
 }
 
 #[napi]
@@ -1202,6 +1223,7 @@ impl NativeRing {
             write_pos: 0,
             total_written: 0,
             geometry: Vec::new(),
+            geometry_tail_provisional: false,
         })
     }
 
@@ -1255,29 +1277,62 @@ impl NativeRing {
         Ok(())
     }
 
+    /// The same rules as RingBuffer.noteGeometry (TS): an applied mark is
+    /// kept even with no bytes at it; a provisional one (`applied` false) is
+    /// replaced by the next mark unless it is the window's only size; an
+    /// applied repeat of a provisional tail makes it applied; a run of marks
+    /// with no bytes between them keeps the one with the fewest rows and the
+    /// newest. `applied` defaults to true.
     #[napi(catch_unwind)]
-    pub fn note_geometry(&mut self, cols: u32, rows: u32) -> Result<()> {
+    pub fn note_geometry(&mut self, cols: u32, rows: u32, applied: Option<bool>) -> Result<()> {
         if self.capacity == 0 {
             return Err(Error::from_reason("Ring disposed"));
         }
         if cols == 0 || rows == 0 {
             return Ok(());
         }
+        let applied = applied.unwrap_or(true);
         if let Some(last) = self.geometry.last() {
             if last.cols == cols && last.rows == rows {
+                if applied {
+                    self.geometry_tail_provisional = false;
+                }
                 return Ok(());
             }
-            if last.at == self.total_written {
+        }
+        if self.geometry_tail_provisional {
+            self.prune_geometry();
+            if self.geometry.len() > 1 {
                 self.geometry.pop();
+                self.geometry_tail_provisional = false;
+                if let Some(last) = self.geometry.last() {
+                    if last.cols == cols && last.rows == rows {
+                        return Ok(());
+                    }
+                }
             }
+            self.geometry_tail_provisional = false;
         }
         self.geometry.push(GeometryMark {
             at: self.total_written,
             cols,
             rows,
         });
+        self.geometry_tail_provisional = !applied;
+        self.compact_geometry_run();
         self.prune_geometry();
         Ok(())
+    }
+
+    /// A viewer's replay is out: a provisional newest mark is kept.
+    #[napi(catch_unwind)]
+    pub fn settle_geometry(&mut self) {
+        self.geometry_tail_provisional = false;
+    }
+
+    #[napi(getter, catch_unwind)]
+    pub fn geometry_tail_provisional(&self) -> bool {
+        self.geometry_tail_provisional && !self.geometry.is_empty()
     }
 
     #[napi(getter, catch_unwind)]
@@ -1320,6 +1375,7 @@ impl NativeRing {
         self.length = 0;
         self.write_pos = 0;
         self.geometry.clear();
+        self.geometry_tail_provisional = false;
     }
 }
 
@@ -1379,6 +1435,31 @@ impl NativeRing {
         result
     }
 
+    /// A run of marks at the newest mark's offset keeps the one with the
+    /// fewest rows and the newest (RingBuffer.compactGeometryRun).
+    fn compact_geometry_run(&mut self) {
+        let Some(at) = self.geometry.last().map(|m| m.at) else {
+            return;
+        };
+        let end = self.geometry.len() - 1;
+        let mut start = end;
+        while start > 0 && self.geometry[start - 1].at == at {
+            start -= 1;
+        }
+        if end - start < 2 {
+            return;
+        }
+        let mut keep = start;
+        for i in start + 1..end {
+            let (m, k) = (&self.geometry[i], &self.geometry[keep]);
+            if m.rows < k.rows || (m.rows == k.rows && m.cols < k.cols) {
+                keep = i;
+            }
+        }
+        let kept = self.geometry[keep].clone();
+        self.geometry.splice(start..end, [kept]);
+    }
+
     fn prune_geometry(&mut self) {
         let start = self.total_written - self.length as u64;
         let keep = self
@@ -1389,10 +1470,30 @@ impl NativeRing {
         if keep > 0 {
             self.geometry.drain(..keep);
         }
+        // Past the cap, the oldest marks after the first go: the first is the
+        // size the window's first bytes were written at.
         if self.geometry.len() > 256 {
-            self.geometry.drain(..self.geometry.len() - 256);
+            let excess = self.geometry.len() - 256;
+            self.geometry.drain(1..1 + excess);
         }
     }
+}
+
+/// Whether narrowing to `cols` would drop a written cell of the active
+/// alternate screen (one Alacritty's resize truncates and xterm keeps).
+fn alt_width_cut(term: &Term<VoidListener>, cols: usize) -> bool {
+    if !term.mode().contains(TermMode::ALT_SCREEN) {
+        return false;
+    }
+    let grid = term.grid();
+    let old = grid.columns();
+    if cols >= old {
+        return false;
+    }
+    (0..grid.screen_lines()).any(|y| {
+        let line = &grid[Line(y as i32)];
+        (cols..old).any(|x| !line[Column(x)].is_empty())
+    })
 }
 
 /// Test hook for the per-reason parity modules (parity_support.rs): `chunks`

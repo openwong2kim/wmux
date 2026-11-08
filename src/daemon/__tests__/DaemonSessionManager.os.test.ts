@@ -608,6 +608,23 @@ describe('DaemonSessionManager', () => {
     expect(session?.meta.rows).toBe(40);
   });
 
+  it("records a size as provisional only while an attached viewer's replay is not out", () => {
+    manager.createSession({ id: 'rsz-prov', cmd: 'cmd.exe', cwd: '.', cols: 80, rows: 24 });
+    const ring = manager.getSession('rsz-prov')!.ringBuffer;
+    const note = vi.spyOn(ring, 'noteGeometry');
+    let pending = true;
+    manager.setReplayPendingProbe((id) => id === 'rsz-prov' && pending);
+
+    manager.resizeSession('rsz-prov', 120, 40);
+    expect(note).toHaveBeenLastCalledWith(120, 40, false);
+    expect(ring.geometryPending).toBe(true);
+
+    pending = false;
+    manager.resizeSession('rsz-prov', 100, 30);
+    expect(note).toHaveBeenLastCalledWith(100, 30, true);
+    expect(ring.geometryPending).toBe(false);
+  });
+
   it('throws when resizing non-existent session', () => {
     expect(() => manager.resizeSession('nope', 80, 24)).toThrow("Session 'nope' not found");
   });

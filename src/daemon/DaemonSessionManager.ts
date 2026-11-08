@@ -291,6 +291,13 @@ export class DaemonSessionManager extends EventEmitter {
     this.liveRendererProbe = fn;
   }
 
+  /** Whether a viewer attached to the session and its replay is not out yet (SessionPipe.awaitingReplay). */
+  private replayPendingProbe: (id: string) => boolean = () => false;
+
+  setReplayPendingProbe(fn: (id: string) => boolean): void {
+    this.replayPendingProbe = fn;
+  }
+
   /**
    * #2388: why a pane may not start in its folder (a task folder whose
    * removal did not finish), or null. Injected by daemon/index.ts, which
@@ -1524,7 +1531,10 @@ export class DaemonSessionManager extends EventEmitter {
       managed.ptyProcess.resize(safeCols, safeRows);
       managed.meta.cols = safeCols;
       managed.meta.rows = safeRows;
-      managed.ringBuffer.noteGeometry(safeCols, safeRows);
+      // Provisional while an attached viewer's replay is not out: no terminal
+      // shows this size yet, so the next size replaces it (and the replay's
+      // end keeps it). Otherwise every terminal holding the content resized.
+      managed.ringBuffer.noteGeometry(safeCols, safeRows, !this.replayPendingProbe(id));
       // Resize-redraw guard: stamp the bridge so the TUI's repaint burst
       // (arriving within RESIZE_REDRAW_GUARD_MS) does not reset the
       // AgentDetector emission dedup and re-fire stale prompt matches.
