@@ -248,10 +248,13 @@ beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
   vi.stubGlobal('WebSocket', FakeBrowserWs);
+  // These fakes are a Chrome on a DevTools port, whatever the default transport is.
+  vi.stubEnv('WMUX_CHROME_TRANSPORT', 'port');
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   delete process.env.WMUX_CHROME_TARGET_WATCHER;
 });
 
