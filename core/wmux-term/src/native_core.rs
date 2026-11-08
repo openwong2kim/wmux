@@ -1582,8 +1582,11 @@ mod alt_kept_cells_tests {
                 Out(bytes) => feed.feed(&mut parser, &mut term, bytes.as_bytes()),
                 To(cols, rows) => {
                     parser.advance(&mut term, &std::mem::take(&mut feed.held));
-                    term.resize(Size { cols: *cols, rows: *rows });
-                },
+                    term.resize(Size {
+                        cols: *cols,
+                        rows: *rows,
+                    });
+                }
             }
         }
         parser.advance(&mut term, &feed.held);
@@ -1644,8 +1647,14 @@ mod alt_kept_cells_tests {
 
     #[test]
     fn a_large_dch_clears_from_the_cursor_only_with_or_without_kept_cells() {
-        assert_eq!(rows(&[Out("\x1b[1;6H\x1b[999P")])[0], "00000...............");
-        assert_eq!(rows(&[N, Out("\x1b[1;6H\x1b[999P"), W])[0], "00000...............");
+        assert_eq!(
+            rows(&[Out("\x1b[1;6H\x1b[999P")])[0],
+            "00000..............."
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[999P"), W])[0],
+            "00000..............."
+        );
     }
 
     #[test]
@@ -1654,13 +1663,26 @@ mod alt_kept_cells_tests {
         assert_eq!(shown[1], "111111111.KLMNOPQRST");
         assert_eq!(shown[2], "\u{4e2d}_2222222222abcdefgh");
         // With autowrap off the glyph is dropped, and nothing shifts.
-        assert_eq!(cells(&[N, Out("\x1b[?7l\x1b[4h\x1b[2;10H\u{4e2d}\x1b[4l\x1b[?7h"), W]), all([R0, R1, R2, R3]));
+        assert_eq!(
+            cells(&[
+                N,
+                Out("\x1b[?7l\x1b[4h\x1b[2;10H\u{4e2d}\x1b[4l\x1b[?7h"),
+                W
+            ]),
+            all([R0, R1, R2, R3])
+        );
     }
 
     #[test]
     fn insert_mode_blanks_a_wide_glyph_shifted_into_the_last_visible_column() {
-        assert_eq!(cells(&[N, Out("\x1b[1;8H\u{4e2d}\x1b[4h\x1b[1;1Hxy\x1b[4l"), W])[0], "xy0000000._0ABCDEFGH");
-        assert_eq!(cells(&[Out("\x1b[1;18H\u{4e2d}\x1b[4h\x1b[1;1Hxy\x1b[4l")])[0], "xy0000000000ABCDEFG.");
+        assert_eq!(
+            cells(&[N, Out("\x1b[1;8H\u{4e2d}\x1b[4h\x1b[1;1Hxy\x1b[4l"), W])[0],
+            "xy0000000._0ABCDEFGH"
+        );
+        assert_eq!(
+            cells(&[Out("\x1b[1;18H\u{4e2d}\x1b[4h\x1b[1;1Hxy\x1b[4l")])[0],
+            "xy0000000000ABCDEFG."
+        );
     }
 
     #[test]
@@ -1678,10 +1700,22 @@ mod alt_kept_cells_tests {
                 }
                 cells(&steps)[0].clone()
             };
-            assert_eq!(around("\x1b[1@"), "00.._000000ABCDEFGHI", "ICH at the spacer, narrowed={narrowed}");
-            assert_eq!(around("\x1b[1P"), "00.000000ABCDEFGHIJ.", "DCH at the spacer, narrowed={narrowed}");
+            assert_eq!(
+                around("\x1b[1@"),
+                "00.._000000ABCDEFGHI",
+                "ICH at the spacer, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around("\x1b[1P"),
+                "00.000000ABCDEFGHIJ.",
+                "DCH at the spacer, narrowed={narrowed}"
+            );
         }
-        assert_eq!(cells(&[Out("\x1b[1;19H\u{4e2d}"), N, Out("\x1b[1;1H\x1b[1@"), W])[0], ".0000000000ABCDEFGH.", "pushed off the physical end");
+        assert_eq!(
+            cells(&[Out("\x1b[1;19H\u{4e2d}"), N, Out("\x1b[1;1H\x1b[1@"), W])[0],
+            ".0000000000ABCDEFGH.",
+            "pushed off the physical end"
+        );
     }
 
     #[test]
@@ -1701,8 +1735,15 @@ mod alt_kept_cells_tests {
     #[test]
     fn a_widen_shows_the_cells_a_narrow_kept() {
         assert_eq!(rows(&[N, W]), all([R0, R1, R2, R3]));
-        assert_eq!(rows(&[N, To(5, 4), W]), all([R0, R1, R2, R3]), "narrows never cut");
-        let wide: Vec<String> = [R0, R1, R2, R3].iter().map(|r| format!("{r}..........")).collect();
+        assert_eq!(
+            rows(&[N, To(5, 4), W]),
+            all([R0, R1, R2, R3]),
+            "narrows never cut"
+        );
+        let wide: Vec<String> = [R0, R1, R2, R3]
+            .iter()
+            .map(|r| format!("{r}.........."))
+            .collect();
         assert_eq!(rows(&[N, To(30, 4)]), wide);
     }
 
@@ -1710,70 +1751,176 @@ mod alt_kept_cells_tests {
     fn a_partial_widen_drops_what_lies_past_it() {
         assert_eq!(
             rows(&[N, To(15, 4), W]),
-            all(["0000000000ABCDE.....", "1111111111KLMNO.....", "2222222222abcde.....", "3333333333klmno....."])
+            all([
+                "0000000000ABCDE.....",
+                "1111111111KLMNO.....",
+                "2222222222abcde.....",
+                "3333333333klmno....."
+            ])
         );
     }
 
     #[test]
     fn printing_and_line_erase_touch_the_visible_cells_only() {
-        assert_eq!(rows(&[N, Out("\x1b[1;6Hxyz"), W])[0], "00000xyz00ABCDEFGHIJ");
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6Hxyz"), W])[0],
+            "00000xyz00ABCDEFGHIJ"
+        );
         let wrapped = rows(&[N, Out("\x1b[1;9Hxyzw"), W]);
-        assert_eq!(wrapped[..2], ["00000000xyABCDEFGHIJ".to_string(), "zw11111111KLMNOPQRST".to_string()]);
-        assert_eq!(rows(&[N, Out("\x1b[1;6H\x1b[K"), W])[0], "00000.....ABCDEFGHIJ");
-        assert_eq!(rows(&[N, Out("\x1b[1;6H\x1b[1K"), W])[0], "......0000ABCDEFGHIJ");
-        assert_eq!(rows(&[N, Out("\x1b[1;6H\x1b[2K"), W])[0], "..........ABCDEFGHIJ");
+        assert_eq!(
+            wrapped[..2],
+            [
+                "00000000xyABCDEFGHIJ".to_string(),
+                "zw11111111KLMNOPQRST".to_string()
+            ]
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[K"), W])[0],
+            "00000.....ABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[1K"), W])[0],
+            "......0000ABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[2K"), W])[0],
+            "..........ABCDEFGHIJ"
+        );
         assert_eq!(rows(&[N, Out("\x1b[1;20Hz"), W])[0], "000000000zABCDEFGHIJ");
-        assert_eq!(rows(&[Out("\x1b[1;16H"), N, Out("Z"), W])[0], "000000000ZABCDEFGHIJ");
-        assert_eq!(rows(&[N, Out("\x1b[1;1H\t\t\tq"), W])[0], "000000000qABCDEFGHIJ");
-        assert_eq!(rows(&[N, Out("\x1b[1;3Ha\x1b[15b"), W])[..2], ["00aaaaaaaaABCDEFGHIJ".to_string(), "aaaaaaaa11KLMNOPQRST".to_string()]);
-        assert_eq!(rows(&[N, Out("\x1b[1;10HQ\x1b[K"), W])[0], "000000000QABCDEFGHIJ", "a pending wrap");
+        assert_eq!(
+            rows(&[Out("\x1b[1;16H"), N, Out("Z"), W])[0],
+            "000000000ZABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;1H\t\t\tq"), W])[0],
+            "000000000qABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3Ha\x1b[15b"), W])[..2],
+            [
+                "00aaaaaaaaABCDEFGHIJ".to_string(),
+                "aaaaaaaa11KLMNOPQRST".to_string()
+            ]
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;10HQ\x1b[K"), W])[0],
+            "000000000QABCDEFGHIJ",
+            "a pending wrap"
+        );
     }
 
     #[test]
     fn display_erase_fills_whole_lines_and_the_current_one_visibly() {
-        assert_eq!(rows(&[N, Out("\x1b[2;6H\x1b[J"), W]), all([R0, "11111.....KLMNOPQRST", BLANK, BLANK]));
-        assert_eq!(rows(&[N, Out("\x1b[2;6H\x1b[1J"), W]), all([BLANK, "......1111KLMNOPQRST", R2, R3]));
-        assert_eq!(rows(&[N, Out("\x1b[2J"), W]), all([BLANK, BLANK, BLANK, BLANK]));
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;6H\x1b[J"), W]),
+            all([R0, "11111.....KLMNOPQRST", BLANK, BLANK])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;6H\x1b[1J"), W]),
+            all([BLANK, "......1111KLMNOPQRST", R2, R3])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2J"), W]),
+            all([BLANK, BLANK, BLANK, BLANK])
+        );
         assert_eq!(rows(&[N, Out("\x1b[3J"), W]), all([R0, R1, R2, R3]));
     }
 
     #[test]
     fn character_insert_delete_and_erase_run_over_the_physical_line() {
-        assert_eq!(rows(&[N, Out("\x1b[1;3H\x1b[3@"), W])[0], "00...00000000ABCDEFG");
-        assert_eq!(rows(&[N, Out("\x1b[1;3H\x1b[3P"), W])[0], "0000000ABCDEFGHIJ...");
-        assert_eq!(rows(&[N, Out("\x1b[1;3H\x1b[15X"), W])[0], "00...............HIJ");
-        assert_eq!(rows(&[N, Out("\x1b[1;9H\x1b[3X"), W])[0], "00000000...BCDEFGHIJ");
-        assert_eq!(rows(&[N, Out("\x1b[1;3H\x1b[30X"), W])[0], "00..................");
-        assert_eq!(rows(&[N, Out("\x1b[4h\x1b[1;3Hxy\x1b[4l"), W])[0], "00xy00000000ABCDEFGH", "insert mode");
-        assert_eq!(rows(&[N, Out("\x1b[1;3H\x1b[3P"), To(15, 4), W])[0], "0000000ABCDEFGH.....");
-        assert_eq!(rows(&[N, Out("\x1b[1;3H\x1b[3@"), To(5, 4), Out("\x1b[1;1H\x1b[2@"), W])[0], "..00...00000000ABCDE");
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[3@"), W])[0],
+            "00...00000000ABCDEFG"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[3P"), W])[0],
+            "0000000ABCDEFGHIJ..."
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[15X"), W])[0],
+            "00...............HIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;9H\x1b[3X"), W])[0],
+            "00000000...BCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[30X"), W])[0],
+            "00.................."
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[4h\x1b[1;3Hxy\x1b[4l"), W])[0],
+            "00xy00000000ABCDEFGH",
+            "insert mode"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[3P"), To(15, 4), W])[0],
+            "0000000ABCDEFGH....."
+        );
+        assert_eq!(
+            rows(&[
+                N,
+                Out("\x1b[1;3H\x1b[3@"),
+                To(5, 4),
+                Out("\x1b[1;1H\x1b[2@"),
+                W
+            ])[0],
+            "..00...00000000ABCDE"
+        );
     }
 
     #[test]
     fn lines_move_with_their_kept_cells_and_new_lines_take_the_current_width() {
         assert_eq!(rows(&[N, Out("\x1b[4;1H\n"), W]), all([R1, R2, R3, BLANK]));
-        assert_eq!(rows(&[N, Out("\x1b[1;1H\x1bM"), W]), all([BLANK, R0, R1, R2]));
-        assert_eq!(rows(&[N, Out("\x1b[2;1H\x1b[L"), W]), all([R0, BLANK, R1, R2]));
-        assert_eq!(rows(&[N, Out("\x1b[2;1H\x1b[M"), W]), all([R0, R2, R3, BLANK]));
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;1H\x1bM"), W]),
+            all([BLANK, R0, R1, R2])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;1H\x1b[L"), W]),
+            all([R0, BLANK, R1, R2])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;1H\x1b[M"), W]),
+            all([R0, R2, R3, BLANK])
+        );
         assert_eq!(rows(&[N, Out("\x1b[S"), W]), all([R1, R2, R3, BLANK]));
         assert_eq!(rows(&[N, Out("\x1b[T"), W]), all([BLANK, R0, R1, R2]));
-        assert_eq!(rows(&[N, Out("\x1b[2;3r\x1b[S\x1b[r"), W]), all([R0, R2, BLANK, R3]));
-        assert_eq!(rows(&[N, Out("\x1b[2;3r\x1b[3;1H\n\x1b[r"), W]), all([R0, R2, BLANK, R3]));
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;3r\x1b[S\x1b[r"), W]),
+            all([R0, R2, BLANK, R3])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;3r\x1b[3;1H\n\x1b[r"), W]),
+            all([R0, R2, BLANK, R3])
+        );
         assert_eq!(rows(&[To(10, 3), To(20, 4)]), all([R1, R2, R3, BLANK]));
         assert_eq!(rows(&[To(10, 6), To(20, 4)]), all([R0, R1, R2, R3]));
         let grown = rows(&[To(10, 6), Out("\x1b[6;1Hsixth"), To(20, 6)]);
         assert_eq!(grown[..4], all([R0, R1, R2, R3])[..]);
-        assert_eq!(grown[4..], ["....................".to_string(), "sixth...............".to_string()]);
+        assert_eq!(
+            grown[4..],
+            [
+                "....................".to_string(),
+                "sixth...............".to_string()
+            ]
+        );
     }
 
     #[test]
     fn decaln_fills_the_physical_line() {
-        assert_eq!(rows(&[N, Out("\x1b#8"), W]), all(["EEEEEEEEEEEEEEEEEEEE"; 4]));
+        assert_eq!(
+            rows(&[N, Out("\x1b#8"), W]),
+            all(["EEEEEEEEEEEEEEEEEEEE"; 4])
+        );
     }
 
     #[test]
     fn leaving_the_alternate_screen_or_a_reset_drops_the_kept_cells() {
-        assert_eq!(rows(&[N, Out("\x1b[?1049l"), W, Out("\x1b[?1049h")]), all([BLANK; 4]));
+        assert_eq!(
+            rows(&[N, Out("\x1b[?1049l"), W, Out("\x1b[?1049h")]),
+            all([BLANK; 4])
+        );
         // ?47 and ?1047 are divergent controls (native_serialize): a stream
         // with them never gets a native snapshot.
         assert_eq!(rows(&[N, Out("\x1bc"), W]), all([BLANK; 4]));
@@ -1781,20 +1928,47 @@ mod alt_kept_cells_tests {
 
     #[test]
     fn a_wide_char_cut_at_the_narrow_edge_comes_back_whole() {
-        assert_eq!(rows(&[Out("\x1b[1;10H\u{4e2d}"), N, W])[0], "000000000\u{4e2d}BCDEFGHIJ");
+        assert_eq!(
+            rows(&[Out("\x1b[1;10H\u{4e2d}"), N, W])[0],
+            "000000000\u{4e2d}BCDEFGHIJ"
+        );
     }
 
     #[test]
     fn the_erase_background_reaches_kept_cells_as_xterm_s_does() {
         let red = |steps: &[Step]| run(steps).1;
         let full = "0123456789abcdefghij".to_string();
-        assert_eq!(red(&[N, Out("\x1b[41m\x1b[2J\x1b[0m"), W]), vec![full.clone(); 4]);
-        assert_eq!(red(&[N, Out("\x1b[41m\x1b[2;6H\x1b[J\x1b[0m"), W]), vec!["".into(), "56789".into(), full.clone(), full.clone()]);
-        assert_eq!(red(&[N, Out("\x1b[41m\x1b[1;6H\x1b[K\x1b[0m"), W])[0], "56789");
-        assert_eq!(red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[3P\x1b[0m"), W])[0], "hij");
-        assert_eq!(red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[3@\x1b[0m"), W])[0], "234");
-        assert_eq!(red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[15X\x1b[0m"), W])[0], "23456789abcdefg");
-        assert_eq!(red(&[N, Out("\x1b[41m\x1b[4;1H\n\x1b[0m"), W])[3], "0123456789");
-        assert_eq!(red(&[N, Out("\x1b[41m\x1b[2;1H\x1b[L\x1b[0m"), W])[1], "0123456789");
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[2J\x1b[0m"), W]),
+            vec![full.clone(); 4]
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[2;6H\x1b[J\x1b[0m"), W]),
+            vec!["".into(), "56789".into(), full.clone(), full.clone()]
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;6H\x1b[K\x1b[0m"), W])[0],
+            "56789"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[3P\x1b[0m"), W])[0],
+            "hij"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[3@\x1b[0m"), W])[0],
+            "234"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[15X\x1b[0m"), W])[0],
+            "23456789abcdefg"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[4;1H\n\x1b[0m"), W])[3],
+            "0123456789"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[2;1H\x1b[L\x1b[0m"), W])[1],
+            "0123456789"
+        );
     }
 }

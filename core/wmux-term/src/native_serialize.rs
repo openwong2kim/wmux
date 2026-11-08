@@ -494,9 +494,9 @@ mod tests {
     use super::serialize;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Dimensions;
-    use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::cell::Flags;
+    use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
 
     struct Size(usize, usize);
@@ -689,7 +689,9 @@ mod tests {
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, " \u{4e2d}b\x1b[44m\x1b[1;2H\x1b[P".as_bytes());
         let row = &term.grid()[Line(0)];
-        assert!(!row[Column(1)].flags.intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER));
+        assert!(!row[Column(1)]
+            .flags
+            .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER));
         assert_eq!(row[Column(1)].bg, Color::Named(NamedColor::Blue));
         assert_eq!(row[Column(2)].c, 'b');
     }
