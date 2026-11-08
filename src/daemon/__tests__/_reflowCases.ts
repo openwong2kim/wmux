@@ -74,8 +74,8 @@ export const reflowCases: Case[] = [
   script('more-rows-at-cap-cursor-mid', [80, 24], [`${rows(150, 20)}\x1b[8H${prompt}`, [80, 30]]),
   script('more-rows-at-cap-cursor-bottom', [80, 24], [`${rows(150, 20)}\r\n${prompt}`, [80, 30]]),
   // The alternate screen narrowed, then widened: xterm never cut its rows, so
-  // the cells come back; Alacritty cut them. Refused until that is fixed.
-  script('alt-narrow-widen', [80, 24], [`n\x1b[?1049h${rows(3, 70)}`, [40, 24], [80, 24]], 'xterm'),
+  // the cells come back, and the vendored grid keeps them too: native.
+  script('alt-narrow-widen', [80, 24], [`n\x1b[?1049h${rows(3, 70)}`, [40, 24], [80, 24]]),
   // Widening alone hides nothing: still native.
   script('alt-widen', [40, 24], [`n\x1b[?1049h${rows(3, 30)}`, [80, 24]]),
   // Soft-wrapped rows on the alternate screen keep their wrap flag in xterm

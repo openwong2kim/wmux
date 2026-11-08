@@ -497,8 +497,10 @@ mod tests {
     use super::serialize;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::cell::Flags;
     use alacritty_terminal::term::{Config, Term};
-    use alacritty_terminal::vte::ansi::Processor;
+    use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
 
     struct Size(usize, usize);
     impl Dimensions for Size {
@@ -679,16 +681,21 @@ mod tests {
         let out = replay(10, "a\u{4e2d}b\x1b[1;3H\x1b[K").unwrap();
         assert!(out.contains("\x1b[0ma \r\n"), "{out:?}");
         assert!(!out.contains('\u{4e2d}'), "{out:?}");
-        // DCH pulls the second half next to content: refused.
-        let err = replay(10, "a\u{4e2d}b\x1b[1;2H\x1b[P").unwrap_err();
-        assert!(err.starts_with("unsupported-wide-half"));
-        // Next to a blank too: xterm fills it with the erase attribute.
+        // DCH at the first half: the second half it pulls to the cursor is
+        // filled, as xterm's deleteCells does, so it replays as a blank.
+        let out = replay(10, "a\u{4e2d}b\x1b[1;2H\x1b[P").unwrap();
+        assert!(out.contains("a b"), "{out:?}");
+        assert!(!out.contains('\u{4e2d}'), "{out:?}");
+        // Next to a blank too, filled with the erase attribute, as xterm's.
         let mut term = Term::new(Config::default(), &Size(10, 3), VoidListener);
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, " \u{4e2d}b\x1b[44m\x1b[1;2H\x1b[P".as_bytes());
-        assert!(serialize(&term, false)
-            .unwrap_err()
-            .starts_with("unsupported-wide-half"));
+        let row = &term.grid()[Line(0)];
+        assert!(!row[Column(1)]
+            .flags
+            .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER));
+        assert_eq!(row[Column(1)].bg, Color::Named(NamedColor::Blue));
+        assert_eq!(row[Column(2)].c, 'b');
     }
 
     #[test]

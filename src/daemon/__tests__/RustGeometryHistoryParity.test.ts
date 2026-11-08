@@ -5,9 +5,9 @@
  * module, Rust's).
  *
  * xterm keeps an alternate-screen row's cells past a narrower width and shows
- * them again when it widens; Alacritty drops them. So the Rust backend refuses
- * a narrowing over written alternate-screen cells (unsupported-alt-width) and
- * the xterm fallback restores them; a blank right side stays native.
+ * them again when it widens. The vendored Alacritty grid keeps them the same
+ * way (core/wmux-term/vendor/alacritty_terminal/WMUX-PATCH.md), so every case
+ * here stays native.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RingBuffer, type ReplayGeometry } from '../RingBuffer';
@@ -22,7 +22,7 @@ interface Case {
   steps: Step[];
   /** What the viewer showed: the sizes its terminal applied, at their byte offsets. */
   shown: ReplayGeometry;
-  /** The Rust backend refuses this history (and xterm restores it). */
+  /** The Rust backend refuses this history with unsupported-reflow (and xterm restores it). */
   rustRefuses?: true;
 }
 
@@ -31,11 +31,18 @@ const rowsOf = (n: number, width: number) => Array.from({ length: n }, (_, i) =>
 const CASES: Case[] = (() => {
   const alt = '\x1b[?1049h\x1b[H' + rowsOf(6, 38);
   const altNarrowWrite = '\x1b[3;1Hxy';
+  // Character insert, delete and erase run over a row's kept cells too, and a
+  // display erase fills whole lines over them.
+  const altNarrowEdit = '\x1b[2;3H\x1b[3@\x1b[4;5H\x1b[2P\x1b[5;1H\x1b[30X\x1b[6;4H\x1b[J\x1b[1;1Hok';
   // Leave the alternate screen and save the home cursor: no snapshot carries
   // the cursor its entry saved, which the parity probes would restore.
   const leave = '\x1b[?1049l\x1b[H\x1b7';
   const reenter = '\x1b[?1049l\x1b[H\x1b[?1049hfresh';
   const altBlankRight = '\x1b[?1049h\x1b[H' + rowsOf(6, 18);
+  // Row 2 runs past the width and soft-wraps onto row 3. xterm keeps the wrap
+  // flags across a width change and the kept cells don't (a widen loses row
+  // 3's), so a width change with a soft-wrapped row on screen still refuses.
+  const altWrap = '\x1b[?1049h\x1b[Htop\r\n' + 'w'.repeat(30) + 'W'.repeat(25) + '\r\nafter';
   const altDip = '\x1b[?1049h\x1b[H' + rowsOf(8, 12) + '\x1b[8;1H';
   const primary = rowsOf(7, 70) + '\r\n$ ';
   const tall = '\x1b[?1049h\x1b[H' + rowsOf(10, 28);
@@ -47,7 +54,6 @@ const CASES: Case[] = (() => {
       name: 'an alternate screen narrowed and widened back with no output between keeps its right side',
       steps: [{ size: [40, 8] }, { out: alt }, { size: [20, 8] }, { size: [40, 8] }, { out: '\x1b[8;1H' }],
       shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: alt.length, cols: 20, rows: 8 }, { offset: alt.length, cols: 40, rows: 8 }] },
-      rustRefuses: true,
     },
     {
       // Diverges with or without the geometry history's change: bytes at the
@@ -55,7 +61,11 @@ const CASES: Case[] = (() => {
       name: 'an alternate screen narrowed, written at the narrow width, then widened keeps its right side',
       steps: [{ size: [40, 8] }, { out: alt }, { size: [20, 8] }, { out: altNarrowWrite }, { size: [40, 8] }],
       shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: alt.length, cols: 20, rows: 8 }, { offset: alt.length + altNarrowWrite.length, cols: 40, rows: 8 }] },
-      rustRefuses: true,
+    },
+    {
+      name: 'an alternate screen narrowed, edited by insert, delete and erase at the narrow width, then widened',
+      steps: [{ size: [40, 8] }, { out: alt }, { size: [20, 8] }, { out: altNarrowEdit }, { size: [40, 8] }],
+      shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: alt.length, cols: 20, rows: 8 }, { offset: alt.length + altNarrowEdit.length, cols: 40, rows: 8 }] },
     },
     {
       // Leaving the alternate screen drops the cells xterm kept, so the widen
@@ -75,6 +85,24 @@ const CASES: Case[] = (() => {
       name: 'an alternate screen narrowed over a blank right side stays native',
       steps: [{ size: [40, 8] }, { out: altBlankRight }, { size: [20, 8] }, { out: altNarrowWrite }, { size: [40, 8] }],
       shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altBlankRight.length, cols: 20, rows: 8 }, { offset: altBlankRight.length + altNarrowWrite.length, cols: 40, rows: 8 }] },
+    },
+    {
+      name: 'an alternate screen with a soft-wrapped row narrowed and widened back',
+      steps: [{ size: [40, 8] }, { out: altWrap }, { size: [20, 8] }, { size: [40, 8] }, { out: '\x1b[8;1H' }],
+      shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 20, rows: 8 }, { offset: altWrap.length, cols: 40, rows: 8 }] },
+      rustRefuses: true,
+    },
+    {
+      name: 'an alternate screen with a soft-wrapped row narrowed, written, then widened',
+      steps: [{ size: [40, 8] }, { out: altWrap }, { size: [20, 8] }, { out: altNarrowWrite }, { size: [40, 8] }],
+      shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 20, rows: 8 }, { offset: altWrap.length + altNarrowWrite.length, cols: 40, rows: 8 }] },
+      rustRefuses: true,
+    },
+    {
+      name: 'an alternate screen with a soft-wrapped row widened',
+      steps: [{ size: [40, 8] }, { out: altWrap }, { size: [60, 8] }, { out: '\x1b[8;1H' }],
+      shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 60, rows: 8 }] },
+      rustRefuses: true,
     },
     {
       // The narrow wraps the long lines and pushes rows into scrollback with
@@ -123,13 +151,13 @@ describe.each([
     if (mode === 'ansi') vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath);
     vi.stubEnv('WMUX_RUST_SNAPSHOT', mode);
     const req = requestFor(steps);
-    const refusedBefore = getAnsiSnapshotBackendDiagnostics().reasons['unsupported-alt-width'] ?? 0;
+    const refusedBefore = getAnsiSnapshotBackendDiagnostics().reasons['unsupported-reflow'] ?? 0;
     const snapshot = await generateSnapshotUnqueued(req);
     expect(snapshot.ok, JSON.stringify(snapshot)).toBe(true);
     if (!snapshot.ok) return;
     if (mode === 'ansi') {
       expect(getAnsiSnapshotBackendDiagnostics().last?.backend).toBe(rustRefuses ? 'xterm' : 'rust');
-      expect((getAnsiSnapshotBackendDiagnostics().reasons['unsupported-alt-width'] ?? 0) - refusedBefore).toBe(rustRefuses ? 1 : 0);
+      expect((getAnsiSnapshotBackendDiagnostics().reasons['unsupported-reflow'] ?? 0) - refusedBefore).toBe(rustRefuses ? 1 : 0);
     }
     expect(await liveDifference({ ...req, geometry: shown }, snapshot.payload)).toBeUndefined();
   });

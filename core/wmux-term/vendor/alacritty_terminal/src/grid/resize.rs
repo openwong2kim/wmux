@@ -317,6 +317,13 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
                 new_raw.push(row);
                 continue;
             }
+            // wmux: without reflow (the alternate screen) xterm keeps a line's
+            // cells past the narrower width; a later widen shows them again.
+            if !reflow {
+                row.hide_past(columns);
+                new_raw.push(row);
+                continue;
+            }
             // Append lines left over from the previous row.
             if let Some(buffered) = buffered.take() {
                 // Add a column for every cell added before the cursor, if it goes beyond the new

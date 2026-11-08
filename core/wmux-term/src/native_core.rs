@@ -197,9 +197,6 @@ pub struct NativeTerminal {
     feed: XtermFeed,
     /// Why the ANSI snapshot of this stream cannot match xterm's.
     refusal: Option<&'static str>,
-    /// The narrowest width the alternate screen was cut to over written
-    /// cells, while it is still the active screen (see alt_width_cut).
-    alt_cut: Option<usize>,
 }
 
 /// Whether a resize to `cols` reflows a row below the cursor's paragraph on
@@ -266,9 +263,6 @@ struct XtermFeed {
     shifted: bool,
     /// A control Alacritty parses differently from xterm.
     divergent: bool,
-    /// The alternate screen was left (?47, ?1047 or ?1049 reset, or RIS)
-    /// since the last resize: xterm dropped the cells it kept past a cut.
-    alt_left: bool,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -370,7 +364,6 @@ impl XtermFeed {
             self.main_margins = false;
             self.alt_margins = false;
             self.alt_screen = false;
-            self.alt_left = true;
             self.sgr_pixels = false;
             self.sgr_mouse = false;
             self.mouse = 0;
@@ -407,9 +400,6 @@ impl XtermFeed {
                             self.mouse = if set { protocol } else { 0 };
                         }
                         Some(47 | 1047 | 1049) => {
-                            if !set {
-                                self.alt_left = true;
-                            }
                             if set && !self.alt_screen {
                                 // xterm's alternate screen starts with its own
                                 // full region; Alacritty keeps one region, so
@@ -576,11 +566,13 @@ fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: 
         parser.stop_sync(term);
     }
     let grid = term.grid_mut();
+    // Whole lines over their physical width: an alternate-screen row keeps
+    // cells past a narrower width, and xterm erases those too.
     if all {
-        grid.reset_region(..);
+        grid.reset_region_keep_width(..);
     } else {
         let cursor = grid.cursor.point;
-        grid.reset_region(..cursor.line);
+        grid.reset_region_keep_width(..cursor.line);
         let bg = grid.cursor.template.bg;
         let end = (cursor.column.0 + 1).min(grid.columns());
         for cell in &mut grid[cursor.line][..Column(end)] {
@@ -613,7 +605,6 @@ impl NativeTerminal {
             scrollback,
             feed: XtermFeed::default(),
             refusal: None,
-            alt_cut: None,
         })
     }
 
@@ -690,16 +681,10 @@ impl NativeTerminal {
             self.parser.stop_sync(term);
         }
         // xterm never reflows or cuts the alternate screen: its rows keep
-        // their cells and wrap flags across a resize, where Alacritty cuts the
-        // cells and drops the flags. A width change with a soft-wrapped row on
-        // screen loses the flags. xterm also shows the kept cells again when
-        // it widens, so only a widen past a cut over written cells can differ
-        // (a snapshot at the narrow width shows the same cells either way): the
-        // cut is remembered and a later widen on the same screen refuses.
-        // Leaving the alternate screen drops xterm's kept cells too.
-        if std::mem::take(&mut self.feed.alt_left) {
-            self.alt_cut = None;
-        }
+        // their cells and wrap flags across a resize. The vendored grid keeps
+        // a row's cells past a narrower width and shows them again when it
+        // widens, as xterm's does (vendor/alacritty_terminal WMUX-PATCH.md),
+        // but a width change with a soft-wrapped row on screen loses the flags.
         if term.mode().contains(TermMode::ALT_SCREEN) {
             let grid = term.grid();
             let old = grid.columns();
@@ -714,17 +699,6 @@ impl NativeTerminal {
                     "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
                 );
             }
-            if self.alt_cut.is_some_and(|cut| cols as usize > cut) {
-                self.refusal.get_or_insert(
-                    "unsupported-alt-width: the alternate screen widened over cells it was cut to",
-                );
-            }
-            if alt_width_cut(term, cols as usize) {
-                let cut = cols as usize;
-                self.alt_cut = Some(self.alt_cut.map_or(cut, |c| c.min(cut)));
-            }
-        } else {
-            self.alt_cut = None;
         }
         // A paragraph below the cursor's that reflows: xterm moves its cursor
         // row by the rows that adds or removes as if they were above it, off
@@ -1479,23 +1453,6 @@ impl NativeRing {
     }
 }
 
-/// Whether narrowing to `cols` would drop a written cell of the active
-/// alternate screen (one Alacritty's resize truncates and xterm keeps).
-fn alt_width_cut(term: &Term<VoidListener>, cols: usize) -> bool {
-    if !term.mode().contains(TermMode::ALT_SCREEN) {
-        return false;
-    }
-    let grid = term.grid();
-    let old = grid.columns();
-    if cols >= old {
-        return false;
-    }
-    (0..grid.screen_lines()).any(|y| {
-        let line = &grid[Line(y as i32)];
-        (cols..old).any(|x| !line[Column(x)].is_empty())
-    })
-}
-
 /// Test hook for the per-reason parity modules (parity_support.rs): `chunks`
 /// fed the way a snapshot feeds the ring, then whether the feed met a
 /// divergent control.
@@ -1756,5 +1713,480 @@ mod tests {
         assert!(!pixels(&["\x1b[?1016h\x1b[?1016l"]));
         assert!(!pixels(&["\x1b[?1016h\x1bc"]));
         assert!(pixels(&["\x1b[?10", "16h"]), "split across chunks");
+    }
+}
+
+/// The alternate screen's cells past a narrower width, against xterm.js
+/// (headless, the daemon's options): a 20x4 alternate screen narrowed to 10,
+/// driven, then widened. Each expectation is what xterm showed.
+#[cfg(test)]
+mod alt_kept_cells_tests {
+    use super::{Size, XtermFeed};
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::cell::Flags;
+    use alacritty_terminal::term::{Config, Term};
+    use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
+
+    enum Step {
+        Out(&'static str),
+        Size(usize, usize),
+    }
+    use Step::{Out, Size as To};
+
+    const N: Step = To(10, 4);
+    const W: Step = To(20, 4);
+    const R0: &str = "0000000000ABCDEFGHIJ";
+    const R1: &str = "1111111111KLMNOPQRST";
+    const R2: &str = "2222222222abcdefghij";
+    const R3: &str = "3333333333klmnopqrst";
+    const BLANK: &str = "....................";
+
+    /// Rows as text ('.' for a blank, a wide char's spacer skipped), and the
+    /// columns of each row with a red background (base 36).
+    /// The terminal after `steps`, from the 20x4 alternate screen.
+    fn run_term(steps: &[Step]) -> (Term<VoidListener>, ()) {
+        let mut term = Term::new(Config::default(), &Size { cols: 20, rows: 4 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut feed = XtermFeed::default();
+        let start = format!("\x1b[?1049h\x1b[H{R0}\r\n{R1}\r\n{R2}\r\n{R3}");
+        feed.feed(&mut parser, &mut term, start.as_bytes());
+        for step in steps {
+            match step {
+                Out(bytes) => feed.feed(&mut parser, &mut term, bytes.as_bytes()),
+                To(cols, rows) => {
+                    parser.advance(&mut term, &std::mem::take(&mut feed.held));
+                    term.resize(Size {
+                        cols: *cols,
+                        rows: *rows,
+                    });
+                }
+            }
+        }
+        parser.advance(&mut term, &feed.held);
+        (term, ())
+    }
+
+    fn run(steps: &[Step]) -> (Vec<String>, Vec<String>) {
+        let (term, _) = run_term(steps);
+        let grid = term.grid();
+        let mut text = Vec::new();
+        let mut red = Vec::new();
+        for y in 0..grid.screen_lines() {
+            let row = &grid[Line(y as i32)];
+            let mut line = String::new();
+            let mut bg = String::new();
+            for x in 0..grid.columns() {
+                let cell = &row[Column(x)];
+                if cell.bg == Color::Named(NamedColor::Red) {
+                    bg.push(std::char::from_digit(x as u32, 36).unwrap());
+                }
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                line.push(if cell.c == ' ' { '.' } else { cell.c });
+            }
+            text.push(line);
+            red.push(bg);
+        }
+        (text, red)
+    }
+
+    fn rows(steps: &[Step]) -> Vec<String> {
+        run(steps).0
+    }
+
+    /// Rows as cells: '_' for a wide glyph's spacer (xterm's width-0 cell).
+    fn cells(steps: &[Step]) -> Vec<String> {
+        let (term, _) = run_term(steps);
+        let grid = term.grid();
+        (0..grid.screen_lines())
+            .map(|y| {
+                let row = &grid[Line(y as i32)];
+                (0..grid.columns())
+                    .map(|x| {
+                        let cell = &row[Column(x)];
+                        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                            '_'
+                        } else if cell.c == ' ' {
+                            '.'
+                        } else {
+                            cell.c
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_large_dch_clears_from_the_cursor_only_with_or_without_kept_cells() {
+        assert_eq!(
+            rows(&[Out("\x1b[1;6H\x1b[999P")])[0],
+            "00000..............."
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[999P"), W])[0],
+            "00000..............."
+        );
+    }
+
+    #[test]
+    fn insert_mode_wraps_a_wide_glyph_before_it_shifts_anything() {
+        let shown = cells(&[N, Out("\x1b[4h\x1b[2;10H\u{4e2d}\x1b[4l"), W]);
+        assert_eq!(shown[1], "111111111.KLMNOPQRST");
+        assert_eq!(shown[2], "\u{4e2d}_2222222222abcdefgh");
+        // With autowrap off the glyph is dropped, and nothing shifts.
+        assert_eq!(
+            cells(&[
+                N,
+                Out("\x1b[?7l\x1b[4h\x1b[2;10H\u{4e2d}\x1b[4l\x1b[?7h"),
+                W
+            ]),
+            all([R0, R1, R2, R3])
+        );
+    }
+
+    #[test]
+    fn insert_mode_blanks_a_wide_glyph_shifted_into_the_last_visible_column() {
+        assert_eq!(
+            cells(&[N, Out("\x1b[1;8H\u{4e2d}\x1b[4h\x1b[1;1Hxy\x1b[4l"), W])[0],
+            "xy0000000._0ABCDEFGH"
+        );
+        assert_eq!(
+            cells(&[Out("\x1b[1;18H\u{4e2d}\x1b[4h\x1b[1;1Hxy\x1b[4l")])[0],
+            "xy0000000000ABCDEFG."
+        );
+    }
+
+    #[test]
+    fn insert_and_delete_at_a_wide_glyph_cut_it_as_xterm_does() {
+        for narrowed in [true, false] {
+            let around = |edit: &'static str| {
+                let mut steps = vec![];
+                if narrowed {
+                    steps.push(To(10, 4));
+                }
+                steps.push(Out("\x1b[1;3H\u{4e2d}\x1b[1;4H"));
+                steps.push(Out(edit));
+                if narrowed {
+                    steps.push(To(20, 4));
+                }
+                cells(&steps)[0].clone()
+            };
+            assert_eq!(
+                around("\x1b[1@"),
+                "00.._000000ABCDEFGHI",
+                "ICH at the spacer, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around("\x1b[1P"),
+                "00.000000ABCDEFGHIJ.",
+                "DCH at the spacer, narrowed={narrowed}"
+            );
+        }
+        assert_eq!(
+            cells(&[Out("\x1b[1;19H\u{4e2d}"), N, Out("\x1b[1;1H\x1b[1@"), W])[0],
+            ".0000000000ABCDEFGH.",
+            "pushed off the physical end"
+        );
+    }
+
+    #[test]
+    fn erase_at_a_wide_glyph_cuts_it_as_xterm_does() {
+        for narrowed in [true, false] {
+            let around = |glyph: &'static str, edit: &'static str| {
+                let mut steps = vec![Out(glyph)];
+                if narrowed {
+                    steps.insert(0, To(10, 4));
+                }
+                steps.push(Out(edit));
+                if narrowed {
+                    steps.push(To(20, 4));
+                }
+                (cells(&steps)[0].clone(), run(&steps).1[0].clone())
+            };
+            let glyph = "\x1b[1;3H\u{4e2d}";
+            assert_eq!(
+                around(glyph, "\x1b[1;4H\x1b[1X").0,
+                "00..000000ABCDEFGHIJ",
+                "ECH at the spacer, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around(glyph, "\x1b[1;2H\x1b[2X").0,
+                "0...000000ABCDEFGHIJ",
+                "ECH ending on the lead, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around(glyph, "\x1b[1;3H\x1b[2X").0,
+                "00..000000ABCDEFGHIJ",
+                "ECH over the glyph, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around(glyph, "\x1b[1;4H\x1b[41m\x1b[1X\x1b[m"),
+                ("00..000000ABCDEFGHIJ".to_string(), "23".to_string()),
+                "the cut lead takes the fill, narrowed={narrowed}"
+            );
+        }
+        assert_eq!(
+            cells(&[Out("\x1b[1;13H\u{4e2d}"), N, Out("\x1b[1;9H\x1b[5X"), W])[0],
+            "00000000......EFGHIJ",
+            "ECH into kept cells, ending on a kept lead"
+        );
+    }
+
+    #[test]
+    fn the_alternate_screen_keeps_no_cells_while_it_is_not_shown() {
+        let (term, _) = run_term(&[N, Out("\x1b[?1049l"), To(8, 4)]);
+        let alt = term.inactive_grid();
+        assert!((0..alt.screen_lines()).all(|y| alt[Line(y as i32)].hidden_len() == 0));
+        let (term, _) = run_term(&[N, Out("\x1b[?1049l")]);
+        let alt = term.inactive_grid();
+        assert!((0..alt.screen_lines()).all(|y| alt[Line(y as i32)].hidden_len() == 0));
+    }
+
+    fn all(rows: [&str; 4]) -> Vec<String> {
+        rows.iter().map(|r| r.to_string()).collect()
+    }
+
+    #[test]
+    fn a_widen_shows_the_cells_a_narrow_kept() {
+        assert_eq!(rows(&[N, W]), all([R0, R1, R2, R3]));
+        assert_eq!(
+            rows(&[N, To(5, 4), W]),
+            all([R0, R1, R2, R3]),
+            "narrows never cut"
+        );
+        let wide: Vec<String> = [R0, R1, R2, R3]
+            .iter()
+            .map(|r| format!("{r}.........."))
+            .collect();
+        assert_eq!(rows(&[N, To(30, 4)]), wide);
+    }
+
+    #[test]
+    fn a_partial_widen_drops_what_lies_past_it() {
+        assert_eq!(
+            rows(&[N, To(15, 4), W]),
+            all([
+                "0000000000ABCDE.....",
+                "1111111111KLMNO.....",
+                "2222222222abcde.....",
+                "3333333333klmno....."
+            ])
+        );
+    }
+
+    #[test]
+    fn printing_and_line_erase_touch_the_visible_cells_only() {
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6Hxyz"), W])[0],
+            "00000xyz00ABCDEFGHIJ"
+        );
+        let wrapped = rows(&[N, Out("\x1b[1;9Hxyzw"), W]);
+        assert_eq!(
+            wrapped[..2],
+            [
+                "00000000xyABCDEFGHIJ".to_string(),
+                "zw11111111KLMNOPQRST".to_string()
+            ]
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[K"), W])[0],
+            "00000.....ABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[1K"), W])[0],
+            "......0000ABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[2K"), W])[0],
+            "..........ABCDEFGHIJ"
+        );
+        assert_eq!(rows(&[N, Out("\x1b[1;20Hz"), W])[0], "000000000zABCDEFGHIJ");
+        assert_eq!(
+            rows(&[Out("\x1b[1;16H"), N, Out("Z"), W])[0],
+            "000000000ZABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;1H\t\t\tq"), W])[0],
+            "000000000qABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3Ha\x1b[15b"), W])[..2],
+            [
+                "00aaaaaaaaABCDEFGHIJ".to_string(),
+                "aaaaaaaa11KLMNOPQRST".to_string()
+            ]
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;10HQ\x1b[K"), W])[0],
+            "000000000QABCDEFGHIJ",
+            "a pending wrap"
+        );
+    }
+
+    #[test]
+    fn display_erase_fills_whole_lines_and_the_current_one_visibly() {
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;6H\x1b[J"), W]),
+            all([R0, "11111.....KLMNOPQRST", BLANK, BLANK])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;6H\x1b[1J"), W]),
+            all([BLANK, "......1111KLMNOPQRST", R2, R3])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2J"), W]),
+            all([BLANK, BLANK, BLANK, BLANK])
+        );
+        assert_eq!(rows(&[N, Out("\x1b[3J"), W]), all([R0, R1, R2, R3]));
+    }
+
+    #[test]
+    fn character_insert_delete_and_erase_run_over_the_physical_line() {
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[3@"), W])[0],
+            "00...00000000ABCDEFG"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[3P"), W])[0],
+            "0000000ABCDEFGHIJ..."
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[15X"), W])[0],
+            "00...............HIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;9H\x1b[3X"), W])[0],
+            "00000000...BCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[30X"), W])[0],
+            "00.................."
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[4h\x1b[1;3Hxy\x1b[4l"), W])[0],
+            "00xy00000000ABCDEFGH",
+            "insert mode"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[3P"), To(15, 4), W])[0],
+            "0000000ABCDEFGH....."
+        );
+        assert_eq!(
+            rows(&[
+                N,
+                Out("\x1b[1;3H\x1b[3@"),
+                To(5, 4),
+                Out("\x1b[1;1H\x1b[2@"),
+                W
+            ])[0],
+            "..00...00000000ABCDE"
+        );
+    }
+
+    #[test]
+    fn lines_move_with_their_kept_cells_and_new_lines_take_the_current_width() {
+        assert_eq!(rows(&[N, Out("\x1b[4;1H\n"), W]), all([R1, R2, R3, BLANK]));
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;1H\x1bM"), W]),
+            all([BLANK, R0, R1, R2])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;1H\x1b[L"), W]),
+            all([R0, BLANK, R1, R2])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;1H\x1b[M"), W]),
+            all([R0, R2, R3, BLANK])
+        );
+        assert_eq!(rows(&[N, Out("\x1b[S"), W]), all([R1, R2, R3, BLANK]));
+        assert_eq!(rows(&[N, Out("\x1b[T"), W]), all([BLANK, R0, R1, R2]));
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;3r\x1b[S\x1b[r"), W]),
+            all([R0, R2, BLANK, R3])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;3r\x1b[3;1H\n\x1b[r"), W]),
+            all([R0, R2, BLANK, R3])
+        );
+        assert_eq!(rows(&[To(10, 3), To(20, 4)]), all([R1, R2, R3, BLANK]));
+        assert_eq!(rows(&[To(10, 6), To(20, 4)]), all([R0, R1, R2, R3]));
+        let grown = rows(&[To(10, 6), Out("\x1b[6;1Hsixth"), To(20, 6)]);
+        assert_eq!(grown[..4], all([R0, R1, R2, R3])[..]);
+        assert_eq!(
+            grown[4..],
+            [
+                "....................".to_string(),
+                "sixth...............".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn decaln_fills_the_physical_line() {
+        assert_eq!(
+            rows(&[N, Out("\x1b#8"), W]),
+            all(["EEEEEEEEEEEEEEEEEEEE"; 4])
+        );
+    }
+
+    #[test]
+    fn leaving_the_alternate_screen_or_a_reset_drops_the_kept_cells() {
+        assert_eq!(
+            rows(&[N, Out("\x1b[?1049l"), W, Out("\x1b[?1049h")]),
+            all([BLANK; 4])
+        );
+        // ?47 and ?1047 are divergent controls (native_serialize): a stream
+        // with them never gets a native snapshot.
+        assert_eq!(rows(&[N, Out("\x1bc"), W]), all([BLANK; 4]));
+    }
+
+    #[test]
+    fn a_wide_char_cut_at_the_narrow_edge_comes_back_whole() {
+        assert_eq!(
+            rows(&[Out("\x1b[1;10H\u{4e2d}"), N, W])[0],
+            "000000000\u{4e2d}BCDEFGHIJ"
+        );
+    }
+
+    #[test]
+    fn the_erase_background_reaches_kept_cells_as_xterm_s_does() {
+        let red = |steps: &[Step]| run(steps).1;
+        let full = "0123456789abcdefghij".to_string();
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[2J\x1b[0m"), W]),
+            vec![full.clone(); 4]
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[2;6H\x1b[J\x1b[0m"), W]),
+            vec!["".into(), "56789".into(), full.clone(), full.clone()]
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;6H\x1b[K\x1b[0m"), W])[0],
+            "56789"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[3P\x1b[0m"), W])[0],
+            "hij"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[3@\x1b[0m"), W])[0],
+            "234"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[15X\x1b[0m"), W])[0],
+            "23456789abcdefg"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[4;1H\n\x1b[0m"), W])[3],
+            "0123456789"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[2;1H\x1b[L\x1b[0m"), W])[1],
+            "0123456789"
+        );
     }
 }

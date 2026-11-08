@@ -105,19 +105,24 @@ const accepted: Case[] = [
   synthetic('mouse-embedded-c0', '\x1b[?100\r0hx'),
   synthetic('mouse-leading-zeros', '\x1b[?01002;01006hx'),
   synthetic('colon-rgb-colorspace', '\x1b[38:2::10:20:30mx\x1b[48:5:3my'),
+  // DCH at a fullwidth glyph's first half: the spacer it pulls to the cursor
+  // is filled with the erase attribute, as xterm's deleteCells does
+  // (vendor/alacritty_terminal WMUX-PATCH.md).
+  synthetic('wide-dch-first-half', 'a中b\x1b[1;2H\x1b[P'),
+  synthetic('wide-dch-second-half-blank', ' 中b\x1b[44m\x1b[1;2H\x1b[P'),
+  // ECH at either half of a fullwidth glyph erases the whole glyph, as
+  // xterm's replaceCells does.
+  synthetic('wide-ech-second-half', 'a中b\x1b[44m\x1b[1;3H\x1b[X'),
+  synthetic('wide-ech-ending-on-first-half', 'a中b\x1b[44m\x1b[1;1H\x1b[2X'),
 ];
 
 // Classes that stay on xterm because Alacritty parses them differently.
 const refused: Case[] = [
-  // Half a fullwidth glyph next to content (DCH pulls the second half left).
-  synthetic('wide-dch-first-half', 'a\u4e2db\x1b[1;2H\x1b[P', 'xterm'),
   synthetic('sync-mixed-params', 'a\x1b[?2026hb\x1b[?2026;1lc', 'xterm'),
   synthetic('deccolm', 'abc\x1b[?3hd', 'xterm'),
   synthetic('colon-rgb-no-colorspace', '\x1b[38:2:10:20:30mx', 'xterm'),
   synthetic('colon-indexed-no-operand', '\x1b[31m\x1b[38:5mx', 'xterm'),
   synthetic('colon-rgb-short', '\x1b[38:2::10:20mx', 'xterm'),
-  // A DCH orphan: xterm fills it with the erase attribute.
-  synthetic('wide-dch-second-half-blank', ' \u4e2db\x1b[44m\x1b[1;2H\x1b[P', 'xterm'),
   synthetic('alt-1047-leading-zero', 'n\x1b[?01047ha', 'xterm'),
   synthetic('rep-after-control', 'X\r\x1b[3b', 'xterm'),
   synthetic('rep-after-sgr', 'X\x1b[31m\x1b[3b', 'xterm'),

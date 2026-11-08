@@ -77,6 +77,27 @@ keeps it out of the wmux-term workspace). It keeps wmux-term's versions for ever
 shared dependency. CI runs `cargo test --manifest-path
 core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
 
+- `src/grid/row.rs`, `src/grid/resize.rs`, `src/grid/mod.rs`, `src/grid/storage.rs` and
+  `src/term/mod.rs` keep an alternate-screen row's cells past a narrower width,
+  as xterm.js keeps its line's length: a resize without reflow moves them into
+  the row's kept cells, and a later widen shows them again up to the new width
+  (the rest is dropped, as xterm's line takes the new width). Character insert,
+  delete and erase and insert-mode printing run over the whole physical row, a
+  display erase fills whole rows over their physical width, DECALN fills it, and
+  a reset row (a scroll, a new line, the alternate screen entered again) is a
+  new line at the current width. The alternate screen's kept cells are
+  dropped once it is no longer shown. `Storage::swap` uses a plain slice swap,
+  since a row is no longer four machine words.
+- `src/term/mod.rs` runs character insert, delete and erase and insert-mode
+  printing on every row as xterm's `BufferLine` does: over the physical row,
+  with its wide-glyph fixes (a glyph cut at the cursor or pushed to the end
+  loses its first cell, a bare spacer left at the cursor by a delete is filled,
+  a glyph shifted into the last column in insert mode is blanked, an erase
+  that cuts a glyph at either end blanks all of it). A large
+  delete no longer clears cells left of the cursor (upstream cleared from
+  `columns - count`), and a wide glyph that does not fit wraps (or is dropped)
+  before insert mode shifts anything. Modified 2026-11-08.
+
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.
 Run both `scripts/rust-terminal-core-bench.mjs --verify-only` (with an output path
