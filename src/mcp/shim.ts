@@ -22,9 +22,16 @@
  * "server died" path that hosts already know how to restart. At STARTUP,
  * connect retries briefly with backoff so a broker that is still booting
  * (app launch race) doesn't fail the first agent spawn.
+ *
+ * The shim asks for the broker's ack before it forwards a byte. A broker that
+ * cannot tie the connection to this process closes it before the ack; that,
+ * any other missing ack, or a `peer`/`peer-unverified` refusal leaves the
+ * session to the full server beside this file, run in this same process, like
+ * the native launcher (core/wmux-native/src/mcp_shim.rs).
  */
 import * as net from 'net';
 import * as fs from 'fs';
+import * as path from 'path';
 import { getMcpBrokerPipeName, getAuthTokenPath } from '../shared/constants';
 import { COMMANDER_MODE_ARG } from '../shared/commanderSurface';
 import { CORE_MODE_ARG } from '../shared/coreSurface';
@@ -32,6 +39,66 @@ import { roleArgValue } from '../shared/roleSurfaces';
 
 const CONNECT_RETRIES = 10;
 const CONNECT_RETRY_DELAY_MS = 300;
+/** As long as the native launcher waits for the broker's ack. */
+const ACK_DEADLINE_MS = 5000;
+const ACK_LINE_MAX = 4096;
+
+type Ack = { kind: 'hosted'; rest: Buffer } | { kind: 'refused'; why: string } | { kind: 'missing'; why: string };
+
+/** The broker's ack line, read before anything is forwarded. */
+function readAck(socket: net.Socket): Promise<Ack> {
+  return new Promise((resolve) => {
+    let buf = Buffer.alloc(0);
+    const done = (ack: Ack): void => {
+      clearTimeout(timer);
+      socket.off('data', onData);
+      socket.off('close', onClose);
+      socket.off('error', onClose);
+      socket.pause();
+      resolve(ack);
+    };
+    const onData = (chunk: Buffer): void => {
+      buf = Buffer.concat([buf, chunk]);
+      const nl = buf.indexOf(0x0a);
+      if (nl === -1) {
+        if (buf.length > ACK_LINE_MAX) done({ kind: 'missing', why: 'the first line from the broker is not an ack' });
+        return;
+      }
+      let line: { wmuxBroker?: unknown; ok?: unknown; error?: unknown };
+      try { line = JSON.parse(buf.subarray(0, nl).toString('utf8')) as typeof line; } catch { line = {}; }
+      if (line.wmuxBroker !== 1) done({ kind: 'missing', why: 'the first line from the broker is not an ack' });
+      else if (line.ok === true) done({ kind: 'hosted', rest: buf.subarray(nl + 1) });
+      else done({ kind: 'refused', why: typeof line.error === 'string' ? line.error : 'unknown' });
+    };
+    const onClose = (): void => done({ kind: 'missing', why: 'the broker closed the connection before its ack' });
+    const timer = setTimeout(() => done({ kind: 'missing', why: `no ack in ${ACK_DEADLINE_MS / 1000} s` }), ACK_DEADLINE_MS);
+    socket.on('data', onData);
+    socket.on('close', onClose);
+    socket.on('error', onClose);
+  });
+}
+
+/** Whether the full server can still take a refused session (the native launcher's rule). */
+function refusalFallsBack(why: string): boolean {
+  return why === 'peer' || why === 'peer-unverified';
+}
+
+/**
+ * Hand the session to the full server beside this file, in this process: its
+ * pid, parent, argv and env stay the ones the host gave this shim. The dev
+ * build's tsc output names it entry.js (index.js there is the server module);
+ * mcp-bundle names the bundled entry index.js.
+ */
+function runFullServer(why: string): void {
+  console.error(`[wmux-mcp-shim] ${why}; running the full server`);
+  const entry = [path.join(__dirname, 'entry.js'), path.join(__dirname, 'index.js')].find((f) => fs.existsSync(f));
+  if (!entry) {
+    console.error('[wmux-mcp-shim] no full server beside the shim');
+    process.exit(1);
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- a runtime path, loaded only on this branch
+  require(entry);
+}
 
 function readAuthToken(): string | undefined {
   try {
@@ -110,8 +177,21 @@ async function main(): Promise<void> {
       coreMode: process.argv.includes(CORE_MODE_ARG),
       // Additive like coreMode: an older broker ignores it and hosts full.
       roleSurface: roleArgValue(process.argv),
+      ack: 1,
     }) + '\n',
   );
+
+  const ack = await readAck(socket);
+  if (ack.kind !== 'hosted') {
+    socket.destroy();
+    if (ack.kind === 'refused' && !refusalFallsBack(ack.why)) {
+      console.error(`[wmux-mcp-shim] broker refused the session: ${ack.why}`);
+      process.exit(1);
+    }
+    runFullServer(ack.kind === 'refused' ? `broker refused the session: ${ack.why}` : ack.why);
+    return;
+  }
+  if (ack.rest.length > 0) process.stdout.write(ack.rest);
 
   // Byte pumps. No parsing: MCP stdio framing is newline-delimited JSON and
   // the broker consumes it as a stream, so pass-through preserves framing.
