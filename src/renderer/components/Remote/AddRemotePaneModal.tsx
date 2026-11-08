@@ -4,6 +4,7 @@ import Dialog, { DialogBody, DialogHeader } from '../ui/Dialog';
 import { FOCUS_RING } from '../focusRing';
 import { IconRemoteDevices } from '../icons';
 import type { RemoteHostPublic } from '../../../shared/remoteHosts';
+import { noWorkspaceGrantMessage } from './noWorkspaceGrant';
 
 export interface AddRemotePaneModalProps {
   onClose: () => void;
@@ -71,7 +72,8 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
         onCreated(hostId, res.sessionId, freshId);
         onClose();
       } else {
-        setError(res.error);
+        const host = hosts?.find((h) => h.id === hostId);
+        setError(noWorkspaceGrantMessage(t, res.reason, host ? hostName(host) : hostId) ?? res.error);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -103,7 +105,7 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
               >
                 <span className="ui-row-icon" aria-hidden="true"><IconRemoteDevices size={14} /></span>
                 <span className="ui-row-text">
-                  <span className="ui-row-title truncate">{h.label || (h.ssh?.alias ?? h.origin)}</span>
+                  <span className="ui-row-title truncate">{hostName(h)}</span>
                   {h.label && h.label !== (h.ssh?.alias ?? h.origin) && (
                     <span className="ui-row-detail font-mono truncate">{h.ssh?.alias ?? h.origin}</span>
                   )}
@@ -116,4 +118,9 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
       </DialogBody>
     </Dialog>
   );
+}
+
+/** A host as its row names it. */
+function hostName(h: RemoteHostPublic): string {
+  return h.label || (h.ssh?.alias ?? h.origin);
 }

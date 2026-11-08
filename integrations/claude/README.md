@@ -65,6 +65,35 @@ of your own beside wmux's, `--remove` — and every re-install, including the
 bridge refresh above — takes out only the wmux command and leaves your group,
 its matcher, and your commands exactly where they are (#1008).
 
+### The native hook runner (macOS, Linux)
+
+Where the app ships `wmux-native`, `setup-hooks` (and the Settings Install and
+Update buttons) copy it to `~/.wmux/hooks/wmux-claude-hook`, run its
+`--self-test`, and only once that prints this build's protocol and the pin of
+this build's bridge write the entries as `"<copy>" "<bridge>" <Event>`.
+Otherwise the entries stay `node "<bridge>" <Event>`. The copy is the bridge
+ported to Rust, so a hook no longer pays node's startup. Windows keeps the node
+form. At boot the app refreshes the copy (never settings.json), right after the
+bridge. `wmux setup-hooks --status` and `wmux doctor` say which form runs, and
+why.
+
+To go back to node:
+
+- At once, without touching settings: `touch ~/.wmux/hooks/native-disabled`.
+  Every native run then hands itself to `node <bridge>` (where there is no
+  node on PATH, the runs stay native; doctor says so).
+- For good: `wmux setup-hooks --runtime node` writes the node form now and on
+  every later install (`--runtime native` turns it back). Only an installed
+  wmux's CLI changes this.
+- A wmux from before the native runner reads the native entries as its own:
+  its `setup-hooks` writes them back as node, and its `--remove` removes them.
+
+`--reprobe` runs the self-test again for a build already judged, and
+`--native-from <path>` copies another build (a checkout's
+`core/wmux-native/target/release/wmux-native`) instead of the shipped one,
+until the next start of the installed app puts its own build back: the app
+keeps the copy in step with the bridge it ships.
+
 **Caveat — do not combine with the plugin.** If you install BOTH this
 plugin (Option A/B) and the `setup-hooks` settings entries, each turn
 fires the hook twice. wmux dedups hook-vs-detector, but not

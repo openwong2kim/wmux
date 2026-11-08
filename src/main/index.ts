@@ -261,7 +261,7 @@ import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
 import { ensureDaemon, killDaemonByPidFile, describeDaemonKillOutcome, killVerifiedDaemonPid, checkProcessLiveness, isDaemonPipeGone } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
 import { createDaemonExitWatch } from './daemon/daemonExitWatch';
-import { loadConfig, getWmuxDir } from '../daemon/config';
+import { loadConfig, getWmuxDir, isFailClosedConfig } from '../daemon/config';
 import { atomicWriteJSON } from '../daemon/util/atomicWrite';
 import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
 import { claudeFileSendPath, readClaudeFileSend } from '../daemon/claudeFileSendSetting';
@@ -297,8 +297,12 @@ import {
 } from '../cli/commands/setupStatusline';
 import {
   refreshHookBridgeAtBoot,
+  refreshHookBridgeAtBootFor,
+  refreshClaudeNativeAtBootFor,
+  hookTargets,
   defaultPaths as defaultHooksPaths,
 } from '../cli/commands/setupHooks';
+import { claudeConfigDirEnv } from './hooks/claudeConfigDirProbe';
 import { refreshWslHookAtBoot } from '../shared/wslGlobalHook';
 import { findWslClaudeBridge } from '../shared/wslIntegration';
 import { detectStalePluginGates } from './hooks/stalePluginGate';
@@ -592,9 +596,13 @@ if (process.platform === 'win32' && app.isPackaged) {
 // in the app: CDP only needs a loopback socket, unlike other same-user vectors
 // which need filesystem or process control. See docs/SECURITY.md §3.
 dropDebuggingSwitches(app.commandLine);
+const bootConfig = loadConfig();
+// An unusable config.json turns CDP off for the session (failClosedConfig);
+// say that, not "disabled by configuration", which points at a setting.
+const cdpOffForUnusableConfig = process.env.WMUX_DISABLE_CDP !== 'true' && isFailClosedConfig(bootConfig);
 const cdpEnabled =
   process.env.WMUX_DISABLE_CDP !== 'true' &&
-  loadConfig().browser?.cdp?.enabled !== false;
+  bootConfig.browser?.cdp?.enabled !== false;
 let cdpPort = 0;
 if (cdpEnabled) {
   // The port is still drawn at random within the range, to keep it
@@ -614,6 +622,8 @@ if (cdpEnabled) {
       (claim.claimed ? '' : ' (port not claimed exclusively — every port in the range is held)'),
   );
 
+} else if (cdpOffForUnusableConfig) {
+  console.log('[WinMux] CDP off — config.json could not be used (see the warning above); fix it and restart wmux');
 } else {
   console.log('[WinMux] CDP disabled — browser automation will be unavailable (enable via ~/.wmux/config.json browser.cdp.enabled)');
 }
@@ -832,7 +842,13 @@ const mcpRegistrar = new McpRegistrar();
 const mcpBrokerSupervisor = new BrokerSupervisor();
 setBrokerPidSource(() => mcpBrokerSupervisor.pid);
 const webviewCdpManager = new WebviewCdpManager(0);
-webviewCdpManager.setCdpFailureReason(cdpEnabled ? 'CDP ownership verification pending' : 'CDP disabled by configuration');
+webviewCdpManager.setCdpFailureReason(
+  cdpEnabled
+    ? 'CDP ownership verification pending'
+    : cdpOffForUnusableConfig
+      ? 'CDP is off because config.json could not be used; fix it and restart wmux'
+      : 'CDP disabled by configuration',
+);
 webviewCdpManager.setCdpDisabled(!cdpEnabled);
 // "Agent is driving" marker + Stop / Take over for in-app browser tabs. Activity
 // is the surface's automation lease count; Stop and Take over end the leases in
@@ -2325,10 +2341,43 @@ app.on('ready', async () => {
       } catch (err) {
         console.warn('[statusline] script refresh failed (non-fatal):', err);
       }
-      try {
-        const br = refreshHookBridgeAtBoot(defaultHooksPaths());
+      // One bridge file serves every Claude folder; it is refreshed when any
+      // of them references it: ~/.claude and the accounts now, the
+      // CLAUDE_CONFIG_DIR folder once the login-shell probe has answered.
+      // Then the one wmux-claude-hook copy, after the bridge (a new copy pins
+      // the new bridge), judged against whichever folder's entries name it:
+      // at once for ~/.claude and the accounts, and again once the probe has
+      // answered only when none of them named it (the env folder may). Neither
+      // writes settings.
+      const logBridge = (br: ReturnType<typeof refreshHookBridgeAtBoot>) => {
         if (br === 'refreshed' || br === 'isolated') logLine('info', 'main', `hook bridge refresh: ${br}`);
         else if (br === 'failed' || br === 'no-source') logLine('warn', 'main', `hook bridge refresh: ${br}`);
+      };
+      try {
+        const base = defaultHooksPaths();
+        const initial = hookTargets({ action: 'install', env: undefined, wmuxDir: getWmuxDir(), base }).targets;
+        const br = refreshHookBridgeAtBootFor(initial);
+        logBridge(br);
+        const logCopy = (nr: Awaited<ReturnType<typeof refreshClaudeNativeAtBootFor>>) => {
+          if (nr === 'refreshed') logLine('info', 'main', `claude hook copy refresh: ${nr}`);
+          else if (nr === 'kept' || nr === 'stale-bridge') logLine('warn', 'main', `claude hook copy refresh: ${nr}`);
+        };
+        const copyNow = refreshClaudeNativeAtBootFor(initial, br).then((nr) => {
+          logCopy(nr);
+          return nr;
+        });
+        // Asked once per boot, in the background (macOS/Linux; Windows reads
+        // its own env): the in-app install awaits the same answer.
+        void Promise.all([claudeConfigDirEnv(), copyNow]).then(async ([env, copied]) => {
+          if (!env) return;
+          const targets = hookTargets({ action: 'install', env, wmuxDir: getWmuxDir(), base }).targets;
+          let bridge = br;
+          if (br === 'not-installed') {
+            bridge = refreshHookBridgeAtBootFor(targets.filter((t) => t.kind === 'env'));
+            logBridge(bridge);
+          }
+          if (copied === 'not-in-use') logCopy(await refreshClaudeNativeAtBootFor(targets, bridge));
+        }).catch((err: unknown) => console.warn('[hooks] bridge or claude hook copy refresh failed (non-fatal):', err));
       } catch (err) {
         console.warn('[hooks] bridge refresh failed (non-fatal):', err);
       }

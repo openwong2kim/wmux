@@ -13,6 +13,11 @@ import type { RpcMethod } from '../../shared/rpc';
 import { formatComputerError, parseComputerErrorMessage, type ActionDisposition } from '../../shared/computer/errors';
 import {
   COMPUTER_ACTIONS,
+  DESKTOP_ACTION_COMMANDS,
+  DESKTOP_COMMANDS,
+  DESKTOP_LIST_APPS_TIMEOUT_MS,
+  DESKTOP_RUN_GRACE_MS,
+  DESKTOP_RUN_MAX_MS,
   MODIFIERS,
   OBSERVATION_MODES,
   isControlAction,
@@ -27,9 +32,18 @@ import { defineWmuxTool, registerWmuxTools, type RegisterWmuxToolsOptions } from
  * helper's own deadline; the person may be reading the dialog.
  */
 const CONSENT_AWARE_TIMEOUT_MS = 140_000;
+/**
+ * The desktop action: the consent prompt (above), then for a command that
+ * names its app the list-apps check before and after it, and the command
+ * itself, each with the runner's grace (ComputerService.desktopNow).
+ */
+export const DESKTOP_TIMEOUT_MS =
+  CONSENT_AWARE_TIMEOUT_MS + 2 * (DESKTOP_LIST_APPS_TIMEOUT_MS + DESKTOP_RUN_GRACE_MS) + DESKTOP_RUN_MAX_MS + DESKTOP_RUN_GRACE_MS;
 const QUICK_TIMEOUT_MS = 20_000;
 
-const OBSERVATION_ONLY_KEYS: ReadonlySet<string> = new Set(['app', 'window', 'mode']);
+const OBSERVATION_ONLY_KEYS: ReadonlySet<string> = new Set(['app', 'window', 'mode', 'command', 'args']);
+/** A desktop ref action's fields: its ref names the target, so app and window are accepted and unused. */
+const DESKTOP_ACTION_KEYS: ReadonlySet<string> = new Set(['action', 'command', 'args', 'app', 'window']);
 
 export type ComputerRpc = (method: RpcMethod, params: Record<string, unknown>, timeoutMs: number) => Promise<unknown>;
 
@@ -63,6 +77,8 @@ const COMPUTER_SHAPE = {
   keys: z.array(z.string()).optional().describe('hotkey: modifiers (ctrl, alt, shift, meta/cmd) plus one pressKey key, e.g. ["ctrl","s"].'),
   direction: z.enum(['up', 'down', 'left', 'right']).optional(),
   amount: z.number().int().min(1).max(50).optional(),
+  command: z.enum([...DESKTOP_COMMANDS, ...DESKTOP_ACTION_COMMANDS]).optional().describe('desktop (macOS): getAppState stays the loop. In a large or scrolled window, find first: it reaches elements off screen and returns only the matching refs; then get or is on a ref. snapshot returns the whole tree, so use it only for a layout you don\'t know. snapshot, find and list-surfaces need app; get and is take a ref (@<snapshot>:eN). The other commands act on args.ref from a window snapshot or find, in the background; select also takes args.value, scroll args.direction and args.amount.'),
+  args: z.record(z.string(), z.unknown()).optional().describe('desktop: that command\'s arguments; a wrong one returns its schema.'),
 };
 
 /**
@@ -148,6 +164,23 @@ export function createComputerTool(rpc: ComputerRpc) {
             )) as ObservedAppState;
             return renderAppState(state);
           }
+          case 'desktop': {
+            if ((DESKTOP_ACTION_COMMANDS as readonly string[]).includes(input.command ?? '')) {
+              // A ref action is an input action: computer.act, never the read path.
+              // Its arguments travel in args only; a top-level one would be dropped.
+              const stray = Object.keys(input).filter((k) => !DESKTOP_ACTION_KEYS.has(k) && input[k as keyof typeof input] !== undefined);
+              if (stray.length > 0) return errorResult(new Error(`[invalid_argument] ${input.command} takes its arguments in args, not ${stray.join(', ')}`), 'not_delivered');
+              sent = true;
+              const result = (await rpc('computer.act', { desktop: { command: input.command, args: input.args } }, DESKTOP_TIMEOUT_MS)) as ActionResult;
+              return renderActionResult(result);
+            }
+            const reply = (await rpc(
+              'computer.getAppState',
+              { desktop: { command: input.command, args: input.args }, app: input.app, window: input.window },
+              DESKTOP_TIMEOUT_MS,
+            )) as { data?: unknown };
+            return { content: [{ type: 'text', text: JSON.stringify(reply.data ?? {}) }] };
+          }
           case 'openApp':
             // Addressed by selector, not snapshot; launching can take a while.
             sent = true;
@@ -162,7 +195,7 @@ export function createComputerTool(rpc: ComputerRpc) {
           }
         }
       } catch (err) {
-        return errorResult(err, isControlAction(input.action) ? (sent ? 'delivered_unverified' : 'not_delivered') : undefined);
+        return errorResult(err, sent || isControlAction(input.action) ? (sent ? 'delivered_unverified' : 'not_delivered') : undefined);
       }
     },
   });

@@ -16,6 +16,45 @@ const root = fileURLToPath(new URL('../..', import.meta.url));
 // Line endings normalised: a Windows checkout may have CRLF.
 const read = (...p) => fs.readFileSync(path.join(root, ...p), 'utf8').replace(/\r\n/g, '\n');
 
+/**
+ * Whether a step's `if` is its gate, or its gate narrowed to one matrix leg:
+ * `<gate> && matrix.name == '<name>'`, gate first, with a name the matrix
+ * has. Nothing else passes, so no step runs outside the gate.
+ */
+function gatedIf(stepIf, gate, matrixNames) {
+  if (stepIf === gate) return true;
+  const leg = typeof stepIf === 'string' && stepIf.startsWith(`${gate} && `)
+    ? /^matrix\.name == '([a-z0-9-]+)'$/.exec(stepIf.slice(gate.length + 4))
+    : null;
+  return !!leg && matrixNames.includes(leg[1]);
+}
+
+describe('gatedIf', () => {
+  const gate = "needs.changes.outputs.relevant != 'false'";
+  const names = ['macos-arm64', 'linux-x64'];
+
+  it('takes the gate, alone or narrowed to one matrix leg', () => {
+    expect(gatedIf(gate, gate, names)).toBe(true);
+    expect(gatedIf(`${gate} && matrix.name == 'linux-x64'`, gate, names)).toBe(true);
+  });
+
+  it('refuses anything else', () => {
+    for (const stepIf of [
+      undefined,
+      "matrix.name == 'linux-x64'",
+      `matrix.name == 'linux-x64' && ${gate}`,
+      `${gate} || matrix.name == 'linux-x64'`,
+      `${gate} && matrix.name == 'windows-x64'`,
+      `${gate} && matrix.name == 'linux-x64' || always()`,
+      `${gate} && always()`,
+      `${gate} && matrix.os == 'ubuntu-22.04'`,
+      `\${{ ${gate} }}`,
+    ]) {
+      expect(gatedIf(stepIf, gate, names), String(stepIf)).toBe(false);
+    }
+  });
+});
+
 describe('build-native-hooks', () => {
   // The installer recognises its copy of the binary by this text in its bytes.
   it('uses the marker the binary carries and the installer looks for', () => {
@@ -47,11 +86,12 @@ describe('build-native-hooks', () => {
     // Every step runs unless `changes` said no, and one says why when it did.
     const { jobs } = parseYaml(workflow);
     expect(jobs['native-hooks'].needs).toBe('changes');
+    const matrixNames = jobs['native-hooks'].strategy.matrix.include.map((leg) => leg.name);
     for (const step of jobs['native-hooks'].steps) {
       const gate = step.name === 'Nothing the native bridge depends on changed'
         ? "needs.changes.outputs.relevant == 'false'"
         : "needs.changes.outputs.relevant != 'false'";
-      expect(step.if, step.name ?? step.uses ?? step.run).toBe(gate);
+      expect(gatedIf(step.if, gate, matrixNames), `${step.name ?? step.uses ?? step.run}: ${step.if}`).toBe(true);
     }
     const pattern = new RegExp(workflow.match(/RELEVANT: '([^']+)'/)[1]);
     for (const file of [

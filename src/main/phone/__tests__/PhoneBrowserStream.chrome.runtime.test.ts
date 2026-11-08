@@ -88,7 +88,6 @@ function describeMode(mode: Mode): void {
   const pushes: Push[] = [];
   let streams: PhoneBrowserStreams;
   let chrome: ReturnType<typeof createPhoneChromeDeps>;
-  const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
 
   beforeAll(async () => {
     server = http.createServer(serve);
@@ -98,8 +97,6 @@ function describeMode(mode: Mode): void {
       preferences: { partition: { per_host_zoom_levels: { x: { localhost: { zoom_level: 1.0, last_modified: '13350000000000000' } } } } },
     });
     const dir = profile.dir;
-    const savedProfile = process.env.USERPROFILE;
-    if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
     try {
       launcher = new ChromeLauncher(dir, {
         portEnvVar: null,
@@ -109,8 +106,6 @@ function describeMode(mode: Mode): void {
       await launcher.ensureRunning();
     } catch (err) {
       skipReason = `Chrome could not be launched here: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
-    } finally {
-      if (process.platform === 'win32') process.env.USERPROFILE = savedProfile;
     }
     const own = launcher;
     chrome = createPhoneChromeDeps({

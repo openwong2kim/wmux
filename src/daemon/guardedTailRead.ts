@@ -31,6 +31,18 @@ export const TAIL_CHECK_INTERVAL_MS = 10 * 60_000;
 /** and at most this often across panes, so a daemon start doesn't stack one extra whole-ring parse per pane. */
 export const TAIL_CHECK_SPACING_MS = 10_000;
 
+/**
+ * After this many tail misses in a row on a session (a tail parse that left a
+ * visible cell unknown), that reader stops trying the tail there. A failed
+ * parse (a budget timeout under load) is not a miss: it says nothing about the pane.
+ * A Claude Code pane repaints its static rows by position, so they sit before
+ * the cut and every tail read misses: each read paid the tail parse and then
+ * the whole ring's. A stopgap until each reader asks for only the rows it needs.
+ */
+export const TAIL_MISS_CAP = 3;
+/** A capped reader tries the tail once more when output resumes after this long without any: the app may have redrawn. */
+export const TAIL_QUIET_RETRY_MS = 60_000;
+
 export type TailSite = 'fleet' | 'stallwatch';
 export type TailFallbackReason = TailHazard | 'no-modes' | 'unknown-visible' | 'tail-failed';
 /** `via` says which replay answered: the tail, or the whole ring. */
@@ -46,12 +58,45 @@ export interface GuardedTailSession {
 
 export interface GuardedTailOptions {
   site: TailSite;
+  /** Which request of the site this is (its scrollback): misses are counted per site and variant. */
+  variant?: string;
   /** The caller's parse: the same request the whole-ring read makes, given its bytes. */
   parse: (initial: Buffer) => Promise<TextSnapshotOutcome>;
   inputs?: TailInputs;
 }
 
 const scans = new WeakMap<GuardedTailSession, TailHazardScan>();
+/**
+ * Per session, site and variant: misses in a row, the pane at the last miss,
+ * and when its output last moved as the reads saw it.
+ */
+interface MissRun { misses: number; cols: number; rows: number; writtenAt: number; seenWrittenAt: number; seenMovedAt: number }
+const missRuns = new WeakMap<GuardedTailSession, Map<string, MissRun>>();
+const runKey = (options: GuardedTailOptions) => `${options.site}:${options.variant ?? ''}`;
+
+function noteMiss(session: GuardedTailSession, key: string, cols: number, rows: number, writtenAt: number): void {
+  let runs = missRuns.get(session);
+  if (!runs) missRuns.set(session, (runs = new Map()));
+  const run = runs.get(key);
+  runs.set(key, { misses: (run?.misses ?? 0) + 1, cols, rows, writtenAt, seenWrittenAt: writtenAt, seenMovedAt: Date.now() });
+}
+
+/**
+ * Whether a capped reader tries the tail again: the pane was resized, the tail
+ * window has turned over (a whole tail's worth of new bytes), or output moved
+ * again after a long stretch without any. Reading a pane that is still quiet
+ * would only miss again.
+ */
+function retriesTail(run: MissRun, cols: number, rows: number, writtenAt: number): boolean {
+  if (cols !== run.cols || rows !== run.rows) return true;
+  if (writtenAt - run.writtenAt >= TAIL_BYTES) return true;
+  if (writtenAt === run.seenWrittenAt) return false;
+  const now = Date.now();
+  const resumed = now - run.seenMovedAt >= TAIL_QUIET_RETRY_MS;
+  run.seenWrittenAt = writtenAt;
+  run.seenMovedAt = now;
+  return resumed;
+}
 const lastCheck = new WeakMap<GuardedTailSession, number>();
 let lastAnyCheck = Number.NEGATIVE_INFINITY;
 const counters = new Map<TailSite, TailReadCounters>();
@@ -60,7 +105,7 @@ function siteCounters(site: TailSite): TailReadCounters {
   let c = counters.get(site);
   if (!c) {
     counters.set(site, (c = {
-      reads: 0, served: 0, whole: 0, fallbacks: {}, tailMsTotal: 0, tailMsMax: 0, fallbackMsTotal: 0, fallbackMsMax: 0,
+      reads: 0, served: 0, whole: 0, fallbacks: {}, skipped: 0, tailMsTotal: 0, tailMsMax: 0, fallbackMsTotal: 0, fallbackMsMax: 0,
       ringCopyMsTotal: 0, ringCopyMsMax: 0, scanMsTotal: 0, scanMsMax: 0, scanBytes: 0, checks: 0, mismatches: {},
     }));
   }
@@ -92,9 +137,16 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   const cols = session.meta.cols ?? 80;
   const rows = session.meta.rows ?? 24;
 
-  const fallback = async (reason: TailFallbackReason): Promise<TailOutcome> => {
-    bump(c.fallbacks, reason);
-    time(c, 'tailMs', performance.now() - started);
+  /** The whole ring's answer: after a fallback for `reason`, or (none) a capped reader's skip. */
+  const fallback = async (reason: TailFallbackReason | null): Promise<TailOutcome> => {
+    // A skip tried no tail: its time stays out of the tail average, whose
+    // count leaves skips out too.
+    if (reason) {
+      bump(c.fallbacks, reason);
+      time(c, 'tailMs', performance.now() - started);
+    } else {
+      c.skipped = (c.skipped ?? 0) + 1;
+    }
     const at = performance.now();
     const answer = await options.parse(full);
     time(c, 'fallbackMs', performance.now() - at);
@@ -113,6 +165,11 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   }
   if (!modes) return fallback('no-modes');
 
+  const key = runKey(options);
+  const run = missRuns.get(session)?.get(key);
+  // Capped: straight to the whole ring, without the scan or the tail parse.
+  if (run && run.misses >= TAIL_MISS_CAP && !retriesTail(run, cols, rows, writtenAt)) return fallback(null);
+
   const scanStarted = performance.now();
   let scan = scans.get(session);
   if (!scan) scans.set(session, (scan = new TailHazardScan()));
@@ -129,7 +186,11 @@ export async function guardedTailRead(session: GuardedTailSession, options: Guar
   );
   const tail = await options.parse(replay);
   if (!tail.ok) return fallback('tail-failed');
-  if (tail.rows.some((row) => row.text.includes(UNKNOWN_CELL))) return fallback('unknown-visible');
+  if (tail.rows.some((row) => row.text.includes(UNKNOWN_CELL))) {
+    noteMiss(session, key, cols, rows, writtenAt);
+    return fallback('unknown-visible');
+  }
+  missRuns.get(session)?.delete(key);
   c.served++;
   time(c, 'tailMs', performance.now() - started);
 

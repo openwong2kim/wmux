@@ -3,7 +3,7 @@
 
 use crate::native_output::NativeOutputChunk;
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
@@ -199,6 +199,27 @@ pub struct NativeTerminal {
     refusal: Option<&'static str>,
 }
 
+/// Whether a resize to `cols` reflows a row below the cursor's paragraph on
+/// this grid: a soft-wrapped row there, either way, or narrower, a row with
+/// content past the new width.
+fn reflows_below_cursor<T: GridCell>(grid: &Grid<T>, cols: usize) -> bool {
+    let old = grid.columns();
+    if cols == old {
+        return false;
+    }
+    let last = Column(old - 1);
+    let lines = grid.screen_lines() as i32;
+    let mut y = grid.cursor.point.line.0;
+    while y + 1 < lines && grid[Line(y)][last].flags().contains(Flags::WRAPLINE) {
+        y += 1;
+    }
+    ((y + 1)..lines).any(|y| {
+        let row = &grid[Line(y)];
+        row[last].flags().contains(Flags::WRAPLINE)
+            || (cols < old && (cols..old).any(|x| !row[Column(x)].is_empty()))
+    })
+}
+
 /// The longest unfinished sequence `feed_xterm` holds for its next bytes.
 const MAX_HELD: usize = 256;
 /// The longest unfinished string re-shipped after a snapshot, in UTF-16
@@ -218,8 +239,12 @@ struct XtermFeed {
     tail: Vec<u8>,
     tail_units: usize,
     tail_overflow: bool,
-    /// DECSTBM margins in effect (MarginTracker).
-    margins: bool,
+    /// DECSTBM margins in effect on the main and the alternate screen, kept
+    /// per screen as xterm does (MarginTracker).
+    main_margins: bool,
+    alt_margins: bool,
+    /// xterm's alternate screen is active (?47, ?1047, ?1049).
+    alt_screen: bool,
     /// DECTCEM off (CursorVisibilityTracker).
     cursor_hidden: bool,
     /// SGR-pixels mouse encoding, ?1016 (SgrMouseEncodingTracker). Alacritty
@@ -317,7 +342,8 @@ impl XtermFeed {
         }
     }
 
-    fn track(&mut self, sequence: &[u8]) {
+    /// `rows`: the screen height the sequence is parsed at.
+    fn track(&mut self, sequence: &[u8], rows: usize) {
         // C0 controls inside a sequence execute and are not part of it.
         let filtered: Vec<u8>;
         let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
@@ -331,10 +357,13 @@ impl XtermFeed {
             sequence
         };
         let numeric = |params: &[u8]| params.iter().all(|&b| b.is_ascii_digit() || b == b';');
-        if sequence == b"\x1bc" || sequence == b"\x1b[!p" {
-            self.margins = false;
+        if sequence == b"\x1b[!p" {
+            self.set_margins(false);
         }
         if sequence == b"\x1bc" {
+            self.main_margins = false;
+            self.alt_margins = false;
+            self.alt_screen = false;
             self.sgr_pixels = false;
             self.sgr_mouse = false;
             self.mouse = 0;
@@ -347,7 +376,7 @@ impl XtermFeed {
             .and_then(|s| s.strip_suffix(b"r"))
         {
             if numeric(params) {
-                self.margins = params.iter().any(u8::is_ascii_digit);
+                self.scroll_region(params, rows);
             }
         }
         if let Some((&last, params)) = sequence
@@ -369,6 +398,22 @@ impl XtermFeed {
                         Some(1006) => self.sgr_mouse = set,
                         Some(protocol @ (9 | 1000 | 1002 | 1003)) => {
                             self.mouse = if set { protocol } else { 0 };
+                        }
+                        Some(47 | 1047 | 1049) => {
+                            if set && !self.alt_screen {
+                                // xterm's alternate screen starts with its own
+                                // full region; Alacritty keeps one region, so
+                                // the alternate screen inherits the main one's.
+                                self.divergent |= self.main_margins;
+                            }
+                            if !set && self.alt_screen {
+                                // xterm clears the alternate screen's region on
+                                // leaving it; Alacritty keeps one region for
+                                // both screens, so the main screen inherits it.
+                                self.divergent |= self.alt_margins;
+                                self.alt_margins = false;
+                            }
+                            self.alt_screen = set;
                         }
                         _ => {}
                     }
@@ -441,7 +486,7 @@ impl XtermFeed {
                 // Alacritty repeats whatever was printed last.
                 self.divergent |=
                     crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
-                self.track(sequence);
+                self.track(sequence, term.screen_lines());
                 next = Some(at + len);
             }
             printed = false;
@@ -449,6 +494,49 @@ impl XtermFeed {
         // A held sequence or an unfinished string ends the stream so far.
         self.printed = printed && self.held.is_empty() && !self.in_string;
         parser.advance(term, &data[from..]);
+    }
+
+    /// DECSTBM as xterm's setScrollRegion reads it (MarginTracker): top
+    /// defaults to 1, bottom to the rows, 0 is the default, a bottom past the
+    /// screen is the screen, and a region whose bottom is not below its top
+    /// is ignored. Only a region narrower than the screen is active.
+    fn scroll_region(&mut self, params: &[u8], rows: usize) {
+        let mut values = params.split(|&b| b == b';').map(|digits| {
+            digits.iter().fold(0usize, |n, &d| {
+                n.saturating_mul(10).saturating_add(usize::from(d - b'0'))
+            })
+        });
+        let first = values.next().unwrap_or(0);
+        let second = values.next().unwrap_or(0);
+        let top = first.max(1);
+        let bottom = if second == 0 || second > rows {
+            rows
+        } else {
+            second
+        };
+        if bottom > top {
+            self.set_margins(top != 1 || bottom != rows);
+        } else {
+            // xterm ignores it; Alacritty keeps a bottom past the screen
+            // (saturated to u16) and applies any top above it.
+            let cap = usize::from(u16::MAX);
+            self.divergent |= second > rows && top.min(cap) < second.min(cap);
+        }
+    }
+
+    /// Set the active screen's margins.
+    fn set_margins(&mut self, narrowed: bool) {
+        if self.alt_screen {
+            self.alt_margins = narrowed;
+        } else {
+            self.main_margins = narrowed;
+        }
+    }
+
+    /// A region narrower than the screen on either screen: the snapshot
+    /// restores neither.
+    fn margins(&self) -> bool {
+        self.main_margins || self.alt_margins
     }
 
     /// The bytes that leave a replaying parser where this one is: the
@@ -586,36 +674,53 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // Rows a narrower reflow adds above the cursor go into Alacritty's
-        // history even with room below; xterm moves the cursor down instead.
-        let before = |term: &Term<VoidListener>| {
-            [term.grid(), term.inactive_grid()].map(|grid| {
-                let room = grid.cursor.point.line.0 + 1 < grid.screen_lines() as i32;
-                (grid.history_size(), room)
-            })
-        };
         // vte holds bytes back inside a synchronized update; xterm parsed them
         // at the old size. Apply them first, then re-enter the update.
         let synchronized = self.parser.sync_timeout().pending_timeout();
         if synchronized {
             self.parser.stop_sync(term);
         }
-        // An alternate-screen row keeps its cells past a narrower width and
-        // shows them again when it widens, as xterm's does: the vendored
-        // grid keeps them (vendor/alacritty_terminal WMUX-PATCH.md).
-        let start = before(term);
+        // xterm never reflows or cuts the alternate screen: its rows keep
+        // their cells and wrap flags across a resize. The vendored grid keeps
+        // a row's cells past a narrower width and shows them again when it
+        // widens, as xterm's does (vendor/alacritty_terminal WMUX-PATCH.md),
+        // but a width change with a soft-wrapped row on screen loses the flags.
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            let grid = term.grid();
+            let old = grid.columns();
+            if old != cols as usize
+                && (0..grid.screen_lines() as i32).any(|y| {
+                    grid[Line(y)][Column(old - 1)]
+                        .flags
+                        .contains(Flags::WRAPLINE)
+                })
+            {
+                self.refusal.get_or_insert(
+                    "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
+                );
+            }
+        }
+        // A paragraph below the cursor's that reflows: xterm moves its cursor
+        // row by the rows that adds or removes as if they were above it, off
+        // the cursor's content, where Alacritty keeps the cursor on it.
+        let primary = if term.mode().contains(TermMode::ALT_SCREEN) {
+            term.inactive_grid()
+        } else {
+            term.grid()
+        };
+        if reflows_below_cursor(primary, cols as usize) {
+            self.refusal.get_or_insert(
+                "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
+            );
+        }
+        // Both terminals reset the margins of both screens on a size change.
+        if term.columns() != size.columns() || term.screen_lines() != size.screen_lines() {
+            self.feed.main_margins = false;
+            self.feed.alt_margins = false;
+        }
         term.resize(size);
-        let end = before(term);
         if synchronized {
             self.parser.advance(term, b"\x1b[?2026h");
-        }
-        if start
-            .iter()
-            .zip(end.iter())
-            .any(|(&(history, room), &(after, _))| room && after > history)
-        {
-            self.refusal
-                .get_or_insert("unsupported-reflow: a resize scrolled rows xterm keeps on screen");
         }
         Ok(())
     }
@@ -714,7 +819,7 @@ impl NativeTerminal {
             ));
         }
         // xterm's SerializeAddon drops margins: both paths replay raw then.
-        if self.feed.margins {
+        if self.feed.margins() {
             return Err(Error::from_reason("margins"));
         }
         let tail = self.feed.pending_tail().map_err(Error::from_reason)?;
@@ -1376,7 +1481,7 @@ pub(crate) fn fed_for_test(
 mod tests {
     use super::{Size, XtermFeed};
     use alacritty_terminal::event::VoidListener;
-    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::{Processor, Timeout};
@@ -1442,11 +1547,11 @@ mod tests {
 
     #[test]
     fn a_split_divergent_control_is_seen() {
-        let (_, _, feed) = feed_with(&["hello\x1b(", "0q"]);
+        let (_, _, feed) = feed_with(&["hello\x1b(", "A#"]);
         assert!(feed.divergent);
-        let (_, _, feed) = feed_with(&["\x1b]0;\x1b(0 in a title\x07"]);
+        let (_, _, feed) = feed_with(&["\x1b]0;\x1b(A in a title\x07"]);
         assert!(feed.divergent, "ESC ends the string, then designates");
-        let (_, _, feed) = feed_with(&["\x1b]0;(0 in a title\x07ok"]);
+        let (_, _, feed) = feed_with(&["\x1b]0;(A in a title\x07ok"]);
         assert!(!feed.divergent);
     }
 
@@ -1522,13 +1627,83 @@ mod tests {
     fn margins_and_cursor_follow_the_stream_trackers() {
         let state = |chunks: &[&str]| {
             let (_, _, feed) = feed_with(chunks);
-            (feed.margins, feed.cursor_hidden)
+            (feed.margins(), feed.cursor_hidden)
         };
         assert_eq!(state(&["\x1b[2;4r"]), (true, false));
         assert_eq!(state(&["\x1b[2;4r\x1b[r"]), (false, false));
         assert_eq!(state(&["\x1b[2;4r\x1bc"]), (false, false));
+        // xterm's setScrollRegion over 3 rows: 0 reads as the default, a
+        // bottom past the screen is the screen, an empty region is ignored.
+        for reset in [
+            "\x1b[0;0r",
+            "\x1b[0r",
+            "\x1b[1r",
+            "\x1b[;3r",
+            "\x1b[1;9r",
+            "\x1b[1;3;2r",
+        ] {
+            assert_eq!(state(&["\x1b[2;4r", reset]), (false, false), "{reset:?}");
+        }
+        for region in ["\x1b[2r", "\x1b[1;2r", "\x1b[0;2r"] {
+            assert_eq!(state(&[region]), (true, false), "{region:?}");
+        }
+        assert_eq!(state(&["\x1b[3;2r"]), (false, false));
+        assert_eq!(state(&["\x1b[2;4r\x1b[3;2r"]), (true, false));
         assert_eq!(state(&["\x1b[?1;25l"]), (false, true));
         assert_eq!(state(&["\x1b[?25l\x1b[?25h"]), (false, false));
+    }
+
+    #[test]
+    fn margins_follow_xterm_per_screen() {
+        let margins = |chunks: &[&str]| feed_with(chunks).2.margins();
+        // The main screen's region outlives an alternate screen that resets its own.
+        assert!(margins(&["\x1b[2;3r\x1b[?1049h\x1b[r\x1b[?1049l"]));
+        assert!(margins(&["\x1b[2;3r\x1b[?1049h\x1b[r"]));
+        // The alternate screen's region goes with it.
+        assert!(margins(&["\x1b[?1049h\x1b[2;3r"]));
+        assert!(!margins(&["\x1b[?1049h\x1b[2;3r", "\x1b[?1049l"]));
+        assert!(!margins(&["\x1b[2;3r\x1b[?1049h\x1b[1;2r\x1bc\x1b[?1049l"]));
+    }
+
+    #[test]
+    fn alacritty_keeps_the_alternate_region_on_the_main_screen() {
+        // xterm leaves the main screen's full region in place; Alacritty has
+        // one region, so main-screen output keeps scrolling inside rows 1-2.
+        let chunks = ["\x1b[?1049h\x1b[1;2r\x1b[?1049l\x1b[Ha\r\nb\r\nc\r\nd"];
+        let (term, _, feed) = feed_with(&chunks);
+        assert_eq!(
+            (row(&term, 0), row(&term, 1), row(&term, 2)),
+            ("c".into(), "d".into(), String::new())
+        );
+        assert!(feed.divergent);
+    }
+
+    #[test]
+    fn alacritty_carries_the_main_region_into_the_alternate_screen() {
+        // xterm's alternate screen scrolls in full and ends with a, b, c;
+        // Alacritty keeps rows 1-2 as the region, so LF on row 3 stays there.
+        let chunks = ["\x1b[1;2r\x1b[?1049h\x1b[3;1Ha\r\nb\r\nc"];
+        let (term, _, feed) = feed_with(&chunks);
+        assert_eq!(
+            (row(&term, 0), row(&term, 1), row(&term, 2)),
+            (String::new(), String::new(), "c".into())
+        );
+        assert!(feed.divergent);
+        // A region the alternate screen sets for itself is no divergence.
+        assert!(!feed_with(&["\x1b[?1049h\x1b[1;2r"]).2.divergent);
+        // Nor is the full region it starts with when the main screen has one.
+        assert!(!feed_with(&["\x1b[1;3r\x1b[?1049h"]).2.divergent);
+    }
+
+    #[test]
+    fn a_region_only_alacritty_applies_is_divergent() {
+        let divergent = |chunks: &[&str]| feed_with(chunks).2.divergent;
+        // Top at or past the last of 3 rows: xterm ignores it, Alacritty
+        // keeps the bottom it was given and homes the cursor.
+        assert!(divergent(&["ab\x1b[3;9r"]));
+        assert!(divergent(&["ab\x1b[4;9r"]));
+        assert!(!divergent(&["ab\x1b[3;3r"]), "both ignore it");
+        assert!(!divergent(&["ab\x1b[2;9r"]), "both apply it");
     }
 
     #[test]

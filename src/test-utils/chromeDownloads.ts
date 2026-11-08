@@ -7,10 +7,11 @@ import path from 'node:path';
  * return that dir. Call it before the profile's Chrome starts. `preferences`
  * are other Preferences the profile starts with.
  *
- * Chrome on macOS and Windows takes its default Downloads folder from the
- * account, not from HOME, so the isolated test HOME does not keep a download
- * with no path set out of the account's real Downloads folder. A pinned
- * folder does.
+ * Chrome on macOS takes its default Downloads folder from the account, not
+ * from HOME; on Windows it follows USERPROFILE, which the test setup points at
+ * its temp home, unless the account's Downloads is redirected to an absolute
+ * path. Either way a pinned folder keeps a download with no path set in one
+ * known place.
  */
 export function pinDownloadDir(profileDir: string, preferences: Record<string, unknown> = {}): string {
   const downloads = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-test-downloads-'));
@@ -31,23 +32,33 @@ export function pinDownloadDir(profileDir: string, preferences: Record<string, u
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * The entries in the account's real Downloads folder (or `dir`) that Chrome
- * could have saved for a file named one of `names`: the name, its " (n)"
- * variants and their in-progress ".crdownload" forms. Read only; empty when
- * the folder can't be read. The default reads the account (os.userInfo()),
- * not HOME, which the test setup points elsewhere.
+ * The entries in the Downloads folders a test's Chrome could fall back to (or
+ * in `dir`) that Chrome could have saved for a file named one of `names`:
+ * the name, its " (n)" variants and their in-progress ".crdownload" forms.
+ * Read only; a folder that can't be read adds nothing. By default it reads
+ * both the account's real Downloads (os.userInfo()) and the test home's
+ * (os.homedir(); on Windows the browser resolves Downloads there), and returns
+ * full paths, so one name in both folders stays two entries. With `dir` it
+ * returns bare names.
  */
-export function accountDownloads(names: readonly string[], dir = path.join(os.userInfo().homedir, 'Downloads')): Set<string> {
+export function accountDownloads(names: readonly string[], dir?: string): Set<string> {
   const patterns = names.map((name) => {
     const ext = path.extname(name);
     const stem = name.slice(0, name.length - ext.length);
     return new RegExp(`^${escape(stem)}( \\(\\d+\\))?${escape(ext)}(\\.crdownload)?$`);
   });
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(dir);
-  } catch {
-    return new Set();
+  const dirs = dir !== undefined
+    ? [dir]
+    : [...new Set([path.join(os.userInfo().homedir, 'Downloads'), path.join(os.homedir(), 'Downloads')])];
+  const found = new Set<string>();
+  for (const d of dirs) {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(d);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) if (patterns.some((p) => p.test(entry))) found.add(dir === undefined ? path.join(d, entry) : entry);
   }
-  return new Set(entries.filter((entry) => patterns.some((p) => p.test(entry))));
+  return found;
 }

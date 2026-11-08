@@ -58,6 +58,21 @@ describe('LanLinkController', () => {
     expect(onChanged).toHaveBeenCalledWith({ enabled: true, nic: null });
   });
 
+  it('a refused save (a fail-closed stand-in) throws with nothing changed and nothing emitted', () => {
+    const { config, persist, controller } = makeController();
+    persist.mockImplementation(() => {
+      throw new Error('wmux started while config.json could not be used');
+    });
+    const onChanged = vi.fn();
+    controller.on(LANLINK_CONFIG_CHANGED, onChanged);
+
+    expect(() => controller.configure({ enabled: true })).toThrow('could not be used');
+
+    expect(config.lanlink).toEqual({ enabled: false, nic: null });
+    expect(controller.getStatus().enabled).toBe(false);
+    expect(onChanged).not.toHaveBeenCalled();
+  });
+
   it('is idempotent — a no-op patch neither persists nor emits', () => {
     const { persist, controller } = makeController();
     controller.configure({ enabled: true }); // 1 persist, 1 emit

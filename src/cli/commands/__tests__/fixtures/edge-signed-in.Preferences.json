@@ -1,0 +1,26 @@
+{
+  "account_info": [
+    {
+      "access_point": 31,
+      "account_id": "0003BFFD00000000",
+      "accountcapabilities": { "accountcapabilities/g42tslldmfya": 1 },
+      "edge_account_age_group": 3,
+      "edge_account_cid": "0000000000000000",
+      "edge_account_environment": 0,
+      "edge_account_environment_string": "login.microsoftonline.com",
+      "edge_account_first_name": "Test",
+      "edge_account_last_name": "User",
+      "edge_account_tenant_id": "9188040d-6c67-4c5b-b112-36a304b66dad",
+      "edge_account_type": 1,
+      "email": "test.user@example.com",
+      "full_name": "Test User",
+      "gaia": "0003BFFD00000000",
+      "given_name": "",
+      "hd": "",
+      "locale": "",
+      "picture_url": ""
+    }
+  ],
+  "edge": { "account_type": 1, "profile_matches_os_primary_account": true },
+  "profile": { "name": "wmux · default" }
+}

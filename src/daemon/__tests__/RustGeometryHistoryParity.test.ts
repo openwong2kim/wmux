@@ -22,6 +22,8 @@ interface Case {
   steps: Step[];
   /** What the viewer showed: the sizes its terminal applied, at their byte offsets. */
   shown: ReplayGeometry;
+  /** The Rust backend refuses this history with unsupported-reflow (and xterm restores it). */
+  rustRefuses?: true;
 }
 
 const rowsOf = (n: number, width: number) => Array.from({ length: n }, (_, i) => `${i}`.padEnd(width, String.fromCharCode(97 + (i % 26)))).join('\r\n');
@@ -37,6 +39,10 @@ const CASES: Case[] = (() => {
   const leave = '\x1b[?1049l\x1b[H\x1b7';
   const reenter = '\x1b[?1049l\x1b[H\x1b[?1049hfresh';
   const altBlankRight = '\x1b[?1049h\x1b[H' + rowsOf(6, 18);
+  // Row 2 runs past the width and soft-wraps onto row 3. xterm keeps the wrap
+  // flags across a width change and the kept cells don't (a widen loses row
+  // 3's), so a width change with a soft-wrapped row on screen still refuses.
+  const altWrap = '\x1b[?1049h\x1b[Htop\r\n' + 'w'.repeat(30) + 'W'.repeat(25) + '\r\nafter';
   const altDip = '\x1b[?1049h\x1b[H' + rowsOf(8, 12) + '\x1b[8;1H';
   const primary = rowsOf(7, 70) + '\r\n$ ';
   const tall = '\x1b[?1049h\x1b[H' + rowsOf(10, 28);
@@ -81,6 +87,24 @@ const CASES: Case[] = (() => {
       shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altBlankRight.length, cols: 20, rows: 8 }, { offset: altBlankRight.length + altNarrowWrite.length, cols: 40, rows: 8 }] },
     },
     {
+      name: 'an alternate screen with a soft-wrapped row narrowed and widened back',
+      steps: [{ size: [40, 8] }, { out: altWrap }, { size: [20, 8] }, { size: [40, 8] }, { out: '\x1b[8;1H' }],
+      shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 20, rows: 8 }, { offset: altWrap.length, cols: 40, rows: 8 }] },
+      rustRefuses: true,
+    },
+    {
+      name: 'an alternate screen with a soft-wrapped row narrowed, written, then widened',
+      steps: [{ size: [40, 8] }, { out: altWrap }, { size: [20, 8] }, { out: altNarrowWrite }, { size: [40, 8] }],
+      shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 20, rows: 8 }, { offset: altWrap.length + altNarrowWrite.length, cols: 40, rows: 8 }] },
+      rustRefuses: true,
+    },
+    {
+      name: 'an alternate screen with a soft-wrapped row widened',
+      steps: [{ size: [40, 8] }, { out: altWrap }, { size: [60, 8] }, { out: '\x1b[8;1H' }],
+      shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 60, rows: 8 }] },
+      rustRefuses: true,
+    },
+    {
       // The narrow wraps the long lines and pushes rows into scrollback with
       // the cursor near the bottom; the widen joins them again.
       name: 'a primary screen with long lines narrowed and widened back with no output between',
@@ -123,14 +147,18 @@ describe.each([
   { backend: 'xterm', mode: 'off', skip: false },
   { backend: 'rust', mode: 'ansi', skip: !available },
 ])('the geometry history restores what the viewer showed ($backend snapshot)', ({ mode, skip }) => {
-  it.skipIf(skip).each(CASES)('$name', async ({ steps, shown }) => {
+  it.skipIf(skip).each(CASES)('$name', async ({ steps, shown, rustRefuses }) => {
     if (mode === 'ansi') vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath);
     vi.stubEnv('WMUX_RUST_SNAPSHOT', mode);
     const req = requestFor(steps);
+    const refusedBefore = getAnsiSnapshotBackendDiagnostics().reasons['unsupported-reflow'] ?? 0;
     const snapshot = await generateSnapshotUnqueued(req);
     expect(snapshot.ok, JSON.stringify(snapshot)).toBe(true);
     if (!snapshot.ok) return;
-    if (mode === 'ansi') expect(getAnsiSnapshotBackendDiagnostics().last?.backend).toBe('rust');
+    if (mode === 'ansi') {
+      expect(getAnsiSnapshotBackendDiagnostics().last?.backend).toBe(rustRefuses ? 'xterm' : 'rust');
+      expect((getAnsiSnapshotBackendDiagnostics().reasons['unsupported-reflow'] ?? 0) - refusedBefore).toBe(rustRefuses ? 1 : 0);
+    }
     expect(await liveDifference({ ...req, geometry: shown }, snapshot.payload)).toBeUndefined();
   });
 });

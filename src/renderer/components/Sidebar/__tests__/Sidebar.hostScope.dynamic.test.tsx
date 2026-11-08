@@ -95,6 +95,20 @@ describe('Sidebar scoped to a paired computer', () => {
     expect(container.querySelector('[data-sidebar-add-remote-workspace]')).toBeNull();
   });
 
+  // The + shows from the grant the host last reported; a host that no longer
+  // grants it refuses the new workspace, and the toast says so in our words.
+  it('a + the host refuses says this PC cannot start panes there, not the host detail', async () => {
+    const detail = 'no live pane is running in that workspace — the daemon can only verify a workspace id it can see on a running session. Omit workspaceId to spawn outside a workspace.';
+    const workspaceCreate = vi.fn(() => Promise.resolve({ ok: false, error: detail, reason: 'unknown-workspace-id' }));
+    (window as unknown as { electronAPI: Record<string, unknown> }).electronAPI.remote = { workspaceCreate };
+    act(() => useStore.setState({ pcRailHosts: [{ id: 'h1', label: 'office-mac', canCreateWorkspace: true }], toasts: [] }));
+    act(() => root.render(<Sidebar />));
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-sidebar-add-remote-workspace]')?.click(); });
+    const messages = useStore.getState().toasts.map((x) => x.message);
+    expect(messages).toContain('This PC can open what is already running on office-mac, but it cannot start new panes there.');
+    expect(messages.join(' ')).not.toContain('workspaceId');
+  });
+
   it("draws the host's pane rows (agent and pane name) under an expanded row", () => {
     act(() => root.render(<Sidebar />));
     const toggle = card(hostRows()[0]).querySelector<HTMLElement>('[aria-controls]');

@@ -30,6 +30,28 @@ const accepted: Case[] = [
   synthetic('osc8-styles', '\x1b]8;;http://x\x07\x1b[1mbold\x1b[0mplain\x1b]8;;\x07 no'),
   synthetic('osc8-open-tail', 'a\x1b]8;id=k;http://y\x07open'),
   synthetic('osc8-alt', '\x1b]8;;http://n\x07nn\x1b[?1049h\x1b]8;;http://a\x07aa'),
+  // DEC line drawing in G0/G1, as xterm.js maps it (`_` stays itself).
+  synthetic('designate-dec', '\x1b(0' + Array.from({ length: 32 }, (_, i) => String.fromCharCode(0x5f + i)).join('') + '\x1b(B', 'rust', 40),
+  synthetic('smacs-box', '\x1b(0lqqk\x1b(B\r\n\x1b(0x\x1b(B  \x1b(0x\x1b(B\r\n\x1b(0mqqj\x1b(B'),
+  synthetic('smacs-open-at-end', 'ab\x1b(0lqk'),
+  synthetic('dec-sgr', '\x1b[31m\x1b(0lqk\x1b(B\x1b[0m'),
+  synthetic('dec-wide', '\x1b(0q\ud55cq\x1b(B'),
+  synthetic('dec-wrap', '\x1b(0' + 'q'.repeat(24) + '\x1b(B'),
+  synthetic('rep-after-dec', '\x1b(0q\x1b[3b\x1b(Bx'),
+  synthetic('tab-under-dec', '\x1b(0a\tb\x1b(B'),
+  synthetic('designate-dec-twice', '\x1b(0\x1b(0q\x1b(B\x1b(Bq'),
+  synthetic('ris-dec', '\x1b(0q\x1bcq'),
+  synthetic('so-si-dec', '\x1b)0\x0elqk\x0fabc'),
+  synthetic('so-open-at-end', '\x1b)0\x0elqk'),
+  synthetic('g1-designate-only', '\x1b)0qx'),
+  // DECSC/DECRC and the alternate screen save the designations and the shift.
+  synthetic('so-dec-decsc', '\x1b)0\x0e\x1b7\x0fq\x1b8q'),
+  synthetic('decsc-designation', '\x1b(0\x1b7\x1b(Bq\x1b8q'),
+  synthetic('decrc-unsaved-dec', '\x1b(0\x1b8q'),
+  synthetic('decrc-unsaved-so', '\x1b)0\x0e\x1b8q'),
+  synthetic('alt-1049-designation', '\x1b(0\x1b[?1049hq\x1b(Bq\x1b[?1049lq'),
+  synthetic('alt-1049-so', '\x1b)0\x1b[?1049h\x0eq\x1b[?1049lq'),
+  synthetic('alt-1049-si-inside', '\x1b)0\x0e\x1b[?1049hq\x0fq\x1b[?1049lq'),
   // SO/SI and ASCII designation: with only ASCII designated, shifts are no-ops.
   synthetic('so-si', '\x0eabc\x0fdef'),
   synthetic('designate-ascii', '\x1b(B\x1b)Babc\x0e\x1b[mx\x0f'),
@@ -107,10 +129,8 @@ const refused: Case[] = [
   synthetic('decaln', 'ab\x1b[2;3H\x1b#8', 'xterm'),
   synthetic('sd-caret', '1\r\n2\r\n3\x1b[1^x', 'xterm'),
   synthetic('ed2-embedded-c0', '1\r\n2\r\n3\x1b[2\x00Jx', 'xterm'),
-  synthetic('designate-dec', '\x1b(0' + Array.from({ length: 32 }, (_, i) => String.fromCharCode(0x5f + i)).join('') + '\x1b(B', 'xterm', 40),
   synthetic('designate-uk', '\x1b(A#x\x1b(B#', 'xterm'),
   synthetic('designate-g2', '\x1b*0\x1bnlq\x1b(Bz', 'xterm'),
-  synthetic('so-dec-decsc', '\x1b)0\x0e\x1b7\x0fq\x1b8q', 'xterm'),
   synthetic('overline', '\x1b[53mover\x1b[55mno', 'xterm'),
   synthetic('sgr-21', '\x1b[21mx\x1b[24my', 'xterm'),
   synthetic('c1', 'a\u009b31mred', 'xterm'),
@@ -119,7 +139,6 @@ const refused: Case[] = [
   synthetic('sl', 'abcdef\x1b[2 @', 'xterm'),
   synthetic('decic', 'abcdef\x1b[1;2H\x1b[2\'}', 'xterm'),
   synthetic('decstr', 'ab\x1b[4h\x1b[!pcd', 'xterm'),
-  synthetic('su', '1\r\n2\r\n3\x1b[2S\x1b[1T', 'xterm'),
   synthetic('ed2-spelled-02', '1\r\n2\r\n3\x1b[02Jx', 'xterm'),
   synthetic('lnm', '\x1b[20ha\nb', 'xterm'),
   synthetic('mode-x10', '\x1b[?9hx', 'xterm'),
@@ -141,7 +160,33 @@ const others: Case[] = [
   synthetic('cnl-cpl', 'a\r\nb\x1b[Fc\x1b[2Ed'),
   synthetic('hpa-vpa', '\x1b[5`a\x1b[3db'),
   synthetic('ich-dch-ech', 'abcdef\x1b[1;2H\x1b[2@\x1b[1P\x1b[2X'),
+  // DCH past the line end clears from the cursor only (xterm.js deleteChars).
+  synthetic('dch-past-line-end', 'abcdef\x1b[1;5H\x1b[44m\x1b[30P\x1b[0m'),
+  synthetic('dch-past-line-end-full-row', 'abcdefghijklmnopqrst\x1b[1;18H\x1b[9P'),
   synthetic('il-dl', '1\r\n2\r\n3\x1b[2;1H\x1b[L\x1b[2M'),
+  // SD fills with default attributes in xterm; IL and RI with the erase colour.
+  synthetic('sd-bg', '1\r\n2\r\n3\x1b[44m\x1b[1T\x1b[0mx'),
+  synthetic('sd-region-bg', '1\r\n2\r\n3\r\n4\x1b[2;4r\x1b[44m\x1b[2T\x1b[0m\x1b[rx'),
+  synthetic('il-bg', '1\r\n2\x1b[44m\x1b[H\x1b[L\x1b[0mx'),
+  synthetic('ri-top-bg', '1\r\n2\x1b[44m\x1b[H\x1bM\x1b[0mx'),
+  // SU scrolls the region in place: xterm keeps nothing in history.
+  synthetic('su', '1\r\n2\r\n3\x1b[2S\x1b[1T'),
+  synthetic('su-full-screen', '1\r\n2\r\n3\r\n4\r\n5\r\n6\x1b[2Sx'),
+  synthetic('su-with-history', '0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\x1b[3Sx'),
+  synthetic('su-default-and-zero', '1\r\n2\r\n3\x1b[S\x1b[0Sx'),
+  synthetic('su-past-screen', '1\r\n2\r\n3\x1b[44m\x1b[99S\x1b[0mx'),
+  synthetic('su-bg', '1\r\n2\r\n3\x1b[44m\x1b[2S\x1b[0mx'),
+  synthetic('su-region-top', '1\r\n2\r\n3\r\n4\r\n5\x1b[1;4r\x1b[2S\x1b[rx'),
+  synthetic('su-region-middle', '1\r\n2\r\n3\r\n4\r\n5\x1b[2;5r\x1b[2S\x1b[rx'),
+  synthetic('su-alt', 'n\x1b[?1049h1\r\n2\r\n3\x1b[2Sx'),
+  synthetic('su-then-linefeed', 'a\x1b[S\x1b[6;1Hb\r\nc\r\nd'),
+  // top: a region scrolled up while the header stays (ncurses `indn`).
+  synthetic('su-top-like', `${Array.from({ length: 6 }, (_, i) => `row ${i}`).join('\r\n')}\x1b[3;6r\x1b[6;1H\x1b[2S\x1b[5;1Hnew a\x1b[6;1Hnew b\x1b[r\x1b[1;1HPID`),
+  // DL on the top row deletes in place: xterm keeps nothing in history.
+  synthetic('dl-row0', '1\r\n2\r\n3\x1b[H\x1b[Mx'),
+  synthetic('dl-row0-history', '0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\x1b[H\x1b[2Mx'),
+  synthetic('dl-row0-past-screen', '1\r\n2\r\n3\x1b[H\x1b[44m\x1b[9M\x1b[0mx'),
+  synthetic('dl-row0-region', '1\r\n2\r\n3\r\n4\x1b[1;3r\x1b[H\x1b[M\x1b[rx'),
   synthetic('ed3', '1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\x1b[3J'),
   // ED 2 erases in place in xterm; Alacritty scrolls the screen into history.
   synthetic('ed2-primary', '1\r\n2\r\n3\x1b[2Jx'),
@@ -167,9 +212,9 @@ const many = Array.from({ length: 30 }, (_, i) => `row ${i} ${'x'.repeat(i % 50)
 const resizes: Case[] = [
   // vte holds bytes inside a synchronized update; xterm parsed them at 80.
   resized('resize-in-sync-update', '\x1b[?2026h\x1b[1;70HX', [80, 12], [40, 12]),
-  // Refused by the native terminal: Alacritty's reflow scrolls rows above the
-  // cursor into history where xterm moves the cursor down.
-  resized('narrow-cursor-high', `line before the box\r\n${box}`, [80, 12], [40, 12], 'xterm'),
+  // Rows a narrower reflow adds above the cursor with no history: xterm moves
+  // the cursor down into the room below, and so does the native terminal.
+  resized('narrow-cursor-high', `line before the box\r\n${box}`, [80, 12], [40, 12]),
   resized('narrow-cursor-low', many, [80, 12], [40, 12]),
   resized('widen-after-wrap', many, [40, 12], [80, 12]),
   resized('fewer-rows', many, [80, 12], [80, 6]),
@@ -230,7 +275,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
   });
 
   it('refuses a divergent control that arrives on the live tee, split from the history', async () => {
-    const tee = () => { const queue = [[Buffer.from('0lqk')], [Buffer.from('\x1b(Bok')]]; return () => queue.shift() ?? []; };
+    const tee = () => { const queue = [[Buffer.from('A#')], [Buffer.from('\x1b(Bok')]]; return () => queue.shift() ?? []; };
     const req: SnapshotRequest = { cols: 20, rows: 6, scrollback: 100, initial: Buffer.from('hello\x1b(') };
     vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
     const reference = await generateSnapshotUnqueued({ ...req, drainQueue: tee() });

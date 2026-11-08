@@ -6,17 +6,27 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { ipcMain } from 'electron';
 import { IPC } from '../../../../shared/constants';
-import { installHooks, statusHooks, type SetupHooksPaths } from '../../../../cli/commands/setupHooks';
+import { installHooks, statusHooks, removeHooks, type InstallOutcome, type SetupHooksPaths } from '../../../../cli/commands/setupHooks';
 import type { Account } from '../../../account/accountStore';
-import { accountHookDrift, registerHooksBridgeHandlers } from '../hooksBridge.handler';
+import { accountHookDrift, installHooksIntoNewAccount, registerHooksBridgeHandlers } from '../hooksBridge.handler';
 
 vi.mock('electron', () => ({
   app: { isPackaged: true },
   ipcMain: { removeHandler: vi.fn(), handle: vi.fn() },
+}));
+// No login-shell probe from a test. By default CLAUDE_CONFIG_DIR reads as
+// unset, so the default folder is the one defaultPaths() names; a test can
+// queue what the Install's read of the shell returns.
+const probe = vi.hoisted(() => ({ reads: [] as Array<{ value: string | undefined; read: boolean }> }));
+vi.mock('../../../hooks/claudeConfigDirProbe', () => ({
+  INSTALL_PROBE_TIMEOUT_MS: 5000,
+  claudeConfigDirEnv: async () => undefined,
+  readClaudeConfigDirEnv: async () => probe.reads.shift() ?? { value: undefined, read: true },
 }));
 
 const accounts = vi.hoisted(() => ({ list: [] as Account[], base: null as SetupHooksPaths | null }));
@@ -57,6 +67,7 @@ beforeEach(() => {
   expect(installHooks(base).ok).toBe(true);
   accounts.base = base;
   accounts.list = [];
+  probe.reads = [];
   vi.mocked(ipcMain.handle).mockClear();
   // A packaged, unsuffixed instance: the only one these handlers write from.
   vi.stubEnv('WMUX_DATA_SUFFIX', '');
@@ -139,5 +150,98 @@ describe('account folders in the hook-set check', () => {
     await expect(update({}, 'alias')).rejects.toThrow(/not listed/);
     await expect(update({}, 'b')).rejects.toThrow(/not listed/);
     expect(fs.readFileSync(path.join(real, 'settings.json'), 'utf8')).toBe(before);
+  });
+});
+
+describe('Install covers every Claude folder (CLAUDE_CONFIG_DIR unset)', () => {
+  const hooksIn = (dir: string) => statusHooks({ ...base, settingsPath: path.join(dir, 'settings.json') }).installedEvents.length;
+
+  it('writes the default folder and every Claude account folder; a Codex account is left alone', async () => {
+    const a = path.join(tmp, 'acct-a');
+    const b = path.join(tmp, 'acct-b');
+    const codex = path.join(tmp, 'codex-c');
+    for (const dir of [a, b, codex]) fs.mkdirSync(dir, { recursive: true });
+    accounts.list = [account('a', a), account('b', b), account('c', codex, 'codex')];
+    const out = await handlerFor(IPC.HOOKS_BRIDGE_INSTALL)({}) as InstallOutcome;
+    expect(out.ok).toBe(true);
+    expect(out.settingsPath).toBe(base.settingsPath);
+    expect(hooksIn(a)).toBeGreaterThan(0);
+    expect(hooksIn(b)).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(codex, 'settings.json'))).toBe(false);
+  });
+
+  it('one corrupt account file fails only itself: the others are written, the result names it', async () => {
+    const a = path.join(tmp, 'acct-a');
+    const bad = path.join(tmp, 'acct-bad');
+    fs.mkdirSync(a, { recursive: true });
+    fs.mkdirSync(bad, { recursive: true });
+    fs.writeFileSync(path.join(bad, 'settings.json'), '{ not json', 'utf8');
+    accounts.list = [account('a', a), account('bad', bad)];
+    const out = await handlerFor(IPC.HOOKS_BRIDGE_INSTALL)({}) as InstallOutcome;
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('acct bad');
+    expect(hooksIn(a)).toBeGreaterThan(0);
+    expect(fs.readFileSync(path.join(bad, 'settings.json'), 'utf8')).toBe('{ not json');
+  });
+
+  it('a shell that never answered is said, not hidden; once it answers, the env folder is written', async () => {
+    const envDir = path.join(tmp, 'cfg-env');
+    fs.mkdirSync(envDir, { recursive: true });
+    probe.reads = [{ value: undefined, read: false }, { value: envDir, read: true }];
+    const install = handlerFor(IPC.HOOKS_BRIDGE_INSTALL);
+
+    const first = await install({}) as InstallOutcome;
+    expect(first.ok).toBe(true);
+    expect(first.settingsPath).toBe(base.settingsPath);
+    expect(first.warning).toContain('Could not read CLAUDE_CONFIG_DIR');
+    expect(fs.existsSync(path.join(envDir, 'settings.json'))).toBe(false);
+
+    const second = await install({}) as InstallOutcome;
+    expect(second.ok).toBe(true);
+    expect(second.settingsPath).toBe(path.join(envDir, 'settings.json'));
+    expect(second.warning).toBeNull();
+    expect(hooksIn(envDir)).toBeGreaterThan(0);
+  });
+
+  it('a primary folder whose install throws fails only itself: the accounts are still written', async () => {
+    const envDir = path.join(tmp, 'cfg-env');
+    fs.mkdirSync(envDir, { recursive: true });
+    const a = path.join(tmp, 'acct-a');
+    fs.mkdirSync(a, { recursive: true });
+    accounts.list = [account('a', a)];
+    probe.reads = [{ value: envDir, read: true }];
+    // A throw from the primary's install, simulated at its first file access.
+    const primarySettings = path.join(envDir, 'settings.json');
+    const realExists = fs.existsSync;
+    vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
+      if (String(p) === primarySettings) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      return realExists(p);
+    });
+    syncBuiltinESMExports();
+    let out: InstallOutcome;
+    try {
+      out = await handlerFor(IPC.HOOKS_BRIDGE_INSTALL)({}) as InstallOutcome;
+    } finally {
+      vi.mocked(fs.existsSync).mockRestore();
+      syncBuiltinESMExports();
+    }
+    expect(out.ok).toBe(false);
+    expect(out.settingsPath).toBe(path.join(envDir, 'settings.json'));
+    expect(out.error).toContain('EACCES');
+    expect(hooksIn(a)).toBeGreaterThan(0);
+  });
+
+  it('a new account folder gets the hooks when the default folder has them, and not otherwise', async () => {
+    const fresh = path.join(tmp, 'acct-new');
+    fs.mkdirSync(fresh, { recursive: true });
+    const out = await installHooksIntoNewAccount(fresh);
+    expect(out?.ok).toBe(true);
+    expect(hooksIn(fresh)).toBeGreaterThan(0);
+
+    removeHooks(base);
+    const other = path.join(tmp, 'acct-new-2');
+    fs.mkdirSync(other, { recursive: true });
+    expect(await installHooksIntoNewAccount(other)).toBeNull();
+    expect(fs.existsSync(path.join(other, 'settings.json'))).toBe(false);
   });
 });

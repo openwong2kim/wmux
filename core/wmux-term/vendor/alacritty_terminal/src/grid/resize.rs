@@ -75,6 +75,22 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     {
         let lines_added = target - self.lines;
 
+        // wmux: xterm pulls history rows down only while the cursor is on the
+        // bottom row; otherwise it adds blank rows below and history stays put
+        // (Buffer.ts resize, rows grow). Growing the window takes rows from the
+        // top of history and leaves blank rows at its far end; rotating by the
+        // rows added brings those blank rows to the bottom instead, so no
+        // history row is lost even at the scrollback cap.
+        if self.cursor.point.line.0 + 1 < self.lines as i32 {
+            self.raw.grow_visible_lines(target);
+            self.lines = target;
+            self.raw.rotate(-(lines_added as isize));
+            for line in (target - lines_added)..target {
+                self.raw[Line(line as i32)].reset(&self.cursor.template);
+            }
+            return;
+        }
+
         // Need to resize before updating buffer.
         self.raw.grow_visible_lines(target);
         self.lines = target;
@@ -278,6 +294,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     /// Shrink number of columns in each row, reflowing if necessary.
     fn shrink_columns(&mut self, reflow: bool, columns: usize) {
         let cursor_paragraph = self.cursor_paragraph();
+        // wmux: what xterm's narrowing reads (see the end of this function).
+        let history_before = self.history_size();
+        let total_before = self.total_lines();
+        let cursor_line_before = self.cursor.point.line;
+        let saved_line_before = self.saved_cursor.point.line;
         self.columns = columns;
 
         // Remove the linewrap special case, by moving the cursor outside of the grid.
@@ -412,8 +433,39 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Reverse iterator and use it as the new grid storage.
         let mut reversed: Vec<Row<T>> = new_raw.drain(..).rev().collect();
-        reversed.truncate(self.max_scroll_limit + self.lines);
+        let added = reversed.len().saturating_sub(total_before);
+        let last = Line(self.lines as i32 - 1);
+        let kept = if reflow && history_before == 0 {
+            min(added, (last.0 - cursor_line_before.0).max(0) as usize)
+        } else {
+            0
+        };
+        // The rows kept on screen below are dropped from the bottom, so keep
+        // them past the history cap here.
+        reversed.truncate(self.max_scroll_limit + self.lines + kept);
         self.raw.replace_inner(reversed);
+
+        // wmux: xterm counts every row the reflow added, above or below the
+        // cursor, and moves its cursor row by its own rule, not with its
+        // content (Buffer.ts `_reflowSmaller`, the viewport adjustment). With
+        // no history it moves the cursor down one row per added row while
+        // there is room, dropping the bottom row each time; the rest goes to
+        // history. With history it leaves the cursor row as it was. The saved
+        // cursor moves down with the room used (`savedY` is absolute there).
+        if reflow {
+            if history_before == 0 {
+                if kept > 0 {
+                    // Bring the rows pushed into history back on screen and
+                    // drop as many from the bottom, as xterm pops them.
+                    self.raw.rotate(kept as isize);
+                    self.raw.shrink_lines(kept);
+                }
+                self.cursor.point.line = cursor_line_before + kept;
+                self.saved_cursor.point.line = min(saved_line_before + kept, last);
+            } else {
+                self.cursor.point.line = cursor_line_before;
+            }
+        }
 
         // Clamp display offset in case some lines went off.
         self.display_offset = min(self.display_offset, self.history_size());

@@ -154,8 +154,12 @@ async function worldIn(send: CdpSend, frameId: string, worldName: string): Promi
   return world.executionContextId;
 }
 
-/** The top frame's `worldName` context; undefined when there is none. */
-async function topWorld(send: CdpSend, worldName: string): Promise<number | undefined> {
+/**
+ * The top frame's `worldName` context; undefined when there is none. Throws
+ * when the frame exists but no context could be made. Shared with
+ * browser.upload.cdp, which finds its file input in an isolated world too.
+ */
+export async function topWorld(send: CdpSend, worldName: string): Promise<number | undefined> {
   const tree = await send('Page.getFrameTree') as { frameTree?: { frame?: { id?: unknown } } } | null;
   const frameId = tree?.frameTree?.frame?.id;
   return typeof frameId === 'string' ? worldIn(send, frameId, worldName) : undefined;
