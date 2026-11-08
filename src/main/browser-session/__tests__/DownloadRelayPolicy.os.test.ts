@@ -384,25 +384,51 @@ describe('DownloadRelayPolicy', () => {
     await vi.waitFor(() => expect(fs.existsSync(path.join(dir, g))).toBe(false), { timeout: 5_000 });
   });
 
-  it('a download Chrome stops talking about is forgotten after the TTL; later progress for it reaches no one', () => {
-    vi.useFakeTimers();
+  it('a paused download, silent for longer than the TTL, is kept (its .crdownload too) and lands when it completes', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    const a = ext('a');
+    const user = tempDir('wmux-dl-user-');
+    const dest = tempDir('wmux-dl-a-');
+    const { dir, told, ask, policy } = setup(held(['FA', a]), { userDir: user });
+    ask(a, { behavior: 'allowAndName', downloadPath: dest, eventsEnabled: true });
+    const handed = '88888888-0000-4000-8000-000000000001';
+    const forUser = '88888888-0000-4000-8000-000000000002';
     try {
-      const a = ext('a');
-      const { told, ask, policy } = setup(held(['FA', a]), { userDir: tempDir('wmux-dl-user-') });
-      ask(a, { behavior: 'allowAndName', downloadPath: tempDir('wmux-dl-a-'), eventsEnabled: true });
-      const handed = '88888888-0000-4000-8000-000000000001';
-      const forUser = '88888888-0000-4000-8000-000000000002';
       policy.downloadEvent('Browser.downloadWillBegin', begin(handed, 'FA'));
-      policy.downloadEvent('Browser.downloadWillBegin', begin(forUser, 'USER-TAB'));
-      const internals = policy as unknown as { handed: Map<string, unknown>; user: Map<string, unknown> };
-      expect(internals.handed.size + internals.user.size).toBe(2);
-      vi.advanceTimersByTime(DOWNLOAD_FILE_TTL_MS + 11 * 60 * 1000);
-      expect(internals.handed.size + internals.user.size).toBe(0);
-      const before = told.length;
-      policy.downloadEvent('Browser.downloadProgress', { guid: handed, state: 'inProgress' });
-      expect(told.length).toBe(before);
+      policy.downloadEvent('Browser.downloadWillBegin', begin(forUser, 'USER-TAB', 'paused.bin'));
+      // Chrome's in-progress names, then silence well past the TTL and several sweeps.
+      fs.writeFileSync(path.join(dir, `${handed}.crdownload`), 'half A');
+      fs.writeFileSync(path.join(dir, `${forUser}.crdownload`), 'half U');
+      vi.advanceTimersByTime(DOWNLOAD_FILE_TTL_MS * 3);
+      expect(fs.readdirSync(dir).sort()).toEqual([`${handed}.crdownload`, `${forUser}.crdownload`].sort());
     } finally {
       vi.useRealTimers();
+    }
+    // Resumed and completed: Chrome renames to the guid, then says so.
+    for (const guid of [handed, forUser]) fs.renameSync(path.join(dir, `${guid}.crdownload`), path.join(dir, guid));
+    policy.downloadEvent('Browser.downloadProgress', { guid: handed, state: 'completed' });
+    policy.downloadEvent('Browser.downloadProgress', { guid: forUser, state: 'completed' });
+    await vi.waitFor(() => expect(told.some((t) => t.params.state === 'completed')).toBe(true), { timeout: 5_000 });
+    expect(fs.readFileSync(path.join(dest, handed), 'utf8')).toBe('half A');
+    await vi.waitFor(() => expect(fs.existsSync(path.join(user, 'paused.bin'))).toBe(true), { timeout: 5_000 });
+    expect(fs.readFileSync(path.join(user, 'paused.bin'), 'utf8')).toBe('half U');
+  });
+
+  it('a completed download this policy does not know is never deleted by it: left to the file sweep, one line logged', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const { dir, told, write, policy } = setup(new Map(), { userDir: tempDir('wmux-dl-user-') });
+      const g = '99999999-0000-4000-8000-000000000001';
+      write(g, 'whose?');
+      policy.downloadEvent('Browser.downloadProgress', { guid: g, state: 'completed' });
+      policy.downloadEvent('Browser.downloadProgress', { guid: g, state: 'canceled' });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(fs.readFileSync(path.join(dir, g), 'utf8')).toBe('whose?');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0])).not.toContain(g);
+      expect(told).toEqual([]);
+    } finally {
+      warn.mockRestore();
     }
   });
 

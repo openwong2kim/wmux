@@ -28,6 +28,8 @@ import type { ClientCommandFilter, ClientRef } from './CdpPipeMux';
 /** A file left in main's folder longer than this is no download in progress. */
 export const DOWNLOAD_FILE_TTL_MS = 60 * 60 * 1000;
 const SWEEP_EVERY_MS = 10 * 60 * 1000;
+/** The suffix of the file Chrome writes while a download is in progress. */
+const IN_PROGRESS = '.crdownload';
 const DIR_PREFIX = 'wmux-dl-';
 const DIR_NAME = /^wmux-dl-(\d+)-/;
 const GUID = /^[A-Za-z0-9-]{1,128}$/;
@@ -105,14 +107,15 @@ interface Handed {
   readonly sessionId: string | undefined;
   readonly dir: string;
   readonly events: boolean;
-  /** When Chrome last said anything about it: a download silent for DOWNLOAD_FILE_TTL_MS is forgotten. */
-  seen: number;
 }
 
-/** A download no client asked for: the name it finishes under in the user's folder. */
+/**
+ * A download no client asked for: the name it finishes under in the user's
+ * folder. Entries here and in `handed` leave on a terminal state, or with
+ * the policy: a paused download can be silent for any length of time.
+ */
 interface ForUser {
   readonly name: string;
-  seen: number;
 }
 
 const refusal = (message: string) => ({ code: -32000, message });
@@ -220,7 +223,7 @@ export class DownloadRelayPolicy {
     for (const [client, sessions] of holders) {
       for (const [sessionId, asked] of sessions) {
         if (asked.behavior !== 'allow' || !asked.dir) continue;
-        this.handed.set(guid, { client, sessionId, dir: asked.dir, events: asked.events, seen: Date.now() });
+        this.handed.set(guid, { client, sessionId, dir: asked.dir, events: asked.events });
         if (asked.events) this.deps.emit(client, 'Browser.downloadWillBegin', params, sessionId);
         return;
       }
@@ -238,14 +241,13 @@ export class DownloadRelayPolicy {
       this.cancel(guid);
       return;
     }
-    this.user.set(guid, { name: safeDownloadName(params.suggestedFilename), seen: Date.now() });
+    this.user.set(guid, { name: safeDownloadName(params.suggestedFilename) });
   }
 
   private progressed(guid: string, params: Record<string, unknown>): void {
     const state = params.state;
     const forUser = this.user.get(guid);
     if (forUser) {
-      forUser.seen = Date.now();
       if (state === 'canceled') {
         this.user.delete(guid);
         this.removeTemp(guid);
@@ -260,10 +262,11 @@ export class DownloadRelayPolicy {
     }
     const to = this.handed.get(guid);
     if (!to) {
-      if (state === 'completed' || state === 'canceled') this.removeTemp(guid);
+      // Not one this policy knows: its file is never deleted here, only by
+      // the file sweep once it is older than DOWNLOAD_FILE_TTL_MS.
+      if (state === 'completed') console.warn('[DownloadRelay] a download finished that no rule holds; kept for an hour in main\'s folder:', 'EUNKNOWN');
       return;
     }
-    to.seen = Date.now();
     if (state === 'inProgress') {
       if (to.events) this.deps.emit(to.client, 'Browser.downloadProgress', params, to.sessionId);
       return;
@@ -388,19 +391,12 @@ export class DownloadRelayPolicy {
   }
 
   /**
-   * Downloads Chrome has said nothing about for DOWNLOAD_FILE_TTL_MS, or whose
-   * file is gone after a sweep's interval, are forgotten (later progress for one
-   * is unknown); then files in main's folder no download is using, older than
-   * DOWNLOAD_FILE_TTL_MS.
+   * Files in main's folder older than DOWNLOAD_FILE_TTL_MS that no download in
+   * progress owns: Chrome writes `<guid>.crdownload` while one runs (or is
+   * paused) and renames it to `<guid>` when it completes.
    */
   private sweepStale(): void {
     const now = Date.now();
-    for (const entries of [this.handed, this.user] as Array<Map<string, { seen: number }>>) {
-      for (const [guid, entry] of entries) {
-        const quiet = now - entry.seen;
-        if (quiet > DOWNLOAD_FILE_TTL_MS || (quiet > SWEEP_EVERY_MS && !fs.existsSync(path.join(this.deps.dir, guid)))) entries.delete(guid);
-      }
-    }
     let names: string[];
     try {
       names = fs.readdirSync(this.deps.dir);
@@ -408,7 +404,8 @@ export class DownloadRelayPolicy {
       return;
     }
     for (const name of names) {
-      if (this.handed.has(name) || this.user.has(name)) continue;
+      const guid = name.endsWith(IN_PROGRESS) ? name.slice(0, -IN_PROGRESS.length) : name;
+      if (this.handed.has(guid) || this.user.has(guid)) continue;
       const file = path.join(this.deps.dir, name);
       try {
         const st = fs.lstatSync(file);
