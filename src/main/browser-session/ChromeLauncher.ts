@@ -381,9 +381,7 @@ export interface ChromeLauncherOptions {
   extraArgs?: string[];
   /**
    * Test seam: the Chrome child's whole environment. Unset (production), the
-   * child inherits process.env. Real-Chrome suites on Windows pass
-   * realProfileBrowserEnv(): Chrome under the isolate setup's temp USERPROFILE
-   * refuses remote debugging, on the port and on the pipe alike.
+   * child inherits process.env.
    */
   childEnv?: NodeJS.ProcessEnv;
   /** Test seam: how long the launch waits for the proxy probe. */

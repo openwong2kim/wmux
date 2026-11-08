@@ -18,7 +18,6 @@ import { CdpPipeMux } from '../CdpPipeMux';
 import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
 import { ChromeLauncher } from '../ChromeLauncher';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
-import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 
 const CHROME = process.env.CHROME_PATH;
 
@@ -44,8 +43,7 @@ async function startChrome(): Promise<Started> {
     // answers cookie calls nor exits.
     '--use-mock-keychain',
     'about:blank',
-    // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
-  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: realProfileBrowserEnv() });
+  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
   const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
   const mux = new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable);
   let endpoint: CdpPipeEndpoint;

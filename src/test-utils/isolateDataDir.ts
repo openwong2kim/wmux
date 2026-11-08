@@ -27,7 +27,17 @@ process.env.HOME = tempDir;
 // USERPROFILE only exists on Windows. getWmuxHomeDir() prefers USERPROFILE over
 // HOME, so defining it on POSIX would shadow a test's own HOME override (a test
 // that points HOME at its fixture dir would silently read the wrong directory).
-if (process.platform === 'win32') process.env.USERPROFILE = tempDir;
+if (process.platform === 'win32') {
+  process.env.USERPROFILE = tempDir;
+  // The folders a Windows profile has. Chrome and Edge resolve their known
+  // folders through USERPROFILE (%USERPROFILE%\AppData\Local, …\Downloads):
+  // with these missing they refuse remote debugging ("requires a non-default
+  // data directory"), and with them present a browser a test starts never
+  // touches the real profile, its Downloads folder included.
+  for (const dir of ['AppData\\Local', 'AppData\\Roaming', 'Downloads']) {
+    fs.mkdirSync(path.join(tempDir, dir), { recursive: true });
+  }
+}
 process.env.WMUX_DATA_SUFFIX ??= '-vitest';
 // Read by assertNotLiveWmuxDataDir: without this marker a vitest run refuses the
 // live data dir even when HOME was never overridden.
