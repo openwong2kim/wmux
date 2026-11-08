@@ -48,8 +48,8 @@ export const OPENER_DEPTH = 8;
 /** What a grant judges a caller by: as main resolved it, never as the caller said. */
 export interface GrantIdentity {
   readonly workspaceId?: string;
-  /** The operator lane (browser.cdp.info's ctx.operator): every target, as on the port. */
-  readonly operator?: boolean;
+  /** Every target, as on the port: the operator lane's callers (browser.cdp.info). */
+  readonly everyTarget?: boolean;
 }
 
 /**
@@ -199,7 +199,7 @@ export class CdpTargetOwnership {
    * in flight) and nothing yet attributes the target to anyone.
    */
   decide(owner: object, identity: GrantIdentity, targetId: string, creating = false): GrantDecision {
-    if (identity.operator === true) return 'grant';
+    if (identity.everyTarget === true) return 'grant';
     const seen = new Set<string>();
     const verdict = this.judge(owner, identity, targetId, OPENER_DEPTH, seen);
     if (verdict !== 'deny' || !creating) return verdict;

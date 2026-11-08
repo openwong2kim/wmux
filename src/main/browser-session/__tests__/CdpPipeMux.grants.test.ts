@@ -87,7 +87,7 @@ describe('CdpPipeMux grants: main\'s registry', () => {
 
   it('an operator sees every target; a caller with no workspace sees only what it made', async () => {
     const { browser, mux, records } = setup();
-    const op = client(mux, 'op', { operator: true });
+    const op = client(mux, 'op', { everyTarget: true });
     const none = client(mux, 'none', {});
     await op.autoAttach(false);
     await none.autoAttach(false);
@@ -498,3 +498,60 @@ describe('CdpPipeMux grants: no way around them', () => {
 function browserSessionOfFirstClient(browser: FakeBrowser): string {
   return browser.received.find((c) => c.id < MUX_ID_BASE && typeof c.sessionId === 'string' && c.sessionId.startsWith('B'))?.sessionId as string;
 }
+
+describe('CdpPipeMux grants: the shared jar, windows, and a revoked session', () => {
+  it('no bulk cookie read on the shared default context: getAllCookies and getCookies with urls refused, the page\'s own cookies kept', async () => {
+    const { browser, mux } = setup();
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    const mine = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank' }))).result?.targetId as string;
+    const page = (await a.replyTo(a.send('Target.attachToTarget', { targetId: mine, flatten: true }))).result?.sessionId as string;
+    expect((await a.replyTo(a.send('Network.getAllCookies', {}, page))).error?.message).toContain('shared default browser context');
+    expect((await a.replyTo(a.send('Network.getCookies', { urls: ['https://bank.example/'] }, page))).error?.message).toContain('shared default browser context');
+    expect((await a.replyTo(a.send('Network.getAllCookies'))).error?.code).toBe(-32000);
+    expect((await a.replyTo(a.send('Network.getCookies', {}, page))).result).toEqual({ echo: 'Network.getCookies' });
+    expect((await a.replyTo(a.send('Network.setCookie', { name: 'n', value: 'v', url: 'https://a.example/' }, page))).result).toEqual({ echo: 'Network.setCookie' });
+    // In a context the client made, the jar is its own.
+    const ctx = (await a.replyTo(a.send('Target.createBrowserContext'))).result?.browserContextId as string;
+    const own = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank', browserContextId: ctx }))).result?.targetId as string;
+    const p2 = (await a.replyTo(a.send('Target.attachToTarget', { targetId: own, flatten: true }))).result?.sessionId as string;
+    expect((await a.replyTo(a.send('Network.getAllCookies', {}, p2))).result).toEqual({ echo: 'Network.getAllCookies' });
+    expect(browser.received.filter((c) => c.method === 'Network.getAllCookies').map((c) => c.sessionId)).toEqual([p2]);
+    mux.close();
+  });
+
+  it('a window is learned only from a page the client holds, and forgotten when that page\'s grant goes', async () => {
+    const { mux, records } = setup();
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    // On its browser session, with no target: teaches nothing.
+    expect((await a.replyTo(a.send('Browser.getWindowForTarget'))).result?.windowId).toBe(7);
+    expect((await a.replyTo(a.send('Browser.setWindowBounds', { windowId: 7, bounds: {} }))).error?.message).toBe('Browser window not found');
+    // On a page session the client holds: teaches that window.
+    records.set('TW', { workspaceId: 'ws-a' });
+    const page = (await a.replyTo(a.send('Target.attachToTarget', { targetId: 'TW', flatten: true }))).result?.sessionId as string;
+    await a.replyTo(a.send('Browser.getWindowForTarget', {}, page));
+    expect((await a.replyTo(a.send('Browser.setWindowBounds', { windowId: 7, bounds: {} }))).result).toEqual({ echo: 'Browser.setWindowBounds' });
+    // The page's grant goes: so does the window.
+    records.set('TW', { workspaceId: 'ws-b' });
+    mux.regrant();
+    expect((await a.replyTo(a.send('Browser.setWindowBounds', { windowId: 7, bounds: {} }))).error?.message).toBe('Browser window not found');
+    mux.close();
+  });
+
+  it('a revoked session hears nothing more before Chrome ends it; its end is still told on the session above it', async () => {
+    const { browser, mux, records } = setup();
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    records.set('TV', { workspaceId: 'ws-a' });
+    await a.replyTo(a.send('Browser.getVersion'));
+    const page = (await a.replyTo(a.send('Target.attachToTarget', { targetId: 'TV', flatten: true }))).result?.sessionId as string;
+    browser.event(page, 'Runtime.consoleAPICalled', { n: 1 });
+    await vi.waitFor(() => expect(a.inbox.filter((m) => m.method === 'Runtime.consoleAPICalled')).toHaveLength(1), { timeout: 5_000 });
+    records.set('TV', { workspaceId: 'ws-b' });
+    mux.regrant();
+    browser.event(page, 'Runtime.consoleAPICalled', { n: 2 });
+    browser.event(browserSessionOfFirstClient(browser), 'Target.detachedFromTarget', { sessionId: page, targetId: 'TV' });
+    await vi.waitFor(() => expect(a.inbox.some((m) => m.method === 'Target.detachedFromTarget')).toBe(true), { timeout: 5_000 });
+    expect(a.inbox.filter((m) => m.method === 'Runtime.consoleAPICalled')).toHaveLength(1);
+    expect(cdpPipeCounters().dropped?.['revoked-session']).toBe(1);
+    mux.close();
+  });
+});

@@ -4365,7 +4365,7 @@ export function registerBrowserRpc(
           ...(decision && { protectedEpoch: decision.epoch }),
           // The operator lane: with grants (C3b), every target, as on the port. From the
           // authenticated caller only, never from params.
-          ...(ctx?.operator === true && { operator: true }),
+          ...(ctx?.operator === true && { everyTarget: true }),
         })
         : undefined;
       return {

@@ -133,8 +133,11 @@ export interface CallerIdentity {
   readonly workspaceId?: string;
   readonly profile?: string;
   readonly protectedEpoch?: number;
-  /** The operator lane: with `grants`, every target, as on the port. Set by main only. */
-  readonly operator?: boolean;
+  /**
+   * With `grants`, every target, as on the port: the operator lane's callers
+   * only. Set by main from the authenticated caller, never from params.
+   */
+  readonly everyTarget?: boolean;
 }
 
 /** A client as a filter or hook sees it. */
@@ -298,6 +301,8 @@ interface Pending {
   session?: string;
   /** Target.disposeBrowserContext's context. */
   contextId?: string;
+  /** Browser.getWindowForTarget: the granted page it asked about (named, or the page session it came on). */
+  windowTarget?: string;
 }
 
 /** A frame for a client, held until its createTarget's new page is named (C3b). */
@@ -350,8 +355,8 @@ abstract class Client {
   creatingCount = 0;
   /** Grants: sessions whose grant went; refused at once, detached as soon as Chrome does. */
   readonly revoked = new Set<string>();
-  /** Grants: windows that hold the client's own pages (Browser.getWindowForTarget answers). */
-  readonly windows = new Set<number>();
+  /** Grants: windows that hold the client's own pages, by window id, with the pages that taught them. */
+  readonly windows = new Map<number, Set<string>>();
   /** Grants: targets let go from this client's auto-attach, by the browser session they came on. */
   readonly denied = new Map<string, string>();
   /**
@@ -535,6 +540,7 @@ export class CdpPipeMux {
           const judged = !(held.type !== undefined && FOLLOWS_PAGE.has(held.type));
           if (!parentRevoked && (!judged || this.granted(client, held.targetId))) continue;
           client.revoked.add(session);
+          this.forgetWindowsOf(client, held.targetId);
           grew = true;
           bump(totals.dropped, 'revoked-target');
           if (!parentRevoked) this.ownCommand('Target.detachFromTarget', { sessionId: session }, held.parent).catch(() => undefined);
@@ -652,7 +658,13 @@ export class CdpPipeMux {
     const targetId = command.method === 'Target.attachToTarget' && typeof target === 'string' ? { targetId: target } : {};
     const contextId = command.method === 'Target.disposeBrowserContext' && typeof command.params.browserContextId === 'string'
       ? { contextId: command.params.browserContextId } : {};
-    this.pending.set(id, { client, clientId, method: command.method, session, ...targetId, ...contextId });
+    // A window is learned only from a page the client holds: one it named (granted
+    // just above), or the page session it asked on. A browser session asking
+    // without a target teaches nothing.
+    const windowTarget = command.method === 'Browser.getWindowForTarget'
+      ? (typeof target === 'string' ? target : command.sessionId !== undefined ? client.targets.get(command.sessionId)?.targetId : undefined)
+      : undefined;
+    this.pending.set(id, { client, clientId, method: command.method, session, ...targetId, ...contextId, ...(windowTarget !== undefined && { windowTarget }) });
     if (command.method === 'Target.createTarget') client.creatingCount++;
     // Only a resume that goes to the browser ends the watch on that session.
     if (command.method === 'Runtime.runIfWaitingForDebugger' && command.sessionId !== undefined) this.watch.resumed(client, command.sessionId);
@@ -718,7 +730,7 @@ export class CdpPipeMux {
     if (this.ownership) {
       if (client.kind !== 'external') return true;
       const identity = client.callerIdentity ?? {};
-      return this.ownership.decide(client, { workspaceId: identity.workspaceId, operator: identity.operator }, targetId) === 'grant';
+      return this.ownership.decide(client, { workspaceId: identity.workspaceId, everyTarget: identity.everyTarget }, targetId) === 'grant';
     }
     return this.opts.targetGrant?.(client, targetId) ?? true;
   }
@@ -746,7 +758,7 @@ export class CdpPipeMux {
     if (onBrowser && (method.startsWith('Fetch.') || method.startsWith('Tracing.'))) {
       return { refuse: { code: -32000, message: `${method} is not available to this client` }, reason: 'browser-wide' };
     }
-    if (WINDOW_METHODS.has(method) && typeof params.windowId === 'number' && !client.windows.has(params.windowId)) {
+    if (WINDOW_METHODS.has(method) && typeof params.windowId === 'number' && !client.windows.get(params.windowId)?.size) {
       return { refuse: { code: -32000, message: 'Browser window not found' }, reason: 'foreign-window' };
     }
     const context = params.browserContextId;
@@ -754,6 +766,14 @@ export class CdpPipeMux {
       const unknown = unknownContext(method, context);
       if (unknown && !this.ownership.ownsContext(client, context)) return { refuse: unknown, reason: 'foreign-context' };
       return null;
+    }
+    // The shared default context's cookie jar: its pages use it, but no client
+    // reads it whole. A page's own cookies (getCookies without urls) and one
+    // URL's (setCookie) are no more than visiting the site.
+    if (method === 'Network.getAllCookies' || (method === 'Network.getCookies' && params.urls !== undefined)) {
+      const pageContext = command.sessionId !== undefined ? client.targets.get(command.sessionId)?.browserContextId : undefined;
+      if (!onBrowser && pageContext !== undefined && this.ownership.ownsContext(client, pageContext)) return null;
+      return { refuse: { code: -32000, message: `${method} on the shared default browser context is not available to this client` }, reason: 'default-context-cookies' };
     }
     if (CONTEXT_WIDE.has(method)) {
       // On a page session: the page's own context, when the client made it.
@@ -917,9 +937,13 @@ export class CdpPipeMux {
           if (job.method === 'Target.attachToBrowserTarget' && this.owner.get(session) === job.client) job.client.ownBrowserSessions.add(session);
         }
       }
-      if (job.method === 'Browser.getWindowForTarget' && !frame.error) {
+      if (job.method === 'Browser.getWindowForTarget' && !frame.error && job.windowTarget !== undefined) {
         const windowId = (frame.result as { windowId?: unknown } | undefined)?.windowId;
-        if (typeof windowId === 'number') job.client.windows.add(windowId);
+        if (typeof windowId === 'number') {
+          const pages = job.client.windows.get(windowId) ?? new Set<string>();
+          pages.add(job.windowTarget);
+          job.client.windows.set(windowId, pages);
+        }
       }
       // A page already loaded when the client attached: Chrome reports its frames
       // only in the answer to the client's own Page.getFrameTree.
@@ -974,6 +998,15 @@ export class CdpPipeMux {
    * names is then not the client's).
    */
   private routeEvent(owner: Client, frame: Frame & { method: string; sessionId: string }, text: string, final: boolean): boolean {
+    // A session whose grant went hears nothing more; what it attached ends with it, quietly.
+    if (owner.revoked.has(frame.sessionId)) {
+      bump(totals.dropped, 'revoked-session');
+      if (frame.method === 'Target.detachedFromTarget') {
+        const child = (frame.params as { sessionId?: unknown } | undefined)?.sessionId;
+        if (typeof child === 'string') this.forgetSession(owner, child);
+      }
+      return true;
+    }
     // Grants are checked where targets are discovered: on every browser
     // session the client holds, and, with `grants`, discovery events on any
     // session (a page session can discover too). A page's own frames and
@@ -996,7 +1029,7 @@ export class CdpPipeMux {
           const identity = owner.callerIdentity ?? {};
           // A popup is decided at once by its opener; only a page with none may be a create's.
           const mayHold = !final && !this.ownership.hasOpener(target) && this.creating(owner);
-          verdict = this.ownership.decide(owner, { workspaceId: identity.workspaceId, operator: identity.operator }, target, mayHold);
+          verdict = this.ownership.decide(owner, { workspaceId: identity.workspaceId, everyTarget: identity.everyTarget }, target, mayHold);
         } else {
           verdict = this.granted(owner, target) ? 'grant' : 'deny';
         }
@@ -1042,17 +1075,29 @@ export class CdpPipeMux {
     owner.event(frame, text);
     if (frame.method === 'Target.detachedFromTarget') {
       const child = (frame.params as { sessionId?: unknown } | undefined)?.sessionId;
-      if (typeof child === 'string' && this.owner.get(child) === owner && child !== owner.browserSession) {
-        this.owner.delete(child);
-        owner.owned.delete(child);
-        owner.targets.delete(child);
-        owner.frames.delete(child);
-        owner.ownBrowserSessions.delete(child);
-        owner.revoked.delete(child);
-        this.watch.detached(owner, child);
-      }
+      if (typeof child === 'string') this.forgetSession(owner, child);
     }
     return true;
+  }
+
+  /** A session `owner` held has ended. */
+  private forgetSession(owner: Client, child: string): void {
+    if (this.owner.get(child) !== owner || child === owner.browserSession) return;
+    this.owner.delete(child);
+    owner.owned.delete(child);
+    owner.targets.delete(child);
+    owner.frames.delete(child);
+    owner.ownBrowserSessions.delete(child);
+    owner.revoked.delete(child);
+    this.watch.detached(owner, child);
+  }
+
+  /** Grants: windows learned from `targetId` no longer count for `client`. */
+  private forgetWindowsOf(client: Client, targetId: string): void {
+    for (const [windowId, pages] of client.windows) {
+      pages.delete(targetId);
+      if (!pages.size) client.windows.delete(windowId);
+    }
   }
 
   // ── Grants (C3b) ─────────────────────────────────────────────────────────
@@ -1082,7 +1127,10 @@ export class CdpPipeMux {
       const timer = setTimeout(() => {
         this.pruning.delete(gone);
         ownership.destroyed(gone);
-        for (const client of this.clients) client.denied.delete(gone);
+        for (const client of this.clients) {
+          client.denied.delete(gone);
+          this.forgetWindowsOf(client, gone);
+        }
       }, DESTROYED_FACT_TTL_MS);
       timer.unref?.();
     }

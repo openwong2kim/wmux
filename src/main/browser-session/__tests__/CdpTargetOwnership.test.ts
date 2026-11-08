@@ -182,9 +182,9 @@ describe('CdpTargetOwnership.decide', () => {
     const o = ownership({ p: { workspaceId: 'ws-b' } });
     o.learn({ targetId: 'p', type: 'page' });
     o.learn({ targetId: 't', type: 'tab' });
-    expect(o.decide(clientA, { operator: true }, 'p')).toBe('grant');
-    expect(o.decide(clientA, { operator: true }, 't')).toBe('grant');
-    expect(o.decide(clientA, { operator: false, workspaceId: 'ws-a' }, 'p')).toBe('deny');
+    expect(o.decide(clientA, { everyTarget: true }, 'p')).toBe('grant');
+    expect(o.decide(clientA, { everyTarget: true }, 't')).toBe('grant');
+    expect(o.decide(clientA, { everyTarget: false, workspaceId: 'ws-a' }, 'p')).toBe('deny');
   });
 
   it('a registry that throws denies', () => {
