@@ -65,13 +65,18 @@ function listen(): string {
 
 describe.runIf(onHostedRunner)('the relay pipe against another local account (hosted runner only)', () => {
   beforeAll(() => {
-    powershell('net user $env:WMUX_CI_USER $env:WMUX_CI_PASSWORD /add | Out-Null');
+    // New-LocalUser, not `net user /add`: net asks a Y/N question for a
+    // password over 14 characters, which fails when nobody can answer.
+    powershell([
+      '$pw = ConvertTo-SecureString $env:WMUX_CI_PASSWORD -AsPlainText -Force;',
+      'New-LocalUser -Name $env:WMUX_CI_USER -Password $pw -AccountNeverExpires -ErrorAction Stop | Out-Null',
+    ].join(' '));
   }, 60_000);
 
   afterAll(() => {
     for (const server of servers) server.close();
     try {
-      powershell('net use \\\\127.0.0.1\\IPC$ /delete /y 2>$null | Out-Null; net user $env:WMUX_CI_USER /delete | Out-Null');
+      powershell('net use \\\\127.0.0.1\\IPC$ /delete /y 2>$null | Out-Null; Remove-LocalUser -Name $env:WMUX_CI_USER -ErrorAction SilentlyContinue');
     } catch { /* the VM goes away anyway */ }
   }, 60_000);
 
