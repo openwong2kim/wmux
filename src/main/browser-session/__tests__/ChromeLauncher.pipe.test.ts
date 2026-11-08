@@ -392,6 +392,24 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await launcher.dispose({ immediate: true });
   });
 
+  it('a cold start with the download relay on waits as long as one without it', async () => {
+    vi.stubEnv('WMUX_CDP_TARGET_GRANT', '1');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { chrome, child } = spawnPipeChrome(SlowPipeChrome);
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    let ready = false;
+    const launched = launcher.endpoint().then(() => { ready = true; });
+    await vi.advanceTimersByTimeAsync(22_000);
+    expect(child.killed).toBe(false);
+    chrome.start();
+    for (let i = 0; i < 40 && !ready; i++) await vi.advanceTimersByTimeAsync(250);
+    await launched;
+    expect(chrome.received.filter((c) => c.method === 'Browser.setDownloadBehavior').map((c) => c.params?.behavior)).toEqual(['allowAndName']);
+    expect(launcher.isRunning()).toBe(true);
+    await launcher.dispose({ immediate: true });
+  });
+
   it('gives up on a Chrome that never answers once the start ceiling passes, and stops it', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);

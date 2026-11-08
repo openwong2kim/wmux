@@ -21,7 +21,8 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
 import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
-import { createServer } from 'node:http';
+import { DownloadRelayPolicy, removeDownloadRelayDir } from '../DownloadRelayPolicy';
+import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 import { chromeForRuntimeSuite } from '../../../test-utils/runtimeChrome';
@@ -78,7 +79,11 @@ const connectTo = async (s: Started, identity: CallerIdentity = {}) => connectTh
 /** Grants (C3b): main's registry for one Chrome, filled by the test. */
 type Registry = Map<string, { workspaceId?: string }>;
 
-async function startChrome(registry?: Registry): Promise<Started> {
+/** With grants: main's download relay for the default context, as the launcher arms it. */
+interface Relay { policy: DownloadRelayPolicy; dir: string; userDir: string }
+const relaysMade: Relay[] = [];
+
+async function startChrome(registry?: Registry, withRelay?: { relay?: Relay }): Promise<Started> {
   const temp = tempChromeProfile('wmux-pipe-chrome-');
   profiles.push(temp);
   const profile = temp.dir;
@@ -95,9 +100,39 @@ async function startChrome(registry?: Registry): Promise<Started> {
     'about:blank',
   ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
   const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  let made: CdpPipeMux | null = null;
+  let dl: Relay | undefined;
+  let dlSession: ReturnType<CdpPipeMux['connect']> | null = null;
+  if (withRelay) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-dl-rt-'));
+    // The user's download folder, as the launcher has it from Electron: a fresh one per run.
+    const userDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-dl-user-')), 'Downloads');
+    fs.mkdirSync(userDir);
+    const policy = new DownloadRelayPolicy({
+      dir,
+      userDir: () => userDir,
+      contextOf: (client, frameId) => made?.contextOfFrame(client, frameId),
+      created: (client, contextId) => made?.createdContext(client, contextId) ?? false,
+      contextOfSession: (client, sessionId) => made?.contextOfSession(client, sessionId),
+      emit: (client, method, params, sessionId) => made?.emitEvent(client, method, params, sessionId) ?? false,
+      cancel: (guid) => dlSession?.send('Browser.cancelDownload', { guid }) ?? Promise.resolve(),
+    });
+    dl = { policy, dir, userDir };
+    relaysMade.push(dl);
+    withRelay.relay = dl;
+  }
   const mux = new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable, {
     ...(registry && { grants: { registry: (id: string) => registry.get(id) ?? null } }),
+    ...(dl && { filter: dl.policy.filter, onClientGone: (client: import('../CdpPipeMux').ClientRef) => dl?.policy.forget(client) }),
   });
+  made = mux;
+  if (dl) {
+    const session = mux.connect({ label: 'download relay' });
+    dlSession = session;
+    session.on('Browser.downloadWillBegin', (p) => dl?.policy.downloadEvent('Browser.downloadWillBegin', p));
+    session.on('Browser.downloadProgress', (p) => dl?.policy.downloadEvent('Browser.downloadProgress', p));
+    await session.send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: dl.dir, eventsEnabled: true });
+  }
   const s = { child, profile, mux, route: relay.serve(mux), exited };
   started.push(s);
   return s;
@@ -436,4 +471,84 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants (C3b)',
     expect(b.contexts()[0].pages()).toEqual([]);
     expect(a.contexts()[0].pages()).toHaveLength(5);
   }, 90_000);
+});
+
+describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants: downloads through main (C3b)', () => {
+  let server: Server | null = null;
+  afterAll(async () => {
+    for (const r of relaysMade.splice(0)) {
+      r.policy.dispose();
+      removeDownloadRelayDir(r.dir);
+    }
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+  });
+
+  it('two workspaces download at once: each gets only its own file, through Playwright\'s own download.path()', async () => {
+    server = createServer((req, res) => {
+      const name = (req.url ?? '/').slice(1) || 'x';
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${name}.bin"` });
+      res.end(`content of ${name}`);
+    });
+    await new Promise<void>((resolve) => server?.listen(0, '127.0.0.1', () => resolve()));
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const registry: Registry = new Map();
+    const opts: { relay?: Relay } = {};
+    const s = await startChrome(registry, opts);
+    const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
+    const b = await connectThrough(await s.route.grant({ workspaceId: 'ws-b' }));
+    browsers.push(a, b);
+    const [pa, pb] = await Promise.all([a.contexts()[0].newPage(), b.contexts()[0].newPage()]);
+    const seenA: string[] = [];
+    const seenB: string[] = [];
+    pa.on('download', (d) => seenA.push(d.url()));
+    pb.on('download', (d) => seenB.push(d.url()));
+    await pa.setContent(`<a id=d href="${origin}/alpha">a</a>`);
+    await pb.setContent(`<a id=d href="${origin}/beta">b</a>`);
+    const [da, db] = await Promise.all([
+      Promise.all([pa.waitForEvent('download', { timeout: 20_000 }), pa.click('#d')]).then(([d]) => d),
+      Promise.all([pb.waitForEvent('download', { timeout: 20_000 }), pb.click('#d')]).then(([d]) => d),
+    ]);
+    expect(fs.readFileSync((await da.path()) as string, 'utf8')).toBe('content of alpha');
+    expect(fs.readFileSync((await db.path()) as string, 'utf8')).toBe('content of beta');
+    expect(seenA).toEqual([`${origin}/alpha`]);
+    expect(seenB).toEqual([`${origin}/beta`]);
+    // Nothing left in main's folder.
+    await vi.waitFor(() => expect(fs.readdirSync(opts.relay?.dir as string)).toEqual([]), { timeout: 10_000 });
+  }, 120_000);
+
+  it('a download in a tab no client holds (the user\'s own) lands in the user\'s folder under its name, a second deduped, no client told', async () => {
+    const files = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename="report.bin"' });
+      res.end('the report');
+    });
+    await new Promise<void>((resolve) => files.listen(0, '127.0.0.1', () => resolve()));
+    try {
+      const origin = `http://127.0.0.1:${(files.address() as AddressInfo).port}`;
+      const opts: { relay?: Relay } = {};
+      const s = await startChrome(new Map(), opts);
+      const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
+      browsers.push(a);
+      const pa = await a.contexts()[0].newPage();
+      const seen: string[] = [];
+      pa.on('download', (d) => seen.push(d.url()));
+      a.contexts()[0].on('page', (p) => p.on('download', (d) => seen.push(d.url())));
+      const userDir = opts.relay?.userDir as string;
+      // Main opens the tab and files it under no workspace: a tab the user opened.
+      const main = s.mux.connect({ label: 'the user' });
+      // A name is claimed (an empty file) before the download is moved over it: wait for the content.
+      const holds = (name: string) => fs.existsSync(path.join(userDir, name)) && fs.readFileSync(path.join(userDir, name), 'utf8') === 'the report';
+      await main.send('Target.createTarget', { url: `${origin}/report` });
+      await vi.waitFor(() => expect(holds('report.bin')).toBe(true), { timeout: 20_000 });
+      await main.send('Target.createTarget', { url: `${origin}/report` });
+      await vi.waitFor(() => expect(holds('report (1).bin')).toBe(true), { timeout: 20_000 });
+      expect(fs.readdirSync(userDir).sort()).toEqual(['report (1).bin', 'report.bin']);
+      expect(seen).toEqual([]);
+      await vi.waitFor(() => expect(fs.readdirSync(opts.relay?.dir as string)).toEqual([]), { timeout: 10_000 });
+      for (const name of fs.readdirSync(userDir)) fs.unlinkSync(path.join(userDir, name));
+      fs.rmdirSync(userDir);
+      fs.rmdirSync(path.dirname(userDir));
+    } finally {
+      await new Promise<void>((resolve) => files.close(() => resolve()));
+    }
+  }, 120_000);
 });
