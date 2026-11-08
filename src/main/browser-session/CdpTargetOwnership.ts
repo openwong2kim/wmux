@@ -178,6 +178,16 @@ export class CdpTargetOwnership {
     }
   }
 
+  /** The target's browser context, as Chrome named it. */
+  contextOf(targetId: string): string | undefined {
+    return this.facts.get(targetId)?.browserContextId;
+  }
+
+  /** The target's type, as Chrome last named it. */
+  typeOf(targetId: string): string | undefined {
+    return this.facts.get(targetId)?.type;
+  }
+
   /** Whether the target has an opener on record (a popup is decided at once, never held). */
   hasOpener(targetId: string): boolean {
     return this.facts.get(targetId)?.openerId !== undefined;

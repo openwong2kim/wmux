@@ -365,8 +365,9 @@ class NotifyingMap<K, V> extends Map<K, V> {
   }
 
   override set(key: K, value: V): this {
+    const same = this.has(key) && this.get(key) === value;
     super.set(key, value);
-    this.changed?.();
+    if (!same) this.changed?.();
     return this;
   }
 

@@ -374,3 +374,127 @@ describe('CdpPipeMux grants: refusals on the session they came on', () => {
     mux.close();
   });
 });
+
+describe('CdpPipeMux grants: no way around them', () => {
+  it('a session on the browser target, however attached, is a browser session: Fetch refused, its auto-attach judged', async () => {
+    const { browser, mux, records } = setup();
+    browser.announceAttach = true;
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    await a.replyTo(a.send('Browser.getVersion'));
+    // The client learns the browser target's id (here: Chrome names it in a targetInfo).
+    browser.event(browserSessionOfFirstClient(browser), 'Target.targetInfoChanged', { targetInfo: { targetId: 'BROWSER', type: 'browser' } });
+    await vi.waitFor(() => expect(a.inbox.some((m) => m.method === 'Target.targetInfoChanged')).toBe(true), { timeout: 5_000 });
+    const s = (await a.replyTo(a.send('Target.attachToTarget', { targetId: 'BROWSER', flatten: true }))).result?.sessionId as string;
+    expect((await a.replyTo(a.send('Fetch.enable', {}, s))).error?.message).toBe('Fetch.enable is not available to this client');
+    expect((await a.replyTo(a.send('Tracing.start', {}, s))).error?.code).toBe(-32000);
+    await a.replyTo(a.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, s));
+    records.set('TO', { workspaceId: 'ws-b' });
+    browser.targets.push({ targetId: 'TO', title: '', url: 'http://b/' });
+    browser.announce({ targetId: 'TO', type: 'page', browserContextId: 'DEFAULT' });
+    await vi.waitFor(() => expect(muxSent(browser, 'Target.detachFromTarget').some((c) => c.sessionId === s)).toBe(true), { timeout: 5_000 });
+    expect(a.attached()).not.toContain('TO');
+    mux.close();
+  });
+
+  it("on a page session, a service worker's attach is judged and let go; the page's own iframe goes with the page", async () => {
+    const { browser, mux } = setup();
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    const mine = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank' }))).result?.targetId as string;
+    const page = (await a.replyTo(a.send('Target.attachToTarget', { targetId: mine, flatten: true }))).result?.sessionId as string;
+    browser.sessions.add('SW1');
+    browser.event(page, 'Target.attachedToTarget', { sessionId: 'SW1', targetInfo: { targetId: 'SW', type: 'service_worker' }, waitingForDebugger: false });
+    await vi.waitFor(() => expect(muxSent(browser, 'Target.detachFromTarget').some((c) => c.sessionId === page && c.params.sessionId === 'SW1')).toBe(true), { timeout: 5_000 });
+    expect((await a.replyTo(a.send('Runtime.evaluate', { expression: 'sw' }, 'SW1'))).error?.code).toBe(-32001);
+    browser.sessions.add('IF1');
+    browser.event(page, 'Target.attachedToTarget', { sessionId: 'IF1', targetInfo: { targetId: 'IFR', type: 'iframe' }, waitingForDebugger: false });
+    await vi.waitFor(() => expect(a.inbox.some((m) => m.method === 'Target.attachedToTarget' && m.sessionId === page)).toBe(true), { timeout: 5_000 });
+    expect((await a.replyTo(a.send('Runtime.evaluate', { expression: 'f' }, 'IF1'))).result).toBeDefined();
+    mux.close();
+  });
+
+  it('a grant that goes ends the session at once, whatever session it was attached on, and the sessions under it', async () => {
+    const { browser, mux, records } = setup();
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    const mine = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank' }))).result?.targetId as string;
+    const page = (await a.replyTo(a.send('Target.attachToTarget', { targetId: mine, flatten: true }))).result?.sessionId as string;
+    records.set('TR', { workspaceId: 'ws-a' });
+    browser.event(page, 'Target.targetInfoChanged', { targetInfo: { targetId: 'TR', type: 'page' } });
+    const other = (await a.replyTo(a.send('Target.attachToTarget', { targetId: 'TR', flatten: true }, page))).result?.sessionId as string;
+    const child = 'IF2';
+    browser.sessions.add(child);
+    browser.event(other, 'Target.attachedToTarget', { sessionId: child, targetInfo: { targetId: 'IFR2', type: 'iframe' }, waitingForDebugger: false });
+    await vi.waitFor(() => expect(a.inbox.some((m) => m.method === 'Target.attachedToTarget' && m.sessionId === other)).toBe(true), { timeout: 5_000 });
+    // Refiled under another workspace.
+    records.set('TR', { workspaceId: 'ws-b' });
+    mux.regrant();
+    const before = browser.received.length;
+    expect((await a.replyTo(a.send('Runtime.evaluate', { expression: 'x' }, other))).error?.code).toBe(-32001);
+    expect((await a.replyTo(a.send('Runtime.evaluate', { expression: 'y' }, child))).error?.code).toBe(-32001);
+    expect(browser.received.slice(before).filter((c) => c.method === 'Runtime.evaluate')).toEqual([]);
+    expect(muxSent(browser, 'Target.detachFromTarget').some((c) => c.sessionId === page && c.params.sessionId === other)).toBe(true);
+    // The client's own page is untouched.
+    expect((await a.replyTo(a.send('Runtime.evaluate', { expression: 'z' }, page))).result).toBeDefined();
+    mux.close();
+  });
+
+  it("context-wide cookie and cache commands are refused on a page session of the default context, allowed in the client's own", async () => {
+    const { mux } = setup();
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    const shared = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank' }))).result?.targetId as string;
+    const p1 = (await a.replyTo(a.send('Target.attachToTarget', { targetId: shared, flatten: true }))).result?.sessionId as string;
+    for (const method of ['Network.clearBrowserCookies', 'Network.clearBrowserCache', 'Storage.clearDataForOrigin']) {
+      expect((await a.replyTo(a.send(method, {}, p1))).error?.message, method).toContain('shared default browser context');
+    }
+    const ctx = (await a.replyTo(a.send('Target.createBrowserContext'))).result?.browserContextId as string;
+    const own = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank', browserContextId: ctx }))).result?.targetId as string;
+    const p2 = (await a.replyTo(a.send('Target.attachToTarget', { targetId: own, flatten: true }))).result?.sessionId as string;
+    expect((await a.replyTo(a.send('Network.clearBrowserCookies', {}, p2))).result).toEqual({ echo: 'Network.clearBrowserCookies' });
+    mux.close();
+  });
+
+  it('a window is only addressable once the client asked which window holds its own page', async () => {
+    const { mux } = setup();
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    expect((await a.replyTo(a.send('Browser.setWindowBounds', { windowId: 7, bounds: { windowState: 'minimized' } }))).error)
+      .toEqual({ code: -32000, message: 'Browser window not found' });
+    const mine = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank' }))).result?.targetId as string;
+    expect((await a.replyTo(a.send('Browser.getWindowForTarget', { targetId: mine }))).result?.windowId).toBe(7);
+    expect((await a.replyTo(a.send('Browser.setWindowBounds', { windowId: 7, bounds: { windowState: 'normal' } }))).result).toEqual({ echo: 'Browser.setWindowBounds' });
+    expect((await a.replyTo(a.send('Browser.getWindowBounds', { windowId: 8 }))).error?.message).toBe('Browser window not found');
+    mux.close();
+  });
+
+  it("what the mux answers itself during a hold waits its turn; a large reply does not count toward the hold's cap", async () => {
+    const browser = new FakeBrowser();
+    browser.announceBeforeReply = true;
+    browser.createWithoutReply = true;
+    const mux = new CdpPipeMux(browser.fromMux, browser.toMux, { grants: { registry: () => null, holdMs: 60_000, holdMaxChars: 1_000 } });
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    await a.autoAttach();
+    const create = a.send('Target.createTarget', { url: 'about:blank' });
+    await vi.waitFor(() => expect(cdpPipeCounters().absorbed?.['grant-hold']).toBe(1), { timeout: 5_000 });
+    const absorbed = a.send('Browser.setDownloadBehavior', { behavior: 'allow' });
+    const big = a.send('Runtime.evaluate', { expression: 'x'.repeat(5_000) });
+    await settle();
+    expect(a.inbox.some((m) => m.id === absorbed || m.id === big)).toBe(false);
+    expect(a.gone()).toBeNull();
+    // Chrome answers the create now.
+    const cmd = browser.received.find((c) => c.method === 'Target.createTarget');
+    const made = browser.targets[browser.targets.length - 1].targetId;
+    browser.reply(cmd as never, `"result":{"targetId":"${made}"}`);
+    const reply = await a.replyTo(create);
+    const at = (pred: (m: Record<string, unknown>) => boolean) => a.inbox.findIndex(pred);
+    const attachedAt = at((m) => m.method === 'Target.attachedToTarget');
+    expect(attachedAt).toBeGreaterThanOrEqual(0);
+    expect(attachedAt).toBeLessThan(at((m) => m.id === absorbed));
+    expect(a.inbox.indexOf(reply)).toBeGreaterThan(attachedAt);
+    expect(await a.replyTo(big)).toMatchObject({ result: { result: { value: 'x'.repeat(5_000) } } });
+    expect(a.gone()).toBeNull();
+    mux.close();
+  });
+});
+
+/** The first client's browser session, by the first command a client sent on one. */
+function browserSessionOfFirstClient(browser: FakeBrowser): string {
+  return browser.received.find((c) => c.id < MUX_ID_BASE && typeof c.sessionId === 'string' && c.sessionId.startsWith('B'))?.sessionId as string;
+}

@@ -120,7 +120,7 @@ export class FakeBrowser {
         const s = `C${++this.n}`;
         this.sessions.add(s);
         if (this.announceAttach && c.sessionId && c.params.flatten === true) {
-          this.event(c.sessionId, 'Target.attachedToTarget', { sessionId: s, targetInfo: { targetId: String(c.params.targetId), type: 'page', browserContextId: 'DEFAULT' }, waitingForDebugger: false });
+          this.event(c.sessionId, 'Target.attachedToTarget', { sessionId: s, targetInfo: { targetId: String(c.params.targetId), type: c.params.targetId === 'BROWSER' ? 'browser' : 'page', browserContextId: 'DEFAULT' }, waitingForDebugger: false });
         }
         this.reply(c, `"result":{"sessionId":"${s}"}`);
         return;
@@ -152,6 +152,9 @@ export class FakeBrowser {
         this.reply(c, `"result":{"browserContextId":"${id}"}`);
         return;
       }
+      case 'Browser.getWindowForTarget':
+        this.reply(c, '"result":{"windowId":7,"bounds":{}}');
+        return;
       case 'Target.getBrowserContexts':
         this.reply(c, `"result":{"browserContextIds":${JSON.stringify(this.contexts)}}`);
         return;
