@@ -1446,11 +1446,11 @@ mod tests {
 
     #[test]
     fn a_split_divergent_control_is_seen() {
-        let (_, _, feed) = feed_with(&["hello\x1b(", "0q"]);
+        let (_, _, feed) = feed_with(&["hello\x1b(", "A#"]);
         assert!(feed.divergent);
-        let (_, _, feed) = feed_with(&["\x1b]0;\x1b(0 in a title\x07"]);
+        let (_, _, feed) = feed_with(&["\x1b]0;\x1b(A in a title\x07"]);
         assert!(feed.divergent, "ESC ends the string, then designates");
-        let (_, _, feed) = feed_with(&["\x1b]0;(0 in a title\x07ok"]);
+        let (_, _, feed) = feed_with(&["\x1b]0;(A in a title\x07ok"]);
         assert!(!feed.divergent);
     }
 

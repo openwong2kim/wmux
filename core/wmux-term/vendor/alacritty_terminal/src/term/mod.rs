@@ -286,9 +286,6 @@ pub struct Term<T> {
     /// primary grid. Otherwise it is the alternate screen buffer.
     inactive_grid: Grid<Cell>,
 
-    /// Index into `charsets`, pointing to what ASCII is currently being mapped to.
-    active_charset: CharsetIndex,
-
     /// Tabstops.
     tabs: TabStops,
 
@@ -432,7 +429,6 @@ impl<T> Term<T> {
             tabs,
             inactive_keyboard_mode_stack: Default::default(),
             keyboard_mode_stack: Default::default(),
-            active_charset: Default::default(),
             vi_mode_cursor: Default::default(),
             cursor_style: Default::default(),
             colors: color::Colors::default(),
@@ -723,6 +719,7 @@ impl<T> Term<T> {
 
             // Drop information about the primary screens saved cursor.
             self.grid.saved_cursor = self.grid.cursor.clone();
+            self.grid.cursor_saved = true;
 
             // Reset alternate screen contents.
             self.inactive_grid.reset_region(..);
@@ -1004,7 +1001,8 @@ impl<T> Term<T> {
     /// Write `c` to the cell at the cursor position.
     #[inline(always)]
     fn write_at_cursor(&mut self, c: char) {
-        let c = self.grid.cursor.charsets[self.active_charset].map(c);
+        // wmux: xterm.js's DEC graphics table has no `_`, so it prints as is.
+        let c = if c == '_' { c } else { self.grid.cursor.charsets[self.grid.cursor.active_charset].map(c) };
         let fg = self.grid.cursor.template.fg;
         let bg = self.grid.cursor.template.bg;
         let flags = self.grid.cursor.template.flags;
@@ -1395,7 +1393,7 @@ impl<T: EventListener> Handler for Term<T> {
         while self.grid.cursor.point.column < self.columns() && count != 0 {
             count -= 1;
 
-            let c = self.grid.cursor.charsets[self.active_charset].map('\t');
+            let c = self.grid.cursor.charsets[self.grid.cursor.active_charset].map('\t');
             let cell = self.grid.cursor_cell();
             if cell.c == ' ' {
                 cell.c = c;
@@ -1651,6 +1649,7 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Saving cursor position");
 
         self.grid.saved_cursor = self.grid.cursor.clone();
+        self.grid.cursor_saved = true;
     }
 
     #[inline]
@@ -1658,7 +1657,13 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Restoring cursor position");
 
         self.damage_cursor();
+        let charsets = self.grid.cursor.charsets;
         self.grid.cursor = self.grid.saved_cursor.clone();
+        // wmux: with nothing saved, xterm.js keeps the designations (and
+        // returns to G0, as the default cursor does).
+        if !self.grid.cursor_saved {
+            self.grid.cursor.charsets = charsets;
+        }
         self.damage_cursor();
     }
 
@@ -1867,7 +1872,6 @@ impl<T: EventListener> Handler for Term<T> {
         if self.mode.contains(TermMode::ALT_SCREEN) {
             mem::swap(&mut self.grid, &mut self.inactive_grid);
         }
-        self.active_charset = Default::default();
         self.cursor_style = None;
         self.grid.reset();
         self.inactive_grid.reset();
@@ -2230,7 +2234,7 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn set_active_charset(&mut self, index: CharsetIndex) {
         trace!("Setting active charset {index:?}");
-        self.active_charset = index;
+        self.grid.cursor.active_charset = index;
     }
 
     #[inline]

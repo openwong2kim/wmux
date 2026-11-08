@@ -22,7 +22,6 @@ import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay'
 import { STALL_MS } from '../CdpPipeStallWatch';
 import { accountDownloads } from '../../../test-utils/chromeDownloads';
 import { CHROME_TEARDOWN_TIMEOUT_MS, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
-import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 import { chromeForRuntimeSuite } from '../../../test-utils/runtimeChrome';
 
 const CHROME = chromeForRuntimeSuite();
@@ -58,9 +57,6 @@ async function start(): Promise<Rig> {
     '--no-first-run', '--no-default-browser-check', '--use-mock-keychain', 'about:blank',
   ], {
     stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'],
-    // Windows: Chrome under the isolate's temp USERPROFILE refuses remote
-    // debugging (realProfileBrowserEnv); it gets the real profile back.
-    env: realProfileBrowserEnv(),
   });
   const mux = new CdpPipeMux(chrome.stdio[3] as Writable, chrome.stdio[4] as Readable);
   rig = { chrome, mux, route: relay.serve(mux) };

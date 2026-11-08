@@ -11,7 +11,6 @@ import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy } from '../../../shared/browserHostPolicy';
 import { accountDownloads } from '../../../test-utils/chromeDownloads';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
-import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 
 // ---------------------------------------------------------------------------
 // One protected profile, the same rows on the DevTools port and on the
@@ -139,8 +138,6 @@ async function makeRig(transport: Transport): Promise<Rig> {
     // Headless Chrome denies downloads in a new context by default, which hides
     // what row j checks; PROTECTED_HEADFUL=1 runs with windows, as wmux does.
     extraArgs: [...(process.env.PROTECTED_HEADFUL === '1' ? [] : ['--headless=new']), '--use-mock-keychain', '--password-store=basic'],
-    // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
-    childEnv: realProfileBrowserEnv(),
   });
   const allowDir = profile.scratch(`wmux-protected-${transport}-allow-`);
   const rig: Rig = { transport, launcher, dir, allowDir, downloads, profile, skip: null };

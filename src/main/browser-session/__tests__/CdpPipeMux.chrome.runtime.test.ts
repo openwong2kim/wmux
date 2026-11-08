@@ -23,7 +23,6 @@ import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay'
 import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 import { chromeForRuntimeSuite } from '../../../test-utils/runtimeChrome';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
@@ -94,8 +93,7 @@ async function startChrome(registry?: Registry): Promise<Started> {
     // answers cookie calls nor exits.
     '--use-mock-keychain',
     'about:blank',
-    // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
-  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: realProfileBrowserEnv() });
+  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
   const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
   const mux = new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable, {
     ...(registry && { grants: { registry: (id: string) => registry.get(id) ?? null } }),

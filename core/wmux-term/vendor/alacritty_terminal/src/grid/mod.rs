@@ -41,6 +41,11 @@ pub struct Cursor<T> {
     /// Currently configured graphic character sets.
     pub charsets: Charsets,
 
+    /// wmux: the set ASCII is mapped to (SI/SO). Kept with the cursor so that
+    /// DECSC/DECRC and the alternate screen's save restore it, as xterm.js
+    /// saves its G-level with the cursor.
+    pub active_charset: CharsetIndex,
+
     /// Tracks if the next call to input will need to first handle wrapping.
     ///
     /// This is true after the last column is set with the input function. Any function that
@@ -116,6 +121,11 @@ pub struct Grid<T> {
     #[cfg_attr(feature = "serde", serde(skip))]
     pub saved_cursor: Cursor<T>,
 
+    /// wmux: DECSC, or entering the alternate screen, set `saved_cursor`
+    /// since the last reset. xterm.js restores no designations otherwise.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub cursor_saved: bool,
+
     /// Lines in the grid. Each row holds a list of cells corresponding to the
     /// columns in that row.
     raw: Storage<T>,
@@ -144,6 +154,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             max_scroll_limit,
             display_offset: 0,
             saved_cursor: Cursor::default(),
+            cursor_saved: false,
             cursor: Cursor::default(),
             lines,
             columns,
@@ -358,6 +369,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.clear_history();
 
         self.saved_cursor = Cursor::default();
+        self.cursor_saved = false;
         self.cursor = Cursor::default();
         self.display_offset = 0;
 

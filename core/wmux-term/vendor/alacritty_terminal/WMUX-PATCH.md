@@ -62,6 +62,15 @@ Local changes:
   into history when the region started at the top row. Linefeed, which
   upstream routed through the same handler, now calls `scroll_up_relative`
   directly and keeps scrolling into history.
+- `src/grid/mod.rs` keeps the active charset (the SI/SO G-level) on the
+  cursor instead of on `Term`, so DECSC/DECRC and the alternate screen's
+  save and restore carry it with the designations, as xterm.js's
+  `saveCursor`/`restoreCursor` save `savedGlevel` with `savedCharsets`. It
+  also records whether a cursor was saved since the last reset:
+  `src/term/mod.rs` DECRC with nothing saved keeps the designations and
+  returns to G0, as xterm.js does with an empty `savedCharsets`.
+- `src/term/mod.rs` prints `_` unmapped under DEC line drawing: xterm.js's
+  `CHARSETS['0']` table has no entry for it, where vte maps it to a blank.
 
 `Cargo.lock` locks the crate's own test build (its dev-dependency, serde_json,
 keeps it out of the wmux-term workspace). It keeps wmux-term's versions for every
