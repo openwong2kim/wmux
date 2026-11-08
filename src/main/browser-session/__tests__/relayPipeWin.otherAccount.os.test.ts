@@ -37,13 +37,18 @@ function powershell(script: string, env: Record<string, string> = {}): string {
 /**
  * Exit code of a pwsh, started as the other account, that opens `pipePath`
  * for reading (.NET Core opens \\.\ paths; Windows PowerShell's .NET does
- * not). 0 opened, 5 access denied, 9 anything else.
+ * not). 0 opened, 5 access denied, 2 not found, 3 bad path, 9 anything else.
+ * The path goes on the child's command line: a process started with
+ * -Credential gets that account's environment, not this one's.
  */
 function openAsOtherAccount(pipePath: string): number {
+  if (!/^\\\\\.\\pipe\\[A-Za-z0-9-]+$/.test(pipePath)) throw new Error('unexpected pipe path');
   const child = [
-    '$p = $env:WMUX_PIPE;',
+    `$p = '${pipePath}';`,
     "try { $s = [System.IO.File]::Open($p, 'Open', 'Read', 'ReadWrite'); $s.Dispose(); exit 0 }",
     'catch [System.UnauthorizedAccessException] { exit 5 }',
+    'catch [System.IO.FileNotFoundException] { exit 2 }',
+    'catch [System.ArgumentException] { exit 3 }',
     'catch { exit 9 }',
   ].join(' ');
   const out = powershell([
@@ -51,7 +56,7 @@ function openAsOtherAccount(pipePath: string): number {
     '$cred = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\\$env:WMUX_CI_USER", $pw);',
     `$p = Start-Process -FilePath pwsh -ArgumentList @('-NoProfile','-NonInteractive','-Command','${child.replace(/'/g, "''")}') -Credential $cred -WorkingDirectory $env:SystemRoot -WindowStyle Hidden -Wait -PassThru;`,
     '[Console]::Out.Write($p.ExitCode)',
-  ].join(' '), { WMUX_PIPE: pipePath });
+  ].join(' '));
   return Number(out.trim());
 }
 
