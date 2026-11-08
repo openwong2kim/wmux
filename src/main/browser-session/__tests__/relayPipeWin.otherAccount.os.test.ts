@@ -18,11 +18,18 @@ const user = `wmuxci${randomBytes(3).toString('hex')}`;
 const password = `Aa1!${randomBytes(12).toString('hex')}`;
 const servers: net.Server[] = [];
 
-/** The credentials go through the environment, never on a command line. */
+/**
+ * The credentials go through the environment, never on a command line.
+ * PSModulePath is left out: a CI step run under pwsh 7 hands down its own
+ * module path, and Windows PowerShell 5.1 then fails to load its built-in
+ * modules (ConvertTo-SecureString, New-LocalUser). Without it, 5.1 uses its
+ * default.
+ */
 function powershell(script: string, env: Record<string, string> = {}): string {
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.toUpperCase() !== 'PSMODULEPATH'));
   return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
     encoding: 'utf8',
-    env: { ...process.env, WMUX_CI_USER: user, WMUX_CI_PASSWORD: password, ...env },
+    env: { ...inherited, WMUX_CI_USER: user, WMUX_CI_PASSWORD: password, ...env },
     timeout: 60_000,
   });
 }
