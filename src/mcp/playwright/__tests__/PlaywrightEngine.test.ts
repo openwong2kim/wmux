@@ -1,3 +1,4 @@
+// @wmux-lane unit — process.platform is stubbed (win32 or darwin) for the early-stop rule; nothing here reaches the OS.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /*
@@ -653,6 +654,406 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
       (params as { workspaceId?: string } | undefined)?.workspaceId === 'ws-caller'
     )).toBe(true);
   }, 20_000);
+});
+
+describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', () => {
+  // The guest's target is listed, but Playwright never has a Page for it. As a
+  // webview that existed when the engine connected, it is the shape logged for
+  // every in-app tab on Windows, and the lookup stops after one attempt. The
+  // memory tests use a page-type target, for which every attempt is made.
+  const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+  /** The tab the caller's pane resolves to (what browser.cdp.info registers). */
+  let targetId = 'wc-1';
+  /** Every target the browser lists. */
+  let listed: Set<string>;
+  /** Target.getTargets calls left to answer with no targets (a target not up yet). */
+  let hiddenListings = 0;
+  let connects = 0;
+  /** Whether the guest's target is there when the first connection lists targets. */
+  let existedAtConnect = true;
+  /** The guest target's CDP type. */
+  let targetType = 'page';
+  /** Target.getTargetInfo probes of Pages (matchPinnedPage). */
+  let probes = 0;
+  /** Probes of the guest Page left to fail (a Page mid-navigation). */
+  let failGuestProbes = 0;
+  /** The profile browser.cdp.info reports for the pane. */
+  let profile = 'p1';
+  /** A Page Playwright has for wc-1 (null: none, the Windows shape). */
+  let guestPage: FakePage | null = null;
+
+  function rig() {
+    const shellPage: FakePage = { url: vi.fn().mockReturnValue(shellUrl), context: vi.fn() };
+    const guestSession = {
+      send: vi.fn().mockImplementation(() => {
+        probes++;
+        if (failGuestProbes > 0) {
+          failGuestProbes--;
+          return Promise.reject(new Error('Target closed (navigating)'));
+        }
+        return Promise.resolve({ targetInfo: { targetId: 'wc-1' } });
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    // main's own debugger attaches every in-app guest, so attached is always true.
+    const listing = (ids: Iterable<string>) => ({
+      targetInfos: [...ids].map((id) => ({ targetId: id, type: targetType, title: '', url: 'http://127.0.0.1:1/', attached: true })),
+    });
+    const session = {
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') {
+          listed.add(targetId);
+          if (hiddenListings > 0) {
+            hiddenListings--;
+            return Promise.resolve({ targetInfos: [] });
+          }
+          return Promise.resolve(listing(listed));
+        }
+        if (method === 'Target.getTargetInfo') {
+          probes++;
+          return Promise.resolve({ targetInfo: { targetId: 'shell' } });
+        }
+        return Promise.resolve({});
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    // The listing a new connection takes (connect): a guest made after the
+    // first connection is missing from that one only.
+    const browserSession = {
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method !== 'Target.getTargets') return Promise.resolve({});
+        const ids = new Set(listed);
+        if (existedAtConnect || connects > 1) ids.add(targetId);
+        else ids.delete(targetId);
+        return Promise.resolve(listing(ids));
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const ctx = {
+      pages: vi.fn().mockImplementation(() => {
+        if (!guestPage) return [shellPage];
+        guestPage.context.mockReturnValue(ctx);
+        return [shellPage, guestPage];
+      }),
+      newCDPSession: vi.fn().mockImplementation(async (p?: FakePage) => (p && p === guestPage ? guestSession : session)),
+      // The post-attach wait listens for new Pages; none arrive here.
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    shellPage.context.mockReturnValue(ctx);
+    const browser = {
+      isConnected: vi.fn().mockReturnValue(true),
+      on: vi.fn(),
+      off: vi.fn(),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => browserSession),
+      contexts: vi.fn().mockReturnValue([ctx]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockConnectOverCDP.mockImplementation(async () => {
+      connects++;
+      return browser;
+    });
+    mockSendRpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === 'browser.cdp.info') {
+        const ws = (params as { workspaceId?: string } | undefined)?.workspaceId;
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl,
+          profile,
+          ...(ws && { targetsScoped: true }),
+          targets: [{ surfaceId: 'surf-A', targetId, workspaceId: 'ws-A' }],
+        });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  /**
+   * getPage with the clock run forward until it settles (its waits are timers).
+   * `during` runs once, `atMs` into the lookup (inside attempt 1's wait).
+   */
+  async function lookup(
+    engine: PlaywrightEngine,
+    during?: { atMs: number; run: () => Promise<void> | void },
+  ): Promise<{ page: FakePage | null; waitedMs: number; connects: number }> {
+    const before = connects;
+    let settled = false;
+    let page: FakePage | null = null;
+    const done = priv(engine).getPage().then((p) => { page = p; settled = true; });
+    let waitedMs = 0;
+    for (let i = 0; i < 200 && !settled; i++) {
+      await vi.advanceTimersByTimeAsync(50);
+      waitedMs += 50;
+      if (during && waitedMs === during.atMs) await during.run();
+    }
+    await done;
+    // Past the 10 s failure latch, so the next lookup reaches discovery again.
+    await vi.advanceTimersByTimeAsync(11_000);
+    return { page, waitedMs, connects: connects - before };
+  }
+
+  const remembered = (engine: PlaywrightEngine) =>
+    [...(engine as unknown as { unpageableTargets: Map<string, unknown> }).unpageableTargets.keys()];
+
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    __resetSurfaceRoutingForTesting();
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+    targetId = 'wc-1';
+    listed = new Set();
+    hiddenListings = 0;
+    connects = 0;
+    existedAtConnect = true;
+    targetType = 'page';
+    probes = 0;
+    failGuestProbes = 0;
+    profile = 'p1';
+    guestPage = null;
+    vi.useFakeTimers();
+    // No /json endpoint: findViaJsonEndpoint must not reach a real port 9222.
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('no /json here')));
+    // The early stop for an already-attached webview is measured on Windows only.
+    setPlatform('win32');
+    rig();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    setPlatform(realPlatform);
+  });
+
+  const realPlatform = process.platform;
+  function setPlatform(platform: NodeJS.Platform): void {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  }
+
+  async function engineFor(): Promise<PlaywrightEngine> {
+    const engine = PlaywrightEngine.getInstance();
+    (engine as unknown as { setWorkspaceIdResolver(r: () => Promise<string>): void })
+      .setWorkspaceIdResolver(async () => 'ws-A');
+    await engine.ensureConnected('ws-A');
+    return engine;
+  }
+
+  it('the first lookup still makes every attempt; a later one on the same target makes none', async () => {
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    expect(first.connects).toBe(2); // a reconnect after attempts 1 and 2
+    expect(first.waitedMs).toBeGreaterThanOrEqual(2_000);
+
+    // Past the old 10 s latch: before this change the whole retry loop ran again here.
+    const second = await lookup(engine);
+    expect(second.page).toBeNull(); // the RPC lane serves the call, as before
+    expect(second.connects).toBe(0);
+    expect(second.waitedMs).toBeLessThanOrEqual(50);
+  });
+
+  it('a new target is tried again', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    targetId = 'wc-2';
+    const again = await lookup(engine);
+    expect(again.page).toBeNull();
+    expect(again.connects).toBe(2);
+    expect(again.waitedMs).toBeGreaterThanOrEqual(2_000);
+  });
+
+  it('a new connection tries the same target again', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    await engine.disconnect();
+    await engine.ensureConnected('ws-A');
+    const again = await lookup(engine);
+    expect(again.page).toBeNull();
+    expect(again.connects).toBe(2);
+    expect(again.waitedMs).toBeGreaterThanOrEqual(2_000);
+  });
+
+  it("another tab's first lookup, with its reconnects, keeps what was learned about the first tab", async () => {
+    const engine = await engineFor();
+    await lookup(engine); // wc-1 remembered
+    targetId = 'wc-2';
+    await lookup(engine); // the full loop for wc-2, reconnecting twice
+    expect(remembered(engine).sort()).toEqual(['wc-1', 'wc-2']);
+    targetId = 'wc-1';
+    const back = await lookup(engine);
+    expect(back.connects).toBe(0);
+    expect(back.waitedMs).toBeLessThanOrEqual(50);
+  });
+
+  it('a target that was not up on every attempt is not remembered', async () => {
+    const engine = await engineFor();
+    hiddenListings = 1; // attempt 1 finds no target
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    expect(remembered(engine)).toEqual([]);
+    const second = await lookup(engine);
+    expect(second.connects).toBe(2); // tried in full again, and remembered now
+    expect(remembered(engine)).toEqual(['wc-1']);
+  });
+
+  it('a closed tab is forgotten', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    listed.delete('wc-1');
+    targetId = 'wc-2';
+    await lookup(engine);
+    expect(remembered(engine)).toEqual(['wc-2']);
+  });
+
+  it('a Page Playwright makes later for a remembered target is used, and the target forgotten', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    const later = await lookup(engine);
+    expect(later.page).toBe(guestPage);
+    expect(later.connects).toBe(0);
+    expect(later.waitedMs).toBeLessThanOrEqual(50);
+    expect(remembered(engine)).toEqual([]);
+  });
+
+  it('a disconnect during a lookup keeps its target from being remembered', async () => {
+    const engine = await engineFor();
+    const first = await lookup(engine, { atMs: 300, run: () => engine.disconnect() });
+    expect(first.page).toBeNull();
+    expect(remembered(engine)).toEqual([]);
+  });
+
+  it("a profile change met by the lookup's own reconnect drops what the old profile taught", async () => {
+    const engine = await engineFor();
+    await lookup(engine); // wc-1 learned under p1
+    expect(remembered(engine)).toEqual(['wc-1']);
+    targetId = 'wc-2';
+    await lookup(engine, { atMs: 300, run: () => { profile = 'p2'; } });
+    expect(remembered(engine)).toEqual(['wc-2']);
+  });
+
+  it('a webview that existed at connect and has no Page stops after one attempt and is remembered', async () => {
+    targetType = 'webview';
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    expect(first.connects).toBe(0); // no reconnect
+    expect(first.waitedMs).toBeGreaterThanOrEqual(500); // the one post-attach wait
+    expect(first.waitedMs).toBeLessThan(1_000); // ~2.5 s with every attempt
+    expect(remembered(engine)).toEqual(['wc-1']);
+    const second = await lookup(engine);
+    expect(second.connects).toBe(0);
+    expect(second.waitedMs).toBeLessThanOrEqual(50);
+  });
+
+  it('off Windows, a webview that existed at connect still gets every attempt, then is remembered', async () => {
+    setPlatform('darwin');
+    targetType = 'webview';
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    expect(first.connects).toBe(2); // every reconnect, as before the early stop
+    expect(remembered(engine)).toEqual(['wc-1']);
+    const second = await lookup(engine);
+    expect(second.connects).toBe(0);
+  });
+
+  it('a webview made after the connection gets a second attempt, then stops', async () => {
+    targetType = 'webview';
+    existedAtConnect = false;
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    // Attempt 1 reconnects; on the new connection the webview existed already.
+    expect(first.connects).toBe(1);
+    expect(remembered(engine)).toEqual(['wc-1']);
+  });
+
+  it('a target of another type still gets every attempt', async () => {
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    expect(first.connects).toBe(2);
+    expect(remembered(engine)).toEqual(['wc-1']);
+  });
+
+  it('a webview that does have a Page is used and not remembered', async () => {
+    targetType = 'webview';
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBe(guestPage);
+    expect(remembered(engine)).toEqual([]);
+  });
+
+  it('the late-Page check probes a Page proven to be another target only once', async () => {
+    targetType = 'webview';
+    const engine = await engineFor();
+    await lookup(engine);
+    probes = 0;
+    await lookup(engine); // the shell: proven another target
+    expect(probes).toBe(1);
+    probes = 0;
+    await lookup(engine);
+    expect(probes).toBe(0);
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    const late = await lookup(engine);
+    expect(late.page).toBe(guestPage);
+    expect(probes).toBe(1); // the new Page only
+  });
+
+  it('a failed reconnect between attempts forgets what was learned', async () => {
+    const engine = await engineFor();
+    await lookup(engine); // wc-1 learned
+    expect(remembered(engine)).toEqual(['wc-1']);
+    targetId = 'wc-2';
+    let calls = 0;
+    mockConnectOverCDP.mockImplementation(async () => {
+      calls++;
+      throw new Error('connect refused');
+    });
+    const done = priv(engine).getPage().catch(() => null);
+    for (let i = 0; i < 400 && calls === 0; i++) await vi.advanceTimersByTimeAsync(50);
+    for (let i = 0; i < 200; i++) await vi.advanceTimersByTimeAsync(50);
+    await done;
+    expect(calls).toBeGreaterThan(0);
+    expect(remembered(engine)).toEqual([]);
+  });
+  it('the late-Page check for one target never hides a Page from another', async () => {
+    targetType = 'webview';
+    const engine = await engineFor();
+    await lookup(engine); // wc-1 remembered
+    targetId = 'wc-2';
+    await lookup(engine); // wc-2 remembered
+    expect(remembered(engine).sort()).toEqual(['wc-1', 'wc-2']);
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    const forTwo = await lookup(engine); // probes the new Page: it is wc-1's
+    expect(forTwo.page).toBeNull();
+    targetId = 'wc-1';
+    const forOne = await lookup(engine);
+    expect(forOne.page).toBe(guestPage);
+  });
+
+  it('a Page whose probe failed while the target was being remembered is probed again', async () => {
+    targetType = 'webview';
+    const engine = await engineFor();
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    failGuestProbes = 1000; // mid-navigation through every attempt
+    expect((await lookup(engine)).page).toBeNull();
+    expect(remembered(engine)).toEqual(['wc-1']);
+    failGuestProbes = 0;
+    expect((await lookup(engine)).page).toBe(guestPage);
+  });
+
+  it('a Page whose probe fails is probed again on the next lookup', async () => {
+    targetType = 'webview';
+    const engine = await engineFor();
+    await lookup(engine);
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    failGuestProbes = 1; // mid-navigation
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    const second = await lookup(engine);
+    expect(second.page).toBe(guestPage);
+  });
 });
 
 describe('PlaywrightEngine reuse of an attached page', () => {
@@ -2349,7 +2750,12 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     await engine.ensureConnected('ws-a');
     expect(browser.newBrowserCDPSession).toHaveBeenCalledTimes(1);
     const session = (await browser.newBrowserCDPSession.mock.results[0].value) as { send: ReturnType<typeof vi.fn>; detach: ReturnType<typeof vi.fn> };
-    expect(session.send.mock.calls.map((c) => c[0])).toEqual([RELAY_PROOF_METHOD, 'Target.setAutoAttach']);
+    // The connect-time target listing (targetsAtConnect) rides the same session.
+    expect(session.send.mock.calls.map((c) => c[0])).toEqual([
+      RELAY_PROOF_METHOD,
+      'Target.getTargets',
+      'Target.setAutoAttach',
+    ]);
     expect(session.detach).not.toHaveBeenCalled();
     expect((engine as unknown as { autoAttachSession: unknown }).autoAttachSession).toBe(session);
   });
