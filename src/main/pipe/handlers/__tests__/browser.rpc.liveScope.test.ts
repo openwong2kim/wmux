@@ -207,6 +207,7 @@ const WRITE_CALLS: Array<[string, Record<string, unknown>]> = [
   ['browser.press.cdp', { key: 'Enter' }],
   ['browser.hover.cdp', { x: 10, y: 10 }],
   ['browser.drag.cdp', { fromX: 1, fromY: 1, toX: 9, toY: 9 }],
+  ['browser.upload.cdp', { files: ['/tmp/x'] }],
   ['browser.evaluate', { expression: '1 + 1' }],
   ['browser.cookies', { action: 'set', cookies: [{ name: 'a', value: 'b' }] }],
   ['browser.cookies', { action: 'clear' }],
