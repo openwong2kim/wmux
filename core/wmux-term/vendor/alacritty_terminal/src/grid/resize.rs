@@ -75,6 +75,22 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     {
         let lines_added = target - self.lines;
 
+        // wmux: xterm pulls history rows down only while the cursor is on the
+        // bottom row; otherwise it adds blank rows below and history stays put
+        // (Buffer.ts resize, rows grow). Growing the window takes rows from the
+        // top of history and leaves blank rows at its far end; rotating by the
+        // rows added brings those blank rows to the bottom instead, so no
+        // history row is lost even at the scrollback cap.
+        if self.cursor.point.line.0 + 1 < self.lines as i32 {
+            self.raw.grow_visible_lines(target);
+            self.lines = target;
+            self.raw.rotate(-(lines_added as isize));
+            for line in (target - lines_added)..target {
+                self.raw[Line(line as i32)].reset(&self.cursor.template);
+            }
+            return;
+        }
+
         // Need to resize before updating buffer.
         self.raw.grow_visible_lines(target);
         self.lines = target;
