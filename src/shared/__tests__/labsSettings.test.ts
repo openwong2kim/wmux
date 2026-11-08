@@ -32,6 +32,9 @@ describe('labs settings', () => {
     expect(labs.ringCompressionInConfig(config)).toBe(false);
     fs.writeFileSync(config, '{"session":{"ringCompression":true}}');
     expect(labs.ringCompressionInConfig(config)).toBe(true);
+    // Windows PowerShell 5.1 writes a BOM; it must not hide the setting.
+    fs.writeFileSync(config, '\uFEFF{"session":{"ringCompression":true}}');
+    expect(labs.ringCompressionInConfig(config)).toBe(true);
   });
 
   it('saves to this instance\'s data dir and the terminal host keeps its startup value', async () => {

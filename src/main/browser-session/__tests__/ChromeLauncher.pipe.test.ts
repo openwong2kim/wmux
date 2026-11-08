@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { PassThrough } from 'node:stream';
 import WebSocket from 'ws';
 import { FakeBrowser, type Command } from './fakePipeBrowser';
 
@@ -34,10 +35,12 @@ vi.mock('node:fs', async (orig) => {
   };
 });
 
-import { ChromeLauncher, chromeTransportKind } from '../ChromeLauncher';
-import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
+import { ChromeLauncher, chromeSaid, chromeTransportKind, setPipeRelayForTests } from '../ChromeLauncher';
+import { CdpPipeRelay, type RelayGrant } from '../CdpPipeRelay';
+import { CDP_PIPE_COMMAND_TIMEOUT_MS } from '../CdpPipeMux';
+import { CHROME_START_CEILING_MS } from '../../../shared/chromeStart';
 
-type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; killed: boolean; exitCode: number | null; signalCode: string | null; signals: string[] };
+type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; stderr: PassThrough; killed: boolean; exitCode: number | null; signalCode: string | null; signals: string[] };
 
 /** A browser that exits (and closes its pipe) on Browser.close. */
 class PipeChrome extends FakeBrowser {
@@ -93,7 +96,8 @@ function spawnPipeChrome<T extends PipeChrome = PipeChrome>(
   child.signalCode = null;
   child.signals = [];
   const chrome = new Kind(child);
-  child.stdio = [null, null, null, chrome.fromMux, chrome.toMux];
+  child.stderr = new PassThrough();
+  child.stdio = [null, null, child.stderr, chrome.fromMux, chrome.toMux];
   child.kill = (signal = 'SIGTERM') => {
     child.signals.push(signal);
     child.killed = true;
@@ -105,7 +109,9 @@ function spawnPipeChrome<T extends PipeChrome = PipeChrome>(
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
-beforeEach(() => {
+beforeEach(async () => {
+  // Loopback TCP: no socket dir in any temp dir another wmux uses.
+  await setPipeRelayForTests(new CdpPipeRelay({ roots: [] }));
   spawnMock.mockReset();
   state.portFiles = {};
   fetchMock = vi.fn(async () => { throw new Error('nothing listening'); });
@@ -113,11 +119,21 @@ beforeEach(() => {
   vi.stubEnv('WMUX_CHROME_TRANSPORT', 'pipe');
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  await setPipeRelayForTests(null);
 });
+
+function dial(grant: RelayGrant): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(grant.endpoint, { headers: { ...grant.headers } });
+    ws.once('open', () => resolve(ws));
+    ws.once('error', reject);
+    ws.once('unexpected-response', (_req, res) => reject(new Error(`HTTP ${res.statusCode}`)));
+  });
+}
 
 describe('ChromeLauncher over a debugging pipe', () => {
   it('is off by default', () => {
@@ -125,6 +141,21 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(chromeTransportKind()).toBe('port');
     vi.stubEnv('WMUX_CHROME_TRANSPORT', 'pipe');
     expect(chromeTransportKind()).toBe('pipe');
+  });
+
+  it('starts Edge with implicit sign-in and sync off, and Chrome without those flags', async () => {
+    for (const [binary, edge] of [['/opt/microsoft/msedge/msedge', true], ['/opt/google/chrome/chrome', false]] as const) {
+      spawnMock.mockClear();
+      vi.stubEnv('WMUX_CHROME_PATH', binary);
+      spawnPipeChrome();
+      const launcher = new ChromeLauncher('/tmp/pipe-profile');
+      await launcher.endpoint();
+      const [spawned, args] = spawnMock.mock.calls[0] as [string, string[]];
+      expect(spawned).toBe(binary);
+      expect(args.filter((a) => a.startsWith('--disable-features='))).toEqual(edge ? ['--disable-features=msImplicitSignin'] : []);
+      expect(args.includes('--disable-sync')).toBe(edge);
+      await launcher.dispose({ immediate: true });
+    }
   });
 
   it('spawns Chrome with the pipe on fds 3 and 4 and no port, probes it with Browser.getVersion, and reports it running', async () => {
@@ -136,7 +167,10 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(args.some((a) => a.startsWith('--remote-debugging-port'))).toBe(false);
     expect(args).not.toContain('--remote-allow-origins=*');
     expect(args).toContain('--disable-blink-features=AutomationControlled');
-    expect(opts.stdio).toEqual(['ignore', 'ignore', 'ignore', 'pipe', 'pipe']);
+    // stderr is read, so a failed start can quote Chrome.
+    expect(opts.stdio).toEqual(['ignore', 'ignore', 'pipe', 'pipe', 'pipe']);
+    // No childEnv: the child inherits process.env, as before.
+    expect(opts).not.toHaveProperty('env');
     expect(chrome.received.find((c) => c.method === 'Browser.getVersion')).toBeDefined();
     // Nothing went to a port.
     expect(fetchMock).not.toHaveBeenCalled();
@@ -144,29 +178,38 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await launcher.dispose({ immediate: true });
   });
 
-  it('hands external clients a loopback endpoint on the pipe, which goes with the Chrome', async () => {
+  it('names no port or endpoint for a pipe Chrome, and hands each caller its own relay token, good for that Chrome only', async () => {
     const { chrome } = spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
-    const { wsEndpoint, cdpPort } = await launcher.endpoint();
-    expect(cdpPort).toBeUndefined();
-    expect(wsEndpoint).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[0-9a-f]{64}$/);
-    // The same endpoint on every call while that Chrome lives.
-    expect((await launcher.endpoint()).wsEndpoint).toBe(wsEndpoint);
-    const ws = new WebSocket(wsEndpoint as string);
-    const answer = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      ws.once('error', reject);
-      ws.once('open', () => ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' })));
+    expect(await launcher.endpoint()).toEqual({ piped: true });
+    const grant = await launcher.relayGrant({ workspaceId: 'ws-a' });
+    const other = await launcher.relayGrant({ workspaceId: 'ws-a' });
+    expect(other.headers.Authorization).not.toBe(grant.headers.Authorization);
+    const ws = await dial(grant);
+    const answer = await new Promise<Record<string, unknown>>((resolve) => {
       ws.on('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+      ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
     });
     expect(answer).toEqual({ id: 1, result: { echo: 'Browser.getVersion' } });
+    // Its connections and unused tokens go with the Chrome.
     const closed = new Promise((resolve) => ws.once('close', resolve));
     chrome.exit();
     await closed;
-    await expect(new Promise((resolve, reject) => {
-      const again = new WebSocket(wsEndpoint as string);
-      again.once('open', resolve);
-      again.once('error', reject);
-    })).rejects.toThrow();
+    await expect(dial(other)).rejects.toThrow('HTTP 401');
+    await expect(launcher.relayGrant({})).rejects.toThrow('Chrome exited');
+  });
+
+  it('a token minted before the Chrome was restarted does not reach the new one', async () => {
+    const first = spawnPipeChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    await launcher.endpoint();
+    const stale = await launcher.relayGrant({});
+    first.chrome.exit();
+    spawnPipeChrome();
+    await vi.waitFor(async () => expect(await launcher.endpoint()).toEqual({ piped: true }), { timeout: 5_000 });
+    await expect(dial(stale)).rejects.toThrow('HTTP 401');
+    (await dial(await launcher.relayGrant({}))).close();
+    await launcher.dispose({ immediate: true });
   });
 
   it('names no port for a pipe Chrome', async () => {
@@ -178,12 +221,14 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await launcher.dispose({ immediate: true });
   });
 
-  it('a loopback endpoint that failed to open is opened again on the next call', async () => {
+  it('a relay that failed to listen is tried again on the next token', async () => {
     spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
-    vi.spyOn(CdpPipeEndpoint, 'open').mockRejectedValueOnce(new Error('listen EACCES'));
-    await expect(launcher.endpoint()).rejects.toThrow('listen EACCES');
-    expect((await launcher.endpoint()).wsEndpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    await launcher.endpoint();
+    vi.spyOn(CdpPipeRelay.prototype as unknown as { listen: () => Promise<unknown> }, 'listen').mockRejectedValueOnce(new Error('listen EACCES'));
+    await expect(launcher.relayGrant({})).rejects.toThrow('listen EACCES');
+    // Loopback TCP, a Unix socket, or on Windows the relay's named pipe.
+    expect((await launcher.relayGrant({})).endpoint).toMatch(/^(ws:\/\/127\.0\.0\.1:|ws\+unix:)/);
     await launcher.dispose({ immediate: true });
   });
 
@@ -363,6 +408,35 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(launcher.isRunning()).toBe(false);
   });
 
+  it('a start that fails says why: the last startup error and what Chrome wrote on stderr', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { child } = spawnPipeChrome(SlowPipeChrome);
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    const launched = launcher.endpoint();
+    const outcome = launched.then(() => null, (err: Error) => err.message);
+    // What Chrome on Windows says when it refuses remote debugging, then noise.
+    child.stderr.write('DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.\r\n');
+    child.stderr.write('Created TensorFlow Lite XNNPACK delegate for CPU.\r\n');
+    // Past the start ceiling, plus the last attempt's own command timeout.
+    await vi.advanceTimersByTimeAsync(CHROME_START_CEILING_MS + CDP_PIPE_COMMAND_TIMEOUT_MS + 2_000);
+    const message = await outcome;
+    expect(message).toContain('ChromeLauncher: CDP endpoint did not become ready in time');
+    expect(message).toContain('last error: ChromeLauncher: Browser.getVersion timed out');
+    expect(message).toContain('Chrome said: DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir. | Created TensorFlow Lite');
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('gives Chrome the childEnv test seam as its whole environment', async () => {
+    spawnPipeChrome();
+    const env = { PATH: '/bin', USERPROFILE: 'C:\\Users\\someone' };
+    const launcher = new ChromeLauncher('/tmp/pipe-profile', { childEnv: env });
+    await launcher.endpoint();
+    const [, , opts] = spawnMock.mock.calls[0] as [string, string[], { env?: NodeJS.ProcessEnv }];
+    expect(opts.env).toBe(env);
+    await launcher.dispose({ immediate: true });
+  });
+
   it('quits through Browser.close on the pipe', async () => {
     const { chrome, child } = spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
@@ -370,5 +444,47 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await launcher.dispose();
     expect(chrome.received.some((c) => c.method === 'Browser.close')).toBe(true);
     expect(child.killed).toBe(false);
+  });
+});
+
+describe('chromeSaid', () => {
+  it('keeps the last few non-empty lines, one each', () => {
+    expect(chromeSaid('a\r\n\r\nb\nc\nd\n')).toBe('b | c | d');
+    expect(chromeSaid('only\n')).toBe('only');
+  });
+
+  it('is null when Chrome said nothing', () => {
+    expect(chromeSaid('')).toBeNull();
+    expect(chromeSaid('\r\n  \n')).toBeNull();
+  });
+
+  it('keeps the newest part of a long line', () => {
+    const said = chromeSaid(`${'x'.repeat(500)}END`, [], 3, 50) as string;
+    expect(said).toHaveLength(51);
+    expect(said.startsWith('…')).toBe(true);
+    expect(said.endsWith('END')).toBe(true);
+  });
+
+  it('writes a home folder as ~ in its backslash, forward-slash, file URL and JSON-escaped spellings', () => {
+    const home = 'C:\\Users\\someone';
+    expect(chromeSaid('cannot open C:\\Users\\someone\\AppData\\x\n', [home])).toBe('cannot open ~\\AppData\\x');
+    expect(chromeSaid('Failed to load file:///C:/Users/someone/a.html\n', [home])).toBe('Failed to load file:///~/a.html');
+    expect(chromeSaid('{"path":"C:\\\\Users\\\\someone\\\\x"}\n', [home])).toBe('{"path":"~\\\\x"}');
+    expect(chromeSaid('at /home/someone/.config and /home/someone\n', ['/home/someone/'])).toBe('at ~/.config and ~');
+  });
+
+  it('masks a home only where the path ends there', () => {
+    expect(chromeSaid('C:\\Users\\someoneelse\\x\n', ['C:\\Users\\someone'])).toBe('C:\\Users\\someoneelse\\x');
+  });
+
+  it('skips a root-like or empty home', () => {
+    const text = '/usr/lib/chromium/chrome: error while loading C:\\x\n';
+    expect(chromeSaid(text, ['/', 'C:\\', 'C:', ''])).toBe('/usr/lib/chromium/chrome: error while loading C:\\x');
+  });
+
+  it('never splits a character outside the BMP when it cuts', () => {
+    const said = chromeSaid(`${'😀'.repeat(60)}\n`, [], 3, 50) as string;
+    expect(Array.from(said)).toHaveLength(51);
+    expect(said).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
   });
 });

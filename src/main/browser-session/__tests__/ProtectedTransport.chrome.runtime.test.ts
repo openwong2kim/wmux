@@ -5,11 +5,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Browser, Page } from 'playwright-core';
 import WebSocket from 'ws';
-import { ChromeLauncher, type ChromeProtectionPlan } from '../ChromeLauncher';
+import { ChromeLauncher, setPipeRelayForTests, type ChromeProtectionPlan } from '../ChromeLauncher';
+import { CdpPipeRelay } from '../CdpPipeRelay';
 import { openDownloadPass } from '../dangerousActionConsent';
 import { compileHostPolicy } from '../../../shared/browserHostPolicy';
 import { accountDownloads } from '../../../test-utils/chromeDownloads';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
+import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 
 // ---------------------------------------------------------------------------
 // One protected profile, the same rows on the DevTools port and on the
@@ -137,6 +139,8 @@ async function makeRig(transport: Transport): Promise<Rig> {
     // Headless Chrome denies downloads in a new context by default, which hides
     // what row j checks; PROTECTED_HEADFUL=1 runs with windows, as wmux does.
     extraArgs: [...(process.env.PROTECTED_HEADFUL === '1' ? [] : ['--headless=new']), '--use-mock-keychain', '--password-store=basic'],
+    // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
+    childEnv: realProfileBrowserEnv(),
   });
   const allowDir = profile.scratch(`wmux-protected-${transport}-allow-`);
   const rig: Rig = { transport, launcher, dir, allowDir, downloads, profile, skip: null };
@@ -151,7 +155,9 @@ async function makeRig(transport: Transport): Promise<Rig> {
 async function connect(rig: Rig): Promise<Browser> {
   const { chromium } = await import('playwright-core');
   const ep = await rig.launcher.endpoint();
-  return chromium.connectOverCDP(ep.wsEndpoint ?? `http://127.0.0.1:${ep.cdpPort}`);
+  if (!ep.piped) return chromium.connectOverCDP(`http://127.0.0.1:${ep.cdpPort}`);
+  const grant = await rig.launcher.relayGrant({ workspaceId: 'ws-table' });
+  return chromium.connectOverCDP(grant.endpoint, { headers: { ...grant.headers } });
 }
 
 /**
@@ -175,8 +181,9 @@ async function clickDownload(rig: Rig, p: Page): Promise<{ through: boolean; not
 /** A bare CDP client on the profile's endpoint: commands by id, and the events it was sent. */
 async function rawClient(rig: Rig) {
   const ep = await rig.launcher.endpoint();
-  const url = ep.wsEndpoint ?? ((await (await fetch(`http://127.0.0.1:${ep.cdpPort}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl;
-  const ws = new WebSocket(url);
+  const grant = ep.piped ? await rig.launcher.relayGrant({ workspaceId: 'ws-table' }) : null;
+  const url = grant?.endpoint ?? ((await (await fetch(`http://127.0.0.1:${ep.cdpPort}/json/version`)).json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl;
+  const ws = new WebSocket(url, grant ? { headers: { ...grant.headers } } : {});
   await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject); });
   const events: Array<{ method: string; sessionId?: string }> = [];
   const waiting = new Map<number, (m: { result?: Record<string, unknown>; error?: { message: string } }) => void>();
@@ -230,7 +237,13 @@ async function consentPass(rig: Rig, p: Page) {
 const SERVED_FILES = ['file.bin', 'slow.bin'];
 let accountBefore = new Set<string>();
 
+/** The relay's temp root, this file's own, so nothing here looks in a temp dir another wmux uses. */
+let relayRoot: string | null = null;
+
 beforeAll(async () => {
+  relayRoot = process.platform === 'win32' ? null : fs.mkdtempSync('/tmp/wmux-rr-');
+  if (relayRoot) fs.chmodSync(relayRoot, 0o700);
+  await setPipeRelayForTests(new CdpPipeRelay({ roots: relayRoot ? [relayRoot] : [] }));
   accountBefore = accountDownloads(SERVED_FILES);
   server = http.createServer(serve);
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
@@ -239,6 +252,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   server?.close();
+  await setPipeRelayForTests(null);
+  if (relayRoot) fs.rmSync(relayRoot, { recursive: true, force: true });
   if (TABLE_OUT) fs.writeFileSync(TABLE_OUT, JSON.stringify({ chrome: CHROME, platform: `${process.platform}-${process.arch}`, rows: ROWS }, null, 2));
   // Every download went to a temp folder: nothing new in the account's own.
   expect([...accountDownloads(SERVED_FILES)].filter((name) => !accountBefore.has(name))).toEqual([]);

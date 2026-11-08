@@ -41,6 +41,22 @@ vi.mock('../lazyPlaywright', () => ({
   }),
 }));
 
+// The browser op's abort signal: none, unless a test runs inside one.
+let mockOpSignal: AbortSignal | undefined;
+vi.mock('../automationLease', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../automationLease')>()),
+  currentBrowserOpSignal: () => mockOpSignal,
+}));
+/** Run `fn` as a browser op with `signal`, as the lease runner would. */
+async function runWithBrowserOpSignal<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+  mockOpSignal = signal;
+  try {
+    return await fn();
+  } finally {
+    mockOpSignal = undefined;
+  }
+}
+
 // Import after mocks are declared.
 import {
   PlaywrightEngine,
@@ -56,6 +72,8 @@ import { claimNextDownload } from '../downloadGuard';
 import { createConnectionScope, runInConnectionScope } from '../../connectionScope';
 import { rememberProtection, resetProtectionMemoryForTests } from '../browserScope';
 import { CHROME_START_RPC_TIMEOUT_MS } from '../../../shared/chromeStart';
+import { RELAY_PROOF_METHOD, relayProof } from '../../../shared/relayProof';
+import { randomBytes } from 'node:crypto';
 
 /*
  * Regression tests for app-shell URL detection.
@@ -300,7 +318,8 @@ describe('PlaywrightEngine CDP session lifecycle', () => {
       'browser.cdp.info did not disclose a usable CDP endpoint to this caller',
     );
     expect(mockSendRpc).toHaveBeenCalledTimes(1);
-    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-caller' });
+    // About to connect, so it asks for a relay token too.
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-caller', relay: true });
     expect(mockConnectOverCDP).not.toHaveBeenCalled();
   });
 
@@ -717,10 +736,15 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
         return [shellPage, guestPage];
       }),
       newCDPSession: vi.fn().mockImplementation(async (p?: FakePage) => (p && p === guestPage ? guestSession : session)),
+      // The post-attach wait listens for new Pages; none arrive here.
+      on: vi.fn(),
+      off: vi.fn(),
     };
     shellPage.context.mockReturnValue(ctx);
     const browser = {
       isConnected: vi.fn().mockReturnValue(true),
+      on: vi.fn(),
+      off: vi.fn(),
       newBrowserCDPSession: vi.fn().mockImplementation(async () => browserSession),
       contexts: vi.fn().mockReturnValue([ctx]),
       close: vi.fn().mockResolvedValue(undefined),
@@ -1029,6 +1053,232 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     expect(first.page).toBeNull();
     const second = await lookup(engine);
     expect(second.page).toBe(guestPage);
+  });
+});
+
+describe('PlaywrightEngine reuse of an attached page', () => {
+  // A guest Playwright does give a Page for (a Chrome-backend tab, or an
+  // in-app tab created while the engine is connected).
+  const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+  const guestUrl = 'http://127.0.0.1:1/';
+  let closed = false;
+  /** Whether Playwright has the guest's Page yet. */
+  let guestUp = true;
+  let pageListeners: Array<() => void> = [];
+  let dropListeners: Array<() => void> = [];
+  /** Runs once while the shell page is being probed (a match in progress). */
+  let duringShellProbe: (() => void) | null = null;
+  let connected = true;
+  let guestSessions = 0;
+  let connects = 0;
+  let shellPage: FakePage & { isClosed: ReturnType<typeof vi.fn> };
+  let guestPage: FakePage & { isClosed: ReturnType<typeof vi.fn> };
+
+  function rig() {
+    shellPage = { url: vi.fn().mockReturnValue(shellUrl), context: vi.fn(), isClosed: vi.fn().mockReturnValue(false) };
+    guestPage = { url: vi.fn().mockReturnValue(guestUrl), context: vi.fn(), isClosed: vi.fn(() => closed) };
+    const browserSession = {
+      send: vi.fn().mockImplementation((method: string) => Promise.resolve(
+        method === 'Target.getTargets'
+          ? { targetInfos: [{ targetId: 'wc-1', type: 'page', title: '', url: guestUrl, attached: true }] }
+          : {},
+      )),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const pageSession = (targetId: string) => ({
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') return browserSession.send(method);
+        if (targetId === 'shell') {
+          // matchPinnedPage probing the shell: a match is in progress.
+          const run = duringShellProbe;
+          duringShellProbe = null;
+          run?.();
+        }
+        return Promise.resolve({ targetInfo: { targetId } });
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    });
+    const ctx = {
+      // Like Playwright: a closed Page is no longer listed.
+      pages: vi.fn().mockImplementation(() => (guestUp && !closed ? [shellPage, guestPage] : [shellPage])),
+      newCDPSession: vi.fn().mockImplementation(async (p: FakePage) => {
+        if (p === guestPage) {
+          guestSessions++;
+          return pageSession('wc-1');
+        }
+        return pageSession('shell');
+      }),
+      on: vi.fn((event: string, fn: () => void) => { if (event === 'page') pageListeners.push(fn); }),
+      off: vi.fn((event: string, fn: () => void) => { pageListeners = pageListeners.filter((l) => l !== fn); }),
+    };
+    shellPage.context.mockReturnValue(ctx);
+    guestPage.context.mockReturnValue(ctx);
+    const browser = {
+      isConnected: vi.fn(() => connected),
+      on: vi.fn((event: string, fn: () => void) => { if (event === 'disconnected') dropListeners.push(fn); }),
+      off: vi.fn((event: string, fn: () => void) => { dropListeners = dropListeners.filter((l) => l !== fn); }),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => browserSession),
+      contexts: vi.fn().mockReturnValue([ctx]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockConnectOverCDP.mockImplementation(async () => {
+      connects++;
+      return browser;
+    });
+    mockSendRpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === 'browser.cdp.info') {
+        const ws = (params as { workspaceId?: string } | undefined)?.workspaceId;
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl,
+          ...(ws && { targetsScoped: true }),
+          targets: [{ surfaceId: 'surf-A', targetId: 'wc-1', workspaceId: 'ws-A' }],
+        });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  /**
+   * getPage with the clock run forward in 10 ms steps until it settles.
+   * `during` runs once, `atMs` into the lookup.
+   */
+  async function lookup(
+    engine: PlaywrightEngine,
+    during?: { atMs: number; run: () => void },
+  ): Promise<{ page: FakePage | null; waitedMs: number }> {
+    let settled = false;
+    let page: FakePage | null = null;
+    const done = priv(engine).getPage().then((p) => { page = p; settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    let waitedMs = 0;
+    for (let i = 0; i < 1000 && !settled; i++) {
+      await vi.advanceTimersByTimeAsync(10);
+      waitedMs += 10;
+      if (during && waitedMs === during.atMs) during.run();
+    }
+    await done;
+    return { page, waitedMs };
+  }
+
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    __resetSurfaceRoutingForTesting();
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+    closed = false;
+    guestUp = true;
+    pageListeners = [];
+    dropListeners = [];
+    duringShellProbe = null;
+    connected = true;
+    guestSessions = 0;
+    connects = 0;
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('no /json here')));
+    rig();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function engineFor(): Promise<PlaywrightEngine> {
+    const engine = PlaywrightEngine.getInstance();
+    (engine as unknown as { setWorkspaceIdResolver(r: () => Promise<string>): void })
+      .setWorkspaceIdResolver(async () => 'ws-A');
+    await engine.ensureConnected('ws-A');
+    return engine;
+  }
+
+  it('a Page that already exists is returned without the fixed post-attach wait', async () => {
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBe(guestPage);
+    expect(first.waitedMs).toBeLessThan(100); // was 500 ms
+  });
+
+  it('a later lookup on the same target reuses the Page without matching it again', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    const matched = guestSessions;
+    const second = await lookup(engine);
+    expect(second.page).toBe(guestPage);
+    expect(guestSessions).toBe(matched);
+    expect(second.waitedMs).toBeLessThan(100);
+    expect(connects).toBe(1);
+  });
+
+  it('a Page that appears after the attach is returned when it appears, not after a fixed wait', async () => {
+    const engine = await engineFor();
+    guestUp = false;
+    const first = await lookup(engine, {
+      atMs: 200,
+      run: () => {
+        guestUp = true;
+        for (const l of [...pageListeners]) l();
+      },
+    });
+    expect(first.page).toBe(guestPage);
+    expect(first.waitedMs).toBeGreaterThanOrEqual(200);
+    expect(first.waitedMs).toBeLessThan(300);
+    expect(pageListeners).toEqual([]); // every listener removed
+  });
+
+  it('with no Page, each wait is bounded and leaves no listener', async () => {
+    const engine = await engineFor();
+    guestUp = false;
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    // 3 attempts × the 500 ms bound, plus the 2 × 500 ms reconnect pauses.
+    expect(first.waitedMs).toBeGreaterThanOrEqual(2_400);
+    expect(first.waitedMs).toBeLessThanOrEqual(2_700);
+    expect(pageListeners).toEqual([]);
+    expect(dropListeners).toEqual([]);
+  });
+
+  it('a closed Page is never handed out again', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    closed = true;
+    const again = await lookup(engine);
+    expect(again.page).toBeNull();
+  });
+
+  it('a Page that appears while a match is running is not missed', async () => {
+    const engine = await engineFor();
+    guestUp = false;
+    duringShellProbe = () => {
+      guestUp = true;
+      for (const l of [...pageListeners]) l();
+    };
+    const first = await lookup(engine);
+    expect(first.page).toBe(guestPage);
+    expect(first.waitedMs).toBeLessThan(100);
+  });
+
+  it('the connection dropping ends the wait at once', async () => {
+    const engine = await engineFor();
+    guestUp = false;
+    let settled = false;
+    let waitedMs = 100;
+    const done = priv(engine).getPage().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(100); // inside attempt 1's wait
+    connected = false;
+    for (const l of [...dropListeners]) l();
+    await vi.advanceTimersByTimeAsync(0);
+    // The wait ended without running out its 500 ms; the lookup carries on
+    // with its own retry pause from here.
+    expect(pageListeners).toEqual([]);
+    expect(dropListeners).toEqual([]);
+    connected = true;
+    for (let i = 0; i < 400 && !settled; i++) {
+      await vi.advanceTimersByTimeAsync(10);
+      waitedMs += 10;
+    }
+    await done;
+    // 2,500 ms when every wait runs out its bound (see above); 400 less here.
+    expect(waitedMs).toBeLessThanOrEqual(2_200);
   });
 });
 
@@ -1862,8 +2112,8 @@ describe('PlaywrightEngine read-path workspace scoping — scoped cdp.info (#580
       workspaceId: 'ws-B',
       openerKey: expect.any(String),
     }, CHROME_START_RPC_TIMEOUT_MS);
-    // And it asked main to scope the target list to the caller.
-    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-B' });
+    // And it asked main to scope the target list to the caller (connecting, so with a relay ask).
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-B', relay: true });
     expect(opened).toBe(true);
   }, 15_000);
 
@@ -2295,6 +2545,239 @@ describe('PlaywrightEngine live-Chrome ws endpoint (Phase 3)', () => {
   });
 });
 
+
+describe('PlaywrightEngine pipe relay (C3)', () => {
+  const RELAY = 'ws+unix:///tmp/wmux-cdp-abc123/r.sock:/devtools/browser/relay';
+  let minted = 0;
+  /** The proof key of the latest grant. */
+  let lastKey = Buffer.alloc(0);
+  const mintKey = () => (lastKey = randomBytes(32)).toString('base64url');
+  /** cdp.info for a Chrome on the pipe: a fresh token only when asked for one. */
+  const pipeInfo = (profile: string) => (params?: { relay?: boolean }) => ({
+    workspaceBackend: 'chrome',
+    targetsScoped: true,
+    targets: [],
+    profile,
+    piped: true,
+    ...(params?.relay && { relay: { endpoint: RELAY, headers: { Authorization: `Bearer tok-${++minted}` }, proofKey: mintKey() } }),
+  });
+  /** A browser behind wmux's relay: it proves itself with the latest grant's key. */
+  const provingBrowser = () => {
+    const browser = makeFakeBrowser([]);
+    browser.newBrowserCDPSession.mockImplementation(async () => ({
+      send: vi.fn().mockImplementation(async (method: string, params?: { nonce?: string }) =>
+        method === RELAY_PROOF_METHOD
+          ? { proof: relayProof(lastKey, Buffer.from(params?.nonce ?? '', 'base64url')) }
+          : { targetInfos: [] }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    }));
+    return browser;
+  };
+  /** Something else answering on the relay's endpoint: `answer` is how it meets the proof. */
+  const impostor = (answer: (method: string) => Promise<unknown>) => {
+    const browser = makeFakeBrowser([]);
+    const sent: string[] = [];
+    browser.newBrowserCDPSession.mockImplementation(async () => ({
+      send: vi.fn().mockImplementation(async (method: string) => {
+        sent.push(method);
+        return answer(method);
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    }));
+    return { browser, sent };
+  };
+  const cdpInfoCalls = () => mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.cdp.info').map((c) => c[1]);
+
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    __resetSurfaceRoutingForTesting();
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+    minted = 0;
+  });
+
+  it('connects through the relay with its one-time header, preferring it over a port', async () => {
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) =>
+      Promise.resolve(method === 'browser.cdp.info' ? { ...pipeInfo('p1')(params), cdpPort: 9222 } : {}),
+    );
+    mockConnectOverCDP.mockResolvedValue(provingBrowser());
+    await PlaywrightEngine.getInstance().ensureConnected('ws-a');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+    expect(mockConnectOverCDP).toHaveBeenCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-1' }, timeout: 30_000 });
+  });
+
+  it('a check on a live connection asks for no token, and the connection is kept', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    mockConnectOverCDP.mockResolvedValue(provingBrowser());
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    await engine.ensureConnected('ws-a');
+    await engine.ensureConnected('ws-a');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }, { workspaceId: 'ws-a' }, { workspaceId: 'ws-a' }]);
+    expect(minted).toBe(1);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rebind asks again for a token and decides on that answer, even when it names yet another profile', async () => {
+    const answers = [pipeInfo('p1'), pipeInfo('p2'), pipeInfo('p3')];
+    let at = 0;
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) =>
+      Promise.resolve(method === 'browser.cdp.info' ? answers[Math.min(at++, answers.length - 1)](params) : {}),
+    );
+    const first = provingBrowser();
+    const second = provingBrowser();
+    mockConnectOverCDP.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    // The check (no token) says p2; the token-bearing answer says p3: p3 it is.
+    await engine.ensureConnected('ws-a');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }, { workspaceId: 'ws-a' }, { workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(2);
+    expect(mockConnectOverCDP).toHaveBeenLastCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-2' }, timeout: 30_000 });
+    expect((engine as unknown as { connectedProfile?: string }).connectedProfile).toBe('p3');
+    expect(first.close).toHaveBeenCalled();
+  });
+
+  it('a rebind answer that names no pipe is not asked about again', async () => {
+    let at = 0;
+    // Then main stops disclosing anything to this caller: no port, no relay, no pipe.
+    mockSendRpc.mockImplementation((method: string) =>
+      Promise.resolve(method === 'browser.cdp.info' ? { workspaceBackend: 'chrome', targets: [], ...(at++ === 0 ? { profile: 'p1', cdpPort: 9222 } : { profile: 'p2' }) } : {}),
+    );
+    mockConnectOverCDP.mockResolvedValue(provingBrowser());
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    await expect(engine.ensureConnected('ws-a')).rejects.toThrow('did not disclose a usable CDP endpoint');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }, { workspaceId: 'ws-a' }]);
+  });
+
+  it('a Chrome on the pipe that does not disclose a relay to this caller fails at once, without retrying', async () => {
+    mockSendRpc.mockImplementation((method: string) => Promise.resolve(method === 'browser.cdp.info' ? { workspaceBackend: 'chrome', targets: [], profile: 'p1' } : {}));
+    await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('did not disclose a usable CDP endpoint');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
+  });
+
+  it('a refused relay connect is retried with a fresh token, and no token reaches the log', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    mockConnectOverCDP.mockRejectedValue(new Error(`browserType.connectOverCDP: WebSocket error: ${RELAY} 401 Unauthorized`));
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.useFakeTimers();
+    try {
+      const failing = PlaywrightEngine.getInstance().ensureConnected('ws-a').then(() => null, (err: Error) => err);
+      await vi.runAllTimersAsync();
+      const err = await failing;
+      expect(err?.message).toBe('[PlaywrightEngine] Failed to connect after 3 attempts');
+    } finally {
+      vi.useRealTimers();
+    }
+    const tokens = mockConnectOverCDP.mock.calls.map((c) => (c[1] as { headers: { Authorization: string } }).headers.Authorization);
+    expect(tokens).toEqual(['Bearer tok-1', 'Bearer tok-2', 'Bearer tok-3']);
+    for (const call of logged.mock.calls) expect(JSON.stringify(call)).not.toMatch(/tok-\d/);
+    logged.mockRestore();
+  });
+
+  it('nothing uses a relay connection that does not prove itself: dropped at once, never retried', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    const wrong = impostor(async (method) => (method === RELAY_PROOF_METHOD ? { proof: randomBytes(32).toString('base64url') } : { targetInfos: [] }));
+    mockConnectOverCDP.mockResolvedValue(wrong.browser);
+    const engine = PlaywrightEngine.getInstance();
+    await expect(engine.ensureConnected('ws-a')).rejects.toThrow('the browser relay did not prove itself');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+    // The proof was the only thing asked, and the browser was closed before it was kept.
+    expect(wrong.sent).toEqual([RELAY_PROOF_METHOD]);
+    expect(wrong.browser.close).toHaveBeenCalledTimes(1);
+    expect((engine as unknown as { browser: unknown }).browser).toBeNull();
+    expect((engine as unknown as { connectedEndpoint: unknown }).connectedEndpoint).toBeNull();
+  });
+
+  it('an endpoint that refuses the proof method, or never answers it, is dropped the same way', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    const refusing = impostor(async () => { throw new Error("Protocol error (Wmux.relayProof): 'Wmux.relayProof' wasn't found"); });
+    mockConnectOverCDP.mockResolvedValueOnce(refusing.browser);
+    await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('the browser relay did not prove itself');
+    expect(refusing.browser.close).toHaveBeenCalledTimes(1);
+
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    const silent = impostor(() => new Promise(() => undefined));
+    mockConnectOverCDP.mockResolvedValueOnce(silent.browser);
+    vi.useFakeTimers();
+    try {
+      const failing = PlaywrightEngine.getInstance().ensureConnected('ws-a').then(() => null, (err: Error) => err);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect((await failing)?.message).toMatch('the browser relay did not prove itself');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(silent.browser.close).toHaveBeenCalledTimes(1);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(2);
+    expect(cdpInfoCalls()).toHaveLength(2);
+  });
+
+  it('a relay grant without a proof key (an older main) is refused before any connect, saying so', async () => {
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info'
+      ? { workspaceBackend: 'chrome', targets: [], profile: 'p1', piped: true, ...(params?.relay && { relay: { endpoint: RELAY, headers: { Authorization: 'Bearer tok-x' } } }) }
+      : {}));
+    await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('cannot check (no proof key)');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
+  });
+
+  it('a short or malformed proof key counts as none', async () => {
+    for (const proofKey of [randomBytes(16).toString('base64url'), 'not base64url!', 42]) {
+      mockSendRpc.mockReset();
+      (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+      mockSendRpc.mockImplementation((method: string) => Promise.resolve(method === 'browser.cdp.info'
+        ? { workspaceBackend: 'chrome', targets: [], profile: 'p1', piped: true, relay: { endpoint: RELAY, headers: { Authorization: 'Bearer tok-x' }, proofKey } }
+        : {}));
+      await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('cannot check (no proof key)');
+    }
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
+  });
+
+  it('the session the proof was asked on is the one kept for auto-attach', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    const browser = provingBrowser();
+    mockConnectOverCDP.mockResolvedValue(browser);
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    expect(browser.newBrowserCDPSession).toHaveBeenCalledTimes(1);
+    const session = (await browser.newBrowserCDPSession.mock.results[0].value) as { send: ReturnType<typeof vi.fn>; detach: ReturnType<typeof vi.fn> };
+    // The connect-time target listing (targetsAtConnect) rides the same session.
+    expect(session.send.mock.calls.map((c) => c[0])).toEqual([
+      RELAY_PROOF_METHOD,
+      'Target.getTargets',
+      'Target.setAutoAttach',
+    ]);
+    expect(session.detach).not.toHaveBeenCalled();
+    expect((engine as unknown as { autoAttachSession: unknown }).autoAttachSession).toBe(session);
+  });
+
+  it('a Stop while the relay is proving itself closes the connection and ends with the abort, not the proof error', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    let asked: () => void = () => undefined;
+    const proofAsked = new Promise<void>((resolve) => { asked = resolve; });
+    const silent = impostor(() => { asked(); return new Promise(() => undefined); });
+    mockConnectOverCDP.mockResolvedValue(silent.browser);
+    const controller = new AbortController();
+    const engine = PlaywrightEngine.getInstance();
+    const failing = runWithBrowserOpSignal(controller.signal, () => engine.ensureConnected('ws-a')).then(() => null, (err: unknown) => err);
+    await proofAsked;
+    const reason = new Error('stopped by the user');
+    controller.abort(reason);
+    expect(await failing).toBe(reason);
+    expect(silent.browser.close).toHaveBeenCalledTimes(1);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+  });
+});
 
 // ── Chrome-backend lifecycle mirror (dogfood P1: inline events went silent) ─
 describe('PlaywrightEngine lifecycle mirror (chrome backend)', () => {

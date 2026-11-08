@@ -1,14 +1,15 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
 import type { CdpConnection } from './CdpSocket';
 import type { Readable, Writable } from 'node:stream';
 import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTransport';
-import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type ClientRef } from './CdpPipeMux';
+import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type CallerIdentity, type ClientRef } from './CdpPipeMux';
 import { ProtectedPipePolicy } from './ProtectedPipePolicy';
-import { CdpPipeEndpoint } from './CdpPipeEndpoint';
+import { CdpPipeRelay, type RelayGrant, type RelayRoute } from './CdpPipeRelay';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
 import { surfaceOpeners } from './SurfaceOpeners';
@@ -60,6 +61,49 @@ const READY_TIMEOUT_MS = 10_000;
  */
 const READY_STARTING_MS = CHROME_START_CEILING_MS;
 const READY_POLL_MS = 250;
+/** Chrome's stderr kept for a failed start's message (characters, the newest). */
+const STARTUP_STDERR_TAIL = 4096;
+/** How long a failed start waits for the rest of stderr after Chrome exited. */
+const STDERR_END_WAIT_MS = 500;
+
+/**
+ * What Chrome last said on stderr, for a failed start's message: its last few
+ * non-empty lines, one line each, with each of `homes` written as `~` (the
+ * message reaches logs and agents). A refused start is often only said there:
+ * "DevTools remote debugging requires a non-default data directory" leaves the
+ * pipe silent and writes no DevToolsActivePort, which otherwise reads as a
+ * timeout.
+ */
+export function chromeSaid(stderr: string, homes: string[] = [], lines = 3, max = 400): string | null {
+  let said = stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(-lines).join(' | ');
+  if (!said) return null;
+  said = maskHomes(said, homes);
+  // Cut by code points, so a character outside the BMP is never split.
+  const chars = Array.from(said);
+  return chars.length > max ? `…${chars.slice(-max).join('')}` : said;
+}
+
+/**
+ * Each home folder as `~`, in its backslash, forward-slash and JSON-escaped
+ * spellings, and only where the path ends there (so `C:\Users\ann` never eats
+ * the start of `C:\Users\anna`). A root-like home (`/`, `C:\`) is skipped.
+ * Case-insensitive on Windows only.
+ */
+function maskHomes(text: string, homes: string[]): string {
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const spellings = new Set<string>();
+  for (const raw of homes) {
+    const home = raw.replace(/[\\/]+$/, '');
+    if (/^([A-Za-z]:)?[\\/]*$/.test(home)) continue;
+    spellings.add(home);
+    spellings.add(home.replace(/\\/g, '/'));
+    spellings.add(home.replace(/\\/g, '\\\\'));
+  }
+  const ordered = [...spellings].sort((a, b) => b.length - a.length);
+  if (ordered.length === 0) return text;
+  const pattern = new RegExp(`(${ordered.map(escape).join('|')})(?=[\\\\/\\s"'\`)\\]:;,|]|$)`, process.platform === 'win32' ? 'gi' : 'g');
+  return text.replace(pattern, '~');
+}
 /**
  * Pipe mode: liveness checks that must fail in a row before the launcher lets
  * a Chrome go, and so stops it (one on a pipe can't be found again). Each check
@@ -129,10 +173,35 @@ export interface ChromeTargetInfo {
 
 /** What browser.cdp.info reports for a chrome-family client. Exactly one of
  *  the fields is set: dedicated instances expose an HTTP CDP port, the live
- *  attach exposes Chrome's secret browser WS endpoint. */
+ *  attach exposes Chrome's secret browser WS endpoint, and a dedicated
+ *  instance on a debugging pipe is reached through the relay (relayGrant). */
 export interface ChromeBackendEndpoint {
   cdpPort?: number;
   wsEndpoint?: string;
+  piped?: true;
+}
+
+/**
+ * The relay every Chrome on a debugging pipe is served through, made on the
+ * first token asked for and closed on quit (disposeAll).
+ */
+let pipeRelay: CdpPipeRelay | null = null;
+
+async function closePipeRelay(): Promise<void> {
+  const relay = pipeRelay;
+  pipeRelay = null;
+  await relay?.close();
+}
+
+/**
+ * Tests: serve pipe Chromes through `relay` (one on a temp root of the test's
+ * own, so nothing the test starts looks in a temp dir another wmux uses), or
+ * back to the default with null. The relay it replaces is closed.
+ */
+export async function setPipeRelayForTests(relay: CdpPipeRelay | null): Promise<void> {
+  const previous = pipeRelay;
+  pipeRelay = relay;
+  if (previous && previous !== relay) await previous.close();
 }
 
 /**
@@ -216,6 +285,8 @@ export class ChromePageSessionError extends Error {
 
 export interface ChromeBackendClient {
   endpoint(): Promise<ChromeBackendEndpoint>;
+  /** Dedicated instances on a debugging pipe (endpoint() said `piped`): a relay token for `identity`. */
+  relayGrant?(identity: CallerIdentity): Promise<RelayGrant>;
   /** Targets reported through browser.cdp.info (page-selection seed). Live
    *  seeds only wmux-opened tabs so a random user tab can never become the
    *  default pin. */
@@ -242,6 +313,48 @@ export interface ChromeBackendClient {
   /** Live attach only: the agent-window write policy. Absent = dedicated. */
   readonly writeScope?: LiveWriteScopeApi;
   dispose(): void | Promise<void>;
+}
+
+/** Whether `binary` is Microsoft Edge (Windows, macOS or Linux spelling). */
+export function isEdgeBinary(binary: string): boolean {
+  const name = binary.split(/[\\/]/).pop() ?? '';
+  // Windows ships every channel as msedge.exe; macOS and Linux name the channel.
+  return /^(msedge(\.exe)?|microsoft edge( beta| dev| canary)?|microsoft-edge(-stable|-beta|-dev|-canary)?)$/i.test(name);
+}
+
+/**
+ * Flags every Edge wmux starts gets, dedicated and protected profiles alike.
+ * On a PC signed in with a Microsoft or work account, Edge signs a fresh
+ * profile in by itself and opens an edge://sync-confirmation-dialog/ target
+ * that Target.closeTarget cannot close. The agent's browser must never sign in
+ * to or sync with the user's account: msImplicitSignin stops the sign-in, and
+ * --disable-sync stops a profile signed in before this from syncing.
+ */
+export function edgeArgs(binary: string): string[] {
+  return isEdgeBinary(binary) ? ['--disable-features=msImplicitSignin', '--disable-sync'] : [];
+}
+
+/**
+ * One `--disable-features` switch holding every feature the list disables, at
+ * the place of the first: Chromium honours only one of several such switches.
+ */
+export function mergeDisableFeatures(args: string[]): string[] {
+  const prefix = '--disable-features=';
+  const features: string[] = [];
+  for (const arg of args) {
+    if (!arg.startsWith(prefix)) continue;
+    for (const f of arg.slice(prefix.length).split(',')) if (f && !features.includes(f)) features.push(f);
+  }
+  let placed = false;
+  const out: string[] = [];
+  for (const arg of args) {
+    if (!arg.startsWith(prefix)) out.push(arg);
+    else if (!placed) {
+      placed = true;
+      if (features.length) out.push(prefix + features.join(','));
+    }
+  }
+  return out;
 }
 
 /** Candidate binary paths per platform, first match wins. */
@@ -335,6 +448,13 @@ export interface ChromeLauncherOptions {
   protection?: () => ChromeProtectionPlan | null;
   /** Test seam: extra Chrome flags (e.g. --headless=new). */
   extraArgs?: string[];
+  /**
+   * Test seam: the Chrome child's whole environment. Unset (production), the
+   * child inherits process.env. Real-Chrome suites on Windows pass
+   * realProfileBrowserEnv(): Chrome under the isolate setup's temp USERPROFILE
+   * refuses remote debugging, on the port and on the pipe alike.
+   */
+  childEnv?: NodeJS.ProcessEnv;
   /** Test seam: how long the launch waits for the proxy probe. */
   proxyProbeTimeoutMs?: number;
 }
@@ -476,15 +596,15 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   private bound: { readonly transport: ChromeTransport; ready: boolean } | null = null;
   /**
-   * Pipe mode: the current Chrome's multiplexer, and the loopback endpoint
-   * external clients dial for it, opened on the first endpoint() call. Both
-   * go with the Chrome (onChildGone).
+   * Pipe mode: the current Chrome's multiplexer, and its route on the relay
+   * external clients dial, made on the first relayGrant() call. Both go with
+   * the Chrome (onChildGone).
    */
   private piped: {
     readonly mux: CdpPipeMux;
     /** A protected profile's rules for the pipe's clients; null when unprotected. */
     readonly policy: ProtectedPipePolicy | null;
-    endpoint: Promise<CdpPipeEndpoint> | null;
+    route: RelayRoute | null;
   } | null = null;
   /** Pipe mode: liveness checks failed in a row, and when the last one counted ended. */
   private pingMisses = { count: 0, lastEnd: 0 };
@@ -544,6 +664,7 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   private readonly protection: (() => ChromeProtectionPlan | null) | undefined;
   private readonly extraArgs: string[];
+  private readonly childEnv: NodeJS.ProcessEnv | undefined;
   /** Whether the running instance was launched behind the proxy. */
   private launchedProtected = false;
   /** False until a protected launch's download guard holds and the tabs
@@ -573,6 +694,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.surfaceStore = opts?.surfaceStore;
     this.protection = opts?.protection;
     this.extraArgs = opts?.extraArgs ?? [];
+    this.childEnv = opts?.childEnv;
     this.proxyProbeTimeoutMs = opts?.proxyProbeTimeoutMs;
   }
 
@@ -1250,30 +1372,29 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   /**
    * Dedicated instances expose the HTTP CDP port (launching on demand); on a
-   * debugging pipe there is no port, and external clients get the loopback
-   * endpoint served on the pipe instead.
+   * debugging pipe there is no port, and external clients connect through the
+   * relay with a token from relayGrant() instead.
    */
   async endpoint(): Promise<ChromeBackendEndpoint> {
     const cdpPort = await this.ensureRunning();
     this.assertOpen(); // a quit may land between ensureRunning's gate and here
-    if (this.piped) return { wsEndpoint: (await this.pipeEndpoint(this.piped)).url };
+    if (this.piped) return { piped: true };
     return { cdpPort };
   }
 
-  /** The loopback endpoint for `piped`, opened once; closed at once if that Chrome went meanwhile. */
-  private async pipeEndpoint(piped: NonNullable<ChromeLauncher['piped']>): Promise<CdpPipeEndpoint> {
-    if (!piped.endpoint) {
-      const opening = CdpPipeEndpoint.open(piped.mux);
-      piped.endpoint = opening;
-      // A listen that failed is tried again on the next call.
-      opening.catch(() => { if (piped.endpoint === opening) piped.endpoint = null; });
-    }
-    const endpoint = await piped.endpoint;
-    if (this.piped !== piped) {
-      await endpoint.close();
-      throw new Error('ChromeLauncher: Chrome exited');
-    }
-    return endpoint;
+  /**
+   * A one-time token for `identity` to connect to the running Chrome on the
+   * pipe through the relay (call endpoint() first). The token reaches this
+   * Chrome only: one started later on the profile is not reached by it.
+   */
+  async relayGrant(identity: CallerIdentity): Promise<RelayGrant> {
+    this.assertOpen();
+    const piped = this.piped;
+    if (!piped) throw new Error('ChromeLauncher: Chrome exited');
+    piped.route ??= (pipeRelay ??= new CdpPipeRelay()).serve(piped.mux);
+    const grant = await piped.route.grant(identity);
+    if (this.piped !== piped) throw new Error('ChromeLauncher: Chrome exited');
+    return grant;
   }
 
   /** Registry-scoped tabs seed page selection for dedicated instances. */
@@ -2071,7 +2192,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.assertOpen();
     const child = spawn(
       binary,
-      [
+      mergeDisableFeatures([
         `--user-data-dir=${this.userDataDir}`,
         ...(pipe
           ? ['--remote-debugging-pipe']
@@ -2092,11 +2213,61 @@ export class ChromeLauncher implements ChromeBackendClient {
         // The tabs it brings back are closed below (closeRestoredTabs).
         '--restore-last-session',
         ...protectedArgs,
+        // Edge: no implicit sign-in to the user's account, no sync.
+        ...edgeArgs(binary),
         ...this.extraArgs,
-      ],
-      // The pipe: Chrome reads fd 3 and writes fd 4.
-      { stdio: pipe ? ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] : 'ignore' },
+      ]),
+      // The pipe: Chrome reads fd 3 and writes fd 4. stderr is read so a
+      // failed start can quote Chrome (STARTUP_STDERR_TAIL).
+      {
+        stdio: pipe ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'ignore', 'pipe'],
+        ...(this.childEnv && { env: this.childEnv }),
+      },
     );
+    // Drained for the child's whole life (a full pipe would block Chrome's
+    // logging); only the newest STARTUP_STDERR_TAIL characters are kept.
+    let stderrTail = '';
+    const stderr = child.stderr;
+    // 'exit' can come before the last of stderr: a failed start waits, bounded, for its end.
+    const stderrEnded = stderr
+      ? new Promise<void>((resolve) => {
+        stderr.once('end', resolve);
+        stderr.once('close', resolve);
+      })
+      : Promise.resolve();
+    if (stderr) {
+      stderr.setEncoding('utf8'); // a character split across reads stays whole
+      stderr.on('data', (text: string) => {
+        const joined = stderrTail + text;
+        if (joined.length <= STARTUP_STDERR_TAIL) {
+          stderrTail = joined;
+          return;
+        }
+        // Over the cap: keep the newest whole lines only. A cut line could hold
+        // half a home path that maskHomes would no longer recognise.
+        const cut = joined.slice(-STARTUP_STDERR_TAIL);
+        const nl = cut.indexOf('\n');
+        stderrTail = nl === -1 ? '' : cut.slice(nl + 1);
+      });
+      // A broken stderr pipe is never a reason to fail; unhandled, it would throw.
+      stderr.on('error', () => undefined);
+    }
+    /** The last probe that failed: what a start that ran out of time ran into. */
+    let lastStartError: string | null = null;
+    /**
+     * Why a start failed: what Chrome said on stderr, and the last probe error
+     * on a timeout, or on an exit Chrome said nothing about.
+     */
+    const startFailure = async (what: string, timedOut: boolean): Promise<Error> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([stderrEnded, new Promise((r) => { timer = setTimeout(r, STDERR_END_WAIT_MS); })]);
+      clearTimeout(timer);
+      const homes = [homedir(), this.childEnv?.USERPROFILE, this.childEnv?.HOME, process.env.USERPROFILE, process.env.HOME];
+      const said = chromeSaid(stderrTail, homes.filter((h): h is string => !!h));
+      const withProbe = timedOut || !said;
+      const detail = [withProbe && lastStartError && `last error: ${lastStartError}`, said && `Chrome said: ${said}`].filter(Boolean).join('; ');
+      return new Error(detail ? `ChromeLauncher: ${what} (${detail})` : `ChromeLauncher: ${what}`);
+    };
 
     // BrokerSupervisor idiom: a failed spawn emits BOTH 'error' and 'exit' —
     // route them through one handler so state resets exactly once.
@@ -2124,7 +2295,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         ...(policy && { filter: policy.filter, beforeReply: policy.beforeReply, onClientGone: (client: ClientRef) => policy.forget(client) }),
       })
       : null;
-    this.piped = mux ? { mux, policy, endpoint: null } : null;
+    this.piped = mux ? { mux, policy, route: null } : null;
     const piped = mux ? pipeTransport(mux) : null;
 
     // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
@@ -2133,7 +2304,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     const startedAt = Date.now();
     let toldStarting = false;
     for (;;) {
-      if (gone) throw new Error('ChromeLauncher: Chrome exited during startup');
+      if (gone) throw await startFailure('Chrome exited during startup', false);
       let candidate = pinned;
       if (candidate === null && !piped) {
         const fresh = this.readPortFile();
@@ -2179,6 +2350,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           // Enforcement that failed is final for this launch: the child is
           // already stopped, so polling on would only wait out the deadline.
           if (err instanceof Error && err.message === PROTECTION_NOT_READY) throw err;
+          lastStartError = err instanceof Error ? err.message : String(err);
           this.unbindEndpoint();
         }
       }
@@ -2193,7 +2365,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           child.kill();
         } catch { /* already gone */ }
         this.onChildGone();
-        throw new Error('ChromeLauncher: CDP endpoint did not become ready in time');
+        throw await startFailure('CDP endpoint did not become ready in time', true);
       }
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
     }
@@ -2252,8 +2424,8 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.child = null;
     this.unbindEndpoint();
     this.pingMisses = { count: 0, lastEnd: 0 };
-    // Its clients go with it.
-    void this.piped?.endpoint?.then((endpoint) => endpoint.close(), () => undefined);
+    // Its clients and unused tokens go with it.
+    this.piped?.route?.close();
     this.piped = null;
     this.launchedProtected = false;
     this.enforcementReady = false;
@@ -2721,6 +2893,10 @@ export class ChromeLauncherRegistry {
     // Socket close only — never touches the user's Chrome process.
     this.live?.dispose();
     this.live = null;
-    await Promise.all(stopping);
+    try {
+      await Promise.all(stopping);
+    } finally {
+      await closePipeRelay();
+    }
   }
 }

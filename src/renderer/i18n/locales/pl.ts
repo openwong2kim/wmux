@@ -5293,6 +5293,7 @@ export const pl = {
   'remote.addHost': 'Dodaj hosta',
   'remote.pasteUrlHint': 'Wklej adres URL wypisany przez `wmux web` na drugiej maszynie',
   'remote.noHostsHint': 'Sparuj kodem albo wklej adres URL wypisany przez `wmux web` na drugiej maszynie',
+  'remote.newPaneNoWorkspaceGrant': 'Ten komputer może otwierać to, co już działa na {name}, ale nie może tam uruchamiać nowych paneli.',
   'remote.selectHostHint': 'Wybierz hosta, aby zobaczyć jego obszary robocze',
   'remote.noWorkspaces': 'Brak obszarów roboczych na tym hoście — lista jest budowana z paneli otwartych właśnie teraz, więc otwórz tam panel i wybierz ponownie',
   'remote.attach': 'Dołącz',

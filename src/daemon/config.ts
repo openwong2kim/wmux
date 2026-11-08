@@ -15,6 +15,7 @@ import {
   CHANNEL_TRASH_TTL_HOURS_DEFAULT,
 } from '../shared/channels';
 import { getWindowsDefaultShell } from '../shared/shellResolution';
+import { stripBom } from '../shared/stripBom';
 import { assertNotLiveWmuxDataDir, dataSuffix, getDaemonSocketPath, getLegacyDaemonSocketPath } from '../shared/constants';
 import { coerceLanLinkConfig, defaultLanLinkConfig } from '../shared/lanlink';
 import { coerceA2aRemoteConfig, defaultA2aRemoteConfig } from './a2aRemote/controller';
@@ -230,17 +231,17 @@ function coercePushPresenceSuppression(
 /**
  * Read `pushPresenceSuppression` WITHOUT the repair behaviour of `loadConfig`.
  *
- * `loadConfig` rewrites config.json with defaults when it cannot parse the
- * file. That is right for boot — a daemon needs a config — and wrong for a
- * per-approval read on the push path, where an unlucky moment (a half-written
- * file, a transient EIO) would silently discard the user's whole config to
- * answer a question about one notification. This reads, never writes, and
- * resolves every failure to `failOpenPresenceConfig()`, i.e. send the push.
+ * `loadConfig` creates a missing config.json and runs migrations that write
+ * it, and it is a full backfill of every slice: too much for a per-approval
+ * read on the push path, where an unlucky moment (a half-written file, a
+ * transient EIO) must not decide anything beyond one notification. This
+ * reads, never writes, and resolves every failure to
+ * `failOpenPresenceConfig()`, i.e. send the push.
  */
 export function readPushPresenceSuppression(): PushPresenceSuppressionConfig {
   const failOpen = failOpenPresenceConfig();
   try {
-    const raw = fs.readFileSync(getConfigPath(), 'utf-8');
+    const raw = stripBom(fs.readFileSync(getConfigPath(), 'utf-8'));
     const parsed: unknown = JSON.parse(raw, (key, value) => {
       if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
       return value;
@@ -318,12 +319,11 @@ function coerceBrowserCdp(raw: unknown, defaults: BrowserCdpConfig): BrowserCdpC
 /**
  * The notify path's READ-ONLY view of `notifySinks`.
  *
- * Deliberately not `loadConfig()`. That function is a boot-time repair tool: a
- * read error or a parse failure makes it REWRITE config.json with defaults,
- * which is right when the daemon is starting and needs a usable file, and
- * catastrophic on a per-notification hot path — one transient `EMFILE` while an
- * approval fires would silently replace the operator's whole config with
- * defaults. Nothing here writes, creates a directory, or mutates anything.
+ * Deliberately not `loadConfig()`. That function is a boot-time loader: it
+ * creates a missing config.json, runs migrations that write it, and backfills
+ * every slice, which is right when the daemon is starting and too much for a
+ * per-notification hot path. Nothing here writes, creates a directory, or
+ * mutates anything.
  *
  * Cached on (mtimeMs, size) so the steady state is one `stat` per notification
  * rather than a full read+parse, while a `wmux` config edit still takes effect
@@ -346,7 +346,7 @@ export function readNotifySinks(
     ) {
       return notifySinksCache.sinks;
     }
-    const raw = fs.readFileSync(configPath, 'utf-8');
+    const raw = stripBom(fs.readFileSync(configPath, 'utf-8'));
     const parsed: unknown = JSON.parse(raw, (key, value) => {
       // Same prototype-pollution guard loadConfig uses.
       if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
@@ -384,8 +384,195 @@ export function resetGateMigrationSaveFailure(): void {
 }
 
 /**
+ * Marks a config built by `failClosedConfig`. Enumerable, so an object spread
+ * of a stand-in (`{ ...config, a2aRemote }`) is still one; `JSON.stringify`
+ * skips symbol keys, so it never reaches disk either way.
+ */
+const FAIL_CLOSED = Symbol('wmux.config.failClosed');
+
+/**
+ * Why config.json could not be used, for the stand-in `loadConfig` returned
+ * then; undefined for any other config. Saving a stand-in is refused,
+ * whenever it is tried: a process that started on one keeps it until it
+ * restarts, and writing it would replace the user's file (perhaps fixed by
+ * then) with defaults.
+ */
+export function failClosedReason(config: DaemonConfig): string | undefined {
+  const reason = (config as unknown as Record<symbol, unknown>)[FAIL_CLOSED];
+  return typeof reason === 'string' ? reason : undefined;
+}
+
+export function isFailClosedConfig(config: DaemonConfig): boolean {
+  return failClosedReason(config) !== undefined;
+}
+
+/** The last unusable-file warning, so the daemon (which loads on every hook signal) logs it once. */
+let lastUnusableWarning: string | null = null;
+
+/** Test seam: forget the last unusable-file warning. */
+export function resetUnusableConfigWarning(): void {
+  lastUnusableWarning = null;
+}
+
+/**
+ * What a process runs on when config.json exists but cannot be used. The
+ * defaults, except where the default is the open side of something the file
+ * may have closed:
+ *
+ * - `browser.cdp.enabled` → off (the default is on).
+ * - `phoneDecisions` → both channels off (the defaults are on); approvals
+ *   then take the plain decline path a daemon without the channels serves.
+ *
+ * The live reapers delete nothing the file may have kept for longer either:
+ * the channel trash is kept (`trashTtlHours` 0), and detached and suspended
+ * sessions for a year rather than 8 h and 7 days. (`deadSessionTtlHours` is
+ * left alone: it is stamped into each new session's metadata at create time,
+ * so a stand-in value would outlive the stand-in.)
+ *
+ * The rest already default to the closed side: `lanlink` and `a2aRemote` are
+ * off, `notifySinks` is empty. `gate` gates the default high-risk tools; tools
+ * the file added to it cannot be known from a file that cannot be read.
+ */
+function failClosedConfig(reason: string): DaemonConfig {
+  const config = createDefaultConfig();
+  config.browser = { cdp: { enabled: false } };
+  config.phoneDecisions = { native: false, stepwise: false };
+  config.channels = { ...(config.channels as ChannelRetentionConfig), trashTtlHours: 0 };
+  config.session.detachedTtlHours = DETACHED_TTL_CAP_HOURS;
+  config.session.suspendedTtlHours = SUSPENDED_TTL_CAP_HOURS;
+  (config as unknown as Record<symbol, unknown>)[FAIL_CLOSED] = reason;
+  return config;
+}
+
+/**
+ * config.json exists but cannot be used: leave it as it is, warn once per
+ * failure, and run on the fail-closed stand-in.
+ */
+function unusableConfigFallback(configPath: string, reason: string): DaemonConfig {
+  const warning =
+    `[daemon/config] ${configPath} could not be used (${reason}). It is left unchanged; ` +
+    'until it is fixed, wmux runs with its defaults, with browser CDP and phone decisions off, ' +
+    'and keeps detached and suspended sessions and the channel trash. CDP comes back on the ' +
+    'first start after the fix.';
+  if (warning !== lastUnusableWarning) console.warn(warning);
+  lastUnusableWarning = warning;
+  return failClosedConfig(`${configPath} could not be used (${reason})`);
+}
+
+/** Read attempts for a config.json that Windows reports as locked. */
+export const CONFIG_READ_ATTEMPTS = 3;
+const CONFIG_READ_RETRY_MS = 100;
+/** What an antivirus scanner or indexer holding the file briefly looks like on Windows. */
+const LOCKED_FILE_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+
+/** Blocking wait between read attempts (the readers are synchronous). */
+const blockingSleep = (ms: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+let configReadSleep = blockingSleep;
+
+/** Test seam: replace the wait between read attempts; no argument restores it. */
+export function setConfigReadSleepForTest(sleep?: (ms: number) => void): void {
+  configReadSleep = sleep ?? blockingSleep;
+}
+
+/**
+ * Paths whose last read ended locked. The daemon loads config.json on every
+ * hook signal, so a lock that does not clear (a deny-read ACL reads as EPERM
+ * too) must not cost every call the full wait: once a streak of attempts
+ * ends locked, later reads try once, until one succeeds.
+ */
+const lockedStreak = new Set<string>();
+
+/** Test seam: forget locked-read streaks. */
+export function resetConfigReadStreaks(): void {
+  lockedStreak.clear();
+}
+
+/** A file that was locked and then gone: being replaced, not missing. */
+class VanishedWhileLocked extends Error {
+  readonly code = 'EVANISHED';
+}
+
+/**
+ * Read config.json. On Windows a file that is locked for a moment (an
+ * antivirus scan, the search indexer) is read up to CONFIG_READ_ATTEMPTS
+ * times about 100 ms apart, so one unlucky boot doesn't run the whole session
+ * with CDP off, and a save isn't refused over it. Only those read errors are
+ * retried; a file that reads but doesn't parse or validate is answered at once.
+ *
+ * ENOENT after a lock is a file being replaced: an editor that saves by
+ * delete and recreate leaves it delete-pending, which reads as EPERM. The
+ * remaining attempts wait for the new file; if it isn't there by then, the
+ * read fails as "being replaced" rather than "missing", which would write the
+ * defaults into the middle of that save. The same holds for the first read
+ * after a locked streak, once: the streak ends there, so a file that really
+ * was deleted is created with the defaults on the load after.
+ */
+function readConfigFile(configPath: string): string {
+  const inStreak = lockedStreak.has(configPath);
+  const attempts = process.platform === 'win32' && !inStreak ? CONFIG_READ_ATTEMPTS : 1;
+  let wasLocked = inStreak;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      lockedStreak.delete(configPath);
+      return raw;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      const vanished = code === 'ENOENT' && wasLocked;
+      if (!vanished && (process.platform !== 'win32' || !LOCKED_FILE_CODES.has(code))) throw err;
+      wasLocked = true;
+      if (attempt >= attempts) {
+        if (vanished) {
+          lockedStreak.delete(configPath);
+          throw new VanishedWhileLocked(
+            `${configPath} was locked, then gone: it was being replaced while wmux read it; restart wmux if browser automation stays off`,
+          );
+        }
+        lockedStreak.add(configPath);
+        throw err;
+      }
+      configReadSleep(CONFIG_READ_RETRY_MS);
+    }
+  }
+}
+
+/**
+ * Why the config.json on disk could not be used, or null when it is usable or
+ * absent. A JSON parse with the same reviver, then `configProblem`.
+ */
+function diskConfigProblem(configPath: string): string | null {
+  let raw: string;
+  try {
+    raw = readConfigFile(configPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    return err instanceof Error ? err.message : String(err);
+  }
+  try {
+    return configProblem(fillAbsentRequiredFields(parseConfigText(raw), createDefaultConfig()));
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+/** JSON.parse of config.json text: BOM stripped, prototype-pollution guard. */
+function parseConfigText(raw: string): unknown {
+  return JSON.parse(stripBom(raw), (key, value) => {
+    // Prototype pollution guard (mirrors SessionManager pattern)
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+    return value;
+  });
+}
+
+/**
  * Ensure ~/.wmux directory exists, then load config.json.
- * If the file is missing or malformed, a default config is written and returned.
+ *
+ * A missing file is created with the defaults. A file that exists but cannot
+ * be read, parsed or validated is never rewritten: this returns a fail-closed
+ * config instead (see `failClosedConfig`) and logs one warning naming the
+ * file and the error.
  */
 export function loadConfig(): DaemonConfig {
   const dir = getWmuxDir();
@@ -396,25 +583,35 @@ export function loadConfig(): DaemonConfig {
   const configPath = getConfigPath();
   const defaults = createDefaultConfig();
 
-  if (!fs.existsSync(configPath)) {
-    saveConfig(defaults);
-    return defaults;
-  }
-
+  let raw: string;
   try {
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    const parsed: unknown = JSON.parse(raw, (key, value) => {
-      // Prototype pollution guard (mirrors SessionManager pattern)
-      if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
-      return value;
-    });
-
-    if (!validateConfig(parsed)) {
-      console.warn('[daemon/config] Invalid config — resetting to defaults');
+    raw = readConfigFile(configPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      lastUnusableWarning = null;
       saveConfig(defaults);
       return defaults;
     }
+    return unusableConfigFallback(configPath, err instanceof Error ? err.message : String(err));
+  }
 
+  let parsed: unknown;
+  try {
+    parsed = parseConfigText(raw);
+  } catch (err) {
+    return unusableConfigFallback(configPath, err instanceof Error ? err.message : String(err));
+  }
+
+  // Absent is not garbage: a file holding only the keys someone set (the
+  // documented `browser.cdp.enabled = false`) gets the required fields it
+  // lacks from the defaults. A field present with the wrong type is still
+  // refused below, untouched.
+  parsed = fillAbsentRequiredFields(parsed, defaults);
+  const invalid = configProblem(parsed);
+  if (invalid !== null) return unusableConfigFallback(configPath, invalid);
+  lastUnusableWarning = null;
+
+  try {
     const config = parsed as DaemonConfig;
 
     // P7 마이그레이션: config.json에 박제된 pipeName이 "구버전 기본값"
@@ -558,6 +755,8 @@ export function loadConfig(): DaemonConfig {
     // Absent slice (old config.json) → default enabled, preserving every prior
     // install's behaviour. A malformed slice degrades to enabled too, never
     // silently disabling browser automation. validateConfig ignores the field.
+    // (A file that cannot be parsed at all is a different case: see
+    // failClosedConfig, which turns CDP off.)
     config.browser = coerceBrowserCdp(config.browser, defaults.browser ?? { cdp: { enabled: true } });
 
     // ── Gate control (#783): per-field backfill ──
@@ -587,19 +786,23 @@ export function loadConfig(): DaemonConfig {
 
     return config;
   } catch (err) {
-    console.warn('[daemon/config] Failed to read config.json — resetting to defaults:', err);
-    saveConfig(defaults);
-    return defaults;
+    // A throw while backfilling a parsed, valid file is a wmux bug, not the
+    // user's file: still never rewrite it.
+    return unusableConfigFallback(configPath, err instanceof Error ? err.message : String(err));
   }
 }
 
 /** Atomic write: .tmp then rename (mirrors SessionManager pattern) */
 export function saveConfig(config: DaemonConfig): void {
+  const configPath = getConfigPath();
+  // A refused save throws like a directory that cannot be created: both are
+  // the caller's to report, never a write failure to log and move past.
+  refuseUnsafeSave(config, configPath);
   // A directory that cannot be created still throws, as it always did.
-  const dir = path.dirname(getConfigPath());
+  const dir = path.dirname(configPath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   try {
-    saveConfigOrThrow(config);
+    writeConfigFile(config, configPath);
   } catch (err) {
     console.error('[daemon/config] Failed to save config:', err);
   }
@@ -611,6 +814,11 @@ export function saveConfig(config: DaemonConfig): void {
  */
 export function saveConfigOrThrow(config: DaemonConfig): void {
   const configPath = getConfigPath();
+  refuseUnsafeSave(config, configPath);
+  writeConfigFile(config, configPath);
+}
+
+function writeConfigFile(config: DaemonConfig, configPath: string): void {
   const tmpPath = configPath + '.tmp';
   const dir = path.dirname(configPath);
 
@@ -632,39 +840,92 @@ export function saveConfigOrThrow(config: DaemonConfig): void {
   }
 }
 
-/** Structural validation — checks required fields exist with correct types */
-function validateConfig(parsed: unknown): parsed is DaemonConfig {
-  if (typeof parsed !== 'object' || parsed === null) return false;
-  const obj = parsed as Record<string, unknown>;
+/**
+ * A config.json that cannot be used is never written over: not with a
+ * fail-closed stand-in (whatever the file holds by now), and not with any
+ * other config while the file on disk is the unusable one, which may be an
+ * edit in progress. Checked at save time, so a file fixed since saves again.
+ */
+function refuseUnsafeSave(config: DaemonConfig, configPath: string): void {
+  const standIn = failClosedReason(config);
+  if (standIn !== undefined) {
+    throw new Error(`wmux started while ${standIn}, so it does not write over that file. Fix the file, restart wmux, then try again.`);
+  }
+  const problem = diskConfigProblem(configPath);
+  if (problem !== null) {
+    throw new Error(`${configPath} could not be used (${problem}), so wmux does not write over it. Fix the file, then try again.`);
+  }
+}
 
-  if (typeof obj['version'] !== 'number') return false;
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A parsed config.json object with the required fields it LACKS taken from the
+ * defaults: `version`, a missing `daemon` or `session` section, and a
+ * missing key inside either. Every key the file has is kept as it is, wrong
+ * type included, so `configProblem` still refuses a present field that is not
+ * usable. Anything that is not a JSON object is returned unchanged. The result
+ * is used in memory; a later save (a migration) writes the user's own keys
+ * plus these filled ones.
+ */
+export function fillAbsentRequiredFields(parsed: unknown, defaults: DaemonConfig): unknown {
+  if (!isPlainObject(parsed)) return parsed;
+  const out: Record<string, unknown> = { ...parsed };
+  if (out['version'] === undefined) out['version'] = defaults.version;
+  for (const section of ['daemon', 'session'] as const) {
+    const own = out[section];
+    const fallback = defaults[section] as unknown as Record<string, unknown>;
+    if (own === undefined) {
+      out[section] = { ...fallback };
+    } else if (isPlainObject(own)) {
+      const merged: Record<string, unknown> = { ...own };
+      for (const [key, value] of Object.entries(fallback)) {
+        if (merged[key] === undefined) merged[key] = value;
+      }
+      out[section] = merged;
+    }
+    // Present but not an object: left for configProblem to refuse.
+  }
+  return out;
+}
+
+/**
+ * Structural validation: what makes the file unusable, naming the field, or
+ * null when the required fields exist with the right types.
+ */
+function configProblem(parsed: unknown): string | null {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'the top level is not a JSON object';
+  const obj = parsed as Record<string, unknown>;
+  const wrong = (field: string, want: string): string => `${field} is missing or is not ${want}`;
+
+  if (typeof obj['version'] !== 'number') return wrong('version', 'a number');
 
   // daemon section
   const daemon = obj['daemon'];
-  if (typeof daemon !== 'object' || daemon === null) return false;
+  if (typeof daemon !== 'object' || daemon === null) return wrong('daemon', 'an object');
   const d = daemon as Record<string, unknown>;
-  if (typeof d['pipeName'] !== 'string') return false;
-  if (typeof d['logLevel'] !== 'string') return false;
-  if (typeof d['autoStart'] !== 'boolean') return false;
+  if (typeof d['pipeName'] !== 'string') return wrong('daemon.pipeName', 'a string');
+  if (typeof d['logLevel'] !== 'string') return wrong('daemon.logLevel', 'a string');
+  if (typeof d['autoStart'] !== 'boolean') return wrong('daemon.autoStart', 'a boolean');
   // idleShutdownMinutes is optional, but if present must be a finite number.
   // The post-validate path below still clamps to a sensible range — this
   // gate just rejects garbage like {"idleShutdownMinutes": "five"}.
   if (
     d['idleShutdownMinutes'] !== undefined &&
     (typeof d['idleShutdownMinutes'] !== 'number' || !Number.isFinite(d['idleShutdownMinutes'] as number))
-  ) return false;
+  ) return 'daemon.idleShutdownMinutes is not a finite number';
 
   // session section
   const session = obj['session'];
-  if (typeof session !== 'object' || session === null) return false;
+  if (typeof session !== 'object' || session === null) return wrong('session', 'an object');
   const s = session as Record<string, unknown>;
-  if (typeof s['defaultShell'] !== 'string') return false;
-  if (typeof s['defaultCols'] !== 'number') return false;
-  if (typeof s['defaultRows'] !== 'number') return false;
-  if (typeof s['bufferSizeMb'] !== 'number') return false;
-  if (typeof s['bufferMaxMb'] !== 'number') return false;
-  if (typeof s['deadSessionTtlHours'] !== 'number') return false;
-  if (typeof s['deadSessionDumpBuffer'] !== 'boolean') return false;
+  if (typeof s['defaultShell'] !== 'string') return wrong('session.defaultShell', 'a string');
+  for (const field of ['defaultCols', 'defaultRows', 'bufferSizeMb', 'bufferMaxMb', 'deadSessionTtlHours']) {
+    if (typeof s[field] !== 'number') return wrong(`session.${field}`, 'a number');
+  }
+  if (typeof s['deadSessionDumpBuffer'] !== 'boolean') return wrong('session.deadSessionDumpBuffer', 'a boolean');
 
-  return true;
+  return null;
 }

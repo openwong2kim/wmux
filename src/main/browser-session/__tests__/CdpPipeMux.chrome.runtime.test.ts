@@ -10,23 +10,66 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chromium, type Browser } from 'playwright-core';
 import WebSocket, { WebSocketServer } from 'ws';
-import { CdpPipeMux } from '../CdpPipeMux';
-import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
-import { ChromeLauncher } from '../ChromeLauncher';
+import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
+import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
+import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
+import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
+import { newRelayProofNonce, RELAY_PROOF_METHOD, relayProofMatches } from '../../../shared/relayProof';
 
 const CHROME = process.env.CHROME_PATH;
 
-interface Started { child: ChildProcess; profile: string; mux: CdpPipeMux; endpoint: CdpPipeEndpoint; exited: Promise<void> }
+interface Started { child: ChildProcess; profile: string; mux: CdpPipeMux; route: RelayRoute; exited: Promise<void> }
 const started: Started[] = [];
 const browsers: Browser[] = [];
 const relays: WebSocketServer[] = [];
 /** Every temp profile a test made, removed after its Chrome is gone, launched or not. */
 const profiles: TempChromeProfile[] = [];
+/**
+ * The relay, on a temp root of this file's own (a Unix socket where the OS has
+ * them), so nothing here looks in a temp dir another wmux uses.
+ */
+let relayRoot: string | null = null;
+let relay: CdpPipeRelay;
+
+beforeAll(async () => {
+  relayRoot = process.platform === 'win32' ? null : fs.mkdtempSync('/tmp/wmux-rr-');
+  if (relayRoot) fs.chmodSync(relayRoot, 0o700);
+  relay = new CdpPipeRelay({ roots: relayRoot ? [relayRoot] : [] });
+  await setPipeRelayForTests(relay);
+});
+
+afterAll(async () => {
+  await setPipeRelayForTests(null);
+  if (relayRoot) fs.rmSync(relayRoot, { recursive: true, force: true });
+});
+
+/** Playwright over the relay, with a token minted for `identity`. */
+function connectThrough(grant: RelayGrant, timeout?: number): Promise<Browser> {
+  return chromium.connectOverCDP(grant.endpoint, { headers: { ...grant.headers }, ...(timeout !== undefined && { timeout }) });
+}
+
+/** Whether the relay behind `browser` answers Wmux.relayProof with `grant`'s key. */
+async function provenBy(browser: Browser, grant: RelayGrant): Promise<boolean> {
+  const session = await browser.newBrowserCDPSession();
+  try {
+    const nonce = newRelayProofNonce();
+    const send = session.send.bind(session) as (method: string, params: object) => Promise<{ proof?: unknown }>;
+    const answer = await send(RELAY_PROOF_METHOD, { nonce });
+    return relayProofMatches(Buffer.from(grant.proofKey, 'base64url'), Buffer.from(nonce, 'base64url'), answer.proof);
+  } finally {
+    await session.detach().catch(() => undefined);
+  }
+}
+
+const connectTo = async (s: Started, identity: CallerIdentity = {}) => connectThrough(await s.route.grant(identity));
 
 async function startChrome(): Promise<Started> {
   const temp = tempChromeProfile('wmux-pipe-chrome-');
@@ -43,48 +86,43 @@ async function startChrome(): Promise<Started> {
     // answers cookie calls nor exits.
     '--use-mock-keychain',
     'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
+    // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
+  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: realProfileBrowserEnv() });
   const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
   const mux = new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable);
-  let endpoint: CdpPipeEndpoint;
-  try {
-    endpoint = await CdpPipeEndpoint.open(mux);
-  } catch (err) {
-    // Not in `started`, so nothing else would stop it before its profile goes.
-    mux.close();
-    child.kill('SIGKILL');
-    await exited;
-    throw err;
-  }
-  const s = { child, profile, mux, endpoint, exited };
+  const s = { child, profile, mux, route: relay.serve(mux), exited };
   started.push(s);
   return s;
 }
 
 /**
- * A loopback relay in front of the endpoint that records every frame one
- * client receives, so a test can see exactly what reached it.
+ * A loopback proxy in front of the relay that records every frame one client
+ * receives, so a test can see exactly what reached it. Each connection it
+ * passes on uses a token of its own from `grant`.
  */
-async function recordingRelay(upstream: string): Promise<{ url: string; received: Array<Record<string, unknown>> }> {
+async function recordingRelay(grant: () => Promise<RelayGrant>): Promise<{ url: string; received: Array<Record<string, unknown>> }> {
   const received: Array<Record<string, unknown>> = [];
   const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   relays.push(wss);
-  wss.on('connection', (down) => {
-    const up = new WebSocket(upstream);
+  wss.on('connection', async (down) => {
     const queued: string[] = [];
-    up.on('open', () => { for (const m of queued.splice(0)) up.send(m); });
+    let up: WebSocket | null = null;
     down.on('message', (data) => {
       const text = data.toString();
-      if (up.readyState === WebSocket.OPEN) up.send(text);
+      if (up?.readyState === WebSocket.OPEN) up.send(text);
       else queued.push(text);
     });
-    up.on('message', (data) => {
+    const g = await grant();
+    const upstream = new WebSocket(g.endpoint, { headers: { ...g.headers } });
+    up = upstream;
+    upstream.on('open', () => { for (const m of queued.splice(0)) upstream.send(m); });
+    upstream.on('message', (data) => {
       const text = data.toString();
       received.push(JSON.parse(text) as Record<string, unknown>);
       down.send(text);
     });
-    down.on('close', () => up.close());
-    up.on('close', () => down.close());
+    down.on('close', () => upstream.close());
+    upstream.on('close', () => down.close());
   });
   await once(wss, 'listening');
   const { port } = wss.address() as { port: number };
@@ -110,7 +148,7 @@ afterEach(async () => {
   for (const b of browsers.splice(0)) await b.close().catch(() => undefined);
   for (const r of relays.splice(0)) r.close();
   for (const s of started.splice(0)) {
-    await s.endpoint.close();
+    s.route.close();
     s.mux.close();
     const gone = await Promise.race([s.exited.then(() => true), new Promise((r) => setTimeout(() => r(false), 5_000))]);
     if (!gone) {
@@ -122,20 +160,21 @@ afterEach(async () => {
 }, CHROME_TEARDOWN_TIMEOUT_MS);
 
 describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
-  it('Playwright connects over CDP through the endpoint and drives a page', async () => {
-    const { endpoint } = await startChrome();
-    const browser = await chromium.connectOverCDP(endpoint.url);
+  it('Playwright connects over CDP through the relay, which proves itself, and drives a page', async () => {
+    const grant = await (await startChrome()).route.grant({ workspaceId: 'ws-a' });
+    const browser = await connectThrough(grant);
     browsers.push(browser);
+    expect(await provenBy(browser, grant)).toBe(true);
     const page = await browser.contexts()[0].newPage();
     await page.goto('data:text/html,<title>pipe</title><p id=x>one</p>');
     expect(await page.title()).toBe('pipe');
     expect(await page.evaluate(() => document.getElementById('x')?.textContent)).toBe('one');
   }, 60_000);
 
-  it('two Playwright clients at once: targets stay visible to both, sessions stay private to each', async () => {
-    const { endpoint } = await startChrome();
-    const relayA = await recordingRelay(endpoint.url);
-    const relayB = await recordingRelay(endpoint.url);
+  it('two Playwright clients at once, for two workspaces on one profile: targets stay visible to both, sessions stay private to each', async () => {
+    const s = await startChrome();
+    const relayA = await recordingRelay(() => s.route.grant({ workspaceId: 'ws-a', profile: 'shared' }));
+    const relayB = await recordingRelay(() => s.route.grant({ workspaceId: 'ws-b', profile: 'shared' }));
     const a = await chromium.connectOverCDP(relayA.url);
     const b = await chromium.connectOverCDP(relayB.url);
     browsers.push(a, b);
@@ -148,7 +187,8 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
     const [titleA, titleB] = await Promise.all([pageA.evaluate(() => document.title), pageB.evaluate(() => document.title)]);
     expect([titleA, titleB]).toEqual(['A', 'B']);
 
-    // Targets stay visible: each client lists the other's page, as on the port.
+    // Targets stay visible: each client lists the other's page, as on the port,
+    // whatever workspace each connected for. Nothing narrows this per client yet.
     const cdpA = await a.newBrowserCDPSession();
     const { targetInfos } = (await cdpA.send('Target.getTargets')) as { targetInfos: Array<{ title: string; type: string }> };
     expect(targetInfos.filter((t) => t.type === 'page').map((t) => t.title)).toEqual(expect.arrayContaining(['A', 'B']));
@@ -168,10 +208,34 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
     expect(await b.contexts()[0].pages().length).toBeGreaterThan(0);
   }, 60_000);
 
+  it('the MCP bundle\'s Playwright, as build-mcp.js builds it, drives a page through the relay; a wrong token is refused', async () => {
+    const require = createRequire(__filename);
+    const { buildPlaywrightChunk } = require('../../../../scripts/lib/playwright-chunk.cjs') as { buildPlaywrightChunk: (dir: string) => Promise<string> };
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pw-chunk-'));
+    try {
+      const bundled = require(await buildPlaywrightChunk(out)) as typeof import('playwright-core');
+      const s = await startChrome();
+      const grant = await s.route.grant({ workspaceId: 'ws-a' });
+      // A Unix socket wherever the OS has them, a named pipe on Windows: the
+      // path the MCP lane takes. The bundle's own ws dials the pipe spelling.
+      if (process.platform === 'win32') expect(grant.endpoint.startsWith('ws+unix:\\\\.\\pipe\\')).toBe(true);
+      else expect(grant.endpoint.startsWith('ws+unix://')).toBe(true);
+      const browser = await bundled.chromium.connectOverCDP(grant.endpoint, { headers: { ...grant.headers } });
+      browsers.push(browser as unknown as Browser);
+      expect(await provenBy(browser as unknown as Browser, grant)).toBe(true);
+      const page = await browser.contexts()[0].newPage();
+      await page.goto('data:text/html,<title>bundled</title>');
+      expect(await page.title()).toBe('bundled');
+      await expect(bundled.chromium.connectOverCDP(grant.endpoint, { headers: { Authorization: 'Bearer forged' }, timeout: 5_000 })).rejects.toThrow(/401/);
+    } finally {
+      fs.rmSync(out, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('Chrome exits on the pipe closing, with no process or lock file left', async () => {
     const s = await startChrome();
     // A live browser first: the pipe answers.
-    const browser = await chromium.connectOverCDP(s.endpoint.url);
+    const browser = await connectTo(s);
     browsers.push(browser);
     expect(browser.version()).toMatch(/\d+\./);
     const started = Date.now();
@@ -192,8 +256,10 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
     const dir = temp.dir;
     const launcher = new ChromeLauncher(dir, { portEnvVar: null, extraArgs: ['--headless=new', '--use-mock-keychain', '--password-store=basic'] });
     try {
-      const first = (await launcher.endpoint()).wsEndpoint as string;
-      const before = await chromium.connectOverCDP(first);
+      await launcher.endpoint();
+      const before = await connectThrough(await launcher.relayGrant({}));
+      // Minted for this Chrome; never used.
+      const stale = await launcher.relayGrant({});
       await before.contexts()[0].addCookies([{ name: 'kept', value: '1', domain: 'probe.invalid', path: '/', expires: Math.floor(Date.now() / 1000) + 86_400 }]);
       await before.close();
       const pid = (launcher as unknown as { child: ChildProcess }).child.pid as number;
@@ -201,11 +267,12 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
       const stoppedAt = Date.now();
       await expect(launcher.endpoint()).rejects.toThrow('ChromeLauncher: Chrome is not answering');
       await expect(launcher.endpoint()).rejects.toThrow('ChromeLauncher: Chrome is not answering');
-      const second = (await launcher.endpoint()).wsEndpoint as string;
+      await launcher.endpoint();
       const tookMs = Date.now() - stoppedAt;
-      expect(second).not.toBe(first);
       expect(() => process.kill(pid, 0)).toThrow();
-      const after = await chromium.connectOverCDP(second);
+      // A token minted for the stopped Chrome does not reach the new one.
+      await expect(connectThrough(stale, 5_000)).rejects.toThrow(/401/);
+      const after = await connectThrough(await launcher.relayGrant({}));
       browsers.push(after);
       const cookieKept = (await after.contexts()[0].cookies('https://probe.invalid/')).some((c) => c.name === 'kept');
       // Measured, not asserted: a SIGKILL loses cookie writes Chrome had not flushed yet.

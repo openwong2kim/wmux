@@ -1,6 +1,7 @@
 // The OS's answer for who connected to a unix socket (shared/peerPid.ts),
 // read against real sockets and a real child process.
 import { afterEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -39,7 +40,7 @@ describe.runIf(supported)('peerPidOf on a unix socket', () => {
     children.push(child);
     const read = await peer;
     expect(read.pid).toBe(child.pid);
-    if (process.platform === 'linux') expect(read).toMatchObject({ uid: process.getuid?.() });
+    expect(read).toMatchObject({ uid: process.getuid?.() });
   });
 
   it('names this process when it connects to itself', async () => {
@@ -57,6 +58,21 @@ describe.runIf(supported)('peerPidOf on a unix socket', () => {
 
   it('passes its startup self-check', async () => {
     expect(await selfCheckPeerPid()).toBe('available');
+  });
+
+  it('binds its self-check socket at the path it is given, over a stale file', async () => {
+    const short = fs.mkdtempSync(path.join('/tmp', 'psc-'));
+    const at = path.join(short, 'b.pc');
+    try {
+      fs.writeFileSync(at, 'left by a broker that was killed');
+      expect(await selfCheckPeerPid(2000, at)).toBe('available');
+      expect(await selfCheckPeerPid(2000, at)).toBe('available');
+      // Nothing is left behind, and a directory that is not there is where it failed.
+      expect(fs.readdirSync(short)).toEqual([]);
+      expect(await selfCheckPeerPid(2000, path.join(short, 'missing', 'b.pc'))).toMatch(/^unavailable \(listen E[A-Z]+: .*\/missing\/b\.pc/);
+    } finally {
+      fs.rmSync(short, { recursive: true, force: true });
+    }
   });
 });
 

@@ -15,7 +15,16 @@ vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => e
 
 import { createWmuxServer } from '../index';
 import { encodeComputerErrorMessage } from '../../shared/computer/errors';
-import type { AppInfo, HelperMethod, WindowInfo } from '../../shared/computer/protocol';
+import {
+  COMPUTER_CONSENT_DEADLINE_MS,
+  DESKTOP_LIST_APPS_TIMEOUT_MS,
+  DESKTOP_RUN_GRACE_MS,
+  DESKTOP_RUN_MAX_MS,
+  type AppInfo,
+  type HelperMethod,
+  type WindowInfo,
+} from '../../shared/computer/protocol';
+import { DESKTOP_TIMEOUT_MS } from '../computer/tool';
 import type { RpcContext } from '../../shared/rpc';
 import type { RpcRouter } from '../../main/pipe/RpcRouter';
 import { registerComputerRpc } from '../../main/pipe/handlers/computer.rpc';
@@ -282,6 +291,127 @@ describe('computer MCP tool', () => {
     expect(text).toContain('password managers, wmux itself');
     // tools/list budget: never longer than the description it replaced (778 chars).
     expect(text.length).toBeLessThanOrEqual(778);
+  });
+
+  it('sends desktop to computer.getAppState with its command and args, and answers with the data', async () => {
+    enabled.value = true;
+    reply = () => ({ command: 'find', data: { snapshot_id: 's9', matches: [{ ref_id: '@s9:e1', name: 'Save' }] } });
+    const client = await connect();
+    const res = await client.callTool({
+      name: 'computer',
+      arguments: { action: 'desktop', command: 'find', app: 'TextEdit', args: { name: 'Save', first: true } },
+    });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect((res.content as Array<{ text: string }>)[0].text).toBe('{"snapshot_id":"s9","matches":[{"ref_id":"@s9:e1","name":"Save"}]}');
+    expect(computerCalls()).toEqual([[
+      'computer.getAppState',
+      { desktop: { command: 'find', args: { name: 'Save', first: true } }, app: 'TextEdit', window: undefined, callerInstance: expect.stringMatching(UUID_RE) },
+      expect.any(Number),
+    ]]);
+  });
+
+  it('refuses a desktop command outside both lists before calling main', async () => {
+    enabled.value = true;
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'type', args: { ref: '@s1:e1' } } });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect(computerCalls()).toEqual([]);
+  });
+
+  it('sends a desktop ref action to computer.act, never the read path, and answers with the action result', async () => {
+    enabled.value = true;
+    reply = () => ({ method: 'accessibility', verification: 'unverified', delivery: 'background' });
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'click', app: 'TextEdit', args: { ref: '@s1:e1' } } });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect((res.content as Array<{ text: string }>)[0].text).toContain('Unverified: call getAppState');
+    expect(computerCalls()).toEqual([[
+      'computer.act',
+      { desktop: { command: 'click', args: { ref: '@s1:e1' } }, callerInstance: expect.stringMatching(UUID_RE) },
+      DESKTOP_TIMEOUT_MS,
+    ]]);
+  });
+
+  it('refuses a desktop action with its arguments outside args, before calling main', async () => {
+    enabled.value = true;
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'scroll', args: { ref: '@s1:e1' }, direction: 'up', amount: 10 } });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect((res as { content: Array<{ text: string }> }).content[0].text).toMatch(/takes its arguments in args, not direction, amount[\s\S]*not_delivered/);
+    expect(computerCalls()).toEqual([]);
+  });
+
+  it('reports a desktop action whose pipe broke as possibly delivered', async () => {
+    enabled.value = true;
+    mockSendRpc.mockImplementation(async (method: string) => {
+      if (method.startsWith('computer.')) throw new Error('RPC timeout: computer.act');
+      return {};
+    });
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'toggle', args: { ref: '@s1:e1' } } });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect((res.content as Array<{ text: string }>)[0].text).toContain('delivered_unverified');
+  });
+
+  it('waits for desktop longer than the consent prompt, both name checks and the longest run together', async () => {
+    enabled.value = true;
+    reply = () => ({ command: 'wait', data: { found: true } });
+    const client = await connect();
+    await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'wait', app: 'TextEdit', args: { text: 'Done', timeout: 30_000 } } });
+    await client.close();
+    const timeout = computerCalls()[0][2] as number;
+    expect(timeout).toBe(DESKTOP_TIMEOUT_MS);
+    const worstRun = COMPUTER_CONSENT_DEADLINE_MS + 2 * (DESKTOP_LIST_APPS_TIMEOUT_MS + DESKTOP_RUN_GRACE_MS) + DESKTOP_RUN_MAX_MS + DESKTOP_RUN_GRACE_MS;
+    expect(timeout).toBeGreaterThan(worstRun);
+  });
+
+  it('keeps every other action\'s pipe timeout', async () => {
+    enabled.value = true;
+    reply = (method) => (method === 'computer.getAppState'
+      ? {
+        snapshotId: 's7',
+        app: { id: 'np', name: 'Notepad', pid: 1, path: 'np.exe' },
+        window: { id: 'w1', appId: 'np', pid: 1, title: 'notes', bounds: { x: 0, y: 0, width: 1, height: 1 } },
+        tree: '0 window notes',
+        screenshotStatus: { status: 'skipped' },
+      }
+      : method === 'computer.listApps' ? { apps: [] } : { method: 'synthetic', verification: 'unverified' });
+    const client = await connect();
+    await client.callTool({ name: 'computer', arguments: { action: 'listApps' } });
+    await client.callTool({ name: 'computer', arguments: { action: 'getAppState', app: 'Notepad' } });
+    await client.callTool({ name: 'computer', arguments: { action: 'click', snapshotId: 's7', index: 1 } });
+    await client.callTool({ name: 'computer', arguments: { action: 'openApp', app: 'TextEdit' } });
+    await client.close();
+    expect(computerCalls().map((c) => [c[0], c[2]])).toEqual([
+      ['computer.listApps', 20_000],
+      ['computer.getAppState', 140_000],
+      ['computer.act', 140_000],
+      ['computer.act', 140_000],
+    ]);
+  });
+
+  it('refuses list-apps, which only main runs, as a desktop command from an agent', async () => {
+    enabled.value = true;
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'list-apps', app: 'TextEdit' } });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect(computerCalls()).toEqual([]);
+  });
+
+  it('keeps desktop fields out of input actions', async () => {
+    enabled.value = true;
+    reply = () => ({ method: 'synthetic', verification: 'unverified' });
+    const client = await connect();
+    await client.callTool({ name: 'computer', arguments: { action: 'click', snapshotId: 's1', index: 2, command: 'get', args: {} } });
+    await client.close();
+    expect(computerCalls()[0][1]).not.toHaveProperty('command');
+    expect(computerCalls()[0][1]).not.toHaveProperty('args');
   });
 
   it('rejects unknown options instead of silently dropping them', async () => {

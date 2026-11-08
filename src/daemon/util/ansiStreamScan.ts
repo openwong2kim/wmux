@@ -144,20 +144,26 @@ export class MarginTracker {
   private carry = '';
   private _active = false;
 
-  feed(chunk: string): void {
+  /** `rows`: the screen height the chunk is parsed at. */
+  feed(chunk: string, rows: number): void {
     const text = this.carry + chunk;
     MARGIN_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = MARGIN_RE.exec(text)) !== null) {
+      // Wholly inside the carry: applied by the previous feed, at its rows.
+      if (m.index + m[0].length <= this.carry.length) continue;
       if (m[1] === undefined) {
         // RIS (ESC c) or DECSTR (CSI ! p) reset margins to full screen.
         this._active = false;
       } else {
-        // DECSTBM: params containing a digit narrow the region; a bare
-        // `CSI r` (or `CSI ; r`) resets to full screen. We cannot compare
-        // against the actual row count here, so any explicit params count
-        // as active — conservative (worst case: raw-replay fallback).
-        this._active = /\d/.test(m[1]);
+        // DECSTBM as xterm's setScrollRegion reads it: top defaults to 1,
+        // bottom to the rows, 0 is the default, a bottom past the screen is
+        // the screen, and a region whose bottom is not below its top is
+        // ignored. Only a region narrower than the screen is active.
+        const [p0, p1] = m[1].split(';').map((p) => Number(p || '0'));
+        const top = p0 || 1;
+        const bottom = !p1 || p1 > rows ? rows : p1;
+        if (bottom > top) this._active = top !== 1 || bottom !== rows;
       }
     }
     this.carry = text.slice(-REGEX_CARRY_CHARS);

@@ -924,6 +924,9 @@ fn broker_bundle() -> Result<PathBuf, String> {
     }
 }
 
+/// On macOS and Linux the broker hosts the session and a broker kill ends it.
+/// On Windows it refuses the session (a named pipe gives it no peer pid) and the
+/// full bundle serves it instead.
 #[test]
 fn against_the_real_broker_initialize_list_call_then_a_broker_kill_exits_1() {
     let bundle = match broker_bundle() {
@@ -961,6 +964,28 @@ fn against_the_real_broker_initialize_list_call_then_a_broker_kill_exits_1() {
     );
     send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
     send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+    if cfg!(windows) {
+        // A named pipe gives the broker no peer pid here, so it closes the
+        // session before its ack and the shim hands it to the full bundle (the
+        // repository's dist/mcp/mcp/entry.js beside this target directory).
+        // The initialize reply above was the bundle's: the host's first bytes
+        // reached it intact.
+        recv_line_with(&broker_log, "peer refused (peer-unverified)");
+        assert!(recv_line_with(&out, r#""id":2"#).contains(r#""name":"workspace_list""#));
+        send(r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workspace_list","arguments":{}}}"#);
+        assert!(recv_line_with(&out, r#""id":3"#).contains(r#""result""#));
+        // The session no longer runs through the broker: it outlives it.
+        broker.0.kill().expect("kill broker");
+        let _ = broker.0.wait();
+        send(r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#);
+        assert!(recv_line_with(&out, r#""id":4"#).contains(r#""name":"workspace_list""#));
+        // The bundle runs in the shim's job object, so killing the shim ends it.
+        shim.kill().expect("kill the shim");
+        let _ = shim.wait();
+        let err = err.join().unwrap();
+        assert!(err.contains("[wmux-mcp-shim] closed before ack\n"), "{err}");
+        return;
+    }
     // This broker knows the ack: the shim consumed it, so it never reached stdout.
     recv_line_with(&broker_log, "shim connected");
     assert!(recv_line_with(&out, r#""id":2"#).contains(r#""name":"workspace_list""#));
@@ -1311,6 +1336,37 @@ fn a_refusal_starts_no_fallback() {
         "something answered: {}",
         String::from_utf8_lossy(&stdout)
     );
+}
+
+/// A broker that could not tie the connection to the shim refuses with
+/// `peer` or `peer-unverified`: the full bundle serves the session instead,
+/// including the request the host sent while the shim waited for the ack.
+#[test]
+fn a_peer_refusal_falls_back_to_the_full_bundle() {
+    for reason in ["peer", "peer-unverified"] {
+        let sb = Sandbox::new();
+        sb.write_token("tok");
+        let Some(install) = Install::new(&sb, Layout::Marked) else {
+            return;
+        };
+        let listener = stub::bind(&sb.pipe());
+        let mut child = spawn(&mut install.shim(&sb, &[])).expect("spawn shim");
+        let err = lines(child.stderr.take().unwrap());
+        let out = lines(child.stdout.take().unwrap());
+        let mut stdin = child.stdin.take().unwrap();
+        let mut conn = listener.accept(WAIT);
+        read_line(&mut conn);
+        let line = format!("{{\"wmuxBroker\":1,\"ok\":false,\"error\":\"{reason}\"}}\n");
+        conn.write_all(line.as_bytes()).unwrap();
+        drop(conn);
+        serves(&mut stdin, &out, false);
+        assert_eq!(
+            recv_line_with(&err, "[wmux-mcp-shim]"),
+            format!("[wmux-mcp-shim] broker refused the session: {reason}"),
+        );
+        child.kill().expect("kill the shim's pid");
+        let _ = child.wait();
+    }
 }
 
 /// A close before the ack falls back; each layout finds its bundle.

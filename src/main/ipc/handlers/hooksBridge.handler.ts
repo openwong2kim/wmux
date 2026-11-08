@@ -23,17 +23,23 @@ import { IPC, dataSuffix } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import {
   defaultPaths,
+  hookTargets,
   statusHooks,
   installHooks,
-  updateHooks,
+  installHooksWithNative,
+  installHookTargetsWithNative,
+  updateHooksWithNative,
   allowFanoutWorkerTools,
   type AllowWorkerToolsOutcome,
   type StatusOutcome,
   type InstallOutcome,
   type UpdateOutcome,
   type SetupHooksPaths,
+  type HookTarget,
 } from '../../../cli/commands/setupHooks';
 import { getAccountStore, type Account } from '../../account/accountStore';
+import { getWmuxDir } from '../../../daemon/config';
+import { INSTALL_PROBE_TIMEOUT_MS, claudeConfigDirEnv, readClaudeConfigDirEnv } from '../../hooks/claudeConfigDirProbe';
 import { copiesSettingsJson } from '../../account/accountProvision';
 import {
   loadHooksPromptPreference,
@@ -166,12 +172,86 @@ export function claudeSettingsWriteRefusal(command = 'wmux setup-hooks'): string
     `change them. Make this change from your installed wmux, or run ${command} in a terminal.`;
 }
 
+/**
+ * The hook paths of the settings file an unset-account `claude` reads:
+ * `$CLAUDE_CONFIG_DIR/settings.json` (this process's env, else the login
+ * shell's, asked within its bound), else `~/.claude/settings.json`.
+ */
+export async function primaryHookPaths(): Promise<SetupHooksPaths> {
+  return (await appHookTargets('status'))[0].paths;
+}
+
+/** The Claude accounts that keep their own settings.json, from the account store. */
+function claudeAccountDirs(): Array<{ label: string; configDir: string }> {
+  return getAccountStore().listAccounts()
+    .filter((a) => copiesSettingsJson(a.vendor))
+    .map((a) => ({ label: a.name, configDir: a.configDir }));
+}
+
+/** hookTargets as the app sees them: the probed env, the account store, defaultPaths(). */
+async function appHookTargets(action: 'install' | 'status'): Promise<HookTarget[]> {
+  return targetsFor(action, await claudeConfigDirEnv());
+}
+
+function targetsFor(action: 'install' | 'status', env: string | undefined): HookTarget[] {
+  return hookTargets({ action, env, wmuxDir: getWmuxDir(), accounts: claudeAccountDirs(), base: defaultPaths() }).targets;
+}
+
+/** Said when the login shell never answered, so its CLAUDE_CONFIG_DIR is unknown. */
+export const SHELL_ENV_UNREAD_WARNING =
+  "Could not read CLAUDE_CONFIG_DIR from your login shell, so only ~/.claude and the Claude accounts were written. If you set it in your shell profile, run 'wmux setup-hooks' in a terminal.";
+
+/**
+ * Install into every Claude folder a claude can run with (hookTargets): the
+ * primary first, whose outcome is returned, then each account and, when the
+ * env points elsewhere, a ~/.claude that already has wmux's hooks. A target
+ * that fails turns the result's ok off and names itself in the error; the
+ * others are still written.
+ */
+export async function installAllHookTargets(): Promise<InstallOutcome> {
+  // A user-started install waits longer for the shell than boot does, and
+  // says so when it still got no answer rather than reporting a plain success.
+  const env = await readClaudeConfigDirEnv({ timeoutMs: INSTALL_PROBE_TIMEOUT_MS });
+  // Every folder through the native path: one copy, prepared once, named by
+  // each folder's entries. A throw (a read-only folder) is that target's
+  // failure, not the call's: the primary's included.
+  const [first, ...others] = await installHookTargetsWithNative(targetsFor('install', env.value));
+  const installed = first.outcome;
+  const outcome = env.read
+    ? installed
+    : { ...installed, warning: [installed.warning, SHELL_ENV_UNREAD_WARNING].filter(Boolean).join(' ') };
+  if (!env.read) console.warn(`[hooksBridge] ${SHELL_ENV_UNREAD_WARNING}`);
+  const failed = others
+    .filter(({ outcome: o }) => !o.ok)
+    .map(({ target: t, outcome: o }) => `${t.label}: ${o.error ?? 'failed'}`);
+  if (failed.length === 0) return outcome;
+  return { ...outcome, ok: false, error: [outcome.error, ...failed].filter(Boolean).join('; ') };
+}
+
+/**
+ * A Claude account folder just made (account onboarding) gets wmux's hooks
+ * when the primary folder has them, on the primary's profile: an account must
+ * not be the one place agent state silently stops working. Never from a build
+ * that may not write Claude settings (claudeSettingsWriteRefusal). Best-effort:
+ * returns the outcome, or null when nothing was due.
+ */
+export async function installHooksIntoNewAccount(configDir: string): Promise<InstallOutcome | null> {
+  if (claudeSettingsWriteRefusal()) return null;
+  const primary = await primaryHookPaths();
+  const status = statusHooks(primary);
+  if (!computeInstalled(status)) return null;
+  // In the form the primary's entries run now: the one copy when they name
+  // it, node otherwise (an older install, or a copy that did not pass).
+  const paths = { ...primary, settingsPath: path.join(configDir, 'settings.json') };
+  return status.hookRuntime.copy ? installHooksWithNative(paths, status.profile) : installHooks(paths, status.profile);
+}
+
 export function registerHooksBridgeHandlers(): void {
   ipcMain.removeHandler(IPC.HOOKS_BRIDGE_STATUS);
   ipcMain.handle(
     IPC.HOOKS_BRIDGE_STATUS,
     wrapHandler(IPC.HOOKS_BRIDGE_STATUS, async (): Promise<HooksBridgeStatus> => {
-      const paths = defaultPaths();
+      const paths = await primaryHookPaths();
       const outcome = statusHooks(paths);
       const installed = computeInstalled(outcome);
       let accounts: AccountHookDrift[] = [];
@@ -184,9 +264,9 @@ export function registerHooksBridgeHandlers(): void {
   ipcMain.handle(
     IPC.HOOKS_BRIDGE_INSTALL,
     wrapHandler(IPC.HOOKS_BRIDGE_INSTALL, async (): Promise<InstallOutcome> => {
-      const paths = defaultPaths();
       const refusal = claudeSettingsWriteRefusal();
       if (refusal) {
+        const paths = await primaryHookPaths();
         return {
           ok: false,
           settingsPath: paths.settingsPath,
@@ -201,7 +281,7 @@ export function registerHooksBridgeHandlers(): void {
           error: refusal,
         };
       }
-      return installHooks(paths);
+      return installAllHookTargets();
     }),
   );
 
@@ -209,10 +289,10 @@ export function registerHooksBridgeHandlers(): void {
   ipcMain.handle(
     IPC.HOOKS_BRIDGE_UPDATE,
     wrapHandler(IPC.HOOKS_BRIDGE_UPDATE, async (): Promise<UpdateOutcome> => {
-      const paths = defaultPaths();
+      const paths = await primaryHookPaths();
       const refusal = claudeSettingsWriteRefusal();
       if (refusal) return { ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: refusal };
-      return updateHooks(paths);
+      return updateHooksWithNative(paths);
     }),
   );
 
@@ -222,7 +302,7 @@ export function registerHooksBridgeHandlers(): void {
   ipcMain.handle(
     IPC.HOOKS_BRIDGE_UPDATE_ACCOUNT,
     wrapHandler(IPC.HOOKS_BRIDGE_UPDATE_ACCOUNT, async (_event, accountId: unknown): Promise<UpdateOutcome> => {
-      const base = defaultPaths();
+      const base = await primaryHookPaths();
       const accounts = getAccountStore().listAccounts();
       const account = typeof accountId === 'string' ? accounts.find((a) => a.id === accountId) : undefined;
       const paths = account ? ownAccountSettings(account, base) : null;
@@ -237,7 +317,7 @@ export function registerHooksBridgeHandlers(): void {
       if (!computeInstalled(statusHooks(paths))) throw new Error('HOOKS_BRIDGE_UPDATE_ACCOUNT: no wmux hooks in that account to update');
       const refusal = claudeSettingsWriteRefusal();
       if (refusal) return { ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: refusal };
-      return updateHooks(paths);
+      return updateHooksWithNative(paths);
     }),
   );
 
@@ -248,7 +328,7 @@ export function registerHooksBridgeHandlers(): void {
   ipcMain.handle(
     IPC.HOOKS_BRIDGE_ALLOW_WORKER_TOOLS,
     wrapHandler(IPC.HOOKS_BRIDGE_ALLOW_WORKER_TOOLS, async (): Promise<AllowWorkerToolsOutcome> => {
-      const paths = defaultPaths();
+      const paths = await primaryHookPaths();
       const refusal = claudeSettingsWriteRefusal();
       if (refusal) return { ok: false, settingsPath: paths.settingsPath, added: [], error: refusal };
       return allowFanoutWorkerTools(paths);

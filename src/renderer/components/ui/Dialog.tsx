@@ -1,8 +1,10 @@
 import { createContext, forwardRef, useCallback, useContext, useEffect, useId, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties, ReactNode, RefObject } from 'react';
 import { IconX } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { focusableWithin, useModalLayer } from './modalLayer';
+import { useDialogHost } from './dialogHost';
 
 export { focusableWithin } from './modalLayer';
 
@@ -10,10 +12,12 @@ export { focusableWithin } from './modalLayer';
  * Modal dialog primitive: backdrop + panel with Header / Body / Footer slots.
  *
  * Stacking and backdrop follow the existing modal convention (the approval
- * and project dialogs): an inline `fixed inset-0` root at `--z-dialog` over
- * `--backdrop-modal`. No portal, so a dialog stacks exactly where the
- * component that renders it already did. The panel is a quiet surface: 14px
- * radius, 24px padding, a hairline and one soft shadow (styles/ui.css).
+ * and project dialogs): a `fixed inset-0` root at `--z-dialog` over
+ * `--backdrop-modal`, rendered where the component that renders it is,
+ * except below a DialogHost (./dialogHost): a dialog opened from inside a
+ * pane renders into the host beside the panes, out of the pane's own
+ * stacking context. The panel is a quiet surface: 14px radius, 24px padding,
+ * a hairline and one soft shadow (styles/ui.css).
  *
  * Behaviour (keyboard and focus live in ./modalLayer, shared with the tour):
  * - `role="dialog"`, `aria-modal`, labelled by the Header title and described
@@ -113,7 +117,8 @@ export default function Dialog({
     // Mount only: initialFocusRef is read once, like autoFocus.
   }, []);
 
-  return (
+  const host = useDialogHost();
+  const root = (
     <div
       className={`fixed inset-0 ${zIndexClassName} flex items-center justify-center`}
       style={{ backgroundColor: 'var(--backdrop-modal)' }}
@@ -140,6 +145,7 @@ export default function Dialog({
       </DialogContext.Provider>
     </div>
   );
+  return host ? createPortal(root, host) : root;
 }
 
 function useDialogIds(): DialogIds {

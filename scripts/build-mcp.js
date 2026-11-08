@@ -1,6 +1,7 @@
 const esbuild = require('esbuild');
 const fs = require('fs');
 const path = require('path');
+const { buildPlaywrightChunk } = require('./lib/playwright-chunk.cjs');
 
 /**
  * Build the MCP bundle as TWO files (B0, app-weight P2 —
@@ -25,7 +26,6 @@ const outfile = path.join(outdir, 'index.js');
 const brokerFile = path.join(outdir, 'broker.js');
 const shimFile = path.join(outdir, 'shim.js');
 const chunkFile = path.join(outdir, 'playwright-chunk.js');
-const chunkEntry = path.join(outdir, '.pw-chunk-entry.js');
 const packageVersion = require('../package.json').version;
 const serverDefines = {
   __WMUX_MCP_VERSION__: JSON.stringify(packageVersion),
@@ -81,48 +81,14 @@ async function main() {
     );
   }
 
-  // 2. Lazy chunk — playwright-core bundled alone behind a re-export shim.
-  fs.mkdirSync(outdir, { recursive: true });
-  fs.writeFileSync(chunkEntry, "module.exports = require('playwright-core');\n");
-  await esbuild.build({
-    entryPoints: [chunkEntry],
-    bundle: true,
-    platform: 'node',
-    outfile: chunkFile,
-    external: ['electron', 'chromium-bidi'],
-    logLevel: 'error',
-  });
-  fs.rmSync(chunkEntry, { force: true });
-
-  // 3. Patch playwright's package.json self-resolve inside the chunk.
-  let code = fs.readFileSync(chunkFile, 'utf8');
-  let patched = 0;
-  code = code.replace(
-    /require\.resolve\("\.\.\/\.\.\/\.\.\/package\.json"\)/g,
-    () => { patched++; return '__dirname + "/playwright-core-package.json"'; }
-  );
-  if (patched === 0) {
-    throw new Error(
-      'playwright-core self-resolve pattern not found in the chunk — the ' +
-      'library changed its package.json resolution; update the patch in ' +
-      'scripts/build-mcp.js'
-    );
-  }
-  fs.writeFileSync(chunkFile, code);
+  // 2-3. Lazy chunk — playwright-core bundled alone behind a re-export shim,
+  //      its package.json self-resolve patched (scripts/lib/playwright-chunk.cjs).
+  await buildPlaywrightChunk(outdir);
 
   // 4. ASCII-only output: one character above U+00FF makes V8 keep a whole
   //    script source as UTF-16 (scripts/lib/ascii-only-files.mjs).
   const { asciiOnlyFiles } = await import('./lib/ascii-only-files.mjs');
   asciiOnlyFiles([outfile, brokerFile, shimFile, chunkFile]);
-
-  // Minimal package.json for playwright-core's version detection (same dir
-  // as the chunk, __dirname-relative). Version mirrors the INSTALLED
-  // library — the one actually bundled into the chunk.
-  const pwVersion = require('playwright-core/package.json').version;
-  fs.writeFileSync(
-    path.join(outdir, 'playwright-core-package.json'),
-    JSON.stringify({ name: 'playwright-core', version: pwVersion })
-  );
 }
 
 main().catch((err) => { console.error(err); process.exit(1); });

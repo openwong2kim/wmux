@@ -35,6 +35,13 @@ import {
 } from './surfaceRouting';
 // Cycle-safe: automationLease reaches this module only inside function bodies.
 import { currentBrowserOpSignal } from './automationLease';
+import {
+  decodeRelayProofBytes,
+  newRelayProofNonce,
+  RELAY_PROOF_KEY_BYTES,
+  RELAY_PROOF_METHOD,
+  relayProofMatches,
+} from '../../shared/relayProof';
 
 export { WORKSPACE_SCOPE_UNRESOLVED_CODE } from './browserScope';
 
@@ -102,6 +109,15 @@ interface CdpInfoResponse {
    */
   wsEndpoint?: string;
   /**
+   * A dedicated Chrome on a debugging pipe: the relay's endpoint and the header
+   * that lets this caller connect once (a one-time token). Present only when
+   * asked for with `relay: true`, which ensureConnected does only when it is
+   * about to connect. Never logged or kept past the connect.
+   */
+  relay?: CdpRelay;
+  /** A dedicated Chrome on a debugging pipe, which this caller may reach through the relay. */
+  piped?: boolean;
+  /**
    * Live Chrome only: the write-scope policy in force (the agent-window
    * policy). 'agent' means writes are confined to the workspace's own tabs plus
    * lent ones; 'all' is the operator opt-out that restores full write exposure.
@@ -124,10 +140,53 @@ interface CdpInfoResponse {
   targets: CdpTargetInfo[];
 }
 
+/**
+ * A relay connect: where, the one-time header that lets this connection in,
+ * and the key the relay must prove itself with (src/shared/relayProof.ts).
+ */
+interface CdpRelay {
+  endpoint: string;
+  headers: Record<string, string>;
+  proofKey: string;
+}
+
+function isRelay(value: unknown): value is CdpRelay {
+  const relay = value as CdpRelay | null;
+  return typeof relay?.endpoint === 'string'
+    && typeof relay.headers === 'object' && relay.headers !== null
+    && Object.values(relay.headers).every((v) => typeof v === 'string')
+    && decodeRelayProofBytes(relay.proofKey, RELAY_PROOF_KEY_BYTES) !== null;
+}
+
+/** How long a relay connect may take, handshake included (Playwright's own default, stated). */
+const RELAY_CONNECT_TIMEOUT_MS = 30_000;
+/** How long the relay has to prove itself once connected. */
+const RELAY_PROOF_TIMEOUT_MS = 5_000;
+const RELAY_PROOF_FAILED_MESSAGE =
+  '[PlaywrightEngine] the browser relay did not prove itself, so the connection was dropped before anything used it';
+const RELAY_GRANT_WITHOUT_KEY_MESSAGE =
+  '[PlaywrightEngine] wmux handed out a browser relay grant this MCP server cannot check (no proof key), so it did not connect. Restart wmux so both run the same version';
+
+/**
+ * The relay endpoint answered but did not prove it is wmux's relay, or main
+ * handed out a grant with no usable proof key. Non-retryable: asking again
+ * would only reach the same server, or get the same grant.
+ */
+class RelayProofError extends Error {
+  constructor(message: string = RELAY_PROOF_FAILED_MESSAGE) {
+    super(message);
+    this.name = 'RelayProofError';
+  }
+}
+
 const MAX_CONNECT_RETRIES = 3;
 const RETRY_DELAY_MS = 800;
 const PAGE_FIND_RETRIES = 3;
 const PAGE_FIND_DELAY_MS = 500;
+/** The longest a lookup waits for Playwright to produce the Page of a target it attached. */
+const POST_ATTACH_PAGE_WAIT_MS = 500;
+/** The same, after the /json fallback's explicit attach. */
+const JSON_ATTACH_PAGE_WAIT_MS = 200;
 const CDP_ATTACH_INFO_UNAVAILABLE_MESSAGE =
   '[PlaywrightEngine] browser.cdp.info did not disclose a usable CDP endpoint to this caller';
 
@@ -303,6 +362,14 @@ export class PlaywrightEngine {
    * guest. Empty when the listing failed, which never stops a lookup early.
    */
   private targetsAtConnect = new Set<string>();
+  /**
+   * The CDP target id each Page was proven to be (matchPinnedPage's
+   * Target.getTargetInfo probe). A Page's target never changes, so the next
+   * pinned lookup takes a proven Page without probing again. Keyed weakly by
+   * the Page itself: a closed Page or a dropped connection's Pages need no
+   * clearing, and only a probe ever fills it, never a URL heuristic.
+   */
+  private targetOfPage = new WeakMap<Page, string>();
   /** In-flight getPage promises, keyed by selection context (#554). A single
    *  shared lock returned one caller's page (or auto-open) to a concurrent
    *  caller in a DIFFERENT workspace — a cross-workspace read. Keying by
@@ -460,10 +527,17 @@ export class PlaywrightEngine {
    * the same URL. A target that cannot be proven → null.
    */
   private async matchPinnedPage(pages: Page[], targetId: string, url: string): Promise<Page | null> {
+    // A Page already proven to be this target is returned without a probe.
+    const proven = pages.find((p) => this.targetOfPage.get(p) === targetId);
+    if (proven) return proven;
     const byUrl = pages.filter((p) => p.url() === url);
     const candidates = byUrl.length > 0 ? byUrl : pages;
     for (const p of candidates) {
-      if ((await this.probeTargetId(p)) === targetId) return p;
+      const probed = await this.probeTargetId(p);
+      if (probed === targetId) {
+        this.targetOfPage.set(p, targetId);
+        return p;
+      }
     }
     return null;
   }
@@ -486,21 +560,28 @@ export class PlaywrightEngine {
     }
   }
 
-  async connect(cdpPortOrWsEndpoint: number | string): Promise<void> {
+  async connect(cdpPortOrWsEndpoint: number | string | CdpRelay): Promise<void> {
     // Ports build the HTTP endpoint (dedicated instances, Electron); a ws://
     // string (live-Chrome attach) passes through verbatim — connectOverCDP
-    // accepts both. The short-circuit keys on the resolved endpoint.
+    // accepts both. The short-circuit keys on the resolved endpoint. A relay
+    // connect never short-circuits: one relay endpoint serves every Chrome on
+    // a pipe, so it can't tell them apart; ensureConnected decided to connect.
+    const relay = typeof cdpPortOrWsEndpoint === 'object' ? cdpPortOrWsEndpoint : null;
     const isPort = typeof cdpPortOrWsEndpoint === 'number';
-    const endpoint = isPort ? `http://localhost:${cdpPortOrWsEndpoint}` : cdpPortOrWsEndpoint;
+    const endpoint = relay ? relay.endpoint : isPort ? `http://localhost:${cdpPortOrWsEndpoint}` : (cdpPortOrWsEndpoint as string);
     const samePort = isPort && this.cdpPort === cdpPortOrWsEndpoint;
-    const sameWs = !isPort && this.cdpPort === null && this.connectedEndpoint === endpoint;
+    const sameWs = !isPort && !relay && this.cdpPort === null && this.connectedEndpoint === endpoint;
     if (this.browser && (samePort || sameWs) && this.browser.isConnected()) {
       return;
     }
     await this.dropConnection(true);
     // B0: first real use — initialize playwright-core's module graph now.
     const { chromium } = loadPlaywright();
-    const browser = await this.connectOverCdp(chromium, endpoint, isPort ? cdpPortOrWsEndpoint : null);
+    const browser = await this.connectOverCdp(chromium, endpoint, isPort ? (cdpPortOrWsEndpoint as number) : null, relay?.headers);
+    // A relay endpoint's name or port may be another process's by now: nothing
+    // uses this connection until the relay proves it is wmux's. The session
+    // the proof was asked on is kept for auto-attach below.
+    const provenSession = relay ? await this.proveRelay(browser, relay.proofKey) : null;
     // The user may have stopped this op while the attach was in flight; the
     // Stop's disconnect ran before there was a browser to drop. Do not keep
     // a connection the stopped op would go on to drive.
@@ -512,15 +593,15 @@ export class PlaywrightEngine {
     this.browser = browser;
     // cdpPort stays null on ws connections: findViaJsonEndpoint (HTTP /json)
     // has no surface to talk to there and is gated on this.cdpPort.
-    this.cdpPort = isPort ? cdpPortOrWsEndpoint : null;
+    this.cdpPort = isPort ? (cdpPortOrWsEndpoint as number) : null;
     this.connectedEndpoint = endpoint;
-    console.error(`[PlaywrightEngine] Connected to CDP at ${isPort ? `port ${cdpPortOrWsEndpoint}` : 'ws endpoint'}`);
+    console.error(`[PlaywrightEngine] Connected to CDP at ${isPort ? `port ${cdpPortOrWsEndpoint}` : relay ? 'the pipe relay' : 'ws endpoint'}`);
 
     // Enable auto-attach so Electron webview targets become discoverable as Playwright pages.
     // Without this, <webview> tags in Electron are separate renderer processes that
     // don't appear in browser.contexts().pages().
     try {
-      const session = await this.browser.newBrowserCDPSession();
+      const session = provenSession ?? await this.browser.newBrowserCDPSession();
       // The targets this connection found already there (see targetsAtConnect).
       try {
         const { targetInfos } = (await session.send('Target.getTargets')) as {
@@ -559,9 +640,12 @@ export class PlaywrightEngine {
     chromium: ReturnType<typeof loadPlaywright>['chromium'],
     endpoint: string,
     cdpPort: number | null,
+    headers?: Record<string, string>,
   ): Promise<Browser> {
     try {
-      return await chromium.connectOverCDP(endpoint);
+      return await (headers
+        ? chromium.connectOverCDP(endpoint, { headers, timeout: RELAY_CONNECT_TIMEOUT_MS })
+        : chromium.connectOverCDP(endpoint));
     } catch (err) {
       if (cdpPort === null || !/Browser context management is not supported/.test(String(err))) throw err;
     }
@@ -575,6 +659,53 @@ export class PlaywrightEngine {
       await this.closeBootstrapTab();
       throw err;
     }
+  }
+
+  /**
+   * Ask the relay for HMAC(key, nonce) over a fresh nonce on a browser session
+   * of this connection; the relay answers with the key of the token this
+   * connection spent. Anything but the right answer within
+   * RELAY_PROOF_TIMEOUT_MS closes `browser` and throws RelayProofError; a
+   * Stop meanwhile closes it and throws the abort. The key is wiped either
+   * way. Proven, the session is returned for the caller to keep.
+   */
+  private async proveRelay(browser: Browser, proofKey: string): Promise<CDPSession> {
+    const key = decodeRelayProofBytes(proofKey, RELAY_PROOF_KEY_BYTES);
+    const opSignal = currentBrowserOpSignal();
+    let session: CDPSession | null = null;
+    let proven = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      if (key) {
+        const nonce = newRelayProofNonce();
+        const stop = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('relay proof timed out')), RELAY_PROOF_TIMEOUT_MS);
+          onAbort = () => reject(opSignal?.reason ?? new Error('aborted'));
+          opSignal?.addEventListener('abort', onAbort, { once: true });
+        });
+        const ask = async () => {
+          session = await browser.newBrowserCDPSession();
+          // Not a CDP method: the relay answers it and never forwards it.
+          const send = session.send.bind(session) as (method: string, params: object) => Promise<unknown>;
+          return (await send(RELAY_PROOF_METHOD, { nonce })) as { proof?: unknown } | undefined;
+        };
+        if (!opSignal?.aborted) {
+          const answer = await Promise.race([ask(), stop]);
+          proven = relayProofMatches(key, Buffer.from(nonce, 'base64url'), answer?.proof);
+        }
+      }
+    } catch {
+      proven = false;
+    } finally {
+      clearTimeout(timer);
+      if (onAbort) opSignal?.removeEventListener('abort', onAbort);
+      key?.fill(0);
+    }
+    if (proven && session && !opSignal?.aborted) return session;
+    await browser.close().catch(() => { /* already gone */ });
+    opSignal?.throwIfAborted();
+    throw new RelayProofError();
   }
 
   private async closeBootstrapTab(): Promise<void> {
@@ -711,11 +842,15 @@ export class PlaywrightEngine {
     }
 
     let lastError: unknown = null;
+    // A relay token is minted on every call that asks for one: ask only when
+    // about to connect. A live connection's check asks without, and asks again
+    // only if it has to reconnect to a Chrome on the pipe.
+    let askRelay = !reusable;
     for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
       try {
         const info = (await sendRpc(
           'browser.cdp.info',
-          workspaceId ? { workspaceId } : {},
+          { ...(workspaceId && { workspaceId }), ...(askRelay && { relay: true }) },
         )) as CdpInfoResponse;
         this.cacheShellUrl(info);
         const profile = typeof info.profile === 'string' ? info.profile : undefined;
@@ -735,6 +870,13 @@ export class PlaywrightEngine {
         }
         // Same (workspace, profile, policy epoch): keep the live connection.
         if (reusable && profile === this.connectedProfile && policyEpoch === this.connectedPolicyEpoch) return;
+        // A Chrome on the pipe: ask again for a token, and decide on that
+        // answer, which may name another profile.
+        if (!askRelay && info.piped === true) {
+          askRelay = true;
+          attempt--;
+          continue;
+        }
         // The profile moved, or a protected pane's policy changed: drop the old
         // browser and every Page cached on it, even if the endpoint looks the
         // same, so nothing keeps driving under the previous terms.
@@ -743,6 +885,18 @@ export class PlaywrightEngine {
           && (profile !== this.connectedProfile || policyEpoch !== this.connectedPolicyEpoch)
         ) {
           await this.disconnect();
+        }
+        // A Chrome on the pipe is reached through the relay, with this call's
+        // token, and only with a grant the relay can be checked with: an older
+        // main's has no proof key, and gets no connect at all.
+        if (info.relay !== undefined) {
+          if (!isRelay(info.relay)) throw new RelayProofError(RELAY_GRANT_WITHOUT_KEY_MESSAGE);
+          await this.connect(info.relay);
+          this.connectedWorkspaceId = workspaceId;
+          this.connectedProfile = profile;
+          this.connectedPolicyEpoch = policyEpoch;
+          if (policyEpoch !== undefined) await this.denyDownloads();
+          return;
         }
         // Live-Chrome attach reports a ws endpoint instead of a port.
         if (typeof info.wsEndpoint === 'string' && info.wsEndpoint.startsWith('ws')) {
@@ -775,7 +929,7 @@ export class PlaywrightEngine {
         }
         return;
       } catch (err) {
-        if (err instanceof CdpAttachInfoUnavailableError) throw err;
+        if (err instanceof CdpAttachInfoUnavailableError || err instanceof RelayProofError) throw err;
         opSignal?.throwIfAborted();
         // A refusal, like the one above: retrying cannot change main's answer.
         const refusal = browserCallRefusal(err);
@@ -828,6 +982,79 @@ export class PlaywrightEngine {
       pages.push(...ctx.pages());
     }
     return pages;
+  }
+
+  /**
+   * Find the Page of a target just attached: match the pages there are now,
+   * then each Page that appears after, until one matches, `boundMs` has passed,
+   * or the connection drops. Replaces a fixed wait after an attach: a Page
+   * that already exists is returned at once. Each Page is matched once:
+   * listening starts after the first match, and any Page that appeared during
+   * it is matched next, before any wait. The bound ends with one last look,
+   * which also covers a Page in a context created during the wait.
+   *
+   * Strict surface targeting (#517): with an explicit surfaceId, the Page must
+   * be proven to be `targetId` (URL only narrows the candidates); without one,
+   * any non-shell Page.
+   */
+  private async waitForAttachedPage(
+    surfaceId: string | undefined,
+    targetId: string,
+    url: string,
+    boundMs: number,
+  ): Promise<{ page: Page | null; pageCount: number }> {
+    const browser = this.browser;
+    let pageCount = 0;
+    if (!browser) return { page: null, pageCount };
+    const deadline = Date.now() + boundMs;
+    const seen = new Set<Page>();
+    const matchNew = async (): Promise<Page | null> => {
+      const all = this.getAllPages();
+      pageCount = all.length;
+      const fresh = all.filter((p) => !seen.has(p));
+      for (const p of fresh) seen.add(p);
+      if (fresh.length === 0) return null;
+      return surfaceId
+        ? this.matchPinnedPage(fresh, targetId, url)
+        : fresh.find((p) => !this.isShellPage(p.url())) ?? null;
+    };
+    const dropped = () => this.browser !== browser || !browser.isConnected();
+
+    const first = await matchNew();
+    if (first || dropped()) return { page: first, pageCount };
+    let changed = false;
+    let wake: (() => void) | null = null;
+    const onChange = () => {
+      changed = true;
+      wake?.();
+    };
+    const contexts = browser.contexts();
+    for (const c of contexts) c.on('page', onChange);
+    browser.on('disconnected', onChange);
+    try {
+      for (;;) {
+        changed = false;
+        const page = await matchNew();
+        if (page || dropped()) return { page, pageCount };
+        const left = deadline - Date.now();
+        if (left <= 0) return { page: null, pageCount };
+        if (changed) continue;
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            wake = null;
+            resolve();
+          }, left);
+          wake = () => {
+            clearTimeout(timer);
+            wake = null;
+            resolve();
+          };
+        });
+      }
+    } finally {
+      for (const c of contexts) c.off('page', onChange);
+      browser.off('disconnected', onChange);
+    }
   }
 
   /**
@@ -1465,7 +1692,7 @@ export class PlaywrightEngine {
         }
       } catch (err) {
         if (isWorkspaceScopeUnresolvedError(err)) throw err;
-        if (err instanceof CdpAttachInfoUnavailableError) throw err;
+        if (err instanceof CdpAttachInfoUnavailableError || err instanceof RelayProofError) throw err;
         // Stopped by the user: the failure in hand is the dropped connection,
         // and the retry below would reconnect to the tab they stopped.
         opSignal?.throwIfAborted();
@@ -1697,17 +1924,16 @@ export class PlaywrightEngine {
           console.error(`[PlaywrightEngine] Attached to target ${webviewTarget.targetId}`);
         }
 
-        // After attaching, check if new pages appeared
-        await sleep(500);
-        const newPages = this.getAllPages();
-        console.error(`[PlaywrightEngine] After attach: ${newPages.length} pages`);
-
-        // Strict surface targeting (#517): with an explicit surfaceId, match
-        // the attached page by the pinned targetId (URL only as an unambiguous
-        // fallback) instead of "any non-shell page".
-        const matchedPage = surfaceId
-          ? await this.matchPinnedPage(newPages, webviewTarget.targetId, webviewTarget.url)
-          : newPages.find((p) => !this.isShellPage(p.url()));
+        // The Page may exist already (a target Playwright attached itself, or
+        // one proven on an earlier call, which matches without a probe) or
+        // appear shortly after the attach (see waitForAttachedPage).
+        const { page: matchedPage, pageCount } = await this.waitForAttachedPage(
+          surfaceId,
+          webviewTarget.targetId,
+          webviewTarget.url,
+          POST_ATTACH_PAGE_WAIT_MS,
+        );
+        console.error(`[PlaywrightEngine] After attach: ${pageCount} pages`);
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page after attach: ${matchedPage.url()}`);
           return matchedPage;
@@ -1802,17 +2028,14 @@ export class PlaywrightEngine {
 
         console.error(`[PlaywrightEngine] Attached to target ${jsonTarget.id} via /json`);
 
-        // Brief wait for Playwright to process the attached target
-        await sleep(200);
-
-        const pages = this.getAllPages();
-        console.error(`[PlaywrightEngine] After /json attach: ${pages.length} pages`);
-
-        // Strict surface targeting (#517): pinned surface matches by targetId
-        // (URL only when unambiguous) — never "any non-shell page".
-        const matchedPage = surfaceId
-          ? await this.matchPinnedPage(pages, jsonTarget.id, jsonTarget.url)
-          : pages.find((p) => !this.isShellPage(p.url()));
+        // Give Playwright a little time to process the attached target.
+        const { page: matchedPage, pageCount } = await this.waitForAttachedPage(
+          surfaceId,
+          jsonTarget.id,
+          jsonTarget.url,
+          JSON_ATTACH_PAGE_WAIT_MS,
+        );
+        console.error(`[PlaywrightEngine] After /json attach: ${pageCount} pages`);
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page via /json attach: ${matchedPage.url()}`);
           return matchedPage;

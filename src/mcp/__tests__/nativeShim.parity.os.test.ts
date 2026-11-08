@@ -11,9 +11,9 @@
 // runs from a directory of its own, so there is none, and it then exits 1 as
 // shim.ts does). DIVERGENCES records where the native shim differs on purpose:
 // each runs both and asserts both outcomes, so the difference stays recorded
-// rather than ignored. The native handshake also ends with `"ack":1` (the
-// broker ack; everything before it is shim.ts's bytes), checked in place, and
-// the stub answers a handshake that asks for the ack, as the broker does.
+// rather than ignored. Both handshakes end with `"ack":1` (the broker ack),
+// checked in place, and the stub answers a handshake that asks for the ack, as
+// the broker does.
 //
 // shim.ts is bundled from source with esbuild, so the test follows the source
 // rather than a stale build. The binary is WMUX_NATIVE_HOOKS_BIN, else the
@@ -232,9 +232,9 @@ function handshake(r: Run, who: string): string {
 
 const maskPid = (line: string) => line.replace(/"callerPid":\d+,/, '"callerPid":0,');
 
-/** The native handshake minus its additive last field, `"ack":1`. */
+/** A handshake minus its last field, `"ack":1`, which both shims send. */
 function withoutAck(line: string): string {
-  expect(line, 'the native handshake ends with "ack":1').toMatch(/,"ack":1\}\n$/);
+  expect(line, 'the handshake ends with "ack":1').toMatch(/,"ack":1\}\n$/);
   return line.replace(/,"ack":1\}\n$/, '}\n');
 }
 
@@ -273,7 +273,7 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
   for (const c of CASES) {
     it(c.name, async () => {
       const { js, native } = await both(c);
-      const jsLine = handshake(js, 'JS');
+      const jsLine = withoutAck(handshake(js, 'JS'));
       const nativeLine = handshake(native, 'native');
       const j = JSON.parse(jsLine);
       const n = JSON.parse(withoutAck(nativeLine));

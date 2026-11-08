@@ -1270,6 +1270,7 @@ export const ko = {
   'remote.hubStatusChecking': '확인 중…',
   'remote.hubStatusInsecure': 'HTTPS 필요',
   'remote.hubOpenHost': '{name}의 워크스페이스 보기',
+  'remote.newPaneNoWorkspaceGrant': '이 PC는 {name}에서 이미 실행 중인 패널을 열 수는 있지만, 그곳에서 새 패널을 시작할 수는 없습니다.',
   'remote.hubPairAgain': '다시 페어링',
   'remote.hubPairHint': '다른 컴퓨터의 페어링 링크를 붙여넣으세요 (원격 → 다른 컴퓨터 연결).',
   'remote.hubRepairHint': '“{name}”의 새 페어링 링크를 붙여넣어 다시 페어링하세요.',

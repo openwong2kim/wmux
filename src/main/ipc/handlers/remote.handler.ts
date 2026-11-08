@@ -25,6 +25,7 @@ import {
   RemoteInsecureTransportError,
   isRemoteAuthRejected,
   isRemoteInsecureTransport,
+  isRemoteUnknownWorkspace,
 } from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
@@ -152,7 +153,7 @@ interface AttachRecord {
  *  reason so the renderer can offer "pair again" instead of a raw message. */
 function failure(err: unknown): { ok: false; error: string; reason?: RemoteErrorReason } {
   const error = err instanceof Error ? err.message : String(err);
-  if (isRemoteAuthRejected(err) || isRemoteInsecureTransport(err)) return { ok: false, error, reason: err.reason };
+  if (isRemoteAuthRejected(err) || isRemoteInsecureTransport(err) || isRemoteUnknownWorkspace(err)) return { ok: false, error, reason: err.reason };
   return { ok: false, error };
 }
 

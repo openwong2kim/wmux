@@ -127,14 +127,22 @@ export function findNativeHooksSource(startDir: string, platform: NodeJS.Platfor
   const parent = path.dirname(startDir);
   const candidates: string[] = [];
   const inCliBundle = path.basename(startDir) === 'cli-bundle';
-  if (inCliBundle && path.basename(parent).toLowerCase() === 'resources') {
-    candidates.push(path.join(parent, 'native-hooks', exe));
-  }
+  const packaged = packagedNativeHooksSource(startDir, platform);
+  if (packaged) candidates.push(packaged);
   const repo = inCliBundle && path.basename(parent) === 'dist' ? path.dirname(parent) : startDir;
   if (fs.existsSync(path.join(repo, 'core', 'wmux-native', 'Cargo.toml'))) {
     candidates.push(path.join(repo, 'core', 'wmux-native', 'target', 'release', exe));
   }
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+/** The packaged root alone: `<resources>/native-hooks/<exe>` seen from the
+ *  CLI bundle inside that resources directory, when it exists. */
+export function packagedNativeHooksSource(cliBundleDir: string, platform: NodeJS.Platform = process.platform): string | null {
+  const resources = path.dirname(cliBundleDir);
+  if (path.basename(cliBundleDir) !== 'cli-bundle' || path.basename(resources).toLowerCase() !== 'resources') return null;
+  const candidate = path.join(resources, 'native-hooks', nativeHooksBasename(platform));
+  return fs.existsSync(candidate) ? candidate : null;
 }
 
 export function resolveCompatHookPaths(

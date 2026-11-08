@@ -17,6 +17,7 @@
 
 import * as fs from 'fs';
 import { getConfigPath } from '../../daemon/config';
+import { stripBom } from '../../shared/stripBom';
 
 export type EnforcementMode = 'shadow' | 'enforce';
 
@@ -40,7 +41,7 @@ export function resolveEnforcementMode(
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw, (key, value) => {
+    parsed = JSON.parse(stripBom(raw), (key, value) => {
       // Prototype pollution guard — mirrors daemon/config.ts.
       if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
         return undefined;

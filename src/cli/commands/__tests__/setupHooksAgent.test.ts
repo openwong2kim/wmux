@@ -2,8 +2,11 @@
 // The installer itself is covered in compatHookInstall.os.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const installCompatHooks = vi.fn();
-vi.mock('../../../shared/hooks/compatHookInstall', () => ({
+const { installCompatHooks } = vi.hoisted(() => ({ installCompatHooks: vi.fn() }));
+vi.mock('../../../shared/hooks/compatHookInstall', async (importOriginal) => ({
+  // setupHooks itself loads this module (the packaged lookup), so the rest of
+  // it stays real.
+  ...await importOriginal<typeof import('../../../shared/hooks/compatHookInstall')>(),
   resolveCompatHookPaths: () => ({ marker: 'paths' }),
   installCompatHooks,
   removeCompatHooks: vi.fn(),

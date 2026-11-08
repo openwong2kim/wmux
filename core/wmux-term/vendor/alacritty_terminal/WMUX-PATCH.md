@@ -17,10 +17,56 @@ Local changes:
   wmux's xterm configuration. Other paragraphs retain upstream reflow. Shrinking
   clamps the cursor and clears pending wrap. Clipped fullwidth cells are retained
   to match xterm; the ANSI serializer explicitly refuses an unrepresentable edge.
+- `src/grid/resize.rs` `grow_lines`: more rows pull history rows down only while
+  the cursor is on the bottom row, as xterm does (`Buffer.ts` `resize`, the rows
+  grow branch, lines 196-221 in 6.1.0-beta.336). Otherwise blank rows are added
+  below the cursor and history and both cursors stay put. Upstream always pulled
+  `min(history, added)` rows. The window is rotated rather than scrolled, so no
+  history row is dropped at the scrollback cap.
+- `src/grid/resize.rs` `shrink_columns`: after the reflow, the cursor row
+  follows xterm's rule rather than its content (`Buffer.ts` `_reflowSmaller`,
+  the viewport adjustment at lines 466-486 in 6.1.0-beta.336). With no history,
+  every added row moves the cursor down one row while there is room below,
+  dropping the bottom row; the rest goes to history, kept past the cap by the
+  rows dropped. With history, the cursor row stays. The saved cursor moves down
+  with the room used. `native_core.rs` refuses a resize that reflows a paragraph
+  below the cursor's, where xterm moves its cursor row off its content.
+- `src/grid/tests.rs`: upstream's `shrink_reflow`, `shrink_reflow_twice`,
+  `shrink_reflow_empty_cell_inside_line`, `grow_reflow` and
+  `grow_reflow_multiline` leave the cursor at 0,0, inside the paragraph they
+  resize, and expected it reflowed. They now expect xterm's result: the
+  cursor's paragraph is not reflowed (`reflowCursorLine` false, `Buffer.ts`
+  lines 391-397 and `BufferReflow.ts` lines 45-52). `shrink_reflow_cursor_below`
+  and `grow_reflow_cursor_below` keep a reflow case with the cursor outside it.
 
 - `src/term/cell.rs` uses the remaining u16 flag bit for SGR blink;
   `src/term/mod.rs` retains SGR 5, ignores SGR 6 like xterm, and clears blink on SGR 25/reset. This keeps
   the 24-byte cell layout while allowing native ANSI replay to preserve blink.
+- `src/term/mod.rs` fills the rows SD (`CSI Ps T`) inserts with default
+  attributes, as xterm.js's `InputHandler.scrollDown` does (it inserts
+  `DEFAULT_ATTR_DATA` blanks), where upstream used the current background.
+  Reverse index at the top margin keeps the erase colour (xterm.js
+  `reverseIndex`), so it now calls `scroll_down_relative` directly.
+- `src/term/mod.rs` deletes lines (DL, `CSI Ps M`) in place, as xterm.js's
+  `InputHandler.deleteLines` does (it splices rows within the scroll region
+  and never touches scrollback). Upstream rotated the deleted rows into
+  history when the region started at the top row. `src/grid/mod.rs` adds
+  `scroll_up_in_place` for it; linefeed still scrolls into history.
+- `src/term/mod.rs` caps DCH (`CSI Ps P`) at the cells right of the cursor,
+  as xterm.js's `InputHandler.deleteChars` (`BufferLine.deleteCells`) does.
+  Upstream capped at the row width and then cleared the last `count` cells,
+  so a count past the line end also cleared cells left of the cursor.
+- `src/term/mod.rs` scrolls the region in place for SU (`CSI Ps S`), as
+  xterm.js's `InputHandler.scrollUp` does (it splices rows within the
+  scroll region and never touches scrollback). Upstream rotated the rows
+  into history when the region started at the top row. Linefeed, which
+  upstream routed through the same handler, now calls `scroll_up_relative`
+  directly and keeps scrolling into history.
+
+`Cargo.lock` locks the crate's own test build (its dev-dependency, serde_json,
+keeps it out of the wmux-term workspace). It keeps wmux-term's versions for every
+shared dependency. CI runs `cargo test --manifest-path
+core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.
