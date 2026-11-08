@@ -43,6 +43,8 @@ process.stdin.on('end', () => {
 
 let script = '';
 const spawned: ChildProcessWithoutNullStreams[] = [];
+/** The pid of the child each runner's first run started, read from the runner's spawn on. */
+const firstStarted: Promise<number>[] = [];
 const runners: RunnerProcess[] = [];
 
 beforeAll(() => {
@@ -53,6 +55,7 @@ beforeAll(() => {
 
 afterEach(() => {
   received.length = 0;
+  firstStarted.length = 0;
   for (const r of runners.splice(0)) void r.dispose();
   // The whole group, while the runner is unreaped: a failed test must not
   // leave a child behind.
@@ -82,6 +85,8 @@ function runner(opts: Partial<ConstructorParameters<typeof RunnerProcess>[0]> & 
         return write(chunk);
       };
       spawned.push(child);
+      // Read from the spawn: a listener added once the run is out can miss the line.
+      firstStarted.push(startedPid(child));
       return child;
     },
     ...rest,
@@ -192,7 +197,7 @@ describe.skipIf(process.platform === 'win32')('RunnerProcess', () => {
     await until(() => spawned[0].stdin.writableEnded);
     const hung = r.run(['hang'], { home: '/tmp/ad', timeoutMs: 30_000 });
     await until(() => spawned.length === 2);
-    const child = await startedPid(spawned[1]);
+    const child = await firstStarted[1];
     process.kill(spawned[1].pid as number, 'SIGSTOP');
     r.abort();
     await expect(hung).rejects.toMatchObject({ code: 'aborted' });
