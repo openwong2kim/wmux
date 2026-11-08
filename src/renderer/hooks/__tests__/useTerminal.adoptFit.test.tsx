@@ -145,15 +145,22 @@ async function settledPane(ptyId: string) {
   expect(sentFor(ptyId)).toContain('57x8');
   resize.mockClear();
   const restructure = async (key: string) => {
+    jobs.length = 0;
     await act(async () => { root!.render(<Harness key={key} />); });
     expect(log.mock.calls.some(([line]) => String(line).includes(`ptyId=${ptyId} mount=adopted`))).toBe(true);
   };
-  return { size, restructure };
+  /** The park dropped WebGL; the reveal queued its rebuild. Run it, and its refit frame. */
+  const upgrade = async () => {
+    expect(jobs.length).toBeGreaterThan(0);
+    await act(async () => { jobs.at(-1)!(); });
+    await settle(40);
+  };
+  return { size, restructure, upgrade };
 }
 
 describe('useTerminal: an adopted terminal fits after the layout, not against the box before it', { timeout: 60_000 }, () => {
   it('sends nothing for the pre-layout box, then only the laid-out size, once', async () => {
-    const { size, restructure } = await settledPane('p-adopt-close');
+    const { size, restructure, upgrade } = await settledPane('p-adopt-close');
     // Before the Group lays out, the box reads a column short (a transient
     // scrollbar) and the old panel's rows.
     Object.assign(size, { cols: 56, rows: 8 });
@@ -164,24 +171,24 @@ describe('useTerminal: an adopted terminal fits after the layout, not against th
     // The Group lays out; the container's first callback carries the size it keeps.
     Object.assign(size, { cols: 57, rows: 20 });
     act(() => ManualResizeObserver.fire());
-    await settle();
+    await upgrade();
     expect(sentFor('p-adopt-close')).toEqual(['57x20']);
   });
 
   it('still fits and sends its first resize when the restructure leaves the size as it was', async () => {
-    const { restructure } = await settledPane('p-adopt-same');
+    const { restructure, upgrade } = await settledPane('p-adopt-same');
     await restructure('second');
     await settle();
     expect(sentFor('p-adopt-same')).toEqual([]);
     // A new container is observed afresh, so it gets its first callback even
     // though its size equals the old one's.
     act(() => ManualResizeObserver.fire());
-    await settle();
+    await upgrade();
     expect(sentFor('p-adopt-same')).toEqual(['57x8']);
   });
 
   it('adopted into a hidden container, it fits on the reveal, the first callback it gets', async () => {
-    const { size, restructure } = await settledPane('p-adopt-hidden');
+    const { size, restructure, upgrade } = await settledPane('p-adopt-hidden');
     shown.value = false;
     await restructure('second');
     await settle(200);
@@ -190,15 +197,68 @@ describe('useTerminal: an adopted terminal fits after the layout, not against th
     shown.value = true;
     Object.assign(size, { cols: 90, rows: 30 });
     act(() => ManualResizeObserver.fire());
-    await settle();
+    await upgrade();
     expect(sentFor('p-adopt-hidden')).toEqual(['90x30']);
   });
 
-  it('a real resize after the adoption still reaches the PTY', async () => {
-    const { size, restructure } = await settledPane('p-adopt-then-resize');
+  it('waits for the WebGL renderer the park dropped: no fit with the DOM renderer cell', async () => {
+    // The layout first: the DOM renderer's cell is wider, so a fit now would
+    // come out a column short. Nothing goes until WebGL is back.
+    const { size, restructure, upgrade } = await settledPane('p-adopt-webgl-late');
     await restructure('second');
+    Object.assign(size, { cols: 56, rows: 20 });
     act(() => ManualResizeObserver.fire());
     await settle();
+    expect(sentFor('p-adopt-webgl-late')).toEqual([]);
+    Object.assign(size, { cols: 57, rows: 20 });
+    await upgrade();
+    expect(sentFor('p-adopt-webgl-late')).toEqual(['57x20']);
+  });
+
+  it('a WebGL upgrade that lands before the layout leaves the fit to the layout', async () => {
+    const { size, restructure, upgrade } = await settledPane('p-adopt-webgl-early');
+    await restructure('second');
+    Object.assign(size, { cols: 56, rows: 8 });
+    await upgrade();
+    expect(sentFor('p-adopt-webgl-early')).toEqual([]);
+    Object.assign(size, { cols: 57, rows: 20 });
+    act(() => ManualResizeObserver.fire());
+    await settle(20);
+    expect(sentFor('p-adopt-webgl-early')).toEqual(['57x20']);
+  });
+
+  it('a callback under the floor is not the laid-out size: the next one fits, at once', async () => {
+    const { size, restructure, upgrade } = await settledPane('p-adopt-floor');
+    await restructure('second');
+    await upgrade();
+    // The box is still collapsed when the first callback comes: under #1255's floor.
+    Object.assign(size, { cols: 57, rows: 1 });
+    act(() => ManualResizeObserver.fire());
+    await settle(20);
+    expect(sentFor('p-adopt-floor')).toEqual([]);
+    // Laid out: the next callback fits without the scheduler's debounce.
+    Object.assign(size, { cols: 57, rows: 20 });
+    act(() => ManualResizeObserver.fire());
+    await settle(20);
+    expect(sentFor('p-adopt-floor')).toEqual(['57x20']);
+  });
+
+  it('a live selection does not hold the adopted pane at its old grid', async () => {
+    const { size, restructure, upgrade } = await settledPane('p-adopt-selected');
+    const { Terminal } = await import('@xterm/xterm');
+    vi.spyOn(Terminal.prototype, 'hasSelection').mockReturnValue(true);
+    await restructure('second');
+    Object.assign(size, { cols: 57, rows: 20 });
+    act(() => ManualResizeObserver.fire());
+    await upgrade();
+    expect(sentFor('p-adopt-selected')).toEqual(['57x20']);
+  });
+
+  it('a real resize after the adoption still reaches the PTY', async () => {
+    const { size, restructure, upgrade } = await settledPane('p-adopt-then-resize');
+    await restructure('second');
+    act(() => ManualResizeObserver.fire());
+    await upgrade();
     expect(sizesFor('p-adopt-then-resize')).toEqual(['57x8']);
 
     Object.assign(size, { cols: 80, rows: 8 });

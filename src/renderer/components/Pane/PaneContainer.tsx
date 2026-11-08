@@ -16,13 +16,13 @@ const SEPARATOR_HIT_TARGET = { coarse: 37, fine: 16 };
 
 /**
  * The style of each Panel's content box. The library makes it `overflow: auto`,
- * so a pane taller than its Panel for a moment (a restructure, before the
- * Group lays the new panel set out) got a scrollbar, and the scrollbar took
- * width from the pane: the terminal fitted a column short and the next fit
- * gave it back. A pane fills its Panel and scrolls inside itself, so the box
- * never needs to scroll; clipping keeps its width the Panel's.
+ * so a pane taller than its Panel (for a moment in a restructure, before the
+ * Group lays the new panel set out) showed a scrollbar, and the scrollbar took
+ * width from the pane: its terminal fitted a column short. The box still
+ * scrolls, so chrome taller than a very short Panel stays reachable with the
+ * wheel or keyboard, but its scrollbar takes no width.
  */
-export const PANEL_CONTENT_STYLE = { overflow: 'hidden' } as const;
+export const PANEL_CONTENT_STYLE = { scrollbarWidth: 'none' } as const;
 
 /** The band the library grabs with — it picks coarse or fine from this same
  *  media query, not per event. */

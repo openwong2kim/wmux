@@ -1117,6 +1117,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // while this is set; the container's first ResizeObserver callback, which
   // comes after the Group's layout, clears it and fits.
   const adoptFitPendingRef = useRef(false);
+  // The adoption's first fit, set by the main effect: runs it when the layout
+  // has arrived and no WebGL upgrade is still to come (`force`: the upgrade
+  // has settled one way or the other). A park drops the WebGL renderer, and
+  // until the upgrade rebuilds it xterm measures the DOM renderer's cell,
+  // which at a fractional device pixel ratio is wider than WebGL's: a fit then
+  // comes out a column short and the upgrade's refit sends the real width.
+  const adoptSettleRef = useRef<((force?: boolean) => void) | null>(null);
   const retryReconnectRef = useRef<(() => Promise<void> | undefined) | null>(null);
   const onRecoveryErrorRef = useRef(options.onRecoveryError);
   onRecoveryErrorRef.current = options.onRecoveryError;
@@ -2559,37 +2566,42 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // the handle for that deferred local fit lives here — teardown and a newer
     // resize both have to be able to drop it.
     let cancelOrderedFit: CancelOrderedFit | null = null;
-    const runFit = () => {
+    // `adoptFirst`: an adoption's first fit (the ResizeObserver below). It is
+    // the one fit the hold lets through, and it does not wait for a selection
+    // to be released: the adopted grid is the pre-restructure one, clipped by
+    // its new box, and the mount fit it replaces never waited either. True when
+    // a fit ran (or was handed to the ordered path), false when it was skipped.
+    const runFit = (adoptFirst = false): boolean => {
       try {
         const term = terminalRef.current;
-        if (!term) return;
+        if (!term) return false;
         // Identity guard, as at every other async site in this hook (fonts.ready,
         // hydrateForRead, …). A ptyId change re-runs this effect; a frame queued
         // by the previous one would otherwise fit against the OLD container and
         // fitAddon and then send those dimensions to ptyIdRef.current — which by
         // then points at the NEW pty.
-        if (term !== terminal) return;
+        if (term !== terminal) return false;
 
         // An adoption fits on its container's first ResizeObserver callback.
-        if (adoptFitPendingRef.current) return;
+        if (adoptFitPendingRef.current && !adoptFirst) return false;
 
-        if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
+        if (container.offsetWidth === 0 || container.offsetHeight === 0) return false;
 
         // #1255: floor gate BEFORE the selection guard — a sub-floor proposal
         // records no fit debt: layout settling re-fires the ResizeObserver,
         // which is the retry. (Checked before claimFit so the debt mechanism
         // stays reserved for selection-deferred fits.)
         const proposed = proposedSafeDimensions(fitAddon, container);
-        if (!proposed) return;
+        if (!proposed) return false;
 
         // Selection-preservation guard: xterm's SelectionService clears the
         // active selection on any rowsChanged event from fit(). While the user
         // is dragging out a selection (or while one is live waiting to be
         // copied) skip this fit and record the debt — releasing the selection
         // fires no ResizeObserver tick, so without this the fit is simply lost.
-        if (!claimFit(term, pendingFitRef)) {
+        if (!adoptFirst && !claimFit(term, pendingFitRef)) {
           console.debug('[Terminal] resize fit deferred — active selection');
-          return;
+          return false;
         }
         pendingFitRef.current = false;
 
@@ -2662,8 +2674,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             }
           },
         });
+        return true;
       } catch {
         // ignore fit errors during unmount
+        return false;
       }
     };
 
@@ -4289,19 +4303,37 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         });
       },
     });
-    // An adoption's first fit: the first callback on this (new) container comes
-    // after the layout Group has applied its new panel set (observations are
-    // delivered shallowest first, with layout run again between depths, and
-    // the Group observes its own element), so it carries the size the pane
-    // keeps. Fitted here rather than a debounce later, so the old grid is not
-    // shown meanwhile. A container with no size yet (a hidden workspace) gets
-    // no callback until it is shown, and that one is the first fit. During an
-    // animated layout change the fit goes to the scheduler, like any other.
+    // An adoption's first fit waits for two things. The layout: a new
+    // container is observed afresh, so it gets a callback even when its size
+    // equals the old one's, and by the time the frame delivers it the Group has
+    // applied the new panel set's layout (measured on Windows: the first
+    // callback carried the size the pane keeps after a split under, a close
+    // and a split right, where a fit at mount had read a column short). And the
+    // renderer: the park dropped WebGL, and the reveal effect rebuilds it on
+    // webglUpgradeQueue with the pane hidden meanwhile, so a fit before that
+    // measures the DOM renderer's cell (the condition the first-resize gate
+    // waits on for a fresh mount). Whichever comes second fits, once. The hold
+    // stays until a fit actually runs: a callback on a box with no size (a
+    // hidden workspace, a window that is not painting) or under #1255's floor
+    // is not the laid-out size, and the next one is. Should a callback ever
+    // carry a size the layout then changes, that change is an ordinary resize
+    // through the scheduler. During an animated layout change the fit goes to
+    // the scheduler, like any other.
+    let adoptLaidOut = false;
+    const adoptRendererPending = () => isVisibleRef.current && !!loadWebglRef.current && !webglAddonRef.current
+      && !webglBuildFailed && !webglContextPool.acquireWouldEvict(webglTokenRef.current);
+    adoptSettleRef.current = (force = false) => {
+      if (!adoptFitPendingRef.current || !adoptLaidOut || terminalRef.current !== terminal) return;
+      if (!force && adoptRendererPending()) return;
+      if (runFit(true)) adoptFitPendingRef.current = false;
+    };
     const resizeObserver = new ResizeObserver(() => {
       if (adoptFitPendingRef.current && terminalRef.current === terminal) {
-        adoptFitPendingRef.current = false;
-        if (!fitsHeld()) {
-          runFit();
+        if (fitsHeld()) {
+          adoptFitPendingRef.current = false;
+        } else {
+          adoptLaidOut = true;
+          adoptSettleRef.current?.();
           return;
         }
       }
@@ -4976,6 +5008,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           let hideTimer: ReturnType<typeof setTimeout> | null = null;
           showAfterUpgrade = () => {
             if (hideTimer !== null) { clearTimeout(hideTimer); hideTimer = null; }
+            // An adoption's first fit waits for this upgrade, built or not.
+            adoptSettleRef.current?.(true);
             if (el) el.style.opacity = '';
           };
           const show = showAfterUpgrade;
