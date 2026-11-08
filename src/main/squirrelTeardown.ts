@@ -17,7 +17,8 @@
  * as classification allows:
  *
  *   killed:  GUI app instances — our exe image with a plain command line
- *            (no --type=, no daemon script, no --squirrel-* flag) — and
+ *            (no --type=, no daemon script, no --squirrel-* flag, not run
+ *            as Node) — and
  *            every process descended from one (Chromium helpers, local
  *            shells, other children), each by pid
  *   spared:  ourselves (the hook process), the wmux daemon and everything
@@ -44,7 +45,7 @@
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 
-export type WmuxProcessKind = 'self' | 'helper' | 'daemon' | 'squirrel-hook' | 'app';
+export type WmuxProcessKind = 'self' | 'helper' | 'daemon' | 'squirrel-hook' | 'node' | 'app';
 
 export interface WmuxProcessRow {
   pid: number;
@@ -62,12 +63,47 @@ export interface WmuxProcessRow {
 // discriminator (same rule the launcher's verified-kill path uses).
 const DAEMON_SCRIPT_RE = /daemon(-bundle)?[\\/](daemon[\\/])?index\.js/i;
 
+/** The first argument after the executable, unquoted ('' when none). */
+function firstArgument(commandLine: string): string {
+  const cmd = commandLine.trimStart();
+  let rest: string;
+  if (cmd.startsWith('"')) {
+    const close = cmd.indexOf('"', 1);
+    rest = close < 0 ? '' : cmd.slice(close + 1);
+  } else {
+    const space = cmd.search(/\s/);
+    rest = space < 0 ? '' : cmd.slice(space);
+  }
+  rest = rest.trimStart();
+  if (rest.startsWith('"')) {
+    const close = rest.indexOf('"', 1);
+    return close < 0 ? rest.slice(1) : rest.slice(1, close);
+  }
+  return rest.split(/\s/, 1)[0] ?? '';
+}
+
+/**
+ * Our exe run as Node (ELECTRON_RUN_AS_NODE), which a command line shows only
+ * by its first argument: an inline script (`-e`/`-p`, the shareReader and
+ * probes) or a script file (the MCP broker, the CLI bundle, hook gates). A GUI
+ * launch takes neither.
+ */
+function runsAsNode(commandLine: string): boolean {
+  const arg = firstArgument(commandLine);
+  if (/^(-e|--eval|-p|--print)$/.test(arg)) return true;
+  // A deep link (wmux://…) can end in .js too.
+  return /\.[cm]?js$/i.test(arg) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(arg);
+}
+
 /**
  * Classify one same-image process row. Order matters: self before everything
  * (our own command line carries --squirrel-*), helpers before daemon (a
- * helper's long cmdline could contain almost anything), and the --squirrel
- * check last-but-one so a concurrent hook or the fresh --squirrel-firstrun
- * launch is never treated as a killable app instance.
+ * helper's long cmdline could contain almost anything), the daemon before the
+ * Node check (the daemon is itself a script run as Node), and the --squirrel
+ * check before the fallback so a concurrent hook or the fresh
+ * --squirrel-firstrun launch is never treated as a killable app instance.
+ * A process run as Node is never an app instance (#3018); one under the app
+ * still goes with it as a descendant.
  */
 export function classifyWmuxProcess(row: WmuxProcessRow, ownPid: number): WmuxProcessKind {
   if (row.pid === ownPid) return 'self';
@@ -75,6 +111,7 @@ export function classifyWmuxProcess(row: WmuxProcessRow, ownPid: number): WmuxPr
   if (cmd.includes('--type=')) return 'helper';
   if (DAEMON_SCRIPT_RE.test(cmd)) return 'daemon';
   if (cmd.includes('--squirrel')) return 'squirrel-hook';
+  if (runsAsNode(cmd)) return 'node';
   return 'app';
 }
 
@@ -128,8 +165,7 @@ export function parseCimProcessJson(stdout: string): WmuxProcessRow[] {
  * pruned at the daemon (its parent pid is the app), at ourselves and at any
  * concurrent Squirrel hook, so none of those, nor anything under them, is
  * killed. The prune applies whatever the image name: sparing a daemon-shaped
- * process is the safe direction. A same-image process anywhere under a daemon
- * is never taken as an app instance either (#3018).
+ * process is the safe direction.
  */
 export function selectAppTreeKillPids(
   rows: readonly WmuxProcessRow[],
@@ -137,25 +173,8 @@ export function selectAppTreeKillPids(
   exeName: string,
 ): { appPids: number[]; descendantPids: number[] } {
   const image = exeName.toLowerCase();
-  const byPid = new Map<number, WmuxProcessRow>();
-  for (const row of rows) byPid.set(row.pid, row);
-  // The daemon's subtree is spared at the roots too (#3018): the daemon runs
-  // helpers of its own image with a plain command line (the shareReader is
-  // `wmux.exe -e <source>`), which classify as 'app' by command line alone.
-  const underDaemon = (row: WmuxProcessRow): boolean => {
-    const seen = new Set<number>([row.pid]);
-    let parent = row.parentPid ?? 0;
-    while (parent > 0 && !seen.has(parent)) {
-      seen.add(parent);
-      const up = byPid.get(parent);
-      if (!up) return false;
-      if (classifyWmuxProcess(up, ownPid) === 'daemon') return true;
-      parent = up.parentPid ?? 0;
-    }
-    return false;
-  };
   const appPids = selectAppInstancePids(
-    rows.filter((row) => (row.name ?? '').toLowerCase() === image && !underDaemon(row)),
+    rows.filter((row) => (row.name ?? '').toLowerCase() === image),
     ownPid,
   );
   const childrenOf = new Map<number, WmuxProcessRow[]>();
