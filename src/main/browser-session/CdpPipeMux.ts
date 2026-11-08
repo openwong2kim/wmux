@@ -836,9 +836,10 @@ export class CdpPipeMux {
     }
     const context = params.browserContextId;
     if (typeof context === 'string') {
+      // Only a method that takes a context: Chrome ignores the parameter on any
+      // other, which then falls through to the rules below.
       const unknown = unknownContext(method, context);
-      if (unknown && !this.ownership.ownsContext(client, context)) return { refuse: unknown, reason: 'foreign-context' };
-      return null;
+      if (unknown) return this.ownership.ownsContext(client, context) ? null : { refuse: unknown, reason: 'foreign-context' };
     }
     // The shared default context's cookie jar: its pages use it, but no client
     // reads it whole. A page's own cookies (getCookies without urls) and one

@@ -566,6 +566,14 @@ describe('CdpPipeMux grants: the shared jar, windows, and a revoked session', ()
     expect((await a.replyTo(a.send('Network.getAllCookies', {}, page))).error?.message).toContain('shared default browser context');
     expect((await a.replyTo(a.send('Network.getCookies', { urls: ['https://bank.example/'] }, page))).error?.message).toContain('shared default browser context');
     expect((await a.replyTo(a.send('Network.getAllCookies'))).error?.code).toBe(-32000);
+    // A method with no context parameter is not moved by one it never reads.
+    for (const browserContextId of ['bogus', 'DEFAULT']) {
+      expect((await a.replyTo(a.send('Network.getAllCookies', { browserContextId }, page))).error?.message).toContain('shared default browser context');
+      expect((await a.replyTo(a.send('Network.getAllCookies', { browserContextId }))).error?.code).toBe(-32000);
+      expect((await a.replyTo(a.send('Network.getCookies', { urls: ['https://bank.example/'], browserContextId }, page))).error?.message).toContain('shared default browser context');
+      expect((await a.replyTo(a.send('Network.clearBrowserCookies', { browserContextId }, page))).error?.message).toContain('shared default browser context');
+      expect((await a.replyTo(a.send('Network.clearBrowserCache', { browserContextId }, page))).error?.message).toContain('shared default browser context');
+    }
     expect((await a.replyTo(a.send('Storage.getCookies', {}, page))).error?.message).toContain('shared default browser context');
     expect((await a.replyTo(a.send('Network.getCookies', {}, page))).result).toEqual({ echo: 'Network.getCookies' });
     expect((await a.replyTo(a.send('Network.setCookie', { name: 'n', value: 'v', url: 'https://a.example/' }, page))).result).toEqual({ echo: 'Network.setCookie' });
