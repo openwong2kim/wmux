@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurfaceStore } from './ChromeSurfaceStore';
 import type { CdpConnection } from './CdpSocket';
@@ -60,6 +61,49 @@ const READY_TIMEOUT_MS = 10_000;
  */
 const READY_STARTING_MS = CHROME_START_CEILING_MS;
 const READY_POLL_MS = 250;
+/** Chrome's stderr kept for a failed start's message (characters, the newest). */
+const STARTUP_STDERR_TAIL = 4096;
+/** How long a failed start waits for the rest of stderr after Chrome exited. */
+const STDERR_END_WAIT_MS = 500;
+
+/**
+ * What Chrome last said on stderr, for a failed start's message: its last few
+ * non-empty lines, one line each, with each of `homes` written as `~` (the
+ * message reaches logs and agents). A refused start is often only said there:
+ * "DevTools remote debugging requires a non-default data directory" leaves the
+ * pipe silent and writes no DevToolsActivePort, which otherwise reads as a
+ * timeout.
+ */
+export function chromeSaid(stderr: string, homes: string[] = [], lines = 3, max = 400): string | null {
+  let said = stderr.split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(-lines).join(' | ');
+  if (!said) return null;
+  said = maskHomes(said, homes);
+  // Cut by code points, so a character outside the BMP is never split.
+  const chars = Array.from(said);
+  return chars.length > max ? `…${chars.slice(-max).join('')}` : said;
+}
+
+/**
+ * Each home folder as `~`, in its backslash, forward-slash and JSON-escaped
+ * spellings, and only where the path ends there (so `C:\Users\ann` never eats
+ * the start of `C:\Users\anna`). A root-like home (`/`, `C:\`) is skipped.
+ * Case-insensitive on Windows only.
+ */
+function maskHomes(text: string, homes: string[]): string {
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const spellings = new Set<string>();
+  for (const raw of homes) {
+    const home = raw.replace(/[\\/]+$/, '');
+    if (/^([A-Za-z]:)?[\\/]*$/.test(home)) continue;
+    spellings.add(home);
+    spellings.add(home.replace(/\\/g, '/'));
+    spellings.add(home.replace(/\\/g, '\\\\'));
+  }
+  const ordered = [...spellings].sort((a, b) => b.length - a.length);
+  if (ordered.length === 0) return text;
+  const pattern = new RegExp(`(${ordered.map(escape).join('|')})(?=[\\\\/\\s"'\`)\\]:;,|]|$)`, process.platform === 'win32' ? 'gi' : 'g');
+  return text.replace(pattern, '~');
+}
 /**
  * Pipe mode: liveness checks that must fail in a row before the launcher lets
  * a Chrome go, and so stops it (one on a pipe can't be found again). Each check
@@ -377,6 +421,13 @@ export interface ChromeLauncherOptions {
   protection?: () => ChromeProtectionPlan | null;
   /** Test seam: extra Chrome flags (e.g. --headless=new). */
   extraArgs?: string[];
+  /**
+   * Test seam: the Chrome child's whole environment. Unset (production), the
+   * child inherits process.env. Real-Chrome suites on Windows pass
+   * realProfileBrowserEnv(): Chrome under the isolate setup's temp USERPROFILE
+   * refuses remote debugging, on the port and on the pipe alike.
+   */
+  childEnv?: NodeJS.ProcessEnv;
   /** Test seam: how long the launch waits for the proxy probe. */
   proxyProbeTimeoutMs?: number;
 }
@@ -586,6 +637,7 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   private readonly protection: (() => ChromeProtectionPlan | null) | undefined;
   private readonly extraArgs: string[];
+  private readonly childEnv: NodeJS.ProcessEnv | undefined;
   /** Whether the running instance was launched behind the proxy. */
   private launchedProtected = false;
   /** False until a protected launch's download guard holds and the tabs
@@ -615,6 +667,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.surfaceStore = opts?.surfaceStore;
     this.protection = opts?.protection;
     this.extraArgs = opts?.extraArgs ?? [];
+    this.childEnv = opts?.childEnv;
     this.proxyProbeTimeoutMs = opts?.proxyProbeTimeoutMs;
   }
 
@@ -2138,9 +2191,57 @@ export class ChromeLauncher implements ChromeBackendClient {
         ...edgeArgs(binary),
         ...this.extraArgs,
       ]),
-      // The pipe: Chrome reads fd 3 and writes fd 4.
-      { stdio: pipe ? ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] : 'ignore' },
+      // The pipe: Chrome reads fd 3 and writes fd 4. stderr is read so a
+      // failed start can quote Chrome (STARTUP_STDERR_TAIL).
+      {
+        stdio: pipe ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'ignore', 'pipe'],
+        ...(this.childEnv && { env: this.childEnv }),
+      },
     );
+    // Drained for the child's whole life (a full pipe would block Chrome's
+    // logging); only the newest STARTUP_STDERR_TAIL characters are kept.
+    let stderrTail = '';
+    const stderr = child.stderr;
+    // 'exit' can come before the last of stderr: a failed start waits, bounded, for its end.
+    const stderrEnded = stderr
+      ? new Promise<void>((resolve) => {
+        stderr.once('end', resolve);
+        stderr.once('close', resolve);
+      })
+      : Promise.resolve();
+    if (stderr) {
+      stderr.setEncoding('utf8'); // a character split across reads stays whole
+      stderr.on('data', (text: string) => {
+        const joined = stderrTail + text;
+        if (joined.length <= STARTUP_STDERR_TAIL) {
+          stderrTail = joined;
+          return;
+        }
+        // Over the cap: keep the newest whole lines only. A cut line could hold
+        // half a home path that maskHomes would no longer recognise.
+        const cut = joined.slice(-STARTUP_STDERR_TAIL);
+        const nl = cut.indexOf('\n');
+        stderrTail = nl === -1 ? '' : cut.slice(nl + 1);
+      });
+      // A broken stderr pipe is never a reason to fail; unhandled, it would throw.
+      stderr.on('error', () => undefined);
+    }
+    /** The last probe that failed: what a start that ran out of time ran into. */
+    let lastStartError: string | null = null;
+    /**
+     * Why a start failed: what Chrome said on stderr, and the last probe error
+     * on a timeout, or on an exit Chrome said nothing about.
+     */
+    const startFailure = async (what: string, timedOut: boolean): Promise<Error> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([stderrEnded, new Promise((r) => { timer = setTimeout(r, STDERR_END_WAIT_MS); })]);
+      clearTimeout(timer);
+      const homes = [homedir(), this.childEnv?.USERPROFILE, this.childEnv?.HOME, process.env.USERPROFILE, process.env.HOME];
+      const said = chromeSaid(stderrTail, homes.filter((h): h is string => !!h));
+      const withProbe = timedOut || !said;
+      const detail = [withProbe && lastStartError && `last error: ${lastStartError}`, said && `Chrome said: ${said}`].filter(Boolean).join('; ');
+      return new Error(detail ? `ChromeLauncher: ${what} (${detail})` : `ChromeLauncher: ${what}`);
+    };
 
     // BrokerSupervisor idiom: a failed spawn emits BOTH 'error' and 'exit' —
     // route them through one handler so state resets exactly once.
@@ -2177,7 +2278,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     const startedAt = Date.now();
     let toldStarting = false;
     for (;;) {
-      if (gone) throw new Error('ChromeLauncher: Chrome exited during startup');
+      if (gone) throw await startFailure('Chrome exited during startup', false);
       let candidate = pinned;
       if (candidate === null && !piped) {
         const fresh = this.readPortFile();
@@ -2223,6 +2324,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           // Enforcement that failed is final for this launch: the child is
           // already stopped, so polling on would only wait out the deadline.
           if (err instanceof Error && err.message === PROTECTION_NOT_READY) throw err;
+          lastStartError = err instanceof Error ? err.message : String(err);
           this.unbindEndpoint();
         }
       }
@@ -2237,7 +2339,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           child.kill();
         } catch { /* already gone */ }
         this.onChildGone();
-        throw new Error('ChromeLauncher: CDP endpoint did not become ready in time');
+        throw await startFailure('CDP endpoint did not become ready in time', true);
       }
       await new Promise((r) => setTimeout(r, READY_POLL_MS));
     }

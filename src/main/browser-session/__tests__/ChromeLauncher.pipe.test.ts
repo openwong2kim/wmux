@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { PassThrough } from 'node:stream';
 import WebSocket from 'ws';
 import { FakeBrowser, type Command } from './fakePipeBrowser';
 
@@ -34,10 +35,12 @@ vi.mock('node:fs', async (orig) => {
   };
 });
 
-import { ChromeLauncher, chromeTransportKind } from '../ChromeLauncher';
+import { ChromeLauncher, chromeSaid, chromeTransportKind } from '../ChromeLauncher';
 import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
+import { CDP_PIPE_COMMAND_TIMEOUT_MS } from '../CdpPipeMux';
+import { CHROME_START_CEILING_MS } from '../../../shared/chromeStart';
 
-type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; killed: boolean; exitCode: number | null; signalCode: string | null; signals: string[] };
+type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; stderr: PassThrough; killed: boolean; exitCode: number | null; signalCode: string | null; signals: string[] };
 
 /** A browser that exits (and closes its pipe) on Browser.close. */
 class PipeChrome extends FakeBrowser {
@@ -93,7 +96,8 @@ function spawnPipeChrome<T extends PipeChrome = PipeChrome>(
   child.signalCode = null;
   child.signals = [];
   const chrome = new Kind(child);
-  child.stdio = [null, null, null, chrome.fromMux, chrome.toMux];
+  child.stderr = new PassThrough();
+  child.stdio = [null, null, child.stderr, chrome.fromMux, chrome.toMux];
   child.kill = (signal = 'SIGTERM') => {
     child.signals.push(signal);
     child.killed = true;
@@ -151,7 +155,10 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(args.some((a) => a.startsWith('--remote-debugging-port'))).toBe(false);
     expect(args).not.toContain('--remote-allow-origins=*');
     expect(args).toContain('--disable-blink-features=AutomationControlled');
-    expect(opts.stdio).toEqual(['ignore', 'ignore', 'ignore', 'pipe', 'pipe']);
+    // stderr is read, so a failed start can quote Chrome.
+    expect(opts.stdio).toEqual(['ignore', 'ignore', 'pipe', 'pipe', 'pipe']);
+    // No childEnv: the child inherits process.env, as before.
+    expect(opts).not.toHaveProperty('env');
     expect(chrome.received.find((c) => c.method === 'Browser.getVersion')).toBeDefined();
     // Nothing went to a port.
     expect(fetchMock).not.toHaveBeenCalled();
@@ -378,6 +385,35 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(launcher.isRunning()).toBe(false);
   });
 
+  it('a start that fails says why: the last startup error and what Chrome wrote on stderr', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { child } = spawnPipeChrome(SlowPipeChrome);
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    const launched = launcher.endpoint();
+    const outcome = launched.then(() => null, (err: Error) => err.message);
+    // What Chrome on Windows says when it refuses remote debugging, then noise.
+    child.stderr.write('DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.\r\n');
+    child.stderr.write('Created TensorFlow Lite XNNPACK delegate for CPU.\r\n');
+    // Past the start ceiling, plus the last attempt's own command timeout.
+    await vi.advanceTimersByTimeAsync(CHROME_START_CEILING_MS + CDP_PIPE_COMMAND_TIMEOUT_MS + 2_000);
+    const message = await outcome;
+    expect(message).toContain('ChromeLauncher: CDP endpoint did not become ready in time');
+    expect(message).toContain('last error: ChromeLauncher: Browser.getVersion timed out');
+    expect(message).toContain('Chrome said: DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir. | Created TensorFlow Lite');
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('gives Chrome the childEnv test seam as its whole environment', async () => {
+    spawnPipeChrome();
+    const env = { PATH: '/bin', USERPROFILE: 'C:\\Users\\someone' };
+    const launcher = new ChromeLauncher('/tmp/pipe-profile', { childEnv: env });
+    await launcher.endpoint();
+    const [, , opts] = spawnMock.mock.calls[0] as [string, string[], { env?: NodeJS.ProcessEnv }];
+    expect(opts.env).toBe(env);
+    await launcher.dispose({ immediate: true });
+  });
+
   it('quits through Browser.close on the pipe', async () => {
     const { chrome, child } = spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
@@ -385,5 +421,47 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await launcher.dispose();
     expect(chrome.received.some((c) => c.method === 'Browser.close')).toBe(true);
     expect(child.killed).toBe(false);
+  });
+});
+
+describe('chromeSaid', () => {
+  it('keeps the last few non-empty lines, one each', () => {
+    expect(chromeSaid('a\r\n\r\nb\nc\nd\n')).toBe('b | c | d');
+    expect(chromeSaid('only\n')).toBe('only');
+  });
+
+  it('is null when Chrome said nothing', () => {
+    expect(chromeSaid('')).toBeNull();
+    expect(chromeSaid('\r\n  \n')).toBeNull();
+  });
+
+  it('keeps the newest part of a long line', () => {
+    const said = chromeSaid(`${'x'.repeat(500)}END`, [], 3, 50) as string;
+    expect(said).toHaveLength(51);
+    expect(said.startsWith('…')).toBe(true);
+    expect(said.endsWith('END')).toBe(true);
+  });
+
+  it('writes a home folder as ~ in its backslash, forward-slash, file URL and JSON-escaped spellings', () => {
+    const home = 'C:\\Users\\someone';
+    expect(chromeSaid('cannot open C:\\Users\\someone\\AppData\\x\n', [home])).toBe('cannot open ~\\AppData\\x');
+    expect(chromeSaid('Failed to load file:///C:/Users/someone/a.html\n', [home])).toBe('Failed to load file:///~/a.html');
+    expect(chromeSaid('{"path":"C:\\\\Users\\\\someone\\\\x"}\n', [home])).toBe('{"path":"~\\\\x"}');
+    expect(chromeSaid('at /home/someone/.config and /home/someone\n', ['/home/someone/'])).toBe('at ~/.config and ~');
+  });
+
+  it('masks a home only where the path ends there', () => {
+    expect(chromeSaid('C:\\Users\\someoneelse\\x\n', ['C:\\Users\\someone'])).toBe('C:\\Users\\someoneelse\\x');
+  });
+
+  it('skips a root-like or empty home', () => {
+    const text = '/usr/lib/chromium/chrome: error while loading C:\\x\n';
+    expect(chromeSaid(text, ['/', 'C:\\', 'C:', ''])).toBe('/usr/lib/chromium/chrome: error while loading C:\\x');
+  });
+
+  it('never splits a character outside the BMP when it cuts', () => {
+    const said = chromeSaid(`${'😀'.repeat(60)}\n`, [], 3, 50) as string;
+    expect(Array.from(said)).toHaveLength(51);
+    expect(said).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
   });
 });

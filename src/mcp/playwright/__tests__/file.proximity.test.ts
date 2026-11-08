@@ -20,7 +20,11 @@ vi.mock('../../wmux-client', () => ({
 }));
 
 vi.mock('../PlaywrightEngine', () => ({
-  PlaywrightEngine: { getInstance: () => ({ getPageForScope: getPage }) },
+  // The Playwright upload route serves the Chrome backend only; builtin goes
+  // through main (file.builtin.test.ts).
+  PlaywrightEngine: {
+    getInstance: () => ({ getPageForScope: getPage, resolveWorkspaceBackend: async () => 'chrome' }),
+  },
 }));
 
 vi.mock('../snapshot', () => ({ resolveRef }));

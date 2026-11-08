@@ -102,8 +102,16 @@ export class LanLinkController extends EventEmitter {
     // persist the whole file (atomic). saveConfig is best-effort (parity with all
     // config.json writes) — the in-memory slice is the authoritative runtime value
     // either way, and the seam consumer (PR-4) reads from the controller, not disk.
+    // The one save it refuses by throwing is a fail-closed stand-in's (the daemon
+    // started on an unusable config.json): restore the slice so the throw reaches
+    // the caller with nothing changed.
     this.config.lanlink = next;
-    this.persist(this.config);
+    try {
+      this.persist(this.config);
+    } catch (err) {
+      this.config.lanlink = cur;
+      throw err;
+    }
     this.emit(LANLINK_CONFIG_CHANGED, next);
     return this.getStatus();
   }

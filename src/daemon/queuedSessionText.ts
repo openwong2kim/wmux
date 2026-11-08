@@ -128,7 +128,7 @@ export function queuedScreenText(sessions: TextReadSessions, sessionId: string, 
 export function queuedTextTail(sessions: TextReadSessions, sessionId: string, scrollback: number, site: TailSite): Promise<TailOutcome | null> {
   return queuedSessionRead(sessions, sessionId, `text-tail:${scrollback}`, (managed) => {
     const request = { cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24, scrollback };
-    return guardedTailRead(managed, { site, parse: (initial) => generateTextSnapshotUnqueued({ ...request, initial }) });
+    return guardedTailRead(managed, { site, variant: `scrollback:${scrollback}`, parse: (initial) => generateTextSnapshotUnqueued({ ...request, initial }) });
   }, scrollback <= REUSE_MAX_SCROLLBACK);
 }
 
@@ -141,6 +141,6 @@ export function queuedTextTail(sessions: TextReadSessions, sessionId: string, sc
 export function queuedScreenTail(sessions: TextReadSessions, sessionId: string, site: TailSite, inputs?: TailInputs): Promise<TailOutcome | null> {
   return queuedSessionRead(sessions, sessionId, 'screen-tail:plain', (managed) => {
     const request = { cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24, scrollback: 0 };
-    return guardedTailRead(managed, { site, inputs, parse: (initial) => generateTextSnapshotUnqueued({ ...request, initial }) });
+    return guardedTailRead(managed, { site, variant: 'screen', inputs, parse: (initial) => generateTextSnapshotUnqueued({ ...request, initial }) });
   });
 }

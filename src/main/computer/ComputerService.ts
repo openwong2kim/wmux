@@ -30,6 +30,7 @@ import {
 } from '../../shared/computer/blocklist';
 import {
   COMPUTER_CONTROL_ACTIONS,
+  DESKTOP_LIST_APPS_TIMEOUT_MS,
   MODIFIERS,
   OBSERVATION_MODES,
   SNAPSHOT_TTL_MS,
@@ -60,6 +61,9 @@ import type { AgentMarkers } from './agentMarkers';
 import { appBundleSelector } from './appBundleId';
 import { thinTreeReason } from './axFirst';
 import { ForegroundLease, INPUT_LOCK_IDLE_MS, PidLanes, foregroundCertain, type LeaseTicket } from './inputLanes';
+import { createHash } from 'node:crypto';
+import { desktopSchema, listAppsArgv, namedPids, parseDesktopReply, planDesktopCommand, refmapPids, type DesktopReply } from './desktopCommands';
+import type { RunnerResult } from './RunnerProcess';
 
 export { INPUT_LOCK_IDLE_MS };
 
@@ -165,7 +169,41 @@ export interface ComputerServiceDeps {
   onControl?: (event: { agent: ComputerAgent; action: ComputerControlAction; window: WindowInfo }) => void;
   /** Each agent's colour and name on screen; without it input carries no marker. */
   markers?: AgentMarkers;
+  /**
+   * The nested agent-desktop binary, through the helper's runner mode
+   * (RunnerProcess.ts). Absent where there is none (every OS but macOS).
+   */
+  desktop?: DesktopDeps;
 }
+
+export interface DesktopDeps {
+  run(argv: string[], timeoutMs: number): Promise<RunnerResult>;
+  /** A snapshot's refmap.json in agent-desktop's state directory; '' when it has none. */
+  readRefmap(snapshotId: string): Promise<string>;
+  /** Kills every run in flight (the stop key). */
+  abort(): void;
+  /** Ends the runner and removes the snapshots agent-desktop saved (quit, or computer use turned off). */
+  dispose(): void;
+}
+
+interface DesktopSnapshotRecord {
+  agentKey: string;
+  app: AppInfo;
+  window: WindowInfo;
+  /** SHA-256 of the snapshot's refmap.json as it stood after the last run this agent made. */
+  refmapHash: string;
+  expiresAt: number;
+}
+
+/** agent-desktop runs in flight across all agents; past this a call is refused with input_busy. */
+export const DESKTOP_MAX_RUNS = 8;
+/** One agent's desktop calls running or waiting their turn; past this a call is refused with input_busy. */
+export const DESKTOP_QUEUE_PER_AGENT = 4;
+/** Desktop snapshots remembered at once; the oldest goes first. */
+const DESKTOP_SNAPSHOT_LIMIT = 256;
+/** A snapshot id as agent-desktop prints it; it names a directory, so nothing else is read. */
+const DESKTOP_SNAPSHOT_ID = /^[a-z0-9]{1,64}$/;
+const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
 interface SnapshotRecord {
   agentKey: string;
@@ -227,6 +265,11 @@ export class ComputerService {
   private readonly deps: ComputerServiceDeps;
   private helper: HelperLike | null = null;
   private readonly snapshots = new Map<string, SnapshotRecord>();
+  private readonly desktopSnapshots = new Map<string, DesktopSnapshotRecord>();
+  /** Each agent's desktop calls, one after another: a run may rewrite a snapshot's refmap the next call checks. */
+  private readonly desktopQueues = new Map<string, Promise<unknown>>();
+  private readonly desktopQueued = new Map<string, number>();
+  private desktopRuns = 0;
   private readonly grants = new Map<string, boolean>();
   private readonly consentInflight = new Map<string, Promise<ConsentAnswer>>();
   /** Aborted (and replaced) by every stop: withdraws the open consent prompts. */
@@ -261,6 +304,7 @@ export class ComputerService {
     if (!this.deps.isEnabled()) {
       // Turned off, possibly by editing the file by hand: give the chord back.
       this.deps.stopKey.release();
+      this.endDesktop();
       fail('turned_off', 'computer use is turned off. The user turns it on in Settings › Computer use');
     }
     if (!this.deps.createHelper) {
@@ -394,6 +438,170 @@ export class ComputerService {
       expiresAt: this.now() + SNAPSHOT_TTL_MS,
     });
     return { ...state, mode, ...(screenshotAdded && { screenshotAdded }) };
+  }
+
+  /**
+   * A read-only agent-desktop command (desktopCommands.ts), on the same
+   * terms as getAppState: the app is resolved by the helper and vetted
+   * (blocklist, consent) before anything runs, and a ref is accepted only
+   * from a snapshot this agent took, whose refmap is unchanged since. The
+   * reply must be for the vetted process and window, or it is discarded.
+   */
+  async desktop(
+    agent: ComputerAgent,
+    params: { command: unknown; args?: unknown; app?: string; window?: string },
+  ): Promise<DesktopReply> {
+    const queued = this.desktopQueued.get(agent.key) ?? 0;
+    if (queued >= DESKTOP_QUEUE_PER_AGENT) {
+      fail('input_busy', `${DESKTOP_QUEUE_PER_AGENT} desktop commands of this agent are already queued; try again when one finishes`);
+    }
+    this.desktopQueued.set(agent.key, queued + 1);
+    const previous = this.desktopQueues.get(agent.key) ?? Promise.resolve();
+    const call = previous.catch(() => undefined).then(() => this.desktopNow(agent, params));
+    const settled = call.catch(() => undefined).finally(() => {
+      const left = (this.desktopQueued.get(agent.key) ?? 1) - 1;
+      if (left > 0) this.desktopQueued.set(agent.key, left);
+      else this.desktopQueued.delete(agent.key);
+      if (this.desktopQueues.get(agent.key) === settled) this.desktopQueues.delete(agent.key);
+    });
+    this.desktopQueues.set(agent.key, settled);
+    return call;
+  }
+
+  /** One agent-desktop run, counted against DESKTOP_MAX_RUNS while it is in flight. */
+  private async desktopRun(desktop: DesktopDeps, argv: string[], timeoutMs: number, generation: number): Promise<DesktopReply> {
+    if (this.desktopRuns >= DESKTOP_MAX_RUNS) {
+      fail('input_busy', `${DESKTOP_MAX_RUNS} desktop commands are already running; try again when one finishes`);
+    }
+    this.desktopRuns += 1;
+    let result: RunnerResult;
+    try {
+      result = await desktop.run(argv, timeoutMs);
+    } finally {
+      this.desktopRuns -= 1;
+    }
+    this.assertCurrent(generation);
+    return parseDesktopReply(result.stdout);
+  }
+
+  /** Whether the vetted process is the only app agent-desktop takes for its display name. */
+  private async soleByName(desktop: DesktopDeps, app: AppInfo, generation: number): Promise<boolean> {
+    const pids = namedPids(await this.desktopRun(desktop, listAppsArgv(app.name), DESKTOP_LIST_APPS_TIMEOUT_MS, generation), app.name);
+    return pids !== null && pids.length === 1 && pids[0] === app.pid;
+  }
+
+  private async desktopNow(
+    agent: ComputerAgent,
+    params: { command: unknown; args?: unknown; app?: string; window?: string },
+  ): Promise<DesktopReply> {
+    const helper = this.ensureReady();
+    const desktop = this.deps.desktop;
+    if (!desktop) fail('unsupported_platform', `desktop commands are not available on ${this.deps.platform ?? process.platform}`);
+    const plan = planDesktopCommand(params.command, params.args);
+    const generation = this.generation;
+    const now = this.now();
+    if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
+
+    let target: { app: AppInfo; window: WindowInfo } | null = null;
+    const used = plan.refs.map((r) => ({ id: r.snapshotId, record: this.checkDesktopSnapshot(agent, r.snapshotId, now) }));
+    if (used.length > 0) {
+      const { app, window } = used[0].record;
+      if (used.some((u) => u.record.app.pid !== app.pid || u.record.window.id !== window.id)) {
+        fail('invalid_argument', 'the refs of one call must come from snapshots of one window');
+      }
+      target = { app, window };
+      await this.vet(agent, app, window, generation);
+      for (const u of used) {
+        const refmap = await desktop.readRefmap(u.id);
+        this.assertCurrent(generation);
+        if (sha256(refmap) !== u.record.refmapHash) {
+          this.desktopSnapshots.delete(u.id);
+          fail('snapshot_unknown', `snapshot ${u.id} changed since it was taken; take a new one with command "snapshot"`);
+        }
+      }
+    } else if (plan.scope === 'window' || plan.scope === 'app') {
+      if (!params.app) fail('invalid_argument', `${plan.command} needs app. ${desktopSchema(plan.command)}`);
+      const resolved = await helper.request('resolveTarget', { app: params.app, ...(params.window && { window: params.window }) });
+      this.assertCurrent(generation);
+      await this.vet(agent, resolved.app, resolved.window, generation);
+      assertConsistent(resolved.app, resolved.window);
+      target = resolved;
+    }
+
+    // Without a ref, agent-desktop finds the app by display name. A snapshot
+    // is tied to the vetted process by its refmap and window; any other
+    // reply by that name naming the vetted process alone, before the run
+    // and after it.
+    const byName = target && used.length === 0 && plan.command !== 'snapshot' ? target.app : null;
+    if (byName && !(await this.soleByName(desktop, byName, generation))) {
+      fail('policy_denied', `${byName.name} is not the only app by that name (or it quit), so agent-desktop cannot be pointed at the one wmux checked`);
+    }
+    const reply = await this.desktopRun(desktop, plan.argv(target && { appName: target.app.name, windowId: target.window.id }), plan.timeoutMs, generation);
+    if (!target) return reply;
+
+    const discard = (): never =>
+      fail('policy_denied', `agent-desktop answered for something other than ${target.app.name}; its reply was discarded`);
+    if (byName && !(await this.soleByName(desktop, byName, generation))) discard();
+    // A reply that names its process must name the vetted one, bracket or not.
+    if (reply.data.pid !== undefined && reply.data.pid !== target.app.pid) discard();
+    const window = reply.data.window as { id?: unknown } | undefined;
+    if (plan.checksWindow && window?.id !== `w-${target.window.id}`) discard();
+    const snapshotId = reply.data.snapshot_id;
+
+    // agent-desktop may rewrite a snapshot's refmap when it resolves a ref:
+    // its refs must still be the snapshot's app's, and what this agent's own
+    // run left is what the next call compares with.
+    for (const u of used) {
+      if (u.id === snapshotId) continue;
+      const record = this.desktopSnapshots.get(u.id);
+      if (!record) continue;
+      const refmap = await desktop.readRefmap(u.id);
+      this.assertCurrent(generation);
+      const pids = refmapPids(refmap);
+      if (!pids || pids.some((pid) => pid !== record.app.pid)) {
+        this.desktopSnapshots.delete(u.id);
+        discard();
+      }
+      record.refmapHash = sha256(refmap);
+    }
+
+    if (snapshotId !== undefined) {
+      if (typeof snapshotId !== 'string' || !DESKTOP_SNAPSHOT_ID.test(snapshotId)) discard();
+      const refmap = await desktop.readRefmap(snapshotId as string);
+      this.assertCurrent(generation);
+      if (refmap) {
+        const pids = refmapPids(refmap);
+        if (!pids || pids.some((pid) => pid !== target.app.pid)) discard();
+      } else {
+        // No refmap to prove whose refs these are: only a reply that lists no
+        // refs, or a snapshot of the window checked above, is kept.
+        const listsRefs = plan.command === 'find'
+          ? (Array.isArray(reply.data.matches) && reply.data.matches.length > 0) || reply.data.match !== undefined
+          : !plan.checksWindow;
+        if (listsRefs) discard();
+      }
+      for (const [id, record] of this.desktopSnapshots) {
+        if (record.expiresAt < now || this.desktopSnapshots.size >= DESKTOP_SNAPSHOT_LIMIT) this.desktopSnapshots.delete(id);
+        else break;
+      }
+      this.desktopSnapshots.set(snapshotId as string, {
+        agentKey: agent.key,
+        app: target.app,
+        window: target.window,
+        refmapHash: sha256(refmap),
+        expiresAt: now + SNAPSHOT_TTL_MS,
+      });
+    }
+    return reply;
+  }
+
+  private checkDesktopSnapshot(agent: ComputerAgent, snapshotId: string, now: number): DesktopSnapshotRecord {
+    const record = this.desktopSnapshots.get(snapshotId);
+    if (!record || record.expiresAt < now) {
+      fail('snapshot_unknown', `snapshot ${snapshotId} is unknown or expired; take one with command "snapshot" on that app`);
+    }
+    if (record.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
+    return record;
   }
 
   private async observe(
@@ -765,6 +973,7 @@ export class ComputerService {
     // no markerClear is needed (or could reach it: a request now would start
     // a fresh helper).
     this.helper?.abort('stopped by the user');
+    this.deps.desktop?.abort();
     this.lease.clear();
     // Every action still waiting for its app's slot ends `aborted` without
     // reaching the helper.
@@ -786,6 +995,19 @@ export class ComputerService {
     this.helper?.dispose();
     this.helper = null;
     this.snapshots.clear();
+    this.endDesktop();
+  }
+
+  /** Computer use was turned off: stop everything, then end the desktop runner and its snapshots. */
+  turnedOff(): void {
+    if (this.disposed) return;
+    this.abort();
+    this.endDesktop();
+  }
+
+  private endDesktop(): void {
+    this.deps.desktop?.dispose();
+    this.desktopSnapshots.clear();
   }
 
   private withdrawConsentPrompts(): void {

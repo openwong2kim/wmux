@@ -8,6 +8,7 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 import BrowserPolicyDialog, { hostLines, invalidHostLines } from '../BrowserPolicyDialog';
+import { DialogHost } from '../../ui/dialogHost';
 import { useStore } from '../../../stores';
 import type {
   BrowserPolicyBlockedResult,
@@ -53,7 +54,10 @@ async function mount(): Promise<void> {
   const r = createRoot(container);
   root = r;
   act(() => {
-    r.render(React.createElement(BrowserPolicyDialog, { workspaceId: WS, paneId: PANE, onClose, onSaved }));
+    // As a pane opens it: inside the pane root, below the pane container's dialog host.
+    r.render(React.createElement(DialogHost, null,
+      React.createElement('div', { 'data-test-pane': '', className: 'relative isolate' },
+        React.createElement(BrowserPolicyDialog, { workspaceId: WS, paneId: PANE, onClose, onSaved }))));
   });
   await flush();
 }
@@ -245,10 +249,10 @@ describe('BrowserPolicyDialog', () => {
     expect(api.set.mock.calls[0][0]).toMatchObject({ protected: false, hosts: { block: [] } });
   });
 
-  it('renders outside the pane, on document.body', async () => {
+  it('renders outside the pane, in the dialog host', async () => {
     await mount();
-    expect(container!.querySelector('[data-testid="browser-policy-dialog"]')).toBeNull();
-    expect(document.body.querySelector('[data-testid="browser-policy-dialog"]')).not.toBeNull();
+    expect(container!.querySelector('[data-test-pane] [data-testid="browser-policy-dialog"]')).toBeNull();
+    expect(container!.querySelector('[data-dialog-host] [data-testid="browser-policy-dialog"]')).not.toBeNull();
   });
 
   it('the switch description follows the toggle and the refused state', async () => {

@@ -66,6 +66,7 @@ import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { WEBGL_UPGRADE_HIDE_MAX_MS, webglUpgradeQueue } from '../terminal/webglUpgradeQueue';
 import { syncInlineImages } from '../terminal/inlineImages';
 import { forceCharSizeMeasure, onCharSizeChange } from '../terminal/charSizeRefit';
+import { createFirstResizeGate, primaryFontLoaded, FIRST_RESIZE_GATE_BOUND_MS, type FirstResizeGate } from '../terminal/firstResizeGate';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { atlasGuard } from '../terminal/atlasGuard';
 import { decideViewerVisibility } from '../terminal/viewerVisibility';
@@ -1094,6 +1095,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const promoteRef = useRef(surfaceShown);
   promoteRef.current = surfaceShown;
   const deferredAttachRef = useRef(false);
+  // The mount's first-resize gate (firstResizeGate.ts): while it is closed no
+  // PTY resize goes out, and the mount's reattach waits for it.
+  const resizeGateRef = useRef<FirstResizeGate | null>(null);
+  // A reattach's stored-size send (#1847) the closed gate held back, sent
+  // when it opens on a pane that cannot measure itself. Fit sizes are not
+  // kept: they are the fallback font's, and the gate refits instead.
+  const heldResizeRef = useRef<{ ptyId: string; cols: number; rows: number } | null>(null);
   const firstShowReattachRef = useRef<(() => Promise<void> | undefined) | null>(null);
   // #1002 — set by the main effect when this mount adopted a parked terminal.
   // Read by the daemon reattach effect (which runs later in the same commit)
@@ -1161,10 +1169,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // Returns the in-flight resize so a caller that must not touch xterm before
   // the daemon has applied the geometry (#1436's shrink path) can wait on it.
   // Every other caller ignores it, exactly as before.
-  const sendResize = useCallback((targetPtyId: string, cols: number, rows: number): Promise<void> => {
+  const sendResize = useCallback((targetPtyId: string, cols: number, rows: number, storedSize = false): Promise<void> => {
     // The grid belongs to someone else (see `fixedGeometry`): never resize the
     // PTY. Gated here, not at the callers, so no fit path can get around it.
     if (fixedGeometryRef.current) return Promise.resolve();
+    // Before the first-resize gate opens the grid is still the fallback
+    // font's: keep the PTY at its size. The gate's own send (mount effect)
+    // goes out unconditionally when it opens, so a caller that recorded
+    // this size as sent is corrected then.
+    if (resizeGateRef.current && !resizeGateRef.current.isOpen) {
+      if (storedSize) heldResizeRef.current = { ptyId: targetPtyId, cols, rows };
+      return Promise.resolve();
+    }
     return window.electronAPI.pty.resize(targetPtyId, cols, rows).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('rate limited')) return; // not-found / other: handled upstream
@@ -2294,6 +2310,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // callback; disposeWebgl is its "evict" callback (reverts to DOM renderer).
     // `replaces`: the addon a rebuild replaces, whose kind (stock or shared
     // context) the new one keeps — see sharedWebglAddonClassFor.
+    // Set when building the WebGL renderer failed: the first-resize gate then
+    // stops waiting for it.
+    let webglBuildFailed = false;
     function loadWebgl(replaces?: WebglAddon) {
       if (webglAddonRef.current) return; // already loaded
       try {
@@ -2325,6 +2344,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       } catch {
         console.warn('WebGL addon failed, using DOM renderer');
         webglAddonRef.current = null;
+        webglBuildFailed = true;
       }
     }
     loadWebglRef.current = wongttyModule ? null : loadWebgl;
@@ -2424,6 +2444,29 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         swapWebglOnRevealRef.current = true;
       }
     }
+
+    // A fresh mount's first PTY resize waits for the grid it will keep: the
+    // bundled webfont loaded and WebGL in (firstResizeGate.ts). An adoption,
+    // an engine swap and a fixed grid keep a live grid and send at once.
+    resizeGateRef.current?.dispose();
+    const firstResizeGate = adopted || carry || wongttyModule || fixedGeometryRef.current
+      ? null
+      : createFirstResizeGate({
+        shown: () => isVisibleRef.current,
+        fontReady: () => primaryFontLoaded(document.fonts, terminal.options.fontFamily, terminal.options.fontSize),
+        rendererPending: () => isVisibleRef.current && !!loadWebglRef.current && !webglAddonRef.current
+          && !webglBuildFailed && !webglContextPool.acquireWouldEvict(webglTokenRef.current),
+        proposal: () => {
+          const dims = proposedSafeDimensions(fitAddon, container);
+          return dims ? `${dims.cols}x${dims.rows}` : null;
+        },
+        requestFrame: (cb) => requestAnimationFrame(cb),
+        cancelFrame: (handle) => cancelAnimationFrame(handle),
+        setTimer: (cb, ms) => setTimeout(cb, ms),
+        clearTimer: (handle) => clearTimeout(handle),
+      }, FIRST_RESIZE_GATE_BOUND_MS, WEBGL_UPGRADE_HIDE_MAX_MS);
+    resizeGateRef.current = firstResizeGate;
+    heldResizeRef.current = null;
 
     let pendingAdoptViewport: ParkedTerminal | null = null;
     // #1255: sub-floor proposals (mid-split/restoring container) are treated
@@ -4056,11 +4099,42 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Resize PTY on initial fit — only when that fit ran. Unfitted, xterm still
     // holds its 80x24 default, which would shrink a background pane's PTY to
     // a size nothing displays; the first fit after reveal sends the real one.
-    const { cols, rows } = terminal;
-    if (initialFitRan && cols > 0 && rows > 0) {
-      lastSentCols = cols;
-      lastSentRows = rows;
-      sendResize(ptyId, cols, rows);
+    // A fresh mount sends once its first-resize gate opens, refitted with the
+    // cell it will keep, and unconditionally: fits before it recorded sizes
+    // they never sent (sendResize).
+    if (firstResizeGate) {
+      void firstResizeGate.opened.then((outcome) => {
+        if (outcome === 'disposed' || terminalRef.current !== terminal || ptyIdRef.current !== ptyId) return;
+        revealTiming(ptyId, 'first-resize-gate', `open=${outcome}`);
+        forceCharSizeMeasure(terminal);
+        const held = heldResizeRef.current;
+        heldResizeRef.current = null;
+        const dims = proposedSafeDimensions(fitAddon, container);
+        if (!dims) {
+          // Hidden or mid-layout now: fits while the gate was closed recorded
+          // sizes they never sent, so let the next fit send. A reattach's held
+          // stored-size send goes now: it is what unmutes the session (#1847).
+          lastSentCols = 0;
+          lastSentRows = 0;
+          if (held && held.ptyId === ptyId) void sendResize(held.ptyId, held.cols, held.rows);
+          return;
+        }
+        // Usually the last fit already landed here (the WebGL upgrade's refit).
+        if (dims.cols !== terminal.cols || dims.rows !== terminal.rows) fitAddon.fit();
+        const { cols: gateCols, rows: gateRows } = terminal;
+        if (gateCols > 0 && gateRows > 0) {
+          lastSentCols = gateCols;
+          lastSentRows = gateRows;
+          void sendResize(ptyId, gateCols, gateRows);
+        }
+      });
+    } else {
+      const { cols, rows } = terminal;
+      if (initialFitRan && cols > 0 && rows > 0) {
+        lastSentCols = cols;
+        lastSentRows = rows;
+        sendResize(ptyId, cols, rows);
+      }
     }
 
     // Terminal registry registration is now per-branch above:
@@ -4248,6 +4322,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // the Retry banner, so it would be stuck unattached; dispose instead
         // and let the fresh mount reattach.
         : reconnectPendingRef.current ? 'reconnect-pending'
+        // The mount's own attach is still waiting on its first-resize gate.
+        // It dies with this run, and the adopting mount skips active-at-mount,
+        // so the pane would end up with no session pipe: dispose instead and
+        // let the fresh mount attach.
+        : firstResizeGate && !firstResizeGate.isOpen ? 'first-resize-pending'
         // Two live instances on one ptyId (the fast unmount→remount ordering
         // the WebGL pool note describes): if the registry no longer points at
         // us, a later mount already owns this pane and ours is the stale copy.
@@ -4326,6 +4405,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       selectionDisposable.dispose();
       charSizeDisposable?.dispose();
       document.fonts.removeEventListener('loadingdone', onFontsLoadingDone);
+      firstResizeGate?.dispose();
+      if (resizeGateRef.current === firstResizeGate) resizeGateRef.current = null;
       hardWrappedLinkDisposable.dispose();
       pathLinkDisposable.dispose();
       osc52Disposable.dispose();
@@ -4509,6 +4590,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // this run must no longer touch the pane's shared refs, which belong to
     // the next run now.
     let disposed = false;
+    // Attempts started by this run: a deferred at-mount attach checks it.
+    let attachAttempts = 0;
     const noteDeferred = (deferred: boolean, resume?: ResumeHint, armResume = true) => {
       deferredAttachRef.current = deferred;
       // No session pipe either: refuses the park, like a pending reattach.
@@ -4520,6 +4603,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // session suspended: wait it out, then promote if it did. A stop key
       // only waits it out: it never promotes.
       if (disposed) return undefined;
+      // The mount's own attach waits for its first-resize gate, so the daemon
+      // serves the replay at the size the pane keeps, not the fallback font's
+      // (firstResizeGate.ts). Any attach that ran meanwhile covers it: a second
+      // one would replay the ring again and tear down the new pipe. A gate
+      // disposed by a remount of the same pane still lets it through.
+      const atMountGate = reason === 'active-at-mount' ? resizeGateRef.current : null;
+      if (atMountGate && !atMountGate.isOpen) {
+        const attemptsBefore = attachAttempts;
+        return atMountGate.opened.then(() => (attachAttempts === attemptsBefore ? reattach(reason) : undefined));
+      }
       if (inFlight) {
         if (reason === 'stop-key') return current;
         // The user's Retry (or Start fresh, which promoted first) is never
@@ -4540,6 +4633,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // #2398 — a stop key (ctrl+c, escape) is never what starts a session:
       // it attaches without promoting, shown pane or not, arms no resume on
       // start, and leaves the pane's own retry schedule as it was.
+      attachAttempts++;
       const stopKey = reason === 'stop-key';
       stopKeyInFlight = stopKey;
       if (stopKey) stopKeyFoundNotRunning = false;
@@ -4601,7 +4695,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           if (isSafeGeometry(stored.cols, stored.rows) && (term.cols !== stored.cols || term.rows !== stored.rows)) {
             term.resize(stored.cols, stored.rows);
           }
-          sendResize(id, stored.cols, stored.rows);
+          sendResize(id, stored.cols, stored.rows, true);
         })
         // #2398 — shown while a hidden attempt was in flight (its first show
         // found nothing to promote yet), or left suspended with a conversation

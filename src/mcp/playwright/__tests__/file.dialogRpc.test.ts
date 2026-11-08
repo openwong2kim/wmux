@@ -49,6 +49,7 @@ describe('browser_dialog with no Playwright page', () => {
     expect(result.isError).toBeFalsy();
     expect(result.content[0].text).toContain('Next dialog will be accepted');
     expect(armCalls()).toHaveLength(1);
+    // The text is armed as given: the backend only changes the reply's wording.
     expect(armCalls()[0][1]).toMatchObject({ accept: true, text: 'typed', surfaceId: 's1' });
   });
 
@@ -66,6 +67,23 @@ describe('browser_dialog with no Playwright page', () => {
     const result = await dialog({ accept: true, surfaceId: 's1' });
     expect(result.isError).toBe(true);
     expect(armCalls()).toEqual([]);
+  });
+
+  it("says the armed answer doesn't apply to prompt on an in-app tab, and that its text answers nothing there", async () => {
+    getPage.mockResolvedValue(null);
+    const plain = await dialog({ accept: true, surfaceId: 's1' });
+    expect(plain.content[0].text).toContain("This doesn't apply to prompt: prompt isn't available on in-app tabs; the page sees an error instead of a dialog.");
+    const withText = await dialog({ accept: true, text: 'typed', surfaceId: 's1' });
+    expect(withText.content[0].text).toContain("The text won't be used here: prompt isn't available on in-app tabs");
+  });
+
+  it('adds no prompt note when the backend is unknown', async () => {
+    getPage.mockResolvedValue({ on: vi.fn(), once: vi.fn(), url: () => 'https://a.test/' });
+    resolveWorkspaceBackend.mockResolvedValue(undefined);
+    const result = await dialog({ accept: true, text: 'typed', surfaceId: 's1' });
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain('Next dialog will be accepted.');
+    expect(result.content[0].text).not.toContain('prompt');
   });
 
   it('reports a refusal from main', async () => {

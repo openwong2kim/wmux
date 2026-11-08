@@ -24,6 +24,8 @@ vi.mock('../../PlaywrightEngine', async () => {
     PlaywrightEngine: {
       getInstance: () => ({
         drainLocalLifecycle: () => [],
+        // A Chrome-backend page: browser_dialog adds no in-app prompt note.
+        resolveWorkspaceBackend: async () => 'chrome',
         getPageForScope: async (scope: { workspaceId?: string; surfaceId?: string }) => {
           const page = engine.page as Page;
           modal.attachModalTracking(page, modal.modalScopeKey(scope.workspaceId, scope.surfaceId));
