@@ -22,7 +22,7 @@
  * the section verdicts without spawning a daemon or touching the real FS.
  */
 
-import { readFileSync, openSync, fstatSync, readSync, closeSync } from 'fs';
+import { readFileSync, readdirSync, openSync, fstatSync, readSync, closeSync } from 'fs';
 import { join, dirname } from 'path';
 import * as os from 'os';
 import { sendRequest, sendDaemonRequest } from '../client';
@@ -54,6 +54,7 @@ import { NATIVE_SELF_TEST_LINE } from '../../shared/mcpLauncher';
 import { fileSha256, probeKey, recordedProbe } from '../../shared/probedNative';
 import { BROKER_TOOL_NAME_RE, type McpSessionsSummary } from '../../shared/mcpSessions';
 import { homeRelative } from '../../shared/homeRelative';
+import { EDGE_SIGNED_IN_HINT, edgeAccountSignedIn, edgeProfileDirs } from './edgeProfileSignin';
 import { claudeHookRuntimeReport, defaultPaths as defaultHooksPaths, type ClaudeHookRuntimeReport } from './setupHooks';
 import { claudeSelfTestLine, selfTestClaudeCopy, type ClaudeSelfTestResult } from '../../shared/hooks/claudeNativeHook';
 
@@ -160,6 +161,12 @@ export interface DoctorDeps {
   tailReadTextFile: (path: string, maxBytes: number) => string | null;
   /** Process env snapshot — only WMUX_DATA_SUFFIX is consulted today. */
   env: Record<string, string | undefined>;
+  /**
+   * wmux's own browser profile folders (the dedicated profile and each named
+   * one), as `[name, dir]`. Each one's `Default/Preferences` is read with
+   * readTextFile to tell whether Edge signed it in to an account. Absent: no check.
+   */
+  browserProfiles?: (env: Record<string, string | undefined>) => Array<[name: string, dir: string]>;
   /** The MCP section's inputs; the section is left out without them. */
   mcp?: McpDoctorDeps;
   /** How the Claude hook entries run (setupHooks' claudeHookRuntimeReport). */
@@ -327,6 +334,21 @@ function buildEnvironment(
       ? 'Instance-isolation suffix is set; this is a dev/isolated build, not the packaged install.'
       : undefined,
   });
+
+  // Shown only when a profile is signed in: profile names, never the account.
+  // Every profile folder of each user-data-dir (Local State's info_cache), not only Default.
+  const signedIn = (deps.browserProfiles?.(deps.env) ?? [])
+    .filter(([, dir]) => edgeProfileDirs(deps.readTextFile(join(dir, 'Local State')))
+      .some((folder) => edgeAccountSignedIn(deps.readTextFile(join(dir, folder, 'Preferences')))))
+    .map(([name]) => name);
+  if (signedIn.length > 0) {
+    lines.push({
+      label: 'Edge profile account',
+      value: `signed in (${signedIn.join(', ')})`,
+      verdict: 'WARN',
+      hint: EDGE_SIGNED_IN_HINT,
+    });
+  }
 
   return { verdict: worst(lines.map((l) => l.verdict)), lines };
 }
@@ -815,6 +837,19 @@ function getFallbackVersion(): string {
  *   - Linux:   ~/.config/<appName><suffix>/logs/main-YYYY-MM-DD.log
  * The Windows path is the dogfood-verified one; the others are best-effort.
  */
+/**
+ * Electron's userData for this instance: productName `wmux` plus
+ * WMUX_DATA_SUFFIX, under APPDATA (Windows), Application Support (macOS) or
+ * XDG_CONFIG_HOME (elsewhere). An empty variable counts as unset, as in
+ * resolveMainLogPath.
+ */
+export function resolveUserDataDir(env: Record<string, string | undefined>, platform: string, home: string): string {
+  const name = `wmux${env.WMUX_DATA_SUFFIX || ''}`;
+  if (platform === 'win32') return join(env.APPDATA || join(home, 'AppData', 'Roaming'), name);
+  if (platform === 'darwin') return join(home, 'Library', 'Application Support', name);
+  return join(env.XDG_CONFIG_HOME || join(home, '.config'), name);
+}
+
 export function resolveMainLogPath(date: string): string {
   const appName = 'wmux';
   const suffix = dataSuffix();
@@ -841,6 +876,22 @@ export function resolveDaemonLogPath(date: string): string {
 /** UTC date in YYYY-MM-DD — matches logSink's `todayUtc()`. */
 export function todayUtc(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
+}
+
+/**
+ * wmux's browser profile folders under the app's userData (main's
+ * ChromeLauncherRegistry): `chrome-agent-profile` is the default profile and
+ * `chrome-profiles/<name>` the named ones.
+ */
+function wmuxBrowserProfiles(env: Record<string, string | undefined>): Array<[string, string]> {
+  const userData = resolveUserDataDir(env, process.platform, os.homedir());
+  const out: Array<[string, string]> = [['default', join(userData, 'chrome-agent-profile')]];
+  try {
+    for (const entry of readdirSync(join(userData, 'chrome-profiles'), { withFileTypes: true })) {
+      if (entry.isDirectory()) out.push([entry.name, join(userData, 'chrome-profiles', entry.name)]);
+    }
+  } catch { /* no named profiles */ }
+  return out;
 }
 
 function readTextFileSafe(path: string): string | null {
@@ -992,6 +1043,7 @@ export async function handleDoctor(args: string[], jsonMode: boolean): Promise<v
     readTextFile: readTextFileSafe,
     tailReadTextFile: tailReadTextFileSafe,
     env: process.env,
+    browserProfiles: wmuxBrowserProfiles,
     mcp: {
       home: os.homedir(),
       targets: () => readAllTargetStatuses(os.homedir()),

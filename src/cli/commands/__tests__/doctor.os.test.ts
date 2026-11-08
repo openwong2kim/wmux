@@ -8,8 +8,12 @@ import {
   AV_TAX_PHASE_WARN_MS,
   type DoctorDeps,
   type DaemonPingResult,
+  resolveUserDataDir,
 } from '../doctor';
 import type { RpcResponse } from '../../../shared/rpc';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { EDGE_SIGNED_IN_HINT } from '../edgeProfileSignin';
 
 // ---- fixtures ----------------------------------------------------------------
 
@@ -245,6 +249,60 @@ describe('environment section', () => {
     const r = await buildDoctorReport(makeDeps({ env: { WMUX_DATA_SUFFIX: '-dev' } }));
     const line = r.environment.lines.find((l) => l.label === 'WMUX_DATA_SUFFIX');
     expect(line?.value).toContain('-dev');
+  });
+});
+
+describe('Edge profile account line', () => {
+  const signedInPrefs = readFileSync(join(__dirname, 'fixtures', 'edge-signed-in.Preferences.json'), 'utf8');
+  const profiles: Array<[string, string]> = [['default', '/ud/chrome-agent-profile'], ['work', '/ud/chrome-profiles/work']];
+
+  it('warns, naming the signed-in profile but never the account', async () => {
+    const files: Record<string, string> = { [join('/ud/chrome-agent-profile', 'Default', 'Preferences')]: signedInPrefs };
+    const base = makeDeps();
+    const deps = makeDeps({
+      browserProfiles: () => profiles,
+      readTextFile: vi.fn((p: string) => files[p] ?? base.readTextFile(p)),
+    });
+    const report = await buildDoctorReport(deps);
+    const line = report.environment.lines.find((l) => l.label === 'Edge profile account');
+    expect(line).toEqual({
+      label: 'Edge profile account',
+      value: 'signed in (default)',
+      verdict: 'WARN',
+      hint: "wmux's Edge profile is signed in to a Microsoft account, so agents using it carry that sign-in. " +
+        "If you didn't sign it in yourself, sign it out in edge://settings/profiles.",
+    });
+    expect(line?.hint).toBe(EDGE_SIGNED_IN_HINT);
+    expect(JSON.stringify(report)).not.toMatch(/example\.com|0003BFFD|Test User/);
+  });
+
+  it('finds an account in another profile folder Local State lists', async () => {
+    const files: Record<string, string> = {
+      [join('/ud/chrome-profiles/work', 'Local State')]: JSON.stringify({ profile: { info_cache: { Default: {}, 'Profile 1': {} } } }),
+      [join('/ud/chrome-profiles/work', 'Profile 1', 'Preferences')]: signedInPrefs,
+    };
+    const base = makeDeps();
+    const report = await buildDoctorReport(makeDeps({ browserProfiles: () => profiles, readTextFile: vi.fn((p: string) => files[p] ?? base.readTextFile(p)) }));
+    expect(report.environment.lines.find((l) => l.label === 'Edge profile account')?.value).toBe('signed in (work)');
+  });
+
+  it('adds no line when no wmux profile is signed in', async () => {
+    const report = await buildDoctorReport(makeDeps({ browserProfiles: () => profiles }));
+    expect(report.environment.lines.some((l) => l.label === 'Edge profile account')).toBe(false);
+  });
+
+  it('looks for the profiles of the instance the env snapshot names', async () => {
+    const seen: Array<string | undefined> = [];
+    await buildDoctorReport(makeDeps({ env: { WMUX_DATA_SUFFIX: '-x' }, browserProfiles: (env) => { seen.push(env.WMUX_DATA_SUFFIX); return []; } }));
+    expect(seen).toEqual(['-x']);
+  });
+});
+
+describe('resolveUserDataDir', () => {
+  it('treats an empty APPDATA or XDG_CONFIG_HOME as unset', () => {
+    expect(resolveUserDataDir({ APPDATA: '', WMUX_DATA_SUFFIX: '-a' }, 'win32', '/h')).toBe(join('/h', 'AppData', 'Roaming', 'wmux-a'));
+    expect(resolveUserDataDir({ XDG_CONFIG_HOME: '' }, 'linux', '/h')).toBe(join('/h', '.config', 'wmux'));
+    expect(resolveUserDataDir({ WMUX_DATA_SUFFIX: '-b' }, 'darwin', '/h')).toBe(join('/h', 'Library', 'Application Support', 'wmux-b'));
   });
 });
 

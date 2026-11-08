@@ -131,6 +131,21 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(chromeTransportKind()).toBe('pipe');
   });
 
+  it('starts Edge with implicit sign-in and sync off, and Chrome without those flags', async () => {
+    for (const [binary, edge] of [['/opt/microsoft/msedge/msedge', true], ['/opt/google/chrome/chrome', false]] as const) {
+      spawnMock.mockClear();
+      vi.stubEnv('WMUX_CHROME_PATH', binary);
+      spawnPipeChrome();
+      const launcher = new ChromeLauncher('/tmp/pipe-profile');
+      await launcher.endpoint();
+      const [spawned, args] = spawnMock.mock.calls[0] as [string, string[]];
+      expect(spawned).toBe(binary);
+      expect(args.filter((a) => a.startsWith('--disable-features='))).toEqual(edge ? ['--disable-features=msImplicitSignin'] : []);
+      expect(args.includes('--disable-sync')).toBe(edge);
+      await launcher.dispose({ immediate: true });
+    }
+  });
+
   it('spawns Chrome with the pipe on fds 3 and 4 and no port, probes it with Browser.getVersion, and reports it running', async () => {
     const { chrome } = spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
