@@ -49,6 +49,13 @@ export const CLIENT_RELEASE_MS = 500;
  * Output: PTY stdout -> writeToClient() -> client socket
  * Input:  client socket -> onInput callback -> PTY stdin
  */
+/**
+ * How long after an attach a size counts as provisional (awaiting the
+ * viewer's replay) while no client has connected: an attach whose renderer
+ * never connects must not keep every later size provisional.
+ */
+export const REPLAY_CONNECT_GRACE_MS = 5_000;
+
 export class SessionPipe {
   private server: net.Server | null = null;
   private client: net.Socket | null = null;
@@ -58,11 +65,14 @@ export class SessionPipe {
   private flushed = false;
   /**
    * A viewer attached and its replay is not out yet: from the attach (this
-   * pipe is made for one) until the flush finishes, and again on a new client
-   * or a reflush. A client that goes away ends it. Sizes taken meanwhile are
-   * provisional in the ring's geometry history (RingBuffer.noteGeometry).
+   * pipe is made for one) until the flush finishes, and again on a new
+   * client. A client that goes away ends it, and so does no client within
+   * REPLAY_CONNECT_GRACE_MS of the attach. Sizes taken meanwhile are
+   * provisional in the ring's geometry history (RingBuffer.noteGeometry). A
+   * reflush does not: its viewer is live and applies every size.
    */
   private replayPending = true;
+  private replayPendingSince = Date.now();
   private reflushInFlight = false;
   private socketPeakQueuedBytes = 0;
   private resyncQueuedBytes = 0;
@@ -215,6 +225,7 @@ export class SessionPipe {
         this.client = socket;
         this.flushed = false;
         this.replayPending = true;
+        this.replayPendingSince = Date.now();
         this.handleClient(socket);
       });
 
@@ -547,7 +558,14 @@ export class SessionPipe {
 
   /** A viewer attached and its replay is not out yet (see `replayPending`). */
   get awaitingReplay(): boolean {
-    return this.replayPending;
+    return this.replayPending && (this.client !== null || Date.now() - this.replayPendingSince < REPLAY_CONNECT_GRACE_MS);
+  }
+
+  /** The client socket is gone: no live mode, and no replay due. */
+  private dropClient(): void {
+    this.client = null;
+    this.flushed = false;
+    this.replayPending = false;
   }
 
   /** The replay is out: live mode, and the size the viewer now holds is applied. */
@@ -668,7 +686,6 @@ export class SessionPipe {
       // the ring, arm the tee. Nothing can arrive between these statements.
       this.writeOutput(socket, this.markers.resyncBegin);
       this.flushed = false;
-      this.replayPending = true;
       const { replay: initial, geometry } = this.readRing();
       opts.bridge.on('data', tee);
 
@@ -751,9 +768,7 @@ export class SessionPipe {
       if (!authenticated) {
         socket.destroy();
         if (this.client === socket) {
-          this.client = null;
-          this.flushed = false;
-          this.replayPending = false;
+          this.dropClient();
         }
       }
     }, 5_000);
@@ -769,9 +784,7 @@ export class SessionPipe {
           clearTimeout(authTimeout);
           socket.destroy();
           if (this.client === socket) {
-            this.client = null;
-            this.flushed = false;
-            this.replayPending = false;
+            this.dropClient();
           }
         }
         return;
@@ -786,9 +799,7 @@ export class SessionPipe {
         socket.write('AUTH_FAILED\n');
         socket.destroy();
         if (this.client === socket) {
-          this.client = null;
-          this.flushed = false;
-          this.replayPending = false;
+          this.dropClient();
         }
         return;
       }
@@ -822,9 +833,7 @@ export class SessionPipe {
     socket.on('close', () => {
       clearTimeout(authTimeout);
       if (this.client === socket) {
-        this.client = null;
-        this.flushed = false;
-        this.replayPending = false;
+        this.dropClient();
         // Notify only for an authed client that vanished without a detach RPC
         // (GUI crash / kill). Pre-auth churn must not demote the session.
         if (authenticated) this.onClientGone?.();
@@ -835,9 +844,7 @@ export class SessionPipe {
       clearTimeout(authTimeout);
       if (this.client === socket) {
         socket.destroy();
-        this.client = null;
-        this.flushed = false;
-        this.replayPending = false;
+        this.dropClient();
         if (authenticated) this.onClientGone?.();
       }
     });

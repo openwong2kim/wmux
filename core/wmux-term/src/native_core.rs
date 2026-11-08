@@ -241,6 +241,9 @@ struct XtermFeed {
     shifted: bool,
     /// A control Alacritty parses differently from xterm.
     divergent: bool,
+    /// The alternate screen was left (?47, ?1047 or ?1049 reset, or RIS)
+    /// since the last resize: xterm dropped the cells it kept past a cut.
+    alt_left: bool,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -338,6 +341,7 @@ impl XtermFeed {
             self.margins = false;
         }
         if sequence == b"\x1bc" {
+            self.alt_left = true;
             self.sgr_pixels = false;
             self.sgr_mouse = false;
             self.mouse = 0;
@@ -368,6 +372,7 @@ impl XtermFeed {
                 for mode in modes {
                     match mode {
                         Some(25) => self.cursor_hidden = !set,
+                        Some(47 | 1047 | 1049) if !set => self.alt_left = true,
                         Some(1016) => self.sgr_pixels = set,
                         Some(1006) => self.sgr_mouse = set,
                         Some(protocol @ (9 | 1000 | 1002 | 1003)) => {
@@ -608,6 +613,9 @@ impl NativeTerminal {
         // shows the same cells either way), so the cut is remembered and a
         // later widen on the same screen refuses. Leaving the alternate
         // screen drops xterm's kept cells too.
+        if std::mem::take(&mut self.feed.alt_left) {
+            self.alt_cut = None;
+        }
         if term.mode().contains(TermMode::ALT_SCREEN) {
             if self.alt_cut.is_some_and(|cut| cols as usize > cut) {
                 self.refusal.get_or_insert(
@@ -1166,8 +1174,10 @@ impl NativeRing {
 
     /// The same rules as RingBuffer.noteGeometry (TS): an applied mark is
     /// kept even with no bytes at it; a provisional one (`applied` false) is
-    /// replaced by the next mark; an applied repeat of a provisional tail
-    /// makes it applied. `applied` defaults to true.
+    /// replaced by the next mark unless it is the window's only size; an
+    /// applied repeat of a provisional tail makes it applied; a run of marks
+    /// with no bytes between them keeps the one with the fewest rows and the
+    /// newest. `applied` defaults to true.
     #[napi(catch_unwind)]
     pub fn note_geometry(&mut self, cols: u32, rows: u32, applied: Option<bool>) -> Result<()> {
         if self.capacity == 0 {
@@ -1185,14 +1195,18 @@ impl NativeRing {
                 return Ok(());
             }
         }
-        if self.geometry_tail_provisional && !self.geometry.is_empty() {
-            self.geometry.pop();
-            self.geometry_tail_provisional = false;
-            if let Some(last) = self.geometry.last() {
-                if last.cols == cols && last.rows == rows {
-                    return Ok(());
+        if self.geometry_tail_provisional {
+            self.prune_geometry();
+            if self.geometry.len() > 1 {
+                self.geometry.pop();
+                self.geometry_tail_provisional = false;
+                if let Some(last) = self.geometry.last() {
+                    if last.cols == cols && last.rows == rows {
+                        return Ok(());
+                    }
                 }
             }
+            self.geometry_tail_provisional = false;
         }
         self.geometry.push(GeometryMark {
             at: self.total_written,
@@ -1200,6 +1214,7 @@ impl NativeRing {
             rows,
         });
         self.geometry_tail_provisional = !applied;
+        self.compact_geometry_run();
         self.prune_geometry();
         Ok(())
     }
@@ -1315,6 +1330,31 @@ impl NativeRing {
         result
     }
 
+    /// A run of marks at the newest mark's offset keeps the one with the
+    /// fewest rows and the newest (RingBuffer.compactGeometryRun).
+    fn compact_geometry_run(&mut self) {
+        let Some(at) = self.geometry.last().map(|m| m.at) else {
+            return;
+        };
+        let end = self.geometry.len() - 1;
+        let mut start = end;
+        while start > 0 && self.geometry[start - 1].at == at {
+            start -= 1;
+        }
+        if end - start < 2 {
+            return;
+        }
+        let mut keep = start;
+        for i in start + 1..end {
+            let (m, k) = (&self.geometry[i], &self.geometry[keep]);
+            if m.rows < k.rows || (m.rows == k.rows && m.cols < k.cols) {
+                keep = i;
+            }
+        }
+        let kept = self.geometry[keep].clone();
+        self.geometry.splice(start..end, [kept]);
+    }
+
     fn prune_geometry(&mut self) {
         let start = self.total_written - self.length as u64;
         let keep = self
@@ -1325,8 +1365,11 @@ impl NativeRing {
         if keep > 0 {
             self.geometry.drain(..keep);
         }
+        // Past the cap, the oldest marks after the first go: the first is the
+        // size the window's first bytes were written at.
         if self.geometry.len() > 256 {
-            self.geometry.drain(..self.geometry.len() - 256);
+            let excess = self.geometry.len() - 256;
+            self.geometry.drain(1..1 + excess);
         }
     }
 }

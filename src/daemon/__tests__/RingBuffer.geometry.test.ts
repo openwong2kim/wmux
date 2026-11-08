@@ -35,7 +35,8 @@ describe('RingBuffer geometry log', () => {
     ring.settleGeometry();
     expect(ring.readAllWithGeometry().geometry).toEqual({
       start: { cols: 80, rows: 24 },
-      changes: [{ offset: 1, cols: 60, rows: 24 }, { offset: 1, cols: 50, rows: 20 }, { offset: 1, cols: 45, rows: 20 }],
+      // The run at offset 1 keeps its fewest rows and its newest size.
+      changes: [{ offset: 1, cols: 50, rows: 20 }, { offset: 1, cols: 45, rows: 20 }],
     });
   });
 

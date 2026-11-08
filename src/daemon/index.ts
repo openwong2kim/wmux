@@ -2665,6 +2665,12 @@ async function restartSupervisedSession(
 
 // === RPC handler registration ===
 
+/**
+ * Sessions whose daemon.attachSession is replacing their pipe: a size sent
+ * meanwhile is provisional (setReplayPendingProbe).
+ */
+const attachesInFlight = new Set<string>();
+
 function registerRpcHandlers(
   pipeServer: DaemonPipeServer,
   sessionManager: DaemonSessionManager,
@@ -3154,10 +3160,17 @@ function registerRpcHandlers(
       // Stop existing SessionPipe if still listening (prevents EADDRINUSE on reconnect)
       const existingPipe = sessionPipes.get(p.id);
       if (existingPipe) {
-        // Input the old client already sent still reaches the PTY (#3073).
-        await existingPipe.releaseClient().catch(() => undefined);
-        await existingPipe.stop().catch(() => undefined);
-        sessionPipes.delete(p.id);
+        // The new viewer's replay is due while the old pipe goes: a size it
+        // sends meanwhile is provisional (setReplayPendingProbe below).
+        attachesInFlight.add(p.id);
+        try {
+          // Input the old client already sent still reaches the PTY (#3073).
+          await existingPipe.releaseClient().catch(() => undefined);
+          await existingPipe.stop().catch(() => undefined);
+          sessionPipes.delete(p.id);
+        } finally {
+          attachesInFlight.delete(p.id);
+        }
       }
 
       // TASK-10: dims provider enables the attach-flush snapshot (large ring
@@ -10908,7 +10921,7 @@ async function main(): Promise<void> {
   // renderer answers the startup DA1 itself; before that the bytes only reach
   // it through the (query-stripped) ring replay, and the daemon answers.
   sessionManager.setLiveRendererProbe((id) => sessionPipes.get(id)?.isFlushed === true);
-  sessionManager.setReplayPendingProbe((id) => sessionPipes.get(id)?.awaitingReplay === true);
+  sessionManager.setReplayPendingProbe((id) => attachesInFlight.has(id) || sessionPipes.get(id)?.awaitingReplay === true);
   // #2388: a task folder whose removal did not finish takes no new pane,
   // whoever asks (the desktop, a phone, an automation, a recovery).
   sessionManager.setSpawnCwdRefusal((cwd, session) => pendingRemovalRefusalAt(getWmuxDir(), cwd, session));
