@@ -70,26 +70,6 @@ describe('classifyWmuxProcess', () => {
     expect(classifyWmuxProcess(row(3001, `"${EXE}" --squirrel-firstrun`), OWN_PID)).toBe('squirrel-hook');
   });
 
-  it.each([
-    [`"${EXE}" -e "'use strict'; process.stdin.resume();"`],
-    [`"${EXE}" --eval "1"`],
-    [`"${EXE}" -p "1"`],
-    [`"${EXE}" "C:\\Users\\me\\AppData\\Local\\wmux\\app-3.27.0\\resources\\cli-bundle\\index.js" daemon status`],
-    [`${EXE.replace('app-3.27.0', 'app')} C:\\hooks\\gate.cjs`],
-    [`"${EXE}"   "C:\\x\\broker.mjs"`],
-  ])('classifies our exe run as Node (%s) as node — never an app instance (#3018)', (cmd) => {
-    expect(classifyWmuxProcess(row(1600, cmd), OWN_PID)).toBe('node');
-  });
-
-  it.each([
-    [`"${EXE}" --process-start-args "--hidden"`],
-    [`"${EXE}" "C:\\projects\\site"`],
-    [`"${EXE}" wmux://open?path=x.js`],
-    [`"${EXE}" --enable-logging -e`],
-  ])('keeps a GUI launch with arguments (%s) as app', (cmd) => {
-    expect(classifyWmuxProcess(row(1700, cmd), OWN_PID)).toBe('app');
-  });
-
   it('treats an unreadable (empty) command line as app — old instance must not survive', () => {
     expect(classifyWmuxProcess(row(1500, ''), OWN_PID)).toBe('app');
   });
@@ -188,23 +168,37 @@ describe('selectAppTreeKillPids (#3007: the app kill must not reach the daemon)'
     for (const spared of [2000, 2001, 2100, 2200, 9000, OWN_PID, 100]) expect(all).not.toContain(spared);
   });
 
-  it('never takes our exe run as Node as an app instance (#3018)', () => {
-    // The daemon's shareReader is `wmux.exe -e <source>` under
-    // ELECTRON_RUN_AS_NODE: a command line with no --type= or daemon script.
+  it("never roots at the daemon's own Node children, only at a GUI with helpers (#3018)", () => {
+    // Our exe run as Node under a daemon has a plain command line, which
+    // classifies as 'app': the shareReader, and node-pty's console agent fork
+    // (it inherits the daemon's V8 flag and has no .js extension).
     const shareReader = `"${STAGED}\\wmux.exe" -e "'use strict'; const fs = require('fs');"`;
+    const consoleAgent = `"${STAGED}\\wmux.exe" --max-semi-space-size=8 ${STAGED}\\resources\\node-pty\\lib\\conpty_console_list_agent 2100`;
     const rows = [
       ...table,
       proc(2300, 2000, 'wmux.exe', shareReader),
-      proc(2301, 2001, 'wmux.exe', `"${EXE}" -e "'use strict';"`),
       proc(2400, 2300, 'cmd.exe', 'cmd.exe'), // a child of that reader
-      // The app's own Node children still go with it, as descendants.
-      proc(1500, 1234, 'wmux.exe', `"${EXE}" "C:\\Users\\me\\AppData\\Local\\wmux\\app-3.27.0\\resources\\mcp-broker\\index.js"`),
-      // A GUI started from a daemon session's shell is an app like any other.
+      proc(2301, 2001, 'wmux.exe', consoleAgent),
+      proc(2302, 2000, 'wmux.exe', ''), // an unreadable command line under the daemon
+      // A GUI started from a daemon session's shell is an app: it has helpers.
       proc(2500, 2100, 'wmux.exe', `"${EXE}"`),
+      proc(2501, 2500, 'wmux.exe', `"${EXE}" --type=renderer`),
+      // Outside a daemon nothing changes: our exe run as Node is a root,
+      // under the app or with no app above it.
+      proc(1500, 1234, 'wmux.exe', `"${EXE}" "C:\\x\\resources\\mcp-broker\\index.js"`),
+      proc(1600, 8888, 'wmux.exe', `"${EXE}" "C:\\x\\resources\\mcp\\index.js"`),
     ];
     const { appPids, descendantPids } = selectAppTreeKillPids(rows, OWN_PID, 'wmux.exe');
-    expect(appPids).toEqual([1234, 2500]);
-    expect([...descendantPids].sort((a, b) => a - b)).toEqual([1300, 1301, 1302, 1303, 1400, 1500]);
+    expect([...appPids].sort((a, b) => a - b)).toEqual([1234, 1500, 1600, 2500]);
+    expect([...descendantPids].sort((a, b) => a - b)).toEqual([1300, 1301, 1302, 1303, 1400, 2501]);
+  });
+
+  it('keeps a pid cycle in the daemon subtree from looping', () => {
+    const rows = [
+      proc(2000, 2300, 'wmux.exe', `"${EXE}" "${ROOT_DAEMON}"`),
+      proc(2300, 2000, 'wmux.exe', `"${EXE}" -e "1"`),
+    ];
+    expect(selectAppTreeKillPids(rows, OWN_PID, 'wmux.exe')).toEqual({ appPids: [], descendantPids: [] });
   });
 
   it('matches the image name regardless of case and never roots at another image', () => {
