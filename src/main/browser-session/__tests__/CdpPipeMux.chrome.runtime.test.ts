@@ -535,11 +535,13 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants: downlo
       const userDir = opts.relay?.userDir as string;
       // Main opens the tab and files it under no workspace: a tab the user opened.
       const main = s.mux.connect({ label: 'the user' });
+      // A name is claimed (an empty file) before the download is moved over it: wait for the content.
+      const holds = (name: string) => fs.existsSync(path.join(userDir, name)) && fs.readFileSync(path.join(userDir, name), 'utf8') === 'the report';
       await main.send('Target.createTarget', { url: `${origin}/report` });
-      await vi.waitFor(() => expect(fs.readdirSync(userDir)).toEqual(['report.bin']), { timeout: 20_000 });
+      await vi.waitFor(() => expect(holds('report.bin')).toBe(true), { timeout: 20_000 });
       await main.send('Target.createTarget', { url: `${origin}/report` });
-      await vi.waitFor(() => expect(fs.readdirSync(userDir).sort()).toEqual(['report (1).bin', 'report.bin']), { timeout: 20_000 });
-      expect(fs.readFileSync(path.join(userDir, 'report (1).bin'), 'utf8')).toBe('the report');
+      await vi.waitFor(() => expect(holds('report (1).bin')).toBe(true), { timeout: 20_000 });
+      expect(fs.readdirSync(userDir).sort()).toEqual(['report (1).bin', 'report.bin']);
       expect(seen).toEqual([]);
       await vi.waitFor(() => expect(fs.readdirSync(opts.relay?.dir as string)).toEqual([]), { timeout: 10_000 });
       for (const name of fs.readdirSync(userDir)) fs.unlinkSync(path.join(userDir, name));
