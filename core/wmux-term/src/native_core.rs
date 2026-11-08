@@ -197,9 +197,9 @@ pub struct NativeTerminal {
     feed: XtermFeed,
     /// Why the ANSI snapshot of this stream cannot match xterm's.
     refusal: Option<&'static str>,
-    /// The alternate screen was narrowed since the main screen was last seen
-    /// at a resize; widening it would bring back cells only xterm kept.
-    alt_narrowed: bool,
+    /// The narrowest width the alternate screen was cut to over written
+    /// cells, while it is still the active screen (see alt_width_cut).
+    alt_cut: Option<usize>,
 }
 
 /// Whether a resize to `cols` reflows a row below the cursor's paragraph on
@@ -606,7 +606,7 @@ impl NativeTerminal {
             scrollback,
             feed: XtermFeed::default(),
             refusal: None,
-            alt_narrowed: false,
+            alt_cut: None,
         })
     }
 
@@ -684,28 +684,37 @@ impl NativeTerminal {
         }
         // xterm never reflows or cuts the alternate screen: its rows keep
         // their cells and wrap flags across a resize, where Alacritty cuts the
-        // cells and drops the flags. Refuse what that loses: a width change
-        // with a soft-wrapped row on screen, or widening after a narrowing.
+        // cells and drops the flags. A width change with a soft-wrapped row on
+        // screen loses the flags. xterm also shows the kept cells again when
+        // it widens, so only a widen past a cut over written cells can differ
+        // (a snapshot at the narrow width shows the same cells either way): the
+        // cut is remembered and a later widen on the same screen refuses.
+        // Leaving the alternate screen drops xterm's kept cells too.
         if term.mode().contains(TermMode::ALT_SCREEN) {
             let grid = term.grid();
             let old = grid.columns();
-            if old != cols as usize {
-                let wrapped = (0..grid.screen_lines() as i32).any(|y| {
+            if old != cols as usize
+                && (0..grid.screen_lines() as i32).any(|y| {
                     grid[Line(y)][Column(old - 1)]
                         .flags
                         .contains(Flags::WRAPLINE)
-                });
-                if wrapped || (cols as usize > old && self.alt_narrowed) {
-                    self.refusal.get_or_insert(
-                        "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
-                    );
-                }
-                if (cols as usize) < old {
-                    self.alt_narrowed = true;
-                }
+                })
+            {
+                self.refusal.get_or_insert(
+                    "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
+                );
+            }
+            if self.alt_cut.is_some_and(|cut| cols as usize > cut) {
+                self.refusal.get_or_insert(
+                    "unsupported-alt-width: the alternate screen widened over cells it was cut to",
+                );
+            }
+            if alt_width_cut(term, cols as usize) {
+                let cut = cols as usize;
+                self.alt_cut = Some(self.alt_cut.map_or(cut, |c| c.min(cut)));
             }
         } else {
-            self.alt_narrowed = false;
+            self.alt_cut = None;
         }
         // A paragraph below the cursor's that reflows: xterm moves its cursor
         // row by the rows that adds or removes as if they were above it, off
@@ -1423,6 +1432,23 @@ impl NativeRing {
             self.geometry.drain(..self.geometry.len() - 256);
         }
     }
+}
+
+/// Whether narrowing to `cols` would drop a written cell of the active
+/// alternate screen (one Alacritty's resize truncates and xterm keeps).
+fn alt_width_cut(term: &Term<VoidListener>, cols: usize) -> bool {
+    if !term.mode().contains(TermMode::ALT_SCREEN) {
+        return false;
+    }
+    let grid = term.grid();
+    let old = grid.columns();
+    if cols >= old {
+        return false;
+    }
+    (0..grid.screen_lines()).any(|y| {
+        let line = &grid[Line(y as i32)];
+        (cols..old).any(|x| !line[Column(x)].is_empty())
+    })
 }
 
 /// Test hook for the per-reason parity modules (parity_support.rs): `chunks`
