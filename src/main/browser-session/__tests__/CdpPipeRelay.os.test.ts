@@ -524,6 +524,41 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
     for (const pipePath of tried) expect(await gone(pipePath)).toBe('ENOENT');
   });
 
+  it('a DACL change that throws closes the pipe and goes on like any other failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const real = security();
+    const tried: string[] = [];
+    const { route } = await setup({
+      pipeSecurity: () => ({ security: { ...real, narrow: () => { throw new Error('koffi decode'); } } }),
+      beforeNarrow: (pipePath) => tried.push(pipePath),
+    });
+    expect((await route.grant({})).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    expect(warn.mock.calls.map((call) => call.map(String).join(' '))).toContain(`${RELAY_PIPE_FALLBACK_LINE} (throw)`);
+    expect(tried).toHaveLength(3);
+    for (const pipePath of tried) expect(await gone(pipePath)).toBe('ENOENT');
+  });
+
+  it('closed just before a DACL change that then succeeds: the pipe is never attached', async () => {
+    const tried: string[] = [];
+    let close: Promise<void> | undefined;
+    const { relay, route } = await setup({
+      beforeNarrow: (pipePath) => {
+        tried.push(pipePath);
+        close = relay.close();
+      },
+    });
+    // rebind() would retire a listener bound after a close anyway; the pipe is
+    // not even attached (no upgrade handler on it for a moment).
+    const attach = vi.spyOn(relay as unknown as { attach: (...args: unknown[]) => unknown }, 'attach');
+    const granting = route.grant({}).then(() => 'granted', (err: Error) => err.message);
+    await vi.waitFor(() => expect(close).toBeDefined(), { timeout: 2_000 });
+    await close;
+    expect(await granting).toMatch(/closed|gone/);
+    expect(attach).not.toHaveBeenCalled();
+    expect(tried).toHaveLength(1);
+    expect(await gone(tried[0])).toBe('ENOENT');
+  });
+
   it('closed while a pipe waits for a free instance: no further pipe and no TCP listener', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const real = security();

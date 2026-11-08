@@ -15,7 +15,7 @@ import {
   type RelaySocketDir,
   type RelaySocketId,
 } from './relaySocket';
-import { loadPipeSecurity, relayPipeEndpoint, relayPipePath, type PipeSecurityResult } from './relayPipeWin';
+import { loadPipeSecurity, relayPipeEndpoint, relayPipePath, type NarrowResult, type PipeSecurityResult } from './relayPipeWin';
 
 // ---------------------------------------------------------------------------
 // The one endpoint external clients (the MCP lane's Playwright) dial for every
@@ -326,21 +326,38 @@ export class CdpPipeRelay {
         reason = 'bind';
         continue;
       }
-      this.beforeNarrow?.(pipePath);
-      let narrowed = security.narrow(pipePath);
-      // Every waiting instance taken: let the event loop serve (and time out)
-      // those connections and make a new instance, then try again, briefly,
-      // with a short pause rather than a spin.
-      const deadline = Date.now() + PIPE_BUSY_WAIT_MS;
-      while (!narrowed.ok && narrowed.busy && Date.now() < deadline && !this.closed) {
-        await new Promise((resolve) => setTimeout(resolve, PIPE_BUSY_RETRY_MS));
-        narrowed = security.narrow(pipePath);
+      // Whatever narrow() does, throwing included, the pipe is either narrowed
+      // and served, or closed: it never stays listening wide.
+      const narrow = (): NarrowResult => {
+        try {
+          return security.narrow(pipePath);
+        } catch {
+          return { ok: false, busy: false, reason: 'throw' };
+        }
+      };
+      let narrowed: NarrowResult = { ok: false, busy: false, reason: 'throw' };
+      try {
+        this.beforeNarrow?.(pipePath);
+        narrowed = narrow();
+        // Every waiting instance taken: let the event loop serve (and time out)
+        // those connections and make a new instance, then try again, briefly,
+        // with a short pause rather than a spin.
+        const deadline = Date.now() + PIPE_BUSY_WAIT_MS;
+        while (!narrowed.ok && narrowed.busy && Date.now() < deadline && !this.closed) {
+          await new Promise((resolve) => setTimeout(resolve, PIPE_BUSY_RETRY_MS));
+          narrowed = narrow();
+        }
+      } finally {
+        server.off('error', onBindError);
       }
-      server.off('error', onBindError);
-      if (narrowed.ok) return { listener: this.attach(server, { endpoint: relayPipeEndpoint(pipePath, RELAY_PATH), tcpHost: null, socket: null, pipe: pipePath }) };
-      reason = narrowed.busy ? 'busy' : 'dacl';
+      // Closed while narrowing: not served, even if the DACL is in place.
+      if (narrowed.ok && !this.closed) {
+        return { listener: this.attach(server, { endpoint: relayPipeEndpoint(pipePath, RELAY_PATH), tcpHost: null, socket: null, pipe: pipePath }) };
+      }
       server.close();
       server.closeAllConnections();
+      if (this.closed) return { reason: 'closed' };
+      reason = narrowed.ok ? 'closed' : narrowed.busy ? 'busy' : narrowed.reason === 'throw' ? 'throw' : 'dacl';
     }
     return { reason };
   }

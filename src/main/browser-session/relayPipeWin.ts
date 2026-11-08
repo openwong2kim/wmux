@@ -120,6 +120,7 @@ const TOKEN_USER = 1;
 const WTS_USER_NAME = 5;
 const WTS_DOMAIN_NAME = 7;
 export const ERROR_PIPE_BUSY = 231;
+const SECURITY_MAX_SID_SIZE = 68;
 const INVALID_HANDLE = 0xffffffffffffffffn;
 
 export type NarrowResult = { ok: true } | { ok: false; busy: boolean; reason: string };
@@ -169,6 +170,11 @@ function load(): PipeSecurityResult {
   const wts = koffi.load('wtsapi32.dll');
   const CreateFileW = k32.func('void * __stdcall CreateFileW(str16 name, uint32 access, uint32 share, void *sa, uint32 disp, uint32 flags, void *tmpl)');
   const CloseHandle = k32.func('int __stdcall CloseHandle(void *h)');
+  // Koffi keeps the thread's last error across its calls: it saves the value
+  // when a call returns and puts it back before the next one, so Node and V8
+  // cannot overwrite it in between (koffi CHANGELOG: "Protect GetLastError()
+  // value from Node.js and V8 on Windows"; abi/x64win.cc). Read it as the next
+  // koffi call after the failing one.
   const GetLastError = k32.func('uint32 __stdcall GetLastError()');
   const LocalFree = k32.func('void * __stdcall LocalFree(void *p)');
   const GetCurrentProcess = k32.func('void * __stdcall GetCurrentProcess()');
@@ -177,7 +183,8 @@ function load(): PipeSecurityResult {
   const OpenProcessToken = adv.func('int __stdcall OpenProcessToken(void *process, uint32 access, _Out_ void **token)');
   const GetTokenInformation = adv.func('int __stdcall GetTokenInformation(void *token, int cls, _Out_ void *info, uint32 length, _Out_ uint32 *returned)');
   const ConvertSidToStringSidW = adv.func('int __stdcall ConvertSidToStringSidW(void *sid, _Out_ void **str)');
-  const LookupAccountSidW = adv.func('int __stdcall LookupAccountSidW(str16 system, void *sid, _Out_ void *name, _Inout_ uint32 *nameLength, _Out_ void *domain, _Inout_ uint32 *domainLength, _Out_ int *use)');
+  const LookupAccountNameW = adv.func('int __stdcall LookupAccountNameW(str16 system, str16 account, _Out_ void *sid, _Inout_ uint32 *sidLength, _Out_ void *domain, _Inout_ uint32 *domainLength, _Out_ int *use)');
+  const EqualSid = adv.func('int __stdcall EqualSid(void *a, void *b)');
   const GetSecurityInfo = adv.func('uint32 __stdcall GetSecurityInfo(void *h, int type, uint32 info, _Out_ void **owner, _Out_ void **group, _Out_ void **dacl, _Out_ void **sacl, _Out_ void **sd)');
   const SetSecurityInfo = adv.func('uint32 __stdcall SetSecurityInfo(void *h, int type, uint32 info, void *owner, void *group, void *dacl, void *sacl)');
   const SdToSddl = adv.func('int __stdcall ConvertSecurityDescriptorToStringSecurityDescriptorW(void *sd, uint32 revision, uint32 info, _Out_ void **str, _Out_ uint32 *length)');
@@ -204,15 +211,9 @@ function load(): PipeSecurityResult {
   if (!ConvertSidToStringSidW(sid, sidText)) return { unavailable: 'win32-api' };
   const userSid = wide(sidText[0]);
   LocalFree(sidText[0]);
-  const name = Buffer.alloc(1024);
-  const domain = Buffer.alloc(1024);
-  const nameLength = [512];
-  const domainLength = [512];
-  if (!LookupAccountSidW(null, sid, name, nameLength, domain, domainLength, [0])) return { unavailable: 'win32-api' };
-  const userName = name.toString('utf16le', 0, nameLength[0] * 2);
-  const userDomain = domain.toString('utf16le', 0, domainLength[0] * 2);
 
   // The session's interactive user: a client the user starts runs as them.
+  // Compared by SID, so a name or domain spelled differently is the same user.
   const session = [0];
   if (!ProcessIdToSessionId(GetCurrentProcessId(), session)) return { unavailable: 'no-session-user' };
   const sessionText = (cls: number): string | null => {
@@ -225,8 +226,15 @@ function load(): PipeSecurityResult {
   const sessionUser = sessionText(WTS_USER_NAME);
   const sessionDomain = sessionText(WTS_DOMAIN_NAME);
   if (!sessionUser) return { unavailable: 'no-session-user' };
-  const same = (a: string | null, b: string): boolean => (a ?? '').toLowerCase() === b.toLowerCase();
-  if (!same(sessionUser, userName) || !same(sessionDomain, userDomain)) return { unavailable: 'different-user' };
+  const account = sessionDomain ? `${sessionDomain}\\${sessionUser}` : sessionUser;
+  const sessionSid = Buffer.alloc(SECURITY_MAX_SID_SIZE);
+  const domainName = Buffer.alloc(512);
+  // A lookup that cannot be answered (a domain controller out of reach) is
+  // not a different user: it is tried again on the next bind.
+  if (!LookupAccountNameW(null, account, sessionSid, [sessionSid.length], domainName, [domainName.length / 2], [0])) {
+    return { unavailable: 'win32-api' };
+  }
+  if (!EqualSid(sid, sessionSid)) return { unavailable: 'different-user' };
 
   const daclSddl = (handle: unknown): string | null => {
     const sd: unknown[] = [null];
