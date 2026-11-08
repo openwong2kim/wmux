@@ -168,6 +168,41 @@ describe('selectAppTreeKillPids (#3007: the app kill must not reach the daemon)'
     for (const spared of [2000, 2001, 2100, 2200, 9000, OWN_PID, 100]) expect(all).not.toContain(spared);
   });
 
+  it("never roots at the daemon's own Node children, only at a GUI with helpers (#3018)", () => {
+    // Our exe run as Node under a daemon has a plain command line, which
+    // classifies as 'app': the shareReader, and node-pty's console agent fork
+    // (it inherits the daemon's V8 flag and has no .js extension).
+    const shareReader = `"${STAGED}\\wmux.exe" -e "'use strict'; const fs = require('fs');"`;
+    const consoleAgent = `"${STAGED}\\wmux.exe" --max-semi-space-size=8 ${STAGED}\\resources\\node-pty\\lib\\conpty_console_list_agent 2100`;
+    const rows = [
+      ...table,
+      proc(2300, 2000, 'wmux.exe', shareReader),
+      proc(2400, 2300, 'cmd.exe', 'cmd.exe'), // a child of that reader
+      // Another program's --type= under the reader is not a Chromium helper of ours.
+      proc(2401, 2300, 'tool.exe', 'tool.exe --type=renderer'),
+      proc(2301, 2001, 'wmux.exe', consoleAgent),
+      proc(2302, 2000, 'wmux.exe', ''), // an unreadable command line under the daemon
+      // A GUI started from a daemon session's shell is an app: it has helpers.
+      proc(2500, 2100, 'wmux.exe', `"${EXE}"`),
+      proc(2501, 2500, 'wmux.exe', `"${EXE}" --type=renderer`),
+      // Outside a daemon nothing changes: our exe run as Node is a root,
+      // under the app or with no app above it.
+      proc(1500, 1234, 'wmux.exe', `"${EXE}" "C:\\x\\resources\\mcp-broker\\index.js"`),
+      proc(1600, 8888, 'wmux.exe', `"${EXE}" "C:\\x\\resources\\mcp\\index.js"`),
+    ];
+    const { appPids, descendantPids } = selectAppTreeKillPids(rows, OWN_PID, 'wmux.exe');
+    expect([...appPids].sort((a, b) => a - b)).toEqual([1234, 1500, 1600, 2500]);
+    expect([...descendantPids].sort((a, b) => a - b)).toEqual([1300, 1301, 1302, 1303, 1400, 2501]);
+  });
+
+  it('keeps a pid cycle in the daemon subtree from looping', () => {
+    const rows = [
+      proc(2000, 2300, 'wmux.exe', `"${EXE}" "${ROOT_DAEMON}"`),
+      proc(2300, 2000, 'wmux.exe', `"${EXE}" -e "1"`),
+    ];
+    expect(selectAppTreeKillPids(rows, OWN_PID, 'wmux.exe')).toEqual({ appPids: [], descendantPids: [] });
+  });
+
   it('matches the image name regardless of case and never roots at another image', () => {
     const rows = [proc(1, 0, 'WMUX.EXE', `"${EXE}"`), proc(2, 0, 'other.exe', 'other.exe')];
     expect(selectAppTreeKillPids(rows, OWN_PID, 'wmux.exe').appPids).toEqual([1]);

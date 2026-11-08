@@ -128,7 +128,8 @@ export function parseCimProcessJson(stdout: string): WmuxProcessRow[] {
  * pruned at the daemon (its parent pid is the app), at ourselves and at any
  * concurrent Squirrel hook, so none of those, nor anything under them, is
  * killed. The prune applies whatever the image name: sparing a daemon-shaped
- * process is the safe direction.
+ * process is the safe direction. Inside a daemon's subtree, only a process
+ * with Chromium helpers is taken as an app instance (#3018).
  */
 export function selectAppTreeKillPids(
   rows: readonly WmuxProcessRow[],
@@ -136,10 +137,6 @@ export function selectAppTreeKillPids(
   exeName: string,
 ): { appPids: number[]; descendantPids: number[] } {
   const image = exeName.toLowerCase();
-  const appPids = selectAppInstancePids(
-    rows.filter((row) => (row.name ?? '').toLowerCase() === image),
-    ownPid,
-  );
   const childrenOf = new Map<number, WmuxProcessRow[]>();
   for (const row of rows) {
     const parent = row.parentPid ?? 0;
@@ -148,6 +145,27 @@ export function selectAppTreeKillPids(
     if (siblings) siblings.push(row);
     else childrenOf.set(parent, [row]);
   }
+  // Under a daemon, our image also runs as Node with a plain command line
+  // (the shareReader is `wmux.exe -e <source>`, node-pty forks a console
+  // agent), which classifies as 'app' (#3018). There a process counts as a
+  // GUI instance only when it has Chromium helpers of its own. A stale parent
+  // pid can only pull a row in here, where a GUI is still known by its helpers.
+  const daemonSubtree = new Set<number>();
+  const pending = rows.filter((row) => classifyWmuxProcess(row, ownPid) === 'daemon').map((row) => row.pid);
+  while (pending.length > 0) {
+    const pid = pending.pop() as number;
+    if (daemonSubtree.has(pid)) continue;
+    daemonSubtree.add(pid);
+    for (const child of childrenOf.get(pid) ?? []) pending.push(child.pid);
+  }
+  const ourImage = (row: WmuxProcessRow): boolean => (row.name ?? '').toLowerCase() === image;
+  // A GUI's helpers are our own image; another program may take --type= too.
+  const hasHelpers = (pid: number): boolean =>
+    (childrenOf.get(pid) ?? []).some((child) => ourImage(child) && classifyWmuxProcess(child, ownPid) === 'helper');
+  const appPids = selectAppInstancePids(
+    rows.filter((row) => ourImage(row) && (!daemonSubtree.has(row.pid) || hasHelpers(row.pid))),
+    ownPid,
+  );
   // `seen` doubles as the cycle guard: Windows recycles pids, so a stale
   // parent reference can close a loop.
   const seen = new Set<number>(appPids);
