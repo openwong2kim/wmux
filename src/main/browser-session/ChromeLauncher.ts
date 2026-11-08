@@ -2080,7 +2080,8 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   /** Main's session on the pipe that holds the default context's downloads, events on. */
   private async armDownloadRelay(mux: CdpPipeMux, relay: DownloadRelay): Promise<void> {
-    const session = mux.connect({ label: 'ChromeLauncher download relay' });
+    // Sent at spawn, so its first command waits out the same cold start the launch does.
+    const session = mux.connect({ label: 'ChromeLauncher download relay', timeoutMs: READY_STARTING_MS });
     relay.session = session;
     session.on('Browser.downloadWillBegin', (params) => relay.policy.downloadEvent('Browser.downloadWillBegin', params));
     session.on('Browser.downloadProgress', (params) => relay.policy.downloadEvent('Browser.downloadProgress', params));
