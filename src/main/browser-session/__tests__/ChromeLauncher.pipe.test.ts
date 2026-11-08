@@ -35,8 +35,8 @@ vi.mock('node:fs', async (orig) => {
   };
 });
 
-import { ChromeLauncher, chromeSaid, chromeTransportKind } from '../ChromeLauncher';
-import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
+import { ChromeLauncher, chromeSaid, chromeTransportKind, setPipeRelayForTests } from '../ChromeLauncher';
+import { CdpPipeRelay, type RelayGrant } from '../CdpPipeRelay';
 import { CDP_PIPE_COMMAND_TIMEOUT_MS } from '../CdpPipeMux';
 import { CHROME_START_CEILING_MS } from '../../../shared/chromeStart';
 
@@ -109,7 +109,9 @@ function spawnPipeChrome<T extends PipeChrome = PipeChrome>(
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
-beforeEach(() => {
+beforeEach(async () => {
+  // Loopback TCP: no socket dir in any temp dir another wmux uses.
+  await setPipeRelayForTests(new CdpPipeRelay({ roots: [] }));
   spawnMock.mockReset();
   state.portFiles = {};
   fetchMock = vi.fn(async () => { throw new Error('nothing listening'); });
@@ -117,11 +119,21 @@ beforeEach(() => {
   vi.stubEnv('WMUX_CHROME_TRANSPORT', 'pipe');
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  await setPipeRelayForTests(null);
 });
+
+function dial(grant: RelayGrant): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(grant.endpoint, { headers: { ...grant.headers } });
+    ws.once('open', () => resolve(ws));
+    ws.once('error', reject);
+    ws.once('unexpected-response', (_req, res) => reject(new Error(`HTTP ${res.statusCode}`)));
+  });
+}
 
 describe('ChromeLauncher over a debugging pipe', () => {
   it('is off by default', () => {
@@ -166,29 +178,38 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await launcher.dispose({ immediate: true });
   });
 
-  it('hands external clients a loopback endpoint on the pipe, which goes with the Chrome', async () => {
+  it('names no port or endpoint for a pipe Chrome, and hands each caller its own relay token, good for that Chrome only', async () => {
     const { chrome } = spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
-    const { wsEndpoint, cdpPort } = await launcher.endpoint();
-    expect(cdpPort).toBeUndefined();
-    expect(wsEndpoint).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[0-9a-f]{64}$/);
-    // The same endpoint on every call while that Chrome lives.
-    expect((await launcher.endpoint()).wsEndpoint).toBe(wsEndpoint);
-    const ws = new WebSocket(wsEndpoint as string);
-    const answer = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      ws.once('error', reject);
-      ws.once('open', () => ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' })));
+    expect(await launcher.endpoint()).toEqual({ piped: true });
+    const grant = await launcher.relayGrant({ workspaceId: 'ws-a' });
+    const other = await launcher.relayGrant({ workspaceId: 'ws-a' });
+    expect(other.headers.Authorization).not.toBe(grant.headers.Authorization);
+    const ws = await dial(grant);
+    const answer = await new Promise<Record<string, unknown>>((resolve) => {
       ws.on('message', (data) => resolve(JSON.parse(data.toString()) as Record<string, unknown>));
+      ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
     });
     expect(answer).toEqual({ id: 1, result: { echo: 'Browser.getVersion' } });
+    // Its connections and unused tokens go with the Chrome.
     const closed = new Promise((resolve) => ws.once('close', resolve));
     chrome.exit();
     await closed;
-    await expect(new Promise((resolve, reject) => {
-      const again = new WebSocket(wsEndpoint as string);
-      again.once('open', resolve);
-      again.once('error', reject);
-    })).rejects.toThrow();
+    await expect(dial(other)).rejects.toThrow('HTTP 401');
+    await expect(launcher.relayGrant({})).rejects.toThrow('Chrome exited');
+  });
+
+  it('a token minted before the Chrome was restarted does not reach the new one', async () => {
+    const first = spawnPipeChrome();
+    const launcher = new ChromeLauncher('/tmp/pipe-profile');
+    await launcher.endpoint();
+    const stale = await launcher.relayGrant({});
+    first.chrome.exit();
+    spawnPipeChrome();
+    await vi.waitFor(async () => expect(await launcher.endpoint()).toEqual({ piped: true }), { timeout: 5_000 });
+    await expect(dial(stale)).rejects.toThrow('HTTP 401');
+    (await dial(await launcher.relayGrant({}))).close();
+    await launcher.dispose({ immediate: true });
   });
 
   it('names no port for a pipe Chrome', async () => {
@@ -200,12 +221,13 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await launcher.dispose({ immediate: true });
   });
 
-  it('a loopback endpoint that failed to open is opened again on the next call', async () => {
+  it('a relay that failed to listen is tried again on the next token', async () => {
     spawnPipeChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-profile');
-    vi.spyOn(CdpPipeEndpoint, 'open').mockRejectedValueOnce(new Error('listen EACCES'));
-    await expect(launcher.endpoint()).rejects.toThrow('listen EACCES');
-    expect((await launcher.endpoint()).wsEndpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    await launcher.endpoint();
+    vi.spyOn(CdpPipeRelay.prototype as unknown as { listen: () => Promise<unknown> }, 'listen').mockRejectedValueOnce(new Error('listen EACCES'));
+    await expect(launcher.relayGrant({})).rejects.toThrow('listen EACCES');
+    expect((await launcher.relayGrant({})).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
     await launcher.dispose({ immediate: true });
   });
 

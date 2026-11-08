@@ -7,9 +7,9 @@ import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurf
 import type { CdpConnection } from './CdpSocket';
 import type { Readable, Writable } from 'node:stream';
 import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTransport';
-import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type ClientRef } from './CdpPipeMux';
+import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type CallerIdentity, type ClientRef } from './CdpPipeMux';
 import { ProtectedPipePolicy } from './ProtectedPipePolicy';
-import { CdpPipeEndpoint } from './CdpPipeEndpoint';
+import { CdpPipeRelay, type RelayGrant, type RelayRoute } from './CdpPipeRelay';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
 import { surfaceOpeners } from './SurfaceOpeners';
@@ -173,10 +173,35 @@ export interface ChromeTargetInfo {
 
 /** What browser.cdp.info reports for a chrome-family client. Exactly one of
  *  the fields is set: dedicated instances expose an HTTP CDP port, the live
- *  attach exposes Chrome's secret browser WS endpoint. */
+ *  attach exposes Chrome's secret browser WS endpoint, and a dedicated
+ *  instance on a debugging pipe is reached through the relay (relayGrant). */
 export interface ChromeBackendEndpoint {
   cdpPort?: number;
   wsEndpoint?: string;
+  piped?: true;
+}
+
+/**
+ * The relay every Chrome on a debugging pipe is served through, made on the
+ * first token asked for and closed on quit (disposeAll).
+ */
+let pipeRelay: CdpPipeRelay | null = null;
+
+async function closePipeRelay(): Promise<void> {
+  const relay = pipeRelay;
+  pipeRelay = null;
+  await relay?.close();
+}
+
+/**
+ * Tests: serve pipe Chromes through `relay` (one on a temp root of the test's
+ * own, so nothing the test starts looks in a temp dir another wmux uses), or
+ * back to the default with null. The relay it replaces is closed.
+ */
+export async function setPipeRelayForTests(relay: CdpPipeRelay | null): Promise<void> {
+  const previous = pipeRelay;
+  pipeRelay = relay;
+  if (previous && previous !== relay) await previous.close();
 }
 
 /**
@@ -260,6 +285,8 @@ export class ChromePageSessionError extends Error {
 
 export interface ChromeBackendClient {
   endpoint(): Promise<ChromeBackendEndpoint>;
+  /** Dedicated instances on a debugging pipe (endpoint() said `piped`): a relay token for `identity`. */
+  relayGrant?(identity: CallerIdentity): Promise<RelayGrant>;
   /** Targets reported through browser.cdp.info (page-selection seed). Live
    *  seeds only wmux-opened tabs so a random user tab can never become the
    *  default pin. */
@@ -569,15 +596,15 @@ export class ChromeLauncher implements ChromeBackendClient {
    */
   private bound: { readonly transport: ChromeTransport; ready: boolean } | null = null;
   /**
-   * Pipe mode: the current Chrome's multiplexer, and the loopback endpoint
-   * external clients dial for it, opened on the first endpoint() call. Both
-   * go with the Chrome (onChildGone).
+   * Pipe mode: the current Chrome's multiplexer, and its route on the relay
+   * external clients dial, made on the first relayGrant() call. Both go with
+   * the Chrome (onChildGone).
    */
   private piped: {
     readonly mux: CdpPipeMux;
     /** A protected profile's rules for the pipe's clients; null when unprotected. */
     readonly policy: ProtectedPipePolicy | null;
-    endpoint: Promise<CdpPipeEndpoint> | null;
+    route: RelayRoute | null;
   } | null = null;
   /** Pipe mode: liveness checks failed in a row, and when the last one counted ended. */
   private pingMisses = { count: 0, lastEnd: 0 };
@@ -1345,30 +1372,29 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   /**
    * Dedicated instances expose the HTTP CDP port (launching on demand); on a
-   * debugging pipe there is no port, and external clients get the loopback
-   * endpoint served on the pipe instead.
+   * debugging pipe there is no port, and external clients connect through the
+   * relay with a token from relayGrant() instead.
    */
   async endpoint(): Promise<ChromeBackendEndpoint> {
     const cdpPort = await this.ensureRunning();
     this.assertOpen(); // a quit may land between ensureRunning's gate and here
-    if (this.piped) return { wsEndpoint: (await this.pipeEndpoint(this.piped)).url };
+    if (this.piped) return { piped: true };
     return { cdpPort };
   }
 
-  /** The loopback endpoint for `piped`, opened once; closed at once if that Chrome went meanwhile. */
-  private async pipeEndpoint(piped: NonNullable<ChromeLauncher['piped']>): Promise<CdpPipeEndpoint> {
-    if (!piped.endpoint) {
-      const opening = CdpPipeEndpoint.open(piped.mux);
-      piped.endpoint = opening;
-      // A listen that failed is tried again on the next call.
-      opening.catch(() => { if (piped.endpoint === opening) piped.endpoint = null; });
-    }
-    const endpoint = await piped.endpoint;
-    if (this.piped !== piped) {
-      await endpoint.close();
-      throw new Error('ChromeLauncher: Chrome exited');
-    }
-    return endpoint;
+  /**
+   * A one-time token for `identity` to connect to the running Chrome on the
+   * pipe through the relay (call endpoint() first). The token reaches this
+   * Chrome only: one started later on the profile is not reached by it.
+   */
+  async relayGrant(identity: CallerIdentity): Promise<RelayGrant> {
+    this.assertOpen();
+    const piped = this.piped;
+    if (!piped) throw new Error('ChromeLauncher: Chrome exited');
+    piped.route ??= (pipeRelay ??= new CdpPipeRelay()).serve(piped.mux);
+    const grant = await piped.route.grant(identity);
+    if (this.piped !== piped) throw new Error('ChromeLauncher: Chrome exited');
+    return grant;
   }
 
   /** Registry-scoped tabs seed page selection for dedicated instances. */
@@ -2269,7 +2295,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         ...(policy && { filter: policy.filter, beforeReply: policy.beforeReply, onClientGone: (client: ClientRef) => policy.forget(client) }),
       })
       : null;
-    this.piped = mux ? { mux, policy, endpoint: null } : null;
+    this.piped = mux ? { mux, policy, route: null } : null;
     const piped = mux ? pipeTransport(mux) : null;
 
     // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
@@ -2398,8 +2424,8 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.child = null;
     this.unbindEndpoint();
     this.pingMisses = { count: 0, lastEnd: 0 };
-    // Its clients go with it.
-    void this.piped?.endpoint?.then((endpoint) => endpoint.close(), () => undefined);
+    // Its clients and unused tokens go with it.
+    this.piped?.route?.close();
     this.piped = null;
     this.launchedProtected = false;
     this.enforcementReady = false;
@@ -2867,6 +2893,10 @@ export class ChromeLauncherRegistry {
     // Socket close only — never touches the user's Chrome process.
     this.live?.dispose();
     this.live = null;
-    await Promise.all(stopping);
+    try {
+      await Promise.all(stopping);
+    } finally {
+      await closePipeRelay();
+    }
   }
 }

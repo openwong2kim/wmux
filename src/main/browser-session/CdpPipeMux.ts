@@ -8,7 +8,7 @@ import { CdpPipeStallWatch, STALL_MS, type WatchedClient } from './CdpPipeStallW
 // One debugging pipe (`--remote-debugging-pipe`: the browser reads fd 3 and
 // writes fd 4, one JSON message per NUL-terminated frame) shared by several
 // clients: main's own connections (the launcher's watcher, download guard,
-// probes) and external ones (CdpPipeEndpoint).
+// probes) and external ones (CdpPipeRelay).
 //
 // Ownership, not broadcast:
 //  - Every client gets a browser session of its own (Target.attachToBrowserTarget),
@@ -84,8 +84,19 @@ export interface ClientCommand {
   sessionId?: string;
 }
 
+/**
+ * Who an external client connected as: what browser.cdp.info resolved for the
+ * caller its relay token was minted for. Carried on the client for a
+ * TargetGrant to judge by; nothing narrows on it yet.
+ */
+export interface CallerIdentity {
+  readonly workspaceId?: string;
+  readonly profile?: string;
+  readonly protectedEpoch?: number;
+}
+
 /** A client as a filter or hook sees it. */
-export interface ClientRef { readonly kind: 'internal' | 'external'; readonly label: string }
+export interface ClientRef { readonly kind: 'internal' | 'external'; readonly label: string; readonly identity?: CallerIdentity }
 
 /**
  * What a filter does with a client's command: refuse it (the client gets the
@@ -337,8 +348,11 @@ export class CdpPipeMux {
     label: string,
     send: (text: string) => void,
     onGone: (reason: string) => void,
-    /** For the stall watch: a WebSocket ping (its answer goes to the returned `pong`) and the socket's backlog. */
-    watched: WatchedClient = {},
+    /**
+     * For the stall watch: a WebSocket ping (its answer goes to the returned
+     * `pong`) and the socket's backlog. `identity`: who the client connected as.
+     */
+    watched: WatchedClient & { identity?: CallerIdentity } = {},
   ): { receive: (text: string) => void; close: () => void; pong: () => void } {
     const client = new ExternalClient(label, send, onGone, watched);
     this.clients.add(client);
@@ -727,12 +741,15 @@ class ExternalClient extends Client {
     label: string,
     private readonly sendText: (text: string) => void,
     private readonly onGone: (reason: string) => void,
-    watched: WatchedClient,
+    watched: WatchedClient & { identity?: CallerIdentity },
   ) {
     super('external', label);
     this.ping = watched.ping;
     this.drain = watched.drain;
+    this.identity = watched.identity;
   }
+
+  readonly identity?: CallerIdentity;
 
   override readonly ping?: () => void;
   override readonly drain?: () => { buffered: number; flushed: number };
