@@ -178,6 +178,8 @@ describe('selectAppTreeKillPids (#3007: the app kill must not reach the daemon)'
       ...table,
       proc(2300, 2000, 'wmux.exe', shareReader),
       proc(2400, 2300, 'cmd.exe', 'cmd.exe'), // a child of that reader
+      // Another program's --type= under the reader is not a Chromium helper of ours.
+      proc(2401, 2300, 'tool.exe', 'tool.exe --type=renderer'),
       proc(2301, 2001, 'wmux.exe', consoleAgent),
       proc(2302, 2000, 'wmux.exe', ''), // an unreadable command line under the daemon
       // A GUI started from a daemon session's shell is an app: it has helpers.

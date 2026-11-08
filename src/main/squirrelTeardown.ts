@@ -158,10 +158,12 @@ export function selectAppTreeKillPids(
     daemonSubtree.add(pid);
     for (const child of childrenOf.get(pid) ?? []) pending.push(child.pid);
   }
+  const ourImage = (row: WmuxProcessRow): boolean => (row.name ?? '').toLowerCase() === image;
+  // A GUI's helpers are our own image; another program may take --type= too.
   const hasHelpers = (pid: number): boolean =>
-    (childrenOf.get(pid) ?? []).some((child) => classifyWmuxProcess(child, ownPid) === 'helper');
+    (childrenOf.get(pid) ?? []).some((child) => ourImage(child) && classifyWmuxProcess(child, ownPid) === 'helper');
   const appPids = selectAppInstancePids(
-    rows.filter((row) => (row.name ?? '').toLowerCase() === image && (!daemonSubtree.has(row.pid) || hasHelpers(row.pid))),
+    rows.filter((row) => ourImage(row) && (!daemonSubtree.has(row.pid) || hasHelpers(row.pid))),
     ownPid,
   );
   // `seen` doubles as the cycle guard: Windows recycles pids, so a stale
