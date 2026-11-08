@@ -33,7 +33,13 @@ const DIR_NAME = /^wmux-dl-(\d+)-/;
 const GUID = /^[A-Za-z0-9-]{1,128}$/;
 /** Names tried in the user's folder before a download is given up: "name (1)" .. "name (99)". */
 const MAX_DEDUPE = 100;
-const MAX_NAME = 200;
+/**
+ * A user-folder name's length in UTF-8 bytes, leaving room for " (99)": under
+ * the 255-byte NAME_MAX of macOS and Linux, and so under Windows' 255 UTF-16
+ * units too.
+ */
+const MAX_NAME_BYTES = 240;
+const MAX_EXT_BYTES = 16;
 
 /** The file operations a move uses; tests stand in for them. */
 export interface RelayFs {
@@ -99,6 +105,14 @@ interface Handed {
   readonly sessionId: string | undefined;
   readonly dir: string;
   readonly events: boolean;
+  /** When Chrome last said anything about it: a download silent for DOWNLOAD_FILE_TTL_MS is forgotten. */
+  seen: number;
+}
+
+/** A download no client asked for: the name it finishes under in the user's folder. */
+interface ForUser {
+  readonly name: string;
+  seen: number;
 }
 
 const refusal = (message: string) => ({ code: -32000, message });
@@ -106,8 +120,8 @@ const refusal = (message: string) => ({ code: -32000, message });
 export class DownloadRelayPolicy {
   private readonly asked = new Map<ClientRef, Map<string | undefined, Asked>>();
   private readonly handed = new Map<string, Handed>();
-  /** Downloads no client asked for, by guid: the name they finish under in the user's folder. */
-  private readonly user = new Map<string, string>();
+  /** Downloads no client asked for, by guid. */
+  private readonly user = new Map<string, ForUser>();
   private readonly fs: RelayFs;
   private readonly sweeper: ReturnType<typeof setInterval>;
 
@@ -202,23 +216,20 @@ export class DownloadRelayPolicy {
     }
     // A workspace's client before one that sees every target: the page is the workspace's.
     holders.sort(([a], [b]) => Number(a.identity?.everyTarget === true) - Number(b.identity?.everyTarget === true));
+    // The first holder that asked anything decides: allow takes it, deny cancels it.
     for (const [client, sessions] of holders) {
       for (const [sessionId, asked] of sessions) {
         if (asked.behavior !== 'allow' || !asked.dir) continue;
-        this.handed.set(guid, { client, sessionId, dir: asked.dir, events: asked.events });
+        this.handed.set(guid, { client, sessionId, dir: asked.dir, events: asked.events, seen: Date.now() });
         if (asked.events) this.deps.emit(client, 'Browser.downloadWillBegin', params, sessionId);
         return;
       }
-    }
-    const denied = holders.filter(([, sessions]) => [...sessions.values()].some((asked) => asked.behavior === 'deny'));
-    if (denied.length) {
+      if (!sessions.size) continue;
       this.cancel(guid);
-      for (const [client, sessions] of denied) {
-        for (const [sessionId, asked] of sessions) {
-          if (asked.behavior !== 'deny' || !asked.events) continue;
-          this.deps.emit(client, 'Browser.downloadWillBegin', params, sessionId);
-          this.deps.emit(client, 'Browser.downloadProgress', { guid, totalBytes: 0, receivedBytes: 0, state: 'canceled' }, sessionId);
-        }
+      for (const [sessionId, asked] of sessions) {
+        if (!asked.events) continue;
+        this.deps.emit(client, 'Browser.downloadWillBegin', params, sessionId);
+        this.deps.emit(client, 'Browser.downloadProgress', { guid, totalBytes: 0, receivedBytes: 0, state: 'canceled' }, sessionId);
       }
       return;
     }
@@ -227,21 +238,22 @@ export class DownloadRelayPolicy {
       this.cancel(guid);
       return;
     }
-    this.user.set(guid, safeDownloadName(params.suggestedFilename));
+    this.user.set(guid, { name: safeDownloadName(params.suggestedFilename), seen: Date.now() });
   }
 
   private progressed(guid: string, params: Record<string, unknown>): void {
     const state = params.state;
-    const name = this.user.get(guid);
-    if (name !== undefined) {
+    const forUser = this.user.get(guid);
+    if (forUser) {
+      forUser.seen = Date.now();
       if (state === 'canceled') {
         this.user.delete(guid);
         this.removeTemp(guid);
       } else if (state === 'completed') {
         this.user.delete(guid);
-        void this.moveToUser(guid, name).catch((err: unknown) => {
-          console.warn('[DownloadRelay] a download could not be placed in the download folder:', (err as NodeJS.ErrnoException).code ?? String(err));
-          this.removeTemp(guid);
+        // The only copy: on a failure it stays in main's folder (swept after DOWNLOAD_FILE_TTL_MS), never deleted here.
+        void this.moveToUser(guid, forUser.name).catch((err: unknown) => {
+          console.warn('[DownloadRelay] a download could not be placed in the download folder; kept for an hour in main\'s:', (err as NodeJS.ErrnoException).code ?? String(err));
         });
       }
       return;
@@ -251,6 +263,7 @@ export class DownloadRelayPolicy {
       if (state === 'completed' || state === 'canceled') this.removeTemp(guid);
       return;
     }
+    to.seen = Date.now();
     if (state === 'inProgress') {
       if (to.events) this.deps.emit(to.client, 'Browser.downloadProgress', params, to.sessionId);
       return;
@@ -262,7 +275,9 @@ export class DownloadRelayPolicy {
       return;
     }
     if (state !== 'completed') return;
-    void this.move(guid, to.dir).then(
+    // The client's folder as it is now, not as it was when it asked.
+    const dir = this.checkedDir(to.dir);
+    void (dir ? this.move(guid, dir) : Promise.reject(new Error('download folder gone'))).then(
       () => { if (to.events) this.deps.emit(to.client, 'Browser.downloadProgress', params, to.sessionId); },
       () => {
         this.removeTemp(guid);
@@ -283,11 +298,24 @@ export class DownloadRelayPolicy {
   /**
    * main's folder → the user's, under `name`, or "name (1)" and on when that is
    * taken: each name is claimed by an exclusive create before the file goes
-   * there, so nothing already in the folder is replaced. Returns where it went.
+   * there, so nothing already in the folder is replaced. A name the folder
+   * refuses (too long, invalid there) falls back to "download-<8 hex>" and the
+   * extension. Returns where it went; on a failure the file stays in main's folder.
    */
   async moveToUser(guid: string, name: string): Promise<string> {
     const dir = this.userFolder();
     if (!dir) throw new Error('no download folder');
+    try {
+      return await this.claimAndPlace(guid, dir, name);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') throw err;
+      const ext = path.extname(name);
+      const fallback = `download-${guid.replace(/-/g, '').slice(0, 8)}${Buffer.byteLength(ext) <= MAX_EXT_BYTES ? ext : ''}`;
+      return this.claimAndPlace(guid, dir, fallback);
+    }
+  }
+
+  private async claimAndPlace(guid: string, dir: string, name: string): Promise<string> {
     const ext = path.extname(name);
     const stem = name.slice(0, name.length - ext.length);
     for (let n = 0; n < MAX_DEDUPE; n++) {
@@ -359,9 +387,20 @@ export class DownloadRelayPolicy {
     void this.fs.unlink(path.join(this.deps.dir, guid)).catch(() => undefined);
   }
 
-  /** Files in main's folder no download is using, older than DOWNLOAD_FILE_TTL_MS. */
+  /**
+   * Downloads Chrome has said nothing about for DOWNLOAD_FILE_TTL_MS, or whose
+   * file is gone after a sweep's interval, are forgotten (later progress for one
+   * is unknown); then files in main's folder no download is using, older than
+   * DOWNLOAD_FILE_TTL_MS.
+   */
   private sweepStale(): void {
     const now = Date.now();
+    for (const entries of [this.handed, this.user] as Array<Map<string, { seen: number }>>) {
+      for (const [guid, entry] of entries) {
+        const quiet = now - entry.seen;
+        if (quiet > DOWNLOAD_FILE_TTL_MS || (quiet > SWEEP_EVERY_MS && !fs.existsSync(path.join(this.deps.dir, guid)))) entries.delete(guid);
+      }
+    }
     let names: string[];
     try {
       names = fs.readdirSync(this.deps.dir);
@@ -385,7 +424,7 @@ const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\
  * Chrome's suggested name, made safe again for a folder of the user's: no
  * separators, control or bidi-override characters, or characters Windows
  * refuses; no leading dots or spaces, no trailing dots or spaces; a Windows
- * device name gets a leading underscore; at most MAX_NAME characters, the
+ * device name gets a leading underscore; at most MAX_NAME_BYTES UTF-8 bytes, the
  * extension kept. "download" when nothing is left.
  */
 export function safeDownloadName(suggested: unknown): string {
@@ -395,12 +434,25 @@ export function safeDownloadName(suggested: unknown): string {
   name = name.replace(/^[.\s]+/, '').replace(/[.\s]+$/, '');
   if (!name) name = 'download';
   if (WINDOWS_RESERVED.test(name.split('.')[0].trim())) name = `_${name}`;
-  if (name.length > MAX_NAME) {
+  if (Buffer.byteLength(name) > MAX_NAME_BYTES) {
     const ext = path.extname(name);
-    const keep = ext.length > 0 && ext.length <= 16 ? ext : '';
-    name = name.slice(0, MAX_NAME - keep.length).replace(/[.\s]+$/, '') + keep;
+    const keep = ext.length > 0 && Buffer.byteLength(ext) <= MAX_EXT_BYTES ? ext : '';
+    name = utf8Prefix(name.slice(0, name.length - keep.length), MAX_NAME_BYTES - Buffer.byteLength(keep)).replace(/[.\s]+$/, '') + keep;
   }
   return name;
+}
+
+/** The longest prefix of `text` within `bytes` UTF-8 bytes, cut between code points. */
+function utf8Prefix(text: string, bytes: number): string {
+  let out = '';
+  let used = 0;
+  for (const ch of text) {
+    const size = Buffer.byteLength(ch);
+    if (used + size > bytes) break;
+    out += ch;
+    used += size;
+  }
+  return out;
 }
 
 /** Folders of this process's that are in use; any other, of a process gone or of this one, is swept. */

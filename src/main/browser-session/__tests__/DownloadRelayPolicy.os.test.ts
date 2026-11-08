@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ClientRef } from '../CdpPipeMux';
 import {
-  DownloadRelayPolicy, makeDownloadRelayDir, removeDownloadRelayDir, safeDownloadName, sweepDeadDownloadRelayDirs, type RelayFs,
+  DOWNLOAD_FILE_TTL_MS, DownloadRelayPolicy, makeDownloadRelayDir, removeDownloadRelayDir, safeDownloadName, sweepDeadDownloadRelayDirs, type RelayFs,
 } from '../DownloadRelayPolicy';
 
 const roots: string[] = [];
@@ -181,7 +181,7 @@ describe('DownloadRelayPolicy', () => {
     expect(safeDownloadName(undefined)).toBe('download');
     expect(safeDownloadName('...')).toBe('download');
     const long = safeDownloadName(`${'x'.repeat(300)}.pdf`);
-    expect(long).toHaveLength(200);
+    expect(long).toHaveLength(240);
     expect(long.endsWith('.pdf')).toBe(true);
   });
 
@@ -229,15 +229,22 @@ describe('DownloadRelayPolicy', () => {
     await vi.waitFor(() => expect(fs.existsSync(path.join(failing.dir, g2))).toBe(false), { timeout: 5_000 });
     expect(fs.readdirSync(dest2)).toEqual([]);
 
-    // Into the user's folder across volumes: the claimed name is filled, no partial file left on failure.
+    // Into the user's folder across volumes, a copy that fails: no claimed name
+    // left behind, and the only copy kept in main's folder.
     const user = tempDir('wmux-dl-user-');
-    const toUser = setup(new Map(), { userDir: user, fs: { rename: exdev, copyFile: () => Promise.reject(Object.assign(new Error('denied'), { code: 'EACCES' })) } });
-    const g3 = 'eeeeeeee-0000-4000-8000-000000000006';
-    toUser.policy.downloadEvent('Browser.downloadWillBegin', begin(g3, 'USER-TAB', 'u.bin'));
-    toUser.write(g3, 'x');
-    toUser.policy.downloadEvent('Browser.downloadProgress', { guid: g3, state: 'completed' });
-    await vi.waitFor(() => expect(fs.existsSync(path.join(toUser.dir, g3))).toBe(false), { timeout: 5_000 });
-    expect(fs.readdirSync(user)).toEqual([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const toUser = setup(new Map(), { userDir: user, fs: { rename: exdev, copyFile: () => Promise.reject(Object.assign(new Error('denied'), { code: 'EACCES' })) } });
+      const g3 = 'eeeeeeee-0000-4000-8000-000000000006';
+      toUser.policy.downloadEvent('Browser.downloadWillBegin', begin(g3, 'USER-TAB', 'u.bin'));
+      toUser.write(g3, 'x');
+      toUser.policy.downloadEvent('Browser.downloadProgress', { guid: g3, state: 'completed' });
+      await vi.waitFor(() => expect(warn).toHaveBeenCalled(), { timeout: 5_000 });
+      expect(fs.readdirSync(user)).toEqual([]);
+      expect(fs.readFileSync(path.join(toUser.dir, g3), 'utf8')).toBe('x');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('a client that asked to deny has its downloads cancelled, and is told', () => {
@@ -299,6 +306,104 @@ describe('DownloadRelayPolicy', () => {
     ask(ws, { behavior: 'allowAndName', downloadPath: tempDir('wmux-dl-ws-'), eventsEnabled: true });
     policy.downloadEvent('Browser.downloadWillBegin', begin('33333333-0000-4000-8000-000000000009', 'F'));
     expect(told.map((t) => t.client)).toEqual([ws]);
+  });
+
+  it('a long Korean name lands, cut to the byte limit on a character boundary and deduped', async () => {
+    const user = tempDir('wmux-dl-user-');
+    const { dir, write, policy } = setup(new Map(), { userDir: user });
+    const longName = `${'보고서'.repeat(40)}.pdf`;
+    expect(longName.length).toBe(124);
+    const named = safeDownloadName(longName);
+    expect(Buffer.byteLength(named)).toBeLessThanOrEqual(240);
+    expect(named.endsWith('.pdf')).toBe(true);
+    expect(named.includes('�')).toBe(false);
+    const g1 = '44444444-0000-4000-8000-000000000001';
+    const g2 = '44444444-0000-4000-8000-000000000002';
+    for (const [g, body] of [[g1, 'one'], [g2, 'two']] as const) {
+      policy.downloadEvent('Browser.downloadWillBegin', begin(g, 'USER-TAB', longName));
+      write(g, body);
+      policy.downloadEvent('Browser.downloadProgress', { guid: g, state: 'completed' });
+      await vi.waitFor(() => expect(fs.existsSync(path.join(dir, g))).toBe(false), { timeout: 5_000 });
+    }
+    const stem = named.slice(0, -'.pdf'.length);
+    expect(fs.readdirSync(user).sort()).toEqual([named, `${stem} (1).pdf`].sort());
+    expect(fs.readFileSync(path.join(user, `${stem} (1).pdf`), 'utf8')).toBe('two');
+  });
+
+  it('a name the folder refuses falls back to download-<hex> and the extension; when that fails too, the file stays in main\'s folder', async () => {
+    const user = tempDir('wmux-dl-user-');
+    const tooLong = (file: string) => (path.basename(file).startsWith('download-')
+      ? defaultFs().createExclusive(file)
+      : Promise.reject(Object.assign(new Error('name too long'), { code: 'ENAMETOOLONG' })));
+    const { dir, write, policy } = setup(new Map(), { userDir: user, fs: { createExclusive: tooLong } });
+    const g = '55555555-0000-4000-8000-000000000001';
+    policy.downloadEvent('Browser.downloadWillBegin', begin(g, 'USER-TAB', 'report.pdf'));
+    write(g, 'kept');
+    policy.downloadEvent('Browser.downloadProgress', { guid: g, state: 'completed' });
+    await vi.waitFor(() => expect(fs.readdirSync(user)).toEqual(['download-55555555.pdf']), { timeout: 5_000 });
+    expect(fs.readFileSync(path.join(user, 'download-55555555.pdf'), 'utf8')).toBe('kept');
+    expect(fs.existsSync(path.join(dir, g))).toBe(false);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const refusing = setup(new Map(), { userDir: tempDir('wmux-dl-user2-'), fs: { createExclusive: () => Promise.reject(Object.assign(new Error('denied'), { code: 'EACCES' })) } });
+      const g2 = '55555555-0000-4000-8000-000000000002';
+      refusing.policy.downloadEvent('Browser.downloadWillBegin', begin(g2, 'USER-TAB', 'report.pdf'));
+      refusing.write(g2, 'the only copy');
+      refusing.policy.downloadEvent('Browser.downloadProgress', { guid: g2, state: 'completed' });
+      await vi.waitFor(() => expect(warn).toHaveBeenCalled(), { timeout: 5_000 });
+      expect(fs.readFileSync(path.join(refusing.dir, g2), 'utf8')).toBe('the only copy');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('the workspace\'s deny wins over an every-target client\'s allow', () => {
+    const operator = ext('operator', true);
+    const ws = ext('ws');
+    const { told, cancelled, ask, policy } = setup(held(['F', operator], ['F', ws]));
+    ask(operator, { behavior: 'allowAndName', downloadPath: tempDir('wmux-dl-op-'), eventsEnabled: true });
+    ask(ws, { behavior: 'deny', eventsEnabled: true });
+    const g = '66666666-0000-4000-8000-000000000001';
+    policy.downloadEvent('Browser.downloadWillBegin', begin(g, 'F'));
+    expect(cancelled).toEqual([g]);
+    expect(told.map((t) => [t.client, t.params.state ?? null])).toEqual([[ws, null], [ws, 'canceled']]);
+  });
+
+  it('a client\'s folder that is gone by completion: canceled for it, the file deleted', async () => {
+    const a = ext('a');
+    const { dir, told, ask, write, policy } = setup(held(['FA', a]));
+    const dest = tempDir('wmux-dl-a-');
+    ask(a, { behavior: 'allowAndName', downloadPath: dest, eventsEnabled: true });
+    const g = '77777777-0000-4000-8000-000000000001';
+    policy.downloadEvent('Browser.downloadWillBegin', begin(g, 'FA'));
+    write(g, 'x');
+    fs.rmdirSync(dest);
+    policy.downloadEvent('Browser.downloadProgress', { guid: g, state: 'completed' });
+    await vi.waitFor(() => expect(told.some((t) => t.params.state === 'canceled')).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(fs.existsSync(path.join(dir, g))).toBe(false), { timeout: 5_000 });
+  });
+
+  it('a download Chrome stops talking about is forgotten after the TTL; later progress for it reaches no one', () => {
+    vi.useFakeTimers();
+    try {
+      const a = ext('a');
+      const { told, ask, policy } = setup(held(['FA', a]), { userDir: tempDir('wmux-dl-user-') });
+      ask(a, { behavior: 'allowAndName', downloadPath: tempDir('wmux-dl-a-'), eventsEnabled: true });
+      const handed = '88888888-0000-4000-8000-000000000001';
+      const forUser = '88888888-0000-4000-8000-000000000002';
+      policy.downloadEvent('Browser.downloadWillBegin', begin(handed, 'FA'));
+      policy.downloadEvent('Browser.downloadWillBegin', begin(forUser, 'USER-TAB'));
+      const internals = policy as unknown as { handed: Map<string, unknown>; user: Map<string, unknown> };
+      expect(internals.handed.size + internals.user.size).toBe(2);
+      vi.advanceTimersByTime(DOWNLOAD_FILE_TTL_MS + 11 * 60 * 1000);
+      expect(internals.handed.size + internals.user.size).toBe(0);
+      const before = told.length;
+      policy.downloadEvent('Browser.downloadProgress', { guid: handed, state: 'inProgress' });
+      expect(told.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('main\'s folder: owner-only, named by pid; a dead process\'s and this one\'s unused are swept, files only, links left', async () => {
