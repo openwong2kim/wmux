@@ -181,9 +181,12 @@ beforeEach(() => {
   nextPort = 18001;
   fetchMock.mockClear();
   vi.stubGlobal('fetch', fetchMock);
+  // These fakes are a Chrome on a DevTools port, whatever the default transport is.
+  vi.stubEnv('WMUX_CHROME_TRANSPORT', 'port');
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe('ChromeLauncher — protected profiles', () => {
@@ -233,6 +236,38 @@ describe('ChromeLauncher — protected profiles', () => {
     expect(sockets[0].sent.map((s) => s.method)).toContain('Browser.close');
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(launcher.currentPort()).toBe(18001);
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('leaves a browser alone that answers on the recorded port but did not write the record', async () => {
+    // The file says /devtools/browser/mine; whatever answers on that port now
+    // says /devtools/browser/x (the default fake): another browser took the port.
+    state.portFiles['/tmp/prot-foreign'] = '17997\n/devtools/browser/mine\n';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    spawnWritesPortFile(makeChild());
+    const launcher = new ChromeLauncher('/tmp/prot-foreign', { protection: () => denyAll });
+    await launcher.ensureRunning();
+    expect(sockets.some((s) => s.sent.some((m) => m.method === 'Browser.close' || m.method === 'SystemInfo.getProcessInfo'))).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('answers for another browser'));
+    warn.mockRestore();
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('leaves alone a server on the recorded port that names no browser, and launches', async () => {
+    // A stale file whose port some other HTTP server took: waiting on it would hold every launch.
+    state.portFiles['/tmp/prot-unnamed'] = '17996\n/devtools/browser/mine\n';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // It answers (any HTTP answer will do), and names no browser endpoint.
+    const notChrome = async () => ({ ok: true, text: async () => '<html></html>', json: async () => ({}) });
+    fetchMock.mockImplementationOnce(notChrome).mockImplementationOnce(notChrome);
+    spawnWritesPortFile(makeChild());
+    const launcher = new ChromeLauncher('/tmp/prot-unnamed', { protection: () => denyAll });
+    await launcher.ensureRunning();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('answers for another browser'));
+    expect(sockets.some((x) => x.sent.some((m) => m.method === 'Browser.close' || m.method === 'SystemInfo.getProcessInfo'))).toBe(false);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
     await launcher.dispose({ immediate: true });
   });
 

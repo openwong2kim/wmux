@@ -155,6 +155,21 @@ export function chromeTransportKind(): 'port' | 'pipe' {
   return process.env.WMUX_CHROME_TRANSPORT === 'pipe' ? 'pipe' : 'port';
 }
 
+/** The path of a browser endpoint (`/devtools/browser/<id>`), or null when it is no URL. */
+function browserPathOf(endpoint: string): string | null {
+  try {
+    return new URL(endpoint).pathname;
+  } catch {
+    return null;
+  }
+}
+
+/** The browser path a DevToolsActivePort file recorded on its second line, or null. */
+function recordedBrowserPath(raw: string): string | null {
+  const path = raw.split(/\r?\n/)[1]?.trim();
+  return path ? path : null;
+}
+
 export interface ChromeTargetInfo {
   /** Stable wmux identity handed to agents (`chrome-<uuid>` for dedicated
    *  instances). Live attach keeps surfaceId ≡ targetId — see LiveChromeClient. */
@@ -624,7 +639,13 @@ export class ChromeLauncher implements ChromeBackendClient {
     readonly mux: CdpPipeMux;
     /** A protected profile's rules for the pipe's clients; null when unprotected. */
     readonly policy: ProtectedPipePolicy | null;
+    /** Main's own connection on the pipe. */
+    readonly transport: ChromeTransport;
     route: RelayRoute | null;
+    /** Blank tabs opened for a grant to attach through (relayGrant), until closed. */
+    readonly bootstraps: Set<string>;
+    /** Grants (C3b) narrow each client to its own targets: a tab main opens is none of them. */
+    readonly grants: boolean;
   } | null = null;
   /** Pipe mode: liveness checks failed in a row, and when the last one counted ended. */
   private pingMisses = { count: 0, lastEnd: 0 };
@@ -1422,9 +1443,60 @@ export class ChromeLauncher implements ChromeBackendClient {
     const piped = this.piped;
     if (!piped) throw new Error('ChromeLauncher: Chrome exited');
     piped.route ??= (pipeRelay ??= new CdpPipeRelay()).serve(piped.mux);
-    const grant = await piped.route.grant(identity);
+    const route = piped.route;
+    // A full Chrome refuses here, before a tab is opened for nothing.
+    route.assertRoom();
+    // With grants a client sees only its own targets, so a tab main opens
+    // would not help it attach, and it could not close the tab either.
+    const page = piped.grants ? null : await this.openRelayPage(piped);
+    const release = () => { if (page !== null) void this.closeRelayPage(piped, page); };
+    let grant: RelayGrant;
+    try {
+      // The caller closes the tab once attached; this is for one that never
+      // does: settled when its connection closes, or its token goes unused.
+      grant = await route.grant(identity, page !== null ? { onSettled: release } : undefined);
+    } catch (err) {
+      release();
+      throw err;
+    }
     if (this.piped !== piped) throw new Error('ChromeLauncher: Chrome exited');
-    return grant;
+    return page !== null ? { ...grant, bootstrapTargetId: page } : grant;
+  }
+
+  /**
+   * A Chrome with every window closed (the macOS default) has no default
+   * browser context, and connectOverCDP fails on it. When the piped Chrome
+   * has no page but the blank tabs earlier grants are still attaching
+   * through, open one for this grant (each its own, as each caller closes
+   * its own); its targetId, or null when Chrome has a page.
+   */
+  private async openRelayPage(piped: NonNullable<ChromeLauncher['piped']>): Promise<string | null> {
+    try {
+      const targets = (await piped.transport.listTargets(boundedBy())) as Array<{ id?: unknown; type?: unknown; url?: unknown }>;
+      if (!Array.isArray(targets)) return null;
+      // A blank tab of ours the user went somewhere in is a page like any other.
+      const pages = targets.filter((t) => t.type === 'page' && !(typeof t.id === 'string' && piped.bootstraps.has(t.id) && t.url === 'about:blank'));
+      if (pages.length > 0) return null;
+      const opened = (await piped.transport.createTarget('about:blank', boundedBy())) as { id?: unknown } | null;
+      if (typeof opened?.id !== 'string') return null;
+      piped.bootstraps.add(opened.id);
+      return opened.id;
+    } catch {
+      // The grant goes ahead: an attach that needed the tab fails as it did before.
+      return null;
+    }
+  }
+
+  /** Close a grant's blank tab if it is still there and still blank (a user may have used it). */
+  private async closeRelayPage(piped: NonNullable<ChromeLauncher['piped']>, id: string): Promise<void> {
+    try {
+      if (this.piped !== piped) return;
+      const targets = (await piped.transport.listTargets(boundedBy())) as Array<{ id?: unknown; url?: unknown }>;
+      const tab = Array.isArray(targets) ? targets.find((t) => t.id === id) : undefined;
+      if (tab && tab.url === 'about:blank') await piped.transport.closeTarget(id, boundedBy());
+    } catch { /* gone with its Chrome */ } finally {
+      piped.bootstraps.delete(id);
+    }
   }
 
   /** Registry-scoped tabs seed page selection for dedicated instances. */
@@ -1689,13 +1761,14 @@ export class ChromeLauncher implements ChromeBackendClient {
    * outright (ours by handle, an adopted one by the pid it reports), so it
    * cannot keep running under the terms it was started with.
    */
-  private async forceKill(transport: ChromeTransport, child: ChildProcess | null): Promise<boolean> {
+  private async forceKill(transport: ChromeTransport, child: ChildProcess | null, browserPath?: string): Promise<boolean> {
     try {
       if (child) {
         child.kill('SIGKILL');
       } else {
         const url = await transport.browserEndpointIgnoringStatus();
-        if (url) {
+        // Only the browser it was asked about: the port may have changed hands since.
+        if (url && (browserPath === undefined || browserPathOf(url) === browserPath)) {
           const socket = transport.connect(() => url, { label: 'ChromeLauncher force stop', timeoutMs: 3_000 });
           try {
             const info = (await socket.send('SystemInfo.getProcessInfo')) as {
@@ -1726,9 +1799,13 @@ export class ChromeLauncher implements ChromeBackendClient {
   }
 
   /** Ask the Chrome at `transport` to quit. false when nothing there could be asked. */
-  private async closeBrowserAt(transport: ChromeTransport, current: () => boolean = () => true): Promise<boolean> {
+  private async closeBrowserAt(
+    transport: ChromeTransport,
+    current: () => boolean = () => true,
+    known?: string,
+  ): Promise<boolean> {
     try {
-      const url = await transport.browserEndpointIgnoringStatus();
+      const url = known ?? await transport.browserEndpointIgnoringStatus();
       if (!url || !current()) return false;
       const socket = transport.connect(() => url, { label: 'ChromeLauncher evict', timeoutMs: 3_000 });
       await socket.send('Browser.close').catch(() => undefined);
@@ -1881,8 +1958,20 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (!file) return true;
     const previous = portTransport(file.port);
     if (!(await previous.answers())) return true; // stale file, nothing running
-    await this.closeBrowserAt(previous);
-    return (await this.waitEndpointGone(previous)) || this.forceKill(previous, null);
+    // The file can outlive its Chrome, and the port can be another browser's
+    // by now: only the one that wrote the file is asked to quit (or killed),
+    // known by the browser path on the file's second line.
+    const endpoint = await previous.browserEndpointIgnoringStatus();
+    const recorded = recordedBrowserPath(file.raw);
+    // Whatever answers there without naming the recorded browser (another
+    // browser, or any other server that took the port) is not ours to stop;
+    // waiting on it would hold every launch on this profile.
+    if (!endpoint || !recorded || browserPathOf(endpoint) !== recorded) {
+      console.warn('[ChromeLauncher] the recorded DevTools port answers for another browser; leaving it running');
+      return true;
+    }
+    await this.closeBrowserAt(previous, () => true, endpoint);
+    return (await this.waitEndpointGone(previous)) || this.forceKill(previous, null, recorded);
   }
 
   /** Drop the profile's DevToolsActivePort: a Chrome on a pipe writes none, so it could only name a Chrome gone by now. */
@@ -2313,6 +2402,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     // The pipe ends with the process; one that breaks first ends it too.
     let mux: CdpPipeMux | null = null;
     const policy = pipe && plan ? this.protectedPipePolicy(() => mux) : null;
+    const muxGrants = cdpTargetGrantEnabled();
     mux = pipe
       ? new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable, {
         onClose: () => {
@@ -2324,7 +2414,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         ...(policy && { filter: policy.filter, beforeReply: policy.beforeReply, onClientGone: (client: ClientRef) => policy.forget(client) }),
         // C3b: each external client sees only its own targets, by this registry
         // and what it made itself. Main's own connections are never narrowed.
-        ...(cdpTargetGrantEnabled() && {
+        ...(muxGrants && {
           grants: {
             registry: (targetId: string) => {
               const record = this.recordForTarget(targetId);
@@ -2335,8 +2425,8 @@ export class ChromeLauncher implements ChromeBackendClient {
         }),
       })
       : null;
-    this.piped = mux ? { mux, policy, route: null } : null;
-    const piped = mux ? pipeTransport(mux) : null;
+    this.piped = mux ? { mux, policy, transport: pipeTransport(mux), route: null, bootstraps: new Set(), grants: muxGrants } : null;
+    const piped = this.piped?.transport ?? null;
 
     // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
     // poll /json/version until the endpoint answers. Past READY_TIMEOUT_MS a

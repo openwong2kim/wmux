@@ -39,6 +39,7 @@ import { ChromeLauncher, chromeSaid, chromeTransportKind, setPipeRelayForTests }
 import { CdpPipeRelay, type RelayGrant } from '../CdpPipeRelay';
 import { CDP_PIPE_COMMAND_TIMEOUT_MS } from '../CdpPipeMux';
 import { CHROME_START_CEILING_MS } from '../../../shared/chromeStart';
+import { RELAY_PROOF_METHOD } from '../../../shared/relayProof';
 
 type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; stderr: PassThrough; killed: boolean; exitCode: number | null; signalCode: string | null; signals: string[] };
 
@@ -197,6 +198,91 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await closed;
     await expect(dial(other)).rejects.toThrow('HTTP 401');
     await expect(launcher.relayGrant({})).rejects.toThrow('Chrome exited');
+  });
+
+  describe('a Chrome with no page (every window closed, the macOS default)', () => {
+    const send = (ws: WebSocket, id: number, method: string, params: Record<string, unknown> = {}) =>
+      new Promise<Record<string, unknown>>((resolve) => {
+        const onMessage = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as Record<string, unknown>;
+          if (message.id !== id) return;
+          ws.off('message', onMessage);
+          resolve(message);
+        };
+        ws.on('message', onMessage);
+        ws.send(JSON.stringify({ id, method, params }));
+      });
+    const prove = (ws: WebSocket) => send(ws, 99, RELAY_PROOF_METHOD, { nonce: Buffer.alloc(32, 7).toString('base64url') });
+    const opened = (chrome: PipeChrome) => chrome.received.filter((c) => c.method === 'Target.createTarget');
+    const closed = (chrome: PipeChrome) => chrome.received.filter((c) => c.method === 'Target.closeTarget');
+
+    it('gives each grant its own blank tab to attach through, named in the grant, and closes one its caller left open when the connection goes', async () => {
+      const { chrome } = spawnPipeChrome();
+      const launcher = new ChromeLauncher('/tmp/pipe-profile');
+      await launcher.endpoint();
+      expect(chrome.targets).toEqual([]);
+      // Two agents at once: each closes its own tab once attached, so neither
+      // may lean on the other's.
+      const [first, second] = await Promise.all([launcher.relayGrant({}), launcher.relayGrant({})]);
+      expect(opened(chrome).map((c) => c.params.url)).toEqual(['about:blank', 'about:blank']);
+      expect(new Set([first.bootstrapTargetId, second.bootstrapTargetId])).toEqual(new Set(chrome.targets.map((t) => t.targetId)));
+      // A third grant while those two are still attaching gets its own as well.
+      const third = await launcher.relayGrant({});
+      expect(third.bootstrapTargetId).toBeDefined();
+      expect(opened(chrome)).toHaveLength(3);
+      const a = await dial(first);
+      await prove(a);
+      // Attached is not done with: the tab stays while the connection may still use it.
+      expect(closed(chrome)).toEqual([]);
+      const gone = new Promise((resolve) => a.once('close', resolve));
+      a.close();
+      await gone;
+      await vi.waitFor(() => expect(closed(chrome).map((c) => c.params.targetId)).toEqual([first.bootstrapTargetId]), { timeout: 5_000 });
+      await launcher.dispose({ immediate: true });
+    });
+
+    it('opens no tab for a grant a full Chrome refuses, nor with grants (C3b), where the client could neither see nor close it', async () => {
+      await setPipeRelayForTests(new CdpPipeRelay({ roots: [], maxClientsPerChrome: 1 }));
+      const { chrome } = spawnPipeChrome();
+      const launcher = new ChromeLauncher('/tmp/pipe-profile');
+      await launcher.endpoint();
+      const held = await dial(await launcher.relayGrant({}));
+      expect(opened(chrome)).toHaveLength(1);
+      await expect(launcher.relayGrant({})).rejects.toThrow('automation connections, the most it takes');
+      expect(opened(chrome)).toHaveLength(1);
+      held.close();
+      await launcher.dispose({ immediate: true });
+
+      vi.stubEnv('WMUX_CDP_TARGET_GRANT', '1');
+      await setPipeRelayForTests(new CdpPipeRelay({ roots: [] }));
+      const granted = spawnPipeChrome();
+      const scoped = new ChromeLauncher('/tmp/pipe-profile');
+      await scoped.endpoint();
+      expect((await scoped.relayGrant({})).bootstrapTargetId).toBeUndefined();
+      expect(opened(granted.chrome)).toEqual([]);
+      await scoped.dispose({ immediate: true });
+    });
+
+    it('opens no tab when Chrome has a page, and leaves a blank tab alone once the user has used it', async () => {
+      const { chrome } = spawnPipeChrome();
+      const launcher = new ChromeLauncher('/tmp/pipe-profile');
+      await launcher.endpoint();
+      const grant = await launcher.relayGrant({});
+      expect(opened(chrome)).toHaveLength(1);
+      // The user went somewhere in the blank tab: it is a page now.
+      chrome.targets[0].url = 'https://example.com/';
+      const next = await launcher.relayGrant({});
+      expect(next.bootstrapTargetId).toBeUndefined();
+      expect(opened(chrome)).toHaveLength(1);
+      const ws = await dial(grant);
+      const lists = chrome.received.filter((c) => c.method === 'Target.getTargets').length;
+      const gone = new Promise((resolve) => ws.once('close', resolve));
+      ws.close();
+      await gone;
+      await vi.waitFor(() => expect(chrome.received.filter((c) => c.method === 'Target.getTargets').length).toBeGreaterThan(lists), { timeout: 5_000 });
+      expect(closed(chrome)).toEqual([]);
+      await launcher.dispose({ immediate: true });
+    });
   });
 
   it('a token minted before the Chrome was restarted does not reach the new one', async () => {

@@ -5,7 +5,8 @@ import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { CallerIdentity, CdpPipeMux, LocalMethods } from './CdpPipeMux';
 import { decodeRelayProofBytes, newRelayProofKey, relayProof, RELAY_PROOF_METHOD, RELAY_PROOF_NONCE_BYTES } from '../../shared/relayProof';
-import { CdpRelayTokens } from './CdpRelayTokens';
+import { CdpRelayTokens, RELAY_TOKEN_TTL_MS } from './CdpRelayTokens';
+import { relayFullMessage } from '../../shared/relayFull';
 import {
   makeRelaySocketDir,
   relaySocketIntact,
@@ -41,9 +42,20 @@ import { loadPipeSecurity, relayPipeEndpoint, relayPipePath, type NarrowResult, 
 // ---------------------------------------------------------------------------
 
 export const RELAY_PATH = '/devtools/browser/relay';
-export const RELAY_MAX_CLIENTS_PER_CHROME = 8;
+/**
+ * Connections one Chrome takes at a time. Each agent's MCP server keeps its
+ * connection until it exits (it does not let go when idle), and a Chrome on
+ * a port has no such cap, so this is set well above a busy session's agents.
+ */
+export const RELAY_MAX_CLIENTS_PER_CHROME = 64;
 /** Above the largest frame expected (a ~20 MiB full-page screenshot), with room. */
 export const RELAY_MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
+/**
+ * What all of one Chrome's clients may have waiting at once: the most eight
+ * clients could hold before the cap above it was raised. Past it, the client
+ * with the most waiting is disconnected.
+ */
+export const RELAY_MAX_BUFFERED_BYTES_PER_CHROME = 512 * 1024 * 1024;
 /** A client's own frames are commands: small, but a script to evaluate can be large. */
 const MAX_INBOUND_BYTES = 32 * 1024 * 1024;
 const HEADER_TIMEOUT_MS = 5_000;
@@ -79,6 +91,11 @@ export interface RelayGrant {
   readonly headers: { readonly Authorization: string };
   /** base64url; never sent on the relay connection. */
   readonly proofKey: string;
+  /**
+   * A blank tab opened for this grant because Chrome had no page to attach
+   * through (ChromeLauncher.relayGrant): the caller closes it once attached.
+   */
+  readonly bootstrapTargetId?: string;
 }
 
 export interface RelayOptions {
@@ -86,6 +103,8 @@ export interface RelayOptions {
   roots?: string[];
   maxClientsPerChrome?: number;
   maxBufferedBytes?: number;
+  /** What all of one Chrome's clients may have waiting at once (default RELAY_MAX_BUFFERED_BYTES_PER_CHROME). */
+  maxBufferedBytesPerChrome?: number;
   headerTimeoutMs?: number;
   /** Windows: serve on a named pipe (default) or, false, on loopback TCP. */
   windowsPipe?: boolean;
@@ -114,6 +133,32 @@ interface Binding {
   readonly listener: Listener;
   /** This grant's proof key; goes with the token to the connection that spends it. */
   readonly key: Buffer;
+  /** Called once, when the grant is done with (RelayGrantOptions.onSettled). */
+  readonly settled: () => void;
+}
+
+/** What a caller of RelayRoute.grant may ask to hear. */
+export interface RelayGrantOptions {
+  /**
+   * Called once, when the grant is done with: the connection that spent its
+   * token closed, or the token went unused (expired, crowded out, or its
+   * Chrome or listener gone).
+   */
+  onSettled?: () => void;
+}
+
+/** `fn`, at most once. */
+function once(fn: (() => void) | undefined): () => void {
+  let called = false;
+  return () => {
+    if (called || !fn) return;
+    called = true;
+    try {
+      fn();
+    } catch (err) {
+      console.warn('[CdpPipeRelay] a grant settle callback threw:', err);
+    }
+  };
 }
 
 function isLoopback(address: string | undefined): boolean {
@@ -149,9 +194,14 @@ export class RelayRoute {
     return !this.closed && this.mux.isOpen();
   }
 
+  /** Throw what grant() would if this Chrome has no room for another connection. */
+  assertRoom(): void {
+    this.relay.assertRoom(this);
+  }
+
   /** A token for `identity` to connect to this Chrome with. */
-  grant(identity: CallerIdentity): Promise<RelayGrant> {
-    return this.relay.grant(this, identity);
+  grant(identity: CallerIdentity, opts?: RelayGrantOptions): Promise<RelayGrant> {
+    return this.relay.grant(this, identity, opts);
   }
 
   /** This Chrome is gone: its clients are disconnected and its unused tokens dropped. */
@@ -162,12 +212,16 @@ export class RelayRoute {
 
 export class CdpPipeRelay {
   /** An unused token's proof key is wiped whenever the token goes. */
-  private readonly tokens = new CdpRelayTokens<Binding>((binding) => binding.key.fill(0));
+  private readonly tokens = new CdpRelayTokens<Binding>((binding) => {
+    binding.key.fill(0);
+    binding.settled();
+  });
   private readonly routes = new Set<RelayRoute>();
   private readonly wss: WebSocketServer;
   private readonly roots: string[];
   private readonly maxClients: number;
   private readonly maxBuffered: number;
+  private readonly maxBufferedPerChrome: number;
   private readonly headerTimeoutMs: number;
   private readonly windowsPipe: boolean;
   private readonly pipeSecurity: () => PipeSecurityResult;
@@ -184,6 +238,7 @@ export class CdpPipeRelay {
     this.roots = opts.roots ?? relaySocketRoots();
     this.maxClients = opts.maxClientsPerChrome ?? RELAY_MAX_CLIENTS_PER_CHROME;
     this.maxBuffered = opts.maxBufferedBytes ?? RELAY_MAX_BUFFERED_BYTES;
+    this.maxBufferedPerChrome = opts.maxBufferedBytesPerChrome ?? RELAY_MAX_BUFFERED_BYTES_PER_CHROME;
     this.headerTimeoutMs = opts.headerTimeoutMs ?? HEADER_TIMEOUT_MS;
     this.windowsPipe = opts.windowsPipe ?? true;
     this.pipeSecurity = opts.pipeSecurity ?? loadPipeSecurity;
@@ -202,7 +257,7 @@ export class CdpPipeRelay {
   }
 
   /** @internal RelayRoute.grant */
-  async grant(route: RelayRoute, identity: CallerIdentity): Promise<RelayGrant> {
+  async grant(route: RelayRoute, identity: CallerIdentity, opts?: RelayGrantOptions): Promise<RelayGrant> {
     if (this.closed || !route.open) throw new Error('CdpPipeRelay: that Chrome is gone');
     let listener = await this.live();
     // A rebind may have retired that listener while this waited: a token is
@@ -210,9 +265,43 @@ export class CdpPipeRelay {
     for (let tries = 1; listener !== this.listener && tries < 3; tries++) listener = await this.live();
     if (this.closed || !route.open) throw new Error('CdpPipeRelay: that Chrome is gone');
     if (listener !== this.listener) throw new Error('CdpPipeRelay: the relay keeps rebinding');
+    this.assertRoom(route);
     const key = newRelayProofKey();
-    const token = this.tokens.mint({ route, identity, listener, key });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onSettled = opts?.onSettled;
+    const settled = once(onSettled && (() => {
+      clearTimeout(timer);
+      onSettled();
+    }));
+    const binding: Binding = { route, identity, listener, key, settled };
+    const token = this.tokens.mint(binding);
+    if (onSettled) {
+      // Tokens expire lazily: one nobody presents is dropped (and settled) on
+      // time, by this timer's clock rather than a wall clock that may step.
+      timer = setTimeout(() => this.forget((b) => b === binding), RELAY_TOKEN_TTL_MS);
+      timer.unref?.();
+    }
     return { endpoint: listener.endpoint, headers: { Authorization: `Bearer ${token}` }, proofKey: key.toString('base64url') };
+  }
+
+  /** @internal RelayRoute.assertRoom */
+  assertRoom(route: RelayRoute): void {
+    // Said where the caller reads it, rather than as a bare 503 on the upgrade
+    // (which stays for a connection that races in after this check).
+    if (route.clients.size + route.handshaking >= this.maxClients) {
+      throw new Error(`CdpPipeRelay: ${relayFullMessage(this.maxClients)}`);
+    }
+  }
+
+  /** Past the per-Chrome budget, disconnect the client of `route` with the most waiting for it. */
+  private holdWithinChrome(route: RelayRoute): void {
+    let total = 0;
+    let largest: WebSocket | null = null;
+    for (const client of route.clients) {
+      total += client.bufferedAmount;
+      if (!largest || client.bufferedAmount > largest.bufferedAmount) largest = client;
+    }
+    if (total > this.maxBufferedPerChrome) largest?.terminate();
   }
 
   /** @internal RelayRoute.close */
@@ -441,7 +530,7 @@ export class CdpPipeRelay {
     const ticket = presented === null ? null : this.tokens.lookup(presented);
     if (!ticket) { refuse(socket, '401 Unauthorized'); return; }
     if (ticket.binding.listener !== listener) { refuse(socket, '401 Unauthorized'); return; }
-    const { route, identity, key } = ticket.binding;
+    const { route, identity, key, settled: grantSettled } = ticket.binding;
     if (!route.open || route.clients.size + route.handshaking >= this.maxClients) { refuse(socket, '503 Service Unavailable'); return; }
     if (!this.tokens.consume(ticket)) { refuse(socket, '401 Unauthorized'); return; }
     route.handshaking++;
@@ -453,18 +542,21 @@ export class CdpPipeRelay {
     // A handshake that fails closes the socket without calling back; the
     // spent token's key goes with it.
     socket.once('close', () => {
-      if (!settled) key.fill(0);
+      if (!settled) {
+        key.fill(0);
+        grantSettled();
+      }
       settle();
     });
     this.wss.handleUpgrade(req, socket, head, (ws) => {
       settle();
-      this.accept(route, identity, key, ws);
+      this.accept(route, identity, key, grantSettled, ws);
     });
   }
 
-  private accept(route: RelayRoute, identity: CallerIdentity, key: Buffer, ws: WebSocket): void {
+  private accept(route: RelayRoute, identity: CallerIdentity, key: Buffer, grantSettled: () => void, ws: WebSocket): void {
     // The Chrome may have gone during the handshake.
-    if (this.closed || !route.open) { key.fill(0); ws.terminate(); return; }
+    if (this.closed || !route.open) { key.fill(0); grantSettled(); ws.terminate(); return; }
     const proof = proofAnswerer(key, this.proofKeyTtlMs);
     route.clients.add(ws);
     const maxBuffered = this.maxBuffered;
@@ -475,6 +567,7 @@ export class CdpPipeRelay {
       sent += Buffer.byteLength(text);
       // A client that stopped reading: disconnect it instead of buffering on.
       if (ws.bufferedAmount > maxBuffered) ws.terminate();
+      else this.holdWithinChrome(route);
     }, () => ws.close(), {
       // Signs of life for the stall watch (C2c): the client's WebSocket answers
       // a ping, and reading down a backlog moves `flushed`.
@@ -492,6 +585,7 @@ export class CdpPipeRelay {
       route.clients.delete(ws);
       proof.wipe();
       client.close();
+      grantSettled();
     });
     ws.on('error', () => ws.terminate());
   }

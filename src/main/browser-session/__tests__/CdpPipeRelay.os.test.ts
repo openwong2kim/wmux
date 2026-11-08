@@ -9,9 +9,10 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { CdpPipeMux, cdpPipeCounters, resetCdpPipeCounters, type ClientRef } from '../CdpPipeMux';
-import { CdpPipeRelay, proofAnswerer, RELAY_PATH, RELAY_PIPE_FALLBACK_LINE, RELAY_PROOF_KEY_TTL_MS, RELAY_TCP_FALLBACK_LINE, type RelayGrant, type RelayOptions } from '../CdpPipeRelay';
+import { CdpPipeRelay, proofAnswerer, RELAY_MAX_CLIENTS_PER_CHROME, RELAY_PATH, RELAY_PIPE_FALLBACK_LINE, RELAY_PROOF_KEY_TTL_MS, RELAY_TCP_FALLBACK_LINE, type RelayGrant, type RelayOptions } from '../CdpPipeRelay';
 import { isOwnerOnlyDacl, loadPipeSecurity, parseDacl, RELAY_PIPE_PREFIX } from '../relayPipeWin';
 import { RELAY_DIR_PREFIX, sweepDeadRelayDirs, verifyRelaySocket } from '../relaySocket';
+import { RELAY_TOKEN_TTL_MS } from '../CdpRelayTokens';
 import { FakeBrowser } from './fakePipeBrowser';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 import { RELAY_PROOF_METHOD, relayProof, relayProofMatches } from '../../../shared/relayProof';
@@ -215,13 +216,30 @@ describe('CdpPipeRelay', () => {
 
   it('caps connections per Chrome; a refusal for room leaves the token usable', async () => {
     const { route } = await setup({ maxClientsPerChrome: 2 });
-    const a = await dial(await route.grant({}));
-    const b = await dial(await route.grant({}));
+    // All three handed out while there was room: the third races in after the cap filled.
+    const first = await route.grant({});
+    const second = await route.grant({});
     const third = await route.grant({});
+    const a = await dial(first);
+    const b = await dial(second);
     await expect(dial(third)).rejects.toThrow('HTTP 503');
     a.close();
     await vi.waitFor(async () => { (await dial(third)).close(); }, { timeout: 5_000 });
     b.close();
+  });
+
+  it('a full Chrome hands out no token, and says why', async () => {
+    const { route } = await setup({ maxClientsPerChrome: 2 });
+    const a = await dial(await route.grant({}));
+    const b = await dial(await route.grant({}));
+    await expect(route.grant({})).rejects.toThrow(/already has 2 automation connections, the most it takes/);
+    a.close();
+    await vi.waitFor(async () => { (await dial(await route.grant({}))).close(); }, { timeout: 5_000 });
+    b.close();
+  });
+
+  it('takes far more connections per Chrome than one busy session runs agents', () => {
+    expect(RELAY_MAX_CLIENTS_PER_CHROME).toBeGreaterThanOrEqual(64);
   });
 
   it('a token reaches only the Chrome it was minted for, and carries the caller\'s identity onto the client', async () => {
@@ -347,6 +365,24 @@ describe('CdpPipeRelay', () => {
     expect(await closed).toBe(1006);
   });
 
+  it('holds one Chrome\'s clients to a shared budget: past it, the one with the most waiting is disconnected', async () => {
+    const { browser, route } = await setup({ maxBufferedBytes: 1024 * 1024 * 1024, maxBufferedBytesPerChrome: 1024 });
+    const reading = await dial(await route.grant({}));
+    const ws = await dial(await route.grant({}));
+    await request(ws, { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, flatten: true } });
+    const closed = new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)));
+    const socket = (ws as unknown as { _socket: net.Socket })._socket;
+    socket.pause();
+    const big = 'x'.repeat(8 * 1024 * 1024);
+    for (let i = 0; i < 4; i++) browser.event('B1', 'Runtime.consoleAPICalled', { args: [{ value: big }] });
+    await deliberateSleep(300, 'the frames must be sent while the client is not reading');
+    socket.resume();
+    expect(await closed).toBe(1006);
+    // The client that kept reading is kept.
+    expect(await request(reading, { id: 2, method: 'Browser.getVersion' })).toEqual({ id: 2, result: { echo: 'Browser.getVersion' } });
+    reading.close();
+  });
+
   it('close() disconnects every client, stops listening and removes its socket dir', async () => {
     const { relay, route } = await setup();
     const grant = await route.grant({});
@@ -362,8 +398,10 @@ describe('CdpPipeRelay', () => {
   it('Playwright refused by the relay, for a wrong token or for room, gets an error that names no token', async () => {
     const { chromium } = await import('playwright-core');
     const { route } = await setup({ maxClientsPerChrome: 1 });
-    const held = await dial(await route.grant({}));
+    // Handed out before the one place is taken: its connect then meets a full Chrome.
+    const first = await route.grant({});
     const grant = await route.grant({});
+    const held = await dial(first);
     const token = grant.headers.Authorization.slice('Bearer '.length);
     const refused = async (headers: Record<string, string>) => {
       const err = await chromium.connectOverCDP(grant.endpoint, { headers, timeout: 5_000 }).then(() => null, (e: Error) => e);
@@ -782,6 +820,41 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
     expect((relay as unknown as { tokens: { size: number } }).tokens.size).toBe(0);
     expect(key).toEqual(Buffer.alloc(32));
+  });
+
+  it('a grant is settled once, when the connection that spent it closes, proven or not', async () => {
+    const { route } = await setup(opts);
+    for (const proven of [true, false]) {
+      const onSettled = vi.fn();
+      const ws = await dial(await route.grant({}, { onSettled }));
+      expect(await request(ws, { id: 1, method: 'Browser.getVersion' })).toEqual({ id: 1, result: { echo: 'Browser.getVersion' } });
+      if (proven) await ask(ws, 2, randomBytes(32));
+      // The connection is still in use: whatever it attached through stays.
+      expect(onSettled).not.toHaveBeenCalled();
+      ws.close();
+      await vi.waitFor(() => expect(onSettled).toHaveBeenCalledTimes(1), { timeout: 5_000 });
+    }
+  });
+
+  it('a grant is settled when its token expires unused, or its Chrome goes', async () => {
+    const { route } = await setup(opts);
+
+    // Nobody presents this one: the grant's own timer drops it once expired.
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    const expired = vi.fn();
+    await route.grant({}, { onSettled: expired });
+    const expiry = timers.mock.calls.find(([, ms]) => ms === RELAY_TOKEN_TTL_MS);
+    timers.mockRestore();
+    if (!expiry) throw new Error('the grant armed no expiry timer');
+    expect(expired).not.toHaveBeenCalled();
+    // By the timer, whatever the wall clock says meanwhile.
+    (expiry[0] as () => void)();
+    expect(expired).toHaveBeenCalledTimes(1);
+
+    const gone = vi.fn();
+    await route.grant({}, { onSettled: gone });
+    route.close();
+    expect(gone).toHaveBeenCalledTimes(1);
   });
 
   it('a listener that stops on its own takes its grants with it', async () => {

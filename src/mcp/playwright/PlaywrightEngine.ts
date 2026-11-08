@@ -42,6 +42,7 @@ import {
   RELAY_PROOF_METHOD,
   relayProofMatches,
 } from '../../shared/relayProof';
+import { relayFullIn } from '../../shared/relayFull';
 
 export { WORKSPACE_SCOPE_UNRESOLVED_CODE } from './browserScope';
 
@@ -148,6 +149,8 @@ interface CdpRelay {
   endpoint: string;
   headers: Record<string, string>;
   proofKey: string;
+  /** A blank tab main opened for this connection to attach through; closed once attached. */
+  bootstrapTargetId?: string;
 }
 
 function isRelay(value: unknown): value is CdpRelay {
@@ -708,6 +711,27 @@ export class PlaywrightEngine {
     throw new RelayProofError();
   }
 
+  /**
+   * Close the blank tab main opened for a relay connection to attach through
+   * (a Chrome with no page, see connectOverCdp). Main closes it as well once
+   * this connection is gone, if it is still there and still blank.
+   */
+  private async closeRelayBootstrapTab(targetId: unknown): Promise<void> {
+    if (typeof targetId !== 'string' || !this.browser) return;
+    const own = this.autoAttachSession === null;
+    let session: CDPSession | null = null;
+    try {
+      session = this.autoAttachSession ?? await this.browser.newBrowserCDPSession();
+      const { targetInfos } = (await session.send('Target.getTargets')) as { targetInfos?: Array<{ targetId: string; url: string }> };
+      // Only while still blank: the user may have gone somewhere in it.
+      if (targetInfos?.find((t) => t.targetId === targetId)?.url === 'about:blank') {
+        await session.send('Target.closeTarget', { targetId });
+      }
+    } catch { /* already gone */ } finally {
+      if (own) await session?.detach().catch(() => { /* gone with the connection */ });
+    }
+  }
+
   private async closeBootstrapTab(): Promise<void> {
     const url = this.bootstrapTabCloseUrl;
     this.bootstrapTabCloseUrl = null;
@@ -869,7 +893,12 @@ export class PlaywrightEngine {
           }
         }
         // Same (workspace, profile, policy epoch): keep the live connection.
-        if (reusable && profile === this.connectedProfile && policyEpoch === this.connectedPolicyEpoch) return;
+        if (reusable && profile === this.connectedProfile && policyEpoch === this.connectedPolicyEpoch) {
+          // A token asked for and not spent: its blank tab is closed now rather
+          // than shown until main gives up on the token.
+          if (isRelay(info.relay)) await this.closeRelayBootstrapTab(info.relay.bootstrapTargetId);
+          return;
+        }
         // A Chrome on the pipe: ask again for a token, and decide on that
         // answer, which may name another profile.
         if (!askRelay && info.piped === true) {
@@ -895,7 +924,12 @@ export class PlaywrightEngine {
           this.connectedWorkspaceId = workspaceId;
           this.connectedProfile = profile;
           this.connectedPolicyEpoch = policyEpoch;
-          if (policyEpoch !== undefined) await this.denyDownloads();
+          try {
+            if (policyEpoch !== undefined) await this.denyDownloads();
+          } finally {
+            // As closeBootstrapTab on the port, before any tool picks a page.
+            await this.closeRelayBootstrapTab(info.relay.bootstrapTargetId);
+          }
           return;
         }
         // Live-Chrome attach reports a ws endpoint instead of a port.
@@ -931,6 +965,10 @@ export class PlaywrightEngine {
       } catch (err) {
         if (err instanceof CdpAttachInfoUnavailableError || err instanceof RelayProofError) throw err;
         opSignal?.throwIfAborted();
+        // A Chrome whose relay is full: a retry moments later meets the same
+        // full Chrome, and the caller needs the reason, not a retry count.
+        const full = relayFullIn(err);
+        if (full) throw new Error(`[PlaywrightEngine] ${full}`);
         // A refusal, like the one above: retrying cannot change main's answer.
         const refusal = browserCallRefusal(err);
         if (refusal) throw refusal;

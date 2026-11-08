@@ -15,7 +15,8 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 // ---------------------------------------------------------------------------
 
 export const RELAY_TOKEN_TTL_MS = 30_000;
-export const RELAY_TOKENS_MAX_UNUSED = 32;
+/** Shared by every Chrome the relay serves: room for a burst of grants to several full ones (RELAY_MAX_CLIENTS_PER_CHROME). */
+export const RELAY_TOKENS_MAX_UNUSED = 256;
 
 interface Entry<B> {
   readonly digest: Buffer;

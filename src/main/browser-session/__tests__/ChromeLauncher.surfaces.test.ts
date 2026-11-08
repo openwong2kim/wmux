@@ -112,10 +112,13 @@ beforeEach(() => {
   nextPort = 21001;
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
+  // These fakes are a Chrome on a DevTools port, whatever the default transport is.
+  vi.stubEnv('WMUX_CHROME_TRANSPORT', 'port');
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
 });
 

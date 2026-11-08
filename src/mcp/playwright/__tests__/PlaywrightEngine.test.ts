@@ -73,6 +73,7 @@ import { createConnectionScope, runInConnectionScope } from '../../connectionSco
 import { rememberProtection, resetProtectionMemoryForTests } from '../browserScope';
 import { CHROME_START_RPC_TIMEOUT_MS } from '../../../shared/chromeStart';
 import { RELAY_PROOF_METHOD, relayProof } from '../../../shared/relayProof';
+import { relayFullMessage } from '../../../shared/relayFull';
 import { randomBytes } from 'node:crypto';
 
 /*
@@ -2605,6 +2606,86 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
     expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
     expect(mockConnectOverCDP).toHaveBeenCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-1' }, timeout: 30_000 });
+  });
+
+  it('closes the blank tab main opened for it to attach through, after the download deny and before it returns; not once the user used it', async () => {
+    for (const [protectedPane, tabUrl] of [[false, 'about:blank'], [true, 'about:blank'], [false, 'https://a.test/']] as const) {
+      mockSendRpc.mockReset();
+      mockConnectOverCDP.mockReset();
+      (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+      mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => {
+        if (method !== 'browser.cdp.info') return Promise.resolve({});
+        const info = pipeInfo('p1')(params) as Record<string, unknown> & { relay?: Record<string, unknown> };
+        return Promise.resolve({
+          ...info,
+          ...(protectedPane && { protected: true, policyEpoch: 3 }),
+          ...(info.relay && { relay: { ...info.relay, bootstrapTargetId: 'T-boot' } }),
+        });
+      });
+      const sent: Array<[string, unknown]> = [];
+      const browser = makeFakeBrowser([]);
+      browser.newBrowserCDPSession.mockImplementation(async () => ({
+        send: vi.fn().mockImplementation(async (method: string, params?: { nonce?: string }) => {
+          sent.push([method, params]);
+          return method === RELAY_PROOF_METHOD
+            ? { proof: relayProof(lastKey, Buffer.from(params?.nonce ?? '', 'base64url')) }
+            : { targetInfos: [{ targetId: 'T-boot', type: 'page', url: tabUrl }] };
+        }),
+        detach: vi.fn().mockResolvedValue(undefined),
+      }));
+      mockConnectOverCDP.mockResolvedValue(browser);
+      await PlaywrightEngine.getInstance().ensureConnected('ws-a');
+      const methods = sent.map(([method]) => method);
+      const closes = sent.filter(([method]) => method === 'Target.closeTarget');
+      if (tabUrl !== 'about:blank') {
+        expect(closes).toEqual([]);
+        continue;
+      }
+      expect(closes).toEqual([['Target.closeTarget', { targetId: 'T-boot' }]]);
+      if (protectedPane) expect(methods.indexOf('Browser.setDownloadBehavior')).toBeLessThan(methods.indexOf('Target.closeTarget'));
+      else expect(methods).not.toContain('Browser.setDownloadBehavior');
+    }
+  });
+
+  it('a token it asked for but did not spend (the answer named the live connection again) has its blank tab closed', async () => {
+    // Connected on p1; the next check first hears p2, asks for a token, and
+    // then hears p1 again: the live connection stays and the token goes unused.
+    const answers = [pipeInfo('p1'), pipeInfo('p2'), pipeInfo('p1')];
+    let at = 0;
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => {
+      if (method !== 'browser.cdp.info') return Promise.resolve({});
+      const info = answers[Math.min(at++, answers.length - 1)](params) as Record<string, unknown> & { relay?: Record<string, unknown> };
+      return Promise.resolve(at === 3 && info.relay ? { ...info, relay: { ...info.relay, bootstrapTargetId: 'T-unused' } } : info);
+    });
+    const sent: Array<[string, unknown]> = [];
+    const browser = makeFakeBrowser([]);
+    browser.newBrowserCDPSession.mockImplementation(async () => ({
+      send: vi.fn().mockImplementation(async (method: string, params?: { nonce?: string }) => {
+        sent.push([method, params]);
+        return method === RELAY_PROOF_METHOD
+          ? { proof: relayProof(lastKey, Buffer.from(params?.nonce ?? '', 'base64url')) }
+          : { targetInfos: [{ targetId: 'T-unused', type: 'page', url: 'about:blank' }] };
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    }));
+    mockConnectOverCDP.mockResolvedValue(browser);
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    await engine.ensureConnected('ws-a');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }, { workspaceId: 'ws-a' }, { workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+    expect(sent.filter(([method]) => method === 'Target.closeTarget')).toEqual([['Target.closeTarget', { targetId: 'T-unused' }]]);
+  });
+
+  it('a Chrome whose relay is full is reported as such, with no retries', async () => {
+    mockSendRpc.mockImplementation((method: string) => (method === 'browser.cdp.info'
+      ? Promise.reject(new Error(`browser.cdp.info: CdpPipeRelay: ${relayFullMessage(64)}`))
+      : Promise.resolve({})));
+    const err = await PlaywrightEngine.getInstance().ensureConnected('ws-a').then(() => null, (e: Error) => e);
+    expect(err?.message).toMatch(/this browser already has 64 automation connections, the most it takes/);
+    expect(err?.message).not.toMatch(/Failed to connect after/);
+    expect(cdpInfoCalls()).toHaveLength(1);
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
   });
 
   it('a check on a live connection asks for no token, and the connection is kept', async () => {

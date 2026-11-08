@@ -129,7 +129,7 @@ async function makeRig(transport: Transport): Promise<Rig> {
   // folder, so no row ever writes outside the temp dirs.
   const profile = tempChromeProfile(`wmux-protected-${transport}-`);
   const { dir, downloads } = profile;
-  vi.stubEnv('WMUX_CHROME_TRANSPORT', transport === 'pipe' ? 'pipe' : '');
+  vi.stubEnv('WMUX_CHROME_TRANSPORT', transport === 'pipe' ? 'pipe' : 'port');
   vi.stubEnv('WMUX_CHROME_PATH', CHROME as string);
   const launcher = new ChromeLauncher(dir, {
     portEnvVar: null,
