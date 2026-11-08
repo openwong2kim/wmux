@@ -10,6 +10,7 @@ import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTran
 import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type CallerIdentity, type ClientRef } from './CdpPipeMux';
 import { ProtectedPipePolicy } from './ProtectedPipePolicy';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from './CdpPipeRelay';
+import { isRecordedBrowser, recordedBrowserPath } from './devToolsActivePort';
 import { cdpTargetGrantEnabled, recordVisibleTo } from './CdpTargetOwnership';
 import { DownloadRelayPolicy, makeDownloadRelayDir, removeDownloadRelayDir } from './DownloadRelayPolicy';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
@@ -589,6 +590,14 @@ function waitForExit(child: ChildProcess, ms: number): Promise<boolean> {
 function boundedBy(stop?: AbortSignal): AbortSignal {
   const timeout = AbortSignal.timeout(RESTORE_SETTLE_MS);
   return stop ? AbortSignal.any([stop, timeout]) : timeout;
+}
+
+/** adoptExisting: what answers on the recorded port is not the browser that recorded it. */
+class NotTheRecordedBrowser extends Error {
+  /** What it is instead, for the log. */
+  constructor(readonly why: string) {
+    super('not the recorded browser');
+  }
 }
 
 /** The one tab a Chrome starts with when it restores nothing. */
@@ -1664,7 +1673,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** DevToolsActivePort in the profile dir. `raw` is kept for freshness
    *  comparison: the secret /devtools/browser/<uuid> on line 2 is new every
    *  boot, so byte-identical content means "same (old) instance". */
-  private readPortFile(): { raw: string; port: number } | null {
+  private readPortFile(): { raw: string; port: number; browserPath: string | null } | null {
     let raw: string;
     try {
       raw = readFileSync(join(this.userDataDir, 'DevToolsActivePort'), 'utf8');
@@ -1673,7 +1682,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     }
     const port = parseInt(raw.split('\n')[0]?.trim() ?? '', 10);
     if (Number.isNaN(port) || port <= 0 || port > 65535) return null;
-    return { raw, port };
+    return { raw, port, browserPath: recordedBrowserPath(raw) };
   }
 
   /**
@@ -1692,7 +1701,28 @@ export class ChromeLauncher implements ChromeBackendClient {
     for (const port of candidates) {
       const candidate = this.bindEndpoint(portTransport(port));
       try {
-        await candidate.ping();
+        // A port named only by the file must answer as the Chrome that wrote
+        // it: the port may be another browser's by now, or not a browser's at
+        // all, and either is nothing to adopt. That one answer is the probe.
+        // A pinned port is the user's own choice: any answer will do.
+        if (file && port === file.port && port !== pinned) {
+          // Rejects when nothing answers (or not with a 2xx), as ping() would.
+          // Bounded so a port that takes the connection and never answers
+          // cannot hold the launch; as long as a starting Chrome is given.
+          const endpoint = await candidate.browserEndpoint(AbortSignal.timeout(CHROME_START_CEILING_MS)).catch((err: unknown) => {
+            const status = /→ HTTP (\d+)/.exec(err instanceof Error ? err.message : '')?.[1];
+            if (status) throw new NotTheRecordedBrowser(`it answers HTTP ${status}`);
+            throw err;
+          });
+          this.assertOpen(); // a quit while it was asked
+          if (!isRecordedBrowser(file.browserPath, endpoint)) {
+            throw new NotTheRecordedBrowser(
+              file.browserPath === null ? 'the port file records no browser' : endpoint !== null ? 'another browser' : 'no browser endpoint',
+            );
+          }
+        } else {
+          await candidate.ping();
+        }
         this.markReady(candidate);
         this.assertOpen();
         // No child handle for an adopted instance — dispose() can only close
@@ -1711,6 +1741,9 @@ export class ChromeLauncher implements ChromeBackendClient {
       } catch (err) {
         this.unbindEndpoint();
         if (this.disposed) throw err;
+        if (err instanceof NotTheRecordedBrowser) {
+          console.warn(`[ChromeLauncher] the recorded DevTools port answers, but not as the browser that recorded it (${err.why}); starting a new one`);
+        }
       }
     }
     return null;
