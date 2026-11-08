@@ -69,8 +69,8 @@ afterEach(() => {
 
 const received: string[] = [];
 
-function runner(opts: Partial<ConstructorParameters<typeof RunnerProcess>[0]> & { env?: (n: number) => NodeJS.ProcessEnv } = {}): RunnerProcess {
-  const { env, ...rest } = opts;
+function runner(opts: Partial<ConstructorParameters<typeof RunnerProcess>[0]> & { env?: (n: number) => NodeJS.ProcessEnv; onSpawn?: (child: ChildProcessWithoutNullStreams) => void } = {}): RunnerProcess {
+  const { env, onSpawn, ...rest } = opts;
   const r = new RunnerProcess({
     command: process.execPath,
     spawn: (_cmd, args) => {
@@ -82,6 +82,7 @@ function runner(opts: Partial<ConstructorParameters<typeof RunnerProcess>[0]> & 
         return write(chunk);
       };
       spawned.push(child);
+      onSpawn?.(child);
       return child;
     },
     ...rest,
@@ -196,12 +197,19 @@ describe.skipIf(process.platform === 'win32')('RunnerProcess', () => {
     // Runner 0 takes 800 ms to exit after its stdin closes; runner 1 is
     // stopped with a cancel pending (2 s grace), so only main can end it, and
     // runner 0's exit lands inside that grace.
-    const r = runner({ idleExitMs: 50, cancelGraceMs: 2000, env: (n) => (n === 0 ? { ...process.env, SLOW_EOF_MS: '800' } : process.env) });
+    // Read from the spawn: a listener added once the run is out can miss the line.
+    const started: Promise<number>[] = [];
+    const r = runner({
+      idleExitMs: 50,
+      cancelGraceMs: 2000,
+      env: (n) => (n === 0 ? { ...process.env, SLOW_EOF_MS: '800' } : process.env),
+      onSpawn: (child) => started.push(startedPid(child)),
+    });
     await r.run(['echo'], { home: '/tmp/ad', timeoutMs: 5000 });
     await until(() => spawned[0].stdin.writableEnded);
     const hung = r.run(['hang'], { home: '/tmp/ad', timeoutMs: 30_000 });
     await until(() => spawned.length === 2);
-    const child = await startedPid(spawned[1]);
+    const child = await started[1];
     process.kill(spawned[1].pid as number, 'SIGSTOP');
     r.abort();
     await expect(hung).rejects.toMatchObject({ code: 'aborted' });
