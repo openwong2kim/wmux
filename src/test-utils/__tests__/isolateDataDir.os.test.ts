@@ -44,7 +44,7 @@ describe('isolateDataDir setup', () => {
   });
 
   it.runIf(process.platform === 'win32')('gives the temp USERPROFILE the folders a browser resolves through it', () => {
-    for (const dir of ['AppData\\Local', 'AppData\\Roaming', 'Downloads']) {
+    for (const dir of ['AppData\\Local', 'AppData\\LocalLow', 'AppData\\Roaming', 'Desktop', 'Documents', 'Downloads']) {
       expect(fs.statSync(path.join(os.homedir(), dir)).isDirectory(), dir).toBe(true);
     }
   });

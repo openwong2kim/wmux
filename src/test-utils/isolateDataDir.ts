@@ -32,9 +32,11 @@ if (process.platform === 'win32') {
   // The folders a Windows profile has. Chrome and Edge resolve their known
   // folders through USERPROFILE (%USERPROFILE%\AppData\Local, …\Downloads):
   // with these missing they refuse remote debugging ("requires a non-default
-  // data directory"), and with them present a browser a test starts never
-  // touches the real profile, its Downloads folder included.
-  for (const dir of ['AppData\\Local', 'AppData\\Roaming', 'Downloads']) {
+  // data directory"); with them present they run, and keep their known-folder
+  // files (downloads' .tmp probes among them) in this temp home. A known
+  // folder the account redirected to an absolute path (OneDrive's folder
+  // move, D:\Downloads) still resolves to the real one.
+  for (const dir of ['AppData\\Local', 'AppData\\LocalLow', 'AppData\\Roaming', 'Desktop', 'Documents', 'Downloads']) {
     fs.mkdirSync(path.join(tempDir, dir), { recursive: true });
   }
 }

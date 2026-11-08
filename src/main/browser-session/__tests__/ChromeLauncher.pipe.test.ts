@@ -142,7 +142,7 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(args).toContain('--disable-blink-features=AutomationControlled');
     // stderr is read, so a failed start can quote Chrome.
     expect(opts.stdio).toEqual(['ignore', 'ignore', 'pipe', 'pipe', 'pipe']);
-    // No childEnv: the child inherits process.env, as before.
+    // The child inherits process.env.
     expect(opts).not.toHaveProperty('env');
     expect(chrome.received.find((c) => c.method === 'Browser.getVersion')).toBeDefined();
     // Nothing went to a port.
@@ -386,16 +386,6 @@ describe('ChromeLauncher over a debugging pipe', () => {
     expect(message).toContain('ChromeLauncher: CDP endpoint did not become ready in time');
     expect(message).toContain('last error: ChromeLauncher: Browser.getVersion timed out');
     expect(message).toContain('Chrome said: DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir. | Created TensorFlow Lite');
-    await launcher.dispose({ immediate: true });
-  });
-
-  it('gives Chrome the childEnv test seam as its whole environment', async () => {
-    spawnPipeChrome();
-    const env = { PATH: '/bin', USERPROFILE: 'C:\\Users\\someone' };
-    const launcher = new ChromeLauncher('/tmp/pipe-profile', { childEnv: env });
-    await launcher.endpoint();
-    const [, , opts] = spawnMock.mock.calls[0] as [string, string[], { env?: NodeJS.ProcessEnv }];
-    expect(opts.env).toBe(env);
     await launcher.dispose({ immediate: true });
   });
 
