@@ -200,8 +200,10 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
       const bundled = require(await buildPlaywrightChunk(out)) as typeof import('playwright-core');
       const s = await startChrome();
       const grant = await s.route.grant({ workspaceId: 'ws-a' });
-      // A Unix socket wherever the OS has them: the path the MCP lane takes.
-      if (process.platform !== 'win32') expect(grant.endpoint.startsWith('ws+unix://')).toBe(true);
+      // A Unix socket wherever the OS has them, a named pipe on Windows: the
+      // path the MCP lane takes. The bundle's own ws dials the pipe spelling.
+      if (process.platform === 'win32') expect(grant.endpoint.startsWith('ws+unix:\\\\.\\pipe\\')).toBe(true);
+      else expect(grant.endpoint.startsWith('ws+unix://')).toBe(true);
       const browser = await bundled.chromium.connectOverCDP(grant.endpoint, { headers: { ...grant.headers } });
       browsers.push(browser as unknown as Browser);
       const page = await browser.contexts()[0].newPage();

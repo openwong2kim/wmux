@@ -9,7 +9,8 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { CdpPipeMux, cdpPipeCounters, resetCdpPipeCounters, type ClientRef } from '../CdpPipeMux';
-import { CdpPipeRelay, RELAY_PATH, RELAY_TCP_FALLBACK_LINE, type RelayGrant, type RelayOptions } from '../CdpPipeRelay';
+import { CdpPipeRelay, RELAY_PATH, RELAY_PIPE_FALLBACK_LINE, RELAY_TCP_FALLBACK_LINE, type RelayGrant, type RelayOptions } from '../CdpPipeRelay';
+import { isOwnerOnlyDacl, loadPipeSecurity, parseDacl, RELAY_PIPE_PREFIX } from '../relayPipeWin';
 import { RELAY_DIR_PREFIX, sweepDeadRelayDirs, verifyRelaySocket } from '../relaySocket';
 import { FakeBrowser } from './fakePipeBrowser';
 import { deliberateSleep } from '../../../test-utils/waitFor';
@@ -68,9 +69,11 @@ function request(ws: WebSocket, message: Record<string, unknown>): Promise<Recor
   });
 }
 
-/** Where a grant's endpoint listens: a socket path or a loopback port. */
+/** Where a grant's endpoint listens: a socket or pipe path, or a loopback port. */
 function placeOf(endpoint: string): { path: string } | { port: number } {
   if (endpoint.startsWith('ws+unix://')) return { path: endpoint.slice('ws+unix://'.length, endpoint.lastIndexOf(`:${RELAY_PATH}`)) };
+  // Windows: ws+unix:\\.\pipe\<name>:<path>, with no `//`.
+  if (endpoint.startsWith('ws+unix:')) return { path: endpoint.slice('ws+unix:'.length, endpoint.lastIndexOf(`:${RELAY_PATH}`)) };
   return { port: Number(new URL(endpoint).port) };
 }
 
@@ -113,7 +116,7 @@ describe('CdpPipeRelay', () => {
   });
 
   it('falls back to loopback TCP with no usable root, and still needs the token', async () => {
-    const { route } = await setup({ roots: [] });
+    const { route } = await setup({ roots: [], windowsPipe: false });
     const grant = await route.grant({});
     expect(grant.endpoint).toMatch(new RegExp(`^ws://127\\.0\\.0\\.1:\\d+${RELAY_PATH}$`));
     const ws = await dial(grant);
@@ -183,8 +186,9 @@ describe('CdpPipeRelay', () => {
   });
 
   it('checks an upgrade in order: method and path, Origin, Host on TCP, token; a refusal leaves a good token unspent', async () => {
-    for (const roots of posix ? [undefined, []] : [[]]) {
-      const { route } = await setup(roots ? { roots } : {});
+    // The private socket (or, on Windows, the pipe), then loopback TCP.
+    for (const opts of posix ? [{}, { roots: [] }] : [{}, { windowsPipe: false }]) {
+      const { route } = await setup(opts);
       const grant = await route.grant({});
       const ep = grant.endpoint;
       expect(await rawStatus(ep, `GET ${RELAY_PATH} HTTP/1.1\r\nHost: ${hostOf(ep)}\r\n${auth(grant)}\r\n`)).toBe('HTTP/1.1 404 Not Found');
@@ -458,6 +462,176 @@ describe.skipIf(!posix)('CdpPipeRelay: leftover socket dirs', () => {
     (await dial(await a.route.grant({}))).close();
     (await dial(grantB)).close();
     wsA.close();
+  });
+});
+
+describe('CdpPipeRelay: tokens and listeners', () => {
+  it('a token handed out before a rebind is refused after it, on the new listener too', async () => {
+    const { relay, route } = await setup();
+    const old = await route.grant({});
+    // The listener goes away (its socket or pipe gone): the next grant binds afresh.
+    const listener = (relay as unknown as { listener: { server: import('node:http').Server } }).listener;
+    await new Promise<void>((resolve) => listener.server.close(() => resolve()));
+    const fresh = await route.grant({});
+    await expect(dial({ endpoint: fresh.endpoint, headers: old.headers })).rejects.toThrow('HTTP 401');
+    (await dial(fresh)).close();
+  });
+});
+
+describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pipe', () => {
+  const pipeOf = (grant: RelayGrant) => (placeOf(grant.endpoint) as { path: string }).path;
+  const security = () => {
+    const loaded = loadPipeSecurity();
+    if (!('security' in loaded)) throw new Error(`pipe security unavailable: ${loaded.unavailable}`);
+    return loaded.security;
+  };
+  const gone = (pipePath: string) => new Promise<string>((resolve) => {
+    const socket = net.connect(pipePath, () => { socket.destroy(); resolve('open'); });
+    socket.on('error', (err: NodeJS.ErrnoException) => resolve(err.code ?? 'error'));
+  });
+
+  it('serves CDP on a pipe closed to everyone but this user and SYSTEM, to a client with a token', async () => {
+    const { route } = await setup();
+    const grant = await route.grant({ workspaceId: 'ws-a' });
+    expect(grant.endpoint).toMatch(new RegExp(`^ws\\+unix:\\\\\\\\\\.\\\\pipe\\\\${RELAY_PIPE_PREFIX}[0-9a-f]{32}:${RELAY_PATH}$`));
+    const sec = security();
+    expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(pipeOf(grant))), sec.userSpellings)).toBe(true);
+    const ws = await dial(grant);
+    expect(await request(ws, { id: 1, method: 'Browser.getVersion' })).toEqual({ id: 1, result: { echo: 'Browser.getVersion' } });
+    ws.close();
+    await expect(dial({ endpoint: grant.endpoint, headers: { Authorization: 'Bearer nope' } })).rejects.toThrow('HTTP 401');
+  });
+
+  it('never serves a pipe whose DACL could not be set: fresh names, then loopback TCP, said once without the pipe', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const real = security();
+    const tried: string[] = [];
+    for (const narrow of [() => ({ ok: false as const, busy: true, reason: 'open 231' }), () => ({ ok: false as const, busy: false, reason: 'read-back' })]) {
+      warn.mockClear();
+      const { route } = await setup({
+        pipeSecurity: () => ({ security: { ...real, narrow } }),
+        beforeNarrow: (pipePath) => tried.push(pipePath),
+      });
+      const grant = await route.grant({});
+      expect(grant.endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:\d+\//);
+      (await dial(grant)).close();
+      const lines = warn.mock.calls.map((call) => call.map(String).join(' '));
+      expect(lines.filter((line) => line.startsWith(RELAY_PIPE_FALLBACK_LINE))).toHaveLength(1);
+      for (const line of lines) for (const pipePath of tried) expect(line).not.toContain(pipePath);
+    }
+    // Three fresh names each time, and none of them is left listening.
+    expect(new Set(tried).size).toBe(6);
+    for (const pipePath of tried) expect(await gone(pipePath)).toBe('ENOENT');
+  });
+
+  it('a DACL change that throws closes the pipe and goes on like any other failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const real = security();
+    const tried: string[] = [];
+    const { route } = await setup({
+      pipeSecurity: () => ({ security: { ...real, narrow: () => { throw new Error('koffi decode'); } } }),
+      beforeNarrow: (pipePath) => tried.push(pipePath),
+    });
+    expect((await route.grant({})).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    expect(warn.mock.calls.map((call) => call.map(String).join(' '))).toContain(`${RELAY_PIPE_FALLBACK_LINE} (throw)`);
+    expect(tried).toHaveLength(3);
+    for (const pipePath of tried) expect(await gone(pipePath)).toBe('ENOENT');
+  });
+
+  it('closed just before a DACL change that then succeeds: the pipe is never attached', async () => {
+    const tried: string[] = [];
+    let close: Promise<void> | undefined;
+    const { relay, route } = await setup({
+      beforeNarrow: (pipePath) => {
+        tried.push(pipePath);
+        close = relay.close();
+      },
+    });
+    // rebind() would retire a listener bound after a close anyway; the pipe is
+    // not even attached (no upgrade handler on it for a moment).
+    const attach = vi.spyOn(relay as unknown as { attach: (...args: unknown[]) => unknown }, 'attach');
+    const granting = route.grant({}).then(() => 'granted', (err: Error) => err.message);
+    await vi.waitFor(() => expect(close).toBeDefined(), { timeout: 2_000 });
+    await close;
+    expect(await granting).toMatch(/closed|gone/);
+    expect(attach).not.toHaveBeenCalled();
+    expect(tried).toHaveLength(1);
+    expect(await gone(tried[0])).toBe('ENOENT');
+  });
+
+  it('closed while a pipe waits for a free instance: no further pipe and no TCP listener', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const real = security();
+    const tried: string[] = [];
+    const { relay, route } = await setup({
+      pipeSecurity: () => ({ security: { ...real, narrow: () => ({ ok: false, busy: true, reason: 'open 231' }) } }),
+      beforeNarrow: (pipePath) => tried.push(pipePath),
+    });
+    const granting = route.grant({}).then(() => 'granted', (err: Error) => err.message);
+    await vi.waitFor(() => expect(tried).toHaveLength(1), { timeout: 2_000 });
+    await relay.close();
+    expect(await granting).toMatch(/closed|gone/);
+    expect(tried).toHaveLength(1);
+    expect(warn.mock.calls.map((call) => call.map(String).join(' ')).some((line) => line.startsWith(RELAY_PIPE_FALLBACK_LINE))).toBe(false);
+    expect(await gone(tried[0])).toBe('ENOENT');
+  });
+
+  it('serves on loopback TCP when this process runs as another user than the session\'s', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { route } = await setup({ pipeSecurity: () => ({ unavailable: 'different-user' }) });
+    expect((await route.grant({})).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    expect(warn.mock.calls.map((call) => call.map(String).join(' '))).toContain(`${RELAY_PIPE_FALLBACK_LINE} (different-user)`);
+  });
+
+  it('every instance taken before the DACL change: waits for a new one, never serves the pipe wide', async () => {
+    const sec = security();
+    const held: Array<() => void> = [];
+    const { relay, route } = await setup({
+      beforeNarrow: (pipePath) => {
+        for (let i = 0; i < 64; i++) {
+          const opened = sec.openForReading(pipePath);
+          if (typeof opened !== 'function') break;
+          held.push(opened);
+        }
+      },
+    });
+    try {
+      const grant = await route.grant({});
+      expect(held.length).toBeGreaterThan(0);
+      if (grant.endpoint.startsWith('ws+unix:')) {
+        expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(pipeOf(grant))), sec.userSpellings)).toBe(true);
+      } else {
+        expect(grant.endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+      }
+      (await dial(grant)).close();
+      void relay;
+    } finally {
+      for (const close of held) close();
+    }
+  });
+
+  it('a connection opened before the DACL change is cut at the header timeout', async () => {
+    const sec = security();
+    const held: Array<() => void> = [];
+    const { relay, route } = await setup({
+      headerTimeoutMs: 1_500,
+      beforeNarrow: (pipePath) => {
+        const opened = sec.openForReading(pipePath);
+        if (typeof opened === 'function') held.push(opened);
+      },
+    });
+    try {
+      await route.grant({});
+      expect(held).toHaveLength(1);
+      const server = (relay as unknown as { listener: { server: import('node:http').Server } }).listener.server;
+      const count = () => new Promise<number>((resolve) => server.getConnections((_err, n) => resolve(n)));
+      // The server accepts the early reader on a later turn of the event loop,
+      // then drops it once the header timeout passes with no request.
+      await vi.waitFor(async () => expect(await count()).toBeGreaterThanOrEqual(1), { timeout: 1_000 });
+      await vi.waitFor(async () => expect(await count()).toBe(0), { timeout: 5_000 });
+    } finally {
+      for (const close of held) close();
+    }
   });
 });
 
