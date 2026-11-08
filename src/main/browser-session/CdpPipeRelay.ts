@@ -15,14 +15,16 @@ import {
   type RelaySocketDir,
   type RelaySocketId,
 } from './relaySocket';
+import { loadPipeSecurity, relayPipeEndpoint, relayPipePath, type PipeSecurityResult } from './relayPipeWin';
 
 // ---------------------------------------------------------------------------
 // The one endpoint external clients (the MCP lane's Playwright) dial for every
 // Chrome on a debugging pipe. A client connects with a one-time token that
 // browser.cdp.info minted for it over the authenticated wmux pipe; the token
 // says which Chrome it reaches and who it connects as.
-//  - A Unix socket in a private temp dir where one can be made (relaySocket),
-//    else loopback TCP; started on the first token, not before.
+//  - A Unix socket in a private temp dir where one can be made (relaySocket);
+//    on Windows a named pipe closed to everyone but this user and SYSTEM
+//    (relayPipeWin); else loopback TCP. Started on the first token, not before.
 //  - WebSocket upgrades at one exact path only; no HTTP routes.
 //  - Each upgrade is checked in order: method and path (404), any Origin
 //    (403), on TCP the Host and the peer (403), the bearer token (401), then
@@ -32,7 +34,8 @@ import {
 //  - No per-message compression, a header timeout, a cap on connections per
 //    Chrome, and a cap on what may wait to be sent to one client.
 //  - Before each token is handed out, a socket that is gone or was replaced is
-//    bound afresh; connections already made stay.
+//    bound afresh; connections already made stay. A token is good only on the
+//    listener it was handed out for, and a rebind drops every unused one.
 // Neither tokens nor the endpoint are logged.
 // ---------------------------------------------------------------------------
 
@@ -47,6 +50,12 @@ const HEADER_TIMEOUT_MS = 5_000;
 const PRE_AUTH_ROOM = 8;
 /** Said once when a platform with Unix sockets has to serve on TCP. Names no endpoint, port, path or token. */
 export const RELAY_TCP_FALLBACK_LINE = '[CdpPipeRelay] no private socket dir; serving on loopback TCP';
+/** Said when Windows has to serve on TCP; a reason code follows. Names no endpoint, pipe, user or token. */
+export const RELAY_PIPE_FALLBACK_LINE = '[CdpPipeRelay] no owner-only pipe; serving on loopback TCP';
+/** Fresh pipe names tried before TCP. */
+const PIPE_BIND_ATTEMPTS = 3;
+/** How long one pipe waits for a free instance to set its DACL on, yielding to the event loop. */
+const PIPE_BUSY_WAIT_MS = 200;
 
 /** What browser.cdp.info hands a caller: where to connect, and the header that lets it. */
 export interface RelayGrant {
@@ -60,6 +69,12 @@ export interface RelayOptions {
   maxClientsPerChrome?: number;
   maxBufferedBytes?: number;
   headerTimeoutMs?: number;
+  /** Windows: serve on a named pipe (default) or, false, on loopback TCP. */
+  windowsPipe?: boolean;
+  /** Test seam: the Win32 side of the pipe (relayPipeWin.loadPipeSecurity). */
+  pipeSecurity?: () => PipeSecurityResult;
+  /** Test seam: runs between a pipe's creation and its DACL change. */
+  beforeNarrow?: (pipePath: string) => void;
 }
 
 interface Listener {
@@ -68,11 +83,15 @@ interface Listener {
   /** TCP: the only Host header accepted. Null on a Unix socket. */
   readonly tcpHost: string | null;
   readonly socket: { readonly place: RelaySocketDir; readonly id: RelaySocketId } | null;
+  /** Windows: the pipe's path. Null elsewhere and on TCP. */
+  readonly pipe: string | null;
 }
 
 interface Binding {
   readonly route: RelayRoute;
   readonly identity: CallerIdentity;
+  /** The listener the token was handed out for: no other one takes it. */
+  readonly listener: Listener;
 }
 
 function isLoopback(address: string | undefined): boolean {
@@ -127,6 +146,9 @@ export class CdpPipeRelay {
   private readonly maxClients: number;
   private readonly maxBuffered: number;
   private readonly headerTimeoutMs: number;
+  private readonly windowsPipe: boolean;
+  private readonly pipeSecurity: () => PipeSecurityResult;
+  private readonly beforeNarrow: ((pipePath: string) => void) | undefined;
   private listener: Listener | null = null;
   private binding: Promise<Listener> | null = null;
   private swept = false;
@@ -139,6 +161,9 @@ export class CdpPipeRelay {
     this.maxClients = opts.maxClientsPerChrome ?? RELAY_MAX_CLIENTS_PER_CHROME;
     this.maxBuffered = opts.maxBufferedBytes ?? RELAY_MAX_BUFFERED_BYTES;
     this.headerTimeoutMs = opts.headerTimeoutMs ?? HEADER_TIMEOUT_MS;
+    this.windowsPipe = opts.windowsPipe ?? true;
+    this.pipeSecurity = opts.pipeSecurity ?? loadPipeSecurity;
+    this.beforeNarrow = opts.beforeNarrow;
     this.wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: MAX_INBOUND_BYTES, clientTracking: false });
   }
 
@@ -156,7 +181,7 @@ export class CdpPipeRelay {
     if (this.closed || !route.open) throw new Error('CdpPipeRelay: that Chrome is gone');
     const listener = await this.live();
     if (this.closed || !route.open) throw new Error('CdpPipeRelay: that Chrome is gone');
-    const token = this.tokens.mint({ route, identity });
+    const token = this.tokens.mint({ route, identity, listener });
     return { endpoint: listener.endpoint, headers: { Authorization: `Bearer ${token}` } };
   }
 
@@ -206,6 +231,8 @@ export class CdpPipeRelay {
   private async rebind(): Promise<Listener> {
     const stale = this.listener;
     this.listener = null;
+    // A token handed out for the old listener names its endpoint: none outlives it.
+    this.tokens.forget(() => true);
     if (stale) void this.retire(stale, false);
     if (!this.swept) {
       // In the background: the first token does not wait on probing leftovers.
@@ -246,13 +273,18 @@ export class CdpPipeRelay {
         fs.chmodSync(place.socketPath, 0o600);
         const id = verifyRelaySocket(place);
         if (!id) throw new Error('relay socket is not private');
-        return this.attach(server, { endpoint: `ws+unix://${place.socketPath}:${RELAY_PATH}`, tcpHost: null, socket: { place, id } });
+        return this.attach(server, { endpoint: `ws+unix://${place.socketPath}:${RELAY_PATH}`, tcpHost: null, socket: { place, id }, pipe: null });
       } catch {
         server.close();
         removeRelaySocketDir(place.dir);
       }
     }
-    // Windows serves on TCP by design; elsewhere it means no root could hold a private socket.
+    if (process.platform === 'win32' && this.windowsPipe) {
+      const pipe = await this.listenPipe();
+      if ('listener' in pipe) return pipe.listener;
+      console.warn(`${RELAY_PIPE_FALLBACK_LINE} (${pipe.reason})`);
+    }
+    // Elsewhere TCP means no root could hold a private socket.
     if (process.platform !== 'win32') console.warn(RELAY_TCP_FALLBACK_LINE);
     const server = this.makeServer();
     await new Promise<void>((resolve, reject) => {
@@ -260,7 +292,51 @@ export class CdpPipeRelay {
       server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve(); });
     });
     const { port } = server.address() as AddressInfo;
-    return this.attach(server, { endpoint: `ws://127.0.0.1:${port}${RELAY_PATH}`, tcpHost: `127.0.0.1:${port}`, socket: null });
+    return this.attach(server, { endpoint: `ws://127.0.0.1:${port}${RELAY_PATH}`, tcpHost: `127.0.0.1:${port}`, socket: null, pipe: null });
+  }
+
+  /**
+   * Windows: a named pipe closed to everyone but this user and SYSTEM, or the
+   * reason there is none. A pipe whose DACL could not be set is closed, never
+   * served; a fresh name is tried, up to PIPE_BIND_ATTEMPTS.
+   */
+  private async listenPipe(): Promise<{ listener: Listener } | { reason: string }> {
+    const loaded = this.pipeSecurity();
+    if (!('security' in loaded)) return { reason: loaded.unavailable };
+    const { security } = loaded;
+    let reason = 'bind';
+    for (let attempt = 0; attempt < PIPE_BIND_ATTEMPTS; attempt++) {
+      const pipePath = relayPipePath();
+      const server = this.makeServer();
+      // A bind error (a name already taken: EADDRINUSE) arrives on the next tick.
+      const onBindError = () => undefined;
+      server.on('error', onBindError);
+      // On Windows Node creates and listens on the pipe before listen() returns:
+      // the DACL is set in this same tick, before any other process can be served.
+      server.listen(pipePath);
+      if (!server.listening) {
+        await new Promise((resolve) => setImmediate(resolve));
+        server.off('error', onBindError);
+        server.close();
+        reason = 'bind';
+        continue;
+      }
+      this.beforeNarrow?.(pipePath);
+      let narrowed = security.narrow(pipePath);
+      // Every waiting instance taken: let the event loop serve (and time out)
+      // those connections and make a new instance, then try again, briefly.
+      const deadline = Date.now() + PIPE_BUSY_WAIT_MS;
+      while (!narrowed.ok && narrowed.busy && Date.now() < deadline && !this.closed) {
+        await new Promise((resolve) => setImmediate(resolve));
+        narrowed = security.narrow(pipePath);
+      }
+      server.off('error', onBindError);
+      if (narrowed.ok) return { listener: this.attach(server, { endpoint: relayPipeEndpoint(pipePath, RELAY_PATH), tcpHost: null, socket: null, pipe: pipePath }) };
+      reason = narrowed.busy ? 'busy' : 'dacl';
+      server.close();
+      server.closeAllConnections();
+    }
+    return { reason };
   }
 
   private makeServer(): Server {
@@ -302,6 +378,7 @@ export class CdpPipeRelay {
     const presented = bearer(req.headers.authorization);
     const ticket = presented === null ? null : this.tokens.lookup(presented);
     if (!ticket) { refuse(socket, '401 Unauthorized'); return; }
+    if (ticket.binding.listener !== listener) { refuse(socket, '401 Unauthorized'); return; }
     const { route, identity } = ticket.binding;
     if (!route.open || route.clients.size + route.handshaking >= this.maxClients) { refuse(socket, '503 Service Unavailable'); return; }
     if (!this.tokens.consume(ticket)) { refuse(socket, '401 Unauthorized'); return; }

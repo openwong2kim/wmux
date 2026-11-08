@@ -9,7 +9,7 @@ import path from 'node:path';
 // the socket itself is 0600. The dir also records its owner's pid, so a later
 // start can tell a dir left by a process that is gone from one still in use
 // (the installed app and an isolated instance share one temp root).
-// Windows has no candidate: the relay uses loopback TCP with its token there.
+// Windows has no candidate: the relay uses a named pipe there (relayPipeWin).
 // ---------------------------------------------------------------------------
 
 export const RELAY_DIR_PREFIX = 'wmux-cdp-';

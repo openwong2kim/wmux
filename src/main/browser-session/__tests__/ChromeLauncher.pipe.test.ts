@@ -227,7 +227,8 @@ describe('ChromeLauncher over a debugging pipe', () => {
     await launcher.endpoint();
     vi.spyOn(CdpPipeRelay.prototype as unknown as { listen: () => Promise<unknown> }, 'listen').mockRejectedValueOnce(new Error('listen EACCES'));
     await expect(launcher.relayGrant({})).rejects.toThrow('listen EACCES');
-    expect((await launcher.relayGrant({})).endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
+    // Loopback TCP, a Unix socket, or on Windows the relay's named pipe.
+    expect((await launcher.relayGrant({})).endpoint).toMatch(/^(ws:\/\/127\.0\.0\.1:|ws\+unix:)/);
     await launcher.dispose({ immediate: true });
   });
 
