@@ -122,19 +122,25 @@ describe('memory diagnostics', () => {
 
   it('shows tail reads by site: served, fallbacks by reason, what they cost and what the check found', () => {
     const fleet = {
-      reads: 10, served: 6, whole: 1, fallbacks: { 'unknown-visible': 2, margins: 1 },
-      tailMsTotal: 30, tailMsMax: 8, fallbackMsTotal: 270, fallbackMsMax: 100,
+      reads: 12, served: 6, whole: 1, fallbacks: { 'unknown-visible': 2, margins: 1 }, skipped: 2,
+      tailMsTotal: 36, tailMsMax: 8, fallbackMsTotal: 450, fallbackMsMax: 100,
       ringCopyMsTotal: 12, ringCopyMsMax: 3, scanMsTotal: 4, scanMsMax: 2, scanBytes: 4096,
       checks: 2, mismatches: { viewport: 1, 'running:full-only': 1, any: 1 },
     };
     const daemon = { pid: 2, rssBytes: 0, heapUsedBytes: 0, heapTotalBytes: 0, externalBytes: 0, arrayBuffersBytes: 0, sessions: [], tailReads: { fleet } };
     expect(isDaemonMemoryDiagnostics(daemon)).toBe(true);
     const text = renderMemoryDiagnostics(undefined, daemon, { available: false, reason: 'n/a' });
-    expect(text).toContain('fleet tail reads: 6 served, 1 whole ring fit, 3 fell back (unknown-visible 2, margins 1); ' +
-      'tail avg 3.0 ms (ring copy 1.2 ms, scan 0.4 ms), fallback avg 90 ms (max 100 ms)');
+    expect(text).toContain('fleet tail reads: 6 served, 1 whole ring fit, 3 fell back (unknown-visible 2, margins 1), ' +
+      '2 missed after a tail parse, 2 skipped the tail after repeated misses; ' +
+      'tail avg 3.6 ms (ring copy 1.0 ms, scan 0.4 ms), whole-ring avg 90 ms (max 100 ms)');
+    // A daemon from before the miss cap sends no `skipped`: read as none.
+    const { skipped: _skipped, ...older } = fleet;
+    expect(renderMemoryDiagnostics(undefined, { ...daemon, tailReads: { fleet: older } }, { available: false, reason: 'n/a' }))
+      .toContain('0 skipped the tail after repeated misses');
+    expect(isDaemonMemoryDiagnostics({ ...daemon, tailReads: { fleet: older } })).toBe(true);
     expect(text).toContain('checked against the whole ring: 2, 1 differed (viewport 1, running:full-only 1)');
     for (const tailReads of [null, { fleet: null }, { fleet: { ...fleet, served: -1 } }, { fleet: { ...fleet, fallbacks: { margins: 'x' } } },
-      { fleet: { ...fleet, mismatches: null } }]) {
+      { fleet: { ...fleet, mismatches: null } }, { fleet: { ...fleet, skipped: -1 } }]) {
       expect(isDaemonMemoryDiagnostics({ ...daemon, tailReads })).toBe(false);
     }
   });
