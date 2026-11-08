@@ -98,8 +98,18 @@ function serveTabs(getList: () => Array<{ id: string; url: string; title: string
     if (String(url).includes('/json/list')) {
       return fetchOk(spawnMock.mock.calls.length > 0 && created === 0 ? [STARTUP_TAB] : getList());
     }
+    // Whatever Chrome wrote the port file answers on its port as that browser.
+    if (String(url).includes('/json/version')) return fetchOk({ webSocketDebuggerUrl: recordedEndpoint(String(url)) });
     return fetchOk({});
   });
+}
+
+/** The browser endpoint the port file naming `url`'s port records. */
+function recordedEndpoint(url: string): string | undefined {
+  const port = /:(\d+)\//.exec(url)?.[1];
+  const raw = Object.values(state.portFiles).find((r) => r.startsWith(`${port}\n`));
+  const path = raw?.split('\n')[1];
+  return path ? `ws://127.0.0.1:${port}${path}` : undefined;
 }
 
 function pageTarget(id: string): { id: string; url: string; title: string; type: string } {

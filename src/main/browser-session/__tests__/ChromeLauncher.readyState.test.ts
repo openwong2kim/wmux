@@ -86,7 +86,7 @@ describe('ChromeLauncher ready state', () => {
         whileProbing ??= seen(launcher);
         expectConsistent(launcher);
       }
-      return ok();
+      return ok('{"webSocketDebuggerUrl":"ws://127.0.0.1:9333/devtools/browser/old"}');
     });
 
     expect(await launcher.ensureRunning()).toBe(9333);
