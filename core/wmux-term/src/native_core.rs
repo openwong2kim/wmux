@@ -1186,6 +1186,8 @@ pub struct NativeRing {
     write_pos: usize,
     total_written: u64,
     geometry: Vec<GeometryMark>,
+    /// The newest mark is provisional: the next mark replaces it.
+    geometry_tail_provisional: bool,
 }
 
 #[napi]
@@ -1202,6 +1204,7 @@ impl NativeRing {
             write_pos: 0,
             total_written: 0,
             geometry: Vec::new(),
+            geometry_tail_provisional: false,
         })
     }
 
@@ -1255,20 +1258,34 @@ impl NativeRing {
         Ok(())
     }
 
+    /// The same rules as RingBuffer.noteGeometry (TS): an applied mark is
+    /// kept even with no bytes at it; a provisional one (`applied` false) is
+    /// replaced by the next mark; an applied repeat of a provisional tail
+    /// makes it applied. `applied` defaults to true.
     #[napi(catch_unwind)]
-    pub fn note_geometry(&mut self, cols: u32, rows: u32) -> Result<()> {
+    pub fn note_geometry(&mut self, cols: u32, rows: u32, applied: Option<bool>) -> Result<()> {
         if self.capacity == 0 {
             return Err(Error::from_reason("Ring disposed"));
         }
         if cols == 0 || rows == 0 {
             return Ok(());
         }
+        let applied = applied.unwrap_or(true);
         if let Some(last) = self.geometry.last() {
             if last.cols == cols && last.rows == rows {
+                if applied {
+                    self.geometry_tail_provisional = false;
+                }
                 return Ok(());
             }
-            if last.at == self.total_written {
-                self.geometry.pop();
+        }
+        if self.geometry_tail_provisional && !self.geometry.is_empty() {
+            self.geometry.pop();
+            self.geometry_tail_provisional = false;
+            if let Some(last) = self.geometry.last() {
+                if last.cols == cols && last.rows == rows {
+                    return Ok(());
+                }
             }
         }
         self.geometry.push(GeometryMark {
@@ -1276,8 +1293,20 @@ impl NativeRing {
             cols,
             rows,
         });
+        self.geometry_tail_provisional = !applied;
         self.prune_geometry();
         Ok(())
+    }
+
+    /// A viewer's replay is out: a provisional newest mark is kept.
+    #[napi(catch_unwind)]
+    pub fn settle_geometry(&mut self) {
+        self.geometry_tail_provisional = false;
+    }
+
+    #[napi(getter, catch_unwind)]
+    pub fn geometry_tail_provisional(&self) -> bool {
+        self.geometry_tail_provisional && !self.geometry.is_empty()
     }
 
     #[napi(getter, catch_unwind)]
@@ -1320,6 +1349,7 @@ impl NativeRing {
         self.length = 0;
         self.write_pos = 0;
         self.geometry.clear();
+        self.geometry_tail_provisional = false;
     }
 }
 
