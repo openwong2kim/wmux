@@ -22,6 +22,7 @@
 
 import type { BrowserWindow, WebContents } from 'electron';
 import { createObjcSheetPort, hostWindowOf, loadObjc } from './dialogSheets.darwin';
+import { createWin32BoxPort, loadWin32 } from './dialogSheets.win32';
 
 /** What GuestDialogs needs. Every call is safe to make on any platform. */
 export interface DialogSheets {
@@ -330,11 +331,32 @@ function errorText(err: unknown): string {
 }
 
 /**
- * The real thing on macOS; nothing elsewhere, or with WMUX_DIALOG_SHEET_CLOSE=0
- * (read once). koffi loads on the first dialog, not at startup.
+ * The real thing on macOS (a window's sheets) and Windows (TaskDialog boxes,
+ * dialogSheets.win32.ts); nothing elsewhere, or with
+ * WMUX_DIALOG_SHEET_CLOSE=0 (read once). koffi loads on the first dialog,
+ * not at startup.
  */
 export function createDialogSheets(): DialogSheets {
-  if (process.platform !== 'darwin' || process.env['WMUX_DIALOG_SHEET_CLOSE'] === '0') return NO_DIALOG_SHEETS;
+  if (process.env['WMUX_DIALOG_SHEET_CLOSE'] === '0') return NO_DIALOG_SHEETS;
+  if (process.platform === 'darwin') {
+    return createHostedSheets(() => {
+      const port = createObjcSheetPort(loadObjc());
+      console.log('[dialog-sheets] macOS: an answered dialog\'s box closes');
+      return port;
+    });
+  }
+  if (process.platform === 'win32') {
+    return createHostedSheets(() => {
+      const port = createWin32BoxPort(loadWin32());
+      console.log('[dialog-sheets] Windows: an answered dialog\'s box closes');
+      return port;
+    });
+  }
+  return NO_DIALOG_SHEETS;
+}
+
+/** A tracker on the tab's BrowserWindow, behind guards that keep every failure off the dialog's answer. */
+function createHostedSheets<S>(port: () => SheetPort<BrowserWindow, S>): DialogSheets {
   // Every way into the tracker from outside goes through here, so whatever
   // throws behind it costs the box closing, never the dialog's answer.
   const guarded = <A extends unknown[]>(name: string, fn: (...args: A) => void) => (...args: A): void => {
@@ -344,12 +366,8 @@ export function createDialogSheets(): DialogSheets {
       console.warn(`[dialog-sheets] ${name} failed: ${errorText(err)}`);
     }
   };
-  const tracker = createSheetTracker<BrowserWindow, unknown>({
-    port: () => {
-      const port = createObjcSheetPort(loadObjc());
-      console.log('[dialog-sheets] macOS: an answered dialog\'s box closes');
-      return port;
-    },
+  const tracker = createSheetTracker<BrowserWindow, S>({
+    port,
     schedule: (fn, ms) => { setTimeout(guarded('retry', fn), ms).unref?.(); },
     now: () => Date.now(),
     warn: (text) => console.warn(text),

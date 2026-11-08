@@ -39,23 +39,39 @@ export function expectationKey(expect: ProbeExpectation): string {
   return 'line' in expect ? expect.line : `contains:${expect.contains}`;
 }
 
+/** A probe's verdict with what the binary printed (trimmed) and, unless it
+ *  exited 0, why not: the spawn error, its exit status or the signal. */
+export interface ProbeRun {
+  verdict: ProbeVerdict;
+  printed: string;
+  failure: string | null;
+}
+
 /** Run `binary args…` and hold its stdout to `expect`. Never throws. */
-export function runProbe(binary: string, args: readonly string[], expect: ProbeExpectation, timeoutMs: number): Promise<ProbeVerdict> {
+export function runProbeDetailed(binary: string, args: readonly string[], expect: ProbeExpectation, timeoutMs: number): Promise<ProbeRun> {
   return new Promise((resolve) => {
     try {
       execFile(binary, [...args], { timeout: timeoutMs, windowsHide: true, encoding: 'utf8' }, (error, stdout) => {
-        if (error && (error as { killed?: boolean }).killed) return resolve('timeout');
+        const out = String(stdout ?? '');
+        const printed = out.trim();
+        const failed = error as { killed?: boolean; code?: unknown; signal?: unknown } | null;
+        if (failed?.killed) return resolve({ verdict: 'timeout', printed, failure: `no answer in ${timeoutMs} ms` });
         // A string code is a spawn error (EACCES, EPERM, EBUSY, ENOENT); an
-        // exit status is a number.
-        if (error && typeof (error as { code?: unknown }).code === 'string') return resolve('unstartable');
-        const out = String(stdout);
-        const met = 'line' in expect ? out.trim() === expect.line : out.includes(expect.contains);
-        resolve(!error && met ? 'pass' : 'fail');
+        // exit status is a number, and a signal leaves it null.
+        if (typeof failed?.code === 'string') return resolve({ verdict: 'unstartable', printed, failure: `${failed.code}: ${(error as Error).message}` });
+        const met = 'line' in expect ? printed === expect.line : out.includes(expect.contains);
+        const failure = !failed ? null : typeof failed.signal === 'string' ? `killed by ${failed.signal}` : `exit ${String(failed.code)}`;
+        resolve({ verdict: !failed && met ? 'pass' : 'fail', printed, failure });
       });
-    } catch {
-      resolve('unstartable');
+    } catch (error) {
+      resolve({ verdict: 'unstartable', printed: '', failure: String(error) });
     }
   });
+}
+
+/** runProbeDetailed's verdict alone. */
+export async function runProbe(binary: string, args: readonly string[], expect: ProbeExpectation, timeoutMs: number): Promise<ProbeVerdict> {
+  return (await runProbeDetailed(binary, args, expect, timeoutMs)).verdict;
 }
 
 // ----- the record ----------------------------------------------------------------
@@ -105,14 +121,46 @@ export function recordedVerdictOf(file: string, recordDir: string, line: string)
   return hash ? recordedProbe(recordDir, probeKey(hash, line)) : undefined;
 }
 
-/** Record a verdict; the newest few are kept, and never evicted is `keep`
- *  (the key of the bytes in place). */
+/** Every verdict recorded on the bytes now at `file`, by expectation key;
+ *  empty when the file cannot be read. Runs nothing. */
+export function recordedVerdictsOf(file: string, recordDir: string): Map<string, 'pass' | 'fail'> {
+  const out = new Map<string, 'pass' | 'fail'>();
+  const hash = fileSha256(file);
+  if (!hash) return out;
+  for (const [key, verdict] of Object.entries(readRecord(recordDir).verdicts)) {
+    if (key.startsWith(`${hash} `) && (verdict === 'pass' || verdict === 'fail')) out.set(key.slice(hash.length + 1), verdict);
+  }
+  return out;
+}
+
+/** The sha256 of every file in `dir` (each copy in place, the record's
+ *  neighbours). Best effort: an unreadable file is left out. */
+function hashesInPlace(dir: string): Set<string> {
+  const hashes = new Set<string>();
+  let names: string[] = [];
+  try { names = fs.readdirSync(dir); } catch { return hashes; }
+  for (const name of names) {
+    const file = path.join(dir, name);
+    try {
+      if (fs.statSync(file).isFile()) hashes.add(sha256Of(fs.readFileSync(file)));
+    } catch { /* gone, or unreadable */ }
+  }
+  return hashes;
+}
+
+/** Record a verdict; the newest few are kept, and never evicted are `keep`
+ *  (the key of the bytes in place) and the verdicts of any file still in
+ *  `dir`: one record serves every copy installed there. */
 export function recordProbe(dir: string, key: string, verdict: 'pass' | 'fail', keep?: string): void {
   const record = readRecord(dir);
   delete record.verdicts[key];
   record.verdicts[key] = verdict;
-  const evictable = Object.keys(record.verdicts).filter((k) => k !== keep && k !== key);
+  let evictable = Object.keys(record.verdicts).filter((k) => k !== keep && k !== key);
   const excess = Object.keys(record.verdicts).length - MAX_RECORDED;
+  if (excess > 0) {
+    const inPlace = hashesInPlace(dir);
+    evictable = evictable.filter((k) => !inPlace.has(k.split(' ')[0]));
+  }
   for (const old of evictable.slice(0, Math.max(0, excess))) delete record.verdicts[old];
   writeRecord(dir, record);
 }

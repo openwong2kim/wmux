@@ -197,6 +197,9 @@ pub struct NativeTerminal {
     feed: XtermFeed,
     /// Why the ANSI snapshot of this stream cannot match xterm's.
     refusal: Option<&'static str>,
+    /// The alternate screen was narrowed since the main screen was last seen
+    /// at a resize; widening it would bring back cells only xterm kept.
+    alt_narrowed: bool,
 }
 
 /// The longest unfinished sequence `feed_xterm` holds for its next bytes.
@@ -317,7 +320,8 @@ impl XtermFeed {
         }
     }
 
-    fn track(&mut self, sequence: &[u8]) {
+    /// `rows`: the screen height the sequence is parsed at.
+    fn track(&mut self, sequence: &[u8], rows: usize) {
         // C0 controls inside a sequence execute and are not part of it.
         let filtered: Vec<u8>;
         let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
@@ -347,7 +351,7 @@ impl XtermFeed {
             .and_then(|s| s.strip_suffix(b"r"))
         {
             if numeric(params) {
-                self.margins = params.iter().any(u8::is_ascii_digit);
+                self.scroll_region(params, rows);
             }
         }
         if let Some((&last, params)) = sequence
@@ -441,7 +445,7 @@ impl XtermFeed {
                 // Alacritty repeats whatever was printed last.
                 self.divergent |=
                     crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
-                self.track(sequence);
+                self.track(sequence, term.screen_lines());
                 next = Some(at + len);
             }
             printed = false;
@@ -449,6 +453,34 @@ impl XtermFeed {
         // A held sequence or an unfinished string ends the stream so far.
         self.printed = printed && self.held.is_empty() && !self.in_string;
         parser.advance(term, &data[from..]);
+    }
+
+    /// DECSTBM as xterm's setScrollRegion reads it (MarginTracker): top
+    /// defaults to 1, bottom to the rows, 0 is the default, a bottom past the
+    /// screen is the screen, and a region whose bottom is not below its top
+    /// is ignored. Only a region narrower than the screen is active.
+    fn scroll_region(&mut self, params: &[u8], rows: usize) {
+        let mut values = params.split(|&b| b == b';').map(|digits| {
+            digits.iter().fold(0usize, |n, &d| {
+                n.saturating_mul(10).saturating_add(usize::from(d - b'0'))
+            })
+        });
+        let first = values.next().unwrap_or(0);
+        let second = values.next().unwrap_or(0);
+        let top = first.max(1);
+        let bottom = if second == 0 || second > rows {
+            rows
+        } else {
+            second
+        };
+        if bottom > top {
+            self.margins = top != 1 || bottom != rows;
+        } else {
+            // xterm ignores it; Alacritty keeps a bottom past the screen
+            // (saturated to u16) and applies any top above it.
+            let cap = usize::from(u16::MAX);
+            self.divergent |= second > rows && top.min(cap) < second.min(cap);
+        }
     }
 
     /// The bytes that leave a replaying parser where this one is: the
@@ -515,6 +547,7 @@ impl NativeTerminal {
             scrollback,
             feed: XtermFeed::default(),
             refusal: None,
+            alt_narrowed: false,
         })
     }
 
@@ -597,6 +630,31 @@ impl NativeTerminal {
         let synchronized = self.parser.sync_timeout().pending_timeout();
         if synchronized {
             self.parser.stop_sync(term);
+        }
+        // xterm never reflows or cuts the alternate screen: its rows keep
+        // their cells and wrap flags across a resize, where Alacritty cuts the
+        // cells and drops the flags. Refuse what that loses: a width change
+        // with a soft-wrapped row on screen, or widening after a narrowing.
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            let grid = term.grid();
+            let old = grid.columns();
+            if old != cols as usize {
+                let wrapped = (0..grid.screen_lines() as i32).any(|y| {
+                    grid[Line(y)][Column(old - 1)]
+                        .flags
+                        .contains(Flags::WRAPLINE)
+                });
+                if wrapped || (cols as usize > old && self.alt_narrowed) {
+                    self.refusal.get_or_insert(
+                        "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
+                    );
+                }
+                if (cols as usize) < old {
+                    self.alt_narrowed = true;
+                }
+            }
+        } else {
+            self.alt_narrowed = false;
         }
         let start = before(term);
         term.resize(size);
@@ -1457,8 +1515,36 @@ mod tests {
         assert_eq!(state(&["\x1b[2;4r"]), (true, false));
         assert_eq!(state(&["\x1b[2;4r\x1b[r"]), (false, false));
         assert_eq!(state(&["\x1b[2;4r\x1bc"]), (false, false));
+        // xterm's setScrollRegion over 3 rows: 0 reads as the default, a
+        // bottom past the screen is the screen, an empty region is ignored.
+        for reset in [
+            "\x1b[0;0r",
+            "\x1b[0r",
+            "\x1b[1r",
+            "\x1b[;3r",
+            "\x1b[1;9r",
+            "\x1b[1;3;2r",
+        ] {
+            assert_eq!(state(&["\x1b[2;4r", reset]), (false, false), "{reset:?}");
+        }
+        for region in ["\x1b[2r", "\x1b[1;2r", "\x1b[0;2r"] {
+            assert_eq!(state(&[region]), (true, false), "{region:?}");
+        }
+        assert_eq!(state(&["\x1b[3;2r"]), (false, false));
+        assert_eq!(state(&["\x1b[2;4r\x1b[3;2r"]), (true, false));
         assert_eq!(state(&["\x1b[?1;25l"]), (false, true));
         assert_eq!(state(&["\x1b[?25l\x1b[?25h"]), (false, false));
+    }
+
+    #[test]
+    fn a_region_only_alacritty_applies_is_divergent() {
+        let divergent = |chunks: &[&str]| feed_with(chunks).2.divergent;
+        // Top at or past the last of 3 rows: xterm ignores it, Alacritty
+        // keeps the bottom it was given and homes the cursor.
+        assert!(divergent(&["ab\x1b[3;9r"]));
+        assert!(divergent(&["ab\x1b[4;9r"]));
+        assert!(!divergent(&["ab\x1b[3;3r"]), "both ignore it");
+        assert!(!divergent(&["ab\x1b[2;9r"]), "both apply it");
     }
 
     #[test]

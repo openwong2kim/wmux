@@ -24,10 +24,10 @@ import { wrapHandler } from '../wrapHandler';
 import {
   defaultPaths,
   hookTargets,
-  failedInstall,
   statusHooks,
-  installHooks,
-  updateHooks,
+  installHooksWithNative,
+  installHookTargetsWithNative,
+  updateHooksWithNative,
   allowFanoutWorkerTools,
   type AllowWorkerToolsOutcome,
   type StatusOutcome,
@@ -207,27 +207,22 @@ export const SHELL_ENV_UNREAD_WARNING =
  * that fails turns the result's ok off and names itself in the error; the
  * others are still written.
  */
-/** A throw (a read-only folder) is that target's failure, not the call's: the primary's included. */
-function installOrFail(paths: SetupHooksPaths): InstallOutcome {
-  try { return installHooks(paths); } catch (err) { return failedInstall(paths, err instanceof Error ? err.message : String(err)); }
-}
-
 export async function installAllHookTargets(): Promise<InstallOutcome> {
   // A user-started install waits longer for the shell than boot does, and
   // says so when it still got no answer rather than reporting a plain success.
   const env = await readClaudeConfigDirEnv({ timeoutMs: INSTALL_PROBE_TIMEOUT_MS });
-  const [primary, ...others] = targetsFor('install', env.value);
-  const installed = installOrFail(primary.paths);
+  // Every folder through the native path: one copy, prepared once, named by
+  // each folder's entries. A throw (a read-only folder) is that target's
+  // failure, not the call's: the primary's included.
+  const [first, ...others] = await installHookTargetsWithNative(targetsFor('install', env.value));
+  const installed = first.outcome;
   const outcome = env.read
     ? installed
     : { ...installed, warning: [installed.warning, SHELL_ENV_UNREAD_WARNING].filter(Boolean).join(' ') };
   if (!env.read) console.warn(`[hooksBridge] ${SHELL_ENV_UNREAD_WARNING}`);
   const failed = others
-    .map((t) => {
-      return { t, o: installOrFail(t.paths) };
-    })
-    .filter(({ o }) => !o.ok)
-    .map(({ t, o }) => `${t.label}: ${o.error ?? 'failed'}`);
+    .filter(({ outcome: o }) => !o.ok)
+    .map(({ target: t, outcome: o }) => `${t.label}: ${o.error ?? 'failed'}`);
   if (failed.length === 0) return outcome;
   return { ...outcome, ok: false, error: [outcome.error, ...failed].filter(Boolean).join('; ') };
 }
@@ -244,7 +239,8 @@ export async function installHooksIntoNewAccount(configDir: string): Promise<Ins
   const primary = await primaryHookPaths();
   const status = statusHooks(primary);
   if (!computeInstalled(status)) return null;
-  return installHooks({ ...primary, settingsPath: path.join(configDir, 'settings.json') }, status.profile);
+  // The native path, as every other folder: its entries name the one copy.
+  return installHooksWithNative({ ...primary, settingsPath: path.join(configDir, 'settings.json') }, status.profile);
 }
 
 export function registerHooksBridgeHandlers(): void {
@@ -293,7 +289,7 @@ export function registerHooksBridgeHandlers(): void {
       const paths = await primaryHookPaths();
       const refusal = claudeSettingsWriteRefusal();
       if (refusal) return { ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: refusal };
-      return updateHooks(paths);
+      return updateHooksWithNative(paths);
     }),
   );
 
@@ -318,7 +314,7 @@ export function registerHooksBridgeHandlers(): void {
       if (!computeInstalled(statusHooks(paths))) throw new Error('HOOKS_BRIDGE_UPDATE_ACCOUNT: no wmux hooks in that account to update');
       const refusal = claudeSettingsWriteRefusal();
       if (refusal) return { ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: refusal };
-      return updateHooks(paths);
+      return updateHooksWithNative(paths);
     }),
   );
 

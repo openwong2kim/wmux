@@ -43,6 +43,11 @@ afterEach(() => {
 });
 
 describe('readConfiguredFirstPartyClients', () => {
+  it('reads a config.json that starts with a UTF-8 BOM', () => {
+    const p = writeConfig('\uFEFF' + JSON.stringify({ mcp: { firstPartyClients: ['aider'] } }));
+    expect(readConfiguredFirstPartyClients({ configPath: p })).toEqual(['aider']);
+  });
+
   it('reads a well-formed mcp.firstPartyClients list', () => {
     const p = writeConfig(
       JSON.stringify({ mcp: { firstPartyClients: ['hermes-agent', 'aider'] } }),

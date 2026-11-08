@@ -413,6 +413,41 @@ for (const c of HELPER_COMPONENTS) {
   lines.push('');
 }
 
+// The macOS computer-use helper bundle nests the agent-desktop binary, built
+// from native/agent-desktop (vendored unmodified; its VENDOR.md names the
+// upstream commit). Its own LICENSE is reproduced, then the license files of
+// every Rust crate it is built from, as scripts/gen-agent-desktop-crates.mjs
+// committed them from Cargo.lock across every target, so this step reads the
+// same file on every OS. Rerun that script whenever the vendored tree moves.
+const AGENT_DESKTOP_DIR = join(ROOT, 'native/agent-desktop');
+const agentDesktopCommit = /Upstream commit: `([0-9a-f]{40})`/.exec(readFileSync(join(AGENT_DESKTOP_DIR, 'VENDOR.md'), 'utf8'))?.[1];
+const agentDesktopVersion = /\[workspace\.package\][^[]*?\nversion\s*=\s*"([^"]+)"/.exec(readFileSync(join(AGENT_DESKTOP_DIR, 'Cargo.toml'), 'utf8'))?.[1];
+if (!agentDesktopCommit || !agentDesktopVersion) throw new Error('native/agent-desktop: VENDOR.md or Cargo.toml does not name the upstream commit and version');
+lines.push('NATIVE COMPONENTS IN THE MACOS COMPUTER-USE HELPER');
+lines.push('');
+lines.push('These apply to the macOS build only. The macOS app ships');
+lines.push('resources/computer-use-macos/wmux Computer Use.app, which contains the');
+lines.push('agent-desktop binary built from native/agent-desktop and the Rust crates');
+lines.push('compiled into it.');
+lines.push('');
+lines.push(SEP);
+lines.push('');
+lines.push('agent-desktop');
+lines.push('License: Apache License 2.0');
+lines.push(`Source: https://github.com/vercel-labs/agent-desktop/tree/${agentDesktopCommit} (LICENSE)`);
+lines.push('');
+lines.push(`agent-desktop ${agentDesktopVersion}, built unmodified from the commit above. The repository has no`);
+lines.push('NOTICE file.');
+lines.push('');
+lines.push(lf(readFileSync(join(AGENT_DESKTOP_DIR, 'LICENSE'), 'utf8')).trimEnd());
+lines.push('');
+lines.push(SEP);
+lines.push('');
+lines.push(lf(readFileSync(join(ROOT, 'native/computer-use-macos/licenses/agent-desktop-crates.txt'), 'utf8')).trimEnd());
+lines.push('');
+lines.push(SEP);
+lines.push('');
+
 // --- Step 5: emit borrowed-source attributions ------------------------------
 // Projects that are not npm dependencies but whose code or implementation
 // approach was adapted into wmux. No package exists to enumerate, so the notice
