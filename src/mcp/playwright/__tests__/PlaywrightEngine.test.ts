@@ -40,6 +40,22 @@ vi.mock('../lazyPlaywright', () => ({
   }),
 }));
 
+// The browser op's abort signal: none, unless a test runs inside one.
+let mockOpSignal: AbortSignal | undefined;
+vi.mock('../automationLease', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../automationLease')>()),
+  currentBrowserOpSignal: () => mockOpSignal,
+}));
+/** Run `fn` as a browser op with `signal`, as the lease runner would. */
+async function runWithBrowserOpSignal<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+  mockOpSignal = signal;
+  try {
+    return await fn();
+  } finally {
+    mockOpSignal = undefined;
+  }
+}
+
 // Import after mocks are declared.
 import {
   PlaywrightEngine,
@@ -2187,7 +2203,7 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     await PlaywrightEngine.getInstance().ensureConnected('ws-a');
     expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
     expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
-    expect(mockConnectOverCDP).toHaveBeenCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-1' }, timeout: 15_000 });
+    expect(mockConnectOverCDP).toHaveBeenCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-1' }, timeout: 30_000 });
   });
 
   it('a check on a live connection asks for no token, and the connection is kept', async () => {
@@ -2218,7 +2234,7 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     await engine.ensureConnected('ws-a');
     expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }, { workspaceId: 'ws-a' }, { workspaceId: 'ws-a', relay: true }]);
     expect(mockConnectOverCDP).toHaveBeenCalledTimes(2);
-    expect(mockConnectOverCDP).toHaveBeenLastCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-2' }, timeout: 15_000 });
+    expect(mockConnectOverCDP).toHaveBeenLastCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-2' }, timeout: 30_000 });
     expect((engine as unknown as { connectedProfile?: string }).connectedProfile).toBe('p3');
     expect(first.close).toHaveBeenCalled();
   });
@@ -2303,11 +2319,11 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     expect(cdpInfoCalls()).toHaveLength(2);
   });
 
-  it('a relay grant without a proof key (an older main) is refused before any connect', async () => {
+  it('a relay grant without a proof key (an older main) is refused before any connect, saying so', async () => {
     mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info'
       ? { workspaceBackend: 'chrome', targets: [], profile: 'p1', piped: true, ...(params?.relay && { relay: { endpoint: RELAY, headers: { Authorization: 'Bearer tok-x' } } }) }
       : {}));
-    await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('the browser relay did not prove itself');
+    await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('cannot check (no proof key)');
     expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
     expect(mockConnectOverCDP).not.toHaveBeenCalled();
   });
@@ -2319,9 +2335,41 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
       mockSendRpc.mockImplementation((method: string) => Promise.resolve(method === 'browser.cdp.info'
         ? { workspaceBackend: 'chrome', targets: [], profile: 'p1', piped: true, relay: { endpoint: RELAY, headers: { Authorization: 'Bearer tok-x' }, proofKey } }
         : {}));
-      await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('the browser relay did not prove itself');
+      await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('cannot check (no proof key)');
     }
     expect(mockConnectOverCDP).not.toHaveBeenCalled();
+  });
+
+  it('the session the proof was asked on is the one kept for auto-attach', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    const browser = provingBrowser();
+    mockConnectOverCDP.mockResolvedValue(browser);
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    expect(browser.newBrowserCDPSession).toHaveBeenCalledTimes(1);
+    const session = (await browser.newBrowserCDPSession.mock.results[0].value) as { send: ReturnType<typeof vi.fn>; detach: ReturnType<typeof vi.fn> };
+    expect(session.send.mock.calls.map((c) => c[0])).toEqual([RELAY_PROOF_METHOD, 'Target.setAutoAttach']);
+    expect(session.detach).not.toHaveBeenCalled();
+    expect((engine as unknown as { autoAttachSession: unknown }).autoAttachSession).toBe(session);
+  });
+
+  it('a Stop while the relay is proving itself closes the connection and ends with the abort, not the proof error', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    let asked: () => void = () => undefined;
+    const proofAsked = new Promise<void>((resolve) => { asked = resolve; });
+    const silent = impostor(() => { asked(); return new Promise(() => undefined); });
+    mockConnectOverCDP.mockResolvedValue(silent.browser);
+    const controller = new AbortController();
+    const engine = PlaywrightEngine.getInstance();
+    const failing = runWithBrowserOpSignal(controller.signal, () => engine.ensureConnected('ws-a')).then(() => null, (err: unknown) => err);
+    await proofAsked;
+    const reason = new Error('stopped by the user');
+    controller.abort(reason);
+    expect(await failing).toBe(reason);
+    expect(silent.browser.close).toHaveBeenCalledTimes(1);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
   });
 });
 

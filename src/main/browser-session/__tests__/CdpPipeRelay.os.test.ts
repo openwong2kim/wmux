@@ -755,6 +755,35 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
     (await dial(fresh)).close();
   });
 
+  it('a grant waiting on a listener that a rebind retires meanwhile is minted for the new one', async () => {
+    const { relay, route } = await setup(opts);
+    await route.grant({});
+    const inner = relay as unknown as { listener: { server: import('node:http').Server } };
+    const old = inner.listener;
+    // The first grant finds the listener intact; before it mints, the listener
+    // stops and a second grant starts the rebind.
+    const first = route.grant({});
+    old.server.close();
+    const second = await route.grant({});
+    const late = await first;
+    expect(inner.listener).not.toBe(old);
+    expect(late.endpoint).toBe(second.endpoint);
+    const ws = await dial(late);
+    const nonce = randomBytes(32);
+    expect(relayProofMatches(keyOf(late), nonce, ((await ask(ws, 1, nonce)).result as { proof: string }).proof)).toBe(true);
+    ws.close();
+  });
+
+  it('every unused key is wiped when its token goes, by expiry too', async () => {
+    const { relay, route } = await setup(opts);
+    await route.grant({});
+    const key = (relay as unknown as { tokens: { entries: Array<{ binding: { key: Buffer } }> } }).tokens.entries[0].binding.key;
+    expect(key.equals(Buffer.alloc(32))).toBe(false);
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
+    expect((relay as unknown as { tokens: { size: number } }).tokens.size).toBe(0);
+    expect(key).toEqual(Buffer.alloc(32));
+  });
+
   it('a listener that stops on its own takes its grants with it', async () => {
     const { relay, route } = await setup(opts);
     await route.grant({});

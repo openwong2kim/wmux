@@ -153,7 +153,8 @@ export class RelayRoute {
 }
 
 export class CdpPipeRelay {
-  private readonly tokens = new CdpRelayTokens<Binding>();
+  /** An unused token's proof key is wiped whenever the token goes. */
+  private readonly tokens = new CdpRelayTokens<Binding>((binding) => binding.key.fill(0));
   private readonly routes = new Set<RelayRoute>();
   private readonly wss: WebSocketServer;
   private readonly roots: string[];
@@ -195,8 +196,12 @@ export class CdpPipeRelay {
   /** @internal RelayRoute.grant */
   async grant(route: RelayRoute, identity: CallerIdentity): Promise<RelayGrant> {
     if (this.closed || !route.open) throw new Error('CdpPipeRelay: that Chrome is gone');
-    const listener = await this.live();
+    let listener = await this.live();
+    // A rebind may have retired that listener while this waited: a token is
+    // only ever minted for the one serving now.
+    for (let tries = 1; listener !== this.listener && tries < 3; tries++) listener = await this.live();
     if (this.closed || !route.open) throw new Error('CdpPipeRelay: that Chrome is gone');
+    if (listener !== this.listener) throw new Error('CdpPipeRelay: the relay keeps rebinding');
     const key = newRelayProofKey();
     const token = this.tokens.mint({ route, identity, listener, key });
     return { endpoint: listener.endpoint, headers: { Authorization: `Bearer ${token}` }, proofKey: key.toString('base64url') };
@@ -267,13 +272,9 @@ export class CdpPipeRelay {
     return listener;
   }
 
-  /** Drop the unused tokens `gone` names, and wipe their proof keys. */
+  /** Drop the unused tokens `gone` names (their proof keys are wiped as they go). */
   private forget(gone: (binding: Binding) => boolean): void {
-    this.tokens.forget((binding) => {
-      if (!gone(binding)) return false;
-      binding.key.fill(0);
-      return true;
-    });
+    this.tokens.forget(gone);
   }
 
   /** Stop accepting on `listener`; its upgraded connections stay unless `all`. */
@@ -441,8 +442,12 @@ export class CdpPipeRelay {
       if (!settled) route.handshaking--;
       settled = true;
     };
-    // A handshake that fails closes the socket without calling back.
-    socket.once('close', settle);
+    // A handshake that fails closes the socket without calling back; the
+    // spent token's key goes with it.
+    socket.once('close', () => {
+      if (!settled) key.fill(0);
+      settle();
+    });
     this.wss.handleUpgrade(req, socket, head, (ws) => {
       settle();
       this.accept(route, identity, key, ws);

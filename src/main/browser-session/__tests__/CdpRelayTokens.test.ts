@@ -59,4 +59,20 @@ describe('CdpRelayTokens', () => {
     expect(tokens.lookup(a)).toBeNull();
     expect(tokens.lookup(b)?.binding).toBe('b');
   });
+
+  it('tells of every token that goes unspent (expired, crowded out, forgotten), and of none that is spent', () => {
+    const dropped: string[] = [];
+    const tokens = new CdpRelayTokens<string>((binding) => dropped.push(binding));
+    const spent = tokens.mint('spent');
+    expect(tokens.consume(tokens.lookup(spent)!)).toBe(true);
+    tokens.mint('forgotten');
+    tokens.forget((binding) => binding === 'forgotten');
+    expect(dropped).toEqual(['forgotten']);
+    tokens.mint('expired');
+    vi.advanceTimersByTime(RELAY_TOKEN_TTL_MS);
+    expect(tokens.size).toBe(0);
+    expect(dropped).toEqual(['forgotten', 'expired']);
+    for (let i = 0; i <= RELAY_TOKENS_MAX_UNUSED; i++) tokens.mint(`n${i}`);
+    expect(dropped).toEqual(['forgotten', 'expired', 'n0']);
+  });
 });

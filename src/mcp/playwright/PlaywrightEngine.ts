@@ -158,21 +158,23 @@ function isRelay(value: unknown): value is CdpRelay {
     && decodeRelayProofBytes(relay.proofKey, RELAY_PROOF_KEY_BYTES) !== null;
 }
 
-/** How long a relay connect may take, handshake included. */
-const RELAY_CONNECT_TIMEOUT_MS = 15_000;
+/** How long a relay connect may take, handshake included (Playwright's own default, stated). */
+const RELAY_CONNECT_TIMEOUT_MS = 30_000;
 /** How long the relay has to prove itself once connected. */
 const RELAY_PROOF_TIMEOUT_MS = 5_000;
 const RELAY_PROOF_FAILED_MESSAGE =
   '[PlaywrightEngine] the browser relay did not prove itself, so the connection was dropped before anything used it';
+const RELAY_GRANT_WITHOUT_KEY_MESSAGE =
+  '[PlaywrightEngine] wmux handed out a browser relay grant this MCP server cannot check (no proof key), so it did not connect. Restart wmux so both run the same version';
 
 /**
  * The relay endpoint answered but did not prove it is wmux's relay, or main
- * handed out a grant with no proof key. Non-retryable: asking again for the
- * same endpoint would only reach the same server.
+ * handed out a grant with no usable proof key. Non-retryable: asking again
+ * would only reach the same server, or get the same grant.
  */
 class RelayProofError extends Error {
-  constructor() {
-    super(RELAY_PROOF_FAILED_MESSAGE);
+  constructor(message: string = RELAY_PROOF_FAILED_MESSAGE) {
+    super(message);
     this.name = 'RelayProofError';
   }
 }
@@ -521,8 +523,9 @@ export class PlaywrightEngine {
     const { chromium } = loadPlaywright();
     const browser = await this.connectOverCdp(chromium, endpoint, isPort ? (cdpPortOrWsEndpoint as number) : null, relay?.headers);
     // A relay endpoint's name or port may be another process's by now: nothing
-    // uses this connection until the relay proves it is wmux's.
-    if (relay) await this.proveRelay(browser, relay.proofKey);
+    // uses this connection until the relay proves it is wmux's. The session
+    // the proof was asked on is kept for auto-attach below.
+    const provenSession = relay ? await this.proveRelay(browser, relay.proofKey) : null;
     // The user may have stopped this op while the attach was in flight; the
     // Stop's disconnect ran before there was a browser to drop. Do not keep
     // a connection the stopped op would go on to drive.
@@ -542,7 +545,7 @@ export class PlaywrightEngine {
     // Without this, <webview> tags in Electron are separate renderer processes that
     // don't appear in browser.contexts().pages().
     try {
-      const session = await this.browser.newBrowserCDPSession();
+      const session = provenSession ?? await this.browser.newBrowserCDPSession();
       await session.send('Target.setAutoAttach', {
         autoAttach: true,
         waitForDebuggerOnStart: false,
@@ -594,42 +597,49 @@ export class PlaywrightEngine {
   }
 
   /**
-   * Ask the relay for HMAC(key, nonce) over a fresh nonce on its own browser
-   * session; the relay answers with the key of the token this connection
-   * spent. Anything but the right answer within RELAY_PROOF_TIMEOUT_MS closes
-   * `browser` and throws RelayProofError. The key is wiped either way.
+   * Ask the relay for HMAC(key, nonce) over a fresh nonce on a browser session
+   * of this connection; the relay answers with the key of the token this
+   * connection spent. Anything but the right answer within
+   * RELAY_PROOF_TIMEOUT_MS closes `browser` and throws RelayProofError; a
+   * Stop meanwhile closes it and throws the abort. The key is wiped either
+   * way. Proven, the session is returned for the caller to keep.
    */
-  private async proveRelay(browser: Browser, proofKey: string): Promise<void> {
+  private async proveRelay(browser: Browser, proofKey: string): Promise<CDPSession> {
     const key = decodeRelayProofBytes(proofKey, RELAY_PROOF_KEY_BYTES);
+    const opSignal = currentBrowserOpSignal();
+    let session: CDPSession | null = null;
     let proven = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
     try {
       if (key) {
         const nonce = newRelayProofNonce();
-        const deadline = new Promise<never>((_, reject) => {
+        const stop = new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new Error('relay proof timed out')), RELAY_PROOF_TIMEOUT_MS);
+          onAbort = () => reject(opSignal?.reason ?? new Error('aborted'));
+          opSignal?.addEventListener('abort', onAbort, { once: true });
         });
         const ask = async () => {
-          const session = await browser.newBrowserCDPSession();
-          try {
-            // Not a CDP method: the relay answers it and never forwards it.
-            const send = session.send.bind(session) as (method: string, params: object) => Promise<unknown>;
-            return (await send(RELAY_PROOF_METHOD, { nonce })) as { proof?: unknown } | undefined;
-          } finally {
-            void session.detach().catch(() => { /* the connection may be gone */ });
-          }
+          session = await browser.newBrowserCDPSession();
+          // Not a CDP method: the relay answers it and never forwards it.
+          const send = session.send.bind(session) as (method: string, params: object) => Promise<unknown>;
+          return (await send(RELAY_PROOF_METHOD, { nonce })) as { proof?: unknown } | undefined;
         };
-        const answer = await Promise.race([ask(), deadline]);
-        proven = relayProofMatches(key, Buffer.from(nonce, 'base64url'), answer?.proof);
+        if (!opSignal?.aborted) {
+          const answer = await Promise.race([ask(), stop]);
+          proven = relayProofMatches(key, Buffer.from(nonce, 'base64url'), answer?.proof);
+        }
       }
     } catch {
       proven = false;
     } finally {
       clearTimeout(timer);
+      if (onAbort) opSignal?.removeEventListener('abort', onAbort);
       key?.fill(0);
     }
-    if (proven) return;
+    if (proven && session && !opSignal?.aborted) return session;
     await browser.close().catch(() => { /* already gone */ });
+    opSignal?.throwIfAborted();
     throw new RelayProofError();
   }
 
@@ -764,12 +774,12 @@ export class PlaywrightEngine {
         ) {
           await this.disconnect();
         }
-        // A grant this engine cannot check the relay with (an older main): no
-        // connect at all.
-        if (info.relay !== undefined && !isRelay(info.relay)) throw new RelayProofError();
-        // A Chrome on the pipe is reached through the relay, with this call's token.
-        if (isRelay(info.relay)) {
-          await this.connect({ endpoint: info.relay.endpoint, headers: info.relay.headers, proofKey: info.relay.proofKey });
+        // A Chrome on the pipe is reached through the relay, with this call's
+        // token, and only with a grant the relay can be checked with: an older
+        // main's has no proof key, and gets no connect at all.
+        if (info.relay !== undefined) {
+          if (!isRelay(info.relay)) throw new RelayProofError(RELAY_GRANT_WITHOUT_KEY_MESSAGE);
+          await this.connect(info.relay);
           this.connectedWorkspaceId = workspaceId;
           this.connectedProfile = profile;
           this.connectedPolicyEpoch = policyEpoch;
