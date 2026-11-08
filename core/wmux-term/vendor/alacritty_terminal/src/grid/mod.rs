@@ -306,6 +306,23 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
     }
 
+    /// wmux: move lines in `region` toward the top without moving any into
+    /// history, as xterm.js deletes lines; the freed rows at the bottom take
+    /// the cursor template.
+    pub fn scroll_up_in_place<D>(&mut self, region: &Range<Line>, positions: usize)
+    where
+        T: ResetDiscriminant<D>,
+        D: PartialEq,
+    {
+        let positions = min(positions, (region.end - region.start).0 as usize);
+        for i in (region.start.0..region.end.0 - positions as i32).map(Line::from) {
+            self.raw.swap(i, i + positions);
+        }
+        for i in (region.end.0 - positions as i32..region.end.0).map(Line::from) {
+            self.raw[i].reset(&self.cursor.template);
+        }
+    }
+
     pub fn clear_viewport<D>(&mut self)
     where
         T: ResetDiscriminant<D>,

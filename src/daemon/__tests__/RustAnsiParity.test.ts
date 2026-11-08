@@ -136,7 +136,20 @@ const others: Case[] = [
   synthetic('cnl-cpl', 'a\r\nb\x1b[Fc\x1b[2Ed'),
   synthetic('hpa-vpa', '\x1b[5`a\x1b[3db'),
   synthetic('ich-dch-ech', 'abcdef\x1b[1;2H\x1b[2@\x1b[1P\x1b[2X'),
+  // DCH past the line end clears from the cursor only (xterm.js deleteChars).
+  synthetic('dch-past-line-end', 'abcdef\x1b[1;5H\x1b[44m\x1b[30P\x1b[0m'),
+  synthetic('dch-past-line-end-full-row', 'abcdefghijklmnopqrst\x1b[1;18H\x1b[9P'),
   synthetic('il-dl', '1\r\n2\r\n3\x1b[2;1H\x1b[L\x1b[2M'),
+  // SD fills with default attributes in xterm; IL and RI with the erase colour.
+  synthetic('sd-bg', '1\r\n2\r\n3\x1b[44m\x1b[1T\x1b[0mx'),
+  synthetic('sd-region-bg', '1\r\n2\r\n3\r\n4\x1b[2;4r\x1b[44m\x1b[2T\x1b[0m\x1b[rx'),
+  synthetic('il-bg', '1\r\n2\x1b[44m\x1b[H\x1b[L\x1b[0mx'),
+  synthetic('ri-top-bg', '1\r\n2\x1b[44m\x1b[H\x1bM\x1b[0mx'),
+  // DL on the top row deletes in place: xterm keeps nothing in history.
+  synthetic('dl-row0', '1\r\n2\r\n3\x1b[H\x1b[Mx'),
+  synthetic('dl-row0-history', '0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\x1b[H\x1b[2Mx'),
+  synthetic('dl-row0-past-screen', '1\r\n2\r\n3\x1b[H\x1b[44m\x1b[9M\x1b[0mx'),
+  synthetic('dl-row0-region', '1\r\n2\r\n3\r\n4\x1b[1;3r\x1b[H\x1b[M\x1b[rx'),
   synthetic('ed3', '1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\x1b[3J'),
   // ED 2 erases in place in xterm; Alacritty scrolls the screen into history.
   synthetic('ed2-primary', '1\r\n2\r\n3\x1b[2Jx'),
