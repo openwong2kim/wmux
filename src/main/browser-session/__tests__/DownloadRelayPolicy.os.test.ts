@@ -215,7 +215,8 @@ describe('DownloadRelayPolicy', () => {
     await vi.waitFor(() => expect(told.some((t) => t.params.state === 'completed')).toBe(true), { timeout: 5_000 });
     expect(fs.readFileSync(path.join(dest, g), 'utf8')).toBe('moved');
     expect(fs.existsSync(path.join(dir, g))).toBe(false);
-    expect(fsync).toHaveBeenCalledWith(path.join(dest, g));
+    // The policy works on the resolved folder (macOS: /var is a link to /private/var).
+    expect(fsync).toHaveBeenCalledWith(path.join(fs.realpathSync(dest), g));
 
     // A disk that refuses the copy: canceled for the client, nothing left behind.
     const failing = setup(held(['FA', a]), { fs: { rename: exdev, copyFile: () => Promise.reject(Object.assign(new Error('no space'), { code: 'ENOSPC' })) } });
