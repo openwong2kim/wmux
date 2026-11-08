@@ -55,6 +55,8 @@ import { claimNextDownload } from '../downloadGuard';
 import { createConnectionScope, runInConnectionScope } from '../../connectionScope';
 import { rememberProtection, resetProtectionMemoryForTests } from '../browserScope';
 import { CHROME_START_RPC_TIMEOUT_MS } from '../../../shared/chromeStart';
+import { RELAY_PROOF_METHOD, relayProof } from '../../../shared/relayProof';
+import { randomBytes } from 'node:crypto';
 
 /*
  * Regression tests for app-shell URL detection.
@@ -2130,6 +2132,9 @@ describe('PlaywrightEngine live-Chrome ws endpoint (Phase 3)', () => {
 describe('PlaywrightEngine pipe relay (C3)', () => {
   const RELAY = 'ws+unix:///tmp/wmux-cdp-abc123/r.sock:/devtools/browser/relay';
   let minted = 0;
+  /** The proof key of the latest grant. */
+  let lastKey = Buffer.alloc(0);
+  const mintKey = () => (lastKey = randomBytes(32)).toString('base64url');
   /** cdp.info for a Chrome on the pipe: a fresh token only when asked for one. */
   const pipeInfo = (profile: string) => (params?: { relay?: boolean }) => ({
     workspaceBackend: 'chrome',
@@ -2137,8 +2142,33 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     targets: [],
     profile,
     piped: true,
-    ...(params?.relay && { relay: { endpoint: RELAY, headers: { Authorization: `Bearer tok-${++minted}` } } }),
+    ...(params?.relay && { relay: { endpoint: RELAY, headers: { Authorization: `Bearer tok-${++minted}` }, proofKey: mintKey() } }),
   });
+  /** A browser behind wmux's relay: it proves itself with the latest grant's key. */
+  const provingBrowser = () => {
+    const browser = makeFakeBrowser([]);
+    browser.newBrowserCDPSession.mockImplementation(async () => ({
+      send: vi.fn().mockImplementation(async (method: string, params?: { nonce?: string }) =>
+        method === RELAY_PROOF_METHOD
+          ? { proof: relayProof(lastKey, Buffer.from(params?.nonce ?? '', 'base64url')) }
+          : { targetInfos: [] }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    }));
+    return browser;
+  };
+  /** Something else answering on the relay's endpoint: `answer` is how it meets the proof. */
+  const impostor = (answer: (method: string) => Promise<unknown>) => {
+    const browser = makeFakeBrowser([]);
+    const sent: string[] = [];
+    browser.newBrowserCDPSession.mockImplementation(async () => ({
+      send: vi.fn().mockImplementation(async (method: string) => {
+        sent.push(method);
+        return answer(method);
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    }));
+    return { browser, sent };
+  };
   const cdpInfoCalls = () => mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.cdp.info').map((c) => c[1]);
 
   beforeEach(() => {
@@ -2153,17 +2183,17 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) =>
       Promise.resolve(method === 'browser.cdp.info' ? { ...pipeInfo('p1')(params), cdpPort: 9222 } : {}),
     );
-    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+    mockConnectOverCDP.mockResolvedValue(provingBrowser());
     await PlaywrightEngine.getInstance().ensureConnected('ws-a');
     expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
     expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
-    expect(mockConnectOverCDP).toHaveBeenCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-1' } });
+    expect(mockConnectOverCDP).toHaveBeenCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-1' }, timeout: 15_000 });
   });
 
   it('a check on a live connection asks for no token, and the connection is kept', async () => {
     const info = pipeInfo('p1');
     mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
-    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+    mockConnectOverCDP.mockResolvedValue(provingBrowser());
     const engine = PlaywrightEngine.getInstance();
     await engine.ensureConnected('ws-a');
     await engine.ensureConnected('ws-a');
@@ -2179,8 +2209,8 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) =>
       Promise.resolve(method === 'browser.cdp.info' ? answers[Math.min(at++, answers.length - 1)](params) : {}),
     );
-    const first = makeFakeBrowser([]);
-    const second = makeFakeBrowser([]);
+    const first = provingBrowser();
+    const second = provingBrowser();
     mockConnectOverCDP.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
     const engine = PlaywrightEngine.getInstance();
     await engine.ensureConnected('ws-a');
@@ -2188,7 +2218,7 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     await engine.ensureConnected('ws-a');
     expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }, { workspaceId: 'ws-a' }, { workspaceId: 'ws-a', relay: true }]);
     expect(mockConnectOverCDP).toHaveBeenCalledTimes(2);
-    expect(mockConnectOverCDP).toHaveBeenLastCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-2' } });
+    expect(mockConnectOverCDP).toHaveBeenLastCalledWith(RELAY, { headers: { Authorization: 'Bearer tok-2' }, timeout: 15_000 });
     expect((engine as unknown as { connectedProfile?: string }).connectedProfile).toBe('p3');
     expect(first.close).toHaveBeenCalled();
   });
@@ -2199,7 +2229,7 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     mockSendRpc.mockImplementation((method: string) =>
       Promise.resolve(method === 'browser.cdp.info' ? { workspaceBackend: 'chrome', targets: [], ...(at++ === 0 ? { profile: 'p1', cdpPort: 9222 } : { profile: 'p2' }) } : {}),
     );
-    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+    mockConnectOverCDP.mockResolvedValue(provingBrowser());
     const engine = PlaywrightEngine.getInstance();
     await engine.ensureConnected('ws-a');
     await expect(engine.ensureConnected('ws-a')).rejects.toThrow('did not disclose a usable CDP endpoint');
@@ -2231,6 +2261,67 @@ describe('PlaywrightEngine pipe relay (C3)', () => {
     expect(tokens).toEqual(['Bearer tok-1', 'Bearer tok-2', 'Bearer tok-3']);
     for (const call of logged.mock.calls) expect(JSON.stringify(call)).not.toMatch(/tok-\d/);
     logged.mockRestore();
+  });
+
+  it('nothing uses a relay connection that does not prove itself: dropped at once, never retried', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    const wrong = impostor(async (method) => (method === RELAY_PROOF_METHOD ? { proof: randomBytes(32).toString('base64url') } : { targetInfos: [] }));
+    mockConnectOverCDP.mockResolvedValue(wrong.browser);
+    const engine = PlaywrightEngine.getInstance();
+    await expect(engine.ensureConnected('ws-a')).rejects.toThrow('the browser relay did not prove itself');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+    // The proof was the only thing asked, and the browser was closed before it was kept.
+    expect(wrong.sent).toEqual([RELAY_PROOF_METHOD]);
+    expect(wrong.browser.close).toHaveBeenCalledTimes(1);
+    expect((engine as unknown as { browser: unknown }).browser).toBeNull();
+    expect((engine as unknown as { connectedEndpoint: unknown }).connectedEndpoint).toBeNull();
+  });
+
+  it('an endpoint that refuses the proof method, or never answers it, is dropped the same way', async () => {
+    const info = pipeInfo('p1');
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info' ? info(params) : {}));
+    const refusing = impostor(async () => { throw new Error("Protocol error (Wmux.relayProof): 'Wmux.relayProof' wasn't found"); });
+    mockConnectOverCDP.mockResolvedValueOnce(refusing.browser);
+    await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('the browser relay did not prove itself');
+    expect(refusing.browser.close).toHaveBeenCalledTimes(1);
+
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    const silent = impostor(() => new Promise(() => undefined));
+    mockConnectOverCDP.mockResolvedValueOnce(silent.browser);
+    vi.useFakeTimers();
+    try {
+      const failing = PlaywrightEngine.getInstance().ensureConnected('ws-a').then(() => null, (err: Error) => err);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect((await failing)?.message).toMatch('the browser relay did not prove itself');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(silent.browser.close).toHaveBeenCalledTimes(1);
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(2);
+    expect(cdpInfoCalls()).toHaveLength(2);
+  });
+
+  it('a relay grant without a proof key (an older main) is refused before any connect', async () => {
+    mockSendRpc.mockImplementation((method: string, params?: { relay?: boolean }) => Promise.resolve(method === 'browser.cdp.info'
+      ? { workspaceBackend: 'chrome', targets: [], profile: 'p1', piped: true, ...(params?.relay && { relay: { endpoint: RELAY, headers: { Authorization: 'Bearer tok-x' } } }) }
+      : {}));
+    await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('the browser relay did not prove itself');
+    expect(cdpInfoCalls()).toEqual([{ workspaceId: 'ws-a', relay: true }]);
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
+  });
+
+  it('a short or malformed proof key counts as none', async () => {
+    for (const proofKey of [randomBytes(16).toString('base64url'), 'not base64url!', 42]) {
+      mockSendRpc.mockReset();
+      (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+      mockSendRpc.mockImplementation((method: string) => Promise.resolve(method === 'browser.cdp.info'
+        ? { workspaceBackend: 'chrome', targets: [], profile: 'p1', piped: true, relay: { endpoint: RELAY, headers: { Authorization: 'Bearer tok-x' }, proofKey } }
+        : {}));
+      await expect(PlaywrightEngine.getInstance().ensureConnected('ws-a')).rejects.toThrow('the browser relay did not prove itself');
+    }
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
   });
 });
 

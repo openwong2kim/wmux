@@ -3,7 +3,8 @@ import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { CallerIdentity, CdpPipeMux } from './CdpPipeMux';
+import type { CallerIdentity, CdpPipeMux, LocalMethods } from './CdpPipeMux';
+import { decodeRelayProofBytes, newRelayProofKey, relayProof, RELAY_PROOF_METHOD, RELAY_PROOF_NONCE_BYTES } from '../../shared/relayProof';
 import { CdpRelayTokens } from './CdpRelayTokens';
 import {
   makeRelaySocketDir,
@@ -58,10 +59,18 @@ const PIPE_BIND_ATTEMPTS = 3;
 const PIPE_BUSY_WAIT_MS = 200;
 const PIPE_BUSY_RETRY_MS = 10;
 
-/** What browser.cdp.info hands a caller: where to connect, and the header that lets it. */
+/** How long a connection keeps its proof key unasked (src/shared/relayProof.ts). */
+export const RELAY_PROOF_KEY_TTL_MS = 30_000;
+
+/**
+ * What browser.cdp.info hands a caller: where to connect, the header that
+ * lets it, and the key the relay proves itself with (src/shared/relayProof.ts).
+ */
 export interface RelayGrant {
   readonly endpoint: string;
   readonly headers: { readonly Authorization: string };
+  /** base64url; never sent on the relay connection. */
+  readonly proofKey: string;
 }
 
 export interface RelayOptions {
@@ -76,6 +85,8 @@ export interface RelayOptions {
   pipeSecurity?: () => PipeSecurityResult;
   /** Test seam: runs between a pipe's creation and its DACL change. */
   beforeNarrow?: (pipePath: string) => void;
+  /** How long a connection keeps its proof key unasked (default RELAY_PROOF_KEY_TTL_MS). */
+  proofKeyTtlMs?: number;
 }
 
 interface Listener {
@@ -93,6 +104,8 @@ interface Binding {
   readonly identity: CallerIdentity;
   /** The listener the token was handed out for: no other one takes it. */
   readonly listener: Listener;
+  /** This grant's proof key; goes with the token to the connection that spends it. */
+  readonly key: Buffer;
 }
 
 function isLoopback(address: string | undefined): boolean {
@@ -150,6 +163,7 @@ export class CdpPipeRelay {
   private readonly windowsPipe: boolean;
   private readonly pipeSecurity: () => PipeSecurityResult;
   private readonly beforeNarrow: ((pipePath: string) => void) | undefined;
+  private readonly proofKeyTtlMs: number;
   private listener: Listener | null = null;
   private binding: Promise<Listener> | null = null;
   private swept = false;
@@ -165,6 +179,7 @@ export class CdpPipeRelay {
     this.windowsPipe = opts.windowsPipe ?? true;
     this.pipeSecurity = opts.pipeSecurity ?? loadPipeSecurity;
     this.beforeNarrow = opts.beforeNarrow;
+    this.proofKeyTtlMs = opts.proofKeyTtlMs ?? RELAY_PROOF_KEY_TTL_MS;
     this.wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: MAX_INBOUND_BYTES, clientTracking: false });
   }
 
@@ -182,8 +197,9 @@ export class CdpPipeRelay {
     if (this.closed || !route.open) throw new Error('CdpPipeRelay: that Chrome is gone');
     const listener = await this.live();
     if (this.closed || !route.open) throw new Error('CdpPipeRelay: that Chrome is gone');
-    const token = this.tokens.mint({ route, identity, listener });
-    return { endpoint: listener.endpoint, headers: { Authorization: `Bearer ${token}` } };
+    const key = newRelayProofKey();
+    const token = this.tokens.mint({ route, identity, listener, key });
+    return { endpoint: listener.endpoint, headers: { Authorization: `Bearer ${token}` }, proofKey: key.toString('base64url') };
   }
 
   /** @internal RelayRoute.close */
@@ -191,7 +207,7 @@ export class CdpPipeRelay {
     if (route.closed) return;
     route.closed = true;
     this.routes.delete(route);
-    this.tokens.forget((binding) => binding.route === route);
+    this.forget((binding) => binding.route === route);
     for (const ws of route.clients) ws.terminate();
     route.clients.clear();
     this.sizeListener();
@@ -233,7 +249,7 @@ export class CdpPipeRelay {
     const stale = this.listener;
     this.listener = null;
     // A token handed out for the old listener names its endpoint: none outlives it.
-    this.tokens.forget(() => true);
+    this.forget(() => true);
     if (stale) void this.retire(stale, false);
     if (!this.swept) {
       // In the background: the first token does not wait on probing leftovers.
@@ -251,8 +267,20 @@ export class CdpPipeRelay {
     return listener;
   }
 
+  /** Drop the unused tokens `gone` names, and wipe their proof keys. */
+  private forget(gone: (binding: Binding) => boolean): void {
+    this.tokens.forget((binding) => {
+      if (!gone(binding)) return false;
+      binding.key.fill(0);
+      return true;
+    });
+  }
+
   /** Stop accepting on `listener`; its upgraded connections stay unless `all`. */
   private async retire(listener: Listener, all: boolean): Promise<void> {
+    // Before the name or port is let go: once it is, another process may take
+    // it, and no grant for this listener may be good there.
+    this.forget((binding) => binding.listener === listener);
     const done = new Promise<void>((resolve) => listener.server.close(() => resolve()));
     if (all) listener.server.closeAllConnections();
     else listener.server.closeIdleConnections();
@@ -382,6 +410,8 @@ export class CdpPipeRelay {
     // From here on a server error is logged, never thrown at main. Never with the endpoint.
     server.on('error', (err) => console.warn('[CdpPipeRelay] server error:', err.message));
     server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => this.upgrade(listener, req, socket, head));
+    // However the server stops (retire, or on its own), its grants go with it.
+    server.once('close', () => this.forget((binding) => binding.listener === listener));
     return listener;
   }
 
@@ -402,7 +432,7 @@ export class CdpPipeRelay {
     const ticket = presented === null ? null : this.tokens.lookup(presented);
     if (!ticket) { refuse(socket, '401 Unauthorized'); return; }
     if (ticket.binding.listener !== listener) { refuse(socket, '401 Unauthorized'); return; }
-    const { route, identity } = ticket.binding;
+    const { route, identity, key } = ticket.binding;
     if (!route.open || route.clients.size + route.handshaking >= this.maxClients) { refuse(socket, '503 Service Unavailable'); return; }
     if (!this.tokens.consume(ticket)) { refuse(socket, '401 Unauthorized'); return; }
     route.handshaking++;
@@ -415,13 +445,14 @@ export class CdpPipeRelay {
     socket.once('close', settle);
     this.wss.handleUpgrade(req, socket, head, (ws) => {
       settle();
-      this.accept(route, identity, ws);
+      this.accept(route, identity, key, ws);
     });
   }
 
-  private accept(route: RelayRoute, identity: CallerIdentity, ws: WebSocket): void {
+  private accept(route: RelayRoute, identity: CallerIdentity, key: Buffer, ws: WebSocket): void {
     // The Chrome may have gone during the handshake.
-    if (this.closed || !route.open) { ws.terminate(); return; }
+    if (this.closed || !route.open) { key.fill(0); ws.terminate(); return; }
+    const proof = proofAnswerer(key, this.proofKeyTtlMs);
     route.clients.add(ws);
     const maxBuffered = this.maxBuffered;
     let sent = 0;
@@ -437,6 +468,7 @@ export class CdpPipeRelay {
       ping: () => { if (ws.readyState === ws.OPEN) ws.ping(); },
       drain: () => ({ buffered: ws.bufferedAmount, flushed: sent - ws.bufferedAmount }),
       identity,
+      local: proof.local,
     });
     ws.on('pong', () => client.pong());
     ws.on('message', (data, isBinary) => {
@@ -445,8 +477,41 @@ export class CdpPipeRelay {
     });
     ws.on('close', () => {
       route.clients.delete(ws);
+      proof.wipe();
       client.close();
     });
     ws.on('error', () => ws.terminate());
   }
+}
+
+/**
+ * A connection's answer to `Wmux.relayProof`: once, with the key of the token
+ * it spent, which is wiped after that one answer, after `ttlMs`,
+ * or when the connection closes, whichever comes first.
+ */
+function proofAnswerer(key: Buffer, ttlMs: number): { local: LocalMethods; wipe: () => void } {
+  let held: Buffer | null = key;
+  const wipe = () => {
+    clearTimeout(timer);
+    held?.fill(0);
+    held = null;
+  };
+  const timer = setTimeout(wipe, ttlMs);
+  timer.unref?.();
+  const local: LocalMethods = (method, params) => {
+    if (method !== RELAY_PROOF_METHOD) return undefined;
+    // One ask per connection, whatever it asks: the key leaves the connection now.
+    const current = held;
+    held = null;
+    clearTimeout(timer);
+    if (!current) return { error: { code: -32000, message: 'this connection has no relay proof to give' } };
+    try {
+      const nonce = decodeRelayProofBytes(params.nonce, RELAY_PROOF_NONCE_BYTES);
+      if (!nonce) return { error: { code: -32602, message: `nonce must be at least ${RELAY_PROOF_NONCE_BYTES} bytes, base64url` } };
+      return { result: { proof: relayProof(current, nonce) } };
+    } finally {
+      current.fill(0);
+    }
+  };
+  return { local, wipe };
 }

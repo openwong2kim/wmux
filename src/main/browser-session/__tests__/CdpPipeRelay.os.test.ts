@@ -14,6 +14,7 @@ import { isOwnerOnlyDacl, loadPipeSecurity, parseDacl, RELAY_PIPE_PREFIX } from 
 import { RELAY_DIR_PREFIX, sweepDeadRelayDirs, verifyRelaySocket } from '../relaySocket';
 import { FakeBrowser } from './fakePipeBrowser';
 import { deliberateSleep } from '../../../test-utils/waitFor';
+import { RELAY_PROOF_METHOD, relayProof, relayProofMatches } from '../../../shared/relayProof';
 
 const posix = process.platform !== 'win32';
 const relays: CdpPipeRelay[] = [];
@@ -47,7 +48,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-function dial(grant: RelayGrant, options: WebSocket.ClientOptions = {}): Promise<WebSocket> {
+function dial(grant: Pick<RelayGrant, 'endpoint' | 'headers'>, options: WebSocket.ClientOptions = {}): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(grant.endpoint, { headers: { ...grant.headers }, ...options });
     ws.once('open', () => resolve(ws));
@@ -632,6 +633,135 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
     } finally {
       for (const close of held) close();
     }
+  });
+});
+
+/** Each transport the relay serves on, on this OS. */
+const PROOF_TRANSPORTS: Array<[string, RelayOptions]> = posix
+  ? [['a Unix socket', {}], ['loopback TCP', { roots: [], windowsPipe: false }]]
+  : [['a named pipe', {}], ['loopback TCP', { windowsPipe: false }]];
+
+describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', (_name, opts) => {
+  const keyOf = (grant: RelayGrant) => Buffer.from(grant.proofKey, 'base64url');
+  const ask = (ws: WebSocket, id: number, nonce: Buffer, sessionId?: string) =>
+    request(ws, { id, method: RELAY_PROOF_METHOD, params: { nonce: nonce.toString('base64url') }, ...(sessionId !== undefined && { sessionId }) });
+  const wmuxFramesAt = (browser: FakeBrowser) => browser.received.filter((c) => c.method.startsWith('Wmux.'));
+
+  it('answers HMAC(key, label || nonce) on the root, once per connection, and never forwards it', async () => {
+    const { route, browser } = await setup(opts);
+    const grant = await route.grant({});
+    expect(keyOf(grant)).toHaveLength(32);
+    resetCdpPipeCounters();
+    const ws = await dial(grant);
+    const nonce = randomBytes(32);
+    const first = await ask(ws, 1, nonce);
+    expect(first).toEqual({ id: 1, result: { proof: relayProof(keyOf(grant), nonce) } });
+    expect(relayProofMatches(keyOf(grant), nonce, (first.result as { proof: string }).proof)).toBe(true);
+    // The proof is not a refusal.
+    expect(cdpPipeCounters().refused).toBe(0);
+    // One ask per connection.
+    expect((await ask(ws, 2, randomBytes(32))).error).toMatchObject({ code: -32000 });
+    // The connection goes on working, and the browser never saw a Wmux.* frame.
+    expect(await request(ws, { id: 3, method: 'Browser.getVersion' })).toEqual({ id: 3, result: { echo: 'Browser.getVersion' } });
+    expect(wmuxFramesAt(browser)).toEqual([]);
+    ws.close();
+  });
+
+  it('answers on a session the client owns, with that sessionId, and on none it does not own', async () => {
+    const { route, browser } = await setup(opts);
+    const grantA = await route.grant({});
+    const grantB = await route.grant({});
+    const a = await dial(grantA);
+    const b = await dial(grantB);
+    const attached = await request(a, { id: 1, method: 'Target.attachToBrowserTarget' });
+    const session = (attached.result as { sessionId: string }).sessionId;
+    // B asks on A's session: refused as unknown, and B's own ask is still there.
+    const stolen = await ask(b, 1, randomBytes(32), session);
+    expect(stolen.error).toEqual({ code: -32001, message: 'Session with given id not found.' });
+    const nonceB = randomBytes(32);
+    expect((await ask(b, 2, nonceB)).result).toEqual({ proof: relayProof(keyOf(grantB), nonceB) });
+    const nonceA = randomBytes(32);
+    expect(await ask(a, 2, nonceA, session)).toEqual({ id: 2, result: { proof: relayProof(keyOf(grantA), nonceA) }, sessionId: session });
+    expect(wmuxFramesAt(browser)).toEqual([]);
+    a.close();
+    b.close();
+  });
+
+  it('a nonce under 32 bytes, or not base64url, is refused and spends the ask', async () => {
+    const { route } = await setup(opts);
+    const ws = await dial(await route.grant({}));
+    expect((await ask(ws, 1, randomBytes(31))).error).toMatchObject({ code: -32602 });
+    expect((await ask(ws, 2, randomBytes(32))).error).toMatchObject({ code: -32000 });
+    const other = await dial(await route.grant({}));
+    expect((await request(other, { id: 1, method: RELAY_PROOF_METHOD, params: { nonce: '+'.repeat(64) } })).error).toMatchObject({ code: -32602 });
+    expect((await request(other, { id: 2, method: RELAY_PROOF_METHOD })).error).toMatchObject({ code: -32000 });
+    ws.close();
+    other.close();
+  });
+
+  it('another Wmux.* method is unknown, and not forwarded either', async () => {
+    const { route, browser } = await setup(opts);
+    const ws = await dial(await route.grant({}));
+    expect((await request(ws, { id: 1, method: 'Wmux.somethingElse', params: {} })).error).toMatchObject({ code: -32601 });
+    expect(wmuxFramesAt(browser)).toEqual([]);
+    ws.close();
+  });
+
+  it('two clients on one grant: the second is refused, and a new grant proves with its own key', async () => {
+    const { route } = await setup(opts);
+    const first = await route.grant({});
+    const ws = await dial(first);
+    await expect(dial(first)).rejects.toThrow('HTTP 401');
+    const second = await route.grant({});
+    expect(second.proofKey).not.toBe(first.proofKey);
+    const again = await dial(second);
+    const nonce = randomBytes(32);
+    const proof = ((await ask(again, 1, nonce)).result as { proof: string }).proof;
+    expect(relayProofMatches(keyOf(second), nonce, proof)).toBe(true);
+    expect(relayProofMatches(keyOf(first), nonce, proof)).toBe(false);
+    ws.close();
+    again.close();
+  });
+
+  it('a connection holds its key for a bounded time only', async () => {
+    const { route } = await setup({ ...opts, proofKeyTtlMs: 50 });
+    const ws = await dial(await route.grant({}));
+    await deliberateSleep(200, "the key's lifetime running out is what is tested");
+    expect((await ask(ws, 1, randomBytes(32))).error).toMatchObject({ code: -32000 });
+    ws.close();
+  });
+
+  it('a retired listener\'s grants and keys are gone before its name or port is let go', async () => {
+    const { relay, route } = await setup(opts);
+    const old = await route.grant({});
+    type Inner = { listener: { server: import('node:http').Server }; tokens: { size: number; entries: Array<{ binding: { key: Buffer } }> } };
+    const inner = relay as unknown as Inner & { retire: (l: Inner['listener'], all: boolean) => Promise<void> };
+    const listener = inner.listener;
+    const key = inner.tokens.entries[0].binding.key;
+    let unusedAtClose = -1;
+    let keyAtClose: Buffer | null = null;
+    const close = listener.server.close.bind(listener.server);
+    vi.spyOn(listener.server, 'close').mockImplementation((cb) => {
+      unusedAtClose = inner.tokens.size;
+      keyAtClose = Buffer.from(key);
+      return close(cb);
+    });
+    await inner.retire(listener, false);
+    expect(unusedAtClose).toBe(0);
+    expect(keyAtClose).toEqual(Buffer.alloc(32));
+    // The next grant binds afresh; the old one is good nowhere.
+    const fresh = await route.grant({});
+    await expect(dial({ endpoint: fresh.endpoint, headers: old.headers })).rejects.toThrow('HTTP 401');
+    (await dial(fresh)).close();
+  });
+
+  it('a listener that stops on its own takes its grants with it', async () => {
+    const { relay, route } = await setup(opts);
+    await route.grant({});
+    const inner = relay as unknown as { listener: { server: import('node:http').Server }; tokens: { size: number } };
+    expect(inner.tokens.size).toBe(1);
+    await new Promise<void>((resolve) => inner.listener.server.close(() => resolve()));
+    expect(inner.tokens.size).toBe(0);
   });
 });
 

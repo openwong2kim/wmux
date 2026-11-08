@@ -22,6 +22,7 @@ import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay'
 import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
+import { newRelayProofNonce, RELAY_PROOF_METHOD, relayProofMatches } from '../../../shared/relayProof';
 
 const CHROME = process.env.CHROME_PATH;
 
@@ -53,6 +54,19 @@ afterAll(async () => {
 /** Playwright over the relay, with a token minted for `identity`. */
 function connectThrough(grant: RelayGrant, timeout?: number): Promise<Browser> {
   return chromium.connectOverCDP(grant.endpoint, { headers: { ...grant.headers }, ...(timeout !== undefined && { timeout }) });
+}
+
+/** Whether the relay behind `browser` answers Wmux.relayProof with `grant`'s key. */
+async function provenBy(browser: Browser, grant: RelayGrant): Promise<boolean> {
+  const session = await browser.newBrowserCDPSession();
+  try {
+    const nonce = newRelayProofNonce();
+    const send = session.send.bind(session) as (method: string, params: object) => Promise<{ proof?: unknown }>;
+    const answer = await send(RELAY_PROOF_METHOD, { nonce });
+    return relayProofMatches(Buffer.from(grant.proofKey, 'base64url'), Buffer.from(nonce, 'base64url'), answer.proof);
+  } finally {
+    await session.detach().catch(() => undefined);
+  }
 }
 
 const connectTo = async (s: Started, identity: CallerIdentity = {}) => connectThrough(await s.route.grant(identity));
@@ -146,9 +160,11 @@ afterEach(async () => {
 }, CHROME_TEARDOWN_TIMEOUT_MS);
 
 describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
-  it('Playwright connects over CDP through the relay and drives a page', async () => {
-    const browser = await connectTo(await startChrome(), { workspaceId: 'ws-a' });
+  it('Playwright connects over CDP through the relay, which proves itself, and drives a page', async () => {
+    const grant = await (await startChrome()).route.grant({ workspaceId: 'ws-a' });
+    const browser = await connectThrough(grant);
     browsers.push(browser);
+    expect(await provenBy(browser, grant)).toBe(true);
     const page = await browser.contexts()[0].newPage();
     await page.goto('data:text/html,<title>pipe</title><p id=x>one</p>');
     expect(await page.title()).toBe('pipe');
@@ -206,6 +222,7 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
       else expect(grant.endpoint.startsWith('ws+unix://')).toBe(true);
       const browser = await bundled.chromium.connectOverCDP(grant.endpoint, { headers: { ...grant.headers } });
       browsers.push(browser as unknown as Browser);
+      expect(await provenBy(browser as unknown as Browser, grant)).toBe(true);
       const page = await browser.contexts()[0].newPage();
       await page.goto('data:text/html,<title>bundled</title>');
       expect(await page.title()).toBe('bundled');
