@@ -122,6 +122,24 @@ export function isRemoteInsecureTransport(err: unknown): err is RemoteInsecureTr
   return err instanceof RemoteInsecureTransportError;
 }
 
+/**
+ * The host refused a new pane's workspace id: none of its live panes carries
+ * it, and this computer's pairing may not start a workspace there
+ * (`WebTerminalServer.rejectWorkspaceId`). The message keeps the host's own
+ * wording for logs; the dialog shows its own text for the reason.
+ */
+export class RemoteUnknownWorkspaceError extends Error {
+  readonly reason = 'unknown-workspace-id' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'RemoteUnknownWorkspaceError';
+  }
+}
+
+export function isRemoteUnknownWorkspace(err: unknown): err is RemoteUnknownWorkspaceError {
+  return err instanceof RemoteUnknownWorkspaceError;
+}
+
 /** The `error` values the host's web server puts on a credential 401. */
 const HOST_CREDENTIAL_ERRORS: ReadonlySet<string> = new Set(['unauthorized', 'authorization-expired']);
 
@@ -453,11 +471,10 @@ export class RemoteHostClient implements RemotePaneEvents {
   /**
    * Bootstrap the first pane of a NEW workspace on this host (#1001). Mints
    * no id itself — the caller (the renderer, which owns the workspace
-   * registry today) supplies `workspaceId`, and this is the operator-Bearer
-   * request `WebTerminalServer.rejectWorkspaceId` lets mint an unknown id
-   * for: `RemoteHost.token` is always the operator credential (parsed from
-   * the pasted wmux-web URL or the pair exchange — see remoteHosts.ts), never
-   * a paired device's, so every call through this client already qualifies.
+   * registry today) supplies `workspaceId`. `WebTerminalServer.rejectWorkspaceId`
+   * lets a new id through for the operator credential or a pairing with the
+   * workspace grant; any other pairing gets `unknown-workspace-id`, thrown
+   * here as RemoteUnknownWorkspaceError.
    *
    * Returns the new pane's `sessionId` on success — the caller attaches to
    * it the same way `REMOTE_PANE_ATTACH` attaches to any other remote pane.
@@ -476,7 +493,9 @@ export class RemoteHostClient implements RemotePaneEvents {
     if (!res.ok) {
       const body = await readErrorBody(res);
       if (isCredentialRejection(res.status, body)) throw this.rejected('createWorkspace');
-      throw new Error(errorMessage(body, `createWorkspace failed: HTTP ${res.status}`));
+      const message = errorMessage(body, `createWorkspace failed: HTTP ${res.status}`);
+      if (res.status === 400 && body?.error === 'unknown-workspace-id') throw new RemoteUnknownWorkspaceError(message);
+      throw new Error(message);
     }
     let body: unknown;
     try {

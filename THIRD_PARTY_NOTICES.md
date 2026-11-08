@@ -398,3 +398,14 @@ SOFTWARE.
    See the License for the specific language governing permissions and
    limitations under the License.
 ```
+
+### agent-desktop, vendored unmodified
+
+- Source: https://github.com/vercel-labs/agent-desktop/tree/b43ac4f6e892ef608f8851428613c4009f0e84c7
+  (the paths listed in `native/agent-desktop/VENDOR.md`)
+- Used in: `native/agent-desktop/`, a byte-identical copy that
+  `native/computer-use-macos/build.sh` builds into the binary the macOS
+  computer-use helper bundle ships. No file in it is changed.
+- License: Apache License 2.0, the text above; `native/agent-desktop/LICENSE`
+  is kept with the copy. The shipped notices (`THIRD_PARTY_NOTICES`) carry
+  that license and those of the Rust crates the binary is built from.

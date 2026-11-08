@@ -4,6 +4,7 @@
 // and move back to tabs in the right-hand deck (ChannelDock) — the center returns to
 // being pane-grid-only.
 
+import { DialogLayer } from '../ui/dialogHost';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { WorkspaceViewport } from './WorkspaceViewport';
@@ -44,7 +45,12 @@ export function WorkspaceCenter() {
         data-pane-grid-wrapper
         style={{ display: remoteVisible || pickOnHost !== null ? 'none' : 'flex' }}
       >
-        <WorkspaceViewport />
+        {/* One dialog layer for every pane tree here (ui/dialogHost):
+            a pane's dialog is over the other tiles and the agent toolbar,
+            and hidden with this grid. */}
+        <DialogLayer>
+          <WorkspaceViewport />
+        </DialogLayer>
       </div>
 
       {/* Every attached remote workspace stays mounted too — unmounting on

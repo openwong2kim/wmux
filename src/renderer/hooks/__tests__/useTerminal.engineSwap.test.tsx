@@ -223,6 +223,8 @@ describe('useTerminal engine swap (Labs wongtty switch)', { timeout: 60_000 }, (
     const old = termRef!.current!;
     expect(old).not.toBeInstanceOf(FakeWongtty);
     expect(containerEl!.dataset.terminalEngine).toBe('xterm');
+    // The mount's attach waits for its first-resize gate (up to its bound).
+    await act(async () => { await vi.waitFor(() => expect(reconnect).toHaveBeenCalled(), { timeout: 2_000 }); });
     const reconnects = reconnect.mock.calls.length;
 
     await setEngine('wongtty');

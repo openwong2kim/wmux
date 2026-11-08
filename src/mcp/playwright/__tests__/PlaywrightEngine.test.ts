@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /*
  * Regression tests for the CDP session lifecycle in PlaywrightEngine.
@@ -634,6 +634,232 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
       (params as { workspaceId?: string } | undefined)?.workspaceId === 'ws-caller'
     )).toBe(true);
   }, 20_000);
+});
+
+describe('PlaywrightEngine reuse of an attached page', () => {
+  // A guest Playwright does give a Page for (a Chrome-backend tab, or an
+  // in-app tab created while the engine is connected).
+  const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+  const guestUrl = 'http://127.0.0.1:1/';
+  let closed = false;
+  /** Whether Playwright has the guest's Page yet. */
+  let guestUp = true;
+  let pageListeners: Array<() => void> = [];
+  let dropListeners: Array<() => void> = [];
+  /** Runs once while the shell page is being probed (a match in progress). */
+  let duringShellProbe: (() => void) | null = null;
+  let connected = true;
+  let guestSessions = 0;
+  let connects = 0;
+  let shellPage: FakePage & { isClosed: ReturnType<typeof vi.fn> };
+  let guestPage: FakePage & { isClosed: ReturnType<typeof vi.fn> };
+
+  function rig() {
+    shellPage = { url: vi.fn().mockReturnValue(shellUrl), context: vi.fn(), isClosed: vi.fn().mockReturnValue(false) };
+    guestPage = { url: vi.fn().mockReturnValue(guestUrl), context: vi.fn(), isClosed: vi.fn(() => closed) };
+    const browserSession = {
+      send: vi.fn().mockImplementation((method: string) => Promise.resolve(
+        method === 'Target.getTargets'
+          ? { targetInfos: [{ targetId: 'wc-1', type: 'page', title: '', url: guestUrl, attached: true }] }
+          : {},
+      )),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const pageSession = (targetId: string) => ({
+      send: vi.fn().mockImplementation((method: string) => {
+        if (method === 'Target.getTargets') return browserSession.send(method);
+        if (targetId === 'shell') {
+          // matchPinnedPage probing the shell: a match is in progress.
+          const run = duringShellProbe;
+          duringShellProbe = null;
+          run?.();
+        }
+        return Promise.resolve({ targetInfo: { targetId } });
+      }),
+      detach: vi.fn().mockResolvedValue(undefined),
+    });
+    const ctx = {
+      // Like Playwright: a closed Page is no longer listed.
+      pages: vi.fn().mockImplementation(() => (guestUp && !closed ? [shellPage, guestPage] : [shellPage])),
+      newCDPSession: vi.fn().mockImplementation(async (p: FakePage) => {
+        if (p === guestPage) {
+          guestSessions++;
+          return pageSession('wc-1');
+        }
+        return pageSession('shell');
+      }),
+      on: vi.fn((event: string, fn: () => void) => { if (event === 'page') pageListeners.push(fn); }),
+      off: vi.fn((event: string, fn: () => void) => { pageListeners = pageListeners.filter((l) => l !== fn); }),
+    };
+    shellPage.context.mockReturnValue(ctx);
+    guestPage.context.mockReturnValue(ctx);
+    const browser = {
+      isConnected: vi.fn(() => connected),
+      on: vi.fn((event: string, fn: () => void) => { if (event === 'disconnected') dropListeners.push(fn); }),
+      off: vi.fn((event: string, fn: () => void) => { dropListeners = dropListeners.filter((l) => l !== fn); }),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => browserSession),
+      contexts: vi.fn().mockReturnValue([ctx]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockConnectOverCDP.mockImplementation(async () => {
+      connects++;
+      return browser;
+    });
+    mockSendRpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === 'browser.cdp.info') {
+        const ws = (params as { workspaceId?: string } | undefined)?.workspaceId;
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl,
+          ...(ws && { targetsScoped: true }),
+          targets: [{ surfaceId: 'surf-A', targetId: 'wc-1', workspaceId: 'ws-A' }],
+        });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  /**
+   * getPage with the clock run forward in 10 ms steps until it settles.
+   * `during` runs once, `atMs` into the lookup.
+   */
+  async function lookup(
+    engine: PlaywrightEngine,
+    during?: { atMs: number; run: () => void },
+  ): Promise<{ page: FakePage | null; waitedMs: number }> {
+    let settled = false;
+    let page: FakePage | null = null;
+    const done = priv(engine).getPage().then((p) => { page = p; settled = true; });
+    await vi.advanceTimersByTimeAsync(0);
+    let waitedMs = 0;
+    for (let i = 0; i < 1000 && !settled; i++) {
+      await vi.advanceTimersByTimeAsync(10);
+      waitedMs += 10;
+      if (during && waitedMs === during.atMs) during.run();
+    }
+    await done;
+    return { page, waitedMs };
+  }
+
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    __resetSurfaceRoutingForTesting();
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+    closed = false;
+    guestUp = true;
+    pageListeners = [];
+    dropListeners = [];
+    duringShellProbe = null;
+    connected = true;
+    guestSessions = 0;
+    connects = 0;
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('no /json here')));
+    rig();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function engineFor(): Promise<PlaywrightEngine> {
+    const engine = PlaywrightEngine.getInstance();
+    (engine as unknown as { setWorkspaceIdResolver(r: () => Promise<string>): void })
+      .setWorkspaceIdResolver(async () => 'ws-A');
+    await engine.ensureConnected('ws-A');
+    return engine;
+  }
+
+  it('a Page that already exists is returned without the fixed post-attach wait', async () => {
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBe(guestPage);
+    expect(first.waitedMs).toBeLessThan(100); // was 500 ms
+  });
+
+  it('a later lookup on the same target reuses the Page without matching it again', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    const matched = guestSessions;
+    const second = await lookup(engine);
+    expect(second.page).toBe(guestPage);
+    expect(guestSessions).toBe(matched);
+    expect(second.waitedMs).toBeLessThan(100);
+    expect(connects).toBe(1);
+  });
+
+  it('a Page that appears after the attach is returned when it appears, not after a fixed wait', async () => {
+    const engine = await engineFor();
+    guestUp = false;
+    const first = await lookup(engine, {
+      atMs: 200,
+      run: () => {
+        guestUp = true;
+        for (const l of [...pageListeners]) l();
+      },
+    });
+    expect(first.page).toBe(guestPage);
+    expect(first.waitedMs).toBeGreaterThanOrEqual(200);
+    expect(first.waitedMs).toBeLessThan(300);
+    expect(pageListeners).toEqual([]); // every listener removed
+  });
+
+  it('with no Page, each wait is bounded and leaves no listener', async () => {
+    const engine = await engineFor();
+    guestUp = false;
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    // 3 attempts × the 500 ms bound, plus the 2 × 500 ms reconnect pauses.
+    expect(first.waitedMs).toBeGreaterThanOrEqual(2_400);
+    expect(first.waitedMs).toBeLessThanOrEqual(2_700);
+    expect(pageListeners).toEqual([]);
+    expect(dropListeners).toEqual([]);
+  });
+
+  it('a closed Page is never handed out again', async () => {
+    const engine = await engineFor();
+    await lookup(engine);
+    closed = true;
+    const again = await lookup(engine);
+    expect(again.page).toBeNull();
+  });
+
+  it('a Page that appears while a match is running is not missed', async () => {
+    const engine = await engineFor();
+    guestUp = false;
+    duringShellProbe = () => {
+      guestUp = true;
+      for (const l of [...pageListeners]) l();
+    };
+    const first = await lookup(engine);
+    expect(first.page).toBe(guestPage);
+    expect(first.waitedMs).toBeLessThan(100);
+  });
+
+  it('the connection dropping ends the wait at once', async () => {
+    const engine = await engineFor();
+    guestUp = false;
+    let settled = false;
+    let waitedMs = 100;
+    const done = priv(engine).getPage().then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(100); // inside attempt 1's wait
+    connected = false;
+    for (const l of [...dropListeners]) l();
+    await vi.advanceTimersByTimeAsync(0);
+    // The wait ended without running out its 500 ms; the lookup carries on
+    // with its own retry pause from here.
+    expect(pageListeners).toEqual([]);
+    expect(dropListeners).toEqual([]);
+    connected = true;
+    for (let i = 0; i < 400 && !settled; i++) {
+      await vi.advanceTimersByTimeAsync(10);
+      waitedMs += 10;
+    }
+    await done;
+    // 2,500 ms when every wait runs out its bound (see above); 400 less here.
+    expect(waitedMs).toBeLessThanOrEqual(2_200);
+  });
 });
 
 /*

@@ -5364,6 +5364,7 @@ export const en = {
   'remote.addHost': 'Add host',
   'remote.pasteUrlHint': 'Paste the URL printed by `wmux web` on the other machine',
   'remote.noHostsHint': 'Pair with a code, or paste the URL printed by `wmux web` on the other machine',
+  'remote.newPaneNoWorkspaceGrant': 'This PC can open what is already running on {name}, but it cannot start new panes there.',
   'remote.selectHostHint': 'Select a host to see its workspaces',
   'remote.noWorkspaces': 'No workspaces on that host — the list is built from panes that are open right now, so open a pane there and reselect',
   'remote.attach': 'Attach',

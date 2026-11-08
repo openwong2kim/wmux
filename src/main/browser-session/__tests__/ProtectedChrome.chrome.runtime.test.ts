@@ -11,6 +11,7 @@ import { compileHostPolicy, type HostPolicy } from '../../../shared/browserHostP
 import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
 import { accountDownloads } from '../../../test-utils/chromeDownloads';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
+import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 
 // ---------------------------------------------------------------------------
 // Protected Chrome profiles against a REAL Chrome, launched by the production
@@ -131,6 +132,8 @@ function makeRig(allow: string[]): Rig {
       '--password-store=basic',
       `--unsafely-treat-insecure-origin-as-secure=http://a.test:${port}`,
     ],
+    // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
+    childEnv: realProfileBrowserEnv(),
   });
   return rig;
 }
@@ -153,7 +156,6 @@ const settle = (ms = 800) => new Promise((r) => setTimeout(r, ms));
 let rigA: Rig;
 let rigB: Rig;
 let skipReason: string | null = null;
-const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
 /** What the fixture serves as downloads; the account's real Downloads folder is checked for these, read only. */
 const SERVED_FILES = ['file.bin', 'slow.bin'];
 let accountBefore = new Set<string>();
@@ -165,18 +167,12 @@ beforeAll(async () => {
   wss.on('connection', (_s, req) => hits.push(`${hostOf(req)} ws-connected`));
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   port = (server.address() as AddressInfo).port;
-  // Chrome under the isolate setup's temp USERPROFILE refuses remote
-  // debugging on Windows (see realProfileBrowserEnv); give it the real one.
-  const savedProfile = process.env.USERPROFILE;
-  if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
   try {
     rigA = makeRig(['a.test']);
     rigB = makeRig(['b.test']);
     await attach(rigA);
   } catch (err) {
     skipReason = `Chrome could not be launched here: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
-  } finally {
-    if (process.platform === 'win32') process.env.USERPROFILE = savedProfile;
   }
 }, 120_000);
 
@@ -360,13 +356,7 @@ describe('protected Chrome profile (real Chrome)', { timeout: CASE_TIMEOUT_MS },
 
   it('runs two protected profiles side by side, each held to its own hosts', async (ctx) => {
     if (skipUnless(ctx)) return;
-    const savedProfile = process.env.USERPROFILE;
-    if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
-    try {
-      await attach(rigB);
-    } finally {
-      if (process.platform === 'win32') process.env.USERPROFILE = savedProfile;
-    }
+    await attach(rigB);
     expect(rigA.launcher.currentPort()).not.toBe(rigB.launcher.currentPort());
     const pb = await newPage(rigB);
     await pb.goto(`http://b.test:${port}/mine`);

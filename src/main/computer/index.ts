@@ -2,9 +2,11 @@
 // helper this OS runs and where the build put it.
 
 import { execFile as nodeExecFile, spawn as nodeSpawn } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { app, BrowserWindow, globalShortcut, ipcMain, shell } from 'electron';
 import { platformChoice } from '../../shared/platform';
-import { IPC } from '../../shared/constants';
+import { IPC, getWmuxHomeDir } from '../../shared/constants';
 import {
   readComputerUseAskPerApp,
   readComputerUseEnabled,
@@ -20,8 +22,10 @@ import { AgentMarkers } from './agentMarkers';
 import { helperStatus as rawHelperStatus, writeComputerUseSettings, type ComputerHelperStatus, type ComputerUseSettingsPatch } from './settings';
 import { readAppBundleId } from './appBundleId';
 import { isPermissionOp, requestHelperPermissions, resetHelperPermissions, revealHelper } from './permissions';
-import { ComputerService, computerUseShutDown, markComputerUseShutDown, type ConsentRequester, type HelperLike } from './ComputerService';
+import { ComputerService, computerUseShutDown, markComputerUseShutDown, type ConsentRequester, type DesktopDeps, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
+import { RunnerProcess } from './RunnerProcess';
+import { clearDesktopSnapshots, endDesktopRunner, prepareDesktopHome } from './desktopHome';
 import { StopKey } from './stopKey';
 import { createHelperVerifier, createWindowsPinCheck } from './verifyHelper';
 import { WINDOWS_HELPER_PIN, effectiveHelperStatus, helperUnsignedNotice } from './helperPin';
@@ -165,6 +169,43 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
 }
 
 /**
+ * agent-desktop, nested in the macOS helper bundle and started by the
+ * helper's runner mode (RunnerProcess.ts), verified like every helper spawn.
+ * Its state lives in a private directory under the wmux data directory.
+ */
+function desktopDeps(helperPath: string): DesktopDeps | undefined {
+  if (process.platform !== 'darwin') return undefined;
+  const home = path.join(getWmuxHomeDir(), 'agent-desktop');
+  // Snapshots a previous run left: no record of them survives, only the files.
+  void clearDesktopSnapshots(home).catch((err: unknown) => console.warn(`[computer] ${String(err)}`));
+  let runner: RunnerProcess | null = null;
+  const current = () => runner ??= new RunnerProcess({
+    command: helperPath,
+    verify: verifyHelper,
+    prepare: () => prepareDesktopHome(home),
+    log: (m) => console.warn(m),
+  });
+  return {
+    run: (argv, timeoutMs) => current().run(argv, { home, timeoutMs }),
+    readRefmap: async (snapshotId) => {
+      try {
+        return await fs.promises.readFile(path.join(home, 'snapshots', snapshotId, 'refmap.json'), 'utf8');
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
+        throw err;
+      }
+    },
+    abort: () => runner?.abort(),
+    // The runner goes with its process group, then the saved snapshots.
+    dispose: () => {
+      const ending = runner;
+      runner = null;
+      void endDesktopRunner(ending, home).catch((err: unknown) => console.warn(`[computer] ${String(err)}`));
+    },
+  };
+}
+
+/**
  * Packaged builds spawn the helper only after it checks out (verifyHelper.ts):
  * its code signature on macOS, its build-time SHA-256 pin on Windows. One
  * verifier, so its verdict cache is shared.
@@ -304,6 +345,7 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
       selfExePath: process.execPath.toLowerCase(),
     }),
     markers: agentMarkers(),
+    ...(helperPath && { desktop: desktopDeps(helperPath) }),
   });
   // Built during quit (the first computer.* call of this run landed after
   // disposeComputerUse): born disposed, so it refuses every call before it
@@ -443,7 +485,7 @@ export function registerComputerUseIpc(
     } catch (err) {
       return snapshot(err instanceof Error ? err.message : String(err));
     }
-    if (patch.enabled === false) getExistingService()?.abort();
+    if (patch.enabled === false) getExistingService()?.turnedOff();
     // A running helper draws (or stops drawing) the cursor and halo now; one
     // started later reads the setting on its hello.
     if (readComputerUseOverlay() !== overlayBefore) {

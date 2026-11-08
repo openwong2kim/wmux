@@ -4,16 +4,16 @@ import { randomBytes } from 'node:crypto';
 import net from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
-import { CdpPipeMux } from '../CdpPipeMux';
+import { CdpPipeMux, cdpPipeCounters, resetCdpPipeCounters } from '../CdpPipeMux';
 import { CdpPipeEndpoint } from '../CdpPipeEndpoint';
 import { FakeBrowser } from './fakePipeBrowser';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const opened: Array<{ mux: CdpPipeMux; endpoint: CdpPipeEndpoint }> = [];
 
-async function setup(opts: Parameters<typeof CdpPipeEndpoint.open>[1] = {}) {
+async function setup(opts: Parameters<typeof CdpPipeEndpoint.open>[1] = {}, muxOpts: ConstructorParameters<typeof CdpPipeMux>[2] = {}) {
   const browser = new FakeBrowser();
-  const mux = new CdpPipeMux(browser.fromMux, browser.toMux);
+  const mux = new CdpPipeMux(browser.fromMux, browser.toMux, muxOpts);
   const endpoint = await CdpPipeEndpoint.open(mux, opts);
   opened.push({ mux, endpoint });
   return { browser, mux, endpoint };
@@ -172,3 +172,24 @@ describe('CdpPipeEndpoint', () => {
     for (const spy of spies) for (const call of spy.mock.calls) expect(JSON.stringify(call)).not.toContain(secret);
   });
 });
+
+describe('CdpPipeEndpoint: signs of life for the stall watch', () => {
+  it('pings a client with a target waiting on it, and its WebSocket\'s pong keeps the target waiting for it', async () => {
+    resetCdpPipeCounters();
+    const { browser, endpoint } = await setup({}, { stallMs: 100 });
+    const a = await dial(endpoint.url);
+    const b = await dial(endpoint.url);
+    let pings = 0;
+    a.on('ping', () => { pings++; });
+    await request(a, { id: 1, method: 'Target.setAutoAttach', params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true } });
+    await request(b, { id: 1, method: 'Target.createTarget', params: { url: 'about:blank' } });
+    // a's WebSocket answers each ping on its own (ws does), and sends nothing else.
+    await deliberateSleep(450, 'several stall periods');
+    expect(pings).toBeGreaterThanOrEqual(3);
+    expect(browser.received.some((c) => c.method === 'Runtime.runIfWaitingForDebugger')).toBe(false);
+    expect(cdpPipeCounters().watchdog?.['restarted-by-pong']).toBeGreaterThanOrEqual(2);
+    a.close();
+    b.close();
+  });
+});
+

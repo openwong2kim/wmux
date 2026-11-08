@@ -794,6 +794,23 @@ impl<T> Term<T> {
         self.mark_fully_damaged();
     }
 
+    /// wmux: the region from `origin` moves up in place, as xterm.js's
+    /// deleteLines runs; unlike `scroll_up_relative`, nothing enters history
+    /// when the region starts at the top row.
+    fn scroll_up_in_place(&mut self, origin: Line, lines: usize) {
+        let lines = cmp::min(lines, (self.scroll_region.end - origin).0 as usize);
+        let region = origin..self.scroll_region.end;
+
+        self.selection = self.selection.take().and_then(|s| s.rotate(self, &region, lines as i32));
+        self.grid.scroll_up_in_place(&region, lines);
+
+        let line = &mut self.vi_mode_cursor.point.line;
+        if region.start <= *line && region.end > *line {
+            *line = cmp::max(*line - lines, region.start);
+        }
+        self.mark_fully_damaged();
+    }
+
     fn deccolm(&mut self)
     where
         T: EventListener,
@@ -1494,8 +1511,12 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn scroll_down(&mut self, lines: usize) {
+        // wmux: SD (`CSI T`) fills with default attributes, as xterm.js's
+        // scrollDown does; IL and RI keep the erase colour.
+        let template = mem::take(&mut self.grid.cursor.template);
         let origin = self.scroll_region.start;
         self.scroll_down_relative(origin, lines);
+        self.grid.cursor.template = template;
     }
 
     #[inline]
@@ -1516,7 +1537,7 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Deleting {lines} lines");
 
         if lines > 0 && self.scroll_region.contains(&origin) {
-            self.scroll_up_relative(origin, lines);
+            self.scroll_up_in_place(origin, lines);
         }
     }
 
@@ -1545,10 +1566,12 @@ impl<T: EventListener> Handler for Term<T> {
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
 
-        // Ensure deleting within terminal bounds.
-        let count = cmp::min(count, columns);
-
         let start = cursor.point.column.0;
+
+        // wmux: at most the cells right of the cursor, as xterm.js's
+        // deleteChars; capping at the row width cleared cells before it.
+        let count = cmp::min(count, columns - start);
+
         let end = cmp::min(start + count, columns - 1);
         let num_cells = columns - end;
 
@@ -1867,7 +1890,8 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Reversing index");
         // If cursor is at the top.
         if self.grid.cursor.point.line == self.scroll_region.start {
-            self.scroll_down(1);
+            // wmux: not `scroll_down`, which is SD's default-attribute fill.
+            self.scroll_down_relative(self.scroll_region.start, 1);
         } else {
             self.damage_cursor();
             self.grid.cursor.point.line = cmp::max(self.grid.cursor.point.line - 1, Line(0));

@@ -11,6 +11,7 @@ import { canonicalUrlHost } from '../../pipe/handlers/browserConsent.rpc';
 import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
 import { accountDownloads } from '../../../test-utils/chromeDownloads';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
+import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
 // The approved download against a REAL protected Chrome (production launcher,
@@ -79,20 +80,15 @@ beforeAll(async () => {
       resolve: (_h, p) => ({ host: '127.0.0.1', port: p }),
     }),
     extraArgs: ['--headless=new', '--use-mock-keychain', '--password-store=basic'],
+    // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
+    childEnv: realProfileBrowserEnv(),
   });
-  // Chrome under the isolate setup's temp USERPROFILE refuses remote debugging
-  // on Windows (same as ProtectedChrome.chrome.runtime.test.ts); give it the real one.
-  const savedProfile = process.env.USERPROFILE;
-  const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
-  if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
   try {
     const { chromium } = await import('playwright-core');
     const cdpPort = await launcher.ensureRunning();
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
   } catch (err) {
     skipReason = `Chrome could not be launched here: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
-  } finally {
-    if (process.platform === 'win32') process.env.USERPROFILE = savedProfile;
   }
 }, 120_000);
 
