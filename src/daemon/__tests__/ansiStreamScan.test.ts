@@ -167,6 +167,52 @@ describe('MarginTracker', () => {
     t.feed('\x1b[2;10r\x1b[5;5r', ROWS);
     expect(t.active).toBe(true);
   });
+  // xterm keeps margins per buffer: the alternate screen's own region goes
+  // when it is left, and the main screen's region outlives it.
+  it.each(['1049', '47', '1047'])('keeps the main region across an alternate screen (?%s)', (mode) => {
+    for (const reset of ['\x1b[r', '\x1b[!p']) {
+      const t = new MarginTracker();
+      t.feed(`\x1b[2;10r\x1b[?${mode}h${reset}`, ROWS);
+      expect(t.active).toBe(true);
+      t.feed(`\x1b[?${mode}l`, ROWS);
+      expect(t.active).toBe(true);
+    }
+  });
+
+  it.each(['1049', '47', '1047'])('drops the alternate screen region on leaving it (?%s)', (mode) => {
+    const t = new MarginTracker();
+    t.feed(`\x1b[?${mode}h\x1b[2;10r`, ROWS);
+    expect(t.active).toBe(true);
+    t.feed(`\x1b[?${mode}l`, ROWS);
+    expect(t.active).toBe(false);
+  });
+
+  it('follows a mode list, leading zeros and a split mode sequence', () => {
+    const t = new MarginTracker();
+    t.feed('\x1b[?1;01049h\x1b[2;10r\x1b[?10', ROWS);
+    expect(t.active).toBe(true);
+    t.feed('49l', ROWS);
+    expect(t.active).toBe(false);
+  });
+
+  it('is reset on both screens by RIS', () => {
+    const t = new MarginTracker();
+    t.feed('\x1b[2;10r\x1b[?1049h\x1b[3;9r\x1bc', ROWS);
+    expect(t.active).toBe(false);
+    t.feed('\x1b[?1049l', ROWS);
+    expect(t.active).toBe(false);
+  });
+  // xterm and Alacritty reset the margins of both screens on a resize.
+  it('is reset on both screens by a resize', () => {
+    const t = new MarginTracker();
+    t.feed('\x1b[2;10r\x1b[?1049h\x1b[3;9r', ROWS);
+    t.resize();
+    expect(t.active).toBe(false);
+    t.feed('\x1b[?1049l', ROWS);
+    expect(t.active).toBe(false);
+    t.feed('\x1b[2;10r', ROWS);
+    expect(t.active).toBe(true);
+  });
 });
 
 describe('SgrMouseEncodingTracker', () => {
