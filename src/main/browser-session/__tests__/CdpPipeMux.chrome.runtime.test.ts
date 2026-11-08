@@ -1,10 +1,12 @@
 // A real Chrome on a debugging pipe, driven through the multiplexer and its
 // loopback endpoint by real Playwright clients.
 //
-// SKIPPED BY DEFAULT: it needs a Chrome binary. To run it:
+// It finds Chrome as wmux does (CHROME_PATH first, then the launcher's own
+// discovery). Without one it skips locally, but fails on a CI runner that must
+// run real-Chrome suites (realBrowserHarness.requiredOnThisRunner), so it cannot
+// go quietly unrun there. To run it:
 //
-//   CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-//     npx vitest run -c vitest.runtime.config.ts src/main/browser-session/__tests__/CdpPipeMux.chrome.runtime.test.ts
+//   npx vitest run -c vitest.runtime.config.ts src/main/browser-session/__tests__/CdpPipeMux.chrome.runtime.test.ts
 //
 // A temporary profile, headless, and data: pages only; nothing is fetched.
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -19,12 +21,16 @@ import { chromium, type Browser } from 'playwright-core';
 import WebSocket, { WebSocketServer } from 'ws';
 import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
-import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
-import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
+import { ChromeLauncher, discoverChromeBinary, setPipeRelayForTests } from '../ChromeLauncher';
+import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
 import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
+import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { newRelayProofNonce, RELAY_PROOF_METHOD, relayProofMatches } from '../../../shared/relayProof';
 
-const CHROME = process.env.CHROME_PATH;
+const CHROME = process.env.CHROME_PATH || discoverChromeBinary() || undefined;
+if (!CHROME && requiredOnThisRunner({ name: 'headless', headless: true })) {
+  throw new Error('no Chrome found on a runner that must run the real-Chrome suites (set CHROME_PATH or install Chrome)');
+}
 
 interface Started { child: ChildProcess; profile: string; mux: CdpPipeMux; route: RelayRoute; exited: Promise<void> }
 const started: Started[] = [];
