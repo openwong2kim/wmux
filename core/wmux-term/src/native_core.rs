@@ -1570,7 +1570,8 @@ mod alt_kept_cells_tests {
 
     /// Rows as text ('.' for a blank, a wide char's spacer skipped), and the
     /// columns of each row with a red background (base 36).
-    fn run(steps: &[Step]) -> (Vec<String>, Vec<String>) {
+    /// The terminal after `steps`, from the 20x4 alternate screen.
+    fn run_term(steps: &[Step]) -> (Term<VoidListener>, ()) {
         let mut term = Term::new(Config::default(), &Size { cols: 20, rows: 4 }, VoidListener);
         let mut parser: Processor = Processor::new();
         let mut feed = XtermFeed::default();
@@ -1586,6 +1587,11 @@ mod alt_kept_cells_tests {
             }
         }
         parser.advance(&mut term, &feed.held);
+        (term, ())
+    }
+
+    fn run(steps: &[Step]) -> (Vec<String>, Vec<String>) {
+        let (term, _) = run_term(steps);
         let grid = term.grid();
         let mut text = Vec::new();
         let mut red = Vec::new();
@@ -1611,6 +1617,81 @@ mod alt_kept_cells_tests {
 
     fn rows(steps: &[Step]) -> Vec<String> {
         run(steps).0
+    }
+
+    /// Rows as cells: '_' for a wide glyph's spacer (xterm's width-0 cell).
+    fn cells(steps: &[Step]) -> Vec<String> {
+        let (term, _) = run_term(steps);
+        let grid = term.grid();
+        (0..grid.screen_lines())
+            .map(|y| {
+                let row = &grid[Line(y as i32)];
+                (0..grid.columns())
+                    .map(|x| {
+                        let cell = &row[Column(x)];
+                        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                            '_'
+                        } else if cell.c == ' ' {
+                            '.'
+                        } else {
+                            cell.c
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_large_dch_clears_from_the_cursor_only_with_or_without_kept_cells() {
+        assert_eq!(rows(&[Out("\x1b[1;6H\x1b[999P")])[0], "00000...............");
+        assert_eq!(rows(&[N, Out("\x1b[1;6H\x1b[999P"), W])[0], "00000...............");
+    }
+
+    #[test]
+    fn insert_mode_wraps_a_wide_glyph_before_it_shifts_anything() {
+        let shown = cells(&[N, Out("\x1b[4h\x1b[2;10H\u{4e2d}\x1b[4l"), W]);
+        assert_eq!(shown[1], "111111111.KLMNOPQRST");
+        assert_eq!(shown[2], "\u{4e2d}_2222222222abcdefgh");
+        // With autowrap off the glyph is dropped, and nothing shifts.
+        assert_eq!(cells(&[N, Out("\x1b[?7l\x1b[4h\x1b[2;10H\u{4e2d}\x1b[4l\x1b[?7h"), W]), all([R0, R1, R2, R3]));
+    }
+
+    #[test]
+    fn insert_mode_blanks_a_wide_glyph_shifted_into_the_last_visible_column() {
+        assert_eq!(cells(&[N, Out("\x1b[1;8H\u{4e2d}\x1b[4h\x1b[1;1Hxy\x1b[4l"), W])[0], "xy0000000._0ABCDEFGH");
+        assert_eq!(cells(&[Out("\x1b[1;18H\u{4e2d}\x1b[4h\x1b[1;1Hxy\x1b[4l")])[0], "xy0000000000ABCDEFG.");
+    }
+
+    #[test]
+    fn insert_and_delete_at_a_wide_glyph_cut_it_as_xterm_does() {
+        for narrowed in [true, false] {
+            let around = |edit: &'static str| {
+                let mut steps = vec![];
+                if narrowed {
+                    steps.push(To(10, 4));
+                }
+                steps.push(Out("\x1b[1;3H\u{4e2d}\x1b[1;4H"));
+                steps.push(Out(edit));
+                if narrowed {
+                    steps.push(To(20, 4));
+                }
+                cells(&steps)[0].clone()
+            };
+            assert_eq!(around("\x1b[1@"), "00.._000000ABCDEFGHI", "ICH at the spacer, narrowed={narrowed}");
+            assert_eq!(around("\x1b[1P"), "00.000000ABCDEFGHIJ.", "DCH at the spacer, narrowed={narrowed}");
+        }
+        assert_eq!(cells(&[Out("\x1b[1;19H\u{4e2d}"), N, Out("\x1b[1;1H\x1b[1@"), W])[0], ".0000000000ABCDEFGH.", "pushed off the physical end");
+    }
+
+    #[test]
+    fn the_alternate_screen_keeps_no_cells_while_it_is_not_shown() {
+        let (term, _) = run_term(&[N, Out("\x1b[?1049l"), To(8, 4)]);
+        let alt = term.inactive_grid();
+        assert!((0..alt.screen_lines()).all(|y| alt[Line(y as i32)].hidden_len() == 0));
+        let (term, _) = run_term(&[N, Out("\x1b[?1049l")]);
+        let alt = term.inactive_grid();
+        assert!((0..alt.screen_lines()).all(|y| alt[Line(y as i32)].hidden_len() == 0));
     }
 
     fn all(rows: [&str; 4]) -> Vec<String> {

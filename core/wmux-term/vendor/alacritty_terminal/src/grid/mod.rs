@@ -373,6 +373,14 @@ impl<T> Grid<T> {
         self.reset_lines(bounds, true);
     }
 
+    /// wmux: forget every visible row's kept cells (row.rs `hidden`): the
+    /// alternate screen's, once it is no longer the active one.
+    pub fn drop_kept_cells(&mut self) {
+        for line in (0..self.screen_lines() as i32).map(Line::from) {
+            self.raw[line].drop_hidden();
+        }
+    }
+
     fn reset_lines<D, R: RangeBounds<Line>>(&mut self, bounds: R, keep_width: bool)
     where
         T: ResetDiscriminant<D> + GridCell + Default,

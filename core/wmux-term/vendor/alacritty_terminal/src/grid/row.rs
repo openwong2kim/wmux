@@ -182,12 +182,18 @@ impl<T> Row<T> {
         match self.hidden.as_mut() {
             None => f(&mut self.inner),
             Some(hidden) => {
+                // Both vectors keep their buffers: no allocation per edit.
                 self.inner.append(hidden);
                 let result = f(&mut self.inner);
-                **hidden = self.inner.split_off(visible);
+                hidden.extend(self.inner.drain(visible..));
                 result
             },
         }
+    }
+
+    /// wmux: forget the kept cells (the row's screen is no longer shown).
+    pub(crate) fn drop_hidden(&mut self) {
+        self.hidden = None;
     }
 
     #[inline]

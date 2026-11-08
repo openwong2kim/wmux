@@ -141,17 +141,12 @@ impl<T> Storage<T> {
         self.len
     }
 
-    /// Swap implementation for Row<T>.
+    /// Swap two rows.
     ///
-    /// Exploits the known size of Row<T> to produce a slightly more efficient
-    /// swap than going through slice::swap.
-    ///
-    /// The default implementation from swap generates 8 movups and 4 movaps
-    /// instructions. This implementation achieves the swap in only 8 movups
-    /// instructions.
+    /// wmux: a plain slice swap. Upstream copied a Row as exactly four qwords,
+    /// which a Row with kept cells (row.rs `hidden`) no longer is; do not
+    /// restore that copy.
     pub fn swap(&mut self, a: Line, b: Line) {
-        // wmux: `Row` carries kept cells (row.rs `hidden`), so it is no longer
-        // four qwords; the upstream qword copy would split it. A plain swap.
         let a = self.compute_index(a);
         let b = self.compute_index(b);
         self.inner.swap(a, b);
