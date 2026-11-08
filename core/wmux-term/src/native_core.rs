@@ -1719,6 +1719,49 @@ mod alt_kept_cells_tests {
     }
 
     #[test]
+    fn erase_at_a_wide_glyph_cuts_it_as_xterm_does() {
+        for narrowed in [true, false] {
+            let around = |glyph: &'static str, edit: &'static str| {
+                let mut steps = vec![Out(glyph)];
+                if narrowed {
+                    steps.insert(0, To(10, 4));
+                }
+                steps.push(Out(edit));
+                if narrowed {
+                    steps.push(To(20, 4));
+                }
+                (cells(&steps)[0].clone(), run(&steps).1[0].clone())
+            };
+            let glyph = "\x1b[1;3H\u{4e2d}";
+            assert_eq!(
+                around(glyph, "\x1b[1;4H\x1b[1X").0,
+                "00..000000ABCDEFGHIJ",
+                "ECH at the spacer, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around(glyph, "\x1b[1;2H\x1b[2X").0,
+                "0...000000ABCDEFGHIJ",
+                "ECH ending on the lead, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around(glyph, "\x1b[1;3H\x1b[2X").0,
+                "00..000000ABCDEFGHIJ",
+                "ECH over the glyph, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around(glyph, "\x1b[1;4H\x1b[41m\x1b[1X\x1b[m"),
+                ("00..000000ABCDEFGHIJ".to_string(), "23".to_string()),
+                "the cut lead takes the fill, narrowed={narrowed}"
+            );
+        }
+        assert_eq!(
+            cells(&[Out("\x1b[1;13H\u{4e2d}"), N, Out("\x1b[1;9H\x1b[5X"), W])[0],
+            "00000000......EFGHIJ",
+            "ECH into kept cells, ending on a kept lead"
+        );
+    }
+
+    #[test]
     fn the_alternate_screen_keeps_no_cells_while_it_is_not_shown() {
         let (term, _) = run_term(&[N, Out("\x1b[?1049l"), To(8, 4)]);
         let alt = term.inactive_grid();

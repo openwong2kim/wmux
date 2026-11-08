@@ -37,7 +37,8 @@ Local changes:
   printing on every row as xterm's `BufferLine` does: over the physical row,
   with its wide-glyph fixes (a glyph cut at the cursor or pushed to the end
   loses its first cell, a bare spacer left at the cursor by a delete is filled,
-  a glyph shifted into the last column in insert mode is blanked). A large
+  a glyph shifted into the last column in insert mode is blanked, an erase
+  that cuts a glyph at either end blanks all of it). A large
   delete no longer clears cells left of the cursor (upstream cleared from
   `columns - count`), and a wide glyph that does not fit wraps (or is dropped)
   before insert mode shifts anything. Modified 2026-11-08.

@@ -1546,12 +1546,9 @@ impl<T: EventListener> Handler for Term<T> {
 
         // wmux: up to the physical end, as xterm's replaceCells: into the
         // cells a row keeps past a narrower width.
-        self.damage.damage_line(line.0 as usize, start.0, end.0);
+        self.damage.damage_line(line.0 as usize, start.0.saturating_sub(1), end.0);
         self.grid[line].with_physical(|cells| {
-            let end = cmp::min(start.0.saturating_add(count), cells.len());
-            for cell in &mut cells[start.0..end] {
-                *cell = bg.into();
-            }
+            replace_cells(cells, start.0, start.0.saturating_add(count), || bg.into())
         });
     }
 
@@ -2356,6 +2353,26 @@ fn delete_cells(cells: &mut [Cell], pos: usize, n: usize, fill: impl Fn() -> Cel
     }
     if cells[pos].flags.contains(Flags::WIDE_CHAR_SPACER) && cells[pos].c == ' ' {
         cells[pos] = fill();
+    }
+}
+
+/// wmux: xterm's `BufferLine.replaceCells` over a physical line: the cells
+/// from `start` to `end` set from `fill`. As xterm, a wide glyph cut at
+/// `start` loses its first cell, and one whose first cell is the last
+/// replaced loses its spacer.
+fn replace_cells(cells: &mut [Cell], start: usize, end: usize, fill: impl Fn() -> Cell) {
+    let len = cells.len();
+    if start >= len {
+        return;
+    }
+    if start > 0 && cells[start - 1].flags.contains(Flags::WIDE_CHAR) {
+        cells[start - 1] = fill();
+    }
+    if end < len && end > start && cells[end - 1].flags.contains(Flags::WIDE_CHAR) {
+        cells[end] = fill();
+    }
+    for cell in &mut cells[start..cmp::min(end, len)] {
+        *cell = fill();
     }
 }
 

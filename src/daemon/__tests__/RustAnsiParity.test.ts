@@ -88,6 +88,10 @@ const accepted: Case[] = [
   // (vendor/alacritty_terminal WMUX-PATCH.md).
   synthetic('wide-dch-first-half', 'a中b\x1b[1;2H\x1b[P'),
   synthetic('wide-dch-second-half-blank', ' 中b\x1b[44m\x1b[1;2H\x1b[P'),
+  // ECH at either half of a fullwidth glyph erases the whole glyph, as
+  // xterm's replaceCells does.
+  synthetic('wide-ech-second-half', 'a中b\x1b[44m\x1b[1;3H\x1b[X'),
+  synthetic('wide-ech-ending-on-first-half', 'a中b\x1b[44m\x1b[1;1H\x1b[2X'),
 ];
 
 // Classes that stay on xterm because Alacritty parses them differently.
