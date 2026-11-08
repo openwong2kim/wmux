@@ -14,6 +14,9 @@ use crate::term::cell::ResetDiscriminant;
 /// A row in the grid.
 #[derive(Default, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+// wmux: `hidden` is skipped, and serde's derive would otherwise ask `T: Default`
+// for it; Row deserializes for any `T` it did before.
+#[cfg_attr(feature = "serde", serde(bound(deserialize = "T: Deserialize<'de>")))]
 pub struct Row<T> {
     inner: Vec<T>,
 
@@ -26,7 +29,9 @@ pub struct Row<T> {
     /// wmux: the cells of an alternate-screen row past a narrower width, kept
     /// as xterm.js keeps them (its line keeps its length) and shown again by a
     /// later widen. Only a resize without reflow keeps them (`hide_past`); a
-    /// reset row is a new line, at the current width.
+    /// reset row is a new line, at the current width. Not serialized: a
+    /// serialized grid keeps upstream's format (the ref tests' grids), and a
+    /// deserialized row has none, as a row read back at its width would.
     #[cfg_attr(feature = "serde", serde(default, skip))]
     hidden: Option<Box<Vec<T>>>,
 }
