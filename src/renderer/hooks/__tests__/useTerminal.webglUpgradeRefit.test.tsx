@@ -91,7 +91,11 @@ async function setup(ptyId: string) {
   const { useTerminal } = await import('../useTerminal');
   // A measurable container, so fit() reaches FitAddon.fit.
   vi.spyOn(FitAddon.prototype, 'proposeDimensions').mockReturnValue({ cols: 100, rows: 30 });
-  const fitSpy = vi.spyOn(FitAddon.prototype, 'fit').mockImplementation(() => undefined);
+  // Applies the proposal, as the real fit does: a grid left at xterm's 80x24
+  // would read as unfitted to the first-resize gate, which refits it.
+  const fitSpy = vi.spyOn(FitAddon.prototype, 'fit').mockImplementation(function (this: FitAddon) {
+    (this as unknown as { _terminal?: { resize(cols: number, rows: number): void } })._terminal?.resize(100, 30);
+  });
   const jobs: Array<() => void> = [];
   const cancel = vi.fn();
   vi.spyOn(webglUpgradeQueue, 'enqueue').mockImplementation((run) => {

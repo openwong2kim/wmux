@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
 import type { BrowserWindow } from 'electron';
 import type { PTYManager } from '../../../pty/PTYManager';
 import {
@@ -7,6 +8,7 @@ import {
   updateBranch,
   updatePorts,
   removeCwd,
+  resetMetadataPollCache,
   broadcastMetadataUpdate,
   clearLastBroadcastAgentStatus,
   getLastBroadcastAgentName,
@@ -41,15 +43,49 @@ function fakeWindow() {
   return { win, sent };
 }
 
+/** Above Linux's largest pid_max (2^22), so no process can have it: the
+ *  poll's live-cwd read (/proc/<pid>/cwd) finds nothing on any runner. */
+const NO_SUCH_PID = 2 ** 22 + 1;
+
 /** Fake PTYManager backed by a Set of live ptyIds. */
 function fakePtyManager(live: Set<string>): PTYManager {
   return {
-    get: (ptyId: string) => (live.has(ptyId) ? { process: { pid: 1234 } } : undefined),
+    get: (ptyId: string) => (live.has(ptyId) ? { process: { pid: NO_SUCH_PID } } : undefined),
   } as unknown as PTYManager;
 }
 
+const TEST_PTY_IDS = ['pty-diff-1', 'pty-diff-sp', 'pty-diff-2', 'pty-diff-3a', 'pty-diff-3b', 'pty-diff-4', 'pty-diff-5', 'pty-diff-proc'];
+
 // app-weight P1-2 — last-payload diff on the poll tick.
 describe('runMetadataPollTick payload diff', () => {
+  // Module state outlives a test: a failed attempt skips its removeCwd, and a
+  // retry would then find its cwd and its last sent payload still there.
+  beforeEach(() => {
+    resetMetadataPollCache();
+    for (const id of TEST_PTY_IDS) removeCwd(id);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('the fake pane pid names no process, so a live /proc cwd never replaces the tracked one', async () => {
+    // A Linux /proc as a runner has it: every pid up to pid_max may be a real
+    // process whose cwd is somewhere else.
+    vi.spyOn(fs.promises, 'readlink').mockImplementation((async (target: fs.PathLike) => {
+      const pid = Number(/^\/proc\/(\d+)\/cwd$/.exec(String(target))?.[1]);
+      if (Number.isInteger(pid) && pid <= 2 ** 22) return '/home/runner';
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    }) as unknown as typeof fs.promises.readlink);
+    const mgr = fakePtyManager(new Set(['pty-diff-proc']));
+    const { win, sent } = fakeWindow();
+    updateCwd('pty-diff-proc', 'C:/repo-proc');
+
+    await runMetadataPollTick(mgr, win, true);
+    expect(sent[0][1]).toMatchObject({ ptyId: 'pty-diff-proc', cwd: 'C:/repo-proc' });
+
+    removeCwd('pty-diff-proc');
+  });
+
   it('sends the first payload, then skips unchanged ticks', async () => {
     const live = new Set(['pty-diff-1']);
     const mgr = fakePtyManager(live);

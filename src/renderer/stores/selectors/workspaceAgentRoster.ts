@@ -6,7 +6,7 @@ import { remoteAgentKey } from '../../../shared/remoteHosts';
 import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import type { StoreState } from '../index';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
-import { HOOK_RUNNING_TTL_MS, isHookRunning, isQuietUsageLimitError, isTeammateRunning, pickStashedRepresentativeSurface, resolveRemoteAgent } from './fleet';
+import { HOOK_RUNNING_TTL_MS, isHookRunning, isQuietUsageLimitError, isTeammateRunning, pickStashedRepresentativeSurface, resolveRemoteAgent, fleetDownHostIds, fleetOutdatedRemoteKeys } from './fleet';
 import { SUBAGENT_COUNT_STALE_MS } from '../../../shared/subagentCount';
 
 /** The pane's subagent count while the daemon keeps refreshing it; undefined for none. */
@@ -192,7 +192,7 @@ export function selectWorkspaceAgentRoster(
         // one) now live in fleet.ts, shared with selectFleetPanes so the
         // sidebar roster and the Fleet cards cannot disagree about which
         // remote sessions are agents.
-        const remoteAgent = resolveRemoteAgent(state.remoteWorkspaces, hostId, sessionId);
+        const remoteAgent = resolveRemoteAgent(state.remoteWorkspaces, hostId, sessionId, fleetDownHostIds(state), fleetOutdatedRemoteKeys(state));
         if (!remoteAgent) return;
         const status: AgentStatus = remoteAgent.status;
         rows.push({

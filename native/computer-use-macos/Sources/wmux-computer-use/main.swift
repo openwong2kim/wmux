@@ -12,6 +12,12 @@ Parent.enforce()
 // Own TCC identity first: nothing below may touch AX or capture as wmux.
 Trampoline.ensureSelfResponsible()
 
+if CommandLine.arguments.contains("--runner") {
+    // Starts the nested agent-desktop binary for main (Runner.swift). Past
+    // the parent check and the trampoline, so its children are this helper's.
+    Runner.run()
+}
+
 if CommandLine.arguments.contains("--request-permissions") {
     // Onboarding, run on an explicit user action: shows the system prompts so
     // the helper appears in both Settings lists. Never part of a request.

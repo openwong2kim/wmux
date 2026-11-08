@@ -6,6 +6,20 @@ import { spawnSync } from 'child_process';
 import { writeJsonAtomic } from '../../shared/settingsFile';
 import { dataSuffix } from '../../shared/constants';
 import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
+import { NATIVE_HOOKS_MARKER } from '../../shared/hooks/hookFlavours';
+import {
+  CLAUDE_KILL_SWITCH_FILE,
+  claudeHookCopyPath,
+  claudeNativeAvailable,
+  isPackagedBridge,
+  judgeClaudeCopy,
+  packagedClaudeNativeSource,
+  prepareClaudeNative,
+  readClaudeRuntime,
+  writeClaudeRuntime,
+  type ClaudeHookRuntime,
+  type ClaudeNativePlan,
+} from '../../shared/hooks/claudeNativeHook';
 
 /**
  * `wmux setup-hooks` — install the wmux ↔ Claude Code hook bridge directly into
@@ -33,6 +47,7 @@ wmux setup-hooks — install official CLI lifecycle integrations
 
 USAGE
   wmux setup-hooks [--remove | --status] [--signals-only | --with-gate] [--json]
+  wmux setup-hooks [--runtime node|native] [--native-from <path>] [--reprobe]
   wmux setup-hooks --wsl [<distro>] [--uninstall] [--json]
 
 ACTIONS (mutually exclusive; default = install)
@@ -49,6 +64,21 @@ ACTIONS (mutually exclusive; default = install)
                For Codex hooks this includes the trust verdict: WRITTEN (block
                in place, Codex silently runs nothing until you approve it) vs
                ACTIVE (the bridge has actually fired).
+
+HOOK COMMAND (install only)
+  Where wmux ships its native hook binary (macOS, Linux), the Claude hooks run
+  a copy of it, ~/.wmux/hooks/wmux-claude-hook, once its self-test passes;
+  otherwise they run \`node\` on the bridge.
+  --runtime node|native
+               Keep the hooks on node (or go back to the copy) from now on.
+               Recorded in ~/.wmux/hooks/claude-runtime; only an installed
+               wmux's CLI changes it. To turn native runs off at once without
+               an install: touch ~/.wmux/hooks/native-disabled.
+  --native-from <path>
+               Copy this wmux-native build instead of the shipped one (a
+               checkout's core/wmux-native/target/release/wmux-native). The
+               installed app puts its own build back when it next starts.
+  --reprobe    Run the copy's self-test again even for a build already judged.
 
 HOOK PROFILE (install only; mutually exclusive)
   --signals-only  Install the lifecycle signals and the approval card WITHOUT
@@ -265,6 +295,9 @@ export interface SetupHooksPaths {
   bridgeDest: string;
   /** Bundled bridge source, or null when it could not be located. */
   bridgeSource: string | null;
+  /** The wmux-native this build ships beside a packaged bridge, or one named
+   *  by `--native-from`; absent or null when there is none. */
+  nativeSource?: string | null;
 }
 
 /** `~/.claude/settings.json` — the only path a gate-presence check needs. */
@@ -274,10 +307,12 @@ function defaultSettingsPath(): string {
 
 export function defaultPaths(): SetupHooksPaths {
   const home = os.homedir();
+  const bridgeSource = findBridgeSource();
   return {
     settingsPath: defaultSettingsPath(),
     bridgeDest: path.join(home, '.wmux', 'hooks', 'wmux-bridge.mjs'),
-    bridgeSource: findBridgeSource(),
+    bridgeSource,
+    nativeSource: packagedClaudeNativeSource(bridgeSource),
   };
 }
 
@@ -329,12 +364,34 @@ export function safeReviver(key: string, value: unknown): unknown {
   return value;
 }
 
-/** Build the command string for a hook event, referencing the stable bridge path. */
-function bridgeCommand(bridgeDest: string, event: HookEvent, extraArgs?: string): string {
+/**
+ * Build the command string for a hook event, referencing the stable bridge path.
+ * Node form: `node "<bridge>" <Event>`. Native form, when `binary` names the
+ * wmux-claude-hook copy: `"<copy>" "<bridge>" <Event>`; the copy runs the
+ * hook itself, and an older wmux still finds its marker and argv tail in it.
+ */
+function bridgeCommand(bridgeDest: string, event: HookEvent, extraArgs?: string, binary?: string | null): string {
   // Mirror hooks.json shape: `node "<abs path>" <HookName>`. Quote the path so
   // spaces in the home directory don't break the command. #783: --permission-gate
   // appends an argv token that switches the bridge to the gate JSON mode.
-  return `node "${bridgeDest}" ${event}${extraArgs ? ` ${extraArgs}` : ''}`;
+  const runner = binary ? `"${binary}"` : 'node';
+  return `${runner} "${bridgeDest}" ${event}${extraArgs ? ` ${extraArgs}` : ''}`;
+}
+
+/** Which command a wmux leaf runs: the wmux-claude-hook copy, or node. */
+type HookCommandForm = 'node' | 'native';
+const NATIVE_LEAF = /^"[^"]*[\\/]wmux-claude-hook" /;
+
+function leafForm(leaf: unknown): HookCommandForm {
+  return nativeLeafCopy(leaf) ? 'native' : 'node';
+}
+
+/** The wmux-claude-hook copy a native leaf runs (its quoted first token), or
+ *  null for a node leaf. */
+function nativeLeafCopy(leaf: unknown): string | null {
+  const command = (leaf as HookLeaf | null)?.command;
+  if (typeof command !== 'string' || !NATIVE_LEAF.test(command.trim())) return null;
+  return /^"([^"]*)"/.exec(command.trim())?.[1] ?? null;
 }
 
 /** A single hook command leaf, e.g. { type: 'command', command: '…' }. */
@@ -459,9 +516,16 @@ function specLabel(spec: HookSpec): string {
   return `${spec.event}${spec.matcher ? `:${spec.matcher}` : ''}${spec.extraArgs ? ` ${spec.extraArgs}` : ''}`;
 }
 
-function specState(groups: unknown, spec: HookSpec): HookSpecState {
+/** A wmux group that gives `spec` its scope, with its leaf in `form`. */
+function isCurrentWmuxGroupForSpec(group: unknown, spec: HookSpec, form: HookCommandForm): boolean {
+  if (!isEffectiveWmuxGroupForSpec(group, spec)) return false;
+  const hooks = (group as HookGroup).hooks as unknown[];
+  return hooks.some((leaf) => isWmuxLeafWithTail(leaf, spec) && leafForm(leaf) === form);
+}
+
+function specState(groups: unknown, spec: HookSpec, form: HookCommandForm): HookSpecState {
   if (!Array.isArray(groups)) return 'missing';
-  if (groups.some((g) => isEffectiveWmuxGroupForSpec(g, spec))) return 'ok';
+  if (groups.some((g) => isCurrentWmuxGroupForSpec(g, spec, form))) return 'ok';
   return groups.some((g) => isWmuxGroup(g) && hasArgvTail(g, spec)) ? 'outdated' : 'missing';
 }
 
@@ -469,16 +533,18 @@ function specState(groups: unknown, spec: HookSpec): HookSpecState {
  * #2404 — the installed hook set compared with the one this build expects.
  * The expected set is `specsFor(profile)`, the list `installHooks` writes, and
  * the profile is the derived one, so an install from before a hook existed is
- * measured against its own profile and never grows the gate.
+ * measured against its own profile and never grows the gate. A hook in the
+ * other command form than `form` (node where the copy is available, or the
+ * copy where it is not) is outdated.
  */
-export function hookSetStatus(settings: Record<string, unknown>): { profile: HookProfile; hooks: HookSpecStatus[] } {
+export function hookSetStatus(settings: Record<string, unknown>, form: HookCommandForm = 'node'): { profile: HookProfile; hooks: HookSpecStatus[] } {
   const profile = detectProfile(settings);
   const map = settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
     ? (settings.hooks as Record<string, unknown>)
     : {};
   return {
     profile,
-    hooks: specsFor(profile).map((spec) => ({ ...spec, label: specLabel(spec), state: specState(map[spec.event], spec) })),
+    hooks: specsFor(profile).map((spec) => ({ ...spec, label: specLabel(spec), state: specState(map[spec.event], spec, form) })),
   };
 }
 
@@ -711,6 +777,87 @@ export interface InstallOutcome {
   warning: string | null;
   /** Fatal error (corruption / missing bridge); when set, ok is false. */
   error: string | null;
+  /** The wmux-claude-hook copy the entries run, or null for node; absent
+   *  when no native plan was made. */
+  native?: string | null;
+  /** Why the entries run node, when they do. */
+  nativeReason?: string | null;
+}
+
+/** What makes the native plan: `--native-from`, `--reprobe`, and whether
+ *  this is an isolated instance (node form only). */
+export interface ClaudeNativeOptions {
+  nativeFrom?: string;
+  reprobe?: boolean;
+  suffixed?: boolean;
+  platform?: NodeJS.Platform;
+}
+
+/** Install or refresh the copy, then say which form the entries take. */
+export function planClaudeNative(paths: SetupHooksPaths, opts: ClaudeNativeOptions = {}): Promise<ClaudeNativePlan> {
+  return prepareClaudeNative({
+    nativeSource: opts.nativeFrom ?? paths.nativeSource ?? null,
+    bridgeSource: paths.bridgeSource,
+    bridgeDest: paths.bridgeDest,
+    suffixed: opts.suffixed ?? dataSuffix() !== '',
+    reprobe: opts.reprobe,
+    platform: opts.platform,
+  });
+}
+
+/** Why `--native-from <path>` cannot be used (no file there), or null. */
+export function nativeFromRefusal(file: string): string | null {
+  try {
+    if (fs.statSync(file).isFile()) return null;
+  } catch { /* reported below */ }
+  return `--native-from: no file at ${path.resolve(file)}`;
+}
+
+/**
+ * `--runtime node|native`: record which form installs write. The file is
+ * shared with the installed wmux, so only an installed app's CLI, not
+ * suffixed, writes it; any other returns the warning to print and writes
+ * nothing.
+ */
+export function applyRuntimeFlag(paths: SetupHooksPaths, runtime: ClaudeHookRuntime, suffixed: boolean): string | null {
+  if (suffixed || !isPackagedBridge(paths.bridgeSource)) {
+    const who = suffixed ? 'an isolated instance' : 'a CLI that is not an installed wmux\'s';
+    return `warning: --runtime ${runtime} ignored: ${who} does not change the runtime your installed wmux uses`;
+  }
+  writeClaudeRuntime(path.dirname(paths.bridgeDest), runtime);
+  return null;
+}
+
+/** `installHooks` with the native form decided first: the copy is prepared
+ *  (and probed) before settings.json is read, never inside its
+ *  read-modify-write. */
+export async function installHooksWithNative(
+  paths: SetupHooksPaths,
+  requestedProfile?: HookProfile,
+  opts: ClaudeNativeOptions = {},
+): Promise<InstallOutcome> {
+  const plan = willWriteEntries(paths) ? await planClaudeNative(paths, opts) : null;
+  return installHooks(paths, requestedProfile, plan);
+}
+
+/** `updateHooks` with the native form decided first, as installHooksWithNative. */
+export async function updateHooksWithNative(paths: SetupHooksPaths, opts: ClaudeNativeOptions = {}): Promise<UpdateOutcome> {
+  const plan = willWriteEntries(paths) ? await planClaudeNative(paths, opts) : null;
+  return updateHooks(paths, plan);
+}
+
+/** True when the marketplace plugin is installed and not disabled: it
+ *  registers the hooks then, and install and update write no entries. */
+function pluginOwnsHooks(settingsPath: string, settings: Record<string, unknown>): boolean {
+  return detectPluginViaManifest(settingsPath) && !isPluginExplicitlyDisabled(settings);
+}
+
+/** False when an install would write no entries (settings.json corrupt, or
+ *  the plugin owns the hooks): then no copy is made or run. Read again by
+ *  the install itself, which decides. */
+function willWriteEntries(paths: SetupHooksPaths): boolean {
+  const load = loadSettings(paths.settingsPath);
+  return !load.corrupted && !pluginOwnsHooks(paths.settingsPath, load.settings);
 }
 
 /**
@@ -723,7 +870,9 @@ export interface InstallOutcome {
 export function installHooks(
   paths: SetupHooksPaths,
   requestedProfile?: HookProfile,
+  native: ClaudeNativePlan | null = null,
 ): InstallOutcome {
+  const binary = native?.binary ?? null;
   const base: InstallOutcome = {
     ok: false,
     settingsPath: paths.settingsPath,
@@ -736,6 +885,7 @@ export function installHooks(
     removedForPlugin: 0,
     warning: null,
     error: null,
+    ...(native ? { native: binary, nativeReason: native.reason } : {}),
   };
 
   // 1. Load settings; abort on corruption rather than clobbering user config.
@@ -765,7 +915,7 @@ export function installHooks(
   //    foreign hooks are preserved. An installed-but-DISABLED plugin loads no
   //    hooks, so it must NOT short-circuit — the settings.json entries are the
   //    only live installation in that case (codex review).
-  if (detectPluginViaManifest(paths.settingsPath) && !isPluginExplicitlyDisabled(settings)) {
+  if (pluginOwnsHooks(paths.settingsPath, settings)) {
     const removedForPlugin = stripWmuxHooks(settings);
     if (removedForPlugin > 0) {
       writeJsonAtomic(paths.settingsPath, settings);
@@ -808,7 +958,7 @@ export function installHooks(
   for (const spec of specs) {
     const group: HookGroup = {
       matcher: spec.matcher,
-      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event, spec.extraArgs) }],
+      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event, spec.extraArgs, binary) }],
     };
     const existing = hooks[spec.event];
     hooks[spec.event] = Array.isArray(existing) ? [...existing, group] : [group];
@@ -836,6 +986,9 @@ export interface UpdateOutcome {
   /** The hooks this call wrote: missing ones added, outdated ones rewritten. */
   updated: string[];
   error: string | null;
+  /** As InstallOutcome: the copy the entries run, or null for node. */
+  native?: string | null;
+  nativeReason?: string | null;
 }
 
 /**
@@ -847,8 +1000,13 @@ export interface UpdateOutcome {
  * a signals-only install stays signals-only. Run only from an explicit click
  * (owner decision 2026-07-17): nothing calls this on its own.
  */
-export function updateHooks(paths: SetupHooksPaths): UpdateOutcome {
-  const base: UpdateOutcome = { ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: null };
+export function updateHooks(paths: SetupHooksPaths, native: ClaudeNativePlan | null = null): UpdateOutcome {
+  const binary = native?.binary ?? null;
+  const form: HookCommandForm = binary ? 'native' : 'node';
+  const base: UpdateOutcome = {
+    ok: false, settingsPath: paths.settingsPath, profile: 'full', updated: [], error: null,
+    ...(native ? { native: binary, nativeReason: native.reason } : {}),
+  };
   const load = loadSettings(paths.settingsPath);
   if (load.corrupted) {
     return {
@@ -860,10 +1018,10 @@ export function updateHooks(paths: SetupHooksPaths): UpdateOutcome {
   }
   const settings = load.settings;
   // The plugin owns the hooks then; settings.json entries would double them.
-  if (detectPluginViaManifest(paths.settingsPath) && !isPluginExplicitlyDisabled(settings)) {
+  if (pluginOwnsHooks(paths.settingsPath, settings)) {
     return { ...base, ok: true };
   }
-  const { profile, hooks: rows } = hookSetStatus(settings);
+  const { profile, hooks: rows } = hookSetStatus(settings, form);
   const stale = rows.filter((r) => r.state !== 'ok');
   if (stale.length === 0) return { ...base, ok: true, profile };
 
@@ -880,7 +1038,7 @@ export function updateHooks(paths: SetupHooksPaths): UpdateOutcome {
     for (const group of existing) {
       // An outdated spec's own leaves go; a hand-mixed group keeps the
       // user's leaves and its place, as in `stripWmuxHooks`.
-      if (spec.state !== 'outdated' || !isWmuxGroup(group) || isEffectiveWmuxGroupForSpec(group, spec)) {
+      if (spec.state !== 'outdated' || !isWmuxGroup(group) || isCurrentWmuxGroupForSpec(group, spec, form)) {
         kept.push(group);
         continue;
       }
@@ -892,7 +1050,7 @@ export function updateHooks(paths: SetupHooksPaths): UpdateOutcome {
     }
     kept.push({
       matcher: spec.matcher,
-      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event, spec.extraArgs) }],
+      hooks: [{ type: 'command', command: bridgeCommand(paths.bridgeDest, spec.event, spec.extraArgs, binary) }],
     });
     hooks[spec.event] = kept;
   }
@@ -1045,6 +1203,53 @@ export function refreshHookBridgeAtBoot(paths: SetupHooksPaths): BridgeRefreshOu
   return refreshHookBridge(paths);
 }
 
+/** What a boot-time refresh of the wmux-claude-hook copy did. */
+export type NativeCopyRefreshOutcome =
+  | 'refreshed'     // the shipped build passed and took the copy's place
+  | 'up-to-date'    // the copy is the shipped build already
+  | 'kept'          // the shipped build did not pass (or could not be put in place); the copy stays
+  | 'not-installed' // no copy of wmux's there: nothing is installed at boot
+  | 'no-source'     // this build ships none
+  | 'runtime-node'  // ~/.wmux/hooks/claude-runtime says node: the copy is not run; an install refreshes it
+  | 'not-in-use'    // no native entry names the copy: an install refreshes it
+  | 'stale-bridge'  // the bridge refresh did not leave this build's bridge in place, so a new copy would pin a bridge that is not there
+  | 'isolated';     // WMUX_DATA_SUFFIX set: the copy is the installed wmux's
+
+/**
+ * Bring the copy the Claude entries run up to the shipped build at boot, as
+ * refreshHookBridge does for the bridge beside it. Call this after it, with
+ * its outcome: a new copy pins this build's bridge, so it is refreshed only
+ * once that bridge is in place. Only a copy wmux installed and native entries
+ * name is refreshed, through the same stage, probe and swap as an install; it
+ * never writes settings.json, and never installs a copy where there is none.
+ */
+export async function refreshClaudeNativeAtBoot(
+  paths: SetupHooksPaths,
+  bridge: BridgeRefreshOutcome | 'isolated',
+): Promise<NativeCopyRefreshOutcome> {
+  if (dataSuffix() !== '') return 'isolated';
+  const copy = claudeHookCopyPath(paths.bridgeDest);
+  let before: Buffer;
+  try {
+    before = fs.readFileSync(copy);
+  } catch {
+    return 'not-installed';
+  }
+  if (!before.includes(Buffer.from(NATIVE_HOOKS_MARKER))) return 'not-installed';
+  if (!paths.nativeSource || !fs.existsSync(paths.nativeSource)) return 'no-source';
+  if (readClaudeRuntime(path.dirname(paths.bridgeDest)) === 'node') return 'runtime-node';
+  const load = loadSettings(paths.settingsPath);
+  if (load.corrupted || !wmuxLeaves(load.settings).some((leaf) => leafForm(leaf) === 'native' && nativeLeafCopy(leaf) === copy)) return 'not-in-use';
+  if (bridge !== 'refreshed' && bridge !== 'up-to-date') return 'stale-bridge';
+  const plan = await planClaudeNative(paths, { suffixed: false });
+  let after: Buffer | null = null;
+  try { after = fs.readFileSync(copy); } catch { /* reported as kept */ }
+  let shipped: Buffer | null = null;
+  try { shipped = fs.readFileSync(paths.nativeSource); } catch { /* reported as kept */ }
+  if (!plan.binary || !after || !shipped || !after.equals(shipped)) return 'kept';
+  return after.equals(before) ? 'up-to-date' : 'refreshed';
+}
+
 // ----- Remove -------------------------------------------------------------
 
 export interface RemoveOutcome {
@@ -1148,6 +1353,13 @@ export interface StatusOutcome {
    * (Settings › Update) or a bare `wmux setup-hooks` brings it up to date.
    */
   updateAvailable: boolean;
+  /** True when the wmux-claude-hook copy passed its self-test for this
+   *  build's bridge: the entries can run it (never on Windows). */
+  nativeAvailable: boolean;
+  /** ~/.wmux/hooks/claude-runtime: `node` keeps the entries on node. */
+  runtime: ClaudeHookRuntime;
+  /** How the entries run now (see claudeHookRuntimeReport). */
+  hookRuntime: ClaudeHookRuntimeReport;
 }
 
 /**
@@ -1383,7 +1595,13 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     ),
   };
 
-  const hookRows = load.corrupted || pluginActive ? [] : hookSetStatus(load.settings).hooks;
+  // The form an install would write now: the copy where it passed and the
+  // runtime is native, else node; an isolated instance writes node only. A
+  // hook in the other form is outdated.
+  const nativeAvailable = claudeNativeAvailable(paths.bridgeDest, paths.bridgeSource);
+  const runtime = readClaudeRuntime(path.dirname(paths.bridgeDest));
+  const form: HookCommandForm = nativeAvailable && runtime === 'native' && dataSuffix() === '' ? 'native' : 'node';
+  const hookRows = load.corrupted || pluginActive ? [] : hookSetStatus(load.settings, form).hooks;
 
   return {
     settingsPath: paths.settingsPath,
@@ -1399,7 +1617,116 @@ export function statusHooks(paths: SetupHooksPaths): StatusOutcome {
     bridgeStale,
     pluginAlsoInstalled: detectPluginInstalled(paths.settingsPath),
     features,
+    nativeAvailable,
+    runtime,
+    hookRuntime: claudeHookRuntimeReport(paths, { settings: load.corrupted ? {} : load.settings, nativeAvailable, runtime }),
   };
+}
+
+/**
+ * How the Claude hook entries run, for `wmux doctor` and `setup-hooks --status`:
+ *   native        the copy, which passed its self-test for the bridge beside it
+ *                 (warn: no bridge beside it, or no self-test recorded)
+ *   node          `node <bridge>` (the copy, when it passes, is an Update away)
+ *   runtime-node  node, as ~/.wmux/hooks/claude-runtime says
+ *   windows       node: Windows has no native Claude hook
+ *   mixed         some entries one form, some the other
+ *   copy-missing  native entries name a copy that is gone: every hook fails
+ *   copy-failed   native entries name a copy recorded as failing its self-test
+ *   pin-mismatch  the bridge beside the copy is not the one it pins: each run
+ *                 hands over to node
+ *   kill-switch   native-disabled beside the copy: each run hands over to node
+ *   node-missing  a hand-over (a pin mismatch, the kill switch) with no node
+ *                 on PATH: the runs stay native
+ *   none          no wmux entries in settings.json
+ * Runs nothing.
+ */
+export type ClaudeHookRuntimeState =
+  | 'native' | 'node' | 'runtime-node' | 'windows' | 'mixed' | 'copy-missing'
+  | 'copy-failed' | 'pin-mismatch' | 'kill-switch' | 'node-missing' | 'none';
+
+export interface ClaudeHookRuntimeReport {
+  state: ClaudeHookRuntimeState;
+  severity: 'ok' | 'warn' | 'fail';
+  detail: string;
+  /** The copy the native entries name; absent when none is native. */
+  copy?: string;
+}
+
+/** Every wmux leaf in settings.json's hooks. */
+function wmuxLeaves(settings: Record<string, unknown>): unknown[] {
+  const hooks = settings.hooks;
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return [];
+  return Object.values(hooks as Record<string, unknown>)
+    .filter(Array.isArray)
+    .flatMap((groups) => (groups as unknown[]).filter(isWmuxGroup))
+    .flatMap((g) => ((g as HookGroup).hooks as unknown[]).filter(isWmuxLeaf));
+}
+
+/** True when `node` is an executable file on this PATH. */
+export function nodeOnPath(env: NodeJS.ProcessEnv = process.env): boolean {
+  const names = process.platform === 'win32' ? ['node.exe'] : ['node'];
+  for (const dir of (env.PATH ?? '').split(path.delimiter)) {
+    for (const name of names) {
+      try {
+        fs.accessSync(path.join(dir, name), fs.constants.X_OK);
+        return true;
+      } catch { /* next */ }
+    }
+  }
+  return false;
+}
+
+export function claudeHookRuntimeReport(
+  paths: SetupHooksPaths,
+  opts: {
+    platform?: NodeJS.Platform;
+    hasNode?: () => boolean;
+    /** What statusHooks already read, so settings.json is not read twice. */
+    settings?: Record<string, unknown>;
+    nativeAvailable?: boolean;
+    runtime?: ClaudeHookRuntime;
+  } = {},
+): ClaudeHookRuntimeReport {
+  const platform = opts.platform ?? process.platform;
+  const leaves = wmuxLeaves(opts.settings ?? loadSettings(paths.settingsPath).settings);
+  const native = leaves.filter((leaf) => leafForm(leaf) === 'native');
+  const named = native.length > 0 ? nativeLeafCopy(native[0]) : null;
+  const report = (state: ClaudeHookRuntimeState, severity: ClaudeHookRuntimeReport['severity'], detail: string): ClaudeHookRuntimeReport =>
+    ({ state, severity, detail, ...(named ? { copy: named } : {}) });
+  if (leaves.length === 0) return report('none', 'ok', 'no wmux hook entries in settings.json');
+  if (native.length > 0 && native.length < leaves.length) {
+    return report('mixed', 'warn', `${native.length} of ${leaves.length} entries run the native copy, the rest node; \`wmux setup-hooks\` writes one form`);
+  }
+  if (native.length === 0) {
+    if (platform === 'win32') return report('windows', 'ok', 'node: Windows runs the Claude hooks on node');
+    if ((opts.runtime ?? readClaudeRuntime(path.dirname(paths.bridgeDest))) === 'node') {
+      return report('runtime-node', 'ok', 'node, as ~/.wmux/hooks/claude-runtime says (`wmux setup-hooks --runtime native` turns it back)');
+    }
+    return (opts.nativeAvailable ?? claudeNativeAvailable(paths.bridgeDest, paths.bridgeSource, platform))
+      ? report('node', 'ok', 'node; the native copy passed its self-test, so Update or `wmux setup-hooks` moves them to it')
+      : report('node', 'ok', 'node');
+  }
+  const copy = named as string;
+  const judged = judgeClaudeCopy(copy);
+  if (judged === 'missing') return report('copy-missing', 'fail', `${copy} is gone, so every hook fails; run \`wmux setup-hooks\``);
+  if (judged === 'fail') return report('copy-failed', 'fail', `${copy} is recorded as failing its self-test; run \`wmux setup-hooks\``);
+  const hasNode = (opts.hasNode ?? nodeOnPath)();
+  if (fs.existsSync(path.join(path.dirname(copy), CLAUDE_KILL_SWITCH_FILE))) {
+    if (judged !== 'no-bridge' && hasNode) return report('kill-switch', 'ok', `native-disabled is set beside ${copy}: each run hands over to node`);
+    const why = judged === 'no-bridge' ? 'there is no bridge beside it' : 'there is no node on PATH';
+    return report('node-missing', 'warn', `native-disabled is set beside ${copy}, but ${why}: the runs stay native`);
+  }
+  if (judged === 'pass') return report('native', 'ok', `native: ${copy}`);
+  if (judged === 'unchecked') {
+    return report('native', 'warn', `native: ${copy}, but no self-test is recorded for these bytes; \`wmux setup-hooks --reprobe\` checks it`);
+  }
+  if (judged === 'no-bridge') {
+    return report('native', 'warn', `native: ${copy}, with no bridge beside it: nothing can hand the runs over to node; \`wmux setup-hooks\` puts it back`);
+  }
+  return hasNode
+    ? report('pin-mismatch', 'warn', `the bridge beside ${copy} is not the one it was made from: each run hands over to node; \`wmux setup-hooks\` brings them in step`)
+    : report('node-missing', 'warn', `the bridge beside ${copy} is not the one it was made from and there is no node on PATH: the runs stay native against it`);
 }
 
 /**
@@ -1428,7 +1755,34 @@ export function isPermissionGateInstalled(settingsPath: string = defaultSettings
   if (detectPluginViaManifest(settingsPath) && !isPluginExplicitlyDisabled(load.settings)) {
     return true;
   }
-  return installedSpecsIn(load.settings).has(specKey(PERMISSION_GATE_SPEC));
+  const hooks = load.settings.hooks;
+  const groups = hooks && typeof hooks === 'object' && !Array.isArray(hooks)
+    ? (hooks as Record<string, unknown>)[PERMISSION_GATE_SPEC.event]
+    : undefined;
+  if (!Array.isArray(groups)) return false;
+  const leaves = groups
+    .filter((g) => isEffectiveWmuxGroupForSpec(g, PERMISSION_GATE_SPEC))
+    .flatMap((g) => ((g as HookGroup).hooks as unknown[]).filter((leaf) => isWmuxLeafWithTail(leaf, PERMISSION_GATE_SPEC)));
+  // A native leaf counts only when its copy is known to run, itself or by
+  // handing over to the node bridge beside it, which answers the decision.
+  // One hash of the copy per call: this runs once, as `wmux web` starts.
+  return leaves.some((leaf) => leafForm(leaf) === 'node' || nativeLeafRuns(leaf));
+}
+
+/** The copy a native leaf names can be executed and passed its self-test,
+ *  for the bridge beside it or another (a run then hands over to that
+ *  bridge). No bridge beside it, or no recorded self-test, does not count.
+ *  Runs nothing. */
+function nativeLeafRuns(leaf: unknown): boolean {
+  const copy = nativeLeafCopy(leaf);
+  if (!copy) return false;
+  try {
+    fs.accessSync(copy, fs.constants.X_OK);
+  } catch {
+    return false;
+  }
+  const judged = judgeClaudeCopy(copy);
+  return judged === 'pass' || judged === 'pin-mismatch';
 }
 
 // ----- Printing -----------------------------------------------------------
@@ -1459,6 +1813,9 @@ function printInstall(outcome: InstallOutcome, jsonMode: boolean): void {
   console.log(`Copied bridge → ${outcome.bridgeDest}`);
   console.log(`Updated settings → ${outcome.settingsPath}`);
   console.log(`Installed hooks for: ${outcome.events.join(', ')}`);
+  if (outcome.native !== undefined) {
+    console.log(outcome.native ? `Hooks run: ${outcome.native}` : `Hooks run: node (${outcome.nativeReason ?? 'no native copy'})`);
+  }
   console.log(
     outcome.profile === 'signals-only'
       ? 'Profile: signals-only — no wmux hook runs per tool call. Remote approvals are OFF; '
@@ -1512,6 +1869,8 @@ function printStatus(outcome: StatusOutcome, jsonMode: boolean): void {
     const tag = f.state === 'ok' ? 'OK ' : f.state === 'stale' ? 'STALE' : 'OFF';
     console.log(`${label.padEnd(18)} ${tag}  ${f.detail}`);
   }
+  const runtimeTag = { ok: 'OK ', warn: 'WARN', fail: 'FAIL' }[outcome.hookRuntime.severity];
+  console.log(`${'hook runtime'.padEnd(18)} ${runtimeTag}  ${outcome.hookRuntime.detail}`);
 
   // #2404 — the hook set itself, one line per hook this build expects, so a
   // hook a newer build added reads as missing instead of hiding behind a
@@ -1857,12 +2216,42 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
       ? 'full'
       : undefined;
 
+  // The Claude hooks' command form (install only): `--native-from <path>`
+  // names a wmux-native build to copy (a checkout's target/release),
+  // `--runtime node|native` records which form installs write, and
+  // `--reprobe` runs the copy's self-test again.
+  const valueOf = (flag: string): string | null | undefined => {
+    const i = args.indexOf(flag);
+    if (i === -1) return undefined;
+    const value = args[i + 1];
+    return value !== undefined && !value.startsWith('--') ? value : null;
+  };
+  const nativeFrom = valueOf('--native-from');
+  const runtimeArg = valueOf('--runtime');
+  const reprobe = args.includes('--reprobe');
+  if (nativeFrom === null || (runtimeArg !== undefined && runtimeArg !== 'node' && runtimeArg !== 'native')) {
+    console.error(nativeFrom === null ? '--native-from needs a path to a wmux-native build.' : '--runtime takes node or native.');
+    process.exit(1);
+    return;
+  }
+  if ((nativeFrom !== undefined || runtimeArg !== undefined || reprobe) && (remove || status)) {
+    console.error('--native-from, --runtime and --reprobe apply to install only; drop --remove/--status.');
+    process.exit(1);
+    return;
+  }
+  const nativeFromError = nativeFrom ? nativeFromRefusal(nativeFrom) : null;
+  if (nativeFromError) {
+    console.error(nativeFromError);
+    process.exit(1);
+    return;
+  }
+  const values = new Set([nativeFrom, runtimeArg].filter((v): v is string => typeof v === 'string'));
+
   // Reject unknown arguments rather than silently falling through to a full
   // install — a typo like `--remov` must not WRITE hooks the user was trying
   // to delete.
-  const unknown = args.filter(
-    (a) => a !== '--remove' && a !== '--status' && a !== '--signals-only' && a !== '--with-gate',
-  );
+  const known = new Set(['--remove', '--status', '--signals-only', '--with-gate', '--native-from', '--runtime', '--reprobe']);
+  const unknown = args.filter((a, i) => !known.has(a) && !(values.has(a) && (args[i - 1] === '--native-from' || args[i - 1] === '--runtime')));
   if (unknown.length > 0) {
     console.error(`Unknown argument(s): ${unknown.join(', ')}. Run 'wmux setup-hooks --help' for usage.`);
     process.exit(1);
@@ -1924,9 +2313,22 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
     return;
   }
 
+  // The runtime is shared with the installed wmux: an isolated instance or a
+  // CLI that is not an installed app's (a checkout) leaves it alone.
+  const suffixed = dataSuffix() !== '';
+  if (runtimeArg) {
+    const ignored = applyRuntimeFlag(paths, runtimeArg as ClaudeHookRuntime, suffixed);
+    if (ignored) console.error(ignored);
+  }
+  if (nativeFrom && suffixed) console.error('warning: --native-from ignored: an isolated instance writes the node form only');
+
   // Run each integration independently so a corrupt Claude settings file does
   // not prevent safe Codex/OpenCode installation (and vice versa).
-  const claude = installHooks(paths, requestedProfile);
+  const claude = await installHooksWithNative(paths, requestedProfile, {
+    nativeFrom: nativeFrom ? path.resolve(nativeFrom) : undefined,
+    reprobe,
+    suffixed,
+  });
   const codexVersionOutput = probeCodexVersion();
   const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths, { codexVersionOutput });
   const opencodeTerminalChat = openCodeTerminalChatIntegration({ ...terminalChatOptions, install: true });

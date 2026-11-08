@@ -62,6 +62,8 @@ export interface TailReadCounters {
   whole: number;
   /** Answered by the whole ring instead, by why the tail could not be. */
   fallbacks: Record<string, number>;
+  /** Answered by the whole ring without trying the tail: it missed TAIL_MISS_CAP times in a row on that pane. Absent from older daemons. */
+  skipped?: number;
   /** Ring copy, hazard scan and tail parse: until the read knew whether the tail serves. */
   tailMsTotal: number;
   tailMsMax: number;
@@ -157,6 +159,7 @@ export function isDaemonMemoryDiagnostics(value: unknown): value is DaemonMemory
 function tailReadCounters(value: unknown): boolean {
   return record(value) && counters(value, ['reads', 'served', 'whole', 'tailMsTotal', 'tailMsMax', 'fallbackMsTotal', 'fallbackMsMax',
     'ringCopyMsTotal', 'ringCopyMsMax', 'scanMsTotal', 'scanMsMax', 'scanBytes', 'checks']) &&
+    (value.skipped === undefined || counters(value, ['skipped'])) &&
     record(value.fallbacks) && counters(value.fallbacks, Object.keys(value.fallbacks)) &&
     record(value.mismatches) && counters(value.mismatches, Object.keys(value.mismatches));
 }

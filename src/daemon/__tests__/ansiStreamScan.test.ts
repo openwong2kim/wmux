@@ -90,43 +90,81 @@ describe('PartialSequenceTracker', () => {
 });
 
 describe('MarginTracker', () => {
+  const ROWS = 24;
+
   it('activates on DECSTBM with params and clears on a bare reset', () => {
     const t = new MarginTracker();
-    t.feed('\x1b[5;20r');
+    t.feed('\x1b[5;20r', ROWS);
     expect(t.active).toBe(true);
-    t.feed('\x1b[r');
+    t.feed('\x1b[r', ROWS);
     expect(t.active).toBe(false);
   });
 
   it('treats CSI ; r (no digits) as a full-screen reset', () => {
     const t = new MarginTracker();
-    t.feed('\x1b[5;20r');
+    t.feed('\x1b[5;20r', ROWS);
     expect(t.active).toBe(true);
-    t.feed('\x1b[;r');
+    t.feed('\x1b[;r', ROWS);
     expect(t.active).toBe(false);
   });
 
   it('is reset by RIS (ESC c)', () => {
     const t = new MarginTracker();
-    t.feed('\x1b[2;10r');
+    t.feed('\x1b[2;10r', ROWS);
     expect(t.active).toBe(true);
-    t.feed('\x1bc');
+    t.feed('\x1bc', ROWS);
     expect(t.active).toBe(false);
   });
 
   it('is reset by DECSTR (CSI ! p)', () => {
     const t = new MarginTracker();
-    t.feed('\x1b[2;10r');
+    t.feed('\x1b[2;10r', ROWS);
     expect(t.active).toBe(true);
-    t.feed('\x1b[!p');
+    t.feed('\x1b[!p', ROWS);
     expect(t.active).toBe(false);
   });
 
   it('detects a DECSTBM split across a chunk boundary', () => {
     const t = new MarginTracker();
-    t.feed('\x1b[5;2');
+    t.feed('\x1b[5;2', ROWS);
     expect(t.active).toBe(false); // sequence not complete yet
-    t.feed('0r');
+    t.feed('0r', ROWS);
+    expect(t.active).toBe(true);
+  });
+
+  // xterm's setScrollRegion: top defaults to 1, bottom to the rows, 0 reads
+  // as the default and a bottom past the screen is the screen.
+  it.each(['\x1b[0;0r', '\x1b[0r', '\x1b[1r', '\x1b[;24r', '\x1b[1;24r', '\x1b[1;99r', '\x1b[1;24;3r'])(
+    'reads %j as a full-screen reset',
+    (reset) => {
+      const t = new MarginTracker();
+      t.feed('\x1b[5;20r', ROWS);
+      t.feed(reset, ROWS);
+      expect(t.active).toBe(false);
+    },
+  );
+
+  it.each(['\x1b[2r', '\x1b[1;23r', '\x1b[2;99r', '\x1b[0;23r'])('reads %j as a partial region', (region) => {
+    const t = new MarginTracker();
+    t.feed(region, ROWS);
+    expect(t.active).toBe(true);
+  });
+
+  it('measures the full screen at the row count the sequence arrives at', () => {
+    const t = new MarginTracker();
+    t.feed('\x1b[1;24r', 30);
+    expect(t.active).toBe(true);
+    t.feed('\x1b[1;24r', 24);
+    expect(t.active).toBe(false);
+  });
+
+  it('leaves the state alone on a region xterm ignores', () => {
+    const t = new MarginTracker();
+    t.feed('\x1b[5;3r', ROWS);
+    expect(t.active).toBe(false);
+    t.feed('\x1b[24;99r', ROWS);
+    expect(t.active).toBe(false);
+    t.feed('\x1b[2;10r\x1b[5;5r', ROWS);
     expect(t.active).toBe(true);
   });
 });

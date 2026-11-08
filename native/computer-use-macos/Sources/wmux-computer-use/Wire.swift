@@ -20,6 +20,11 @@ typealias JSON = [String: Any]
 enum Wire {
     private static let lock = NSLock()
 
+    /// What happens when main has closed the pipe: the helper just exits; the
+    /// runner (Runner.swift) takes its process group with it. Set once,
+    /// before any reply is written.
+    static var onOutputClosed: () -> Never = { exit(0) }
+
     /// One line to stdout, written unbuffered: a pipe would otherwise hold the
     /// hello back until the buffer fills, and main's hello timer would fire.
     /// `id` keeps a reply that cannot be encoded (a non-finite number from an
@@ -44,7 +49,7 @@ enum Wire {
                 if n < 0 {
                     if errno == EINTR { continue }
                     // main is gone; nothing left to answer.
-                    exit(0)
+                    onOutputClosed()
                 }
                 offset += n
             }

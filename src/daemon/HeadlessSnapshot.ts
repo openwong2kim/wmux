@@ -475,7 +475,7 @@ async function generateXtermInner(req: SnapshotRequest): Promise<SnapshotOutcome
         if (slice.length === 0) continue;
         const text = slice.toString('utf8');
         partialTail.feed(text);
-        margins.feed(text);
+        margins.feed(text, terminal.rows);
         sgrMouse.feed(text);
         cursor.feed(text);
         // Await the parse callback: backpressure AND an event-loop yield per

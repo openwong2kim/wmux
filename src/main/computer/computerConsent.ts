@@ -7,10 +7,9 @@
 // without recording a refusal the person never made.
 
 import type { ApprovalQueue } from '../mcp/ApprovalQueue';
-import type { AppInfo, WindowInfo } from '../../shared/computer/protocol';
+import { COMPUTER_CONSENT_DEADLINE_MS, type AppInfo, type WindowInfo } from '../../shared/computer/protocol';
 import type { ComputerAgent, ConsentAnswer, ConsentRequester } from './ComputerService';
 
-export const COMPUTER_CONSENT_DEADLINE_MS = 120_000;
 const TITLE_PART_MAX_CHARS = 80;
 
 function clean(text: string): string {

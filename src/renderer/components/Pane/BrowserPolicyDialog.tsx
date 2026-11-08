@@ -18,7 +18,6 @@
 // list on main.
 
 import { useCallback, useEffect, useId, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
@@ -328,9 +327,9 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
     })),
   ];
 
-  // Portalled: a pane root is its own stacking context (Pane.tsx `isolate`),
-  // so a dialog left inside it would sit under the panes painted after it.
-  return createPortal(
+  // Opened from inside a pane, it renders into the pane container's dialog
+  // host (ui/dialogHost), out of the pane's own stacking context.
+  return (
     <Dialog onClose={onClose} width={460} data-testid="browser-policy-dialog">
       <DialogHeader title={t('pane.browserPolicyTitle')} description={t('pane.browserPolicyDescription')} />
       {/* Fields keep their height so a long body scrolls instead of the
@@ -468,7 +467,6 @@ export default function BrowserPolicyDialog({ workspaceId, paneId, onClose, onSa
           {t('pane.browserPolicySave')}
         </Button>
       </DialogFooter>
-    </Dialog>,
-    document.body,
+    </Dialog>
   );
 }

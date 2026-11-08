@@ -1,3 +1,4 @@
+import { noWorkspaceGrantMessage } from '../Remote/noWorkspaceGrant';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 // Aliased: the Escape-key effect below binds a DOM listener and needs the
@@ -379,7 +380,7 @@ export default function AttachRemoteModal({ onClose, repairHostId, initialHostId
         return;
       }
       if (!res.ok) {
-        setCreateWorkspaceError(t('remote.createWorkspaceFailed', { error: res.error }));
+        setCreateWorkspaceError(noWorkspaceGrantMessage(t, res.reason, host.label) ?? t('remote.createWorkspaceFailed', { error: res.error }));
         return;
       }
       attachRemoteWorkspace({

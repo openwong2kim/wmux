@@ -18,9 +18,67 @@ import {
   type PcRailPersisted,
   type PcRailWorkspaceRow,
 } from '../../../shared/pcRail';
-import { remoteAttachmentKey } from '../../../shared/remoteHosts';
+import { remoteAttachmentKey, type RemoteHostStatus } from '../../../shared/remoteHosts';
 
 const NO_ATTENTION: PcRailAttentionCounts = Object.freeze({ needsYou: 0, finished: 0 });
+
+/** Failed rail polls in a row before a paired PC counts as down. */
+export const SHARE_DROP_FAILED_POLLS = 2;
+
+/**
+ * Whether a paired PC is down: the rail's own status says unreachable and it
+ * has missed this many polls in a row. One failed poll says nothing yet (an
+ * error answer even comes from a host that is up). A PC with no status yet
+ * has not answered its first round and is not down. The one rule for "this PC
+ * is gone": the drop notice and every reader of remote rows ask this.
+ */
+export function isShareHostDown(status: RemoteHostStatus | undefined, failedTicks: number | undefined): boolean {
+  return status === 'unreachable' && (failedTicks ?? 0) >= SHARE_DROP_FAILED_POLLS;
+}
+
+const NO_HOSTS: ReadonlySet<string> = Object.freeze(new Set<string>()) as ReadonlySet<string>;
+let downMemo: { ids: ReadonlySet<string> } | null = null;
+
+/**
+ * The paired PCs that are down by `isShareHostDown`. The same Set comes back
+ * while its members are unchanged, so a poll tick that only moves a fetch time
+ * does not look like a change to a memoized reader.
+ */
+const NO_KEYS: ReadonlySet<string> = NO_HOSTS;
+let outdatedMemo: { keys: ReadonlySet<string> } | null = null;
+
+/**
+ * Attachment keys whose kept snapshot is outdated: stale for want of an
+ * answer, yet the rail has had a good answer from their host since. The rail
+ * and the attachment poll run on separate clocks (after a sleep the poll may
+ * be backed off for minutes), so the rail's last good contact, not its failed
+ * count, decides. The Set keeps its identity while the result is unchanged.
+ */
+export function selectOutdatedRemoteKeys(s: Pick<StoreState, 'remoteWorkspaces' | 'pcRailFeeds'>): ReadonlySet<string> {
+  const keys: string[] = [];
+  for (const w of s.remoteWorkspaces) {
+    if (!w.stale || w.staleReason !== 'unanswered') continue;
+    const heardAt = s.pcRailFeeds[w.hostId]?.fetchedAt;
+    if (typeof heardAt === 'number' && heardAt > (w.staleSince ?? 0)) keys.push(w.key);
+  }
+  const prev = outdatedMemo?.keys ?? NO_KEYS;
+  if (keys.length === prev.size && keys.every((k) => prev.has(k))) return prev;
+  const out: ReadonlySet<string> = keys.length === 0 ? NO_KEYS : new Set(keys);
+  outdatedMemo = { keys: out };
+  return out;
+}
+
+export function selectDownHostIds(s: Pick<StoreState, 'pcRailHostStatus' | 'pcRailFeeds'>): ReadonlySet<string> {
+  const down: string[] = [];
+  for (const [hostId, status] of Object.entries(s.pcRailHostStatus)) {
+    if (isShareHostDown(status, s.pcRailFeeds[hostId]?.failedTicks)) down.push(hostId);
+  }
+  const prev = downMemo?.ids ?? NO_HOSTS;
+  if (down.length === prev.size && down.every((id) => prev.has(id))) return prev;
+  const ids: ReadonlySet<string> = down.length === 0 ? NO_HOSTS : new Set(down);
+  downMemo = { ids };
+  return ids;
+}
 const NO_ROWS: readonly PcRailWorkspaceRow[] = Object.freeze([]);
 
 /**

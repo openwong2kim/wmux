@@ -1,3 +1,4 @@
+// @wmux-lane unit — 'win32' here is a stubbed process.platform; the locked-file reads are mocked fs calls.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -6,11 +7,17 @@ import {
   createDefaultConfig,
   loadConfig,
   saveConfig,
+  saveConfigOrThrow,
   getWmuxDir,
   readNotifySinks,
   resetNotifySinksCache,
   readPushPresenceSuppression,
   resetGateMigrationSaveFailure,
+  resetUnusableConfigWarning,
+  isFailClosedConfig,
+  CONFIG_READ_ATTEMPTS,
+  setConfigReadSleepForTest,
+  resetConfigReadStreaks,
 } from '../config';
 import {
   DESKTOP_PRESENCE_STALE_AFTER_MS,
@@ -32,6 +39,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetUnusableConfigWarning();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (os as any).homedir = originalHomedir;
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -86,29 +94,456 @@ describe('loadConfig', () => {
     expect(loaded.daemon.logLevel).toBe('debug');
   });
 
-  it('resets to defaults when config.json contains invalid JSON', () => {
+  it('reads a config.json that starts with a UTF-8 BOM (Windows PowerShell 5.1 writes one)', () => {
     const wmuxDir = getWmuxDir();
     fs.mkdirSync(wmuxDir, { recursive: true });
-    fs.writeFileSync(path.join(wmuxDir, 'config.json'), '{{not json}}', 'utf-8');
-
-    const config = loadConfig();
-    expect(config.version).toBe(1);
-    expect(config.daemon.logLevel).toBe('info');
+    const custom = {
+      ...createDefaultConfig(),
+      daemon: { ...createDefaultConfig().daemon, logLevel: 'debug' },
+      browser: { cdp: { enabled: false } },
+      phoneDecisions: { native: true, stepwise: true },
+    };
+    const configPath = path.join(wmuxDir, 'config.json');
+    fs.writeFileSync(configPath, '\uFEFF' + JSON.stringify(custom, null, 2), 'utf-8');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const config = loadConfig();
+      // The file's own values, not the defaults a failed parse would give.
+      expect(config.daemon.logLevel).toBe('debug');
+      expect(config.browser?.cdp.enabled).toBe(false);
+      expect(config.phoneDecisions).toEqual({ native: true, stepwise: true });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
-  it('resets to defaults when config.json has wrong structure', () => {
-    const wmuxDir = getWmuxDir();
-    fs.mkdirSync(wmuxDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(wmuxDir, 'config.json'),
-      JSON.stringify({ version: 1, daemon: 'wrong' }),
-      'utf-8',
-    );
+  describe('a config.json that cannot be used', () => {
+    const cases: Array<[string, string]> = [
+      ['invalid JSON', '{{not json}}'],
+      ['the wrong structure', JSON.stringify({ version: 1, daemon: 'wrong', browser: { cdp: { enabled: true } } })],
+    ];
+    for (const [what, content] of cases) {
+      it(`${what}: left byte-identical, CDP off, one warning naming the file`, () => {
+        const wmuxDir = getWmuxDir();
+        fs.mkdirSync(wmuxDir, { recursive: true });
+        const configPath = path.join(wmuxDir, 'config.json');
+        fs.writeFileSync(configPath, content, 'utf-8');
+        const before = fs.readFileSync(configPath);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        try {
+          const config = loadConfig();
+          // The daemon loads on every hook signal: still one warning.
+          loadConfig();
+          expect(config.browser?.cdp.enabled).toBe(false);
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(String(warn.mock.calls[0][0])).toContain(configPath);
+          expect(isFailClosedConfig(config)).toBe(true);
+        } finally {
+          warn.mockRestore();
+        }
+        expect(fs.readFileSync(configPath).equals(before)).toBe(true);
+        expect(fs.existsSync(configPath + '.tmp')).toBe(false);
+      });
+    }
 
-    const config = loadConfig();
-    expect(config.version).toBe(1);
-    expect(config.daemon.logLevel).toBe('info');
+    describe('a config.json Windows reports as locked', () => {
+      const realPlatform = process.platform;
+      const setPlatform = (p: string): void => { Object.defineProperty(process, 'platform', { value: p }); };
+      const waits: number[] = [];
+      beforeEach(() => {
+        waits.length = 0;
+        setConfigReadSleepForTest((ms) => { waits.push(ms); });
+      });
+      afterEach(() => {
+        setPlatform(realPlatform);
+        setConfigReadSleepForTest();
+        resetConfigReadStreaks();
+        vi.restoreAllMocks();
+      });
+      function writeGood(): string {
+        const wmuxDir = getWmuxDir();
+        fs.mkdirSync(wmuxDir, { recursive: true });
+        const configPath = path.join(wmuxDir, 'config.json');
+        fs.writeFileSync(configPath, JSON.stringify({ ...createDefaultConfig(), browser: { cdp: { enabled: false } } }), 'utf-8');
+        return configPath;
+      }
+      function lockFor(configPath: string, times: number, code = 'EBUSY') {
+        const real = fs.readFileSync;
+        let left = times;
+        return vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+          if (file === configPath && left > 0) {
+            left--;
+            throw Object.assign(new Error(`${code}: resource busy or locked, open '${configPath}'`), { code });
+          }
+          return (real as (...a: unknown[]) => unknown)(file, ...rest);
+        }) as typeof fs.readFileSync);
+      }
+      const readsOf = (spy: ReturnType<typeof lockFor>, configPath: string): number =>
+        spy.mock.calls.filter((c) => c[0] === configPath).length;
+
+      it('on Windows, a brief EBUSY is read again and the file is used', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const spy = lockFor(configPath, 2);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const config = loadConfig();
+        expect(isFailClosedConfig(config)).toBe(false);
+        expect(config.browser?.cdp.enabled).toBe(false); // the file's own value
+        expect(warn).not.toHaveBeenCalled();
+        expect(readsOf(spy, configPath)).toBe(3);
+        expect(waits).toEqual([100, 100]);
+      });
+
+      it('on Windows, a lock that outlasts every try gives the stand-in, and later loads try once', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const spy = lockFor(configPath, 100, 'EPERM');
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        expect(isFailClosedConfig(loadConfig())).toBe(true);
+        expect(readsOf(spy, configPath)).toBe(CONFIG_READ_ATTEMPTS);
+        expect(String(warn.mock.calls[0][0])).toContain('EPERM');
+        // A lock that doesn't clear (a deny-read ACL reads as EPERM too) must not
+        // cost every hook signal the full wait: the streak reads once per load.
+        spy.mockClear();
+        waits.length = 0;
+        loadConfig();
+        loadConfig();
+        expect(readsOf(spy, configPath)).toBe(2);
+        expect(waits).toEqual([]);
+      });
+
+      it('a file that is locked and then gone is being replaced: no defaults are written over it', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const real = fs.readFileSync;
+        let n = 0;
+        vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+          if (file === configPath) {
+            n++;
+            const code = n === 1 ? 'EPERM' : 'ENOENT';
+            throw Object.assign(new Error(`${code}: open '${configPath}'`), { code });
+          }
+          return (real as (...a: unknown[]) => unknown)(file, ...rest);
+        }) as typeof fs.readFileSync);
+        const before = real(configPath);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const config = loadConfig();
+        expect(isFailClosedConfig(config)).toBe(true);
+        expect(String(warn.mock.calls[0][0])).toContain('being replaced');
+        expect(real(configPath).equals(before)).toBe(true);
+      });
+
+      it('a file that is locked, gone, then back (delete and recreate) is read', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const real = fs.readFileSync;
+        let n = 0;
+        vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+          if (file === configPath && ++n <= 2) {
+            const code = n === 1 ? 'EPERM' : 'ENOENT';
+            throw Object.assign(new Error(`${code}: open '${configPath}'`), { code });
+          }
+          return (real as (...a: unknown[]) => unknown)(file, ...rest);
+        }) as typeof fs.readFileSync);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const config = loadConfig();
+        expect(isFailClosedConfig(config)).toBe(false);
+        expect(config.browser?.cdp.enabled).toBe(false);
+        expect(warn).not.toHaveBeenCalled();
+      });
+
+      it('on Windows, a config.json that is simply missing is still created with the defaults', () => {
+        setPlatform('win32');
+        const configPath = path.join(getWmuxDir(), 'config.json');
+        const config = loadConfig();
+        expect(isFailClosedConfig(config)).toBe(false);
+        expect(fs.existsSync(configPath)).toBe(true);
+        expect(waits).toEqual([]);
+      });
+
+      it('after a locked streak, a missing file is "being replaced" once, then created with the defaults', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const spy = lockFor(configPath, CONFIG_READ_ATTEMPTS, 'EPERM');
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        expect(isFailClosedConfig(loadConfig())).toBe(true); // the streak starts
+        spy.mockRestore();
+        fs.rmSync(configPath);
+        expect(isFailClosedConfig(loadConfig())).toBe(true); // gone right after a lock
+        expect(fs.existsSync(configPath)).toBe(false);
+        expect(String(warn.mock.calls.at(-1)?.[0])).toContain('being replaced');
+        expect(isFailClosedConfig(loadConfig())).toBe(false); // really missing
+        expect(fs.existsSync(configPath)).toBe(true);
+      });
+
+      it('a save during a locked streak reads once, with no wait', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const good = loadConfig();
+        const spy = lockFor(configPath, 100, 'EPERM');
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        loadConfig(); // the streak starts
+        spy.mockClear();
+        waits.length = 0;
+        expect(() => saveConfigOrThrow(good)).toThrow('EPERM');
+        expect(readsOf(spy, configPath)).toBe(1);
+        expect(waits).toEqual([]);
+      });
+
+      it('a save waits out a brief lock instead of refusing', () => {
+        setPlatform('win32');
+        const configPath = writeGood();
+        const good = loadConfig();
+        lockFor(configPath, 2);
+        good.daemon.logLevel = 'debug';
+        expect(() => saveConfigOrThrow(good)).not.toThrow();
+        vi.restoreAllMocks();
+        expect(loadConfig().daemon.logLevel).toBe('debug');
+      });
+
+      it('elsewhere, and for a parse failure, there is no second read', () => {
+        setPlatform('linux');
+        const configPath = writeGood();
+        const spy = lockFor(configPath, 1);
+        vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        expect(isFailClosedConfig(loadConfig())).toBe(true);
+        expect(readsOf(spy, configPath)).toBe(1);
+
+        setPlatform('win32');
+        fs.writeFileSync(configPath, '{ not json', 'utf-8');
+        spy.mockClear();
+        expect(isFailClosedConfig(loadConfig())).toBe(true);
+        expect(readsOf(spy, configPath)).toBe(1);
+      });
+    });
+
+    function writeGarbage(): string {
+      const wmuxDir = getWmuxDir();
+      fs.mkdirSync(wmuxDir, { recursive: true });
+      const configPath = path.join(wmuxDir, 'config.json');
+      fs.writeFileSync(configPath, '{ "browser": { "cdp": { "enabled": false } }', 'utf-8');
+      return configPath;
+    }
+
+    it('names the parse error in the warning', () => {
+      writeGarbage();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        loadConfig();
+        let parseError = '';
+        try {
+          JSON.parse('{ "browser": { "cdp": { "enabled": false } }');
+        } catch (err) {
+          parseError = (err as Error).message;
+        }
+        expect(String(warn.mock.calls[0][0])).toContain(parseError);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('closes every setting whose default is the open side, and keeps the closed ones closed', () => {
+      writeGarbage();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const config = loadConfig();
+        const defaults = createDefaultConfig();
+        expect(config.browser?.cdp.enabled).toBe(false);
+        expect(config.phoneDecisions).toEqual({ native: false, stepwise: false });
+        expect(config.channels?.trashTtlHours).toBe(0);
+        // The live reapers keep detached and suspended sessions for a year.
+        expect(config.session.detachedTtlHours).toBe(24 * 365);
+        expect(config.session.suspendedTtlHours).toBe(24 * 365);
+        // Stamped into each new session at create time, so left at the default.
+        expect(config.session.deadSessionTtlHours).toBe(defaults.session.deadSessionTtlHours);
+        expect(config.lanlink?.enabled).toBe(false);
+        expect(config.a2aRemote).toEqual(defaults.a2aRemote);
+        expect(config.notifySinks).toEqual([]);
+        expect(config.gate).toEqual(defaults.gate);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('names the wrong field when the structure is invalid', () => {
+      const wmuxDir = getWmuxDir();
+      fs.mkdirSync(wmuxDir, { recursive: true });
+      const bad = { ...createDefaultConfig(), session: { ...createDefaultConfig().session, defaultCols: '120' } };
+      fs.writeFileSync(path.join(wmuxDir, 'config.json'), JSON.stringify(bad), 'utf-8');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        loadConfig();
+        expect(String(warn.mock.calls[0][0])).toContain('session.defaultCols is missing or is not a number');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('refuses to save the stand-in, through either saver, so it never lands on disk', () => {
+      const configPath = writeGarbage();
+      const before = fs.readFileSync(configPath);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const config = loadConfig();
+        expect(() => saveConfigOrThrow(config)).toThrow(configPath);
+        // The best-effort saver (LanLink) throws too: a stand-in is not a write failure to log.
+        expect(() => saveConfig(config)).toThrow(configPath);
+        // A2A saves a spread copy; the copy is still the stand-in.
+        expect(() => saveConfigOrThrow({ ...config, a2aRemote: config.a2aRemote })).toThrow(configPath);
+      } finally {
+        warn.mockRestore();
+      }
+      expect(fs.readFileSync(configPath).equals(before)).toBe(true);
+    });
+
+    it('a stand-in loaded before the file was fixed still cannot overwrite the fixed file', () => {
+      const configPath = writeGarbage();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      let bootConfig: DaemonConfig;
+      try {
+        bootConfig = loadConfig();
+      } finally {
+        warn.mockRestore();
+      }
+      const fixed = { ...createDefaultConfig(), browser: { cdp: { enabled: false } } };
+      fs.writeFileSync(configPath, JSON.stringify(fixed), 'utf-8');
+      expect(isFailClosedConfig(loadConfig())).toBe(false); // a later load succeeds
+      const onDisk = fs.readFileSync(configPath);
+      expect(() => saveConfigOrThrow(bootConfig)).toThrow(configPath);
+      expect(fs.readFileSync(configPath).equals(onDisk)).toBe(true);
+    });
+
+    it('a config loaded while the file was good does not write over it while it is broken, and does once it is fixed', () => {
+      const wmuxDir = getWmuxDir();
+      fs.mkdirSync(wmuxDir, { recursive: true });
+      const configPath = path.join(wmuxDir, 'config.json');
+      fs.writeFileSync(configPath, JSON.stringify(createDefaultConfig()), 'utf-8');
+      const good = loadConfig();
+      fs.writeFileSync(configPath, '{ half-written', 'utf-8');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        loadConfig();
+      } finally {
+        warn.mockRestore();
+      }
+      good.daemon.logLevel = 'debug';
+      // The broken file may be an edit in progress: both savers refuse.
+      expect(() => saveConfigOrThrow(good)).toThrow(configPath);
+      expect(() => saveConfig(good)).toThrow(configPath);
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe('{ half-written');
+      // Not sticky: once the file is usable again the same object saves.
+      fs.writeFileSync(configPath, JSON.stringify(createDefaultConfig()), 'utf-8');
+      expect(() => saveConfigOrThrow(good)).not.toThrow();
+      expect(loadConfig().daemon.logLevel).toBe('debug');
+    });
+
+    it('wmux gate refuses every action, --list included, and exits non-zero', () => {
+      const configPath = writeGarbage();
+      const before = fs.readFileSync(configPath);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      const exitCode = process.exitCode;
+      try {
+        // Bash is in the stand-in's default list: no "already there" from it.
+        for (const [action, args] of [['--add', ['Bash']], ['--remove', ['Bash']], ['--list', []]] as const) {
+          log.mockClear();
+          process.exitCode = 0;
+          handleGate(action, [...args], true);
+          const reply = JSON.parse(String(log.mock.calls[0][0]));
+          expect(reply.ok).toBe(false);
+          expect(reply.error).toContain(`${configPath} could not be used`);
+          expect(reply.enforcedGatedTools).toEqual(createDefaultConfig().gate?.gatedTools);
+          expect(process.exitCode).toBe(1);
+        }
+      } finally {
+        process.exitCode = exitCode;
+        warn.mockRestore();
+        log.mockRestore();
+      }
+      expect(fs.readFileSync(configPath).equals(before)).toBe(true);
+    });
+
+    it('a fixed file is used again on the next load, and saves work again', () => {
+      const configPath = writeGarbage();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        loadConfig();
+      } finally {
+        warn.mockRestore();
+      }
+      fs.writeFileSync(configPath, JSON.stringify(createDefaultConfig(), null, 2), 'utf-8');
+      const config = loadConfig();
+      expect(config.browser?.cdp.enabled).toBe(true);
+      config.daemon.logLevel = 'debug';
+      expect(() => saveConfigOrThrow(config)).not.toThrow();
+      expect(loadConfig().daemon.logLevel).toBe('debug');
+    });
   });
+});
+
+describe('loadConfig — a partial config.json (absent is not garbage)', () => {
+  const write = (obj: unknown): string => {
+    const dir = getWmuxDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const configPath = path.join(dir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify(obj), 'utf-8');
+    return configPath;
+  };
+
+  it('only browser.cdp.enabled = false (as SECURITY.md says): CDP stays off, the rest is the defaults, no stand-in', () => {
+    const configPath = write({ browser: { cdp: { enabled: false } } });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const config = loadConfig();
+      expect(isFailClosedConfig(config)).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+      expect(config.browser?.cdp.enabled).toBe(false);
+      const defaults = createDefaultConfig();
+      expect(config.daemon).toEqual(defaults.daemon);
+      expect(config.session).toMatchObject({ defaultShell: defaults.session.defaultShell, bufferSizeMb: defaults.session.bufferSizeMb });
+      expect(config.phoneDecisions).toEqual(defaults.phoneDecisions);
+    } finally {
+      warn.mockRestore();
+    }
+    // A later save (the gate migration) keeps the user's own key.
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8')).browser).toEqual({ cdp: { enabled: false } });
+  });
+
+  it('a file with only another slice ({ mcp: { mode } }): CDP stays on, no stand-in', () => {
+    write({ mcp: { mode: 'enforce' } });
+    const config = loadConfig();
+    expect(isFailClosedConfig(config)).toBe(false);
+    expect(config.browser?.cdp.enabled).toBe(true);
+  });
+
+  it('a partial daemon section keeps its own keys and gets the missing ones', () => {
+    write({ daemon: { logLevel: 'debug' } });
+    const config = loadConfig();
+    expect(isFailClosedConfig(config)).toBe(false);
+    expect(config.daemon.logLevel).toBe('debug');
+    expect(config.daemon.pipeName).toBe(createDefaultConfig().daemon.pipeName);
+  });
+
+  for (const [what, content] of [
+    ['a wrong-typed daemon.pipeName', { version: 1, daemon: { pipeName: 5 } }],
+    ['a daemon section that is not an object', { daemon: null }],
+    ['a wrong-typed session field', { session: { defaultCols: 'eighty' } }],
+  ] as const) {
+    it(`${what}: still fail-closed, file untouched`, () => {
+      const configPath = write(content);
+      const before = fs.readFileSync(configPath);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const config = loadConfig();
+        expect(isFailClosedConfig(config)).toBe(true);
+        expect(config.browser?.cdp.enabled).toBe(false);
+      } finally {
+        warn.mockRestore();
+      }
+      expect(fs.readFileSync(configPath).equals(before)).toBe(true);
+    });
+  }
 });
 
 describe('saveConfig', () => {
