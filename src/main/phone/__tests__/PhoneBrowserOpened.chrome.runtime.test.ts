@@ -3,7 +3,6 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { ChromeLauncher } from '../../browser-session/ChromeLauncher';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
-import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 import { createPhoneChromeDeps } from '../PhoneBrowserChrome';
 import { handlePhoneBrowser } from '../PhoneBrowser';
 import { MODES, requiredOnThisRunner, type Mode } from '../../../test-utils/realBrowserHarness';
@@ -68,8 +67,6 @@ function describeMode(mode: Mode): void {
         portEnvVar: null,
         profileName: `opened-${mode.name}`,
         extraArgs: [...(mode.headless ? ['--headless=new'] : []), '--use-mock-keychain', '--password-store=basic'],
-        // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
-        childEnv: realProfileBrowserEnv(),
       });
       await launcher.ensureRunning();
     } catch (err) {

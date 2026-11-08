@@ -448,13 +448,6 @@ export interface ChromeLauncherOptions {
   protection?: () => ChromeProtectionPlan | null;
   /** Test seam: extra Chrome flags (e.g. --headless=new). */
   extraArgs?: string[];
-  /**
-   * Test seam: the Chrome child's whole environment. Unset (production), the
-   * child inherits process.env. Real-Chrome suites on Windows pass
-   * realProfileBrowserEnv(): Chrome under the isolate setup's temp USERPROFILE
-   * refuses remote debugging, on the port and on the pipe alike.
-   */
-  childEnv?: NodeJS.ProcessEnv;
   /** Test seam: how long the launch waits for the proxy probe. */
   proxyProbeTimeoutMs?: number;
 }
@@ -664,7 +657,6 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   private readonly protection: (() => ChromeProtectionPlan | null) | undefined;
   private readonly extraArgs: string[];
-  private readonly childEnv: NodeJS.ProcessEnv | undefined;
   /** Whether the running instance was launched behind the proxy. */
   private launchedProtected = false;
   /** False until a protected launch's download guard holds and the tabs
@@ -694,7 +686,6 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.surfaceStore = opts?.surfaceStore;
     this.protection = opts?.protection;
     this.extraArgs = opts?.extraArgs ?? [];
-    this.childEnv = opts?.childEnv;
     this.proxyProbeTimeoutMs = opts?.proxyProbeTimeoutMs;
   }
 
@@ -2221,7 +2212,6 @@ export class ChromeLauncher implements ChromeBackendClient {
       // failed start can quote Chrome (STARTUP_STDERR_TAIL).
       {
         stdio: pipe ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'ignore', 'pipe'],
-        ...(this.childEnv && { env: this.childEnv }),
       },
     );
     // Drained for the child's whole life (a full pipe would block Chrome's
@@ -2262,7 +2252,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([stderrEnded, new Promise((r) => { timer = setTimeout(r, STDERR_END_WAIT_MS); })]);
       clearTimeout(timer);
-      const homes = [homedir(), this.childEnv?.USERPROFILE, this.childEnv?.HOME, process.env.USERPROFILE, process.env.HOME];
+      const homes = [homedir(), process.env.USERPROFILE, process.env.HOME];
       const said = chromeSaid(stderrTail, homes.filter((h): h is string => !!h));
       const withProbe = timedOut || !said;
       const detail = [withProbe && lastStartError && `last error: ${lastStartError}`, said && `Chrome said: ${said}`].filter(Boolean).join('; ');

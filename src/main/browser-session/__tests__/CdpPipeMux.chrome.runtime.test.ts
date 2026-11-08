@@ -21,7 +21,6 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
 import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
-import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 import { chromeForRuntimeSuite } from '../../../test-utils/runtimeChrome';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { newRelayProofNonce, RELAY_PROOF_METHOD, relayProofMatches } from '../../../shared/relayProof';
@@ -88,8 +87,7 @@ async function startChrome(): Promise<Started> {
     // answers cookie calls nor exits.
     '--use-mock-keychain',
     'about:blank',
-    // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
-  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: realProfileBrowserEnv() });
+  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
   const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
   const mux = new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable);
   const s = { child, profile, mux, route: relay.serve(mux), exited };

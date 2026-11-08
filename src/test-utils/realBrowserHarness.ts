@@ -1,7 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { existsSync } from 'node:fs';
 import { afterAll, beforeAll } from 'vitest';
-import { realProfileBrowserEnv } from './realProfileBrowserEnv';
 
 // ---------------------------------------------------------------------------
 // One real Google Chrome per mode, for the `*.chrome.runtime.test.ts` suites.
@@ -159,8 +158,6 @@ export function harnessFor(mode: Mode, options: HarnessOptions): Harness {
       return;
     }
 
-    // Chrome refuses to start under the isolate setup's temp USERPROFILE on the
-    // Windows runner, which skipped every case here; see realProfileBrowserEnv.
     // Playwright's own timeout kills a Chrome that did not answer, so it does
     // not keep cold-starting next to the following mode's launch, and its error
     // carries the launch call log. The race below stays as a backstop.
@@ -169,7 +166,6 @@ export function harnessFor(mode: Mode, options: HarnessOptions): Harness {
     const launching = chromium.launch({
       channel: 'chrome',
       headless: mode.headless,
-      env: realProfileBrowserEnv(),
       timeout: bound,
     });
     let timer: ReturnType<typeof setTimeout> | undefined;

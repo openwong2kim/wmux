@@ -11,7 +11,6 @@ import { compileHostPolicy, type HostPolicy } from '../../../shared/browserHostP
 import { requiredOnThisRunner } from '../../../test-utils/realBrowserHarness';
 import { accountDownloads } from '../../../test-utils/chromeDownloads';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
-import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 
 // ---------------------------------------------------------------------------
 // Protected Chrome profiles against a REAL Chrome, launched by the production
@@ -132,8 +131,6 @@ function makeRig(allow: string[]): Rig {
       '--password-store=basic',
       `--unsafely-treat-insecure-origin-as-secure=http://a.test:${port}`,
     ],
-    // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
-    childEnv: realProfileBrowserEnv(),
   });
   return rig;
 }
