@@ -37,7 +37,9 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * the name, its " (n)" variants and their in-progress ".crdownload" forms.
  * Read only; a folder that can't be read adds nothing. By default it reads
  * both the account's real Downloads (os.userInfo()) and the test home's
- * (os.homedir(); on Windows the browser resolves Downloads there).
+ * (os.homedir(); on Windows the browser resolves Downloads there), and returns
+ * full paths, so one name in both folders stays two entries. With `dir` it
+ * returns bare names.
  */
 export function accountDownloads(names: readonly string[], dir?: string): Set<string> {
   const patterns = names.map((name) => {
@@ -56,7 +58,7 @@ export function accountDownloads(names: readonly string[], dir?: string): Set<st
     } catch {
       continue;
     }
-    for (const entry of entries) if (patterns.some((p) => p.test(entry))) found.add(entry);
+    for (const entry of entries) if (patterns.some((p) => p.test(entry))) found.add(dir === undefined ? path.join(d, entry) : entry);
   }
   return found;
 }

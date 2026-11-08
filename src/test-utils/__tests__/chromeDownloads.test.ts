@@ -38,7 +38,7 @@ describe('chromeDownloads', () => {
     const name = `wmux-fallback-${process.pid}-${Date.now()}.bin`;
     fs.writeFileSync(path.join(homeDownloads, name), '');
     try {
-      expect(accountDownloads([name]).has(name)).toBe(true);
+      expect(accountDownloads([name]).has(path.join(homeDownloads, name))).toBe(true);
     } finally {
       fs.rmSync(path.join(homeDownloads, name));
     }
