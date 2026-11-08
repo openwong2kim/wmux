@@ -105,6 +105,7 @@ export function renderMemoryDiagnostics(
     if (byReason(p.refusals) || byReason(p.absorbed)) {
       lines.push(`    by rule: refused ${byReason(p.refusals) || 'none'}; answered without the browser ${byReason(p.absorbed) || 'none'}`);
     }
+    if (byReason(p.watchdog)) lines.push(`    stall watch: ${byReason(p.watchdog)}`);
   }
   if (daemon) {
     lines.push(`  daemon RSS: ${mib(daemon.rssBytes)}; JS heap used: ${mib(daemon.heapUsedBytes)}; external: ${mib(daemon.externalBytes)}; ArrayBuffers: ${mib(daemon.arrayBuffersBytes)}`);

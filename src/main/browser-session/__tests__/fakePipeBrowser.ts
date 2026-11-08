@@ -17,6 +17,12 @@ export class FakeBrowser {
   private n = 0;
   readonly sessions = new Set<string>();
   readonly autoAttach = new Set<string>();
+  /** Sessions whose auto-attach asked to pause new targets (waitForDebuggerOnStart). */
+  readonly pauseOnStart = new Set<string>();
+  /** Methods whose replies are held until releaseHeld(). */
+  readonly holdReplies = new Set<string>();
+  private heldReplies: Command[] = [];
+  private releasing = false;
   readonly targets: Array<{ targetId: string; title: string; url: string }> = [];
   /** What Page.getFrameTree answers, when set. */
   frameTree: unknown = null;
@@ -47,7 +53,24 @@ export class FakeBrowser {
     this.emit(`{"method":${JSON.stringify(method)},"params":${JSON.stringify(params)},"sessionId":${JSON.stringify(sessionId)}}`);
   }
 
+  /** Answer the held commands now. */
+  releaseHeld(): void {
+    const held = this.heldReplies;
+    this.heldReplies = [];
+    // A flag, not an argument: subclasses override handle(c) and call super.handle(c).
+    this.releasing = true;
+    try {
+      for (const c of held) this.handle(c);
+    } finally {
+      this.releasing = false;
+    }
+  }
+
   protected handle(c: Command): void {
+    if (!this.releasing && this.holdReplies.has(c.method)) {
+      this.heldReplies.push(c);
+      return;
+    }
     if (c.sessionId !== undefined && !this.sessions.has(c.sessionId)) {
       this.reply(c, '"error":{"code":-32001,"message":"Session with given id not found."}');
       return;
@@ -67,6 +90,7 @@ export class FakeBrowser {
       }
       case 'Target.setAutoAttach':
         if (c.sessionId) this.autoAttach.add(c.sessionId);
+        if (c.sessionId && c.params.waitForDebuggerOnStart === true) this.pauseOnStart.add(c.sessionId);
         this.reply(c, '"result":{}');
         return;
       case 'Target.createTarget': {
@@ -77,7 +101,7 @@ export class FakeBrowser {
           const child = `C${++this.n}`;
           this.sessions.add(child);
           const browserContextId = typeof c.params.browserContextId === 'string' ? c.params.browserContextId : 'DEFAULT';
-          this.event(parent, 'Target.attachedToTarget', { sessionId: child, targetInfo: { targetId, type: 'page', browserContextId }, waitingForDebugger: false });
+          this.event(parent, 'Target.attachedToTarget', { sessionId: child, targetInfo: { targetId, type: 'page', browserContextId }, waitingForDebugger: this.pauseOnStart.has(parent) });
         }
         return;
       }
