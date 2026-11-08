@@ -401,13 +401,15 @@ impl XtermFeed {
                 for mode in modes {
                     match mode {
                         Some(25) => self.cursor_hidden = !set,
-                        Some(47 | 1047 | 1049) if !set => self.alt_left = true,
                         Some(1016) => self.sgr_pixels = set,
                         Some(1006) => self.sgr_mouse = set,
                         Some(protocol @ (9 | 1000 | 1002 | 1003)) => {
                             self.mouse = if set { protocol } else { 0 };
                         }
                         Some(47 | 1047 | 1049) => {
+                            if !set {
+                                self.alt_left = true;
+                            }
                             if set && !self.alt_screen {
                                 // xterm's alternate screen starts with its own
                                 // full region; Alacritty keeps one region, so
