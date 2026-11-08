@@ -120,6 +120,8 @@ export class RingBuffer {
   private length: number;     // bytes currently stored (<= physical)
   private totalWritten: number; // monotonic lifetime count (used as byte offset for PromptEventLog)
   private geometry: GeometryMark[] = []; // size changes, oldest first (see ReplayGeometry)
+  /** The newest mark is provisional: the next mark replaces it (see noteGeometry). */
+  private geometryTailProvisional = false;
   // Idle hibernation (see BufferHibernation.ts): while
   // `hibernatedPath` is set, `buffer` is released and the stored bytes live
   // only in that `.buf`. `length`, `totalWritten` and `geometry` stay in
@@ -330,30 +332,65 @@ export class RingBuffer {
     this.buffer = Buffer.alloc(0); this.length = 0; this.physical = 0; this.writePos = 0;
     this.chunks = []; this.chunkSkip = 0; this.chunkBytes = 0;
     this.geometry = [];
+    this.geometryTailProvisional = false;
     this.hibernatedPath = null;
     this.pending = []; this.pendingBytes = 0; this.appendedBytes = 0;
   }
 
   /**
    * Record that the PTY now writes at `cols`×`rows`. Bytes written from here
-   * on were produced at this size. Repeats of the current size are ignored.
+   * on were produced at this size.
+   *
+   * `applied`: a viewer that shows this pane's content took the size, or no
+   * viewer is waiting for its replay (the spawn size, a CLI, a phone while the
+   * desk is away): every terminal that holds the content resized, so the mark
+   * is kept, even with no bytes at it (an alternate screen narrowed and
+   * widened back comes back cut, as it was). Not applied (provisional): a
+   * viewer is attached but its replay has not been flushed yet, so nothing
+   * shows that size yet; the next mark replaces it, bytes or not, and
+   * settleGeometry() keeps it once the replay is out.
+   *
+   * Only the newest mark can be provisional. A repeat of the current size is
+   * ignored, except that an applied repeat makes a provisional tail applied.
    */
-  noteGeometry(cols: number, rows: number): void {
+  noteGeometry(cols: number, rows: number, applied = true): void {
     if (this.disposed) throw new Error('Ring disposed');
     if (this.native) {
-      if (cols > 0 && rows > 0) this.native.noteGeometry(cols, rows);
+      if (cols > 0 && rows > 0) this.native.noteGeometry(cols, rows, applied);
       return;
     }
     if (!(cols > 0 && rows > 0)) return;
-    const last = this.geometry[this.geometry.length - 1];
-    if (last && last.cols === cols && last.rows === rows) return;
-    if (last && last.at === this.totalWritten) {
-      // No bytes at the previous size — it never applied to anything.
-      this.geometry[this.geometry.length - 1] = { at: this.totalWritten, cols, rows };
-    } else {
-      this.geometry.push({ at: this.totalWritten, cols, rows });
+    let last = this.geometry[this.geometry.length - 1];
+    if (last && last.cols === cols && last.rows === rows) {
+      if (applied) this.geometryTailProvisional = false;
+      return;
     }
+    if (last && this.geometryTailProvisional) {
+      this.geometry.pop();
+      last = this.geometry[this.geometry.length - 1];
+      this.geometryTailProvisional = false;
+      if (last && last.cols === cols && last.rows === rows) return;
+    }
+    this.geometry.push({ at: this.totalWritten, cols, rows });
+    this.geometryTailProvisional = !applied;
     this.pruneGeometry();
+  }
+
+  /**
+   * The replay of a viewer that attached is out (the session pipe's flush
+   * finished): the size it holds now is applied, so a provisional newest
+   * mark is kept.
+   */
+  settleGeometry(): void {
+    if (this.disposed) return;
+    if (this.native) { this.native.settleGeometry?.(); return; }
+    this.geometryTailProvisional = false;
+  }
+
+  /** Whether the newest geometry mark is provisional (tests and diagnostics). */
+  get geometryPending(): boolean {
+    if (this.native) return this.native.geometryTailProvisional === true;
+    return this.geometryTailProvisional;
   }
 
   /**
@@ -692,6 +729,7 @@ export class RingBuffer {
    */
   private releaseNative(native: NativeRingStorage): number {
     const { data, geometry, writtenAt } = native.readAllWithGeometry();
+    const tailProvisional = native.geometryTailProvisional === true;
     const released = native.allocatedBytes;
     this.totalWritten = this.nativeBase + writtenAt;
     this.length = data.length;
@@ -699,6 +737,7 @@ export class RingBuffer {
     this.geometry = geometry
       ? [{ at: windowStart, ...geometry.start }, ...geometry.changes.map((c) => ({ at: windowStart + c.offset, cols: c.cols, rows: c.rows }))]
       : [];
+    this.geometryTailProvisional = tailProvisional && this.geometry.length > 0;
     native.dispose();
     this.native = undefined;
     this.physical = 0;
@@ -716,15 +755,17 @@ export class RingBuffer {
     const native = new NativeRing(this.capacity);
     const windowStart = this.totalWritten - data.length;
     let written = 0;
-    for (const mark of this.geometry) {
+    this.geometry.forEach((mark, i) => {
       const at = Math.max(0, mark.at - windowStart);
       if (at > written) { native.write(data.subarray(written, at)); written = at; }
-      native.noteGeometry(mark.cols, mark.rows);
-    }
+      // Only the newest mark can be provisional.
+      native.noteGeometry(mark.cols, mark.rows, !(this.geometryTailProvisional && i === this.geometry.length - 1));
+    });
     if (written < data.length) native.write(data.subarray(written));
     this.native = native;
     this.nativeBase = windowStart;
     this.geometry = [];
+    this.geometryTailProvisional = false;
   }
 
   /** Leave hibernation holding exactly `data` (its newest `capacity` bytes). */

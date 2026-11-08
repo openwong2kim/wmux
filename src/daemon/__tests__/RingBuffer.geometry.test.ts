@@ -22,17 +22,20 @@ describe('RingBuffer geometry log', () => {
     });
   });
 
-  it('ignores a repeat of the current size and collapses changes with no bytes between', () => {
+  it('ignores a repeat of the current size; keeps applied changes with no bytes between and collapses provisional ones', () => {
     const ring = new RingBuffer(64);
     ring.noteGeometry(80, 24);
     ring.write(Buffer.from('a'));
     ring.noteGeometry(80, 24);
     ring.noteGeometry(60, 24);
     ring.noteGeometry(50, 20);
+    ring.noteGeometry(40, 20, false);
+    ring.noteGeometry(45, 20, false);
     ring.write(Buffer.from('b'));
+    ring.settleGeometry();
     expect(ring.readAllWithGeometry().geometry).toEqual({
       start: { cols: 80, rows: 24 },
-      changes: [{ offset: 1, cols: 50, rows: 20 }],
+      changes: [{ offset: 1, cols: 60, rows: 24 }, { offset: 1, cols: 50, rows: 20 }, { offset: 1, cols: 45, rows: 20 }],
     });
   });
 

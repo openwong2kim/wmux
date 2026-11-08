@@ -10908,6 +10908,7 @@ async function main(): Promise<void> {
   // renderer answers the startup DA1 itself; before that the bytes only reach
   // it through the (query-stripped) ring replay, and the daemon answers.
   sessionManager.setLiveRendererProbe((id) => sessionPipes.get(id)?.isFlushed === true);
+  sessionManager.setReplayPendingProbe((id) => sessionPipes.get(id)?.awaitingReplay === true);
   // #2388: a task folder whose removal did not finish takes no new pane,
   // whoever asks (the desktop, a phone, an automation, a recovery).
   sessionManager.setSpawnCwdRefusal((cwd, session) => pendingRemovalRefusalAt(getWmuxDir(), cwd, session));
