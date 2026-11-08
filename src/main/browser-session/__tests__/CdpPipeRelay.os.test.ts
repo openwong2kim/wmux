@@ -9,7 +9,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { CdpPipeMux, cdpPipeCounters, resetCdpPipeCounters, type ClientRef } from '../CdpPipeMux';
-import { CdpPipeRelay, RELAY_PATH, RELAY_PIPE_FALLBACK_LINE, RELAY_TCP_FALLBACK_LINE, type RelayGrant, type RelayOptions } from '../CdpPipeRelay';
+import { CdpPipeRelay, proofAnswerer, RELAY_PATH, RELAY_PIPE_FALLBACK_LINE, RELAY_PROOF_KEY_TTL_MS, RELAY_TCP_FALLBACK_LINE, type RelayGrant, type RelayOptions } from '../CdpPipeRelay';
 import { isOwnerOnlyDacl, loadPipeSecurity, parseDacl, RELAY_PIPE_PREFIX } from '../relayPipeWin';
 import { RELAY_DIR_PREFIX, sweepDeadRelayDirs, verifyRelaySocket } from '../relaySocket';
 import { FakeBrowser } from './fakePipeBrowser';
@@ -791,6 +791,24 @@ describe.each(PROOF_TRANSPORTS)('CdpPipeRelay: the relay proves itself, on %s', 
     expect(inner.tokens.size).toBe(1);
     await new Promise<void>((resolve) => inner.listener.server.close(() => resolve()));
     expect(inner.tokens.size).toBe(0);
+  });
+});
+
+describe('CdpPipeRelay: how long a connection keeps its proof key', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('still answers 35 s after the accept (a slow but genuine attach plus the proof), and not once the TTL is up', () => {
+    vi.useFakeTimers();
+    const key = randomBytes(32);
+    const late = proofAnswerer(Buffer.from(key), RELAY_PROOF_KEY_TTL_MS);
+    const expired = proofAnswerer(Buffer.from(key), RELAY_PROOF_KEY_TTL_MS);
+    vi.advanceTimersByTime(35_000);
+    const nonce = randomBytes(32);
+    expect(late.local(RELAY_PROOF_METHOD, { nonce: nonce.toString('base64url') })).toEqual({ result: { proof: relayProof(key, nonce) } });
+    vi.advanceTimersByTime(RELAY_PROOF_KEY_TTL_MS - 35_000);
+    expect(expired.local(RELAY_PROOF_METHOD, { nonce: nonce.toString('base64url') })).toMatchObject({ error: { code: -32000 } });
   });
 });
 

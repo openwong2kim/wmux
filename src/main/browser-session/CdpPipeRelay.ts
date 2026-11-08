@@ -59,8 +59,16 @@ const PIPE_BIND_ATTEMPTS = 3;
 const PIPE_BUSY_WAIT_MS = 200;
 const PIPE_BUSY_RETRY_MS = 10;
 
-/** How long a connection keeps its proof key unasked (src/shared/relayProof.ts). */
-export const RELAY_PROOF_KEY_TTL_MS = 30_000;
+/**
+ * How long a connection keeps its proof key unasked (src/shared/relayProof.ts).
+ * The clock starts at the WebSocket accept, and the MCP engine (another
+ * process) asks only after its whole connectOverCDP, which may take up to
+ * RELAY_CONNECT_TIMEOUT_MS (30 s), then gives the answer RELAY_PROOF_TIMEOUT_MS
+ * (5 s); see src/mcp/playwright/PlaywrightEngine.ts. Keep this strictly
+ * longer than those two together, or a slow but genuine attach outlives the
+ * key and fails as a proof the engine does not retry.
+ */
+export const RELAY_PROOF_KEY_TTL_MS = 45_000;
 
 /**
  * What browser.cdp.info hands a caller: where to connect, the header that
@@ -494,7 +502,8 @@ export class CdpPipeRelay {
  * it spent, which is wiped after that one answer, after `ttlMs`,
  * or when the connection closes, whichever comes first.
  */
-function proofAnswerer(key: Buffer, ttlMs: number): { local: LocalMethods; wipe: () => void } {
+/** @internal Exported for tests. */
+export function proofAnswerer(key: Buffer, ttlMs: number): { local: LocalMethods; wipe: () => void } {
   let held: Buffer | null = key;
   const wipe = () => {
     clearTimeout(timer);
