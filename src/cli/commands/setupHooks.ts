@@ -6,6 +6,7 @@ import { spawnSync } from 'child_process';
 import { writeJsonAtomic } from '../../shared/settingsFile';
 import { dataSuffix } from '../../shared/constants';
 import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
+import { claudeConfigTargets, envClaudeConfigDir, type ClaudeConfigTarget } from '../../shared/claudeConfigTargets';
 import { NATIVE_HOOKS_MARKER } from '../../shared/hooks/hookFlavours';
 import {
   CLAUDE_KILL_SWITCH_FILE,
@@ -64,6 +65,12 @@ ACTIONS (mutually exclusive; default = install)
                For Codex hooks this includes the trust verdict: WRITTEN (block
                in place, Codex silently runs nothing until you approve it) vs
                ACTIVE (the bridge has actually fired).
+
+CLAUDE CODE FOLDERS
+  Claude hooks go to every folder a claude can run with: $CLAUDE_CONFIG_DIR
+  when it is set (else ~/.claude), and each Claude account added in wmux.
+  With CLAUDE_CONFIG_DIR set, ~/.claude is kept current only if it already
+  has wmux hooks; --remove and --status cover it whenever it exists.
 
 HOOK COMMAND (install only)
   Where wmux ships its native hook binary (macOS, Linux), the Claude hooks run
@@ -300,9 +307,57 @@ export interface SetupHooksPaths {
   nativeSource?: string | null;
 }
 
-/** `~/.claude/settings.json` — the only path a gate-presence check needs. */
+/** `~/.claude/settings.json`: Claude's settings when CLAUDE_CONFIG_DIR is unset. */
 function defaultSettingsPath(): string {
   return path.join(os.homedir(), '.claude', 'settings.json');
+}
+
+/** A settings.json that holds wmux's hook entries (or references the bridge). */
+function holdsWmuxHooks(settingsPath: string): boolean {
+  const load = loadSettings(settingsPath);
+  if (!load.exists || load.corrupted) return false;
+  return installedSpecsIn(load.settings).size > 0 || settingsReferenceBridge(load.settings);
+}
+
+/** One Claude config folder a command acts on, with the paths it uses there. */
+export interface HookTarget extends ClaudeConfigTarget {
+  paths: SetupHooksPaths;
+}
+
+export interface HookTargetOptions {
+  /**
+   * install: the primary folder and every account, plus `~/.claude` when the
+   * env points elsewhere and it already holds wmux's entries (kept current).
+   * remove / status: `~/.claude` whenever it exists, so nothing is orphaned.
+   */
+  action: 'install' | 'remove' | 'status';
+  /** CLAUDE_CONFIG_DIR to use. Left out, process.env's is read; passed as
+   *  undefined, there is none (the app passes its probe's answer). */
+  env?: string | undefined;
+  /** This instance's `~/.wmux<suffix>`, where accounts.json lives. */
+  wmuxDir?: string;
+  /** The Claude accounts when the caller holds them (main's account store). */
+  accounts?: ReadonlyArray<{ label: string; configDir: string }>;
+  base?: SetupHooksPaths;
+}
+
+/**
+ * Every Claude config folder a command acts on, primary first (see
+ * claudeConfigTargets): the env folder or `~/.claude`, then each account.
+ * `envRefused` explains a CLAUDE_CONFIG_DIR that was left out.
+ */
+export function hookTargets(opts: HookTargetOptions): { targets: HookTarget[]; envRefused: string | null } {
+  const base = opts.base ?? defaultPaths();
+  const { dir, refused } = envClaudeConfigDir('env' in opts ? opts.env : process.env.CLAUDE_CONFIG_DIR);
+  const targets = claudeConfigTargets({
+    envDir: dir,
+    // ~/.claude as the base names it: a caller's (or a test's) own paths.
+    defaultSettingsPath: base.settingsPath,
+    wmuxDir: opts.wmuxDir ?? path.join(os.homedir(), `.wmux${dataSuffix()}`),
+    accounts: opts.accounts,
+    includeDefault: opts.action === 'install' ? holdsWmuxHooks : (settingsPath) => fs.existsSync(settingsPath),
+  });
+  return { targets: targets.map((t) => ({ ...t, paths: { ...base, settingsPath: t.settingsPath } })), envRefused: refused };
 }
 
 export function defaultPaths(): SetupHooksPaths {
@@ -836,13 +891,50 @@ export async function installHooksWithNative(
   requestedProfile?: HookProfile,
   opts: ClaudeNativeOptions = {},
 ): Promise<InstallOutcome> {
-  const plan = willWriteEntries(paths) ? await planClaudeNative(paths, opts) : null;
+  const plan = writesEntries(paths) ? await preparedNativePlan(paths, opts) : null;
   return installHooks(paths, requestedProfile, plan);
+}
+
+/** willWriteEntries, where a settings file that cannot be read counts as one that will not. */
+function writesEntries(paths: SetupHooksPaths): boolean {
+  try { return willWriteEntries(paths); } catch { return false; }
+}
+
+/**
+ * planClaudeNative for an install or update about to write entries. A
+ * preparation that throws (an unwritable ~/.wmux/hooks) is a plan with no
+ * copy and that reason: the entries are written on node, as when the copy
+ * does not pass, and the reason is reported.
+ */
+async function preparedNativePlan(paths: SetupHooksPaths, opts: ClaudeNativeOptions): Promise<ClaudeNativePlan> {
+  try {
+    return await planClaudeNative(paths, opts);
+  } catch (err) {
+    return { binary: null, reason: `the hook copy could not be prepared: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/**
+ * Every Claude folder an install writes, through the native path. They share
+ * the base paths (bridge, copy, shipped build); only settings.json differs. So
+ * the copy is prepared (and probed) once, before any settings.json is read,
+ * when any folder will write entries, and each folder's entries name that one
+ * copy. A folder whose write throws fails only itself.
+ */
+export async function installHookTargetsWithNative(
+  targets: ReadonlyArray<HookTarget>,
+  requestedProfile?: HookProfile,
+  opts: ClaudeNativeOptions = {},
+): Promise<Array<{ target: HookTarget; outcome: InstallOutcome }>> {
+  const writing = targets.map((t) => writesEntries(t.paths));
+  const plan = writing.some(Boolean) ? await preparedNativePlan(targets[0].paths, opts) : null;
+  // A folder that writes no entries (plugin-owned, corrupt) reports no copy.
+  return targets.map((t, i) => contained(t, (p) => installHooks(p, requestedProfile, writing[i] ? plan : null), (error) => failedInstall(t.paths, error, requestedProfile)));
 }
 
 /** `updateHooks` with the native form decided first, as installHooksWithNative. */
 export async function updateHooksWithNative(paths: SetupHooksPaths, opts: ClaudeNativeOptions = {}): Promise<UpdateOutcome> {
-  const plan = willWriteEntries(paths) ? await planClaudeNative(paths, opts) : null;
+  const plan = writesEntries(paths) ? await preparedNativePlan(paths, opts) : null;
   return updateHooks(paths, plan);
 }
 
@@ -1203,6 +1295,43 @@ export function refreshHookBridgeAtBoot(paths: SetupHooksPaths): BridgeRefreshOu
   return refreshHookBridge(paths);
 }
 
+/**
+ * One bridge file serves every Claude folder, so the boot refresh runs when
+ * ANY of them references it: the first target whose answer is not
+ * 'not-installed' decides.
+ */
+export function refreshHookBridgeAtBootFor(targets: ReadonlyArray<{ paths: SetupHooksPaths }>): BridgeRefreshOutcome | 'isolated' {
+  let outcome: BridgeRefreshOutcome | 'isolated' = 'not-installed';
+  for (const t of targets) {
+    outcome = refreshHookBridgeAtBoot(t.paths);
+    if (outcome !== 'not-installed') break;
+  }
+  return outcome;
+}
+
+/** Whether this settings.json's wmux entries run the copy at `copy`. */
+function entriesNameCopy(settingsPath: string, copy: string): boolean {
+  const load = loadSettings(settingsPath);
+  return !load.corrupted && wmuxLeaves(load.settings).some((leaf) => leafForm(leaf) === 'native' && nativeLeafCopy(leaf) === copy);
+}
+
+/**
+ * refreshClaudeNativeAtBoot for every Claude folder. They share one copy, so
+ * it is refreshed once, judged against the first target whose entries name
+ * it (else the first target, whose answer then says why nothing ran).
+ */
+export async function refreshClaudeNativeAtBootFor(
+  targets: ReadonlyArray<{ paths: SetupHooksPaths }>,
+  bridge: BridgeRefreshOutcome | 'isolated',
+): Promise<NativeCopyRefreshOutcome> {
+  if (targets.length === 0) return 'not-installed';
+  const copy = claudeHookCopyPath(targets[0].paths.bridgeDest);
+  const user = targets.find((t) => {
+    try { return entriesNameCopy(t.paths.settingsPath, copy); } catch { return false; }
+  }) ?? targets[0];
+  return refreshClaudeNativeAtBoot(user.paths, bridge);
+}
+
 /** What a boot-time refresh of the wmux-claude-hook copy did. */
 export type NativeCopyRefreshOutcome =
   | 'refreshed'     // the shipped build passed and took the copy's place
@@ -1238,8 +1367,7 @@ export async function refreshClaudeNativeAtBoot(
   if (!before.includes(Buffer.from(NATIVE_HOOKS_MARKER))) return 'not-installed';
   if (!paths.nativeSource || !fs.existsSync(paths.nativeSource)) return 'no-source';
   if (readClaudeRuntime(path.dirname(paths.bridgeDest)) === 'node') return 'runtime-node';
-  const load = loadSettings(paths.settingsPath);
-  if (load.corrupted || !wmuxLeaves(load.settings).some((leaf) => leafForm(leaf) === 'native' && nativeLeafCopy(leaf) === copy)) return 'not-in-use';
+  if (!entriesNameCopy(paths.settingsPath, copy)) return 'not-in-use';
   if (bridge !== 'refreshed' && bridge !== 'up-to-date') return 'stale-bridge';
   const plan = await planClaudeNative(paths, { suffixed: false });
   let after: Buffer | null = null;
@@ -1747,7 +1875,7 @@ export function claudeHookRuntimeReport(
  * A corrupt settings.json returns FALSE. We cannot prove the gate is there, and
  * a false "armed" reading is exactly the outcome this guard exists to prevent.
  */
-export function isPermissionGateInstalled(settingsPath: string = defaultSettingsPath()): boolean {
+export function isPermissionGateInstalled(settingsPath: string = hookTargets({ action: 'status' }).targets[0].settingsPath): boolean {
   const load = loadSettings(settingsPath);
   if (load.corrupted) return false;
   // An active marketplace plugin supplies the gate from its own hooks.json,
@@ -2155,6 +2283,54 @@ async function handleCompatAgentHooks(
   if (!outcome.ok) process.exit(1);
 }
 
+/** A target and its outcome, for --json: which folder, why it was a target, what happened. */
+function targetJson<T>(r: { target: HookTarget; outcome: T }): { kind: HookTarget['kind']; label: string; settingsPath: string; outcome: T } {
+  return { kind: r.target.kind, label: r.target.label, settingsPath: r.target.settingsPath, outcome: r.outcome };
+}
+
+/**
+ * Runs one extra target's step. A throw there (a read-only folder: EACCES,
+ * EPERM, EROFS) becomes that target's failure, so it never stops the others.
+ */
+function contained<T>(target: HookTarget, step: (paths: SetupHooksPaths) => T, failed: (error: string) => T): { target: HookTarget; outcome: T } {
+  try {
+    return { target, outcome: step(target.paths) };
+  } catch (err) {
+    return { target, outcome: failed(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+/** One extra target's line after the primary's usual report. */
+function printTargetLine(target: HookTarget, summary: string, failed: boolean): void {
+  (failed ? console.warn : console.log)(`also ${target.label}: ${summary} (${target.settingsPath})`);
+}
+
+/** An install outcome for a target whose write threw, on the profile the run asked for. */
+export function failedInstall(paths: SetupHooksPaths, error: string, profile: HookProfile = 'full'): InstallOutcome {
+  return {
+    ok: false, settingsPath: paths.settingsPath, bridgeDest: paths.bridgeDest, bridgeSource: paths.bridgeSource,
+    events: [], profile, bridgeCopied: false, pluginDetected: false, removedForPlugin: 0, warning: null, error,
+  };
+}
+
+function installSummary(o: InstallOutcome): string {
+  if (!o.ok) return `FAILED: ${o.error ?? 'unknown error'}`;
+  return o.events.length ? `hooks installed (${o.events.length} events, ${o.profile})` : 'nothing to write';
+}
+
+/** An extra target's status: its outcome, or why it could not be read (an unreadable folder). */
+export type TargetStatus = StatusOutcome | { ok: false; settingsPath: string; error: string };
+
+const statusFailed = (o: TargetStatus): o is Extract<TargetStatus, { error: string }> => 'error' in o;
+
+function statusSummary(o: TargetStatus): string {
+  if (statusFailed(o)) return `FAILED: ${o.error}`;
+  if (o.settingsCorrupted) return 'settings.json is not valid JSON';
+  if (!o.settingsExists) return 'no settings.json';
+  if (o.installedEvents.length === 0) return 'wmux hooks NOT installed';
+  return `wmux hooks installed (${o.installedEvents.length} events, ${o.profile}${o.updateAvailable ? ', update available' : ''})`;
+}
+
 export async function handleSetupHooks(args: string[], jsonMode: boolean): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(HELP_TEXT);
@@ -2258,14 +2434,29 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
     return;
   }
 
-  const paths = defaultPaths();
+  // Every Claude config folder a claude can run with: CLAUDE_CONFIG_DIR (or
+  // ~/.claude), then each registered account. The first is the primary, whose
+  // outcome keeps the historical top-level fields; `claudeTargets` lists all.
+  const { targets, envRefused } = hookTargets({ action: remove ? 'remove' : status ? 'status' : 'install' });
+  if (envRefused) console.error(`warning: ${envRefused}`);
+  const [primary, ...others] = targets;
+  const paths = primary.paths;
 
   // Preserve the historical --remove contract: it only edits Claude's
   // settings.json and never deletes shared scripts or another CLI's config.
   if (remove) {
     const outcome = removeHooks(paths);
-    printRemove(outcome, jsonMode);
-    if (!outcome.ok) process.exit(1);
+    const rest = others.map((t) => contained(t, removeHooks, (error): RemoveOutcome => ({ ok: false, settingsPath: t.settingsPath, settingsExisted: true, removed: 0, error })));
+    const ok = outcome.ok && rest.every((r) => r.outcome.ok);
+    if (jsonMode) {
+      console.log(JSON.stringify({ ...outcome, ok, claudeTargets: [{ target: primary, outcome }, ...rest].map(targetJson) }, null, 2));
+    } else {
+      printRemove(outcome, false);
+      for (const r of rest) {
+        printTargetLine(r.target, r.outcome.ok ? `removed ${r.outcome.removed} wmux hook group(s)` : `FAILED: ${r.outcome.error}`, !r.outcome.ok);
+      }
+    }
+    if (!ok) process.exit(1);
     return;
   }
 
@@ -2275,15 +2466,18 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
 
   if (status) {
     const claude = statusHooks(paths);
+    const rest = others.map((t) => contained<TargetStatus>(t, statusHooks, (error) => ({ ok: false, settingsPath: t.settingsPath, error })));
     const integrations = lifecycle.statusLifecycleIntegrations(lifecyclePaths);
     // Preserve the legacy Claude-only root fields for scripts while exposing
     // the richer per-integration objects alongside them.
     const opencodeTerminalChat = openCodeTerminalChatIntegration(terminalChatOptions);
-    const outcome = { ...claude, claude, ...integrations, opencodeTerminalChat };
+    const claudeTargets = [{ target: primary, outcome: claude }, ...rest].map(targetJson);
+    const outcome = { ...claude, claude, claudeTargets, ...integrations, opencodeTerminalChat };
     if (jsonMode) {
       console.log(JSON.stringify(outcome, null, 2));
     } else {
       printStatus(claude, false);
+      for (const r of rest) printTargetLine(r.target, statusSummary(r.outcome), statusFailed(r.outcome) || r.outcome.settingsCorrupted);
       printAssetStatus('codex bridge', integrations.codexBridge);
       if (!integrations.codexNotify.configExists) {
         console.log(`codex notify: Codex config not found (${integrations.codexNotify.configPath})`);
@@ -2306,10 +2500,11 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
       printAssetStatus('codex hooks bridge', integrations.codexHooksBridge);
       printCodexHooksStatus(integrations.codexHooks);
     }
-    // Keep the existing scripted contract: status is non-zero only when the
-    // Claude settings file is corrupt, not merely because an optional CLI is
-    // absent or a user-owned integration occupies its slot.
-    if (claude.settingsCorrupted) process.exit(1);
+    // Keep the existing scripted contract: status is non-zero only when a
+    // Claude settings file is corrupt or could not be read, not merely because
+    // an optional CLI is absent or a user-owned integration occupies its slot.
+    // Every Claude folder counts, as it does for install and remove.
+    if (claude.settingsCorrupted || rest.some((r) => statusFailed(r.outcome) || r.outcome.settingsCorrupted)) process.exit(1);
     return;
   }
 
@@ -2323,12 +2518,15 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   if (nativeFrom && suffixed) console.error('warning: --native-from ignored: an isolated instance writes the node form only');
 
   // Run each integration independently so a corrupt Claude settings file does
-  // not prevent safe Codex/OpenCode installation (and vice versa).
-  const claude = await installHooksWithNative(paths, requestedProfile, {
+  // not prevent safe Codex/OpenCode installation (and vice versa). Each Claude
+  // folder is its own target too: a corrupt account file stops only itself.
+  // One wmux-claude-hook copy, prepared once, serves every folder.
+  const [first, ...rest] = await installHookTargetsWithNative(targets, requestedProfile, {
     nativeFrom: nativeFrom ? path.resolve(nativeFrom) : undefined,
     reprobe,
     suffixed,
   });
+  const claude = first.outcome;
   const codexVersionOutput = probeCodexVersion();
   const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths, { codexVersionOutput });
   const opencodeTerminalChat = openCodeTerminalChatIntegration({ ...terminalChatOptions, install: true });
@@ -2336,13 +2534,15 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
     ...claude,
     ...integrations,
     opencodeTerminalChat,
-    ok: claude.ok && integrations.ok,
+    ok: claude.ok && rest.every((r) => r.outcome.ok) && integrations.ok,
     claude,
+    claudeTargets: [{ target: primary, outcome: claude }, ...rest].map(targetJson),
   };
   if (jsonMode) {
     console.log(JSON.stringify(outcome, null, 2));
   } else {
     printInstall(claude, false);
+    for (const r of rest) printTargetLine(r.target, installSummary(r.outcome), !r.outcome.ok);
     printAssetInstall('codex bridge', integrations.codexBridge);
     if (!integrations.codexNotify) {
       console.warn('codex notify: not registered because the bridge could not be installed safely');

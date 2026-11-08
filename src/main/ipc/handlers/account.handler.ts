@@ -19,7 +19,10 @@ import {
   type Vendor,
   type Account,
 } from '../../account/accountStore';
-import { provisionAccountDir } from '../../account/accountProvision';
+import { copiesSettingsJson, provisionAccountDir } from '../../account/accountProvision';
+import { envClaudeConfigDir } from '../../../shared/claudeConfigTargets';
+import { claudeConfigDirEnv } from '../../hooks/claudeConfigDirProbe';
+import { installHooksIntoNewAccount } from './hooksBridge.handler';
 import { loadClaudeCredential, credentialFingerprint } from '../../claude/claudeCredential';
 
 function isVendor(v: unknown): v is Vendor {
@@ -165,7 +168,21 @@ export function registerAccountHandlers(): () => void {
       if (!isVendor(args?.vendor)) throw new AccountError('invalid', 'invalid vendor');
       const share = args.share !== false; // default: hybrid share ON
       const configDir = path.join(getWmuxDir(), 'accounts', `${args.vendor}-${randomUUID().slice(0, 8)}`);
-      const result = provisionAccountDir({ configDir, vendor: args.vendor, share });
+      // An account that keeps Claude's settings.json shares from the folder
+      // Claude itself reads:
+      // CLAUDE_CONFIG_DIR when set, else ~/.claude.
+      const sourceDir = copiesSettingsJson(args.vendor) ? envClaudeConfigDir(await claudeConfigDirEnv()).dir ?? undefined : undefined;
+      const result = provisionAccountDir({ configDir, vendor: args.vendor, share, sourceDir });
+      // wmux's hooks there too, when the primary folder has them (its copied
+      // settings may predate them, or there was no copy at all).
+      if (copiesSettingsJson(args.vendor)) {
+        try {
+          const hooks = await installHooksIntoNewAccount(configDir);
+          if (hooks && !hooks.ok) console.warn(`[account] wmux hooks not installed in the new account: ${hooks.error}`);
+        } catch (err) {
+          console.warn('[account] wmux hooks not installed in the new account:', err);
+        }
+      }
       // Hand out the same canonical string ACCOUNT_ADD will store: the login
       // tab exports it as CLAUDE_CONFIG_DIR and the macOS keychain item is keyed
       // on that exact string, so every later read must use the identical path.

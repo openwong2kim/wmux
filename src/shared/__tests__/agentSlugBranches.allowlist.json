@@ -3,7 +3,6 @@
   "files": {
     "src/cli/commands/codex.ts": 1,
     "src/cli/commands/role.ts": 2,
-    "src/cli/commands/setupStatusline.ts": 1,
     "src/cli/index.ts": 1,
     "src/daemon/approvals/ApprovalRegistry.ts": 4,
     "src/daemon/approvals/openCodeDecisions.ts": 2,
@@ -93,6 +92,7 @@
     "src/shared/agentResume.ts": 3,
     "src/shared/bot.ts": 2,
     "src/shared/botWorkerGuard.ts": 1,
+    "src/shared/claudeConfigTargets.ts": 1,
     "src/shared/codexWorkerGuard.ts": 3,
     "src/shared/fanoutPreset.ts": 2,
     "src/shared/mcpRegistration.ts": 1,
