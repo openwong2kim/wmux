@@ -891,8 +891,27 @@ export async function installHooksWithNative(
   requestedProfile?: HookProfile,
   opts: ClaudeNativeOptions = {},
 ): Promise<InstallOutcome> {
-  const plan = willWriteEntries(paths) ? await planClaudeNative(paths, opts) : null;
+  const plan = writesEntries(paths) ? await preparedNativePlan(paths, opts) : null;
   return installHooks(paths, requestedProfile, plan);
+}
+
+/** willWriteEntries, where a settings file that cannot be read counts as one that will not. */
+function writesEntries(paths: SetupHooksPaths): boolean {
+  try { return willWriteEntries(paths); } catch { return false; }
+}
+
+/**
+ * planClaudeNative for an install or update about to write entries. A
+ * preparation that throws (an unwritable ~/.wmux/hooks) is a plan with no
+ * copy and that reason: the entries are written on node, as when the copy
+ * does not pass, and the reason is reported.
+ */
+async function preparedNativePlan(paths: SetupHooksPaths, opts: ClaudeNativeOptions): Promise<ClaudeNativePlan> {
+  try {
+    return await planClaudeNative(paths, opts);
+  } catch (err) {
+    return { binary: null, reason: `the hook copy could not be prepared: ${err instanceof Error ? err.message : String(err)}` };
+  }
 }
 
 /**
@@ -907,16 +926,15 @@ export async function installHookTargetsWithNative(
   requestedProfile?: HookProfile,
   opts: ClaudeNativeOptions = {},
 ): Promise<Array<{ target: HookTarget; outcome: InstallOutcome }>> {
-  const writes = (t: HookTarget) => {
-    try { return willWriteEntries(t.paths); } catch { return false; }
-  };
-  const plan = targets.length > 0 && targets.some(writes) ? await planClaudeNative(targets[0].paths, opts) : null;
-  return targets.map((t) => contained(t, (p) => installHooks(p, requestedProfile, plan), (error) => failedInstall(t.paths, error, requestedProfile)));
+  const writing = targets.map((t) => writesEntries(t.paths));
+  const plan = writing.some(Boolean) ? await preparedNativePlan(targets[0].paths, opts) : null;
+  // A folder that writes no entries (plugin-owned, corrupt) reports no copy.
+  return targets.map((t, i) => contained(t, (p) => installHooks(p, requestedProfile, writing[i] ? plan : null), (error) => failedInstall(t.paths, error, requestedProfile)));
 }
 
 /** `updateHooks` with the native form decided first, as installHooksWithNative. */
 export async function updateHooksWithNative(paths: SetupHooksPaths, opts: ClaudeNativeOptions = {}): Promise<UpdateOutcome> {
-  const plan = willWriteEntries(paths) ? await planClaudeNative(paths, opts) : null;
+  const plan = writesEntries(paths) ? await preparedNativePlan(paths, opts) : null;
   return updateHooks(paths, plan);
 }
 

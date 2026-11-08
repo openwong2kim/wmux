@@ -450,11 +450,27 @@ describe.skipIf(process.platform === 'win32')('every Claude folder through the n
     vi.stubEnv('WMUX_DATA_SUFFIX', '');
     shipNative(goodLine());
     const broken = account('acct-broken');
-    fs.mkdirSync(broken.settingsPath); // a folder where settings.json should be: the write throws
-    const results = await installHookTargetsWithNative([primary(), broken, account('acct-ok')], undefined, { suffixed: false });
-    expect(results[1].outcome.ok).toBe(false);
+    // A read-only folder: settings.json reads as absent, and its write throws.
+    fs.chmodSync(path.dirname(broken.settingsPath), 0o555);
+    try {
+      const results = await installHookTargetsWithNative([primary(), broken, account('acct-ok')], undefined, { suffixed: false });
+      expect(results[1].outcome).toMatchObject({ ok: false });
+      expect(results[1].outcome.error).toMatch(/EACCES|EPERM|permission/i);
+      expect(results[0].outcome).toMatchObject({ ok: true, native: copy });
+      expect(results[2].outcome).toMatchObject({ ok: true, native: copy });
+    } finally {
+      fs.chmodSync(path.dirname(broken.settingsPath), 0o755);
+    }
+  });
+
+  it('a folder that writes no entries reports no copy', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
+    shipNative(goodLine());
+    const corrupt = account('acct-corrupt');
+    fs.writeFileSync(corrupt.settingsPath, '{ not json');
+    const results = await installHookTargetsWithNative([primary(), corrupt], undefined, { suffixed: false });
     expect(results[0].outcome).toMatchObject({ ok: true, native: copy });
-    expect(results[2].outcome).toMatchObject({ ok: true, native: copy });
+    expect(results[1].outcome.native).toBeUndefined();
   });
 
   it('the boot refresh is judged against whichever folder\'s entries name the copy', async () => {

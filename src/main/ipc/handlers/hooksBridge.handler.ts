@@ -25,6 +25,7 @@ import {
   defaultPaths,
   hookTargets,
   statusHooks,
+  installHooks,
   installHooksWithNative,
   installHookTargetsWithNative,
   updateHooksWithNative,
@@ -239,8 +240,10 @@ export async function installHooksIntoNewAccount(configDir: string): Promise<Ins
   const primary = await primaryHookPaths();
   const status = statusHooks(primary);
   if (!computeInstalled(status)) return null;
-  // The native path, as every other folder: its entries name the one copy.
-  return installHooksWithNative({ ...primary, settingsPath: path.join(configDir, 'settings.json') }, status.profile);
+  // In the form the primary's entries run now: the one copy when they name
+  // it, node otherwise (an older install, or a copy that did not pass).
+  const paths = { ...primary, settingsPath: path.join(configDir, 'settings.json') };
+  return status.hookRuntime.copy ? installHooksWithNative(paths, status.profile) : installHooks(paths, status.profile);
 }
 
 export function registerHooksBridgeHandlers(): void {
