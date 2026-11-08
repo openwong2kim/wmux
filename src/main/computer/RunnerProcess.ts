@@ -70,6 +70,8 @@ interface Pending {
   /** The runner answered this run itself, so there is nothing to cancel. */
   answered?: boolean;
   timer: ReturnType<typeof setTimeout>;
+  /** Called once the runner reports it started agent-desktop for this run. */
+  onStarted?: () => void;
 }
 
 interface Running {
@@ -104,7 +106,7 @@ export class RunnerProcess {
   }
 
   /** Runs agent-desktop with `argv` and resolves with what it printed. */
-  async run(argv: readonly string[], options: { home: string; timeoutMs: number }): Promise<RunnerResult> {
+  async run(argv: readonly string[], options: { home: string; timeoutMs: number; onStarted?: () => void }): Promise<RunnerResult> {
     const generation = this.generation;
     const current = () => {
       if (this.disposed) throw new ComputerError('shutting_down', 'computer use is shutting down');
@@ -122,7 +124,7 @@ export class RunnerProcess {
       const timer = setTimeout(() => {
         this.settle(id, new ComputerError('timeout', `agent-desktop did not answer within ${timeoutMs} ms`));
       }, timeoutMs + (this.opts.graceMs ?? GRACE_MS));
-      this.pending.set(id, { resolve, reject, running, timer });
+      this.pending.set(id, { resolve, reject, running, timer, onStarted: options.onStarted });
       this.write(running, { id, argv: [...argv], timeoutMs, home: options.home });
     });
   }
@@ -296,7 +298,10 @@ export class RunnerProcess {
     }
     const p = this.pending.get(id);
     if (!p || p.running.child !== from) return;
-    if (message.event === 'started') return;
+    if (message.event === 'started') {
+      p.onStarted?.();
+      return;
+    }
     if (message.ok === true) {
       this.settle(id, {
         ...(typeof message.exitCode === 'number' && { exitCode: message.exitCode }),

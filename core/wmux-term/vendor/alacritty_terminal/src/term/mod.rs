@@ -795,8 +795,8 @@ impl<T> Term<T> {
     }
 
     /// wmux: the region from `origin` moves up in place, as xterm.js's
-    /// deleteLines runs; unlike `scroll_up_relative`, nothing enters history
-    /// when the region starts at the top row.
+    /// deleteLines and scrollUp run; unlike `scroll_up_relative`, nothing
+    /// enters history when the region starts at the top row.
     fn scroll_up_in_place(&mut self, origin: Line, lines: usize) {
         let lines = cmp::min(lines, (self.scroll_region.end - origin).0 as usize);
         let region = origin..self.scroll_region.end;
@@ -1446,7 +1446,8 @@ impl<T: EventListener> Handler for Term<T> {
         trace!("Linefeed");
         let next = self.grid.cursor.point.line + 1;
         if next == self.scroll_region.end {
-            self.scroll_up(1);
+            // wmux: not `scroll_up`, which is SU's in-place scroll.
+            self.scroll_up_relative(self.scroll_region.start, 1);
         } else if next < self.screen_lines() {
             self.damage_cursor();
             self.grid.cursor.point.line += 1;
@@ -1505,8 +1506,10 @@ impl<T: EventListener> Handler for Term<T> {
 
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
+        // wmux: SU (`CSI S`) scrolls the region in place, as xterm.js's
+        // scrollUp does; only a linefeed moves rows into history.
         let origin = self.scroll_region.start;
-        self.scroll_up_relative(origin, lines);
+        self.scroll_up_in_place(origin, lines);
     }
 
     #[inline]

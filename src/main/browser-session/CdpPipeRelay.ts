@@ -1,0 +1,531 @@
+import fs from 'node:fs';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import type { Duplex } from 'node:stream';
+import { WebSocketServer, type WebSocket } from 'ws';
+import type { CallerIdentity, CdpPipeMux, LocalMethods } from './CdpPipeMux';
+import { decodeRelayProofBytes, newRelayProofKey, relayProof, RELAY_PROOF_METHOD, RELAY_PROOF_NONCE_BYTES } from '../../shared/relayProof';
+import { CdpRelayTokens } from './CdpRelayTokens';
+import {
+  makeRelaySocketDir,
+  relaySocketIntact,
+  relaySocketRoots,
+  removeRelaySocketDir,
+  sweepDeadRelayDirs,
+  verifyRelaySocket,
+  type RelaySocketDir,
+  type RelaySocketId,
+} from './relaySocket';
+import { loadPipeSecurity, relayPipeEndpoint, relayPipePath, type NarrowResult, type PipeSecurityResult } from './relayPipeWin';
+
+// ---------------------------------------------------------------------------
+// The one endpoint external clients (the MCP lane's Playwright) dial for every
+// Chrome on a debugging pipe. A client connects with a one-time token that
+// browser.cdp.info minted for it over the authenticated wmux pipe; the token
+// says which Chrome it reaches and who it connects as.
+//  - A Unix socket in a private temp dir where one can be made (relaySocket);
+//    on Windows a named pipe closed to everyone but this user and SYSTEM
+//    (relayPipeWin); else loopback TCP. Started on the first token, not before.
+//  - WebSocket upgrades at one exact path only; no HTTP routes.
+//  - Each upgrade is checked in order: method and path (404), any Origin
+//    (403), on TCP the Host and the peer (403), the bearer token (401), then
+//    whether its Chrome is still there and has room (503). Only then is the
+//    token spent, in the same tick as the upgrade, so a refusal for room
+//    leaves it usable.
+//  - No per-message compression, a header timeout, a cap on connections per
+//    Chrome, and a cap on what may wait to be sent to one client.
+//  - Before each token is handed out, a socket that is gone or was replaced is
+//    bound afresh; connections already made stay. A token is good only on the
+//    listener it was handed out for, and a rebind drops every unused one.
+// Neither tokens nor the endpoint are logged.
+// ---------------------------------------------------------------------------
+
+export const RELAY_PATH = '/devtools/browser/relay';
+export const RELAY_MAX_CLIENTS_PER_CHROME = 8;
+/** Above the largest frame expected (a ~20 MiB full-page screenshot), with room. */
+export const RELAY_MAX_BUFFERED_BYTES = 64 * 1024 * 1024;
+/** A client's own frames are commands: small, but a script to evaluate can be large. */
+const MAX_INBOUND_BYTES = 32 * 1024 * 1024;
+const HEADER_TIMEOUT_MS = 5_000;
+/** Connections not yet upgraded the listener takes on top of every Chrome's cap. */
+const PRE_AUTH_ROOM = 8;
+/** Said once when a platform with Unix sockets has to serve on TCP. Names no endpoint, port, path or token. */
+export const RELAY_TCP_FALLBACK_LINE = '[CdpPipeRelay] no private socket dir; serving on loopback TCP';
+/** Said when Windows has to serve on TCP; a reason code follows. Names no endpoint, pipe, user or token. */
+export const RELAY_PIPE_FALLBACK_LINE = '[CdpPipeRelay] no owner-only pipe; serving on loopback TCP';
+/** Fresh pipe names tried before TCP. */
+const PIPE_BIND_ATTEMPTS = 3;
+/** How long one pipe waits for a free instance to set its DACL on, yielding to the event loop. */
+const PIPE_BUSY_WAIT_MS = 200;
+const PIPE_BUSY_RETRY_MS = 10;
+
+/**
+ * How long a connection keeps its proof key unasked (src/shared/relayProof.ts).
+ * The clock starts at the WebSocket accept, and the MCP engine (another
+ * process) asks only after its whole connectOverCDP, which may take up to
+ * RELAY_CONNECT_TIMEOUT_MS (30 s), then gives the answer RELAY_PROOF_TIMEOUT_MS
+ * (5 s); see src/mcp/playwright/PlaywrightEngine.ts. Keep this strictly
+ * longer than those two together, or a slow but genuine attach outlives the
+ * key and fails as a proof the engine does not retry.
+ */
+export const RELAY_PROOF_KEY_TTL_MS = 45_000;
+
+/**
+ * What browser.cdp.info hands a caller: where to connect, the header that
+ * lets it, and the key the relay proves itself with (src/shared/relayProof.ts).
+ */
+export interface RelayGrant {
+  readonly endpoint: string;
+  readonly headers: { readonly Authorization: string };
+  /** base64url; never sent on the relay connection. */
+  readonly proofKey: string;
+}
+
+export interface RelayOptions {
+  /** Temp roots to try for the socket, in order; none means loopback TCP. */
+  roots?: string[];
+  maxClientsPerChrome?: number;
+  maxBufferedBytes?: number;
+  headerTimeoutMs?: number;
+  /** Windows: serve on a named pipe (default) or, false, on loopback TCP. */
+  windowsPipe?: boolean;
+  /** Test seam: the Win32 side of the pipe (relayPipeWin.loadPipeSecurity). */
+  pipeSecurity?: () => PipeSecurityResult;
+  /** Test seam: runs between a pipe's creation and its DACL change. */
+  beforeNarrow?: (pipePath: string) => void;
+  /** How long a connection keeps its proof key unasked (default RELAY_PROOF_KEY_TTL_MS). */
+  proofKeyTtlMs?: number;
+}
+
+interface Listener {
+  readonly server: Server;
+  readonly endpoint: string;
+  /** TCP: the only Host header accepted. Null on a Unix socket. */
+  readonly tcpHost: string | null;
+  readonly socket: { readonly place: RelaySocketDir; readonly id: RelaySocketId } | null;
+  /** Windows: the pipe's path. Null elsewhere and on TCP. */
+  readonly pipe: string | null;
+}
+
+interface Binding {
+  readonly route: RelayRoute;
+  readonly identity: CallerIdentity;
+  /** The listener the token was handed out for: no other one takes it. */
+  readonly listener: Listener;
+  /** This grant's proof key; goes with the token to the connection that spends it. */
+  readonly key: Buffer;
+}
+
+function isLoopback(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::ffff:127.0.0.1';
+}
+
+function refuse(socket: Duplex, status: string): void {
+  // Destroyed once the answer is written out, not before it is.
+  socket.once('finish', () => socket.destroy());
+  socket.once('error', () => socket.destroy());
+  try {
+    socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  } catch {
+    socket.destroy();
+  }
+}
+
+function bearer(header: string | undefined): string | null {
+  const match = /^Bearer ([A-Za-z0-9_-]{1,128})$/.exec(header ?? '');
+  return match ? match[1] : null;
+}
+
+/** One Chrome the relay serves. */
+export class RelayRoute {
+  readonly clients = new Set<WebSocket>();
+  /** Upgrades accepted and still in their handshake: they count against the cap. */
+  handshaking = 0;
+  closed = false;
+
+  constructor(readonly mux: CdpPipeMux, private readonly relay: CdpPipeRelay) {}
+
+  get open(): boolean {
+    return !this.closed && this.mux.isOpen();
+  }
+
+  /** A token for `identity` to connect to this Chrome with. */
+  grant(identity: CallerIdentity): Promise<RelayGrant> {
+    return this.relay.grant(this, identity);
+  }
+
+  /** This Chrome is gone: its clients are disconnected and its unused tokens dropped. */
+  close(): void {
+    this.relay.drop(this);
+  }
+}
+
+export class CdpPipeRelay {
+  /** An unused token's proof key is wiped whenever the token goes. */
+  private readonly tokens = new CdpRelayTokens<Binding>((binding) => binding.key.fill(0));
+  private readonly routes = new Set<RelayRoute>();
+  private readonly wss: WebSocketServer;
+  private readonly roots: string[];
+  private readonly maxClients: number;
+  private readonly maxBuffered: number;
+  private readonly headerTimeoutMs: number;
+  private readonly windowsPipe: boolean;
+  private readonly pipeSecurity: () => PipeSecurityResult;
+  private readonly beforeNarrow: ((pipePath: string) => void) | undefined;
+  private readonly proofKeyTtlMs: number;
+  private listener: Listener | null = null;
+  private binding: Promise<Listener> | null = null;
+  private swept = false;
+  /** The background sweep of dirs left by processes that are gone (tests wait on it). */
+  sweeping: Promise<void> = Promise.resolve();
+  private closed = false;
+
+  constructor(opts: RelayOptions = {}) {
+    this.roots = opts.roots ?? relaySocketRoots();
+    this.maxClients = opts.maxClientsPerChrome ?? RELAY_MAX_CLIENTS_PER_CHROME;
+    this.maxBuffered = opts.maxBufferedBytes ?? RELAY_MAX_BUFFERED_BYTES;
+    this.headerTimeoutMs = opts.headerTimeoutMs ?? HEADER_TIMEOUT_MS;
+    this.windowsPipe = opts.windowsPipe ?? true;
+    this.pipeSecurity = opts.pipeSecurity ?? loadPipeSecurity;
+    this.beforeNarrow = opts.beforeNarrow;
+    this.proofKeyTtlMs = opts.proofKeyTtlMs ?? RELAY_PROOF_KEY_TTL_MS;
+    this.wss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: MAX_INBOUND_BYTES, clientTracking: false });
+  }
+
+  /** Serve `mux`'s Chrome; close the route when that Chrome goes. */
+  serve(mux: CdpPipeMux): RelayRoute {
+    if (this.closed) throw new Error('CdpPipeRelay: closed');
+    const route = new RelayRoute(mux, this);
+    this.routes.add(route);
+    this.sizeListener();
+    return route;
+  }
+
+  /** @internal RelayRoute.grant */
+  async grant(route: RelayRoute, identity: CallerIdentity): Promise<RelayGrant> {
+    if (this.closed || !route.open) throw new Error('CdpPipeRelay: that Chrome is gone');
+    let listener = await this.live();
+    // A rebind may have retired that listener while this waited: a token is
+    // only ever minted for the one serving now.
+    for (let tries = 1; listener !== this.listener && tries < 3; tries++) listener = await this.live();
+    if (this.closed || !route.open) throw new Error('CdpPipeRelay: that Chrome is gone');
+    if (listener !== this.listener) throw new Error('CdpPipeRelay: the relay keeps rebinding');
+    const key = newRelayProofKey();
+    const token = this.tokens.mint({ route, identity, listener, key });
+    return { endpoint: listener.endpoint, headers: { Authorization: `Bearer ${token}` }, proofKey: key.toString('base64url') };
+  }
+
+  /** @internal RelayRoute.close */
+  drop(route: RelayRoute): void {
+    if (route.closed) return;
+    route.closed = true;
+    this.routes.delete(route);
+    this.forget((binding) => binding.route === route);
+    for (const ws of route.clients) ws.terminate();
+    route.clients.clear();
+    this.sizeListener();
+  }
+
+  /** Disconnect every client, stop listening and remove the socket dir. */
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    for (const route of [...this.routes]) this.drop(route);
+    this.wss.close();
+    const binding = this.binding;
+    if (binding) await binding.catch(() => undefined);
+    await this.sweeping;
+    const listener = this.listener;
+    this.listener = null;
+    if (listener) await this.retire(listener, true);
+  }
+
+  /** The current listener, bound afresh when its socket is gone or was replaced. One bind at a time. */
+  private live(): Promise<Listener> {
+    const current = this.listener;
+    if (current && this.intact(current)) return Promise.resolve(current);
+    if (!this.binding) {
+      const binding = this.rebind();
+      this.binding = binding;
+      const clear = () => { if (this.binding === binding) this.binding = null; };
+      binding.then(clear, clear);
+    }
+    return this.binding;
+  }
+
+  private intact(listener: Listener): boolean {
+    if (!listener.server.listening) return false;
+    return listener.socket === null || relaySocketIntact(listener.socket.place.socketPath, listener.socket.id);
+  }
+
+  private async rebind(): Promise<Listener> {
+    const stale = this.listener;
+    this.listener = null;
+    // A token handed out for the old listener names its endpoint: none outlives it.
+    this.forget(() => true);
+    if (stale) void this.retire(stale, false);
+    if (!this.swept) {
+      // In the background: the first token does not wait on probing leftovers.
+      // A dir this process makes names its own pid, so the sweep never takes it.
+      this.swept = true;
+      this.sweeping = Promise.all(this.roots.map((root) => sweepDeadRelayDirs(root))).then(() => undefined, () => undefined);
+    }
+    const listener = await this.listen();
+    if (this.closed) {
+      await this.retire(listener, true);
+      throw new Error('CdpPipeRelay: closed');
+    }
+    this.listener = listener;
+    this.sizeListener();
+    return listener;
+  }
+
+  /** Drop the unused tokens `gone` names (their proof keys are wiped as they go). */
+  private forget(gone: (binding: Binding) => boolean): void {
+    this.tokens.forget(gone);
+  }
+
+  /** Stop accepting on `listener`; its upgraded connections stay unless `all`. */
+  private async retire(listener: Listener, all: boolean): Promise<void> {
+    // Before the name or port is let go: once it is, another process may take
+    // it, and no grant for this listener may be good there.
+    this.forget((binding) => binding.listener === listener);
+    const done = new Promise<void>((resolve) => listener.server.close(() => resolve()));
+    if (all) listener.server.closeAllConnections();
+    else listener.server.closeIdleConnections();
+    if (listener.socket) removeRelaySocketDir(listener.socket.place.dir);
+    if (all) await done;
+  }
+
+  private async listen(): Promise<Listener> {
+    for (const root of this.roots) {
+      const place = makeRelaySocketDir(root);
+      if (!place) continue;
+      const server = this.makeServer();
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once('error', reject);
+          server.listen(place.socketPath, () => { server.off('error', reject); resolve(); });
+        });
+        // The socket is created with the process umask: close it to everyone else.
+        fs.chmodSync(place.socketPath, 0o600);
+        const id = verifyRelaySocket(place);
+        if (!id) throw new Error('relay socket is not private');
+        return this.attach(server, { endpoint: `ws+unix://${place.socketPath}:${RELAY_PATH}`, tcpHost: null, socket: { place, id }, pipe: null });
+      } catch {
+        server.close();
+        removeRelaySocketDir(place.dir);
+      }
+    }
+    if (process.platform === 'win32' && this.windowsPipe) {
+      const pipe = await this.listenPipe();
+      if ('listener' in pipe) return pipe.listener;
+      // Closed while trying: no TCP listener either.
+      if (this.closed) throw new Error('CdpPipeRelay: closed');
+      console.warn(`${RELAY_PIPE_FALLBACK_LINE} (${pipe.reason})`);
+    }
+    // Elsewhere TCP means no root could hold a private socket.
+    if (process.platform !== 'win32') console.warn(RELAY_TCP_FALLBACK_LINE);
+    const server = this.makeServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve(); });
+    });
+    const { port } = server.address() as AddressInfo;
+    return this.attach(server, { endpoint: `ws://127.0.0.1:${port}${RELAY_PATH}`, tcpHost: `127.0.0.1:${port}`, socket: null, pipe: null });
+  }
+
+  /**
+   * Windows: a named pipe closed to everyone but this user and SYSTEM, or the
+   * reason there is none. A pipe whose DACL could not be set is closed, never
+   * served; a fresh name is tried, up to PIPE_BIND_ATTEMPTS.
+   */
+  private async listenPipe(): Promise<{ listener: Listener } | { reason: string }> {
+    const loaded = this.pipeSecurity();
+    if (!('security' in loaded)) return { reason: loaded.unavailable };
+    const { security } = loaded;
+    let reason = 'bind';
+    for (let attempt = 0; attempt < PIPE_BIND_ATTEMPTS; attempt++) {
+      // Closed meanwhile: no further pipe (each starts under the default DACL).
+      if (this.closed) return { reason: 'closed' };
+      const pipePath = relayPipePath();
+      const server = this.makeServer();
+      // A bind error (a name already taken: EADDRINUSE) arrives on the next tick.
+      const onBindError = () => undefined;
+      server.on('error', onBindError);
+      // On Windows Node creates and listens on the pipe before listen() returns:
+      // the DACL is set in this same tick, before any other process can be served.
+      server.listen(pipePath);
+      if (!server.listening) {
+        await new Promise((resolve) => setImmediate(resolve));
+        server.off('error', onBindError);
+        server.close();
+        reason = 'bind';
+        continue;
+      }
+      // Whatever narrow() does, throwing included, the pipe is either narrowed
+      // and served, or closed: it never stays listening wide.
+      const narrow = (): NarrowResult => {
+        try {
+          return security.narrow(pipePath);
+        } catch {
+          return { ok: false, busy: false, reason: 'throw' };
+        }
+      };
+      let narrowed: NarrowResult = { ok: false, busy: false, reason: 'throw' };
+      try {
+        this.beforeNarrow?.(pipePath);
+        narrowed = narrow();
+        // Every waiting instance taken: let the event loop serve (and time out)
+        // those connections and make a new instance, then try again, briefly,
+        // with a short pause rather than a spin.
+        const deadline = Date.now() + PIPE_BUSY_WAIT_MS;
+        while (!narrowed.ok && narrowed.busy && Date.now() < deadline && !this.closed) {
+          await new Promise((resolve) => setTimeout(resolve, PIPE_BUSY_RETRY_MS));
+          narrowed = narrow();
+        }
+      } finally {
+        server.off('error', onBindError);
+      }
+      // Closed while narrowing: not served, even if the DACL is in place.
+      if (narrowed.ok && !this.closed) {
+        return { listener: this.attach(server, { endpoint: relayPipeEndpoint(pipePath, RELAY_PATH), tcpHost: null, socket: null, pipe: pipePath }) };
+      }
+      server.close();
+      server.closeAllConnections();
+      if (this.closed) return { reason: 'closed' };
+      reason = narrowed.ok ? 'closed' : narrowed.busy ? 'busy' : narrowed.reason === 'throw' ? 'throw' : 'dacl';
+    }
+    return { reason };
+  }
+
+  private makeServer(): Server {
+    const server = createServer((_req, res) => {
+      // No HTTP routes: only the upgrade is served.
+      res.writeHead(404, { Connection: 'close' });
+      res.end();
+    });
+    server.headersTimeout = this.headerTimeoutMs;
+    server.requestTimeout = this.headerTimeoutMs * 2;
+    // A connection that never finishes its handshake is dropped (an upgraded one clears this).
+    server.on('connection', (socket) => socket.setTimeout(this.headerTimeoutMs, () => socket.destroy()));
+    // A client that sends something that is not HTTP is dropped.
+    server.on('clientError', (_err, socket) => socket.destroy());
+    return server;
+  }
+
+  private attach(server: Server, fields: Omit<Listener, 'server'>): Listener {
+    const listener: Listener = { server, ...fields };
+    // From here on a server error is logged, never thrown at main. Never with the endpoint.
+    server.on('error', (err) => console.warn('[CdpPipeRelay] server error:', err.message));
+    server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => this.upgrade(listener, req, socket, head));
+    // However the server stops (retire, or on its own), its grants go with it.
+    server.once('close', () => this.forget((binding) => binding.listener === listener));
+    return listener;
+  }
+
+  private sizeListener(): void {
+    const listener = this.listener;
+    if (listener) listener.server.maxConnections = this.maxClients * this.routes.size + PRE_AUTH_ROOM;
+  }
+
+  private upgrade(listener: Listener, req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    if (this.closed) { refuse(socket, '503 Service Unavailable'); return; }
+    if (req.method !== 'GET' || req.url !== RELAY_PATH) { refuse(socket, '404 Not Found'); return; }
+    if (req.headers.origin !== undefined) { refuse(socket, '403 Forbidden'); return; }
+    if (listener.tcpHost !== null && (req.headers.host !== listener.tcpHost || !isLoopback(req.socket.remoteAddress))) {
+      refuse(socket, '403 Forbidden');
+      return;
+    }
+    const presented = bearer(req.headers.authorization);
+    const ticket = presented === null ? null : this.tokens.lookup(presented);
+    if (!ticket) { refuse(socket, '401 Unauthorized'); return; }
+    if (ticket.binding.listener !== listener) { refuse(socket, '401 Unauthorized'); return; }
+    const { route, identity, key } = ticket.binding;
+    if (!route.open || route.clients.size + route.handshaking >= this.maxClients) { refuse(socket, '503 Service Unavailable'); return; }
+    if (!this.tokens.consume(ticket)) { refuse(socket, '401 Unauthorized'); return; }
+    route.handshaking++;
+    let settled = false;
+    const settle = () => {
+      if (!settled) route.handshaking--;
+      settled = true;
+    };
+    // A handshake that fails closes the socket without calling back; the
+    // spent token's key goes with it.
+    socket.once('close', () => {
+      if (!settled) key.fill(0);
+      settle();
+    });
+    this.wss.handleUpgrade(req, socket, head, (ws) => {
+      settle();
+      this.accept(route, identity, key, ws);
+    });
+  }
+
+  private accept(route: RelayRoute, identity: CallerIdentity, key: Buffer, ws: WebSocket): void {
+    // The Chrome may have gone during the handshake.
+    if (this.closed || !route.open) { key.fill(0); ws.terminate(); return; }
+    const proof = proofAnswerer(key, this.proofKeyTtlMs);
+    route.clients.add(ws);
+    const maxBuffered = this.maxBuffered;
+    let sent = 0;
+    const client = route.mux.attachExternal('relay', (text) => {
+      if (ws.readyState !== ws.OPEN) return;
+      ws.send(text);
+      sent += Buffer.byteLength(text);
+      // A client that stopped reading: disconnect it instead of buffering on.
+      if (ws.bufferedAmount > maxBuffered) ws.terminate();
+    }, () => ws.close(), {
+      // Signs of life for the stall watch (C2c): the client's WebSocket answers
+      // a ping, and reading down a backlog moves `flushed`.
+      ping: () => { if (ws.readyState === ws.OPEN) ws.ping(); },
+      drain: () => ({ buffered: ws.bufferedAmount, flushed: sent - ws.bufferedAmount }),
+      identity,
+      local: proof.local,
+    });
+    ws.on('pong', () => client.pong());
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) return; // CDP is text
+      client.receive(data.toString());
+    });
+    ws.on('close', () => {
+      route.clients.delete(ws);
+      proof.wipe();
+      client.close();
+    });
+    ws.on('error', () => ws.terminate());
+  }
+}
+
+/**
+ * A connection's answer to `Wmux.relayProof`: once, with the key of the token
+ * it spent, which is wiped after that one answer, after `ttlMs`,
+ * or when the connection closes, whichever comes first.
+ */
+/** @internal Exported for tests. */
+export function proofAnswerer(key: Buffer, ttlMs: number): { local: LocalMethods; wipe: () => void } {
+  let held: Buffer | null = key;
+  const wipe = () => {
+    clearTimeout(timer);
+    held?.fill(0);
+    held = null;
+  };
+  const timer = setTimeout(wipe, ttlMs);
+  timer.unref?.();
+  const local: LocalMethods = (method, params) => {
+    if (method !== RELAY_PROOF_METHOD) return undefined;
+    // One ask per connection, whatever it asks: the key leaves the connection now.
+    const current = held;
+    held = null;
+    clearTimeout(timer);
+    if (!current) return { error: { code: -32000, message: 'this connection has no relay proof to give' } };
+    try {
+      const nonce = decodeRelayProofBytes(params.nonce, RELAY_PROOF_NONCE_BYTES);
+      if (!nonce) return { error: { code: -32602, message: `nonce must be at least ${RELAY_PROOF_NONCE_BYTES} bytes, base64url` } };
+      return { result: { proof: relayProof(current, nonce) } };
+    } finally {
+      current.fill(0);
+    }
+  };
+  return { local, wipe };
+}

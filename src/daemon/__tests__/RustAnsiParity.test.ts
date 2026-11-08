@@ -114,7 +114,6 @@ const refused: Case[] = [
   synthetic('sl', 'abcdef\x1b[2 @', 'xterm'),
   synthetic('decic', 'abcdef\x1b[1;2H\x1b[2\'}', 'xterm'),
   synthetic('decstr', 'ab\x1b[4h\x1b[!pcd', 'xterm'),
-  synthetic('su', '1\r\n2\r\n3\x1b[2S\x1b[1T', 'xterm'),
   synthetic('ed2-spelled-02', '1\r\n2\r\n3\x1b[02Jx', 'xterm'),
   synthetic('lnm', '\x1b[20ha\nb', 'xterm'),
   synthetic('mode-x10', '\x1b[?9hx', 'xterm'),
@@ -145,6 +144,19 @@ const others: Case[] = [
   synthetic('sd-region-bg', '1\r\n2\r\n3\r\n4\x1b[2;4r\x1b[44m\x1b[2T\x1b[0m\x1b[rx'),
   synthetic('il-bg', '1\r\n2\x1b[44m\x1b[H\x1b[L\x1b[0mx'),
   synthetic('ri-top-bg', '1\r\n2\x1b[44m\x1b[H\x1bM\x1b[0mx'),
+  // SU scrolls the region in place: xterm keeps nothing in history.
+  synthetic('su', '1\r\n2\r\n3\x1b[2S\x1b[1T'),
+  synthetic('su-full-screen', '1\r\n2\r\n3\r\n4\r\n5\r\n6\x1b[2Sx'),
+  synthetic('su-with-history', '0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\x1b[3Sx'),
+  synthetic('su-default-and-zero', '1\r\n2\r\n3\x1b[S\x1b[0Sx'),
+  synthetic('su-past-screen', '1\r\n2\r\n3\x1b[44m\x1b[99S\x1b[0mx'),
+  synthetic('su-bg', '1\r\n2\r\n3\x1b[44m\x1b[2S\x1b[0mx'),
+  synthetic('su-region-top', '1\r\n2\r\n3\r\n4\r\n5\x1b[1;4r\x1b[2S\x1b[rx'),
+  synthetic('su-region-middle', '1\r\n2\r\n3\r\n4\r\n5\x1b[2;5r\x1b[2S\x1b[rx'),
+  synthetic('su-alt', 'n\x1b[?1049h1\r\n2\r\n3\x1b[2Sx'),
+  synthetic('su-then-linefeed', 'a\x1b[S\x1b[6;1Hb\r\nc\r\nd'),
+  // top: a region scrolled up while the header stays (ncurses `indn`).
+  synthetic('su-top-like', `${Array.from({ length: 6 }, (_, i) => `row ${i}`).join('\r\n')}\x1b[3;6r\x1b[6;1H\x1b[2S\x1b[5;1Hnew a\x1b[6;1Hnew b\x1b[r\x1b[1;1HPID`),
   // DL on the top row deletes in place: xterm keeps nothing in history.
   synthetic('dl-row0', '1\r\n2\r\n3\x1b[H\x1b[Mx'),
   synthetic('dl-row0-history', '0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\x1b[H\x1b[2Mx'),
@@ -175,9 +187,9 @@ const many = Array.from({ length: 30 }, (_, i) => `row ${i} ${'x'.repeat(i % 50)
 const resizes: Case[] = [
   // vte holds bytes inside a synchronized update; xterm parsed them at 80.
   resized('resize-in-sync-update', '\x1b[?2026h\x1b[1;70HX', [80, 12], [40, 12]),
-  // Refused by the native terminal: Alacritty's reflow scrolls rows above the
-  // cursor into history where xterm moves the cursor down.
-  resized('narrow-cursor-high', `line before the box\r\n${box}`, [80, 12], [40, 12], 'xterm'),
+  // Rows a narrower reflow adds above the cursor with no history: xterm moves
+  // the cursor down into the room below, and so does the native terminal.
+  resized('narrow-cursor-high', `line before the box\r\n${box}`, [80, 12], [40, 12]),
   resized('narrow-cursor-low', many, [80, 12], [40, 12]),
   resized('widen-after-wrap', many, [40, 12], [80, 12]),
   resized('fewer-rows', many, [80, 12], [80, 6]),

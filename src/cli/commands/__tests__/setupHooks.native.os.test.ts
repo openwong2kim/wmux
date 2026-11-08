@@ -8,12 +8,15 @@ import {
   applyRuntimeFlag,
   claudeHookRuntimeReport,
   installHooks,
+  installHookTargetsWithNative,
   installHooksWithNative,
   isPermissionGateInstalled,
   nativeFromRefusal,
   refreshClaudeNativeAtBoot,
+  refreshClaudeNativeAtBootFor,
   statusHooks,
   updateHooksWithNative,
+  type HookTarget,
   type SetupHooksPaths,
 } from '../setupHooks';
 import { probeKey, recordProbe, sha256Of } from '../../../shared/probedNative';
@@ -419,5 +422,71 @@ describe('--native-from', () => {
     expect(nativeFromRefusal(root)).toMatch(/no file at/);
     fs.writeFileSync(path.join(root, 'wmux-native'), 'x');
     expect(nativeFromRefusal(path.join(root, 'wmux-native'))).toBeNull();
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('every Claude folder through the native path (#3221 with #3186)', () => {
+  const account = (name: string): HookTarget => {
+    const configDir = path.join(root, 'home', name);
+    fs.mkdirSync(configDir, { recursive: true });
+    const settingsPath = path.join(configDir, 'settings.json');
+    return { kind: 'account', label: name, configDir, settingsPath, paths: { ...paths, settingsPath } };
+  };
+  const primary = (): HookTarget => ({ kind: 'default', label: '~/.claude', configDir: path.dirname(paths.settingsPath), settingsPath: paths.settingsPath, paths });
+  const commandsOf = (settingsPath: string) => Object.values((JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> }).hooks)
+    .flat().flatMap((g) => g.hooks.map((h) => h.command));
+
+  it('every folder\'s entries name the one copy', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
+    shipNative(goodLine());
+    const results = await installHookTargetsWithNative([primary(), account('acct-a'), account('acct-b')], undefined, { suffixed: false });
+    expect(results.map((r) => r.outcome)).toEqual(results.map(() => expect.objectContaining({ ok: true, native: copy })));
+    for (const { target } of results) {
+      expect(commandsOf(target.settingsPath).every((c) => c.startsWith(`"${copy}" "${paths.bridgeDest}" `))).toBe(true);
+    }
+  });
+
+  it('a folder whose write throws fails only itself; the others still name the copy', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
+    shipNative(goodLine());
+    const broken = account('acct-broken');
+    // A read-only folder: settings.json reads as absent, and its write throws.
+    fs.chmodSync(path.dirname(broken.settingsPath), 0o555);
+    try {
+      const results = await installHookTargetsWithNative([primary(), broken, account('acct-ok')], undefined, { suffixed: false });
+      expect(results[1].outcome).toMatchObject({ ok: false });
+      expect(results[1].outcome.error).toMatch(/EACCES|EPERM|permission/i);
+      expect(results[0].outcome).toMatchObject({ ok: true, native: copy });
+      expect(results[2].outcome).toMatchObject({ ok: true, native: copy });
+    } finally {
+      fs.chmodSync(path.dirname(broken.settingsPath), 0o755);
+    }
+  });
+
+  it('a folder that writes no entries reports no copy', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
+    shipNative(goodLine());
+    const corrupt = account('acct-corrupt');
+    fs.writeFileSync(corrupt.settingsPath, '{ not json');
+    const results = await installHookTargetsWithNative([primary(), corrupt], undefined, { suffixed: false });
+    expect(results[0].outcome).toMatchObject({ ok: true, native: copy });
+    expect(results[1].outcome.native).toBeUndefined();
+  });
+
+  it('the boot refresh is judged against whichever folder\'s entries name the copy', async () => {
+    vi.stubEnv('WMUX_DATA_SUFFIX', '');
+    shipNative(goodLine());
+    const a = account('acct-a');
+    await installHookTargetsWithNative([primary(), a], undefined, { suffixed: false });
+    // The primary goes back to node: only the account names the copy now.
+    installHooks(paths);
+    expect(commands().every((c) => c.startsWith('node '))).toBe(true);
+    fs.appendFileSync(paths.nativeSource as string, '# the next release\n');
+    expect(await refreshClaudeNativeAtBoot(paths, 'up-to-date')).toBe('not-in-use');
+    expect(await refreshClaudeNativeAtBootFor([primary(), a], 'up-to-date')).toBe('refreshed');
+    expect(fs.readFileSync(copy).equals(fs.readFileSync(paths.nativeSource as string))).toBe(true);
+    // No folder names it: the first target's answer says why nothing ran.
+    installHooks(a.paths);
+    expect(await refreshClaudeNativeAtBootFor([primary(), a], 'up-to-date')).toBe('not-in-use');
   });
 });

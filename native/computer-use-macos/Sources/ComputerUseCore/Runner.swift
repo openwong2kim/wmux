@@ -35,7 +35,20 @@ public enum RunnerPolicy {
     /// The commands the runner starts. main decides what an agent may ask for;
     /// this list is the runner's own floor under it. main runs list-apps
     /// itself, to check which app a display name picks.
-    public static let commands: Set<String> = ["snapshot", "find", "get", "is", "list-surfaces", "wait", "list-apps", "version"]
+    public static let commands: Set<String> = readCommands.union(actionCommands)
+
+    static let readCommands: Set<String> = ["snapshot", "find", "get", "is", "list-surfaces", "wait", "list-apps", "version"]
+
+    /// The ref actions: each acts on one element of a snapshot, named by its
+    /// ref, and takes nothing that could point it anywhere else (an app, a
+    /// window, a root or a surface).
+    static let actionCommands: Set<String> = ["click", "focus", "select", "toggle", "check", "uncheck", "expand", "collapse", "scroll"]
+
+    // \A and \z: ICU's ^ and $ also match around a trailing newline.
+    static let refPattern = try! NSRegularExpression(pattern: "\\A@[a-z0-9]{1,64}:e[1-9][0-9]{0,8}\\z")
+    static let maxSelectValueBytes = 4096
+    static let directionPattern = try! NSRegularExpression(pattern: "\\A--direction=(?:up|down|left|right)\\z")
+    static let amountPattern = try! NSRegularExpression(pattern: "\\A--amount=(?:[1-9]|[1-4][0-9]|50)\\z")
 
     /// Global options the runner never passes on, whatever main sends.
     static let refusedOptions: [String] = ["--headed", "--trace", "--debug", "--screenshot"]
@@ -59,18 +72,59 @@ public enum RunnerPolicy {
         guard let argv = object["argv"] as? [String], let command = argv.first else {
             throw RunnerProblem("invalid_argument", "argv must be a non-empty array of strings")
         }
+        // A NUL would cut the argument short at spawn.
+        guard !argv.contains(where: { $0.contains("\0") }) else {
+            throw RunnerProblem("invalid_argument", "argv must not contain NUL")
+        }
         guard commands.contains(command) else {
             throw RunnerProblem("invalid_argument", "the runner does not start \(command)")
         }
-        for arg in argv where refusedOptions.contains(where: { arg == $0 || arg.hasPrefix($0 + "=") || arg.hasPrefix($0 + "-") }) {
+        // Only select's option text, after its "--", is a value rather than an option.
+        let scanned = command == "select" ? Array(argv.prefix(while: { $0 != "--" })) : argv
+        for arg in scanned where refusedOptions.contains(where: { arg == $0 || arg.hasPrefix($0 + "=") || arg.hasPrefix($0 + "-") }) {
             throw RunnerProblem("invalid_argument", "the runner does not pass \(arg)")
         }
+        if actionCommands.contains(command) { try checkAction(command, argv) }
         guard let home = object["home"] as? String, isPlainAbsolutePath(home) else {
             throw RunnerProblem("invalid_argument", "home must be an absolute path")
         }
         let requested = (object["timeoutMs"] as? NSNumber)?.intValue ?? maxTimeoutMs
         let timeoutMs = min(max(requested, 1), maxTimeoutMs)
         return .run(RunRequest(id: idNumber.intValue, argv: argv, timeoutMs: timeoutMs, home: home))
+    }
+
+    /// An action's argv: the command, a ref, then only that command's own
+    /// arguments (select's value after "--", scroll's direction and amount).
+    static func checkAction(_ command: String, _ argv: [String]) throws {
+        guard argv.count >= 2, matches(refPattern, argv[1]) else {
+            throw RunnerProblem("invalid_argument", "\(command) takes a ref (@<snapshot>:eN) as its first argument")
+        }
+        let rest = Array(argv.dropFirst(2))
+        switch command {
+        case "select":
+            // main caps the value at 512 characters; 4 KB of UTF-8 is the runner's own ceiling.
+            guard rest.count == 2, rest[0] == "--" else {
+                throw RunnerProblem("invalid_argument", "select takes exactly one value, after \"--\"")
+            }
+            guard !rest[1].isEmpty, rest[1].utf8.count <= maxSelectValueBytes else {
+                throw RunnerProblem("invalid_argument", "select's value must be 1 to \(maxSelectValueBytes) bytes")
+            }
+        case "scroll":
+            // At most one direction and one amount, each a value agent-desktop takes.
+            let directions = rest.filter { matches(directionPattern, $0) }.count
+            let amounts = rest.filter { matches(amountPattern, $0) }.count
+            guard directions + amounts == rest.count, directions <= 1, amounts <= 1 else {
+                throw RunnerProblem("invalid_argument", "the runner does not pass \(rest.joined(separator: " ")) to scroll")
+            }
+        default:
+            guard rest.isEmpty else {
+                throw RunnerProblem("invalid_argument", "the runner does not pass \(rest.joined(separator: " ")) to \(command)")
+            }
+        }
+    }
+
+    static func matches(_ pattern: NSRegularExpression, _ text: String) -> Bool {
+        pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
     /// The child's whole environment: a fixed PATH, the person's HOME, TMPDIR

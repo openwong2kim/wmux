@@ -32,6 +32,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { psPath } from '../shared/psPath';
 
 export const CODEX_THREAD_ID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
@@ -274,8 +275,8 @@ export async function readParentChain(startPid: number, timeoutMs = 5000): Promi
       // what the process was started as (on macOS argv[0] verbatim), not a
       // spoof-proof executable identity.
       const opts = { encoding: 'utf8' as const, timeout: timeoutMs };
-      const head = (await run('ps', ['-ww', '-o', 'ppid=', '-o', 'comm=', '-p', String(pid)], opts)).stdout;
-      const args = (await run('ps', ['-ww', '-o', 'args=', '-p', String(pid)], opts)).stdout;
+      const head = (await run(psPath(), ['-ww', '-o', 'ppid=', '-o', 'comm=', '-p', String(pid)], opts)).stdout;
+      const args = (await run(psPath(), ['-ww', '-o', 'args=', '-p', String(pid)], opts)).stdout;
       const m = /^\s*(\d+)\s+(.*)$/.exec(head.trim());
       if (!m) break;
       chain.push(splitPsArgs(args.trim(), m[2]));

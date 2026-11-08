@@ -86,6 +86,7 @@ import { UNLISTED_TOOLS_SET } from '../shared/unlistedTools';
 import { fromAgentPath, toAgentFileParts } from './wslPaths';
 import type { RegisterWmuxToolsOptions, WmuxToolProfile } from './toolCatalog';
 import { CHROME_START_RPC_TIMEOUT_MS } from '../shared/chromeStart';
+import { psPath } from '../shared/psPath';
 
 /**
  * Everything a server instance needs that used to come from process globals.
@@ -1371,7 +1372,7 @@ async function getParentPid(pid: number): Promise<number | null> {
       const parsed = parseInt(stdout.trim(), 10);
       return isNaN(parsed) ? null : parsed;
     } else {
-      const { stdout } = await execFileAsync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 });
+      const { stdout } = await execFileAsync(psPath(), ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 });
       return parseInt(stdout.trim(), 10) || null;
     }
   } catch {

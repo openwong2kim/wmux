@@ -8,7 +8,7 @@ import { CdpPipeStallWatch, STALL_MS, type WatchedClient } from './CdpPipeStallW
 // One debugging pipe (`--remote-debugging-pipe`: the browser reads fd 3 and
 // writes fd 4, one JSON message per NUL-terminated frame) shared by several
 // clients: main's own connections (the launcher's watcher, download guard,
-// probes) and external ones (CdpPipeEndpoint).
+// probes) and external ones (CdpPipeRelay).
 //
 // Ownership, not broadcast:
 //  - Every client gets a browser session of its own (Target.attachToBrowserTarget),
@@ -84,8 +84,19 @@ export interface ClientCommand {
   sessionId?: string;
 }
 
+/**
+ * Who an external client connected as: what browser.cdp.info resolved for the
+ * caller its relay token was minted for. Carried on the client for a
+ * TargetGrant to judge by; nothing narrows on it yet.
+ */
+export interface CallerIdentity {
+  readonly workspaceId?: string;
+  readonly profile?: string;
+  readonly protectedEpoch?: number;
+}
+
 /** A client as a filter or hook sees it. */
-export interface ClientRef { readonly kind: 'internal' | 'external'; readonly label: string }
+export interface ClientRef { readonly kind: 'internal' | 'external'; readonly label: string; readonly identity?: CallerIdentity }
 
 /**
  * What a filter does with a client's command: refuse it (the client gets the
@@ -243,6 +254,18 @@ interface Pending {
   targetId?: string;
 }
 
+/** Methods the mux answers itself for a connection, never sent to the browser. */
+export const LOCAL_METHOD_PREFIX = 'Wmux.';
+
+/**
+ * A connection's answerer for `Wmux.*` commands: a result, an error, or
+ * undefined for a method it does not know (answered as unknown).
+ */
+export type LocalMethods = (
+  method: string,
+  params: Record<string, unknown>,
+) => { result: Record<string, unknown> } | { error: { code: number; message: string } } | undefined;
+
 /** One client of the mux: its browser session and the sessions it owns. */
 abstract class Client {
   /** For the stall watch (external clients on a WebSocket only). */
@@ -337,8 +360,11 @@ export class CdpPipeMux {
     label: string,
     send: (text: string) => void,
     onGone: (reason: string) => void,
-    /** For the stall watch: a WebSocket ping (its answer goes to the returned `pong`) and the socket's backlog. */
-    watched: WatchedClient = {},
+    /**
+     * For the stall watch: a WebSocket ping (its answer goes to the returned
+     * `pong`) and the socket's backlog. `identity`: who the client connected as.
+     */
+    watched: WatchedClient & { identity?: CallerIdentity; local?: LocalMethods } = {},
   ): { receive: (text: string) => void; close: () => void; pong: () => void } {
     const client = new ExternalClient(label, send, onGone, watched);
     this.clients.add(client);
@@ -404,6 +430,18 @@ export class CdpPipeMux {
   async submit(client: Client, clientId: number, command: ClientCommand): Promise<void> {
     if (command.sessionId !== undefined && !client.owned.has(command.sessionId)) {
       refuseTo(client, clientId, UNKNOWN_SESSION);
+      return;
+    }
+    // wmux's own methods are answered here, by the connection's local
+    // answerer (the relay's proof), and never reach the browser.
+    if (command.method.startsWith(LOCAL_METHOD_PREFIX)) {
+      const local = client instanceof ExternalClient ? client.local?.(command.method, command.params) : undefined;
+      if (local && 'result' in local) {
+        const frame = { id: clientId, result: local.result, ...(command.sessionId !== undefined && { sessionId: command.sessionId }) };
+        client.reply(clientId, frame, JSON.stringify(frame));
+        return;
+      }
+      refuseTo(client, clientId, local?.error ?? { code: -32601, message: `'${command.method}' wasn't found` }, command.sessionId);
       return;
     }
     const answer: FilterAnswer = (client.kind === 'external' ? externalRule(command) : null) ?? this.opts.filter?.(client, command) ?? null;
@@ -727,12 +765,18 @@ class ExternalClient extends Client {
     label: string,
     private readonly sendText: (text: string) => void,
     private readonly onGone: (reason: string) => void,
-    watched: WatchedClient,
+    watched: WatchedClient & { identity?: CallerIdentity; local?: LocalMethods },
   ) {
     super('external', label);
     this.ping = watched.ping;
     this.drain = watched.drain;
+    this.identity = watched.identity;
+    this.local = watched.local;
   }
+
+  readonly identity?: CallerIdentity;
+  /** Answers this connection's `Wmux.*` commands (CdpPipeMux.submit). */
+  readonly local?: LocalMethods;
 
   override readonly ping?: () => void;
   override readonly drain?: () => { buffered: number; flushed: number };

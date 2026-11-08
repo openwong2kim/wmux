@@ -24,7 +24,8 @@ vi.mock('node:fs', async (orig) => {
   };
 });
 
-import { ChromeLauncher, type ChromeProtectionPlan } from '../ChromeLauncher';
+import { ChromeLauncher, setPipeRelayForTests, type ChromeProtectionPlan } from '../ChromeLauncher';
+import { CdpPipeRelay, type RelayGrant } from '../CdpPipeRelay';
 
 type FakeChild = EventEmitter & { kill: (signal?: string) => void; stdio: unknown[]; killed: boolean; exitCode: number | null; signalCode: string | null };
 
@@ -80,8 +81,8 @@ function spawnChrome(): ProtectedPipeChrome {
 }
 
 /** A raw CDP client on the endpoint: send, await a reply by id, collect events. */
-async function client(url: string) {
-  const ws = new WebSocket(url);
+async function client(grant: RelayGrant) {
+  const ws = new WebSocket(grant.endpoint, { headers: { ...grant.headers } });
   await new Promise<void>((resolve, reject) => { ws.once('open', () => resolve()); ws.once('error', reject); });
   const inbox: Array<Record<string, unknown>> = [];
   const onReply = new Map<number, (m: Record<string, unknown>) => void>();
@@ -102,24 +103,27 @@ async function client(url: string) {
 
 const denyAll: ChromeProtectionPlan = { matcher: () => ({ allows: () => false }) };
 
-beforeEach(() => {
+beforeEach(async () => {
+  // Loopback TCP: no socket dir in any temp dir another wmux uses.
+  await setPipeRelayForTests(new CdpPipeRelay({ roots: [] }));
   spawnMock.mockReset();
   vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('nothing listening'); }));
   vi.stubEnv('WMUX_CHROME_TRANSPORT', 'pipe');
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  await setPipeRelayForTests(null);
 });
 
 describe('ChromeLauncher: a protected profile on the pipe', () => {
   it('gives the pipe the profile\'s rules and forwards the download guard\'s events to them', async () => {
     const chrome = spawnChrome();
     const launcher = new ChromeLauncher('/tmp/pipe-protected', { profileName: 'bank', protection: () => denyAll });
-    const { wsEndpoint } = await launcher.endpoint();
+    await launcher.endpoint();
     expect(launcher.isProtected()).toBe(true);
-    const c = await client(wsEndpoint as string);
+    const c = await client(await launcher.relayGrant({ workspaceId: 'ws-bank' }));
     const allows = () => chrome.received.filter((m) => m.method === 'Browser.setDownloadBehavior' && m.params.behavior !== 'deny');
 
     // A client's download setting is answered here and never reaches Chrome.

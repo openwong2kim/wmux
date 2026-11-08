@@ -297,9 +297,12 @@ import {
 } from '../cli/commands/setupStatusline';
 import {
   refreshHookBridgeAtBoot,
-  refreshClaudeNativeAtBoot,
+  refreshHookBridgeAtBootFor,
+  refreshClaudeNativeAtBootFor,
+  hookTargets,
   defaultPaths as defaultHooksPaths,
 } from '../cli/commands/setupHooks';
+import { claudeConfigDirEnv } from './hooks/claudeConfigDirProbe';
 import { refreshWslHookAtBoot } from '../shared/wslGlobalHook';
 import { findWslClaudeBridge } from '../shared/wslIntegration';
 import { detectStalePluginGates } from './hooks/stalePluginGate';
@@ -2338,16 +2341,43 @@ app.on('ready', async () => {
       } catch (err) {
         console.warn('[statusline] script refresh failed (non-fatal):', err);
       }
-      try {
-        const hooksPaths = defaultHooksPaths();
-        const br = refreshHookBridgeAtBoot(hooksPaths);
+      // One bridge file serves every Claude folder; it is refreshed when any
+      // of them references it: ~/.claude and the accounts now, the
+      // CLAUDE_CONFIG_DIR folder once the login-shell probe has answered.
+      // Then the one wmux-claude-hook copy, after the bridge (a new copy pins
+      // the new bridge), judged against whichever folder's entries name it:
+      // at once for ~/.claude and the accounts, and again once the probe has
+      // answered only when none of them named it (the env folder may). Neither
+      // writes settings.
+      const logBridge = (br: ReturnType<typeof refreshHookBridgeAtBoot>) => {
         if (br === 'refreshed' || br === 'isolated') logLine('info', 'main', `hook bridge refresh: ${br}`);
         else if (br === 'failed' || br === 'no-source') logLine('warn', 'main', `hook bridge refresh: ${br}`);
-        // After the bridge: a new copy pins the new bridge. Never writes settings.
-        void refreshClaudeNativeAtBoot(hooksPaths, br).then((nr) => {
+      };
+      try {
+        const base = defaultHooksPaths();
+        const initial = hookTargets({ action: 'install', env: undefined, wmuxDir: getWmuxDir(), base }).targets;
+        const br = refreshHookBridgeAtBootFor(initial);
+        logBridge(br);
+        const logCopy = (nr: Awaited<ReturnType<typeof refreshClaudeNativeAtBootFor>>) => {
           if (nr === 'refreshed') logLine('info', 'main', `claude hook copy refresh: ${nr}`);
           else if (nr === 'kept' || nr === 'stale-bridge') logLine('warn', 'main', `claude hook copy refresh: ${nr}`);
-        }, (err: unknown) => console.warn('[hooks] claude hook copy refresh failed (non-fatal):', err));
+        };
+        const copyNow = refreshClaudeNativeAtBootFor(initial, br).then((nr) => {
+          logCopy(nr);
+          return nr;
+        });
+        // Asked once per boot, in the background (macOS/Linux; Windows reads
+        // its own env): the in-app install awaits the same answer.
+        void Promise.all([claudeConfigDirEnv(), copyNow]).then(async ([env, copied]) => {
+          if (!env) return;
+          const targets = hookTargets({ action: 'install', env, wmuxDir: getWmuxDir(), base }).targets;
+          let bridge = br;
+          if (br === 'not-installed') {
+            bridge = refreshHookBridgeAtBootFor(targets.filter((t) => t.kind === 'env'));
+            logBridge(bridge);
+          }
+          if (copied === 'not-in-use') logCopy(await refreshClaudeNativeAtBootFor(targets, bridge));
+        }).catch((err: unknown) => console.warn('[hooks] bridge or claude hook copy refresh failed (non-fatal):', err));
       } catch (err) {
         console.warn('[hooks] bridge refresh failed (non-fatal):', err);
       }

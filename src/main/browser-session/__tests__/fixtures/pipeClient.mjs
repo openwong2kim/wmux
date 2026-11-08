@@ -1,6 +1,8 @@
 // A Playwright client in its own process, for CdpPipeWatchdog.chrome.runtime.test.ts:
 // the test stops and resumes this process (SIGSTOP / SIGCONT) or keeps it
-// healthy while it works. One command per stdin line; one answer per line:
+// healthy while it works. The first stdin line is the relay grant as JSON
+// ({endpoint, headers}: never argv or env). Then one command per line; one
+// answer per line:
 //   page        open a page and load a data: URL         -> "ok page"
 //   eval        evaluate on the first page               -> "ok eval <value>"
 //   big <n>     n evaluations each returning ~1 MB       -> "ok big"
@@ -14,7 +16,9 @@ import { chromium } from 'playwright-core';
 const say = (line) => process.stdout.write(`${line}\n`);
 process.on('unhandledRejection', (err) => say(`error ${err instanceof Error ? err.message : String(err)}`));
 
-const browser = await chromium.connectOverCDP(process.argv[2]);
+const lines = readline.createInterface({ input: process.stdin })[Symbol.asyncIterator]();
+const grant = JSON.parse((await lines.next()).value);
+const browser = await chromium.connectOverCDP(grant.endpoint, { headers: grant.headers });
 const context = browser.contexts()[0];
 const first = await context.newPage();
 first.on('pageerror', (err) => say(`error ${err.message}`));
@@ -30,7 +34,7 @@ const big = async (n) => {
   for (let i = 0; i < n; i++) await first.evaluate(() => 'x'.repeat(1 << 20));
 };
 
-readline.createInterface({ input: process.stdin }).on('line', (line) => {
+const run = (line) => {
   const [command, arg] = line.trim().split(' ');
   const done = (work, label) => work.then((value) => say(`ok ${label}${value === undefined ? '' : ` ${value}`}`), (err) => say(`error ${err.message}`));
   if (command === 'page') done(openPage(), 'page');
@@ -38,5 +42,6 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   else if (command === 'big') done(big(Number(arg) || 1), 'big');
   else if (command === 'page+big') done(Promise.all([openPage(), big(8)]).then(() => undefined), 'page+big');
   else if (command === 'chatty') done(first.evaluate((kb) => { const line = 'x'.repeat(kb * 1024); setInterval(() => console.log(line), 10); }, Number(arg) || 16), 'chatty');
-});
+};
 say('ready');
+for (let next = await lines.next(); !next.done; next = await lines.next()) run(next.value);
