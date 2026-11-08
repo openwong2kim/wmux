@@ -478,7 +478,20 @@ export interface ChromeLauncherOptions {
   extraArgs?: string[];
   /** Test seam: how long the launch waits for the proxy probe. */
   proxyProbeTimeoutMs?: number;
+  /** The user's download folder: where, with grants, a download no client asked for lands. Absent: those are cancelled. */
+  downloadsDir?: () => string | null;
 }
+
+/** With grants on an unprotected profile (C3b): main's own folder, rules and session for the default context's downloads. */
+interface DownloadRelay {
+  readonly policy: DownloadRelayPolicy;
+  readonly dir: string;
+  session: CdpConnection | null;
+  /** Settles once main's session holds the behaviour; rejects when it could not. No grant is handed out before. */
+  ready: Promise<void>;
+}
+
+const DOWNLOAD_RELAY_NOT_READY = 'ChromeLauncher: the download relay could not be armed';
 
 /** How a protected profile is enforced (see ProtectedProxy). */
 export interface ChromeProtectionPlan {
@@ -626,7 +639,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     /** A protected profile's rules for the pipe's clients; null when unprotected. */
     readonly policy: ProtectedPipePolicy | null;
     /** With grants on an unprotected profile: downloads of the shared default context. */
-    readonly relay: { readonly policy: DownloadRelayPolicy; readonly dir: string; session: CdpConnection | null } | null;
+    readonly relay: DownloadRelay | null;
     route: RelayRoute | null;
   } | null = null;
   /** Pipe mode: liveness checks failed in a row, and when the last one counted ended. */
@@ -689,6 +702,7 @@ export class ChromeLauncher implements ChromeBackendClient {
 
   private readonly protection: (() => ChromeProtectionPlan | null) | undefined;
   private readonly extraArgs: string[];
+  private readonly downloadsDir: (() => string | null) | undefined;
   /** Whether the running instance was launched behind the proxy. */
   private launchedProtected = false;
   /** False until a protected launch's download guard holds and the tabs
@@ -718,6 +732,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.surfaceStore = opts?.surfaceStore;
     this.protection = opts?.protection;
     this.extraArgs = opts?.extraArgs ?? [];
+    this.downloadsDir = opts?.downloadsDir;
     this.proxyProbeTimeoutMs = opts?.proxyProbeTimeoutMs;
   }
 
@@ -1424,6 +1439,9 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.assertOpen();
     const piped = this.piped;
     if (!piped) throw new Error('ChromeLauncher: Chrome exited');
+    // With grants, no client before main holds the default context's downloads.
+    if (piped.relay) await piped.relay.ready;
+    if (this.piped !== piped) throw new Error('ChromeLauncher: Chrome exited');
     piped.route ??= (pipeRelay ??= new CdpPipeRelay()).serve(piped.mux);
     const grant = await piped.route.grant(identity);
     if (this.piped !== piped) throw new Error('ChromeLauncher: Chrome exited');
@@ -2045,29 +2063,28 @@ export class ChromeLauncher implements ChromeBackendClient {
    * behaviour (armDownloadRelay); each client's own setting is recorded, not
    * forwarded.
    */
-  private downloadRelay(mux: () => CdpPipeMux | null): NonNullable<NonNullable<ChromeLauncher['piped']>['relay']> {
-    const dir = makeDownloadRelayDir();
-    const holder: { session: CdpConnection | null } = { session: null };
+  private downloadRelay(mux: () => CdpPipeMux | null, dir: string): DownloadRelay {
+    const holder: { session: CdpConnection | null; ready: Promise<void> } = { session: null, ready: Promise.resolve() };
+    const downloadsDir = this.downloadsDir;
     const policy = new DownloadRelayPolicy({
       dir,
       contextOf: (client, frameId) => mux()?.contextOfFrame(client, frameId),
+      created: (client, contextId) => mux()?.createdContext(client, contextId) ?? false,
+      contextOfSession: (client, sessionId) => mux()?.contextOfSession(client, sessionId),
       emit: (client, method, params, sessionId) => mux()?.emitEvent(client, method, params, sessionId) ?? false,
       cancel: (guid) => holder.session?.send('Browser.cancelDownload', { guid }) ?? Promise.resolve(),
+      ...(downloadsDir && { userDir: downloadsDir }),
     });
     return Object.assign(holder, { policy, dir });
   }
 
   /** Main's session on the pipe that holds the default context's downloads, events on. */
-  private async armDownloadRelay(mux: CdpPipeMux, relay: NonNullable<NonNullable<ChromeLauncher['piped']>['relay']>): Promise<void> {
+  private async armDownloadRelay(mux: CdpPipeMux, relay: DownloadRelay): Promise<void> {
     const session = mux.connect({ label: 'ChromeLauncher download relay' });
     relay.session = session;
     session.on('Browser.downloadWillBegin', (params) => relay.policy.downloadEvent('Browser.downloadWillBegin', params));
     session.on('Browser.downloadProgress', (params) => relay.policy.downloadEvent('Browser.downloadProgress', params));
-    try {
-      await session.send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: relay.dir, eventsEnabled: true });
-    } catch (err) {
-      console.warn('[ChromeLauncher] download relay not armed:', err instanceof Error ? err.message : String(err));
-    }
+    await session.send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: relay.dir, eventsEnabled: true });
   }
 
   /** The browser-level CDP endpoint `transport` names; not-ready when absent. */
@@ -2254,6 +2271,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     // After the last await before the spawn (adoption, eviction, the proxy):
     // a Chrome started now would be one dispose() never saw.
     this.assertOpen();
+    // C3b: with grants, an unprotected profile's default-context downloads go
+    // through main (DownloadRelayPolicy); a protected one's are denied (policy).
+    // Its folder is made first: one that cannot be made stops the launch here.
+    const relayDir = pipe && !plan && cdpTargetGrantEnabled() ? makeDownloadRelayDir() : null;
     const child = spawn(
       binary,
       mergeDisableFeatures([
@@ -2347,9 +2368,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     // The pipe ends with the process; one that breaks first ends it too.
     let mux: CdpPipeMux | null = null;
     const policy = pipe && plan ? this.protectedPipePolicy(() => mux) : null;
-    // C3b: with grants, an unprotected profile's default-context downloads go
-    // through main (DownloadRelayPolicy); a protected one's are denied (policy).
-    const relay = pipe && !plan && cdpTargetGrantEnabled() ? this.downloadRelay(() => mux) : null;
+    const relay = relayDir !== null ? this.downloadRelay(() => mux, relayDir) : null;
     mux = pipe
       ? new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable, {
         onClose: () => {
@@ -2374,7 +2393,10 @@ export class ChromeLauncher implements ChromeBackendClient {
       })
       : null;
     this.piped = mux ? { mux, policy, relay, route: null } : null;
-    if (mux && relay) void this.armDownloadRelay(mux, relay);
+    if (mux && relay) {
+      relay.ready = this.armDownloadRelay(mux, relay);
+      relay.ready.catch(() => undefined); // the launch below reports it
+    }
     const piped = mux ? pipeTransport(mux) : null;
 
     // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
@@ -2405,6 +2427,18 @@ export class ChromeLauncher implements ChromeBackendClient {
           this.byTabTargetId.clear();
           void this.surfaceStore?.dropProfile(this.profileName).catch(() => undefined);
           if (!plan) await this.closeRestoredTabs();
+          if (relay) {
+            try {
+              await relay.ready;
+            } catch (err) {
+              console.warn('[ChromeLauncher] download relay not armed:', err instanceof Error ? err.message : String(err));
+              try {
+                child.kill();
+              } catch { /* already gone */ }
+              this.onChildGone();
+              throw new Error(DOWNLOAD_RELAY_NOT_READY);
+            }
+          }
           if (plan) {
             // Enforcement readiness is part of the launch: no protected
             // surface is handed out before the download guard holds.
@@ -2428,7 +2462,7 @@ export class ChromeLauncher implements ChromeBackendClient {
         } catch (err) {
           // Enforcement that failed is final for this launch: the child is
           // already stopped, so polling on would only wait out the deadline.
-          if (err instanceof Error && err.message === PROTECTION_NOT_READY) throw err;
+          if (err instanceof Error && (err.message === PROTECTION_NOT_READY || err.message === DOWNLOAD_RELAY_NOT_READY)) throw err;
           lastStartError = err instanceof Error ? err.message : String(err);
           this.unbindEndpoint();
         }
@@ -2748,6 +2782,8 @@ export class ChromeLauncherRegistry {
       surfaceStore?: ChromeSurfaceStore;
       /** Protected panes: the plan a profile runs under now, or null (legacy). */
       protection?: (profile: string) => ChromeProtectionPlan | null;
+      /** The user's download folder (ChromeLauncherOptions.downloadsDir). */
+      downloadsDir?: () => string | null;
     },
   ) {}
 
@@ -2799,6 +2835,7 @@ export class ChromeLauncherRegistry {
         // must not overwrite the profile's persisted ones.
         ...(this.opts.surfaceStore && !this.disposed && { surfaceStore: this.opts.surfaceStore }),
         ...(this.opts.protection && { protection: () => this.opts.protection?.(name) ?? null }),
+        ...(this.opts.downloadsDir && { downloadsDir: this.opts.downloadsDir }),
       },
     );
     // Asked while the app quits: a launcher outside disposeAll's snapshot

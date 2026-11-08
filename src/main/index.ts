@@ -1316,6 +1316,8 @@ const chromeRegistry = new ChromeLauncherRegistry({
   // main's filtering proxy (and is restarted when that changes).
   protection: (profile) =>
     browserPolicyStore.protectionPlanFor(profile, { paneBindings: () => chromeProfileStore.getPaneBindings() }),
+  // With the target grant flag, a download in a tab no agent holds lands here, as Chrome's own would.
+  downloadsDir: () => app.getPath('downloads'),
 });
 browserPolicyStore.onChange(() => {
   // #2063: every policy change (an Allow included) starts the recently-blocked

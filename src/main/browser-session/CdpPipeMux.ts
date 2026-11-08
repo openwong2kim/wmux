@@ -570,6 +570,19 @@ export class CdpPipeMux {
     return undefined;
   }
 
+  /** With grants: whether `client` created that browser context. */
+  createdContext(client: ClientRef, contextId: string): boolean {
+    if (!(client instanceof Client) || !this.clients.has(client)) return false;
+    return this.ownership?.ownsContext(client, contextId) ?? false;
+  }
+
+  /** The browser context of the target a session `client` holds is attached to, as contextOfFrame names it. */
+  contextOfSession(client: ClientRef, sessionId: string): string | null | undefined {
+    if (!(client instanceof Client) || !this.clients.has(client)) return undefined;
+    const held = client.targets.get(sessionId);
+    return held ? held.browserContextId ?? null : undefined;
+  }
+
   /** Send a command on the pipe's root session as the mux itself; rejects with the browser's error. */
   command(method: string, params: Record<string, unknown>): Promise<unknown> {
     return this.ownCommand(method, params).then((frame) => frame.result);
