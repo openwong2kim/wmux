@@ -1124,6 +1124,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // which at a fractional device pixel ratio is wider than WebGL's: a fit then
   // comes out a column short and the upgrade's refit sends the real width.
   const adoptSettleRef = useRef<((force?: boolean) => void) | null>(null);
+  // Every fit site asks this first: while an adoption's first fit is held it
+  // returns true (skip), after nudging that fit, which runs only once the
+  // layout and the renderer are both in.
+  const holdForAdopt = useCallback((): boolean => {
+    if (!adoptFitPendingRef.current) return false;
+    adoptSettleRef.current?.();
+    return true;
+  }, []);
   const retryReconnectRef = useRef<(() => Promise<void> | undefined) | null>(null);
   const onRecoveryErrorRef = useRef(options.onRecoveryError);
   onRecoveryErrorRef.current = options.onRecoveryError;
@@ -1496,8 +1504,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const fit = useCallback(() => {
     const container = containerRef.current;
     if (!fitAddonRef.current || !terminalRef.current || !container) return;
-    // An adoption fits on its container's first ResizeObserver callback.
-    if (adoptFitPendingRef.current) return;
+    // An adoption's first fit runs once its layout and renderer are in.
+    if (holdForAdopt()) return;
     // Guard: skip fit entirely when the container is hidden (zero dimensions).
     // Calling fit() on a display:none element produces 0 cols/rows which
     // corrupts the xterm buffer and causes the "infinite copy downward" bug.
@@ -2467,14 +2475,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // A fresh mount's first PTY resize waits for the grid it will keep: the
     // bundled webfont loaded and WebGL in (firstResizeGate.ts). An adoption,
     // an engine swap and a fixed grid keep a live grid and send at once.
+    // A WebGL renderer is still to come for this pane: the reveal effect builds
+    // it on webglUpgradeQueue. The first-resize gate (a fresh mount) and an
+    // adoption's first fit both wait for it rather than fit the DOM cell.
+    const webglUpgradePending = () => isVisibleRef.current && !!loadWebglRef.current && !webglAddonRef.current
+      && !webglBuildFailed && !webglContextPool.acquireWouldEvict(webglTokenRef.current);
     resizeGateRef.current?.dispose();
     const firstResizeGate = adopted || carry || wongttyModule || fixedGeometryRef.current
       ? null
       : createFirstResizeGate({
         shown: () => isVisibleRef.current,
         fontReady: () => primaryFontLoaded(document.fonts, terminal.options.fontFamily, terminal.options.fontSize),
-        rendererPending: () => isVisibleRef.current && !!loadWebglRef.current && !webglAddonRef.current
-          && !webglBuildFailed && !webglContextPool.acquireWouldEvict(webglTokenRef.current),
+        rendererPending: webglUpgradePending,
         proposal: () => {
           const dims = proposedSafeDimensions(fitAddon, container);
           return dims ? `${dims.cols}x${dims.rows}` : null;
@@ -2582,8 +2594,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // then points at the NEW pty.
         if (term !== terminal) return false;
 
-        // An adoption fits on its container's first ResizeObserver callback.
-        if (adoptFitPendingRef.current && !adoptFirst) return false;
+        // An adoption's first fit runs once its layout and renderer are in.
+        if (!adoptFirst && holdForAdopt()) return false;
 
         if (container.offsetWidth === 0 || container.offsetHeight === 0) return false;
 
@@ -4320,22 +4332,27 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // through the scheduler. During an animated layout change the fit goes to
     // the scheduler, like any other.
     let adoptLaidOut = false;
-    const adoptRendererPending = () => isVisibleRef.current && !!loadWebglRef.current && !webglAddonRef.current
-      && !webglBuildFailed && !webglContextPool.acquireWouldEvict(webglTokenRef.current);
-    adoptSettleRef.current = (force = false) => {
-      if (!adoptFitPendingRef.current || !adoptLaidOut || terminalRef.current !== terminal) return;
-      if (!force && adoptRendererPending()) return;
+    // Latched when the upgrade job has settled (built, skipped or failed): a
+    // grant freed later must not make the first fit wait again.
+    let adoptRendererSettled = false;
+    adoptSettleRef.current = (rendererSettled = false) => {
+      if (terminalRef.current !== terminal) return;
+      if (rendererSettled) adoptRendererSettled = true;
+      if (!adoptFitPendingRef.current || !adoptLaidOut) return;
+      if (!adoptRendererSettled && webglUpgradePending()) return;
+      // An animated layout change: the scheduler holds the fit as debt and
+      // runs it on release, which comes back here through runFit.
+      if (fitsHeld()) {
+        resizeScheduler.onResize();
+        return;
+      }
       if (runFit(true)) adoptFitPendingRef.current = false;
     };
     const resizeObserver = new ResizeObserver(() => {
       if (adoptFitPendingRef.current && terminalRef.current === terminal) {
-        if (fitsHeld()) {
-          adoptFitPendingRef.current = false;
-        } else {
-          adoptLaidOut = true;
-          adoptSettleRef.current?.();
-          return;
-        }
+        adoptLaidOut = true;
+        adoptSettleRef.current?.();
+        return;
       }
       resizeScheduler.onResize();
     });
@@ -4889,9 +4906,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       console.debug('[Terminal] font/theme fit skipped — container has zero dimensions');
       return;
     }
-    // An adoption fits on its container's first ResizeObserver callback, with
+    // An adoption's first fit runs once its layout and renderer are in, with
     // the font settings in place by then.
-    if (adoptFitPendingRef.current) return;
+    if (holdForAdopt()) return;
     // #1255: floor gate — a font change re-measures the container; skip
     // sub-floor proposals instead of reflowing the buffer at a broken width.
     if (!proposedSafeDimensions(fitAddonRef.current, container)) {
@@ -4988,7 +5005,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       let cancelUpgrade: (() => void) | null = null;
       let upgradeFitRaf: number | null = null;
-      let showAfterUpgrade: (() => void) | null = null;
+      let showAfterUpgrade: ((settled?: boolean) => void) | null = null;
       if (
         loadWebglRef.current &&
         disposeWebglRef.current &&
@@ -5006,14 +5023,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // callbacks, so the queued build may never run: show the pane after
           // a bounded wait whatever happens.
           let hideTimer: ReturnType<typeof setTimeout> | null = null;
-          showAfterUpgrade = () => {
+          // `settled`: the upgrade job ran to an end (built, skipped or
+          // failed), which is what an adoption's first fit waits for. The
+          // bounded wait and the effect's cleanup only show the pane: the
+          // renderer is still to come, or another reveal will build it.
+          showAfterUpgrade = (settled = false) => {
             if (hideTimer !== null) { clearTimeout(hideTimer); hideTimer = null; }
-            // An adoption's first fit waits for this upgrade, built or not.
-            adoptSettleRef.current?.(true);
+            if (settled) adoptSettleRef.current?.(true);
             if (el) el.style.opacity = '';
           };
           const show = showAfterUpgrade;
-          hideTimer = setTimeout(show, WEBGL_UPGRADE_HIDE_MAX_MS);
+          hideTimer = setTimeout(() => show(), WEBGL_UPGRADE_HIDE_MAX_MS);
           cancelUpgrade = webglUpgradeQueue.enqueue(() => {
             if (
               !isVisibleRef.current ||
@@ -5021,18 +5041,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
               !disposeWebglRef.current ||
               webglContextPool.acquireWouldEvict(token)
             ) {
-              show();
+              show(true);
               return;
             }
             const hadAddon = webglAddonRef.current !== null;
             try {
               webglContextPool.acquire(token, loadWebglRef.current, disposeWebglRef.current);
             } catch (err) {
-              show();
+              show(true);
               throw err;
             }
             if (hadAddon || !webglAddonRef.current) {
-              show();
+              show(true);
               return;
             }
             // The reveal's fit measured the DOM renderer's cell. WebGL rounds
@@ -5048,7 +5068,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
               try {
                 if (claimFit(terminalRef.current, pendingFitRef)) fit();
               } finally {
-                show();
+                show(true);
               }
             });
           });

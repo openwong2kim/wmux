@@ -15,6 +15,8 @@ import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { FitAddon } from '@xterm/addon-fit';
 import { webglUpgradeQueue } from '../../terminal/webglUpgradeQueue';
+import { webglContextPool } from '../../terminal/webglContextPool';
+import { holdFits, releaseFits } from '../../utils/layoutTransitionGate';
 import { setDaemonModeActive } from '../../daemon/daemonMode';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
@@ -225,6 +227,37 @@ describe('useTerminal: an adopted terminal fits after the layout, not against th
     act(() => ManualResizeObserver.fire());
     await settle(20);
     expect(sentFor('p-adopt-webgl-early')).toEqual(['57x20']);
+  });
+
+  it('an upgrade that settled without a renderer is not waited for again when a slot frees later', async () => {
+    const { size, restructure, upgrade } = await settledPane('p-adopt-webgl-skipped');
+    await restructure('second');
+    // No room for a context when the job runs: it settles without one.
+    const evict = vi.spyOn(webglContextPool, 'acquireWouldEvict').mockReturnValue(true);
+    await upgrade();
+    // A slot frees afterwards (another pane closed in the same restructure).
+    evict.mockReturnValue(false);
+    Object.assign(size, { cols: 57, rows: 20 });
+    act(() => ManualResizeObserver.fire());
+    await settle(20);
+    expect(sentFor('p-adopt-webgl-skipped')).toEqual(['57x20']);
+  });
+
+  it('during an animated layout change the first fit waits for the release, and still for the renderer', async () => {
+    const { size, restructure, upgrade } = await settledPane('p-adopt-held');
+    await restructure('second');
+    holdFits(5_000);
+    try {
+      Object.assign(size, { cols: 57, rows: 20 });
+      act(() => ManualResizeObserver.fire());
+      await upgrade();
+      // Mid-animation: nothing yet, whatever has arrived.
+      expect(sentFor('p-adopt-held')).toEqual([]);
+    } finally {
+      act(() => releaseFits());
+    }
+    await settle();
+    expect(sentFor('p-adopt-held')).toEqual(['57x20']);
   });
 
   it('a callback under the floor is not the laid-out size: the next one fits, at once', async () => {
