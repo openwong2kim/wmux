@@ -91,6 +91,15 @@ export async function parity(req: SnapshotRequest, rust: Buffer, xterm: Buffer):
   return fromXterm && difference(restored, await replay(req)) && fromXterm;
 }
 
+/**
+ * How `payload` restores against the live terminal: the stream parsed at
+ * `req.geometry`'s sizes, then resized to `req.cols`x`req.rows`. The first
+ * difference, or undefined.
+ */
+export async function liveDifference(req: SnapshotRequest, payload: Buffer): Promise<string | undefined> {
+  return difference(await replay(req, payload), await replay(req));
+}
+
 /** First difference, or undefined. Trailing printed spaces may be dropped. */
 function difference(rust: State[], ref: State[]): string | undefined {
   for (let i = 0; i < ref.length; i++) {

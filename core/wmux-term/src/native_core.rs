@@ -3,7 +3,7 @@
 
 use crate::native_output::NativeOutputChunk;
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, GridCell};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
@@ -197,6 +197,9 @@ pub struct NativeTerminal {
     feed: XtermFeed,
     /// Why the ANSI snapshot of this stream cannot match xterm's.
     refusal: Option<&'static str>,
+    /// The narrowest width the alternate screen was cut to over written
+    /// cells, while it is still the active screen (see alt_width_cut).
+    alt_cut: Option<usize>,
 }
 
 /// The longest unfinished sequence `feed_xterm` holds for its next bytes.
@@ -515,6 +518,7 @@ impl NativeTerminal {
             scrollback,
             feed: XtermFeed::default(),
             refusal: None,
+            alt_cut: None,
         })
     }
 
@@ -597,6 +601,25 @@ impl NativeTerminal {
         let synchronized = self.parser.sync_timeout().pending_timeout();
         if synchronized {
             self.parser.stop_sync(term);
+        }
+        // xterm keeps an alternate-screen row's cells past a narrower width
+        // and shows them again when it widens; Alacritty drops them. Only a
+        // widen past such a cut can differ (a snapshot at the narrow width
+        // shows the same cells either way), so the cut is remembered and a
+        // later widen on the same screen refuses. Leaving the alternate
+        // screen drops xterm's kept cells too.
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            if self.alt_cut.is_some_and(|cut| cols as usize > cut) {
+                self.refusal.get_or_insert(
+                    "unsupported-alt-width: the alternate screen widened over cells it was cut to",
+                );
+            }
+            if alt_width_cut(term, cols as usize) {
+                let cut = cols as usize;
+                self.alt_cut = Some(self.alt_cut.map_or(cut, |c| c.min(cut)));
+            }
+        } else {
+            self.alt_cut = None;
         }
         let start = before(term);
         term.resize(size);
@@ -1306,6 +1329,23 @@ impl NativeRing {
             self.geometry.drain(..self.geometry.len() - 256);
         }
     }
+}
+
+/// Whether narrowing to `cols` would drop a written cell of the active
+/// alternate screen (one Alacritty's resize truncates and xterm keeps).
+fn alt_width_cut(term: &Term<VoidListener>, cols: usize) -> bool {
+    if !term.mode().contains(TermMode::ALT_SCREEN) {
+        return false;
+    }
+    let grid = term.grid();
+    let old = grid.columns();
+    if cols >= old {
+        return false;
+    }
+    (0..grid.screen_lines()).any(|y| {
+        let line = &grid[Line(y as i32)];
+        (cols..old).any(|x| !line[Column(x)].is_empty())
+    })
 }
 
 /// Test hook for the per-reason parity modules (parity_support.rs): `chunks`
