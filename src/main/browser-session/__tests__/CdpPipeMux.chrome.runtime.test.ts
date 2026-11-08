@@ -1,10 +1,11 @@
 // A real Chrome on a debugging pipe, driven through the multiplexer and its
 // loopback endpoint by real Playwright clients.
 //
-// SKIPPED BY DEFAULT: it needs a Chrome binary. To run it:
+// Chrome: CHROME_PATH, else what wmux's launcher would start
+// (chromeForRuntimeSuite). Without one it skips locally, and fails on a CI
+// runner that must run the real-Chrome suites. To run it:
 //
-//   CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-//     npx vitest run -c vitest.runtime.config.ts src/main/browser-session/__tests__/CdpPipeMux.chrome.runtime.test.ts
+//   npx vitest run -c vitest.runtime.config.ts src/main/browser-session/__tests__/CdpPipeMux.chrome.runtime.test.ts
 //
 // A temporary profile, headless, and data: pages only; nothing is fetched.
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -20,11 +21,12 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
 import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
-import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
+import { chromeForRuntimeSuite } from '../../../test-utils/runtimeChrome';
+import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { newRelayProofNonce, RELAY_PROOF_METHOD, relayProofMatches } from '../../../shared/relayProof';
 
-const CHROME = process.env.CHROME_PATH;
+const CHROME = chromeForRuntimeSuite();
 
 interface Started { child: ChildProcess; profile: string; mux: CdpPipeMux; route: RelayRoute; exited: Promise<void> }
 const started: Started[] = [];
@@ -243,7 +245,8 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
     const gone = await Promise.race([s.exited.then(() => true), new Promise((r) => setTimeout(() => r(false), 5_000))]);
     expect(gone).toBe(true);
     expect(Date.now() - started).toBeLessThan(5_000);
-    expect(fs.readdirSync(s.profile).filter((f) => /^Singleton/.test(f))).toEqual([]);
+    // Singleton* on macOS and Linux, lockfile on Windows.
+    expect(fs.readdirSync(s.profile).filter((f) => /^(Singleton|lockfile$)/.test(f))).toEqual([]);
   }, 60_000);
 
   // SIGSTOP: the browser process stops reading the pipe, and SIGTERM stays
