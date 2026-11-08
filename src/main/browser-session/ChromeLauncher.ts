@@ -357,8 +357,8 @@ export function mergeDisableFeatures(args: string[]): string[] {
   return out;
 }
 
-/** Candidate binary paths per platform, first match wins. */
-function discoverChromeBinary(): string | null {
+/** Candidate binary paths per platform, first match wins. Exported for the runtime suites. */
+export function discoverChromeBinary(): string | null {
   const envPath = process.env.WMUX_CHROME_PATH;
   if (envPath) return existsSync(envPath) ? envPath : null;
 

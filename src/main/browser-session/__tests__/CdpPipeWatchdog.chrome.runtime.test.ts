@@ -3,12 +3,13 @@
 // a healthy one is never taken for stopped, even with main blocked past the
 // stall period and large frames in flight.
 //
-// SKIPPED unless CHROME_PATH names a Chrome. A temporary profile with a pinned
+// Chrome: CHROME_PATH, else what wmux's launcher would start
+// (chromeForRuntimeSuite). Without one it skips locally, and fails on a CI
+// runner that must run the real-Chrome suites. A temporary profile with a pinned
 // download folder, headless, data: pages only; nothing is fetched. The child
 // client is a process this suite spawns; only it is ever stopped, by its pid.
 //
-//   CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-//     npx vitest run -c vitest.runtime.config.ts src/main/browser-session/__tests__/CdpPipeWatchdog.chrome.runtime.test.ts
+//   npx vitest run -c vitest.runtime.config.ts src/main/browser-session/__tests__/CdpPipeWatchdog.chrome.runtime.test.ts
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,8 +22,9 @@ import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay'
 import { STALL_MS } from '../CdpPipeStallWatch';
 import { accountDownloads } from '../../../test-utils/chromeDownloads';
 import { CHROME_TEARDOWN_TIMEOUT_MS, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
+import { chromeForRuntimeSuite } from '../../../test-utils/runtimeChrome';
 
-const CHROME = process.env.CHROME_PATH;
+const CHROME = chromeForRuntimeSuite();
 const CLIENT = path.join(__dirname, 'fixtures', 'pipeClient.mjs');
 /** Rounds of the false-fire check, each with main blocked this long right after the arm. */
 const ROUNDS = 15;
@@ -53,7 +55,9 @@ async function start(): Promise<Rig> {
   const chrome = spawn(CHROME as string, [
     '--remote-debugging-pipe', `--user-data-dir=${profile.dir}`, '--headless=new',
     '--no-first-run', '--no-default-browser-check', '--use-mock-keychain', 'about:blank',
-  ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
+  ], {
+    stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'],
+  });
   const mux = new CdpPipeMux(chrome.stdio[3] as Writable, chrome.stdio[4] as Readable);
   rig = { chrome, mux, route: relay.serve(mux) };
   return rig;
