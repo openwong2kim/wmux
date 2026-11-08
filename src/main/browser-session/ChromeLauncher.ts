@@ -11,6 +11,7 @@ import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type CallerIdentity, type Clie
 import { ProtectedPipePolicy } from './ProtectedPipePolicy';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from './CdpPipeRelay';
 import { cdpTargetGrantEnabled, recordVisibleTo } from './CdpTargetOwnership';
+import { DownloadRelayPolicy, makeDownloadRelayDir, removeDownloadRelayDir } from './DownloadRelayPolicy';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
 import { surfaceOpeners } from './SurfaceOpeners';
@@ -624,6 +625,8 @@ export class ChromeLauncher implements ChromeBackendClient {
     readonly mux: CdpPipeMux;
     /** A protected profile's rules for the pipe's clients; null when unprotected. */
     readonly policy: ProtectedPipePolicy | null;
+    /** With grants on an unprotected profile: downloads of the shared default context. */
+    readonly relay: { readonly policy: DownloadRelayPolicy; readonly dir: string; session: CdpConnection | null } | null;
     route: RelayRoute | null;
   } | null = null;
   /** Pipe mode: liveness checks failed in a row, and when the last one counted ended. */
@@ -2036,6 +2039,37 @@ export class ChromeLauncher implements ChromeBackendClient {
     });
   }
 
+  /**
+   * With grants on an unprotected profile (C3b): main's own folder and rules
+   * for the downloads of the shared default context. Main's session holds the
+   * behaviour (armDownloadRelay); each client's own setting is recorded, not
+   * forwarded.
+   */
+  private downloadRelay(mux: () => CdpPipeMux | null): NonNullable<NonNullable<ChromeLauncher['piped']>['relay']> {
+    const dir = makeDownloadRelayDir();
+    const holder: { session: CdpConnection | null } = { session: null };
+    const policy = new DownloadRelayPolicy({
+      dir,
+      contextOf: (client, frameId) => mux()?.contextOfFrame(client, frameId),
+      emit: (client, method, params, sessionId) => mux()?.emitEvent(client, method, params, sessionId) ?? false,
+      cancel: (guid) => holder.session?.send('Browser.cancelDownload', { guid }) ?? Promise.resolve(),
+    });
+    return Object.assign(holder, { policy, dir });
+  }
+
+  /** Main's session on the pipe that holds the default context's downloads, events on. */
+  private async armDownloadRelay(mux: CdpPipeMux, relay: NonNullable<NonNullable<ChromeLauncher['piped']>['relay']>): Promise<void> {
+    const session = mux.connect({ label: 'ChromeLauncher download relay' });
+    relay.session = session;
+    session.on('Browser.downloadWillBegin', (params) => relay.policy.downloadEvent('Browser.downloadWillBegin', params));
+    session.on('Browser.downloadProgress', (params) => relay.policy.downloadEvent('Browser.downloadProgress', params));
+    try {
+      await session.send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: relay.dir, eventsEnabled: true });
+    } catch (err) {
+      console.warn('[ChromeLauncher] download relay not armed:', err instanceof Error ? err.message : String(err));
+    }
+  }
+
   /** The browser-level CDP endpoint `transport` names; not-ready when absent. */
   private async browserWsUrl(transport: ChromeTransport): Promise<string> {
     let endpoint: string | null;
@@ -2313,6 +2347,9 @@ export class ChromeLauncher implements ChromeBackendClient {
     // The pipe ends with the process; one that breaks first ends it too.
     let mux: CdpPipeMux | null = null;
     const policy = pipe && plan ? this.protectedPipePolicy(() => mux) : null;
+    // C3b: with grants, an unprotected profile's default-context downloads go
+    // through main (DownloadRelayPolicy); a protected one's are denied (policy).
+    const relay = pipe && !plan && cdpTargetGrantEnabled() ? this.downloadRelay(() => mux) : null;
     mux = pipe
       ? new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable, {
         onClose: () => {
@@ -2322,6 +2359,7 @@ export class ChromeLauncher implements ChromeBackendClient {
           } catch { /* already gone */ }
         },
         ...(policy && { filter: policy.filter, beforeReply: policy.beforeReply, onClientGone: (client: ClientRef) => policy.forget(client) }),
+        ...(relay && { filter: relay.policy.filter, onClientGone: (client: ClientRef) => relay.policy.forget(client) }),
         // C3b: each external client sees only its own targets, by this registry
         // and what it made itself. Main's own connections are never narrowed.
         ...(cdpTargetGrantEnabled() && {
@@ -2335,7 +2373,8 @@ export class ChromeLauncher implements ChromeBackendClient {
         }),
       })
       : null;
-    this.piped = mux ? { mux, policy, route: null } : null;
+    this.piped = mux ? { mux, policy, relay, route: null } : null;
+    if (mux && relay) void this.armDownloadRelay(mux, relay);
     const piped = mux ? pipeTransport(mux) : null;
 
     // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
@@ -2464,6 +2503,12 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.child = null;
     this.unbindEndpoint();
     this.pingMisses = { count: 0, lastEnd: 0 };
+    const relay = this.piped?.relay;
+    if (relay) {
+      relay.session?.close();
+      relay.policy.dispose();
+      removeDownloadRelayDir(relay.dir);
+    }
     // Its clients and unused tokens go with it.
     this.piped?.route?.close();
     this.piped = null;
