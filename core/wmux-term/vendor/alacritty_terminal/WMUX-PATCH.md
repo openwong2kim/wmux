@@ -41,6 +41,12 @@ Local changes:
   as xterm.js's `InputHandler.deleteChars` (`BufferLine.deleteCells`) does.
   Upstream capped at the row width and then cleared the last `count` cells,
   so a count past the line end also cleared cells left of the cursor.
+- `src/term/mod.rs` scrolls the region in place for SU (`CSI Ps S`), as
+  xterm.js's `InputHandler.scrollUp` does (it splices rows within the
+  scroll region and never touches scrollback). Upstream rotated the rows
+  into history when the region started at the top row. Linefeed, which
+  upstream routed through the same handler, now calls `scroll_up_relative`
+  directly and keeps scrolling into history.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.
