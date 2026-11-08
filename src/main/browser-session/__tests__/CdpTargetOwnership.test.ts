@@ -38,6 +38,19 @@ describe('recordVisibleTo (main\'s target lists and the pipe)', () => {
   });
 });
 
+describe("main's target lists and the pipe give the same answers", () => {
+  it('for every record and caller, the registry rule grants exactly what recordVisibleTo shows', () => {
+    for (const recordWs of ['ws-a', 'ws-b', undefined]) {
+      for (const callerWs of ['ws-a', 'ws-b', undefined]) {
+        const o = ownership({ t: recordWs === undefined ? {} : { workspaceId: recordWs } });
+        o.learn({ targetId: 't', type: 'page' });
+        const pipe = o.decide(clientA, callerWs === undefined ? {} : { workspaceId: callerWs }, 't') === 'grant';
+        expect(pipe, `${recordWs}/${callerWs}`).toBe(recordVisibleTo(recordWs, callerWs));
+      }
+    }
+  });
+});
+
 describe('CdpTargetOwnership.decide', () => {
   it('registry: the record\'s own workspace only', () => {
     const o = ownership({ p1: { workspaceId: 'ws-a' } });
@@ -141,7 +154,14 @@ describe('CdpTargetOwnership.decide', () => {
     expect(c.decide(clientA, A, 'x')).toBe('deny');
   });
 
-  it('never grants a tab, browser UI, a background page, a service or shared worker, the browser, or a prerender', () => {
+  it("the browser target is every client's (it is what Target.attachToBrowserTarget gives)", () => {
+    const o = ownership();
+    o.learn({ targetId: 'br', type: 'browser' });
+    expect(o.decide(clientA, A, 'br')).toBe('grant');
+    expect(o.decide(clientB, NONE, 'br')).toBe('grant');
+  });
+
+  it('never grants a tab, browser UI, a background page, a service or shared worker, or a prerender', () => {
     const records: Record<string, { workspaceId?: string }> = {};
     for (const type of NEVER_GRANTED_TYPES) records[type] = { workspaceId: 'ws-a' };
     records.pre = { workspaceId: 'ws-a' };

@@ -10,6 +10,7 @@ import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTran
 import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type CallerIdentity, type ClientRef } from './CdpPipeMux';
 import { ProtectedPipePolicy } from './ProtectedPipePolicy';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from './CdpPipeRelay';
+import { cdpTargetGrantEnabled, recordVisibleTo } from './CdpTargetOwnership';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
 import { surfaceOpeners } from './SurfaceOpeners';
@@ -357,6 +358,31 @@ export function mergeDisableFeatures(args: string[]): string[] {
   return out;
 }
 
+/** A map that tells `changed` of every entry set or removed (main's target registry, for grants). */
+class NotifyingMap<K, V> extends Map<K, V> {
+  constructor(private readonly changed: () => void) {
+    super();
+  }
+
+  override set(key: K, value: V): this {
+    super.set(key, value);
+    this.changed?.();
+    return this;
+  }
+
+  override delete(key: K): boolean {
+    const removed = super.delete(key);
+    if (removed) this.changed();
+    return removed;
+  }
+
+  override clear(): void {
+    const had = this.size > 0;
+    super.clear();
+    if (had) this.changed();
+  }
+}
+
 /** Candidate binary paths per platform, first match wins. Exported for the runtime suites. */
 export function discoverChromeBinary(): string | null {
   const envPath = process.env.WMUX_CHROME_PATH;
@@ -616,7 +642,9 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** wmux-opened tabs, keyed by the stable surfaceId agents hold. */
   private readonly surfaces = new Map<string, ChromeSurfaceRecord>();
   /** Reverse index: current CDP targetId → surfaceId. */
-  private readonly byTargetId = new Map<string, string>();
+  /** targetId → surfaceId. Every change lets the pipe's grants catch up (C3b). */
+  private readonly byTargetId = new NotifyingMap<string, string>(() => this.scheduleRegrant());
+  private regrantQueued = false;
   /** Reverse index: stable CDP tab-target anchor → surfaceId. */
   private readonly byTabTargetId = new Map<string, string>();
   /** True once the persisted records for this profile have been merged in. */
@@ -745,6 +773,16 @@ export class ChromeLauncher implements ChromeBackendClient {
     const snapshot = [...this.surfaces.values()];
     if (immediate) void this.surfaceStore.saveNow(this.profileName, snapshot).catch(() => undefined);
     else this.surfaceStore.save(this.profileName, snapshot);
+  }
+
+  /** Grants (C3b): the registry changed; the pipe catches up once, after this turn's changes. */
+  private scheduleRegrant(): void {
+    if (this.regrantQueued) return;
+    this.regrantQueued = true;
+    queueMicrotask(() => {
+      this.regrantQueued = false;
+      this.piped?.mux.regrant();
+    });
   }
 
   private bind(record: ChromeSurfaceRecord, targetId: string): void {
@@ -2293,6 +2331,17 @@ export class ChromeLauncher implements ChromeBackendClient {
           } catch { /* already gone */ }
         },
         ...(policy && { filter: policy.filter, beforeReply: policy.beforeReply, onClientGone: (client: ClientRef) => policy.forget(client) }),
+        // C3b: each external client sees only its own targets, by this registry
+        // and what it made itself. Main's own connections are never narrowed.
+        ...(cdpTargetGrantEnabled() && {
+          grants: {
+            registry: (targetId: string) => {
+              const record = this.recordForTarget(targetId);
+              if (!record) return null;
+              return record.workspaceId !== undefined ? { workspaceId: record.workspaceId } : {};
+            },
+          },
+        }),
       })
       : null;
     this.piped = mux ? { mux, policy, route: null } : null;
@@ -2519,7 +2568,11 @@ export class ChromeLauncher implements ChromeBackendClient {
       record.lastSeenAt = now;
       record.url = t.url;
       record.title = t.title;
-      if (workspaceId !== undefined && record.workspaceId !== undefined && record.workspaceId !== workspaceId) {
+      // With grants (C3b) a caller is shown what the pipe would grant it: its own
+      // workspace's records, never one filed under no workspace.
+      if (workspaceId !== undefined && (cdpTargetGrantEnabled()
+        ? !recordVisibleTo(record.workspaceId, workspaceId)
+        : record.workspaceId !== undefined && record.workspaceId !== workspaceId)) {
         continue;
       }
       out.push({

@@ -5,6 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CdpPipeMux, GRANT_HOLD_MAX_FRAMES, MUX_ID_BASE, cdpPipeCounters, resetCdpPipeCounters, type CallerIdentity } from '../CdpPipeMux';
 import { FakeBrowser } from './fakePipeBrowser';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 type Inbox = Array<Record<string, unknown>>;
 
@@ -43,7 +44,8 @@ const muxSent = (browser: FakeBrowser, method: string) => browser.received.filte
 /** The session a client's browser session is, as the browser named it (B<n>), found by the auto-attach command it sent. */
 const browserSessionOf = (browser: FakeBrowser, nth: number) => browser.received.filter((c) => c.method === 'Target.setAutoAttach')[nth]?.sessionId as string;
 
-const settle = () => new Promise((r) => setTimeout(r, 50));
+/** A negative check: nothing more arrives in this long. */
+const settle = () => deliberateSleep(50, 'a negative check: nothing more arrives');
 
 afterEach(() => resetCdpPipeCounters());
 
@@ -130,7 +132,7 @@ describe('CdpPipeMux grants: a client\'s own pages (Chrome announces them before
     await settle();
     expect(b.attached()).toEqual([]);
     expect(muxSent(browser, 'Target.detachFromTarget').map((c) => c.sessionId)).toEqual([browserSessionOf(browser, 1)]);
-    expect(cdpPipeCounters().absorbed['grant-hold']).toBe(1);
+    expect(cdpPipeCounters().absorbed?.['grant-hold']).toBe(1);
     mux.close();
   });
 
@@ -174,7 +176,7 @@ describe('CdpPipeMux grants: a client\'s own pages (Chrome announces them before
     await a.autoAttach();
     const ctx = (await a.replyTo(a.send('Target.createBrowserContext'))).result?.browserContextId as string;
     await a.replyTo(a.send('Target.createTarget', { url: 'about:blank', browserContextId: ctx }));
-    expect(cdpPipeCounters().absorbed['grant-hold']).toBeUndefined();
+    expect(cdpPipeCounters().absorbed?.['grant-hold']).toBeUndefined();
     const before = browser.received.length;
     expect((await b.replyTo(b.send('Target.createTarget', { url: 'about:blank', browserContextId: ctx }))).error)
       .toEqual({ code: -32000, message: `Failed to find browser context with id ${ctx}` });
@@ -218,7 +220,7 @@ describe('CdpPipeMux grants: a client\'s own pages (Chrome announces them before
     await a.autoAttach();
     browser.createWithoutReply = true;
     a.send('Target.createTarget', { url: 'about:blank' });
-    await vi.waitFor(() => expect(cdpPipeCounters().absorbed['grant-hold']).toBe(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(cdpPipeCounters().absorbed?.['grant-hold']).toBe(1), { timeout: 5_000 });
     const later = a.send('Browser.getVersion');
     await settle();
     expect(a.inbox.some((m) => m.id === later)).toBe(false);
@@ -234,11 +236,11 @@ describe('CdpPipeMux grants: a client\'s own pages (Chrome announces them before
     await a.autoAttach();
     browser.createWithoutReply = true;
     a.send('Target.createTarget', { url: 'about:blank' });
-    await vi.waitFor(() => expect(cdpPipeCounters().absorbed['grant-hold']).toBe(1), { timeout: 5_000 });
+    await vi.waitFor(() => expect(cdpPipeCounters().absorbed?.['grant-hold']).toBe(1), { timeout: 5_000 });
     const session = browserSessionOf(browser, 0);
     for (let i = 0; i <= GRANT_HOLD_MAX_FRAMES; i++) browser.event(session, 'Test.noise', { i });
     await vi.waitFor(() => expect(a.gone()).toBe('too many frames held for a new page'), { timeout: 5_000 });
-    expect(cdpPipeCounters().dropped['grant-hold-overflow']).toBe(1);
+    expect(cdpPipeCounters().dropped?.['grant-hold-overflow']).toBe(1);
     mux.close();
   });
 });
@@ -256,7 +258,7 @@ describe('CdpPipeMux grants: discovery and the shared browser', () => {
     browser.event(page, 'Target.targetInfoChanged', { targetInfo: { targetId: mine, type: 'page', browserContextId: 'DEFAULT' } });
     await vi.waitFor(() => expect(a.inbox.some((m) => m.method === 'Target.targetInfoChanged')).toBe(true), { timeout: 5_000 });
     expect(a.inbox.filter((m) => m.method === 'Target.targetCreated' && m.sessionId === page)).toEqual([]);
-    expect(cdpPipeCounters().dropped['ungranted-target']).toBeGreaterThanOrEqual(1);
+    expect(cdpPipeCounters().dropped?.['ungranted-target']).toBeGreaterThanOrEqual(1);
     mux.close();
   });
 
@@ -272,7 +274,7 @@ describe('CdpPipeMux grants: discovery and the shared browser', () => {
     const page = (await a.replyTo(a.send('Target.attachToTarget', { targetId: mine, flatten: true }))).result?.sessionId as string;
     expect((await a.replyTo(a.send('Fetch.enable', {}, page))).result).toEqual({ echo: 'Fetch.enable' });
     expect(browser.received.filter((c) => c.method === 'Fetch.enable' || c.method === 'Tracing.start').map((c) => c.sessionId)).toEqual([page]);
-    expect(cdpPipeCounters().refusals['browser-wide']).toBe(3);
+    expect(cdpPipeCounters().refusals?.['browser-wide']).toBe(3);
     mux.close();
   });
 
@@ -335,7 +337,7 @@ describe('CdpPipeMux grants: a grant that comes late, and one that goes', () => 
     records.set('TL', { workspaceId: 'ws-b' });
     mux.regrant();
     await vi.waitFor(() => expect(muxSent(browser, 'Target.detachFromTarget').some((c) => c.params.sessionId === session && c.sessionId === sa)).toBe(true), { timeout: 5_000 });
-    expect(cdpPipeCounters().dropped['revoked-target']).toBe(1);
+    expect(cdpPipeCounters().dropped?.['revoked-target']).toBe(1);
     mux.close();
   });
 
@@ -355,6 +357,20 @@ describe('CdpPipeMux grants: a grant that comes late, and one that goes', () => 
     await settle();
     expect(b.attached()).toEqual([]);
     expect(muxSent(browser, 'Target.attachToTarget')).toHaveLength(1);
+    mux.close();
+  });
+});
+
+describe('CdpPipeMux grants: refusals on the session they came on', () => {
+  it('a target refused on a browser session the client attached itself is answered on that session', async () => {
+    const { mux, records } = setup();
+    records.set('TB', { workspaceId: 'ws-b' });
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    const second = (await a.replyTo(a.send('Target.attachToBrowserTarget'))).result?.sessionId as string;
+    const reply = await a.replyTo(a.send('Target.attachToTarget', { targetId: 'TB', flatten: true }, second));
+    expect(reply).toEqual({ id: reply.id, error: { code: -32602, message: 'No target with given id found' }, sessionId: second });
+    const param = await a.replyTo(a.send('Target.detachFromTarget', { sessionId: 'not-mine' }, second));
+    expect(param.sessionId).toBe(second);
     mux.close();
   });
 });

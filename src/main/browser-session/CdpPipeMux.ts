@@ -569,12 +569,14 @@ export class CdpPipeMux {
     const session = command.sessionId ?? (await this.browserSessionOf(client));
     const named = command.params.sessionId;
     if (PARAM_SESSION_METHODS.has(command.method) && named !== undefined && (typeof named !== 'string' || !client.owned.has(named))) {
-      refuseTo(client, clientId, UNKNOWN_PARAM_SESSION);
+      // On the session the command came on, as the browser answers: a client's
+      // reply router finds the waiting command by that session and id.
+      refuseTo(client, clientId, UNKNOWN_PARAM_SESSION, command.sessionId);
       return;
     }
     const target = command.params.targetId;
     if (typeof target === 'string' && !this.granted(client, target)) {
-      refuseTo(client, clientId, UNKNOWN_TARGET);
+      refuseTo(client, clientId, UNKNOWN_TARGET, command.sessionId);
       return;
     }
     if (client.closed || !this.open) return;

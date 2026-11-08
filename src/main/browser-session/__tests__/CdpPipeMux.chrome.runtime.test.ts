@@ -16,12 +16,13 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { chromium, type Browser } from 'playwright-core';
+import { chromium, type Browser, type Page } from 'playwright-core';
 import WebSocket, { WebSocketServer } from 'ws';
 import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
 import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
 import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 import { chromeForRuntimeSuite } from '../../../test-utils/runtimeChrome';
 import { CHROME_TEARDOWN_TIMEOUT_MS, stopChrome, tempChromeProfile, type TempChromeProfile } from '../../../test-utils/chromeProfile';
 import { newRelayProofNonce, RELAY_PROOF_METHOD, relayProofMatches } from '../../../shared/relayProof';
@@ -73,7 +74,10 @@ async function provenBy(browser: Browser, grant: RelayGrant): Promise<boolean> {
 
 const connectTo = async (s: Started, identity: CallerIdentity = {}) => connectThrough(await s.route.grant(identity));
 
-async function startChrome(): Promise<Started> {
+/** Grants (C3b): main's registry for one Chrome, filled by the test. */
+type Registry = Map<string, { workspaceId?: string }>;
+
+async function startChrome(registry?: Registry): Promise<Started> {
   const temp = tempChromeProfile('wmux-pipe-chrome-');
   profiles.push(temp);
   const profile = temp.dir;
@@ -91,7 +95,9 @@ async function startChrome(): Promise<Started> {
     // Windows: Chrome under the isolate setup's temp USERPROFILE refuses remote debugging.
   ], { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'], env: realProfileBrowserEnv() });
   const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-  const mux = new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable);
+  const mux = new CdpPipeMux(child.stdio[3] as Writable, child.stdio[4] as Readable, {
+    ...(registry && { grants: { registry: (id: string) => registry.get(id) ?? null } }),
+  });
   const s = { child, profile, mux, route: relay.serve(mux), exited };
   started.push(s);
   return s;
@@ -287,4 +293,103 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe', () => {
       await stopChrome(launcher);
     }
   }, 120_000);
+});
+
+describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants (C3b)', () => {
+  /** A page main opens and files under `workspaceId`, as the launcher does, then tells the pipe. */
+  async function mainOpens(s: Started, registry: Registry, workspaceId: string, url = 'about:blank'): Promise<string> {
+    const main = s.mux.connect({ label: 'main' });
+    const { targetId } = (await main.send('Target.createTarget', { url })) as { targetId: string };
+    registry.set(targetId, { workspaceId });
+    s.mux.regrant();
+    return targetId;
+  }
+  const targetIdOf = async (page: Page) => {
+    const session = await page.context().newCDPSession(page);
+    try {
+      return ((await session.send('Target.getTargetInfo')) as { targetInfo: { targetId: string } }).targetInfo.targetId;
+    } finally {
+      await session.detach().catch(() => undefined);
+    }
+  };
+
+  it('two workspaces on one profile: each sees and drives only its own pages; the other\'s is "not there"', async () => {
+    const registry: Registry = new Map();
+    const s = await startChrome(registry);
+    const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
+    const b = await connectThrough(await s.route.grant({ workspaceId: 'ws-b' }));
+    browsers.push(a, b);
+    // Opened by main after both connected: reaches each through the late grant.
+    const pa = await mainOpens(s, registry, 'ws-a', 'data:text/html,<title>A</title>');
+    const pb = await mainOpens(s, registry, 'ws-b', 'data:text/html,<title>B</title>');
+    await vi.waitFor(() => expect(a.contexts()[0].pages()).toHaveLength(1), { timeout: 15_000 });
+    await vi.waitFor(() => expect(b.contexts()[0].pages()).toHaveLength(1), { timeout: 15_000 });
+    // Attached while its data: page may still be committing: read once it settles.
+    await vi.waitFor(async () => expect(await a.contexts()[0].pages()[0].title().catch(() => '')).toBe('A'), { timeout: 15_000 });
+    await vi.waitFor(async () => expect(await b.contexts()[0].pages()[0].title().catch(() => '')).toBe('B'), { timeout: 15_000 });
+    const cdpA = await a.newBrowserCDPSession();
+    const listed = ((await cdpA.send('Target.getTargets')) as { targetInfos: Array<{ targetId: string; type: string }> }).targetInfos;
+    expect(listed.filter((t) => t.type === 'page').map((t) => t.targetId)).toEqual([pa]);
+    const failure = (p: Promise<unknown>) => p.then(() => 'answered', (err: unknown) => String(err));
+    expect(await failure(cdpA.send('Target.attachToTarget', { targetId: pb, flatten: true }))).toMatch(/No target with given id found/);
+    expect(await failure(cdpA.send('Target.activateTarget', { targetId: pb }))).toMatch(/No target with given id found/);
+    expect(await failure(cdpA.send('Fetch.enable' as 'Target.getTargets'))).toMatch(/not available to this client/);
+  }, 90_000);
+
+  it('20 concurrent new pages across two clients, in the default context and in their own: each gets its own only', async () => {
+    const registry: Registry = new Map();
+    const s = await startChrome(registry);
+    const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
+    const b = await connectThrough(await s.route.grant({ workspaceId: 'ws-b' }));
+    browsers.push(a, b);
+    const [ctxA, ctxB] = await Promise.all([a.newContext(), b.newContext()]);
+    const made = await Promise.all([
+      ...Array.from({ length: 5 }, () => a.contexts()[0].newPage()),
+      ...Array.from({ length: 5 }, () => ctxA.newPage()),
+      ...Array.from({ length: 5 }, () => b.contexts()[0].newPage()),
+      ...Array.from({ length: 5 }, () => ctxB.newPage()),
+    ]);
+    expect(made).toHaveLength(20);
+    const idsA = new Set(await Promise.all([...a.contexts()[0].pages(), ...ctxA.pages()].map((p) => targetIdOf(p))));
+    const idsB = new Set(await Promise.all([...b.contexts()[0].pages(), ...ctxB.pages()].map((p) => targetIdOf(p))));
+    expect(idsA.size).toBe(10);
+    expect(idsB.size).toBe(10);
+    expect([...idsA].filter((id) => idsB.has(id))).toEqual([]);
+    // Each still drives its own.
+    await made[0].goto('data:text/html,<title>mine</title>');
+    expect(await made[0].title()).toBe('mine');
+  }, 120_000);
+
+  it('a popup opened by a click goes to the client that holds its opener, with and without opener access, and the click returns', async () => {
+    const registry: Registry = new Map();
+    const s = await startChrome(registry);
+    const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
+    const b = await connectThrough(await s.route.grant({ workspaceId: 'ws-b' }));
+    browsers.push(a, b);
+    const page = await a.contexts()[0].newPage();
+    await page.setContent('<button id=open onclick="window.open(\'about:blank\')">o</button><button id=noopener onclick="window.open(\'about:blank\', \'_blank\', \'noopener\')">n</button>');
+    for (const id of ['open', 'noopener']) {
+      const started = Date.now();
+      const [popup] = await Promise.all([page.waitForEvent('popup', { timeout: 15_000 }), page.click(`#${id}`)]);
+      expect(Date.now() - started, id).toBeLessThan(10_000);
+      expect(popup, id).toBeTruthy();
+    }
+    // An evaluate that opens one returns: with opener access it waits for the
+    // paused popup to be let go, so the popup's attach must not wait behind it.
+    const cdp = await page.context().newCDPSession(page);
+    for (const features of ['', 'noopener']) {
+      const started = Date.now();
+      const [popup, evaluated] = await Promise.all([
+        page.waitForEvent('popup', { timeout: 15_000 }),
+        cdp.send('Runtime.evaluate', { expression: `window.open('about:blank', '_blank', '${features}'); 1`, userGesture: true }),
+      ]);
+      expect(Date.now() - started, features || 'opener').toBeLessThan(10_000);
+      expect(popup, features || 'opener').toBeTruthy();
+      expect((evaluated as { result: { value: number } }).result.value).toBe(1);
+    }
+    await cdp.detach();
+    await deliberateSleep(500, 'a negative check: no popup reaches the other client');
+    expect(b.contexts()[0].pages()).toEqual([]);
+    expect(a.contexts()[0].pages()).toHaveLength(5);
+  }, 90_000);
 });

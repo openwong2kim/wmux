@@ -5,9 +5,12 @@
 // found or named, and main's own clients are never narrowed.
 //
 // A target is a client's when, in this order:
+//  0. the browser target is every client's: attaching to it gives a browser
+//     session, which Target.attachToBrowserTarget gives any client anyway (and
+//     Chrome announces that very attach as one to the browser target);
 //  1. its type is never any external client's (a tab, browser UI, an
-//     extension's background page, a service or shared worker, the browser
-//     itself) or it is a prerender: no one's;
+//     extension's background page, a service or shared worker) or it is a
+//     prerender: no one's;
 //  2. main's registry files it under another workspace: not this client's,
 //     whatever else holds (a popup main filed under that workspace stays there);
 //  3. main's registry files it under the client's workspace: the client's;
@@ -36,7 +39,7 @@ export function cdpTargetGrantEnabled(): boolean {
 
 /** Target types no external client is ever granted. */
 export const NEVER_GRANTED_TYPES: ReadonlySet<string> = new Set([
-  'tab', 'browser_ui', 'background_page', 'service_worker', 'shared_worker', 'browser',
+  'tab', 'browser_ui', 'background_page', 'service_worker', 'shared_worker',
 ]);
 
 /** How many openers a grant follows back. */
@@ -208,6 +211,7 @@ export class CdpTargetOwnership {
     if (seen.has(targetId)) return 'deny';
     seen.add(targetId);
     const f = this.facts.get(targetId);
+    if (f?.type === 'browser') return 'grant';
     if (f?.type && NEVER_GRANTED_TYPES.has(f.type)) return 'deny';
     if (f?.subtype) return 'deny';
     let record: { readonly workspaceId?: string } | null;

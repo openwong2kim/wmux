@@ -4363,6 +4363,9 @@ export function registerBrowserRpc(
           ...(callerWorkspaceId && { workspaceId: callerWorkspaceId }),
           profile: chrome.profile,
           ...(decision && { protectedEpoch: decision.epoch }),
+          // The operator lane: with grants (C3b), every target, as on the port. From the
+          // authenticated caller only, never from params.
+          ...(ctx?.operator === true && { operator: true }),
         })
         : undefined;
       return {
