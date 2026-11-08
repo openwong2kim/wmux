@@ -184,6 +184,8 @@ describe('CdpPipeMux grants: a client\'s own pages (Chrome announces them before
       .toEqual({ code: -32000, message: `Failed to find context with id ${ctx}` });
     expect((await b.replyTo(b.send('Browser.setDownloadBehavior', { behavior: 'allow', browserContextId: ctx }))).error)
       .toEqual({ code: -32602, message: `Failed to find browser context for id ${ctx}` });
+    expect((await b.replyTo(b.send('Browser.cancelDownload', { guid: 'g', browserContextId: ctx }))).error)
+      .toEqual({ code: -32602, message: `Failed to find browser context for id ${ctx}` });
     expect(browser.received.slice(before).filter((c) => c.id < MUX_ID_BASE)).toEqual([]);
     // Context lists: each its own.
     expect((await a.replyTo(a.send('Target.getBrowserContexts'))).result?.browserContextIds).toEqual([ctx]);
@@ -543,6 +545,10 @@ describe('CdpPipeMux grants: the shared jar, windows, and a revoked session', ()
     browser.event(page, 'Page.frameNavigated', { frame: { id: mine, url: 'https://c.example/', securityOrigin: 'https://c.example' } });
     expect(await on('Storage.trackIndexedDBForOrigin', { origin: 'https://a.example' })).toBe('refused');
     expect(await on('Storage.trackIndexedDBForOrigin', { origin: 'https://c.example' })).toBe('sent');
+    // Page events off on the one session that heard them: its origins go with them.
+    expect(await on('Page.disable')).toBe('sent');
+    expect(await on('Storage.trackIndexedDBForOrigin', { origin: 'https://c.example' })).toBe('refused');
+    expect(await on('Storage.trackIndexedDBForOrigin', { origin: 'https://c.example' }, second)).toBe('refused');
     // In a context the client made, the storage is its own.
     const ctx = (await a.replyTo(a.send('Target.createBrowserContext'))).result?.browserContextId as string;
     const own = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank', browserContextId: ctx }))).result?.targetId as string;

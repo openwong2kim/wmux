@@ -112,7 +112,7 @@ const DISCOVERY_EVENTS = new Set(['Target.targetCreated', 'Target.targetInfoChan
 function unknownContext(method: string, contextId: string): { code: number; message: string } | null {
   if (method === 'Target.createTarget') return { code: -32000, message: `Failed to find browser context with id ${contextId}` };
   if (method === 'Target.disposeBrowserContext') return { code: -32000, message: `Failed to find context with id ${contextId}` };
-  if (method === 'Browser.setDownloadBehavior' || method === 'Browser.grantPermissions' || method === 'Browser.resetPermissions'
+  if (method === 'Browser.setDownloadBehavior' || method === 'Browser.cancelDownload' || method === 'Browser.grantPermissions' || method === 'Browser.resetPermissions'
     || method === 'Browser.setPermission' || method.startsWith('Storage.')) {
     return { code: -32602, message: `Failed to find browser context for id ${contextId}` };
   }
@@ -824,6 +824,9 @@ export class CdpPipeMux {
   private grantRule(client: Client, command: ClientCommand): FilterAnswer {
     if (!this.ownership) return null;
     const { method, params } = command;
+    // A session that turns Page events off stops hearing its frames' origins:
+    // what it learned goes now, not when it is next wrong (pageStorageAllowed).
+    if (method === 'Page.disable' && command.sessionId !== undefined) client.origins.delete(command.sessionId);
     const onBrowser = this.isBrowserSession(client, command.sessionId);
     if (onBrowser && (method.startsWith('Fetch.') || method.startsWith('Tracing.'))) {
       return { refuse: { code: -32000, message: `${method} is not available to this client` }, reason: 'browser-wide' };
