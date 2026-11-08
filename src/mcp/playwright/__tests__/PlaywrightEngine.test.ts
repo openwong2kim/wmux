@@ -1,3 +1,4 @@
+// @wmux-lane unit — process.platform is stubbed (win32 or darwin) for the early-stop rule; nothing here reaches the OS.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /*
@@ -785,12 +786,20 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     vi.useFakeTimers();
     // No /json endpoint: findViaJsonEndpoint must not reach a real port 9222.
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('no /json here')));
+    // The early stop for an already-attached webview is measured on Windows only.
+    setPlatform('win32');
     rig();
   });
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    setPlatform(realPlatform);
   });
+
+  const realPlatform = process.platform;
+  function setPlatform(platform: NodeJS.Platform): void {
+    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+  }
 
   async function engineFor(): Promise<PlaywrightEngine> {
     const engine = PlaywrightEngine.getInstance();
@@ -906,6 +915,18 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     const second = await lookup(engine);
     expect(second.connects).toBe(0);
     expect(second.waitedMs).toBeLessThanOrEqual(50);
+  });
+
+  it('off Windows, a webview that existed at connect still gets every attempt, then is remembered', async () => {
+    setPlatform('darwin');
+    targetType = 'webview';
+    const engine = await engineFor();
+    const first = await lookup(engine);
+    expect(first.page).toBeNull();
+    expect(first.connects).toBe(2); // every reconnect, as before the early stop
+    expect(remembered(engine)).toEqual(['wc-1']);
+    const second = await lookup(engine);
+    expect(second.connects).toBe(0);
   });
 
   it('a webview made after the connection gets a second attempt, then stops', async () => {

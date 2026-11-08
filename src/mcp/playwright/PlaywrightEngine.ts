@@ -1452,7 +1452,8 @@ export class PlaywrightEngine {
 
         // A webview that existed before this connection and gave no Page won't
         // give one after a reconnect either: stop here, and remember it below.
-        if (probe.unpaged && probe.attachedWebview && attempt < PAGE_FIND_RETRIES) {
+        // Measured on Windows only; elsewhere every attempt is still made.
+        if (process.platform === 'win32' && probe.unpaged && probe.attachedWebview && attempt < PAGE_FIND_RETRIES) {
           stoppedEarly = true;
           break;
         }
