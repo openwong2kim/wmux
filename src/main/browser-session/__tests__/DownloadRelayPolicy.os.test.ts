@@ -128,12 +128,11 @@ describe('DownloadRelayPolicy', () => {
     write(g1, 'one');
     write(g2, 'two');
     policy.downloadEvent('Browser.downloadProgress', { guid: g1, state: 'completed' });
-    await vi.waitFor(() => expect(fs.existsSync(path.join(user, 'report (1).pdf'))).toBe(true), { timeout: 5_000 });
+    // The name is claimed empty before the move: wait for the content.
+    await vi.waitFor(() => expect(fs.readFileSync(path.join(user, 'report (1).pdf'), 'utf8')).toBe('one'), { timeout: 5_000 });
     policy.downloadEvent('Browser.downloadProgress', { guid: g2, state: 'completed' });
-    await vi.waitFor(() => expect(fs.existsSync(path.join(user, 'report (2).pdf'))).toBe(true), { timeout: 5_000 });
+    await vi.waitFor(() => expect(fs.readFileSync(path.join(user, 'report (2).pdf'), 'utf8')).toBe('two'), { timeout: 5_000 });
     expect(fs.readFileSync(path.join(user, 'report.pdf'), 'utf8')).toBe('the user\'s own, older');
-    expect(fs.readFileSync(path.join(user, 'report (1).pdf'), 'utf8')).toBe('one');
-    expect(fs.readFileSync(path.join(user, 'report (2).pdf'), 'utf8')).toBe('two');
     expect(fs.readdirSync(dir)).toEqual([]);
     expect(cancelled).toEqual([]);
     expect(told).toEqual([]);
@@ -215,8 +214,8 @@ describe('DownloadRelayPolicy', () => {
     await vi.waitFor(() => expect(told.some((t) => t.params.state === 'completed')).toBe(true), { timeout: 5_000 });
     expect(fs.readFileSync(path.join(dest, g), 'utf8')).toBe('moved');
     expect(fs.existsSync(path.join(dir, g))).toBe(false);
-    // The policy works on the resolved folder (macOS: /var is a link to /private/var).
-    expect(fsync).toHaveBeenCalledWith(path.join(fs.realpathSync(dest), g));
+    // The policy works on the resolved folder (macOS: /var is a link to /private/var; Windows: an 8.3 temp path).
+    expect(fsync).toHaveBeenCalledWith(path.join(fs.realpathSync.native(dest), g));
 
     // A disk that refuses the copy: canceled for the client, nothing left behind.
     const failing = setup(held(['FA', a]), { fs: { rename: exdev, copyFile: () => Promise.reject(Object.assign(new Error('no space'), { code: 'ENOSPC' })) } });
@@ -412,8 +411,7 @@ describe('DownloadRelayPolicy', () => {
     policy.downloadEvent('Browser.downloadProgress', { guid: forUser, state: 'completed' });
     await vi.waitFor(() => expect(told.some((t) => t.params.state === 'completed')).toBe(true), { timeout: 5_000 });
     expect(fs.readFileSync(path.join(dest, handed), 'utf8')).toBe('half A');
-    await vi.waitFor(() => expect(fs.existsSync(path.join(user, 'paused.bin'))).toBe(true), { timeout: 5_000 });
-    expect(fs.readFileSync(path.join(user, 'paused.bin'), 'utf8')).toBe('half U');
+    await vi.waitFor(() => expect(fs.readFileSync(path.join(user, 'paused.bin'), 'utf8')).toBe('half U'), { timeout: 5_000 });
   });
 
   it('a completed download this policy does not know is never deleted by it: left to the file sweep, one line logged', async () => {
