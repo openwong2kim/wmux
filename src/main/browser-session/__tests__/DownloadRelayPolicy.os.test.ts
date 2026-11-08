@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ClientRef } from '../CdpPipeMux';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 import {
   DOWNLOAD_FILE_TTL_MS, DownloadRelayPolicy, makeDownloadRelayDir, removeDownloadRelayDir, safeDownloadName, sweepDeadDownloadRelayDirs, type RelayFs,
 } from '../DownloadRelayPolicy';
@@ -422,7 +423,7 @@ describe('DownloadRelayPolicy', () => {
       write(g, 'whose?');
       policy.downloadEvent('Browser.downloadProgress', { guid: g, state: 'completed' });
       policy.downloadEvent('Browser.downloadProgress', { guid: g, state: 'canceled' });
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await deliberateSleep(50, 'a negative check: no delete of the unknown file is under way');
       expect(fs.readFileSync(path.join(dir, g), 'utf8')).toBe('whose?');
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0])).not.toContain(g);
