@@ -311,13 +311,51 @@ describe('computer MCP tool', () => {
     ]]);
   });
 
-  it('refuses a desktop command outside the read-only list before calling main', async () => {
+  it('refuses a desktop command outside both lists before calling main', async () => {
     enabled.value = true;
     const client = await connect();
-    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'click', args: { ref: '@s1:e1' } } });
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'type', args: { ref: '@s1:e1' } } });
     await client.close();
     expect(res.isError).toBe(true);
     expect(computerCalls()).toEqual([]);
+  });
+
+  it('sends a desktop ref action to computer.act, never the read path, and answers with the action result', async () => {
+    enabled.value = true;
+    reply = () => ({ method: 'accessibility', verification: 'unverified', delivery: 'background' });
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'click', app: 'TextEdit', args: { ref: '@s1:e1' } } });
+    await client.close();
+    expect(res.isError).toBeFalsy();
+    expect((res.content as Array<{ text: string }>)[0].text).toContain('Unverified: call getAppState');
+    expect(computerCalls()).toEqual([[
+      'computer.act',
+      { desktop: { command: 'click', args: { ref: '@s1:e1' } }, callerInstance: expect.stringMatching(UUID_RE) },
+      DESKTOP_TIMEOUT_MS,
+    ]]);
+  });
+
+  it('refuses a desktop action with its arguments outside args, before calling main', async () => {
+    enabled.value = true;
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'scroll', args: { ref: '@s1:e1' }, direction: 'up', amount: 10 } });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect((res as { content: Array<{ text: string }> }).content[0].text).toMatch(/takes its arguments in args, not direction, amount[\s\S]*not_delivered/);
+    expect(computerCalls()).toEqual([]);
+  });
+
+  it('reports a desktop action whose pipe broke as possibly delivered', async () => {
+    enabled.value = true;
+    mockSendRpc.mockImplementation(async (method: string) => {
+      if (method.startsWith('computer.')) throw new Error('RPC timeout: computer.act');
+      return {};
+    });
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'desktop', command: 'toggle', args: { ref: '@s1:e1' } } });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect((res.content as Array<{ text: string }>)[0].text).toContain('delivered_unverified');
   });
 
   it('waits for desktop longer than the consent prompt, both name checks and the longest run together', async () => {

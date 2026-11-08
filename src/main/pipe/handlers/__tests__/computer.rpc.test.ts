@@ -298,6 +298,7 @@ describe('computer.rpc on a protected browser pane', () => {
     ['computer.getAppState', { app: 'Chrome', senderPtyId: 'pty-a1' }],
     ['computer.act', { action: 'click', snapshotId: 's-1', index: 1, senderPtyId: 'pty-a1' }],
     ['computer.act', { action: 'openApp', app: 'Chrome', senderPtyId: 'pty-a1' }],
+    ['computer.act', { desktop: { command: 'click', args: { ref: '@s1:e1' } }, senderPtyId: 'pty-a1' }],
   ];
   const ctx = { clientName: 'claude-code' };
 
@@ -309,6 +310,7 @@ describe('computer.rpc on a protected browser pane', () => {
       getAppState: vi.fn(async () => ({})),
       control: vi.fn(async () => ({})),
       openApp: vi.fn(async () => ({})),
+      desktopAct: vi.fn(async () => ({})),
     };
   }
 

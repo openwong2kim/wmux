@@ -186,7 +186,7 @@ function desktopDeps(helperPath: string): DesktopDeps | undefined {
     log: (m) => console.warn(m),
   });
   return {
-    run: (argv, timeoutMs) => current().run(argv, { home, timeoutMs }),
+    run: (argv, timeoutMs, onStarted) => current().run(argv, { home, timeoutMs, onStarted }),
     readRefmap: async (snapshotId) => {
       try {
         return await fs.promises.readFile(path.join(home, 'snapshots', snapshotId, 'refmap.json'), 'utf8');

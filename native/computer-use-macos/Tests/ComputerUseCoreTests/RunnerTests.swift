@@ -19,8 +19,45 @@ final class RunnerPolicyTests: XCTestCase {
     }
 
     func testRefusesCommandsOutsideItsList() {
-        for command in ["click", "type", "clipboard-get", "batch", "launch", "screenshot", "permissions", "mcp", "skills"] {
+        for command in ["type", "clipboard-get", "batch", "launch", "screenshot", "permissions", "mcp", "skills", "scroll-to", "double-click"] {
             XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": [command], "home": "/tmp/ad"]), command)
+        }
+    }
+
+    func testStartsTheRefActionsOnARefAlone() throws {
+        for command in ["click", "focus", "toggle", "check", "uncheck", "expand", "collapse"] {
+            XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": [command, "@s2gy5:e7"], "home": "/tmp/ad"]), command)
+        }
+        XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["select", "@s2gy5:e7", "--", "Large"], "home": "/tmp/ad"]))
+        // An option text that looks like a refused option is a value after "--".
+        XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["select", "@s2gy5:e7", "--", "--debug-level"], "home": "/tmp/ad"]))
+        XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["scroll", "@s2gy5:e7", "--direction=down", "--amount=3"], "home": "/tmp/ad"]))
+    }
+
+    func testRefusesAnActionWithoutARef() {
+        for argv in [["click"], ["click", "e7"], ["click", "@S2:e7"], ["click", "@s2:e0"], ["click", "--app=TextEdit"], ["select", "Large"], ["click", "@abc:e1\n"], ["click", "\n@abc:e1"]] {
+            XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": argv, "home": "/tmp/ad"]), argv.joined(separator: " "))
+        }
+    }
+
+    func testRefusesAnActionPointedAnywhereElse() {
+        for extra in [["--app=TextEdit"], ["--app", "TextEdit"], ["--window-id=w-1"], ["--root=@s2:e1"], ["--surface=menu"], ["--pid=1"], ["@s2:e8"]] {
+            XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["click", "@s2:e7"] + extra, "home": "/tmp/ad"]), extra.joined(separator: " "))
+            XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["scroll", "@s2:e7"] + extra, "home": "/tmp/ad"]), extra.joined(separator: " "))
+        }
+        // scroll: one known direction and one amount of 1-50, nothing else.
+        for extra in [["--direction=sideways"], ["--direction=up", "--direction=down"], ["--amount=0"], ["--amount=51"], ["--amount=3", "--amount=4"],
+                      ["--amount=+3"], ["--amount=03"], ["--amount=3\n"], ["--direction=up\n"], ["--direction="], ["--amount="]] {
+            XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["scroll", "@s2:e7"] + extra, "home": "/tmp/ad"]), extra.joined(separator: " "))
+        }
+        for extra in [[], ["--direction=left"], ["--amount=50"], ["--amount=1", "--direction=right"]] {
+            XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["scroll", "@s2:e7"] + extra, "home": "/tmp/ad"]), extra.joined(separator: " "))
+        }
+        // select: one value, after "--", and nothing else.
+        XCTAssertNoThrow(try RunnerPolicy.parse(["id": 1, "argv": ["select", "@s2:e7", "--", String(repeating: "가", count: 1365)], "home": "/tmp/ad"]))
+        for argv in [["select", "@s2:e7", "Large"], ["select", "@s2:e7", "--app=X", "--", "Large"], ["select", "@s2:e7", "--", "Large", "Small"],
+                     ["select", "@s2:e7", "--", ""], ["select", "@s2:e7", "--", String(repeating: "x", count: 4097)], ["select", "@s2:e7", "--", "\0Large"]] {
+            XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": argv, "home": "/tmp/ad"]), argv.joined(separator: " "))
         }
     }
 
@@ -28,6 +65,9 @@ final class RunnerPolicyTests: XCTestCase {
         for arg in ["--headed", "--trace", "--trace=/tmp/t", "--trace-strict", "--debug", "--screenshot", "--screenshot=/tmp/x.png"] {
             XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["snapshot", arg], "home": "/tmp/ad"]), arg)
         }
+        XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["get", "@s2:e7\0", "--property=value"], "home": "/tmp/ad"]))
+        // A read gets no "--" exemption: everything is scanned.
+        XCTAssertThrowsError(try RunnerPolicy.parse(["id": 1, "argv": ["snapshot", "--", "--headed"], "home": "/tmp/ad"]))
     }
 
     func testRefusesARelativeOrClimbingHome() {
