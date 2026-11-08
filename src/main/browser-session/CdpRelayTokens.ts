@@ -33,12 +33,17 @@ const digestOf = (token: string): Buffer => createHash('sha256').update(token, '
 export class CdpRelayTokens<B> {
   private entries: Array<Entry<B>> = [];
 
+  /** `dropped` hears of every unused token that goes without being spent: expired, crowded out or forgotten. */
+  constructor(private readonly dropped: (binding: B) => void = () => undefined) {}
+
   /** A new token for `binding`. */
   mint(binding: B): string {
     this.prune();
     const token = randomBytes(32).toString('base64url');
     this.entries.push({ digest: digestOf(token), binding, expires: Date.now() + RELAY_TOKEN_TTL_MS });
-    if (this.entries.length > RELAY_TOKENS_MAX_UNUSED) this.entries.splice(0, this.entries.length - RELAY_TOKENS_MAX_UNUSED);
+    if (this.entries.length > RELAY_TOKENS_MAX_UNUSED) {
+      for (const entry of this.entries.splice(0, this.entries.length - RELAY_TOKENS_MAX_UNUSED)) this.dropped(entry.binding);
+    }
     return token;
   }
 
@@ -64,7 +69,7 @@ export class CdpRelayTokens<B> {
 
   /** Drop every unused token whose binding `gone` names. */
   forget(gone: (binding: B) => boolean): void {
-    this.entries = this.entries.filter((entry) => !gone(entry.binding));
+    this.drop((entry) => gone(entry.binding));
   }
 
   /** How many unused tokens are held (tests and diagnostics; never the tokens). */
@@ -75,6 +80,15 @@ export class CdpRelayTokens<B> {
 
   private prune(): void {
     const now = Date.now();
-    if (this.entries.some((entry) => entry.expires <= now)) this.entries = this.entries.filter((entry) => entry.expires > now);
+    if (this.entries.some((entry) => entry.expires <= now)) this.drop((entry) => entry.expires <= now);
+  }
+
+  private drop(gone: (entry: Entry<B>) => boolean): void {
+    const kept: Array<Entry<B>> = [];
+    for (const entry of this.entries) {
+      if (gone(entry)) this.dropped(entry.binding);
+      else kept.push(entry);
+    }
+    this.entries = kept;
   }
 }
