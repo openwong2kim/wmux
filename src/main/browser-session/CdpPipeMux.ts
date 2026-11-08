@@ -769,8 +769,10 @@ export class CdpPipeMux {
     }
     // The shared default context's cookie jar: its pages use it, but no client
     // reads it whole. A page's own cookies (getCookies without urls) and one
-    // URL's (setCookie) are no more than visiting the site.
-    if (method === 'Network.getAllCookies' || (method === 'Network.getCookies' && params.urls !== undefined)) {
+    // URL's (setCookie) are no more than visiting the site. Storage.getCookies
+    // on a page session returns the jar of that page's context.
+    if (method === 'Network.getAllCookies' || method === 'Storage.getCookies'
+      || (method === 'Network.getCookies' && params.urls !== undefined)) {
       const pageContext = command.sessionId !== undefined ? client.targets.get(command.sessionId)?.browserContextId : undefined;
       if (!onBrowser && pageContext !== undefined && this.ownership.ownsContext(client, pageContext)) return null;
       return { refuse: { code: -32000, message: `${method} on the shared default browser context is not available to this client` }, reason: 'default-context-cookies' };

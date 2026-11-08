@@ -500,7 +500,7 @@ function browserSessionOfFirstClient(browser: FakeBrowser): string {
 }
 
 describe('CdpPipeMux grants: the shared jar, windows, and a revoked session', () => {
-  it('no bulk cookie read on the shared default context: getAllCookies and getCookies with urls refused, the page\'s own cookies kept', async () => {
+  it('no bulk cookie read on the shared default context: getAllCookies, Storage.getCookies and getCookies with urls refused, the page\'s own cookies kept', async () => {
     const { browser, mux } = setup();
     const a = client(mux, 'a', { workspaceId: 'ws-a' });
     const mine = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank' }))).result?.targetId as string;
@@ -508,6 +508,7 @@ describe('CdpPipeMux grants: the shared jar, windows, and a revoked session', ()
     expect((await a.replyTo(a.send('Network.getAllCookies', {}, page))).error?.message).toContain('shared default browser context');
     expect((await a.replyTo(a.send('Network.getCookies', { urls: ['https://bank.example/'] }, page))).error?.message).toContain('shared default browser context');
     expect((await a.replyTo(a.send('Network.getAllCookies'))).error?.code).toBe(-32000);
+    expect((await a.replyTo(a.send('Storage.getCookies', {}, page))).error?.message).toContain('shared default browser context');
     expect((await a.replyTo(a.send('Network.getCookies', {}, page))).result).toEqual({ echo: 'Network.getCookies' });
     expect((await a.replyTo(a.send('Network.setCookie', { name: 'n', value: 'v', url: 'https://a.example/' }, page))).result).toEqual({ echo: 'Network.setCookie' });
     // In a context the client made, the jar is its own.
@@ -515,6 +516,8 @@ describe('CdpPipeMux grants: the shared jar, windows, and a revoked session', ()
     const own = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank', browserContextId: ctx }))).result?.targetId as string;
     const p2 = (await a.replyTo(a.send('Target.attachToTarget', { targetId: own, flatten: true }))).result?.sessionId as string;
     expect((await a.replyTo(a.send('Network.getAllCookies', {}, p2))).result).toEqual({ echo: 'Network.getAllCookies' });
+    expect((await a.replyTo(a.send('Storage.getCookies', {}, p2))).result).toEqual({ echo: 'Storage.getCookies' });
+    expect(browser.received.filter((c) => c.method === 'Storage.getCookies').map((c) => c.sessionId)).toEqual([p2]);
     expect(browser.received.filter((c) => c.method === 'Network.getAllCookies').map((c) => c.sessionId)).toEqual([p2]);
     mux.close();
   });
