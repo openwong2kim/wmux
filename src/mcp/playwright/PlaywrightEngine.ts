@@ -285,8 +285,7 @@ export class PlaywrightEngine {
    * learned under (unpageableScope), so the target is tried again there. Ids
    * that no longer appear in the target list are dropped as they go.
    *
-   * Each target maps to the Pages known not to be it: those there when it was
-   * remembered, and any proven since to be another target. The late-Page
+   * Each target maps to the Pages proven to be another target. The late-Page
    * check probes only the rest.
    */
   private unpageableTargets = new Map<string, WeakSet<Page>>();
@@ -1494,7 +1493,7 @@ export class PlaywrightEngine {
     if (agreed && this.browser && this.unpageableEpoch === epochAtStart) {
       const scope = this.connectionScope();
       if (this.unpageableScope !== scope) this.resetUnpageable(scope, false);
-      this.unpageableTargets.set(agreed, new WeakSet(this.getAllPages()));
+      this.unpageableTargets.set(agreed, new WeakSet());
       console.error(`[PlaywrightEngine] Target ${agreed} gives no page; later calls use the RPC lane at once`);
     }
     this.playwrightFailed.add(ctx.key);

@@ -690,7 +690,10 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
           }
           return Promise.resolve(listing(listed));
         }
-        if (method === 'Target.getTargetInfo') probes++;
+        if (method === 'Target.getTargetInfo') {
+          probes++;
+          return Promise.resolve({ targetInfo: { targetId: 'shell' } });
+        }
         return Promise.resolve({});
       }),
       detach: vi.fn().mockResolvedValue(undefined),
@@ -957,12 +960,15 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     expect(remembered(engine)).toEqual([]);
   });
 
-  it('the late-Page check probes only Pages newer than the remembering', async () => {
+  it('the late-Page check probes a Page proven to be another target only once', async () => {
     targetType = 'webview';
     const engine = await engineFor();
     await lookup(engine);
     probes = 0;
-    await lookup(engine); // only the shell, seen at remember time
+    await lookup(engine); // the shell: proven another target
+    expect(probes).toBe(1);
+    probes = 0;
+    await lookup(engine);
     expect(probes).toBe(0);
     guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
     const late = await lookup(engine);
@@ -1000,6 +1006,17 @@ describe('PlaywrightEngine targets that give no page (in-app tabs on Windows)', 
     targetId = 'wc-1';
     const forOne = await lookup(engine);
     expect(forOne.page).toBe(guestPage);
+  });
+
+  it('a Page whose probe failed while the target was being remembered is probed again', async () => {
+    targetType = 'webview';
+    const engine = await engineFor();
+    guestPage = { url: vi.fn().mockReturnValue('http://127.0.0.1:1/'), context: vi.fn() };
+    failGuestProbes = 1000; // mid-navigation through every attempt
+    expect((await lookup(engine)).page).toBeNull();
+    expect(remembered(engine)).toEqual(['wc-1']);
+    failGuestProbes = 0;
+    expect((await lookup(engine)).page).toBe(guestPage);
   });
 
   it('a Page whose probe fails is probed again on the next lookup', async () => {
