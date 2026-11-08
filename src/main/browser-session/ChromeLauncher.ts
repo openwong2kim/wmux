@@ -10,7 +10,7 @@ import { pipeTransport, portTransport, type ChromeTransport } from './ChromeTran
 import { CDP_PIPE_COMMAND_TIMEOUT_MS, CdpPipeMux, type CallerIdentity, type ClientRef } from './CdpPipeMux';
 import { ProtectedPipePolicy } from './ProtectedPipePolicy';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from './CdpPipeRelay';
-import { isRecordedBrowser, recordedBrowserPath } from './devToolsActivePort';
+import { browserPathOf, isRecordedBrowser, recordedBrowserPath } from './devToolsActivePort';
 import { cdpTargetGrantEnabled, recordVisibleTo } from './CdpTargetOwnership';
 import { DownloadRelayPolicy, makeDownloadRelayDir, removeDownloadRelayDir } from './DownloadRelayPolicy';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
@@ -155,21 +155,6 @@ export function chromeTargetWatcherEnabled(): boolean {
  */
 export function chromeTransportKind(): 'port' | 'pipe' {
   return process.env.WMUX_CHROME_TRANSPORT === 'pipe' ? 'pipe' : 'port';
-}
-
-/** The path of a browser endpoint (`/devtools/browser/<id>`), or null when it is no URL. */
-function browserPathOf(endpoint: string): string | null {
-  try {
-    return new URL(endpoint).pathname;
-  } catch {
-    return null;
-  }
-}
-
-/** The browser path a DevToolsActivePort file recorded on its second line, or null. */
-function recordedBrowserPath(raw: string): string | null {
-  const path = raw.split(/\r?\n/)[1]?.trim();
-  return path ? path : null;
 }
 
 export interface ChromeTargetInfo {
