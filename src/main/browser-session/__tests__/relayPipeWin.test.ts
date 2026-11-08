@@ -51,6 +51,14 @@ describe('the owner-only DACL', () => {
     expect(ownerOnlyDaclSddl(SID)).toBe(`D:P(A;;GA;;;SY)(A;;GA;;;${SID})`);
   });
 
+  it('takes the alias SDDL writes for some accounts (LA for the built-in Administrator)', () => {
+    const admin = 'S-1-5-21-1000-2000-3000-500';
+    expect(isOwnerOnlyDacl(parseDacl('D:P(A;;FA;;;SY)(A;;FA;;;LA)'), admin)).toBe(false);
+    expect(isOwnerOnlyDacl(parseDacl('D:P(A;;FA;;;SY)(A;;FA;;;LA)'), [admin, 'LA'])).toBe(true);
+    // An alias is not a pass for anyone else.
+    expect(isOwnerOnlyDacl(parseDacl('D:P(A;;FA;;;SY)(A;;FA;;;LG)'), [admin, 'LA'])).toBe(false);
+  });
+
   it.each([
     ['the default pipe DACL', `D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;${SID})(A;;FR;;;WD)(A;;FR;;;AN)`],
     ['not protected', `D:(A;;FA;;;SY)(A;;FA;;;${SID})`],

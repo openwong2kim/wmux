@@ -74,17 +74,23 @@ const ALL_ACCESS = new Set(['FA', 'GA', '0x1f01ff']);
 
 /**
  * Exactly what the relay sets: protected (nothing inherited), two allow
- * entries with all access and no inheritance flags, for SYSTEM and `userSid`.
+ * entries with all access and no inheritance flags, for SYSTEM and the user.
+ * `user` lists every way SDDL may write the user's SID: its S-1-… form, and
+ * the alias SDDL prints for some accounts (LA for the built-in Administrator).
  */
-export function isOwnerOnlyDacl(dacl: ParsedDacl | null, userSid: string): boolean {
+export function isOwnerOnlyDacl(dacl: ParsedDacl | null, user: string | readonly string[]): boolean {
   if (!dacl || !dacl.protected || dacl.aces.length !== 2) return false;
-  const sids = new Set<string>();
+  const spellings = new Set(typeof user === 'string' ? [user] : user);
+  let system = 0;
+  let owner = 0;
   for (const ace of dacl.aces) {
     const rights = /^0x/i.test(ace.rights) ? ace.rights.toLowerCase() : ace.rights;
     if (ace.type !== 'A' || ace.flags !== '' || !ALL_ACCESS.has(rights)) return false;
-    sids.add(ace.sid);
+    if (ace.sid === 'SY') system++;
+    else if (spellings.has(ace.sid)) owner++;
+    else return false;
   }
-  return sids.size === 2 && sids.has('SY') && sids.has(userSid);
+  return system === 1 && owner === 1;
 }
 
 export function ownerOnlyDaclSddl(userSid: string): string {
@@ -122,6 +128,8 @@ export type NarrowResult = { ok: true } | { ok: false; busy: boolean; reason: st
 export interface PipeSecurity {
   /** This process's user, as a SID string. */
   readonly userSid: string;
+  /** Every way a DACL read back as SDDL writes that user (see isOwnerOnlyDacl). */
+  readonly userSpellings: readonly string[];
   /** Set the owner-only DACL on `pipePath` and read it back. */
   narrow(pipePath: string): NarrowResult;
   /** `pipePath`'s DACL as SDDL (opens the pipe once, for reading its descriptor), or an error text. */
@@ -134,15 +142,22 @@ export type PipeSecurityResult = { security: PipeSecurity } | { unavailable: 'di
 
 let loaded: PipeSecurityResult | undefined;
 
-/** Load once: koffi, this process's user, and whether it is the session's user. */
+/**
+ * Koffi, this process's user, and whether it is the session's user. A result
+ * that cannot change while the process runs (loaded, or another user) is kept;
+ * a failure that may be passing (an account lookup that could not be answered)
+ * is tried again on the next bind.
+ */
 export function loadPipeSecurity(): PipeSecurityResult {
   if (loaded) return loaded;
+  let result: PipeSecurityResult;
   try {
-    loaded = load();
+    result = load();
   } catch {
-    loaded = { unavailable: 'win32-api' };
+    result = { unavailable: 'win32-api' };
   }
-  return loaded;
+  if ('security' in result || result.unavailable === 'different-user') loaded = result;
+  return result;
 }
 
 function load(): PipeSecurityResult {
@@ -225,8 +240,27 @@ function load(): PipeSecurityResult {
     return out;
   };
 
+  // How SDDL writes this user back: the S-1-… form, or an alias for some
+  // well-known accounts (LA for the built-in Administrator). Found by a round
+  // trip through the same converters the read-back uses.
+  const userSpellings = [userSid];
+  {
+    const sd: unknown[] = [null];
+    if (!SddlToSd(ownerOnlyDaclSddl(userSid), 1, sd, [0])) return { unavailable: 'win32-api' };
+    const text: unknown[] = [null];
+    const length = [0];
+    const converted = SdToSddl(sd[0], 1, DACL_SECURITY_INFORMATION, text, length);
+    const back = converted ? (koffi.decode(text[0], 'char16_t', length[0] - 1) as string) : null;
+    if (converted) LocalFree(text[0]);
+    LocalFree(sd[0]);
+    const written = back === null ? undefined : parseDacl(back)?.aces.find((ace) => ace.sid !== 'SY')?.sid;
+    if (!written) return { unavailable: 'win32-api' };
+    if (written !== userSid) userSpellings.push(written);
+  }
+
   const security: PipeSecurity = {
     userSid,
+    userSpellings,
     narrow(pipePath) {
       // Opening the pipe connects to one of its instances: the server sees a
       // connection that ends when this handle closes.
@@ -248,7 +282,7 @@ function load(): PipeSecurityResult {
           LocalFree(sd[0]);
         }
         const back = daclSddl(handle);
-        return isOwnerOnlyDacl(back === null ? null : parseDacl(back), userSid)
+        return isOwnerOnlyDacl(back === null ? null : parseDacl(back), userSpellings)
           ? { ok: true }
           : { ok: false, busy: false, reason: 'read-back' };
       } finally {

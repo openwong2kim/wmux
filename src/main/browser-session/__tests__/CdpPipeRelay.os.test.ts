@@ -495,7 +495,7 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
     const grant = await route.grant({ workspaceId: 'ws-a' });
     expect(grant.endpoint).toMatch(new RegExp(`^ws\\+unix:\\\\\\\\\\.\\\\pipe\\\\${RELAY_PIPE_PREFIX}[0-9a-f]{32}:${RELAY_PATH}$`));
     const sec = security();
-    expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(pipeOf(grant))), sec.userSid)).toBe(true);
+    expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(pipeOf(grant))), sec.userSpellings)).toBe(true);
     const ws = await dial(grant);
     expect(await request(ws, { id: 1, method: 'Browser.getVersion' })).toEqual({ id: 1, result: { echo: 'Browser.getVersion' } });
     ws.close();
@@ -524,6 +524,23 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
     for (const pipePath of tried) expect(await gone(pipePath)).toBe('ENOENT');
   });
 
+  it('closed while a pipe waits for a free instance: no further pipe and no TCP listener', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const real = security();
+    const tried: string[] = [];
+    const { relay, route } = await setup({
+      pipeSecurity: () => ({ security: { ...real, narrow: () => ({ ok: false, busy: true, reason: 'open 231' }) } }),
+      beforeNarrow: (pipePath) => tried.push(pipePath),
+    });
+    const granting = route.grant({}).then(() => 'granted', (err: Error) => err.message);
+    await vi.waitFor(() => expect(tried).toHaveLength(1), { timeout: 2_000 });
+    await relay.close();
+    expect(await granting).toMatch(/closed|gone/);
+    expect(tried).toHaveLength(1);
+    expect(warn.mock.calls.map((call) => call.map(String).join(' ')).some((line) => line.startsWith(RELAY_PIPE_FALLBACK_LINE))).toBe(false);
+    expect(await gone(tried[0])).toBe('ENOENT');
+  });
+
   it('serves on loopback TCP when this process runs as another user than the session\'s', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { route } = await setup({ pipeSecurity: () => ({ unavailable: 'different-user' }) });
@@ -547,7 +564,7 @@ describe.runIf(process.platform === 'win32')('CdpPipeRelay on a Windows named pi
       const grant = await route.grant({});
       expect(held.length).toBeGreaterThan(0);
       if (grant.endpoint.startsWith('ws+unix:')) {
-        expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(pipeOf(grant))), sec.userSid)).toBe(true);
+        expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(pipeOf(grant))), sec.userSpellings)).toBe(true);
       } else {
         expect(grant.endpoint).toMatch(/^ws:\/\/127\.0\.0\.1:/);
       }

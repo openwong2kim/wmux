@@ -56,6 +56,7 @@ export const RELAY_PIPE_FALLBACK_LINE = '[CdpPipeRelay] no owner-only pipe; serv
 const PIPE_BIND_ATTEMPTS = 3;
 /** How long one pipe waits for a free instance to set its DACL on, yielding to the event loop. */
 const PIPE_BUSY_WAIT_MS = 200;
+const PIPE_BUSY_RETRY_MS = 10;
 
 /** What browser.cdp.info hands a caller: where to connect, and the header that lets it. */
 export interface RelayGrant {
@@ -282,6 +283,8 @@ export class CdpPipeRelay {
     if (process.platform === 'win32' && this.windowsPipe) {
       const pipe = await this.listenPipe();
       if ('listener' in pipe) return pipe.listener;
+      // Closed while trying: no TCP listener either.
+      if (this.closed) throw new Error('CdpPipeRelay: closed');
       console.warn(`${RELAY_PIPE_FALLBACK_LINE} (${pipe.reason})`);
     }
     // Elsewhere TCP means no root could hold a private socket.
@@ -306,6 +309,8 @@ export class CdpPipeRelay {
     const { security } = loaded;
     let reason = 'bind';
     for (let attempt = 0; attempt < PIPE_BIND_ATTEMPTS; attempt++) {
+      // Closed meanwhile: no further pipe (each starts under the default DACL).
+      if (this.closed) return { reason: 'closed' };
       const pipePath = relayPipePath();
       const server = this.makeServer();
       // A bind error (a name already taken: EADDRINUSE) arrives on the next tick.
@@ -324,10 +329,11 @@ export class CdpPipeRelay {
       this.beforeNarrow?.(pipePath);
       let narrowed = security.narrow(pipePath);
       // Every waiting instance taken: let the event loop serve (and time out)
-      // those connections and make a new instance, then try again, briefly.
+      // those connections and make a new instance, then try again, briefly,
+      // with a short pause rather than a spin.
       const deadline = Date.now() + PIPE_BUSY_WAIT_MS;
       while (!narrowed.ok && narrowed.busy && Date.now() < deadline && !this.closed) {
-        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setTimeout(resolve, PIPE_BUSY_RETRY_MS));
         narrowed = security.narrow(pipePath);
       }
       server.off('error', onBindError);

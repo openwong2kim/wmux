@@ -47,10 +47,10 @@ describe.runIf(process.platform === 'win32')('the relay pipe DACL (Win32)', () =
     expect(server.listening).toBe(true);
     const before = parseDacl(sec.daclOf(path));
     expect(before?.aces.some((ace) => ace.sid === 'WD')).toBe(true);
-    expect(isOwnerOnlyDacl(before, sec.userSid)).toBe(false);
+    expect(isOwnerOnlyDacl(before, sec.userSpellings)).toBe(false);
 
     expect(sec.narrow(path)).toEqual({ ok: true });
-    expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(path)), sec.userSid)).toBe(true);
+    expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(path)), sec.userSpellings)).toBe(true);
     // The pipe still serves this user.
     expect(await echo(path)).toBe('ping');
   });
@@ -63,7 +63,7 @@ describe.runIf(process.platform === 'win32')('the relay pipe DACL (Win32)', () =
     const clients = Array.from({ length: 8 }, () => net.connect(path).on('error', () => undefined));
     closers.push(() => { for (const c of clients) c.destroy(); });
     await Promise.all(clients.map((c) => new Promise((resolve) => c.once('connect', resolve))));
-    expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(path)), sec.userSid)).toBe(true);
+    expect(isOwnerOnlyDacl(parseDacl(sec.daclOf(path)), sec.userSpellings)).toBe(true);
   });
 
   it('says the pipe is busy when every waiting instance is taken, and changes nothing', () => {
