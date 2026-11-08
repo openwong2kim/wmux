@@ -30,7 +30,7 @@ import { pasteClipboardImage } from '../utils/imagePaste';
 import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { claimFit } from '../utils/fitGuard';
-import { createFitScheduler } from '../utils/layoutTransitionGate';
+import { createFitScheduler, fitsHeld } from '../utils/layoutTransitionGate';
 import { installAltClickTrackingGuard } from '../utils/altClickUnderMouseTracking';
 import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
 import { agentSelectsOnDrag, installPlainDragSelect, installWheelClearsSelectionHint, mouseOwnedHintApplies } from '../utils/plainDragSelect';
@@ -1108,6 +1108,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // to skip its active-at-mount reconnect: the session pipe never detached, so
   // asking for one only buys the ring-buffer replay adoption exists to avoid.
   const adoptedAtMountRef = useRef(false);
+  // An adopted terminal is moved into a container inside a Panel the layout
+  // Group has not sized yet: the Group lays its new panel set out from its own
+  // ResizeObserver, after this mount's effects. Until then the Panel keeps its
+  // old or default size, the pane's chrome can overflow it (the Panel's inner
+  // div scrolls, so a scrollbar takes width), and a fit reads a grid the pane
+  // never keeps: a column short, rows of the old panel. Every fit site waits
+  // while this is set; the container's first ResizeObserver callback, which
+  // comes after the Group's layout, clears it and fits.
+  const adoptFitPendingRef = useRef(false);
   const retryReconnectRef = useRef<(() => Promise<void> | undefined) | null>(null);
   const onRecoveryErrorRef = useRef(options.onRecoveryError);
   onRecoveryErrorRef.current = options.onRecoveryError;
@@ -1480,6 +1489,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const fit = useCallback(() => {
     const container = containerRef.current;
     if (!fitAddonRef.current || !terminalRef.current || !container) return;
+    // An adoption fits on its container's first ResizeObserver callback.
+    if (adoptFitPendingRef.current) return;
     // Guard: skip fit entirely when the container is hidden (zero dimensions).
     // Calling fit() on a display:none element produces 0 cols/rows which
     // corrupts the xterm buffer and causes the "infinite copy downward" bug.
@@ -1729,6 +1740,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // A parked terminal of the other engine is disposed, not adopted (R6).
     const adopted = adoptTerminal(ptyId, (parked) => engineOf(parked) === paneEngine);
     adoptedAtMountRef.current = adopted !== null;
+    adoptFitPendingRef.current = adopted !== null;
     console.log(`[wmux:pane-adopt] ptyId=${ptyId} mount=${adopted ? 'adopted' : 'fresh'}`);
 
     // wongtty failed to build or open this pane: every pane goes back to
@@ -2472,16 +2484,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // #1255: sub-floor proposals (mid-split/restoring container) are treated
     // exactly like a hidden container — no fit, and an adoption holds its
     // parked viewport until a real fit runs.
-    const initialFitRan = container.offsetWidth > 0 && container.offsetHeight > 0 && !!proposedSafeDimensions(fitAddon, container);
+    // An adoption does not fit here: its container is not laid out yet
+    // (adoptFitPendingRef). Its first fit is the ResizeObserver's, after the
+    // layout, and that fit restores the parked viewport (pendingAdoptViewport):
+    // the fit can change how many rows the viewport holds, which moves what
+    // "the bottom" means, so a pane parked at the bottom lands at the bottom.
+    const initialFitRan = !adopted && container.offsetWidth > 0 && container.offsetHeight > 0 && !!proposedSafeDimensions(fitAddon, container);
     if (initialFitRan) {
       fitAddon.fit();
-      // #1002: the fit runs AFTER the adopted element is back in the DOM and
-      // can change how many rows the viewport holds, which moves what "the
-      // bottom" means — so put the user's scroll position back on this side of
-      // it. A pane parked at the bottom (the case the issue is about) lands at
-      // the bottom, not scrolled up by the height difference between the
-      // pre-split and post-split panel.
-      if (adopted) restoreParkedViewport(adopted);
     } else if (adopted) {
       pendingAdoptViewport = adopted;
     }
@@ -2559,6 +2569,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // fitAddon and then send those dimensions to ptyIdRef.current — which by
         // then points at the NEW pty.
         if (term !== terminal) return;
+
+        // An adoption fits on its container's first ResizeObserver callback.
+        if (adoptFitPendingRef.current) return;
 
         if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
 
@@ -4276,7 +4289,24 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         });
       },
     });
-    const resizeObserver = new ResizeObserver(() => resizeScheduler.onResize());
+    // An adoption's first fit: the first callback on this (new) container comes
+    // after the layout Group has applied its new panel set (observations are
+    // delivered shallowest first, with layout run again between depths, and
+    // the Group observes its own element), so it carries the size the pane
+    // keeps. Fitted here rather than a debounce later, so the old grid is not
+    // shown meanwhile. A container with no size yet (a hidden workspace) gets
+    // no callback until it is shown, and that one is the first fit. During an
+    // animated layout change the fit goes to the scheduler, like any other.
+    const resizeObserver = new ResizeObserver(() => {
+      if (adoptFitPendingRef.current && terminalRef.current === terminal) {
+        adoptFitPendingRef.current = false;
+        if (!fitsHeld()) {
+          runFit();
+          return;
+        }
+      }
+      resizeScheduler.onResize();
+    });
     resizeObserver.observe(container);
 
     return () => {
@@ -4827,6 +4857,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       console.debug('[Terminal] font/theme fit skipped — container has zero dimensions');
       return;
     }
+    // An adoption fits on its container's first ResizeObserver callback, with
+    // the font settings in place by then.
+    if (adoptFitPendingRef.current) return;
     // #1255: floor gate — a font change re-measures the container; skip
     // sub-floor proposals instead of reflowing the buffer at a broken width.
     if (!proposedSafeDimensions(fitAddonRef.current, container)) {
