@@ -22,6 +22,13 @@ pub struct Row<T> {
     /// This is the upper bound on the number of elements in the row, which have been modified
     /// since the last reset. All cells after this point are guaranteed to be equal.
     pub(crate) occ: usize,
+
+    /// wmux: the cells of an alternate-screen row past a narrower width, kept
+    /// as xterm.js keeps them (its line keeps its length) and shown again by a
+    /// later widen. Only a resize without reflow keeps them (`hide_past`); a
+    /// reset row is a new line, at the current width.
+    #[cfg_attr(feature = "serde", serde(default, skip))]
+    hidden: Option<Box<Vec<T>>>,
 }
 
 impl<T: PartialEq> PartialEq for Row<T> {
@@ -52,7 +59,7 @@ impl<T: Default> Row<T> {
             inner.set_len(columns);
         }
 
-        Row { inner, occ: 0 }
+        Row { inner, occ: 0, hidden: None }
     }
 
     /// Increase the number of columns in the row.
@@ -62,7 +69,31 @@ impl<T: Default> Row<T> {
             return;
         }
 
+        // wmux: kept cells come back first, up to the new width; xterm drops
+        // the rest (its line takes the new width).
+        if let Some(hidden) = self.hidden.take() {
+            let mut hidden = *hidden;
+            hidden.truncate(columns - self.inner.len());
+            self.inner.append(&mut hidden);
+            self.occ = self.inner.len();
+        }
+
         self.inner.resize_with(columns, T::default);
+    }
+
+    /// wmux: narrow to `columns` without reflow, keeping the cells past it in
+    /// front of any already kept (see `hidden`).
+    pub(crate) fn hide_past(&mut self, columns: usize) {
+        if self.inner.len() <= columns {
+            return;
+        }
+
+        let mut cut = self.inner.split_off(columns);
+        if let Some(hidden) = self.hidden.take() {
+            cut.extend(*hidden);
+        }
+        self.occ = min(self.occ, columns);
+        self.hidden = Some(Box::new(cut));
     }
 
     /// Reduce the number of columns in the row.
@@ -107,6 +138,26 @@ impl<T: Default> Row<T> {
         }
 
         self.occ = 0;
+
+        // wmux: a reset row is a new line, at the current width.
+        self.hidden = None;
+    }
+
+    /// wmux: reset over the row's whole physical width, kept cells included,
+    /// as xterm fills a whole erased line (ED); they stay kept.
+    pub(crate) fn reset_keep_width<D>(&mut self, template: &T)
+    where
+        T: ResetDiscriminant<D> + GridCell,
+        D: PartialEq,
+    {
+        let hidden = self.hidden.take();
+        self.reset(template);
+        if let Some(mut hidden) = hidden {
+            for item in hidden.iter_mut() {
+                item.reset(template);
+            }
+            self.hidden = Some(hidden);
+        }
     }
 }
 
@@ -114,7 +165,29 @@ impl<T: Default> Row<T> {
 impl<T> Row<T> {
     #[inline]
     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
-        Row { inner: vec, occ }
+        Row { inner: vec, occ, hidden: None }
+    }
+
+    /// wmux: how many cells are kept past the visible width.
+    #[inline]
+    pub fn hidden_len(&self) -> usize {
+        self.hidden.as_ref().map_or(0, |hidden| hidden.len())
+    }
+
+    /// wmux: run `f` over the row's physical cells, the visible ones then the
+    /// kept ones, as xterm's line operations (ICH, DCH, ECH, insert mode) do.
+    pub(crate) fn with_physical<R>(&mut self, f: impl FnOnce(&mut [T]) -> R) -> R {
+        let visible = self.inner.len();
+        self.occ = visible;
+        match self.hidden.as_mut() {
+            None => f(&mut self.inner),
+            Some(hidden) => {
+                self.inner.append(hidden);
+                let result = f(&mut self.inner);
+                **hidden = self.inner.split_off(visible);
+                result
+            },
+        }
     }
 
     #[inline]

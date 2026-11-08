@@ -1096,7 +1096,13 @@ impl<T: EventListener> Handler for Term<T> {
 
         // If in insert mode, first shift cells to the right.
         let columns = self.columns();
-        if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < columns {
+        let kept = self.grid[self.grid.cursor.point.line].hidden_len() > 0;
+        if self.mode.contains(TermMode::INSERT) && kept {
+            // wmux: xterm shifts the whole physical line, into the kept cells.
+            let line = self.grid.cursor.point.line;
+            let col = self.grid.cursor.point.column.0;
+            self.grid[line].with_physical(|cells| insert_cells(cells, col, width, Cell::default));
+        } else if self.mode.contains(TermMode::INSERT) && self.grid.cursor.point.column + width < columns {
             let line = self.grid.cursor.point.line;
             let col = self.grid.cursor.point.column;
             let row = &mut self.grid[line][..];
@@ -1146,11 +1152,21 @@ impl<T: EventListener> Handler for Term<T> {
     fn decaln(&mut self) {
         trace!("Decalnning");
 
+        let columns = self.columns();
         for line in (0..self.screen_lines()).map(Line::from) {
-            for column in 0..self.columns() {
+            for column in 0..columns {
                 let cell = &mut self.grid[line][Column(column)];
                 *cell = Cell::default();
                 cell.c = 'E';
+            }
+            // wmux: xterm fills the whole physical line, kept cells included.
+            if self.grid[line].hidden_len() > 0 {
+                self.grid[line].with_physical(|cells| {
+                    for cell in &mut cells[columns..] {
+                        *cell = Cell::default();
+                        cell.c = 'E';
+                    }
+                });
             }
         }
 
@@ -1192,6 +1208,17 @@ impl<T: EventListener> Handler for Term<T> {
     fn insert_blank(&mut self, count: usize) {
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
+
+        // wmux: with cells kept past a narrower width, xterm shifts the whole
+        // physical line: the visible end moves into the kept cells.
+        let line = cursor.point.line;
+        if self.grid[line].hidden_len() > 0 {
+            let col = self.grid.cursor.point.column.0;
+            self.damage.damage_line(line.0 as usize, 0, self.columns() - 1);
+            self.grid[line].with_physical(|cells| insert_cells(cells, col, count, || bg.into()));
+            return;
+        }
+        let cursor = &self.grid.cursor;
 
         // Ensure inserting within terminal bounds
         let count = cmp::min(count, self.columns() - cursor.point.column.0);
@@ -1532,6 +1559,18 @@ impl<T: EventListener> Handler for Term<T> {
         // Cleared cells have current background color set.
         let bg = self.grid.cursor.template.bg;
         let line = cursor.point.line;
+
+        // wmux: xterm erases up to the physical end, into kept cells.
+        if self.grid[line].hidden_len() > 0 {
+            self.damage.damage_line(line.0 as usize, start.0, self.columns() - 1);
+            self.grid[line].with_physical(|cells| {
+                let end = cmp::min(start.0.saturating_add(count), cells.len());
+                for cell in &mut cells[start.0..end] {
+                    *cell = bg.into();
+                }
+            });
+            return;
+        }
         self.damage.damage_line(line.0 as usize, start.0, end.0);
         let row = &mut self.grid[line];
         for cell in &mut row[start..end] {
@@ -1544,6 +1583,17 @@ impl<T: EventListener> Handler for Term<T> {
         let columns = self.columns();
         let cursor = &self.grid.cursor;
         let bg = cursor.template.bg;
+
+        // wmux: with cells kept past a narrower width, xterm shifts the whole
+        // physical line: kept cells move into view, the erase cell fills its end.
+        let line = cursor.point.line;
+        if self.grid[line].hidden_len() > 0 {
+            let col = cursor.point.column.0;
+            self.damage.damage_line(line.0 as usize, 0, columns - 1);
+            self.grid[line].with_physical(|cells| delete_cells(cells, col, count, || bg.into()));
+            return;
+        }
+        let cursor = &self.grid.cursor;
 
         // Ensure deleting within terminal bounds.
         let count = cmp::min(count, columns);
@@ -1765,7 +1815,7 @@ impl<T: EventListener> Handler for Term<T> {
                 // If clearing more than one line.
                 if cursor.line > 1 {
                     // Fully clear all lines before the current line.
-                    self.grid.reset_region(..cursor.line);
+                    self.grid.reset_region_keep_width(..cursor.line);
                 }
 
                 // Clear up to the current column in the current line.
@@ -1784,7 +1834,7 @@ impl<T: EventListener> Handler for Term<T> {
                 }
 
                 if (cursor.line.0 as usize) < screen_lines - 1 {
-                    self.grid.reset_region((cursor.line + 1)..);
+                    self.grid.reset_region_keep_width((cursor.line + 1)..);
                 }
 
                 let range = cursor.line..Line(screen_lines as i32);
@@ -1792,7 +1842,7 @@ impl<T: EventListener> Handler for Term<T> {
             },
             ansi::ClearMode::All => {
                 if self.mode.contains(TermMode::ALT_SCREEN) {
-                    self.grid.reset_region(..);
+                    self.grid.reset_region_keep_width(..);
                 } else {
                     let old_offset = self.grid.display_offset();
 
@@ -2292,6 +2342,48 @@ enum ModeState {
 impl From<bool> for ModeState {
     fn from(value: bool) -> Self {
         if value { Self::Set } else { Self::Reset }
+    }
+}
+
+/// wmux: xterm's `BufferLine.insertCells` over a physical line: `n` cells
+/// from `fill` at `pos`, the end dropped.
+fn insert_cells(cells: &mut [Cell], pos: usize, n: usize, fill: impl Fn() -> Cell) {
+    let len = cells.len();
+    if pos >= len {
+        return;
+    }
+    if n < len - pos {
+        for i in (pos + n..len).rev() {
+            cells.swap(i, i - n);
+        }
+        for cell in &mut cells[pos..pos + n] {
+            *cell = fill();
+        }
+    } else {
+        for cell in &mut cells[pos..] {
+            *cell = fill();
+        }
+    }
+}
+
+/// wmux: xterm's `BufferLine.deleteCells` over a physical line: `n` cells
+/// at `pos` removed, the end filled from `fill`.
+fn delete_cells(cells: &mut [Cell], pos: usize, n: usize, fill: impl Fn() -> Cell) {
+    let len = cells.len();
+    if pos >= len {
+        return;
+    }
+    if n < len - pos {
+        for i in pos..len - n {
+            cells.swap(i, i + n);
+        }
+        for cell in &mut cells[len - n..] {
+            *cell = fill();
+        }
+    } else {
+        for cell in &mut cells[pos..] {
+            *cell = fill();
+        }
     }
 }
 

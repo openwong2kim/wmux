@@ -359,6 +359,25 @@ impl<T> Grid<T> {
         T: ResetDiscriminant<D> + GridCell + Default,
         D: PartialEq,
     {
+        self.reset_lines(bounds, false);
+    }
+
+    /// wmux: reset a visible region over each row's whole physical width, as
+    /// xterm's ED fills whole lines: cells kept past a narrower width are
+    /// erased with the template, and stay kept.
+    pub fn reset_region_keep_width<D, R: RangeBounds<Line>>(&mut self, bounds: R)
+    where
+        T: ResetDiscriminant<D> + GridCell + Default,
+        D: PartialEq,
+    {
+        self.reset_lines(bounds, true);
+    }
+
+    fn reset_lines<D, R: RangeBounds<Line>>(&mut self, bounds: R, keep_width: bool)
+    where
+        T: ResetDiscriminant<D> + GridCell + Default,
+        D: PartialEq,
+    {
         let start = match bounds.start_bound() {
             Bound::Included(line) => *line,
             Bound::Excluded(line) => *line + 1,
@@ -375,7 +394,11 @@ impl<T> Grid<T> {
         debug_assert!(end <= self.screen_lines() as i32);
 
         for line in (start.0..end.0).map(Line::from) {
-            self.raw[line].reset(&self.cursor.template);
+            if keep_width {
+                self.raw[line].reset_keep_width(&self.cursor.template);
+            } else {
+                self.raw[line].reset(&self.cursor.template);
+            }
         }
     }
 

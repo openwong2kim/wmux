@@ -22,6 +22,17 @@ Local changes:
   `src/term/mod.rs` retains SGR 5, ignores SGR 6 like xterm, and clears blink on SGR 25/reset. This keeps
   the 24-byte cell layout while allowing native ANSI replay to preserve blink.
 
+- `src/grid/row.rs`, `src/grid/resize.rs`, `src/grid/mod.rs`, `src/grid/storage.rs` and
+  `src/term/mod.rs` keep an alternate-screen row's cells past a narrower width,
+  as xterm.js keeps its line's length: a resize without reflow moves them into
+  the row's kept cells, and a later widen shows them again up to the new width
+  (the rest is dropped, as xterm's line takes the new width). Character insert,
+  delete and erase and insert-mode printing run over the whole physical row, a
+  display erase fills whole rows over their physical width, DECALN fills it, and
+  a reset row (a scroll, a new line, the alternate screen entered again) is a
+  new line at the current width. `Storage::swap` uses a plain slice swap,
+  since a row is no longer four machine words. Modified 2026-11-08.
+
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.
 Run both `scripts/rust-terminal-core-bench.mjs --verify-only` (with an output path

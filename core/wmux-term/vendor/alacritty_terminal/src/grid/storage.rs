@@ -1,6 +1,5 @@
 use std::cmp::max;
 use std::mem;
-use std::mem::MaybeUninit;
 use std::ops::{Index, IndexMut};
 
 #[cfg(feature = "serde")]
@@ -151,28 +150,11 @@ impl<T> Storage<T> {
     /// instructions. This implementation achieves the swap in only 8 movups
     /// instructions.
     pub fn swap(&mut self, a: Line, b: Line) {
-        debug_assert_eq!(mem::size_of::<Row<T>>(), mem::size_of::<usize>() * 4);
-
+        // wmux: `Row` carries kept cells (row.rs `hidden`), so it is no longer
+        // four qwords; the upstream qword copy would split it. A plain swap.
         let a = self.compute_index(a);
         let b = self.compute_index(b);
-
-        unsafe {
-            // Cast to a qword array to opt out of copy restrictions and avoid
-            // drop hazards. Byte array is no good here since for whatever
-            // reason LLVM won't optimized it.
-            let a_ptr = self.inner.as_mut_ptr().add(a) as *mut MaybeUninit<usize>;
-            let b_ptr = self.inner.as_mut_ptr().add(b) as *mut MaybeUninit<usize>;
-
-            // Copy 1 qword at a time.
-            //
-            // The optimizer unrolls this loop and vectorizes it.
-            let mut tmp: MaybeUninit<usize>;
-            for i in 0..4 {
-                tmp = *a_ptr.offset(i);
-                *a_ptr.offset(i) = *b_ptr.offset(i);
-                *b_ptr.offset(i) = tmp;
-            }
-        }
+        self.inner.swap(a, b);
     }
 
     /// Rotate the grid, moving all lines up/down in history.
