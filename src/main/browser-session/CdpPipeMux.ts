@@ -92,6 +92,20 @@ const CONTEXT_WIDE = new Set([
 ]);
 /** Browser commands that name a window by id; with grants, only a window of the client's own pages. */
 const WINDOW_METHODS = new Set(['Browser.getWindowBounds', 'Browser.setWindowBounds', 'Browser.setContentsSize']);
+/**
+ * Storage commands a page session in the shared default context may send: they
+ * reach only that page's own frames, or (track/untrack) an origin or first-party
+ * storage key one of its frames has now. Every other Storage command there is refused.
+ */
+const PAGE_STORAGE_FRAME = new Set(['Storage.getStorageKeyForFrame', 'Storage.getStorageKey']);
+const PAGE_STORAGE_ORIGIN = new Set([
+  'Storage.trackCacheStorageForOrigin', 'Storage.untrackCacheStorageForOrigin',
+  'Storage.trackIndexedDBForOrigin', 'Storage.untrackIndexedDBForOrigin',
+]);
+const PAGE_STORAGE_KEY = new Set([
+  'Storage.trackCacheStorageForStorageKey', 'Storage.untrackCacheStorageForStorageKey',
+  'Storage.trackIndexedDBForStorageKey', 'Storage.untrackIndexedDBForStorageKey',
+]);
 /** Target events that discover targets; filtered on every session a client holds. */
 const DISCOVERY_EVENTS = new Set(['Target.targetCreated', 'Target.targetInfoChanged', 'Target.targetDestroyed']);
 /** Commands that name a browser context, and Chrome's own answer when it does not know the one named. */
@@ -247,12 +261,50 @@ function refuseTo(client: Client, clientId: number, error: { code: number; messa
   client.reply(clientId, frame, JSON.stringify(frame));
 }
 
+/**
+ * A Storage command on `session`, a page of the shared default context, that
+ * reaches only that page's own frames. The page's frames and their origins are
+ * as Chrome reported them on any session the client holds to the same target
+ * (a fresh CDP session has no Page events of its own).
+ */
+function pageStorageAllowed(client: Client, session: string, method: string, params: Record<string, unknown>): boolean {
+  const targetId = client.targets.get(session)?.targetId;
+  if (targetId === undefined) return false;
+  const frameIds = new Set<string>([targetId]);
+  const origins = new Set<string>();
+  for (const [held, info] of client.targets) {
+    if (info.targetId !== targetId) continue;
+    for (const id of client.frames.get(held)?.keys() ?? []) frameIds.add(id);
+    for (const [id, origin] of client.origins.get(held) ?? []) {
+      frameIds.add(id);
+      origins.add(origin);
+    }
+  }
+  if (PAGE_STORAGE_FRAME.has(method)) {
+    const frameId = params.frameId;
+    if (frameId === undefined) return method === 'Storage.getStorageKey';
+    return typeof frameId === 'string' && frameIds.has(frameId);
+  }
+  if (PAGE_STORAGE_ORIGIN.has(method)) return typeof params.origin === 'string' && origins.has(params.origin);
+  if (PAGE_STORAGE_KEY.has(method)) {
+    // A first-party storage key is the origin and a slash; a partitioned one is never the page's own.
+    const key = params.storageKey;
+    return typeof key === 'string' && key.endsWith('/') && origins.has(key.slice(0, -1));
+  }
+  return false;
+}
+
 /** Add the child frames of a page session's frame tree (Page.getFrameTree's answer). */
 function seedFrames(client: Client, session: string, tree: unknown): void {
-  type Node = { frame?: { id?: unknown; parentId?: unknown }; childFrames?: unknown };
+  type Node = { frame?: { id?: unknown; parentId?: unknown; securityOrigin?: unknown }; childFrames?: unknown };
   const walk = (node: Node | undefined, depth: number) => {
     if (!node || depth > 64) return;
-    const { id, parentId } = node.frame ?? {};
+    const { id, parentId, securityOrigin } = node.frame ?? {};
+    if (typeof id === 'string' && typeof securityOrigin === 'string') {
+      let origins = client.origins.get(session);
+      if (!origins) client.origins.set(session, (origins = new Map()));
+      origins.set(id, securityOrigin);
+    }
     if (typeof id === 'string' && typeof parentId === 'string') {
       let frames = client.frames.get(session);
       if (!frames) client.frames.set(session, (frames = new Map()));
@@ -269,8 +321,19 @@ function seedFrames(client: Client, session: string, tree: unknown): void {
  * a main-frame navigation starts the page over.
  */
 function trackFrames(client: Client, session: string, method: string, params: unknown): void {
-  const p = params as { frameId?: unknown; parentFrameId?: unknown; frame?: { id?: unknown; parentId?: unknown } } | undefined;
+  const p = params as { frameId?: unknown; parentFrameId?: unknown; frame?: { id?: unknown; parentId?: unknown; securityOrigin?: unknown } } | undefined;
   let frames = client.frames.get(session);
+  if (method === 'Page.frameNavigated' && typeof p?.frame?.id === 'string') {
+    // A main-frame navigation starts the page's origins over.
+    let origins = typeof p.frame.parentId === 'string' ? client.origins.get(session) : undefined;
+    if (typeof p.frame.securityOrigin === 'string') {
+      if (!origins) client.origins.set(session, (origins = new Map()));
+      origins.set(p.frame.id, p.frame.securityOrigin);
+    } else {
+      origins?.delete(p.frame.id);
+      if (typeof p.frame.parentId !== 'string') client.origins.delete(session);
+    }
+  }
   if (method === 'Page.frameAttached' && typeof p?.frameId === 'string' && typeof p.parentFrameId === 'string') {
     if (!frames) client.frames.set(session, (frames = new Map()));
     frames.set(p.frameId, p.parentFrameId);
@@ -285,7 +348,11 @@ function trackFrames(client: Client, session: string, method: string, params: un
       grew = false;
       for (const [id, parent] of frames) if (!gone.has(id) && gone.has(parent)) { gone.add(id); grew = true; }
     }
-    for (const id of gone) frames.delete(id);
+    const origins = client.origins.get(session);
+    for (const id of gone) {
+      frames.delete(id);
+      origins?.delete(id);
+    }
     if (!frames.size) client.frames.delete(session);
   }
 }
@@ -365,6 +432,8 @@ abstract class Client {
    * page's process that is not a target of its own.
    */
   readonly frames = new Map<string, Map<string, string>>();
+  /** The security origin of each frame of an owned page session, main frame included, as Chrome last reported it. */
+  readonly origins = new Map<string, Map<string, string>>();
   closed = false;
   /** Bumped by every detach, so an attach that lands after a close is not published. */
   epoch = 0;
@@ -698,6 +767,7 @@ export class CdpPipeMux {
     client.owned.clear();
     client.targets.clear();
     client.frames.clear();
+    client.origins.clear();
     client.ownBrowserSessions.clear();
     client.browserSession = null;
     client.attaching = null;
@@ -782,6 +852,14 @@ export class CdpPipeMux {
       const pageContext = command.sessionId !== undefined ? client.targets.get(command.sessionId)?.browserContextId : undefined;
       if (!onBrowser && pageContext !== undefined && this.ownership.ownsContext(client, pageContext)) return null;
       return { refuse: { code: -32000, message: `${method} on the shared default browser context is not available to this client` }, reason: 'default-context' };
+    }
+    if (!onBrowser && method.startsWith('Storage.')) {
+      // On a page session: everything in a context the client made; in the
+      // shared default one, only what stays within the page's own frames.
+      const pageContext = command.sessionId !== undefined ? client.targets.get(command.sessionId)?.browserContextId : undefined;
+      if (pageContext !== undefined && this.ownership.ownsContext(client, pageContext)) return null;
+      if (command.sessionId !== undefined && pageStorageAllowed(client, command.sessionId, method, params)) return null;
+      return { refuse: { code: -32000, message: `${method} on the shared default browser context is not available to this client` }, reason: 'default-context-storage' };
     }
     if (method === 'Browser.setDownloadBehavior') return { absorb: {}, reason: 'default-context-downloads' };
     if (method === 'Browser.grantPermissions' || method === 'Browser.resetPermissions' || method === 'Browser.setPermission'
@@ -1089,6 +1167,7 @@ export class CdpPipeMux {
     owner.owned.delete(child);
     owner.targets.delete(child);
     owner.frames.delete(child);
+    owner.origins.delete(child);
     owner.ownBrowserSessions.delete(child);
     owner.revoked.delete(child);
     this.watch.detached(owner, child);

@@ -21,6 +21,8 @@ import WebSocket, { WebSocketServer } from 'ws';
 import { CdpPipeMux, type CallerIdentity } from '../CdpPipeMux';
 import { CdpPipeRelay, type RelayGrant, type RelayRoute } from '../CdpPipeRelay';
 import { ChromeLauncher, setPipeRelayForTests } from '../ChromeLauncher';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { realProfileBrowserEnv } from '../../../test-utils/realProfileBrowserEnv';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 import { chromeForRuntimeSuite } from '../../../test-utils/runtimeChrome';
@@ -359,6 +361,50 @@ describe.skipIf(!CHROME)('a real Chrome on a debugging pipe, with grants (C3b)',
     await made[0].goto('data:text/html,<title>mine</title>');
     expect(await made[0].title()).toBe('mine');
   }, 120_000);
+
+  it('storage through Playwright: a default-context page keeps its own storage, its own context keeps storageState and cookies, a foreign origin is refused', async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html', 'Set-Cookie': 'sid=1; Path=/' });
+      res.end('<title>s</title>');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const failure = (p: Promise<unknown>) => p.then(() => 'answered', (err: unknown) => String(err));
+    try {
+      const s = await startChrome(new Map());
+      const a = await connectThrough(await s.route.grant({ workspaceId: 'ws-a' }));
+      browsers.push(a);
+      const page = await a.contexts()[0].newPage();
+      await page.goto(`${origin}/`);
+      expect(await page.evaluate(async () => {
+        localStorage.setItem('k', 'v');
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+          const req = indexedDB.open('d', 1);
+          req.onupgradeneeded = () => req.result.createObjectStore('s');
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return `${localStorage.getItem('k')} ${document.cookie}`;
+      })).toBe('v sid=1');
+      const cdp = await page.context().newCDPSession(page);
+      expect(await failure(cdp.send('Storage.trackIndexedDBForOrigin', { origin }))).toBe('answered');
+      expect(await failure(cdp.send('Storage.trackIndexedDBForOrigin', { origin: 'https://bank.example' }))).toMatch(/not available to this client/);
+      expect(await failure(cdp.send('Storage.getCookies', {}))).toMatch(/not available to this client/);
+      await cdp.detach();
+      const ctx = await a.newContext();
+      const own = await ctx.newPage();
+      await own.goto(`${origin}/`);
+      await own.evaluate(() => localStorage.setItem('k2', 'v2'));
+      const state = await ctx.storageState();
+      expect(state.cookies.map((c) => c.name)).toEqual(['sid']);
+      expect(state.origins.find((o) => o.origin === origin)?.localStorage).toEqual([{ name: 'k2', value: 'v2' }]);
+      await ctx.clearCookies();
+      expect(await ctx.cookies()).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 90_000);
 
   it('a popup opened by a click goes to the client that holds its opener, with and without opener access, and the click returns', async () => {
     const registry: Registry = new Map();

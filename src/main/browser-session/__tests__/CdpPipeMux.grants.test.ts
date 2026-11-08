@@ -500,6 +500,58 @@ function browserSessionOfFirstClient(browser: FakeBrowser): string {
 }
 
 describe('CdpPipeMux grants: the shared jar, windows, and a revoked session', () => {
+  it('Storage on a default-context page reaches only its own frames and their origins; in its own context, everything', async () => {
+    const { browser, mux } = setup();
+    const a = client(mux, 'a', { workspaceId: 'ws-a' });
+    const mine = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank' }))).result?.targetId as string;
+    const page = (await a.replyTo(a.send('Target.attachToTarget', { targetId: mine, flatten: true }))).result?.sessionId as string;
+    const on = async (method: string, params: Record<string, unknown> = {}, session = page) => {
+      const reply = await a.replyTo(a.send(method, params, session));
+      return reply.error ? 'refused' : 'sent';
+    };
+    // No origin learned yet: nothing origin-scoped passes.
+    expect(await on('Storage.trackIndexedDBForOrigin', { origin: 'https://a.example' })).toBe('refused');
+    browser.event(page, 'Page.frameNavigated', { frame: { id: mine, url: 'https://a.example/', securityOrigin: 'https://a.example' } });
+    browser.event(page, 'Page.frameNavigated', { frame: { id: 'child', parentId: mine, url: 'https://b.example/x', securityOrigin: 'https://b.example' } });
+    expect(await on('Storage.trackIndexedDBForOrigin', { origin: 'https://a.example' })).toBe('sent');
+    expect(await on('Storage.trackCacheStorageForOrigin', { origin: 'https://b.example' })).toBe('sent');
+    expect(await on('Storage.untrackIndexedDBForStorageKey', { storageKey: 'https://a.example/' })).toBe('sent');
+    expect(await on('Storage.getStorageKeyForFrame', { frameId: mine })).toBe('sent');
+    expect(await on('Storage.getStorageKeyForFrame', { frameId: 'child' })).toBe('sent');
+    expect(await on('Storage.getStorageKey')).toBe('sent');
+    // A second session to the same page (no Page events of its own) knows the page's origins too.
+    const second = (await a.replyTo(a.send('Target.attachToTarget', { targetId: mine, flatten: true }))).result?.sessionId as string;
+    expect(second).not.toBe(page);
+    expect(await on('Storage.trackIndexedDBForOrigin', { origin: 'https://b.example' }, second)).toBe('sent');
+    // Another origin, a partitioned key, another page's frame, and the rest of the domain.
+    expect(await on('Storage.trackIndexedDBForOrigin', { origin: 'https://bank.example' })).toBe('refused');
+    expect(await on('Storage.trackIndexedDBForStorageKey', { storageKey: 'https://a.example/^0https://c.example' })).toBe('refused');
+    expect(await on('Storage.getStorageKeyForFrame', { frameId: 'elsewhere' })).toBe('refused');
+    expect(await on('Storage.getStorageKey', { frameId: 'elsewhere' })).toBe('refused');
+    for (const [method, params] of [
+      ['Storage.clearSharedStorageEntries', { ownerOrigin: 'https://a.example' }],
+      ['Storage.deleteSharedStorageEntry', { ownerOrigin: 'https://a.example', key: 'k' }],
+      ['Storage.getSharedStorageEntries', { ownerOrigin: 'https://bank.example' }],
+      ['Storage.clearTrustTokens', { issuerOrigin: 'https://bank.example' }],
+      ['Storage.deleteStorageBucket', { bucket: { storageKey: 'https://bank.example/', name: 'b' } }],
+      ['Storage.getInterestGroupDetails', { ownerOrigin: 'https://bank.example', name: 'g' }],
+      ['Storage.getUsageAndQuota', { origin: 'https://a.example' }],
+    ] as const) expect(await on(method, params)).toBe('refused');
+    // A detached frame's origin goes with it; a main-frame navigation starts over.
+    browser.event(page, 'Page.frameDetached', { frameId: 'child' });
+    expect(await on('Storage.trackCacheStorageForOrigin', { origin: 'https://b.example' })).toBe('refused');
+    browser.event(page, 'Page.frameNavigated', { frame: { id: mine, url: 'https://c.example/', securityOrigin: 'https://c.example' } });
+    expect(await on('Storage.trackIndexedDBForOrigin', { origin: 'https://a.example' })).toBe('refused');
+    expect(await on('Storage.trackIndexedDBForOrigin', { origin: 'https://c.example' })).toBe('sent');
+    // In a context the client made, the storage is its own.
+    const ctx = (await a.replyTo(a.send('Target.createBrowserContext'))).result?.browserContextId as string;
+    const own = (await a.replyTo(a.send('Target.createTarget', { url: 'about:blank', browserContextId: ctx }))).result?.targetId as string;
+    const p2 = (await a.replyTo(a.send('Target.attachToTarget', { targetId: own, flatten: true }))).result?.sessionId as string;
+    expect(await on('Storage.clearSharedStorageEntries', { ownerOrigin: 'https://bank.example' }, p2)).toBe('sent');
+    expect(browser.received.filter((c) => c.method === 'Storage.clearSharedStorageEntries').map((c) => c.sessionId)).toEqual([p2]);
+    mux.close();
+  });
+
   it('no bulk cookie read on the shared default context: getAllCookies, Storage.getCookies and getCookies with urls refused, the page\'s own cookies kept', async () => {
     const { browser, mux } = setup();
     const a = client(mux, 'a', { workspaceId: 'ws-a' });
