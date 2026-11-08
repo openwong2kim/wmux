@@ -34,6 +34,7 @@ const CASES: Case[] = (() => {
   // Leave the alternate screen and save the home cursor: no snapshot carries
   // the cursor its entry saved, which the parity probes would restore.
   const leave = '\x1b[?1049l\x1b[H\x1b7';
+  const reenter = '\x1b[?1049l\x1b[H\x1b[?1049hfresh';
   const altBlankRight = '\x1b[?1049h\x1b[H' + rowsOf(6, 18);
   const altDip = '\x1b[?1049h\x1b[H' + rowsOf(8, 12) + '\x1b[8;1H';
   const primary = rowsOf(7, 70) + '\r\n$ ';
@@ -62,6 +63,13 @@ const CASES: Case[] = (() => {
       name: 'an alternate screen narrowed over written cells, then left before the widen, stays native',
       steps: [{ size: [40, 8] }, { out: 'top\r\n' + alt }, { size: [20, 8] }, { out: leave }, { size: [40, 8] }],
       shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: 5 + alt.length, cols: 20, rows: 8 }, { offset: 5 + alt.length + leave.length, cols: 40, rows: 8 }] },
+    },
+    {
+      // Left and entered again with no resize between: the new alternate
+      // screen holds none of the cut cells.
+      name: 'an alternate screen narrowed over written cells, then left and entered again before the widen, stays native',
+      steps: [{ size: [40, 8] }, { out: 'top\r\n' + alt }, { size: [20, 8] }, { out: reenter }, { size: [40, 8] }],
+      shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: 5 + alt.length, cols: 20, rows: 8 }, { offset: 5 + alt.length + reenter.length, cols: 40, rows: 8 }] },
     },
     {
       name: 'an alternate screen narrowed over a blank right side stays native',

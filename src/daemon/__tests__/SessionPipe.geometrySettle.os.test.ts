@@ -1,10 +1,10 @@
 // The geometry history's provisional sizes (RingBuffer.noteGeometry): a pipe
 // is awaiting its viewer's replay from the attach until the flush finishes,
 // and the flush's end keeps the size the viewer then holds.
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import net from 'node:net';
 import crypto from 'node:crypto';
-import { SessionPipe } from '../SessionPipe';
+import { REPLAY_CONNECT_GRACE_MS, SessionPipe } from '../SessionPipe';
 import { RingBuffer } from '../RingBuffer';
 import { waitFor } from '../../test-utils/waitFor';
 
@@ -54,6 +54,18 @@ describe('SessionPipe and the geometry history', () => {
     cleanups.push(() => { second.destroy(); });
     await waitFor(() => pipe.isFlushed, 3000);
     expect(pipe.awaitingReplay).toBe(false);
+  });
+
+  it('stops awaiting a replay when no client connects within the grace', async () => {
+    const pipe = await pipeWith(new RingBuffer(64 * 1024));
+    expect(pipe.awaitingReplay).toBe(true);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + REPLAY_CONNECT_GRACE_MS + 1);
+      expect(pipe.awaitingReplay).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("the flush's end keeps a size taken before it", async () => {

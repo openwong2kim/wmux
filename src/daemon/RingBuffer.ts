@@ -352,6 +352,11 @@ export class RingBuffer {
    *
    * Only the newest mark can be provisional. A repeat of the current size is
    * ignored, except that an applied repeat makes a provisional tail applied.
+   * A provisional mark that is the window's only size stays (as its start).
+   *
+   * A run of sizes with no bytes between them (a divider drag on a terminal
+   * that writes nothing on resize) keeps two marks: the one with the fewest
+   * rows (what the viewer's terminal lost) and the newest.
    */
   noteGeometry(cols: number, rows: number, applied = true): void {
     if (this.disposed) throw new Error('Ring disposed');
@@ -365,15 +370,34 @@ export class RingBuffer {
       if (applied) this.geometryTailProvisional = false;
       return;
     }
-    if (last && this.geometryTailProvisional) {
-      this.geometry.pop();
-      last = this.geometry[this.geometry.length - 1];
+    if (this.geometryTailProvisional) {
+      this.pruneGeometry();
+      if (this.geometry.length > 1) {
+        this.geometry.pop();
+        last = this.geometry[this.geometry.length - 1];
+        this.geometryTailProvisional = false;
+        if (last && last.cols === cols && last.rows === rows) return;
+      }
       this.geometryTailProvisional = false;
-      if (last && last.cols === cols && last.rows === rows) return;
     }
     this.geometry.push({ at: this.totalWritten, cols, rows });
     this.geometryTailProvisional = !applied;
+    this.compactGeometryRun();
     this.pruneGeometry();
+  }
+
+  /** A run of marks at the newest mark's offset keeps the one with the fewest rows and the newest (see noteGeometry). */
+  private compactGeometryRun(): void {
+    const g = this.geometry;
+    const at = g[g.length - 1].at;
+    let start = g.length - 1;
+    while (start > 0 && g[start - 1].at === at) start--;
+    if (g.length - start <= 2) return;
+    let keep = start;
+    for (let i = start + 1; i < g.length - 1; i++) {
+      if (g[i].rows < g[keep].rows || (g[i].rows === g[keep].rows && g[i].cols < g[keep].cols)) keep = i;
+    }
+    g.splice(start, g.length - 1 - start, g[keep]);
   }
 
   /**
@@ -433,8 +457,10 @@ export class RingBuffer {
       firstApplying++;
     }
     if (firstApplying > 0) this.geometry.splice(0, firstApplying);
+    // Past the cap, the oldest marks after the first go: the first is the
+    // size the window's first bytes were written at.
     if (this.geometry.length > MAX_GEOMETRY_MARKS) {
-      this.geometry.splice(0, this.geometry.length - MAX_GEOMETRY_MARKS);
+      this.geometry.splice(1, this.geometry.length - MAX_GEOMETRY_MARKS);
     }
   }
 
