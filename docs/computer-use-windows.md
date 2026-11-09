@@ -647,7 +647,9 @@ the user had in front gets it back once the action is done (Core
   the front by itself (Chrome activates after a click, or an activation
   came late) and the checks still pass, `SetForegroundWindow` once more,
   silently. A new request, the stop
-  key (`releaseInput`) or shutdown cancels it. It never loops.
+  key (`releaseInput`) or shutdown cancels it. It never loops. Posted input
+  doesn't count as sent input here, so a window that activates after a posted
+  click, later than the reply, is not re-checked and keeps the front.
 
 ## Agent overlay
 

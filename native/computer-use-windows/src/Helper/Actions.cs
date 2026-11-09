@@ -186,10 +186,10 @@ internal static unsafe class Focus
                 {
                     GiveBack.NoteOwnInput(call: true);
                     el->SetFocus();
-                    GiveBack.CallDone();
                 }
                 finally
                 {
+                    GiveBack.CallDone();
                     el->Release();
                 }
             }
@@ -259,10 +259,10 @@ internal static unsafe class Focus
                     {
                         GiveBack.NoteOwnInput(call: true);
                         el->SetFocus();
-                        GiveBack.CallDone();
                     }
                     finally
                     {
+                        GiveBack.CallDone();
                         el->Release();
                     }
                 }
@@ -981,8 +981,14 @@ internal static unsafe class Actions
                 {
                     Focus.RequireSemantic(target, el, refuse);
                     GiveBack.NoteOwnInput(call: true);
-                    el->SetFocus();
-                    GiveBack.CallDone();
+                    try
+                    {
+                        el->SetFocus();
+                    }
+                    finally
+                    {
+                        GiveBack.CallDone();
+                    }
                 }
                 catch (Exception e) when (e is not HelperError)
                 {
@@ -1228,8 +1234,14 @@ internal static unsafe class Actions
             if (end == null) return false;
             end->MoveEndpointByRange(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End);
             Input.CountSemantic();
-            end->Select();
-            GiveBack.CallDone();
+            try
+            {
+                end->Select();
+            }
+            finally
+            {
+                GiveBack.CallDone();
+            }
             now = Selection(el);
             if (now == null) return false;
             if (SameRange(end, now)) return true;
@@ -1342,8 +1354,14 @@ internal static unsafe class Actions
         try
         {
             GiveBack.NoteOwnInput(call: true);
-            before->Select();
-            GiveBack.CallDone();
+            try
+            {
+                before->Select();
+            }
+            finally
+            {
+                GiveBack.CallDone();
+            }
         }
         catch (Exception e) when (e is not HelperError)
         {
