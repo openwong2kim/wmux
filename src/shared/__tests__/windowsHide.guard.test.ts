@@ -56,10 +56,14 @@ function unwrap(node: ts.Expression): ts.Expression {
   return current;
 }
 
+/** The module a `require('<m>')` or an `await import('<m>')` loads. */
 function requireOf(node: ts.Expression | undefined): string | null {
   if (!node) return null;
-  const call = unwrap(node);
-  if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression) || call.expression.text !== 'require') return null;
+  let call = unwrap(node);
+  if (ts.isAwaitExpression(call)) call = unwrap(call.expression);
+  if (!ts.isCallExpression(call)) return null;
+  const isRequire = ts.isIdentifier(call.expression) && call.expression.text === 'require';
+  if (!isRequire && call.expression.kind !== ts.SyntaxKind.ImportKeyword) return null;
   const arg = call.arguments[0];
   return arg && ts.isStringLiteralLike(arg) ? arg.text : null;
 }
@@ -216,6 +220,8 @@ function unhiddenSpawns(source: string, fileName = 'sample.ts'): string[] {
   /** The child_process function this expression names, if any. */
   const spawnerOf = (node: ts.Expression): string | null => {
     const expr = unwrap(node);
+    // `promisify(execFile)('a')` is the same call.
+    if (ts.isCallExpression(expr) && /(^|\.)promisify$/.test(expr.expression.getText()) && expr.arguments[0]) return spawnerOf(expr.arguments[0]);
     if (ts.isIdentifier(expr)) return functions.get(expr.text) ?? null;
     if (ts.isPropertyAccessExpression(expr) && ts.isIdentifier(expr.expression) && modules.has(expr.expression.text) && SPAWNERS.has(expr.name.text)) return expr.name.text;
     return null;
@@ -282,7 +288,9 @@ function unhiddenSpawns(source: string, fileName = 'sample.ts'): string[] {
       const isName = (ts.isVariableDeclaration(parent) && parent.name === node)
         || (ts.isPropertyAccessExpression(parent) && parent.name === node)
         || (ts.isPropertyAssignment(parent) && parent.name === node)
-        || ts.isParameter(parent) || ts.isBindingElement(parent);
+        || (ts.isParameter(parent) && parent.name === node)
+        // `{ spawn: alias }`: the key names the property, not a value.
+        || (ts.isBindingElement(parent) && (parent.name === node || parent.propertyName === node));
       if (!isName) report(node);
       return;
     }
@@ -357,6 +365,11 @@ describe('windowsHide guard', () => {
       expect(count("run('a');", "import { spawn as run } from 'child_process';\n")).toBe(1);
       expect(count("spawn('a');", '')).toBe(0);
       expect(count("const { spawn } = require('child_process');\nspawn('a');", '')).toBe(1);
+      expect(count("const { execFile } = await import('node:child_process');\nexecFile('a');", '')).toBe(1);
+      expect(count("const { execFile: run } = await import('child_process');\nawait promisify(run)('a');", '')).toBe(1);
+      expect(count("const { execFile } = await import('child_process');\nconst run = promisify(execFile);\nawait run('a');", '')).toBe(1);
+      expect(count("const cp = await import('child_process');\ncp.spawn('a');", '')).toBe(1);
+      expect(count("const { execFile } = await import('child_process');\nexecFile('a', [], { windowsHide: true });", '')).toBe(0);
       expect(count("launch('a', []);", "import launch from 'cross-spawn';\n")).toBe(1);
       expect(count("launch.sync('a', []);", "import launch from 'cross-spawn';\n")).toBe(1);
     });
@@ -369,6 +382,9 @@ describe('windowsHide guard', () => {
     it('a spawn function handed on as a value', () => {
       expect(count('const deps = { run: execFile };')).toBe(1);
       expect(count('use(spawn);')).toBe(1);
+      expect(count('function f(spawnImpl = spawn) { return spawnImpl; }')).toBe(1);
+      expect(count('const { run = execFile } = deps;')).toBe(1);
+      expect(count("const { spawn: alias } = require('child_process');", '')).toBe(0);
     });
   });
 
