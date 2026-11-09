@@ -93,7 +93,7 @@ function replaceConfig(configPath: string, readText: string | null, newText: str
  *  that one file takes the same lock. A held lock throws, which callers already
  *  report per target as a failed write; the next registration tries again. */
 function withConfigLock<T>(target: McpTarget, configPath: string, edit: () => T): T {
-  return target.id === 'claude' ? withClaudeConfigLock(configPath, edit) : edit();
+  return target.savesUnderLock ? withClaudeConfigLock(configPath, edit) : edit();
 }
 
 /** Pure read of one target's registration state. Never creates / throws. */

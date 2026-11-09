@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { parse as parseTomlText } from 'smol-toml';
+import { stripBom } from '../../../../shared/stripBom';
 import type { SurfaceFileEdit, SurfaceItem } from '../../../../shared/tokenUsage/surfaceTypes';
 import type { TomlEdit } from '../../safeWrite';
 import type { ResolvedChange, WriterDeps } from '../types';
@@ -134,7 +135,7 @@ function findHookStateKey(
 
   let hooksJson: unknown;
   try {
-    hooksJson = JSON.parse(content);
+    hooksJson = JSON.parse(stripBom(content));
   } catch {
     throw new Error(`Failed to parse hooks file at ${filePath}`);
   }
