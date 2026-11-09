@@ -1197,6 +1197,38 @@ export function allowFanoutWorkerTools(paths: Pick<SetupHooksPaths, 'settingsPat
   return { ...base, ok: true, added };
 }
 
+export interface RemoveWorkerToolsOutcome {
+  ok: boolean;
+  settingsPath: string;
+  removed: string[];
+  error: string | null;
+}
+
+/**
+ * Undo `allowFanoutWorkerTools`: drop exactly the entries of that fixed list,
+ * all in wmux's own `mcp__wmux__` namespace, and nothing else from
+ * `permissions`. Same load and atomic write as the grant.
+ */
+export function removeFanoutWorkerTools(paths: Pick<SetupHooksPaths, 'settingsPath'>): RemoveWorkerToolsOutcome {
+  const base: RemoveWorkerToolsOutcome = { ok: true, settingsPath: paths.settingsPath, removed: [], error: null };
+  const load = loadSettings(paths.settingsPath);
+  if (load.corrupted) {
+    return { ...base, ok: false, error: `settings.json at ${paths.settingsPath} is not valid JSON; it was left untouched.` };
+  }
+  const perms = load.settings.permissions;
+  if (!perms || typeof perms !== 'object' || Array.isArray(perms)) return base;
+  const allow = (perms as Record<string, unknown>).allow;
+  if (!Array.isArray(allow)) return base;
+  const removed = FANOUT_WORKER_ALLOWED_TOOLS.filter((t) => allow.includes(t));
+  if (removed.length === 0) return base;
+  const kept = allow.filter((t) => !removed.includes(t));
+  if (kept.length > 0) (perms as Record<string, unknown>).allow = kept;
+  else delete (perms as Record<string, unknown>).allow;
+  if (Object.keys(perms).length === 0) delete load.settings.permissions;
+  writeJsonAtomic(paths.settingsPath, load.settings, { keepBom: true });
+  return { ...base, removed };
+}
+
 // ----- Boot-time script refresh -------------------------------------------
 
 /** What a boot-time bridge refresh did — mirrors setupStatusline's RefreshOutcome. */

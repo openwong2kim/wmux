@@ -20,6 +20,7 @@ import { handleGate } from './commands/gate';
 import { handleMcp } from './commands/mcp';
 import { handleSetupHooks } from './commands/setupHooks';
 import { handleSetupStatusline } from './commands/setupStatusline';
+import { handleUninstallIntegrations } from './commands/uninstallIntegrations';
 import { handleDoctor } from './commands/doctor';
 import { handleSecrets } from './commands/secretsCheck';
 import { handleRole } from './commands/role';
@@ -247,6 +248,13 @@ CLAUDE CODE INTEGRATION
               [--remove]            Remove the wmux-owned statusLine entries
               [--status]            Report statusline install state
 
+REMOVING WMUX
+  uninstall-integrations            Remove wmux's MCP entries, hooks, statusline and
+                                    plugins from every agent's config, and report
+                                    each one. Run it before deleting the app on
+                                    macOS or Linux; the Windows uninstaller does it.
+              [--force]             Also remove entries another wmux copy may use
+
 GLOBAL FLAGS
   --json      Output raw JSON (useful for scripting)
   --help      Show this help text
@@ -360,6 +368,8 @@ async function main(): Promise<void> {
       handleGate(rest[0] ?? '--list', rest.slice(1), jsonMode);
     } else if (cmd === 'setup-statusline') {
       await handleSetupStatusline(rest, jsonMode);
+    } else if (cmd === 'uninstall-integrations') {
+      await handleUninstallIntegrations(rest, jsonMode);
     } else if (cmd === 'secrets') {
       await handleSecrets(rest);
     } else if (cmd === 'doctor') {
