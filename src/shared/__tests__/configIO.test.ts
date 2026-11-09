@@ -14,6 +14,8 @@ import {
   renderCodexHooksBlockToml,
   upsertCodexHooksToml,
   removeCodexHooksToml,
+  CODEX_HOOKS_MANAGED_MARKER,
+  CODEX_HOOKS_MANAGED_END_MARKER,
   findCodexHooksBlock,
   codexVersionSupportsHooks,
   wmuxMcpEntry,
@@ -194,6 +196,80 @@ approval_mode = "approve"
     const arr = `[[mcp_servers.wmux]]\ncommand = "other"\nargs = ["x"]\n`;
     // removeMcpServers must leave the array-of-tables construct untouched.
     expect(removeMcpServers(arr, 'toml', ['wmux'])).toBe(arr);
+  });
+
+  describe('removing a table keeps the comments that are not its own', () => {
+    const TABLE = '[mcp_servers.wmux]\ncommand = "node"\nargs = ["/w.js"]\n';
+
+    it('keeps a comment after a blank line', () => {
+      const text = `${TABLE}\n# my note about what comes next\n[other]\nx = 1\n`;
+      expect(removeMcpServers(text, 'toml', ['wmux'])).toBe('\n# my note about what comes next\n[other]\nx = 1\n');
+    });
+
+    it('keeps a comment directly above the next header', () => {
+      const text = `${TABLE}# about other\n[other]\nx = 1\n`;
+      expect(removeMcpServers(text, 'toml', ['wmux'])).toBe('# about other\n[other]\nx = 1\n');
+    });
+
+    it('keeps a comment after a blank line at the end of the file', () => {
+      const text = `before = 1\n\n${TABLE}\n# the last word\n`;
+      expect(removeMcpServers(text, 'toml', ['wmux'])).toBe('before = 1\n\n# the last word\n');
+    });
+
+    it('still removes the comments inside the table', () => {
+      const text = `[mcp_servers.wmux]\n# why this command\ncommand = "node"\n# old = "value"\nargs = ["/w.js"]\n# touching the last key\n\n[other]\nx = 1\n`;
+      expect(removeMcpServers(text, 'toml', ['wmux'])).toBe('\n[other]\nx = 1\n');
+    });
+
+    it('takes the comment above a child table along with the child', () => {
+      const text = `${TABLE}\n# the env below\n[mcp_servers.wmux.env]\nA = "1"\n\n# mine\n[other]\nx = 1\n`;
+      expect(removeMcpServers(text, 'toml', ['wmux'])).toBe('\n# mine\n[other]\nx = 1\n');
+    });
+
+    it('does not take a comment-looking line of a multi-line value for a comment', () => {
+      const text = `[mcp_servers.wmux]\ncommand = "node"\nargs = [\n  "/w.js",\n  # inside the array\n]\n\n# mine\n[other]\nx = 1\n`;
+      expect(removeMcpServers(text, 'toml', ['wmux'])).toBe('\n# mine\n[other]\nx = 1\n');
+    });
+
+    it('keeps the comments in a CRLF file', () => {
+      const text = `${TABLE}\n# mine\n[other]\nx = 1\n`.replace(/\n/g, '\r\n');
+      expect(removeMcpServers(text, 'toml', ['wmux'])).toBe('\r\n# mine\r\n[other]\r\nx = 1\r\n');
+    });
+
+    const hooksBlock = renderCodexHooksBlockToml('/b.mjs');
+    const hooksRemoved = (text: string) => {
+      expect(text).not.toContain('[[hooks.');
+      expect(text).not.toContain(CODEX_HOOKS_MANAGED_MARKER);
+    };
+
+    it('removes the MCP table and the hooks block in either order', () => {
+      const text = `# mine\nmodel = "m"\n\n${TABLE}\n${hooksBlock}`;
+      const mcpFirst = removeCodexHooksToml(removeMcpServers(text, 'toml', ['wmux']));
+      const hooksFirst = removeMcpServers(removeCodexHooksToml(text), 'toml', ['wmux']);
+      hooksRemoved(mcpFirst);
+      hooksRemoved(hooksFirst);
+      expect(mcpFirst).toBe(hooksFirst);
+      expect(mcpFirst).toBe('# mine\nmodel = "m"\n');
+    });
+
+    it('removes both in either order when Codex wrote the table inside the markers', () => {
+      // Codex keeps a comment that ends the document as trailing text, so a
+      // table it adds later lands above the end marker.
+      const end = `# ${CODEX_HOOKS_MANAGED_END_MARKER}\n`;
+      const text = `${hooksBlock.slice(0, -end.length)}${TABLE}\n${end}`;
+      for (const out of [
+        removeCodexHooksToml(removeMcpServers(text, 'toml', ['wmux'])),
+        removeMcpServers(removeCodexHooksToml(text), 'toml', ['wmux']),
+      ]) {
+        hooksRemoved(out);
+        expect(out).not.toContain('[mcp_servers.wmux]');
+      }
+    });
+
+    it('never takes a hooks marker that touches the last key', () => {
+      const text = `${TABLE}# ${CODEX_HOOKS_MANAGED_MARKER}\n\n[[hooks.Stop]]\nmatcher = "*"\n\n# ${CODEX_HOOKS_MANAGED_END_MARKER}\n`;
+      expect(removeMcpServers(text, 'toml', ['wmux'])).toContain(`# ${CODEX_HOOKS_MANAGED_MARKER}`);
+    });
   });
 
   it('throws when the surgical edit would produce invalid TOML (inline-table → duplicate)', () => {

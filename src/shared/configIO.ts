@@ -345,8 +345,12 @@ function isAnyTableHeader(line: string): boolean {
   return /^\s*\[\[?[^\]]/.test(line);
 }
 
-/** Range [start, end) of lines spanning the `[mcp_servers.<key>]` table and any
- *  child sub-tables (e.g. `[mcp_servers.<key>.env]`). null when absent. */
+/** Range [start, end) of the lines that are the `[mcp_servers.<key>]` table's
+ *  own, child sub-tables (e.g. `[mcp_servers.<key>.env]`) included. null when
+ *  absent. A comment past the last key belongs to what follows when a blank
+ *  line or nothing at all separates it from the next header, so it stays; only
+ *  a comment touching the last key, with neither of those, goes with the table.
+ *  A wmux hooks marker is never the table's: it bounds another block. */
 function findTomlBlockRange(lines: string[], key: string): [number, number] | null {
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -365,10 +369,24 @@ function findTomlBlockRange(lines: string[], key: string): [number, number] | nu
       break;
     }
   }
-  // Exclude trailing blank lines from the block so the separator before the
-  // next table (or EOF) is preserved in the surrounding text, not swallowed.
-  while (end > start + 1 && lines[end - 1].trim() === '') end--;
-  return [start, end];
+  // Walk by value, not by line: a multi-line value can hold a line that reads
+  // as a comment or a blank.
+  let lastOwn = start;
+  for (let i = start + 1; i < end; i++) {
+    const eq = tomlKeyValueEq(lines[i]);
+    if (eq !== -1) i = tomlValueEndRow(lines, i, eq);
+    if (eq !== -1 || isAnyTableHeader(lines[i])) lastOwn = Math.min(i, end - 1);
+  }
+  let tail = lastOwn + 1;
+  while (tail < end && isTableOwnComment(lines[tail])) tail++;
+  const touchesNextHeader = tail === end && end < lines.length;
+  return [start, touchesNextHeader ? lastOwn + 1 : tail];
+}
+
+function isTableOwnComment(line: string): boolean {
+  return /^\s*#/.test(line)
+    && !markerLine(CODEX_HOOKS_MANAGED_MARKER, line)
+    && !markerLine(CODEX_HOOKS_MANAGED_END_MARKER, line);
 }
 
 /** Emit a key segment for a TOML header: bare when allowed, else basic-string. */
