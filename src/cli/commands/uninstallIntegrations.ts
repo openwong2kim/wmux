@@ -340,8 +340,6 @@ function planSteps(opts: RemoveAgentIntegrationsOptions): Step[] {
   const env = opts.env ?? process.env;
   const steps: Step[] = [];
 
-  // Before Codex's MCP entry: removing that table also takes the comments up to
-  // the next header, which can be this block's start marker.
   const codex = { agent: agentSlugToDisplay('codex'), path: getMcpTarget('codex')?.configPath(home) ?? '', sharedSlot: true };
   steps.push({ ...codex, item: 'hooks block', run: () => removeCodexHooksBlock(home) });
   steps.push({ ...codex, item: 'notify', run: () => removeCodexNotify(home) });
