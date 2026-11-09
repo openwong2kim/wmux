@@ -263,6 +263,40 @@ describe('weekly rollup', () => {
     expect(calls).toHaveLength(3);
   });
 
+  it('stops at a short page, sized below what GitHub cannot serve', () => {
+    const calls = [];
+    const gh = (args) => {
+      calls.push(args[1]);
+      return { status: 0, stdout: JSON.stringify({ artifacts: [] }), stderr: '' };
+    };
+    runsWithReports(gh, { window: WINDOW });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('per_page=50&page=1');
+  });
+
+  it('asks again for a page GitHub cut off or failed, and only for those', () => {
+    const artifact = { id: 1, name: 'test-report-retries-x', expired: false, created_at: '2026-10-18T00:00:00Z', workflow_run: { id: 7 } };
+    const answers = [
+      { status: 1, stdout: '', stderr: 'unexpected end of JSON input' },
+      { status: 1, stdout: '', stderr: 'gh: Server Error (HTTP 502)' },
+      { status: 0, stdout: JSON.stringify({ artifacts: [artifact] }), stderr: '' },
+    ];
+    const slept = [];
+    const ids = runsWithReports(() => answers.shift(), { window: WINDOW, sleep: (ms) => slept.push(ms) });
+    expect([...ids]).toEqual(['7']);
+    expect(slept).toEqual([2000, 5000]);
+
+    let calls = 0;
+    const denied = () => { calls += 1; return { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' }; };
+    expect(() => runsWithReports(denied, { window: WINDOW, sleep: () => undefined })).toThrow(/listing artifacts failed: gh: Not Found/);
+    expect(calls).toBe(1);
+
+    let tries = 0;
+    const down = () => { tries += 1; return { status: 1, stdout: '', stderr: 'unexpected end of JSON input' }; };
+    expect(() => runsWithReports(down, { window: WINDOW, sleep: () => undefined })).toThrow(/listing artifacts failed/);
+    expect(tries).toBe(4);
+  });
+
   it('lists runs one day at a time and drops runs outside the window', () => {
     const fake = fakeGh({
       runs: { 'runtime.yml': [run(1, '2026-10-12T00:10:00Z'), run(2, '2026-10-12T00:20:00Z')] },
