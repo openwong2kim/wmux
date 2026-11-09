@@ -498,6 +498,13 @@ describe('logs section', () => {
     expect(read.mock.calls.some((c) => String(c[0]).includes('auth'))).toBe(true);
   });
 
+  it('names the newest hang dump, and says nothing when there is none', async () => {
+    const r = await buildDoctorReport(makeDeps({ newestHangDump: () => ({ path: '/logs/daemon-hang-1-0.txt', writtenAt: 0 }) }));
+    expect(r.logs.lines.find((l) => l.label === 'daemon hang dump')?.value).toBe('/logs/daemon-hang-1-0.txt — 1970-01-01T00:00:00.000Z');
+    const none = await buildDoctorReport(makeDeps({ newestHangDump: () => null }));
+    expect(none.logs.lines.some((l) => l.label === 'daemon hang dump')).toBe(false);
+  });
+
   it('WARNs when today\'s daemon log has error lines (real daemon format)', async () => {
     // Ground truth: the daemon logger writes `[<iso>] [daemon/<level>] <msg>`
     // (src/daemon/index.ts log()), NOT `[error] [daemon] ...`. This fixture

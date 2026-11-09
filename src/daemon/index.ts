@@ -221,6 +221,7 @@ import { SHA_RE } from '../shared/commitOrigin';
 import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink, isBrokenPipeError, stdioErrorsConsumed } from './util/logSink';
 import { installExitEvidence, noteExitReason } from './exitEvidence';
+import { startHangWatchdog } from './hangWatchdog';
 import { newerTimestamp } from './util/idleAnchor';
 import type { DaemonSession, DaemonState } from './types';
 import { retireAdopted, withDiskOnlySessions } from './diskOnlySessions';
@@ -1411,6 +1412,10 @@ installExitEvidence(process, {
   ignoreError: (err) => !stdioErrorsConsumed() && isBrokenPipeError(err),
   reportDir: path.join(wmuxDir, 'crash-reports'),
 });
+
+// A main thread that stops turning leaves a file saying what it was doing, for
+// the respawn that follows. Bundle line numbers mean nothing without the version.
+startHangWatchdog({ logsDir: path.join(wmuxDir, 'logs'), log, version: DAEMON_VERSION ?? SPAWNED_BY_VERSION });
 
 // === X6 resume on replay ===
 // Compute the NON-persisted launch command for a supervised exec session being

@@ -44,6 +44,7 @@ import {
 } from '../../shared/bootPhases';
 import type { RpcResponse } from '../../shared/rpc';
 import { handleDoctorDetect } from './doctorDetect';
+import { newestHangDump } from '../../daemon/hangEvidence';
 import {
   isAppMemoryDiagnostics, isDaemonMemoryDiagnostics,
   type AppMemoryDiagnostics, type DaemonMemoryDiagnostics,
@@ -150,6 +151,8 @@ export interface DoctorDeps {
   mainLogPath: string;
   /** Resolved absolute path to today's daemon log file. */
   daemonLogPath: string;
+  /** The newest file a stuck daemon left (src/daemon/hangWatchdog.ts), if any. */
+  newestHangDump?: () => { path: string; writtenAt: number } | null;
   /** Reads a file's full text, or returns null if it does not exist / errors. */
   readTextFile: (path: string) => string | null;
   /** Reads at most the trailing `maxBytes` of a file as UTF-8 text (or null if
@@ -527,6 +530,11 @@ function buildLogs(deps: DoctorDeps): DoctorReport['logs'] {
       verdict: errors > 0 ? 'WARN' : 'OK',
       hint: errors > 0 ? `${errors} error line(s) in today's log — inspect the tail for the cause.` : undefined,
     });
+  }
+
+  const dump = deps.newestHangDump?.();
+  if (dump) {
+    lines.push({ label: 'daemon hang dump', value: `${dump.path} — ${new Date(dump.writtenAt).toISOString()}`, verdict: 'OK' });
   }
 
   return { verdict: worst(lines.map((l) => l.verdict)), lines };
@@ -1040,6 +1048,7 @@ export async function handleDoctor(args: string[], jsonMode: boolean): Promise<v
     authTokenPath: getAuthTokenPath(),
     mainLogPath: resolveMainLogPath(date),
     daemonLogPath: resolveDaemonLogPath(date),
+    newestHangDump: () => newestHangDump(join(getWmuxHomeDir(), 'logs')),
     readTextFile: readTextFileSafe,
     tailReadTextFile: tailReadTextFileSafe,
     env: process.env,
