@@ -44,7 +44,7 @@ const RUN_FIELDS = 'databaseId,headBranch,event,conclusion,createdAt,url';
 const ignore = () => undefined;
 const ARTIFACT_PAGE_SIZE = 50;
 const LISTING_RETRY_DELAYS_MS = [2000, 5000, 10000];
-const TRANSIENT_LISTING = /unexpected end of JSON input|HTTP 50\d/i;
+const TRANSIENT_LISTING = /unexpected end of JSON input|HTTP 5\d\d\b/i;
 const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /** YYYY-MM-DD in UTC. */
