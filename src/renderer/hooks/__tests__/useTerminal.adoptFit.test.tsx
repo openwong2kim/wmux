@@ -14,7 +14,8 @@ import { installCanvas2dStub } from '../../../test-utils/canvas2dStub';
 import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { FitAddon } from '@xterm/addon-fit';
-import { webglUpgradeQueue } from '../../terminal/webglUpgradeQueue';
+import { webglUpgradeQueue, WEBGL_UPGRADE_HIDE_MAX_MS } from '../../terminal/webglUpgradeQueue';
+import type { Terminal } from '@xterm/xterm';
 import { webglContextPool } from '../../terminal/webglContextPool';
 import { holdFits, releaseFits } from '../../utils/layoutTransitionGate';
 import { setDaemonModeActive } from '../../daemon/daemonMode';
@@ -130,9 +131,11 @@ async function settledPane(ptyId: string) {
     return () => undefined;
   });
   const log = vi.spyOn(console, 'log');
+  let live: Terminal | null = null;
   function Harness() {
     const ref = useRef<HTMLDivElement>(null);
-    useTerminal(ref, { ptyId, isVisible: true });
+    const { terminal } = useTerminal(ref, { ptyId, isVisible: true });
+    live = terminal.current;
     return <div ref={ref} style={{ width: 800, height: 600 }} />;
   }
   host = document.createElement('div');
@@ -157,8 +160,17 @@ async function settledPane(ptyId: string) {
     await act(async () => { jobs.at(-1)!(); });
     await settle(40);
   };
-  return { size, restructure, upgrade };
+  /** The xterm instance the last render saw. */
+  const term = () => {
+    if (!live) throw new Error('no terminal');
+    return live;
+  };
+  return { size, restructure, upgrade, term };
 }
+
+/** The bound's log line, for this pane. */
+const boundLines = (warn: { mock: { calls: unknown[][] } }, ptyId: string) =>
+  warn.mock.calls.filter(([line]) => String(line).includes(`ptyId=${ptyId} first fit: renderer not settled`));
 
 describe('useTerminal: an adopted terminal fits after the layout, not against the box before it', { timeout: 60_000 }, () => {
   it('sends nothing for the pre-layout box, then only the laid-out size, once', async () => {
@@ -213,8 +225,51 @@ describe('useTerminal: an adopted terminal fits after the layout, not against th
     await settle();
     expect(sentFor('p-adopt-webgl-late')).toEqual([]);
     Object.assign(size, { cols: 57, rows: 20 });
+    const warn = vi.spyOn(console, 'warn');
     await upgrade();
     expect(sentFor('p-adopt-webgl-late')).toEqual(['57x20']);
+    // The renderer settled in time: the bound is cleared and never fires.
+    await settle(WEBGL_UPGRADE_HIDE_MAX_MS + 100);
+    expect(sentFor('p-adopt-webgl-late')).toEqual(['57x20']);
+    expect(boundLines(warn, 'p-adopt-webgl-late')).toEqual([]);
+  });
+
+  it('a renderer that never settles holds the first fit only up to the bound', async () => {
+    const { size, restructure, upgrade } = await settledPane('p-adopt-bound');
+    const warn = vi.spyOn(console, 'warn');
+    await restructure('second');
+    // The layout is in; the upgrade job never runs.
+    Object.assign(size, { cols: 56, rows: 20 });
+    act(() => ManualResizeObserver.fire());
+    await settle(WEBGL_UPGRADE_HIDE_MAX_MS / 2);
+    expect(sentFor('p-adopt-bound')).toEqual([]);
+    // Past the bound: the pane fits with the cell it has, and says so once.
+    await settle(WEBGL_UPGRADE_HIDE_MAX_MS / 2 + 150);
+    expect(sentFor('p-adopt-bound')).toEqual(['56x20']);
+    expect(boundLines(warn, 'p-adopt-bound')).toHaveLength(1);
+    // Later resizes are ordinary ones.
+    Object.assign(size, { cols: 80, rows: 20 });
+    act(() => ManualResizeObserver.fire());
+    await settle(250);
+    expect(sizesFor('p-adopt-bound')).toEqual(['56x20', '80x20']);
+    // An upgrade that does come late refits to its own cell.
+    Object.assign(size, { cols: 82, rows: 20 });
+    await upgrade();
+    expect(sizesFor('p-adopt-bound')).toEqual(['56x20', '80x20', '82x20']);
+    expect(boundLines(warn, 'p-adopt-bound')).toHaveLength(1);
+  });
+
+  it('a teardown before the bound clears it', async () => {
+    const { restructure } = await settledPane('p-adopt-bound-teardown');
+    const warn = vi.spyOn(console, 'warn');
+    await restructure('second');
+    act(() => ManualResizeObserver.fire());
+    // Gone before the bound: the pane unmounts for good.
+    act(() => root?.unmount());
+    root = null;
+    await settle(WEBGL_UPGRADE_HIDE_MAX_MS + 150);
+    expect(boundLines(warn, 'p-adopt-bound-teardown')).toEqual([]);
+    expect(sentFor('p-adopt-bound-teardown')).toEqual([]);
   });
 
   it('a WebGL upgrade that lands before the layout leaves the fit to the layout', async () => {
@@ -285,6 +340,25 @@ describe('useTerminal: an adopted terminal fits after the layout, not against th
     act(() => ManualResizeObserver.fire());
     await upgrade();
     expect(sentFor('p-adopt-selected')).toEqual(['57x20']);
+  });
+
+  it('a second restructure before the first fit keeps the scroll position', async () => {
+    const { size, restructure, upgrade, term } = await settledPane('p-adopt-twice');
+    await act(async () => { await new Promise<void>((done) => term().write('line\r\n'.repeat(100), done)); });
+    act(() => term().scrollLines(-10));
+    const fromBottom = () => term().buffer.active.baseY - term().buffer.active.viewportY;
+    expect(fromBottom()).toBe(10);
+    // A split, then a second one before the first adoption has fitted.
+    await restructure('second');
+    await restructure('third');
+    await settle();
+    expect(sentFor('p-adopt-twice')).toEqual([]);
+    Object.assign(size, { cols: 57, rows: 20 });
+    act(() => ManualResizeObserver.fire());
+    await upgrade();
+    expect(sentFor('p-adopt-twice')).toEqual(['57x20']);
+    expect(term().rows).toBe(20);
+    expect(fromBottom()).toBe(10);
   });
 
   it('a real resize after the adoption still reaches the PTY', async () => {

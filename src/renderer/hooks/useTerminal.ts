@@ -4335,18 +4335,47 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Latched when the upgrade job has settled (built, skipped or failed): a
     // grant freed later must not make the first fit wait again.
     let adoptRendererSettled = false;
+    // The renderer wait is bounded, like the first-resize gate's for a fresh
+    // mount (the pane stays hidden for the same WEBGL_UPGRADE_HIDE_MAX_MS, so
+    // the wait shows nothing). Every exit of the upgrade settles it, so the
+    // bound is not expected to fire. If it does, the pane fits with the cell it
+    // has rather than ignore every resize, and the upgrade's own refit, if one
+    // ever comes, corrects the column. Armed once the layout is in, at most
+    // once per mount.
+    let adoptRendererBound: ReturnType<typeof setTimeout> | null = null;
+    let adoptRendererBoundArmed = false;
+    const clearAdoptRendererBound = () => {
+      if (adoptRendererBound !== null) { clearTimeout(adoptRendererBound); adoptRendererBound = null; }
+    };
     adoptSettleRef.current = (rendererSettled = false) => {
       if (terminalRef.current !== terminal) return;
-      if (rendererSettled) adoptRendererSettled = true;
+      if (rendererSettled) {
+        adoptRendererSettled = true;
+        clearAdoptRendererBound();
+      }
       if (!adoptFitPendingRef.current || !adoptLaidOut) return;
-      if (!adoptRendererSettled && webglUpgradePending()) return;
+      if (!adoptRendererSettled && webglUpgradePending()) {
+        if (!adoptRendererBoundArmed) {
+          adoptRendererBoundArmed = true;
+          adoptRendererBound = setTimeout(() => {
+            adoptRendererBound = null;
+            if (!adoptFitPendingRef.current || terminalRef.current !== terminal) return;
+            console.warn(`[wmux:pane-adopt] ptyId=${ptyId} first fit: renderer not settled after ${WEBGL_UPGRADE_HIDE_MAX_MS}ms, fitting with the current cell`);
+            adoptSettleRef.current?.(true);
+          }, WEBGL_UPGRADE_HIDE_MAX_MS);
+        }
+        return;
+      }
       // An animated layout change: the scheduler holds the fit as debt and
       // runs it on release, which comes back here through runFit.
       if (fitsHeld()) {
         resizeScheduler.onResize();
         return;
       }
-      if (runFit(true)) adoptFitPendingRef.current = false;
+      if (runFit(true)) {
+        adoptFitPendingRef.current = false;
+        clearAdoptRendererBound();
+      }
     };
     const resizeObserver = new ResizeObserver(() => {
       if (adoptFitPendingRef.current && terminalRef.current === terminal) {
@@ -4503,6 +4532,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       document.removeEventListener('mouseup', onHintMouseUp);
       cancelOrderedFit?.();
       resizeObserver.disconnect();
+      clearAdoptRendererBound();
       // #929: cancel any pending resting-cursor show before dispose — a late
       // inject into a disposed xterm is the #582 class of bug.
       restingCursor.dispose();
