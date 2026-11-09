@@ -19,11 +19,13 @@
  *   - Node stdlib only. No Electron, no daemon-specific state. The
  *     quarantine subtree is addressed purely by path, so both the
  *     daemon and the main process can call in once wiring lands.
- *   - `rename` only — never `copy`. Staying on a single volume keeps
- *     the move as a metadata-only op.
- *   - Every I/O path is best-effort. A failing quarantine must not
- *     take the caller down; it returns `null` (or swallows) and lets
- *     the read fallback chain carry on.
+ *   - `rename`, not `copy`, to isolate a file. Staying on a single volume
+ *     keeps the move as a metadata-only op. `copyToQuarantine` is the
+ *     exception: it keeps a copy of a file that stays where it is until a
+ *     write replaces it.
+ *   - Every I/O path is best-effort, `copyToQuarantine` aside. A failing
+ *     quarantine must not take the caller down; it returns `null` (or
+ *     swallows) and lets the read fallback chain carry on.
  *   - Logs go to `process.stderr.write` as a JSON line per event. We
  *     deliberately do NOT reach for a logger dep — this module stays
  *     importable from any layer.
@@ -163,7 +165,7 @@ function emitLog(entry: CorruptFileLog): void {
     // The line above is for grep. This one carries the level token `wmux doctor`
     // counts in the main and daemon logs, which stderr is teed into.
     process.stderr.write(
-      `[${new Date(entry.ts).toISOString()}] [${entry.level}] [quarantine] ${entry.path} moved to ${entry.quarantined_to}: ${entry.reason}\n`,
+      `[${new Date(entry.ts).toISOString()}] [${entry.level}] [quarantine] ${entry.path} kept as ${entry.quarantined_to}: ${entry.reason}\n`,
     );
   } catch {
     // Logging must never throw — a failed write on stderr is
@@ -307,6 +309,69 @@ export function quarantineFileSync(
     // best-effort retention
   }
 
+  return { quarantined_to: target };
+}
+
+// ── Public API: copyToQuarantine ────────────────────────────────────
+
+/**
+ * Keep a copy of `sourcePath` in `corrupted/`, leaving the file where it is, for
+ * a judgement that could be wrong or a file that is still in use. Unlike a move,
+ * this throws when it cannot be done: the caller is about to replace the file,
+ * and this copy is all that would be left of it.
+ */
+export async function copyToQuarantine(
+  sourcePath: string,
+  reason: string,
+  opts?: QuarantineOptions,
+): Promise<{ quarantined_to: string }> {
+  const clock = resolveClock(opts);
+  const ts = clock();
+  const dir = quarantineDirFor(sourcePath);
+  const target = quarantineTargetFor(sourcePath, ts);
+  await fsp.mkdir(dir, { recursive: true });
+  await fsp.copyFile(sourcePath, target);
+  emitLog({
+    event: 'CORRUPT_FILE',
+    ts,
+    level: 'warn',
+    code: 'CORRUPT_FILE',
+    path: sourcePath,
+    quarantined_to: target,
+    reason,
+    sha256_prefix: await computeShaPrefix(sourcePath),
+  });
+  void cleanupQuarantine(dir, opts).catch(() => undefined);
+  return { quarantined_to: target };
+}
+
+/** Sync counterpart of {@link copyToQuarantine}. */
+export function copyToQuarantineSync(
+  sourcePath: string,
+  reason: string,
+  opts?: QuarantineOptions,
+): { quarantined_to: string } {
+  const clock = resolveClock(opts);
+  const ts = clock();
+  const dir = quarantineDirFor(sourcePath);
+  const target = quarantineTargetFor(sourcePath, ts);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.copyFileSync(sourcePath, target);
+  emitLog({
+    event: 'CORRUPT_FILE',
+    ts,
+    level: 'warn',
+    code: 'CORRUPT_FILE',
+    path: sourcePath,
+    quarantined_to: target,
+    reason,
+    sha256_prefix: computeShaPrefixSync(sourcePath),
+  });
+  try {
+    cleanupQuarantineSync(dir, opts);
+  } catch {
+    // best-effort retention
+  }
   return { quarantined_to: target };
 }
 

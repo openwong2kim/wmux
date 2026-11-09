@@ -34,19 +34,21 @@ import {
 } from './rotation';
 import { quarantineFile, quarantineFileSync } from './quarantine';
 import {
-  assertWritesNotHeld,
   chainAsyncWrite,
   commitRename,
   commitRenameSync,
-  CouldNotReadError,
-  holdWrites,
   noteFallback,
   notePrimaryRead,
+  noteReadFailure,
   readFileRetrying,
   readFileRetryingSync,
-  releaseWrites,
+  rememberWrittenAsync,
+  rememberWrittenSync,
   rollbackBak,
   rollbackBakSync,
+  settlePrimary,
+  settlePrimarySync,
+  verdictRotates,
   type PrimaryProblem,
   type PrimaryVerdict,
   type RenameRetryPolicy,
@@ -146,15 +148,15 @@ async function unlinkIfExists(p: string): Promise<void> {
   }
 }
 
-/** Text has no parse to fail, so without a validator only a file of nothing but
- *  zero bytes, what a crash mid-write can leave, reads as bad. */
-function judgePrimaryText(raw: string | null, validate?: (content: string) => boolean): PrimaryVerdict {
-  if (raw === null) return 'absent';
+/** Text has no parse to fail, so a file of nothing but zero bytes, what a crash
+ *  mid-write can leave, is the one that reads as bad. */
+function judgePrimaryText(raw: string, validate?: (content: string) => boolean): PrimaryVerdict {
   if (raw === '') return 'empty';
+  if (/^\0*$/.test(raw)) return 'bad';
   try {
-    return (validate ? validate(raw) : !/^\0*$/.test(raw)) ? 'good' : 'bad';
+    return !validate || validate(raw) ? 'good' : 'rejected';
   } catch {
-    return 'bad';
+    return 'rejected';
   }
 }
 
@@ -194,8 +196,6 @@ export async function atomicWriteText(
   // Serialised per target, as in core.ts: the retry sleep must not let two
   // async writers interleave while the primary is rotated away.
   return chainAsyncWrite(targetPath, async () => {
-    assertWritesNotHeld(targetPath);
-
     const tmp = makeTmpPath(targetPath);
     const bak = bakPathFor(targetPath);
 
@@ -206,16 +206,9 @@ export async function atomicWriteText(
       await fsp.writeFile(tmp, content, { encoding: 'utf-8', mode: 0o600 });
 
       // Only a primary that passes becomes `.bak` (see core.ts).
-      const verdict = judgePrimaryText(await readFileRetrying(targetPath, opts.renameRetry), opts.validate);
-      if (verdict === 'bad') {
-        const moved = await quarantineFile(targetPath, 'failed validation before a write', { clock: opts.clock });
-        if (!moved) {
-          // eslint-disable-next-line no-console
-          console.warn(`[atomicWriteText] could not set aside the invalid "${targetPath}"; the write replaces it`);
-        }
-      }
+      const verdict = await settlePrimary(targetPath, opts, (raw) => judgePrimaryText(raw, opts.validate));
 
-      if (opts.rotationEnabled && (verdict === 'good' || verdict === 'absent')) {
+      if (opts.rotationEnabled && verdictRotates(verdict)) {
         await rotateBackups(targetPath);
       }
 
@@ -241,6 +234,7 @@ export async function atomicWriteText(
         if (movedToBak) await rollbackBak(bak, targetPath);
         throw err;
       }
+      await rememberWrittenAsync(targetPath);
     } catch (err) {
       await unlinkIfExists(tmp);
       throw err;
@@ -258,8 +252,14 @@ export async function atomicReadText(
   const attempt = async (
     p: string,
   ): Promise<AtomicReadTextResult | null> => {
-    // A failed read throws out of here: it is not a slot to step past.
-    const content = await readFileRetrying(p, opts.readRetry);
+    let content: string | null;
+    try {
+      content = await readFileRetrying(p, opts.readRetry);
+    } catch (err) {
+      noteReadFailure(targetPath, p, err);
+      if (p === targetPath) primaryProblem = 'unreadable';
+      return null;
+    }
     if (content === null) return null;
     if (p === targetPath) primaryProblem = 'corrupt';
 
@@ -279,29 +279,21 @@ export async function atomicReadText(
     return { path: p, content };
   };
 
-  try {
-    const primary = await attempt(targetPath);
-    if (primary !== null) {
-      notePrimaryRead(targetPath);
-      releaseWrites(targetPath);
-      return primary;
-    }
-
-    for (const suffix of BACKUP_SUFFIXES) {
-      const candidate = `${targetPath}${suffix}`;
-      const backup = await attempt(candidate);
-      if (backup !== null) {
-        noteFallback(targetPath, candidate, primaryProblem);
-        releaseWrites(targetPath);
-        return backup;
-      }
-    }
-  } catch (err) {
-    if (err instanceof CouldNotReadError) holdWrites(targetPath, err);
-    throw err;
+  const primary = await attempt(targetPath);
+  if (primary !== null) {
+    notePrimaryRead(targetPath);
+    return primary;
   }
 
-  releaseWrites(targetPath);
+  for (const suffix of BACKUP_SUFFIXES) {
+    const candidate = `${targetPath}${suffix}`;
+    const backup = await attempt(candidate);
+    if (backup !== null) {
+      noteFallback(targetPath, candidate, primaryProblem);
+      return backup;
+    }
+  }
+
   return null;
 }
 
@@ -328,8 +320,6 @@ export function atomicWriteTextSync(
     }
   }
 
-  assertWritesNotHeld(targetPath);
-
   const tmp = makeTmpPath(targetPath);
   const bak = bakPathFor(targetPath);
 
@@ -339,16 +329,9 @@ export function atomicWriteTextSync(
     fs.writeFileSync(tmp, content, { encoding: 'utf-8', mode: 0o600 });
 
     // Only a primary that passes becomes `.bak` (see core.ts).
-    const verdict = judgePrimaryText(readFileRetryingSync(targetPath, opts.renameRetry), opts.validate);
-    if (verdict === 'bad') {
-      const moved = quarantineFileSync(targetPath, 'failed validation before a write', { clock: opts.clock });
-      if (!moved) {
-        // eslint-disable-next-line no-console
-        console.warn(`[atomicWriteText] could not set aside the invalid "${targetPath}"; the write replaces it`);
-      }
-    }
+    const verdict = settlePrimarySync(targetPath, opts, (raw) => judgePrimaryText(raw, opts.validate));
 
-    if (opts.rotationEnabled && (verdict === 'good' || verdict === 'absent')) {
+    if (opts.rotationEnabled && verdictRotates(verdict)) {
       rotateBackupsSync(targetPath);
     }
 
@@ -372,6 +355,7 @@ export function atomicWriteTextSync(
       if (movedToBak) rollbackBakSync(bak, targetPath);
       throw err;
     }
+    rememberWrittenSync(targetPath);
   } catch (err) {
     unlinkIfExistsSync(tmp);
     throw err;
@@ -386,8 +370,14 @@ export function atomicReadTextSync(
 ): AtomicReadTextResult | null {
   let primaryProblem: PrimaryProblem = 'missing';
   const attempt = (p: string): AtomicReadTextResult | null => {
-    // A failed read throws out of here: it is not a slot to step past.
-    const content = readFileRetryingSync(p, opts.readRetry);
+    let content: string | null;
+    try {
+      content = readFileRetryingSync(p, opts.readRetry);
+    } catch (err) {
+      noteReadFailure(targetPath, p, err);
+      if (p === targetPath) primaryProblem = 'unreadable';
+      return null;
+    }
     if (content === null) return null;
     if (p === targetPath) primaryProblem = 'corrupt';
 
@@ -407,28 +397,20 @@ export function atomicReadTextSync(
     return { path: p, content };
   };
 
-  try {
-    const primary = attempt(targetPath);
-    if (primary !== null) {
-      notePrimaryRead(targetPath);
-      releaseWrites(targetPath);
-      return primary;
-    }
-
-    for (const suffix of BACKUP_SUFFIXES) {
-      const candidate = `${targetPath}${suffix}`;
-      const backup = attempt(candidate);
-      if (backup !== null) {
-        noteFallback(targetPath, candidate, primaryProblem);
-        releaseWrites(targetPath);
-        return backup;
-      }
-    }
-  } catch (err) {
-    if (err instanceof CouldNotReadError) holdWrites(targetPath, err);
-    throw err;
+  const primary = attempt(targetPath);
+  if (primary !== null) {
+    notePrimaryRead(targetPath);
+    return primary;
   }
 
-  releaseWrites(targetPath);
+  for (const suffix of BACKUP_SUFFIXES) {
+    const candidate = `${targetPath}${suffix}`;
+    const backup = attempt(candidate);
+    if (backup !== null) {
+      noteFallback(targetPath, candidate, primaryProblem);
+      return backup;
+    }
+  }
+
   return null;
 }

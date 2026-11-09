@@ -66,7 +66,7 @@ export function collectDeckWorkspaceFiles(dir?: string): Map<string, string[]> {
 
   // 1. deck-work.json
   try {
-    const raw = atomicReadJSONSync<unknown>(getDeckWorkPath(dir), { readOnly: true });
+    const raw = atomicReadJSONSync<unknown>(getDeckWorkPath(dir));
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       const active = (raw as Record<string, unknown>).active;
       if (active && typeof active === 'object' && !Array.isArray(active)) {
@@ -81,7 +81,7 @@ export function collectDeckWorkspaceFiles(dir?: string): Map<string, string[]> {
 
   // 2. deck-autonomy.json
   try {
-    const raw = atomicReadJSONSync<unknown>(getDeckAutonomyPath(dir), { readOnly: true });
+    const raw = atomicReadJSONSync<unknown>(getDeckAutonomyPath(dir));
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       for (const k of Object.keys(raw as Record<string, unknown>)) {
         if (WORKSPACE_ID_RE.test(k)) addId(k, 'deck-autonomy.json');
@@ -93,7 +93,7 @@ export function collectDeckWorkspaceFiles(dir?: string): Map<string, string[]> {
 
   // 3. deck-decisions.json
   try {
-    const raw = atomicReadJSONSync<unknown>(getDeckDecisionPath(dir), { readOnly: true });
+    const raw = atomicReadJSONSync<unknown>(getDeckDecisionPath(dir));
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       for (const k of Object.keys(raw as Record<string, unknown>)) {
         // The retired "Remember this?" card's key is not a workspace.

@@ -26,7 +26,7 @@
 import { holderInputsChanged } from './holderInputs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { atomicReadJSONSync, CouldNotReadError } from '../../daemon/util/atomicWrite';
+import { atomicReadJSONSync } from '../../daemon/util/atomicWrite';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 
 export const AGENT_GONE_FILENAME = 'agent-gone.json';
@@ -97,12 +97,6 @@ export class AgentGoneFacts {
       for (const f of list) if (isFact(f)) this.facts.set(f.taskId, { ...f, sessions: [...f.sessions] });
       this.writable = true;
     } catch (err) {
-      // Held for now, not broken: nothing is known against the file, so it stays.
-      if (err instanceof CouldNotReadError) {
-        this.writable = false;
-        this.warn(`[factory] agent-gone facts not read, none are kept on disk: ${String(err)}`);
-        return;
-      }
       if (this.newerVersionOnDisk()) {
         this.writable = false;
         this.warn(`[factory] agent-gone facts not read, none are kept on disk: ${String(err)}`);
@@ -123,7 +117,7 @@ export class AgentGoneFacts {
    *  file is broken) names a version above this one's. */
   private newerVersionOnDisk(): boolean {
     try {
-      const v = atomicReadJSONSync<{ version?: unknown }>(this.file, { readOnly: true })?.version;
+      const v = atomicReadJSONSync<{ version?: unknown }>(this.file)?.version;
       return typeof v === 'number' && v > AGENT_GONE_VERSION;
     } catch {
       return false;

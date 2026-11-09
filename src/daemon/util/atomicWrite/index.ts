@@ -4,7 +4,6 @@ export type {
   RenameRetryPolicy,
 } from './core';
 export {
-  CouldNotReadError,
   atomicWriteJSON,
   atomicReadJSON,
   atomicWriteJSONSync,

@@ -20,7 +20,6 @@ import {
   atomicWriteJSON,
   atomicWriteJSONSync,
   atomicReadJSONSync,
-  CouldNotReadError,
 } from '../util/atomicWrite';
 import { AsyncQueue } from '../util/AsyncQueue';
 
@@ -276,9 +275,6 @@ export class SnapshotStore {
       validate: (d): d is SnapshotEnvelope<T> =>
         isSnapshotEnvelope(d) && validateProjection(d.projection),
       quarantineOnCorruption: opts.preserveOnCorruption ? false : undefined,
-      // A snapshot is written from state replayed off the log, never from what
-      // an earlier load of it returned.
-      readOnly: true,
     });
   }
 
@@ -295,18 +291,7 @@ export class SnapshotStore {
   }): FallbackLoad<T> | null {
     const { activeRef, genesisRef, reseedRefs, validateProjection } = opts;
 
-    // Each step carries its own snapshotLamport and the log replays the rest, so
-    // a snapshot that could not be read costs replay time, not state: step past it.
-    const loadOrSkip = (ref: string, opts?: { preserveOnCorruption?: boolean }): SnapshotEnvelope<T> | null => {
-      try {
-        return this.load<T>(ref, validateProjection, opts);
-      } catch (err) {
-        if (err instanceof CouldNotReadError) return null;
-        throw err;
-      }
-    };
-
-    const active = loadOrSkip(activeRef);
+    const active = this.load<T>(activeRef, validateProjection);
     if (active) {
       return {
         projection: active.projection,
@@ -319,7 +304,9 @@ export class SnapshotStore {
     // reseed는 최신(높은 번호)부터 — 가장 최근 구-데몬 구간을 우선 복구.
     // preserveOnCorruption: reseed·genesis는 §6.2 불변 아티팩트 — 손상돼도 이동 금지(G①).
     for (const ref of [...reseedRefs].reverse()) {
-      const rs = loadOrSkip(ref, { preserveOnCorruption: true });
+      const rs = this.load<T>(ref, validateProjection, {
+        preserveOnCorruption: true,
+      });
       if (rs) {
         return {
           projection: rs.projection,
@@ -330,7 +317,9 @@ export class SnapshotStore {
       }
     }
 
-    const genesis = loadOrSkip(genesisRef, { preserveOnCorruption: true });
+    const genesis = this.load<T>(genesisRef, validateProjection, {
+      preserveOnCorruption: true,
+    });
     if (genesis) {
       return {
         projection: genesis.projection,
