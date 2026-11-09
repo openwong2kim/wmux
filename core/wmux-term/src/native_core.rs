@@ -199,7 +199,7 @@ pub struct NativeTerminal {
     /// (an alternate screen's width change is XtermFeed::alt_reflow).
     refusal: Option<&'static str>,
     /// The text feed's trailing ESC (advance_indexing).
-    text_held: bool,
+    text_held: Vec<u8>,
 }
 
 /// Whether a resize to `cols` reflows a row below the cursor's paragraph on
@@ -504,6 +504,12 @@ impl XtermFeed {
                 // Alacritty repeats whatever was printed last.
                 self.divergent |=
                     crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
+                // An escape cut short by DEL or a byte past ASCII: both
+                // parsers ignore DEL there, so `ESC DEL D` is still IND,
+                // which this scan would not see as one.
+                self.divergent |= sequence.get(1) != Some(&b'[')
+                    && !(0x30..=0x7e).contains(&sequence[len - 1])
+                    && data.get(at + len).is_some_and(|&b| b == 0x7f || b >= 0x80);
                 self.track(sequence, term.screen_lines());
                 next = Some(at + len);
                 if self.alt_reflow && self.may_leave_alt {
@@ -588,9 +594,8 @@ impl XtermFeed {
     }
 }
 
-/// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
-/// screen scrolls the screen into history, and its ED 1 skips the top row
-/// when the cursor is on the second. The renderer is xterm.
+/// IND or NEL (`sequence`, C0 controls or DEL inside included) as xterm's
+/// `index`.
 fn index_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, sequence: &[u8]) {
     // vte runs IND and NEL through the line feed, which ends the paragraph of
     // the row it enters as xterm's `lineFeed` does (vendor `line_down`);
@@ -613,37 +618,45 @@ fn index_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, seque
 }
 
 /// `parser.advance` for a stream no XtermFeed scans (the text snapshot), with
-/// IND and NEL as xterm's `index`. An ESC ending `bytes` waits in `held` for
-/// the byte that tells what it starts.
+/// IND and NEL as xterm's `index`. Both parsers execute C0 controls and ignore
+/// DEL between the ESC and its final byte. An ESC still waiting for that byte
+/// at the end of `bytes` waits in `held` with what follows it.
 fn advance_indexing(
     parser: &mut Processor,
     term: &mut Term<VoidListener>,
-    held: &mut bool,
+    held: &mut Vec<u8>,
     bytes: &[u8],
 ) {
-    let mut data = Vec::new();
-    let bytes = if std::mem::take(held) {
-        data.reserve(bytes.len() + 1);
-        data.push(0x1b);
-        data.extend_from_slice(bytes);
-        &data[..]
-    } else {
+    let joined;
+    let bytes = if held.is_empty() {
         bytes
+    } else {
+        let mut data = std::mem::take(held);
+        data.extend_from_slice(bytes);
+        joined = data;
+        &joined[..]
     };
     let mut from = 0;
     let mut at = 0;
     while let Some(found) = bytes[at..].iter().position(|&b| b == 0x1b) {
         let esc = at + found;
-        match bytes.get(esc + 1) {
+        let mut end = esc + 1;
+        while bytes
+            .get(end)
+            .is_some_and(|&b| (b < 0x20 && !matches!(b, 0x18 | 0x1a | 0x1b)) || b == 0x7f)
+        {
+            end += 1;
+        }
+        match bytes.get(end) {
             None => {
                 parser.advance(term, &bytes[from..esc]);
-                *held = true;
+                held.extend_from_slice(&bytes[esc..]);
                 return;
             }
             Some(b'D' | b'E') => {
                 parser.advance(term, &bytes[from..esc]);
-                index_like_xterm(parser, term, &bytes[esc..esc + 2]);
-                from = esc + 2;
+                index_like_xterm(parser, term, &bytes[esc..=end]);
+                from = end + 1;
                 at = from;
             }
             Some(_) => at = esc + 1,
@@ -652,6 +665,9 @@ fn advance_indexing(
     parser.advance(term, &bytes[from..]);
 }
 
+/// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
+/// screen scrolls the screen into history, and its ED 1 skips the top row
+/// when the cursor is on the second. The renderer is xterm.
 fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: bool) {
     // A real ESC [ ends any string or sequence in progress; Alacritty
     // ignores DECSED, so this ends it the same way and does nothing else.
@@ -702,7 +718,7 @@ impl NativeTerminal {
             scrollback,
             feed: XtermFeed::default(),
             refusal: None,
-            text_held: false,
+            text_held: Vec::new(),
         })
     }
 
@@ -829,9 +845,8 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        if std::mem::take(&mut self.text_held) {
-            self.parser.advance(term, b"");
-        }
+        let held = std::mem::take(&mut self.text_held);
+        self.parser.advance(term, &held);
         // A text read must include bytes in an unfinished synchronized update.
         // This finalizes the batch; this API does not promise ANSI replay state.
         self.parser.stop_sync(term);
@@ -1883,13 +1898,27 @@ mod tests {
         // The text feed (no XtermFeed) keeps IND's paragraph too.
         let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
         let mut parser: Processor = Processor::new();
-        let mut held = false;
+        let mut held = Vec::new();
         for chunk in [para.as_bytes(), b"\x1b", b"D"] {
             super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
         }
         assert!(term.grid()[Line(0)][Column(9)]
             .flags
             .contains(Flags::WRAPLINE));
+        // DEL inside, split after it: both parsers ignore DEL there.
+        for chunk in [para.as_bytes(), b"\x1b\x7f", b"D"] {
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+        }
+        assert!(held.is_empty());
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        // The ANSI feed leaves that spelling to the reference.
+        assert!(feed_with(&[para, "\x1b\x7fD"]).2.divergent);
+        assert!(
+            !feed_with(&[para, "\x1b7\u{e9}"]).2.divergent,
+            "a complete escape before UTF-8"
+        );
         super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b[1;1H\n");
         assert!(!term.grid()[Line(0)][Column(9)]
             .flags

@@ -176,6 +176,7 @@ const lineFeeds: Case[] = [
   synthetic('ind-drops-pending-wrap', `${'x'.repeat(20)}\x1bDY`),
   // A C0 inside IND: left to the reference.
   synthetic('ind-with-c0-inside', `${para}\x1b\x07DY`, 'xterm'),
+  synthetic('ind-with-del-inside', `${para}\x1b\x7fDY`, 'xterm'),
 ];
 
 // Controls the selector never refused, rechecked now that Rust is the default.
