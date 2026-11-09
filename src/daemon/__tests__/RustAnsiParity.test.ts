@@ -150,10 +150,14 @@ const refused: Case[] = [
   // Refused by the serializer: xterm drops a saved pending wrap.
   synthetic('decsc-wrap-pending', 'abcdefgh\x1b7\x1b[H\x1b8X', 'xterm', 8),
   synthetic('alt-save-at-wrap', 'abcdefgh\x1b[?1049h\x1b[?1049lX', 'xterm', 8),
+  synthetic('alt-decsc-wrap-pending', 'n\x1b[?1049h\x1b[Habcdefgh\x1b7\x1b[H', 'xterm', 8),
 ];
 
 // Controls the selector never refused, rechecked now that Rust is the default.
 const others: Case[] = [
+  // A cursor saved with a pending wrap on an alternate screen since left:
+  // xterm discarded it with that screen.
+  synthetic('alt-decsc-wrap-pending-left', 'n\x1b[?1049h\x1b[Habcdefgh\x1b7\x1b[?1049lX', 'rust', 8),
   synthetic('ris', 'abc\x1b[31m\x1bcdef'),
   synthetic('ind-nel-ri', 'a\x1bDb\x1bEc\x1bMd'),
   synthetic('cht-cbt', 'a\x1b[2Ib\x1b[Zc'),

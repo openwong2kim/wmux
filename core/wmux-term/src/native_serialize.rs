@@ -437,7 +437,15 @@ fn csi_divergent(rest: &[u8]) -> bool {
 pub fn serialize(term: &Term<VoidListener>, repair_wide: bool) -> Result<String, &'static str> {
     // xterm can retain half a wide glyph when clipping the cursor paragraph.
     // Printing that glyph would wrap instead. Refuse instead of corrupting it.
-    for grid in [term.grid(), term.inactive_grid()] {
+    // The inactive grid is the primary screen only while the alternate one is
+    // shown. Otherwise it is an alternate screen xterm already discarded on
+    // leaving it, and the payload carries none of it.
+    let shown: &[&Grid<Cell>] = if term.mode().contains(TermMode::ALT_SCREEN) {
+        &[term.grid(), term.inactive_grid()]
+    } else {
+        &[term.grid()]
+    };
+    for grid in shown {
         for y in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
             if grid[Line(y)][grid.last_column()]
                 .flags
@@ -704,5 +712,10 @@ mod tests {
         assert!(err.starts_with("unsupported-saved-wrap"));
         let err = replay(4, "abcd\x1b[?1049h").unwrap_err();
         assert!(err.starts_with("unsupported-saved-wrap"));
+        // Saved on the alternate screen: refused while it is shown, not once
+        // it is left, which discards it.
+        let err = replay(4, "n\x1b[?1049h\x1b[Habcd\x1b7\x1b[H").unwrap_err();
+        assert!(err.starts_with("unsupported-saved-wrap"));
+        assert!(replay(4, "n\x1b[?1049h\x1b[Habcd\x1b7\x1b[?1049lX").is_ok());
     }
 }

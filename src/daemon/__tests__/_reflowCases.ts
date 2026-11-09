@@ -93,6 +93,10 @@ export const reflowCases: Case[] = [
   // Another refusal set in the same resize or after it outlives the leave.
   script('alt-wrapped-left-reflow-below-cursor', [80, 24], [`${rows(4, 70)}\x1b[2H\x1b[?1049h${'w'.repeat(100)}`, [40, 24], '\x1b[?1049l'], 'xterm'),
   script('alt-wrapped-left-after-decstr', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], '\x1b[!p\x1b[?1049l$ '], 'xterm'),
+  // A fullwidth glyph cut at the narrow edge of an alternate screen: refused
+  // while that screen is shown, native once it is left.
+  script('alt-wide-edge', [80, 24], [`n\x1b[?1049h\x1b[H${'x'.repeat(38)}한`, [39, 24]], 'xterm'),
+  script('alt-wide-edge-left', [80, 24], [`n\x1b[?1049h\x1b[H${'x'.repeat(38)}한`, [39, 24], '\x1b[?1049l$ '], 'rust'),
   // Narrowed on the main screen (short rows, nothing reflows), then into a
   // fresh alternate screen with short rows, and wider: nothing was cut or
   // wrapped there, so still native.
