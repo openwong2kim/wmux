@@ -318,6 +318,45 @@ fn shrink_reflow_cursor_below() {
 }
 
 #[test]
+fn grow_reflow_below_the_cursor_moves_it_up_as_xterm() {
+    // wmux: xterm counts every row a widen removes, below the cursor too:
+    // each takes a history row first, then moves the cursor (and the saved
+    // cursor) up one row (Buffer.ts `_reflowLargerAdjustViewport`).
+    let paragraphs = |grid: &mut Grid<Cell>, from: i32| {
+        for y in [from, from + 2] {
+            grid[Line(y)][Column(0)] = cell('a');
+            grid[Line(y)][Column(1)] = wrap_cell('b');
+            grid[Line(y + 1)][Column(0)] = cell('c');
+        }
+    };
+    // No history: two rows removed below, both cursors go up two.
+    let mut grid = Grid::<Cell>::new(8, 2, 0);
+    paragraphs(&mut grid, 4);
+    grid.cursor.point.line = Line(3);
+    grid.saved_cursor.point.line = Line(7);
+    grid.resize(true, 8, 3);
+    assert_eq!(grid.cursor.point.line, Line(1));
+    assert_eq!(grid.saved_cursor.point.line, Line(5));
+    // Clamped at the top.
+    let mut grid = Grid::<Cell>::new(6, 2, 0);
+    paragraphs(&mut grid, 1);
+    grid.cursor.point.line = Line(0);
+    grid.resize(true, 6, 3);
+    assert_eq!(grid.cursor.point.line, Line(0));
+    // One history row: it takes the first removed row, the cursors the other.
+    let mut grid = Grid::<Cell>::new(6, 2, 10);
+    grid.scroll_up(&(Line(0)..Line(6)), 1);
+    paragraphs(&mut grid, 2);
+    grid.cursor.point.line = Line(1);
+    grid.saved_cursor.point.line = Line(5);
+    assert_eq!(grid.history_size(), 1);
+    grid.resize(true, 6, 3);
+    assert_eq!(grid.history_size(), 0);
+    assert_eq!(grid.cursor.point.line, Line(0));
+    assert_eq!(grid.saved_cursor.point.line, Line(4));
+}
+
+#[test]
 fn grow_reflow_cursor_below() {
     let mut grid = Grid::<Cell>::new(3, 2, 0);
     grid[Line(0)][Column(0)] = cell('1');

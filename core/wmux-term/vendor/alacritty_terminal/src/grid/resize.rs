@@ -144,6 +144,11 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     /// Grow number of columns in each row, reflowing if necessary.
     fn grow_columns(&mut self, reflow: bool, columns: usize) {
         let cursor_paragraph = self.cursor_paragraph();
+        // wmux: what xterm's widening reads (see the end of this function).
+        let history_before = self.history_size();
+        let total_before = self.total_lines();
+        let cursor_line_before = self.cursor.point.line;
+        let saved_line_before = self.saved_cursor.point.line;
         // Check if a row needs to be wrapped.
         let should_reflow = |row: &Row<T>| -> bool {
             let len = Column(row.len());
@@ -259,6 +264,8 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             reversed.push(row);
         }
 
+        let removed = total_before.saturating_sub(reversed.len());
+
         // Make sure we have at least the viewport filled.
         if reversed.len() < self.lines {
             let delta = (self.lines - reversed.len()) as i32;
@@ -289,6 +296,19 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 
         // Clamp display offset in case lines above it got merged.
         self.display_offset = min(self.display_offset, self.history_size());
+
+        // wmux: xterm counts every row the reflow removed, above or below the
+        // cursor, and moves its cursor row by its own rule, not with its
+        // content (Buffer.ts `_reflowLargerAdjustViewport`). Each removed row
+        // first takes one history row, then moves the cursor up one row while
+        // it is below the top. The saved cursor (`savedY`, absolute there)
+        // moves up by every removed row, which on this screen-relative line
+        // is the same rule.
+        if reflow {
+            let up = removed.saturating_sub(history_before) as i32;
+            self.cursor.point.line = max(cursor_line_before - up, Line(0));
+            self.saved_cursor.point.line = max(saved_line_before - up, Line(0));
+        }
     }
 
     /// Shrink number of columns in each row, reflowing if necessary.

@@ -202,12 +202,12 @@ pub struct NativeTerminal {
     text_held: Vec<u8>,
 }
 
-/// Whether a resize to `cols` reflows a row below the cursor's paragraph on
-/// this grid: a soft-wrapped row there, either way, or narrower, a row with
-/// content past the new width.
+/// Whether narrowing to `cols` reflows a row below the cursor's paragraph on
+/// this grid: a soft-wrapped row there, or a row with content past the new
+/// width. A widen follows xterm's cursor rule (vendor grow_columns).
 fn reflows_below_cursor<T: GridCell>(grid: &Grid<T>, cols: usize) -> bool {
     let old = grid.columns();
-    if cols == old {
+    if cols >= old {
         return false;
     }
     let last = Column(old - 1);
@@ -219,7 +219,7 @@ fn reflows_below_cursor<T: GridCell>(grid: &Grid<T>, cols: usize) -> bool {
     ((y + 1)..lines).any(|y| {
         let row = &grid[Line(y)];
         row[last].flags().contains(Flags::WRAPLINE)
-            || (cols < old && (cols..old).any(|x| !row[Column(x)].is_empty()))
+            || (cols..old).any(|x| !row[Column(x)].is_empty())
     })
 }
 
