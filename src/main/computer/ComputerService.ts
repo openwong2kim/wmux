@@ -898,6 +898,7 @@ export class ComputerService {
       clickCount: clampInt(params.clickCount ?? 1, 1, 3),
       modifiers: keys?.modifiers ?? params.modifiers,
       text: params.text,
+      direction: params.direction,
     }, os);
     // Every action on this app takes its slot first, foreground or not, so
     // one app's actions run in arrival order; other apps' agents never wait
