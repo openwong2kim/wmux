@@ -4,6 +4,7 @@
  * undone. A backup is replaced only by a primary that passed validation.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -603,8 +604,30 @@ describe('access to a kept copy', () => {
   });
 
   it.runIf(process.platform === 'win32')('on a real win32 file system the copy reads back as owner-only', () => {
+    const harden = vi.mocked(reHardenTokenFileAcl);
+    harden.mockClear();
     atomicWriteJSONSync(targetPath, { gen: 'next' });
-    expect(verifyOwnerOnlyDaclSync(path.join(corruptedDir(), kept()[0]), null)).toBe(true);
+    const copy = path.join(corruptedDir(), kept()[0]);
+    const run = (file: string, args: string[], cwd?: string): string => {
+      try {
+        return execFileSync(file, args, { cwd, windowsHide: true }).toString('utf8');
+      } catch (err) {
+        return `failed: ${String(err)}`;
+      }
+    };
+    const whoami = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\whoami.exe`;
+    const icacls = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\icacls.exe`;
+    const saved = path.join(tmpDir, 'sddl.txt');
+    run(icacls, [path.basename(copy), '/save', saved], path.dirname(copy));
+    const diagnostics = [
+      `mock calls: ${JSON.stringify(harden.mock.calls)}`,
+      `mock results: ${JSON.stringify(harden.mock.results)}`,
+      `whoami /user: ${run(whoami, ['/user', '/fo', 'list'])}`,
+      `whoami /groups: ${run(whoami, ['/groups', '/fo', 'list'])}`,
+      `icacls: ${run(icacls, [copy])}`,
+      `icacls /save: ${fs.existsSync(saved) ? fs.readFileSync(saved, 'utf16le') : 'none'}`,
+    ].join('\n');
+    expect(verifyOwnerOnlyDaclSync(copy, null), diagnostics).toBe(true);
   });
 });
 
