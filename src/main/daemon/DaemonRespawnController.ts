@@ -3,6 +3,8 @@ import type { DaemonInfo, DaemonPingResult } from './launcher';
 import type { ProcessLiveness } from '../../shared/processLiveness';
 import { isDaemonOlder, runDaemonReplacement, type ShutdownRpcResult } from './daemonReplacement';
 import type { DaemonExitWatch } from './daemonExitWatch';
+import { hangDumpForPid } from '../../daemon/hangEvidence';
+import { getWmuxHomeDir } from '../../shared/constants';
 import {
   DAEMON_PROGRESS_DEFAULTS, DaemonProgressTracker, UNREADABLE_SAMPLE,
   type DaemonProcessSample, type DaemonProgress, type DaemonProgressConfig,
@@ -76,6 +78,8 @@ export interface DaemonRespawnDeps {
    * absent means every hang is respawned, as before.
    */
   sampleDaemon?: (pid: number) => Promise<DaemonProcessSample>;
+  /** Test seam: the file this daemon wrote about its hang (src/daemon/hangWatchdog.ts); production reads the log folder. */
+  findHangDump?: (pid: number) => string | null;
 }
 
 export interface DaemonReplacementHooks {
@@ -713,6 +717,7 @@ export class DaemonRespawnController {
         this.deps.logger.error(
           `daemon hang detected — forcing respawn${progress === 'stalled' ? ' (no CPU time for the whole budget)' : ''}`,
         );
+        this.logHangDump(pid);
         // Says whether the daemon was still alive when main let go of it.
         void this.exitWatch?.report('health probe hang');
         // Force a clean disconnect. The socket-close path will still fire
@@ -724,6 +729,16 @@ export class DaemonRespawnController {
         } catch { /* best-effort */ }
       }
     }
+  }
+
+  /** Where the daemon's own account of this hang is, when it left one. */
+  private logHangDump(pid: number | null): void {
+    if (pid === null) return;
+    try {
+      const find = this.deps.findHangDump ?? ((p: number) => hangDumpForPid(`${getWmuxHomeDir()}/logs`, p));
+      const dump = find(pid);
+      if (dump) this.deps.logger.error(`daemon hang evidence: ${dump}`);
+    } catch { /* a pointer must not stand in the way of the respawn */ }
   }
 
   /**

@@ -86,6 +86,7 @@ function makeHarness(
     replacement?: DaemonReplacementHooks;
     watchDaemonExit?: DaemonRespawnDeps['watchDaemonExit'];
     sampleDaemon?: DaemonRespawnDeps['sampleDaemon'];
+    findHangDump?: DaemonRespawnDeps['findHangDump'];
   } = {},
 ): Harness {
   const logs: { level: string; msg: string }[] = [];
@@ -117,6 +118,7 @@ function makeHarness(
     replacement: opts.replacement,
     watchDaemonExit: opts.watchDaemonExit,
     sampleDaemon: opts.sampleDaemon,
+    findHangDump: opts.findHangDump,
   };
 
   const controller = buildController(deps, opts.config);
@@ -879,6 +881,35 @@ describe('DaemonRespawnController health probe', () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(h.events).toEqual([{ type: 'reconnecting', attempt: 1, backoffMs: 1000 }]);
     expect(h.logs.some((l) => l.msg.includes('health ping'))).toBe(false);
+  });
+  it('points at the hung daemon\'s own dump when it forces a respawn, when there is one', async () => {
+    const run = async (found: string | null) => {
+      const findHangDump = vi.fn(() => found);
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 2, baseBackoffMs: 50, budget: 5 },
+        findHangDump,
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      let pings = 0;
+      c1.rpcImpl = async (method) => {
+        if (method !== 'daemon.ping') return {};
+        if (++pings === 1) return {};
+        throw new Error('ping timeout');
+      };
+      await h.controller.bootstrap();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(c1.disconnectSyncCalls).toBe(1);
+      return { h, findHangDump };
+    };
+
+    const { h, findHangDump } = await run('/logs/daemon-hang-1-2.txt');
+    expect(findHangDump).toHaveBeenCalledTimes(1);
+    expect(findHangDump).toHaveBeenCalledWith(1234);
+    expect(h.logs).toContainEqual({ level: 'error', msg: 'daemon hang evidence: /logs/daemon-hang-1-2.txt' });
+
+    const none = await run(null);
+    expect(none.h.logs.some((l) => l.msg.includes('daemon hang evidence'))).toBe(false);
   });
 });
 
