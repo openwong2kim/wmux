@@ -16,6 +16,11 @@ export type ScanEvent =
   | { type: 'data'; data: Buffer; replay: boolean }
   | { type: 'flushComplete'; recoveredBytes: number };
 
+interface MarkerHit {
+  index: number;
+  length: number;
+}
+
 const DEFAULT_MAX_PENDING_BYTES = 10 * 1024 * 1024; // 10 MB safety cap
 const EMPTY = Buffer.alloc(0);
 
@@ -52,14 +57,19 @@ export class SessionPipeStreamScanner {
   private carry: Buffer = EMPTY;
   private readonly maxPendingBytes: number;
   private readonly stripReplay: (b: Buffer) => Buffer;
-  private readonly markers: SessionPipeMarkers;
+  // Accepted forms of each marker: the current one first, then the legacy
+  // form an older daemon still sends (see SessionPipeMarkers.legacy).
+  // Removable together with that field once no supported daemon sends it.
+  private readonly flushMarkers: readonly Buffer[];
+  private readonly resyncMarkers: readonly Buffer[];
 
   constructor(opts: {
     markers: SessionPipeMarkers;
     maxPendingBytes?: number;
     stripReplay: (b: Buffer) => Buffer;
   }) {
-    this.markers = opts.markers;
+    this.flushMarkers = [opts.markers.flushDone, opts.markers.legacy.flushDone];
+    this.resyncMarkers = [opts.markers.resyncBegin, opts.markers.legacy.resyncBegin];
     this.maxPendingBytes = opts.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
     this.stripReplay = opts.stripReplay;
   }
@@ -130,20 +140,21 @@ export class SessionPipeStreamScanner {
       this.armed = false;
       this.pendingChunks = [];
       this.pendingBytes = 0;
-      const markerIndex = combined.indexOf(this.markers.flushDone);
-      if (markerIndex !== -1) {
-        return this.finishDiscardedOverflow(combined, markerIndex);
+      const hit = this.findMarker(combined, this.flushMarkers);
+      if (hit) {
+        return this.finishDiscardedOverflow(combined, hit);
       }
       this.discardingOverflowReplay = true;
-      const hold = this.matchingPrefixLen(combined, this.markers.flushDone);
+      const hold = this.holdLen(combined, this.flushMarkers);
       this.overflowCarry = hold > 0
         ? Buffer.from(combined.subarray(combined.length - hold))
         : EMPTY;
       return [];
     }
 
-    const markerIndex = combined.indexOf(this.markers.flushDone);
-    if (markerIndex === -1) return [];
+    const flushHit = this.findMarker(combined, this.flushMarkers);
+    if (!flushHit) return [];
+    const markerIndex = flushHit.index;
 
     this._mode = 'live';
     this.pendingChunks = [];
@@ -181,7 +192,7 @@ export class SessionPipeStreamScanner {
     // Emit data after marker (if any real-time data arrived in the same chunk).
     // After both the initial flush and a re-flush the scanner is disarmed, so
     // this tail is plain live output — passed straight through like the original.
-    const afterMarker = combined.subarray(markerIndex + this.markers.flushDone.length);
+    const afterMarker = combined.subarray(markerIndex + flushHit.length);
     if (afterMarker.length > 0) {
       events.push({ type: 'data', data: afterMarker, replay: false });
     }
@@ -198,25 +209,25 @@ export class SessionPipeStreamScanner {
       ? Buffer.concat([this.overflowCarry, buf])
       : buf;
     this.overflowCarry = EMPTY;
-    const markerIndex = combined.indexOf(this.markers.flushDone);
-    if (markerIndex !== -1) {
-      return this.finishDiscardedOverflow(combined, markerIndex);
+    const hit = this.findMarker(combined, this.flushMarkers);
+    if (hit) {
+      return this.finishDiscardedOverflow(combined, hit);
     }
-    const hold = this.matchingPrefixLen(combined, this.markers.flushDone);
+    const hold = this.holdLen(combined, this.flushMarkers);
     if (hold > 0) {
       this.overflowCarry = Buffer.from(combined.subarray(combined.length - hold));
     }
     return [];
   }
 
-  private finishDiscardedOverflow(combined: Buffer, markerIndex: number): ScanEvent[] {
+  private finishDiscardedOverflow(combined: Buffer, hit: MarkerHit): ScanEvent[] {
     this.discardingOverflowReplay = false;
     this.overflowCarry = EMPTY;
     this.armed = false;
     // No replay reached the renderer, so recoveredBytes=0 preserves any .txt
     // cache and still settles an in-flight attach/resync cleanly.
     const events: ScanEvent[] = [{ type: 'flushComplete', recoveredBytes: 0 }];
-    const afterMarker = combined.subarray(markerIndex + this.markers.flushDone.length);
+    const afterMarker = combined.subarray(hit.index + hit.length);
     if (afterMarker.length > 0) {
       events.push({ type: 'data', data: afterMarker, replay: false });
     }
@@ -234,8 +245,9 @@ export class SessionPipeStreamScanner {
     const combined = this.carry.length > 0 ? Buffer.concat([this.carry, buf]) : buf;
     this.carry = EMPTY;
 
-    const markerIndex = combined.indexOf(this.markers.resyncBegin);
-    if (markerIndex !== -1) {
+    const hit = this.findMarker(combined, this.resyncMarkers);
+    if (hit) {
+      const markerIndex = hit.index;
       const events: ScanEvent[] = [];
       if (markerIndex > 0) {
         events.push({ type: 'data', data: combined.subarray(0, markerIndex), replay: false });
@@ -244,7 +256,7 @@ export class SessionPipeStreamScanner {
       // disarm: the resync episode is now owned by the FLUSH_DONE cycle.
       this.armed = false;
       this._mode = 'accumulating';
-      const residual = combined.subarray(markerIndex + this.markers.resyncBegin.length);
+      const residual = combined.subarray(markerIndex + hit.length);
       if (residual.length > 0) {
         events.push(...this.accumulate(residual));
       }
@@ -254,13 +266,38 @@ export class SessionPipeStreamScanner {
     // No full marker in this buffer. Only a tail that is a strict prefix of the
     // marker can still complete on the next chunk; everything before it is
     // definitely live data.
-    const hold = this.matchingPrefixLen(combined, this.markers.resyncBegin);
+    const hold = this.holdLen(combined, this.resyncMarkers);
     if (hold === 0) {
       return combined.length > 0 ? [{ type: 'data', data: combined, replay: false }] : [];
     }
     const emittable = combined.subarray(0, combined.length - hold);
     this.carry = combined.subarray(combined.length - hold);
     return emittable.length > 0 ? [{ type: 'data', data: emittable, replay: false }] : [];
+  }
+
+  /** The earliest occurrence of any accepted form of a marker. */
+  private findMarker(buf: Buffer, markers: readonly Buffer[]): MarkerHit | null {
+    let best: MarkerHit | null = null;
+    for (const marker of markers) {
+      const index = buf.indexOf(marker);
+      if (index !== -1 && (best === null || index < best.index)) {
+        best = { index, length: marker.length };
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Bytes to hold back while no full marker is present: the longest tail that
+   * could still complete into any accepted form, so the hold covers the longer
+   * of the two.
+   */
+  private holdLen(buf: Buffer, markers: readonly Buffer[]): number {
+    let hold = 0;
+    for (const marker of markers) {
+      hold = Math.max(hold, this.matchingPrefixLen(buf, marker));
+    }
+    return hold;
   }
 
   /**

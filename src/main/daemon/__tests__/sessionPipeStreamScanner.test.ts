@@ -408,3 +408,87 @@ describe('max pending overflow', () => {
     expect(c.data.equals(b('live'))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Legacy marker form (an older daemon kept running)
+// ---------------------------------------------------------------------------
+
+describe('legacy marker form', () => {
+  // A UUID token makes the legacy form longer than the current one, so the
+  // split cases below only pass if the hold covers the longer form.
+  const UUID_MARKERS = createSessionPipeMarkers('6f1c2a9e-3b4d-4e5f-8a7b-0c1d2e3f4a5b');
+  const CURRENT = { flush: UUID_MARKERS.flushDone, resync: UUID_MARKERS.resyncBegin };
+  const LEGACY = { flush: UUID_MARKERS.legacy.flushDone, resync: UUID_MARKERS.legacy.resyncBegin };
+
+  const scanner = (maxPendingBytes?: number) => new SessionPipeStreamScanner({
+    markers: UUID_MARKERS,
+    stripReplay: identityStrip,
+    maxPendingBytes,
+  });
+
+  /** Feed `wire` one byte at a time, arming before each resync episode. */
+  function feedBytewise(s: SessionPipeStreamScanner, wire: Buffer): ScanEvent[] {
+    const events: ScanEvent[] = [];
+    for (let i = 0; i < wire.length; i++) {
+      if (s.mode === 'live') s.armResync();
+      events.push(...s.feed(wire.subarray(i, i + 1)));
+    }
+    return events;
+  }
+
+  it('the legacy form is the longer one with this token', () => {
+    expect(LEGACY.flush.length).toBeGreaterThan(CURRENT.flush.length);
+    expect(LEGACY.resync.length).toBeGreaterThan(CURRENT.resync.length);
+  });
+
+  for (const [name, form] of [['current', CURRENT], ['legacy', LEGACY]] as const) {
+    it(`${name} form ends the initial flush, whole and split byte by byte`, () => {
+      const wire = Buffer.concat([b('replay'), form.flush, b('live')]);
+      for (const events of [scanner().feed(wire), feedBytewise(scanner(), wire)]) {
+        const c = collect(events);
+        expect(c.flushes).toEqual([6]);
+        expect(c.data.equals(b('replaylive'))).toBe(true);
+      }
+    });
+
+    it(`${name} form starts a resync and ends its re-flush`, () => {
+      const wire = Buffer.concat([
+        form.flush, b('live1'), form.resync, b('replay2'), form.flush, b('live2'),
+      ]);
+      const s = scanner();
+      const c = collect(feedBytewise(s, wire));
+      expect(c.flushes).toEqual([0, 7]);
+      expect(c.data.equals(b('live1replay2live2'))).toBe(true);
+      expect(s.mode).toBe('live');
+    });
+
+    it(`${name} form ends a discarded overflow`, () => {
+      const s = scanner(5);
+      expect(s.feed(b('too-large'))).toEqual([]);
+      const c = collect(feedBytewise(s, Buffer.concat([form.flush, b('L')])));
+      expect(c.flushes).toEqual([0]);
+      expect(c.data.equals(b('L'))).toBe(true);
+    });
+  }
+
+  it('a stream that mixes both forms keeps every boundary', () => {
+    const segments = [
+      Buffer.concat([b('r1'), LEGACY.flush, b('l1')]),
+      Buffer.concat([CURRENT.resync, b('r2'), LEGACY.flush, b('l2')]),
+      Buffer.concat([LEGACY.resync, b('r3'), CURRENT.flush, b('l3')]),
+    ];
+    const wholeSegments = (s: SessionPipeStreamScanner): ScanEvent[] => segments.flatMap((seg) => {
+      if (s.mode === 'live') s.armResync();
+      return s.feed(seg);
+    });
+    const bytewise = (s: SessionPipeStreamScanner): ScanEvent[] => feedBytewise(s, Buffer.concat(segments));
+    for (const feed of [wholeSegments, bytewise]) {
+      const events = feed(scanner());
+      const c = collect(events);
+      const replayed = Buffer.concat(events.flatMap((e) => (e.type === 'data' && e.replay ? [e.data] : [])));
+      expect(c.flushes).toEqual([2, 2, 2]);
+      expect(c.data.equals(b('r1l1r2l2r3l3'))).toBe(true);
+      expect(replayed.equals(b('r1r2r3'))).toBe(true);
+    }
+  });
+});

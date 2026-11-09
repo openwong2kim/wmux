@@ -16,6 +16,13 @@ export interface SessionPipeMarkers {
   flushDone: Buffer;
   /** Sent immediately before a live-pipe re-flush begins. */
   resyncBegin: Buffer;
+  /**
+   * The earlier marker form, which carried the token itself. The daemon never
+   * sends it; main's scanner still accepts it so a daemon from an older
+   * release that is kept running (a failed or skipped replacement) can finish
+   * its replays. Removable once no supported daemon sends the old form.
+   */
+  legacy: { flushDone: Buffer; resyncBegin: Buffer };
 }
 
 /** Hex characters of the HMAC kept in each marker (128 bits). */
@@ -39,5 +46,9 @@ export function createSessionPipeMarkers(authToken: string): SessionPipeMarkers 
   return {
     flushDone: Buffer.from(`\x00WMUX_FLUSH_DONE:${markerTag(authToken, 'wmux-session-pipe/flush-done')}\x00`),
     resyncBegin: Buffer.from(`\x00WMUX_RESYNC_BEGIN:${markerTag(authToken, 'wmux-session-pipe/resync-begin')}\x00`),
+    legacy: {
+      flushDone: Buffer.from(`\x00WMUX_FLUSH_DONE:${authToken}\x00`),
+      resyncBegin: Buffer.from(`\x00WMUX_RESYNC_BEGIN:${authToken}\x00`),
+    },
   };
 }
