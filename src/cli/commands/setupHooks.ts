@@ -4,6 +4,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { writeJsonAtomic } from '../../shared/settingsFile';
+import { writeFileAtomic } from '../../shared/mcpRegistration';
+import { stripBom } from '../../shared/stripBom';
 import { dataSuffix } from '../../shared/constants';
 import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
 import { claudeConfigTargets, envClaudeConfigDir, type ClaudeConfigTarget } from '../../shared/claudeConfigTargets';
@@ -653,18 +655,34 @@ function loadSettings(settingsPath: string): LoadResult {
   } catch {
     return { settings: {}, exists: true, corrupted: true };
   }
+  const bare = stripBom(raw);
   // An empty file is treated as an empty object, not corruption.
-  if (raw.trim().length === 0) {
+  if (bare.trim().length === 0) {
     return { settings: {}, exists: true, corrupted: false };
   }
   try {
-    const parsed = JSON.parse(raw, safeReviver) as unknown;
+    const parsed = JSON.parse(bare, safeReviver) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { settings: {}, exists: true, corrupted: true };
     }
     return { settings: parsed as Record<string, unknown>, exists: true, corrupted: false };
   } catch {
     return { settings: {}, exists: true, corrupted: true };
+  }
+}
+
+/** Save settings.json, keeping the byte order mark of a file last saved with one. */
+function writeSettings(settingsPath: string, settings: Record<string, unknown>): void {
+  let raw = '';
+  try {
+    raw = fs.readFileSync(settingsPath, 'utf8');
+  } catch {
+    /* a new file has no mark to keep */
+  }
+  if (stripBom(raw) === raw) {
+    writeJsonAtomic(settingsPath, settings);
+  } else {
+    writeFileAtomic(settingsPath, `${raw[0]}${JSON.stringify(settings, null, 2)}\n`);
   }
 }
 
@@ -1010,7 +1028,7 @@ export function installHooks(
   if (pluginOwnsHooks(paths.settingsPath, settings)) {
     const removedForPlugin = stripWmuxHooks(settings);
     if (removedForPlugin > 0) {
-      writeJsonAtomic(paths.settingsPath, settings);
+      writeSettings(paths.settingsPath, settings);
     }
     return {
       ...base,
@@ -1058,7 +1076,7 @@ export function installHooks(
   settings.hooks = hooks;
 
   // 4. Atomic write.
-  writeJsonAtomic(paths.settingsPath, settings);
+  writeSettings(paths.settingsPath, settings);
 
   return {
     ...base,
@@ -1147,7 +1165,7 @@ export function updateHooks(paths: SetupHooksPaths, native: ClaudeNativePlan | n
     hooks[spec.event] = kept;
   }
   settings.hooks = hooks;
-  writeJsonAtomic(paths.settingsPath, settings);
+  writeSettings(paths.settingsPath, settings);
   return { ...base, ok: true, profile, updated: stale.map((r) => r.label) };
 }
 
@@ -1191,7 +1209,7 @@ export function allowFanoutWorkerTools(paths: Pick<SetupHooksPaths, 'settingsPat
   if (added.length === 0) return { ...base, ok: true };
   perms.allow = [...allow, ...added];
   settings.permissions = perms;
-  writeJsonAtomic(paths.settingsPath, settings);
+  writeSettings(paths.settingsPath, settings);
   return { ...base, ok: true, added };
 }
 
@@ -1409,7 +1427,7 @@ export function removeHooks(paths: SetupHooksPaths): RemoveOutcome {
   const settings = load.settings;
   const removed = stripWmuxHooks(settings);
   if (removed > 0) {
-    writeJsonAtomic(paths.settingsPath, settings);
+    writeSettings(paths.settingsPath, settings);
   }
   return { ok: true, settingsPath: paths.settingsPath, settingsExisted: true, removed, error: null };
 }

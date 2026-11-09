@@ -732,3 +732,42 @@ describe('configIO — codex hooks lockstep with wmuxHooks.mjs', () => {
     expect(codexVersionSupportsHooks(null)).toBe(mjs.codexSupportsHooks(null));
   });
 });
+
+describe('a config saved with a UTF-8 byte order mark', () => {
+  const BOM = '\uFEFF';
+
+  it('parses in both formats', () => {
+    expect(parseConfig(`${BOM}{"a":1}`, 'json')).toEqual({ a: 1 });
+    expect(parseConfig(`${BOM}a = 1\n`, 'toml')).toEqual({ a: 1 });
+    expect(parseConfig(BOM, 'json')).toEqual({});
+  });
+
+  it('keeps the mark through a JSON upsert and removal', () => {
+    const added = upsertMcpServer(`${BOM}{"theme":"dark"}`, 'json', 'wmux', '/w/index.js');
+    expect(added.startsWith(BOM)).toBe(true);
+    expect(parseConfig(added, 'json').theme).toBe('dark');
+    const removed = removeMcpServers(added, 'json', ['wmux']);
+    expect(removed.startsWith(BOM)).toBe(true);
+    expect(removed.lastIndexOf(BOM)).toBe(0);
+  });
+
+  it('returns the text unchanged when a removal finds nothing', () => {
+    const text = `${BOM}{"theme":"dark"}`;
+    expect(removeMcpServers(text, 'json', ['wmux'])).toBe(text);
+  });
+
+  // The line editors must see the header on line one, or the root key lands
+  // inside that table.
+  it('still finds a table header on the first line of a TOML file', () => {
+    const out = upsertNotifyToml(`${BOM}[projects]\na = 1\n`, '/w/wmux-codex-notify.mjs');
+    expect(out.startsWith(`${BOM}notify = `)).toBe(true);
+    expect(getNotify(parseConfig(out, 'toml'))).not.toBeNull();
+    expect(removeNotifyToml(out)).toBe(`${BOM}[projects]\na = 1\n`);
+  });
+
+  it('writes no lone mark when a removal empties the file', () => {
+    const only = upsertCodexHooksToml(BOM, '/w/wmux-codex-hooks-bridge.mjs');
+    expect(only.startsWith(BOM)).toBe(true);
+    expect(removeCodexHooksToml(only)).toBe('');
+  });
+});

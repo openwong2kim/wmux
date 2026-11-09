@@ -248,6 +248,22 @@ describe('installHooks', () => {
   });
 });
 
+describe('installHooks — settings.json saved with a byte order mark', () => {
+  it('reads it as valid and keeps the mark on the write', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, '\uFEFF{"model":"opus"}', 'utf8');
+
+    const outcome = installHooks(paths());
+
+    expect(outcome.ok).toBe(true);
+    const raw = fs.readFileSync(settingsPath, 'utf8');
+    expect(raw.charCodeAt(0)).toBe(0xfeff);
+    const parsed = JSON.parse(raw.slice(1));
+    expect(parsed.model).toBe('opus');
+    expect(parsed.hooks).toBeDefined();
+  });
+});
+
 describe('installHooks — plugin-aware', () => {
   it('strips duplicate wmux entries, does not re-add, and preserves foreign hooks', () => {
     // Seed a prior plugin-LESS install so settings.json carries wmux entries.

@@ -14,7 +14,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { randomBytes } from 'crypto';
 import {
   MCP_TARGETS,
   WMUX_SERVER_KEY,
@@ -50,6 +49,11 @@ import {
   type McpServerEntry,
 } from './configIO';
 import { getWmuxHomeDir } from './constants';
+import { withClaudeConfigLock } from './claudeConfigLock';
+import { writeFileAtomic } from '../main/surfaces/safeWrite/atomicWrite';
+import { ConfigChangedError, snapshotFile } from '../main/surfaces/safeWrite/snapshot';
+
+export { writeFileAtomic };
 
 /** The surface a registered entry launches with, read back off its argv. Null
  *  when nothing is registered. `commander` can appear even though no host
@@ -73,21 +77,23 @@ export interface TargetRegStatus {
   wmux: ServerRegState;
 }
 
-/** Atomic write (tmp + rename), creating the parent dir if needed. The temp
- *  name carries a per-process random suffix so two concurrent writers (CLI +
- *  GUI registrar, or parallel CLI invocations) can't collide on a shared
- *  `.tmp`; the temp file is cleaned up if the rename fails. */
-export function writeFileAtomic(filePath: string, text: string): void {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = `${filePath}.${process.pid}-${randomBytes(6).toString('hex')}.tmp`;
-  fs.writeFileSync(tmp, text, 'utf8');
-  try {
-    fs.renameSync(tmp, filePath);
-  } catch (e) {
-    try { fs.unlinkSync(tmp); } catch { /* best-effort cleanup */ }
-    throw e;
+/** Write an edited config, refusing when the file no longer holds the text the
+ *  edit was computed from: writing anyway would drop what another process just
+ *  saved. `readText` is null for a file that did not exist. */
+function replaceConfig(configPath: string, readText: string | null, newText: string): void {
+  const current = snapshotFile(configPath).text;
+  if (current !== readText) {
+    const reason = readText === null ? 'appeared' : current === null ? 'vanished' : 'modified';
+    throw new ConfigChangedError(configPath, reason);
   }
+  writeFileAtomic(configPath, newText);
+}
+
+/** Claude Code saves `~/.claude.json` under a lock of its own, so wmux's edit of
+ *  that one file takes the same lock. A held lock throws, which callers already
+ *  report per target as a failed write; the next registration tries again. */
+function withConfigLock<T>(target: McpTarget, configPath: string, edit: () => T): T {
+  return target.id === 'claude' ? withClaudeConfigLock(configPath, edit) : edit();
 }
 
 /** Pure read of one target's registration state. Never creates / throws. */
@@ -267,6 +273,17 @@ export function registerTarget(
   ownedKeys?: Set<string>,
   profile?: WmuxMcpEntryProfile,
 ): RegisterTargetResult {
+  return withConfigLock(target, target.configPath(home), () =>
+    registerTargetUnlocked(target, home, launcher, ownedKeys, profile));
+}
+
+function registerTargetUnlocked(
+  target: McpTarget,
+  home: string,
+  launcher: WmuxLauncherInput,
+  ownedKeys?: Set<string>,
+  profile?: WmuxMcpEntryProfile,
+): RegisterTargetResult {
   const configPath = target.configPath(home);
   const exists = fs.existsSync(configPath);
   if (!exists && !target.createIfMissing) {
@@ -343,7 +360,7 @@ export function registerTarget(
     return { configPath, skipped: 'malformed', wrote: [], foreign, profile: null };
   }
 
-  if (newText !== text) writeFileAtomic(configPath, newText); // write errors propagate
+  if (newText !== text) replaceConfig(configPath, exists ? text : null, newText); // write errors propagate
   return { configPath, skipped: null, wrote, foreign, profile: resultProfile };
 }
 
@@ -355,6 +372,10 @@ export interface UnregisterTargetResult {
 
 /** Remove the wmux-owned `wmux` key from one target's config. */
 export function unregisterTarget(target: McpTarget, home: string): UnregisterTargetResult {
+  return withConfigLock(target, target.configPath(home), () => unregisterTargetUnlocked(target, home));
+}
+
+function unregisterTargetUnlocked(target: McpTarget, home: string): UnregisterTargetResult {
   const configPath = target.configPath(home);
   if (!fs.existsSync(configPath)) return { configPath, removed: [], configExisted: false };
 
@@ -390,7 +411,7 @@ export function unregisterTarget(target: McpTarget, home: string): UnregisterTar
   } catch {
     return { configPath, removed: [], configExisted: true };
   }
-  writeFileAtomic(configPath, newText);
+  replaceConfig(configPath, text, newText);
   // Report only keys that are ACTUALLY gone — a mixed config (one removable
   // header-form key + one un-targetable inline key) must not claim the inline
   // one was removed.
@@ -476,7 +497,7 @@ export function registerCodexNotify(home: string, notifyScript: string): Registe
   } catch {
     return { configPath, skipped: 'malformed', wrote: false };
   }
-  if (newText !== text) writeFileAtomic(configPath, newText); // write errors propagate
+  if (newText !== text) replaceConfig(configPath, text, newText); // write errors propagate
   return { configPath, skipped: null, wrote: newText !== text };
 }
 
@@ -499,7 +520,7 @@ export function unregisterCodexNotify(home: string): { configPath: string; remov
     return { configPath, removed: false };
   }
   if (newText === text) return { configPath, removed: false };
-  writeFileAtomic(configPath, newText);
+  replaceConfig(configPath, text, newText);
   return { configPath, removed: true };
 }
 
@@ -690,7 +711,7 @@ export function registerCodexHooks(
   } catch {
     return { configPath, skipped: 'malformed', wrote: false };
   }
-  if (newText !== text) writeFileAtomic(configPath, newText); // write errors propagate
+  if (newText !== text) replaceConfig(configPath, text, newText); // write errors propagate
   writeInstallStamp();
   return { configPath, skipped: null, wrote: newText !== text };
 }
@@ -714,7 +735,7 @@ export function unregisterCodexHooks(home: string): { configPath: string; remove
     return { configPath, removed: false };
   }
   if (newText === text) return { configPath, removed: false };
-  writeFileAtomic(configPath, newText);
+  replaceConfig(configPath, text, newText);
   // Reset the evidence window: a block re-added later (e.g. by the manual
   // README flow, which writes no stamp) must not read as ACTIVE on firings
   // logged while the removed block was in place.
