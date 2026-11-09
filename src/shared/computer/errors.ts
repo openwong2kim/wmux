@@ -31,6 +31,7 @@ export const COMPUTER_ERROR_CODES = [
   'invalid_argument',
   'policy_denied',
   'needs_foreground',
+  'user_input_active',
   'internal',
 ] as const;
 
@@ -101,6 +102,9 @@ export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly strin
   // Internal to main (protocol `foreground: 'refuse'`): main re-sends the
   // action with real input and never shows this code to an agent.
   needs_foreground: ['Retry once. If it fails again, tell the user.'],
+  user_input_active: [
+    'The user is typing or moving the mouse, so nothing was sent. Wait a few seconds and retry; if it keeps happening, tell the user you are waiting for them.',
+  ],
   internal: ['Retry once (after getAppState when the disposition says input may have reached the app). If it fails again, tell the user.'],
 };
 
