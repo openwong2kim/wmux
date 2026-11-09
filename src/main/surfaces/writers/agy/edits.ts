@@ -4,6 +4,7 @@ import type { SurfaceFileEdit } from '../../../../shared/tokenUsage/surfaceTypes
 import { parseSkillFrontmatter } from '../../inventory/helpers';
 import type { ResolvedChange } from '../types';
 import { getPluginDirName, getSkillDirName } from './paths';
+import { stripBom } from '../../../../shared/stripBom';
 
 export interface PlannedFileEdits {
   filePath: string;
@@ -25,7 +26,7 @@ export function planEditsForFile(
   try {
     const text =
       snapshotText !== undefined ? snapshotText : fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : null;
-    if (text !== null) parsed = JSON.parse(text);
+    if (text !== null) parsed = JSON.parse(stripBom(text));
   } catch {
     parsed = null;
   }

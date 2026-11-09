@@ -59,6 +59,11 @@ export interface McpTarget {
    */
   createIfMissing: boolean;
   /**
+   * The agent saves this config under a `<file>.lock` directory of its own, so
+   * wmux's read-modify-write takes the same lock. Absent for the rest.
+   */
+  savesUnderLock?: boolean;
+  /**
    * Whether wmux's integration with this agent is empirically verified to work
    * end-to-end. Unverified targets are surfaced as "experimental / not
    * detected" and never created speculatively.
@@ -95,6 +100,7 @@ export const MCP_TARGETS: readonly McpTarget[] = AGENT_ROWS.flatMap((row): McpTa
     format: spec.format,
     configPath: (home) => path.join(home, ...spec.configPath),
     createIfMissing: spec.createIfMissing,
+    savesUnderLock: spec.savesUnderLock,
     verified: spec.verified,
     autoRegister: spec.autoRegister,
   }];

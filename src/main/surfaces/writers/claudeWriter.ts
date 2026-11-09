@@ -17,6 +17,7 @@ import type { ResolvedChange, SurfaceWriter, WriterContext, WriterDeps } from '.
 import { buildClaudeJsonEdits, getClaudeJsonPath } from './claude/claudeJsonTarget';
 import { buildSettingsEdits, resolveSettingsPath } from './claude/settingsTarget';
 import { isPathAllowed } from './claude/pathSecurity';
+import { ClaudeConfigLockedError, withClaudeConfigLock } from '../../../shared/claudeConfigLock';
 
 /** Settings changes grouped by the settings file they land in. Project MCP server disables only target ~/.claude.json. */
 function settingsChangesByPath(changes: ResolvedChange[], deps: WriterDeps): Map<string, ResolvedChange[]> {
@@ -63,10 +64,28 @@ function writeJsonEdits(run: ApplyRun, filePath: string, edits: JsonEdit[], snap
 function applyClaudeJson(run: ApplyRun, changes: ResolvedChange[]): string[] {
   const claudeJsonPath = getClaudeJsonPath(run.deps);
   if (!isPathAllowed(claudeJsonPath, run.deps)) return [];
-  const snapshot = snapshotFile(claudeJsonPath);
-  const result = buildClaudeJsonEdits(run.deps, changes, snapshot.text);
-  writeJsonEdits(run, claudeJsonPath, result.edits, snapshot);
-  return result.affectedItemIds;
+  const planned = buildClaudeJsonEdits(run.deps, changes, snapshotFile(claudeJsonPath).text);
+  // Most applies have nothing for this file, and those must not wait on its lock.
+  if (planned.edits.length === 0) return planned.affectedItemIds;
+  // Claude Code saves this file under a lock of its own; a held lock throws, and apply reports it.
+  return withClaudeConfigLock(claudeJsonPath, () => {
+    const snapshot = snapshotFile(claudeJsonPath);
+    const result = buildClaudeJsonEdits(run.deps, changes, snapshot.text);
+    writeJsonEdits(run, claudeJsonPath, result.edits, snapshot);
+    return result.affectedItemIds;
+  });
+}
+
+/** Puts back what this apply wrote. Restoring ~/.claude.json is a write to it too, so it takes the same lock. */
+function rollbackRun(run: ApplyRun): boolean {
+  const claudeJsonPath = getClaudeJsonPath(run.deps);
+  const undo = (): boolean => rollbackWrittenFiles(run.writtenFiles);
+  if (!run.writtenFiles.some((f) => f.path === claudeJsonPath)) return undo();
+  try {
+    return withClaudeConfigLock(claudeJsonPath, undo);
+  } catch {
+    return false;
+  }
 }
 
 /** Writes each settings file; returns the ids applied and the restored hooks to take out of the store. */
@@ -130,6 +149,7 @@ function applyErrorMessage(err: unknown, rollbackFailed: boolean): string {
   }
   if (err instanceof Error && err.message.startsWith('More than one hook matches')) return err.message;
   if (err instanceof ConfigChangedError) return 'The configuration changed while editing; reload and try again.';
+  if (err instanceof ClaudeConfigLockedError) return 'Claude Code is saving its config; nothing was changed. Try again in a moment.';
   return 'Applying the change failed; no file was left half-written.';
 }
 
@@ -189,7 +209,7 @@ export function createClaudeWriter(): SurfaceWriter {
           throw new Error('Project directory is required to toggle project MCP server');
         }
         // Roll back any files that were written in this apply call
-        const rollbackFailed = !rollbackWrittenFiles(run.writtenFiles);
+        const rollbackFailed = !rollbackRun(run);
         return {
           provider: 'claude',
           ok: false,

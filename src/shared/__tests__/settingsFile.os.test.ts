@@ -72,6 +72,15 @@ describe('writeJsonAtomic', () => {
     expect(JSON.parse(fs.readFileSync(real, 'utf8'))).toEqual({ model: 'opus' });
   });
 
+  it('keeps a byte order mark only when asked to', () => {
+    const file = path.join(tmpDir, 'settings.json');
+    fs.writeFileSync(file, '\uFEFF{}', 'utf8');
+    writeJsonAtomic(file, { a: 1 }, { keepBom: true });
+    expect(fs.readFileSync(file, 'utf8')).toBe('\uFEFF{\n  "a": 1\n}\n');
+    writeJsonAtomic(file, { a: 1 });
+    expect(fs.readFileSync(file, 'utf8')).toBe('{\n  "a": 1\n}\n');
+  });
+
   it('leaves the original intact and no temp behind when the write fails', () => {
     const file = path.join(tmpDir, 'settings.json');
     fs.writeFileSync(file, '{"keep":true}', 'utf8');

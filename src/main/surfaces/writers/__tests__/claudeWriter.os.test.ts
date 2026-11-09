@@ -1624,6 +1624,79 @@ describe('claudeWriter', () => {
     storeAfter.load();
     expect(storeAfter.removedHooks.get('claude', hookId)).toBeUndefined();
   });
+
+  it('an edit on configs saved with a byte order mark keeps their entries and the mark', async () => {
+    seedFixtures();
+    const deps = makeDeps(tempHome, tempProj);
+    const inv = await readInventory('claude', { homeDir: tempHome, projectDir: tempProj, run: deps.run });
+    const server = inv.items.find((i) => i.kind === 'mcp-server' && i.name === 'proj-server')!;
+    const userServer = inv.items.find((i) => i.kind === 'mcp-server' && i.name === 'user-server')!;
+
+    const claudeJsonPath = path.join(tempHome, '.claude.json');
+    const settingsPath = path.join(tempHome, '.claude', 'settings.json');
+    const seeded = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...seeded, deniedMcpServers: [{ serverName: 'kept-server' }] }), 'utf8');
+    for (const file of [claudeJsonPath, settingsPath]) {
+      fs.writeFileSync(file, `\uFEFF${fs.readFileSync(file, 'utf8')}`, 'utf8');
+    }
+
+    const res = await createClaudeWriter().apply({
+      deps,
+      inventory: inv,
+      changes: [{ item: server, enabled: false }, { item: userServer, enabled: false }],
+    });
+    expect(res.ok).toBe(true);
+
+    const claudeJsonRaw = fs.readFileSync(claudeJsonPath, 'utf8');
+    expect(claudeJsonRaw.charCodeAt(0)).toBe(0xfeff);
+    const claudeJson = JSON.parse(claudeJsonRaw.slice(1));
+    expect(claudeJson.projects[tempProj].disabledMcpServers).toEqual(['proj-server-disabled', 'proj-server']);
+    expect(claudeJson.projects[tempProj].extraProjectData).toEqual({ custom: 123 });
+    expect(claudeJson.unrelatedCliMeta).toEqual({ version: '1.0.0', customFlag: true });
+
+    const settingsRaw = fs.readFileSync(settingsPath, 'utf8');
+    expect(settingsRaw.charCodeAt(0)).toBe(0xfeff);
+    const settings = JSON.parse(settingsRaw.slice(1));
+    expect(settings.deniedMcpServers).toEqual([{ serverName: 'kept-server' }, { serverName: 'user-server' }]);
+    expect(settings.permissions.deny).toContain('WebSearch');
+    expect(settings.enabledPlugins['active-plugin@store']).toBe(true);
+  });
+
+  describe('Claude Code holds its lock on ~/.claude.json', () => {
+    const holdLock = (): string => {
+      const claudeJsonPath = path.join(tempHome, '.claude.json');
+      fs.mkdirSync(`${claudeJsonPath}.lock`);
+      return claudeJsonPath;
+    };
+
+    it('reports an edit of that file as an error and leaves it alone', async () => {
+      seedFixtures();
+      const deps = makeDeps(tempHome, tempProj);
+      const inv = await readInventory('claude', { homeDir: tempHome, projectDir: tempProj, run: deps.run });
+      const server = inv.items.find((i) => i.kind === 'mcp-server' && i.name === 'proj-server')!;
+      const claudeJsonPath = holdLock();
+      const before = fs.readFileSync(claudeJsonPath, 'utf8');
+
+      const res = await createClaudeWriter().apply({ deps, inventory: inv, changes: [{ item: server, enabled: false }] });
+
+      expect(res.ok).toBe(false);
+      expect(res.appliedItemIds).toEqual([]);
+      expect(res.error).toContain('Claude Code is saving its config');
+      expect(fs.readFileSync(claudeJsonPath, 'utf8')).toBe(before);
+    });
+
+    it('does not hold up a change that only touches settings.json', async () => {
+      seedFixtures();
+      const deps = makeDeps(tempHome, tempProj);
+      const inv = await readInventory('claude', { homeDir: tempHome, projectDir: tempProj, run: deps.run });
+      const userServer = inv.items.find((i) => i.kind === 'mcp-server' && i.name === 'user-server')!;
+      holdLock();
+
+      const res = await createClaudeWriter().apply({ deps, inventory: inv, changes: [{ item: userServer, enabled: false }] });
+
+      expect(res.ok).toBe(true);
+    });
+  });
 });
 
 describe('claudeWriter hook identity', () => {

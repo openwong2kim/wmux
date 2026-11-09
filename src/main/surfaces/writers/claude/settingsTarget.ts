@@ -8,6 +8,7 @@ import { applyHookChangesToRoot } from './hookTarget';
 import { deepEqual } from '../../safeWrite/deepEqual';
 import { foldPathCase } from '../../safeWrite/pathCase';
 import { isPathAllowed, resolveCanonicalPath } from './pathSecurity';
+import { stripBom } from '../../../../shared/stripBom';
 
 function pathsEqual(p1: string, p2: string): boolean {
   const norm1 = path.normalize(p1);
@@ -108,7 +109,7 @@ function readSettingsRoot(targetPath: string, snapshotText: string | null | unde
     snapshotText !== undefined ? snapshotText : fs.existsSync(targetPath) ? fs.readFileSync(targetPath, 'utf8') : null;
   if (text === null) return {};
   try {
-    return JSON.parse(text);
+    return JSON.parse(stripBom(text));
   } catch {
     return {};
   }

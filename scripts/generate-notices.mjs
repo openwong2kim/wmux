@@ -745,6 +745,17 @@ const BORROWED_SOURCES = [
       '- Interface-Agent (https://github.com/francedot/Interface-Agent),\n' +
       '  Copyright (c) 2024 Francesco Bonacci: the Windows UI Automation walk.',
   },
+  {
+    name: 'magpie',
+    license: 'MIT License',
+    repo: 'https://github.com/yetone/magpie',
+    copyright: 'Copyright (c) 2026 yetone',
+    what:
+      'Taking the lock Claude Code saves its config file under, adapted from its\n' +
+      'source at commit c7ebb6f8d (internal/claudelock/claudelock.go).\n' +
+      'wmux file: src/shared/claudeConfigLock.ts (it carries a header naming its\n' +
+      'source).',
+  },
 ];
 lines.push('ADAPTED SOURCES AND IMPLEMENTATION TECHNIQUES');
 lines.push('');

@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { writeJsonAtomic, copyFileAtomic } from '../../shared/settingsFile';
+import { stripBom } from '../../shared/stripBom';
 import type { StatuslineTargetOutcome } from '../../shared/statuslineOutcome';
 import { dataSuffix } from '../../shared/constants';
 import { isolatedScriptsNotice } from './setupHooks';
@@ -139,7 +140,8 @@ function loadSettings(settingsPath: string): LoadResult {
   } catch {
     return { settings: {}, exists: true, corrupted: true };
   }
-  if (raw.trim().length === 0) {
+  const bare = stripBom(raw);
+  if (bare.trim().length === 0) {
     return { settings: {}, exists: true, corrupted: false };
   }
   try {
@@ -149,7 +151,7 @@ function loadSettings(settingsPath: string): LoadResult {
     // written straight back — quietly deleting them from the operator's file.
     // JSON.parse makes such names ordinary own properties; they do not reach
     // Object.prototype.
-    const parsed = JSON.parse(raw) as unknown;
+    const parsed = JSON.parse(bare) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { settings: {}, exists: true, corrupted: true };
     }
@@ -399,7 +401,7 @@ export function installStatusline(
         }
       }
       load.settings.statusLine = { type: 'command', command };
-      writeJsonAtomic(t.settingsPath, load.settings);
+      writeJsonAtomic(t.settingsPath, load.settings, { keepBom: true });
       targets.push({ ...t, outcome: kind === 'foreign' ? 'replaced' : 'installed' });
     } catch (err) {
       targets.push({ ...t, outcome: 'failed', error: errorText(err) });
@@ -514,13 +516,13 @@ export function removeStatusline(paths: SetupStatuslinePaths): StatuslineOutcome
       isRestorableStatusLine(backup.entry.statusLine);
     if (restorable) {
       load.settings.statusLine = (backup as { entry: ReplacedBackup }).entry.statusLine;
-      writeJsonAtomic(t.settingsPath, load.settings);
+      writeJsonAtomic(t.settingsPath, load.settings, { keepBom: true });
       deleteBackup(paths, t.settingsPath);
       targets.push({ ...t, outcome: 'restored' });
       continue;
     }
     delete load.settings.statusLine;
-    writeJsonAtomic(t.settingsPath, load.settings);
+    writeJsonAtomic(t.settingsPath, load.settings, { keepBom: true });
     // A backup that no longer matches is stale, not precious — drop it so a
     // later remove cannot resurrect it.
     if (backup.kind === 'entry') deleteBackup(paths, t.settingsPath);

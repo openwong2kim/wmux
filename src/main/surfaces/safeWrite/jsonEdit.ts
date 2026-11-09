@@ -1,3 +1,5 @@
+import { stripBom } from '../../../shared/stripBom';
+
 export class JsonEditError extends Error {
   constructor(message: string) {
     super(message);
@@ -50,7 +52,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
 export function editJsonKeys(text: string, edits: JsonEdit[]): string {
   let root: unknown;
   try {
-    root = JSON.parse(text);
+    root = JSON.parse(stripBom(text));
   } catch (err) {
     throw new JsonEditError(`Invalid JSON: ${(err as Error).message}`);
   }
@@ -124,8 +126,9 @@ function parentOf(root: unknown, edit: JsonEdit): Record<string | number, unknow
   return current !== null && typeof current === 'object' ? current : null;
 }
 
-/** `value` as JSON in the original text's indent, line endings and final newline. */
+/** `value` as JSON in the original text's byte order mark, indent, line endings and final newline. */
 function formatLike(text: string, value: unknown): string {
+  const bom = stripBom(text) === text ? '' : text[0];
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   const hasTrailingNewline = text.endsWith('\n') || text.endsWith('\r\n');
   const indent = detectJsonIndent(text.split(/\r?\n/));
@@ -137,5 +140,5 @@ function formatLike(text: string, value: unknown): string {
   if (hasTrailingNewline) {
     formatted += eol;
   }
-  return formatted;
+  return bom + formatted;
 }

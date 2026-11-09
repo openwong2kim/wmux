@@ -133,7 +133,7 @@ describe('derived lists match the literals they replaced', () => {
     expect(targets.map((t) => ({ ...t, configPath: t.configPath(home) }))).toEqual([
       {
         id: 'claude', displayName: 'Claude Code', format: 'json', configPath: path.join(home, '.claude.json'),
-        createIfMissing: true, verified: true, autoRegister: true,
+        createIfMissing: true, savesUnderLock: true, verified: true, autoRegister: true,
       },
       {
         id: 'codex', displayName: 'Codex CLI', format: 'toml', configPath: path.join(home, '.codex', 'config.toml'),

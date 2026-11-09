@@ -23,6 +23,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
+import { stripBom } from './stripBom';
 
 /** Sharing violations and antivirus scans surface as these. They say "someone
  *  is holding the file right now", not "you may not do this", so a bounded
@@ -93,6 +94,15 @@ function existingMode(filePath: string): number | null {
   }
 }
 
+function leadingBom(filePath: string): string {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return stripBom(raw) === raw ? '' : raw[0];
+  } catch {
+    return '';
+  }
+}
+
 /**
  * Write `data` as pretty JSON to `filePath`, atomically and durably.
  *
@@ -100,8 +110,12 @@ function existingMode(filePath: string): number | null {
  * cannot cross filesystems). It inherits the destination's mode when there is
  * one, and is fsynced before the rename so the rename can never publish an
  * empty file. A failure leaves the original untouched and no temp behind.
+ *
+ * `keepBom` is for a file the operator owns: the byte order mark it was last
+ * saved with stays. Without it a mark is dropped, which suits wmux's own files,
+ * whose readers do not all accept one.
  */
-export function writeJsonAtomic(filePath: string, data: unknown): void {
+export function writeJsonAtomic(filePath: string, data: unknown, options: { keepBom?: boolean } = {}): void {
   const target = resolveWriteTarget(filePath);
   const dir = path.dirname(target);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -111,7 +125,8 @@ export function writeJsonAtomic(filePath: string, data: unknown): void {
   try {
     const fd = fs.openSync(tmp, 'w', mode);
     try {
-      fs.writeFileSync(fd, JSON.stringify(data, null, 2) + '\n', 'utf8');
+      const bom = options.keepBom ? leadingBom(target) : '';
+      fs.writeFileSync(fd, bom + JSON.stringify(data, null, 2) + '\n', 'utf8');
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
