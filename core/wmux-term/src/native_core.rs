@@ -268,6 +268,9 @@ struct XtermFeed {
     /// (NativeTerminal::resize). Unlike the other refusals this one ends:
     /// leaving that screen discards the rows that differ.
     alt_reflow: bool,
+    /// The sequence just tracked resets 47, 1047 or 1049, or is RIS: it may
+    /// leave the alternate screen, whatever this tracker thinks is shown.
+    may_leave_alt: bool,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -365,6 +368,7 @@ impl XtermFeed {
         if sequence == b"\x1b[!p" {
             self.set_margins(false);
         }
+        self.may_leave_alt = sequence == b"\x1bc";
         if sequence == b"\x1bc" {
             self.main_margins = false;
             self.alt_margins = false;
@@ -405,6 +409,7 @@ impl XtermFeed {
                             self.mouse = if set { protocol } else { 0 };
                         }
                         Some(47 | 1047 | 1049) => {
+                            self.may_leave_alt |= !set;
                             if set && !self.alt_screen {
                                 // xterm's alternate screen starts with its own
                                 // full region; Alacritty keeps one region, so
@@ -491,16 +496,15 @@ impl XtermFeed {
                 // Alacritty repeats whatever was printed last.
                 self.divergent |=
                     crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
-                let was_alt = self.alt_screen;
                 self.track(sequence, term.screen_lines());
                 next = Some(at + len);
-                if self.alt_reflow && was_alt && !self.alt_screen {
+                if self.alt_reflow && self.may_leave_alt {
                     // Leaving the alternate screen, or a reset there, drops
                     // its rows on both (xterm at once, Alacritty on the next
                     // entry), and with them the wrap flags a width change
-                    // lost. Confirmed on Alacritty's own mode at this byte,
-                    // so a control only this tracker reads as a leave lifts
-                    // nothing.
+                    // lost. Decided by Alacritty's own mode at this byte, not
+                    // this tracker's: past 32 parameters, for one, they
+                    // disagree on whether a leave happened.
                     parser.advance(term, &data[from..at + len]);
                     from = at + len;
                     let synchronized = parser.sync_timeout().pending_timeout();
@@ -1764,6 +1768,10 @@ mod tests {
         // though this tracker reads every one.
         let overflow = format!("\x1b[?{}1049l", "1;".repeat(32));
         assert!(!lifted(&[overflow.as_str()]));
+        assert!(
+            lifted(&[overflow.as_str(), "\x1b[?1049l"]),
+            "a real leave after it"
+        );
     }
 
     #[test]
