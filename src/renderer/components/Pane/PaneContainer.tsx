@@ -14,6 +14,16 @@ import { DialogHost, useHasDialogHost } from '../ui/dialogHost';
  */
 const SEPARATOR_HIT_TARGET = { coarse: 37, fine: 16 };
 
+/**
+ * The style of each Panel's content box. The library makes it `overflow: auto`,
+ * so a pane taller than its Panel (for a moment in a restructure, before the
+ * Group lays the new panel set out) showed a scrollbar, and the scrollbar took
+ * width from the pane: its terminal fitted a column short. The box still
+ * scrolls, so chrome taller than a very short Panel stays reachable with the
+ * wheel or keyboard, but its scrollbar takes no width.
+ */
+export const PANEL_CONTENT_STYLE = { scrollbarWidth: 'none' } as const;
+
 /** The band the library grabs with — it picks coarse or fine from this same
  *  media query, not per event. */
 function separatorBand(): number {
@@ -374,6 +384,7 @@ function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = f
               // the default layout of a panel set it has no cached layout for.
               defaultSize={`${pane.sizes?.[i] ?? 100 / pane.children.length}%`}
               minSize={10}
+              style={PANEL_CONTENT_STYLE}
               {...(zoomHidden ? { 'data-wmux-zoom-hidden': true } : {})}
             >
               <PaneContainer
