@@ -615,16 +615,12 @@ describe('access to a kept copy', () => {
         return `failed: ${String(err)}`;
       }
     };
-    const whoami = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\whoami.exe`;
-    const icacls = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\icacls.exe`;
+    const system32 = `${process.env.SystemRoot || 'C:\\Windows'}\\System32`;
     const saved = path.join(tmpDir, 'sddl.txt');
-    run(icacls, [path.basename(copy), '/save', saved], path.dirname(copy));
+    run(`${system32}\\icacls.exe`, [path.basename(copy), '/save', saved], path.dirname(copy));
     const diagnostics = [
-      `mock calls: ${JSON.stringify(harden.mock.calls)}`,
-      `mock results: ${JSON.stringify(harden.mock.results)}`,
-      `whoami /user: ${run(whoami, ['/user', '/fo', 'list'])}`,
-      `whoami /groups: ${run(whoami, ['/groups', '/fo', 'list'])}`,
-      `icacls: ${run(icacls, [copy])}`,
+      `hardening returned: ${JSON.stringify(harden.mock.results)}`,
+      `whoami /user: ${run(`${system32}\\whoami.exe`, ['/user', '/fo', 'list'])}`,
       `icacls /save: ${fs.existsSync(saved) ? fs.readFileSync(saved, 'utf16le') : 'none'}`,
     ].join('\n');
     expect(verifyOwnerOnlyDaclSync(copy, null), diagnostics).toBe(true);
