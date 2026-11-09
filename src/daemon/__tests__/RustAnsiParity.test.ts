@@ -150,6 +150,14 @@ const refused: Case[] = [
   // Refused by the serializer: xterm drops a saved pending wrap.
   synthetic('decsc-wrap-pending', 'abcdefgh\x1b7\x1b[H\x1b8X', 'xterm', 8),
   synthetic('alt-save-at-wrap', 'abcdefgh\x1b[?1049h\x1b[?1049lX', 'xterm', 8),
+  synthetic('alt-decsc-wrap-pending', 'n\x1b[?1049h\x1b[Habcdefgh\x1b7\x1b[H', 'xterm', 8),
+];
+
+// Served natively once the alternate screen that held the refused state is
+// left: the payload carries none of that screen. (Its saved cursor, which
+// xterm keeps, is in neither backend's payload.)
+const leftAlt: Case[] = [
+  synthetic('alt-decsc-wrap-pending-left', 'n\x1b[?1049h\x1b[Habcdefgh\x1b7\x1b[?1049lX', 'rust', 8),
 ];
 
 // A line feed into a soft-wrapped row's continuation: LF, VT and FF end the
@@ -278,7 +286,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
   beforeEach(() => vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath));
   afterEach(() => vi.unstubAllEnvs());
 
-  it.each([...accepted, ...refused, ...lineFeeds, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
+  it.each([...accepted, ...refused, ...leftAlt, ...lineFeeds, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
     await expectParity(c);
   });
 
