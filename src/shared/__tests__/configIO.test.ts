@@ -268,7 +268,8 @@ approval_mode = "approve"
 
     it('never takes a hooks marker that touches the last key', () => {
       const text = `${TABLE}# ${CODEX_HOOKS_MANAGED_MARKER}\n\n[[hooks.Stop]]\nmatcher = "*"\n\n# ${CODEX_HOOKS_MANAGED_END_MARKER}\n`;
-      expect(removeMcpServers(text, 'toml', ['wmux'])).toContain(`# ${CODEX_HOOKS_MANAGED_MARKER}`);
+      // By line: the end marker's text contains the start marker's.
+      expect(removeMcpServers(text, 'toml', ['wmux']).split('\n')).toContain(`# ${CODEX_HOOKS_MANAGED_MARKER}`);
     });
   });
 
