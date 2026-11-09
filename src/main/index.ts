@@ -281,6 +281,7 @@ import { daemonStageRootIn, removeDaemonRuntimeStagesAfterExit } from './daemon/
 // Squirrel events entirely (issue #463).
 import * as autostart from './autostart';
 import * as cliShim from './cliShim';
+import { SQUIRREL_INTEGRATIONS_BUDGET_MS, formatIntegrationItem, removeAgentIntegrations } from '../cli/commands/uninstallIntegrations';
 import * as shortcutHygiene from './shortcutHygiene';
 import { runPostInstallReconcile } from './postInstallReconcile';
 import {
@@ -470,6 +471,26 @@ if (process.platform === 'win32') {
       // userData outlives the uninstall, so say so in it: a later install is
       // a first install again (autostart on, Desktop shortcut).
       try { if (hookUserData !== null) markProfileUninstalled(hookUserData); } catch { /* best-effort */ }
+
+      // Take wmux out of the other agents' configs while the install still
+      // stands, so none is left on a dead MCP server or failing hooks. Only this
+      // branch: an update runs --squirrel-updated and --squirrel-obsolete. The
+      // running instances were stopped above, so none can write them back. Under
+      // a budget, because Squirrel cancels this hook at about 16 s and the steps
+      // below must still run.
+      try {
+        const report = removeAgentIntegrations({
+          home: os.homedir(),
+          startDir: __dirname,
+          // Squirrel runs this hook on the installed copy; its root holds every app-*.
+          copy: { installed: true, roots: [path.dirname(path.dirname(process.execPath))] },
+          deadlineMs: SQUIRREL_INTEGRATIONS_BUDGET_MS,
+        });
+        if (report.skipped) console.log(`[Squirrel] ${report.skipped}`);
+        for (const item of report.items) {
+          if (item.outcome !== 'not-present') console.log(`[Squirrel] ${formatIntegrationItem(item)}`);
+        }
+      } catch { /* best-effort */ }
 
       // X4: remove the CLI shim + strip <root>\bin from the user PATH.
       try { cliShim.uninstallCliShim(process.execPath); } catch { /* best-effort */ }
