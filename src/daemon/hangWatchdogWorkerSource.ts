@@ -101,9 +101,17 @@ function dump(done) {
     session.connectToMainThread();
     session.on('Debugger.scriptParsed', (message) => { urls.set(message.params.scriptId, message.params.url); });
     session.on('Debugger.paused', (message) => {
-      const frames = message.params.callFrames.slice(0, MAX_FRAMES).map((frame) => frameLine(frame, urls));
+      // First: the message is already a copy, and an inspector event swallows a
+      // throw, so anything failing ahead of this would hold the main thread for the
+      // whole time box (measured: 3004 ms against 20).
       session.post('Debugger.resume');
-      finish(['state: JavaScript', 'detail: paused ' + (Date.now() - askedAt) + ' ms after asking', 'frames:'].concat(frames.map((f) => '  ' + f)));
+      const detail = 'detail: paused ' + (Date.now() - askedAt) + ' ms after asking';
+      try {
+        const frames = message.params.callFrames.slice(0, MAX_FRAMES).map((frame) => '  ' + frameLine(frame, urls));
+        finish(['state: JavaScript', detail, 'frames:'].concat(frames));
+      } catch {
+        finish(['state: JavaScript', detail, 'frames: could not be read']);
+      }
     });
     session.post('Debugger.enable');
     session.post('Debugger.pause');
