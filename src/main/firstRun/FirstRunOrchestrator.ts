@@ -40,6 +40,7 @@ import {
 } from '../../shared/agentInstall';
 import { isExecutableFile, liveResolveEnv, programOnPath } from '../claude/resolveClaudeExecutable';
 import { atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import { stripBom } from '../../shared/stripBom';
 
 const MARKER_FILENAME = '.first-run';
 /** A skipped first run's marker body starts with this; a completed one is the
@@ -433,7 +434,7 @@ export class FirstRunOrchestrator {
     try {
       const content = await fs.readFile(claudeJsonPath, 'utf8');
       try {
-        JSON.parse(content);
+        JSON.parse(stripBom(content));
       } catch (e: unknown) {
         return { ok: false, code: 'PARSE', message: this.errorMessage(e, 'malformed ~/.claude.json') };
       }

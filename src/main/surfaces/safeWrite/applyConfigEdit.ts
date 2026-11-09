@@ -5,6 +5,7 @@ import { backupFile } from './backup';
 import { writeFileAtomic } from './atomicWrite';
 import { editJsonKeys, JsonEdit } from './jsonEdit';
 import { editTomlKeys, TomlEdit } from './tomlEdit';
+import { stripBom } from '../../../shared/stripBom';
 
 export interface ApplyConfigEditOptions {
   path: string;
@@ -43,7 +44,7 @@ export function applyConfigEdit(options: ApplyConfigEditOptions): ApplyConfigEdi
     try {
       const written = fs.readFileSync(options.path, 'utf8');
       if (options.kind === 'json') {
-        JSON.parse(written);
+        JSON.parse(stripBom(written));
       } else {
         parseTomlText(written);
       }
@@ -81,7 +82,7 @@ export function applyConfigEdit(options: ApplyConfigEditOptions): ApplyConfigEdi
   try {
     const written = fs.readFileSync(options.path, 'utf8');
     if (options.kind === 'json') {
-      JSON.parse(written);
+      JSON.parse(stripBom(written));
     } else {
       parseTomlText(written);
     }

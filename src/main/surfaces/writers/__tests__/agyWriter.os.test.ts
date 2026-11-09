@@ -9,6 +9,7 @@ import {
 } from '../index';
 import { readInventory } from '../../inventory';
 import { createAgyWriter } from '../agyWriter';
+import { planEditsForFile } from '../agy/edits';
 import * as safeWrite from '../../safeWrite';
 import { ConfigChangedError, SurfacesStore } from '../../safeWrite';
 
@@ -1168,5 +1169,12 @@ describe('agyWriter', () => {
         }),
       ).rejects.toThrow('Unsupported item kind: builtin-tool');
     });
+  });
+
+  it('plans from the existing entries of a config saved with a byte order mark', () => {
+    const item = { id: 'tool', kind: 'mcp-tool', name: 'toolB', parent: 'srv' } as never;
+    const text = '\uFEFF{"mcpServers":{"srv":{"disabledTools":["toolA"]}}}';
+    const planned = planEditsForFile('/agy/mcp.json', [{ item, enabled: false }], text);
+    expect(planned.jsonEdits[0].value).toEqual(['toolA', 'toolB']);
   });
 });

@@ -4,7 +4,6 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { writeJsonAtomic } from '../../shared/settingsFile';
-import { writeFileAtomic } from '../../shared/mcpRegistration';
 import { stripBom } from '../../shared/stripBom';
 import { dataSuffix } from '../../shared/constants';
 import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
@@ -671,21 +670,6 @@ function loadSettings(settingsPath: string): LoadResult {
   }
 }
 
-/** Save settings.json, keeping the byte order mark of a file last saved with one. */
-function writeSettings(settingsPath: string, settings: Record<string, unknown>): void {
-  let raw = '';
-  try {
-    raw = fs.readFileSync(settingsPath, 'utf8');
-  } catch {
-    /* a new file has no mark to keep */
-  }
-  if (stripBom(raw) === raw) {
-    writeJsonAtomic(settingsPath, settings);
-  } else {
-    writeFileAtomic(settingsPath, `${raw[0]}${JSON.stringify(settings, null, 2)}\n`);
-  }
-}
-
 /**
  * Strip every wmux-owned hook LEAF from a settings.hooks map, dropping any
  * group, event array (and the `hooks` key itself) left empty. Returns the
@@ -1028,7 +1012,7 @@ export function installHooks(
   if (pluginOwnsHooks(paths.settingsPath, settings)) {
     const removedForPlugin = stripWmuxHooks(settings);
     if (removedForPlugin > 0) {
-      writeSettings(paths.settingsPath, settings);
+      writeJsonAtomic(paths.settingsPath, settings, { keepBom: true });
     }
     return {
       ...base,
@@ -1076,7 +1060,7 @@ export function installHooks(
   settings.hooks = hooks;
 
   // 4. Atomic write.
-  writeSettings(paths.settingsPath, settings);
+  writeJsonAtomic(paths.settingsPath, settings, { keepBom: true });
 
   return {
     ...base,
@@ -1165,7 +1149,7 @@ export function updateHooks(paths: SetupHooksPaths, native: ClaudeNativePlan | n
     hooks[spec.event] = kept;
   }
   settings.hooks = hooks;
-  writeSettings(paths.settingsPath, settings);
+  writeJsonAtomic(paths.settingsPath, settings, { keepBom: true });
   return { ...base, ok: true, profile, updated: stale.map((r) => r.label) };
 }
 
@@ -1209,7 +1193,7 @@ export function allowFanoutWorkerTools(paths: Pick<SetupHooksPaths, 'settingsPat
   if (added.length === 0) return { ...base, ok: true };
   perms.allow = [...allow, ...added];
   settings.permissions = perms;
-  writeSettings(paths.settingsPath, settings);
+  writeJsonAtomic(paths.settingsPath, settings, { keepBom: true });
   return { ...base, ok: true, added };
 }
 
@@ -1427,7 +1411,7 @@ export function removeHooks(paths: SetupHooksPaths): RemoveOutcome {
   const settings = load.settings;
   const removed = stripWmuxHooks(settings);
   if (removed > 0) {
-    writeSettings(paths.settingsPath, settings);
+    writeJsonAtomic(paths.settingsPath, settings, { keepBom: true });
   }
   return { ok: true, settingsPath: paths.settingsPath, settingsExisted: true, removed, error: null };
 }

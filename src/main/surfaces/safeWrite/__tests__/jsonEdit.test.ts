@@ -95,4 +95,11 @@ describe('editJsonKeys', () => {
     const input = '{\n  "a": 1\n}\n';
     expect(editJsonKeys(input, [{ path: ['nonexistent', 'nested'], op: 'delete' }])).toBe(input);
   });
+
+  it('reads past a byte order mark and keeps it', () => {
+    const input = '\uFEFF{\n  "a": 1\n}\n';
+    expect(editJsonKeys(input, [])).toBe(input);
+    expect(editJsonKeys(input, [{ path: ['a'], op: 'set', value: 1 }])).toBe(input);
+    expect(editJsonKeys(input, [{ path: ['b'], op: 'set', value: 2 }])).toBe('\uFEFF{\n  "a": 1,\n  "b": 2\n}\n');
+  });
 });
