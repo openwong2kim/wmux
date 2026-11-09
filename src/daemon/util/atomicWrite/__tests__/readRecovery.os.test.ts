@@ -135,6 +135,20 @@ describe.each([
     expect(countErrorWarn(logText)).toEqual({ errors: 2, warns: 0 });
   });
 
+  it('a second episode after a successful write is logged too', async () => {
+    const first = failReads(targetPath, 'EBUSY');
+    await expect(read({ readRetry: noSleep })).resolves.toEqual({ gen: 'old' });
+    first.restore();
+    await write({ gen: 'written' });
+    const errorsAfterFirst = countErrorWarn(logged.join('')).errors;
+    expect(errorsAfterFirst).toBe(2);
+
+    const second = failReads(targetPath, 'EBUSY');
+    await read({ readRetry: noSleep });
+    second.restore();
+    expect(countErrorWarn(logged.join('')).errors).toBe(errorsAfterFirst + 2);
+  });
+
   it('is not retried off win32', async () => {
     const restore = asPlatform('linux');
     const reads = failReads(targetPath, 'EACCES');

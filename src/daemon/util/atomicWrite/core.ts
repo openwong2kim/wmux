@@ -582,6 +582,8 @@ const lastWritten = new Map<string, { mtimeMs: number; size: number }>();
 const LAST_WRITTEN_MAX = 512;
 
 function rememberWritten(targetPath: string, stat: fs.Stats | null): void {
+  // The file is new, so a failure to read it after this is a new one to report.
+  notePrimaryRead(targetPath);
   const key = path.resolve(targetPath);
   lastWritten.delete(key);
   if (!stat) return;
