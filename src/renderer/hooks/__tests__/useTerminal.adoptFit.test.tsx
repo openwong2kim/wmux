@@ -298,6 +298,17 @@ describe('useTerminal: an adopted terminal fits after the layout, not against th
     expect(sentFor('p-adopt-webgl-skipped')).toEqual(['57x20']);
   });
 
+  it('a pool full at the reveal queues no upgrade: a slot freed before the layout does not hold the first fit', async () => {
+    const { size, restructure } = await settledPane('p-adopt-pool-full');
+    const evict = vi.spyOn(webglContextPool, 'acquireWouldEvict').mockReturnValue(true);
+    await restructure('second');
+    evict.mockReturnValue(false);
+    Object.assign(size, { cols: 57, rows: 20 });
+    act(() => ManualResizeObserver.fire());
+    await settle(20);
+    expect(sizesFor('p-adopt-pool-full')).toEqual(['57x20']);
+  });
+
   it('during an animated layout change the first fit waits for the release, and still for the renderer', async () => {
     const { size, restructure, upgrade } = await settledPane('p-adopt-held');
     await restructure('second');

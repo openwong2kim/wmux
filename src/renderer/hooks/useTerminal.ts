@@ -5103,6 +5103,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             });
           });
         }
+      } else {
+        // No upgrade will run for this reveal, so a slot freed later must not
+        // make an adoption's first fit wait for one.
+        adoptSettleRef.current?.(true);
       }
       // Defer fit to allow CSS display change to take effect before measuring.
       // Selection-preservation guard — workspace/tab switch then immediate
