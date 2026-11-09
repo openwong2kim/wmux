@@ -102,6 +102,17 @@ export interface AtomicReadOptions<T> {
   clock?: () => number;
 
   /**
+   * This read does not feed a later write of the file (a targeted read of one
+   * field, a check). It still throws `CouldNotReadError`, but neither holds
+   * writes back nor releases a hold, so one blip here cannot stop a store whose
+   * state in memory is good from saving.
+   */
+  readOnly?: boolean;
+
+  /** Test seam for the win32 read retry. Mirrors `AtomicWriteOptions.renameRetry`. */
+  readRetry?: RenameRetryPolicy;
+
+  /**
    * validate 거부 시 격리(quarantine) 이동 여부(기본 true — 기존 동작 불변).
    * false면 손상 파일을 **절대 이동·수정하지 않고** null만 반환한다 — genesis·reseed처럼
    * "어떤 경로도 수정·삭제하지 않는다"(envelope-design §6.2 불변 계약) 아티팩트의
@@ -395,6 +406,163 @@ export function chainAsyncWrite(targetPath: string, run: () => Promise<void>): P
   return next;
 }
 
+// ── Could not read ───────────────────────────────────────────────────
+
+/**
+ * The read itself failed, so nothing is known about what the file holds: not
+ * missing (a null read), not corrupt (the bytes were read and are bad). Thrown
+ * by the atomic reads, and by a write to a file whose last read ended this way.
+ */
+export class CouldNotReadError extends Error {
+  readonly code = 'ECOULDNOTREAD';
+  /** The operating system's code for the failure, such as EBUSY. */
+  readonly fileCode: string;
+
+  constructor(readonly path: string, err: unknown) {
+    const fileCode = (err as NodeJS.ErrnoException | undefined)?.code ?? String(err);
+    super(`could not read "${path}" (${fileCode}); it is left as it is`);
+    this.name = 'CouldNotReadError';
+    this.fileCode = fileCode;
+  }
+}
+
+function isAbsentError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+// Adapted from yetone/magpie@c7ebb6f8d (internal/steady/steady.go), MIT
+/**
+ * The file's text, or null when it is not there, which is never waited on: most
+ * reads of an absent file are of a store not written yet. A file another process
+ * holds for a moment on win32 is retried with the rename policy above; any other
+ * failure, or one that outlasts the retries, is a `CouldNotReadError`.
+ */
+export function readFileRetryingSync(filePath: string, policy?: RenameRetryPolicy): string | null {
+  const delays = clampRetryDelays(policy?.delaysMs ?? RENAME_RETRY_DELAYS_MS);
+  const sleep = policy?.sleepSync ?? sleepSyncDefault;
+
+  for (let i = 0; ; i++) {
+    try {
+      return fs.readFileSync(filePath, 'utf-8');
+    } catch (err) {
+      if (isAbsentError(err)) return null;
+      const retryable =
+        process.platform === 'win32' &&
+        i < delays.length &&
+        isTransientRenameError(err) &&
+        takeSyncRetryBudget(delays[i]);
+      if (!retryable) throw new CouldNotReadError(filePath, err);
+      try {
+        sleep(delays[i]);
+      } catch {
+        throw new CouldNotReadError(filePath, err);
+      }
+    }
+  }
+}
+
+export async function readFileRetrying(filePath: string, policy?: RenameRetryPolicy): Promise<string | null> {
+  const delays = clampRetryDelays(policy?.delaysMs ?? RENAME_RETRY_DELAYS_MS);
+  const sleep = policy?.sleep ?? sleepDefault;
+
+  for (let i = 0; ; i++) {
+    try {
+      return await fsp.readFile(filePath, 'utf-8');
+    } catch (err) {
+      if (isAbsentError(err)) return null;
+      const retryable =
+        process.platform === 'win32' &&
+        i < delays.length &&
+        isTransientRenameError(err);
+      if (!retryable) throw new CouldNotReadError(filePath, err);
+      try {
+        await sleep(delays[i]);
+      } catch {
+        throw new CouldNotReadError(filePath, err);
+      }
+    }
+  }
+}
+
+/**
+ * One line in the shape of both log sinks' `logLine`. Their tee carries stderr
+ * into the main and daemon daily logs, and `wmux doctor` counts the level token.
+ * Written directly because this module takes no logger dependency.
+ */
+function logStateEvent(level: 'warn' | 'error', message: string): void {
+  try {
+    process.stderr.write(`[${new Date().toISOString()}] [${level}] [atomicWrite] ${message}\n`);
+  } catch {
+    // Logging must never throw.
+  }
+}
+
+// Files whose last read could not read them. Most callers catch every read
+// error and carry on with an empty store, so the read's error alone would not
+// stop their next save from replacing a good file with that emptiness. Their
+// writes are refused here until a read of the file gets through, which is also
+// what a store that reads before each write does next time.
+const heldTargets = new Map<string, CouldNotReadError>();
+
+export function holdWrites(targetPath: string, err: CouldNotReadError): void {
+  const key = path.resolve(targetPath);
+  if (heldTargets.has(key)) return;
+  heldTargets.set(key, err);
+  logStateEvent('error', `${err.message}; writes to it are refused until a read succeeds`);
+}
+
+export function releaseWrites(targetPath: string): void {
+  heldTargets.delete(path.resolve(targetPath));
+}
+
+export function assertWritesNotHeld(targetPath: string): void {
+  const held = heldTargets.get(path.resolve(targetPath));
+  if (held) throw new CouldNotReadError(targetPath, { code: held.fileCode });
+}
+
+// Adapted from yetone/magpie@c7ebb6f8d (internal/lastgood/lastgood.go), MIT
+// A store read hundreds of times over is reported once, until its file reads.
+const reportedFallbacks = new Set<string>();
+
+export type PrimaryProblem = 'missing' | 'corrupt';
+
+/** A read that did not come from the file itself. */
+export function noteFallback(targetPath: string, slot: string, problem: PrimaryProblem): void {
+  const key = path.resolve(targetPath);
+  if (reportedFallbacks.has(key)) return;
+  reportedFallbacks.add(key);
+  // A missing file is also what a crash between a write's two renames leaves,
+  // and what a reader sees during them, so only corruption counts as an error.
+  logStateEvent(
+    problem === 'corrupt' ? 'error' : 'warn',
+    `"${targetPath}" is ${problem}; using the older state in ${path.basename(slot)}`,
+  );
+}
+
+export function notePrimaryRead(targetPath: string): void {
+  reportedFallbacks.delete(path.resolve(targetPath));
+}
+
+// Adapted from yetone/magpie@c7ebb6f8d (internal/lastgood/lastgood.go), MIT
+/**
+ * What a write does with the primary it is about to replace. Only a `good` one
+ * becomes `.bak`: a `bad` one is set aside and an `empty` one holds nothing to
+ * keep, so in both cases the last good backup stays where it is.
+ */
+export type PrimaryVerdict = 'absent' | 'good' | 'empty' | 'bad';
+
+function judgePrimaryJSON(raw: string | null, validate?: (data: unknown) => boolean): PrimaryVerdict {
+  if (raw === null) return 'absent';
+  if (raw.trim() === '') return 'empty';
+  try {
+    const parsed = parseJSONSafe(raw);
+    return parsed !== null && (!validate || validate(parsed)) ? 'good' : 'bad';
+  } catch {
+    return 'bad';
+  }
+}
+
 function ensureDirSync(filePath: string): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) {
@@ -540,6 +708,8 @@ export async function atomicWriteJSON(
   // Serialised per target: see chainAsyncWrite for why interleaving async
   // writers across the retry window loses data.
   return chainAsyncWrite(targetPath, async () => {
+    assertWritesNotHeld(targetPath);
+
     const tmp = makeTmpPath(targetPath);
     const bak = bakPathFor(targetPath);
 
@@ -564,44 +734,60 @@ export async function atomicWriteJSON(
         await fsp.writeFile(tmp, json, { encoding: 'utf-8', mode: 0o600 });
       }
 
-      // 2. When rotation is enabled we shift the existing numbered
+      // 2. Judge the primary. A read that fails here stops the write: the
+      //    file is neither replaced nor rotated while nothing is known of it.
+      const verdict = judgePrimaryJSON(
+        await readFileRetrying(targetPath, opts.renameRetry),
+        opts.validate,
+      );
+      if (verdict === 'bad') {
+        const moved = await quarantineFile(targetPath, 'failed validation before a write', { clock: opts.clock });
+        if (!moved) {
+          // eslint-disable-next-line no-console
+          console.warn(`[atomicWrite] could not set aside the invalid "${targetPath}"; the write replaces it`);
+        }
+      }
+
+      // 3. When rotation is enabled we shift the existing numbered
       //    slots BEFORE overwriting `.bak` so nothing is lost:
       //      .bak.2 → .bak.3, .bak.1 → .bak.2, .bak → .bak.1.
       //    With rotation off we keep the historical single-slot
-      //    behaviour (current `.bak` is overwritten by step 3).
-      if (opts.rotationEnabled) {
+      //    behaviour (current `.bak` is overwritten by step 4).
+      if (opts.rotationEnabled && (verdict === 'good' || verdict === 'absent')) {
         await rotateBackups(targetPath);
       }
 
-      // 3. Rotate current → .bak. The SAME AV contention that holds the
+      // 4. Rotate current → .bak. The SAME AV contention that holds the
       //    commit rename can hold this one, and giving up here means the
       //    commit overwrites the primary while `.bak` still holds an older
       //    generation — the last good copy would survive nowhere. Retry it
       //    with the same policy; if it still fails we keep the historical
       //    warn-and-continue (availability over the backup guarantee).
-      try {
-        await commitRename(targetPath, bak, opts.renameRetry, 'backup');
-        movedToBak = true;
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== 'ENOENT') {
-          // eslint-disable-next-line no-console
-          console.warn('[atomicWrite] Failed to create backup:', err);
+      if (verdict === 'good') {
+        try {
+          await commitRename(targetPath, bak, opts.renameRetry, 'backup');
+          movedToBak = true;
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT') {
+            // eslint-disable-next-line no-console
+            console.warn('[atomicWrite] Failed to create backup:', err);
+          }
         }
       }
 
-      // 4. Atomic rename tmp → target (retried on win32 AV contention).
+      // 5. Atomic rename tmp → target (retried on win32 AV contention).
       try {
         await commitRename(tmp, targetPath, opts.renameRetry);
       } catch (err) {
-        // The primary is gone (step 3 moved it) and the new data never
+        // The primary is gone (step 4 moved it) and the new data never
         // landed. Put the previous generation back so "a failed write
         // leaves the previous state" still holds.
         if (movedToBak) await rollbackBak(bak, targetPath);
         throw err;
       }
 
-      // 5. §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
+      // 6. §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
       if (opts.durable) {
         await fsyncParentDir(path.dirname(targetPath));
       }
@@ -615,27 +801,20 @@ export async function atomicWriteJSON(
 
 // ── Async read ───────────────────────────────────────────────────────
 
-async function readParsed(filePath: string): Promise<unknown | null> {
-  let raw: string;
-  try {
-    raw = await fsp.readFile(filePath, 'utf-8');
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') return null;
-    throw err;
-  }
-  if (!raw) return null;
-  return parseJSONSafe(raw);
-}
-
 export async function atomicReadJSON<T>(
   targetPath: string,
   opts: AtomicReadOptions<T> = {},
 ): Promise<T | null> {
+  let primaryProblem: PrimaryProblem = 'missing';
   const attempt = async (p: string, label: 'primary' | 'backup'): Promise<T | null> => {
+    // A failed read throws out of here: it is not a slot to step past.
+    const raw = await readFileRetrying(p, opts.readRetry);
+    if (raw === null) return null;
+    if (label === 'primary') primaryProblem = 'corrupt';
+    if (!raw) return null;
     let parsed: unknown;
     try {
-      parsed = await readParsed(p);
+      parsed = parseJSONSafe(raw);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(`[atomicRead] ${label} parse failed for "${p}":`, err);
@@ -701,16 +880,35 @@ export async function atomicReadJSON<T>(
   // is deliberately independent of `rotationEnabled`: a legacy
   // single-`.bak` file still participates, and rotated archives
   // added by T5 become usable without any call-site change.
-  const primary = await attempt(targetPath, 'primary');
-  if (primary !== null) return primary;
+  try {
+    const primary = await attempt(targetPath, 'primary');
+    if (primary !== null) {
+      settleRead(targetPath, opts, true);
+      return primary;
+    }
 
-  for (const suffix of BACKUP_SUFFIXES) {
-    const candidate = `${targetPath}${suffix}`;
-    const backup = await attempt(candidate, 'backup');
-    if (backup !== null) return backup;
+    for (const suffix of BACKUP_SUFFIXES) {
+      const candidate = `${targetPath}${suffix}`;
+      const backup = await attempt(candidate, 'backup');
+      if (backup !== null) {
+        noteFallback(targetPath, candidate, primaryProblem);
+        settleRead(targetPath, opts, false);
+        return backup;
+      }
+    }
+  } catch (err) {
+    if (err instanceof CouldNotReadError && !opts.readOnly) holdWrites(targetPath, err);
+    throw err;
   }
 
+  settleRead(targetPath, opts, false);
   return null;
+}
+
+/** A read that got through: whatever it found, it is what the file holds. */
+function settleRead<T>(targetPath: string, opts: AtomicReadOptions<T>, fromPrimary: boolean): void {
+  if (fromPrimary) notePrimaryRead(targetPath);
+  if (!opts.readOnly) releaseWrites(targetPath);
 }
 
 // ── Sync write (emergency save paths) ────────────────────────────────
@@ -736,6 +934,8 @@ export function atomicWriteJSONSync(
     }
   }
 
+  assertWritesNotHeld(targetPath);
+
   const tmp = makeTmpPath(targetPath);
   const bak = bakPathFor(targetPath);
 
@@ -757,17 +957,30 @@ export function atomicWriteJSONSync(
       fs.writeFileSync(tmp, json, { encoding: 'utf-8', mode: 0o600 });
     }
 
+    // Judge the primary before anything moves — see the async variant.
+    const verdict = judgePrimaryJSON(
+      readFileRetryingSync(targetPath, opts.renameRetry),
+      opts.validate,
+    );
+    if (verdict === 'bad') {
+      const moved = quarantineFileSync(targetPath, 'failed validation before a write', { clock: opts.clock });
+      if (!moved) {
+        // eslint-disable-next-line no-console
+        console.warn(`[atomicWrite] could not set aside the invalid "${targetPath}"; the write replaces it`);
+      }
+    }
+
     // Shift the numbered slots up when rotation is enabled so the
     // upcoming `.bak` overwrite does not drop a generation. See the
     // async variant for the slot-order rationale.
-    if (opts.rotationEnabled) {
+    if (opts.rotationEnabled && (verdict === 'good' || verdict === 'absent')) {
       rotateBackupsSync(targetPath);
     }
 
     // Rotate current → .bak with the same retry as the commit — see the async
     // variant for why giving up here silently forfeits the last good copy.
     let movedToBak = false;
-    if (fs.existsSync(targetPath)) {
+    if (verdict === 'good') {
       try {
         commitRenameSync(targetPath, bak, opts.renameRetry, 'backup');
         movedToBak = true;
@@ -798,21 +1011,20 @@ export function atomicWriteJSONSync(
 
 // ── Sync read ────────────────────────────────────────────────────────
 
-function readParsedSync(filePath: string): unknown | null {
-  if (!fs.existsSync(filePath)) return null;
-  const raw = fs.readFileSync(filePath, 'utf-8');
-  if (!raw) return null;
-  return parseJSONSafe(raw);
-}
-
 export function atomicReadJSONSync<T>(
   targetPath: string,
   opts: AtomicReadOptions<T> = {},
 ): T | null {
+  let primaryProblem: PrimaryProblem = 'missing';
   const attempt = (p: string, label: 'primary' | 'backup'): T | null => {
+    // A failed read throws out of here: it is not a slot to step past.
+    const raw = readFileRetryingSync(p, opts.readRetry);
+    if (raw === null) return null;
+    if (label === 'primary') primaryProblem = 'corrupt';
+    if (!raw) return null;
     let parsed: unknown;
     try {
-      parsed = readParsedSync(p);
+      parsed = parseJSONSafe(raw);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn(`[atomicRead] ${label} parse failed for "${p}":`, err);
@@ -859,14 +1071,27 @@ export function atomicReadJSONSync<T>(
 
   // Same fallback walk as the async variant; see there for the
   // rationale on being rotation-agnostic.
-  const primary = attempt(targetPath, 'primary');
-  if (primary !== null) return primary;
+  try {
+    const primary = attempt(targetPath, 'primary');
+    if (primary !== null) {
+      settleRead(targetPath, opts, true);
+      return primary;
+    }
 
-  for (const suffix of BACKUP_SUFFIXES) {
-    const candidate = `${targetPath}${suffix}`;
-    const backup = attempt(candidate, 'backup');
-    if (backup !== null) return backup;
+    for (const suffix of BACKUP_SUFFIXES) {
+      const candidate = `${targetPath}${suffix}`;
+      const backup = attempt(candidate, 'backup');
+      if (backup !== null) {
+        noteFallback(targetPath, candidate, primaryProblem);
+        settleRead(targetPath, opts, false);
+        return backup;
+      }
+    }
+  } catch (err) {
+    if (err instanceof CouldNotReadError && !opts.readOnly) holdWrites(targetPath, err);
+    throw err;
   }
 
+  settleRead(targetPath, opts, false);
   return null;
 }

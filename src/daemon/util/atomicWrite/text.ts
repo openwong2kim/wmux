@@ -34,11 +34,21 @@ import {
 } from './rotation';
 import { quarantineFile, quarantineFileSync } from './quarantine';
 import {
+  assertWritesNotHeld,
   chainAsyncWrite,
   commitRename,
   commitRenameSync,
+  CouldNotReadError,
+  holdWrites,
+  noteFallback,
+  notePrimaryRead,
+  readFileRetrying,
+  readFileRetryingSync,
+  releaseWrites,
   rollbackBak,
   rollbackBakSync,
+  type PrimaryProblem,
+  type PrimaryVerdict,
   type RenameRetryPolicy,
 } from './core';
 
@@ -78,6 +88,9 @@ export interface AtomicReadTextOptions {
 
   /** Injectable clock for tests. Default: Date.now. */
   clock?: () => number;
+
+  /** Test seam for the win32 read retry. Mirrors `renameRetry` on writes. */
+  readRetry?: RenameRetryPolicy;
 }
 
 export interface AtomicReadTextResult {
@@ -133,6 +146,18 @@ async function unlinkIfExists(p: string): Promise<void> {
   }
 }
 
+/** Text has no parse to fail, so without a validator only a file of nothing but
+ *  zero bytes, what a crash mid-write can leave, reads as bad. */
+function judgePrimaryText(raw: string | null, validate?: (content: string) => boolean): PrimaryVerdict {
+  if (raw === null) return 'absent';
+  if (raw === '') return 'empty';
+  try {
+    return (validate ? validate(raw) : !/^\0*$/.test(raw)) ? 'good' : 'bad';
+  } catch {
+    return 'bad';
+  }
+}
+
 function isQuarantineEligible(
   targetPath: string,
   candidatePath: string,
@@ -169,6 +194,8 @@ export async function atomicWriteText(
   // Serialised per target, as in core.ts: the retry sleep must not let two
   // async writers interleave while the primary is rotated away.
   return chainAsyncWrite(targetPath, async () => {
+    assertWritesNotHeld(targetPath);
+
     const tmp = makeTmpPath(targetPath);
     const bak = bakPathFor(targetPath);
 
@@ -178,19 +205,31 @@ export async function atomicWriteText(
     try {
       await fsp.writeFile(tmp, content, { encoding: 'utf-8', mode: 0o600 });
 
-      if (opts.rotationEnabled) {
+      // Only a primary that passes becomes `.bak` (see core.ts).
+      const verdict = judgePrimaryText(await readFileRetrying(targetPath, opts.renameRetry), opts.validate);
+      if (verdict === 'bad') {
+        const moved = await quarantineFile(targetPath, 'failed validation before a write', { clock: opts.clock });
+        if (!moved) {
+          // eslint-disable-next-line no-console
+          console.warn(`[atomicWriteText] could not set aside the invalid "${targetPath}"; the write replaces it`);
+        }
+      }
+
+      if (opts.rotationEnabled && (verdict === 'good' || verdict === 'absent')) {
         await rotateBackups(targetPath);
       }
 
       // Rotate current → .bak with the same retry as the commit (see core.ts).
-      try {
-        await commitRename(targetPath, bak, opts.renameRetry, 'backup');
-        movedToBak = true;
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== 'ENOENT') {
-          // eslint-disable-next-line no-console
-          console.warn('[atomicWriteText] Failed to create backup:', err);
+      if (verdict === 'good') {
+        try {
+          await commitRename(targetPath, bak, opts.renameRetry, 'backup');
+          movedToBak = true;
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code !== 'ENOENT') {
+            // eslint-disable-next-line no-console
+            console.warn('[atomicWriteText] Failed to create backup:', err);
+          }
         }
       }
 
@@ -211,26 +250,18 @@ export async function atomicWriteText(
 
 // ── Async read ───────────────────────────────────────────────────────
 
-async function readTextOrNull(filePath: string): Promise<string | null> {
-  try {
-    const raw = await fsp.readFile(filePath, 'utf-8');
-    return raw;
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') return null;
-    return null;
-  }
-}
-
 export async function atomicReadText(
   targetPath: string,
   opts: AtomicReadTextOptions = {},
 ): Promise<AtomicReadTextResult | null> {
+  let primaryProblem: PrimaryProblem = 'missing';
   const attempt = async (
     p: string,
   ): Promise<AtomicReadTextResult | null> => {
-    const content = await readTextOrNull(p);
+    // A failed read throws out of here: it is not a slot to step past.
+    const content = await readFileRetrying(p, opts.readRetry);
     if (content === null) return null;
+    if (p === targetPath) primaryProblem = 'corrupt';
 
     if (opts.validate && !opts.validate(content)) {
       if (isQuarantineEligible(targetPath, p)) {
@@ -248,15 +279,29 @@ export async function atomicReadText(
     return { path: p, content };
   };
 
-  const primary = await attempt(targetPath);
-  if (primary !== null) return primary;
+  try {
+    const primary = await attempt(targetPath);
+    if (primary !== null) {
+      notePrimaryRead(targetPath);
+      releaseWrites(targetPath);
+      return primary;
+    }
 
-  for (const suffix of BACKUP_SUFFIXES) {
-    const candidate = `${targetPath}${suffix}`;
-    const backup = await attempt(candidate);
-    if (backup !== null) return backup;
+    for (const suffix of BACKUP_SUFFIXES) {
+      const candidate = `${targetPath}${suffix}`;
+      const backup = await attempt(candidate);
+      if (backup !== null) {
+        noteFallback(targetPath, candidate, primaryProblem);
+        releaseWrites(targetPath);
+        return backup;
+      }
+    }
+  } catch (err) {
+    if (err instanceof CouldNotReadError) holdWrites(targetPath, err);
+    throw err;
   }
 
+  releaseWrites(targetPath);
   return null;
 }
 
@@ -283,6 +328,8 @@ export function atomicWriteTextSync(
     }
   }
 
+  assertWritesNotHeld(targetPath);
+
   const tmp = makeTmpPath(targetPath);
   const bak = bakPathFor(targetPath);
 
@@ -291,13 +338,23 @@ export function atomicWriteTextSync(
   try {
     fs.writeFileSync(tmp, content, { encoding: 'utf-8', mode: 0o600 });
 
-    if (opts.rotationEnabled) {
+    // Only a primary that passes becomes `.bak` (see core.ts).
+    const verdict = judgePrimaryText(readFileRetryingSync(targetPath, opts.renameRetry), opts.validate);
+    if (verdict === 'bad') {
+      const moved = quarantineFileSync(targetPath, 'failed validation before a write', { clock: opts.clock });
+      if (!moved) {
+        // eslint-disable-next-line no-console
+        console.warn(`[atomicWriteText] could not set aside the invalid "${targetPath}"; the write replaces it`);
+      }
+    }
+
+    if (opts.rotationEnabled && (verdict === 'good' || verdict === 'absent')) {
       rotateBackupsSync(targetPath);
     }
 
     // Rotate current → .bak with the same retry as the commit (see core.ts).
     let movedToBak = false;
-    if (fs.existsSync(targetPath)) {
+    if (verdict === 'good') {
       try {
         commitRenameSync(targetPath, bak, opts.renameRetry, 'backup');
         movedToBak = true;
@@ -323,22 +380,16 @@ export function atomicWriteTextSync(
 
 // ── Sync read ────────────────────────────────────────────────────────
 
-function readTextOrNullSync(filePath: string): string | null {
-  try {
-    if (!fs.existsSync(filePath)) return null;
-    return fs.readFileSync(filePath, 'utf-8');
-  } catch {
-    return null;
-  }
-}
-
 export function atomicReadTextSync(
   targetPath: string,
   opts: AtomicReadTextOptions = {},
 ): AtomicReadTextResult | null {
+  let primaryProblem: PrimaryProblem = 'missing';
   const attempt = (p: string): AtomicReadTextResult | null => {
-    const content = readTextOrNullSync(p);
+    // A failed read throws out of here: it is not a slot to step past.
+    const content = readFileRetryingSync(p, opts.readRetry);
     if (content === null) return null;
+    if (p === targetPath) primaryProblem = 'corrupt';
 
     if (opts.validate && !opts.validate(content)) {
       if (isQuarantineEligible(targetPath, p)) {
@@ -356,14 +407,28 @@ export function atomicReadTextSync(
     return { path: p, content };
   };
 
-  const primary = attempt(targetPath);
-  if (primary !== null) return primary;
+  try {
+    const primary = attempt(targetPath);
+    if (primary !== null) {
+      notePrimaryRead(targetPath);
+      releaseWrites(targetPath);
+      return primary;
+    }
 
-  for (const suffix of BACKUP_SUFFIXES) {
-    const candidate = `${targetPath}${suffix}`;
-    const backup = attempt(candidate);
-    if (backup !== null) return backup;
+    for (const suffix of BACKUP_SUFFIXES) {
+      const candidate = `${targetPath}${suffix}`;
+      const backup = attempt(candidate);
+      if (backup !== null) {
+        noteFallback(targetPath, candidate, primaryProblem);
+        releaseWrites(targetPath);
+        return backup;
+      }
+    }
+  } catch (err) {
+    if (err instanceof CouldNotReadError) holdWrites(targetPath, err);
+    throw err;
   }
 
+  releaseWrites(targetPath);
   return null;
 }

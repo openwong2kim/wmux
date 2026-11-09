@@ -30,7 +30,7 @@
 import { holderInputsChanged } from './holderInputs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
+import { atomicReadJSONSync, atomicWriteJSONSync, CouldNotReadError } from '../../daemon/util/atomicWrite';
 import { readVersionedFile } from './versionedFile';
 import { getWmuxDir } from '../../daemon/config';
 import type { LedgerEntry } from '../../shared/ledger';
@@ -125,6 +125,8 @@ export class WorkerSlots {
    *  launches go on; `broken`: the file could not be read nor moved aside,
    *  so nothing can be recorded and every launch is refused. */
   private mode: 'disk' | 'memory' | 'broken' = 'disk';
+  /** Broken because the read failed, not because the file is bad. */
+  private readFailed = false;
   /** Launches begun in this run and not settled yet: task → generation. */
   private readonly underway = new Map<string, number>();
   /** Generations begun by this process, including ones whose pane came up. */
@@ -157,10 +159,18 @@ export class WorkerSlots {
     this.panes.clear();
     this.workspaces.clear();
     let raw: Record<string, unknown> | null = null;
+    this.readFailed = false;
     try {
       raw = readVersionedFile(this.file, WORKER_SLOTS_VERSION);
       this.mode = 'disk';
     } catch (err) {
+      // Held for now, not broken: nothing is known against the file, so it stays.
+      if (err instanceof CouldNotReadError) {
+        this.mode = 'broken';
+        this.readFailed = true;
+        this.warn(`[factory] worker slots could not be read; each launch reads again, and none starts until it can: ${String(err)}`);
+        return;
+      }
       if (this.newerVersionOnDisk()) {
         // Memory only, seeded from the ledger below; the file is never written.
         this.mode = 'memory';
@@ -258,7 +268,7 @@ export class WorkerSlots {
 
   private newerVersionOnDisk(): boolean {
     try {
-      const v = atomicReadJSONSync<{ version?: unknown }>(this.file)?.version;
+      const v = atomicReadJSONSync<{ version?: unknown }>(this.file, { readOnly: true })?.version;
       return typeof v === 'number' && v > WORKER_SLOTS_VERSION;
     } catch {
       return false;
@@ -344,6 +354,11 @@ export class WorkerSlots {
       ownerWorkspaceId: req.ownerWorkspaceId,
       state: 'launching',
     };
+    if (this.mode === 'broken' && this.readFailed) {
+      this.load();
+      if (this.mode === 'broken') throw new Error(`the task's launch could not be recorded: ${this.file} could not be read`);
+      return this.beginLaunch(req);
+    }
     if (this.mode === 'broken') {
       // The file may be free again (a lock that held it at load is gone).
       const moveErr = this.moveAside(1);

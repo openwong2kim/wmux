@@ -170,6 +170,33 @@ describe('T-스냅샷 손상 폴백', () => {
     expect(fb!.snapshotLamport).toBe(7);
   });
 
+  it('steps past a snapshot it could not read: the log replays what the older one lacks', () => {
+    const store = new SnapshotStore(dir);
+    store.writeDurableSync(GENESIS_CHANNEL_REF, proj('genesis'), 0);
+    store.writeDurableSync(CHANNEL_PROJECTION_REF, proj('active'), 9);
+    const held = store.snapshotPath(CHANNEL_PROJECTION_REF);
+    const real = fs.readFileSync.bind(fs) as (...a: unknown[]) => unknown;
+    const reads = vi.spyOn(fs, 'readFileSync').mockImplementation(((...a: unknown[]) => {
+      if (a[0] === held) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return real(...a);
+    }) as typeof fs.readFileSync);
+    try {
+      const fb = store.loadWithFallback<ChannelState>({
+        activeRef: CHANNEL_PROJECTION_REF,
+        genesisRef: GENESIS_CHANNEL_REF,
+        reseedRefs: [],
+        validateProjection: isChannelStateLike,
+      });
+      expect(fb!.source).toBe('genesis');
+      expect(fb!.snapshotLamport).toBe(0);
+    } finally {
+      reads.mockRestore();
+    }
+    // The snapshot is written from replayed state, so later saves go through.
+    store.writeDurableSync(CHANNEL_PROJECTION_REF, proj('next'), 12);
+    expect(store.load<ChannelState>(CHANNEL_PROJECTION_REF, isChannelStateLike)!.snapshotLamport).toBe(12);
+  });
+
   it('genesis마저 손상 → null(파국은 상위가 처리)', () => {
     const store = new SnapshotStore(dir);
     store.writeDurableSync(GENESIS_CHANNEL_REF, proj('genesis'), 0);

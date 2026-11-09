@@ -7,8 +7,10 @@
  * module replaces that path with an explicit isolation step:
  *
  *   1. Rename the offender into `{dir}/corrupted/{basename}.{ts}.bak`.
- *   2. Emit a `CORRUPT_FILE` structured log to stderr so operators can
- *      grep for the event and correlate it with surrounding writes.
+ *   2. Emit a `CORRUPT_FILE` structured log to stderr, which the main and
+ *      daemon log sinks tee to disk, so operators can grep for the event
+ *      and correlate it with surrounding writes. A plain line beside it
+ *      carries the level token `wmux doctor` counts.
  *   3. Enforce retention on `corrupted/` (default: 30 days / 10 files)
  *      so the subtree does not grow unbounded.
  *
@@ -158,6 +160,11 @@ function unlinkIfExistsSync(p: string): void {
 function emitLog(entry: CorruptFileLog): void {
   try {
     process.stderr.write(`${JSON.stringify(entry)}\n`);
+    // The line above is for grep. This one carries the level token `wmux doctor`
+    // counts in the main and daemon logs, which stderr is teed into.
+    process.stderr.write(
+      `[${new Date(entry.ts).toISOString()}] [${entry.level}] [quarantine] ${entry.path} moved to ${entry.quarantined_to}: ${entry.reason}\n`,
+    );
   } catch {
     // Logging must never throw — a failed write on stderr is
     // preferable to crashing the caller.

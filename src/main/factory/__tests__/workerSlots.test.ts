@@ -155,6 +155,51 @@ describe('WorkerSlots', () => {
   });
 });
 
+describe('a file that could not be read', () => {
+  const failingReads = (file: string) => {
+    const real = fs.readFileSync.bind(fs) as (...a: unknown[]) => unknown;
+    return vi.spyOn(fs, 'readFileSync').mockImplementation(((...a: unknown[]) => {
+      if (a[0] === file) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
+      return real(...a);
+    }) as typeof fs.readFileSync);
+  };
+  const leftAside = (file: string) => fs.readdirSync(path.dirname(file)).filter((n) => n.includes('.unreadable-'));
+
+  it('worker slots: stays in place, refuses launches meanwhile, and reads again once it can', () => {
+    const dir = tmp();
+    const file = path.join(dir, 'factory', WORKER_SLOTS_FILENAME);
+    const first = store(dir);
+    first.beginLaunch({ taskId: 'kept', origin: 'owner', ownerWorkspaceId: 'ws-owner' });
+    first.settlePendingWriteForTests();
+
+    const reads = failingReads(file);
+    const s = store(dir);
+    expect(() => s.beginLaunch({ taskId: 't', origin: 'owner', ownerWorkspaceId: 'ws-owner' })).toThrow(/could not be read/);
+    reads.mockRestore();
+    expect(leftAside(file)).toEqual([]);
+
+    expect(s.beginLaunch({ taskId: 't', origin: 'owner', ownerWorkspaceId: 'ws-owner' }).gen).toBe(1);
+    expect(s.launchOf('kept')?.gen).toBe(1);
+  });
+
+  it('agent-gone facts: stays in place, and nothing is written over it', () => {
+    const dir = tmp();
+    const file = path.join(dir, 'factory', AGENT_GONE_FILENAME);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const saved = JSON.stringify({ version: 1, facts: [{ taskId: 'kept', taskWorkspaceId: 'ws', sessions: ['s'], at: 1 }] });
+    fs.writeFileSync(file, saved);
+
+    const reads = failingReads(file);
+    const facts = new AgentGoneFacts(file, () => undefined, () => 9_000, () => undefined);
+    facts.load();
+    reads.mockRestore();
+    facts.note({ taskId: 'other', taskWorkspaceId: 'ws', sessions: ['s'], at: 2 });
+
+    expect(leftAside(file)).toEqual([]);
+    expect(fs.readFileSync(file, 'utf8')).toBe(saved);
+  });
+});
+
 describe('round 1 review (#2393 identity)', () => {
   it('a file that can neither be read nor moved aside refuses launches only while it cannot be moved', () => {
     const dir = tmp();

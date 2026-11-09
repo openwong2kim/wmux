@@ -6,6 +6,7 @@ import type { PersistedShape } from '../metadata/MetadataStore';
 import { METADATA_SCHEMA_VERSION } from '../metadata/MetadataStore';
 import {
   atomicReadJSONSync,
+  CouldNotReadError,
   atomicWriteJSON,
   atomicWriteJSONSync,
   createMigrator,
@@ -278,6 +279,7 @@ export class SessionManager {
     try {
       const loaded = atomicReadJSONSync<SessionData>(this.filePath, {
         validate: SessionManager.isSessionData,
+        readOnly: true,
       });
       return loaded?.autoUpdateEnabled ?? null;
     } catch {
@@ -296,6 +298,7 @@ export class SessionManager {
     try {
       const loaded = atomicReadJSONSync<SessionData>(this.filePath, {
         validate: SessionManager.isSessionData,
+        readOnly: true,
       });
       return loaded?.windowGlass ?? null;
     } catch {
@@ -314,6 +317,7 @@ export class SessionManager {
     try {
       const loaded = atomicReadJSONSync<SessionData>(this.filePath, {
         validate: SessionManager.isSessionData,
+        readOnly: true,
       });
       return loaded?.windowGlassEffective ?? null;
     } catch {
@@ -332,6 +336,7 @@ export class SessionManager {
     try {
       const loaded = atomicReadJSONSync<SessionData>(this.filePath, {
         validate: SessionManager.isSessionData,
+        readOnly: true,
       });
       if (!loaded) return undefined;
       return loaded.windowAppearance ?? null;
@@ -349,6 +354,7 @@ export class SessionManager {
     try {
       return atomicReadJSONSync<SessionData>(this.filePath, {
         validate: SessionManager.isSessionData,
+        readOnly: true,
       })?.locale ?? null;
     } catch {
       return null;
@@ -368,6 +374,7 @@ export class SessionManager {
     try {
       const loaded = atomicReadJSONSync<SessionData>(this.filePath, {
         validate: SessionManager.isSessionData,
+        readOnly: true,
       });
       return loaded?.siteMemoryEnabled ?? null;
     } catch {
@@ -384,6 +391,7 @@ export class SessionManager {
     try {
       const loaded = atomicReadJSONSync<SessionData>(this.filePath, {
         validate: SessionManager.isSessionData,
+        readOnly: true,
       });
       return loaded?.siteGuidesEnabled ?? null;
     } catch {
@@ -417,8 +425,8 @@ export class SessionManager {
         validate: SessionManager.isSessionData,
         migrator,
       });
-      // The atomic-read helper swallows read/validate failures internally
-      // (falls through the .bak chain, then returns null) — so a locked or
+      // The atomic-read helper throws on a locked file, but swallows validate
+      // failures (falls through the .bak chain, then returns null) — so a
       // fully-corrupt-with-backups file surfaces as null, indistinguishable
       // from first launch. Promote that to an error when the file EXISTS:
       // refusing to load is recoverable (next boot retries; the file is
@@ -434,7 +442,9 @@ export class SessionManager {
       return loaded;
     } catch (err) {
       console.error('[SessionManager] Failed to load session:', err);
-      if (hadFile) throw err;
+      // existsSync says no for a file it cannot stat, or when only a backup is
+      // left, so a failed read is not a first launch whatever it said.
+      if (hadFile || err instanceof CouldNotReadError) throw err;
       return null;
     }
   }
