@@ -82,6 +82,16 @@ export const reflowCases: Case[] = [
   // across any width change; Alacritty drops it. Refused until fixed.
   script('alt-wrapped-widen', [40, 24], [`\x1b[?1049h${rows(2, 70)}`, [80, 24]], 'xterm'),
   script('alt-wrapped-narrow', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24]], 'xterm'),
+  // Leaving the alternate screen discards those rows on both: native again,
+  // also with a fresh alternate screen entered after it, in the same write.
+  script('alt-wrapped-widen-left', [40, 24], [`$ less\r\n\x1b[?1049h${rows(2, 70)}`, [80, 24], '\x1b[?1049l$ '], 'rust'),
+  script('alt-wrapped-narrow-left', [80, 24], [`$ vim\r\n\x1b[?1049h${'w'.repeat(100)}`, [60, 24], 'q\x1b[?1049l$ '], 'rust'),
+  script('alt-wrapped-left-entered-again', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], `\x1b[?1049l$ less\r\n\x1b[?1049h\x1b[H${rows(2, 30)}`], 'rust'),
+  // Still on an alternate screen whose wrapped rows changed width since.
+  script('alt-wrapped-left-entered-again-resized', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], `\x1b[?1049l\x1b[?1049h${'v'.repeat(100)}`, [80, 24]], 'xterm'),
+  // Another refusal set in the same resize or after it outlives the leave.
+  script('alt-wrapped-left-reflow-below-cursor', [80, 24], [`${rows(4, 70)}\x1b[2H\x1b[?1049h${'w'.repeat(100)}`, [40, 24], '\x1b[?1049l'], 'xterm'),
+  script('alt-wrapped-left-after-decstr', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], '\x1b[!p\x1b[?1049l$ '], 'xterm'),
   // Narrowed on the main screen (short rows, nothing reflows), then into a
   // fresh alternate screen with short rows, and wider: nothing was cut or
   // wrapped there, so still native.

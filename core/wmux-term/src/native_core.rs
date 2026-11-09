@@ -195,7 +195,8 @@ pub struct NativeTerminal {
     scrollback: u32,
     /// `feed_xterm` state besides the grid.
     feed: XtermFeed,
-    /// Why the ANSI snapshot of this stream cannot match xterm's.
+    /// Why the ANSI snapshot of this stream cannot match xterm's, for good
+    /// (an alternate screen's width change is XtermFeed::alt_reflow).
     refusal: Option<&'static str>,
 }
 
@@ -263,6 +264,10 @@ struct XtermFeed {
     shifted: bool,
     /// A control Alacritty parses differently from xterm.
     divergent: bool,
+    /// The alternate screen changed width with a soft-wrapped row on it
+    /// (NativeTerminal::resize). Unlike the other refusals this one ends:
+    /// leaving that screen discards the rows that differ.
+    alt_reflow: bool,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -412,6 +417,11 @@ impl XtermFeed {
                                 // both screens, so the main screen inherits it.
                                 self.divergent |= self.alt_margins;
                                 self.alt_margins = false;
+                                // Both drop the alternate screen's rows here
+                                // (xterm on leaving, Alacritty on the next
+                                // entry), and with them a width change's
+                                // lost wrap flags.
+                                self.alt_reflow = false;
                             }
                             self.alt_screen = set;
                         }
@@ -622,9 +632,10 @@ impl NativeTerminal {
 
     /// `feed` for an ANSI snapshot replayed by xterm: ED 1 and ED 2 erase as
     /// xterm does (see erase_like_xterm). Returns whether the snapshot is
-    /// already refused, so the caller can stop parsing: a control Alacritty
+    /// refused for good, so the caller can stop parsing: a control Alacritty
     /// parses differently, or a history past this terminal's cap when the
-    /// request asked for more.
+    /// request asked for more. An alternate screen's width change is not
+    /// reported: leaving that screen later in the stream lifts it.
     #[napi(catch_unwind)]
     pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool> {
         let term = self
@@ -684,7 +695,8 @@ impl NativeTerminal {
         // their cells and wrap flags across a resize. The vendored grid keeps
         // a row's cells past a narrower width and shows them again when it
         // widens, as xterm's does (vendor/alacritty_terminal WMUX-PATCH.md),
-        // but a width change with a soft-wrapped row on screen loses the flags.
+        // but a width change with a soft-wrapped row on screen loses the
+        // flags, until the screen is left.
         if term.mode().contains(TermMode::ALT_SCREEN) {
             let grid = term.grid();
             let old = grid.columns();
@@ -695,9 +707,7 @@ impl NativeTerminal {
                         .contains(Flags::WRAPLINE)
                 })
             {
-                self.refusal.get_or_insert(
-                    "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
-                );
+                self.feed.alt_reflow = true;
             }
         }
         // A paragraph below the cursor's that reflows: xterm moves its cursor
@@ -808,6 +818,11 @@ impl NativeTerminal {
         self.parser.stop_sync(term);
         if let Some(refusal) = self.refusal {
             return Err(Error::from_reason(refusal));
+        }
+        if self.feed.alt_reflow {
+            return Err(Error::from_reason(
+                "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
+            ));
         }
         if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
             && [term.grid(), term.inactive_grid()]
@@ -1704,6 +1719,30 @@ mod tests {
         assert!(divergent(&["ab\x1b[4;9r"]));
         assert!(!divergent(&["ab\x1b[3;3r"]), "both ignore it");
         assert!(!divergent(&["ab\x1b[2;9r"]), "both apply it");
+    }
+
+    #[test]
+    fn leaving_the_alternate_screen_lifts_its_width_change() {
+        // As NativeTerminal::resize leaves it after a width change there.
+        let lifted = |chunks: &[&str]| {
+            let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+            let mut parser: Processor = Processor::new();
+            let mut feed = XtermFeed::default();
+            feed.feed(&mut parser, &mut term, b"\x1b[?1049h");
+            feed.alt_reflow = true;
+            for chunk in chunks {
+                feed.feed(&mut parser, &mut term, chunk.as_bytes());
+            }
+            !feed.alt_reflow
+        };
+        assert!(lifted(&["x\x1b[?1049l"]));
+        assert!(lifted(&["\x1b[?10", "49l"]), "split across chunks");
+        // Left and entered again in one chunk: the new screen is a fresh one.
+        assert!(lifted(&["\x1b[?1049l$ less\r\n\x1b[?1049hpage"]));
+        assert!(!lifted(&["more output"]));
+        assert!(!lifted(&["\x1b[?1049h"]), "entering again while on it");
+        // A reset is not a leave here; it keeps the refusal for now.
+        assert!(!lifted(&["\x1bc"]));
     }
 
     #[test]

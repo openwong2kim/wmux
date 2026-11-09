@@ -105,6 +105,17 @@ const CASES: Case[] = (() => {
       rustRefuses: true,
     },
     {
+      // Leaving drops the rows whose wrap flags the width change lost.
+      name: 'an alternate screen with a soft-wrapped row narrowed, written, widened, then left, is native again',
+      steps: [{ size: [40, 8] }, { out: altWrap }, { size: [20, 8] }, { out: altNarrowWrite }, { size: [40, 8] }, { out: leave }],
+      shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: altWrap.length, cols: 20, rows: 8 }, { offset: altWrap.length + altNarrowWrite.length, cols: 40, rows: 8 }] },
+    },
+    {
+      name: 'an alternate screen with a soft-wrapped row narrowed, then left before the widen, is native again',
+      steps: [{ size: [40, 8] }, { out: 'top\r\n' + altWrap }, { size: [20, 8] }, { out: leave }, { size: [40, 8] }],
+      shown: { start: { cols: 40, rows: 8 }, changes: [{ offset: 5 + altWrap.length, cols: 20, rows: 8 }, { offset: 5 + altWrap.length + leave.length, cols: 40, rows: 8 }] },
+    },
+    {
       // The narrow wraps the long lines and pushes rows into scrollback with
       // the cursor near the bottom; the widen joins them again.
       name: 'a primary screen with long lines narrowed and widened back with no output between',
