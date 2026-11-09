@@ -176,6 +176,7 @@ const PATH_VALUE = /^(?:~\/|\.\.?\/|\/(?:Users|home|tmp|private|var|etc|run|opt|
 /** Files named with a line after them: `src/secret_store.ts:12`. Not `.env`, `.txt`, `.key`, which hold secrets. */
 const SOURCE_FILE = /\.(?:go|tsx?|mts|cts|jsx?|mjs|cjs|pyi?|rb|rs|java|kts?|swift|c|h|cc|cpp|cxx|hpp|hh|mm?|cs|fs|php|scala|dart|lua|zig|nim|exs?|erl|hs|ml|clj|r|jl|sh|bash|zsh|fish|ps1|vue|svelte|astro|mdx?|rst|sql|proto|graphql|gradle|html|s?css|less|jsonc?|ya?ml|toml|xml|tf|ipynb)$/i;
 const LOWER_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)+$/;
+const TYPED_ARRAY = /^(?:Big)?(?:Ui|I)nt\d+(?:Clamped)?Array$|^Float\d+Array$/;
 /** Punctuation after a value that is not part of it; never the marker's own bracket. */
 const TRAILING_STOP = /(?<!\[redacted)[,;)\]}\\]+$/;
 /** The next field, when the one named was set to nothing: `UI_PASSWORD= UI_ADDR=127.0.0.1`. */
@@ -261,7 +262,7 @@ function fieldClass(name: string, before: string): FieldClass {
  * camelCase, snake_case or dotted name mostly is code's.
  */
 function lettersOnlySecret(cls: 'password' | 'token', v: string, sep: string, quoted: boolean): boolean {
-  if (quoted || mixedRandom(v) || v.includes('-') || /^[a-z]+$|^[A-Z]+$/.test(v)) return true;
+  if (quoted || mixedRandom(v) || v.includes('-') || /^[a-z]+$|^[A-Z]+$/.test(v) || (v.length >= 8 && /^[A-Z][a-z]+$/.test(v))) return true;
   // After `=`: a config's value when glued to it (`TOKEN=some_value`); a statement's otherwise.
   return !sep.includes(':') && (cls === 'password' || !/\s/.test(sep));
 }
@@ -310,8 +311,7 @@ function fieldValueIsSecret(cls: Exclude<FieldClass, null>, v: string, name: str
   if (v.length < 8 && !shortValueOk(v, sep, quoted)) return false;
   if (cls === 'bare') return v.length >= 16 && hasDigit(v) && hasLetter(v) && !/^[0-9a-fA-F]{16,31}$/.test(v);
   if (!hasLetter(v)) {
-    if (cls === 'token') return false;
-    return /^\d+$/.test(v) || !/^[\d.,:_-]+$/.test(v);
+    return /^\d+$/.test(v) || (cls === 'password' && !/^[\d.,:_-]+$/.test(v));
   }
   if (!hasDigit(v) && /^[A-Za-z._-]+$/.test(v)) return lettersOnlySecret(cls, v, sep, quoted);
   return true;
@@ -358,17 +358,20 @@ function maskAssigned(s: string): string {
     const colon = g.sep.includes(':');
     const v = value.replace(TRAILING_STOP, '');
     if (!quoted && colon) {
-      // Code naming a value, not a value: a type or a read that code goes on from
-      // (`secretKey: Uint8Array;`), or `plugin-name:skill-name`.
-      if (/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$/.test(v) && (v !== value || /[,;)}\]|?&<>(]/.test(whole[at + m.length] ?? ''))) return m;
+      // Code naming a value, not a value: a typed array, a read that code goes on
+      // from (`private_key: details.2,`), or `plugin-name:skill-name`. A word and
+      // digits with punctuation after it is a value in a list, not code.
+      if (TYPED_ARRAY.test(v)) return m;
+      if (cls === 'token' && v !== value && /^[A-Za-z_][A-Za-z_]*(?:\.[A-Za-z0-9_]+)+$/.test(v)) return m;
       if (g.sep === ':' && LOWER_SLUG.test(name) && LOWER_SLUG.test(v) && isSlug(v)) return m;
     }
     // Words in a string are a message about the field, unless it is a password.
     if (/\s/.test(v) && !PHRASE_NAME.test(name) && !/\d/.test(v)) return m;
+    // A short name that a statement ends on is a variable: `password = value;`.
+    // After a colon it needs no digit to read so: `password: hunter2,` is a value.
+    if (!quoted && v !== value && v.length < 8 && /^[A-Za-z_$][\w$.]*$/.test(v) && (!colon || !hasDigit(v))) return m;
     // A marker in a string counts as the word it replaced, so the verdict on a
     // second pass is the verdict on the first.
-    // A short name after `=` that a statement ends on is a variable: `password = value;`.
-    if (!quoted && v !== value && v.length < 8 && /^[A-Za-z_$][\w$.]*$/.test(v)) return m;
     return fieldValueIsSecret(cls, v.split(REDACTED).join('x9x9x9x9'), name, g.sep, quoted) ? masked : m;
   });
 }

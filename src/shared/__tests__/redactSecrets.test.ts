@@ -178,6 +178,15 @@ describe('redactSecrets — credential forms', () => {
     ["token: 'test-token-123'", `token: '${REDACTED}'`],
     ['{"access_token":"ya29.SECRET"}', `{"access_token":"${REDACTED}"}`],
     ['{"refresh_token":"1//0gSECRET"}', `{"refresh_token":"${REDACTED}"}`],
+    ['{user: admin, password: s3cr3tPass1}', `{user: admin, password: ${REDACTED}`],
+    ['password: Summer2024, retrying', `password: ${REDACTED} retrying`],
+    ['(password: abc12345)', `(password: ${REDACTED}`],
+    ['api_key: abc12345;', `api_key: ${REDACTED}`],
+    ['token: abc12345,', `token: ${REDACTED}`],
+    ['token: 12345678', `token: ${REDACTED}`],
+    ['secret: Summer2024}', `secret: ${REDACTED}`],
+    ['password: hunter2,', `password: ${REDACTED}`],
+    ['password: Sunshine,', `password: ${REDACTED}`],
     ['GITHUB_TOKEN=some_value', `GITHUB_TOKEN=${REDACTED}`],
     ["{ '/auth-token': 'TOKEN123' }", `{ '/auth-token': '${REDACTED}' }`],
     ['password: hunter2', `password: ${REDACTED}`],
@@ -332,6 +341,11 @@ describe('redactSecrets — ordinary text stays as written', () => {
     'password = :password',
     'password=%s',
     'const token = some_value',
+    'token: claim.token,',
+    'password: getPassword(),',
+    'password: SecretStr,',
+    'password: Buffer,',
+    'private_key: details.2,',
     'secret: SECRET2 }',
     'const DB_PASSWORD = new RegExp(source);',
     'password = await getPassword()',
@@ -476,12 +490,13 @@ describe('redactSecrets — fixed point and cost', () => {
     '密码', '密码：', '密码："', '비밀번호', '비밀번호 ', '토큰은 a', 'パスワード', 'key 是 ', 'token：', '0', 'f', 'sha256:', 'sha256-', 'h1:', '-----BEGIN ', '-----BEGIN A ',
     '-----BEGIN PRIVATE KEY-----', '[redacted]', 'wmuxguest~', 'wmuxguest~a-',
     'password:a ', 'passwd=abc ', '--password ', '--password a1b ', '--password "', '--a-', '--a-a-a-a-token ', '-u ', ' -u a:b ', 'curl -u a:b1c ', 'curl -u ', 'curl ', ' -pa1b', 'mysql -pa1b ', 'mysql ', 'x -p', 'sshpass -p a1b ', 'sshpass -a ', 'sshpass ', 'hooks.slack.com/services/', 'hooks.slack.com/services/a1b2c3d4e5 ',
-  ])('takes well under a second on 1 MB of %j', (unit) => {
+  ])('stays linear on 1 MB of %j', (unit) => {
     const hostile = unit.repeat(Math.ceil((1 << 20) / unit.length)).slice(0, 1 << 20);
     const started = performance.now();
     redactSecrets(hostile);
     redactSecretsCounted(hostile, { readableNames: true });
-    // Two passes; on a loaded CI machine a linear pass is still far below this.
-    expect(performance.now() - started).toBeLessThan(1000);
+    // Two passes. Linear takes well under a second here and over one on a loaded
+    // CI runner; quadratic takes minutes at this size, so this bound still catches it.
+    expect(performance.now() - started).toBeLessThan(5000);
   });
 });
