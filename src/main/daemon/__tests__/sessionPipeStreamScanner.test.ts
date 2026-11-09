@@ -125,6 +125,32 @@ describe('initial flush', () => {
   });
 });
 
+describe('createSessionPipeMarkers', () => {
+  const token = '6f1c2a9e-3b4d-4e5f-8a7b-0c1d2e3f4a5b';
+
+  it('derives stable markers that do not contain the auth token', () => {
+    const a = createSessionPipeMarkers(token);
+    const again = createSessionPipeMarkers(token);
+    expect(a.flushDone.equals(again.flushDone)).toBe(true);
+    expect(a.resyncBegin.equals(again.resyncBegin)).toBe(true);
+    for (const marker of [a.flushDone, a.resyncBegin]) {
+      expect(marker.includes(token)).toBe(false);
+    }
+    const shape = (m: Buffer): string => m.toString('latin1').split('\x00').join('|');
+    expect(shape(a.flushDone)).toMatch(/^\|WMUX_FLUSH_DONE:[0-9a-f]{32}\|$/);
+    expect(shape(a.resyncBegin)).toMatch(/^\|WMUX_RESYNC_BEGIN:[0-9a-f]{32}\|$/);
+  });
+
+  it('gives each marker and each token a distinct value', () => {
+    const a = createSessionPipeMarkers(token);
+    const other = createSessionPipeMarkers(`${token}x`);
+    const tag = (m: Buffer): string => m.toString('latin1').split(':')[1];
+    expect(tag(a.flushDone)).not.toBe(tag(a.resyncBegin));
+    expect(other.flushDone.equals(a.flushDone)).toBe(false);
+    expect(other.resyncBegin.equals(a.resyncBegin)).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // stripReplay is applied to the pre-marker replay only
 // ---------------------------------------------------------------------------
