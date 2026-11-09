@@ -717,5 +717,9 @@ mod tests {
         let err = replay(4, "n\x1b[?1049h\x1b[Habcd\x1b7\x1b[H").unwrap_err();
         assert!(err.starts_with("unsupported-saved-wrap"));
         assert!(replay(4, "n\x1b[?1049h\x1b[Habcd\x1b7\x1b[?1049lX").is_ok());
+        // Both keep that screen's saved cursor: refused again once it is
+        // shown, as a restore there may still diverge.
+        let err = replay(4, "n\x1b[?1049h\x1b[Habcd\x1b7\x1b[?1049l\x1b[?1049h").unwrap_err();
+        assert!(err.starts_with("unsupported-saved-wrap"));
     }
 }

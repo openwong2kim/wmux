@@ -153,11 +153,15 @@ const refused: Case[] = [
   synthetic('alt-decsc-wrap-pending', 'n\x1b[?1049h\x1b[Habcdefgh\x1b7\x1b[H', 'xterm', 8),
 ];
 
+// Served natively once the alternate screen that held the refused state is
+// left: the payload carries none of that screen. (Its saved cursor, which
+// xterm keeps, is in neither backend's payload.)
+const leftAlt: Case[] = [
+  synthetic('alt-decsc-wrap-pending-left', 'n\x1b[?1049h\x1b[Habcdefgh\x1b7\x1b[?1049lX', 'rust', 8),
+];
+
 // Controls the selector never refused, rechecked now that Rust is the default.
 const others: Case[] = [
-  // A cursor saved with a pending wrap on an alternate screen since left:
-  // xterm discarded it with that screen.
-  synthetic('alt-decsc-wrap-pending-left', 'n\x1b[?1049h\x1b[Habcdefgh\x1b7\x1b[?1049lX', 'rust', 8),
   synthetic('ris', 'abc\x1b[31m\x1bcdef'),
   synthetic('ind-nel-ri', 'a\x1bDb\x1bEc\x1bMd'),
   synthetic('cht-cbt', 'a\x1b[2Ib\x1b[Zc'),
@@ -255,7 +259,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
   beforeEach(() => vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath));
   afterEach(() => vi.unstubAllEnvs());
 
-  it.each([...accepted, ...refused, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
+  it.each([...accepted, ...refused, ...leftAlt, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
     await expectParity(c);
   });
 
