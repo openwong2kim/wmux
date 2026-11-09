@@ -243,9 +243,10 @@ section); that result says `delivery: "foreground"`. A posted one says
 - **Per action.** Checked first, before any window state is read: what the
   action asks for.
   - `click`: a single left click with no modifiers, after the UIA ladder
-    (Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern. Under
-    `foreground: 'refuse'`, a ladder pattern on a target that is not in
-    front answers `needs_foreground` instead (see below).
+    (DoDefaultAction on a covered target under `foreground: 'refuse'`, then
+    Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern. Under
+    `refuse`, a ladder pattern other than DoDefaultAction on a target that
+    is not in front answers `needs_foreground` instead (see below).
     Right and middle buttons, double and triple clicks, and modifiers go the
     real way: posted messages carry no keyboard state, and the rest was not
     measured.
@@ -281,11 +282,11 @@ section); that result says `delivery: "foreground"`. A posted one says
     posted: a trailing `\n` (backslash, n) types Enter in the same action.
   - `hotkey` with modifiers and `scroll`: always the real way (a chord
     cannot be posted; `WM_MOUSEWHEEL` was not measured).
-  - `setValue` and the UIA click ladder are not input, but each of their
-    pattern calls (Invoke, Toggle, SelectionItem, ExpandCollapse, Value)
-    brought a covered target window to the front, with WinForms and with
-    Electron (a ScrollIntoView or a property read did not). Their results
-    say `background` unless the target window came to the front during the
+  - `setValue` and the UIA click ladder are not input, but their pattern
+    calls (Invoke, Toggle, SelectionItem, ExpandCollapse, Value) bring a
+    covered target window to the front (the table below). DoDefaultAction,
+    ScrollIntoView and property reads do not. Their results say
+    `background` unless the target window came to the front during the
     call (the foreground is read before the call's checks).
 - **Refused before posting** (`not_delivered`, then real input), besides
   the above: the target window is minimized, hidden or cloaked, on another
@@ -341,8 +342,8 @@ section); that result says `delivery: "foreground"`. A posted one says
   began becomes `needs_foreground`; a stop after posting started (no focus
   after the click, the field moved, the keys refused) keeps its own answer.
   `scroll` and a `hotkey` with modifiers answer `needs_foreground` at once.
-  The pattern calls of `setValue` and the UIA click ladder raise a covered
-  target, so they are foreground input (Core
+  The pattern calls of `setValue` and the UIA click ladder take the front
+  from a covered target's owner, so they are foreground input (Core
   `Background.PatternCallAllowed`). Under `refuse` one is made only when
   the target window is the foreground window, read right before the call
   and after the element checks (gone, stale, elevated), where it cannot
@@ -353,16 +354,64 @@ section); that result says `delivery: "foreground"`. A posted one says
   click lands on whatever is at the element's point, and the pattern call
   presses exactly that element. An index click on an element with no
   ladder pattern is posted as before.
-  Under `allow` such a call can still bring a covered target to the
-  front: an Invoke or ExpandCollapse call did with WinForms and Electron
-  (a ScrollIntoView did not). A result then says `foreground`, and an
-  error says so in its message, as does a click that went on another way
-  after such a call certainly did not run.
+  The one exception is LegacyIAccessible `DoDefaultAction` (Core
+  `Background.DefaultActionFirst`). Under `refuse` with the target not in
+  front, the click ladder tries it first, before the gate above, on an
+  element whose default action is a press: a button, hyperlink, menu
+  item, check box or radio button with a non-empty `DefaultAction`
+  (`Background.DefaultActionIsPress`; a list, tree or data item's default
+  action can be the double click, which opens things). The other target
+  checks (gone, stale, elevated, a secret field) run first. An error that
+  certainly did nothing falls through to `needs_foreground`; Chromium and
+  Electron answer `UIA_E_ELEMENTNOTENABLED` on a covered window in some
+  sessions. A returned success never goes on another way, since the press
+  may have happened: the result is `delivery: background`, `unverified`
+  unless a check box's toggle state or a radio button's selection is read
+  back changed.
+  Under `allow` a pattern call can still bring a covered target to the
+  front. A result then says `foreground`, and an error says so in its
+  message, as does a click that went on another way after such a call
+  certainly did not run.
   The sent counter's baseline for a request is taken after the release of
   keys a dead helper left down, so those up events never decide an
   action's `not_delivered` or `needs_foreground`. The helper's stderr says
   `needs foreground (…)` for such a refusal under `refuse`, and
   `real input, not background (…)` under `allow`.
+- **What takes the front** (measured on Windows 11, November 2026,
+  WinForms on .NET Framework 4.8, Electron 42, Chrome 157, Calculator and
+  Settings, the target covered by another process's foreground window,
+  sampled every millisecond; calls that took effect / took the foreground
+  / raised the window, of the calls made; blank: not run or not exposed):
+
+  | call | WinForms | Electron | Chrome | Calculator | Settings |
+  | --- | --- | --- | --- | --- | --- |
+  | Invoke | 12/12/0 of 12 | 18/18/18 of 18 | 18/18/18 of 18 | 10/10/10 of 10 | |
+  | Toggle | 12/12/0 of 12 | 18/18/18 of 18 | 18/18/18 of 18 | | |
+  | SelectionItem | 12/12/12 of 12 | 18/18/18 of 18 | 18/18/18 of 18 | | |
+  | ExpandCollapse | 12/12/4 of 12 (tree) | 31/36/36 of 36 | 30/36/36 of 36 | | 9/9/9 of 9 |
+  | ScrollPattern | 21/21/21 of 21 | 18/18/18 of 18 | 18/18/18 of 18 | | 9/9/9 of 9 |
+  | UIA `SetFocus` | 7/7/4 of 8 | 12/12/12 of 12 | 11/11/11 of 12 | | |
+  | ScrollIntoView | | 7/0/0 of 18 | 7/0/0 of 18 | | 6/0/0 of 9 |
+  | DoDefaultAction | 12/0/0 of 12 | 6/0/0 of 18 | 9/0/0 of 18 | 8/0/0 of 8 | |
+
+  - Each call that took the front injected a key pair (the reserved
+    virtual key `0xB9`, down and up) at the call, which passes the
+    foreground lock even with `SPI_GETFOREGROUNDLOCKTIMEOUT` at its
+    maximum. Whether the caller was started by the foreground process
+    made no difference.
+  - WinForms Invoke, Toggle, `SetFocus` on a button and Expand on a tree
+    item activate the target **without raising it**: the covering window
+    stays on screen while keyboard focus moves to the hidden target, so
+    the user's next keys go there.
+  - ScrollIntoView and DoDefaultAction never took the front. On Chromium
+    and Electron both act on a covered window in some sessions only, all
+    or nothing per session (the misses: `UIA_E_ELEMENTNOTENABLED` from
+    DoDefaultAction, no scroll from ScrollIntoView); with the target in
+    front they always did. A WinForms ListBox item has no ScrollItem and a
+    WinForms ComboBox no ExpandCollapse.
+  - Not run: Notepad (a RichEdit in a WinForms window stands in for it in
+    the ScrollPattern row), Explorer, and Toggle on Calculator and
+    Settings (a system setting or always-on-top).
 - Measured on Windows 11 with Chrome 155, Electron 42 and Notepad
   (`RichEditD2DPT`): posted clicks move the caret or land as
   `pointerType: mouse`, posted keys insert text, and the cursor, foreground

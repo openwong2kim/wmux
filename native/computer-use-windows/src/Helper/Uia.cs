@@ -42,6 +42,7 @@ internal static unsafe class Uia
     public const int ExpandCollapseStateProperty = 30070;
     public const int SelectionItemIsSelectedProperty = 30079;
     public const int ToggleStateProperty = 30086;
+    public const int LegacyIAccessibleDefaultActionProperty = 30100;
     public const int FullDescriptionProperty = 30159;
 
     // Pattern ids (UIA_*PatternId).
@@ -51,6 +52,7 @@ internal static unsafe class Uia
     public const int SelectionItemPattern = 10010;
     public const int TextPattern = 10014;
     public const int TogglePattern = 10015;
+    public const int LegacyIAccessiblePattern = 10018;
 
     public const int DocumentControlType = 50030;
 
@@ -192,6 +194,19 @@ internal static unsafe class Uia
         try
         {
             return VariantText(ref v);
+        }
+        finally
+        {
+            PInvoke.VariantClear(&v);
+        }
+    }
+
+    public static int? CurrentInt(IUIAutomationElement* el, int property)
+    {
+        var v = el->GetCurrentPropertyValue((UIA_PROPERTY_ID)property);
+        try
+        {
+            return v.vt == VARENUM.VT_I4 ? v.lVal : null;
         }
         finally
         {

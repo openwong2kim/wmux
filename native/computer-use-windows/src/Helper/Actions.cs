@@ -239,6 +239,20 @@ internal static unsafe class Focus
     /// </summary>
     public static void RequireSemantic(ControlTarget target, IUIAutomationElement* el, bool refuseForeground)
     {
+        RequireSemanticTarget(target, el);
+        if (!Background.PatternCallAllowed(refuseForeground, InFront(target)))
+        {
+            Wire.Log("accessibility call: needs foreground (it would bring the target window to the front)");
+            throw new HelperError("needs_foreground", "an accessibility call would bring the target window to the front; nothing was sent");
+        }
+    }
+
+    /// <summary>
+    /// RequireSemantic without the foreground gate, for the one call that does
+    /// not bring a covered target to the front (DoDefaultAction).
+    /// </summary>
+    public static void RequireSemanticTarget(ControlTarget target, IUIAutomationElement* el)
+    {
         Input.ThrowIfStopping();
         InputDesktop.Require();
         RequireNotElevated(target);
@@ -261,11 +275,6 @@ internal static unsafe class Focus
         if (pid != target.Pid || !Win.InTargetWindow(top, target.Window, target.Pid))
         {
             throw new HelperError("element_stale", "the element is no longer in the target window");
-        }
-        if (!Background.PatternCallAllowed(refuseForeground, InFront(target)))
-        {
-            Wire.Log("accessibility call: needs foreground (it would bring the target window to the front)");
-            throw new HelperError("needs_foreground", "an accessibility call would bring the target window to the front; nothing was sent");
         }
     }
 }
@@ -373,6 +382,74 @@ internal static unsafe class Actions
     }
 
     /// <summary>
+    /// The background rung of the click ladder: LegacyIAccessible
+    /// DoDefaultAction, only on an element whose default action is a press
+    /// (Core Background.DefaultActionIsPress) and that is not a secret field.
+    /// The target checks of the other rungs run first, without the foreground
+    /// gate. An error that certainly did nothing (Chromium answers
+    /// UIA_E_ELEMENTNOTENABLED on a covered window) returns null, and the
+    /// ladder goes on to answer needs_foreground; a returned success is never
+    /// followed by another way, since the press may have happened. Verified
+    /// only when a check box's toggle state or a radio button's selection is
+    /// read back changed.
+    /// </summary>
+    private static (string Note, bool Verified)? PressByDefaultAction(ControlTarget target, IUIAutomationElement* el, int type)
+    {
+        string? action;
+        try
+        {
+            action = Uia.CurrentString(el, Uia.LegacyIAccessibleDefaultActionProperty);
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return null;
+        }
+        if (!Background.DefaultActionIsPress(type, action) || Uia.IsSecretElement(el)) return null;
+        var legacy = (IUIAutomationLegacyIAccessiblePattern*)Pattern(el, Uia.LegacyIAccessiblePattern, IUIAutomationLegacyIAccessiblePattern.IID_Guid);
+        if (legacy == null) return null;
+        try
+        {
+            Focus.RequireSemanticTarget(target, el);
+            int? toggleBefore = ReadQuietly(() => Uia.CurrentInt(el, Uia.ToggleStateProperty));
+            bool? selectedBefore = ReadQuietly(() => (bool?)Uia.CurrentBool(el, Uia.SelectionItemIsSelectedProperty));
+            try
+            {
+                Input.CountSemantic();
+                legacy->DoDefaultAction();
+            }
+            catch (Exception e) when (e is not HelperError)
+            {
+                EndIfAmbiguous(e, "DoDefaultAction");
+                Wire.Log($"click: DoDefaultAction did not run ({Uia.Describe(e)})");
+                return null;
+            }
+            bool verified = type switch
+            {
+                50002 /* CheckBox */ => toggleBefore is int t0 && ReadQuietly(() => Uia.CurrentInt(el, Uia.ToggleStateProperty)) is int t1 && t1 != t0,
+                50013 /* RadioButton */ => selectedBefore == false && ReadQuietly(() => (bool?)Uia.CurrentBool(el, Uia.SelectionItemIsSelectedProperty)) == true,
+                _ => false,
+            };
+            return ("pressed through accessibility (DoDefaultAction), without bringing the window to the front", verified);
+        }
+        finally
+        {
+            legacy->Release();
+        }
+    }
+
+    private static T? ReadQuietly<T>(Func<T?> read) where T : struct
+    {
+        try
+        {
+            return read();
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// A pattern call failed. If it certainly did nothing (not supported,
     /// disabled, not implemented) the ladder may try the next way; anything
     /// else may have run (a timeout on a call the app is still executing), so
@@ -390,11 +467,14 @@ internal static unsafe class Actions
     }
 
     /// <summary>
-    /// The action ladder for a plain left click on an element: its primary
-    /// UIA pattern (Invoke; Toggle for a check box; SelectionItem; then
-    /// ExpandCollapse). Null when no pattern applies; then the caller clicks.
+    /// The action ladder for a plain left click on an element. Under `refuse`
+    /// with the target not in front it starts with DoDefaultAction, the one
+    /// press that does not bring the window to the front
+    /// (Core Background.DefaultActionFirst). Then its primary UIA pattern
+    /// (Invoke; Toggle for a check box; SelectionItem; then ExpandCollapse).
+    /// Null when no pattern applies; then the caller clicks.
     /// </summary>
-    private static string? ClickSemantically(ControlTarget target, IUIAutomationElement* el, bool refuse)
+    private static (string Note, bool Verified)? ClickSemantically(ControlTarget target, IUIAutomationElement* el, bool refuse)
     {
         int type;
         try
@@ -404,6 +484,10 @@ internal static unsafe class Actions
         catch (Exception e) when (e is not HelperError)
         {
             return null;
+        }
+        if (Background.DefaultActionFirst(refuse, Focus.InFront(target)) && PressByDefaultAction(target, el, type) is { } pressed)
+        {
+            return pressed;
         }
         if (type != 50002 /* CheckBox */)
         {
@@ -415,7 +499,7 @@ internal static unsafe class Actions
                     Focus.RequireSemantic(target, el, refuse);
                     Input.CountSemantic();
                     invoke->Invoke();
-                    return "pressed through accessibility (Invoke)";
+                    return ("pressed through accessibility (Invoke)", false);
                 }
                 catch (Exception e) when (e is not HelperError)
                 {
@@ -435,7 +519,7 @@ internal static unsafe class Actions
                 Focus.RequireSemantic(target, el, refuse);
                 Input.CountSemantic();
                 toggle->Toggle();
-                return "toggled through accessibility (Toggle)";
+                return ("toggled through accessibility (Toggle)", false);
             }
             catch (Exception e) when (e is not HelperError)
             {
@@ -454,7 +538,7 @@ internal static unsafe class Actions
                 Focus.RequireSemantic(target, el, refuse);
                 Input.CountSemantic();
                 select->Select();
-                return "selected through accessibility (SelectionItem)";
+                return ("selected through accessibility (SelectionItem)", false);
             }
             catch (Exception e) when (e is not HelperError)
             {
@@ -485,7 +569,7 @@ internal static unsafe class Actions
                     Input.CountSemantic();
                     if (collapsed) expand->Expand();
                     else expand->Collapse();
-                    return "expanded or collapsed through accessibility (ExpandCollapse)";
+                    return ("expanded or collapsed through accessibility (ExpandCollapse)", false);
                 }
                 catch (Exception e) when (e is not HelperError)
                 {
@@ -569,21 +653,22 @@ internal static unsafe class Actions
         if (element != 0 && button == 0 && count == 1 && mods.Count == 0)
         {
             bool frontBefore = Focus.InFront(target);
-            string? note;
+            (string Note, bool Verified)? pressed;
             try
             {
                 // Under `refuse` a pattern call on a covered target answers
-                // needs_foreground (Focus.RequireSemantic) before it is made.
-                note = ClickSemantically(target, (IUIAutomationElement*)element, refuse);
+                // needs_foreground (Focus.RequireSemantic) before it is made,
+                // after DoDefaultAction, which stays in the background.
+                pressed = ClickSemantically(target, (IUIAutomationElement*)element, refuse);
             }
             catch (HelperError e)
             {
                 throw SayIfCameToFront(e, target, frontBefore);
             }
-            if (note != null)
+            if (pressed is { } done)
             {
                 Overlay.Press(marker.Id, x, y);
-                return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
+                return Result("accessibility", done.Verified, SemanticDelivery(target, frontBefore), done.Note);
             }
             ladderRaised = !frontBefore && Focus.InFront(target);
         }

@@ -695,4 +695,37 @@ public class BackgroundTests
     {
         Assert.Equal(allowed, Background.PatternCallAllowed(refuseForeground, targetInFront));
     }
+
+    // DoDefaultAction did not take the front where every other pattern call
+    // did, so it goes first exactly where those would answer needs_foreground.
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    public void DefaultActionGoesFirstOnlyForACoveredTargetWithoutTheLease(bool refuseForeground, bool targetInFront, bool first)
+    {
+        Assert.Equal(first, Background.DefaultActionFirst(refuseForeground, targetInFront));
+    }
+
+    // Only roles whose default action is a press; a list, tree or data item's
+    // default action can be the double click, which opens things.
+    [Theory]
+    [InlineData(50000, "Press", true)]   // button
+    [InlineData(50002, "Check", true)]   // check box
+    [InlineData(50005, "Jump", true)]    // hyperlink
+    [InlineData(50011, "Execute", true)] // menu item
+    [InlineData(50013, "Select", true)]  // radio button
+    [InlineData(50000, "", false)]
+    [InlineData(50000, "  ", false)]
+    [InlineData(50000, null, false)]
+    [InlineData(50007, "Double Click", false)] // list item
+    [InlineData(50024, "Double Click", false)] // tree item
+    [InlineData(50029, "Open", false)]         // data item
+    [InlineData(50004, "", false)]             // edit
+    [InlineData(50003, "Open", false)]         // combo box
+    public void DefaultActionOnlyWhereItIsAPress(int controlType, string? defaultAction, bool press)
+    {
+        Assert.Equal(press, Background.DefaultActionIsPress(controlType, defaultAction));
+    }
 }
