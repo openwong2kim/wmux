@@ -334,21 +334,45 @@ describe.each([
     expect(fs.existsSync(`${targetPath}.bak.1`)).toBe(false);
   });
 
-  it('an older-schema primary is not set aside, and does not reach the backup', async () => {
-    fs.writeFileSync(targetPath, JSON.stringify({ version: 1, name: 'older' }));
-    // A read migrates it, so the store is right to save over it.
+  it('a primary that parses but fails validate, with no prior read, is copied aside and the backup stays', async () => {
+    const bytes = JSON.stringify({ version: 3, from: 'a newer build' });
+    fs.writeFileSync(targetPath, bytes);
+
+    await write({ version: 2 }, { validate: (d: unknown) => (d as { version?: unknown }).version === 2 });
+
+    expect(json(targetPath)).toEqual({ version: 2 });
+    expect(json(`${targetPath}.bak`)).toEqual({ gen: 'old' });
+    expect(keptText()).toBe(bytes);
+    expect(fs.existsSync(`${targetPath}.bak.1`)).toBe(false);
+  });
+
+  it('an older-schema primary costs one copy after a read migrates it, and nothing is lost', async () => {
+    const bytes = JSON.stringify({ version: 1, name: 'older' });
+    fs.writeFileSync(targetPath, bytes);
     const migrated = atomicReadJSONSync<{ version: number }>(targetPath, {
       migrator: (d) => ({ data: { ...(d as object), version: 2 } as { version: number }, version: 2 }),
       validate: (d): d is { version: number } => (d as { version?: unknown }).version === 2,
     });
     expect(migrated).toEqual({ version: 2, name: 'older' });
 
-    const validate = (d: unknown) => (d as { version?: unknown }).version === 2;
-    await write(migrated, { validate });
+    await write(migrated, { validate: (d: unknown) => (d as { version?: unknown }).version === 2 });
 
     expect(json(targetPath)).toEqual({ version: 2, name: 'older' });
     expect(json(`${targetPath}.bak`)).toEqual({ gen: 'old' });
-    expect(kept()).toEqual([]);
+    expect(keptText()).toBe(bytes);
+  });
+
+  it('a copy of a refused primary that cannot be made stops the write', async () => {
+    const bytes = JSON.stringify({ version: 3 });
+    fs.writeFileSync(targetPath, bytes);
+    const sync = vi.spyOn(fs, 'copyFileSync').mockImplementation(() => { throw errno('EIO'); });
+    const async_ = vi.spyOn(fsp, 'copyFile').mockRejectedValue(errno('EIO'));
+    await expect(write({ version: 2 }, { validate: (d: unknown) => (d as { version?: unknown }).version === 2 }))
+      .rejects.toMatchObject({ code: 'EIO' });
+    sync.mockRestore();
+    async_.mockRestore();
+    expect(text(targetPath)).toBe(bytes);
+    expect(json(`${targetPath}.bak`)).toEqual({ gen: 'old' });
   });
 
   it('an empty primary is replaced with nothing kept and the backup stays', async () => {
@@ -422,11 +446,12 @@ describe.each([
     expect(keptText()).toBe('\0'.repeat(32));
   });
 
-  it('a primary the write validator rejects is neither backed up nor set aside', async () => {
+  it('a primary the write validator refuses is copied aside and the backup stays', async () => {
     fs.writeFileSync(targetPath, 'written elsewhere');
     await write('next', { validate: (t: string) => t !== 'written elsewhere' });
+    expect(text(targetPath)).toBe('next');
     expect(text(`${targetPath}.bak`)).toBe('old');
-    expect(kept()).toEqual([]);
+    expect(keptText()).toBe('written elsewhere');
   });
 
   it('logs a fallback where wmux doctor counts it', async () => {

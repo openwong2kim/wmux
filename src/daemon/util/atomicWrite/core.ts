@@ -542,7 +542,8 @@ export function notePrimaryRead(targetPath: string): void {
  *   - `empty` holds nothing worth keeping: it is replaced, and `.bak` stays.
  *   - `bad` cannot be what anyone wrote: it is copied aside, and `.bak` stays.
  *   - `rejected` parses but the write's validator refuses it. A write has no
- *     migrator, so this may be a valid older file: neither `.bak` nor set aside.
+ *     migrator, so this may be a valid older file: copied aside like `bad`, which
+ *     costs one extra file if the judgement is wrong, and `.bak` stays.
  *   - `keptAside` is already in `corrupted/`, and `.bak` stays.
  */
 export type PrimaryVerdict = 'absent' | 'good' | 'empty' | 'bad' | 'rejected' | 'keptAside';
@@ -612,6 +613,7 @@ export async function rememberWrittenAsync(targetPath: string): Promise<void> {
 
 const UNREAD_PRIMARY_REASON = 'a read failed, so what replaces it may come from an older state';
 const INVALID_PRIMARY_REASON = 'failed validation before a write';
+const REJECTED_PRIMARY_REASON = 'refused by the validator of a write; it may be a valid older file';
 
 /**
  * Settle the primary before a write replaces it. Throws, stopping the write, only
@@ -654,8 +656,8 @@ export function settlePrimarySync(
     return 'keptAside';
   }
   const verdict = judge(raw);
-  if (verdict !== 'bad') return verdict;
-  copyToQuarantineSync(targetPath, INVALID_PRIMARY_REASON, { clock: opts.clock });
+  if (verdict !== 'bad' && verdict !== 'rejected') return verdict;
+  copyToQuarantineSync(targetPath, verdict === 'bad' ? INVALID_PRIMARY_REASON : REJECTED_PRIMARY_REASON, { clock: opts.clock });
   return 'keptAside';
 }
 
@@ -695,8 +697,8 @@ export async function settlePrimary(
     return 'keptAside';
   }
   const verdict = judge(raw);
-  if (verdict !== 'bad') return verdict;
-  await copyToQuarantine(targetPath, INVALID_PRIMARY_REASON, { clock: opts.clock });
+  if (verdict !== 'bad' && verdict !== 'rejected') return verdict;
+  await copyToQuarantine(targetPath, verdict === 'bad' ? INVALID_PRIMARY_REASON : REJECTED_PRIMARY_REASON, { clock: opts.clock });
   return 'keptAside';
 }
 
