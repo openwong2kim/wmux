@@ -206,14 +206,14 @@ export async function atomicWriteText(
       await fsp.writeFile(tmp, content, { encoding: 'utf-8', mode: 0o600 });
 
       // Only a primary that passes becomes `.bak` (see core.ts).
-      const verdict = await settlePrimary(targetPath, opts, (raw) => judgePrimaryText(raw, opts.validate));
+      const settled = await settlePrimary(targetPath, opts, (raw) => judgePrimaryText(raw, opts.validate));
 
-      if (opts.rotationEnabled && verdictRotates(verdict)) {
+      if (opts.rotationEnabled && verdictRotates(settled.verdict)) {
         await rotateBackups(targetPath);
       }
 
       // Rotate current → .bak with the same retry as the commit (see core.ts).
-      if (verdict === 'good') {
+      if (settled.verdict === 'good') {
         try {
           await commitRename(targetPath, bak, opts.renameRetry, 'backup');
           movedToBak = true;
@@ -232,6 +232,7 @@ export async function atomicWriteText(
         // The primary is at `.bak` and the new content never landed: put the
         // previous generation back so a failed write leaves the previous state.
         if (movedToBak) await rollbackBak(bak, targetPath);
+        else if (settled.movedTo) await rollbackBak(settled.movedTo, targetPath);
         throw err;
       }
       await rememberWrittenAsync(targetPath);
@@ -329,15 +330,15 @@ export function atomicWriteTextSync(
     fs.writeFileSync(tmp, content, { encoding: 'utf-8', mode: 0o600 });
 
     // Only a primary that passes becomes `.bak` (see core.ts).
-    const verdict = settlePrimarySync(targetPath, opts, (raw) => judgePrimaryText(raw, opts.validate));
+    const settled = settlePrimarySync(targetPath, opts, (raw) => judgePrimaryText(raw, opts.validate));
 
-    if (opts.rotationEnabled && verdictRotates(verdict)) {
+    if (opts.rotationEnabled && verdictRotates(settled.verdict)) {
       rotateBackupsSync(targetPath);
     }
 
     // Rotate current → .bak with the same retry as the commit (see core.ts).
     let movedToBak = false;
-    if (verdict === 'good') {
+    if (settled.verdict === 'good') {
       try {
         commitRenameSync(targetPath, bak, opts.renameRetry, 'backup');
         movedToBak = true;
@@ -353,6 +354,7 @@ export function atomicWriteTextSync(
       // Restore the previous generation so a retry-exhausted write does not
       // leave the caller with no primary file at all.
       if (movedToBak) rollbackBakSync(bak, targetPath);
+      else if (settled.movedTo) rollbackBakSync(settled.movedTo, targetPath);
       throw err;
     }
     rememberWrittenSync(targetPath);

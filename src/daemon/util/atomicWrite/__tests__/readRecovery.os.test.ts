@@ -10,6 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { countErrorWarn } from '../../../../cli/commands/doctor';
+import { reHardenTokenFileAcl, verifyOwnerOnlyDaclSync } from '../../../../shared/security';
 import {
   atomicReadJSON,
   atomicReadJSONSync,
@@ -18,6 +19,11 @@ import {
   commitRenameSync,
 } from '../core';
 import { atomicReadText, atomicReadTextSync, atomicWriteText, atomicWriteTextSync } from '../text';
+
+vi.mock('../../../../shared/security', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../../shared/security')>();
+  return { ...actual, reHardenTokenFileAcl: vi.fn(actual.reHardenTokenFileAcl) };
+});
 
 let tmpDir: string;
 let targetPath: string;
@@ -77,6 +83,7 @@ const text = (file: string): string => fs.readFileSync(file, 'utf-8');
 const corruptedDir = () => path.join(tmpDir, 'corrupted');
 const kept = (): string[] => (fs.existsSync(corruptedDir()) ? fs.readdirSync(corruptedDir()) : []);
 const keptText = (): string => text(path.join(corruptedDir(), kept()[0]));
+const beside = (): string[] => fs.readdirSync(tmpDir).filter((n) => n.includes('.kept-'));
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-read-recovery-'));
@@ -317,14 +324,95 @@ describe.each([
     expect(json(`${targetPath}.bak`)).toEqual({ gen: 'old' });
   });
 
-  it('a copy that cannot be made stops the write', async () => {
+  it('a copy that cannot be made moves the primary beside itself, and the save goes through', async () => {
     fs.writeFileSync(targetPath, '{torn');
-    const sync = vi.spyOn(fs, 'copyFileSync').mockImplementation(() => { throw errno('EIO'); });
-    const async_ = vi.spyOn(fsp, 'copyFile').mockRejectedValue(errno('EIO'));
-    await expect(write({ gen: 'next' })).rejects.toMatchObject({ code: 'EIO' });
+    fs.writeFileSync(corruptedDir(), 'not a folder');
+    await write({ gen: 'next' });
+    expect(json(targetPath)).toEqual({ gen: 'next' });
+    expect(json(`${targetPath}.bak`)).toEqual({ gen: 'old' });
+    expect(beside()).toHaveLength(1);
+    expect(text(path.join(tmpDir, beside()[0]))).toBe('{torn');
+  });
+
+  it('only the newest two stay beside it', async () => {
+    fs.writeFileSync(corruptedDir(), 'not a folder');
+    let now = 1_000;
+    const clock = () => now++;
+    for (const n of [1, 2, 3, 4]) {
+      fs.writeFileSync(targetPath, `{torn ${n}`);
+      await write({ gen: n }, { clock });
+    }
+    expect(beside().map((n) => text(path.join(tmpDir, n))).sort()).toEqual(['{torn 3', '{torn 4']);
+  });
+
+  it('neither copied nor movable: the write stops and nothing is lost', async () => {
+    fs.writeFileSync(targetPath, '{torn');
+    fs.writeFileSync(corruptedDir(), 'not a folder');
+    const renames = failRenames(targetPath, 'EBUSY');
+    await expect(write({ gen: 'next' })).rejects.toMatchObject({ code: 'EBUSY' });
+    renames.restore();
+    expect(text(targetPath)).toBe('{torn');
+    expect(json(`${targetPath}.bak`)).toEqual({ gen: 'old' });
+  });
+
+  it('a primary moved beside itself comes back when the commit fails', async () => {
+    fs.writeFileSync(targetPath, '{torn');
+    fs.writeFileSync(corruptedDir(), 'not a folder');
+    const realSync = fs.renameSync.bind(fs);
+    const realAsync = fsp.rename.bind(fsp);
+    const isCommit = (a: fs.PathLike, b: fs.PathLike) => b === targetPath && String(a).includes('.tmp.');
+    const sync = vi.spyOn(fs, 'renameSync').mockImplementation((a, b) => {
+      if (isCommit(a, b)) throw errno('ENOSPC');
+      realSync(a, b);
+    });
+    const async_ = vi.spyOn(fsp, 'rename').mockImplementation(async (a, b) => {
+      if (isCommit(a, b)) throw errno('ENOSPC');
+      await realAsync(a, b);
+    });
+    await expect(write({ gen: 'next' })).rejects.toMatchObject({ code: 'ENOSPC' });
     sync.mockRestore();
     async_.mockRestore();
     expect(text(targetPath)).toBe('{torn');
+    expect(beside()).toEqual([]);
+  });
+
+  it('a commit that keeps failing does not copy the same primary again', async () => {
+    fs.writeFileSync(targetPath, '{torn');
+    const realSync = fs.renameSync.bind(fs);
+    const realAsync = fsp.rename.bind(fsp);
+    const sync = vi.spyOn(fs, 'renameSync').mockImplementation((a, b) => {
+      if (b === targetPath) throw errno('ENOSPC');
+      realSync(a, b);
+    });
+    const async_ = vi.spyOn(fsp, 'rename').mockImplementation(async (a, b) => {
+      if (b === targetPath) throw errno('ENOSPC');
+      await realAsync(a, b);
+    });
+    let now = 1_700_000_000_000;
+    const clock = () => now++;
+    for (let i = 0; i < 3; i++) await expect(write({ gen: 'next' }, { clock })).rejects.toMatchObject({ code: 'ENOSPC' });
+    sync.mockRestore();
+    async_.mockRestore();
+    expect(kept()).toHaveLength(1);
+  });
+
+  it('a primary unwritten for longer than the retention is not deleted as soon as it is kept', async () => {
+    fs.writeFileSync(targetPath, '{torn');
+    const longAgo = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(targetPath, longAgo, longAgo);
+    await write({ gen: 'next' });
+    expect(keptText()).toBe('{torn');
+    expect(fs.statSync(path.join(corruptedDir(), kept()[0])).mtimeMs).toBeGreaterThan(Date.now() - 60_000);
+  });
+
+  it('the same for one moved aside because it could not be read', async () => {
+    const longAgo = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(targetPath, longAgo, longAgo);
+    const reads = failReads(targetPath, 'EACCES');
+    await write({ gen: 'next' }, { renameRetry: noSleep });
+    reads.restore();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(JSON.parse(keptText())).toEqual({ gen: 'good' });
   });
 
   it('with rotation on, the chain does not shift for it either', async () => {
@@ -362,17 +450,15 @@ describe.each([
     expect(keptText()).toBe(bytes);
   });
 
-  it('a copy of a refused primary that cannot be made stops the write', async () => {
+  it('a refused primary that cannot be copied moves beside itself too', async () => {
     const bytes = JSON.stringify({ version: 3 });
     fs.writeFileSync(targetPath, bytes);
     const sync = vi.spyOn(fs, 'copyFileSync').mockImplementation(() => { throw errno('EIO'); });
-    const async_ = vi.spyOn(fsp, 'copyFile').mockRejectedValue(errno('EIO'));
-    await expect(write({ version: 2 }, { validate: (d: unknown) => (d as { version?: unknown }).version === 2 }))
-      .rejects.toMatchObject({ code: 'EIO' });
+    await write({ version: 2 }, { validate: (d: unknown) => (d as { version?: unknown }).version === 2 });
     sync.mockRestore();
-    async_.mockRestore();
-    expect(text(targetPath)).toBe(bytes);
+    expect(json(targetPath)).toEqual({ version: 2 });
     expect(json(`${targetPath}.bak`)).toEqual({ gen: 'old' });
+    expect(text(path.join(tmpDir, beside()[0]))).toBe(bytes);
   });
 
   it('an empty primary is replaced with nothing kept and the backup stays', async () => {
@@ -458,6 +544,53 @@ describe.each([
     fs.unlinkSync(targetPath);
     await expect(read()).resolves.toMatchObject({ content: 'old' });
     expect(countErrorWarn(logged.join('')).warns).toBe(1);
+  });
+});
+
+describe('access to a kept copy', () => {
+  beforeEach(() => {
+    atomicWriteJSONSync(targetPath, { gen: 'old' });
+    atomicWriteJSONSync(targetPath, { gen: 'good' });
+    fs.writeFileSync(targetPath, '{torn');
+  });
+
+  it.skipIf(process.platform === 'win32')('a copy and a file moved beside itself keep the owner-only mode', () => {
+    fs.chmodSync(targetPath, 0o600);
+    atomicWriteJSONSync(targetPath, { gen: 'next' });
+    expect(fs.statSync(path.join(corruptedDir(), kept()[0])).mode & 0o777).toBe(0o600);
+
+    fs.rmSync(corruptedDir(), { recursive: true });
+    fs.writeFileSync(corruptedDir(), 'not a folder');
+    fs.writeFileSync(targetPath, '{torn again');
+    fs.chmodSync(targetPath, 0o600);
+    atomicWriteJSONSync(targetPath, { gen: 'after' });
+    expect(fs.statSync(path.join(tmpDir, beside()[0])).mode & 0o777).toBe(0o600);
+  });
+
+  it('on win32 a copy is restricted to its owner', () => {
+    const restore = asPlatform('win32');
+    const harden = vi.mocked(reHardenTokenFileAcl);
+    harden.mockClear();
+    harden.mockImplementationOnce(() => 'hardened');
+    atomicWriteJSONSync(targetPath, { gen: 'next' });
+    restore();
+    expect(harden).toHaveBeenCalledTimes(1);
+    expect(harden).toHaveBeenCalledWith(path.join(corruptedDir(), kept()[0]));
+  });
+
+  it('on win32 a copy that cannot be restricted is removed, and the primary moves beside itself', () => {
+    const restore = asPlatform('win32');
+    vi.mocked(reHardenTokenFileAcl).mockImplementationOnce(() => 'failed');
+    atomicWriteJSONSync(targetPath, { gen: 'next' });
+    restore();
+    expect(kept()).toEqual([]);
+    expect(text(path.join(tmpDir, beside()[0]))).toBe('{torn');
+    expect(json(targetPath)).toEqual({ gen: 'next' });
+  });
+
+  it.runIf(process.platform === 'win32')('on a real win32 file system the copy reads back as owner-only', () => {
+    atomicWriteJSONSync(targetPath, { gen: 'next' });
+    expect(verifyOwnerOnlyDaclSync(path.join(corruptedDir(), kept()[0]), null)).toBe(true);
   });
 });
 

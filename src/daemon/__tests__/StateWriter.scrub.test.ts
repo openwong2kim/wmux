@@ -37,6 +37,20 @@ describe('scrubPersistedCredentials', () => {
     expect(sessions[1].env!.PATH).toBe('/bin');
   });
 
+  it('covers the copies a write kept in corrupted/ and beside the file', () => {
+    const inFolder = path.join(dir, 'corrupted', 'sessions.json.1700000000000.bak');
+    const beside = `${primary()}.kept-1700000000000`;
+    fs.mkdirSync(path.dirname(inFolder));
+    const legacy = JSON.stringify({ version: 1, sessions: [{ id: 'a', env: { PATH: '/p', ANTHROPIC_API_KEY: 'sk' } }] });
+    fs.writeFileSync(inFolder, legacy);
+    fs.writeFileSync(beside, legacy);
+    scrubPersistedCredentials(dir);
+    for (const file of [inFolder, beside]) {
+      expect(readSessions(file)[0].env!.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(readSessions(file)[0].env!.PATH).toBe('/p');
+    }
+  });
+
   it('.bak 슬롯도 스크럽', () => {
     const bak = `${primary()}.bak`;
     fs.writeFileSync(bak, JSON.stringify({

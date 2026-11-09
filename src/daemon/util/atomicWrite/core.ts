@@ -36,8 +36,8 @@ import {
   rotateBackupsSync,
 } from './rotation';
 import {
-  copyToQuarantine,
-  copyToQuarantineSync,
+  keepCopyOrMoveSync,
+  moveAsideSync,
   quarantineFile,
   quarantineFileSync,
 } from './quarantine';
@@ -540,13 +540,19 @@ export function notePrimaryRead(targetPath: string): void {
  *   - `good` parses and passes the write's validator: it becomes `.bak`.
  *   - `absent` has nothing to move.
  *   - `empty` holds nothing worth keeping: it is replaced, and `.bak` stays.
- *   - `bad` cannot be what anyone wrote: it is copied aside, and `.bak` stays.
+ *   - `bad` cannot be what anyone wrote: it is kept aside, and `.bak` stays.
  *   - `rejected` parses but the write's validator refuses it. A write has no
- *     migrator, so this may be a valid older file: copied aside like `bad`, which
+ *     migrator, so this may be a valid older file: kept aside like `bad`, which
  *     costs one extra file if the judgement is wrong, and `.bak` stays.
- *   - `keptAside` is already in `corrupted/`, and `.bak` stays.
+ *   - `keptAside` has been dealt with, and `.bak` stays.
  */
 export type PrimaryVerdict = 'absent' | 'good' | 'empty' | 'bad' | 'rejected' | 'keptAside';
+
+/** The verdict, and where the primary went if it was moved rather than copied. */
+export interface SettledPrimary {
+  verdict: PrimaryVerdict;
+  movedTo?: string;
+}
 
 /** Whether a verdict lets the numbered backup slots shift for this write. */
 export function verdictRotates(verdict: PrimaryVerdict): boolean {
@@ -615,91 +621,91 @@ const UNREAD_PRIMARY_REASON = 'a read failed, so what replaces it may come from 
 const INVALID_PRIMARY_REASON = 'failed validation before a write';
 const REJECTED_PRIMARY_REASON = 'refused by the validator of a write; it may be a valid older file';
 
+type SettleOptions = { renameRetry?: RenameRetryPolicy; clock?: () => number };
+
+/** The primary could not be read just now. Renaming needs no read access, so the
+ *  bytes can still be kept. Throws, stopping the write, if it cannot be moved. */
+function settleUnreadable(targetPath: string, err: unknown, opts: SettleOptions): SettledPrimary {
+  const movedTo = moveAsideSync(targetPath, `could not be read before a write (${errorCode(err)})`, { clock: opts.clock });
+  unreadPrimaries.delete(path.resolve(targetPath));
+  return { verdict: 'keptAside', movedTo };
+}
+
+function settleRead(
+  targetPath: string,
+  raw: string | null,
+  opts: SettleOptions,
+  judge: (raw: string) => PrimaryVerdict,
+): SettledPrimary {
+  const key = path.resolve(targetPath);
+  if (raw === null) {
+    unreadPrimaries.delete(key);
+    return { verdict: 'absent' };
+  }
+  const verdict = unreadPrimaries.has(key) ? 'unread' : judge(raw);
+  if (verdict !== 'unread' && verdict !== 'bad' && verdict !== 'rejected') return { verdict };
+  const reason = verdict === 'unread'
+    ? UNREAD_PRIMARY_REASON
+    : verdict === 'bad' ? INVALID_PRIMARY_REASON : REJECTED_PRIMARY_REASON;
+  const movedTo = keepCopyOrMoveSync(targetPath, reason, { clock: opts.clock });
+  unreadPrimaries.delete(key);
+  return { verdict: 'keptAside', movedTo };
+}
+
 /**
  * Settle the primary before a write replaces it. Throws, stopping the write, only
- * when bytes would otherwise be lost: the primary can be neither read nor moved
- * aside, or a copy that has to be made cannot be. The next write tries again.
+ * when its bytes would otherwise be lost: it cannot be kept in any of the ways
+ * above. The next write tries again.
  */
 export function settlePrimarySync(
   targetPath: string,
-  opts: { renameRetry?: RenameRetryPolicy; clock?: () => number },
+  opts: SettleOptions,
   judge: (raw: string) => PrimaryVerdict,
-): PrimaryVerdict {
+): SettledPrimary {
   const key = path.resolve(targetPath);
-  const unread = unreadPrimaries.has(key);
-  if (!unread && lastWritten.has(key)) {
+  if (!unreadPrimaries.has(key) && lastWritten.has(key)) {
     let stat: fs.Stats | null = null;
     try {
       stat = fs.statSync(targetPath);
     } catch {
       // Judged below, by reading it.
     }
-    if (isLastWritten(key, stat)) return 'good';
+    if (isLastWritten(key, stat)) return { verdict: 'good' };
   }
 
   let raw: string | null;
   try {
     raw = readFileRetryingSync(targetPath, opts.renameRetry);
   } catch (err) {
-    // Renaming needs no read access, so the bytes can still be kept.
-    if (!quarantineFileSync(targetPath, `could not be read before a write (${errorCode(err)})`, { clock: opts.clock })) throw err;
-    unreadPrimaries.delete(key);
-    return 'keptAside';
+    return settleUnreadable(targetPath, err, opts);
   }
-  if (raw === null) {
-    unreadPrimaries.delete(key);
-    return 'absent';
-  }
-  if (unread) {
-    copyToQuarantineSync(targetPath, UNREAD_PRIMARY_REASON, { clock: opts.clock });
-    unreadPrimaries.delete(key);
-    return 'keptAside';
-  }
-  const verdict = judge(raw);
-  if (verdict !== 'bad' && verdict !== 'rejected') return verdict;
-  copyToQuarantineSync(targetPath, verdict === 'bad' ? INVALID_PRIMARY_REASON : REJECTED_PRIMARY_REASON, { clock: opts.clock });
-  return 'keptAside';
+  return settleRead(targetPath, raw, opts, judge);
 }
 
 /** Async counterpart of {@link settlePrimarySync}. */
 export async function settlePrimary(
   targetPath: string,
-  opts: { renameRetry?: RenameRetryPolicy; clock?: () => number },
+  opts: SettleOptions,
   judge: (raw: string) => PrimaryVerdict,
-): Promise<PrimaryVerdict> {
+): Promise<SettledPrimary> {
   const key = path.resolve(targetPath);
-  const unread = unreadPrimaries.has(key);
-  if (!unread && lastWritten.has(key)) {
+  if (!unreadPrimaries.has(key) && lastWritten.has(key)) {
     let stat: fs.Stats | null = null;
     try {
       stat = await fsp.stat(targetPath);
     } catch {
       // Judged below, by reading it.
     }
-    if (isLastWritten(key, stat)) return 'good';
+    if (isLastWritten(key, stat)) return { verdict: 'good' };
   }
 
   let raw: string | null;
   try {
     raw = await readFileRetrying(targetPath, opts.renameRetry);
   } catch (err) {
-    if (!(await quarantineFile(targetPath, `could not be read before a write (${errorCode(err)})`, { clock: opts.clock }))) throw err;
-    unreadPrimaries.delete(key);
-    return 'keptAside';
+    return settleUnreadable(targetPath, err, opts);
   }
-  if (raw === null) {
-    unreadPrimaries.delete(key);
-    return 'absent';
-  }
-  if (unread) {
-    await copyToQuarantine(targetPath, UNREAD_PRIMARY_REASON, { clock: opts.clock });
-    unreadPrimaries.delete(key);
-    return 'keptAside';
-  }
-  const verdict = judge(raw);
-  if (verdict !== 'bad' && verdict !== 'rejected') return verdict;
-  await copyToQuarantine(targetPath, verdict === 'bad' ? INVALID_PRIMARY_REASON : REJECTED_PRIMARY_REASON, { clock: opts.clock });
-  return 'keptAside';
+  return settleRead(targetPath, raw, opts, judge);
 }
 
 function ensureDirSync(filePath: string): void {
@@ -872,14 +878,14 @@ export async function atomicWriteJSON(
       }
 
       // 2. Settle the primary: only a valid one goes on to `.bak` below.
-      const verdict = await settlePrimary(targetPath, opts, (raw) => judgePrimaryJSON(raw, opts.validate));
+      const settled = await settlePrimary(targetPath, opts, (raw) => judgePrimaryJSON(raw, opts.validate));
 
       // 3. When rotation is enabled we shift the existing numbered
       //    slots BEFORE overwriting `.bak` so nothing is lost:
       //      .bak.2 → .bak.3, .bak.1 → .bak.2, .bak → .bak.1.
       //    With rotation off we keep the historical single-slot
       //    behaviour (current `.bak` is overwritten by step 4).
-      if (opts.rotationEnabled && verdictRotates(verdict)) {
+      if (opts.rotationEnabled && verdictRotates(settled.verdict)) {
         await rotateBackups(targetPath);
       }
 
@@ -889,7 +895,7 @@ export async function atomicWriteJSON(
       //    generation — the last good copy would survive nowhere. Retry it
       //    with the same policy; if it still fails we keep the historical
       //    warn-and-continue (availability over the backup guarantee).
-      if (verdict === 'good') {
+      if (settled.verdict === 'good') {
         try {
           await commitRename(targetPath, bak, opts.renameRetry, 'backup');
           movedToBak = true;
@@ -910,6 +916,7 @@ export async function atomicWriteJSON(
         // landed. Put the previous generation back so "a failed write
         // leaves the previous state" still holds.
         if (movedToBak) await rollbackBak(bak, targetPath);
+        else if (settled.movedTo) await rollbackBak(settled.movedTo, targetPath);
         throw err;
       }
       await rememberWrittenAsync(targetPath);
@@ -1076,19 +1083,19 @@ export function atomicWriteJSONSync(
     }
 
     // Settle the primary before anything moves — see the async variant.
-    const verdict = settlePrimarySync(targetPath, opts, (raw) => judgePrimaryJSON(raw, opts.validate));
+    const settled = settlePrimarySync(targetPath, opts, (raw) => judgePrimaryJSON(raw, opts.validate));
 
     // Shift the numbered slots up when rotation is enabled so the
     // upcoming `.bak` overwrite does not drop a generation. See the
     // async variant for the slot-order rationale.
-    if (opts.rotationEnabled && verdictRotates(verdict)) {
+    if (opts.rotationEnabled && verdictRotates(settled.verdict)) {
       rotateBackupsSync(targetPath);
     }
 
     // Rotate current → .bak with the same retry as the commit — see the async
     // variant for why giving up here silently forfeits the last good copy.
     let movedToBak = false;
-    if (verdict === 'good') {
+    if (settled.verdict === 'good') {
       try {
         commitRenameSync(targetPath, bak, opts.renameRetry, 'backup');
         movedToBak = true;
@@ -1104,6 +1111,7 @@ export function atomicWriteJSONSync(
       // Restore the previous generation so a retry-exhausted write does not
       // leave the caller with no primary file at all (see rollbackBakSync).
       if (movedToBak) rollbackBakSync(bak, targetPath);
+      else if (settled.movedTo) rollbackBakSync(settled.movedTo, targetPath);
       throw err;
     }
     rememberWrittenSync(targetPath);
