@@ -9,6 +9,7 @@ import {
   DAEMON_STATE_REGISTRY,
   BACKUP_SUFFIXES,
 } from './util/atomicWrite';
+import { keptCopiesOf } from './util/atomicWrite/quarantine';
 import { AsyncQueue } from './util/AsyncQueue';
 import { stripCredentialValues } from '../shared/envFilter';
 import { isPidAlive } from './phantomExit';
@@ -38,14 +39,15 @@ function toPersistable(state: DaemonState): DaemonState {
  * total·non-throwing: 읽기/파싱 실패한 슬롯은 건너뛰고, 세션 목록은 절대 드롭하지 않는다.
  * rotation 없이 임시파일→fsync→rename으로 슬롯 자체를 제자리 스크럽(백업의 백업 없음).
  *
- * 범위: 주 파일 + rotation 백업(.bak~.bak.3)만. `*.premigrate.bak`(migrate)·`corrupted/`
- * (quarantine) 사본은 대상 아님 — 현재 DAEMON_STATE_REGISTRY가 identity라 premigrate
- * 스냅샷이 생성되지 않고, quarantine은 파싱 불가 파일만 격리하므로 오늘은 무해. 실제
- * daemon-state 마이그레이션 스텝을 추가하면 그때 이 두 경로도 스크럽 대상에 포함해야 한다.
+ * Scope: the primary, the rotation backups (.bak to .bak.3), and the copies a write
+ * keeps in `corrupted/` or beside the file, which can be valid files. A kept copy that
+ * does not parse is skipped like any other slot. `*.premigrate.bak` is not covered:
+ * DAEMON_STATE_REGISTRY is an identity, so none is written today. A real daemon-state
+ * migration step has to add it here.
  */
 export function scrubPersistedCredentials(baseDir: string): void {
   const primary = path.join(baseDir, 'sessions.json');
-  const targets = [primary, ...BACKUP_SUFFIXES.map((suffix) => `${primary}${suffix}`)];
+  const targets = [primary, ...BACKUP_SUFFIXES.map((suffix) => `${primary}${suffix}`), ...keptCopiesOf(primary)];
   for (const file of targets) {
     try {
       if (!fs.existsSync(file)) continue;

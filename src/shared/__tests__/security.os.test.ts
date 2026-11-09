@@ -723,6 +723,20 @@ describe('reHardenTokenFileAcl', () => {
     expect(fsMock.unlinkSync).not.toHaveBeenCalled();
   });
 
+  // Measured on a GitHub Windows runner: icacls /save wrote D:PAI(A;;FA;;;LA)
+  // for its RID 500 account, with that account alone on the file.
+  it.each([
+    ['the built-in Administrator as its alias', 'S-1-5-21-1-2-3-500', 'D:PAI(A;;FA;;;LA)', true],
+    ['another account against that alias', 'S-1-5-21-1-2-3-1001', 'D:PAI(A;;FA;;;LA)', false],
+    ['the alias beside a broad grant', 'S-1-5-21-1-2-3-500', 'D:PAI(A;;FR;;;S-1-1-0)(A;;FA;;;LA)', false],
+    ['the alias with less than full control', 'S-1-5-21-1-2-3-500', 'D:PAI(A;;FR;;;LA)', false],
+  ])('owner-only read-back: %s', async (_name, sid, sddl, expected) => {
+    stubWin32();
+    fsMock.readFileSync.mockImplementation(() => `token\r\n${sddl}\r\n`);
+    const { verifyOwnerOnlyDaclSync } = await import('../security');
+    expect(verifyOwnerOnlyDaclSync(path.join('C:', 'Users', 'tester', '.wmux-auth-token'), sid)).toBe(expected);
+  });
+
   // THE upgrade-boot case (GLM+Codex consensus): the original ACL is the WEAK
   // one. A swap failure there must report 'failed' so the fail-closed callers
   // (machine-key regeneration) actually fire.
