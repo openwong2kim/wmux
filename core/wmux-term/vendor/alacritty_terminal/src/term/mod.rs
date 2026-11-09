@@ -1458,6 +1458,13 @@ impl<T: EventListener> Handler for Term<T> {
             // wmux: not `scroll_up`, which is SU's in-place scroll.
             self.scroll_up_relative(self.scroll_region.start, 1);
         } else if next < self.screen_lines() {
+            // wmux: a line feed that moves down without scrolling or clamping
+            // makes the row it enters a new line, as xterm.js's `lineFeed`
+            // clears that row's wrapped state. IND and NEL keep it there
+            // (`index`); native_core.rs puts the flag back for those.
+            let line = self.grid.cursor.point.line;
+            let last = self.grid.last_column();
+            self.grid[line][last].flags.remove(Flags::WRAPLINE);
             self.damage_cursor();
             self.grid.cursor.point.line += 1;
             self.damage_cursor();

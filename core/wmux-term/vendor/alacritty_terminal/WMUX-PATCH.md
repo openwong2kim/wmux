@@ -97,6 +97,12 @@ core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
   delete no longer clears cells left of the cursor (upstream cleared from
   `columns - count`), and a wide glyph that does not fit wraps (or is dropped)
   before insert mode shifts anything. Modified 2026-11-08.
+- `src/term/mod.rs` `linefeed`: a line feed that moves the cursor down
+  without scrolling or clamping clears the wrap flag of the row it leaves, so
+  the row it enters starts a new line, as xterm.js's `InputHandler.lineFeed`
+  clears that row's `isWrapped` (LF, VT and FF). vte routes IND and NEL to
+  the same handler, where xterm's `index` keeps the flag; `native_core.rs`
+  puts it back for those. Added 2026-11-10.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.

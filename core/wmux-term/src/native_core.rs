@@ -472,6 +472,27 @@ impl XtermFeed {
                 erase_like_xterm(parser, term, sequence[2] == b'2');
                 from = at + len;
                 next = Some(at + len);
+            } else if sequence == b"\x1bD" || sequence == b"\x1bE" {
+                // IND and NEL: Alacritty runs its line feed, which clears the
+                // wrapped state of the row it enters as xterm's `lineFeed`
+                // does; xterm's `index` keeps it. Put back what it cleared.
+                parser.advance(term, &data[from..at]);
+                let synchronized = parser.sync_timeout().pending_timeout();
+                if synchronized {
+                    parser.stop_sync(term);
+                }
+                let line = term.grid().cursor.point.line;
+                let last = term.grid().last_column();
+                let wrapped = term.grid()[line][last].flags.contains(Flags::WRAPLINE);
+                parser.advance(term, sequence);
+                if wrapped && term.grid().cursor.point.line == line + 1 {
+                    term.grid_mut()[line][last].flags.insert(Flags::WRAPLINE);
+                }
+                if synchronized {
+                    parser.advance(term, b"\x1b[?2026h");
+                }
+                from = at + len;
+                next = Some(at + len);
             } else if is_restricting(sequence) {
                 // xterm's ICH, DCH and ECH first restrict the cursor, which
                 // drops a pending wrap; Alacritty keeps it.
@@ -1772,6 +1793,42 @@ mod tests {
             lifted(&[overflow.as_str(), "\x1b[?1049l"]),
             "a real leave after it"
         );
+    }
+
+    #[test]
+    fn a_line_feed_into_a_continuation_ends_its_paragraph_as_xterm_s() {
+        use alacritty_terminal::term::cell::Flags;
+        // 15 x on 10 columns: row 1 continues row 0.
+        let wrapped = |chunks: &[&str]| {
+            let term = feed(chunks);
+            term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        };
+        let para = "xxxxxxxxxxxxxxx\x1b[1;1H";
+        assert!(wrapped(&[para]));
+        // xterm's lineFeed: LF, VT and FF clear the entered row's wrap.
+        for lf in ["\n", "\x0b", "\x0c"] {
+            assert!(!wrapped(&[para, lf]), "{lf:?}");
+        }
+        assert!(
+            !wrapped(&[para, "\x1b[1;2r\x1b[1;1H\n"]),
+            "inside a region, above its bottom"
+        );
+        // xterm's index: IND and NEL keep it, also in an update or a split.
+        for index in ["\x1bD", "\x1bE", "\x1b[?2026h\x1bD"] {
+            assert!(wrapped(&[para, index]), "{index:?}");
+        }
+        assert!(wrapped(&[para, "\x1b", "D"]), "split across chunks");
+        // At the bottom a line feed scrolls; the paragraph moves up intact.
+        let (term, _, _) = feed_with(&["\x1b[3;1Hxxxxxxxxxxxxxxx\x1b[3;1H\n"]);
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        let (term, _, _) = feed_with(&["\x1b[3;1Hxxxxxxxxxxxxxxx\x1b[3;1H\x1bD"]);
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
     }
 
     #[test]
