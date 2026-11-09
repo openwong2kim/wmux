@@ -384,6 +384,10 @@ pub(crate) fn divergent(sequence: &[u8]) -> bool {
         if body.first() == Some(&b'[') && body.last() == Some(&b'J') {
             return true;
         }
+        // Nor IND and NEL xterm's `index` semantics (native_core.rs).
+        if body == b"D" || body == b"E" {
+            return true;
+        }
     }
     match body.split_first() {
         Some((b'[', rest)) => csi_divergent(rest),

@@ -100,9 +100,12 @@ core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
 - `src/term/mod.rs` `linefeed`: a line feed that moves the cursor down
   without scrolling or clamping clears the wrap flag of the row it leaves, so
   the row it enters starts a new line, as xterm.js's `InputHandler.lineFeed`
-  clears that row's `isWrapped` (LF, VT and FF). vte routes IND and NEL to
-  the same handler, where xterm's `index` keeps the flag; `native_core.rs`
-  puts it back for those. Added 2026-11-10.
+  clears that row's `isWrapped` (LF, VT and FF). It also drops a pending
+  wrap, as `lineFeed` and `index` both pull the cursor back into the last
+  column. The motion moved to `line_down`, which `wrapline` calls without the
+  clear, so an auto-wrap below a scroll region keeps its wrap. vte routes IND
+  and NEL to the same handler, where xterm's `index` keeps the flag;
+  `native_core.rs` puts it back for those. Added 2026-11-10.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.

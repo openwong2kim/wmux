@@ -169,6 +169,13 @@ const lineFeeds: Case[] = [
   synthetic('nel-c1-into-continuation', `${para}\u0085Y`, 'xterm'),
   synthetic('lf-scrolls-a-paragraph', `${bottom}\nY`),
   synthetic('ind-scrolls-a-paragraph', `${bottom}\x1bDY`),
+  // An auto-wrap keeps its paragraph, also below a scroll region.
+  synthetic('auto-wrap-below-region', `\x1b[1;3r\x1b[5;1H${'x'.repeat(25)}\x1b[r`),
+  // Both drop a pending wrap: the next glyph lands in the last column.
+  synthetic('lf-drops-pending-wrap', `${'x'.repeat(20)}\nY`),
+  synthetic('ind-drops-pending-wrap', `${'x'.repeat(20)}\x1bDY`),
+  // A C0 inside IND: left to the reference.
+  synthetic('ind-with-c0-inside', `${para}\x1b\x07DY`, 'xterm'),
 ];
 
 // Controls the selector never refused, rechecked now that Rust is the default.

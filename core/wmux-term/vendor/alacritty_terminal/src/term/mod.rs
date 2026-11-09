@@ -996,7 +996,8 @@ impl<T> Term<T> {
         self.grid.cursor_cell().flags.insert(Flags::WRAPLINE);
 
         if self.grid.cursor.point.line + 1 >= self.scroll_region.end {
-            self.linefeed();
+            // wmux: the line feed's motion, keeping the wrap just set.
+            self.line_down(false);
         } else {
             self.damage_cursor();
             self.grid.cursor.point.line += 1;
@@ -1005,6 +1006,28 @@ impl<T> Term<T> {
         self.grid.cursor.point.column = Column(0);
         self.grid.cursor.input_needs_wrap = false;
         self.damage_cursor();
+    }
+
+    /// wmux: a line feed's motion: scroll at the region's bottom, otherwise
+    /// down one row unless on the last. `new_line`: moving down makes the
+    /// row entered a new line (xterm.js `lineFeed` clears its wrapped state);
+    /// an auto-wrap keeps the wrap it just set.
+    #[inline]
+    fn line_down(&mut self, new_line: bool) {
+        let next = self.grid.cursor.point.line + 1;
+        if next == self.scroll_region.end {
+            // wmux: not `scroll_up`, which is SU's in-place scroll.
+            self.scroll_up_relative(self.scroll_region.start, 1);
+        } else if next < self.screen_lines() {
+            if new_line {
+                let line = self.grid.cursor.point.line;
+                let last = self.grid.last_column();
+                self.grid[line][last].flags.remove(Flags::WRAPLINE);
+            }
+            self.damage_cursor();
+            self.grid.cursor.point.line += 1;
+            self.damage_cursor();
+        }
     }
 
     /// Write `c` to the cell at the cursor position.
@@ -1453,22 +1476,12 @@ impl<T: EventListener> Handler for Term<T> {
     #[inline]
     fn linefeed(&mut self) {
         trace!("Linefeed");
-        let next = self.grid.cursor.point.line + 1;
-        if next == self.scroll_region.end {
-            // wmux: not `scroll_up`, which is SU's in-place scroll.
-            self.scroll_up_relative(self.scroll_region.start, 1);
-        } else if next < self.screen_lines() {
-            // wmux: a line feed that moves down without scrolling or clamping
-            // makes the row it enters a new line, as xterm.js's `lineFeed`
-            // clears that row's wrapped state. IND and NEL keep it there
-            // (`index`); native_core.rs puts the flag back for those.
-            let line = self.grid.cursor.point.line;
-            let last = self.grid.last_column();
-            self.grid[line][last].flags.remove(Flags::WRAPLINE);
-            self.damage_cursor();
-            self.grid.cursor.point.line += 1;
-            self.damage_cursor();
-        }
+        // wmux: xterm.js's `lineFeed` (LF, VT, FF) ends the paragraph of the
+        // row it enters and drops a pending wrap. vte also routes IND and NEL
+        // here, where xterm's `index` drops the pending wrap but keeps the
+        // paragraph; native_core.rs puts the wrap flag back for those.
+        self.line_down(true);
+        self.grid.cursor.input_needs_wrap = false;
     }
 
     /// Set current position as a tabstop.
