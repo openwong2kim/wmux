@@ -171,6 +171,25 @@ describe('redactSecrets — credential forms', () => {
     ['UI_PASSWORD= UI_TOKEN=t0k3nValue2', `UI_PASSWORD= UI_TOKEN=${REDACTED}`],
     ['secret.txt:hunter2pass9', `secret.txt:${REDACTED}`],
     ['a=1\\nSECRET_TOKEN=abc123def456', `a=1\\nSECRET_TOKEN=${REDACTED}`],
+    ["api_key = 'live-key-2024-prod'", `api_key = '${REDACTED}'`],
+    ['api_key: my-prod-api-key', `api_key: ${REDACTED}`],
+    ['apiKey: "abcd-efgh-ijkl"', `apiKey: "${REDACTED}"`],
+    ['client_secret: oauth-client-secret-value', `client_secret: ${REDACTED}`],
+    ["token: 'test-token-123'", `token: '${REDACTED}'`],
+    ['{"access_token":"ya29.SECRET"}', `{"access_token":"${REDACTED}"}`],
+    ['{"refresh_token":"1//0gSECRET"}', `{"refresh_token":"${REDACTED}"}`],
+    ['GITHUB_TOKEN=some_value', `GITHUB_TOKEN=${REDACTED}`],
+    ["{ '/auth-token': 'TOKEN123' }", `{ '/auth-token': '${REDACTED}' }`],
+    ['password: hunter2', `password: ${REDACTED}`],
+    ['secret: letmein', `secret: ${REDACTED}`],
+    ['PGPASSWORD=s3cr3t', `PGPASSWORD=${REDACTED}`],
+    ['passwd=abc', `passwd=${REDACTED}`],
+    ['DB_PASS=abc1', `DB_PASS=${REDACTED}`],
+    ['password: "correct horse battery staple"', `password: "${REDACTED}"`],
+    ['PASSWORD="my secret pass phrase"', `PASSWORD="${REDACTED}"`],
+    ['private_key: "abc def ghi"', `private_key: "${REDACTED}"`],
+    ['passphrase: "abc def"', `passphrase: "${REDACTED}"`],
+    ["password: 'Password must be at least 8 characters'", `password: '${REDACTED}'`],
     ['POST /login {"password":"hunter2SECRET"}', `POST /login {"password":"${REDACTED}"}`],
     ['password: abc$def(1)xy', `password: ${REDACTED}`],
     ['AWS_SECRET_ACCESS_KEY=abc123def456', `AWS_SECRET_ACCESS_KEY=${REDACTED}`],
@@ -215,6 +234,27 @@ describe('redactSecrets — credential forms', () => {
     ['密码："correct horse"', `密码："${REDACTED}"`],
   ])('masks a value after its name in Chinese, Japanese or Korean: %s', (input, want) => {
     expect(redactSecrets(input)).toBe(want);
+  });
+
+  it.each([
+    ['tool --password s3cr3tpass --user x', `tool --password ${REDACTED} --user x`],
+    ['tool --password=s3cr3tpass', `tool --password=${REDACTED}`],
+    ['tool --password "correct horse" -v', `tool --password "${REDACTED}" -v`],
+    ['tool --db-password s3cr3tpass', `tool --db-password ${REDACTED}`],
+    ['gh --token abc123def456', `gh --token ${REDACTED}`],
+    ['curl -u admin:s3cr3tpass https://h/x', `curl -u admin:${REDACTED} https://h/x`],
+    ['curl --user admin:s3cr3tpass https://h/x', `curl --user admin:${REDACTED} https://h/x`],
+    ['/usr/bin/curl -s -u "admin:s3cr3t pass" https://h/x', `/usr/bin/curl -s -u "admin:${REDACTED}" https://h/x`],
+    ['sshpass -p s3cr3tpass ssh host', `sshpass -p ${REDACTED} ssh host`],
+    ['sshpass -ps3cr3tpass ssh host', `sshpass -p${REDACTED} ssh host`],
+    ['sshpass -p "s3cr3t pass" ssh host', `sshpass -p "${REDACTED}" ssh host`],
+    ['mysql -uroot -ps3cr3tpass db', `mysql -uroot -p${REDACTED} db`],
+    ['mariadb -h db -u root -ps3cr3tpass', `mariadb -h db -u root -p${REDACTED}`],
+    ['/usr/bin/mysqldump -uroot -ps3cr3tpass db', `/usr/bin/mysqldump -uroot -p${REDACTED} db`],
+    ['post to https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXX now', `post to https://hooks.slack.com/services/${REDACTED} now`],
+  ])('masks a credential on a command line or in a webhook: %s', (input, want) => {
+    expect(redactSecrets(input)).toBe(want);
+    expect(redactSecretsCounted(input).masked).toBe(1);
   });
 
   it('recognises more vendor key shapes, with readable names too', () => {
@@ -275,7 +315,31 @@ describe('redactSecrets — ordinary text stays as written', () => {
     'token: <your-token-here>',
     "credentials: 'same-origin',",
     'token:\n  type: string-value',
-    "password: 'Password must be at least 8 characters'",
+    "SECRET_KEY = get_random_secret_key()",
+    'password: $DB_PASSWORD',
+    'max_tokens: 4096',
+    'password: string',
+    'password: string;',
+    'password: str = ""',
+    'password: Optional[str] = None',
+    'password = value;',
+    'password = None',
+    'secret: true',
+    'isSecret: yes',
+    'showPassword: false',
+    'resetPassword: pending',
+    'passwordless: enabled',
+    'password = :password',
+    'password=%s',
+    'const token = some_value',
+    'secret: SECRET2 }',
+    'const DB_PASSWORD = new RegExp(source);',
+    'password = await getPassword()',
+    'factory:secret:delete',
+    'skills/secret-scanner:x7k2p9q1',
+    'token: abc',
+    'export GITHUB_TOKEN=abcdef',
+    'key: some-slug',
     // Places: a file and line, a path, a skill.
     'internal/auth/token.go:L643-669.',
     'src/secret_store.ts:L643-669. and L12-40',
@@ -313,9 +377,29 @@ describe('redactSecrets — ordinary text stays as written', () => {
     `sha256-${sha256}`,
     'integrity sha512-oYp4Zq1m3Vb2xGQ9nKfL7hT0sR8uWdE5yC6aJ1iM3pX==',
     'h1:Xr3Ez0pQkE9yJ5m2Lq7sT1vU8wN4oB6cD0fG2hI3jK4=',
+    // Flags and options that are not credentials here.
+    'pass the --password flag to set it',
+    '--password is required',
+    '--password $DB_PASSWORD',
+    '--no-password --user x',
+    '--password --user x',
+    '--token-file token.txt',
+    '--secret id=npmrc,src=npmrc',
+    'mkdir -pfoo',
+    'tar -pxf archive.tar',
+    'ps -u admin:staff',
+    'docker run -u 1000:1000 image',
+    'curl -u user:password https://h/x',
+    'curl -u "$USER:$PASS" https://h/x',
+    'curl -u admin https://h/x',
+    'sshpass -p "$SSHPASS" ssh host',
+    'mysql -p db',
+    'mysql -p$MYSQL_PWD db',
+    'echo mysql; tool -pfoobar1',
+    'session_id=9f8a7b6c5d4e',
+    'https://hooks.slack.com/services/',
     // A page's address, a project's name.
     'sk-hynix-third-quarter-profit',
-    "token: 'test-token-123',",
     'ark-survival-evolved-server',
     // Chinese, Japanese and Korean prose.
     '비밀번호를 변경하세요',
@@ -367,6 +451,8 @@ describe('redactSecrets — fixed point and cost', () => {
       'password: "correcthorse battery"', 'token=abc123def456.tail', 'keyboard: enabled-mode', '"tokenCount": 12345678',
       `curl -H 'Authorization: Bearer abcd1234efgh' -H 'Cookie: sid=abc123def456' https://h/x`, 'Authorization: Digest username="u", nonce="n1"',
       'UI_PASSWORD= UI_TOKEN=t0k3nValue2', 'postgres://app:hunter2pw@db.local:5432/x?token=abc',
+      'password: hunter2', 'passwd=abc', 'password: "correct horse battery staple"', 'tool --password s3cr3tpass', 'curl -u admin:s3cr3tpass https://h/x',
+      'sshpass -p s3cr3tpass ssh host', 'mysql -uroot -ps3cr3tpass db', 'https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXX',
     ];
     for (const s of inputs) {
       for (const opts of [{}, { readableNames: true }]) {
@@ -389,6 +475,7 @@ describe('redactSecrets — fixed point and cost', () => {
     'eyJ-', 'eyJ.', 'sk-', 'ark-', 'hf_', 'gsk_', 'xai-', 'pypi-', 'dop_v1_', 'SG.', 'SG.a', 'x://', 'a://b:', 'a://b:c@', 'a://b:c@d@', '?token=',
     '密码', '密码：', '密码："', '비밀번호', '비밀번호 ', '토큰은 a', 'パスワード', 'key 是 ', 'token：', '0', 'f', 'sha256:', 'sha256-', 'h1:', '-----BEGIN ', '-----BEGIN A ',
     '-----BEGIN PRIVATE KEY-----', '[redacted]', 'wmuxguest~', 'wmuxguest~a-',
+    'password:a ', 'passwd=abc ', '--password ', '--password a1b ', '--password "', '--a-', '--a-a-a-a-token ', '-u ', ' -u a:b ', 'curl -u a:b1c ', 'curl -u ', 'curl ', ' -pa1b', 'mysql -pa1b ', 'mysql ', 'x -p', 'sshpass -p a1b ', 'sshpass -a ', 'sshpass ', 'hooks.slack.com/services/', 'hooks.slack.com/services/a1b2c3d4e5 ',
   ])('takes well under a second on 1 MB of %j', (unit) => {
     const hostile = unit.repeat(Math.ceil((1 << 20) / unit.length)).slice(0, 1 << 20);
     const started = performance.now();

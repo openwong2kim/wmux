@@ -3,8 +3,9 @@
 // (main/ipc/wrapHandler.ts), and key-shaped values — OpenAI/Anthropic `sk-…`,
 // GitHub `ghp_…`/`github_pat_…`, AWS `AKIA…`/`ASIA…`, Slack `xox?-…`, private
 // key headers, a value after a key/secret/token/password name (in English,
-// Chinese, Japanese or Korean), an Authorization or Cookie header's value, and
-// any other long random-looking token — plus every key shape the outbound
+// Chinese, Japanese or Korean), an Authorization or Cookie header's value, a
+// password on a command line, a Slack webhook's path, and any other long
+// random-looking token — plus every key shape the outbound
 // secret guard blocks (shared/secretGuard.ts KEY_RULES), so a key that cannot
 // be committed is not logged either. Pure, no Node imports, so main, the
 // daemon and the CLI share it.
@@ -150,13 +151,18 @@ const hasLetter = (v: string): boolean => /[A-Za-z]/.test(v);
 const mixedRandom = (v: string): boolean => /[a-z]/.test(v) && /[A-Z]/.test(v) && !wordlike(v);
 
 /** What stands in for a value instead of being one: `${PASS}`, `<password>`, `****`, `your-key`. */
-const PLACEHOLDER = /^(?:\$\{?\w+\}?(?:[/:.-].*)?|\$\(.*|%\w+%?|\{.*\}|<.*>|\[.*\]|[*xX.]+|your[_-].*|changeme|change[_-]me|example.*|placeholder.*|dummy.*)$/i;
+const PLACEHOLDER = /^(?:\$\{?\w+\}?(?:[/:.-].*)?|\$\(.*|%\w+%?|%\(.*|[:@]\w+|\{.*\}|<.*>|\[.*\]|[*xX.]+|your[_-].*|changeme|change[_-]me|example.*|placeholder.*|dummy.*)$/i;
 /** Code reading a value from somewhere, calling for it or comparing with it. */
-const CODE_VALUE = /^(?:process\.env|import\.meta|os\.|env\.|this\.|self\.|[A-Za-z_$][\w$.]*(?:<[^>]*>)?\([^)]*\)?[;,)]*$|\(|\[\]|map\[|[A-Z]\w*<|[=>]|\/\/|[a-z][a-z0-9+.-]*:\/\/)/i;
+const CODE_VALUE = /^(?:process\.env|import\.meta|os\.|env\.|this\.|self\.|[A-Za-z_$][\w$.]*(?:<[^>]*>)?\([^)]*\)?[;,)]*$|\(|\[\]|map\[|[A-Z]\w*[<[]|[=>]|\/\/|[a-z][a-z0-9+.-]*:\/\/)/i;
 /** A value built from code in a template string: `Bearer ${token}`, `{{ secrets.X }}`, `#{key}`. */
 const TEMPLATE = /\$\{|\{\{|#\{/;
 /** Words a field called password or token is set to in code and prose: not values. */
-const NOT_A_VALUE = new Set(['undefined', 'function', 'required', 'optional', 'enabled', 'disabled', 'boolean', 'provided', 'missing', 'expired', 'invalid', 'incorrect', 'rejected', 'password', 'username', 'nullable', 'readonly', 'inherited', 'notfound', 'same-origin']);
+const NOT_A_VALUE = new Set([
+  'undefined', 'function', 'required', 'optional', 'enabled', 'disabled', 'boolean', 'provided', 'missing', 'expired', 'invalid', 'incorrect', 'rejected',
+  'password', 'passwd', 'pass', 'pwd', 'username', 'nullable', 'readonly', 'inherit', 'inherited', 'notfound', 'same-origin',
+  'string', 'str', 'number', 'int', 'integer', 'bool', 'any', 'none', 'null', 'nil', 'true', 'false', 'void', 'object', 'text', 'unknown', 'never', 'value', 'input', 'secret', 'secrets', 'token', 'key', 'hidden', 'empty', 'blank', 'yes',
+  'new', 'await', 'async', 'yield', 'typeof', 'lambda', 'require', 'import', 'const', 'let', 'var', 'this', 'self',
+]);
 
 // Adapted from yetone/magpie@c7ebb6f8d (internal/redact/fieldvalue.go), MIT
 /** A release's version as a manifest pins it: `^4.0.0-beta.1`. */
@@ -194,8 +200,8 @@ function namesASecret(v: string): boolean {
 }
 
 /** Not a secret in any field: stands in for one, reads one, or is a version, a time, a path or a name. */
-function neverAValue(v: string): boolean {
-  return PLACEHOLDER.test(v) || TEMPLATE.test(v) || CODE_VALUE.test(v) || VERSION_VALUE.test(v) || TIME_VALUE.test(v) || LINE_REF.test(v) || PATH_VALUE.test(v) || namesASecret(v) || NOT_A_VALUE.has(v.toLowerCase());
+function neverAValue(v: string, quoted = false): boolean {
+  return PLACEHOLDER.test(v) || TEMPLATE.test(v) || CODE_VALUE.test(v) || VERSION_VALUE.test(v) || TIME_VALUE.test(v) || LINE_REF.test(v) || PATH_VALUE.test(v) || (namesASecret(v) && !(quoted && v.includes('.'))) || NOT_A_VALUE.has(v.toLowerCase());
 }
 
 /**
@@ -235,7 +241,7 @@ function fieldClass(name: string, before: string): FieldClass {
   for (let i = words.length - 1; i >= 0; i--) {
     const w = lower[i];
     let found: FieldClass = null;
-    if (/(?:passw(?:or)?d|pwd|secrets?)$/.test(w) || (words[i] === 'PASS' && i > 0)) found = 'password';
+    if (/(?:passw(?:or)?d|passphrase|pwd|secrets?)$/.test(w) || (words[i] === 'PASS' && i > 0)) found = 'password';
     else if (/(?:token|credentials?)$/.test(w) || /(?:api|access|secret|private|auth|signing|encryption|master|license|licence|ssh)key$/.test(w)) found = 'token';
     else if (w === 'key') {
       // `key` alone is code's unless a word says whose: an upper-case env name
@@ -249,31 +255,66 @@ function fieldClass(name: string, before: string): FieldClass {
   return null;
 }
 
-/** A value of letters, `-`, `_` and `.` and no digit: is it a word, a name, or does it read as generated? */
-function lettersOnlySecret(cls: 'password' | 'token', v: string, assigned: boolean, quoted: boolean): boolean {
-  if (mixedRandom(v)) return true;
-  const plainWord = /^[A-Za-z]+$/.test(v) && (v === v.toLowerCase() || v === v.toUpperCase());
-  if (cls === 'token') return assigned && plainWord;
-  return assigned || quoted || plainWord;
+/**
+ * A value of letters, `-`, `_` and `.` and no digit: under a name that says
+ * secret, a word, a hyphenated phrase or a quoted string is one, and an unquoted
+ * camelCase, snake_case or dotted name mostly is code's.
+ */
+function lettersOnlySecret(cls: 'password' | 'token', v: string, sep: string, quoted: boolean): boolean {
+  if (quoted || mixedRandom(v) || v.includes('-') || /^[a-z]+$|^[A-Z]+$/.test(v)) return true;
+  // After `=`: a config's value when glued to it (`TOKEN=some_value`); a statement's otherwise.
+  return !sep.includes(':') && (cls === 'password' || !/\s/.test(sep));
 }
 
-/** Is this value of a field of this class a secret? `v` has no trailing punctuation. */
-function fieldValueIsSecret(cls: Exclude<FieldClass, null>, v: string, assigned: boolean, quoted: boolean): boolean {
-  if (v.length < 8 || TEMPLATE.test(v)) return false;
+/** Names whose value may be a phrase, spaces and all. */
+const PHRASE_NAME = /passw|pwd|_pass|passphrase|private[_-]?key/i;
+/** The first word of a name for a state or an action, not a stored password: showPassword, resetPassword. */
+const STATE_WORD = /^(?:is|has|show|hide|no|use|needs?|requires?|with|without|set|get|handle|toggle|reset|forgot|change|update|validate|verify|check|confirm)$/i;
+
+/**
+ * How short a value can be and still be one. A password is whatever someone
+ * chose, so a name that ends in one takes 3 characters (`secret` and `pwd`, also
+ * everyday words in code, take 6); a token or a key is generated, and a shorter
+ * value under its name is rarely one, so those take 8.
+ */
+function minValueLength(cls: Exclude<FieldClass, null>, name: string): number {
+  if (cls !== 'password' || STATE_WORD.test(nameWords(name)[0] ?? '')) return 8;
+  if (/(?:passw(?:or)?d|_pass|passphrase)\d*$/i.test(name)) return 3;
+  return /(?:secrets?|pwd)\d*$/i.test(name) ? 6 : 8;
+}
+
+/**
+ * A value under 8 characters needs more to go on: plain ASCII (a label in a
+ * locale file is not one), not naming a secret itself (`secret: SECRET2`), not a
+ * dotted or snake_case name, and not a word glued on with `:` (`secret:delete`
+ * is a channel's name).
+ */
+function shortValueOk(v: string, sep: string, quoted: boolean): boolean {
+  if (!/^[\x21-\x7e]+$/.test(v) || !/[A-Za-z0-9]/.test(v) || v.startsWith('-') || /secret|token|key/i.test(v)) return false;
+  if (quoted) return true;
+  return !/^[A-Za-z]+[._][A-Za-z._]*$/.test(v) && !(/^(?:\\?["'])?:$/.test(sep) && /^[A-Za-z]+$/.test(v));
+}
+
+/** Is this value of this field a secret? `v` has no trailing punctuation. */
+function fieldValueIsSecret(cls: Exclude<FieldClass, null>, v: string, name: string, sep: string, quoted: boolean): boolean {
+  if (TEMPLATE.test(v)) return false;
   if (/\s/.test(v)) {
+    if (PHRASE_NAME.test(name)) return v.trim().length >= 3;
+    if (v.length < 8) return false;
     // A sentence in a string is a message about the field, not its value.
     const words = v.split(/\s+/).filter(Boolean);
     if (words.length >= 3 && words.filter((w) => /^[^\d]*$/.test(w)).length >= words.length - 1) return false;
     return cls === 'password' || words.some((w) => w.length >= 8 && hasDigit(w) && hasLetter(w));
   }
-  if (neverAValue(v)) return false;
+  if (v.length < minValueLength(cls, name) || neverAValue(v, quoted)) return false;
+  if (v.length < 8 && !shortValueOk(v, sep, quoted)) return false;
   if (cls === 'bare') return v.length >= 16 && hasDigit(v) && hasLetter(v) && !/^[0-9a-fA-F]{16,31}$/.test(v);
   if (!hasLetter(v)) {
     if (cls === 'token') return false;
     return /^\d+$/.test(v) || !/^[\d.,:_-]+$/.test(v);
   }
-  if (!hasDigit(v) && /^[A-Za-z._-]+$/.test(v)) return lettersOnlySecret(cls, v, assigned, quoted);
-  return cls === 'password' || /^sk-/.test(v) || !LOWER_SLUG.test(v) || !isSlug(v);
+  if (!hasDigit(v) && /^[A-Za-z._-]+$/.test(v)) return lettersOnlySecret(cls, v, sep, quoted);
+  return true;
 }
 
 /**
@@ -283,7 +324,7 @@ function fieldValueIsSecret(cls: Exclude<FieldClass, null>, v: string, assigned:
  * read back from the secret word, so a long run of name characters costs a
  * bounded amount per word.
  */
-const ASSIGNED = /(?<word>key|secret|token|passw(?:or)?d|pwd|credential|_pass)(?<tail>[A-Za-z0-9_.-]{0,64})(?<sep>(?:\\?["'])?[ \t]*[:=][ \t]*)(?:(?<open>\\?["'`])(?<quoted>(?:(?!\k<open>)(?:\\.|[^\\\r\n])){1,512})\k<open>|(?<lead>\\?["'`])?(?<bare>[^\s"'`]{8,}))/gi;
+const ASSIGNED = /(?<word>key|secret|token|passw(?:or)?d|passphrase|pwd|credential|_pass)(?<tail>[A-Za-z0-9_.-]{0,64})(?<sep>(?:\\?["'])?[ \t]*[:=][ \t]*)(?:(?<open>\\?["'`])(?<quoted>(?:(?!\k<open>)(?:\\.|[^\\\r\n])){1,512})\k<open>|(?<lead>\\?["'`])?(?<bare>[^\s"'`]+))/gi;
 
 interface AssignedGroups { word: string; tail: string; sep: string; open?: string; quoted?: string; lead?: string; bare?: string }
 
@@ -295,7 +336,7 @@ function maskAssigned(s: string): string {
     const m = args[0] as string;
     const value = g.quoted ?? g.bare ?? '';
     const head = `${g.word}${g.tail}${g.sep}`;
-    if (value === REDACTED) return m;
+    if (value === REDACTED || value.length < 3) return m;
     // A separator with a space after it and a whole assignment after that: the
     // field before is empty, and this one is read on its own.
     if (g.bare !== undefined && !g.lead && /[ \t]$/.test(g.sep) && NEXT_FIELD.test(g.bare)) return `${head}${maskAssigned(g.bare)}`;
@@ -307,7 +348,8 @@ function maskAssigned(s: string): string {
     if (prev === '\\' && /^[nrt]/.test(name)) { name = name.slice(1); prev = ''; }
     const close = g.open ?? '';
     const masked = g.bare !== undefined ? `${head}${g.lead ?? ''}${REDACTED}` : `${head}${close}${REDACTED}${close}`;
-    if (prev === '/' || prev === '\\') return m;
+    // A path's last part and a line, or a plugin's skill: `skills/secret-scanner:x7k2`.
+    if ((prev === '/' || prev === '\\') && g.sep === ':') return m;
     const cls = fieldClass(name, whole.slice(Math.max(0, start - 8), start));
     if (!cls) return m;
     // One word that is partly masked already goes whole.
@@ -322,10 +364,12 @@ function maskAssigned(s: string): string {
       if (g.sep === ':' && LOWER_SLUG.test(name) && LOWER_SLUG.test(v) && isSlug(v)) return m;
     }
     // Words in a string are a message about the field, unless it is a password.
-    if (/\s/.test(v) && !/passw|pwd/i.test(name) && !/\d/.test(v)) return m;
+    if (/\s/.test(v) && !PHRASE_NAME.test(name) && !/\d/.test(v)) return m;
     // A marker in a string counts as the word it replaced, so the verdict on a
     // second pass is the verdict on the first.
-    return fieldValueIsSecret(cls, v.split(REDACTED).join('x9x9x9x9'), !colon, quoted) ? masked : m;
+    // A short name after `=` that a statement ends on is a variable: `password = value;`.
+    if (!quoted && v !== value && v.length < 8 && /^[A-Za-z_$][\w$.]*$/.test(v)) return m;
+    return fieldValueIsSecret(cls, v.split(REDACTED).join('x9x9x9x9'), name, g.sep, quoted) ? masked : m;
   });
 }
 
@@ -347,7 +391,13 @@ const AUTH_SCHEME = /^(?:bearer|basic|token|digest|negotiate|ntlm|apikey|api-key
 /** One word that reads as a credential, with or without a scheme word before it. */
 function credentialWord(word: string): boolean {
   if (word.includes(REDACTED)) return word !== REDACTED;
-  if (word.length < 8 || /\s/.test(word) || neverAValue(word) || (LOWER_SLUG.test(word) && isSlug(word))) return false;
+  if (word.length < 8 || (LOWER_SLUG.test(word) && isSlug(word))) return false;
+  return credentialShaped(word);
+}
+
+/** Reads as generated or chosen rather than as a word or a name. */
+function credentialShaped(word: string): boolean {
+  if (/\s/.test(word) || neverAValue(word)) return false;
   return hasDigit(word) || mixedRandom(word) || /[^A-Za-z0-9_.-]/.test(word);
 }
 
@@ -460,6 +510,57 @@ function maskCjkNamed(s: string): string {
   return maskCjk(maskCjk(maskCjk(s, CJK_PASSWORD, cjkPasswordSecret), CJK_KEY, cjkKeySecret), NAME_THEN_COPULA, cjkKeySecret);
 }
 
+/**
+ * A password or a token on a command line: `--password <value>`, `curl -u
+ * user:<value>`, `sshpass -p <value>`, `mysql -p<value>`. A flag's bare value
+ * has to read as a credential, as docs write `--password flag`. `-u` and `-p`
+ * mean other things elsewhere, so those two only count after their command,
+ * read back from the flag on the same command.
+ */
+const CLI_VALUE = `(?:(?<open>["'])(?<quoted>[^"'\\r\\n]{1,512})["']|(?<bare>[^\\s"'\`]+))`;
+const CLI_FLAG = new RegExp(`(?<![\\w-])(?<flag>--(?:[a-z0-9]+-){0,4}(?:password|passwd|pass|passphrase|secret|token|api-?key|access-key|secret-key|private-key))[ \\t]+${CLI_VALUE}`, 'gi');
+const SSHPASS = new RegExp(`\\bsshpass[ \\t]+(?:-[a-oq-zA-Z][ \\t]+){0,4}-p[ \\t]*${CLI_VALUE}`, 'g');
+const CURL_USER = /(?<![\w-])(?:-u|--user)(?:[ \t]+|=)?(?:(?<open>["'])[^\s:"']{1,64}:(?<quoted>[^"'\r\n]{1,512})["']|[^\s:"'`]{1,64}:(?<bare>[^\s"'`]+))/g;
+const MYSQL_PASSWORD = new RegExp(`(?<=[ \\t])-p${CLI_VALUE}`, 'g');
+const CURL_COMMAND = /(?:^|[\s/"'(=])curl(?:\.exe)?\s/;
+const MYSQL_COMMAND = /(?:^|[\s/"'(=])(?:mysql|mariadb|mysqldump|mysqladmin|mariadb-dump)(?:\.exe)?\s/;
+
+function commandBefore(whole: string, at: number, command: RegExp): boolean {
+  const before = whole.slice(Math.max(0, at - 200), at);
+  return command.test(before.slice(Math.max(before.lastIndexOf('\n'), before.lastIndexOf('|'), before.lastIndexOf(';'), before.lastIndexOf('&')) + 1));
+}
+
+function maskCli(s: string, re: RegExp, isSecret: (v: string, quoted: boolean, at: number, whole: string, flag: string) => boolean): string {
+  return s.replace(re, (...args: unknown[]) => {
+    const g = args[args.length - 1] as unknown as { open?: string; quoted?: string; bare?: string; flag?: string };
+    const whole = args[args.length - 2] as string;
+    const at = args[args.length - 3] as number;
+    const m = args[0] as string;
+    const value = g.quoted ?? g.bare ?? '';
+    if (value === REDACTED || value.length < 3) return m;
+    if (!value.includes(REDACTED) && !isSecret(value, g.quoted !== undefined, at, whole, g.flag ?? '')) return m;
+    const end = m.lastIndexOf(value);
+    return `${m.slice(0, end)}${REDACTED}${m.slice(end + value.length)}`;
+  });
+}
+
+const plainCliValue = (v: string, quoted: boolean): boolean => (quoted || !/^(?:-|[A-Za-z_-]+=[^=])/.test(v)) && !neverAValue(v);
+
+function maskCommandLines(s: string): string {
+  let out = maskCli(s, CLI_FLAG, (v, quoted, _at, _whole, flag) => {
+    if (/^--no-/i.test(flag) || SOURCE_FILE.test(v) || !plainCliValue(v, quoted) || v.startsWith('-')) return false;
+    if (/pass/i.test(flag)) return quoted || credentialShaped(v);
+    return v.length >= 8 && credentialShaped(v);
+  });
+  if (out.includes('sshpass')) out = maskCli(out, SSHPASS, plainCliValue);
+  if (out.includes('curl')) out = maskCli(out, CURL_USER, (v, quoted, at, whole) => plainCliValue(v, quoted) && commandBefore(whole, at, CURL_COMMAND));
+  if (out.includes('mysql') || out.includes('mariadb')) out = maskCli(out, MYSQL_PASSWORD, (v, quoted, at, whole) => plainCliValue(v, quoted) && commandBefore(whole, at, MYSQL_COMMAND));
+  return out;
+}
+
+/** A Slack incoming webhook's path is its credential; the host stays. */
+const SLACK_WEBHOOK = /(hooks\.slack\.com\/(?:services|workflows)\/)[A-Za-z0-9_/-]{8,}/g;
+
 // Adapted from yetone/magpie@c7ebb6f8d (internal/redact/model.go), MIT
 /**
  * A digest with its algorithm's name is an id anyone can read: a hex run of the
@@ -508,7 +609,8 @@ export function redactSecretsCounted(s: string, opts: { readableNames?: boolean 
   // Headers first: a value that takes a whole line goes as one, not with holes.
   let out = maskInlineCredentials(maskHeaders(s));
   for (const re of KEY_SHAPES) out = out.replace(re, maskShape);
-  out = maskAssigned(maskCjkNamed(out));
+  out = out.replace(SLACK_WEBHOOK, `$1${REDACTED}`);
+  out = maskCommandLines(maskAssigned(maskCjkNamed(out)));
   const named = out;
   out = out.replace(HEX_RUN, (m: string, at: number, whole: string) => {
     if (!/[0-9]/.test(m) || !/[a-fA-F]/.test(m) || namedDigest(m, at, whole)) return m;
@@ -519,6 +621,6 @@ export function redactSecretsCounted(s: string, opts: { readableNames?: boolean 
   out = out.replace(LONG_TOKEN, (m: string, at: number, whole: string) => (m.includes(REDACTED) || !longRandom(m) || namedDigest(m, at, whole) ? m : REDACTED));
   for (const re of MORE_SHAPES) out = out.replace(re, maskShape);
   // A named value a later rule took part of goes whole now, not on the next call.
-  if (out !== named) out = maskAssigned(maskCjkNamed(out));
+  if (out !== named) out = maskCommandLines(maskAssigned(maskCjkNamed(out)));
   return { text: out, masked: Math.max(0, markers(out) - markers(s)) };
 }
