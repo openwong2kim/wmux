@@ -86,6 +86,7 @@ export const reflowCases: Case[] = [
   // also with a fresh alternate screen entered after it, in the same write.
   script('alt-wrapped-widen-left', [40, 24], [`$ less\r\n\x1b[?1049h${rows(2, 70)}`, [80, 24], '\x1b[?1049l$ '], 'rust'),
   script('alt-wrapped-narrow-left', [80, 24], [`$ vim\r\n\x1b[?1049h${'w'.repeat(100)}`, [60, 24], 'q\x1b[?1049l$ '], 'rust'),
+  script('alt-wrapped-reset', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], '\x1bc$ '], 'rust'),
   script('alt-wrapped-left-entered-again', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], `\x1b[?1049l$ less\r\n\x1b[?1049h\x1b[H${rows(2, 30)}`], 'rust'),
   // Still on an alternate screen whose wrapped rows changed width since.
   script('alt-wrapped-left-entered-again-resized', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], `\x1b[?1049l\x1b[?1049h${'v'.repeat(100)}`, [80, 24]], 'xterm'),

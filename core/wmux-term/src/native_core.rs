@@ -417,11 +417,6 @@ impl XtermFeed {
                                 // both screens, so the main screen inherits it.
                                 self.divergent |= self.alt_margins;
                                 self.alt_margins = false;
-                                // Both drop the alternate screen's rows here
-                                // (xterm on leaving, Alacritty on the next
-                                // entry), and with them a width change's
-                                // lost wrap flags.
-                                self.alt_reflow = false;
                             }
                             self.alt_screen = set;
                         }
@@ -496,8 +491,27 @@ impl XtermFeed {
                 // Alacritty repeats whatever was printed last.
                 self.divergent |=
                     crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
+                let was_alt = self.alt_screen;
                 self.track(sequence, term.screen_lines());
                 next = Some(at + len);
+                if self.alt_reflow && was_alt && !self.alt_screen {
+                    // Leaving the alternate screen, or a reset there, drops
+                    // its rows on both (xterm at once, Alacritty on the next
+                    // entry), and with them the wrap flags a width change
+                    // lost. Confirmed on Alacritty's own mode at this byte,
+                    // so a control only this tracker reads as a leave lifts
+                    // nothing.
+                    parser.advance(term, &data[from..at + len]);
+                    from = at + len;
+                    let synchronized = parser.sync_timeout().pending_timeout();
+                    if synchronized {
+                        parser.stop_sync(term);
+                    }
+                    self.alt_reflow = term.mode().contains(TermMode::ALT_SCREEN);
+                    if synchronized {
+                        parser.advance(term, b"\x1b[?2026h");
+                    }
+                }
             }
             printed = false;
         }
@@ -1741,8 +1755,15 @@ mod tests {
         assert!(lifted(&["\x1b[?1049l$ less\r\n\x1b[?1049hpage"]));
         assert!(!lifted(&["more output"]));
         assert!(!lifted(&["\x1b[?1049h"]), "entering again while on it");
-        // A reset is not a leave here; it keeps the refusal for now.
-        assert!(!lifted(&["\x1bc"]));
+        assert!(lifted(&["\x1bc"]), "a reset leaves it too");
+        assert!(
+            lifted(&["\x1b[?2026h\x1b[?1049l"]),
+            "inside a synchronized update"
+        );
+        // Past 32 parameters Alacritty (and xterm) drop the rest: no leave,
+        // though this tracker reads every one.
+        let overflow = format!("\x1b[?{}1049l", "1;".repeat(32));
+        assert!(!lifted(&[overflow.as_str()]));
     }
 
     #[test]
