@@ -31,6 +31,9 @@ function script(name: string, start: [number, number], parts: Array<string | [nu
 }
 
 const prompt = '$ ';
+/** Up into the paragraph's first row, so the parity probe's CR LF enters a
+ * continuation and ends that paragraph (xterm's lineFeed). */
+const UP = '\x1b[A';
 
 export const reflowCases: Case[] = [
   // Narrower with no history: xterm moves the cursor down into the room
@@ -61,8 +64,33 @@ export const reflowCases: Case[] = [
   // the rows were above it, off its content. Refused.
   script('reflow-below-cursor', [80, 24], [`${rows(4, 70)}\x1b[2H`, [40, 24]], 'xterm'),
   script('narrow-history-below-cursor', [80, 24], [`${rows(40, 20)}\r\n${rows(6, 70)}\x1b[19H`, [40, 24]], 'xterm'),
-  script('widen-below-cursor', [40, 24], [`${rows(4, 70)}\x1b[2H`, [80, 24]], 'xterm'),
-  script('widen-history-below-cursor', [40, 24], [`${rows(40, 20)}\r\n${rows(6, 70)}\x1b[13H`, [80, 24]], 'xterm'),
+  // Wider: xterm counts every row the reflow removes, above or below the
+  // cursor: each takes a history row first, then moves both cursors up.
+  script('widen-below-cursor', [40, 24], [`${rows(4, 70)}\x1b[2H`, [80, 24]]),
+  script('widen-history-below-cursor', [40, 24], [`${rows(40, 20)}\r\n${rows(6, 70)}\x1b[13H`, [80, 24]]),
+  script('widen-below-cursor-saved', [40, 24], [`${rows(4, 70)}\x1b[3H\x1b7\x1b[2H`, [80, 24], '\x1b8Z']),
+  script('widen-history-short-cursor-clamped', [40, 24], [`${rows(14, 70)}\x1b[3H`, [80, 24], 'Z']),
+  script('widen-history-short-saved', [40, 24], [`${rows(14, 70)}\x1b[20H\x1b7\x1b[3H`, [80, 24], '\x1b8Z']),
+  script('widen-twice', [30, 24], [`${rows(5, 70)}\x1b[2H`, [50, 24], [80, 24], 'Z']),
+  script('widen-then-type', [40, 24], [`${rows(4, 70)}\x1b[2H`, [80, 24], 'Z\r\nY']),
+  script('widen-while-alt-primary-below-cursor', [40, 24], [`${rows(4, 70)}\x1b[2H\x1b[?1049hq`, [80, 24], '\x1b[?1049lZ']),
+  // The unreflowed cursor paragraph's rows are soft-wrapped with empty tails.
+  // A colored cell right before the tail (the pen is colored there).
+  script('widen-tail-after-colored', [40, 24], [`${'x'.repeat(39)}\x1b[41mR\x1b[0m${'y'.repeat(10)}`, [80, 24], UP]),
+  // History above: the filler wraps at the bottom, scrolling the replay.
+  script('widen-tail-at-bottom', [40, 24], [`${rows(30, 20)}\r\n${'p'.repeat(50)}`, [80, 24], UP]),
+  // The cursor on the row after the tail, and with a pending wrap there.
+  script('widen-tail-cursor-on-continuation', [40, 24], [`${rows(3, 20)}\r\n${'q'.repeat(50)}`, [80, 24]]),
+  script('widen-tail-pending-wrap', [40, 24], [`${rows(3, 20)}\r\n${'q'.repeat(80)}`, [80, 24]]),
+  // A fullwidth glyph right before the tail.
+  script('widen-tail-after-wide', [40, 24], [`${'x'.repeat(38)}한yy`, [80, 24], UP]),
+  // A fullwidth glyph that did not fit: its spacer sits inside the row after
+  // the widen, an empty cell in xterm.
+  script('widen-tail-after-leading-spacer', [40, 24], [`${'x'.repeat(39)}한${'y'.repeat(38)}`, [80, 24], UP]),
+  // Blanks a program printed up to a soft wrap stay content (no widen).
+  script('wrap-at-printed-spaces', [20, 24], [`${'a'.repeat(17)}   bbbb${UP}`]),
+  // Two tails in a row.
+  script('widen-two-tails', [30, 24], [`${'z'.repeat(75)}`, [80, 24], UP]),
   // More rows with history while the cursor is mid-screen: xterm adds blank
   // rows below and pulls nothing from history (Buffer.ts:196-221).
   script('zoomout-history-cursor-mid', [80, 24], [`${rows(40, 20)}\x1b[8H${prompt}`, [100, 30]]),

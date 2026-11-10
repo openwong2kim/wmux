@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::grid::GridCell;
 use crate::index::Column;
-use crate::term::cell::ResetDiscriminant;
+use crate::term::cell::{Flags, ResetDiscriminant};
 
 /// A row in the grid.
 #[derive(Default, Clone, Debug)]
@@ -34,6 +34,13 @@ pub struct Row<T> {
     /// deserialized row has none, as a row read back at its width would.
     #[cfg_attr(feature = "serde", serde(default, skip))]
     hidden: Option<Box<Vec<T>>>,
+
+    /// wmux: where the empty cells a widen gave this soft-wrapped row begin
+    /// (0: none). xterm leaves the cursor's paragraph unreflowed, so those
+    /// cells stay empty there, unlike the blanks a program printed up to the
+    /// wrap. Gone once the row is reset or its cells move.
+    #[cfg_attr(feature = "serde", serde(default, skip))]
+    empty_from: usize,
 }
 
 impl<T: PartialEq> PartialEq for Row<T> {
@@ -64,7 +71,7 @@ impl<T: Default> Row<T> {
             inner.set_len(columns);
         }
 
-        Row { inner, occ: 0, hidden: None }
+        Row { inner, occ: 0, hidden: None, empty_from: 0 }
     }
 
     /// Increase the number of columns in the row.
@@ -118,6 +125,9 @@ impl<T: Default> Row<T> {
         new_row.truncate(index);
 
         self.occ = min(self.occ, columns);
+        if self.empty_from >= columns {
+            self.empty_from = 0;
+        }
 
         if new_row.is_empty() { None } else { Some(new_row) }
     }
@@ -133,6 +143,10 @@ impl<T: Default> Row<T> {
 
         // Mark all cells as dirty if template cell changed.
         let len = self.inner.len();
+        // wmux: a row with empty cells marked has its wrap flag past `occ`.
+        if self.empty_from != 0 {
+            self.occ = len;
+        }
         if self.inner[len - 1].discriminant() != template.discriminant() {
             self.occ = len;
         }
@@ -146,6 +160,7 @@ impl<T: Default> Row<T> {
 
         // wmux: a reset row is a new line, at the current width.
         self.hidden = None;
+        self.empty_from = 0;
     }
 
     /// wmux: reset over the row's whole physical width, kept cells included,
@@ -170,7 +185,49 @@ impl<T: Default> Row<T> {
 impl<T> Row<T> {
     #[inline]
     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
-        Row { inner: vec, occ, hidden: None }
+        Row { inner: vec, occ, hidden: None, empty_from: 0 }
+    }
+
+    /// wmux: where the empty cells a widen gave this soft-wrapped row begin,
+    /// past anything written since: every write through the row moves `occ`
+    /// past the cells it reaches, so a blank printed there later is content.
+    pub fn empty_from(&self) -> Option<usize> {
+        let from = self.empty_from.max(self.occ);
+        (self.empty_from > 0 && from < self.inner.len()).then_some(from)
+    }
+
+    /// wmux: mark the cells from `column` on as the empty ones a widen added.
+    pub(crate) fn set_empty_from(&mut self, column: usize) {
+        if column > 0 && (self.empty_from == 0 || column < self.empty_from) {
+            self.empty_from = column;
+        }
+    }
+
+    /// wmux: take the wrap flag off the last cell without counting it as a
+    /// write (`occ`), so a resize keeps an earlier widen's empty cells.
+    pub(crate) fn take_wrap(&mut self) -> bool
+    where
+        T: GridCell,
+    {
+        let Some(cell) = self.inner.last_mut() else { return false };
+        let wrapped = cell.flags().contains(Flags::WRAPLINE);
+        cell.flags_mut().remove(Flags::WRAPLINE);
+        wrapped
+    }
+
+    /// wmux: set the wrap flag on the last cell. On a row with empty cells
+    /// marked it does not count as a write: `reset` then resets the whole
+    /// row, that flag included.
+    pub(crate) fn put_wrap(&mut self)
+    where
+        T: GridCell,
+    {
+        if self.empty_from == 0 {
+            self.occ = self.inner.len();
+        }
+        if let Some(cell) = self.inner.last_mut() {
+            cell.flags_mut().insert(Flags::WRAPLINE);
+        }
     }
 
     /// wmux: how many cells are kept past the visible width.
@@ -184,6 +241,7 @@ impl<T> Row<T> {
     pub(crate) fn with_physical<R>(&mut self, f: impl FnOnce(&mut [T]) -> R) -> R {
         let visible = self.inner.len();
         self.occ = visible;
+        self.empty_from = 0;
         match self.hidden.as_mut() {
             None => f(&mut self.inner),
             Some(hidden) => {
@@ -223,12 +281,14 @@ impl<T> Row<T> {
         T: GridCell,
     {
         self.occ += vec.len();
+        self.empty_from = 0;
         self.inner.append(vec);
     }
 
     #[inline]
     pub fn append_front(&mut self, mut vec: Vec<T>) {
         self.occ += vec.len();
+        self.empty_from = 0;
 
         vec.append(&mut self.inner);
         self.inner = vec;
@@ -246,6 +306,7 @@ impl<T> Row<T> {
     #[inline]
     pub fn front_split_off(&mut self, at: usize) -> Vec<T> {
         self.occ = self.occ.saturating_sub(at);
+        self.empty_from = 0;
 
         let mut split = self.inner.split_off(at);
         std::mem::swap(&mut split, &mut self.inner);

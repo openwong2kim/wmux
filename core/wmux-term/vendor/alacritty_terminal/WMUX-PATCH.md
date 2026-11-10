@@ -29,8 +29,28 @@ Local changes:
   every added row moves the cursor down one row while there is room below,
   dropping the bottom row; the rest goes to history, kept past the cap by the
   rows dropped. With history, the cursor row stays. The saved cursor moves down
-  with the room used. `native_core.rs` refuses a resize that reflows a paragraph
-  below the cursor's, where xterm moves its cursor row off its content.
+  with the room used. `native_core.rs` refuses a narrowing that reflows a
+  paragraph below the cursor's, where xterm moves its cursor row off its
+  content.
+- `src/grid/resize.rs` `grow_columns`: after the reflow, the cursor row and
+  the saved cursor row follow xterm's rule rather than their content
+  (`Buffer.ts` `_reflowLargerAdjustViewport`). Every removed row counts,
+  above or below the cursor: it first takes a history row, then moves both
+  rows up one, stopping at the top. Upstream moved them only for rows
+  removed above. `native_core.rs` no longer refuses a widen that reflows a
+  paragraph below the cursor. Added 2026-11-10.
+- `src/grid/row.rs` `empty_from`: where the empty cells a widen gave a
+  soft-wrapped row begin (`resize_cursor_row` sets it). xterm leaves the
+  cursor's paragraph unreflowed, so those cells stay empty there, while the
+  blanks a program printed up to a wrap are content; the ANSI serializer
+  keeps the first empty. It adds nothing to the write path: `empty_from()`
+  reads it past `occ`, which every write through the row's mutable
+  indexing already raises past the cells it reaches, so a blank printed
+  there later stays content. `take_wrap`/`put_wrap` move the wrap flag on a
+  resize without raising `occ`, so a later widen keeps it; `reset` then
+  covers the whole marked row, that flag included. Cleared when the row is
+  reset or its cells move (append, split, physical edits), and when a
+  narrowing cuts it off. Not serialized. Added 2026-11-10.
 - `src/grid/tests.rs`: upstream's `shrink_reflow`, `shrink_reflow_twice`,
   `shrink_reflow_empty_cell_inside_line`, `grow_reflow` and
   `grow_reflow_multiline` leave the cursor at 0,0, inside the paragraph they

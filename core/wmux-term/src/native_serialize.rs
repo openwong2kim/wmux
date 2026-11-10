@@ -227,18 +227,31 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
         let fixed = whole_glyphs(row, columns, repair)?;
         let line = |x: usize| fixed.as_ref().map_or(&row[Column(x)], |cells| &cells[x]);
         let wrapped = row[grid.last_column()].flags.contains(Flags::WRAPLINE);
-        // A soft-wrapped row must reach its last column to wrap again.
         let mut end = columns;
-        if !wrapped {
+        // A soft-wrapped row must reach its last column to wrap again, so its
+        // blanks print: Alacritty cannot tell a printed blank from an empty
+        // cell. Only the empty cells a widen gave the row are known (the
+        // grid marks them): printed, they would become content, so print
+        // filler through the edge instead and erase it once the row wrapped.
+        let empty = row
+            .empty_from()
+            .filter(|_| wrapped && y < grid.screen_lines() as i32 - 1);
+        if let Some(from) = empty {
+            while end > from && blank(line(end - 1)) {
+                end -= 1;
+            }
+        } else if !wrapped {
             while end > 0 && blank(line(end - 1)) {
                 end -= 1;
             }
-            // Blanks left of the cursor are usually printed: a prompt's
-            // trailing space, which reads back as part of the prompt.
-            if y == grid.cursor.point.line.0 {
-                end = end.max(grid.cursor.point.column.0);
-            }
         }
+        // Blanks left of the cursor are usually printed: a prompt's
+        // trailing space, which reads back as part of the prompt. Not past a
+        // widen's mark: a blank printed there would have moved it.
+        if y == grid.cursor.point.line.0 && !wrapped {
+            end = end.max(grid.cursor.point.column.0);
+        }
+        let filler = empty.is_some() && end < columns;
         for x in 0..end {
             let cell = line(x);
             // A fullwidth glyph that did not fit wraps by itself on replay,
@@ -249,10 +262,24 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
                 .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
             {
                 pen.print(out, cell);
+            } else if cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) && x + 1 < columns {
+                // A widen left that spacer inside the row: xterm's cell there
+                // is empty, so step over it.
+                out.push_str("\x1b[C");
             }
+        }
+        if filler {
+            // Neither the filler nor a scroll its wrap causes paints anything.
+            pen.set(out, &Cell::default());
+            // One more than fits lands on the next row's head and wraps it;
+            // erase that one, then go back up to the filler.
+            out.extend(std::iter::repeat_n('-', columns - end + 1));
+            // `end` is at least the mark, never 0.
+            let _ = write!(out, "\x1b[D\x1b[X\x1b[A\r\x1b[{end}C");
         }
         // Trailing blanks: skip a default run, erase a colored one with ECH so
         // the cells stay empty but keep their background, as an erase left them.
+        // Over filler, erase every run, each with its own background.
         let mut x = end;
         while x < columns {
             let bg = line(x).bg;
@@ -260,7 +287,16 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
             while run < columns && line(run).bg == bg {
                 run += 1;
             }
-            if bg != Color::Named(NamedColor::Background) {
+            if filler {
+                pen.set(
+                    out,
+                    &Cell {
+                        bg,
+                        ..Cell::default()
+                    },
+                );
+                let _ = write!(out, "\x1b[{}X", run - x);
+            } else if bg != Color::Named(NamedColor::Background) {
                 pen.set(out, line(x));
                 let _ = write!(out, "\x1b[{}X", run - x);
             }
@@ -268,6 +304,10 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
                 let _ = write!(out, "\x1b[{}C", run - x);
             }
             x = run;
+        }
+        if filler {
+            // Down to the wrapped row's head, where the next row prints.
+            out.push_str("\r\x1b[B");
         }
         if y < grid.screen_lines() as i32 - 1 && !wrapped {
             // A scroll fills the new row with the current background; clear
@@ -712,6 +752,141 @@ mod tests {
             .intersects(Flags::WIDE_CHAR | Flags::WIDE_CHAR_SPACER));
         assert_eq!(row[Column(1)].bg, Color::Named(NamedColor::Blue));
         assert_eq!(row[Column(2)].c, 'b');
+    }
+
+    /// Written at 7 columns ("abcdddR" soft-wrapped onto "ef", the cursor
+    /// on the continuation), then widened to 10: row 0's cells 7..10 are the
+    /// widen's empty ones.
+    fn widened(rows: usize) -> (Term<VoidListener>, Processor) {
+        let mut term = Term::new(Config::default(), &Size(7, rows), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, b"abcdddRef");
+        term.resize(Size(10, rows));
+        (term, parser)
+    }
+
+    /// Where the serializer would treat each marked row's cells as empty:
+    /// the blanks after the mark and after the row's last other content.
+    /// Those cells must be unwritten (default blanks, at most the wrap
+    /// flag); a stale mark would turn printed blanks into empty cells, which
+    /// the cases below rule out by where they print.
+    fn sound(term: &Term<VoidListener>) -> Vec<(i32, usize)> {
+        let grid = term.grid();
+        let mut runs = Vec::new();
+        for y in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
+            let row = &grid[Line(y)];
+            let Some(from) = row.empty_from() else {
+                continue;
+            };
+            let mut start = grid.columns();
+            while start > from && super::blank(&row[Column(start - 1)]) {
+                start -= 1;
+            }
+            for x in start..grid.columns() {
+                let cell = &row[Column(x)];
+                assert!(
+                    cell.bg == Color::Named(NamedColor::Background)
+                        && cell.fg == Color::Named(NamedColor::Foreground)
+                        && (cell.flags - Flags::WRAPLINE).is_empty(),
+                    "row {y} column {x} in a run from {start}: {cell:?}"
+                );
+            }
+            runs.push((y, start));
+        }
+        runs
+    }
+
+    #[test]
+    fn only_the_widen_marks_empty_cells_and_every_other_edit_keeps_it_sound() {
+        let after = |rows: usize, bytes: &str| {
+            let (mut term, mut parser) = widened(rows);
+            parser.advance(&mut term, bytes.as_bytes());
+            sound(&term)
+        };
+        assert_eq!(after(3, ""), [(0, 7)]);
+        // A blank or a glyph printed in the run ends it there.
+        assert_eq!(after(3, "\x1b[1;9H "), [(0, 9)]);
+        assert_eq!(after(3, "\x1b[1;9HZ"), [(0, 9)]);
+        assert_eq!(after(3, "\x1b[1;10H "), []);
+        // Insert, delete and erase characters and line erases count as
+        // writes up to the row's edge: gone.
+        for edit in [
+            "\x1b[1;2H\x1b[@",
+            "\x1b[1;2H\x1b[P",
+            "\x1b[1;9H\x1b[X",
+            "\x1b[1;5H\x1b[K",
+            "\x1b[1;1H\x1b[2K",
+        ] {
+            assert_eq!(after(3, edit), [], "{edit:?}");
+        }
+        // Rows that move keep their run: insert and delete lines, scrolls,
+        // and line feeds at the bottom into history.
+        assert_eq!(after(3, "\x1b[1;1H\x1b[L"), [(1, 7)]);
+        assert_eq!(after(3, "\x1b[2;1H\x1b[M"), [(0, 7)]);
+        assert_eq!(after(3, "\x1b[T"), [(1, 7)]);
+        assert_eq!(after(3, "\x1b[3;1H\n\n\n"), [(-3, 7)]);
+        // A reset is a new line.
+        assert_eq!(after(3, "\x1bc"), []);
+        // A later widen keeps the first run; a narrowing keeps what fits.
+        let (mut term, _) = widened(3);
+        term.resize(Size(13, 3));
+        assert_eq!(sound(&term), [(0, 7)]);
+        term.resize(Size(8, 3));
+        assert_eq!(sound(&term), [(0, 7)]);
+        term.resize(Size(12, 3));
+        assert_eq!(sound(&term), [(0, 7)]);
+        // A later widen over an edit marks only the cells nothing wrote.
+        let widen = |bytes: &str| {
+            let (mut term, mut parser) = widened(3);
+            parser.advance(&mut term, bytes.as_bytes());
+            term.resize(Size(13, 3));
+            sound(&term)
+        };
+        assert_eq!(widen("\x1b[1;9HZ\x1b[2;3H"), [(0, 9)]);
+        assert_eq!(widen("\x1b[1;9H\x1b[X\x1b[2;3H"), [(0, 10)]);
+        assert_eq!(widen("\x1b[1;1H\x1b[L\x1b[3;3H"), [(1, 7)]);
+    }
+
+    #[test]
+    fn a_wrapped_row_with_an_empty_tail_wraps_on_filler_it_erases() {
+        // Written at 7 columns, the cursor on the continuation, widened to 10:
+        // the cursor's paragraph is not reflowed, so row 0 is "abcdddR" and
+        // three empty cells, soft-wrapped onto "ef".
+        let run = |after: &str| {
+            let mut term = Term::new(Config::default(), &Size(7, 3), VoidListener);
+            let mut parser: Processor = Processor::new();
+            parser.advance(&mut term, b"abcddd\x1b[41mR\x1b[0mef");
+            term.resize(Size(10, 3));
+            parser.advance(&mut term, after.as_bytes());
+            assert!(term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE));
+            serialize(&term, true).unwrap()
+        };
+        // Filler through the edge (4 = 3 cells + the next row's head), its
+        // head erased, then back up to column 7; the red pen closed first.
+        let out = run("");
+        let at = out.find("----\x1b[D\x1b[X\x1b[A\r\x1b[7C").expect(&out);
+        assert!(out[..at].ends_with("R\x1b[0m"), "{out:?}");
+        // The tail erased with the default background in one run, then down
+        // to the next row's head before it prints.
+        assert!(out[at..].contains("\x1b[3X\r\x1b[Bef"), "{out:?}");
+        // The cursor moved into the empty run prints nothing there.
+        let out = run("\x1b[1;9H");
+        assert!(out.contains("R\x1b[0m----\x1b[D\x1b[X\x1b[A\r\x1b[7C"), "{out:?}");
+        // A blank printed there later, here with a colored background, is
+        // content: the empty run starts after it, and only that is filler
+        // (an empty run holds unwritten cells, so its background is default).
+        let out = run("\x1b[1;9H\x1b[44m \x1b[0m\x1b[2;3H");
+        assert!(
+            out.contains(
+                "R\x1b[0m \x1b[0;44m \x1b[0m--\x1b[D\x1b[X\x1b[A\r\x1b[9C\x1b[1X\r\x1b[Bef"
+            ),
+            "{out:?}"
+        );
+        // Without a widen, blanks printed up to a wrap stay content.
+        let out = replay(5, "ab   cd").unwrap();
+        assert!(out.contains("ab   cd"), "{out:?}");
     }
 
     #[test]
