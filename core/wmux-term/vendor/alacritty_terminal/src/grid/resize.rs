@@ -32,10 +32,16 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
     fn resize_cursor_row(row: &mut Row<T>, columns: usize) {
         let wrapped = row.last().is_some_and(|cell| cell.flags().contains(Flags::WRAPLINE));
         if let Some(cell) = row.last_mut() { cell.flags_mut().remove(Flags::WRAPLINE); }
+        let old = row.len();
         if row.len() > columns {
             row.shrink(columns);
         } else { row.grow(columns); }
         if wrapped { row[Column(columns - 1)].flags_mut().insert(Flags::WRAPLINE); }
+        // wmux: a soft-wrapped row grown here has empty cells xterm never
+        // wrote (its paragraph is not reflowed); the serializer keeps them so.
+        if wrapped && old < columns {
+            row.set_empty_from(old);
+        }
     }
 
     /// Resize the grid's width and/or height.

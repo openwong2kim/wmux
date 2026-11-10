@@ -228,31 +228,29 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
         let line = |x: usize| fixed.as_ref().map_or(&row[Column(x)], |cells| &cells[x]);
         let wrapped = row[grid.last_column()].flags.contains(Flags::WRAPLINE);
         let mut end = columns;
-        // A fullwidth glyph that did not fit leaves a spacer in the last
-        // column and wraps again by itself on replay (below). After a widen
-        // that spacer sits inside the row, where xterm has an empty cell.
-        while end > 0
-            && blank(line(end - 1))
-            && !(end == columns
-                && line(end - 1)
-                    .flags
-                    .contains(Flags::LEADING_WIDE_CHAR_SPACER))
-        {
-            end -= 1;
+        // A soft-wrapped row must reach its last column to wrap again, so its
+        // blanks print: Alacritty cannot tell a printed blank from an empty
+        // cell. Only the empty cells a widen gave the row are known (the
+        // grid marks them): printed, they would become content, so print
+        // filler through the edge instead and erase it once the row wrapped.
+        let empty = row
+            .empty_from()
+            .filter(|_| wrapped && y < grid.screen_lines() as i32 - 1);
+        if let Some(from) = empty {
+            while end > from && blank(line(end - 1)) {
+                end -= 1;
+            }
+        } else if !wrapped {
+            while end > 0 && blank(line(end - 1)) {
+                end -= 1;
+            }
         }
         // Blanks left of the cursor are usually printed: a prompt's
         // trailing space, which reads back as part of the prompt.
-        if y == grid.cursor.point.line.0 {
+        if y == grid.cursor.point.line.0 && (!wrapped || empty.is_some()) {
             end = end.max(grid.cursor.point.column.0);
         }
-        // A soft-wrapped row must reach its last column to wrap again. With
-        // empty cells there (an unreflowed cursor paragraph after a widen),
-        // printing them would make them content: print filler through the
-        // edge instead, and erase it once the row has wrapped.
-        let filler = wrapped && end < columns && y < grid.screen_lines() as i32 - 1;
-        if wrapped && !filler {
-            end = columns;
-        }
+        let filler = empty.is_some() && end < columns;
         for x in 0..end {
             let cell = line(x);
             // A fullwidth glyph that did not fit wraps by itself on replay,
@@ -263,6 +261,10 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
                 .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
             {
                 pen.print(out, cell);
+            } else if cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER) && x + 1 < columns {
+                // A widen left that spacer inside the row: xterm's cell there
+                // is empty, so step over it.
+                out.push_str("\x1b[C");
             }
         }
         if filler {
@@ -755,38 +757,38 @@ mod tests {
 
     #[test]
     fn a_wrapped_row_with_an_empty_tail_wraps_on_filler_it_erases() {
-        // 10 columns: row 0 is "abc" and seven empty cells, soft-wrapped onto
-        // row 1, as an unreflowed cursor paragraph is after a widen.
-        let run = |tail: Color| {
-            let mut term = Term::new(Config::default(), &Size(10, 3), VoidListener);
+        // Written at 7 columns, the cursor on the continuation, widened to 10:
+        // the cursor's paragraph is not reflowed, so row 0 is "abcdddR" and
+        // three empty cells, soft-wrapped onto "ef".
+        let run = |after: &str| {
+            let mut term = Term::new(Config::default(), &Size(7, 3), VoidListener);
             let mut parser: Processor = Processor::new();
-            parser.advance(&mut term, b"\x1b[41mabc\x1b[0m\x1b[2;1Hdef\x1b[3;1H");
-            let grid = term.grid_mut();
-            for x in 3..10 {
-                grid[Line(0)][Column(x)].bg = if x >= 6 {
-                    tail
-                } else {
-                    grid[Line(0)][Column(x)].bg
-                };
-            }
-            grid[Line(0)][Column(9)].flags.insert(Flags::WRAPLINE);
+            parser.advance(&mut term, b"abcddd\x1b[41mR\x1b[0mef");
+            term.resize(Size(10, 3));
+            parser.advance(&mut term, after.as_bytes());
+            assert!(term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE));
             serialize(&term, true).unwrap()
         };
-        // Filler through the edge (8 = 7 cells + the next row's head), its
-        // head erased, then back up to column 3; the red pen is closed first.
-        let out = run(Color::Named(NamedColor::Background));
-        let at = out.find("--------\x1b[D\x1b[X\x1b[A\r\x1b[3C").expect(&out);
-        assert!(out[..at].ends_with("\x1b[0m"), "{out:?}");
+        // Filler through the edge (4 = 3 cells + the next row's head), its
+        // head erased, then back up to column 7; the red pen closed first.
+        let out = run("");
+        let at = out.find("----\x1b[D\x1b[X\x1b[A\r\x1b[7C").expect(&out);
+        assert!(out[..at].ends_with("R\x1b[0m"), "{out:?}");
         // The tail erased with the default background in one run, then down
         // to the next row's head before it prints.
-        assert!(out[at..].contains("\x1b[7X\r\x1b[Bdef"), "{out:?}");
-        assert!(!out.contains("abc    "), "no printed blanks: {out:?}");
-        // A colored part of the tail is erased with its own background.
-        let out = run(Color::Named(NamedColor::Blue));
+        assert!(out[at..].contains("\x1b[3X\r\x1b[Bef"), "{out:?}");
+        // A blank printed there later with a colored background is erased
+        // with that background, the rest with the default one.
+        let out = run("\x1b[1;9H\x1b[44m \x1b[0m\x1b[2;3H");
         assert!(
-            out.contains("\x1b[3X\x1b[3C\x1b[0;44m\x1b[4X\r\x1b[B\x1b[0mdef"),
+            out.contains("\x1b[1X\x1b[1C\x1b[0;44m\x1b[1X\x1b[1C\x1b[0m\x1b[1X\r\x1b[B"),
             "{out:?}"
         );
+        // Without a widen, blanks printed up to a wrap stay content.
+        let out = replay(5, "ab   cd").unwrap();
+        assert!(out.contains("ab   cd"), "{out:?}");
     }
 
     #[test]

@@ -34,6 +34,13 @@ pub struct Row<T> {
     /// deserialized row has none, as a row read back at its width would.
     #[cfg_attr(feature = "serde", serde(default, skip))]
     hidden: Option<Box<Vec<T>>>,
+
+    /// wmux: where the empty cells a widen gave this soft-wrapped row begin
+    /// (0: none). xterm leaves the cursor's paragraph unreflowed, so those
+    /// cells stay empty there, unlike the blanks a program printed up to the
+    /// wrap. Gone once the row is reset or its cells move.
+    #[cfg_attr(feature = "serde", serde(default, skip))]
+    empty_from: usize,
 }
 
 impl<T: PartialEq> PartialEq for Row<T> {
@@ -64,7 +71,7 @@ impl<T: Default> Row<T> {
             inner.set_len(columns);
         }
 
-        Row { inner, occ: 0, hidden: None }
+        Row { inner, occ: 0, hidden: None, empty_from: 0 }
     }
 
     /// Increase the number of columns in the row.
@@ -118,6 +125,9 @@ impl<T: Default> Row<T> {
         new_row.truncate(index);
 
         self.occ = min(self.occ, columns);
+        if self.empty_from >= columns {
+            self.empty_from = 0;
+        }
 
         if new_row.is_empty() { None } else { Some(new_row) }
     }
@@ -146,6 +156,7 @@ impl<T: Default> Row<T> {
 
         // wmux: a reset row is a new line, at the current width.
         self.hidden = None;
+        self.empty_from = 0;
     }
 
     /// wmux: reset over the row's whole physical width, kept cells included,
@@ -170,11 +181,23 @@ impl<T: Default> Row<T> {
 impl<T> Row<T> {
     #[inline]
     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
-        Row { inner: vec, occ, hidden: None }
+        Row { inner: vec, occ, hidden: None, empty_from: 0 }
     }
 
     /// wmux: how many cells are kept past the visible width.
     #[inline]
+    /// wmux: where the empty cells a widen gave this soft-wrapped row begin.
+    pub fn empty_from(&self) -> Option<usize> {
+        (self.empty_from > 0).then_some(self.empty_from)
+    }
+
+    /// wmux: mark the cells from `column` on as the empty ones a widen added.
+    pub(crate) fn set_empty_from(&mut self, column: usize) {
+        if column > 0 && (self.empty_from == 0 || column < self.empty_from) {
+            self.empty_from = column;
+        }
+    }
+
     pub fn hidden_len(&self) -> usize {
         self.hidden.as_ref().map_or(0, |hidden| hidden.len())
     }
@@ -184,6 +207,7 @@ impl<T> Row<T> {
     pub(crate) fn with_physical<R>(&mut self, f: impl FnOnce(&mut [T]) -> R) -> R {
         let visible = self.inner.len();
         self.occ = visible;
+        self.empty_from = 0;
         match self.hidden.as_mut() {
             None => f(&mut self.inner),
             Some(hidden) => {
@@ -223,12 +247,14 @@ impl<T> Row<T> {
         T: GridCell,
     {
         self.occ += vec.len();
+        self.empty_from = 0;
         self.inner.append(vec);
     }
 
     #[inline]
     pub fn append_front(&mut self, mut vec: Vec<T>) {
         self.occ += vec.len();
+        self.empty_from = 0;
 
         vec.append(&mut self.inner);
         self.inner = vec;
@@ -246,6 +272,7 @@ impl<T> Row<T> {
     #[inline]
     pub fn front_split_off(&mut self, at: usize) -> Vec<T> {
         self.occ = self.occ.saturating_sub(at);
+        self.empty_from = 0;
 
         let mut split = self.inner.split_off(at);
         std::mem::swap(&mut split, &mut self.inner);

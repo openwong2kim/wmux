@@ -816,9 +816,10 @@ impl NativeTerminal {
                 self.feed.alt_reflow = true;
             }
         }
-        // A paragraph below the cursor's that reflows: xterm moves its cursor
-        // row by the rows that adds or removes as if they were above it, off
-        // the cursor's content, where Alacritty keeps the cursor on it.
+        // Narrower, a paragraph below the cursor's that reflows: xterm moves
+        // its cursor row by the rows that adds as if they were above it and
+        // clips a different row than Alacritty does. (A widen follows xterm's
+        // rule in the vendored grow_columns.)
         let primary = if term.mode().contains(TermMode::ALT_SCREEN) {
             term.inactive_grid()
         } else {

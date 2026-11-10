@@ -84,6 +84,11 @@ export const reflowCases: Case[] = [
   script('widen-tail-pending-wrap', [40, 24], [`${rows(3, 20)}\r\n${'q'.repeat(80)}`, [80, 24]]),
   // A fullwidth glyph right before the tail.
   script('widen-tail-after-wide', [40, 24], [`${'x'.repeat(38)}한yy`, [80, 24], UP]),
+  // A fullwidth glyph that did not fit: its spacer sits inside the row after
+  // the widen, an empty cell in xterm.
+  script('widen-tail-after-leading-spacer', [40, 24], [`${'x'.repeat(39)}한${'y'.repeat(38)}`, [80, 24], UP]),
+  // Blanks a program printed up to a soft wrap stay content (no widen).
+  script('wrap-at-printed-spaces', [20, 24], [`${'a'.repeat(17)}   bbbb${UP}`]),
   // Two tails in a row.
   script('widen-two-tails', [30, 24], [`${'z'.repeat(75)}`, [80, 24], UP]),
   // More rows with history while the cursor is mid-screen: xterm adds blank
