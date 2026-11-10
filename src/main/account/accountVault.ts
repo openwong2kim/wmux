@@ -25,6 +25,7 @@ import path from 'node:path';
 import { BOT_SECRET_LIMITS, isBotSecretName } from '../../shared/botSecret';
 import { electronSecretCrypto, type SecretCrypto, type SecretCryptoState } from '../factory/secretStore';
 import { getAccountStore, getAccountsPath } from './accountStore';
+import { atomicReadJSONSync } from '../../daemon/util/atomicWrite';
 import { isRedactableSecretValue, setRedactedAccountVault } from '../factory/secretRedaction';
 
 export const ACCOUNT_VAULT_FILE_VERSION = 1 as const;
@@ -349,7 +350,7 @@ let current: AccountVault | null = null;
  * app is ready: safeStorage needs it). `liveAccountIds` drops the entries of
  * removed accounts at that load.
  */
-export function getAccountVault(init?: { file: string; crypto: () => SecretCrypto; liveAccountIds: () => ReadonlySet<string> }): AccountVault | null {
+export function getAccountVault(init?: { file: string; crypto: () => SecretCrypto; liveAccountIds: () => ReadonlySet<string> | undefined }): AccountVault | null {
   if (!current && init) {
     current = new AccountVault({ file: init.file, crypto: init.crypto() });
     current.load(init.liveAccountIds());
@@ -366,6 +367,21 @@ export function appAccountVault(): AccountVault {
   return getAccountVault({
     file: path.join(path.dirname(getAccountsPath()), 'accounts', 'vault.json'),
     crypto: electronSecretCrypto,
-    liveAccountIds: () => new Set(getAccountStore().listAccounts().map((a) => a.id)),
+    liveAccountIds: readableAccountIds,
   }) as AccountVault;
+}
+
+/**
+ * The ids of the account list, only when accounts.json (or its backup) reads
+ * as a list: the account store opens an unreadable file as empty, and pruning
+ * against that would delete every vault entry.
+ */
+function readableAccountIds(): ReadonlySet<string> | undefined {
+  try {
+    const raw = atomicReadJSONSync<{ accounts?: unknown }>(getAccountsPath());
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.accounts)) return undefined;
+  } catch {
+    return undefined;
+  }
+  return new Set(getAccountStore().listAccounts().map((a) => a.id));
 }

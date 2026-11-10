@@ -37,7 +37,7 @@ describe('pty create in daemon mode', () => {
     registerPTYHandlers({} as never, { setupDataForwarding: () => undefined } as never, daemonClient as never, () => null);
     const create = captured.get(IPC.PTY_CREATE);
     expect(create).toBeDefined();
-    await create?.({}, { cwd: process.cwd() }).catch(() => undefined);
+    await Promise.resolve(create?.({}, { cwd: process.cwd() })).catch(() => undefined);
     const createCall = rpc.mock.calls.find((c) => (c as unknown[])[0] === 'daemon.createSession') as unknown[] | undefined;
     expect(createCall).toBeDefined();
     expect((createCall?.[1] as { secretEnv?: unknown }).secretEnv).toBeUndefined();
