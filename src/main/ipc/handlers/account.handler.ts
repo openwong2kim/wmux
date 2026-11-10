@@ -273,15 +273,15 @@ export function registerAccountHandlers(): () => void {
   ipcMain.handle(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, wrapHandler(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD,
     async (_e, args: { accountId: unknown; name: unknown; expectPrefix?: unknown }): Promise<AccountVaultSetResult & { clipboardCleared?: boolean }> => {
       const accountId = knownAccount(args?.accountId);
-      const value = clipboard.readText().trim();
+      const value = (await clipboard.readText()).trim();
       if (typeof args?.expectPrefix === 'string' && args.expectPrefix && !value.startsWith(args.expectPrefix)) {
         return { ok: false, code: 'invalid_value', message: `The clipboard does not start with "${args.expectPrefix}", so nothing was saved.` };
       }
       const result = appAccountVault().set(accountId, args?.name, value);
       if (!result.ok) return result;
       let clipboardCleared = false;
-      if (clipboard.readText().trim() === value) {
-        clipboard.clear();
+      if ((await clipboard.readText()).trim() === value) {
+        await clipboard.clear();
         clipboardCleared = true;
       }
       return { ...result, clipboardCleared };
