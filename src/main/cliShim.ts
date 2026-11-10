@@ -344,9 +344,9 @@ function pathEditArgs(binDir: string, op: 'add' | 'remove', broadcast = true): s
   return ['-NoProfile', '-NonInteractive', '-Command', buildPathEditScript(binDir, op, undefined, undefined, broadcast)];
 }
 
-function runPathEdit(binDir: string, op: 'add' | 'remove', broadcast = true): void {
+function runPathEdit(binDir: string, op: 'add' | 'remove', broadcast = true, timeoutMs = 20000): void {
   try {
-    execFileSync(powershellExe(), pathEditArgs(binDir, op, broadcast), { encoding: 'utf8', windowsHide: true, timeout: 20000 });
+    execFileSync(powershellExe(), pathEditArgs(binDir, op, broadcast), { encoding: 'utf8', windowsHide: true, timeout: timeoutMs });
   } catch (err) {
     handlePathEditError(err, binDir, op);
   }
@@ -593,15 +593,16 @@ export function darwinShimNeedsRepair(
  * `detachBroadcast`: write PATH, then leave the WM_SETTINGCHANGE broadcast to a
  * detached PowerShell instead of waiting for it. The Squirrel uninstall hook
  * needs this: Squirrel cancels it at 10 s, and the broadcast alone can take
- * that long.
+ * that long. `timeoutMs` bounds the PATH edit (the hook passes what its budget
+ * leaves).
  */
-export function uninstallCliShim(execPath: string, opts: { detachBroadcast?: boolean } = {}): void {
+export function uninstallCliShim(execPath: string, opts: { detachBroadcast?: boolean; timeoutMs?: number } = {}): void {
   try {
     const { binDir } = deriveShimPaths(execPath);
     try {
       fs.rmSync(binDir, { recursive: true, force: true });
     } catch { /* best-effort */ }
-    runPathEdit(binDir, 'remove', !opts.detachBroadcast);
+    runPathEdit(binDir, 'remove', !opts.detachBroadcast, opts.timeoutMs);
     if (opts.detachBroadcast) broadcastSettingChangeDetached();
   } catch (err) {
     console.warn('[cliShim] shim uninstall failed (non-fatal):', err);

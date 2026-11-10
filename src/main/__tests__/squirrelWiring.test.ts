@@ -188,7 +188,9 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     expect(pathEdit).toBeGreaterThan(branch.indexOf('terminateStagedDaemons('));
     expect(pathEdit).toBeGreaterThan(branch.indexOf("'--removeShortcut'"));
     expect(pathEdit).toBeGreaterThan(branch.indexOf('removeToastEntries('));
-    expect(branch).toContain('uninstallCliShim(process.execPath, { detachBroadcast: true })');
+    expect(branch).toContain('uninstallCliShim(process.execPath, { detachBroadcast: true, timeoutMs: Math.max(1_000, hookTimeLeft()) })');
+    // The staged daemon's listing and kills get a bound from the budget too.
+    expect(branch).toMatch(/terminateStagedDaemons\(stageRoot, Math\.max\(1_000, hookTimeLeft\(\)/);
     // The daemon's exit wait is cut to what the budget leaves.
     expect(branch).toMatch(/removeDaemonRuntimeStagesAfterExit\([^)]*waitMs/);
     expect(branch).toContain('hookTimeLeft()');

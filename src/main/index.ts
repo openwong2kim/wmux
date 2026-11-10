@@ -507,7 +507,9 @@ if (process.platform === 'win32') {
       // then remove the copies. Its exit wait leaves time for the PATH edit.
       try {
         const stageRoot = daemonStageRootIn(getWmuxDir());
-        const found = terminateStagedDaemons(stageRoot);
+        // Listing and kills are bounded too, so a slow query cannot eat the
+        // time the shortcut and PATH steps need.
+        const found = terminateStagedDaemons(stageRoot, Math.max(1_000, hookTimeLeft() - UNINSTALL_PATH_EDIT_RESERVE_MS));
         if (found === null) {
           // Not knowing whether a daemon runs from a copy is not "none": keep them.
           console.warn(`[Squirrel] could not list the staged daemons; ${stageRoot} is left for the next run`);
@@ -540,7 +542,7 @@ if (process.platform === 'win32') {
       // X4: remove the CLI shim + strip <root>\bin from the user PATH. The
       // WM_SETTINGCHANGE broadcast runs detached: it alone can outlast the hook.
       if (hookTimeLeft() > 0) {
-        try { cliShim.uninstallCliShim(process.execPath, { detachBroadcast: true }); } catch { /* best-effort */ }
+        try { cliShim.uninstallCliShim(process.execPath, { detachBroadcast: true, timeoutMs: Math.max(1_000, hookTimeLeft()) }); } catch { /* best-effort */ }
       } else {
         console.warn('[Squirrel] out of time before the PATH edit; <root>\\bin stays on the user PATH');
       }
