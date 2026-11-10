@@ -198,6 +198,8 @@ pub struct NativeTerminal {
     /// Why the ANSI snapshot of this stream cannot match xterm's, for good
     /// (an alternate screen's width change is XtermFeed::alt_reflow).
     refusal: Option<&'static str>,
+    /// The text feed's trailing ESC (advance_indexing).
+    text_held: Vec<u8>,
 }
 
 /// Whether a resize to `cols` reflows a row below the cursor's paragraph on
@@ -472,6 +474,12 @@ impl XtermFeed {
                 erase_like_xterm(parser, term, sequence[2] == b'2');
                 from = at + len;
                 next = Some(at + len);
+            } else if sequence == b"\x1bD" || sequence == b"\x1bE" {
+                // IND and NEL keep the paragraph, as xterm's `index` does.
+                parser.advance(term, &data[from..at]);
+                index_like_xterm(parser, term, sequence);
+                from = at + len;
+                next = Some(at + len);
             } else if is_restricting(sequence) {
                 // xterm's ICH, DCH and ECH first restrict the cursor, which
                 // drops a pending wrap; Alacritty keeps it.
@@ -496,6 +504,12 @@ impl XtermFeed {
                 // Alacritty repeats whatever was printed last.
                 self.divergent |=
                     crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
+                // An escape cut short by DEL or a byte past ASCII: both
+                // parsers ignore DEL there, so `ESC DEL D` is still IND,
+                // which this scan would not see as one.
+                self.divergent |= sequence.get(1) != Some(&b'[')
+                    && !(0x30..=0x7e).contains(&sequence[len - 1])
+                    && data.get(at + len).is_some_and(|&b| b == 0x7f || b >= 0x80);
                 self.track(sequence, term.screen_lines());
                 next = Some(at + len);
                 if self.alt_reflow && self.may_leave_alt {
@@ -580,6 +594,79 @@ impl XtermFeed {
     }
 }
 
+/// IND or NEL (`sequence`, C0 controls or DEL inside included) as xterm's
+/// `index`.
+fn index_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, sequence: &[u8]) {
+    // vte runs IND and NEL through the line feed, which ends the paragraph of
+    // the row it enters as xterm's `lineFeed` does (vendor `line_down`);
+    // xterm's `index` keeps it. Put back the flag it cleared, which it does
+    // only when the cursor moved down one row.
+    let synchronized = parser.sync_timeout().pending_timeout();
+    if synchronized {
+        parser.stop_sync(term);
+    }
+    let line = term.grid().cursor.point.line;
+    let last = term.grid().last_column();
+    let wrapped = term.grid()[line][last].flags.contains(Flags::WRAPLINE);
+    parser.advance(term, sequence);
+    if wrapped && term.grid().cursor.point.line == line + 1 {
+        term.grid_mut()[line][last].flags.insert(Flags::WRAPLINE);
+    }
+    if synchronized {
+        parser.advance(term, b"\x1b[?2026h");
+    }
+}
+
+/// `parser.advance` for a stream no XtermFeed scans (the text snapshot), with
+/// IND and NEL as xterm's `index`. Both parsers execute C0 controls and ignore
+/// DEL between the ESC and its final byte. An ESC still waiting for that byte
+/// at the end of `bytes` waits in `held` with what follows it, up to
+/// MAX_HELD bytes as XtermFeed holds; past that it goes to the parser as is.
+fn advance_indexing(
+    parser: &mut Processor,
+    term: &mut Term<VoidListener>,
+    held: &mut Vec<u8>,
+    bytes: &[u8],
+) {
+    let joined;
+    let bytes = if held.is_empty() {
+        bytes
+    } else {
+        let mut data = std::mem::take(held);
+        data.extend_from_slice(bytes);
+        joined = data;
+        &joined[..]
+    };
+    let mut from = 0;
+    let mut at = 0;
+    while let Some(found) = bytes[at..].iter().position(|&b| b == 0x1b) {
+        let esc = at + found;
+        let mut end = esc + 1;
+        while bytes
+            .get(end)
+            .is_some_and(|&b| (b < 0x20 && !matches!(b, 0x18 | 0x1a | 0x1b)) || b == 0x7f)
+        {
+            end += 1;
+        }
+        match bytes.get(end) {
+            None if bytes.len() - esc <= MAX_HELD => {
+                parser.advance(term, &bytes[from..esc]);
+                held.extend_from_slice(&bytes[esc..]);
+                return;
+            }
+            None => break,
+            Some(b'D' | b'E') => {
+                parser.advance(term, &bytes[from..esc]);
+                index_like_xterm(parser, term, &bytes[esc..=end]);
+                from = end + 1;
+                at = from;
+            }
+            Some(_) => at = esc + 1,
+        }
+    }
+    parser.advance(term, &bytes[from..]);
+}
+
 /// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
 /// screen scrolls the screen into history, and its ED 1 skips the top row
 /// when the cursor is on the second. The renderer is xterm.
@@ -633,6 +720,7 @@ impl NativeTerminal {
             scrollback,
             feed: XtermFeed::default(),
             refusal: None,
+            text_held: Vec::new(),
         })
     }
 
@@ -644,7 +732,7 @@ impl NativeTerminal {
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
         // Parser retains incomplete UTF-8 / escape state across feeds.
         // VoidListener intentionally discards all PTY replies and clipboard events.
-        self.parser.advance(term, &bytes);
+        advance_indexing(&mut self.parser, term, &mut self.text_held, &bytes);
         Ok(())
     }
 
@@ -687,7 +775,7 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        self.parser.advance(term, bytes);
+        advance_indexing(&mut self.parser, term, &mut self.text_held, bytes);
         Ok(())
     }
 
@@ -759,6 +847,8 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        let held = std::mem::take(&mut self.text_held);
+        self.parser.advance(term, &held);
         // A text read must include bytes in an unfinished synchronized update.
         // This finalizes the batch; this API does not promise ANSI replay state.
         self.parser.stop_sync(term);
@@ -1772,6 +1862,98 @@ mod tests {
             lifted(&[overflow.as_str(), "\x1b[?1049l"]),
             "a real leave after it"
         );
+    }
+
+    #[test]
+    fn a_line_feed_into_a_continuation_ends_its_paragraph_as_xterm_s() {
+        use alacritty_terminal::term::cell::Flags;
+        // 15 x on 10 columns: row 1 continues row 0.
+        let wrapped = |chunks: &[&str]| {
+            let term = feed(chunks);
+            term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        };
+        let para = "xxxxxxxxxxxxxxx\x1b[1;1H";
+        assert!(wrapped(&[para]));
+        // xterm's lineFeed: LF, VT and FF clear the entered row's wrap.
+        for lf in ["\n", "\x0b", "\x0c"] {
+            assert!(!wrapped(&[para, lf]), "{lf:?}");
+        }
+        assert!(
+            !wrapped(&[para, "\x1b[1;2r\x1b[1;1H\n"]),
+            "inside a region, above its bottom"
+        );
+        // xterm's index: IND and NEL keep it, also in an update or a split.
+        for index in ["\x1bD", "\x1bE", "\x1b[?2026h\x1bD"] {
+            assert!(wrapped(&[para, index]), "{index:?}");
+        }
+        assert!(wrapped(&[para, "\x1b", "D"]), "split across chunks");
+        // With a C0 inside, the feed leaves IND and NEL to the reference.
+        assert!(crate::native_serialize::divergent(b"\x1b\x07D"));
+        assert!(crate::native_serialize::divergent(b"\x1b\x00E"));
+        // Both drop a pending wrap: the next glyph lands in the last column.
+        for down in ["\n", "\x1bD"] {
+            let term = feed(&["xxxxxxxxxx", down, "Y"]);
+            assert_eq!(term.grid()[Line(1)][Column(9)].c, 'Y', "{down:?}");
+        }
+        // The text feed (no XtermFeed) keeps IND's paragraph too.
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut held = Vec::new();
+        for chunk in [para.as_bytes(), b"\x1b", b"D"] {
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+        }
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        // DEL inside, split after it: both parsers ignore DEL there.
+        for chunk in [para.as_bytes(), b"\x1b\x7f", b"D"] {
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+        }
+        assert!(held.is_empty());
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        // An ESC followed by an endless run of C0 controls and DEL, a few
+        // bytes per feed: the held bytes stay under the cap, so each feed
+        // rescans at most that much, and the run reaches the parser.
+        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b");
+        let mut most = 0;
+        for i in 0..100_000 {
+            let chunk: &[u8] = if i % 2 == 0 { b"\x00\x7f\x07" } else { b"\x7f" };
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+            most = most.max(held.len());
+        }
+        assert!(most <= super::MAX_HELD, "{most}");
+        assert!(held.len() <= super::MAX_HELD);
+        // The ANSI feed leaves that spelling to the reference.
+        assert!(feed_with(&[para, "\x1b\x7fD"]).2.divergent);
+        assert!(
+            !feed_with(&[para, "\x1b7\u{e9}"]).2.divergent,
+            "a complete escape before UTF-8"
+        );
+        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b[1;1H\n");
+        assert!(!term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        // An auto-wrap below a scroll region keeps its wrap.
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 5 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut feed = XtermFeed::default();
+        feed.feed(&mut parser, &mut term, b"\x1b[1;2r\x1b[4;1Hxxxxxxxxxxxxxxx");
+        assert!(term.grid()[Line(3)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        // At the bottom a line feed scrolls; the paragraph moves up intact.
+        let (term, _, _) = feed_with(&["\x1b[3;1Hxxxxxxxxxxxxxxx\x1b[3;1H\n"]);
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        let (term, _, _) = feed_with(&["\x1b[3;1Hxxxxxxxxxxxxxxx\x1b[3;1H\x1bD"]);
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
     }
 
     #[test]

@@ -372,7 +372,9 @@ fn sgr_divergent(params: &str) -> bool {
 /// into G0/G1, selective erase, SL/SR,
 /// DECIC/DECDC, DECSTR, SD spelled `CSI ^` (vte ignores it), ED 1/2
 /// spelled other than `CSI 1 J` / `CSI 2 J`, the modes 9, 20, 45, 47, 66,
-/// 1047 and 1048, and SGR 21/53 or malformed colors. `sequence` is complete.
+/// 1047 and 1048, SGR 21/53 or malformed colors, and IND/NEL with a C0
+/// control inside (the feed gives xterm's `index` only to their plain
+/// spelling). `sequence` is complete.
 pub(crate) fn divergent(sequence: &[u8]) -> bool {
     // C0 controls inside a sequence execute and are not part of it (rare).
     let filtered: Vec<u8>;
@@ -382,6 +384,10 @@ pub(crate) fn divergent(sequence: &[u8]) -> bool {
         body = &filtered;
         // The feed gives ED xterm's semantics only in its plain spelling.
         if body.first() == Some(&b'[') && body.last() == Some(&b'J') {
+            return true;
+        }
+        // Nor IND and NEL xterm's `index` semantics (native_core.rs).
+        if body == b"D" || body == b"E" {
             return true;
         }
     }

@@ -160,6 +160,33 @@ const leftAlt: Case[] = [
   synthetic('alt-decsc-wrap-pending-left', 'n\x1b[?1049h\x1b[Habcdefgh\x1b7\x1b[?1049lX', 'rust', 8),
 ];
 
+// A line feed into a soft-wrapped row's continuation: LF, VT and FF end the
+// paragraph there (xterm's lineFeed), IND and NEL keep it (xterm's index),
+// and neither touches it when it scrolls.
+const para = `${'x'.repeat(25)}\x1b[1;1H`;
+const bottom = `\x1b[6;1H${'x'.repeat(25)}\x1b[6;1H`;
+const lineFeeds: Case[] = [
+  synthetic('lf-into-continuation', `${para}\nY`),
+  synthetic('lf-into-continuation-no-print', `${para}\n`),
+  synthetic('vt-into-continuation', `${para}\x0bY`),
+  synthetic('ff-into-continuation', `${para}\x0cY`),
+  synthetic('lf-into-continuation-in-region', `${para}\x1b[1;4r\x1b[1;1H\n\x1b[rY`),
+  synthetic('ind-into-continuation', `${para}\x1bDY`),
+  synthetic('nel-into-continuation', `${para}\x1bEY`),
+  synthetic('ind-into-continuation-in-update', `${para}\x1b[?2026h\x1bDY\x1b[?2026l`),
+  synthetic('nel-c1-into-continuation', `${para}\u0085Y`, 'xterm'),
+  synthetic('lf-scrolls-a-paragraph', `${bottom}\nY`),
+  synthetic('ind-scrolls-a-paragraph', `${bottom}\x1bDY`),
+  // An auto-wrap keeps its paragraph, also below a scroll region.
+  synthetic('auto-wrap-below-region', `\x1b[1;3r\x1b[5;1H${'x'.repeat(25)}\x1b[r`),
+  // Both drop a pending wrap: the next glyph lands in the last column.
+  synthetic('lf-drops-pending-wrap', `${'x'.repeat(20)}\nY`),
+  synthetic('ind-drops-pending-wrap', `${'x'.repeat(20)}\x1bDY`),
+  // A C0 inside IND: left to the reference.
+  synthetic('ind-with-c0-inside', `${para}\x1b\x07DY`, 'xterm'),
+  synthetic('ind-with-del-inside', `${para}\x1b\x7fDY`, 'xterm'),
+];
+
 // Controls the selector never refused, rechecked now that Rust is the default.
 const others: Case[] = [
   synthetic('ris', 'abc\x1b[31m\x1bcdef'),
@@ -259,7 +286,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
   beforeEach(() => vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath));
   afterEach(() => vi.unstubAllEnvs());
 
-  it.each([...accepted, ...refused, ...leftAlt, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
+  it.each([...accepted, ...refused, ...leftAlt, ...lineFeeds, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
     await expectParity(c);
   });
 
