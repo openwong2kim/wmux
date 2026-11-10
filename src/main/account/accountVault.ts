@@ -88,6 +88,11 @@ const VENDOR_AUTH_NAMES: ReadonlyMap<string, 'claude' | 'codex'> = new Map([
   ['CODEX_API_KEY', 'codex'],
 ]);
 
+/** The vendor whose CLI reads this sign-in variable, if it is one. */
+export function vendorOfAuthName(name: string): 'claude' | 'codex' | undefined {
+  return VENDOR_AUTH_NAMES.get(name);
+}
+
 function keyOf(accountId: string, name: string): string {
   return `${accountId}\u0000${name}`;
 }
