@@ -25,7 +25,11 @@ import { envClaudeConfigDir } from '../../../shared/claudeConfigTargets';
 import { claudeConfigDirEnv } from '../../hooks/claudeConfigDirProbe';
 import { installHooksIntoNewAccount } from './hooksBridge.handler';
 import { loadClaudeCredential, credentialFingerprint } from '../../claude/claudeCredential';
-import { appAccountVault, type AccountVaultSetResult } from '../../account/accountVault';
+import { appAccountVault, vendorOfAuthName, type AccountVaultSetResult } from '../../account/accountVault';
+import { markClaudeOnboardingDone } from '../../account/claudeOnboardingFlag';
+
+/** The vault name a Claude account signs in with (`claude setup-token`). */
+const CLAUDE_TOKEN_NAME = 'CLAUDE_CODE_OAUTH_TOKEN';
 
 function isVendor(v: unknown): v is Vendor {
   return v === 'claude' || v === 'codex';
@@ -101,6 +105,20 @@ export interface AccountRow extends Account {
   status: CredentialStatus;
   /** Copy-able fallback for users who log in from their own terminal. */
   loginCommand: string;
+  /** A Claude account whose vault holds a long-lived token: when it was saved,
+   *  and whether this machine can decrypt it. Never the value. */
+  tokenSignIn?: { createdAt: number; usable: boolean };
+}
+
+/** The token sign-in metadata of a Claude account, if its vault holds one. */
+function tokenSignInOf(a: Account): AccountRow['tokenSignIn'] {
+  if (vendorOfAuthName(CLAUDE_TOKEN_NAME) !== a.vendor) return undefined;
+  try {
+    const entry = appAccountVault().list(a.id).find((e) => e.name === CLAUDE_TOKEN_NAME);
+    return entry ? { createdAt: entry.createdAt, usable: entry.usable } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Build the platform-correct, properly-escaped, process-scoped login command
@@ -162,6 +180,7 @@ export function registerAccountHandlers(getWindow: () => BrowserWindow | null = 
         ...a,
         status: await credentialStatus(a.vendor, a.configDir),
         loginCommand: buildLoginCommand(a.vendor, a.configDir),
+        tokenSignIn: tokenSignInOf(a),
       })),
     );
     return { accounts: rows, bindings: store.getBindings() };
@@ -274,7 +293,7 @@ export function registerAccountHandlers(getWindow: () => BrowserWindow | null = 
   // Clipboard → vault. The clipboard is cleared only if it still holds what
   // was saved, so text copied since is not lost.
   ipcMain.handle(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, wrapHandler(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD,
-    async (e, args: { accountId: unknown; name: unknown; expectPrefix?: unknown }): Promise<AccountVaultSetResult & { clipboardCleared?: boolean }> => {
+    async (e, args: { accountId: unknown; name: unknown; expectPrefix?: unknown }): Promise<AccountVaultSetResult & { clipboardCleared?: boolean; onboardingWarning?: string }> => {
       const accountId = knownAccount(e, args?.accountId);
       const value = (await clipboard.readText()).trim();
       if (typeof args?.expectPrefix === 'string' && args.expectPrefix && !value.startsWith(args.expectPrefix)) {
@@ -287,7 +306,15 @@ export function registerAccountHandlers(getWindow: () => BrowserWindow | null = 
         await clipboard.clear();
         clipboardCleared = true;
       }
-      return { ...result, clipboardCleared };
+      // A Claude token is read only once first-run setup is marked done in the
+      // account's folder. A refusal leaves the token saved and says why.
+      let onboardingWarning: string | undefined;
+      const account = getAccountStore().getAccount(accountId);
+      if (args?.name === CLAUDE_TOKEN_NAME && account && tokenSignInOf(account)) {
+        const flag = markClaudeOnboardingDone(account.configDir, path.resolve(getWmuxDir(), 'accounts'));
+        if (!flag.ok) onboardingWarning = flag.message;
+      }
+      return { ...result, clipboardCleared, ...(onboardingWarning ? { onboardingWarning } : {}) };
     }));
 
   ipcMain.handle(IPC.ACCOUNT_VAULT_GENERATE, wrapHandler(IPC.ACCOUNT_VAULT_GENERATE,

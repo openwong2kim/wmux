@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback, useRef, useSyncExternalStore, type CSSProperties } from 'react';
-import type { Account } from '../../../main/account/accountStore';
-import type { CredentialStatus } from '../../../main/ipc/handlers/account.handler';
+import { Fragment, useState, useEffect, useCallback, useRef, useSyncExternalStore, type CSSProperties } from 'react';
+import type { AccountRow as AccountListRow } from '../../../main/ipc/handlers/account.handler';
 import type { AccountUsageEntry } from '../../../main/account/AccountUsageService';
 import { accountGroupOf, groupAccounts, MAX_ACCOUNT_GROUP_CHARS } from '../../../shared/accountGroup';
 import { t } from '../../i18n';
 import { useT } from '../../hooks/useT';
+import { renderSentence } from '../../i18n/renderSentence';
 import { usageWindowsText } from '../StatusBar/UsageWidget';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
@@ -29,7 +29,18 @@ import {
 } from '../../utils/accountLogin';
 
 type Vendor = 'claude' | 'codex';
-type AccountRow = Account & { status: CredentialStatus; loginCommand: string };
+type AccountRow = AccountListRow;
+
+/** The vault entry a Claude account signs in with, and how its value starts. */
+const CLAUDE_TOKEN_NAME = 'CLAUDE_CODE_OAUTH_TOKEN';
+const CLAUDE_TOKEN_PREFIX = 'sk-ant-oat';
+/** `claude setup-token` issues a token valid for one year. */
+const TOKEN_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** The day (UTC) a token saved at `createdAt` runs out; the row says "about". */
+export function tokenExpiryDate(createdAt: number): string {
+  return new Date(createdAt + TOKEN_LIFETIME_MS).toISOString().slice(0, 10);
+}
 
 // ─── M2 — per-account usage (hook-gated) ─────────────────────────────────────
 // The 5h/7d numbers are populated in the background when a claude turn ends in a
@@ -116,6 +127,110 @@ function LoginState({ row, expired, pending }: { row: AccountRow; expired: boole
     >
       {t('accounts.loginAgain')}
     </Button>
+  );
+}
+
+/** A row's login and usage cells. A token sign-in (main reports it for Claude
+ *  accounts only) replaces both with one line: the token is not a browser
+ *  login, and its usage cannot be read. */
+export function AccountRowStatus({ row, usage, pending, rotationRow }: {
+  row: AccountRow;
+  usage: AccountUsageEntry | undefined;
+  pending: boolean;
+  rotationRow: Parameters<typeof RotationQuotaBit>[0]['row'];
+}): React.ReactElement {
+  const t = useT();
+  if (row.tokenSignIn) {
+    const usable = row.tokenSignIn.usable;
+    const text = usable
+      ? t('accounts.tokenSignedIn', { date: tokenExpiryDate(row.tokenSignIn.createdAt) })
+      : t('accounts.tokenUnreadable');
+    return (
+      <span
+        className="justify-self-end min-w-0 max-w-full truncate text-[11px]"
+        style={{ gridColumn: '3 / 5', color: usable ? 'var(--text-sub)' : 'var(--accent-red)' }}
+        title={text}
+        data-account-token-state
+      >
+        {text}
+      </span>
+    );
+  }
+  return (
+    <>
+      <span className="justify-self-end min-w-0 max-w-full overflow-hidden">
+        <LoginState row={row} expired={usage?.status === 'unauthorized'} pending={pending} />
+      </span>
+      <span className="justify-self-end min-w-0 max-w-full overflow-hidden">
+        {row.vendor === 'codex' ? <RotationQuotaBit row={rotationRow} /> : <UsageBit entry={usage} />}
+      </span>
+    </>
+  );
+}
+
+/** Sign a Claude account in with a `claude setup-token` token. The value goes
+ *  clipboard → main → vault; the renderer only asks for the save. */
+function TokenSignInPanel({ row, onSaved, onClose }: { row: AccountRow; onSaved: () => void; onClose: () => void }): React.ReactElement {
+  const t = useT();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /** Saved, but the first-run flag was not set; main's reason. */
+  const [warning, setWarning] = useState<string | null>(null);
+  const paste = async () => {
+    const vault = window.electronAPI?.accounts?.vault;
+    if (!vault) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await vault.saveFromClipboard({ accountId: row.id, name: CLAUDE_TOKEN_NAME, expectPrefix: CLAUDE_TOKEN_PREFIX });
+      if (!res.ok) {
+        setError(res.code === 'invalid_value' ? t('accounts.tokenNotInClipboard') : res.message);
+        return;
+      }
+      onSaved();
+      if (res.onboardingWarning) setWarning(res.onboardingWarning);
+      else onClose();
+    } catch (e) {
+      setError(String((e as { message?: string })?.message ?? e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="settings-row" data-account-token-panel={row.id}>
+      <div className="flex flex-col gap-3">
+        <div className="text-[13px] text-[var(--text-main)]">{t('accounts.tokenPanelTitle', { name: row.name })}</div>
+        {warning ? (
+          <div className="flex items-center gap-2 text-[11px] text-[var(--text-sub)]" title={warning} data-account-token-warning>
+            <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: 'var(--accent-yellow)' }} />
+            {t('accounts.tokenOnboardingWarning')}
+          </div>
+        ) : (
+          <>
+            <ol className="m-0 pl-5 flex flex-col gap-1 text-[12px] text-[var(--text-sub)]">
+              <li>{renderSentence(t('accounts.tokenStepRun'), { command: <code className="ui-code">claude setup-token</code> })}</li>
+              <li>{t('accounts.tokenStepCopy')}</li>
+              <li>{t('accounts.tokenStepPaste', { button: t('accounts.pasteToken') })}</li>
+            </ol>
+            <div className="flex items-center gap-2 text-[11px] text-[var(--text-sub)]">
+              <span aria-hidden="true" className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: 'var(--accent-yellow)' }} />
+              {t('accounts.tokenCaution')}
+            </div>
+            {error && <div className="text-[11px] text-[var(--accent-red)]" role="alert">{error}</div>}
+          </>
+        )}
+        <div className="flex justify-end gap-2">
+          {warning ? (
+            <Button variant="secondary" size="md" onClick={onClose}>{t('common.done')}</Button>
+          ) : (
+            <>
+              <Button variant="ghost" size="md" onClick={onClose}>{t('common.cancel')}</Button>
+              <Button variant="primary" size="md" onClick={() => { void paste(); }} disabled={busy} autoFocus>{t('accounts.pasteToken')}</Button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -307,6 +422,8 @@ export function AccountsSection(): React.ReactElement | null {
   const [confirmRemove, setConfirmRemove] = useState<AccountRow | null>(null);
   const [bindings, setBindings] = useState<Record<string, Partial<Record<Vendor, string>>>>({});
   const [move, setMove] = useState<PendingMove | null>(null);
+  /** The account whose token sign-in panel is open. */
+  const [tokenPanel, setTokenPanel] = useState<string | null>(null);
   const workspaces = useStore((s) => s.workspaces);
   // Settings closes on Escape unless something it opened owns the key.
   useOwnedDialog(move !== null || confirmRemove !== null);
@@ -479,14 +596,27 @@ export function AccountsSection(): React.ReactElement | null {
       })),
       ...(from ? [{ id: 'move:none', label: t('accounts.moveToNoGroup'), onSelect: () => requestMove({ ids: [r.id], from, to: '', kind: 'move' }) }] : []),
       { id: 'move:new', label: t('accounts.moveToNewGroup'), onSelect: () => setMove({ ids: [r.id], from, to: null, kind: 'move' }) },
-      ...(r.vendor === 'claude' ? [{ id: 'refresh', label: t('accounts.refreshUsage'), onSelect: () => window.electronAPI?.accounts?.usageRefresh?.(r.id) }] : []),
+      ...(r.vendor === 'claude' ? [
+        // A token account's usage cannot be read, so it has no refresh.
+        ...(r.tokenSignIn ? [] : [{ id: 'refresh', label: t('accounts.refreshUsage'), onSelect: () => window.electronAPI?.accounts?.usageRefresh?.(r.id) }]),
+        ...(window.electronAPI?.accounts?.vault ? [r.tokenSignIn
+          ? { id: 'token:remove', label: t('accounts.removeToken'), onSelect: () => removeToken(r.id) }
+          : { id: 'token:use', label: t('accounts.useToken'), onSelect: () => { setAdding(false); setTokenPanel(r.id); } }] : []),
+      ] : []),
       { id: 'rename', label: t('accounts.rename'), onSelect: () => { setEditingId(r.id); setEditName(r.name); } },
       { id: 'remove', label: t('common.remove'), danger: true, onSelect: () => setConfirmRemove(r) },
     ];
   };
 
+  const removeToken = (id: string) => {
+    const vault = window.electronAPI?.accounts?.vault;
+    if (!vault) return;
+    void vault.remove({ accountId: id, name: CLAUDE_TOKEN_NAME }).then(reload, reload);
+  };
+
   const renderRow = (r: AccountRow) => (
-    <div key={r.id} className="ui-row" style={ROW_TRACKS} data-account-row={r.id}>
+    <Fragment key={r.id}>
+    <div className="ui-row" style={ROW_TRACKS} data-account-row={r.id}>
       <Badge className="justify-self-start">{r.vendor}</Badge>
       {editingId === r.id ? (
         <Input
@@ -501,20 +631,18 @@ export function AccountsSection(): React.ReactElement | null {
       ) : (
         <span className="min-w-0 text-[13px] font-medium text-[var(--text-main)] truncate">{r.name}</span>
       )}
-      <span className="justify-self-end min-w-0 max-w-full overflow-hidden">
-        <LoginState
-          row={r}
-          expired={usage.get(r.id)?.status === 'unauthorized'}
-          pending={pending.some((p) => p.configDir === r.configDir)}
-        />
-      </span>
-      <span className="justify-self-end min-w-0 max-w-full overflow-hidden">
-        {r.vendor === 'codex'
-          ? <RotationQuotaBit row={rotation.state?.rows.find((x) => x.accountId === r.id)} />
-          : <UsageBit entry={usage.get(r.id)} />}
-      </span>
+      <AccountRowStatus
+        row={r}
+        usage={usage.get(r.id)}
+        pending={pending.some((p) => p.configDir === r.configDir)}
+        rotationRow={rotation.state?.rows.find((x) => x.accountId === r.id)}
+      />
       <AccountMenu label={t('accounts.rowMenu', { name: r.name })} items={rowMenu(r)} />
     </div>
+    {tokenPanel === r.id && (
+      <TokenSignInPanel row={r} onSaved={reload} onClose={() => setTokenPanel(null)} />
+    )}
+    </Fragment>
   );
   const tail = (
     <>
@@ -528,7 +656,7 @@ export function AccountsSection(): React.ReactElement | null {
             variant={rows.length === 0 ? 'primary' : 'secondary'}
             size="md"
             className="self-start"
-            onClick={() => setAdding(true)}
+            onClick={() => { setTokenPanel(null); setAdding(true); }}
           >
             {t('accounts.addAccount')}
           </Button>
