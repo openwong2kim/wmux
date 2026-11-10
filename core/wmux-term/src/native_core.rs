@@ -620,7 +620,8 @@ fn index_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, seque
 /// `parser.advance` for a stream no XtermFeed scans (the text snapshot), with
 /// IND and NEL as xterm's `index`. Both parsers execute C0 controls and ignore
 /// DEL between the ESC and its final byte. An ESC still waiting for that byte
-/// at the end of `bytes` waits in `held` with what follows it.
+/// at the end of `bytes` waits in `held` with what follows it, up to
+/// MAX_HELD bytes as XtermFeed holds; past that it goes to the parser as is.
 fn advance_indexing(
     parser: &mut Processor,
     term: &mut Term<VoidListener>,
@@ -648,11 +649,12 @@ fn advance_indexing(
             end += 1;
         }
         match bytes.get(end) {
-            None => {
+            None if bytes.len() - esc <= MAX_HELD => {
                 parser.advance(term, &bytes[from..esc]);
                 held.extend_from_slice(&bytes[esc..]);
                 return;
             }
+            None => break,
             Some(b'D' | b'E') => {
                 parser.advance(term, &bytes[from..esc]);
                 index_like_xterm(parser, term, &bytes[esc..=end]);
@@ -1913,6 +1915,18 @@ mod tests {
         assert!(term.grid()[Line(0)][Column(9)]
             .flags
             .contains(Flags::WRAPLINE));
+        // An ESC followed by an endless run of C0 controls and DEL, a few
+        // bytes per feed: the held bytes stay under the cap, so each feed
+        // rescans at most that much, and the run reaches the parser.
+        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b");
+        let mut most = 0;
+        for i in 0..100_000 {
+            let chunk: &[u8] = if i % 2 == 0 { b"\x00\x7f\x07" } else { b"\x7f" };
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+            most = most.max(held.len());
+        }
+        assert!(most <= super::MAX_HELD, "{most}");
+        assert!(held.len() <= super::MAX_HELD);
         // The ANSI feed leaves that spelling to the reference.
         assert!(feed_with(&[para, "\x1b\x7fD"]).2.divergent);
         assert!(
