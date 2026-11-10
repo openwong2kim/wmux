@@ -10,9 +10,10 @@
 // is names and metadata only.
 //
 // What a pane does not get: a pane started by a bot, a fan-out task, another
-// PC or a wmux.json exec unit; a pane the daemon starts itself (phone, continue on an account,
-// scheduled runs), since the daemon cannot decrypt; a pane recovered after a
-// restart, since `secretEnv` is never replayed; a pane in non-daemon mode. The
+// PC or a wmux.json exec unit; a pane the daemon starts itself (phone, continue
+// on an account in the same pane, scheduled runs), since the daemon cannot
+// decrypt; a pane recovered after a restart, since `secretEnv` is never
+// replayed; a pane in non-daemon mode. The
 // values follow the account the pane was created under. Redaction
 // (secretRedaction.ts) covers the text bots see, not the pane's own screen.
 // An agent pane does get them although "Withhold credentials from agent
@@ -24,7 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BOT_SECRET_LIMITS, isBotSecretName } from '../../shared/botSecret';
 import { electronSecretCrypto, type SecretCrypto, type SecretCryptoState } from '../factory/secretStore';
-import { getAccountStore, getAccountsPath } from './accountStore';
+import { getAccountStore, getAccountsPath, isAccessibleDir, type Account } from './accountStore';
 import { atomicReadJSONSync } from '../../daemon/util/atomicWrite';
 import { isRedactableSecretValue, setRedactedAccountVault } from '../factory/secretRedaction';
 
@@ -324,6 +325,45 @@ export function vaultEligibleCreate(options: {
 } | undefined, botWorker: unknown): boolean {
   if (!options?.workspaceId || options.ignoreAccountBinding === true) return false;
   return !botWorker && !options.fanoutTaskOf && !options.remoteSpawnOf;
+}
+
+/**
+ * The account a create names for itself (`accountId`): it stands in for the
+ * workspace's bound account of its vendor, for the folder env and the vault
+ * (vaultAccountsForCreate). Only the id of a registered Claude or Codex
+ * account whose folder exists; anything else refuses the create, so it never
+ * starts on another account. The caller names an id, never env. Undefined
+ * when the create names none.
+ */
+export function createAccountOverride(
+  options: { accountId?: unknown; ignoreAccountBinding?: boolean } | undefined,
+  deps: { account?: (id: string) => Account | undefined; dirOk?: (dir: string) => boolean } = {},
+): Account | undefined {
+  if (options?.accountId === undefined) return undefined;
+  const id = options.accountId;
+  if (typeof id !== 'string' || !ACCOUNT_ID_RE.test(id)) throw new Error('PTY_CREATE: invalid account id');
+  // An agent-setup pane signs in to the default folder, so it takes no account.
+  if (options.ignoreAccountBinding === true) throw new Error('PTY_CREATE: this pane takes no account');
+  const account = (deps.account ?? ((i: string) => getAccountStore().getAccount(i)))(id);
+  if (!account || (account.vendor !== 'claude' && account.vendor !== 'codex')) throw new Error('PTY_CREATE: unknown account');
+  if (!(deps.dirOk ?? isAccessibleDir)(account.configDir)) throw new Error('PTY_CREATE: the account folder is missing');
+  return account;
+}
+
+/** The accounts whose vault a create gets: the workspace's bound Claude and
+ *  Codex accounts, with `override` in place of the one of its vendor. None
+ *  for a create vaultEligibleCreate refuses. Pure. */
+export function vaultAccountsForCreate(
+  options: Parameters<typeof vaultEligibleCreate>[0],
+  botWorker: unknown,
+  binding: (workspaceId: string, vendor: 'claude' | 'codex') => string | undefined,
+  override?: Pick<Account, 'id' | 'vendor'>,
+): Array<{ id: string; vendor: 'claude' | 'codex' }> {
+  const workspaceId = options?.workspaceId;
+  if (!vaultEligibleCreate(options, botWorker) || !workspaceId) return [];
+  return (['claude', 'codex'] as const)
+    .map((vendor) => ({ id: override?.vendor === vendor ? override.id : binding(workspaceId, vendor), vendor }))
+    .filter((a): a is { id: string; vendor: 'claude' | 'codex' } => typeof a.id === 'string');
 }
 
 /**

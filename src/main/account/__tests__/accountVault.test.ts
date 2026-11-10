@@ -8,9 +8,12 @@ vi.mock('electron', () => ({ safeStorage: { isEncryptionAvailable: () => false }
 import {
   ACCOUNT_VAULT_PER_ACCOUNT_MAX,
   AccountVault,
+  createAccountOverride,
   mergeVaultSecretEnv,
+  vaultAccountsForCreate,
   vaultEligibleCreate,
 } from '../accountVault';
+import type { Account } from '../accountStore';
 import type { SecretCrypto, SecretCryptoState } from '../../factory/secretStore';
 import {
   __resetRedactedSecretsForTesting,
@@ -164,6 +167,52 @@ describe('who gets the vault', () => {
     expect(Object.keys(merged.env ?? {})).toHaveLength(BOT_SECRET_LIMITS.NAMES_PER_FANOUT);
     expect(merged.dropped).toEqual(['HF_TOKEN']);
     expect(mergeVaultSecretEnv(undefined, {})).toEqual({ env: null, dropped: [] });
+  });
+});
+
+describe('the account a create names', () => {
+  const tokenAccount: Account = { id: 'acc-token', name: 'Token', vendor: 'claude', configDir: '/acc/token', createdAt: 1 };
+  const deps = { account: (id: string) => (id === tokenAccount.id ? tokenAccount : undefined), dirOk: () => true };
+
+  it('resolves only a registered account whose folder exists; anything else refuses the create', () => {
+    expect(createAccountOverride({}, deps)).toBeUndefined();
+    expect(createAccountOverride(undefined, deps)).toBeUndefined();
+    expect(createAccountOverride({ accountId: 'acc-token' }, deps)).toBe(tokenAccount);
+    expect(() => createAccountOverride({ accountId: 'acc-unknown' }, deps)).toThrow(/unknown account/);
+    expect(() => createAccountOverride({ accountId: '../x' }, deps)).toThrow(/invalid account id/);
+    expect(() => createAccountOverride({ accountId: 42 }, deps)).toThrow(/invalid account id/);
+    expect(() => createAccountOverride({ accountId: 'acc-token' }, { ...deps, dirOk: () => false })).toThrow(/folder is missing/);
+    expect(() => createAccountOverride({ accountId: 'acc-token', ignoreAccountBinding: true }, deps)).toThrow(/takes no account/);
+  });
+
+  it('stands in for the bound account of its vendor in the vault, and ineligible creates still get none', () => {
+    const binding = (_ws: string, vendor: 'claude' | 'codex') => (vendor === 'claude' ? 'acc-bound' : 'acc-codex');
+    expect(vaultAccountsForCreate({ workspaceId: 'ws-1' }, null, binding)).toEqual([
+      { id: 'acc-bound', vendor: 'claude' }, { id: 'acc-codex', vendor: 'codex' },
+    ]);
+    expect(vaultAccountsForCreate({ workspaceId: 'ws-1' }, null, binding, tokenAccount)).toEqual([
+      { id: 'acc-token', vendor: 'claude' }, { id: 'acc-codex', vendor: 'codex' },
+    ]);
+    // A workspace bound to nothing still gets the named account.
+    expect(vaultAccountsForCreate({ workspaceId: 'ws-1' }, null, () => undefined, tokenAccount)).toEqual([{ id: 'acc-token', vendor: 'claude' }]);
+    for (const [options, bot] of [
+      [{ workspaceId: 'ws-1' }, { botId: 'b' }],
+      [{ workspaceId: 'ws-1', fanoutTaskOf: 'task' }, null],
+      [{ workspaceId: 'ws-1', remoteSpawnOf: 'pc' }, null],
+      [{ workspaceId: 'ws-1', ignoreAccountBinding: true }, null],
+      [{}, null],
+    ] as const) {
+      expect(vaultAccountsForCreate(options, bot, binding, tokenAccount)).toEqual([]);
+    }
+  });
+
+  it('is resolved in the create, feeds both the folder env and the vault, and an exec unit gets no vault', () => {
+    const src = readSourceText(path.join(__dirname, '..', '..', 'ipc', 'handlers', 'pty.handler.ts'));
+    const resolved = src.indexOf('const accountOverride = closingLeases(() => createAccountOverride(options));');
+    expect(resolved).toBeGreaterThan(src.indexOf('options = staged.options;'));
+    expect(src).toContain('execCommand !== undefined || supervisionPolicy !== undefined, accountOverride));');
+    expect(src).toContain('[VENDOR_ENV_KEYS[accountOverride.vendor]]: accountOverride.configDir');
+    expect(src).toMatch(/if \(execUnit \|\| !options\?\.workspaceId\) return secretEnv;/);
   });
 });
 

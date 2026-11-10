@@ -48,6 +48,8 @@ export type ContinueOnAccountCode =
 
 export type ContinueOnAccountResult =
   | { ok: true; sessionId: string; transcriptPath: string }
+  /** Copy-only: what the new pane resumes, in which folder and mode. */
+  | { ok: true; sessionId: string; transcriptPath: string; cwd: string; permissionMode?: ResumeBinding['permissionMode'] }
   | { ok: false; code: ContinueOnAccountCode };
 
 // eslint-disable-next-line no-control-regex -- a control character ends a typed line early
@@ -182,31 +184,50 @@ export interface ContinueOnAccountDeps {
   atFolderTrust?: (id: string) => Promise<boolean>;
 }
 
-export async function continueOnAccount(deps: ContinueOnAccountDeps, id: string, configDir: string): Promise<ContinueOnAccountResult> {
+/**
+ * `copyOnly`: the target account signs in with a token, which reaches a
+ * process only at spawn and is never typed. So only the copy is made (step 3,
+ * after the same checks); the source pane is left as is, and main opens a new
+ * pane that resumes the conversation. Nothing is stopped, rebound or typed.
+ */
+export async function continueOnAccount(
+  deps: ContinueOnAccountDeps,
+  id: string,
+  configDir: string,
+  opts: { copyOnly?: boolean } = {},
+): Promise<ContinueOnAccountResult> {
   // One move per pane, shared with the chat ↔ terminal handoffs.
   if (!beginPaneMove(id)) return { ok: false, code: 'busy' };
   try {
     if (deps.chatOwnsPane?.(id)) return { ok: false, code: 'busy' };
-    return await run(deps, id, configDir);
+    return await run(deps, id, configDir, opts.copyOnly === true);
   } finally {
     endPaneMove(id);
   }
 }
 
-async function run(deps: ContinueOnAccountDeps, id: string, configDir: string): Promise<ContinueOnAccountResult> {
+async function run(deps: ContinueOnAccountDeps, id: string, configDir: string, copyOnly: boolean): Promise<ContinueOnAccountResult> {
   const pane = deps.pane(id);
   if (!pane) return { ok: false, code: 'no_session' };
   if (pane.exec || pane.wslTarget) return { ok: false, code: 'unsupported' };
-  const shell = deps.shellKind(id);
-  if (!shell) return { ok: false, code: 'unsupported' };
+  // A copy types nothing into this pane, so its shell does not matter.
+  const shell = copyOnly ? null : deps.shellKind(id);
+  if (!copyOnly && !shell) return { ok: false, code: 'unsupported' };
   const live = deps.liveAgent(id);
   if (live !== undefined && !agentRow(live)?.continueOnAccount) return { ok: false, code: 'not_claude' };
   const binding = pane.resumeBinding;
   const plan = planTranscriptCopy(binding, configDir);
   if (!plan.ok || !binding) return { ok: false, code: plan.ok ? 'unknown_session' : plan.code };
-  const line = relaunchLine(binding, configDir, shell);
-  // The id and folder passed their checks above, so an untypeable line is the account folder's.
-  if (!line) return { ok: false, code: 'invalid_account' };
+  let line = '';
+  if (copyOnly) {
+    // The new pane starts in this folder.
+    if (!binding.cwd || !path.isAbsolute(binding.cwd) || CONTROL.test(binding.cwd)) return { ok: false, code: 'unknown_session' };
+  } else {
+    const typed = shell ? relaunchLine(binding, configDir, shell) : null;
+    // The id and folder passed their checks above, so an untypeable line is the account folder's.
+    if (!typed) return { ok: false, code: 'invalid_account' };
+    line = typed;
+  }
   if (!fs.existsSync(plan.source)) return { ok: false, code: 'unknown_session' };
   try {
     if (!fs.statSync(configDir).isDirectory()) return { ok: false, code: 'invalid_account' };
@@ -217,6 +238,25 @@ async function run(deps: ContinueOnAccountDeps, id: string, configDir: string): 
   // A folder-trust prompt in the pane is the person's to answer: refused
   // before anything is stopped or copied.
   if (await deps.atFolderTrust?.(id)) return { ok: false, code: 'folder_trust' };
+
+  if (copyOnly) {
+    // Claude keeps running in the source pane; a closed turn means it is not
+    // writing the transcript now.
+    try {
+      const copied = await (deps.copy ?? copyTranscript)(plan.source, plan.target);
+      if (copied === 'diverged') return { ok: false, code: 'diverged' };
+      if (copied === 'same') return { ok: false, code: 'same_account' };
+    } catch {
+      return { ok: false, code: 'copy_failed' };
+    }
+    return {
+      ok: true,
+      sessionId: binding.sessionId,
+      transcriptPath: plan.target,
+      cwd: binding.cwd,
+      ...(binding.permissionMode ? { permissionMode: binding.permissionMode } : {}),
+    };
+  }
 
   // Stop first: Claude may still write to the transcript as it exits. The
   // turn is checked again right before the first signal.

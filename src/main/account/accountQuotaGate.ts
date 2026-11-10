@@ -25,6 +25,9 @@ export interface QuotaLaunchOptions {
   /** Agent-setup panes: they sign in to the default account the first-run
    *  card detects, so no rotation (see pty.handler PtyCreateOptions). */
   ignoreAccountBinding?: boolean;
+  /** The account this pane runs on (pty.handler PtyCreateOptions): a choice
+   *  already made, so no rotation; set by a switch, so the vault follows. */
+  accountId?: string;
 }
 
 export interface AccountQuotaGateDeps {
@@ -40,8 +43,10 @@ export interface AccountQuotaGateDeps {
  * when the workspace's bound one is out, by setting the account's config dir
  * in this pane's env (applied after the binding). When no account has quota
  * the launch is replaced with a notice. A launch that already names its
- * account (the vendor's config-dir key in the pane/profile env, or an inline
- * `KEY=… claude` prefix) is the user's choice and is left alone. A fan-out
+ * account (the vendor's config-dir key in the pane/profile env, an inline
+ * `KEY=… claude` prefix, or an account the create names) is the user's choice
+ * and is left alone. A switch names its account on the create, so the pane
+ * gets that account's vault (a token sign-in) instead of the bound one's. A fan-out
  * worker line's model-env marker is wmux's own prefix, not a user command:
  * the checks run on the launch after it, and a hold keeps it. Its prompt-file
  * argument is wmux's own read of the task prompt, not a command chain, so it
@@ -58,11 +63,12 @@ export async function withAccountQuota<T extends QuotaLaunchOptions>(
   if (stem !== 'claude' && stem !== 'codex') return options;
   if (!isNewSessionLaunch(stem, command)) return options;
   const key = VENDOR_ENV_KEYS[stem];
-  if (launchInlineEnvKeys(command).includes(key) || envSetsKey(options.env, key, deps.platform ?? process.platform)) return options;
+  if (options.accountId !== undefined || launchInlineEnvKeys(command).includes(key)
+    || envSetsKey(options.env, key, deps.platform ?? process.platform)) return options;
   try {
     const prepare = deps.prepareLaunch ?? ((v: Vendor, ws: string | undefined) => getAccountRotationService().prepareLaunch(v, ws));
     const decision = await prepare(stem, options.workspaceId);
-    if (decision.kind === 'switch') return { ...options, env: { ...options.env, ...decision.env } };
+    if (decision.kind === 'switch') return { ...options, env: { ...options.env, ...decision.env }, accountId: decision.accountId };
     if (decision.kind === 'hold') {
       // Holding replaces the launch; never drop commands chained after it.
       if (isCompoundLine(stripPromptFileArgument(command))) {
