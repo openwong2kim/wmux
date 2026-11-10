@@ -1,5 +1,428 @@
 ## [Unreleased]
 
+## [4.15.0-beta.2] — 2026-11-10
+
+### Added
+
+- `browser_dialog` works on in-app browser tabs with no Playwright page.
+
+- **`wmux doctor` has an MCP section.** It shows which launcher (native,
+  Node shim or full bundle) and which tool profile each agent has registered,
+  even with the app closed. With the app running it adds the shared broker's
+  state, its open connections and how often it crashed, and how many agents
+  used the full bundle in the last 10 minutes. Paths under your home folder
+  print as `~/…`. (#3164)
+
+- **Browser snapshots on the RPC lane read in-process frames.** After the
+  page's own listing, `browser_snapshot` lists the contents of each frame
+  that runs in the page's process (up to 20 per snapshot), each under a line
+  naming the frame and its origin. The page's own listing always comes first
+  and is never shortened; frames share 40% of the snapshot budget and say
+  where they were cut. Refs inside a frame work with `browser_click`,
+  `browser_type` and `browser_fill`, which check that the click lands on the
+  element before pressing; other tools say the ref is inside a frame. A frame
+  in another process is still listed as a boundary line. (#3172)
+
+- **A protected browser profile runs on the debugging pipe.** With `WMUX_CHROME_TRANSPORT=pipe`, a protected browser profile now runs on the debugging pipe instead of being refused. On the pipe, only wmux sets the browser's download behaviour, a client's new browser context is denied downloads before the client can use it, and context proxy options are refused. Device selection prompts are refused on a protected profile. (#3181)
+
+- `wmux doctor` has a hooks section that says which runner your hooks use and, when they use the native runner, tests it. `wmux setup-hooks --status` shows which runner they use, and `wmux setup-hooks --reprobe` checks the runner again. (#3186)
+
+- **On the debugging pipe, a client that stops answering no longer holds other clients' new tabs.** With `WMUX_CHROME_TRANSPORT=pipe`, after 2 s with no sign of life, wmux lets that client's waiting targets go. (#3189)
+
+- **Computer use on macOS can search and read an app's interface in more
+  depth.** The `computer` tool's new `desktop` action runs read-only commands
+  (`snapshot`, `find`, `get`, `is`, `list-surfaces`, `wait`) through
+  agent-desktop, which now ships inside the computer-use helper. They follow
+  the same rules as `getAppState`: computer use must be on, blocked apps stay
+  blocked, and Ask before each app still asks. (#3190)
+
+- **Computer use on macOS can press, toggle and scroll an element by its
+  ref, in the background.** The `computer` tool's `desktop` action now takes
+  `click`, `focus`, `select`, `toggle`, `check`, `uncheck`, `expand`,
+  `collapse` and `scroll` on a ref from a window snapshot or `find`. They act
+  through accessibility without moving the pointer or bringing the app
+  forward, count as input actions (the stop key, the rate limit and the
+  per-app lock apply), and report whether the input may have been delivered.
+  A ref whose element changed since the snapshot is refused, and password
+  fields are never acted on. (#3200)
+
+- `wmux doctor` says when wmux's Edge profile is signed in to a Microsoft account, so agents using it carry that sign-in. If you didn't sign it in yourself, sign it out in edge://settings/profiles.
+
+- **Opt-in: browser tools on a shared Chrome profile see only their own workspace's pages.** With `WMUX_CHROME_TRANSPORT=pipe` and `WMUX_CDP_TARGET_GRANT=1`, each agent's browser connection sees and drives only the pages wmux opened for its workspace, the pages it opened itself, and their popups. Downloads through the browser tools don't work in this mode yet. (#3229)
+
+- **Opt-in target grants: downloads through the browser tools work.** With `WMUX_CDP_TARGET_GRANT=1`, each agent's downloads on a shared Chrome profile reach only that agent, in the folder it asked for. A download in a tab you opened yourself in that Chrome lands in your Downloads folder, as it would without wmux, and never replaces a file already there. (#3230)
+
+- **`wmux uninstall-integrations` takes wmux out of other agents' configs.** It removes wmux's MCP entries, hooks, statusline and plugins from every agent's config and reports what happened to each item, with `--json`. Run it before deleting the app on macOS or Linux, which have no uninstaller. Entries that aren't wmux's stay. A portable copy leaves the installed app's entries alone unless you pass `--force`, and an isolated instance touches nothing. (#3244)
+
+- **A stuck daemon now leaves evidence of what it was doing.** When the daemon's main thread stops turning for about 10 seconds, it writes a small file to the logs folder (`daemon-hang-<pid>-<time>.txt`): the function names and file:line of a thread stuck in JavaScript, or a note that it is inside a native call or a blocking system call, which can't be named. No arguments, values or terminal text go in it. Before, a daemon the app had to force-restart left nothing to say why. The app's log points to the file when it restarts a daemon, and `wmux doctor` lists the newest. `WMUX_HANG_EVIDENCE=0` turns it off. (#3248)
+
+### Changed
+
+- **A terminal `file://` link may name this computer by its short or full
+  host name.** `devbox` and `devbox.local` now count as the same machine,
+  whichever of the two the link and the computer use. A link from another
+  machine that has the same host name as this one is also treated as local,
+  so its path opens on this computer. (#3119)
+
+- **The background service no longer re-reads a quiet pane's whole history over and over.** Approval prompts, the chat view, automations, stall checks and the Fleet preview read a pane's screen often, many times a second while an approval answer lands. Each of those reads rebuilt the screen from the pane's entire output history, even when nothing had printed since the last read. Now the screen read last is reused until new output arrives or the pane is resized, so an agent waiting at a prompt costs far less CPU. (#3125)
+
+- **On macOS and Linux, a pane notices its agent has exited within about 3
+  seconds instead of up to 15.** Fleet and "needs you" clear sooner. The
+  check spawns nothing on these systems, so it now runs as often as the
+  Windows native check. (#3126)
+
+- **Panes come back faster when wmux reconnects to running terminals.** After a restart or reconnect, each pane's screen is rebuilt from its saved output. wmux asked for ten times more history than the terminal keeps, which pushed the rebuild off the fast native path and cost about half a second per pane. It now asks for exactly your scrollback setting, so the fast path serves the rebuild and no history you could scroll to is lost. (#3127)
+
+- **`wmux doctor --performance` shows how often the native terminal engine rebuilds a screen and why it sometimes doesn't.** The memory section now has one line each for screen and text snapshots: how many were answered by the Rust engine, how many it didn't serve (most fall back to the slower JavaScript parser), and the reasons (for example a control sequence the engines read differently, or history past the engine's limit). This tells us which gap to close next. (#3128)
+
+- **On macOS and Linux, an idle wmux no longer starts `ps` and `lsof` every
+  10 seconds to find which panes listen on ports.** With the native terminal
+  core the daemon reads the process tree and listening sockets itself; on a
+  Mac that removed every process spawn of an idle daemon and about 40% of
+  its CPU, children included. Without the native core, `ps` and `lsof` now
+  run by full path. (#3130)
+
+- **GitHub Copilot CLI hooks can run a small native program instead of
+  Node.** Each hook event used to start a Node process (about 50 ms and
+  35 MB); `wmux-native` takes about 10 ms and 1.5 MB, so Copilot's hooks
+  return sooner. `wmux setup-hooks --agent copilot` writes the native command
+  when the app ships the binary and it runs on this machine, says which form
+  it wrote, and otherwise keeps the Node bridge. Older wmux versions still
+  recognise the file. On Windows the binary ships only once it is signed.
+  Kiro hooks are still set up by hand, and wmux installs no hooks for Gemini
+  or Qwen. (#3132)
+
+- **`wmux doctor --performance` shows what reading a pane's screen costs.** New lines report how often the background service re-parsed a pane's history to read its screen, by kind and depth, how long that took, how long reads waited in line, and how busy its main thread has been. These numbers decide how the next round of Rust work is built. (#3137)
+
+- `browser.session.status` shows the Chrome debugging port only to callers that `browser.cdp.info` would show it to.
+
+- **On the built-in browser, `browser_file_upload` takes a CSS `selector` and
+  reaches the top document only.** An invalid selector, or a `ref` from inside
+  an iframe, is refused with nothing uploaded. The Chrome backend is
+  unchanged. (#3146)
+
+- **A browser snapshot without a Playwright page lists the page's frames.**
+  Each frame (iframe, frame, object, embed, fencedframe, including those in
+  open shadow roots) becomes one line with its tag, name and the origin it
+  points at, marked as a separate document whose contents are not in the
+  snapshot. Before, the listing gave no sign that a frame was there. At most
+  50 frames are listed, and a final line counts the rest. (#3154)
+
+- **With the shared MCP broker turned on, agents start a native launcher.**
+  When `WMUX_MCP_BROKER=1`, wmux copies its native launcher next to the stable
+  MCP bundle and registers it for each agent, after checking that it runs on
+  this machine. If the check fails, the agents get the Node launcher instead.
+  `wmux mcp register` makes the same choice, so it no longer switches a working
+  native entry back to Node. (#3160)
+
+- **A failed update of the native MCP launcher keeps the working one** instead
+  of switching agents to Node for that start. (#3168)
+
+- **Agents start without a 3-second wait when the shared MCP broker is not
+  there.** With the broker enabled, an agent's native MCP launcher used to
+  dial it ten times, 300 ms apart, before falling back to its own server,
+  so every agent started while wmux was closed waited about three seconds.
+  It now falls back on the first try when there is nothing to dial. (#3174)
+
+- **A failed update of the native hook bridge keeps the working one.** `wmux setup-hooks --agent <name>` now checks a new copy before it replaces the old one, and keeps the copy that works instead of switching that agent's hooks to Node. `--reprobe` re-checks the copy in place, for example after making the home folder executable again. (#3175)
+
+- **A shared MCP broker that keeps crashing is switched off until wmux
+  restarts.** With the broker enabled, wmux used to restart it after every
+  crash, forever. After five failures in a minute, or eight in half an hour,
+  it now stops, and agents on the native launcher start their own MCP server
+  straight away. `wmux doctor` says so and names the tools that were running
+  at the last crash. The broker also exits when the wmux app does instead of
+  outliving it. An installed wmux now registers only the native launcher or
+  the full MCP server, so every agent can do this; when the native launcher
+  cannot run on a machine, agents get the full server. (#3176)
+
+- **On the debugging pipe, external clients get a narrower command set on every profile.** `Browser.close` and the browser crash commands are refused, and so are non-flat target sessions, `Target.sendMessageToTarget`, `Target.exposeDevToolsProtocol`, `Target.openDevTools`, `Target.setRemoteLocations`, `Tethering`, the `Extensions` domain, and `PWA` commands other than `getOsAppState`. (#3181)
+
+- On macOS and Linux, Claude Code hooks can run on a native runner, so a hook no longer pays Node's startup on every event. New installs use it, and Settings' Update or `wmux setup-hooks` moves existing entries. The runner is used only after it passes a self-test; otherwise hooks stay on Node. Windows keeps Node. To go back, run `wmux setup-hooks --runtime node`. (#3186)
+
+- **On the debugging pipe, browser tools connect through a token relay.** With `WMUX_CHROME_TRANSPORT=pipe`, an agent's browser tools reach a dedicated Chrome through one wmux relay, using a one-time token from wmux's authenticated pipe. The relay listens on a private Unix socket, or on Windows a named pipe only you can open, and on loopback only when neither can be set up, which wmux logs. (#3198)
+
+- **Panes where a full-screen program scrolled part of the screen (`top`, for example) are now restored from the native snapshot,** instead of the slower fallback. (#3207)
+
+- **Panes that drew boxes or lines with the terminal's line-drawing characters (ncurses borders, for example) are now restored from the native snapshot,** instead of the slower fallback. (#3209)
+
+- **More panes restore from the native snapshot after the window was made narrower,** instead of the slower fallback, with the same rows and cursor position. (#3211)
+
+- **Panes whose app reset the scroll margins to the full screen when it exited are now restored from the native snapshot,** instead of the slower fallback for as long as that output stayed in the pane. (#3212)
+
+- **Browser calls on a page the agent already reached are about half a
+  second faster.** Each call used to wait a fixed half second while it found
+  the page again. It now reuses the page it found last time, and waits only
+  while a new page is actually loading. On a Chrome-backend tab a click went
+  from about 1.3 s to about 0.8 s.
+
+- **Stall checks on Claude Code panes no longer pay for a screen read that cannot work there.** After three misses in a row the check reads the pane's whole buffer straight away, and tries the shorter read again after a resize or a burst of new output. `wmux doctor` now shows, for each reader, how many quick reads missed and how many were skipped. (#3220)
+
+- **Windows computer use scrolls a covered text box without taking your mouse.** A vertical `scroll` over a multiline Edit or RichEdit control is now posted to that control, so your cursor and front window stay where they are, and the result says whether the text moved. Scrolling sideways, and scrolling browsers, Electron apps and other controls, uses real input as before. (#3222)
+
+- **On Windows, the pipe relay for browser tools listens on a named pipe only you can open.** With `WMUX_CHROME_TRANSPORT=pipe`, the relay that reaches a dedicated Chrome no longer listens on a loopback port that every account on the PC can reach. It uses loopback only when that pipe cannot be set up, which wmux logs. (#3226)
+
+### Fixed
+
+- **Workspace groups behave as expected while the sidebar is filtered, and
+  deleting one always asks first when it holds workspaces.** A search shows
+  every group open. Clicking a group's header during a search now switches
+  whether it is folded once the search clears; before, the click always saved
+  it as folded. Deleting a group whose workspaces are all settled, snoozed or
+  filtered out now asks before taking them out of the group, and the question
+  counts all of them. (#3120)
+
+- **A file path that wraps onto the next row in a narrow pane opens whole.**
+  Clicking any of its rows opens the full path; before, the first row opened
+  the cut-off part, which does not exist. (#3122)
+
+- **A file link that opens nothing says why.** A path that does not exist
+  shows "Not found — nothing opened" instead of revealing a parent folder, in
+  the terminal, the sidebar, worktree cleanup, Fleet and the preview. A
+  `file:` link to another computer, and a link a program printed that wmux's
+  viewer cannot show, each get their own message. (#3122)
+
+- **A file opened from a pane's second terminal tab opens beside that tab.**
+  When an editor, browser or preview tab takes the focus in a pane with
+  several terminal tabs, the terminal column keeps showing the tab that had
+  the focus; before, it switched to the first tab. Fleet, the browser's
+  hand-off to an agent, and the program a pane reports to agents now name
+  that same tab. (#3124)
+
+- **Updating wmux no longer resets your Codex settings for the wmux MCP
+  server.** When wmux re-registered itself in Codex's `config.toml` (after
+  an update or a moved install), it replaced the whole `[mcp_servers.wmux]`
+  table. That dropped the tools you had approved
+  (`[mcp_servers.wmux.tools.*]`), an `env` table, and settings such as
+  `startup_timeout_sec`. Now it updates only `command` and `args` and
+  leaves the rest as you wrote it. (#3131)
+
+- wmux now ignores debugging switches passed on the command line (`--remote-debugging-port`, `--remote-debugging-pipe`, `--remote-debugging-address`, `--remote-allow-origins`). Turning CDP off (`browser.cdp.enabled: false` or `WMUX_DISABLE_CDP=true`) now really means no debugging endpoint.
+
+- Browser tools keep working in the in-app browser while the debugging port is still coming up, instead of failing with "CDP remote debugging is unavailable". The error now appears only when CDP is turned off.
+
+- `browser_screenshot` with `ref` now fails when it can't capture the element, instead of returning the whole viewport and reporting success.
+
+- Two in-app browser tabs on the same page no longer risk sharing a target id.
+
+- A page with a `beforeunload` handler no longer traps the in-app browser. Link clicks, the URL field, Reload and agent navigations used to be cancelled with no explanation.
+
+- A page's `alert()` or `confirm()` no longer stalls an agent driving an in-app browser tab. While an agent drives the tab, the dialog is dismissed at once, or given the answer set with `browser_dialog`, and the next tool result reports it. Electron's own box stays on screen until someone clicks it, and on macOS the window takes no input until then, as with any page dialog; clicking it has no further effect on the page. With no agent driving, dialogs work as before.
+
+- A crash inside the Rust terminal core no longer takes down the session daemon and every pane with it. The call fails on its own, and wmux falls back to its other path for that work.
+
+- **File uploads in the in-app browser work every time.** `browser_file_upload`
+  on the built-in browser used to need the automation page that only sometimes
+  attached to a tab, so the same upload could work once and then report that no
+  browser page was available. wmux now sets the files on the input itself, so
+  an upload works without that page. A `ref` from either kind of snapshot still
+  finds the file input next to a styled upload button. The 50MB ceiling on
+  `ref` uploads is gone on this backend too, since the browser opens the file
+  by path. (#3146)
+
+- **Element screenshots in the in-app browser work every time.**
+  `browser_screenshot` with a `ref` on the built-in browser used to need the
+  automation page that only sometimes attached to a tab, so the same call could
+  crop the element once and then report that it could not capture the ref.
+  wmux now captures the element itself, cropped to its box, so it works
+  without that page. If the crop cannot be taken (the tab is hidden, or the
+  element does not fit on screen while the page has stopped drawing), the call
+  fails with the reason instead of returning the whole viewport. (#3148)
+
+- **An answered dialog no longer leaves a box that locks the window on macOS.**
+  When an agent's tab showed an alert or confirm, wmux answered it but the
+  box stayed on screen, and until someone clicked it the whole window took no
+  typing or clicks, terminals included. Now the box closes as soon as the
+  dialog is answered, by the agent, an attached automation page or the person.
+  A box wmux can't match to its dialog with certainty, such as wmux's own
+  questions, stays open for you as before. (#3153)
+
+- **Settings no longer changes your real Claude settings from an isolated or
+  development instance.** Installing or updating the hook bridge, updating an
+  account's hooks, allowing the worker tools and installing the status line
+  from Settings wrote `~/.claude/settings.json` (and account copies of it)
+  even in a wmux started with `WMUX_DATA_SUFFIX` or from a source checkout,
+  which changed what your installed wmux runs. Those buttons now say why they
+  did nothing there; `wmux setup-hooks` and `wmux setup-statusline` in a
+  terminal are still available when you mean it. (#3163)
+
+- **A tab returns to its own size after the phone view stops.** On some Chrome versions a dedicated-profile tab stayed at a phone's width after a phone stopped streaming it with the phone viewport on; it now goes back to its own size. (#3173)
+
+- **An approved download finishes when another connection attaches.** On a protected pane, a download the operator approved could be cancelled, or never reported finished, when another browser connection attached or left while it was pending; it now completes. (#3179)
+
+- **`browser_click` with a `smartRef` is no longer refused as "inside a
+  frame".** On a surface without a live Chrome page, a number from
+  `browser_smart_snapshot` that happened to equal a frame element's ref from
+  `browser_snapshot` was turned away. A `smartRef` is now always clicked in
+  the page itself. (#3180)
+
+- **`browser_click` with a `smartRef` presses the element from the smart
+  snapshot even after a later `browser_snapshot`.** On a surface without a
+  live Chrome page, a `browser_snapshot` taken after `browser_smart_snapshot`
+  could make a `smartRef` click press a different element; after a navigation
+  it now fails instead. A `smartRef` also takes priority over `ref` on every
+  surface, as documented, including next to an empty `ref`. (#3182)
+
+- Dialogs opened from a pane, such as New remote pane and its split variants, Link with a pane on another PC and Continue in another agent, now show above the other panes in a split layout instead of behind them, and still hide with their workspace. (#3193)
+
+- When a paired PC doesn't let this one start panes there, New remote pane, its split variants and the new-workspace + now say so plainly ("This PC can open what is already running on <PC>, but it cannot start new panes there.") instead of showing the other PC's technical message. (#3194)
+
+- **Computer use on Windows can press a covered button without taking the
+  front.** When the agent may not bring a window forward, a click on a
+  button, check box, link, menu item or radio button now goes through
+  accessibility's default action, which leaves the user's window in front.
+  Before, every such press was refused on a covered window.
+
+- **Computer use on Windows gives the front back.** An agent's click or
+  keystroke used to leave its app in front, so the user's next keys went
+  there. Now the window the user had in front gets it back after each
+  action. It does not when the agent asks to keep the app in front
+  (`keepFront`), when a menu or a new window is open, or when the user
+  started typing meanwhile. If the user is typing or moving the mouse when
+  an action that may take the front starts, it waits up to a second and then
+  answers that the user is busy, without sending anything.
+
+- **Computer use on Windows sends keys to a window behind others.** Under
+  the agent's foreground permission, a key press or shortcut now brings
+  the target window forward, sends the keys, and gives the front back, as
+  a click does. Before, keys after a click failed unless the window was
+  already in front. A fully covered Chrome, Edge, Electron or VS Code
+  window still cannot be pressed by element, and the error now says why.
+
+- **A paired PC's agents no longer vanish from Fleet on one missed poll.** They stay with their last status until wmux says it lost the connection, then leave Fleet, the sidebar, the status bar and `fleet_triage` together, plain remote shells included, and come back together when the PC answers again. (#3201)
+
+- When the dedicated Chrome fails to start, the error now says why: it quotes what Chrome printed (for example "DevTools remote debugging requires a non-default data directory") and the last startup error, instead of only "CDP endpoint did not become ready in time". Home folders in the quoted text are shown as `~`.
+
+- Microsoft Edge started by wmux (the dedicated profile and protected profiles) no longer signs itself in to your Microsoft or work account and no longer syncs. This also fixes protected Edge profiles that failed to start about half the time on a PC signed in with such an account ("the protected browser could not be started under its site policy").
+
+- **A terminal restored from the native snapshot now matches the live screen in three more cases:** a scroll-down with a background colour set, deleting lines on the top row, and deleting more characters than remain on a line. (#3206)
+
+- **A `config.json` saved by Windows PowerShell is read as written.** Windows
+  PowerShell 5.1 starts the files it saves with a byte order mark. wmux used
+  to reject such a file and replace it with defaults, which turned browser
+  automation back on even when the file had turned it off. The mark is now
+  skipped and the file's own settings apply.
+
+- **wmux no longer overwrites a `config.json` it cannot read.** It used to
+  replace a file with a typo, or with a required field of the wrong type,
+  with the defaults, discarding everything in it. Now the file is left
+  exactly as it is, and one warning names it and the error, including the
+  field that has the wrong type. Until the file is fixed, wmux runs on
+  its defaults with browser automation (CDP) and phone decisions off, and it
+  does not empty the channel trash or end detached or suspended sessions.
+  Browser automation comes back on the first start after the fix. Saves
+  that would write over the broken file are refused with an error instead:
+  `wmux gate` exits 1 and lists the tools it gates meanwhile, and a LanLink
+  change is reported as not saved.
+
+- **A `config.json` that holds only the settings you changed works as written.**
+  A file with just `browser.cdp.enabled = false`, as SECURITY.md suggests, used
+  to be reset to the defaults, which turned browser automation back on. The
+  required fields it leaves out now come from the defaults, and its own
+  settings apply.
+
+- **A `config.json` that Windows locks for a moment is read anyway.** An
+  antivirus scan or the search indexer can hold the file briefly. wmux used
+  to treat that read as a failure; now it reads it up to three times,
+  about 100 ms apart, before it falls back as above. A file that is still
+  locked after that is read once per load, not three times, until it reads
+  again.
+
+- **A pane restored after its window grew taller, with the cursor above the bottom row, now matches what it showed before,** instead of pulling rows from scrollback onto the screen. When a full-screen app's width change would cut its rows in the native snapshot, the pane is restored by the fallback instead. (#3210)
+
+- **On Windows, a page dialog an agent answered no longer leaves its box
+  open.** While an agent drives an in-app tab, wmux answers that page's
+  `alert()` and `confirm()` for it, but on Windows the native box used to
+  stay up after the answer and keep the whole wmux window disabled,
+  terminals included, until someone closed it by hand. The box now closes
+  as soon as the dialog is answered, as it already did on macOS. A dialog
+  nobody answered still keeps its box, and wmux never closes a box it
+  can't tell apart from a person's own.
+
+- **A pane whose full-screen app reset its scroll margins, after the shell had set its own, is now restored with the shell's margins kept,** using the fallback where the native snapshot can't keep them. A window resize also no longer sends a pane with scroll margins to the slower fallback. (#3214)
+
+- **`browser_dialog` no longer promises to answer `prompt()` on in-app tabs.**
+  In-app tabs can't show a prompt: the page gets an error instead of a
+  dialog. The tool used to list prompt among the dialogs it answers and
+  report prompt text as set, which left agents waiting for an answer that
+  could never happen. It now says prompt is answered on Chrome-backend tabs
+  only, and on an in-app tab its reply says the armed answer doesn't apply
+  to prompt there.
+
+- **Browser calls on an in-app tab no longer stall for about 4 seconds
+  (Windows).** When an in-app tab existed before the agent's browser
+  connection was made, its first call and the first call after more than
+  10 seconds of quiet each re-ran a slow page search that could never
+  succeed there. The search now stops after one try for such a tab and
+  remembers the outcome, so the first call is about 3 seconds faster and
+  later calls take about as long as any other.
+
+- **A restored pane keeps its bottom rows after an app restart.** Its first resize, and its replay, now wait until the bundled terminal font has loaded, so a status line or input box below the cursor is no longer cut, and repeated restarts no longer stack up stray sizes in the pane's history. (#3219)
+
+- **wmux's Claude Code hooks now reach every folder Claude reads its settings from.** With `CLAUDE_CONFIG_DIR` set, Claude reads its settings from that folder, and each Claude account added in wmux has its own folder. `wmux setup-hooks` and the in-app install only ever wrote `~/.claude`, so for those users agent state silently stopped working. They now write the `CLAUDE_CONFIG_DIR` folder (or `~/.claude`) and every Claude account. `--remove` and `--status` cover them all, and a new account gets the hooks when they are installed. (#3221)
+
+- **A restored terminal no longer shows rows its screen had lost, or a size it never showed.** wmux records each pane's sizes so it can restore the pane later. It now keeps a size the pane really showed even when nothing was printed at it (a full-screen app made shorter and back loses rows), and drops a size taken before an attaching pane had shown its content. A full-screen app whose pane was narrowed and widened again is restored with the text that was beyond the narrow width. (#3223)
+
+- **Installing an update no longer kills the background service's own helper processes.** The installer stops a running wmux before it replaces the files. Among the processes the background service started (the one that keeps your terminal sessions), it now stops only real app windows, so the service's helpers keep running. (#3224)
+
+- **With the Rust terminal engine, a full-screen app that was narrowed and widened again is restored by the native snapshot.** The native terminal now keeps the text beyond a narrower width, as the pane's own terminal does, instead of handing those panes to the slower fallback. Inserting, deleting and erasing characters at a wide (CJK) character also match the pane's terminal. (#3231)
+
+- **Opt-in debugging-pipe Chrome (`WMUX_CHROME_TRANSPORT=pipe`): browser tools attach to a Chrome with every window closed.** wmux opens a blank tab for the attach and closes it once the agent is attached, as it already did for a Chrome on a port. (#3234)
+
+- **Opt-in debugging-pipe Chrome: many more agents per browser.** One Chrome now takes 64 agent connections instead of 8. When it is full, the agent is told why and what to do, instead of retrying. (#3234)
+
+- **A launch no longer stops a browser it did not start.** When the port recorded in a Chrome profile has been taken by another browser or server, wmux leaves that one running instead of closing it. (#3234)
+
+- **wmux no longer takes over a browser it did not start.** When a Chrome left behind by an earlier session is gone and another browser or program now uses its debugging port, wmux starts its own Chrome instead of attaching to that one. (#3235)
+
+- **Splitting or closing a pane no longer resizes its neighbour by a column for a moment.** The pane that stays now takes its new size once, after the layout settles and its renderer is back, so programs in it (less, vim, agents) see one resize, to the final size, and a pane restored after a restart keeps its screen. (#3238)
+
+- **A config file saved with a byte order mark no longer reads as malformed.**
+  PowerShell and Notepad can start a UTF-8 file with a byte order mark. wmux
+  then skipped that agent's config when registering its MCP server, the first
+  run wizard reported `~/.claude.json` as malformed, `wmux setup-hooks` and
+  `wmux setup-statusline` refused `settings.json` as corrupted. These paths now
+  read such a file and keep the mark when they write it back. (#3240)
+
+- **MCP registration no longer replaces a symlinked config with a plain file.**
+  A config linked into a dotfiles folder stays linked and the change lands in
+  the real file, which also keeps its permissions. The write is flushed to disk
+  before it takes effect and is retried when Windows briefly holds the file. If
+  the file changes while wmux is editing it, wmux leaves the other program's
+  change in place and reports the registration as failed. (#3240)
+
+- **wmux and Claude Code no longer overwrite each other's change to
+  `~/.claude.json`.** Registering the MCP server and turning a project's MCP
+  server on or off now wait for Claude Code's lock on that file. If Claude Code
+  still holds it after 3 seconds, wmux leaves the file alone and reports the
+  change as failed. Registration tries again the next time it runs. (#3240)
+
+- **Secret masking recognises more credential forms and leaves ordinary text alone.** Text masked on outbound paths now keeps names in code, file locations, paths, versions, times and named digests as written, masks header and quoted values whole, and understands values named in Chinese, Japanese or Korean, common command-line credential flags and webhook URLs. Masking long text stays fast whatever the text is. (#3243)
+
+- **Uninstalling wmux on Windows no longer leaves other agents broken.** The uninstaller left a dead MCP server and failing hooks in Claude Code, Codex and the others, pointing at files that no longer existed. It now removes what wmux wrote into their configs, and puts back a statusline wmux had replaced. (#3244)
+
+- **Removing wmux's MCP entry from Codex no longer deletes your comments.** Unregistering took every line up to the next table in `~/.codex/config.toml`, including a comment you had written for what came next. It could also delete a marker of wmux's Codex hooks block, which left those hooks in place with nothing able to remove them. Now only the entry's own lines go. (#3245)
+
+- **A file that is busy for a moment no longer costs you recent wmux state.** On Windows, antivirus or another process can hold a state file just as wmux reads it. wmux used to fall back to an older backup straight away. It now retries for up to half a second first. If the file is busy past that, wmux still uses the backup, but the next save keeps the file it couldn't read in `corrupted/`, so the newer state can be recovered. (#3246)
+
+- **A damaged state file can no longer replace its good backup.** Saving moved the current file over its backup without checking it. Now only a file that parses and passes validation becomes the backup. Any other file with content is copied to `corrupted/`, or renamed beside itself if that folder can't take it, and the backup stays as it is. (#3246)
+
+- **Falling back to a backup now shows in `wmux doctor`.** Failed reads, backup fallbacks and kept files are written to the main and daemon logs in the form the doctor counts. (#3246)
+
+- **A pane restores natively again after a full-screen program it was resized in has quit.** Resizing a pane while `less`, `vim` or another full-screen program showed a wrapped line made every later restore of that pane fall back to the slower reference path, even after the program had exited. That fallback now ends when the program leaves its full screen. (#3250)
+
+- **Session stream markers no longer carry the daemon's token.** The markers
+  that tell the app where a pane's replayed output ends now hold a value
+  derived from the token instead of the token itself. Restoring and
+  resyncing panes works as before, including against a daemon from an
+  earlier release that is still running. (#3251)
+
+- **A pane restores natively after a full-screen program that saved its cursor at a line end, or showed a wide character cut at the edge, has quit.** Those states of the program's screen kept every later restore of the pane on the slower reference path, even after the program had exited and its screen was gone. They now count only while that screen is shown. (#3252)
+
+### Security
+
+- **Browser tools check the pipe relay before using it.** With `WMUX_CHROME_TRANSPORT=pipe`, the MCP server now uses a relay connection only after the relay proves, with a one-time key wmux hands it, that it is wmux's own relay; otherwise it drops the connection and reports it. (#3227)
+
 ## [4.15.0-beta.1] — 2026-11-06
 
 ### Added
