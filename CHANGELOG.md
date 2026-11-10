@@ -1,5 +1,25 @@
 ## [Unreleased]
 
+## [4.15.0] — 2026-11-11
+
+### Added
+
+- **Sign a Claude account in with a long-lived token.** In Settings › Accounts,
+  a Claude account's ⋯ menu now has "Use a long-lived token": run
+  `claude setup-token` in a terminal, copy the token, and paste it from the
+  clipboard. New terminals for that account then sign in with the token, with
+  no browser login, which helps where the browser login cannot finish, such as
+  WSL. The row shows when the token expires, about a year after it was saved.
+  Usage and plan cannot be shown for an account that signs in with a token.
+
+### Fixed
+
+- **Copying or resizing a pane keeps the line breaks a program printed, after it restored natively.** When output moved down into a line that had wrapped, a restored pane still treated that line as wrapped, so copy and a later resize joined it to the line above. A line ending exactly at the edge followed by a line feed also put the next character one row too low. Both now match what the pane showed before the restore. (#3253)
+
+- **Widening a pane with lines below the cursor no longer makes its restore fall back to the slower path.** The native terminal core now moves the cursor and the saved cursor the way the pane does on a widen, and a wrapped line next to the cursor keeps the empty cells the widen gave it instead of filling them with spaces. (#3256)
+
+- **Uninstalling on Windows removes wmux completely again.** The uninstaller stopped partway through: it left the background service running, and left the app folder and the Start Menu shortcut behind. It now stops the service and removes the shortcuts first. It no longer waits on the slow step that tells open windows about the PATH change, which now runs on its own.
+
 ## [4.15.0-beta.2] — 2026-11-10
 
 ### Added
