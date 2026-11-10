@@ -285,6 +285,13 @@ export const IPC = {
   ACCOUNT_REMOVE: 'account:remove',
   ACCOUNT_SET_BINDING: 'account:set-binding',
   ACCOUNT_CREDENTIAL_STATUS: 'account:credential-status',
+  // Account vault (main/account/accountVault.ts): names and metadata only;
+  // values never cross to the renderer.
+  ACCOUNT_VAULT_LIST: 'account:vault:list',
+  ACCOUNT_VAULT_SAVE_CLIPBOARD: 'account:vault:save-clipboard',
+  ACCOUNT_VAULT_GENERATE: 'account:vault:generate',
+  ACCOUNT_VAULT_SET_INJECT: 'account:vault:set-inject',
+  ACCOUNT_VAULT_DELETE: 'account:vault:delete',
   // Continue a pane's Claude conversation on another account (invoke,
   // renderer → main → daemon `session.continueOnAccount`).
   ACCOUNT_CONTINUE_PANE: 'account:continue-pane',

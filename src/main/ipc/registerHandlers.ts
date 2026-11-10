@@ -317,7 +317,7 @@ export function registerAllHandlers(
 
   // Multi-account registry (M1) — renderer-only, mode-agnostic (main owns
   // accounts.json in both local and daemon mode; spawn env is resolved in main).
-  const cleanupAccounts = registerAccountHandlers();
+  const cleanupAccounts = registerAccountHandlers(getWindow);
   const cleanupAccountRotation = registerAccountRotationHandlers();
   const cleanupAgyAccounts = registerAgyAccountHandlers(getWindow);
   const cleanupQuickCommands = registerQuickCommandHandlers();

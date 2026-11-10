@@ -4,7 +4,8 @@
 // the ONLY place spawn env is resolved. The renderer edits names/bindings and
 // drives onboarding, but never sees or writes a token.
 
-import { ipcMain } from 'electron';
+import { clipboard, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { isMainWindowSender } from '../mainWindowSender';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -24,6 +25,7 @@ import { envClaudeConfigDir } from '../../../shared/claudeConfigTargets';
 import { claudeConfigDirEnv } from '../../hooks/claudeConfigDirProbe';
 import { installHooksIntoNewAccount } from './hooksBridge.handler';
 import { loadClaudeCredential, credentialFingerprint } from '../../claude/claudeCredential';
+import { appAccountVault, type AccountVaultSetResult } from '../../account/accountVault';
 
 function isVendor(v: unknown): v is Vendor {
   return v === 'claude' || v === 'codex';
@@ -130,7 +132,7 @@ export interface OnboardPrepareResult {
   loginCommand: string;
 }
 
-export function registerAccountHandlers(): () => void {
+export function registerAccountHandlers(getWindow: () => BrowserWindow | null = () => null): () => void {
   const channels = [
     IPC.ACCOUNT_LIST,
     IPC.ACCOUNT_ONBOARD_PREPARE,
@@ -140,6 +142,11 @@ export function registerAccountHandlers(): () => void {
     IPC.ACCOUNT_REMOVE,
     IPC.ACCOUNT_SET_BINDING,
     IPC.ACCOUNT_CREDENTIAL_STATUS,
+    IPC.ACCOUNT_VAULT_LIST,
+    IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD,
+    IPC.ACCOUNT_VAULT_GENERATE,
+    IPC.ACCOUNT_VAULT_SET_INJECT,
+    IPC.ACCOUNT_VAULT_DELETE,
   ];
   for (const c of channels) ipcMain.removeHandler(c);
 
@@ -221,7 +228,10 @@ export function registerAccountHandlers(): () => void {
   // Remove = unregister only (never deletes the dir). Returns affected workspaces.
   ipcMain.handle(IPC.ACCOUNT_REMOVE, wrapHandler(IPC.ACCOUNT_REMOVE,
     async (_e, args: { id: unknown }) => {
-      const affected = await getAccountStore().removeAccount(assertString(args?.id, 'id'));
+      const id = assertString(args?.id, 'id');
+      const affected = await getAccountStore().removeAccount(id);
+      // Its vault goes with it; a failed write is dropped at the next load.
+      try { appAccountVault().deleteAccount(id); } catch { /* best-effort */ }
       return { ok: true, affectedWorkspaceIds: affected };
     }));
 
@@ -248,6 +258,51 @@ export function registerAccountHandlers(): () => void {
       const dir = assertReadableAccountDir(assertString(args?.configDir, 'configDir'));
       return credentialStatus(args.vendor, dir);
     }));
+
+  // ── Account vault (accountVault.ts). No value crosses to the renderer:
+  // the clipboard is read here, and replies carry names and metadata only.
+  // Only the main window's top frame may touch the vault, as for bot secrets.
+  const knownAccount = (e: IpcMainInvokeEvent, v: unknown): string => {
+    if (!isMainWindowSender(e, getWindow())) throw new AccountError('invalid', 'not allowed from this window');
+    const id = assertSafeId(v, 'accountId');
+    if (!getAccountStore().getAccount(id)) throw new AccountError('not-found', 'no such account');
+    return id;
+  };
+  ipcMain.handle(IPC.ACCOUNT_VAULT_LIST, wrapHandler(IPC.ACCOUNT_VAULT_LIST,
+    async (e, args: { accountId: unknown }) => ({ ok: true, entries: appAccountVault().list(knownAccount(e, args?.accountId)) })));
+
+  // Clipboard → vault. The clipboard is cleared only if it still holds what
+  // was saved, so text copied since is not lost.
+  ipcMain.handle(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, wrapHandler(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD,
+    async (e, args: { accountId: unknown; name: unknown; expectPrefix?: unknown }): Promise<AccountVaultSetResult & { clipboardCleared?: boolean }> => {
+      const accountId = knownAccount(e, args?.accountId);
+      const value = (await clipboard.readText()).trim();
+      if (typeof args?.expectPrefix === 'string' && args.expectPrefix && !value.startsWith(args.expectPrefix)) {
+        return { ok: false, code: 'invalid_value', message: `The clipboard does not start with "${args.expectPrefix}", so nothing was saved.` };
+      }
+      const result = appAccountVault().set(accountId, args?.name, value);
+      if (!result.ok) return result;
+      let clipboardCleared = false;
+      if ((await clipboard.readText()).trim() === value) {
+        await clipboard.clear();
+        clipboardCleared = true;
+      }
+      return { ...result, clipboardCleared };
+    }));
+
+  ipcMain.handle(IPC.ACCOUNT_VAULT_GENERATE, wrapHandler(IPC.ACCOUNT_VAULT_GENERATE,
+    async (e, args: { accountId: unknown; name: unknown; length?: unknown }) =>
+      appAccountVault().generate(knownAccount(e, args?.accountId), args?.name, typeof args?.length === 'number' ? args.length : undefined)));
+
+  ipcMain.handle(IPC.ACCOUNT_VAULT_SET_INJECT, wrapHandler(IPC.ACCOUNT_VAULT_SET_INJECT,
+    async (e, args: { accountId: unknown; name: unknown; inject: unknown }) => {
+      if (typeof args?.inject !== 'boolean') throw new AccountError('invalid', 'inject must be a boolean');
+      return { ok: appAccountVault().setInject(knownAccount(e, args?.accountId), assertString(args?.name, 'name'), args.inject) };
+    }));
+
+  ipcMain.handle(IPC.ACCOUNT_VAULT_DELETE, wrapHandler(IPC.ACCOUNT_VAULT_DELETE,
+    async (e, args: { accountId: unknown; name: unknown }) =>
+      ({ ok: appAccountVault().delete(knownAccount(e, args?.accountId), assertString(args?.name, 'name')) })));
 
   return () => {
     for (const c of channels) ipcMain.removeHandler(c);

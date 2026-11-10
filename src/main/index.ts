@@ -134,6 +134,7 @@ import { setUsageClientVersion, type UsageSnapshot } from './claude/UsageApi';
 import { AccountUsageService } from './account/AccountUsageService';
 import { getAccountRotationService } from './account/AccountRotationService';
 import { getAccountStore } from './account/accountStore';
+import { appAccountVault } from './account/accountVault';
 import { IPC, getWmuxHomeDir, dataSuffix } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { sampleDaemonProcess } from '../shared/daemon/daemonProgress';
@@ -800,6 +801,9 @@ void app.whenReady().then(() => { try { warnOnInstallIntegrityGap(); } catch { /
 void app.whenReady().then(() => { void warmLoginShellPath(); });
 // Screen-reader users only: watch for a screen reader (screenReader.ts).
 void app.whenReady().then(() => { startScreenReaderMonitor(); });
+// The account vault loads at once, so its values are redacted from the first
+// bot-facing read on (a pane that survived the restart may still show one).
+void app.whenReady().then(() => { try { appAccountVault(); } catch { /* best-effort */ } });
 // #2971: the installed app writes its one Start Menu entry through Electron's
 // toast setup, so it exists from the first launch rather than the first toast.
 void app.whenReady().then(() => {

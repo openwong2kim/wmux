@@ -21,6 +21,8 @@ import { isShadowWorkspaceId } from '../../../shared/pcRail/shadowId';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore } from '../../account/accountStore';
+import { appAccountVault, mergeVaultSecretEnv, vaultEligibleCreate } from '../../account/accountVault';
+import { BOT_SECRET_LIMITS } from '../../../shared/botSecret';
 import { withAccountQuota } from '../../account/accountQuotaGate';
 import { botWorkerForCreate, botWorkerLaunchTask, botWorkerSessionRecord, noteGuardedLaunchTyped, clearedLaunchLine, forgetBotWorkerSession, guardedClaudeCwdRefusal, guardedCodexCwdRefusal, guardedCodexLaunch, guardedLaunchOf, isBotWorkerSession, noteBotWorkerSession, paneLaunchFolders, setWorkerMcpResolvers, taskConnectors, taskGatewayNames, withBotWorkerMergeGuard, type BotWorkerCreate, type WorkerGatewayLaunch } from '../../agents/botWorkerMergeGuard';
 import { isPlainCmdLaunchLine, namesClaude } from '../../../shared/botWorkerGuard';
@@ -88,7 +90,7 @@ import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import { wslDistroArgs, isWslDistroSpawnArgs, isValidWslDistroName } from '../../../shared/wslDistro';
 import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
-import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane } from '../../worktask/fanoutGuards';
+import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane, taskOfWorkspace } from '../../worktask/fanoutGuards';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 import {
   removeSessionPromptSchedulesForPty,
@@ -451,6 +453,34 @@ export function secretCreateCwdRefusal(granted: unknown, resolution: ResolvedPty
   return null;
 }
 
+/**
+ * `secretEnv` plus the vault values of the workspace's bound Claude and Codex
+ * accounts, for a create that may have them (vaultEligibleCreate). Logs the
+ * names of values left out over the daemon's limit, never a value.
+ */
+function withAccountVaultEnv(
+  sessionId: string,
+  options: PtyCreateOptions | undefined,
+  botWorker: unknown,
+  secretEnv: Record<string, string> | undefined,
+  execUnit: boolean,
+): Record<string, string> | undefined {
+  if (execUnit || !vaultEligibleCreate(options, botWorker) || !options?.workspaceId) return secretEnv;
+  // A task or remote-spawn workspace is known here, whatever the create says.
+  if (taskOfWorkspace(options.workspaceId)) return secretEnv;
+  const store = getAccountStore();
+  const accounts = (['claude', 'codex'] as const)
+    .map((vendor) => ({ id: store.getBinding(options.workspaceId as string, vendor), vendor }))
+    .filter((a): a is { id: string; vendor: 'claude' | 'codex' } => typeof a.id === 'string');
+  if (accounts.length === 0) return secretEnv;
+  const vaultEnv = appAccountVault().envFor(accounts);
+  const { env, dropped } = mergeVaultSecretEnv(secretEnv, vaultEnv);
+  if (dropped.length > 0) {
+    console.warn(`[account] pane ${sessionId}: vault value(s) ${dropped.join(', ')} left out, over the ${BOT_SECRET_LIMITS.NAMES_PER_FANOUT}-name spawn limit`);
+  }
+  return env ?? undefined;
+}
+
 function logCwdResolution(
   sessionId: string,
   incoming: string | undefined,
@@ -740,6 +770,12 @@ export function registerPTYHandlers(
       // The leases are this pane's: they end with its session.
       gateway?.open.bind(sessionId);
       logCwdResolution(sessionId, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
+      // The bound accounts' vault values (accountVault.ts): spawn-only like
+      // `secretEnv`, joined after the grant's folder check, which binds only a
+      // bot worker. Never for a bot, a fan-out task, another PC's pane or a
+      // wmux.json exec unit.
+      const createSecretEnv = closingLeases(() => withAccountVaultEnv(
+        sessionId, options, botWorker, secretEnv, execCommand !== undefined || supervisionPolicy !== undefined));
       // Recorded before the session exists, so a restart always knows it.
       closingLeases(() => {
         if (botWorker) {
@@ -888,7 +924,7 @@ export function registerPTYHandlers(
           rows: options?.rows || 24,
           env: resolvedEnv,
           wslAccountLoginEnvKey: options?.wslAccountLoginEnvKey,
-          ...(secretEnv ? { secretEnv } : {}),
+          ...(createSecretEnv ? { secretEnv: createSecretEnv } : {}),
           ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
           ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
         }, isWslShell(shell) ? { timeoutMs: WSL_RPC_TIMEOUT_MS } : undefined);
