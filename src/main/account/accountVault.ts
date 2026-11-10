@@ -9,12 +9,15 @@
 // and holds them in memory. Nothing here returns a value outside main: `list`
 // is names and metadata only.
 //
-// What a pane does not get: a pane started by a bot, a fan-out task or another
-// PC; a pane the daemon starts itself (phone, continue on an account,
+// What a pane does not get: a pane started by a bot, a fan-out task, another
+// PC or a wmux.json exec unit; a pane the daemon starts itself (phone, continue on an account,
 // scheduled runs), since the daemon cannot decrypt; a pane recovered after a
 // restart, since `secretEnv` is never replayed; a pane in non-daemon mode. The
 // values follow the account the pane was created under. Redaction
 // (secretRedaction.ts) covers the text bots see, not the pane's own screen.
+// An agent pane does get them although "Withhold credentials from agent
+// panes" is on: that setting strips what the pane would inherit, while a vault
+// entry is one the owner marked for injection.
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -74,6 +77,15 @@ export interface AccountVaultOptions {
 }
 
 const ACCOUNT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** Sign-in variables each vendor's CLI reads (envFor). */
+const VENDOR_AUTH_NAMES: ReadonlyMap<string, 'claude' | 'codex'> = new Map([
+  ['ANTHROPIC_API_KEY', 'claude'],
+  ['ANTHROPIC_AUTH_TOKEN', 'claude'],
+  ['CLAUDE_CODE_OAUTH_TOKEN', 'claude'],
+  ['OPENAI_API_KEY', 'codex'],
+  ['CODEX_API_KEY', 'codex'],
+]);
 
 function keyOf(accountId: string, name: string): string {
   return `${accountId}\u0000${name}`;
@@ -242,12 +254,16 @@ export class AccountVault {
   }
 
   /** The injected values of these accounts, by env name. The first account
-   *  listed wins a name both hold. */
-  envFor(accountIds: readonly string[]): Record<string, string> {
+   *  listed wins a name both hold. A vendor's own sign-in variables come only
+   *  from an account of that vendor, so a Codex account's vault cannot sign a
+   *  Claude pane in elsewhere (or move its billing). */
+  envFor(accounts: ReadonlyArray<{ id: string; vendor: 'claude' | 'codex' }>): Record<string, string> {
     const env: Record<string, string> = {};
-    for (const accountId of accountIds) {
+    for (const account of accounts) {
       for (const h of this.held.values()) {
-        if (h.record.accountId !== accountId || !h.record.inject || h.value === null) continue;
+        if (h.record.accountId !== account.id || !h.record.inject || h.value === null) continue;
+        const owner = VENDOR_AUTH_NAMES.get(h.record.name);
+        if (owner && owner !== account.vendor) continue;
         if (!(h.record.name in env)) env[h.record.name] = h.value;
       }
     }

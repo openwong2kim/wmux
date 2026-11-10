@@ -4,7 +4,8 @@
 // the ONLY place spawn env is resolved. The renderer edits names/bindings and
 // drives onboarding, but never sees or writes a token.
 
-import { clipboard, ipcMain } from 'electron';
+import { clipboard, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { isMainWindowSender } from '../mainWindowSender';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -131,7 +132,7 @@ export interface OnboardPrepareResult {
   loginCommand: string;
 }
 
-export function registerAccountHandlers(): () => void {
+export function registerAccountHandlers(getWindow: () => BrowserWindow | null = () => null): () => void {
   const channels = [
     IPC.ACCOUNT_LIST,
     IPC.ACCOUNT_ONBOARD_PREPARE,
@@ -260,19 +261,21 @@ export function registerAccountHandlers(): () => void {
 
   // ── Account vault (accountVault.ts). No value crosses to the renderer:
   // the clipboard is read here, and replies carry names and metadata only.
-  const knownAccount = (v: unknown): string => {
+  // Only the main window's top frame may touch the vault, as for bot secrets.
+  const knownAccount = (e: IpcMainInvokeEvent, v: unknown): string => {
+    if (!isMainWindowSender(e, getWindow())) throw new AccountError('invalid', 'not allowed from this window');
     const id = assertSafeId(v, 'accountId');
     if (!getAccountStore().getAccount(id)) throw new AccountError('not-found', 'no such account');
     return id;
   };
   ipcMain.handle(IPC.ACCOUNT_VAULT_LIST, wrapHandler(IPC.ACCOUNT_VAULT_LIST,
-    async (_e, args: { accountId: unknown }) => ({ ok: true, entries: appAccountVault().list(knownAccount(args?.accountId)) })));
+    async (e, args: { accountId: unknown }) => ({ ok: true, entries: appAccountVault().list(knownAccount(e, args?.accountId)) })));
 
   // Clipboard → vault. The clipboard is cleared only if it still holds what
   // was saved, so text copied since is not lost.
   ipcMain.handle(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, wrapHandler(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD,
-    async (_e, args: { accountId: unknown; name: unknown; expectPrefix?: unknown }): Promise<AccountVaultSetResult & { clipboardCleared?: boolean }> => {
-      const accountId = knownAccount(args?.accountId);
+    async (e, args: { accountId: unknown; name: unknown; expectPrefix?: unknown }): Promise<AccountVaultSetResult & { clipboardCleared?: boolean }> => {
+      const accountId = knownAccount(e, args?.accountId);
       const value = (await clipboard.readText()).trim();
       if (typeof args?.expectPrefix === 'string' && args.expectPrefix && !value.startsWith(args.expectPrefix)) {
         return { ok: false, code: 'invalid_value', message: `The clipboard does not start with "${args.expectPrefix}", so nothing was saved.` };
@@ -288,18 +291,18 @@ export function registerAccountHandlers(): () => void {
     }));
 
   ipcMain.handle(IPC.ACCOUNT_VAULT_GENERATE, wrapHandler(IPC.ACCOUNT_VAULT_GENERATE,
-    async (_e, args: { accountId: unknown; name: unknown; length?: unknown }) =>
-      appAccountVault().generate(knownAccount(args?.accountId), args?.name, typeof args?.length === 'number' ? args.length : undefined)));
+    async (e, args: { accountId: unknown; name: unknown; length?: unknown }) =>
+      appAccountVault().generate(knownAccount(e, args?.accountId), args?.name, typeof args?.length === 'number' ? args.length : undefined)));
 
   ipcMain.handle(IPC.ACCOUNT_VAULT_SET_INJECT, wrapHandler(IPC.ACCOUNT_VAULT_SET_INJECT,
-    async (_e, args: { accountId: unknown; name: unknown; inject: unknown }) => {
+    async (e, args: { accountId: unknown; name: unknown; inject: unknown }) => {
       if (typeof args?.inject !== 'boolean') throw new AccountError('invalid', 'inject must be a boolean');
-      return { ok: appAccountVault().setInject(knownAccount(args?.accountId), assertString(args?.name, 'name'), args.inject) };
+      return { ok: appAccountVault().setInject(knownAccount(e, args?.accountId), assertString(args?.name, 'name'), args.inject) };
     }));
 
   ipcMain.handle(IPC.ACCOUNT_VAULT_DELETE, wrapHandler(IPC.ACCOUNT_VAULT_DELETE,
-    async (_e, args: { accountId: unknown; name: unknown }) =>
-      ({ ok: appAccountVault().delete(knownAccount(args?.accountId), assertString(args?.name, 'name')) })));
+    async (e, args: { accountId: unknown; name: unknown }) =>
+      ({ ok: appAccountVault().delete(knownAccount(e, args?.accountId), assertString(args?.name, 'name')) })));
 
   return () => {
     for (const c of channels) ipcMain.removeHandler(c);

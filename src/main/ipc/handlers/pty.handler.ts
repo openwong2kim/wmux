@@ -90,7 +90,7 @@ import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import { wslDistroArgs, isWslDistroSpawnArgs, isValidWslDistroName } from '../../../shared/wslDistro';
 import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
-import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane } from '../../worktask/fanoutGuards';
+import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane, taskOfWorkspace } from '../../worktask/fanoutGuards';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 import {
   removeSessionPromptSchedulesForPty,
@@ -463,14 +463,17 @@ function withAccountVaultEnv(
   options: PtyCreateOptions | undefined,
   botWorker: unknown,
   secretEnv: Record<string, string> | undefined,
+  execUnit: boolean,
 ): Record<string, string> | undefined {
-  if (!vaultEligibleCreate(options, botWorker) || !options?.workspaceId) return secretEnv;
+  if (execUnit || !vaultEligibleCreate(options, botWorker) || !options?.workspaceId) return secretEnv;
+  // A task or remote-spawn workspace is known here, whatever the create says.
+  if (taskOfWorkspace(options.workspaceId)) return secretEnv;
   const store = getAccountStore();
-  const ids = (['claude', 'codex'] as const)
-    .map((vendor) => store.getBinding(options.workspaceId as string, vendor))
-    .filter((id): id is string => typeof id === 'string');
-  if (ids.length === 0) return secretEnv;
-  const vaultEnv = appAccountVault().envFor(ids);
+  const accounts = (['claude', 'codex'] as const)
+    .map((vendor) => ({ id: store.getBinding(options.workspaceId as string, vendor), vendor }))
+    .filter((a): a is { id: string; vendor: 'claude' | 'codex' } => typeof a.id === 'string');
+  if (accounts.length === 0) return secretEnv;
+  const vaultEnv = appAccountVault().envFor(accounts);
   const { env, dropped } = mergeVaultSecretEnv(secretEnv, vaultEnv);
   if (dropped.length > 0) {
     console.warn(`[account] pane ${sessionId}: vault value(s) ${dropped.join(', ')} left out, over the ${BOT_SECRET_LIMITS.NAMES_PER_FANOUT}-name spawn limit`);
@@ -744,10 +747,6 @@ export function registerPTYHandlers(
         const refusal = secretCreateCwdRefusal(grantedCwd, cwdResolution);
         if (refusal) throw failCreate(refusal);
       }
-      // The bound accounts' vault values (accountVault.ts): spawn-only like
-      // `secretEnv`, joined after the grant's folder check, which binds only a
-      // bot worker. Never for a bot, a fan-out task or another PC's pane.
-      const createSecretEnv = closingLeases(() => withAccountVaultEnv(sessionId, options, botWorker, secretEnv));
       const safeCwd = cwdResolution.safeCwd;
       let effectiveCwd = safeCwd ?? (isWslShell(shell) ? '~' : homedir());
       // #1103 — the renderer's WSL distro choice, applied at the one place
@@ -771,6 +770,12 @@ export function registerPTYHandlers(
       // The leases are this pane's: they end with its session.
       gateway?.open.bind(sessionId);
       logCwdResolution(sessionId, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
+      // The bound accounts' vault values (accountVault.ts): spawn-only like
+      // `secretEnv`, joined after the grant's folder check, which binds only a
+      // bot worker. Never for a bot, a fan-out task, another PC's pane or a
+      // wmux.json exec unit.
+      const createSecretEnv = closingLeases(() => withAccountVaultEnv(
+        sessionId, options, botWorker, secretEnv, execCommand !== undefined || supervisionPolicy !== undefined));
       // Recorded before the session exists, so a restart always knows it.
       closingLeases(() => {
         if (botWorker) {

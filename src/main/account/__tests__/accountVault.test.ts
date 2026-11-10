@@ -67,7 +67,7 @@ describe('AccountVault', () => {
     a.set('gone', 'HF_TOKEN', 'hf_example_value_0123');
     const b = vault();
     b.load(new Set(['acc-1']));
-    expect(b.envFor(['acc-1', 'gone'])).toEqual({ GITHUB_TOKEN: TOKEN });
+    expect(b.envFor([{ id: 'acc-1', vendor: 'claude' }, { id: 'gone', vendor: 'codex' }])).toEqual({ GITHUB_TOKEN: TOKEN });
     expect(fs.readFileSync(file, 'utf8')).not.toContain('"gone"');
   });
 
@@ -77,9 +77,21 @@ describe('AccountVault', () => {
     v.set('claude-acc', 'GITHUB_TOKEN', TOKEN);
     v.set('codex-acc', 'GITHUB_TOKEN', 'ghp_other_value_987654321');
     v.set('codex-acc', 'HF_TOKEN', 'hf_example_value_0123', { inject: false });
-    expect(v.envFor(['claude-acc', 'codex-acc'])).toEqual({ GITHUB_TOKEN: TOKEN });
+    expect(v.envFor([{ id: 'claude-acc', vendor: 'claude' }, { id: 'codex-acc', vendor: 'codex' }])).toEqual({ GITHUB_TOKEN: TOKEN });
     expect(v.setInject('codex-acc', 'HF_TOKEN', true)).toBe(true);
-    expect(v.envFor(['codex-acc'])).toEqual({ GITHUB_TOKEN: 'ghp_other_value_987654321', HF_TOKEN: 'hf_example_value_0123' });
+    expect(v.envFor([{ id: 'codex-acc', vendor: 'codex' }])).toEqual({ GITHUB_TOKEN: 'ghp_other_value_987654321', HF_TOKEN: 'hf_example_value_0123' });
+  });
+
+  it('takes a vendor\'s sign-in variables only from an account of that vendor', () => {
+    const v = vault();
+    v.load();
+    v.set('codex-acc', 'ANTHROPIC_API_KEY', 'sk-ant-example-value-01');
+    v.set('codex-acc', 'OPENAI_API_KEY', 'sk-openai-example-value');
+    v.set('claude-acc', 'CLAUDE_CODE_OAUTH_TOKEN', 'oauth-example-value-01');
+    expect(v.envFor([{ id: 'claude-acc', vendor: 'claude' }, { id: 'codex-acc', vendor: 'codex' }])).toEqual({
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth-example-value-01',
+      OPENAI_API_KEY: 'sk-openai-example-value',
+    });
   });
 
   it('refuses names that are not credential env vars, short or multi-line values, and too many entries', () => {
@@ -120,7 +132,7 @@ describe('AccountVault', () => {
     expect(v.list('acc-1')).toEqual([]);
     expect(fs.readFileSync(file, 'utf8')).not.toContain('acc-1');
     expect(v.delete('acc-2', 'HF_TOKEN')).toBe(true);
-    expect(v.envFor(['acc-2'])).toEqual({});
+    expect(v.envFor([{ id: 'acc-2', vendor: 'claude' }])).toEqual({});
   });
 
   it('redacts vault values without dropping the bot store\'s', () => {
@@ -160,9 +172,11 @@ describe('the pty create wiring', () => {
 
   it('checks the grant folder on the bot grant alone, then adds the vault, and sends the merged env', () => {
     const refusal = src.indexOf('secretCreateCwdRefusal(grantedCwd, cwdResolution)');
-    const vaultJoin = src.indexOf('withAccountVaultEnv(sessionId, options, botWorker, secretEnv)');
+    const vaultJoin = src.indexOf('const createSecretEnv = closingLeases(() => withAccountVaultEnv(');
     expect(refusal).toBeGreaterThan(-1);
     expect(vaultJoin).toBeGreaterThan(refusal);
+    // Read after the session id exists (it is used in the join's log line).
+    expect(vaultJoin).toBeGreaterThan(src.indexOf('const sessionId = `daemon-'));
     // The folder check stays keyed on the grant's env: a person's pane with
     // vault values must not be refused for having no grant folder.
     expect(src.slice(refusal - 120, refusal)).toMatch(/if \(secretEnv\) \{/);
