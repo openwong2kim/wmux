@@ -246,8 +246,9 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
             }
         }
         // Blanks left of the cursor are usually printed: a prompt's
-        // trailing space, which reads back as part of the prompt.
-        if y == grid.cursor.point.line.0 && (!wrapped || empty.is_some()) {
+        // trailing space, which reads back as part of the prompt. Not past a
+        // widen's mark: a blank printed there would have moved it.
+        if y == grid.cursor.point.line.0 && !wrapped {
             end = end.max(grid.cursor.point.column.0);
         }
         let filler = empty.is_some() && end < columns;
@@ -273,10 +274,8 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
             // One more than fits lands on the next row's head and wraps it;
             // erase that one, then go back up to the filler.
             out.extend(std::iter::repeat_n('-', columns - end + 1));
-            out.push_str("\x1b[D\x1b[X\x1b[A\r");
-            if end > 0 {
-                let _ = write!(out, "\x1b[{end}C");
-            }
+            // `end` is at least the mark, never 0.
+            let _ = write!(out, "\x1b[D\x1b[X\x1b[A\r\x1b[{end}C");
         }
         // Trailing blanks: skip a default run, erase a colored one with ECH so
         // the cells stay empty but keep their background, as an erase left them.
@@ -872,6 +871,9 @@ mod tests {
         // The tail erased with the default background in one run, then down
         // to the next row's head before it prints.
         assert!(out[at..].contains("\x1b[3X\r\x1b[Bef"), "{out:?}");
+        // The cursor moved into the empty run prints nothing there.
+        let out = run("\x1b[1;9H");
+        assert!(out.contains("R\x1b[0m----\x1b[D\x1b[X\x1b[A\r\x1b[7C"), "{out:?}");
         // A blank printed there later, here with a colored background, is
         // content: the empty run starts after it, and only that is filler
         // (an empty run holds unwritten cells, so its background is default).
