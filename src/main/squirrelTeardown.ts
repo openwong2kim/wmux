@@ -230,12 +230,13 @@ export function terminateRunningAppInstances(): number[] {
  * so the caller waits on each one; null when the processes could not be
  * listed, which must not be read as "no daemon".
  */
-export function terminateStagedDaemons(stageRoot: string): number[] | null {
-  return terminateSameImage((rows) => selectStagedDaemonPids(rows, process.pid, stageRoot))?.found ?? null;
+export function terminateStagedDaemons(stageRoot: string, timeoutMs = 10_000): number[] | null {
+  return terminateSameImage((rows) => selectStagedDaemonPids(rows, process.pid, stageRoot), timeoutMs)?.found ?? null;
 }
 
-/** null: the processes could not be listed. */
-function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { found: number[]; killed: number[] } | null {
+/** null: the processes could not be listed. `timeoutMs` bounds the listing
+ *  and each kill (the uninstall hook passes what its budget leaves). */
+function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[], timeoutMs = 10_000): { found: number[]; killed: number[] } | null {
   if (process.platform !== 'win32') return { found: [], killed: [] };
   const exeName = path.basename(process.execPath);
   // The name lands inside a CIM filter string — refuse anything that could
@@ -243,7 +244,7 @@ function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { fou
   if (!/^[\w][\w .-]*\.exe$/i.test(exeName) || exeName.includes("'")) return null;
 
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-  const rows = listProcesses(systemRoot, ` -Filter "Name='${exeName}'"`, 'ProcessId,CommandLine');
+  const rows = listProcesses(systemRoot, ` -Filter "Name='${exeName}'"`, 'ProcessId,CommandLine', timeoutMs);
   if (!rows) return null;
 
   const targets = select(rows);
@@ -252,7 +253,7 @@ function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { fou
   for (const pid of targets) {
     try {
       execFileSync(taskkill, ['/PID', String(pid), '/T', '/F'], {
-        timeout: 10_000,
+        timeout: timeoutMs,
         windowsHide: true,
         stdio: 'ignore',
       });
@@ -265,7 +266,7 @@ function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { fou
 }
 
 /** null: the processes could not be listed. */
-function listProcesses(systemRoot: string, filter: string, fields: string): WmuxProcessRow[] | null {
+function listProcesses(systemRoot: string, filter: string, fields: string, timeoutMs = 10_000): WmuxProcessRow[] | null {
   const powershell = path.join(
     systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
   );
@@ -278,7 +279,7 @@ function listProcesses(systemRoot: string, filter: string, fields: string): Wmux
         `Get-CimInstance Win32_Process${filter} -ErrorAction Stop | Select-Object ${fields} | ConvertTo-Json -Compress`,
       ],
       // The full table with command lines can pass the 1 MB default.
-      { encoding: 'utf-8', timeout: 10_000, windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+      { encoding: 'utf-8', timeout: timeoutMs, windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
     );
   } catch {
     // -ErrorAction Stop: a failed query exits nonzero and lands here, while a

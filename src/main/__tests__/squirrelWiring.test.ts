@@ -178,6 +178,29 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     expect(markPos).toBeGreaterThan(readPos);
   });
 
+  it('the uninstall hook stops the staged daemon and starts --removeShortcut before the PATH edit, whose broadcast is detached', () => {
+    // Squirrel cancels the uninstall hook at 10 s, and the PATH edit's
+    // WM_SETTINGCHANGE broadcast alone took that long on a CI runner, so nothing
+    // after it ran: the daemon kept running and the app folder stayed.
+    const start = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
+    const branch = indexSrc.slice(start, indexSrc.indexOf("squirrelCmd === '--squirrel-obsolete'", start));
+    const pathEdit = branch.indexOf('uninstallCliShim(');
+    expect(pathEdit).toBeGreaterThan(branch.indexOf('terminateStagedDaemons('));
+    expect(pathEdit).toBeGreaterThan(branch.indexOf("'--removeShortcut'"));
+    expect(pathEdit).toBeGreaterThan(branch.indexOf('removeToastEntries('));
+    expect(branch).toContain('uninstallCliShim(process.execPath, { detachBroadcast: true, timeoutMs: Math.max(1_000, hookTimeLeft()) })');
+    // The staged daemon's listing and kills get a bound from the budget too.
+    expect(branch).toMatch(/terminateStagedDaemons\(stageRoot, Math\.max\(1_000, hookTimeLeft\(\)/);
+    // The daemon's exit wait is cut to what the budget leaves.
+    expect(branch).toMatch(/removeDaemonRuntimeStagesAfterExit\([^)]*waitMs/);
+    expect(branch).toContain('hookTimeLeft()');
+    // The hook ends itself once its steps are done: it never waits on a
+    // child's 'close' event, which left it running until Squirrel's cancel.
+    expect(branch).not.toMatch(/\.on\(\s*'close'/);
+    // process.exit() and app.exit() never return in this hook process.
+    expect(branch).toMatch(/process\.kill\(process\.pid, 'SIGKILL'\);\s*\}\s*else if \($/);
+  });
+
   it('the predicate classifies by exact membership, never a startsWith prefix', () => {
     // The most realistic regression is moving the logic into squirrel.ts and
     // using `startsWith('--squirrel-')` there — which would re-swallow firstrun.

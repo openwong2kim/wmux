@@ -48,9 +48,10 @@ import { removeStatusline, type TargetOutcome } from './setupStatusline';
  *   - Scripts under `~/.wmux/hooks`: wmux's own folder, not an agent's config.
  */
 
-/** Squirrel cancels the uninstall hook at about 16 s, and the steps after this
- *  one must still run. The longest wait inside is the 3 s Claude config lock. */
-export const SQUIRREL_INTEGRATIONS_BUDGET_MS = 4_000;
+/** Squirrel cancels the uninstall hook 10 s after starting it, and the steps
+ *  after this one must still run (UNINSTALL_HOOK_BUDGET_MS). The longest wait
+ *  inside is the Claude config lock. */
+export const SQUIRREL_INTEGRATIONS_BUDGET_MS = 2_500;
 
 export type IntegrationOutcome =
   /** wmux's entry was there and is gone (or the entry it replaced is back). */
