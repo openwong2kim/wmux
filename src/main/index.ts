@@ -357,7 +357,7 @@ if (process.platform === 'win32') {
     // eslint-disable-next-line @typescript-eslint/no-var-requires -- Preserve installer-only module loading.
     const path = require('path');
     // eslint-disable-next-line @typescript-eslint/no-var-requires -- Preserve installer-only module loading.
-    const { spawn } = require('child_process');
+    const { spawn, execFileSync } = require('child_process');
     const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
     const target = path.basename(process.execPath);
 
@@ -520,10 +520,17 @@ if (process.platform === 'win32') {
         }
       } catch { /* best-effort */ }
 
-      // Update.exe removes its shortcuts in parallel with the steps below; the
-      // hook exits when it is done and they are.
-      spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
-        .on('close', () => process.exit(0));
+      // Update.exe removes its own shortcuts. The hook waits for it here and
+      // then exits itself, instead of exiting from the spawned child's 'close'
+      // event: a runner trace showed the hook still alive 7 s after its last
+      // step, until Squirrel cancelled it, and the app folder stayed.
+      try {
+        execFileSync(updateExe, ['--removeShortcut', target], {
+          windowsHide: true,
+          stdio: 'ignore',
+          timeout: Math.max(1_000, hookTimeLeft()),
+        });
+      } catch { /* best-effort */ }
 
       // #2971: the Start Menu entry and the toast activator classes Electron's
       // toast setup wrote are not Update.exe's, so --removeShortcut leaves
@@ -538,7 +545,7 @@ if (process.platform === 'win32') {
         console.warn('[Squirrel] out of time before the PATH edit; <root>\\bin stays on the user PATH');
       }
       console.log(`[Squirrel] uninstall hook done at ${Math.round(process.uptime() * 1000)} ms`);
-      app.quit();
+      process.exit(0);
     } else if (squirrelCmd === '--squirrel-obsolete') {
       process.exit(0);
     }
