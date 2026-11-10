@@ -545,7 +545,12 @@ if (process.platform === 'win32') {
         console.warn('[Squirrel] out of time before the PATH edit; <root>\\bin stays on the user PATH');
       }
       console.log(`[Squirrel] uninstall hook done at ${Math.round(process.uptime() * 1000)} ms`);
-      process.exit(0);
+      // Ends the process at once. In this hook process neither process.exit()
+      // nor app.exit() returns or emits 'exit': runner probes of both stayed
+      // alive until Squirrel cancelled the hook at 10 s, while a self-kill
+      // ended it at 1.5 s and Squirrel finished cleanly. The steps above write
+      // synchronously, so nothing is left to flush.
+      process.kill(process.pid, 'SIGKILL');
     } else if (squirrelCmd === '--squirrel-obsolete') {
       process.exit(0);
     }

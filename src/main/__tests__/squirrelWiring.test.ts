@@ -192,10 +192,11 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     // The daemon's exit wait is cut to what the budget leaves.
     expect(branch).toMatch(/removeDaemonRuntimeStagesAfterExit\([^)]*waitMs/);
     expect(branch).toContain('hookTimeLeft()');
-    // The hook exits by itself once its steps are done: it never waits on a
+    // The hook ends itself once its steps are done: it never waits on a
     // child's 'close' event, which left it running until Squirrel's cancel.
     expect(branch).not.toMatch(/\.on\(\s*'close'/);
-    expect(branch).toMatch(/process\.exit\(0\);\s*\}\s*else if \($/);
+    // process.exit() and app.exit() never return in this hook process.
+    expect(branch).toMatch(/process\.kill\(process\.pid, 'SIGKILL'\);\s*\}\s*else if \($/);
   });
 
   it('the predicate classifies by exact membership, never a startsWith prefix', () => {
