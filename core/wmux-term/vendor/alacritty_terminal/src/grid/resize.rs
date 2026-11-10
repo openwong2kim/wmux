@@ -33,12 +33,17 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         let wrapped = row.last().is_some_and(|cell| cell.flags().contains(Flags::WRAPLINE));
         if let Some(cell) = row.last_mut() { cell.flags_mut().remove(Flags::WRAPLINE); }
         let old = row.len();
+        let empty = row.empty_from();
         if row.len() > columns {
             row.shrink(columns);
         } else { row.grow(columns); }
         if wrapped { row[Column(columns - 1)].flags_mut().insert(Flags::WRAPLINE); }
         // wmux: a soft-wrapped row grown here has empty cells xterm never
         // wrote (its paragraph is not reflowed); the serializer keeps them so.
+        // Setting the wrap flag is no write: keep what an earlier widen gave.
+        if let Some(from) = empty.filter(|&from| from < columns) {
+            row.set_empty_from(from);
+        }
         if wrapped && old < columns {
             row.set_empty_from(old);
         }

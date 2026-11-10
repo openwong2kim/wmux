@@ -755,6 +755,83 @@ mod tests {
         assert_eq!(row[Column(2)].c, 'b');
     }
 
+    /// Written at 7 columns ("abcdddR" soft-wrapped onto "ef", the cursor
+    /// on the continuation), then widened to 10: row 0's cells 7..10 are the
+    /// widen's empty ones.
+    fn widened(rows: usize) -> (Term<VoidListener>, Processor) {
+        let mut term = Term::new(Config::default(), &Size(7, rows), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, b"abcdddRef");
+        term.resize(Size(10, rows));
+        (term, parser)
+    }
+
+    /// Every row's empty run holds only cells nothing wrote since the widen
+    /// (blank, default colors, at most the wrap flag): a stale run would
+    /// turn printed blanks into empty cells.
+    fn sound(term: &Term<VoidListener>) -> Vec<(i32, usize)> {
+        let grid = term.grid();
+        let mut runs = Vec::new();
+        for y in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
+            let row = &grid[Line(y)];
+            let Some(from) = row.empty_from() else {
+                continue;
+            };
+            for x in from..grid.columns() {
+                let cell = &row[Column(x)];
+                assert!(
+                    cell.c == ' '
+                        && cell.bg == Color::Named(NamedColor::Background)
+                        && cell.fg == Color::Named(NamedColor::Foreground)
+                        && (cell.flags - Flags::WRAPLINE).is_empty(),
+                    "row {y} column {x} in a run from {from}: {cell:?}"
+                );
+            }
+            runs.push((y, from));
+        }
+        runs
+    }
+
+    #[test]
+    fn only_the_widen_marks_empty_cells_and_every_other_edit_keeps_it_sound() {
+        let after = |rows: usize, bytes: &str| {
+            let (mut term, mut parser) = widened(rows);
+            parser.advance(&mut term, bytes.as_bytes());
+            sound(&term)
+        };
+        assert_eq!(after(3, ""), [(0, 7)]);
+        // A blank or a glyph printed in the run ends it there.
+        assert_eq!(after(3, "\x1b[1;9H "), [(0, 9)]);
+        assert_eq!(after(3, "\x1b[1;9HZ"), [(0, 9)]);
+        assert_eq!(after(3, "\x1b[1;10H "), []);
+        // Insert, delete and erase characters edit the physical row: gone.
+        for edit in [
+            "\x1b[1;2H\x1b[@",
+            "\x1b[1;2H\x1b[P",
+            "\x1b[1;9H\x1b[X",
+            "\x1b[1;5H\x1b[K",
+        ] {
+            assert_eq!(after(3, edit), [], "{edit:?}");
+        }
+        // Rows that move keep their run: insert and delete lines, scrolls,
+        // and line feeds at the bottom into history.
+        assert_eq!(after(3, "\x1b[1;1H\x1b[L"), [(1, 7)]);
+        assert_eq!(after(3, "\x1b[2;1H\x1b[M"), [(0, 7)]);
+        assert_eq!(after(3, "\x1b[T"), [(1, 7)]);
+        assert_eq!(after(3, "\x1b[3;1H\n\n\n"), [(-3, 7)]);
+        // A line erase or a reset there is a new line.
+        assert_eq!(after(3, "\x1b[1;1H\x1b[2K"), []);
+        assert_eq!(after(3, "\x1bc"), []);
+        // A later widen keeps the first run; a narrowing keeps what fits.
+        let (mut term, _) = widened(3);
+        term.resize(Size(13, 3));
+        assert_eq!(sound(&term), [(0, 7)]);
+        term.resize(Size(8, 3));
+        assert_eq!(sound(&term), [(0, 7)]);
+        term.resize(Size(12, 3));
+        assert_eq!(sound(&term), [(0, 7)]);
+    }
+
     #[test]
     fn a_wrapped_row_with_an_empty_tail_wraps_on_filler_it_erases() {
         // Written at 7 columns, the cursor on the continuation, widened to 10:
@@ -779,11 +856,14 @@ mod tests {
         // The tail erased with the default background in one run, then down
         // to the next row's head before it prints.
         assert!(out[at..].contains("\x1b[3X\r\x1b[Bef"), "{out:?}");
-        // A blank printed there later with a colored background is erased
-        // with that background, the rest with the default one.
+        // A blank printed there later, here with a colored background, is
+        // content: the empty run starts after it, and only that is filler
+        // (an empty run holds unwritten cells, so its background is default).
         let out = run("\x1b[1;9H\x1b[44m \x1b[0m\x1b[2;3H");
         assert!(
-            out.contains("\x1b[1X\x1b[1C\x1b[0;44m\x1b[1X\x1b[1C\x1b[0m\x1b[1X\r\x1b[B"),
+            out.contains(
+                "R\x1b[0m \x1b[0;44m \x1b[0m--\x1b[D\x1b[X\x1b[A\r\x1b[9C\x1b[1X\r\x1b[Bef"
+            ),
             "{out:?}"
         );
         // Without a widen, blanks printed up to a wrap stay content.
