@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::grid::GridCell;
 use crate::index::Column;
-use crate::term::cell::ResetDiscriminant;
+use crate::term::cell::{Flags, ResetDiscriminant};
 
 /// A row in the grid.
 #[derive(Default, Clone, Debug)]
@@ -143,6 +143,10 @@ impl<T: Default> Row<T> {
 
         // Mark all cells as dirty if template cell changed.
         let len = self.inner.len();
+        // wmux: a row with empty cells marked has its wrap flag past `occ`.
+        if self.empty_from != 0 {
+            self.occ = len;
+        }
         if self.inner[len - 1].discriminant() != template.discriminant() {
             self.occ = len;
         }
@@ -184,21 +188,12 @@ impl<T> Row<T> {
         Row { inner: vec, occ, hidden: None, empty_from: 0 }
     }
 
-    /// wmux: how many cells are kept past the visible width.
-    #[inline]
-    /// wmux: where the empty cells a widen gave this soft-wrapped row begin.
+    /// wmux: where the empty cells a widen gave this soft-wrapped row begin,
+    /// past anything written since: every write through the row moves `occ`
+    /// past the cells it reaches, so a blank printed there later is content.
     pub fn empty_from(&self) -> Option<usize> {
-        (self.empty_from > 0).then_some(self.empty_from)
-    }
-
-    /// wmux: cells before `end` may be written: the empty run, if it reaches
-    /// them, now begins after them (or there is none). Cells it gives up
-    /// print as blanks, never the other way round.
-    #[inline]
-    fn touched(&mut self, end: usize) {
-        if self.empty_from != 0 && end > self.empty_from {
-            self.empty_from = if end < self.inner.len() { end } else { 0 };
-        }
+        let from = self.empty_from.max(self.occ);
+        (self.empty_from > 0 && from < self.inner.len()).then_some(from)
     }
 
     /// wmux: mark the cells from `column` on as the empty ones a widen added.
@@ -208,6 +203,35 @@ impl<T> Row<T> {
         }
     }
 
+    /// wmux: take the wrap flag off the last cell without counting it as a
+    /// write (`occ`), so a resize keeps an earlier widen's empty cells.
+    pub(crate) fn take_wrap(&mut self) -> bool
+    where
+        T: GridCell,
+    {
+        let Some(cell) = self.inner.last_mut() else { return false };
+        let wrapped = cell.flags().contains(Flags::WRAPLINE);
+        cell.flags_mut().remove(Flags::WRAPLINE);
+        wrapped
+    }
+
+    /// wmux: set the wrap flag on the last cell. On a row with empty cells
+    /// marked it does not count as a write: `reset` then resets the whole
+    /// row, that flag included.
+    pub(crate) fn put_wrap(&mut self)
+    where
+        T: GridCell,
+    {
+        if self.empty_from == 0 {
+            self.occ = self.inner.len();
+        }
+        if let Some(cell) = self.inner.last_mut() {
+            cell.flags_mut().insert(Flags::WRAPLINE);
+        }
+    }
+
+    /// wmux: how many cells are kept past the visible width.
+    #[inline]
     pub fn hidden_len(&self) -> usize {
         self.hidden.as_ref().map_or(0, |hidden| hidden.len())
     }
@@ -324,7 +348,6 @@ impl<T> IndexMut<Column> for Row<T> {
     #[inline]
     fn index_mut(&mut self, index: Column) -> &mut T {
         self.occ = max(self.occ, *index + 1);
-        self.touched(index.0 + 1);
         &mut self.inner[index.0]
     }
 }
@@ -342,7 +365,6 @@ impl<T> IndexMut<Range<Column>> for Row<T> {
     #[inline]
     fn index_mut(&mut self, index: Range<Column>) -> &mut [T] {
         self.occ = max(self.occ, *index.end);
-        self.touched(index.end.0);
         &mut self.inner[(index.start.0)..(index.end.0)]
     }
 }
@@ -360,7 +382,6 @@ impl<T> IndexMut<RangeTo<Column>> for Row<T> {
     #[inline]
     fn index_mut(&mut self, index: RangeTo<Column>) -> &mut [T] {
         self.occ = max(self.occ, *index.end);
-        self.touched(index.end.0);
         &mut self.inner[..(index.end.0)]
     }
 }
@@ -378,7 +399,6 @@ impl<T> IndexMut<RangeFrom<Column>> for Row<T> {
     #[inline]
     fn index_mut(&mut self, index: RangeFrom<Column>) -> &mut [T] {
         self.occ = self.len();
-        self.touched(self.inner.len());
         &mut self.inner[(index.start.0)..]
     }
 }
@@ -396,7 +416,6 @@ impl<T> IndexMut<RangeFull> for Row<T> {
     #[inline]
     fn index_mut(&mut self, _: RangeFull) -> &mut [T] {
         self.occ = self.len();
-        self.empty_from = 0;
         &mut self.inner[..]
     }
 }
@@ -414,7 +433,6 @@ impl<T> IndexMut<RangeToInclusive<Column>> for Row<T> {
     #[inline]
     fn index_mut(&mut self, index: RangeToInclusive<Column>) -> &mut [T] {
         self.occ = max(self.occ, *index.end + 1);
-        self.touched(index.end.0 + 1);
         &mut self.inner[..=(index.end.0)]
     }
 }

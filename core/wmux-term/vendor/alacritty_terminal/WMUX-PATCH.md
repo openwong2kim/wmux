@@ -43,11 +43,14 @@ Local changes:
   soft-wrapped row begin (`resize_cursor_row` sets it). xterm leaves the
   cursor's paragraph unreflowed, so those cells stay empty there, while the
   blanks a program printed up to a wrap are content; the ANSI serializer
-  keeps the first empty. A write through the row's mutable indexing moves
-  it past the cells written (or clears it at the end), so a blank printed
-  there later stays content; setting the wrap flag on a resize keeps it.
-  Cleared when the row is reset, reflowed or edited over its physical
-  cells, and when a narrowing cuts it off. Not serialized. Added 2026-11-10.
+  keeps the first empty. It adds nothing to the write path: `empty_from()`
+  reads it past `occ`, which every write through the row's mutable
+  indexing already raises past the cells it reaches, so a blank printed
+  there later stays content. `take_wrap`/`put_wrap` move the wrap flag on a
+  resize without raising `occ`, so a later widen keeps it; `reset` then
+  covers the whole marked row, that flag included. Cleared when the row is
+  reset or its cells move (append, split, physical edits), and when a
+  narrowing cuts it off. Not serialized. Added 2026-11-10.
 - `src/grid/tests.rs`: upstream's `shrink_reflow`, `shrink_reflow_twice`,
   `shrink_reflow_empty_cell_inside_line`, `grow_reflow` and
   `grow_reflow_multiline` leave the cursor at 0,0, inside the paragraph they

@@ -766,9 +766,11 @@ mod tests {
         (term, parser)
     }
 
-    /// Every row's empty run holds only cells nothing wrote since the widen
-    /// (blank, default colors, at most the wrap flag): a stale run would
-    /// turn printed blanks into empty cells.
+    /// Where the serializer would treat each marked row's cells as empty:
+    /// the blanks after the mark and after the row's last other content.
+    /// Those cells must be unwritten (default blanks, at most the wrap
+    /// flag); a stale mark would turn printed blanks into empty cells, which
+    /// the cases below rule out by where they print.
     fn sound(term: &Term<VoidListener>) -> Vec<(i32, usize)> {
         let grid = term.grid();
         let mut runs = Vec::new();
@@ -777,17 +779,20 @@ mod tests {
             let Some(from) = row.empty_from() else {
                 continue;
             };
-            for x in from..grid.columns() {
+            let mut start = grid.columns();
+            while start > from && super::blank(&row[Column(start - 1)]) {
+                start -= 1;
+            }
+            for x in start..grid.columns() {
                 let cell = &row[Column(x)];
                 assert!(
-                    cell.c == ' '
-                        && cell.bg == Color::Named(NamedColor::Background)
+                    cell.bg == Color::Named(NamedColor::Background)
                         && cell.fg == Color::Named(NamedColor::Foreground)
                         && (cell.flags - Flags::WRAPLINE).is_empty(),
-                    "row {y} column {x} in a run from {from}: {cell:?}"
+                    "row {y} column {x} in a run from {start}: {cell:?}"
                 );
             }
-            runs.push((y, from));
+            runs.push((y, start));
         }
         runs
     }
@@ -804,12 +809,14 @@ mod tests {
         assert_eq!(after(3, "\x1b[1;9H "), [(0, 9)]);
         assert_eq!(after(3, "\x1b[1;9HZ"), [(0, 9)]);
         assert_eq!(after(3, "\x1b[1;10H "), []);
-        // Insert, delete and erase characters edit the physical row: gone.
+        // Insert, delete and erase characters and line erases count as
+        // writes up to the row's edge: gone.
         for edit in [
             "\x1b[1;2H\x1b[@",
             "\x1b[1;2H\x1b[P",
             "\x1b[1;9H\x1b[X",
             "\x1b[1;5H\x1b[K",
+            "\x1b[1;1H\x1b[2K",
         ] {
             assert_eq!(after(3, edit), [], "{edit:?}");
         }
@@ -819,8 +826,7 @@ mod tests {
         assert_eq!(after(3, "\x1b[2;1H\x1b[M"), [(0, 7)]);
         assert_eq!(after(3, "\x1b[T"), [(1, 7)]);
         assert_eq!(after(3, "\x1b[3;1H\n\n\n"), [(-3, 7)]);
-        // A line erase or a reset there is a new line.
-        assert_eq!(after(3, "\x1b[1;1H\x1b[2K"), []);
+        // A reset is a new line.
         assert_eq!(after(3, "\x1bc"), []);
         // A later widen keeps the first run; a narrowing keeps what fits.
         let (mut term, _) = widened(3);
@@ -830,6 +836,16 @@ mod tests {
         assert_eq!(sound(&term), [(0, 7)]);
         term.resize(Size(12, 3));
         assert_eq!(sound(&term), [(0, 7)]);
+        // A later widen over an edit marks only the cells nothing wrote.
+        let widen = |bytes: &str| {
+            let (mut term, mut parser) = widened(3);
+            parser.advance(&mut term, bytes.as_bytes());
+            term.resize(Size(13, 3));
+            sound(&term)
+        };
+        assert_eq!(widen("\x1b[1;9HZ\x1b[2;3H"), [(0, 9)]);
+        assert_eq!(widen("\x1b[1;9H\x1b[X\x1b[2;3H"), [(0, 10)]);
+        assert_eq!(widen("\x1b[1;1H\x1b[L\x1b[3;3H"), [(1, 7)]);
     }
 
     #[test]
