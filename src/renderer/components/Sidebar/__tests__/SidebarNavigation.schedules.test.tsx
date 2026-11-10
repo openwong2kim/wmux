@@ -22,6 +22,7 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 const row = () => container.querySelector<HTMLButtonElement>('[data-sidebar-nav="schedules"]');
 
@@ -32,6 +33,10 @@ describe('Sidebar Schedules row', () => {
   });
 
   it('shows the next run muted when nothing needs you, and opens the main-area view', async () => {
+    // Pin the clock to midday: a run at 23:59 today is in the past once the
+    // real clock passes it.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 0, 15, 12, 0, 0, 0));
     const next = new Date();
     next.setHours(23, 59, 0, 0);
     useStore.setState({ schedulesAvailable: true, automations: [automation({ nextRunAt: next.getTime() })] });
