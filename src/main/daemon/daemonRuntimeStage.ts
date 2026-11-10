@@ -252,7 +252,7 @@ export function removeDaemonRuntimeStages(stageRoot: string): boolean {
 }
 
 /** How long uninstall waits for the daemons it stopped to exit. */
-const STOPPED_DAEMON_EXIT_WAIT_MS = 5_000;
+export const STOPPED_DAEMON_EXIT_WAIT_MS = 5_000;
 const EXIT_POLL_MS = 100;
 
 /**

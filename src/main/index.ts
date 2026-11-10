@@ -272,7 +272,7 @@ import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
 import { terminateRunningAppInstances, terminateStagedDaemons } from './squirrelTeardown';
-import { daemonStageRootIn, removeDaemonRuntimeStagesAfterExit } from './daemon/daemonRuntimeStage';
+import { STOPPED_DAEMON_EXIT_WAIT_MS, daemonStageRootIn, removeDaemonRuntimeStagesAfterExit } from './daemon/daemonRuntimeStage';
 // Static imports (NOT require('./...')) so rollup inlines these into the
 // single .vite/build/index.js bundle. A dynamic require left literal in the
 // bundle has no adjacent chunk to resolve at runtime and throws
@@ -345,6 +345,11 @@ app.commandLine.appendSwitch('lang', 'en-US');
 // appInit() — leaving an invisible zombie that spawned its own gpu/network procs.
 // See isSquirrelInstallerEvent + src/main/squirrel.ts.)
 let isSquirrelEvent = false;
+/** The uninstall hook's time, counted from process start: Squirrel cancels it
+ *  at 10 s, and this leaves room for Electron's boot and a slow machine. */
+const UNINSTALL_HOOK_BUDGET_MS = 8_000;
+/** Kept back from the staged daemon's exit wait for the PATH edit after it. */
+const UNINSTALL_PATH_EDIT_RESERVE_MS = 2_000;
 if (process.platform === 'win32') {
   const squirrelCmd = process.argv[1];
   if (isSquirrelInstallerEvent(squirrelCmd)) {
@@ -465,6 +470,13 @@ if (process.platform === 'win32') {
       spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
       process.exit(0);
     } else if (squirrelCmd === '--squirrel-uninstall') {
+      // Squirrel cancels this hook 10 s after starting it (the install hook
+      // gets about 16 s), and a cancelled hook leaves the app folder, the Start
+      // Menu link and a running daemon behind. So every step fits inside
+      // UNINSTALL_HOOK_BUDGET_MS of process start, and one that doesn't is
+      // logged as skipped instead of running into the cancel.
+      const hookTimeLeft = (): number => UNINSTALL_HOOK_BUDGET_MS - process.uptime() * 1000;
+
       // Remove startup registry entry
       try { autostart.disableAutostart(); } catch { /* best-effort */ }
 
@@ -475,9 +487,7 @@ if (process.platform === 'win32') {
       // Take wmux out of the other agents' configs while the install still
       // stands, so none is left on a dead MCP server or failing hooks. Only this
       // branch: an update runs --squirrel-updated and --squirrel-obsolete. The
-      // running instances were stopped above, so none can write them back. Under
-      // a budget, because Squirrel cancels this hook at about 16 s and the steps
-      // below must still run.
+      // running instances were stopped above, so none can write them back.
       try {
         const report = removeAgentIntegrations({
           home: os.homedir(),
@@ -492,12 +502,9 @@ if (process.platform === 'win32') {
         }
       } catch { /* best-effort */ }
 
-      // X4: remove the CLI shim + strip <root>\bin from the user PATH.
-      try { cliShim.uninstallCliShim(process.execPath); } catch { /* best-effort */ }
-
       // The daemon runs from a copy outside the install (daemonRuntimeStage.ts),
       // which Squirrel's uninstall neither stops nor deletes: stop its daemon,
-      // then remove the copies.
+      // then remove the copies. Its exit wait leaves time for the PATH edit.
       try {
         const stageRoot = daemonStageRootIn(getWmuxDir());
         const found = terminateStagedDaemons(stageRoot);
@@ -506,12 +513,15 @@ if (process.platform === 'win32') {
           console.warn(`[Squirrel] could not list the staged daemons; ${stageRoot} is left for the next run`);
         } else {
           if (found.length > 0) console.log(`[Squirrel] stopping the staged daemon(s) before uninstall: ${found.join(', ')}`);
-          const { exiting, removed } = removeDaemonRuntimeStagesAfterExit(stageRoot, found, { liveness: checkProcessLiveness });
+          const waitMs = Math.max(0, Math.min(STOPPED_DAEMON_EXIT_WAIT_MS, hookTimeLeft() - UNINSTALL_PATH_EDIT_RESERVE_MS));
+          const { exiting, removed } = removeDaemonRuntimeStagesAfterExit(stageRoot, found, { liveness: checkProcessLiveness, waitMs });
           if (exiting.length > 0) console.warn(`[Squirrel] staged daemon(s) ${exiting.join(', ')} still exiting; ${stageRoot} is left for the next run`);
           else if (!removed) console.warn(`[Squirrel] could not remove ${stageRoot} completely`);
         }
       } catch { /* best-effort */ }
 
+      // Update.exe removes its shortcuts in parallel with the steps below; the
+      // hook exits when it is done and they are.
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
 
@@ -519,6 +529,15 @@ if (process.platform === 'win32') {
       // toast setup wrote are not Update.exe's, so --removeShortcut leaves
       // them. Done while Update.exe works, so it never delays --removeShortcut.
       try { shortcutHygiene.removeToastEntries(process.execPath); } catch { /* best-effort */ }
+
+      // X4: remove the CLI shim + strip <root>\bin from the user PATH. The
+      // WM_SETTINGCHANGE broadcast runs detached: it alone can outlast the hook.
+      if (hookTimeLeft() > 0) {
+        try { cliShim.uninstallCliShim(process.execPath, { detachBroadcast: true }); } catch { /* best-effort */ }
+      } else {
+        console.warn('[Squirrel] out of time before the PATH edit; <root>\\bin stays on the user PATH');
+      }
+      console.log(`[Squirrel] uninstall hook done at ${Math.round(process.uptime() * 1000)} ms`);
       app.quit();
     } else if (squirrelCmd === '--squirrel-obsolete') {
       process.exit(0);

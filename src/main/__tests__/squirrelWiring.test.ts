@@ -178,6 +178,22 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     expect(markPos).toBeGreaterThan(readPos);
   });
 
+  it('the uninstall hook stops the staged daemon and starts --removeShortcut before the PATH edit, whose broadcast is detached', () => {
+    // Squirrel cancels the uninstall hook at 10 s, and the PATH edit's
+    // WM_SETTINGCHANGE broadcast alone took that long on a CI runner, so nothing
+    // after it ran: the daemon kept running and the app folder stayed.
+    const start = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
+    const branch = indexSrc.slice(start, indexSrc.indexOf("squirrelCmd === '--squirrel-obsolete'", start));
+    const pathEdit = branch.indexOf('uninstallCliShim(');
+    expect(pathEdit).toBeGreaterThan(branch.indexOf('terminateStagedDaemons('));
+    expect(pathEdit).toBeGreaterThan(branch.indexOf("'--removeShortcut'"));
+    expect(pathEdit).toBeGreaterThan(branch.indexOf('removeToastEntries('));
+    expect(branch).toContain('uninstallCliShim(process.execPath, { detachBroadcast: true })');
+    // The daemon's exit wait is cut to what the budget leaves.
+    expect(branch).toMatch(/removeDaemonRuntimeStagesAfterExit\([^)]*waitMs/);
+    expect(branch).toContain('hookTimeLeft()');
+  });
+
   it('the predicate classifies by exact membership, never a startsWith prefix', () => {
     // The most realistic regression is moving the logic into squirrel.ts and
     // using `startsWith('--squirrel-')` there — which would re-swallow firstrun.
