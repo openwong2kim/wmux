@@ -935,6 +935,24 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.ACCOUNT_CREDENTIAL_STATUS, args) as Promise<
         import('../main/ipc/handlers/account.handler').CredentialStatus
       >,
+    // Account vault: names and metadata only; no call sends or returns a value.
+    vault: {
+      list: (accountId: string) =>
+        ipcRenderer.invoke(IPC.ACCOUNT_VAULT_LIST, { accountId }) as Promise<{
+          ok: boolean;
+          entries: import('../main/account/accountVault').AccountVaultEntry[];
+        }>,
+      saveFromClipboard: (args: { accountId: string; name: string; expectPrefix?: string }) =>
+        ipcRenderer.invoke(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, args) as Promise<
+          import('../main/account/accountVault').AccountVaultSetResult & { clipboardCleared?: boolean }
+        >,
+      generate: (args: { accountId: string; name: string; length?: number }) =>
+        ipcRenderer.invoke(IPC.ACCOUNT_VAULT_GENERATE, args) as Promise<import('../main/account/accountVault').AccountVaultSetResult>,
+      setInject: (args: { accountId: string; name: string; inject: boolean }) =>
+        ipcRenderer.invoke(IPC.ACCOUNT_VAULT_SET_INJECT, args) as Promise<{ ok: boolean }>,
+      remove: (args: { accountId: string; name: string }) =>
+        ipcRenderer.invoke(IPC.ACCOUNT_VAULT_DELETE, args) as Promise<{ ok: boolean }>,
+    },
     // Continue the pane's own Claude conversation on another account (same pane).
     continuePane: (args: { ptyId: string; accountId: string }) =>
       ipcRenderer.invoke(IPC.ACCOUNT_CONTINUE_PANE, args) as Promise<
