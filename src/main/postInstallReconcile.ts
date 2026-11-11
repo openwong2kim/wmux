@@ -165,17 +165,19 @@ export function readPinRepairMarker(userData: string): PinRepairMarker | null {
 }
 
 /**
- * The marker a finished pass leaves. Only a pass that ran, listed every pin
- * folder and saved every retarget marks the version done; anything else uses
- * one of its attempts, so the next boot tries again (a folder that could not
+ * The marker a finished pass leaves. Only a pass that ran and reported that
+ * it listed every pin folder, read every link and saved every retarget marks
+ * the version done. Anything else, a missing count included, uses one of the
+ * version's attempts, so the next boot tries again (a folder that could not
  * be listed or a link locked for a moment is usually gone by then).
  */
 export function nextPinRepairMarker(
   prev: PinRepairMarker | null,
   version: string,
-  result: Pick<RepairPassResult, 'failure' | 'enumErrors' | 'saveFailures'>,
+  result: Pick<RepairPassResult, 'failure' | 'enumErrors' | 'saveFailures' | 'unreadLinks'>,
 ): PinRepairMarker {
-  const complete = result.failure === null && !result.enumErrors && !result.saveFailures;
+  const complete = result.failure === null &&
+    result.enumErrors === 0 && result.saveFailures === 0 && result.unreadLinks === 0;
   if (complete) return { version, failures: 0 };
   return { version, failures: (prev?.version === version ? prev.failures : 0) + 1 };
 }
@@ -210,7 +212,7 @@ async function repairPinsOnce(execPath: string, root: string, userData: string, 
   if (next.failures > 0) {
     const why = result.failure !== null
       ? `did not run: ${result.failure}`
-      : `incomplete: ${result.enumErrors ?? 0} pin folder(s) not listed, ${result.saveFailures ?? 0} retarget(s) not saved`;
+      : `incomplete: pin folders not listed ${result.enumErrors ?? '?'}, links not read ${result.unreadLinks ?? '?'}, retargets not saved ${result.saveFailures ?? '?'}`;
     console.warn(`[postInstall] pin repair ${why} (attempt ${next.failures} of ${PIN_REPAIR_ATTEMPTS})`);
   }
   writePinRepairMarker(userData, next);

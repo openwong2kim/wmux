@@ -113,6 +113,8 @@ export interface RepairPassResult {
    */
   enumErrors?: number;
   saveFailures?: number;
+  /** Candidate links the pass could not open, so could not check. */
+  unreadLinks?: number;
 }
 
 /** Locations the repair pass reads. Overridable so tests use temp dirs. */
@@ -157,8 +159,10 @@ export function defaultRepairLocations(appData: string): RepairLocations {
  * The script's contract: examine each candidate .lnk; skip links whose target
  * is missing/empty or not under `<root>\`; retarget the rest to the stub
  * unless the target already IS the stub. Never deletes. Emits compact JSON
- * `{actions: [{path, action}], enumErrors, saveFailures}`: no actions with
- * both counts 0 means nothing needed repair.
+ * `{actions: [{path, action}], enumErrors, saveFailures, unreadLinks}`: no
+ * actions with every count 0 means nothing needed repair. enumErrors counts
+ * pin folders that could not be listed; saveFailures, retargets that did not
+ * read back from disk; unreadLinks, links that could not be opened.
  */
 export function buildRepairScript(rootDir: string, loc: RepairLocations): string | null {
   const paths = [rootDir, ...loc.pinDirs];
@@ -172,7 +176,9 @@ export function buildRepairScript(rootDir: string, loc: RepairLocations): string
     `$ErrorActionPreference = 'SilentlyContinue'`,
     `$root = ${psQuote(rootDir)}`,
     `$stub = Join-Path $root 'wmux.exe'`,
-    `if (-not (Test-Path $stub)) { Write-Output '[]'; exit 0 }`,
+    // No stub to point at: nothing done, and no counts, so the app's
+    // per-version marker does not read it as a finished pass.
+    `if (-not (Test-Path -LiteralPath $stub)) { Write-Output '[]'; exit 0 }`,
     // Only pin the icon when the file is actually there. Writing an
     // IconLocation that resolves to nothing reproduces the very bug this pass
     // exists to fix; with no icon staged, leaving IconLocation empty makes the
@@ -183,7 +189,7 @@ export function buildRepairScript(rootDir: string, loc: RepairLocations): string
     // A folder that exists but cannot be listed must not read as "no pins":
     // -ErrorVariable collects what SilentlyContinue would otherwise swallow.
     `$enumErrors = 0`,
-    `foreach ($d in @(${pinArray})) { if (Test-Path $d) { $ge = $null; $cands += @(Get-ChildItem -LiteralPath $d -Filter *.lnk -ErrorVariable ge | ForEach-Object { $_.FullName }); $enumErrors += @($ge).Count } }`,
+    `foreach ($d in @(${pinArray})) { if (Test-Path -LiteralPath $d) { $ge = $null; $cands += @(Get-ChildItem -LiteralPath $d -Filter *.lnk -ErrorVariable ge | ForEach-Object { $_.FullName }); if (@($ge).Count) { $enumErrors++ } } }`,
     `$saveFailures = 0`,
     `$sh = New-Object -ComObject WScript.Shell`,
     // A refused COM class factory (a loaded machine, an antivirus holding the
@@ -211,34 +217,41 @@ export function buildRepairScript(rootDir: string, loc: RepairLocations): string
     `  if (-not $t) { continue }`,
     `  if (-not $t.StartsWith($root + '\\', [System.StringComparison]::OrdinalIgnoreCase)) { continue }`,
     `  if ($t -ieq $stub) { continue }`,
-    `  $l.TargetPath = $stub`,
-    `  $l.WorkingDirectory = $root`,
-    `  if ($haveIcon) { $l.IconLocation = "$icon,0" }`,
     // Save() on a read-only/locked .lnk fails WITHOUT setting $false on $? —
     // measured — so only try/catch tells us whether the edit reached disk.
     // Reporting a retarget that never happened would send the caller (and the
     // next debugger of a blank icon) down the wrong path.
+    // The property writes go inside the try too: a write that fails would
+    // otherwise leave Save() writing the link back unchanged. Read back what
+    // reached disk rather than trusting the calls (CodeRabbit on #3279).
     `  $saved = $true`,
-    `  try { $l.Save() } catch { $saved = $false }`,
+    `  try { $l.TargetPath = $stub; $l.WorkingDirectory = $root; if ($haveIcon) { $l.IconLocation = "$icon,0" }; $l.Save() } catch { $saved = $false }`,
+    `  if ($saved) { $back = $sh.CreateShortcut($p); $saved = $back -and ($back.TargetPath -ieq $stub) }`,
     `  if (-not $saved) { $saveFailures++; continue }`,
     `  $out += @{ path = $p; action = 'retargeted' }`,
     `}`,
     `[System.Runtime.InteropServices.Marshal]::ReleaseComObject($sh) | Out-Null`,
     `if ($opened -eq 0 -and $unopened -gt 0) { Write-Output '${NO_LINKS_READABLE_MARKER}'; exit ${NO_LINKS_READABLE_EXIT} }`,
-    `ConvertTo-Json -Depth 4 -Compress @{ actions = @($out); enumErrors = $enumErrors; saveFailures = $saveFailures }`,
+    // $unopened counts too: a link that could not be read was not repaired.
+    `ConvertTo-Json -Depth 4 -Compress @{ actions = @($out); enumErrors = $enumErrors; saveFailures = $saveFailures; unreadLinks = $unopened }`,
   ].join('\n');
 }
 
 /** Parse the script's JSON output. Tolerates empty/garbage (returns []). */
 export function parseRepairOutput(stdout: string): ShortcutRepairAction[] {
-  const trimmed = stdout.trim();
-  if (!trimmed) return [];
-  let parsed: unknown;
+  return actionsFrom(parseJson(stdout));
+}
+
+function parseJson(stdout: string): unknown {
   try {
-    parsed = JSON.parse(trimmed);
+    return JSON.parse(stdout.trim());
   } catch {
-    return [];
+    return undefined;
   }
+}
+
+function actionsFrom(parsed: unknown): ShortcutRepairAction[] {
+  if (parsed === undefined) return [];
   // The repair script wraps its list with its counts (buildRepairScript).
   const list = parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'actions' in parsed
     ? (parsed as { actions: unknown }).actions
@@ -351,25 +364,25 @@ function readActions(stdout: string): RepairPassResult {
   if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) {
     return { actions: [], failure: `the script produced no JSON [${trimmed.slice(0, 120) || 'empty output'}]` };
   }
-  return { actions: parseRepairOutput(trimmed), failure: null, ...parseRepairCounts(trimmed) };
+  const parsed = parseJson(trimmed);
+  return { actions: actionsFrom(parsed), failure: null, ...countsFrom(parsed) };
 }
 
+type RepairCounts = Pick<RepairPassResult, 'enumErrors' | 'saveFailures' | 'unreadLinks'>;
+
 /** The repair script's incompleteness counts; {} for output that has none. */
-export function parseRepairCounts(stdout: string): Pick<RepairPassResult, 'enumErrors' | 'saveFailures'> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout.trim());
-  } catch {
-    return {};
-  }
+export function parseRepairCounts(stdout: string): RepairCounts {
+  return countsFrom(parseJson(stdout));
+}
+
+function countsFrom(parsed: unknown): RepairCounts {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
   const o = parsed as Record<string, unknown>;
-  const count = (v: unknown): number | undefined => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : undefined);
-  const out: Pick<RepairPassResult, 'enumErrors' | 'saveFailures'> = {};
-  const enumErrors = count(o.enumErrors);
-  const saveFailures = count(o.saveFailures);
-  if (enumErrors !== undefined) out.enumErrors = enumErrors;
-  if (saveFailures !== undefined) out.saveFailures = saveFailures;
+  const out: RepairCounts = {};
+  for (const key of ['enumErrors', 'saveFailures', 'unreadLinks'] as const) {
+    const v = o[key];
+    if (typeof v === 'number' && Number.isInteger(v) && v >= 0) out[key] = v;
+  }
   return out;
 }
 
