@@ -187,6 +187,64 @@ const lineFeeds: Case[] = [
   synthetic('ind-with-del-inside', `${para}\x1b\x7fDY`, 'xterm'),
 ];
 
+// Erases and character edits on a soft-wrapped paragraph. xterm keeps the
+// wrap as the next row's isWrapped: EL, ECH, ICH and DCH never touch it, EL2
+// and an EL0 from column 0 end the row's own (it is no longer a
+// continuation), and ED resets every row it clears whole.
+const para3 = `${'x'.repeat(45)}\x1b[1;1H`;
+const history = 'x'.repeat(130); // the screen's top row continues a history row
+const erases: Case[] = [
+  synthetic('el0-on-a-pending-wrap', `${para}\x1b[1;20HX\x1b[K`),
+  synthetic('el0-mid-continuation', `${para}\x1b[2;3H\x1b[K`),
+  synthetic('el0-at-col0-on-a-continuation', `${para}\x1b[2;1H\x1b[K`),
+  synthetic('el1-to-the-last-column', `${para}\x1b[1;20H\x1b[1K`),
+  synthetic('el1-on-a-pending-wrap', `${para}\x1b[1;20HX\x1b[1K`),
+  synthetic('el1-on-a-continuation', `${para}\x1b[2;3H\x1b[1K`),
+  synthetic('el2-on-a-continuation', `${para}\x1b[2;3H\x1b[2K`),
+  synthetic('ech-to-the-last-column', `${para}\x1b[1;18H\x1b[5X`),
+  synthetic('ech-on-a-pending-wrap', `${para}\x1b[1;20HX\x1b[XY`),
+  synthetic('ich-on-a-wrapping-row', `${para}\x1b[1;5H\x1b[3@`),
+  synthetic('ich-on-a-pending-wrap', `${para}\x1b[1;20HX\x1b[@Y`),
+  synthetic('dch-on-a-pending-wrap', `${para}\x1b[1;20HX\x1b[PY`),
+  synthetic('irm-print-on-a-wrapping-row', `${para}\x1b[4h\x1b[1;5HAB\x1b[4l`),
+  synthetic('ed0-mid-continuation', `${para3}\x1b[2;6H\x1b[J`),
+  synthetic('ed0-at-col0-on-a-continuation', `${para3}\x1b[2;1H\x1b[J`),
+  synthetic('ed0-on-a-pending-wrap', `${para}\x1b[1;20HX\x1b[J`),
+  synthetic('ed0-on-a-pending-wrap-bottom', `\x1b[6;1H${'x'.repeat(20)}\x1b[J`),
+  synthetic('ed0-at-col0-on-the-history-continuation', `${history}\x1b[1;1H\x1b[J`),
+  synthetic('ed1-from-the-second-row', `abc\r\ndef\x1b[2;2H\x1b[1J`),
+  synthetic('ed1-to-the-last-column', `${para3}\x1b[2;20H\x1b[1J`),
+  synthetic('ed1-mid-row', `${para3}\x1b[2;3H\x1b[1J`),
+  synthetic('ed1-on-the-history-continuation', `${history}\x1b[1;3H\x1b[1J`),
+  synthetic('ed2-with-a-history-continuation', `${history}\x1b[2J`),
+  synthetic('ed2-on-the-alternate-screen', `\x1b[?1049h${'x'.repeat(25)}\x1b[2J`),
+  // A wrapped row whose cells an erase emptied through its edge: they replay
+  // erased, in their background, not printed (then a line feed into the
+  // continuation would leave them as trailing blanks).
+  synthetic('el0-on-a-wrapping-row', `${para}\x1b[1;10H\x1b[K`),
+  synthetic('el0-on-a-wrapping-row-bg', `${para}\x1b[1;10H\x1b[44m\x1b[K\x1b[0m`),
+  synthetic('el0-at-col0-mid-paragraph', `${para3}\x1b[2;1H\x1b[K`),
+  synthetic('el2-on-a-wrapping-row', `${para}\x1b[2K`),
+  synthetic('el2-on-the-history-continuation', `${history}\x1b[1;1H\x1b[2K`),
+  synthetic('ech-whole-row', `${para}\x1b[20X`),
+  synthetic('dch-on-a-wrapping-row', `${para}\x1b[1;5H\x1b[3P`),
+  // Later edits keep that run: an erase inside it or reaching into it, and
+  // inserted cells, which move it.
+  synthetic('ech-inside-an-erased-edge', `${para}\x1b[1;10H\x1b[K\x1b[1;15H\x1b[X`),
+  synthetic('el1-into-an-erased-edge', `${para}\x1b[1;10H\x1b[K\x1b[1;12H\x1b[1K\x1b[1;2H`),
+  synthetic('ich-on-an-erased-edge', `${para}\x1b[1;10H\x1b[K\x1b[1;3H\x1b[2@`),
+  synthetic('irm-on-an-erased-edge', `${para}\x1b[1;10H\x1b[K\x1b[4h\x1b[1;3HZ\x1b[4l`),
+  synthetic('ed1-into-an-erased-edge', `${para}\x1b[1;10H\x1b[K\x1b[1;12H\x1b[1J\x1b[1;2H`),
+  // Inserted blanks through the edge, and a wide glyph insert mode pushes
+  // into the last column (xterm blanks it), are empty cells too.
+  synthetic('ich-to-the-edge', `${para}\x1b[1;3H\x1b[20@`),
+  synthetic('irm-blanks-a-wide-glyph-at-the-edge', `${para}\x1b[1;19H한\x1b[4h\x1b[1;3Ha\x1b[4l`),
+  // A wide glyph that ECH or DCH cuts goes whole: its other cell is erased
+  // too, through the edge here.
+  synthetic('ech-cuts-a-wide-glyph-at-the-edge', 'abc界de\x1b[1;4H\x1b[X\x1b[1;1H', 'rust', 5),
+  synthetic('dch-at-a-wide-glyph-spacer-at-the-edge', 'abc界de\x1b[1;5H\x1b[P\x1b[1;1H', 'rust', 5),
+];
+
 // Controls the selector never refused, rechecked now that Rust is the default.
 const others: Case[] = [
   synthetic('ris', 'abc\x1b[31m\x1bcdef'),
@@ -286,7 +344,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
   beforeEach(() => vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath));
   afterEach(() => vi.unstubAllEnvs());
 
-  it.each([...accepted, ...refused, ...leftAlt, ...lineFeeds, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
+  it.each([...accepted, ...refused, ...leftAlt, ...lineFeeds, ...erases, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
     await expectParity(c);
   });
 

@@ -1065,8 +1065,35 @@ impl<T> Term<T> {
         cursor_cell.c = c;
         cursor_cell.fg = fg;
         cursor_cell.bg = bg;
-        cursor_cell.flags = flags;
+        // wmux: the wrap belongs to the row (xterm keeps it as the next row's
+        // isWrapped), so printing into the last column keeps it.
+        cursor_cell.flags = flags | (cursor_cell.flags & Flags::WRAPLINE);
         cursor_cell.extra = extra;
+    }
+
+    /// wmux: the row above `line` no longer wraps into it: xterm clears
+    /// `line`'s isWrapped (EL 2, EL 0 from column 0, ED). Not a write, so a
+    /// widen's empty cells on that row stay empty (`Row::take_wrap`).
+    pub fn end_wrap_into(&mut self, line: Line) {
+        if line > self.topmost_line() {
+            self.grid[line - 1i32].take_wrap();
+        }
+    }
+
+    /// wmux: edit `line`'s physical cells, keeping its wrap at the edge. xterm
+    /// keeps the wrap as the next row's isWrapped, which no cell edit (ICH,
+    /// DCH, ECH, insert mode) changes; Alacritty keeps it on the last cell,
+    /// which those edits move or replace.
+    fn edit_keeping_wrap(&mut self, line: Line, f: impl FnOnce(&mut [Cell])) {
+        let last = self.columns() - 1;
+        self.grid[line].with_physical(|cells| {
+            let wrapped = cells[last].flags.contains(Flags::WRAPLINE);
+            cells[last].flags.remove(Flags::WRAPLINE);
+            f(cells);
+            if wrapped {
+                cells[last].flags.insert(Flags::WRAPLINE);
+            }
+        });
     }
 
     #[inline]
@@ -1168,12 +1195,22 @@ impl<T: EventListener> Handler for Term<T> {
             let line = self.grid.cursor.point.line;
             let col = self.grid.cursor.point.column.0;
             let bg = self.grid.cursor.template.bg;
-            self.grid[line].with_physical(|cells| {
+            let before = self.grid[line].empty_from();
+            let mut blanked = false;
+            self.edit_keeping_wrap(line, |cells| {
+                // Blanked below or by insert_cells itself.
+                blanked = pushed_wide(cells, col, width, columns);
                 insert_cells(cells, col, width, || bg.into());
                 if cells[columns - 1].flags.contains(Flags::WIDE_CHAR) {
                     cells[columns - 1] = bg.into();
                 }
             });
+            // The row's empty run moves with its cells, and a glyph blanked
+            // in the last column is an empty cell there; the glyph written
+            // next is content.
+            if let Some(from) = edge_blanked(inserted_run(before, col, width, columns), blanked, columns) {
+                self.grid[line].mark_erased_from(from);
+            }
         }
 
         if width == 1 {
@@ -1262,7 +1299,19 @@ impl<T: EventListener> Handler for Term<T> {
         let line = self.grid.cursor.point.line;
         let col = self.grid.cursor.point.column.0;
         self.damage.damage_line(line.0 as usize, 0, self.columns() - 1);
-        self.grid[line].with_physical(|cells| insert_cells(cells, col, count, || bg.into()));
+        let columns = self.columns();
+        let before = self.grid[line].empty_from();
+        let mut blanked = false;
+        self.edit_keeping_wrap(line, |cells| {
+            // insert_cells blanks a glyph pushed to the physical end.
+            blanked = cells.len() == columns && pushed_wide(cells, col, count, columns);
+            insert_cells(cells, col, count, || bg.into())
+        });
+        // wmux: the row's empty run moves with its cells, and a glyph
+        // blanked in the last column is an empty cell there.
+        if let Some(from) = edge_blanked(inserted_run(before, col, count, columns), blanked, columns) {
+            self.grid[line].mark_erased_from(from);
+        }
     }
 
     #[inline]
@@ -1589,9 +1638,27 @@ impl<T: EventListener> Handler for Term<T> {
         // wmux: up to the physical end, as xterm's replaceCells: into the
         // cells a row keeps past a narrower width.
         self.damage.damage_line(line.0 as usize, start.0.saturating_sub(1), end.0);
-        self.grid[line].with_physical(|cells| {
-            replace_cells(cells, start.0, start.0.saturating_add(count), || bg.into())
+        let before = self.grid[line].empty_from();
+        let (mut first, mut stop) = (start.0, end.0);
+        self.edit_keeping_wrap(line, |cells| {
+            // The cells replace_cells clears: a wide glyph cut at either end
+            // goes whole, its first cell before `start` or its spacer at
+            // the erase's end.
+            let to = start.0.saturating_add(count);
+            if first > 0 && cells[first - 1].flags.contains(Flags::WIDE_CHAR) {
+                first -= 1;
+            }
+            if to < cells.len() && to > start.0 && cells[to - 1].flags.contains(Flags::WIDE_CHAR) {
+                stop = stop.max(to + 1);
+            }
+            replace_cells(cells, start.0, to, || bg.into())
         });
+        // wmux: erased cells are empty: they join the row's empty run, or
+        // start one at the edge.
+        let columns = self.columns();
+        if let Some(from) = erased_run(before, first, stop.min(columns), columns) {
+            self.grid[line].mark_erased_from(from);
+        }
     }
 
     #[inline]
@@ -1607,7 +1674,29 @@ impl<T: EventListener> Handler for Term<T> {
         let line = cursor.point.line;
         let col = cursor.point.column.0;
         self.damage.damage_line(line.0 as usize, 0, columns - 1);
-        self.grid[line].with_physical(|cells| delete_cells(cells, col, count, || bg.into()));
+        let before = self.grid[line].empty_from();
+        let physical = columns + self.grid[line].hidden_len();
+        let mut cut = false;
+        self.edit_keeping_wrap(line, |cells| {
+            // delete_cells clears a wide glyph cut at the cursor, left of it.
+            cut = col > 0 && col < cells.len() && cells[col - 1].flags.contains(Flags::WIDE_CHAR);
+            delete_cells(cells, col, count, || bg.into())
+        });
+        // wmux: the cells filled in at the physical end are empty, and so is
+        // whatever moved in from an empty run.
+        let filled = col.max(physical.saturating_sub(count));
+        // Past a narrower width the kept cells move in first: not empty.
+        let moved = before.filter(|_| physical == columns).map(|from| {
+            if from <= col { from } else { col.max(from.saturating_sub(count)) }
+        });
+        let mut from = moved.map_or(filled, |moved| moved.min(filled));
+        // A run from the cursor takes in the glyph cleared left of it.
+        if cut && from == col {
+            from = col - 1;
+        }
+        if col < columns && from < columns {
+            self.grid[line].mark_erased_from(from);
+        }
     }
 
     #[inline]
@@ -1702,9 +1791,27 @@ impl<T: EventListener> Handler for Term<T> {
 
         self.damage.damage_line(point.line.0 as usize, left.0, right.0 - 1);
 
+        // wmux: as xterm's eraseInLine: the row keeps its wrap into the next
+        // (xterm's next-row isWrapped, which no EL touches), and EL 2, or EL 0
+        // from column 0, ends the row's own: it is no longer a continuation.
+        // The erased cells are empty: they join the row's empty run, or start
+        // one at the edge.
+        let columns = self.columns();
+        let last = Column(columns - 1);
         let row = &mut self.grid[point.line];
+        let before = row.empty_from();
+        let wrapped = row[last].flags.contains(Flags::WRAPLINE);
         for cell in &mut row[left..right] {
             *cell = bg.into();
+        }
+        if let Some(from) = erased_run(before, left.0, right.0, columns) {
+            row.mark_erased_from(from);
+        }
+        if wrapped {
+            row.put_wrap();
+        }
+        if left == Column(0) && !matches!(mode, ansi::LineClearMode::Left) {
+            self.end_wrap_into(point.line);
         }
 
         let range = self.grid.cursor.point.line..=self.grid.cursor.point.line;
@@ -1811,25 +1918,53 @@ impl<T: EventListener> Handler for Term<T> {
             ansi::ClearMode::Above => {
                 let cursor = self.grid.cursor.point;
 
-                // If clearing more than one line.
-                if cursor.line > 1 {
+                // wmux: every line before the current one, as xterm resets
+                // them (upstream skipped the top row from the second).
+                if cursor.line > 0 {
                     // Fully clear all lines before the current line.
                     self.grid.reset_region_keep_width(..cursor.line);
                 }
 
                 // Clear up to the current column in the current line.
-                let end = cmp::min(cursor.column + 1, Column(self.columns()));
-                for cell in &mut self.grid[cursor.line][..end] {
+                // wmux: the erased cells join the row's empty run if they
+                // reach it.
+                let columns = self.columns();
+                let end = cmp::min(cursor.column + 1, Column(columns));
+                let row = &mut self.grid[cursor.line];
+                let before = row.empty_from();
+                for cell in &mut row[..end] {
                     *cell = bg.into();
                 }
+                if let Some(from) = erased_run(before, 0, end.0, columns) {
+                    row.mark_erased_from(from);
+                }
+
+                // wmux: as xterm, no row up to the cursor's is a continuation
+                // any more. The reset rows lost their wraps; the top row's
+                // comes from history.
+                self.end_wrap_into(Line(0));
 
                 let range = Line(0)..=cursor.line;
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::Below => {
                 let cursor = self.grid.cursor.point;
-                for cell in &mut self.grid[cursor.line][cursor.column..] {
-                    *cell = bg.into();
+                // wmux: as xterm's eraseInDisplay, a pending wrap erases
+                // nothing on the cursor's row (its cursor is past the last
+                // column). The rows below are reset either way, so the row
+                // no longer wraps into the next; from column 0 it is no
+                // longer a continuation either.
+                if self.grid.cursor.input_needs_wrap {
+                    if (cursor.line.0 as usize) < screen_lines - 1 {
+                        self.grid[cursor.line].take_wrap();
+                    }
+                } else {
+                    for cell in &mut self.grid[cursor.line][cursor.column..] {
+                        *cell = bg.into();
+                    }
+                    if cursor.column == 0 {
+                        self.end_wrap_into(cursor.line);
+                    }
                 }
 
                 if (cursor.line.0 as usize) < screen_lines - 1 {
@@ -2342,6 +2477,40 @@ impl From<bool> for ModeState {
     fn from(value: bool) -> Self {
         if value { Self::Set } else { Self::Reset }
     }
+}
+
+/// wmux: where a row's empty run starts after an erase of `start..end` on a
+/// row `columns` wide, given where it started before (`before`). The erased
+/// cells join a run they reach, and start one at the edge; an erase short of
+/// a run leaves it where it was.
+fn erased_run(before: Option<usize>, start: usize, end: usize, columns: usize) -> Option<usize> {
+    match before {
+        Some(from) if from <= end => Some(from.min(start)),
+        _ if end >= columns => Some(start),
+        before => before,
+    }
+}
+
+/// wmux: whether inserting `n` cells at `pos` pushes a wide glyph's first
+/// cell into the last visible column, where xterm blanks it.
+fn pushed_wide(cells: &[Cell], pos: usize, n: usize, columns: usize) -> bool {
+    columns - 1 >= pos.saturating_add(n) && cells[columns - 1 - n].flags.contains(Flags::WIDE_CHAR)
+}
+
+/// wmux: the empty run after a glyph was blanked in the last column (or not).
+fn edge_blanked(run: Option<usize>, blanked: bool, columns: usize) -> Option<usize> {
+    if blanked { Some(run.map_or(columns - 1, |from| from.min(columns - 1))) } else { run }
+}
+
+/// wmux: where a row's empty run starts after `n` cells are inserted at
+/// `pos` (blank, from the erase background): one at or before `pos` stays,
+/// one past it moves right with the cells. Inserted cells that reach the edge
+/// are a run of their own, as an erase to the edge.
+fn inserted_run(before: Option<usize>, pos: usize, n: usize, columns: usize) -> Option<usize> {
+    if pos.saturating_add(n) >= columns {
+        return Some(before.filter(|&from| from <= pos).unwrap_or(pos));
+    }
+    before.map(|from| if from <= pos { from } else { from + n }).filter(|&from| from < columns)
 }
 
 /// wmux: xterm's `BufferLine.insertCells` over a physical line: `n` cells
