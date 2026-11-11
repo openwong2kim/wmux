@@ -828,7 +828,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-dock { position: relative; display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 46rem; margin: 0 auto; padding: 0 16px 12px; }
 /* Jump to latest: shown only while scrolled up with newer rows below; floats over the transcript, no layout row. */
 .wmux-chatv2-jump { position: absolute; top: -44px; left: 50%; z-index: 1; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-surface); color: var(--text-main); box-shadow: var(--shadow-popover); transform: translateX(-50%); }
-.wmux-chatv2-jump:hover { background: var(--selection-hover); }
+.wmux-chatv2-jump:hover { background: var(--selection-hover); --text-muted: var(--text-subtle); }
 .wmux-chatv2-composer { display: flex; flex-direction: column; gap: 4px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: 12px; background: transparent; transition: border-color 150ms; }
 .wmux-chatv2-composer:focus-within { border-color: var(--line-strong); }
 .wmux-chatv2-textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; resize: none; padding: 4px 0; background: transparent; color: var(--text-main); font: inherit; line-height: 1.55; word-break: keep-all; overflow-wrap: anywhere; outline: none; field-sizing: content; }
@@ -846,7 +846,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-chip-strip[data-fade="end"] { -webkit-mask-image: linear-gradient(to left, transparent, #000 20px); mask-image: linear-gradient(to left, transparent, #000 20px); }
 .wmux-chatv2-chip-strip[data-fade="both"] { -webkit-mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent); mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent); }
 .wmux-chatv2-chip { display: inline-flex; align-items: center; min-height: 26px; padding: 0 8px; border-radius: var(--chip-radius, 6px); background: var(--selection); color: var(--text-sub); font-size: 11.5px; white-space: nowrap; }
-.wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--selection-hover); color: var(--text-main); }
+.wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--selection-hover); --text-muted: var(--text-subtle); color: var(--text-main); }
 .wmux-chatv2-chip select { appearance: none; field-sizing: content; background: transparent; color: inherit; font: inherit; cursor: pointer; outline: none; }
 .wmux-chatv2-chip select:disabled { cursor: default; }
 .wmux-chatv2-chip[aria-disabled="true"] { color: var(--text-muted); }
