@@ -218,6 +218,27 @@ const erases: Case[] = [
   synthetic('ed1-on-the-history-continuation', `${history}\x1b[1;3H\x1b[1J`),
   synthetic('ed2-with-a-history-continuation', `${history}\x1b[2J`),
   synthetic('ed2-on-the-alternate-screen', `\x1b[?1049h${'x'.repeat(25)}\x1b[2J`),
+  // A wrapped row whose cells an erase emptied through its edge: they replay
+  // erased, in their background, not printed (then a line feed into the
+  // continuation would leave them as trailing blanks).
+  synthetic('el0-on-a-wrapping-row', `${para}\x1b[1;10H\x1b[K`),
+  synthetic('el0-on-a-wrapping-row-bg', `${para}\x1b[1;10H\x1b[44m\x1b[K\x1b[0m`),
+  synthetic('el0-at-col0-mid-paragraph', `${para3}\x1b[2;1H\x1b[K`),
+  synthetic('el2-on-a-wrapping-row', `${para}\x1b[2K`),
+  synthetic('el2-on-the-history-continuation', `${history}\x1b[1;1H\x1b[2K`),
+  synthetic('ech-whole-row', `${para}\x1b[20X`),
+  synthetic('dch-on-a-wrapping-row', `${para}\x1b[1;5H\x1b[3P`),
+  // Later edits keep that run: an erase inside it or reaching into it, and
+  // inserted cells, which move it.
+  synthetic('ech-inside-an-erased-edge', `${para}\x1b[1;10H\x1b[K\x1b[1;15H\x1b[X`),
+  synthetic('el1-into-an-erased-edge', `${para}\x1b[1;10H\x1b[K\x1b[1;12H\x1b[1K\x1b[1;2H`),
+  synthetic('ich-on-an-erased-edge', `${para}\x1b[1;10H\x1b[K\x1b[1;3H\x1b[2@`),
+  synthetic('irm-on-an-erased-edge', `${para}\x1b[1;10H\x1b[K\x1b[4h\x1b[1;3HZ\x1b[4l`),
+  synthetic('ed1-into-an-erased-edge', `${para}\x1b[1;10H\x1b[K\x1b[1;12H\x1b[1J\x1b[1;2H`),
+  // Inserted blanks through the edge, and a wide glyph insert mode pushes
+  // into the last column (xterm blanks it), are empty cells too.
+  synthetic('ich-to-the-edge', `${para}\x1b[1;3H\x1b[20@`),
+  synthetic('irm-blanks-a-wide-glyph-at-the-edge', `${para}\x1b[1;19H한\x1b[4h\x1b[1;3Ha\x1b[4l`),
 ];
 
 // Controls the selector never refused, rechecked now that Rust is the default.

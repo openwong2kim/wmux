@@ -230,9 +230,10 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
         let mut end = columns;
         // A soft-wrapped row must reach its last column to wrap again, so its
         // blanks print: Alacritty cannot tell a printed blank from an empty
-        // cell. Only the empty cells a widen gave the row are known (the
-        // grid marks them): printed, they would become content, so print
-        // filler through the edge instead and erase it once the row wrapped.
+        // cell. Only the empty cells a widen gave the row, or an erase left at
+        // its edge, are known (the grid marks them): printed, they would
+        // become content, so print filler through the edge instead and erase
+        // it, each run with its own background, once the row wrapped.
         let empty = row
             .empty_from()
             .filter(|_| wrapped && y < grid.screen_lines() as i32 - 1);
@@ -274,8 +275,11 @@ fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'s
             // One more than fits lands on the next row's head and wraps it;
             // erase that one, then go back up to the filler.
             out.extend(std::iter::repeat_n('-', columns - end + 1));
-            // `end` is at least the mark, never 0.
-            let _ = write!(out, "\x1b[D\x1b[X\x1b[A\r\x1b[{end}C");
+            out.push_str("\x1b[D\x1b[X\x1b[A\r");
+            // An erase can empty the whole row (`end` 0), and CUF 0 moves one.
+            if end > 0 {
+                let _ = write!(out, "\x1b[{end}C");
+            }
         }
         // Trailing blanks: skip a default run, erase a colored one with ECH so
         // the cells stay empty but keep their background, as an erase left them.
@@ -782,11 +786,12 @@ mod tests {
             while start > from && super::blank(&row[Column(start - 1)]) {
                 start -= 1;
             }
+            // An erase's run keeps the erase background, as xterm's erased
+            // cells do; the serializer erases it with that background.
             for x in start..grid.columns() {
                 let cell = &row[Column(x)];
                 assert!(
-                    cell.bg == Color::Named(NamedColor::Background)
-                        && cell.fg == Color::Named(NamedColor::Foreground)
+                    cell.fg == Color::Named(NamedColor::Foreground)
                         && (cell.flags - Flags::WRAPLINE).is_empty(),
                     "row {y} column {x} in a run from {start}: {cell:?}"
                 );
@@ -797,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_widen_marks_empty_cells_and_every_other_edit_keeps_it_sound() {
+    fn widen_and_erase_marks_stay_sound_through_every_other_edit() {
         let after = |rows: usize, bytes: &str| {
             let (mut term, mut parser) = widened(rows);
             parser.advance(&mut term, bytes.as_bytes());
@@ -808,17 +813,28 @@ mod tests {
         assert_eq!(after(3, "\x1b[1;9H "), [(0, 9)]);
         assert_eq!(after(3, "\x1b[1;9HZ"), [(0, 9)]);
         assert_eq!(after(3, "\x1b[1;10H "), []);
-        // Insert, delete and erase characters and line erases count as
-        // writes up to the row's edge: gone.
-        for edit in [
-            "\x1b[1;2H\x1b[@",
-            "\x1b[1;2H\x1b[P",
-            "\x1b[1;9H\x1b[X",
-            "\x1b[1;5H\x1b[K",
-            "\x1b[1;1H\x1b[2K",
-        ] {
-            assert_eq!(after(3, edit), [], "{edit:?}");
-        }
+        // Erased cells are empty: they join the run when they reach it (it
+        // then starts where it did, or where the erase did if that is
+        // earlier), start one at the edge, and leave it alone short of it.
+        // Inserted cells move the run with them, out of the row at worst; a
+        // delete empties what moves in from the run and what it fills at the
+        // end.
+        assert_eq!(after(3, "\x1b[1;9H\x1b[X"), [(0, 7)]);
+        assert_eq!(after(3, "\x1b[1;2H\x1b[X"), [(0, 7)]);
+        assert_eq!(after(3, "\x1b[1;9H\x1b[1K"), [(0, 0)]);
+        assert_eq!(after(3, "\x1b[1;2H\x1b[@"), [(0, 8)]);
+        assert_eq!(after(3, "\x1b[1;2H\x1b[3@"), []);
+        assert_eq!(after(3, "\x1b[1;3H\x1b[20@"), [(0, 2)]);
+        assert_eq!(after(3, "\x1b[1;9H\x1b[1J"), [(0, 0)]);
+        assert_eq!(after(3, "\x1b[4h\x1b[1;9HZ\x1b[4l"), [(0, 9)]);
+        assert_eq!(after(3, "\x1b[1;9H\x1b[2X"), [(0, 7)]);
+        assert_eq!(after(3, "\x1b[1;5H\x1b[K"), [(0, 4)]);
+        assert_eq!(after(3, "\x1b[1;5H\x1b[44m\x1b[K"), [(0, 4)]);
+        assert_eq!(after(3, "\x1b[1;5H\x1b[1K"), [(0, 7)]);
+        assert_eq!(after(3, "\x1b[1;10H\x1b[1K"), [(0, 0)]);
+        assert_eq!(after(3, "\x1b[1;1H\x1b[2K"), [(0, 0)]);
+        assert_eq!(after(3, "\x1b[1;2H\x1b[P"), [(0, 6)]);
+        assert_eq!(after(3, "\x1b[1;2H\x1b[44m\x1b[5P"), [(0, 2)]);
         // Rows that move keep their run: insert and delete lines, scrolls,
         // and line feeds at the bottom into history.
         assert_eq!(after(3, "\x1b[1;1H\x1b[L"), [(1, 7)]);
@@ -843,7 +859,9 @@ mod tests {
             sound(&term)
         };
         assert_eq!(widen("\x1b[1;9HZ\x1b[2;3H"), [(0, 9)]);
-        assert_eq!(widen("\x1b[1;9H\x1b[X\x1b[2;3H"), [(0, 10)]);
+        // An erase inside the run keeps it, so the widen extends it.
+        assert_eq!(widen("\x1b[1;9H\x1b[X\x1b[2;3H"), [(0, 7)]);
+        assert_eq!(widen("\x1b[1;9H\x1b[44m \x1b[0m\x1b[2;3H"), [(0, 9)]);
         assert_eq!(widen("\x1b[1;1H\x1b[L\x1b[3;3H"), [(1, 7)]);
     }
 
@@ -887,6 +905,14 @@ mod tests {
         // Without a widen, blanks printed up to a wrap stay content.
         let out = replay(5, "ab   cd").unwrap();
         assert!(out.contains("ab   cd"), "{out:?}");
+        // An erase through a wrapped row's edge leaves empty cells too: they
+        // replay as filler erased in the erase background.
+        let out = replay(5, "abcdefg\x1b[1;3H\x1b[44m\x1b[K\x1b[0m\x1b[2;3H").unwrap();
+        assert!(out.contains("ab----\x1b[D\x1b[X\x1b[A\r\x1b[2C\x1b[0;44m\x1b[3X"), "{out:?}");
+        // From column 0 the whole row is filler, and only CR goes back to it
+        // (CUF 0 would move one).
+        let out = replay(5, "abcdefg\x1b[1;1H\x1b[2K\x1b[2;3H").unwrap();
+        assert!(out.contains("------\x1b[D\x1b[X\x1b[A\r\x1b[5X"), "{out:?}");
     }
 
     #[test]

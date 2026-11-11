@@ -7,7 +7,7 @@ use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
-use alacritty_terminal::vte::ansi::{Processor, Timeout};
+use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Timeout};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -668,9 +668,9 @@ fn advance_indexing(
 }
 
 /// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
-/// screen scrolls the screen into history, and its ED 1 skipped the top row
-/// when the cursor is on the second (the vendored handler now resets it too,
-/// for the text feed). The renderer is xterm.
+/// screen scrolls the screen into history (its ED 1 used to skip the top row
+/// from the second; the vendored handler now matches xterm). The renderer is
+/// xterm.
 fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: bool) {
     // A real ESC [ ends any string or sequence in progress; Alacritty
     // ignores DECSED, so this ends it the same way and does nothing else.
@@ -681,24 +681,19 @@ fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: 
     if synchronized {
         parser.stop_sync(term);
     }
-    let grid = term.grid_mut();
-    // Whole lines over their physical width: an alternate-screen row keeps
-    // cells past a narrower width, and xterm erases those too.
     if all {
-        grid.reset_region_keep_width(..);
+        // Whole lines over their physical width: an alternate-screen row
+        // keeps cells past a narrower width, and xterm erases those too.
+        term.grid_mut().reset_region_keep_width(..);
+        // No row is a continuation any more (xterm's isWrapped): the reset
+        // rows lost their wraps; the top row's comes from history.
+        term.end_wrap_into(Line(0));
     } else {
-        let cursor = grid.cursor.point;
-        grid.reset_region_keep_width(..cursor.line);
-        let bg = grid.cursor.template.bg;
-        let end = (cursor.column.0 + 1).min(grid.columns());
-        for cell in &mut grid[cursor.line][..Column(end)] {
-            *cell = bg.into();
-        }
+        // The vendored ED 1 is xterm's: the rows above reset over their
+        // physical width, the cursor's row erased up to it, its wraps and
+        // empty run kept as xterm keeps them.
+        term.clear_screen(ClearMode::Above);
     }
-    // No row up to the cursor's is a continuation any more (xterm's
-    // isWrapped). The reset rows lost their wraps; the top row's comes from
-    // history.
-    term.end_wrap_into(Line(0));
     if synchronized {
         parser.advance(term, b"\x1b[?2026h");
     }
