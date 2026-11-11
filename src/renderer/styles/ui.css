@@ -725,13 +725,14 @@
 .wmux-chat-first-ask-actions { display: flex; justify-content: flex-end; gap: 6px; }
 .wmux-chatv2-viewport { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
 .wmux-chatv2-column { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 46rem; margin: 0 auto; padding: 14px 16px 10px; }
-.wmux-chatv2-empty { justify-content: flex-end; min-height: 100%; gap: 6px; padding-bottom: 18px; }
+.wmux-chatv2-empty { justify-content: center; min-height: 100%; gap: 6px; padding-bottom: 18px; }
 .wmux-chatv2-empty strong { font-size: 18px; font-weight: 500; letter-spacing: -.01em; }
 .wmux-chatv2-empty p { color: var(--text-sub); line-height: 1.6; }
 .wmux-chatv2-runs-in { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; }
 .wmux-chatv2-cwd { max-width: 18em; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); }
-.wmux-chatv2-user { align-self: flex-end; max-width: 85%; margin-top: 10px; padding: 6px 12px; border-radius: 12px; background: var(--bg-surface); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
-.wmux-chatv2-assistant, .wmux-chatv2-plan { line-height: 1.65; overflow-wrap: anywhere; }
+.wmux-chatv2-user { align-self: flex-end; max-width: 85%; margin-top: 10px; padding: 6px 12px; border-radius: 12px; background: var(--bg-surface); white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere; line-height: 1.55; }
+/* keep-all keeps Korean words whole; overflow-wrap still breaks a long URL or path. */
+.wmux-chatv2-assistant, .wmux-chatv2-plan { line-height: 1.65; word-break: keep-all; overflow-wrap: anywhere; }
 .wmux-chatv2-reasoning summary, .wmux-chatv2-tool summary, .wmux-chatv2-subagent summary { cursor: pointer; list-style: none; }
 .wmux-chatv2-reasoning summary::-webkit-details-marker, .wmux-chatv2-tool summary::-webkit-details-marker, .wmux-chatv2-subagent summary::-webkit-details-marker { display: none; }
 .wmux-chatv2-reasoning summary { color: var(--text-sub); font-size: 12px; }
@@ -749,12 +750,17 @@
 details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(90deg); }
 .wmux-chatv2-group-rows { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 2px 4px; padding-left: 10px; box-shadow: inset 1px 0 0 var(--border-soft); }
 .wmux-chatv2-step-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wmux-chatv2-glyph { flex-shrink: 0; width: 1ch; text-align: center; color: var(--text-muted); }
+.wmux-chatv2-glyph { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 12px; height: 12px; color: var(--text-muted); }
+/* Shapes beside the check and cross icons: running is a filled dot, pending a ring, a step a small dot. */
+.wmux-chatv2-mark { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+.wmux-chatv2-mark[data-mark="ring"] { width: 7px; height: 7px; border: 1.5px solid currentColor; background: transparent; }
+.wmux-chatv2-mark[data-mark="step"] { width: 3px; height: 3px; }
 .wmux-chatv2-glyph[data-state="running"] { color: var(--accent); }
 .wmux-chatv2-glyph[data-state="done"] { color: var(--accent-green); }
 .wmux-chatv2-glyph[data-state="failed"] { color: var(--accent-red); }
 .wmux-chatv2-steps { margin: 2px 0 2px 4px; padding-left: 10px; box-shadow: inset 1px 0 0 var(--border-soft); }
 .wmux-chatv2-pre { max-height: 280px; overflow: auto; margin: 4px 0 4px 15px; padding: 6px 8px; border-radius: 6px; background: var(--bg-mantle); color: var(--text-sub); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11.5px; line-height: 1.55; white-space: pre; }
+.wmux-chatv2-pre[data-detail] { white-space: pre-wrap; overflow-wrap: anywhere; }
 .wmux-chatv2-line[data-kind="add"] { color: var(--accent-green); }
 .wmux-chatv2-line[data-kind="del"] { color: var(--accent-red); }
 /* Diff and shell bodies keep the one .wmux-chatv2-pre fill; the inner pre scrolls. */
@@ -770,11 +776,13 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-pre[data-shell] > pre, .wmux-chatv2-pre[data-shell] > .wmux-chatv2-body-more { padding: 0 8px; }
 /* Output scrolls past ~9rem; an edge fades while there is more beyond it. */
 .wmux-chatv2-shell-output { max-height: 9rem; }
+/* Show full output: the box grows to the whole output. */
+.wmux-chatv2-shell-output[data-full] { max-height: none; }
 .wmux-chatv2-shell-output[data-fade="top"] { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 18px); mask-image: linear-gradient(to bottom, transparent, #000 18px); }
 .wmux-chatv2-shell-output[data-fade="bottom"] { -webkit-mask-image: linear-gradient(to top, transparent, #000 18px); mask-image: linear-gradient(to top, transparent, #000 18px); }
 .wmux-chatv2-shell-output[data-fade="both"] { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 18px, #000 calc(100% - 18px), transparent); mask-image: linear-gradient(to bottom, transparent, #000 18px, #000 calc(100% - 18px), transparent); }
 .wmux-chatv2-tasks ul { margin: 2px 0 0; padding: 0; list-style: none; }
-.wmux-chatv2-tasks li { display: flex; gap: 7px; font-size: 12.5px; line-height: 1.6; }
+.wmux-chatv2-tasks li { display: flex; align-items: center; gap: 7px; font-size: 12.5px; line-height: 1.6; }
 .wmux-chatv2-tasks li[data-status="completed"] { color: var(--text-sub); text-decoration: line-through; }
 .wmux-chatv2-tasks li[data-status="in_progress"] .wmux-chatv2-glyph { color: var(--accent); }
 .wmux-chatv2-meta { color: var(--text-sub); font-size: 12px; }
@@ -784,8 +792,9 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-live-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); }
 .wmux-chatv2-footer[data-live] { color: var(--text-sub); }
 .wmux-chatv2-footer [data-outcome] { color: var(--text-sub); }
-.wmux-chatv2-card { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 4px 15px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-mantle); }
-.wmux-chatv2-card-title { display: block; color: var(--text-sub); font-size: 11.5px; font-weight: 500; letter-spacing: .02em; }
+/* A card that waits on the owner: its one boundary is the needs-you hairline, no fill. */
+.wmux-chatv2-card { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 4px 15px; padding: 10px 12px; border: 1px solid var(--attention-hairline); border-radius: 10px; background: transparent; }
+.wmux-chatv2-card-title { display: block; color: var(--text-main); font-size: 13px; font-weight: var(--title-weight, 500); }
 .wmux-chatv2-card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .wmux-chatv2-decided { display: flex; align-items: center; gap: 5px; margin-left: 15px; color: var(--text-muted); font-size: 12px; }
 .wmux-chatv2-decided:is([data-decision="allow"], [data-decision="deny"]) { color: var(--text-sub); }
@@ -804,25 +813,28 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-link:hover { color: var(--accent-blue); }
 .wmux-chatv2-earlier { align-self: center; margin-bottom: 6px; }
 .wmux-chatv2-body-more { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
-.wmux-chatv2-dock { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 46rem; margin: 0 auto; padding: 0 16px 12px; }
-.wmux-chatv2-composer { display: flex; flex-direction: column; gap: 4px; padding: 6px 6px 6px 10px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--bg-mantle); transition: border-color 150ms; }
-.wmux-chatv2-composer:focus-within { border-color: var(--accent-blue); }
-.wmux-chatv2-textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; resize: none; padding: 4px 0; background: transparent; color: var(--text-main); font: inherit; line-height: 1.55; outline: none; field-sizing: content; }
+.wmux-chatv2-dock { position: relative; display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 46rem; margin: 0 auto; padding: 0 16px 12px; }
+/* Jump to latest: shown only while scrolled up with newer rows below; floats over the transcript, no layout row. */
+.wmux-chatv2-jump { position: absolute; top: -40px; left: 50%; z-index: 1; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 999px; background: var(--bg-surface); color: var(--text-sub); box-shadow: var(--shadow-popover); transform: translateX(-50%); }
+.wmux-chatv2-jump:hover { color: var(--text-main); }
+.wmux-chatv2-composer { display: flex; flex-direction: column; gap: 4px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: 12px; background: transparent; transition: border-color 150ms; }
+.wmux-chatv2-composer:focus-within { border-color: var(--line-strong); }
+.wmux-chatv2-textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; resize: none; padding: 4px 0; background: transparent; color: var(--text-main); font: inherit; line-height: 1.55; word-break: keep-all; overflow-wrap: anywhere; outline: none; field-sizing: content; }
 .wmux-chatv2-textarea::placeholder { color: var(--text-muted); }
 .wmux-chatv2-composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
-.wmux-chatv2-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
-.wmux-chatv2-chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 7px; border-radius: 999px; color: var(--text-sub); font-size: 11.5px; white-space: nowrap; }
-.wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--bg-surface); color: var(--text-main); }
+.wmux-chatv2-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+.wmux-chatv2-chip { display: inline-flex; align-items: center; min-height: 26px; padding: 0 8px; border-radius: var(--chip-radius, 6px); background: var(--selection); color: var(--text-sub); font-size: 11.5px; white-space: nowrap; }
+.wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--selection-hover); color: var(--text-main); }
 .wmux-chatv2-chip select { appearance: none; field-sizing: content; background: transparent; color: inherit; font: inherit; cursor: pointer; outline: none; }
 .wmux-chatv2-chip select:disabled { cursor: default; }
 .wmux-chatv2-chip[aria-disabled="true"] { color: var(--text-muted); }
 .wmux-chatv2-chip[aria-disabled="true"] select:disabled { opacity: 1; }
 .wmux-chatv2-chip[data-mode="bypass"] { color: var(--accent-red); }
 .wmux-chatv2-attachments { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.wmux-chatv2-chip[data-attachment] { gap: 2px; padding-right: 0; background: var(--bg-surface); color: var(--text-main); }
+.wmux-chatv2-chip[data-attachment] { gap: 2px; padding-right: 0; color: var(--text-main); }
 .wmux-chatv2-handed-off { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .wmux-chatv2-composer-actions { display: flex; flex-shrink: 0; align-items: center; gap: 6px; }
-.wmux-chatv2-send { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--text-main); color: var(--bg-base); font-size: 14px; transition: opacity 150ms; }
+.wmux-chatv2-send { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 50%; background: var(--text-main); color: var(--bg-base); transition: opacity 150ms; }
 .wmux-chatv2-send:disabled { opacity: .3; cursor: not-allowed; }
 .wmux-chatv2-status { color: var(--text-muted); font-size: 11.5px; }
 .wmux-chatv2-status[data-status="failed"] { color: var(--accent-red); }
@@ -2711,11 +2723,9 @@ html[data-glass] .wmux-frame-row > .wmux-shell-body {
 
 /* ─── Chat v2 in the new look ─────────────────────────────────────────────────
  * The view keeps its layout; its surfaces follow DESIGN.md. The composer is a
- * hairline without a fill, cards are a fill without a border, buttons drop the
- * bevel, and the one solid action is the theme's primary. */
-.wmux-chatv2-composer { border-color: var(--line); background: transparent; }
-.wmux-chatv2-composer:focus-within { border-color: var(--line-strong); }
-.wmux-chatv2-card { border: 0; background: var(--selection-subtle); }
+ * hairline without a fill and a card that waits on the owner is the needs-you
+ * hairline (both in their own rules above), buttons drop the bevel, and the one
+ * solid action is the theme's primary. */
 .wmux-chatv2-pre, .wmux-chatv2-input-line { background: var(--selection-subtle); }
 .wmux-chatv2-input-line { box-shadow: inset 0 0 0 1px var(--line); }
 .wmux-chatv2-steps, .wmux-chatv2-group-rows { box-shadow: inset 1px 0 0 var(--stroke); }

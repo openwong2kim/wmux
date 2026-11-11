@@ -8,7 +8,7 @@ import type { FormAnswers } from '../../../shared/chatv2/questions';
 import { ApprovalCard, QuestionCard } from './Cards';
 import { absolutePath, formatClockTime, formatWorkingDuration, toolLabelParts } from './format';
 import { diffStats, toolFamily, type ToolGroupRow, type ToolState, type TranscriptRow } from './rows';
-import { IconChevron, IconExternalLink } from '../icons';
+import { IconCheck, IconChevron, IconExternalLink, IconX } from '../icons';
 import type { BodyRead } from './controller';
 import { S } from './strings';
 
@@ -17,11 +17,25 @@ export interface TranscriptActions {
   body(blockId: string, field: 'text' | 'detail' | 'output', offset?: number): Promise<BodyRead | null>;
 }
 
-const GLYPH: Record<ToolState, string> = { running: '●', done: '✓', failed: '✕' };
+/** A status mark drawn as an icon or a shape, never a text glyph: the sidebar's grammar. */
+type Mark = 'check' | 'cross' | 'dot' | 'ring' | 'step';
+
+const TOOL_MARK: Record<ToolState, Mark> = { running: 'dot', done: 'check', failed: 'cross' };
+
+function MarkIcon({ mark }: { mark: Mark }) {
+  if (mark === 'check') return <IconCheck size={12} />;
+  if (mark === 'cross') return <IconX size={12} />;
+  return <span className="wmux-chatv2-mark" data-mark={mark} />;
+}
 
 function StatusGlyph({ state }: { state: ToolState }) {
-  return <span className="wmux-chatv2-glyph" data-state={state} aria-hidden>{GLYPH[state]}</span>;
+  return <span className="wmux-chatv2-glyph" data-state={state} aria-hidden><MarkIcon mark={TOOL_MARK[state]} /></span>;
 }
+
+const TASK_MARK: Record<string, Mark> = { completed: 'check', in_progress: 'dot', cancelled: 'cross' };
+
+/** Assistant prose and plans: code blocks get their language label and Copy, as on the other markdown surfaces. */
+const renderMarkdown = (text: string) => renderBrainMarkdown(text, { richCode: true });
 
 function previewSummary(preview: ToolPreview | undefined, title: string, cwd: string): string {
   // A shell preview's own title is the tool name ("Bash"), never a summary.
@@ -53,9 +67,21 @@ function PreviewBody({ preview, cwd }: { preview: ToolPreview; cwd: string }) {
   return preview.output ? <pre className="wmux-chatv2-pre">{preview.output}</pre> : null;
 }
 
-/** A command and what it printed: a dim `$ command` line, then the output, faded where it scrolls. */
-function ShellBody({ command, output, children }: { command: string | null; output: string; children?: React.ReactNode }) {
+/**
+ * A command and what it printed: a dim `$ command` line, then the output,
+ * faded where it scrolls. A long output opens on its tail (what the command
+ * said last) and offers the whole of it; when the fold cut the output, that
+ * also loads the cut part in place.
+ */
+function ShellBody({ block, actions, command, output, children }: { block: Block; actions: TranscriptActions; command: string | null; output: string; children?: React.ReactNode }) {
   const ref = useRef<HTMLPreElement>(null);
+  const cut = !!block.overflow?.output;
+  const full = useFullBody(block, 'output', actions);
+  const text = full.read ? full.read.text : output;
+  const [expanded, setExpanded] = useState(false);
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  const [long, setLong] = useState(false);
   // Which edges have more beyond them: those fade.
   const edges = () => {
     const el = ref.current;
@@ -65,18 +91,41 @@ function ShellBody({ command, output, children }: { command: string | null; outp
     const fade = top && bottom ? 'both' : top ? 'top' : bottom ? 'bottom' : '';
     if (fade) el.dataset.fade = fade; else delete el.dataset.fade;
   };
-  useLayoutEffect(edges, [output]);
+  const settle = () => {
+    const el = ref.current;
+    if (!el) return;
+    if (!expandedRef.current) {
+      el.scrollTop = el.scrollHeight;
+      // A closed <details> measures 0: only an open one says whether the output is long.
+      if (el.clientHeight > 0) setLong(el.scrollHeight > el.clientHeight + 1);
+    }
+    edges();
+  };
+  useLayoutEffect(settle, [text, expanded]);
   // A closed <details> lays out nothing, so measure again whenever one around it opens.
   useEffect(() => {
     const opened: HTMLDetailsElement[] = [];
     for (let el = ref.current?.parentElement; el; el = el.parentElement) if (el instanceof HTMLDetailsElement) opened.push(el);
-    opened.forEach((el) => el.addEventListener('toggle', edges));
-    return () => opened.forEach((el) => el.removeEventListener('toggle', edges));
-  }, [output]);
+    opened.forEach((el) => el.addEventListener('toggle', settle));
+    return () => opened.forEach((el) => el.removeEventListener('toggle', settle));
+  }, [text]);
+  const toggle = () => {
+    if (expanded) { setExpanded(false); return; }
+    setExpanded(true);
+    if (cut && full.read === undefined) full.load();
+  };
   return (
     <div className="wmux-chatv2-pre" data-shell>
       {command && <div className="wmux-chatv2-shell-command">$ {command}</div>}
-      {output && <pre ref={ref} className="wmux-chatv2-shell-output" onScroll={edges}>{output}</pre>}
+      {text && <pre ref={ref} className="wmux-chatv2-shell-output" data-full={expanded || undefined} onScroll={edges}>{text}</pre>}
+      {(long || cut) && (
+        <span className="wmux-chatv2-body-more">
+          <button type="button" className="wmux-chatv2-link" data-output-toggle aria-expanded={expanded} disabled={full.loading} onClick={toggle}>
+            {full.loading ? S.loadingFull : expanded ? S.showLess : S.showMore}
+          </button>
+        </span>
+      )}
+      {expanded && full.read !== undefined && <BodyMore read={full.read} loading={full.loading} load={full.load} first={S.showMore} />}
       {children}
     </div>
   );
@@ -187,7 +236,13 @@ function ToolRow({ block, state, cwd, actions, findActive, enter }: { block: Blo
   const stats = family === 'edit' ? diffStats(block) : null;
   const hasBody = shell ? !!(output || block.overflow?.output || block.overflow?.detail) : !!(preview?.lines?.length || preview?.output || tool?.detail);
   // A title the fold left as the raw command gets a verb; a rewritten one has its own.
-  const label = toolLabelParts(title, { command: shell && !READABLE_TITLE.test(title), running: state === 'running' });
+  // A call held for the owner's answer is not running yet: it waits.
+  const waiting = !!block.approval && !block.approval.decided;
+  const label = waiting
+    ? { verb: S.waitingForApproval, object: title.trim() }
+    : toolLabelParts(title, { command: shell && !READABLE_TITLE.test(title), running: state === 'running' });
+  // A diff already shows what an edit did; the result text under it only repeats it.
+  const diff = !!preview?.lines?.length;
   const line = (
     <>
       <StatusGlyph state={state} />
@@ -203,16 +258,15 @@ function ToolRow({ block, state, cwd, actions, findActive, enter }: { block: Blo
         <details>
           <summary className="wmux-chatv2-tool-line">{line}</summary>
           {shell ? (
-            <ShellBody command={command} output={output}>
-              {block.overflow?.output && <FullBody block={block} field="output" actions={actions} />}
+            <ShellBody block={block} actions={actions} command={command} output={output}>
               {block.overflow?.detail && <FullBody block={block} field="detail" actions={actions} />}
             </ShellBody>
           ) : (
             <>
               {preview && <PreviewBody preview={preview} cwd={cwd} />}
               {block.overflow?.output && <FullBody block={block} field="output" actions={actions} />}
-              {tool?.detail && <pre className="wmux-chatv2-pre">{tool.detail}</pre>}
-              {block.overflow?.detail && <FullBody block={block} field="detail" actions={actions} />}
+              {tool?.detail && !diff && <pre className="wmux-chatv2-pre" data-detail>{tool.detail}</pre>}
+              {block.overflow?.detail && !diff && <FullBody block={block} field="detail" actions={actions} />}
             </>
           )}
         </details>
@@ -269,7 +323,7 @@ function SubagentRow({ block, state, actions, findActive, enter }: { block: Bloc
         <ol className="wmux-chatv2-steps">
           {run.steps.map((step) => (
             <li key={step.id} className="wmux-chatv2-tool-line" data-kind={step.kind}>
-              {step.kind === 'tool' ? <StatusGlyph state={stepState(step)} /> : <span className="wmux-chatv2-glyph" aria-hidden>·</span>}
+              {step.kind === 'tool' ? <StatusGlyph state={stepState(step)} /> : <span className="wmux-chatv2-glyph" aria-hidden><MarkIcon mark="step" /></span>}
               <span className="wmux-chatv2-step-text">{step.text}</span>
             </li>
           ))}
@@ -320,7 +374,7 @@ export const TranscriptRowView = memo(function TranscriptRowView({ row, cwd, act
     case 'assistant':
       return (
         <div className="wmux-chatv2-assistant" data-block-id={row.block.id} data-streaming={row.block.streaming || undefined} {...active}>
-          <CappedText block={row.block} actions={actions} render={renderBrainMarkdown} />
+          <CappedText block={row.block} actions={actions} render={renderMarkdown} />
         </div>
       );
     case 'reasoning':
@@ -344,7 +398,7 @@ export const TranscriptRowView = memo(function TranscriptRowView({ row, cwd, act
           <ul>
             {list.items.map((item, index) => (
               <li key={item.id ?? index} data-status={item.status}>
-                <span className="wmux-chatv2-glyph" aria-hidden>{item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '●' : item.status === 'cancelled' ? '✕' : '○'}</span>
+                <span className="wmux-chatv2-glyph" aria-hidden><MarkIcon mark={TASK_MARK[item.status] ?? 'ring'} /></span>
                 {item.text}
               </li>
             ))}
@@ -353,7 +407,7 @@ export const TranscriptRowView = memo(function TranscriptRowView({ row, cwd, act
       );
     }
     case 'plan':
-      return <div className="wmux-chatv2-plan" data-block-id={row.block.id} {...active}><CappedText block={row.block} actions={actions} render={renderBrainMarkdown} /></div>;
+      return <div className="wmux-chatv2-plan" data-block-id={row.block.id} {...active}><CappedText block={row.block} actions={actions} render={renderMarkdown} /></div>;
     case 'image':
       return <div className="wmux-chatv2-meta" data-block-id={row.block.id} {...entering}>{row.block.image?.name ?? row.block.text}</div>;
     case 'notice':

@@ -8,6 +8,8 @@ import { DictationButton, dictationAvailable } from '../Dictation/DictationButto
 import { shortDir } from '../../utils/shortDir';
 import { getChatV2Bridge } from './bridge';
 import { S } from './strings';
+import { IconX } from '../icons';
+import { ArrowIcon } from './ArrowIcon';
 
 // Drafts survive view switches, per pane and conversation (`<paneId>:<chatSessionId|new>`).
 const drafts = new Map<string, string>();
@@ -149,7 +151,7 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
             <span key={item.path} className="wmux-chatv2-chip" data-attachment>
               {item.name}
               <button type="button" className="wmux-chatv2-icon" aria-label={`${S.removeAttachment} ${item.name}`}
-                onClick={() => setStaged((prev) => prev.filter((other) => other.path !== item.path))}>✕</button>
+                onClick={() => setStaged((prev) => prev.filter((other) => other.path !== item.path))}><IconX size={12} /></button>
             </span>
           ))}
           {notice && <span className="wmux-chatv2-status" role="status">{notice}</span>}
@@ -217,7 +219,7 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
           {running && canStop ? (
             <button type="button" className="wmux-chatv2-btn" onClick={onStop}>{S.stop}</button>
           ) : (
-            <button type="button" className="wmux-chatv2-send" aria-label={S.send} disabled={!canSend} onClick={() => void send()}>↑</button>
+            <button type="button" className="wmux-chatv2-send" aria-label={S.send} title={S.send} disabled={!canSend} onClick={() => void send()}><ArrowIcon dir="up" /></button>
           )}
         </div>
       </div>

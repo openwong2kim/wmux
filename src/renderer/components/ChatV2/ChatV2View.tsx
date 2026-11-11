@@ -14,6 +14,7 @@ import { ContinueInChat, usePaneMove } from './ContinueInChat';
 import { useStore } from '../../stores';
 import { focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useTranscriptWindow } from '../shared/useTranscriptWindow';
+import { ArrowIcon } from './ArrowIcon';
 
 const NEAR_BOTTOM_PX = 48;
 
@@ -98,6 +99,9 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   const [draftRev, setDraftRev] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  // Rows arrived below while the reader was scrolled up: offer the way back.
+  const [newBelow, setNewBelow] = useState(false);
+  const lastRowKey = useRef<string | undefined>(undefined);
 
   const rowCache = useRef<RowCache>(new WeakMap());
   const rows = useMemo(() => (view ? groupToolRows(sessionRows(view.session, rowCache.current), rowCache.current) : []), [view]);
@@ -111,6 +115,7 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     entered.current = new Set();
     // Its window opens at the tail, so the view follows it from there.
     pinned.current = true;
+    lastRowKey.current = undefined;
   }
   knownKeys.current = enteringKeys(rows, knownKeys.current, entered.current);
   // A long transcript mounts its recent rows; earlier ones are read in on the way up.
@@ -126,18 +131,32 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     body: (blockId, field, offset) => controller?.body(blockId, field, offset) ?? Promise.resolve(null),
   }), [controller]);
 
-  // Stay at the bottom while the reader is there.
+  // Stay at the bottom while the reader is there; otherwise note that a row
+  // arrived below (the live footer only ticks, so it does not count).
+  const lastKey = rows.findLast((row) => row.kind !== 'footer')?.key;
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && pinned.current && !findId) el.scrollTop = el.scrollHeight;
-  }, [transcriptWindow.visible, findId]);
+    const arrived = lastRowKey.current !== undefined && lastKey !== lastRowKey.current;
+    lastRowKey.current = lastKey;
+    if (el && pinned.current && !findId) { el.scrollTop = el.scrollHeight; setNewBelow(false); }
+    else if (arrived) setNewBelow(true);
+  }, [transcriptWindow.visible, findId, lastKey]);
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
     // The bottom of a window cut short (after find) is not the end of the chat.
     pinned.current = atBottom && transcriptWindow.laterCount === 0;
+    if (pinned.current) setNewBelow(false);
     transcriptWindow.onScroll(atBottom);
+  };
+  // Back to the newest row, and keep following from there (also on send).
+  const toLatest = () => {
+    pinned.current = true;
+    setNewBelow(false);
+    transcriptWindow.toTail();
+    const el = scroller.current;
+    if (el) el.scrollTop = el.scrollHeight;
   };
   // A match the window hides is revealed first, then scrolled to once.
   const shownFind = useRef<string | null>(null);
@@ -271,6 +290,11 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
         </div>
       </div>
       <div className="wmux-chatv2-dock">
+        {newBelow && (
+          <button type="button" className="wmux-chatv2-jump" aria-label={t('chat.scrollToBottom')} title={t('chat.scrollToBottom')} data-chatv2-jump onClick={toLatest}>
+            <ArrowIcon dir="down" />
+          </button>
+        )}
         {error}
         {handedOff ? (
           <div className="wmux-chatv2-notice wmux-chatv2-handed-off">
@@ -295,7 +319,7 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             running={running}
             canStop={binding.capabilities.interrupt}
             chips={{ agent: binding.agent, model: binding.model, effort: view.session.modelSettings.effort ?? '', mode: binding.mode, cwd: view.session.cwd, editable: false }}
-            onSend={(text, attachments) => controller.send(text, attachments)}
+            onSend={(text, attachments) => { toLatest(); return controller.send(text, attachments); }}
             onStop={() => void controller.interrupt()}
             extra={canHandOff ? (
               <button type="button" className="wmux-chatv2-btn" title={S.continueInTerminalHint} disabled={handingOff} onClick={() => void continueInTerminal()}>
