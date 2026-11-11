@@ -106,6 +106,13 @@ const REPAIR_BUDGET_MS = 15_000;
 export interface RepairPassResult {
   actions: ShortcutRepairAction[];
   failure: string | null;
+  /**
+   * The repair pass ran but may have missed links: pin folders it could not
+   * list, and links whose retarget did not reach disk. Set only by the pin
+   * repair script; a caller that records "done" must require both to be 0.
+   */
+  enumErrors?: number;
+  saveFailures?: number;
 }
 
 /** Locations the repair pass reads. Overridable so tests use temp dirs. */
@@ -149,8 +156,9 @@ export function defaultRepairLocations(appData: string): RepairLocations {
  *
  * The script's contract: examine each candidate .lnk; skip links whose target
  * is missing/empty or not under `<root>\`; retarget the rest to the stub
- * unless the target already IS the stub. Never deletes. Emits a compact JSON
- * array of {path, action} — empty output means nothing needed repair.
+ * unless the target already IS the stub. Never deletes. Emits compact JSON
+ * `{actions: [{path, action}], enumErrors, saveFailures}`: no actions with
+ * both counts 0 means nothing needed repair.
  */
 export function buildRepairScript(rootDir: string, loc: RepairLocations): string | null {
   const paths = [rootDir, ...loc.pinDirs];
@@ -172,7 +180,11 @@ export function buildRepairScript(rootDir: string, loc: RepairLocations): string
     `$icon = Join-Path $root 'app.ico'`,
     `$haveIcon = Test-Path -LiteralPath $icon`,
     `$cands = @()`,
-    `foreach ($d in @(${pinArray})) { if (Test-Path $d) { $cands += @(Get-ChildItem -LiteralPath $d -Filter *.lnk | ForEach-Object { $_.FullName }) } }`,
+    // A folder that exists but cannot be listed must not read as "no pins":
+    // -ErrorVariable collects what SilentlyContinue would otherwise swallow.
+    `$enumErrors = 0`,
+    `foreach ($d in @(${pinArray})) { if (Test-Path $d) { $ge = $null; $cands += @(Get-ChildItem -LiteralPath $d -Filter *.lnk -ErrorVariable ge | ForEach-Object { $_.FullName }); $enumErrors += @($ge).Count } }`,
+    `$saveFailures = 0`,
     `$sh = New-Object -ComObject WScript.Shell`,
     // A refused COM class factory (a loaded machine, an antivirus holding the
     // registration) leaves $sh null, and with SilentlyContinue every read
@@ -208,12 +220,12 @@ export function buildRepairScript(rootDir: string, loc: RepairLocations): string
     // next debugger of a blank icon) down the wrong path.
     `  $saved = $true`,
     `  try { $l.Save() } catch { $saved = $false }`,
-    `  if (-not $saved) { continue }`,
+    `  if (-not $saved) { $saveFailures++; continue }`,
     `  $out += @{ path = $p; action = 'retargeted' }`,
     `}`,
     `[System.Runtime.InteropServices.Marshal]::ReleaseComObject($sh) | Out-Null`,
     `if ($opened -eq 0 -and $unopened -gt 0) { Write-Output '${NO_LINKS_READABLE_MARKER}'; exit ${NO_LINKS_READABLE_EXIT} }`,
-    `ConvertTo-Json @($out) -Compress`,
+    `ConvertTo-Json -Depth 4 -Compress @{ actions = @($out); enumErrors = $enumErrors; saveFailures = $saveFailures }`,
   ].join('\n');
 }
 
@@ -227,7 +239,11 @@ export function parseRepairOutput(stdout: string): ShortcutRepairAction[] {
   } catch {
     return [];
   }
-  const items = Array.isArray(parsed) ? parsed : [parsed];
+  // The repair script wraps its list with its counts (buildRepairScript).
+  const list = parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'actions' in parsed
+    ? (parsed as { actions: unknown }).actions
+    : parsed;
+  const items = Array.isArray(list) ? list : [list];
   const out: ShortcutRepairAction[] = [];
   for (const item of items) {
     if (!item || typeof item !== 'object') continue;
@@ -330,12 +346,31 @@ function runScriptAsync(script: string, timeoutMs: number): Promise<RunOutcome> 
  * JSON means it died before reaching it — which is exactly the "reads like
  * nothing needed repair" state this change exists to remove.
  */
-function readActions(stdout: string): { actions: ShortcutRepairAction[] } | { failure: string } {
+function readActions(stdout: string): RepairPassResult {
   const trimmed = stdout.trim();
   if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) {
-    return { failure: `the script produced no JSON [${trimmed.slice(0, 120) || 'empty output'}]` };
+    return { actions: [], failure: `the script produced no JSON [${trimmed.slice(0, 120) || 'empty output'}]` };
   }
-  return { actions: parseRepairOutput(trimmed) };
+  return { actions: parseRepairOutput(trimmed), failure: null, ...parseRepairCounts(trimmed) };
+}
+
+/** The repair script's incompleteness counts; {} for output that has none. */
+export function parseRepairCounts(stdout: string): Pick<RepairPassResult, 'enumErrors' | 'saveFailures'> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.trim());
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  const o = parsed as Record<string, unknown>;
+  const count = (v: unknown): number | undefined => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : undefined);
+  const out: Pick<RepairPassResult, 'enumErrors' | 'saveFailures'> = {};
+  const enumErrors = count(o.enumErrors);
+  const saveFailures = count(o.saveFailures);
+  if (enumErrors !== undefined) out.enumErrors = enumErrors;
+  if (saveFailures !== undefined) out.saveFailures = saveFailures;
+  return out;
 }
 
 function appDataOrThrow(): string {
@@ -384,8 +419,8 @@ function retryBudget(label: string, run: RunOutcome, deadline: number): number |
 function settle(label: string, run: RunOutcome): RepairPassResult {
   if ('failure' in run) return passFailure(label, run.failure);
   const read = readActions(run.stdout);
-  if ('failure' in read) return passFailure(label, read.failure);
-  return { actions: read.actions, failure: null };
+  if (read.failure !== null) return passFailure(label, read.failure);
+  return read;
 }
 
 function runPassSync(label: string, build: () => string | null, budgetMs: number): RepairPassResult {

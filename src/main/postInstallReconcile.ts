@@ -51,6 +51,7 @@ import { spawn } from 'child_process';
 import * as autostart from './autostart';
 import * as cliShim from './cliShim';
 import * as shortcutHygiene from './shortcutHygiene';
+import type { RepairPassResult } from './shortcutHygiene';
 import { mayRepairPinnedShortcuts } from './dataIsolation';
 import { squirrelInstallRootFor } from './updater/installIntegrity';
 
@@ -130,8 +131,8 @@ export const PIN_REPAIR_MARKER = 'shortcut-repair-version';
 export const PIN_REPAIR_ATTEMPTS = 3;
 
 /**
- * The marker: `<version>` once that version's pass ran, `<version> <n>` after
- * `n` passes that could not run (a pin folder or WScript.Shell blocked by
+ * The marker: `<version>` once that version's pass ran complete, `<version> <n>`
+ * after `n` passes that could not run or missed links (a pin folder or WScript.Shell blocked by
  * policy fails the same way every boot, and must not start PowerShell forever).
  */
 export interface PinRepairMarker {
@@ -163,6 +164,22 @@ export function readPinRepairMarker(userData: string): PinRepairMarker | null {
   }
 }
 
+/**
+ * The marker a finished pass leaves. Only a pass that ran, listed every pin
+ * folder and saved every retarget marks the version done; anything else uses
+ * one of its attempts, so the next boot tries again (a folder that could not
+ * be listed or a link locked for a moment is usually gone by then).
+ */
+export function nextPinRepairMarker(
+  prev: PinRepairMarker | null,
+  version: string,
+  result: Pick<RepairPassResult, 'failure' | 'enumErrors' | 'saveFailures'>,
+): PinRepairMarker {
+  const complete = result.failure === null && !result.enumErrors && !result.saveFailures;
+  if (complete) return { version, failures: 0 };
+  return { version, failures: (prev?.version === version ? prev.failures : 0) + 1 };
+}
+
 export function writePinRepairMarker(userData: string, marker: PinRepairMarker): void {
   try {
     fs.mkdirSync(userData, { recursive: true });
@@ -175,7 +192,7 @@ export function writePinRepairMarker(userData: string, marker: PinRepairMarker):
 
 /**
  * Repair pinned shortcuts once for this version (module header). A pass that
- * could not run counts as an attempt; one with no root stub to point pins at
+ * could not run or missed links counts as an attempt; one with no root stub to point pins at
  * yet does not, so it is simply tried again next boot.
  */
 async function repairPinsOnce(execPath: string, root: string, userData: string, version: string): Promise<void> {
@@ -188,14 +205,15 @@ async function repairPinsOnce(execPath: string, root: string, userData: string, 
   // The icon a retargeted pin points at; the hook stages it, unless cancelled.
   try { shortcutHygiene.stageRootIcon(execPath); } catch { /* best-effort */ }
   const result = await shortcutHygiene.runShortcutRepairPassAsync(execPath);
-  if (result.failure !== null) {
-    const failures = (marker?.version === version ? marker.failures : 0) + 1;
-    console.warn(`[postInstall] pin repair did not run (attempt ${failures} of ${PIN_REPAIR_ATTEMPTS}): ${result.failure}`);
-    writePinRepairMarker(userData, { version, failures });
-    return;
-  }
   if (result.actions.length > 0) console.log(`[postInstall] pins repaired: ${result.actions.length}`);
-  writePinRepairMarker(userData, { version, failures: 0 });
+  const next = nextPinRepairMarker(marker, version, result);
+  if (next.failures > 0) {
+    const why = result.failure !== null
+      ? `did not run: ${result.failure}`
+      : `incomplete: ${result.enumErrors ?? 0} pin folder(s) not listed, ${result.saveFailures ?? 0} retarget(s) not saved`;
+    console.warn(`[postInstall] pin repair ${why} (attempt ${next.failures} of ${PIN_REPAIR_ATTEMPTS})`);
+  }
+  writePinRepairMarker(userData, next);
 }
 
 export function isEmptyPlan(plan: ReconcilePlan): boolean {

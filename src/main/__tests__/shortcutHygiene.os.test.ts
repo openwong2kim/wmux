@@ -9,6 +9,7 @@ import {
   isSafePsPathLiteral,
   buildRepairScript,
   parseRepairOutput,
+  parseRepairCounts,
   defaultRepairLocations,
   runShortcutRepairPass,
   buildToastEntryRemovalScript,
@@ -169,6 +170,15 @@ describe('parseRepairOutput', () => {
     expect(parseRepairOutput('{"path":"C:\\\\a.lnk","action":"retargeted"}')).toEqual([
       { path: 'C:\\a.lnk', action: 'retargeted' },
     ]);
+  });
+
+  it('reads the actions out of the repair script\'s wrapped form, and its counts', () => {
+    const out = '{"actions":[{"path":"C:\\\\a.lnk","action":"retargeted"}],"enumErrors":1,"saveFailures":2}';
+    expect(parseRepairOutput(out)).toEqual([{ path: 'C:\\a.lnk', action: 'retargeted' }]);
+    expect(parseRepairCounts(out)).toEqual({ enumErrors: 1, saveFailures: 2 });
+    expect(parseRepairOutput('{"actions":[],"enumErrors":0,"saveFailures":0}')).toEqual([]);
+    expect(parseRepairCounts('[]')).toEqual({});
+    expect(parseRepairCounts('{"actions":[],"enumErrors":-1,"saveFailures":"x"}')).toEqual({});
   });
 
   it('returns [] on empty, non-JSON, or malformed rows', () => {

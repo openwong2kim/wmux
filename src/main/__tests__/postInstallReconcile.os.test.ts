@@ -19,6 +19,7 @@ import {
   parsePinRepairMarker,
   readPinRepairMarker,
   writePinRepairMarker,
+  nextPinRepairMarker,
   PIN_REPAIR_MARKER,
   PIN_REPAIR_ATTEMPTS,
   type ReconcileProbe,
@@ -155,6 +156,37 @@ describe('pin repair marker', () => {
     expect(pinRepairDue(readPinRepairMarker(userData), '4.16.0', {})).toBe(false);
     fs.writeFileSync(path.join(userData, PIN_REPAIR_MARKER), '  \n');
     expect(readPinRepairMarker(userData)).toBeNull();
+  });
+
+  // CodeRabbit on #3279: a pass that ran but missed links must not mark the
+  // version done, or a passing lock or unlistable folder is never retried.
+  it('records a pass with 1 failed save as an attempt, retried next boot', () => {
+    const userData = path.join(dir, 'partial');
+    const ran = { failure: null, enumErrors: 0, saveFailures: 1 };
+    writePinRepairMarker(userData, nextPinRepairMarker(null, '4.16.0', ran));
+    expect(fs.readFileSync(path.join(userData, PIN_REPAIR_MARKER), 'utf8')).toBe('4.16.0 1');
+    expect(pinRepairDue(readPinRepairMarker(userData), '4.16.0', {})).toBe(true);
+  });
+
+  it('marks the version done only when the pass ran with no misses', () => {
+    expect(nextPinRepairMarker(null, '4.16.0', { failure: null, enumErrors: 0, saveFailures: 0 }))
+      .toEqual({ version: '4.16.0', failures: 0 });
+    // The other scripts' output carries no counts: absent is 0.
+    expect(nextPinRepairMarker(null, '4.16.0', { failure: null })).toEqual({ version: '4.16.0', failures: 0 });
+    expect(nextPinRepairMarker(null, '4.16.0', { failure: null, enumErrors: 1, saveFailures: 0 }))
+      .toEqual({ version: '4.16.0', failures: 1 });
+    expect(nextPinRepairMarker(null, '4.16.0', { failure: 'powershell died' }))
+      .toEqual({ version: '4.16.0', failures: 1 });
+  });
+
+  it('counts misses toward the same cap as a pass that cannot run', () => {
+    const prev = { version: '4.16.0', failures: PIN_REPAIR_ATTEMPTS - 1 };
+    const next = nextPinRepairMarker(prev, '4.16.0', { failure: null, enumErrors: 0, saveFailures: 1 });
+    expect(next).toEqual({ version: '4.16.0', failures: PIN_REPAIR_ATTEMPTS });
+    expect(pinRepairDue(next, '4.16.0', {})).toBe(false);
+    // An older version's attempts do not carry over.
+    expect(nextPinRepairMarker({ version: '4.15.0', failures: 2 }, '4.16.0', { failure: null, saveFailures: 1 }))
+      .toEqual({ version: '4.16.0', failures: 1 });
   });
 
   it('does not throw when the marker cannot be written', () => {
