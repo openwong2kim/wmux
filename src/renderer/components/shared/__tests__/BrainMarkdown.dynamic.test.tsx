@@ -344,6 +344,31 @@ describe('renderBrainMarkdown', () => {
     expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('code');
   });
 
+  it('a mid-line opener takes the info string a line-start fence takes', () => {
+    render('Here: ```ts title=example.ts\nconst a = 1;\n```\nafter');
+    expect(container.querySelectorAll('[data-brain-md-code]')).toHaveLength(1);
+    expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('const a = 1;');
+    expect([...container.querySelectorAll('[data-brain-md-p]')].map((p) => p.textContent)).toEqual(['Here:', 'after']);
+    render('Here: ``` ts\ncode\n```\nafter');
+    expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('code');
+    expect(container.textContent).toContain('after');
+  });
+
+  it('a quoted fence stays inside its quote, and the text after it is prose', () => {
+    render('> ```ts\n> const a = 1;\n> ```\nAfter');
+    const quote = container.querySelector('blockquote');
+    expect(quote?.querySelector('[data-brain-md-code]')?.textContent).toBe('const a = 1;');
+    expect(container.querySelectorAll('[data-brain-md-code]')).toHaveLength(1);
+    expect([...container.querySelectorAll('[data-brain-md-p]')].map((p) => p.textContent)).toEqual(['After']);
+    // A quoted line with prose before its opener splits inside the quote only.
+    render('> Example ```ts\n> const b = 2;\n> ```\nAfter');
+    expect(container.querySelector('blockquote')?.textContent).toContain('Example');
+    expect(container.querySelector('blockquote [data-brain-md-code]')?.textContent).toBe('const b = 2;');
+    expect(container.querySelectorAll('[data-brain-md-code]')).toHaveLength(1);
+    const after = [...container.querySelectorAll('[data-brain-md-p]')].find((p) => p.textContent === 'After');
+    expect(after?.closest('blockquote')).toBeNull();
+  });
+
   it('renders headings, bold, italic, and inline code', () => {
     render('## Status\nAll **good**, *mostly* — run `npm test`.');
     const h = container.querySelector('[data-brain-md-heading]');

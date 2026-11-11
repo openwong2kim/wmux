@@ -431,8 +431,11 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
 
     // A fence opener after prose on the same line ("... text ```ts", as models
     // write it) opens the fence there: the prose is drawn as its own line
-    // first. A line with another ``` run (an inline ```code```) stays as it is.
-    const midFence = line.includes('```') && fenceOpenLength(line) === 0 ? /^(.*\S)[ \t]+(`{3,}[^`\s]*)[ \t]*$/.exec(line) : null;
+    // first. The opener takes the info string a line-start fence takes (no
+    // backticks after the run). A line with another ``` run (an inline
+    // ```code```) stays as it is, and so does a quoted line: the quote branch
+    // reads its fences once the `>` is stripped, bounded by the quote.
+    const midFence = line.includes('```') && fenceOpenLength(line) === 0 && !/^\s*>/.test(line) ? /^(.*\S)[ \t]+(`{3,}[^`]*)$/.exec(line) : null;
     if (midFence && !midFence[1].includes('```')) {
       out.push(<Fragment key={out.length}>{renderBlocks(midFence[1], opts, depth, budget)}</Fragment>);
       line = midFence[2];
