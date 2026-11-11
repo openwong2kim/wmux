@@ -494,6 +494,8 @@ export type RpcMethod =
   | 'mcp.identify'
   | 'mcp.declarePermissions'
   | 'notify'
+  | 'app.action'
+  | 'app.action.list'
   | 'meta.setStatus'
   | 'meta.setProgress'
   | 'ui.decoratePane'
@@ -897,6 +899,8 @@ export const ALL_RPC_METHODS = [
   'mcp.identify',
   'mcp.declarePermissions',
   'notify',
+  'app.action',
+  'app.action.list',
   'meta.setStatus',
   'meta.setProgress',
   'ui.decoratePane',

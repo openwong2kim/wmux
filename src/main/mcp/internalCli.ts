@@ -76,6 +76,10 @@ export const WMUX_CLI_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'meta.setProgress',
   // notification (`wmux notify`)
   'notify',
+  // app actions on the caller's own workspace (`wmux action`); main
+  // resolves the workspace from the pane claim, never from the call
+  'app.action',
+  'app.action.list',
   // a2a identity resolution (`wmux` resolves its own pane identity)
   'a2a.resolve.identity',
   // A native Codex launch in this CLI's verified pane, never an arbitrary target.

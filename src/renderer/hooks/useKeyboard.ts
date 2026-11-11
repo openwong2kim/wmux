@@ -128,8 +128,8 @@ const STOP_PROPAGATION_ACTIONS: ReadonlySet<ShortcutActionId> = new Set<Shortcut
 // font-size slider (SettingsPanel TabAppearance: min 8 / max 24) and the
 // store default (uiSlice terminalFontSize: 14) so keyboard zoom and the slider
 // never disagree on the reachable range. One-px steps mirror the slider grain.
-const FONT_SIZE_MIN = 8;
-const FONT_SIZE_MAX = 24;
+export const FONT_SIZE_MIN = 8;
+export const FONT_SIZE_MAX = 24;
 const FONT_SIZE_DEFAULT = 14;
 const FONT_SIZE_STEP = 1;
 

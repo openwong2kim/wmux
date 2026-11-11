@@ -100,6 +100,7 @@ import { registerHandOutHandlers } from './ipc/handlers/handOut.handler';
 import { registerApprovalsRpc } from './pipe/handlers/approvals.rpc';
 import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
+import { registerAppActionRpc } from './pipe/handlers/appAction.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerCodexRpc } from './pipe/handlers/codex.rpc';
@@ -1319,6 +1320,7 @@ ipcMain.handle(IPC.DECK_FANOUT_CALLER_SUBMIT, (event, payload: unknown) =>
 registerApprovalsRpc(rpcRouter, () => daemonClient);
 registerDeckRpc(rpcRouter, () => mainWindow);
 registerNotifyRpc(rpcRouter, () => mainWindow);
+registerAppActionRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerCodexRpc(rpcRouter, () => mainWindow, () => daemonClient);
