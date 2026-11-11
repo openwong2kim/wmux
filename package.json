@@ -142,7 +142,7 @@
     "react-dom": "^19.2.4",
     "react-resizable-panels": "^4.7.3",
     "smol-toml": "^1.9.0",
-    "wongtty": "0.0.4",
+    "wongtty": "0.0.5",
     "ws": "^8.21.0",
     "yaml": "2.9.0",
     "zod": "^4.6.7",
