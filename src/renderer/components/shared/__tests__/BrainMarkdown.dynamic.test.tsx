@@ -354,6 +354,20 @@ describe('renderBrainMarkdown', () => {
     expect(container.textContent).toContain('after');
   });
 
+  it('a mid-line ``` with no closing fence after it stays prose', () => {
+    render('Wrap it in ``` some words\nand the rest of the message.');
+    expect(container.querySelector('[data-brain-md-code]')).toBeNull();
+    expect([...container.querySelectorAll('[data-brain-md-p]')].map((p) => p.textContent)).toEqual(['Wrap it in ``` some words', 'and the rest of the message.']);
+    // A closer shorter than the opener does not count either.
+    render('Here: ````ts\ncode\n```');
+    expect([...container.querySelectorAll('[data-brain-md-p]')].map((p) => p.textContent)).toEqual(['Here: ````ts', 'code']);
+    // A quote's closer does not count for text outside it.
+    render('Here: ```ts\n> ```\nafter');
+    expect(container.querySelectorAll('[data-brain-md-code]')).toHaveLength(1);
+    expect(container.querySelector('blockquote [data-brain-md-code]')).not.toBeNull();
+    expect(container.textContent).toContain('Here: ```ts');
+  });
+
   it('a quoted fence stays inside its quote, and the text after it is prose', () => {
     render('> ```ts\n> const a = 1;\n> ```\nAfter');
     const quote = container.querySelector('blockquote');

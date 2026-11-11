@@ -419,6 +419,20 @@ interface BlockBudget { left: number; cut?: boolean; cells?: number }
 function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budget: BlockBudget): React.ReactNode[] {
   const lines = source.split('\n');
   const out: React.ReactNode[] = [];
+  // The longest closing-fence run on any line after each index, read once,
+  // when a mid-line opener first asks (linear, however many openers).
+  let closerRuns: Int32Array | null = null;
+  const closerRunAfter = (index: number): number => {
+    if (!closerRuns) {
+      const runs = new Int32Array(lines.length + 1);
+      for (let j = lines.length - 1; j >= 0; j--) {
+        const run = /^(`{3,})\s*$/.exec(lines[j].trimStart());
+        runs[j] = Math.max(runs[j + 1], run ? run[1].length : 0);
+      }
+      closerRuns = runs;
+    }
+    return closerRuns[index + 1];
+  };
   let i = 0;
   while (i < lines.length) {
     if (budget.left <= 0) {
@@ -432,11 +446,13 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
     // A fence opener after prose on the same line ("... text ```ts", as models
     // write it) opens the fence there: the prose is drawn as its own line
     // first. The opener takes the info string a line-start fence takes (no
-    // backticks after the run). A line with another ``` run (an inline
-    // ```code```) stays as it is, and so does a quoted line: the quote branch
-    // reads its fences once the `>` is stripped, bounded by the quote.
+    // backticks after the run), and counts only when a line closing it comes
+    // later in this text (a quote's own text, for a quote): prose that names
+    // ``` must not swallow the rest of the message. A line with another ```
+    // run (an inline ```code```) stays as it is, and so does a quoted line:
+    // the quote branch reads its fences once the `>` is stripped.
     const midFence = line.includes('```') && fenceOpenLength(line) === 0 && !/^\s*>/.test(line) ? /^(.*\S)[ \t]+(`{3,}[^`]*)$/.exec(line) : null;
-    if (midFence && !midFence[1].includes('```')) {
+    if (midFence && !midFence[1].includes('```') && closerRunAfter(i) >= fenceOpenLength(midFence[2])) {
       out.push(<Fragment key={out.length}>{renderBlocks(midFence[1], opts, depth, budget)}</Fragment>);
       line = midFence[2];
     }
