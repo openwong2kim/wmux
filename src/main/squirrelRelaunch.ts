@@ -10,18 +10,19 @@
  * Setup.exe, plus everything Squirrel does after the hook, waited until the
  * user closed wmux (runner probe, run 43075263739).
  *
- * So the hook relaunches through ShellExecute: a short-lived PowerShell runs
- * `Start-Process`, and the app it starts inherits nothing from us. Only that
- * PowerShell holds the pipe, for the second it runs.
+ * So the hook relaunches through ShellExecute, in process (Electron's
+ * `shell.openPath`): the shell starts the app without handle inheritance, and
+ * no helper process of ours sits in between holding the pipe.
  *
  * And it relaunches only when nothing else will. The in-app updater's install
  * waiter starts Setup.exe non-silently, so Squirrel's own
  * `--squirrel-firstrun` launch brings the app back; the waiter says so through
  * FIRSTRUN_RELAUNCH_ENV, which Setup.exe, Update.exe and the hook inherit. A
  * silent package-manager upgrade sets nothing, and the hook relaunches.
+ *
+ * No `electron` import here: the caller passes `shell.openPath` in, so this
+ * module stays testable outside Electron.
  */
-import * as path from 'path';
-import { spawn } from 'child_process';
 
 /** Set to '1' on the Setup.exe the in-app updater starts (installTeardown.ts). */
 export const FIRSTRUN_RELAUNCH_ENV = 'WMUX_SQUIRREL_FIRSTRUN_RELAUNCHES';
@@ -31,25 +32,34 @@ export function hookShouldRelaunch(env: NodeJS.ProcessEnv): boolean {
   return env[FIRSTRUN_RELAUNCH_ENV] !== '1';
 }
 
-/**
- * The PowerShell command line that starts `exe` through ShellExecute. The
- * script is passed encoded (UTF-16LE base64), so no path character can break
- * the command line; inside it the path is a single-quoted literal, where only
- * an apostrophe needs escaping (by doubling). Pure, for tests.
- */
-export function relaunchCommand(exe: string, systemRoot: string): { file: string; args: string[] } {
-  const script = `Start-Process -FilePath '${exe.replace(/'/g, "''")}'`;
-  return {
-    file: path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-      '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-  };
-}
+/** `shell.openPath`: resolves to '' on success, else the error text. */
+export type OpenPath = (target: string) => Promise<string>;
 
-/** Start `exe` so it inherits no handle of this process. Best-effort, win32. */
-export function relaunchWithoutInheritance(exe: string): void {
-  const { file, args } = relaunchCommand(exe, process.env.SystemRoot || 'C:\\Windows');
-  spawn(file, args, { detached: true, stdio: 'ignore', windowsHide: true })
-    .on('error', (err: Error) => console.warn('[Squirrel] relaunch failed:', err))
-    .unref();
+/** How long the hook waits for the shell's answer before it exits anyway. */
+export const RELAUNCH_WAIT_MS = 5_000;
+
+/**
+ * Start `exe` through the shell, so it inherits no handle of this process,
+ * and wait for the shell's answer (bounded) so a failure reaches the log
+ * before the hook exits. Never rejects.
+ */
+export async function relaunchWithoutInheritance(
+  exe: string,
+  openPath: OpenPath,
+  waitMs: number = RELAUNCH_WAIT_MS,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<string>((resolve) => {
+    timer = setTimeout(() => resolve(`no answer from the shell after ${waitMs} ms`), waitMs);
+  });
+  try {
+    const opened = Promise.resolve()
+      .then(() => openPath(exe))
+      .catch((err: unknown) => (err instanceof Error ? err.message : String(err)) || 'unknown error');
+    const error = await Promise.race([opened, timeout]);
+    if (error) console.warn(`[Squirrel] relaunch failed: ${error}`);
+    else console.log('[Squirrel] relaunched through the shell');
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

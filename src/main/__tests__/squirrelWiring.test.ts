@@ -22,6 +22,8 @@ import { readSourceText } from '../../test-utils/sourceText';
 describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
   const indexPath = path.join(__dirname, '..', 'index.ts');
   const indexSrc = readSourceText(indexPath);
+  // #3280: the hooks' relaunch, through the shell, and the exit after it.
+  const RELAUNCH_THEN_EXIT = 'relaunchWithoutInheritance(process.execPath, (p) => shell.openPath(p)).finally(() => process.exit(0));';
 
   it('classifies the Squirrel arg via isSquirrelInstallerEvent, not a bare startsWith', () => {
     // The predicate must be the gate that sets isSquirrelEvent.
@@ -109,9 +111,9 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     expect(updatedPos).toBeGreaterThan(0);
     expect(uninstallPos).toBeGreaterThan(updatedPos);
     const updatedBranch = indexSrc.slice(updatedPos, uninstallPos);
-    // Same relaunch the --squirrel-install branch uses (through ShellExecute,
+    // Same relaunch the --squirrel-install branch uses (through the shell,
     // #3280); the single-instance lock dedupes any double-launch.
-    expect(updatedBranch).toContain('relaunchWithoutInheritance(process.execPath)');
+    expect(updatedBranch).toContain(RELAUNCH_THEN_EXIT);
   });
 
   // Every in-app update is a Squirrel full install, so --squirrel-install runs
@@ -232,7 +234,7 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     // The existing-profile path still repairs, then relaunches.
     const elseAt = installBranch.indexOf('} else {', quitAt);
     const repairAt = installBranch.indexOf('shortcutHygiene.repairInstalledShortcuts(process.execPath)', elseAt);
-    const launchAt = installBranch.indexOf('relaunchWithoutInheritance(process.execPath)', repairAt);
+    const launchAt = installBranch.indexOf('relaunchWithoutInheritance(process.execPath,', repairAt);
     expect(elseAt).toBeGreaterThan(quitAt);
     expect(repairAt).toBeGreaterThan(elseAt);
     expect(launchAt).toBeGreaterThan(repairAt);
@@ -257,9 +259,12 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     const updatedStart = indexSrc.indexOf("squirrelCmd === '--squirrel-updated'");
     const uninstallStart = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
     const installBranch = indexSrc.slice(installStart, updatedStart);
-    expect(installBranch).toMatch(/if\s*\(relaunch\)\s*relaunchWithoutInheritance\(process\.execPath\)/);
+    // The hook exits only once the shell has answered, so a failed relaunch is
+    // logged first; when firstrun relaunches, it exits at once.
+    expect(installBranch).toContain(`if (relaunch) void ${RELAUNCH_THEN_EXIT}`);
+    expect(installBranch).toMatch(/else process\.exit\(0\);/);
     expect(installBranch).toContain('hookShouldRelaunch(process.env)');
-    expect(indexSrc.slice(updatedStart, uninstallStart)).toContain('relaunchWithoutInheritance(process.execPath)');
+    expect(indexSrc.slice(updatedStart, uninstallStart)).toContain(RELAUNCH_THEN_EXIT);
     // The waiter's note to the hook stays out of the app's own environment.
     const initAt = indexSrc.indexOf('function appInit(): void {');
     const scrubAt = indexSrc.indexOf('delete process.env[FIRSTRUN_RELAUNCH_ENV]', initAt);

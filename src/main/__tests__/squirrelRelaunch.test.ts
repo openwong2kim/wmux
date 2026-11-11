@@ -1,15 +1,13 @@
 /**
- * #3280: the install hook relaunches the app through ShellExecute, never as
- * its own child, and not at all when Squirrel's firstrun does (squirrelRelaunch.ts).
+ * #3280: the install hook relaunches the app through the shell, never as its
+ * own child, and not at all when Squirrel's firstrun does (squirrelRelaunch.ts).
  */
-import { describe, it, expect } from 'vitest';
-import { FIRSTRUN_RELAUNCH_ENV, hookShouldRelaunch, relaunchCommand } from '../squirrelRelaunch';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { FIRSTRUN_RELAUNCH_ENV, hookShouldRelaunch, relaunchWithoutInheritance } from '../squirrelRelaunch';
 
-function decode(args: string[]): string {
-  const at = args.indexOf('-EncodedCommand');
-  expect(at).toBeGreaterThanOrEqual(0);
-  return Buffer.from(args[at + 1], 'base64').toString('utf16le');
-}
+const EXE = 'C:\\Users\\u\\AppData\\Local\\wmux\\app-4.16.0\\wmux.exe';
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('hookShouldRelaunch', () => {
   it('relaunches unless the in-app updater said firstrun will', () => {
@@ -19,23 +17,32 @@ describe('hookShouldRelaunch', () => {
   });
 });
 
-describe('relaunchCommand', () => {
-  const root = 'C:\\Windows';
-
-  it('runs Windows PowerShell from the system root, hidden and without a profile', () => {
-    const { file, args } = relaunchCommand('C:\\Users\\u\\AppData\\Local\\wmux\\app-4.16.0\\wmux.exe', root);
-    expect(file.toLowerCase()).toBe('c:\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe');
-    expect(args).toEqual(expect.arrayContaining(['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden']));
+describe('relaunchWithoutInheritance', () => {
+  it('opens the exe through the shell and logs success', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const openPath = vi.fn(async () => '');
+    await relaunchWithoutInheritance(EXE, openPath);
+    expect(openPath).toHaveBeenCalledWith(EXE);
+    expect(log).toHaveBeenCalledWith('[Squirrel] relaunched through the shell');
   });
 
-  it('starts the exe with Start-Process (ShellExecute), the path a single-quoted literal', () => {
-    const exe = 'C:\\Users\\u\\AppData\\Local\\wmux\\app-4.16.0\\wmux.exe';
-    expect(decode(relaunchCommand(exe, root).args)).toBe(`Start-Process -FilePath '${exe}'`);
+  it('logs the shell\'s error text before resolving', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await relaunchWithoutInheritance(EXE, async () => 'Access is denied.');
+    expect(warn).toHaveBeenCalledWith('[Squirrel] relaunch failed: Access is denied.');
   });
 
-  it('keeps an apostrophe, spaces, $ and a backtick inside the literal', () => {
-    const exe = "C:\\Users\\O'Connor $x `y\\AppData\\Local\\wmux\\app-4.16.0\\wmux.exe";
-    expect(decode(relaunchCommand(exe, root).args))
-      .toBe("Start-Process -FilePath 'C:\\Users\\O''Connor $x `y\\AppData\\Local\\wmux\\app-4.16.0\\wmux.exe'");
+  it('never rejects, even when openPath throws or rejects', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(relaunchWithoutInheritance(EXE, () => { throw new Error('boom'); })).resolves.toBeUndefined();
+    await expect(relaunchWithoutInheritance(EXE, () => Promise.reject(new Error('gone')))).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith('[Squirrel] relaunch failed: boom');
+    expect(warn).toHaveBeenCalledWith('[Squirrel] relaunch failed: gone');
+  });
+
+  it('gives up waiting after the cap, so the hook still exits', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await relaunchWithoutInheritance(EXE, () => new Promise<string>(() => undefined), 20);
+    expect(warn).toHaveBeenCalledWith('[Squirrel] relaunch failed: no answer from the shell after 20 ms');
   });
 });

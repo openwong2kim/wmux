@@ -62,7 +62,7 @@ process.on('uncaughtException', (err) => {
 import { markBoot, emitBootSummary } from './util/bootTrace';
 import * as path from 'path';
 import * as os from 'os';
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, shell } from 'electron';
 import { checkUserDataIsolation, claimPortableDataNotice, mayInstallDarwinCliShim, PORTABLE_DATA_SUFFIX, shouldUsePortableData } from './dataIsolation';
 import { createWindow, loadMainRenderer } from './window/createWindow';
 import { attachDesktopPresenceReporter, reportDesktopPresence } from './window/desktopPresence';
@@ -342,8 +342,9 @@ app.commandLine.appendSwitch('lang', 'en-US');
 // Only the four INSTALLER lifecycle events (install/updated/uninstall/obsolete)
 // are handled-and-exited here. '--squirrel-firstrun' is NOT an installer hook —
 // Squirrel passes it on the first normal launch, so it must fall through to
-// appInit() where the single-instance lock dedupes it against the clean instance
-// auto-launched from --squirrel-install. (A bare startsWith('--squirrel-') guard
+// appInit() where the single-instance lock dedupes it against an instance the
+// install hook relaunched (it skips that when the in-app updater says firstrun
+// will, #3280). (A bare startsWith('--squirrel-') guard
 // used to catch firstrun, set the flag, match no handler, never quit, and skip
 // appInit() — leaving an invisible zombie that spawned its own gpu/network procs.
 // See isSquirrelInstallerEvent + src/main/squirrel.ts.)
@@ -458,8 +459,8 @@ if (process.platform === 'win32') {
         try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
         const relaunch = hookShouldRelaunch(process.env);
         console.log(`[Squirrel] install hook relaunch: ${relaunch ? 'by the hook' : 'left to Squirrel firstrun'}`);
-        if (relaunch) relaunchWithoutInheritance(process.execPath);
-        process.exit(0);
+        if (relaunch) void relaunchWithoutInheritance(process.execPath, (p) => shell.openPath(p)).finally(() => process.exit(0));
+        else process.exit(0);
       }
     } else if (squirrelCmd === '--squirrel-updated') {
       // Refresh the startup entry's exe path (it changes on every update) —
@@ -485,8 +486,7 @@ if (process.platform === 'win32') {
       // and the single-instance lock dedupes if Squirrel also launches one
       // itself. Not as our own child: it would hold Squirrel's output pipe
       // open until the app exits (#3280; squirrelRelaunch.ts).
-      relaunchWithoutInheritance(process.execPath);
-      process.exit(0);
+      void relaunchWithoutInheritance(process.execPath, (p) => shell.openPath(p)).finally(() => process.exit(0));
     } else if (squirrelCmd === '--squirrel-uninstall') {
       // Squirrel cancels this hook 10 s after starting it (the install hook
       // gets about 16 s), and a cancelled hook leaves the app folder, the Start
