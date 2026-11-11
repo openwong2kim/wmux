@@ -2699,12 +2699,14 @@ html:not([data-glass]) .wmux-shell-body.flex-row-reverse:not([data-sidebar="hidd
 }
 /* Under window glass the corners outside the curve must show the material, so
  * they cannot be painted over. When the two panes in the column's sidebar-side
- * corners are plain terminals (data-corner, set by PaneContainer and Pane), the
- * column clips along x only, which Chromium does as a plain rect (a one-axis
- * clip ignores border-radius), and the few boxes that reach those corners round
- * themselves inside the column's own hairline. Any other corner content
- * (browser, editor, chat, preview, multiview, a remote view) keeps the rounded
- * clip, since its boxes are not rounded here.
+ * corners are plain terminals (data-glass-corners on the column, from
+ * selectGlassCornerSides; data-corner on those panes), the column clips along x
+ * only, which Chromium does as a plain rect (a one-axis clip ignores
+ * border-radius), and the few boxes that reach those corners round themselves
+ * inside the column's own hairline. Any other corner content (browser, editor,
+ * chat, preview, multiview, a remote view) keeps the rounded clip, since its
+ * boxes are not rounded here. The gate is an attribute, not :has(): a :has()
+ * on the column re-ran style for the whole column on every terminal frame.
  * The frame stops painting (the column's own background is the same colour) and
  * the corner panes round their bottom border, terminal, and the agent toolbar
  * and its lip along the old clip's inner curve. The top-left header starts 1px
@@ -2712,47 +2714,47 @@ html:not([data-glass]) .wmux-shell-body.flex-row-reverse:not([data-sidebar="hidd
  * clip-path from 1px down: it holds no composited layer, so this clip is painted.
  * The bottom pane's left border sits under the hairline (the clip used to hide
  * it), so it stops painting rather than following the curve. */
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tl"]):has([data-pane-grid-wrapper="shown"] [data-corner~="bl"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)),
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tr"]):has([data-pane-grid-wrapper="shown"] [data-corner~="br"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"],
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] {
   overflow: visible;
   overflow-x: clip;
 }
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tl"]):has([data-pane-grid-wrapper="shown"] [data-corner~="bl"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) .wmux-workspace-frame,
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tr"]):has([data-pane-grid-wrapper="shown"] [data-corner~="br"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) .wmux-workspace-frame {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] .wmux-workspace-frame,
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] .wmux-workspace-frame {
   background-color: transparent;
 }
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tl"]):has([data-pane-grid-wrapper="shown"] [data-corner~="bl"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) [data-corner~="tl"] .wmux-pane-header {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-corner~="tl"] .wmux-pane-header {
   clip-path: inset(1px 0 0 0 round calc(var(--sheet-radius) - 1px) 0 0 0 / var(--sheet-radius) 0 0 0);
 }
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tl"]):has([data-pane-grid-wrapper="shown"] [data-corner~="bl"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) [data-corner~="bl"] {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-corner~="bl"] {
   border-bottom-left-radius: var(--sheet-radius);
   border-left-color: transparent !important;
 }
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tl"]):has([data-pane-grid-wrapper="shown"] [data-corner~="bl"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) [data-corner~="bl"] [data-terminal-engine] {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-corner~="bl"] [data-terminal-engine] {
   border-bottom-left-radius: calc(var(--sheet-radius) - 1px);
 }
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tl"]):has([data-pane-grid-wrapper="shown"] [data-corner~="bl"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) [data-testid="toolbar-lip"],
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tl"]):has([data-pane-grid-wrapper="shown"] [data-corner~="bl"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) .wmux-toolbar {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-testid="toolbar-lip"],
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] .wmux-toolbar {
   border-bottom-left-radius: calc(var(--sheet-radius) - 1px) var(--sheet-radius);
 }
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tr"]):has([data-pane-grid-wrapper="shown"] [data-corner~="br"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) [data-corner~="tr"] .wmux-pane-header {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-corner~="tr"] .wmux-pane-header {
   clip-path: inset(1px 0 0 0 round 0 calc(var(--sheet-radius) - 1px) 0 0 / 0 var(--sheet-radius) 0 0);
 }
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tr"]):has([data-pane-grid-wrapper="shown"] [data-corner~="br"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) [data-corner~="br"] {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-corner~="br"] {
   border-bottom-right-radius: var(--sheet-radius);
   border-right-color: transparent !important;
 }
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tr"]):has([data-pane-grid-wrapper="shown"] [data-corner~="br"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) [data-corner~="br"] [data-terminal-engine] {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-corner~="br"] [data-terminal-engine] {
   border-bottom-right-radius: calc(var(--sheet-radius) - 1px);
 }
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tr"]):has([data-pane-grid-wrapper="shown"] [data-corner~="br"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) [data-testid="toolbar-lip"],
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tr"]):has([data-pane-grid-wrapper="shown"] [data-corner~="br"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) .wmux-toolbar {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-testid="toolbar-lip"],
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] .wmux-toolbar {
   border-bottom-right-radius: calc(var(--sheet-radius) - 1px) var(--sheet-radius);
 }
 /* The lip is 2px tall, too short for the curve: it grows to the radius and
  * paints only its bottom 2px, so its rounded corner cuts it like the clip did. */
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tl"]):has([data-pane-grid-wrapper="shown"] [data-corner~="bl"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) [data-testid="toolbar-lip"],
-html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column:has([data-pane-grid-wrapper="shown"] [data-corner~="tr"]):has([data-pane-grid-wrapper="shown"] [data-corner~="br"]):not(:has([data-chatv2-surface], [data-chat-surface], .wmux-chat-first-ask)) [data-testid="toolbar-lip"] {
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-testid="toolbar-lip"],
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-testid="toolbar-lip"] {
   height: var(--sheet-radius) !important;
   background: linear-gradient(to top, var(--bg-surface) 2px, transparent 2px) !important;
 }

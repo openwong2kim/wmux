@@ -2,8 +2,8 @@
 // over the panes: on macOS a rounded clip with differing corners makes Chromium
 // mask the whole column in window-sized GPU surfaces. Under window glass the
 // column clips along x only when both sidebar-side corner panes are plain
-// terminals, which then round their own boxes. Compositing does not run in
-// jsdom, so this reads the stylesheet.
+// terminals (data-glass-corners), which then round their own boxes.
+// Compositing does not run in jsdom, so this reads the stylesheet.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -39,18 +39,20 @@ describe('pane column edge in an opaque window', () => {
     expect(overlay).toMatch(/pointer-events:\s*none/);
   });
 
-  it('under glass, clips along x only and rounds corner boxes, only behind the both-corners gate', () => {
+  it('under glass, clips along x only and rounds corner boxes, only behind the column gate attribute', () => {
     const cornerRules = RULES.flatMap((r) => r.selectors).filter((x) => x.includes('[data-corner'));
     expect(cornerRules.length).toBeGreaterThan(0);
     for (const sel of cornerRules) {
       expect(sel.startsWith('html[data-glass] ')).toBe(true);
       const right = /\.flex-row-reverse(?!\))/.test(sel);
-      for (const c of right ? ['tr', 'br'] : ['tl', 'bl']) expect(sel).toContain(`:has([data-pane-grid-wrapper="shown"] [data-corner~="${c}"])`);
+      expect(sel).toContain(`.wmux-main-column[data-glass-corners~="${right ? 'right' : 'left'}"]`);
+      // A :has() on the column re-runs style for all of it on every terminal frame.
+      expect(sel).not.toContain(':has(');
     }
-    const unclipped = RULES.filter((r) => r.selectors.some((x) => x.endsWith('.wmux-main-column') || x.includes('.wmux-main-column:')) && /overflow:\s*visible/.test(r.body));
+    const unclipped = RULES.filter((r) => r.selectors.some((x) => x.includes('.wmux-main-column')) && /overflow:\s*visible/.test(r.body));
     expect(unclipped.length).toBe(1);
     expect(unclipped[0].body).toMatch(/overflow-x:\s*clip/);
-    expect(unclipped[0].selectors.length).toBe(2);
-    for (const r of unclipped[0].selectors) expect(r).toMatch(/^html\[data-glass\] .*:has\(\[data-pane-grid-wrapper="shown"\] \[data-corner~=.*\]\):has\(.*\):not\(:has\(.*\)\)$/);
+    expect(unclipped[0].selectors.map((x) => x.replace(/.* \.wmux-main-column/, ''))).toEqual(['[data-glass-corners~="left"]', '[data-glass-corners~="right"]']);
+    for (const r of unclipped[0].selectors) expect(r.startsWith('html[data-glass] ')).toBe(true);
   });
 });

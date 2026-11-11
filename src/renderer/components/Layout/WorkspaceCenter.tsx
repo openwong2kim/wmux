@@ -42,8 +42,7 @@ export function WorkspaceCenter() {
           for individual workspaces), just toggled to display:none. */}
       <div
         className="absolute inset-0 flex flex-col"
-        // 'hidden' tells the glass corner rules (ui.css) a remote view covers it.
-        data-pane-grid-wrapper={remoteVisible || pickOnHost !== null ? 'hidden' : 'shown'}
+        data-pane-grid-wrapper
         style={{ display: remoteVisible || pickOnHost !== null ? 'none' : 'flex' }}
       >
         {/* One dialog layer for every pane tree here (ui/dialogHost):

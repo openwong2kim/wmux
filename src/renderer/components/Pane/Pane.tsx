@@ -37,6 +37,7 @@ import SurfaceTabs, {
 import { PANE_CORNER_GUTTER, paneHeaderTailGap } from './paneChrome';
 import { readRemoteSpawnedBy } from '../../utils/remoteSpawnedBy';
 import { isTerminalKindSurfaceType, isTerminalSurfaceType, isWorkSurfaceType, pickSplitShownSurfaces } from './surfaceKinds';
+import { isPlainTerminalPane } from './paneCorners';
 import { AUTO_RESUME_AGENTS } from '../../stores/selectors/surfaceShown';
 import WorkTabs from './WorkTabs';
 import { useElementWidth } from '../../hooks/useElementWidth';
@@ -1108,8 +1109,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         'data-pane-workspace': workspace.id,
         // Glass rounds a corner pane's own boxes (ui.css) only when it shows a
         // plain terminal: other surfaces paint their own corners, so the
-        // column keeps its clip for them.
-        'data-corner': corners && !splitMode && isTerminalSurfaceType(activeSurfaceType) ? corners : undefined,
+        // column keeps its clip for them (selectGlassCornerSides).
+        'data-corner': corners && isPlainTerminalPane(pane, chatViewEnabled) ? corners : undefined,
       }}
       onClick={handleClick}
       data-onboarding-target="pane-area"

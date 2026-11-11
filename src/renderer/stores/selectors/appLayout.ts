@@ -15,6 +15,9 @@
 import type { StoreState } from '../index';
 import type { Pane } from '../../../shared/types';
 import { workspaceProbeCwd } from '../../utils/projectConfigProbe';
+import { glassCornerSides } from '../../components/Pane/paneCorners';
+import { isRemoteMirrorVisible } from '../slices/remoteWorkspacesSlice';
+import { selectHostPickName } from '../shadowWorkspace';
 
 /** Empty leaves (a leaf pane with no surfaces) under a pane subtree. */
 function collectEmptyLeafIds(pane: Pane, out: string[]): void {
@@ -71,4 +74,19 @@ export function selectActiveRefusedEmptyLeafIdsKey(state: StoreState): string {
  */
 export function selectProjectCwdSignature(state: StoreState): string {
   return state.workspaces.map((w) => `${w.id}:${workspaceProbeCwd(w) ?? ''}`).join('|');
+}
+
+/**
+ * The column sides whose two corner panes are plain terminals ('left',
+ * 'right', both, or ''), for the window-glass corner rules in ui.css. Only the
+ * single-view local pane tree counts: multiview tiles and a remote or other-PC
+ * view cover the column with content these rules do not round. A string, so it
+ * changes only when a corner pane changes kind.
+ */
+export function selectGlassCornerSides(state: StoreState): string {
+  const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+  if (!ws) return '';
+  if (state.multiviewIds.length >= 2 && state.multiviewIds.includes(ws.id)) return '';
+  if (isRemoteMirrorVisible(state) || selectHostPickName(state) !== null) return '';
+  return glassCornerSides(ws.rootPane, state.zoomedPaneId, state.chatViewEnabled);
 }
