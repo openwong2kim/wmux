@@ -208,6 +208,9 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     const installStart = indexSrc.indexOf("squirrelCmd === '--squirrel-install'");
     const updatedStart = indexSrc.indexOf("squirrelCmd === '--squirrel-updated'");
     const uninstallStart = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
+    expect(installStart).toBeGreaterThan(0);
+    expect(updatedStart).toBeGreaterThan(installStart);
+    expect(uninstallStart).toBeGreaterThan(updatedStart);
     const installBranch = indexSrc.slice(installStart, updatedStart);
     const updatedBranch = indexSrc.slice(updatedStart, uninstallStart);
     for (const branch of [installBranch, updatedBranch]) {

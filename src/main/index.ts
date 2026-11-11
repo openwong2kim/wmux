@@ -554,9 +554,11 @@ if (process.platform === 'win32') {
       // nor app.exit() returns or emits 'exit': runner probes of both stayed
       // alive until Squirrel cancelled the hook at 10 s, while a self-kill
       // ended it at 1.5 s and Squirrel finished cleanly. The steps above write
-      // synchronously, so nothing is left to flush. (The exit hung in a native
-      // module's DLL detach, which calls FlushFileBuffers on stdout: on
-      // Squirrel's pipe, unread until the hook exits, that never returns. #3017)
+      // synchronously, so nothing is left to flush. (In the install hook the
+      // same hang was traced to koffi's DLL detach, which calls
+      // FlushFileBuffers on stdout: on Squirrel's pipe, unread until the hook
+      // exits, that never returns. #3017 stopped main loading koffi at module
+      // load; the self-kill also covers any native module loaded later.)
       process.kill(process.pid, 'SIGKILL');
     } else if (squirrelCmd === '--squirrel-obsolete') {
       process.exit(0);
