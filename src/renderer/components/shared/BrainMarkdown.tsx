@@ -219,13 +219,61 @@ export function reduceInlineHtml(text: string): string {
   }).join('');
 }
 
+/**
+ * For each line, the next line after it that starts with a fence marker (as
+ * the fence branch reads one), or undefined. A null line ends the text: no
+ * marker past it counts. Built once, on the first ask.
+ */
+function fenceMarkerAfter(lines: readonly (string | null)[]): (index: number) => string | undefined {
+  let next: Int32Array | null = null;
+  return (index) => {
+    if (!next) {
+      next = new Int32Array(lines.length).fill(-1);
+      for (let j = lines.length - 2; j >= 0; j--) {
+        const after = lines[j + 1];
+        next[j] = after === null ? -1 : fenceOpenLength(after) > 0 ? j + 1 : next[j + 1];
+      }
+    }
+    const at = next[index];
+    return at >= 0 ? (lines[at] ?? undefined) : undefined;
+  };
+}
+
+/**
+ * A fence opener after prose on the same line ("... text ```ts", as models
+ * write it), as `[prose, opener]`: the fence opens there. The opener takes the
+ * info string a line-start fence takes (no backticks after the run). It
+ * counts only when the first fence marker after it (`followingMarker`) is a
+ * bare closer at least as long, the line that would close it. When that
+ * marker opens another block ("```js") or there is none, the ``` is prose
+ * naming it, and splitting would swallow what follows. A line with another
+ * ``` run (inline ```code```) is not one, and neither is a quoted line: the
+ * quote is read once its `>` is stripped.
+ */
+function midLineFence(line: string, followingMarker: () => string | undefined): [string, string] | null {
+  if (!line.includes('```') || fenceOpenLength(line) > 0 || /^\s*>/.test(line)) return null;
+  const m = /^(.*\S)[ \t]+(`{3,}[^`]*)$/.exec(line);
+  if (!m || m[1].includes('```')) return null;
+  const marker = followingMarker();
+  return marker !== undefined && closesFence(marker, fenceOpenLength(m[2])) ? [m[1], m[2]] : null;
+}
+
+const QUOTE_MARKERS = /^(?:\s*>\s?)+/;
+
 /** The whole body, outside code fences: comments and script/style elements
- *  dropped, <br> as a line break. */
+ *  dropped, <br> as a line break. Fences are found as renderBlocks finds
+ *  them: at line start, mid-line (midLineFence), and inside a quote once its
+ *  `>` markers are stripped, so what it draws as code stays as written. */
 function preprocessGithubHtml(source: string): string {
   const lines = source.split('\n');
+  // A quoted line's text without its markers; null outside a quote, which ends it.
+  const quoteText = lines.map((l) => (/^\s*>/.test(l) ? l.replace(QUOTE_MARKERS, '') : null));
+  const markerAfter = fenceMarkerAfter(lines);
+  const quoteMarkerAfter = fenceMarkerAfter(quoteText);
   const out: string[] = [];
   let chunk: string[] = [];
   let fence = 0;
+  let quoteFence = 0;
   const flush = () => {
     if (chunk.length === 0) return;
     const text = chunk.join('\n')
@@ -245,18 +293,47 @@ function preprocessGithubHtml(source: string): string {
     for (const l of text.split('\n')) out.push(l);
     chunk = [];
   };
-  for (const line of lines) {
-    if (fence === 0 && fenceOpenLength(line) > 0) {
-      flush();
-      fence = fenceOpenLength(line);
-      out.push(line);
-    } else if (fence > 0) {
+  // Body text before a mid-line opener stays body; the opener goes on its own line.
+  const openMid = (prefix: string, mid: [string, string]): number => {
+    chunk.push(prefix + mid[0]);
+    flush();
+    out.push(prefix + mid[1]);
+    return fenceOpenLength(mid[1]);
+  };
+  lines.forEach((line, index) => {
+    const quoted = quoteText[index];
+    if (quoted === null) quoteFence = 0;
+    if (fence > 0) {
       if (closesFence(line, fence)) fence = 0;
       out.push(line);
+    } else if (quoted !== null) {
+      const prefix = line.slice(0, line.length - quoted.length);
+      const mid = quoteFence === 0 ? midLineFence(quoted, () => quoteMarkerAfter(index)) : null;
+      if (quoteFence > 0) {
+        if (closesFence(quoted, quoteFence)) quoteFence = 0;
+        out.push(line);
+      } else if (mid) {
+        quoteFence = openMid(prefix, mid);
+      } else if (fenceOpenLength(quoted) > 0) {
+        flush();
+        quoteFence = fenceOpenLength(quoted);
+        out.push(line);
+      } else {
+        chunk.push(line);
+      }
     } else {
-      chunk.push(line);
+      const mid = midLineFence(line, () => markerAfter(index));
+      if (mid) {
+        fence = openMid('', mid);
+      } else if (fenceOpenLength(line) > 0) {
+        flush();
+        fence = fenceOpenLength(line);
+        out.push(line);
+      } else {
+        chunk.push(line);
+      }
     }
-  }
+  });
   flush();
   return out.join('\n');
 }
@@ -419,6 +496,7 @@ interface BlockBudget { left: number; cut?: boolean; cells?: number }
 function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budget: BlockBudget): React.ReactNode[] {
   const lines = source.split('\n');
   const out: React.ReactNode[] = [];
+  const markerAfter = fenceMarkerAfter(lines);
   let i = 0;
   while (i < lines.length) {
     if (budget.left <= 0) {
@@ -427,7 +505,15 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
       break;
     }
     budget.left--;
-    const line = lines[i];
+    let line = lines[i];
+
+    // A fence opened mid-line (midLineFence): the prose is drawn as its own line first.
+    const index = i;
+    const midFence = midLineFence(line, () => markerAfter(index));
+    if (midFence) {
+      out.push(<Fragment key={out.length}>{renderBlocks(midFence[0], opts, depth, budget)}</Fragment>);
+      line = midFence[1];
+    }
 
     // Fenced code block (an unclosed fence swallows to the end — streaming).
     // It closes on a backtick run at least as long as the one it opened with.
