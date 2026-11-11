@@ -1065,8 +1065,35 @@ impl<T> Term<T> {
         cursor_cell.c = c;
         cursor_cell.fg = fg;
         cursor_cell.bg = bg;
-        cursor_cell.flags = flags;
+        // wmux: the wrap belongs to the row (xterm keeps it as the next row's
+        // isWrapped), so printing into the last column keeps it.
+        cursor_cell.flags = flags | (cursor_cell.flags & Flags::WRAPLINE);
         cursor_cell.extra = extra;
+    }
+
+    /// wmux: the row above `line` no longer wraps into it: xterm clears
+    /// `line`'s isWrapped (EL 2, EL 0 from column 0, ED). Not a write, so a
+    /// widen's empty cells on that row stay empty (`Row::take_wrap`).
+    pub fn end_wrap_into(&mut self, line: Line) {
+        if line > self.topmost_line() {
+            self.grid[line - 1i32].take_wrap();
+        }
+    }
+
+    /// wmux: edit `line`'s physical cells, keeping its wrap at the edge. xterm
+    /// keeps the wrap as the next row's isWrapped, which no cell edit (ICH,
+    /// DCH, ECH, insert mode) changes; Alacritty keeps it on the last cell,
+    /// which those edits move or replace.
+    fn edit_keeping_wrap(&mut self, line: Line, f: impl FnOnce(&mut [Cell])) {
+        let last = self.columns() - 1;
+        self.grid[line].with_physical(|cells| {
+            let wrapped = cells[last].flags.contains(Flags::WRAPLINE);
+            cells[last].flags.remove(Flags::WRAPLINE);
+            f(cells);
+            if wrapped {
+                cells[last].flags.insert(Flags::WRAPLINE);
+            }
+        });
     }
 
     #[inline]
@@ -1168,7 +1195,7 @@ impl<T: EventListener> Handler for Term<T> {
             let line = self.grid.cursor.point.line;
             let col = self.grid.cursor.point.column.0;
             let bg = self.grid.cursor.template.bg;
-            self.grid[line].with_physical(|cells| {
+            self.edit_keeping_wrap(line, |cells| {
                 insert_cells(cells, col, width, || bg.into());
                 if cells[columns - 1].flags.contains(Flags::WIDE_CHAR) {
                     cells[columns - 1] = bg.into();
@@ -1262,7 +1289,7 @@ impl<T: EventListener> Handler for Term<T> {
         let line = self.grid.cursor.point.line;
         let col = self.grid.cursor.point.column.0;
         self.damage.damage_line(line.0 as usize, 0, self.columns() - 1);
-        self.grid[line].with_physical(|cells| insert_cells(cells, col, count, || bg.into()));
+        self.edit_keeping_wrap(line, |cells| insert_cells(cells, col, count, || bg.into()));
     }
 
     #[inline]
@@ -1589,7 +1616,7 @@ impl<T: EventListener> Handler for Term<T> {
         // wmux: up to the physical end, as xterm's replaceCells: into the
         // cells a row keeps past a narrower width.
         self.damage.damage_line(line.0 as usize, start.0.saturating_sub(1), end.0);
-        self.grid[line].with_physical(|cells| {
+        self.edit_keeping_wrap(line, |cells| {
             replace_cells(cells, start.0, start.0.saturating_add(count), || bg.into())
         });
     }
@@ -1607,7 +1634,7 @@ impl<T: EventListener> Handler for Term<T> {
         let line = cursor.point.line;
         let col = cursor.point.column.0;
         self.damage.damage_line(line.0 as usize, 0, columns - 1);
-        self.grid[line].with_physical(|cells| delete_cells(cells, col, count, || bg.into()));
+        self.edit_keeping_wrap(line, |cells| delete_cells(cells, col, count, || bg.into()));
     }
 
     #[inline]
@@ -1702,9 +1729,20 @@ impl<T: EventListener> Handler for Term<T> {
 
         self.damage.damage_line(point.line.0 as usize, left.0, right.0 - 1);
 
+        // wmux: as xterm's eraseInLine: the row keeps its wrap into the next
+        // (xterm's next-row isWrapped, which no EL touches), and EL 2, or EL 0
+        // from column 0, ends the row's own: it is no longer a continuation.
+        let last = Column(self.columns() - 1);
         let row = &mut self.grid[point.line];
+        let wrapped = row[last].flags.contains(Flags::WRAPLINE);
         for cell in &mut row[left..right] {
             *cell = bg.into();
+        }
+        if wrapped {
+            row.put_wrap();
+        }
+        if left == Column(0) && !matches!(mode, ansi::LineClearMode::Left) {
+            self.end_wrap_into(point.line);
         }
 
         let range = self.grid.cursor.point.line..=self.grid.cursor.point.line;
@@ -1811,8 +1849,9 @@ impl<T: EventListener> Handler for Term<T> {
             ansi::ClearMode::Above => {
                 let cursor = self.grid.cursor.point;
 
-                // If clearing more than one line.
-                if cursor.line > 1 {
+                // wmux: every line before the current one, as xterm resets
+                // them (upstream skipped the top row from the second).
+                if cursor.line > 0 {
                     // Fully clear all lines before the current line.
                     self.grid.reset_region_keep_width(..cursor.line);
                 }
@@ -1823,13 +1862,32 @@ impl<T: EventListener> Handler for Term<T> {
                     *cell = bg.into();
                 }
 
+                // wmux: as xterm, no row up to the cursor's is a continuation
+                // any more. The reset rows lost their wraps; the top row's
+                // comes from history.
+                self.end_wrap_into(Line(0));
+
                 let range = Line(0)..=cursor.line;
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(range));
             },
             ansi::ClearMode::Below => {
                 let cursor = self.grid.cursor.point;
-                for cell in &mut self.grid[cursor.line][cursor.column..] {
-                    *cell = bg.into();
+                // wmux: as xterm's eraseInDisplay, a pending wrap erases
+                // nothing on the cursor's row (its cursor is past the last
+                // column). The rows below are reset either way, so the row
+                // no longer wraps into the next; from column 0 it is no
+                // longer a continuation either.
+                if self.grid.cursor.input_needs_wrap {
+                    if (cursor.line.0 as usize) < screen_lines - 1 {
+                        self.grid[cursor.line].take_wrap();
+                    }
+                } else {
+                    for cell in &mut self.grid[cursor.line][cursor.column..] {
+                        *cell = bg.into();
+                    }
+                    if cursor.column == 0 {
+                        self.end_wrap_into(cursor.line);
+                    }
                 }
 
                 if (cursor.line.0 as usize) < screen_lines - 1 {

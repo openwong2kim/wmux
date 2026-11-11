@@ -668,8 +668,9 @@ fn advance_indexing(
 }
 
 /// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
-/// screen scrolls the screen into history, and its ED 1 skips the top row
-/// when the cursor is on the second. The renderer is xterm.
+/// screen scrolls the screen into history, and its ED 1 skipped the top row
+/// when the cursor is on the second (the vendored handler now resets it too,
+/// for the text feed). The renderer is xterm.
 fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: bool) {
     // A real ESC [ ends any string or sequence in progress; Alacritty
     // ignores DECSED, so this ends it the same way and does nothing else.
@@ -694,6 +695,10 @@ fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: 
             *cell = bg.into();
         }
     }
+    // No row up to the cursor's is a continuation any more (xterm's
+    // isWrapped). The reset rows lost their wraps; the top row's comes from
+    // history.
+    term.end_wrap_into(Line(0));
     if synchronized {
         parser.advance(term, b"\x1b[?2026h");
     }
@@ -1863,6 +1868,91 @@ mod tests {
             lifted(&[overflow.as_str(), "\x1b[?1049l"]),
             "a real leave after it"
         );
+    }
+
+    #[test]
+    fn erases_and_cell_edits_keep_or_end_a_paragraph_as_xterm_s() {
+        use alacritty_terminal::term::cell::Flags;
+        // On 10 columns: `para` wraps row 0 into row 1; `para3` wraps rows 0
+        // and 1; `history` also wraps the history row into screen row 0.
+        let para = "xxxxxxxxxxxxxxx\x1b[1;1H";
+        let para3 = "xxxxxxxxxxxxxxxxxxxxxxxxx\x1b[1;1H";
+        let history = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let wraps = |term: &Term<VoidListener>, line: i32| {
+            term.grid()[Line(line)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        };
+        // xterm keeps the wrap as the next row's isWrapped: no EL, ECH, ICH,
+        // DCH or print touches it, also from a pending wrap.
+        for edit in [
+            "\x1b[1;5H\x1b[K",
+            "\x1b[1;5H\x1b[44m\x1b[K",
+            "\x1b[1;10H\x1b[1K",
+            "\x1b[1;10HX\x1b[1K",
+            "\x1b[2K",
+            "\x1b[1;10HX\x1b[K",
+            "\x1b[1;8H\x1b[5X",
+            "\x1b[10X",
+            "\x1b[1;3H\x1b[2@",
+            "\x1b[1;3H\x1b[2P",
+            "\x1b[1;10HX\x1b[P",
+            "\x1b[4h\x1b[1;3HAB\x1b[4l",
+        ] {
+            assert!(wraps(&feed(&[para, edit]), 0), "{edit:?}");
+        }
+        let term = feed(&[para, "\x1b[1;10HZ"]);
+        assert!(wraps(&term, 0) && term.grid()[Line(0)][Column(9)].c == 'Z');
+        // EL 2, or EL 0 from column 0, ends the row's own: the row above no
+        // longer wraps into it. The row still wraps into the next.
+        for edit in ["\x1b[2;1H\x1b[K", "\x1b[2;4H\x1b[2K"] {
+            let term = feed(&[para3, edit]);
+            assert!(!wraps(&term, 0) && wraps(&term, 1), "{edit:?}");
+        }
+        for edit in ["\x1b[2;4H\x1b[K", "\x1b[2;4H\x1b[1K"] {
+            let term = feed(&[para3, edit]);
+            assert!(wraps(&term, 0) && wraps(&term, 1), "{edit:?}");
+        }
+        // ED resets the rows after the cursor's; from column 0 the cursor's
+        // row is no longer a continuation either.
+        let term = feed(&[para3, "\x1b[2;4H\x1b[J"]);
+        assert!(wraps(&term, 0) && !wraps(&term, 1));
+        let term = feed(&[para3, "\x1b[2;1H\x1b[J"]);
+        assert!(!wraps(&term, 0) && !wraps(&term, 1));
+        // A pending wrap: its cursor is past the last column, so ED erases
+        // nothing on its row, and the pending wrap stays.
+        let term = feed(&[para, "\x1b[1;10HX\x1b[J"]);
+        assert!(!wraps(&term, 0) && term.grid()[Line(0)][Column(9)].c == 'X');
+        assert!(term.grid().cursor.input_needs_wrap);
+        // ED 1 resets the rows above; the cursor's row keeps its wrap unless
+        // the erase reached its last column.
+        assert!(wraps(&feed(&[para3, "\x1b[2;4H\x1b[1J"]), 1));
+        assert!(!wraps(&feed(&[para3, "\x1b[2;10H\x1b[1J"]), 1));
+        // The history row stops wrapping into the top row it no longer
+        // continues, and only then.
+        for edit in [
+            "\x1b[1;1H\x1b[2K",
+            "\x1b[1;1H\x1b[K",
+            "\x1b[1;1H\x1b[J",
+            "\x1b[1;3H\x1b[1J",
+            "\x1b[2J",
+        ] {
+            assert!(!wraps(&feed(&[history, edit]), -1), "{edit:?}");
+        }
+        assert!(wraps(&feed(&[history, "\x1b[1;3H\x1b[K"]), -1));
+        // The text feed (no XtermFeed) takes Alacritty's own ED 1 the same way.
+        let plain = |bytes: &str| {
+            let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+            let mut parser: Processor = Processor::new();
+            parser.advance(&mut term, bytes.as_bytes());
+            term
+        };
+        let term = plain(&format!("{para3}\x1b[3;4H\x1b[1J"));
+        assert!(!wraps(&term, 1));
+        assert!(!wraps(&plain(&format!("{history}\x1b[1;3H\x1b[1J")), -1));
+        // From the second row it resets the top row too, as xterm does.
+        let term = plain(&format!("{para3}\x1b[2;4H\x1b[1J"));
+        assert!(row(&term, 0).is_empty() && !wraps(&term, 0) && wraps(&term, 1));
     }
 
     #[test]

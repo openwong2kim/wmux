@@ -126,6 +126,19 @@ core/wmux-term/vendor/alacritty_terminal/Cargo.toml --locked`.
   clear, so an auto-wrap below a scroll region keeps its wrap. vte routes IND
   and NEL to the same handler, where xterm's `index` keeps the flag;
   `native_core.rs` puts it back for those. Added 2026-11-10.
+- `src/term/mod.rs` keeps a row's wrap where xterm.js keeps it, as the next
+  row's `isWrapped`, which only line feeds and erases that clear whole rows
+  change. Alacritty keeps it on the last cell, so every edit that replaced or
+  moved that cell dropped it. Printing into the last column (`write_at_cursor`)
+  and character insert, delete and erase and insert-mode printing
+  (`edit_keeping_wrap`) now keep it at the edge, and `clear_line` keeps it for
+  every EL. EL 2, and EL 0 from column 0, end the row's own wrap instead
+  (`end_wrap_into`: the row above, a history row for the top one, stops
+  wrapping into it; `Row::take_wrap`, so not a write). ED 0 from a pending wrap
+  erases nothing on the cursor's row, as xterm's cursor is past the last column
+  there; ED 0 and ED 1 end every wrap into a row they clear whole, the top row's
+  from history included. ED 1 from the second row resets the top row too, as
+  xterm does (upstream skipped it). Added 2026-11-12.
 
 These changes are experimental compatibility policy, not upstream behavior.
 Revalidate width, resize, ANSI restoration and live continuation when upgrading.
