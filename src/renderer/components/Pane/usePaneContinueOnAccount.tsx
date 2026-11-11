@@ -5,6 +5,9 @@
 // account's config dir and resumes the same session id there, in the same
 // pane (src/daemon/continueOnAccount.ts). Offered only while the pane runs
 // Claude Code under the daemon and at least one Claude account is registered.
+// When the target account or this pane signs in from a vault (a token), the
+// conversation goes to a new pane beside this one instead
+// (continueOnAccount.handler.ts), and this pane is left as is.
 
 import { useCallback, useMemo, useState } from 'react';
 import { useStore } from '../../stores';
@@ -14,6 +17,30 @@ import { IconUsers } from '../icons';
 import type { PaneActionItem } from './PaneActionsMenu';
 import { agentRow } from '../../../shared/agentIdentity';
 import { accountGroupOf, groupAccountsBoundFirst } from '../../../shared/accountGroup';
+import { findWorkspaceSurfaceByPtyId } from '../../utils/paneTraversal';
+
+/**
+ * A new pane beside the one running `ptyId` (the workspace's active pane when
+ * that one is stashed) that runs `command` in `cwd` on the account: the funnel
+ * creates it from the seed, through the normal create. False when there is no
+ * such workspace or the split was refused (the pane cap says so itself).
+ */
+export function openContinuePane(ptyId: string, pane: { accountId: string; command: string; cwd: string }): boolean {
+  const st = useStore.getState();
+  const ws = st.workspaces.find((w) => findWorkspaceSurfaceByPtyId(w, ptyId));
+  const hit = ws ? findWorkspaceSurfaceByPtyId(ws, ptyId) : null;
+  if (!ws || !hit) return false;
+  const source = hit.stashed ? ws.activePaneId : hit.paneId;
+  // The funnel fills only the active workspace's empty leaves.
+  st.setActiveWorkspace(ws.id);
+  const paneId = useStore.getState().splitPane(source, 'horizontal', ws.id);
+  if (!paneId) return false;
+  useStore.setState((s) => {
+    s.projectPaneSeed[paneId] = { command: pane.command, cwd: pane.cwd, accountId: pane.accountId };
+    delete s.splitCwdSeed[paneId];
+  });
+  return true;
+}
 
 /** Key of the main-menu item that opens the account submenu. */
 export const PANE_CONTINUE_ACCOUNT_KEY = 'continue-on-account';
@@ -68,7 +95,9 @@ export function usePaneContinueOnAccount(opts: {
       const rows = res.accounts.filter((a) => agentRow(a.vendor)?.continueOnAccount);
       const bound = workspaceId ? rows.find((a) => a.id === res.bindings[workspaceId]?.claude) : undefined;
       const buckets = groupAccountsBoundFirst(rows, bound ? accountGroupOf(bound) : null);
-      setAccounts(buckets.flatMap((b) => b.accounts).map((a) => ({ id: a.id, name: a.name, group: a.group, loggedIn: a.status.loggedIn })));
+      setAccounts(buckets.flatMap((b) => b.accounts).map((a) => ({
+        id: a.id, name: a.name, group: a.group, loggedIn: a.status.loggedIn || a.tokenSignIn?.usable === true,
+      })));
       setOtherFrom(bound && buckets.length > 1 ? buckets[0].accounts.length : -1);
     }).catch(() => { /* menu keeps the last rows */ });
   }, [ready, workspaceId]);
@@ -78,7 +107,15 @@ export function usePaneContinueOnAccount(opts: {
     if (!api || !ptyId) return;
     const { pushToast } = useStore.getState();
     try {
-      const res = await api.continuePane({ ptyId, accountId: account.id });
+      const res = await api.continuePane({ ptyId, accountId: account.id, ...(workspaceId ? { workspaceId } : {}) });
+      if (res.ok && res.newPane) {
+        if (!openContinuePane(ptyId, res.newPane)) {
+          pushToast({ level: 'error', message: t('pane.continueOnAccountFailed') });
+          return;
+        }
+        pushToast({ level: 'info', message: t('pane.continueOnAccountNewPane', { name: account.name }) });
+        return;
+      }
       if (res.ok) {
         pushToast({ level: 'info', message: t('pane.continueOnAccountDone', { name: account.name }) });
         return;
@@ -87,7 +124,7 @@ export function usePaneContinueOnAccount(opts: {
     } catch {
       pushToast({ level: 'error', message: t('pane.continueOnAccountFailed') });
     }
-  }, [ptyId, t]);
+  }, [ptyId, workspaceId, t]);
 
   const enabled = ready && accounts.length > 0;
 

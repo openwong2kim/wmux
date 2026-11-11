@@ -1408,6 +1408,7 @@ export const ko = {
   'pane.rewindUnavailable': "이 판에서는 되돌리기를 쓸 수 없습니다",
   'pane.continueOnAccountNamed': "{name}에서 이어가기",
   'pane.continueOnAccountDone': "이 대화를 {name}에서 이어갑니다.",
+  'pane.continueOnAccountNewPane': "이 대화를 새 페인에서 {name}(으)로 이어갑니다. 이 페인은 닫아도 됩니다.",
   'pane.continueOnAccountFailed': "이 대화를 그 계정에서 이어가지 못했습니다.",
   'pane.continueOnAccountNotClaude': "Claude Code 대화만 다른 계정으로 옮길 수 있습니다.",
   'pane.continueOnAccountUnknownSession': "이 페인의 대화를 아직 알 수 없어 옮길 수 없습니다. 메시지를 하나 보낸 뒤 다시 시도하세요.",

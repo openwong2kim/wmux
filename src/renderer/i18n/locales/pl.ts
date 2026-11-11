@@ -1562,6 +1562,7 @@ export const pl = {
   'pane.rewindUnavailable': "Cofanie nie jest dostępne w tym panelu",
   'pane.continueOnAccountNamed': "Kontynuuj na koncie {name}",
   'pane.continueOnAccountDone': "Ta rozmowa jest kontynuowana na koncie {name}.",
+  'pane.continueOnAccountNewPane': "Ta rozmowa jest kontynuowana na koncie {name} w nowym panelu. Ten panel możesz zamknąć.",
   'pane.continueOnAccountFailed': "Nie udało się kontynuować tej rozmowy na tym koncie.",
   'pane.continueOnAccountNotClaude': "Na inne konto można przenieść tylko rozmowę Claude Code.",
   'pane.continueOnAccountUnknownSession': "Rozmowa w tym panelu nie jest jeszcze znana, więc nie można jej przenieść. Najpierw wyślij jedną wiadomość.",

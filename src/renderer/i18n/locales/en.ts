@@ -1610,6 +1610,7 @@ export const en = {
   'pane.rewindUnavailable': "Rewind is not available in this pane",
   'pane.continueOnAccountNamed': "Continue on {name}",
   'pane.continueOnAccountDone': "Continuing this conversation on {name}.",
+  'pane.continueOnAccountNewPane': "This conversation continues on {name} in a new pane. You can close this one.",
   'pane.continueOnAccountFailed': "Could not continue this conversation on that account.",
   'pane.continueOnAccountNotClaude': "Only a Claude Code conversation can move to another account.",
   'pane.continueOnAccountUnknownSession': "This pane's conversation is not known yet, so it cannot move. Send one message first.",

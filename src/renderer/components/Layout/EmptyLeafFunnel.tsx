@@ -218,6 +218,8 @@ export function EmptyLeafFunnel() {
                     ...(projectSeed?.launchEnv ? { launchEnv: projectSeed.launchEnv } : {}),
                     // A WSL session's folder: a WSL shell in its distro.
                     ...(projectSeed?.wslDistro ? { shell: 'wsl.exe', wslDistro: projectSeed.wslDistro } : {}),
+                    // A conversation continued on another account: that account's folder and vault.
+                    ...(projectSeed?.accountId ? { accountId: projectSeed.accountId } : {}),
                     ...bootstrapOptions,
                     spawnKind: seedCommand === undefined ? 'user-shell' as const : 'exec' as const,
                   },

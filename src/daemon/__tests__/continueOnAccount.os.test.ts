@@ -157,4 +157,23 @@ describe('continueOnAccount', () => {
     expect(await continueOnAccount(mid, 'p1', accountB)).toEqual({ ok: false, code: 'shell_busy' });
     expect(running).not.toHaveBeenCalled();
   });
+
+  it('copy-only (a token account): copies and returns what the new pane resumes; stops, rebinds and types nothing', async () => {
+    const shellKind = vi.fn(() => null);
+    const d = deps({ shellKind, pane: () => ({ resumeBinding: binding({ permissionMode: 'acceptEdits' }) }) });
+    const res = await continueOnAccount(d, 'p1', accountB, { copyOnly: true });
+    const target = path.join(accountB, 'projects', '-work-repo', `${SID}.jsonl`);
+    expect(res).toEqual({ ok: true, sessionId: SID, transcriptPath: target, cwd: '/work/repo', permissionMode: 'acceptEdits' });
+    expect(d.calls).toEqual(['copy']);
+    expect(fs.readFileSync(target, 'utf8')).toBe(fs.readFileSync(source, 'utf8'));
+    // The source pane's shell is never asked about: nothing is typed there.
+    expect(shellKind).not.toHaveBeenCalled();
+
+    // The same checks first: an open turn or another agent copies nothing.
+    const busy = deps({ turnClosed: () => false });
+    expect(await continueOnAccount(busy, 'p1', accountB, { copyOnly: true })).toEqual({ ok: false, code: 'turn_open' });
+    const other = deps({ liveAgent: () => 'codex' });
+    expect(await continueOnAccount(other, 'p1', accountB, { copyOnly: true })).toEqual({ ok: false, code: 'not_claude' });
+    expect([...busy.calls, ...other.calls]).toEqual([]);
+  });
 });

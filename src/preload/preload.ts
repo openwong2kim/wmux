@@ -953,8 +953,8 @@ const electronAPI = {
       remove: (args: { accountId: string; name: string }) =>
         ipcRenderer.invoke(IPC.ACCOUNT_VAULT_DELETE, args) as Promise<{ ok: boolean }>,
     },
-    // Continue the pane's own Claude conversation on another account (same pane).
-    continuePane: (args: { ptyId: string; accountId: string }) =>
+    // Continue the pane's own Claude conversation on another account (same pane, or a new one).
+    continuePane: (args: { ptyId: string; accountId: string; workspaceId?: string }) =>
       ipcRenderer.invoke(IPC.ACCOUNT_CONTINUE_PANE, args) as Promise<
         import('../main/account/continueOnAccount.handler').ContinuePaneResult
       >,
