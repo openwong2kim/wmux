@@ -1639,12 +1639,24 @@ impl<T: EventListener> Handler for Term<T> {
         // cells a row keeps past a narrower width.
         self.damage.damage_line(line.0 as usize, start.0.saturating_sub(1), end.0);
         let before = self.grid[line].empty_from();
+        let (mut first, mut stop) = (start.0, end.0);
         self.edit_keeping_wrap(line, |cells| {
-            replace_cells(cells, start.0, start.0.saturating_add(count), || bg.into())
+            // The cells replace_cells clears: a wide glyph cut at either end
+            // goes whole, its first cell before `start` or its spacer at
+            // the erase's end.
+            let to = start.0.saturating_add(count);
+            if first > 0 && cells[first - 1].flags.contains(Flags::WIDE_CHAR) {
+                first -= 1;
+            }
+            if to < cells.len() && to > start.0 && cells[to - 1].flags.contains(Flags::WIDE_CHAR) {
+                stop = stop.max(to + 1);
+            }
+            replace_cells(cells, start.0, to, || bg.into())
         });
         // wmux: erased cells are empty: they join the row's empty run, or
         // start one at the edge.
-        if let Some(from) = erased_run(before, start.0, end.0, self.columns()) {
+        let columns = self.columns();
+        if let Some(from) = erased_run(before, first, stop.min(columns), columns) {
             self.grid[line].mark_erased_from(from);
         }
     }
@@ -1664,7 +1676,12 @@ impl<T: EventListener> Handler for Term<T> {
         self.damage.damage_line(line.0 as usize, 0, columns - 1);
         let before = self.grid[line].empty_from();
         let physical = columns + self.grid[line].hidden_len();
-        self.edit_keeping_wrap(line, |cells| delete_cells(cells, col, count, || bg.into()));
+        let mut cut = false;
+        self.edit_keeping_wrap(line, |cells| {
+            // delete_cells clears a wide glyph cut at the cursor, left of it.
+            cut = col > 0 && col < cells.len() && cells[col - 1].flags.contains(Flags::WIDE_CHAR);
+            delete_cells(cells, col, count, || bg.into())
+        });
         // wmux: the cells filled in at the physical end are empty, and so is
         // whatever moved in from an empty run.
         let filled = col.max(physical.saturating_sub(count));
@@ -1672,7 +1689,11 @@ impl<T: EventListener> Handler for Term<T> {
         let moved = before.filter(|_| physical == columns).map(|from| {
             if from <= col { from } else { col.max(from.saturating_sub(count)) }
         });
-        let from = moved.map_or(filled, |moved| moved.min(filled));
+        let mut from = moved.map_or(filled, |moved| moved.min(filled));
+        // A run from the cursor takes in the glyph cleared left of it.
+        if cut && from == col {
+            from = col - 1;
+        }
         if col < columns && from < columns {
             self.grid[line].mark_erased_from(from);
         }

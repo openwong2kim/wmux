@@ -239,6 +239,10 @@ const erases: Case[] = [
   // into the last column (xterm blanks it), are empty cells too.
   synthetic('ich-to-the-edge', `${para}\x1b[1;3H\x1b[20@`),
   synthetic('irm-blanks-a-wide-glyph-at-the-edge', `${para}\x1b[1;19H한\x1b[4h\x1b[1;3Ha\x1b[4l`),
+  // A wide glyph that ECH or DCH cuts goes whole: its other cell is erased
+  // too, through the edge here.
+  synthetic('ech-cuts-a-wide-glyph-at-the-edge', 'abc界de\x1b[1;4H\x1b[X\x1b[1;1H', 'rust', 5),
+  synthetic('dch-at-a-wide-glyph-spacer-at-the-edge', 'abc界de\x1b[1;5H\x1b[P\x1b[1;1H', 'rust', 5),
 ];
 
 // Controls the selector never refused, rechecked now that Rust is the default.
