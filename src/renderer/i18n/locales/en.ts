@@ -1978,8 +1978,9 @@ export const en = {
   'accounts.signInBrowser': "Browser login",
   'accounts.signInToken': "Long-lived token",
   'accounts.browserLoginNote': "Shows the account's usage and plan.",
-  'accounts.tokenAccountNote': "Usage, plan and Remote Control aren't shown for a token account.",
+  'accounts.tokenAccountNote': "Usage, plan and Remote Control aren't shown for a token account. It can't run scheduled runs, and its Claude panes need the wmux daemon.",
   'accounts.pasteTokenAndAdd': "Paste token and add",
+  'accounts.tokenClipboardNotCleared': "The token was saved, but the clipboard could not be cleared. Clear it yourself.",
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "Switch Claude accounts by quota",
   'accounts.rotateCodex': "Switch Codex accounts by quota",

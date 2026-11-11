@@ -949,8 +949,9 @@ export const zh = {
   'accounts.signInBrowser': "浏览器登录",
   'accounts.signInToken': "长期令牌",
   'accounts.browserLoginNote': "显示账户的用量和套餐。",
-  'accounts.tokenAccountNote': "令牌账户不显示用量、套餐和 Remote Control。",
+  'accounts.tokenAccountNote': "令牌账户不显示用量、套餐和 Remote Control。它不能用于计划运行，其 Claude 窗格需要 wmux 守护进程。",
   'accounts.pasteTokenAndAdd': "粘贴令牌并添加",
+  'accounts.tokenClipboardNotCleared': "令牌已保存，但无法清空剪贴板。请自行清空。",
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "按配额切换 Claude 账号",
   'accounts.rotateCodex': "按配额切换 Codex 账号",

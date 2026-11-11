@@ -161,12 +161,12 @@ export interface OnboardPrepareResult {
 /**
  * Provision an isolated config dir for a NEW account (hybrid share when
  * `share`), with wmux's hooks installed, and return its canonical path: the
- * same string ACCOUNT_ADD stores. `created` is false only if the random path
- * already existed, in which case a rollback must leave it alone.
+ * same string ACCOUNT_ADD stores. `created` (the folder's identity) is set
+ * only when this call made the folder; a rollback leaves any other alone.
  */
-async function provisionNewAccountDir(vendor: Vendor, share: boolean): Promise<{ provisioned: ProvisionResult; created: boolean }> {
+async function provisionNewAccountDir(vendor: Vendor, share: boolean): Promise<{ provisioned: ProvisionResult; created: DirIdentity | null }> {
   const configDir = path.join(getWmuxDir(), 'accounts', `${vendor}-${randomUUID().slice(0, 8)}`);
-  const created = !fs.existsSync(configDir);
+  const existed = fs.existsSync(configDir);
   // An account that keeps Claude's settings.json shares from the folder
   // Claude itself reads:
   // CLAUDE_CONFIG_DIR when set, else ~/.claude.
@@ -185,7 +185,25 @@ async function provisionNewAccountDir(vendor: Vendor, share: boolean): Promise<{
   // Hand out the same canonical string ACCOUNT_ADD will store: the login
   // tab exports it as CLAUDE_CONFIG_DIR and the macOS keychain item is keyed
   // on that exact string, so every later read must use the identical path.
-  return { provisioned: { ...result, configDir: canonicalizeConfigDir(result.configDir) }, created };
+  const canonical = canonicalizeConfigDir(result.configDir);
+  return { provisioned: { ...result, configDir: canonical }, created: existed ? null : dirIdentity(canonical) };
+}
+
+/** A directory's device and inode, read without following a link (bigint:
+ *  Windows file ids exceed 2^53). Null when the path is not a real directory. */
+type DirIdentity = { dev: bigint; ino: bigint };
+function dirIdentity(dir: string): DirIdentity | null {
+  try {
+    const st = fs.lstatSync(dir, { bigint: true });
+    return st.isDirectory() && !st.isSymbolicLink() ? { dev: st.dev, ino: st.ino } : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameDir(dir: string, expected: DirIdentity): boolean {
+  const now = dirIdentity(dir);
+  return !!now && now.dev === expected.dev && now.ino === expected.ino;
 }
 
 /** Remove a link itself, never its target. A directory link on Windows (a
@@ -209,10 +227,16 @@ function removeLinkOnly(p: string): void {
  * file directly inside, then the folder itself. Nothing is removed
  * recursively: a real subdirectory is left in place, so the folder stays and
  * a warning says so — a leftover folder is harmless, a deleted shared target
- * is not. Nothing outside `<wmuxDir>/accounts` is touched.
+ * is not. Nothing outside `<wmuxDir>/accounts` is touched, and nothing at all
+ * when the path is no longer the directory provisioning made (replaced by a
+ * link, a junction or another folder): readdir would follow a link.
  */
-function discardProvisionedDir(configDir: string): void {
+function discardProvisionedDir(configDir: string, identity: DirIdentity): void {
   if (!isUnderAccountsRoot(configDir)) return;
+  if (!sameDir(configDir, identity)) {
+    console.warn(`[account] the unused account folder ${configDir} was replaced since it was made; left as it is`);
+    return;
+  }
   try {
     for (const entry of fs.readdirSync(configDir)) {
       const p = path.join(configDir, entry);
@@ -221,6 +245,7 @@ function discardProvisionedDir(configDir: string): void {
       else if (st.isFile()) fs.unlinkSync(p);
     }
     // Fails (and keeps the folder) when anything was left above.
+    if (!sameDir(configDir, identity)) throw new Error('replaced while it was being emptied');
     fs.rmdirSync(configDir);
   } catch (err) {
     console.warn(`[account] could not remove the unused account folder ${configDir}: ${String(err)}`);
@@ -239,11 +264,12 @@ async function readClipboardValue(expectPrefix: unknown): Promise<{ ok: true; va
   return { ok: true, value };
 }
 
-type VaultSaveResult = AccountVaultSetResult & { clipboardCleared?: boolean; onboardingWarning?: string };
+type VaultSaveResult = AccountVaultSetResult & { clipboardCleared?: boolean; clipboardCleanupFailed?: true; onboardingWarning?: string };
 
 /**
  * Save a clipboard value to an account's vault. The clipboard is cleared only
- * if it still holds what was saved, so text copied since is not lost. A Claude
+ * if it still holds what was saved, so text copied since is not lost; a
+ * failed clear is reported (`clipboardCleanupFailed`), never a failed save. A Claude
  * token is read only once first-run setup is marked done in the account's
  * folder; a refusal leaves the token saved and says why.
  */
@@ -251,9 +277,14 @@ async function saveClipboardValue(accountId: string, name: unknown, value: strin
   const result = appAccountVault().set(accountId, name, value);
   if (!result.ok) return result;
   let clipboardCleared = false;
-  if ((await clipboard.readText()).trim() === value) {
-    await clipboard.clear();
-    clipboardCleared = true;
+  let clipboardCleanupFailed = false;
+  try {
+    if ((await clipboard.readText()).trim() === value) {
+      await clipboard.clear();
+      clipboardCleared = true;
+    }
+  } catch {
+    clipboardCleanupFailed = true;
   }
   let onboardingWarning: string | undefined;
   const account = getAccountStore().getAccount(accountId);
@@ -261,11 +292,16 @@ async function saveClipboardValue(accountId: string, name: unknown, value: strin
     const flag = markClaudeOnboardingDone(account.configDir, path.resolve(getWmuxDir(), 'accounts'));
     if (!flag.ok) onboardingWarning = flag.message;
   }
-  return { ...result, clipboardCleared, ...(onboardingWarning ? { onboardingWarning } : {}) };
+  return {
+    ...result,
+    clipboardCleared,
+    ...(clipboardCleanupFailed ? { clipboardCleanupFailed: true as const } : {}),
+    ...(onboardingWarning ? { onboardingWarning } : {}),
+  };
 }
 
 export type AddWithTokenResult =
-  | { ok: true; account: Account; clipboardCleared: boolean; onboardingWarning?: string; groupFailed?: boolean }
+  | { ok: true; account: Account; clipboardCleared: boolean; clipboardCleanupFailed?: true; onboardingWarning?: string; groupFailed?: boolean }
   | ClipboardRefusal;
 
 export function registerAccountHandlers(getWindow: () => BrowserWindow | null = () => null): () => void {
@@ -422,7 +458,7 @@ export function registerAccountHandlers(getWindow: () => BrowserWindow | null = 
           // A token saved before a later step threw goes with the account.
           try { appAccountVault().deleteAccount(accountId); } catch { /* best-effort, as in ACCOUNT_REMOVE */ }
         }
-        if (created) discardProvisionedDir(provisioned.configDir);
+        if (created) discardProvisionedDir(provisioned.configDir, created);
       };
       let account: Account | undefined;
       try {
@@ -441,6 +477,7 @@ export function registerAccountHandlers(getWindow: () => BrowserWindow | null = 
           ok: true,
           account: store.getAccount(account.id) ?? account,
           clipboardCleared: saved.clipboardCleared ?? false,
+          ...(saved.clipboardCleanupFailed ? { clipboardCleanupFailed: true as const } : {}),
           ...(saved.onboardingWarning ? { onboardingWarning: saved.onboardingWarning } : {}),
           ...(groupFailed ? { groupFailed } : {}),
         };

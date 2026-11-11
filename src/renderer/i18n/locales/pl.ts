@@ -1925,8 +1925,9 @@ export const pl = {
   'accounts.signInBrowser': "Logowanie w przeglądarce",
   'accounts.signInToken': "Token długoterminowy",
   'accounts.browserLoginNote': "Pokazuje użycie i plan konta.",
-  'accounts.tokenAccountNote': "Konto z tokenem nie pokazuje użycia, planu ani Remote Control.",
+  'accounts.tokenAccountNote': "Konto z tokenem nie pokazuje użycia, planu ani Remote Control. Nie uruchamia zaplanowanych zadań, a jego panele Claude wymagają demona wmux.",
   'accounts.pasteTokenAndAdd': "Wklej token i dodaj",
+  'accounts.tokenClipboardNotCleared': "Token zapisano, ale nie udało się wyczyścić schowka. Wyczyść go sam.",
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "Przełączaj konta Claude według limitu",
   'accounts.rotateCodex': "Przełączaj konta Codex według limitu",

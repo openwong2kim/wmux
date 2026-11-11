@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ipcMain } from 'electron';
+import { clipboard, ipcMain } from 'electron';
 import { IPC } from '../../../../shared/constants';
 import { AccountStore } from '../../../account/accountStore';
 import type { AccountVaultEntry, AccountVaultSetResult } from '../../../account/accountVault';
@@ -151,5 +151,33 @@ describe('ACCOUNT_ADD_WITH_TOKEN', () => {
     expect(fs.readFileSync(path.join(configDir, 'projects', 'keep.txt'), 'utf8')).toBe('keep\n');
     expect(fs.existsSync(path.join(configDir, 'skills'))).toBe(false);
     expect(fs.readFileSync(path.join(h.sourceDir, 'skills', 'mine', 'SKILL.md'), 'utf8')).toBe('shared\n');
+  });
+
+  it('touches nothing when the folder was replaced by a link before the rollback', async () => {
+    h.clip = TOKEN;
+    const outside = path.join(tmp, 'outside');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'precious.txt'), 'mine\n');
+    let configDir = '';
+    h.vaultSet = (accountId) => {
+      configDir = h.store.getAccount(accountId)?.configDir ?? '';
+      fs.renameSync(configDir, `${configDir}.moved`);
+      fs.symlinkSync(outside, configDir, 'dir');
+      return { ok: false, code: 'write_failed', message: 'write failed' };
+    };
+    const res = await addWithToken({ name: 'Work' });
+    expect(res).toMatchObject({ ok: false, code: 'write_failed' });
+    expect(h.store.listAccounts()).toEqual([]);
+    expect(fs.readFileSync(path.join(outside, 'precious.txt'), 'utf8')).toBe('mine\n');
+    expect(fs.lstatSync(configDir).isSymbolicLink()).toBe(true);
+  });
+
+  it('keeps the account when clearing the clipboard fails after the token is saved', async () => {
+    h.clip = TOKEN;
+    vi.mocked(clipboard.readText).mockResolvedValueOnce(TOKEN).mockRejectedValueOnce(new Error('clipboard busy'));
+    const res = await addWithToken({ name: 'Work' }) as { ok: boolean; account: { id: string }; clipboardCleared: boolean; clipboardCleanupFailed?: true };
+    expect(res).toMatchObject({ ok: true, clipboardCleared: false, clipboardCleanupFailed: true });
+    expect(h.store.listAccounts().map((a) => a.id)).toEqual([res.account.id]);
+    expect(h.saved.map((e) => e.name)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN']);
   });
 });

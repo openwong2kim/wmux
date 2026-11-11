@@ -5112,8 +5112,9 @@ export const ko = {
   'accounts.signInBrowser': "브라우저 로그인",
   'accounts.signInToken': "장기 토큰",
   'accounts.browserLoginNote': "계정의 사용량과 요금제를 보여 줍니다.",
-  'accounts.tokenAccountNote': "토큰 계정은 사용량, 요금제, Remote Control을 보여 주지 않습니다.",
+  'accounts.tokenAccountNote': "토큰 계정은 사용량, 요금제, Remote Control을 보여 주지 않습니다. 예약 실행에는 쓸 수 없고, Claude 페인은 wmux 데몬이 있어야 합니다.",
   'accounts.pasteTokenAndAdd': "토큰 붙여 넣고 추가",
+  'accounts.tokenClipboardNotCleared': "토큰은 저장했지만 클립보드를 비우지 못했습니다. 직접 비우세요.",
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "할당량에 따라 Claude 계정 전환",
   'accounts.rotateCodex': "할당량에 따라 Codex 계정 전환",

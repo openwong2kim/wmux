@@ -950,7 +950,7 @@ const electronAPI = {
         }>,
       saveFromClipboard: (args: { accountId: string; name: string; expectPrefix?: string }) =>
         ipcRenderer.invoke(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, args) as Promise<
-          import('../main/account/accountVault').AccountVaultSetResult & { clipboardCleared?: boolean; onboardingWarning?: string }
+          import('../main/account/accountVault').AccountVaultSetResult & { clipboardCleared?: boolean; clipboardCleanupFailed?: true; onboardingWarning?: string }
         >,
       generate: (args: { accountId: string; name: string; length?: number }) =>
         ipcRenderer.invoke(IPC.ACCOUNT_VAULT_GENERATE, args) as Promise<import('../main/account/accountVault').AccountVaultSetResult>,

@@ -188,6 +188,7 @@ function TokenSignInPanel({ row, onSaved, onClose }: { row: AccountRow; onSaved:
         return;
       }
       onSaved();
+      if (res.clipboardCleanupFailed) useStore.getState().pushToast({ level: 'warn', message: t('accounts.tokenClipboardNotCleared') });
       if (res.onboardingWarning) setWarning(res.onboardingWarning);
       else onClose();
     } catch (e) {
@@ -382,6 +383,7 @@ function AddAccountWizard({ groups, onDone, onCancel }: { groups: string[]; onDo
         toast({ level: 'info', message: t('accounts.loginReady', { name: res.account.name }) });
         if (res.groupFailed) toast({ level: 'warn', message: t('accounts.loginGroupFailed', { name: res.account.name, group }) });
         if (res.onboardingWarning) toast({ level: 'warn', message: t('accounts.tokenOnboardingWarning') });
+        if (res.clipboardCleanupFailed) toast({ level: 'warn', message: t('accounts.tokenClipboardNotCleared') });
         onDone();
         return;
       }
