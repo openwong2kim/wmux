@@ -202,9 +202,13 @@ function groupLabel(family: ToolFamily | 'mixed', n: number): string {
   }
 }
 
-/** A plain tool call nobody has to look at: no approval, not failed. */
+/**
+ * A plain finished tool call nobody has to look at: no approval, not failed,
+ * not still running. A running call stays on its own line ("Running …") and
+ * joins the group before it once it finishes.
+ */
 function foldable(row: TranscriptRow): row is Extract<TranscriptRow, { kind: 'tool' }> {
-  return row.kind === 'tool' && row.state !== 'failed' && !row.block.approval;
+  return row.kind === 'tool' && row.state === 'done' && !row.block.approval;
 }
 
 // Groups of the previous call per cache, by first member key.
