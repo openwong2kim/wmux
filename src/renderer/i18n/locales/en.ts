@@ -6738,6 +6738,7 @@ export const en = {
   'sidebar.groups.limit': "You have reached the limit of 200 groups.",
   'workspace.renameRefused.empty': "A workspace name cannot be empty.",
   'workspace.renameRefused.tooLong': "A workspace name can be at most {max} characters.",
+  'workspace.renameRefused.hiddenChars': "A workspace name cannot contain zero-width or text-direction characters.",
   'workspace.renameRefused.paneTag': "A workspace name cannot look like a pane tag (w1-2).",
   'workspace.renameRefused.taken': "Another workspace already has this name, so neither could be addressed by it.",
   'appAction.settingChanged': "An agent changed {setting} to {value}.",

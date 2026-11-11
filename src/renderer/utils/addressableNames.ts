@@ -3,27 +3,32 @@
 // neither, as ambiguous. So a rename that would make a name ambiguous, or
 // read as an automatic pane tag (w1-2), is refused before it is stored.
 //
-// The comparisons are the resolver's own: workspace names trimmed and
-// case-insensitive (its `Workspace.name` prefix), tab names flattened and
-// case-insensitive, pane labels normalized. PC rail shadows are another
-// computer's workspaces and never resolve here, so they never clash.
+// Names compare normalized: NFC, hidden format and bidi characters dropped,
+// whitespace collapsed and trimmed, case-insensitive (the resolver matches
+// case-insensitively). A name that carries a zero-width or bidi control
+// character is refused outright, so two names that read alike are never two
+// different names. PC rail shadows are another computer's workspaces and
+// never resolve here, so they never clash.
 
 import type { Workspace } from '../../shared/types';
 import { flattenName } from '../../shared/a2aNameSanitize';
 import { APP_ACTION_NAME_MAX } from '../../shared/appActions';
-import { normalizePaneLabel } from '../../shared/paneLabelRules';
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { isShadowWorkspaceId } from '../../shared/pcRail';
-import { isAutoNameShape } from './paneNaming';
+import { AUTO_NAME_RE } from './paneNameResolver';
 
-export type NameRefusal = 'empty' | 'too-long' | 'pane-tag' | 'taken';
+export type NameRefusal = 'empty' | 'too-long' | 'hidden-chars' | 'pane-tag' | 'taken';
 
 export const ADDRESSABLE_NAME_MAX = APP_ACTION_NAME_MAX;
+
+/** Zero-width characters, the BOM, and bidi marks, embeddings, overrides and isolates. */
+const HIDDEN_CHARS = /[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF\u061C]/u;
 
 const MESSAGES: Record<NameRefusal, string> = {
   empty: 'the name is empty',
   'too-long': `the name is longer than ${ADDRESSABLE_NAME_MAX} characters`,
-  'pane-tag': 'the name looks like an automatic pane tag (w<n>-<n>), which it would shadow',
+  'hidden-chars': 'the name contains zero-width or text-direction characters',
+  'pane-tag': 'the name is an automatic pane tag (w<n>-<n>), which it would shadow',
   taken: 'another one already has this name, so neither would resolve by it',
 };
 
@@ -31,13 +36,19 @@ export function nameRefusalMessage(reason: NameRefusal): string {
   return MESSAGES[reason];
 }
 
+/** The form two names are compared in. */
+export function normalizeAddressableName(name: string): string {
+  return flattenName(name.normalize('NFC')).toLowerCase();
+}
+
 function shapeRefusal(name: string): NameRefusal | null {
-  // Flattened first, so a hidden format or bidi character cannot smuggle the
-  // tag shape past the check (`w<zwsp>1-2`).
-  const flat = flattenName(name);
+  if (HIDDEN_CHARS.test(name)) return 'hidden-chars';
+  const flat = flattenName(name.normalize('NFC'));
   if (!flat) return 'empty';
   if (name.trim().length > ADDRESSABLE_NAME_MAX) return 'too-long';
-  if (isAutoNameShape(flat)) return 'pane-tag';
+  // The resolver's own pattern: a whole name that reads as a tag (`w1-2`,
+  // `w1-2.3`, `w1-2(claude)`), not one that merely starts like one.
+  if (AUTO_NAME_RE.test(flat)) return 'pane-tag';
   return null;
 }
 
@@ -51,9 +62,9 @@ export function workspaceNameRefusal(
 ): NameRefusal | null {
   const shape = shapeRefusal(name);
   if (shape) return shape;
-  const wanted = name.trim().toLowerCase();
+  const wanted = normalizeAddressableName(name);
   const taken = workspaces.some(
-    (w) => w.id !== id && !isShadowWorkspaceId(w.id) && w.name.trim().toLowerCase() === wanted,
+    (w) => w.id !== id && !isShadowWorkspaceId(w.id) && normalizeAddressableName(w.name) === wanted,
   );
   return taken ? 'taken' : null;
 }
@@ -72,17 +83,16 @@ export function tabNameRefusal(
 ): NameRefusal | null {
   const shape = shapeRefusal(name);
   if (shape) return shape;
-  const wanted = flattenName(name).toLowerCase();
-  const wantedLabel = normalizePaneLabel(flattenName(name));
+  const wanted = normalizeAddressableName(name);
   for (const ws of workspaces) {
     if (isShadowWorkspaceId(ws.id)) continue;
     for (const leaf of getWorkspaceLeafPanes(ws)) {
       const own = leaf.surfaces.some((s) => s.id === surfaceId);
-      const label = (paneLabel?.[leaf.id] ?? leaf.metadata?.label)?.trim();
-      if (!own && label && normalizePaneLabel(label) === wantedLabel) return 'taken';
+      const label = paneLabel?.[leaf.id] ?? leaf.metadata?.label;
+      if (!own && label && normalizeAddressableName(label) === wanted) return 'taken';
       for (const s of leaf.surfaces) {
         if (s.id === surfaceId || !s.userName) continue;
-        if (flattenName(s.userName).toLowerCase() === wanted) return 'taken';
+        if (normalizeAddressableName(s.userName) === wanted) return 'taken';
       }
     }
   }

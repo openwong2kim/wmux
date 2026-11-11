@@ -344,8 +344,9 @@ export interface WorkspaceSlice {
   closeShadowWorkspace: (id: string) => void;
   /**
    * Rename a workspace. Its name is an address (`#name` scoping), so a name
-   * another local workspace has, one shaped like a pane tag (w1-2), an empty
-   * one or one over the length cap is refused (utils/addressableNames.ts):
+   * another local workspace has, a pane tag (w1-2), one with zero-width or
+   * text-direction characters, an empty one or one over the length cap is
+   * refused (utils/addressableNames.ts):
    * the name stays and a toast says why. Returns whether it was renamed.
    */
   renameWorkspace: (id: string, name: string) => boolean;
@@ -426,6 +427,7 @@ function shadowCopy(name: string) {
 const WORKSPACE_RENAME_REFUSAL_KEY: Record<NameRefusal, TranslationKey> = {
   empty: 'workspace.renameRefused.empty',
   'too-long': 'workspace.renameRefused.tooLong',
+  'hidden-chars': 'workspace.renameRefused.hiddenChars',
   'pane-tag': 'workspace.renameRefused.paneTag',
   taken: 'workspace.renameRefused.taken',
 };

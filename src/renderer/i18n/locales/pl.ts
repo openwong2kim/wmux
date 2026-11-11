@@ -6693,6 +6693,7 @@ export const pl = {
   'sidebar.groups.limit': "Osiągnięto limit 200 grup.",
   'workspace.renameRefused.empty': "Nazwa obszaru roboczego nie może być pusta.",
   'workspace.renameRefused.tooLong': "Nazwa obszaru roboczego może mieć najwyżej {max} znaków.",
+  'workspace.renameRefused.hiddenChars': "Nazwa obszaru roboczego nie może zawierać znaków o zerowej szerokości ani znaków kierunku tekstu.",
   'workspace.renameRefused.paneTag': "Nazwa obszaru roboczego nie może wyglądać jak znacznik panelu (w1-2).",
   'workspace.renameRefused.taken': "Inny obszar roboczy ma już tę nazwę, więc żadnego nie dałoby się nią wskazać.",
   'appAction.settingChanged': "Agent zmienił ustawienie {setting} na {value}.",

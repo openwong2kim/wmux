@@ -6259,6 +6259,7 @@ export const ko = {
   'sidebar.groups.limit': "그룹은 최대 200개까지 만들 수 있습니다.",
   'workspace.renameRefused.empty': "작업공간 이름은 비워 둘 수 없습니다.",
   'workspace.renameRefused.tooLong': "작업공간 이름은 최대 {max}자입니다.",
+  'workspace.renameRefused.hiddenChars': "작업공간 이름에는 폭이 없는 문자나 텍스트 방향 제어 문자를 넣을 수 없습니다.",
   'workspace.renameRefused.paneTag': "작업공간 이름은 페인 태그(w1-2)처럼 보일 수 없습니다.",
   'workspace.renameRefused.taken': "다른 작업공간이 이미 이 이름을 쓰고 있어 어느 쪽도 이 이름으로 가리킬 수 없습니다.",
   'appAction.settingChanged': "에이전트가 {setting} 설정을 {value}(으)로 바꿨습니다.",

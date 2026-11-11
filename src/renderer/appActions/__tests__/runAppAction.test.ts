@@ -47,6 +47,8 @@ function seed(): void {
     toasts: [],
     notifications: [note('n1', 'ws-a', 'surf-a1'), note('n2', 'ws-a', 'surf-a2'), note('n3', 'ws-b', 'surf-b1')],
     unreadBySurfaceId: { 'surf-a1': 1, 'surf-a2': 1, 'surf-b1': 1 },
+    surfacePendingQuestion: {},
+    surfaceAgent: {},
     theme: 'tint',
     terminalFontSize: 14,
     terminalFontFamily: 'Cascadia Code',
@@ -100,10 +102,16 @@ describe('workspace.rename', () => {
   });
 
   it('refuses a clashing or pane-tag-shaped name', () => {
-    for (const name of ['beta', 'BETA ', 'w1-2', 'w​3-1 x']) {
+    for (const name of ['beta', 'BETA ', 'w1-2', 'w1-2.3', 'w1-2(claude)', 'be\u200Bta', 'alpha\u202Egnp']) {
       expect(act('workspace.rename', { args: { name } }), name).toMatchObject({ ok: false, code: 'invalid_args' });
     }
     expect(ws('ws-a').name).toBe('alpha');
+  });
+
+  it('allows a name that only starts like a pane tag', () => {
+    expect(act('workspace.rename', { args: { name: 'w12-13 notes' } })).toMatchObject({ ok: true, changed: true });
+    expect(act('workspace.rename', { args: { name: 'w2-3-migration' } })).toMatchObject({ ok: true, changed: true });
+    expect(ws('ws-a').name).toBe('w2-3-migration');
   });
 
   it('the store refuses the same names for the UI, with a toast', () => {
@@ -204,6 +212,54 @@ describe('settings', () => {
 
   it('takes no target', () => {
     expect(act('settings.get', { target: 'ws-a' })).toMatchObject({ code: 'invalid_args' });
+  });
+});
+
+describe('notifications that still need the human', () => {
+  /** An approval prompt from pane A, a turn waiting on a question from pane A,
+   *  and a finished turn from pane B, all in the caller's workspace. */
+  function seedDecisions(): void {
+    const decision = (id: string, category: Notification['category'], ptyId: string, surfaceId: string): Notification =>
+      ({ ...note(id, 'ws-a', surfaceId), category, ptyId });
+    useStore.setState({
+      notifications: [
+        decision('approve', 'approval', 'pty-a1', 'surf-a1'),
+        decision('asks', 'agent-turn', 'pty-a1', 'surf-a1'),
+        decision('done', 'agent-turn', 'pty-a2', 'surf-a2'),
+        note('n3', 'ws-b', 'surf-b1'),
+      ],
+      unreadBySurfaceId: { 'surf-a1': 2, 'surf-a2': 1, 'surf-b1': 1 },
+      surfacePendingQuestion: { 'pty-a1': 'Which branch?' },
+    });
+  }
+
+  it('pane B\'s clear keeps pane A\'s approval row and pending question, and their unread count', () => {
+    seedDecisions();
+    const res = act('notifications.clear', { callerPtyId: 'pty-a2' });
+    expect(res).toMatchObject({ ok: true, cleared: 1, kept: 2 });
+    expect(useStore.getState().notifications.map((n) => n.id)).toEqual(['approve', 'asks', 'n3']);
+    expect(useStore.getState().unreadBySurfaceId).toEqual({ 'surf-a1': 2, 'surf-b1': 1 });
+  });
+
+  it('mark-read leaves them unread too', () => {
+    seedDecisions();
+    expect(act('notifications.markRead', { callerPtyId: 'pty-a2' })).toMatchObject({ ok: true, marked: 1, kept: 2 });
+    const read = Object.fromEntries(useStore.getState().notifications.map((n) => [n.id, n.read]));
+    expect(read).toEqual({ approve: false, asks: false, done: true, n3: false });
+    expect(useStore.getState().unreadBySurfaceId).toEqual({ 'surf-a1': 2, 'surf-b1': 1 });
+  });
+
+  it('a turn whose question was answered is cleared like any other', () => {
+    seedDecisions();
+    useStore.setState({ surfacePendingQuestion: {} });
+    expect(act('notifications.clear')).toMatchObject({ ok: true, cleared: 2, kept: 1 });
+    expect(useStore.getState().notifications.map((n) => n.id)).toEqual(['approve', 'n3']);
+  });
+
+  it('the human\'s own clear is unchanged and clears everything', () => {
+    seedDecisions();
+    useStore.getState().clearNotifications();
+    expect(useStore.getState().notifications).toEqual([]);
   });
 });
 

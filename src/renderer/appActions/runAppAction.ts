@@ -8,7 +8,7 @@
 // action twice is the same as running it once.
 
 import { useStore } from '../stores';
-import type { Pane, PaneLeaf, Workspace } from '../../shared/types';
+import type { Notification, Pane, PaneLeaf, Workspace } from '../../shared/types';
 import { findParent, findPane, getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { isShadowWorkspaceId } from '../../shared/pcRail';
 import {
@@ -98,7 +98,7 @@ function locate(store: Store, target: string, caller: Workspace): Located | Refu
   return found;
 }
 
-/** The caller's own pane and tab, from the pty main verified for it. */
+/** The caller's own pane and tab, from the pty of its pane claim. */
 function ownPane(caller: Workspace, callerPtyId: string | undefined): { paneId: string; surfaceId: string } | null {
   if (!callerPtyId) return null;
   for (const leaf of getWorkspaceLeafPanes(caller)) {
@@ -245,8 +245,17 @@ function movePaneAction(store: Store, ws: Workspace, sourceId: string, args: App
   return { ok: true, ...result, changed: true };
 }
 
-function unreadIn(store: Store, workspaceId: string): number {
-  return store.notifications.filter((n) => n.workspaceId === workspaceId && !n.read).length;
+/**
+ * A row that still asks the human for a decision: an approval prompt, or a
+ * turn that ended on a question or a permission prompt still waiting. An
+ * agent's mark-read or clear leaves these alone, whichever pane they came
+ * from, so the badge and the record of the pending decision stay until the
+ * human handles them. The human's own clear in the panel is not affected.
+ */
+function holdsDecision(store: Store, n: Notification): boolean {
+  if (n.category === 'approval') return true;
+  if (n.category !== 'agent-turn' || !n.ptyId) return false;
+  return !!store.surfacePendingQuestion?.[n.ptyId]?.trim() || store.surfaceAgent?.[n.ptyId]?.status === 'awaiting_input';
 }
 
 /**
@@ -301,14 +310,16 @@ export function runAppAction(params: Record<string, unknown>): Answer | Refusal 
       return { ok: true, key, value: parsed.value, changed: true };
     }
     case 'notifications.markRead': {
-      const marked = unreadIn(store, ws.id);
-      store.markAllReadForWorkspace(ws.id);
-      return { ok: true, workspaceId: ws.id, marked };
+      const rows = store.notifications.filter((n) => n.workspaceId === ws.id && !n.read);
+      const held = rows.filter((n) => holdsDecision(store, n));
+      for (const n of rows) if (!holdsDecision(store, n)) store.markRead(n.id);
+      return { ok: true, workspaceId: ws.id, marked: rows.length - held.length, kept: held.length };
     }
     case 'notifications.clear': {
-      const cleared = store.notifications.filter((n) => n.workspaceId === ws.id).length;
-      store.clearNotificationsForWorkspace(ws.id);
-      return { ok: true, workspaceId: ws.id, cleared };
+      const rows = store.notifications.filter((n) => n.workspaceId === ws.id);
+      const held = rows.filter((n) => holdsDecision(store, n)).length;
+      store.clearNotificationsForWorkspace(ws.id, (n) => holdsDecision(store, n));
+      return { ok: true, workspaceId: ws.id, cleared: rows.length - held, kept: held };
     }
     default:
       return refuse('unknown_action', `no action "${id}"`);

@@ -41,7 +41,7 @@ const AMBIGUOUS_NAME_CAP = 8;
 
 /** `w1-2`, with the optional terminal-tab number (`.2`, as an A2A name carries
  *  it) and the header's `(agent)` suffix, both of which are ignored. */
-const AUTO_NAME_RE = /^w(\d+)-(\d+)(?:\.(\d+))?(?:\([^()]*\))?$/i;
+export const AUTO_NAME_RE = /^w(\d+)-(\d+)(?:\.(\d+))?(?:\([^()]*\))?$/i;
 
 /** A terminal surface (has a pty, is not a browser/editor tab). */
 function isTerm(s: Surface): boolean {
