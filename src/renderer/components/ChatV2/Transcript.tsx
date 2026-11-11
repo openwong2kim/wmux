@@ -68,6 +68,9 @@ function PreviewBody({ preview, cwd }: { preview: ToolPreview; cwd: string }) {
   return preview.output ? <pre className="wmux-chatv2-pre">{preview.output}</pre> : null;
 }
 
+/** How often an open, running command's full output is read again as it grows. */
+const RUNNING_REREAD_MS = 2_000;
+
 /** How many of a long output's last lines the collapsed box holds. */
 export const SHELL_TAIL_LINES = 40;
 
@@ -90,11 +93,22 @@ export function shellView(text: string, complete: boolean, expanded: boolean, ta
  * opens, so the end shown is the command's end, not the cut's. One control
  * shows the whole output and folds it back.
  */
-function ShellBody({ block, field, actions, command, output }: { block: Block; field: 'output' | 'detail'; actions: TranscriptActions; command: string | null; output: string }) {
+function ShellBody({ block, field, running, actions, command, output }: { block: Block; field: 'output' | 'detail'; running: boolean; actions: TranscriptActions; command: string | null; output: string }) {
   const root = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLPreElement>(null);
   const cut = !!block.overflow?.[field];
-  const full = useFullBody(block, field, actions);
+  // A full read belongs to one state of the value. A running call's block is
+  // folded anew as output arrives (past the capped preview too), so a new
+  // block of a running call makes it stale, at most once per RUNNING_REREAD_MS
+  // so a busy command is not read again on every push; a new status (the call
+  // finished) or another field makes it stale at once.
+  const turn = useRef({ block, n: 0, at: 0 });
+  if (turn.current.block !== block) {
+    const now = Date.now();
+    const bump = running && now - turn.current.at >= RUNNING_REREAD_MS;
+    turn.current = { block, n: turn.current.n + (bump ? 1 : 0), at: bump ? now : turn.current.at };
+  }
+  const full = useFullBody(block, field, actions, `${field}|${block.tool?.status ?? ''}|${turn.current.n}|${output}`);
   const fullRef = useRef(full);
   fullRef.current = full;
   const complete = !cut || (!!full.read && !full.read.stopped);
@@ -127,7 +141,7 @@ function ShellBody({ block, field, actions, command, output }: { block: Block; f
   // A cut output is read in full once its row is open, so its tail is the real one.
   const readIfCut = () => {
     const body = fullRef.current;
-    if (cut && body.read === undefined && !body.loading) body.load();
+    if (cut && (body.read === undefined || body.stale) && !body.loading) body.load();
   };
   useLayoutEffect(settle, [shown.text, expanded]);
   // A closed <details> lays out nothing, so measure again (and read) whenever one around it opens.
@@ -141,13 +155,14 @@ function ShellBody({ block, field, actions, command, output }: { block: Block; f
     if (opened.length && opened.every((el) => el.open)) readIfCut();
     opened.forEach((el) => el.addEventListener('toggle', onToggle));
     return () => opened.forEach((el) => el.removeEventListener('toggle', onToggle));
-  }, [shown.text, cut]);
+  }, [shown.text, cut, full.stale]);
   const toggle = () => {
     if (expanded) { setExpanded(false); return; }
     setExpanded(true);
     readIfCut();
   };
   const stopped = !!full.read?.stopped || full.read === null;
+  const firstRead = full.loading && full.read === undefined;
   return (
     <div ref={root} className="wmux-chatv2-pre" data-shell>
       {command && <div className="wmux-chatv2-shell-command">$ {command}</div>}
@@ -157,8 +172,9 @@ function ShellBody({ block, field, actions, command, output }: { block: Block; f
         <BodyMore read={full.read} loading={full.loading} load={full.load} first={S.showMore} />
       ) : (long || shown.earlier > 0 || expanded || (cut && !complete)) && (
         <span className="wmux-chatv2-body-more">
-          <button type="button" className="wmux-chatv2-link" data-output-toggle aria-expanded={expanded} disabled={full.loading} onClick={toggle}>
-            {full.loading ? S.loadingFull : expanded ? S.showLess : S.showMore}
+          {/* A refresh of an output already shown keeps the control as it is. */}
+          <button type="button" className="wmux-chatv2-link" data-output-toggle aria-expanded={expanded} disabled={firstRead} onClick={toggle}>
+            {firstRead ? S.loadingFull : expanded ? S.showLess : S.showMore}
           </button>
         </span>
       )}
@@ -193,21 +209,38 @@ const Chevron = () => <span className="wmux-chatv2-chevron" aria-hidden><IconChe
  * not asked, null = no longer kept. A partial read keeps what it has and offers
  * to continue (`stopped`).
  */
-function useFullBody(block: Block, field: 'text' | 'detail' | 'output', actions: TranscriptActions) {
+function useFullBody(block: Block, field: 'text' | 'detail' | 'output', actions: TranscriptActions, resetKey?: string) {
   const [read, setRead] = useState<BodyRead | null | undefined>(undefined);
   const [loading, setLoading] = useState(false);
+  // A changed `resetKey` means the value moved on (more output, a new status):
+  // what was read is stale (kept on screen until a fresh read replaces it), and
+  // a read still in flight is dropped when it lands.
+  const [stale, setStale] = useState(false);
+  const generation = useRef(0);
+  const seenKey = useRef(resetKey);
+  useEffect(() => {
+    if (seenKey.current === resetKey) return;
+    seenKey.current = resetKey;
+    generation.current += 1;
+    setStale(true);
+    setLoading(false);
+  }, [resetKey]);
   const load = () => {
     if (loading) return;
     setLoading(true);
-    const from = read?.stopped ? read.nextOffset ?? 0 : 0;
-    const before = read?.stopped ? read.text : '';
+    const resume = !stale && !!read?.stopped;
+    const from = resume ? read?.nextOffset ?? 0 : 0;
+    const before = resume ? read?.text ?? '' : '';
+    const asked = generation.current;
     void actions.body(block.id, field, from).then((next) => {
+      if (asked !== generation.current) return;
+      setStale(false);
       if (next) setRead({ ...next, text: before + next.text });
       else if (before) setRead({ text: before, nextOffset: from, stopped: 'error' });
       else setRead(null);
-    }).finally(() => setLoading(false));
+    }).finally(() => { if (asked === generation.current) setLoading(false); });
   };
-  return { read, load, loading };
+  return { read, load, loading, stale };
 }
 
 /** Continue or retry a partial read, or say the value is gone. */
@@ -277,7 +310,8 @@ function ToolRow({ block, state, cwd, actions, findActive, enter }: { block: Blo
     ? { verb: S.waitingForApproval, object: title.trim() }
     : toolLabelParts(title, { command: shell && !READABLE_TITLE.test(title), running: state === 'running' });
   // A diff already shows what an edit did; the result text under it only repeats it.
-  const diff = !!preview?.lines?.length;
+  // A failed edit still shows its error under the diff.
+  const diff = !!preview?.lines?.length && state !== 'failed';
   const line = (
     <>
       <StatusGlyph state={waiting ? 'waiting' : state} />
@@ -293,7 +327,7 @@ function ToolRow({ block, state, cwd, actions, findActive, enter }: { block: Blo
         <details>
           <summary className="wmux-chatv2-tool-line">{line}</summary>
           {shell ? (
-            <ShellBody block={block} field={preview?.output ? 'output' : 'detail'} actions={actions} command={command} output={output} />
+            <ShellBody block={block} field={preview?.output ? 'output' : 'detail'} running={state === 'running'} actions={actions} command={command} output={output} />
           ) : (
             <>
               {preview && <PreviewBody preview={preview} cwd={cwd} />}

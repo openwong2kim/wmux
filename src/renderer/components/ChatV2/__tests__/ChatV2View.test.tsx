@@ -45,7 +45,7 @@ const flush = async () => { await act(async () => { await new Promise((resolve) 
 
 describe('tool rows', () => {
   const actions: TranscriptActions = { answer: async () => true, body: async () => ({ text: 'line 1\nline 2\nline 3\n', nextOffset: 21 }) };
-  const renderRow = (block: Block, state: 'running' | 'done' = 'done') =>
+  const renderRow = (block: Block, state: 'running' | 'done' | 'failed' = 'done') =>
     act(async () => root.render(<TranscriptRowView row={{ kind: 'tool', key: block.id, block, state }} cwd="/repo" actions={actions} findActive={false} />));
 
   it('says a call held for approval waits, not runs, and marks state with icons, not text glyphs', async () => {
@@ -71,6 +71,11 @@ describe('tool rows', () => {
     expect(host.textContent).not.toContain('has been updated');
     await renderRow({ id: '6.2', role: 'tool', text: 'Read', tool: { callId: 't', title: 'Read a.ts', kind: 'read', status: 'failed', detail: 'File does not exist.' } });
     expect(host.querySelector('[data-detail]')?.textContent).toBe('File does not exist.');
+    // A failed edit keeps its error, and the way to the rest of it, under the diff.
+    await renderRow({ id: '6.3', role: 'tool', text: 'Edit', tool: { callId: 't', title: 'Edit a.ts', kind: 'edit', status: 'failed', detail: 'String to replace not found in file.', preview }, overflow: { detail: true } }, 'failed');
+    expect(host.querySelector('[data-diff]')).not.toBeNull();
+    expect(host.querySelector('[data-detail]')?.textContent).toBe('String to replace not found in file.');
+    expect(host.querySelector('[data-truncated]')?.textContent).toBe('Show full output');
   });
 
   it('offers a cut command output whole, in place, and folds it back', async () => {
@@ -136,6 +141,27 @@ describe('tool rows', () => {
       delete (proto as unknown as Record<string, unknown>).scrollHeight;
       delete (proto as unknown as Record<string, unknown>).clientHeight;
     }
+  });
+
+  it('reads a running command\u2019s cut output again once it moved on, keeping the old read until then', async () => {
+    let body = 'early 1\nearly 2\n';
+    const reads: string[] = [];
+    const liveActions: TranscriptActions = { answer: async () => true, body: async () => { reads.push(body); return { text: body }; } };
+    const block = (status: string, output: string): Block => ({ id: '8.3', role: 'tool', text: 'npm run e2e', tool: { callId: 't', title: 'npm run e2e', kind: 'execute', status, preview: { kind: 'shell', command: 'npm run e2e', output } }, overflow: { output: true } });
+    const show = (b: Block, state: 'running' | 'done') =>
+      act(async () => root.render(<TranscriptRowView row={{ kind: 'tool', key: b.id, block: b, state }} cwd="/repo" actions={liveActions} findActive={false} />));
+    await show(block('in_progress', 'early 1\n'), 'running');
+    const details = host.querySelector('details') as HTMLDetailsElement;
+    await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')); });
+    await flush();
+    const output = () => host.querySelector('.wmux-chatv2-shell-output')?.textContent;
+    expect(output()).toBe('early 1\nearly 2\n');
+    // The command finishes with more output: the open box reads it again.
+    body = 'early 1\nearly 2\nlate 3\ndone\n';
+    await show(block('completed', 'early 1\n'), 'done');
+    await flush();
+    expect(reads).toHaveLength(2);
+    expect(output()).toBe(body);
   });
 
   it('shows a cut head up to its last whole line, and a complete output\u2019s tail', () => {
@@ -321,6 +347,54 @@ describe('ChatV2View', () => {
     await flush();
     expect(host.querySelector('[data-chatv2-jump]')).toBeNull();
     expect(viewport.scrollTop).toBe(2000);
+  });
+
+  it('ends an open find before following the newest row', async () => {
+    // jsdom has neither; find uses both to bring a match into view.
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    vi.stubGlobal('CSS', { escape: (value: string) => value });
+    await mock.call('subscribe', { paneId: 'daemon-find' });
+    await mock.call('create', { paneId: 'daemon-find', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-find" active onTerminal={() => undefined} />));
+    await flush();
+    await act(async () => { mock.emit('daemon-find', [{ type: 'user.message', text: 'needle here', clientMessageId: 'c-00000001' }, { type: 'turn.ended', outcome: 'completed' }]); });
+    const viewport = host.querySelector('.wmux-chatv2-viewport') as HTMLDivElement;
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 300 });
+    // Find a match: the view holds on it.
+    await act(async () => { (host.querySelector('.wmux-chatv2') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true })); });
+    const input = host.querySelector('.wmux-chatv2-find input') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'needle');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(scrollIntoView).toHaveBeenCalled();
+    viewport.scrollTop = 100;
+    await act(async () => { mock.emit('daemon-find', [{ type: 'session.error', message: 'boom' }]); });
+    expect(viewport.scrollTop).toBe(100);
+    // The jump closes find and goes to the end.
+    await act(async () => { (host.querySelector('[data-chatv2-jump]') as HTMLButtonElement).click(); });
+    expect(host.querySelector('.wmux-chatv2-find')).toBeNull();
+    expect(viewport.scrollTop).toBe(2000);
+    // Find again, then send: find closes and the view follows the sent message.
+    await act(async () => { (host.querySelector('.wmux-chatv2') as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'f', metaKey: true, bubbles: true })); });
+    const again = host.querySelector('.wmux-chatv2-find input') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(again, 'needle');
+      again.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    viewport.scrollTop = 100;
+    const box = host.querySelector('textarea') as HTMLTextAreaElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(box, 'two');
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { (host.querySelector('.wmux-chatv2-send') as HTMLButtonElement).click(); });
+    await flush();
+    expect(host.querySelector('.wmux-chatv2-find')).toBeNull();
+    expect(viewport.scrollTop).toBe(2000);
+    delete (Element.prototype as unknown as Record<string, unknown>).scrollIntoView;
   });
 
   it('renders a streaming turn, an approval card and the finished footer from pushes', async () => {

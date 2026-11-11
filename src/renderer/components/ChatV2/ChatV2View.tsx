@@ -151,7 +151,10 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     transcriptWindow.onScroll(atBottom);
   };
   // Back to the newest row, and keep following from there (also on send).
+  // An open find holds the view on its match and may have cut the window
+  // short, so it ends first.
   const toLatest = () => {
+    if (findOpen || findId) { setFindOpen(false); setFindId(null); }
     pinned.current = true;
     setNewBelow(false);
     transcriptWindow.toTail();
