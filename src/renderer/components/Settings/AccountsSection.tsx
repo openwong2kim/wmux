@@ -346,14 +346,21 @@ function GroupPicker({ value, groups, onSet }: {
   );
 }
 
+type SignInMethod = 'browser' | 'token';
+/** How each vendor's new account can sign in; a choice is shown when there are several. */
+const SIGN_IN_METHODS: Record<Vendor, readonly SignInMethod[]> = { claude: ['browser', 'token'], codex: ['browser'] };
+
 function AddAccountWizard({ groups, onDone, onCancel }: { groups: string[]; onDone: () => void; onCancel: () => void }): React.ReactElement {
   const t = useT();
   const [vendor, setVendor] = useState<Vendor>('claude');
   const [name, setName] = useState('');
   const [group, setGroup] = useState('');
   const [share, setShare] = useState(true);
+  const [chosenMethod, setMethod] = useState<SignInMethod>('browser');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const methods = SIGN_IN_METHODS[vendor];
+  const method = methods.includes(chosenMethod) ? chosenMethod : 'browser';
 
   const prepare = useCallback(async () => {
     setError(null);
@@ -362,6 +369,22 @@ function AddAccountWizard({ groups, onDone, onCancel }: { groups: string[]; onDo
     if (!name.trim()) { setError(t('accounts.enterName')); return; }
     setBusy(true);
     try {
+      if (method === 'token') {
+        // Main reads the token from the clipboard and creates the account,
+        // or nothing at all.
+        const res = await api.addWithToken({ name: name.trim(), share, group: group || undefined });
+        if (!res.ok) {
+          setError(res.code === 'invalid_value' ? t('accounts.tokenNotInClipboard') : res.message);
+          setBusy(false);
+          return;
+        }
+        const toast = useStore.getState().pushToast;
+        toast({ level: 'info', message: t('accounts.loginReady', { name: res.account.name }) });
+        if (res.groupFailed) toast({ level: 'warn', message: t('accounts.loginGroupFailed', { name: res.account.name, group }) });
+        if (res.onboardingWarning) toast({ level: 'warn', message: t('accounts.tokenOnboardingWarning') });
+        onDone();
+        return;
+      }
       const res = await api.onboardPrepare({ vendor, share });
       // Opens the login tab, closes Settings and watches for the login; the
       // account is registered once the credential shows up.
@@ -371,7 +394,7 @@ function AddAccountWizard({ groups, onDone, onCancel }: { groups: string[]; onDo
       setError(String((e as { message?: string })?.message ?? e));
       setBusy(false);
     }
-  }, [vendor, name, group, share, onDone, t]);
+  }, [vendor, method, name, group, share, onDone, t]);
 
   return (
     <div className="settings-row" data-account-wizard>
@@ -401,11 +424,33 @@ function AddAccountWizard({ groups, onDone, onCancel }: { groups: string[]; onDo
           {t('accounts.copyDefaultSettings')}
         </label>
         {share && <div className="text-[11px] text-[var(--text-sub)]">{t('accounts.independentProfile')}</div>}
-        <div className="text-[11px] text-[var(--text-sub)]">{t('accounts.loginHowItWorks')}</div>
+        {methods.length > 1 && (
+          <Field
+            label={t('accounts.signInMethod')}
+            description={method === 'token' ? t('accounts.tokenAccountNote') : t('accounts.browserLoginNote')}
+          >
+            <SegmentedControl
+              value={method}
+              onValueChange={setMethod}
+              options={methods.map((m) => ({ value: m, label: m === 'token' ? t('accounts.signInToken') : t('accounts.signInBrowser') }))}
+            />
+          </Field>
+        )}
+        {method === 'token' ? (
+          <ol className="m-0 pl-5 flex flex-col gap-1 text-[12px] text-[var(--text-sub)]" data-account-wizard-token-steps>
+            <li>{renderSentence(t('accounts.tokenStepRun'), { command: <code className="ui-code">claude setup-token</code> })}</li>
+            <li>{t('accounts.tokenStepCopy')}</li>
+            <li>{t('accounts.tokenStepPaste', { button: t('accounts.pasteTokenAndAdd') })}</li>
+          </ol>
+        ) : (
+          <div className="text-[11px] text-[var(--text-sub)]">{t('accounts.loginHowItWorks')}</div>
+        )}
         {error && <div className="text-[11px] text-[var(--accent-red)]">{error}</div>}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" size="md" onClick={onCancel}>{t('common.cancel')}</Button>
-          <Button variant="primary" size="md" onClick={prepare} disabled={busy}>{t('accounts.createAndLogin')}</Button>
+          <Button variant="primary" size="md" onClick={prepare} disabled={busy}>
+            {method === 'token' ? t('accounts.pasteTokenAndAdd') : t('accounts.createAndLogin')}
+          </Button>
         </div>
       </div>
     </div>

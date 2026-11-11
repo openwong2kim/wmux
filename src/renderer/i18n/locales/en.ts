@@ -1974,6 +1974,12 @@ export const en = {
   'accounts.tokenOnboardingWarning': "Token saved, but Claude Code's first-run setup could not be marked done for this account. If its first start asks for setup, finish it once.",
   'accounts.tokenSignedIn': "Token sign-in · usage not available · expires about {date}",
   'accounts.tokenUnreadable': "Token sign-in · can't be read on this computer, paste it again",
+  'accounts.signInMethod': "Sign-in method",
+  'accounts.signInBrowser': "Browser login",
+  'accounts.signInToken': "Long-lived token",
+  'accounts.browserLoginNote': "Shows the account's usage and plan.",
+  'accounts.tokenAccountNote': "Usage, plan and Remote Control aren't shown for a token account.",
+  'accounts.pasteTokenAndAdd': "Paste token and add",
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "Switch Claude accounts by quota",
   'accounts.rotateCodex': "Switch Codex accounts by quota",

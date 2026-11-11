@@ -292,6 +292,8 @@ export const IPC = {
   ACCOUNT_VAULT_GENERATE: 'account:vault:generate',
   ACCOUNT_VAULT_SET_INJECT: 'account:vault:set-inject',
   ACCOUNT_VAULT_DELETE: 'account:vault:delete',
+  // A new Claude account from a `claude setup-token` token on the clipboard.
+  ACCOUNT_ADD_WITH_TOKEN: 'account:add-with-token',
   // Continue a pane's Claude conversation on another account (invoke,
   // renderer → main → daemon `session.continueOnAccount`).
   ACCOUNT_CONTINUE_PANE: 'account:continue-pane',

@@ -920,6 +920,12 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.ACCOUNT_ADD, args) as Promise<
         import('../main/account/accountStore').Account
       >,
+    // A new Claude account from the `claude setup-token` token on the
+    // clipboard; main reads the clipboard, so no value crosses here.
+    addWithToken: (args: { name: string; share?: boolean; group?: string }) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_ADD_WITH_TOKEN, args) as Promise<
+        import('../main/ipc/handlers/account.handler').AddWithTokenResult
+      >,
     rename: (args: { id: string; name: string }) =>
       ipcRenderer.invoke(IPC.ACCOUNT_RENAME, args) as Promise<{ ok: boolean }>,
     setGroup: (args: { id: string; group: string }) =>

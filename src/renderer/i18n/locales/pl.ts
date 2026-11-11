@@ -1921,6 +1921,12 @@ export const pl = {
   'accounts.tokenOnboardingWarning': "Token zapisano, ale nie udało się oznaczyć pierwszej konfiguracji Claude Code jako ukończonej dla tego konta. Jeśli przy pierwszym uruchomieniu poprosi o konfigurację, dokończ ją raz.",
   'accounts.tokenSignedIn': "Logowanie tokenem · użycie niedostępne · wygasa około {date}",
   'accounts.tokenUnreadable': "Logowanie tokenem · nie można odczytać na tym komputerze, wklej go ponownie",
+  'accounts.signInMethod': "Metoda logowania",
+  'accounts.signInBrowser': "Logowanie w przeglądarce",
+  'accounts.signInToken': "Token długoterminowy",
+  'accounts.browserLoginNote': "Pokazuje użycie i plan konta.",
+  'accounts.tokenAccountNote': "Konto z tokenem nie pokazuje użycia, planu ani Remote Control.",
+  'accounts.pasteTokenAndAdd': "Wklej token i dodaj",
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "Przełączaj konta Claude według limitu",
   'accounts.rotateCodex': "Przełączaj konta Codex według limitu",

@@ -5108,6 +5108,12 @@ export const ko = {
   'accounts.tokenOnboardingWarning': "토큰은 저장했지만 이 계정의 Claude Code 첫 실행 설정을 완료로 표시하지 못했습니다. 첫 실행에서 설정을 물으면 한 번만 마치세요.",
   'accounts.tokenSignedIn': "토큰 로그인 · 사용량 표시 안 됨 · {date}쯤 만료",
   'accounts.tokenUnreadable': "토큰 로그인 · 이 컴퓨터에서 읽을 수 없음, 다시 붙여 넣으세요",
+  'accounts.signInMethod': "로그인 방식",
+  'accounts.signInBrowser': "브라우저 로그인",
+  'accounts.signInToken': "장기 토큰",
+  'accounts.browserLoginNote': "계정의 사용량과 요금제를 보여 줍니다.",
+  'accounts.tokenAccountNote': "토큰 계정은 사용량, 요금제, Remote Control을 보여 주지 않습니다.",
+  'accounts.pasteTokenAndAdd': "토큰 붙여 넣고 추가",
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "할당량에 따라 Claude 계정 전환",
   'accounts.rotateCodex': "할당량에 따라 Codex 계정 전환",
