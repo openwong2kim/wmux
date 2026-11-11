@@ -393,11 +393,20 @@ export function deriveShimPaths(execPath: string): ShimPaths {
  * Install/refresh the CLI shim and register the bin dir on the user PATH.
  * Best-effort: callers run this inside Squirrel event handlers where a
  * failure must never block install/update — throws are caught and logged.
+ *
+ * `detachBroadcast`: write PATH, then leave the WM_SETTINGCHANGE broadcast to a
+ * detached PowerShell instead of waiting for it. The Squirrel hooks need this:
+ * the hook's main thread owns top-level windows (Chromium's power message
+ * window, the IME window) and pumps no messages while it waits for the PATH
+ * edit, so a broadcast it waits for also waits 5 s on each of them (#3017).
  */
-export function installCliShim(execPath: string): void {
+export function installCliShim(execPath: string, opts: { detachBroadcast?: boolean } = {}): void {
   try {
     const binDir = writeShimFile(execPath);
-    if (binDir) runPathEdit(binDir, 'add');
+    if (binDir) {
+      runPathEdit(binDir, 'add', !opts.detachBroadcast);
+      if (opts.detachBroadcast) broadcastSettingChangeDetached();
+    }
   } catch (err) {
     console.warn('[cliShim] shim install failed (non-fatal):', err);
   }

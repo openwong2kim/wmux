@@ -420,8 +420,10 @@ if (process.platform === 'win32') {
       } catch { /* best-effort */ }
 
       // X4: drop the `wmux` CLI shim into <root>\bin and register it on the
-      // user PATH. Internally best-effort — never blocks the install.
-      try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
+      // user PATH. Internally best-effort — never blocks the install. The
+      // broadcast is detached: this thread owns windows it cannot pump while
+      // it waits, and a broadcast it waited for waited 5 s on each (#3017).
+      try { cliShim.installCliShim(process.execPath, { detachBroadcast: true }); } catch { /* best-effort */ }
 
       // #863: stage <root>\app.ico from the packaged icon so shortcut icons
       // stop depending on Squirrel's iconUrl download. Best-effort.
@@ -452,8 +454,8 @@ if (process.platform === 'win32') {
       try { autostart.refreshAutostartEntry(process.execPath); } catch { /* best-effort */ }
 
       // X4: regenerate the CLI shim — it embeds the absolute app-X.Y.Z path,
-      // which changes on every update.
-      try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
+      // which changes on every update. Broadcast detached, as in the install hook.
+      try { cliShim.installCliShim(process.execPath, { detachBroadcast: true }); } catch { /* best-effort */ }
 
       // #863: same shortcut hygiene as the install hook — an update is when
       // versioned shortcut targets (old app-X.Y.Z paths) actually die. The
@@ -552,7 +554,9 @@ if (process.platform === 'win32') {
       // nor app.exit() returns or emits 'exit': runner probes of both stayed
       // alive until Squirrel cancelled the hook at 10 s, while a self-kill
       // ended it at 1.5 s and Squirrel finished cleanly. The steps above write
-      // synchronously, so nothing is left to flush.
+      // synchronously, so nothing is left to flush. (The exit hung in a native
+      // module's DLL detach, which calls FlushFileBuffers on stdout: on
+      // Squirrel's pipe, unread until the hook exits, that never returns. #3017)
       process.kill(process.pid, 'SIGKILL');
     } else if (squirrelCmd === '--squirrel-obsolete') {
       process.exit(0);

@@ -74,8 +74,10 @@ const fixer = new FirewallFixer({
   facts: { exists: (p) => fs.existsSync(p), onLocalFixedDrive },
   // Per action: main sets WMUX_DATA_SUFFIX in appInit(), after this module loads.
   scope: () => ({ dataSuffix: dataSuffix(), user: currentRuleUser(), group: FIREWALL_GROUP }),
-  // The same long form the daemon reports for the same program.
-  selfExe: canonicalExePath(process.execPath),
+  // The same long form the daemon reports for the same program. Read per
+  // action: canonicalExePath loads koffi, and every process that loads main,
+  // the Squirrel hooks included, must not load it here (#3017).
+  selfExe: () => canonicalExePath(process.execPath),
   stagedExe: () => {
     const exe = stagedDaemonExe();
     return exe ? canonicalExePath(exe) : null;
