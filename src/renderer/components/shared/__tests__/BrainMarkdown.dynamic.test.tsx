@@ -368,6 +368,15 @@ describe('renderBrainMarkdown', () => {
     expect(container.textContent).toContain('Here: ```ts');
   });
 
+  it('GitHub HTML: a fence opened mid-line keeps comments and tags inside it as code', () => {
+    gh('intro ```html\n<!-- x -->\n<details><summary>s</summary>body</details>\n```\nafter <!-- gone -->');
+    expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('<!-- x -->\n<details><summary>s</summary>body</details>');
+    expect(container.querySelector('details')).toBeNull();
+    // Outside the fence the body is still read as HTML.
+    expect(container.textContent).toContain('intro');
+    expect(container.textContent).not.toContain('gone');
+  });
+
   it('a quoted fence stays inside its quote, and the text after it is prose', () => {
     render('> ```ts\n> const a = 1;\n> ```\nAfter');
     const quote = container.querySelector('blockquote');

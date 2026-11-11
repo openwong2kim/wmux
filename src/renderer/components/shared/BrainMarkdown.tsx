@@ -219,10 +219,45 @@ export function reduceInlineHtml(text: string): string {
   }).join('');
 }
 
+/**
+ * A fence opener after prose on the same line ("... text ```ts", as models
+ * write it), as `[prose, opener]`: the fence opens there. The opener takes the
+ * info string a line-start fence takes (no backticks after the run), and
+ * counts only when a line closing it comes later in the same text (a quote's
+ * own text, for a quote): prose that names ``` must not swallow the rest of
+ * the message. A line with another ``` run (an inline ```code```) is not
+ * one, and neither is a quoted line: the quote is read once its `>` is
+ * stripped. `closerRunAfter` is `closingRuns(lines)` at the line's index.
+ */
+function midLineFence(line: string, closerRunAfter: () => number): [string, string] | null {
+  if (!line.includes('```') || fenceOpenLength(line) > 0 || /^\s*>/.test(line)) return null;
+  const m = /^(.*\S)[ \t]+(`{3,}[^`]*)$/.exec(line);
+  if (!m || m[1].includes('```') || closerRunAfter() < fenceOpenLength(m[2])) return null;
+  return [m[1], m[2]];
+}
+
+/** The longest closing-fence run on any line after each index, read once on
+ *  the first ask (linear, however many openers ask). */
+function closingRuns(lines: readonly string[]): (index: number) => number {
+  let runs: Int32Array | null = null;
+  return (index) => {
+    if (!runs) {
+      runs = new Int32Array(lines.length + 1);
+      for (let j = lines.length - 1; j >= 0; j--) {
+        const run = /^(`{3,})\s*$/.exec(lines[j].trimStart());
+        runs[j] = Math.max(runs[j + 1], run ? run[1].length : 0);
+      }
+    }
+    return runs[index + 1];
+  };
+}
+
 /** The whole body, outside code fences: comments and script/style elements
- *  dropped, <br> as a line break. */
+ *  dropped, <br> as a line break. Fences are found as renderBlocks finds them,
+ *  mid-line openers included, so what it draws as code stays as written. */
 function preprocessGithubHtml(source: string): string {
   const lines = source.split('\n');
+  const closerRunAfter = closingRuns(lines);
   const out: string[] = [];
   let chunk: string[] = [];
   let fence = 0;
@@ -245,8 +280,15 @@ function preprocessGithubHtml(source: string): string {
     for (const l of text.split('\n')) out.push(l);
     chunk = [];
   };
-  for (const line of lines) {
-    if (fence === 0 && fenceOpenLength(line) > 0) {
+  lines.forEach((line, index) => {
+    const mid = fence === 0 ? midLineFence(line, () => closerRunAfter(index)) : null;
+    if (mid) {
+      // The prose before it is body text; the opener goes on its own line.
+      chunk.push(mid[0]);
+      flush();
+      fence = fenceOpenLength(mid[1]);
+      out.push(mid[1]);
+    } else if (fence === 0 && fenceOpenLength(line) > 0) {
       flush();
       fence = fenceOpenLength(line);
       out.push(line);
@@ -256,7 +298,7 @@ function preprocessGithubHtml(source: string): string {
     } else {
       chunk.push(line);
     }
-  }
+  });
   flush();
   return out.join('\n');
 }
@@ -419,20 +461,7 @@ interface BlockBudget { left: number; cut?: boolean; cells?: number }
 function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budget: BlockBudget): React.ReactNode[] {
   const lines = source.split('\n');
   const out: React.ReactNode[] = [];
-  // The longest closing-fence run on any line after each index, read once,
-  // when a mid-line opener first asks (linear, however many openers).
-  let closerRuns: Int32Array | null = null;
-  const closerRunAfter = (index: number): number => {
-    if (!closerRuns) {
-      const runs = new Int32Array(lines.length + 1);
-      for (let j = lines.length - 1; j >= 0; j--) {
-        const run = /^(`{3,})\s*$/.exec(lines[j].trimStart());
-        runs[j] = Math.max(runs[j + 1], run ? run[1].length : 0);
-      }
-      closerRuns = runs;
-    }
-    return closerRuns[index + 1];
-  };
+  const closerRunAfter = closingRuns(lines);
   let i = 0;
   while (i < lines.length) {
     if (budget.left <= 0) {
@@ -443,18 +472,12 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
     budget.left--;
     let line = lines[i];
 
-    // A fence opener after prose on the same line ("... text ```ts", as models
-    // write it) opens the fence there: the prose is drawn as its own line
-    // first. The opener takes the info string a line-start fence takes (no
-    // backticks after the run), and counts only when a line closing it comes
-    // later in this text (a quote's own text, for a quote): prose that names
-    // ``` must not swallow the rest of the message. A line with another ```
-    // run (an inline ```code```) stays as it is, and so does a quoted line:
-    // the quote branch reads its fences once the `>` is stripped.
-    const midFence = line.includes('```') && fenceOpenLength(line) === 0 && !/^\s*>/.test(line) ? /^(.*\S)[ \t]+(`{3,}[^`]*)$/.exec(line) : null;
-    if (midFence && !midFence[1].includes('```') && closerRunAfter(i) >= fenceOpenLength(midFence[2])) {
-      out.push(<Fragment key={out.length}>{renderBlocks(midFence[1], opts, depth, budget)}</Fragment>);
-      line = midFence[2];
+    // A fence opened mid-line (midLineFence): the prose is drawn as its own line first.
+    const index = i;
+    const midFence = midLineFence(line, () => closerRunAfter(index));
+    if (midFence) {
+      out.push(<Fragment key={out.length}>{renderBlocks(midFence[0], opts, depth, budget)}</Fragment>);
+      line = midFence[1];
     }
 
     // Fenced code block (an unclosed fence swallows to the end — streaming).
