@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkspacePaneOwner } from '../../../../shared/paneUtils';
-import { getDraft, setDraft } from '../Composer';
+import { enqueueMessage, getDraft, getStaged, queuedMessages, setDraft, setStaged } from '../Composer';
 import { forgetChatV2PaneIfClosed } from '../useChatV2';
 
 const leaf = (id: string, ptyId: string) => ({ type: 'leaf', id, surfaces: [{ id: `s-${id}`, ptyId }], activeSurfaceId: `s-${id}` });
@@ -22,8 +22,13 @@ describe('forgetChatV2PaneIfClosed', () => {
     setDraft('pty-3:chat-b', 'gone soon');
     setDraft('pty-3:new', 'also gone');
     setDraft('pty-4:new', 'another pane');
+    setStaged('pty-3:chat-b', [{ path: '/staged/a.png', name: 'a.png' }]);
+    enqueueMessage('pty-3:chat-b', { id: 'm1', text: 'queued', staged: [] });
     forgetChatV2PaneIfClosed('pty-3', { workspaces: [workspace(leaf('p4', 'pty-4'))] });
     expect(getDraft('pty-3:chat-b')).toBe('');
+    // Its staged attachments and queued messages go with it.
+    expect(getStaged('pty-3:chat-b')).toEqual([]);
+    expect(queuedMessages('pty-3:chat-b')).toEqual([]);
     expect(getDraft('pty-3:new')).toBe('');
     expect(getDraft('pty-4:new')).toBe('another pane');
   });

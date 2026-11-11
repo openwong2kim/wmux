@@ -14,6 +14,7 @@ import type {
   ChatV2RunMode,
 } from '../../../shared/chatv2/ipc';
 import { applyPushToView, prependHistory, RESNAPSHOT, stateFromSnapshot, type ChatV2ViewState } from './viewState';
+import { S } from './strings';
 
 export type ChatV2Phase = 'loading' | 'empty' | 'ready' | 'unavailable';
 
@@ -66,7 +67,8 @@ export function onKnownBindings(listener: () => void): () => void {
 }
 
 let messageCounter = 0;
-function clientMessageId(): string {
+/** A new message id; the host's send ledger answers a resend with the same id as a duplicate. */
+export function clientMessageId(): string {
   messageCounter += 1;
   const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID().replace(/-/g, '') : Math.random().toString(36).slice(2);
   return `m${Date.now().toString(36)}${messageCounter.toString(36)}${random.slice(0, 12)}`;
@@ -209,20 +211,57 @@ export class ChatV2Controller {
     return true;
   }
 
-  async send(text: string, attachments: string[] = []): Promise<boolean> {
+  /**
+   * True once the host took the message, also when this controller was
+   * disposed meanwhile (a split remount): the composer that remounted clears
+   * what was sent.
+   */
+  async send(text: string, attachments: string[] = [], messageId = clientMessageId()): Promise<boolean> {
     const view = this.state.view;
     if (!view) return false;
     this.set({ error: null });
-    const result = await this.bridge.call('send', {
+    const result = await this.post(view, { id: messageId, text, attachments });
+    if (result.ok) return true;
+    if (this.disposed) return false;
+    return this.fail(result.error);
+  }
+
+  /**
+   * Send a message queued behind a turn. `wait`: the agent is not free yet
+   * (the turn's end not folded, a question open) or the view went, so it
+   * stays queued, unsent; `gone`: its chat no longer exists (reloaded by
+   * then), so the queue belongs in the composer of what the pane shows now;
+   * `failed`: the host refused it, with the error shown.
+   */
+  async deliver(message: { id: string; text: string; attachments: string[] }): Promise<'sent' | 'wait' | 'gone' | 'failed'> {
+    const view = this.state.view;
+    if (!view) return 'wait';
+    const result = await this.post(view, message);
+    if (result.ok) return 'sent';
+    if (this.disposed) return 'wait';
+    const { code } = result.error;
+    if (code === 'turn-running' || code === 'needs-input') return 'wait';
+    // A reload settles a stale copy by itself; it is tried again on the new one.
+    if (code === 'stale-epoch') { void this.reload(); return 'wait'; }
+    if (code === 'session-not-found') {
+      await this.reload();
+      if (this.disposed) return 'wait';
+      this.set({ error: { code, message: S.queueMovedToDraft } });
+      return 'gone';
+    }
+    this.fail(result.error);
+    return 'failed';
+  }
+
+  private post(view: ChatV2ViewState, message: { id: string; text: string; attachments: string[] }): Promise<ChatV2ResultByMethod['send']> {
+    return this.bridge.call('send', {
       paneId: this.paneId,
       chatSessionId: view.binding.chatSessionId,
       epoch: view.epoch,
-      clientMessageId: clientMessageId(),
-      text,
-      ...(attachments.length ? { attachments } : {}),
+      clientMessageId: message.id,
+      text: message.text,
+      ...(message.attachments.length ? { attachments: message.attachments } : {}),
     });
-    if (this.disposed) return false;
-    return result.ok ? true : this.fail(result.error);
   }
 
   async interrupt(): Promise<boolean> {
