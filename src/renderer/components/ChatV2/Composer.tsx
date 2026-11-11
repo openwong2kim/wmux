@@ -41,6 +41,11 @@ export function useDraft(key: string): DraftEntry {
   return useSyncExternalStore(onDrafts, () => draftEntry(key));
 }
 
+/** One conversation's queued messages, kept current (typing does not change it). */
+export function useQueuedMessages(key: string): readonly QueuedMessage[] {
+  return useSyncExternalStore(onDrafts, () => draftEntry(key).queue);
+}
+
 export function getDraft(key: string): string {
   return draftEntry(key).text;
 }

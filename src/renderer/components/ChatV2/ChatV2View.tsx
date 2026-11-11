@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { CHATV2_AGENT_CAPS, type ChatV2Agent, type ChatV2RunMode } from '../../../shared/chatv2/ipc';
-import { Composer, dequeueMessage, enqueueMessage, restoreToDraft, setDraft, useDraft } from './Composer';
+import { Composer, dequeueMessage, enqueueMessage, restoreToDraft, setDraft, useQueuedMessages } from './Composer';
 import { clientMessageId } from './controller';
 import { shortDir } from '../../utils/shortDir';
 import { FindBar } from './FindBar';
@@ -84,7 +84,7 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   const { state, controller, retry } = useChatV2(paneId, active);
   const view = state.view;
   const draftKey = view ? `${paneId}:${view.binding.chatSessionId}` : `${paneId}:new`;
-  const { queue } = useDraft(draftKey);
+  const queue = useQueuedMessages(draftKey);
   const [findOpen, setFindOpen] = useState(false);
   const [findId, setFindId] = useState<string | null>(null);
   const [newModel, setNewModel] = useState('');

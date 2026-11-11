@@ -238,8 +238,10 @@ export class ChatV2Controller {
     if (this.disposed) return 'wait';
     const { code } = result.error;
     if (code === 'turn-running' || code === 'needs-input') return 'wait';
+    // A reload settles these by itself; it is tried again on the new copy.
+    if (code === 'stale-epoch' || code === 'session-not-found') { void this.reload(); return 'wait'; }
     this.fail(result.error);
-    return code === 'stale-epoch' || code === 'session-not-found' ? 'wait' : 'failed';
+    return 'failed';
   }
 
   private post(view: ChatV2ViewState, message: { id: string; text: string; attachments: string[] }): Promise<ChatV2ResultByMethod['send']> {
