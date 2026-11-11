@@ -3340,7 +3340,7 @@ export const ko = {
   'settings.windowGlassSoft': '은은하게',
   'settings.windowGlassClear': '맑게',
   'settings.windowGlassUnsupported': 'Windows 11 22H2 이상이 필요합니다. 이 Windows에서는 창이 불투명하게 유지됩니다.',
-  'settings.windowGlassThemeOpaque': '이 테마는 글자가 잘 읽히도록 Windows에서 불투명하게 유지됩니다. 고른 값은 유리를 유지할 수 있는 테마에서 다시 적용됩니다.',
+  'settings.windowGlassThemeOpaque': '이 테마는 바탕화면 위에서도 글자가 잘 읽히도록 불투명하게 유지됩니다. 고른 값은 유리를 유지할 수 있는 테마에서 다시 적용됩니다.',
   'settings.sidebarLeft': '왼쪽',
   'settings.sidebarRight': '오른쪽',
   'settings.chatView': '여러 에이전트 챗뷰 (실험적)',

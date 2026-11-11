@@ -1127,7 +1127,7 @@ export const zh = {
   'settings.windowGlassSoft': '柔和',
   'settings.windowGlassClear': '通透',
   'settings.windowGlassUnsupported': '需要 Windows 11 22H2 或更高版本。此 Windows 上窗口保持不透明。',
-  'settings.windowGlassThemeOpaque': '为保证文字清晰可读，此主题在 Windows 上保持不透明。你的选择会在可保留玻璃效果的主题上再次生效。',
+  'settings.windowGlassThemeOpaque': '为保证文字在桌面背景上清晰可读，此主题保持不透明。你的选择会在可保留玻璃效果的主题上再次生效。',
   'settings.sidebarLeft': '左',
   'settings.sidebarRight': '右',
   'settings.titlebarVitals': '始终显示内存和 CPU',

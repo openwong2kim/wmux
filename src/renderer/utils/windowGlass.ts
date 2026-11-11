@@ -9,11 +9,11 @@
 // main to set that appearance from the theme (dark theme, dark material; light
 // theme, light material) and turns glass on once the two agree. The flag is a
 // `data-glass` attribute on <html>; globals.css turns the frame and the
-// sidebar translucent under it while the panes stay opaque. On Windows the
-// renderer also sends the level, so main switches the material at runtime,
-// and sets the coverage itself: it is derived from the theme's tokens so the
-// text stays legible over any backdrop (glassCoverage.ts), and a look that
-// cannot be legible is opaque there, as if glass were Off.
+// sidebar translucent under it while the panes stay opaque. The renderer sets
+// the coverage itself on both platforms: it is derived from the theme's
+// tokens so the text stays legible over any backdrop (glassCoverage.ts), and
+// a look that cannot be legible is opaque, as if glass were Off. On Windows
+// it also sends the level, so main switches the material at runtime.
 import { isLight } from '../tailwindPalette';
 import {
   DEFAULT_WINDOW_GLASS,
@@ -22,7 +22,7 @@ import {
   type WindowGlassLevel,
 } from '../../shared/windowGlass';
 import { cssColorToHex, overlayColors } from './titlebarOverlay';
-import { windowsGlassCoverage, type GlassCoverage, type GlassTokens } from './glassCoverage';
+import { glassCoverage, type GlassCoverage, type GlassPlatform, type GlassTokens } from './glassCoverage';
 
 export {
   DEFAULT_WINDOW_GLASS,
@@ -38,8 +38,8 @@ export function windowGlassSupported(): boolean {
 }
 
 /**
- * Whether the current theme keeps the window opaque on Windows although the
- * user picked Soft or Clear. It reads the level the glass sync last applied
+ * Whether the current theme keeps the window opaque although the user picked
+ * Soft or Clear. It reads the level the glass sync last applied
  * (`effective`, reported through installWindowGlass's onGlassLevel), so the
  * legibility rule stays in one place: sync() and glassCoverage.ts.
  */
@@ -48,7 +48,7 @@ export function themeBlocksWindowGlass(
   chosen: WindowGlassLevel,
   effective: WindowGlassLevel | null,
 ): boolean {
-  return platform === 'win32' && chosen !== 'off' && effective === 'off';
+  return (platform === 'win32' || platform === 'darwin') && chosen !== 'off' && effective === 'off';
 }
 
 /** The theme's polarity from its base colour, or null while it cannot be read. */
@@ -79,9 +79,9 @@ export function shouldUseGlass(
 interface SyncState {
   /** The appearance last sent to main. */
   appearance: string | null;
-  /** The glass level last sent to main (Windows). */
+  /** The glass level last applied: sent to main on Windows, reported on both. */
   level: WindowGlassLevel | null;
-  /** The last Windows coverage worked out, by its inputs: the search is not free. */
+  /** The last coverage worked out, by its inputs: the search is not free. */
   coverage: { key: string; value: GlassCoverage | null } | null;
 }
 
@@ -128,21 +128,23 @@ function setInlineVar(root: HTMLElement, name: string, value: string | null): vo
 }
 
 /**
- * The Windows coverage for the current look and level, or null when the look
- * cannot stay legible over glass (or its tokens cannot be read: legibility
- * wins, so that is opaque too).
+ * The coverage for the current look and level, or null when the look cannot
+ * stay legible over glass (or its tokens cannot be read: legibility wins, so
+ * that is opaque too).
  */
-function windowsCoverage(
+function currentCoverage(
   root: HTMLElement,
   style: CSSStyleDeclaration,
+  platform: GlassPlatform,
   appearance: 'dark' | 'light',
   level: 'soft' | 'clear',
   last: SyncState,
 ): GlassCoverage | null {
   const tokens = readGlassTokens(root, style);
   if (!tokens) return null;
-  const key = [appearance, level, tokens.frameBg, tokens.mantle, tokens.textMain, tokens.textSub2, tokens.textSub, tokens.textSubtle, tokens.textMuted].join(' ');
-  if (last.coverage?.key !== key) last.coverage = { key, value: windowsGlassCoverage(tokens, appearance, level) };
+  const theme = root.getAttribute('data-theme');
+  const key = [platform, theme, appearance, level, tokens.frameBg, tokens.mantle, tokens.textMain, tokens.textSub2, tokens.textSub, tokens.textSubtle, tokens.textMuted].join(' ');
+  if (last.coverage?.key !== key) last.coverage = { key, value: glassCoverage(tokens, appearance, level, platform, theme) };
   return last.coverage.value;
 }
 
@@ -162,14 +164,16 @@ function sync(
   if (appearance) onAppearance?.(appearance);
   const themeGlass = style.getPropertyValue('--theme-glass') || '1';
   const chosen = resolveWindowGlass(root.getAttribute('data-glass-level'));
-  // On Windows the look decides too: one that cannot show glass (opted out,
-  // unreadable, or not legible over any backdrop) is treated as Off, so main
-  // drops the acrylic and the transparent caption strip under an opaque page.
-  const win32 = platform === 'win32' && supported;
-  const coverage = win32 && chosen !== 'off' && appearance && themeGlass.trim() !== '0'
-    ? windowsCoverage(root, style, appearance, chosen, last)
+  // The look decides too: one that cannot show glass (opted out, unreadable,
+  // or not legible over any backdrop) is treated as Off. The page is then
+  // opaque, and on Windows main also drops the acrylic and the transparent
+  // caption strip.
+  const glassPlatform: GlassPlatform | null = supported && (platform === 'win32' || platform === 'darwin') ? platform : null;
+  const win32 = glassPlatform === 'win32';
+  const coverage = glassPlatform && chosen !== 'off' && appearance && themeGlass.trim() !== '0'
+    ? currentCoverage(root, style, glassPlatform, appearance, chosen, last)
     : null;
-  const level: WindowGlassLevel = win32 && !coverage ? 'off' : chosen;
+  const level: WindowGlassLevel = glassPlatform && !coverage ? 'off' : chosen;
   // With glass off the app goes back to the system appearance: overriding it
   // is app-wide (native menus, the in-app browser's prefers-color-scheme),
   // so it is only worth it while the material shows.
@@ -179,7 +183,7 @@ function sync(
     window.electronAPI?.window?.setAppearance?.(wanted);
   }
   const on = shouldUseGlass(platform, bgBase, themeGlass, systemDark, level, windowsBuild);
-  // Windows coverage is inline on <html>; elsewhere the globals.css rules apply.
+  // The coverage is inline on <html>, set in the same pass as `data-glass`.
   setInlineVar(root, '--glass-frame', on && coverage ? `${coverage.frame}%` : null);
   setInlineVar(root, '--glass-sheet', on && coverage ? `${coverage.sheet}%` : null);
   // The value is the material's appearance, so CSS can tune a light material.
@@ -188,10 +192,11 @@ function sync(
   // Windows switches the material at runtime (macOS keeps its vibrancy and
   // lets the page decide). Sent after `data-glass` moved, so the overlay pair
   // is the frame's paint for this level: the solid colour main restores when
-  // glass goes off.
-  if (win32 && level !== last.level) {
+  // glass goes off. Both platforms report the level, so Settings can say
+  // why a look is opaque.
+  if (glassPlatform && level !== last.level) {
     last.level = level;
-    window.electronAPI?.window?.setGlass?.({ level, ...(overlayColors() ?? {}) });
+    if (win32) window.electronAPI?.window?.setGlass?.({ level, ...(overlayColors() ?? {}) });
     onGlassLevel?.(level);
   }
 }
@@ -199,7 +204,7 @@ function sync(
 /**
  * Keep `data-glass` and the app's appearance in step with the theme, the glass
  * level and the appearance. `onAppearance` hears the theme's polarity on every
- * sync, and `onGlassLevel` each level sent to main on Windows ('off' while the
+ * sync, and `onGlassLevel` each level applied ('off' while the
  * theme blocks glass), both for the session save.
  */
 export function installWindowGlass(

@@ -75,7 +75,7 @@ describe('WindowGlassSetting', () => {
     for (const label of ['Off', 'Soft', 'Clear']) expect(isDisabled(option(container, label)), label).toBe(false);
     expect(isSelected(option(container, 'Soft'))).toBe(true);
     expect(isSelected(option(container, 'Off'))).toBe(false);
-    expect(container.textContent).toContain('This theme stays opaque on Windows so its text stays readable.');
+    expect(container.textContent).toContain('This theme stays opaque so its text stays readable over the desktop.');
     expect(container.textContent).not.toContain('How much of the desktop shows through');
     act(() => option(container, 'Clear').click());
     expect(onChange).toHaveBeenCalledWith('clear');
@@ -95,9 +95,12 @@ describe('themeBlocksWindowGlass', () => {
     ['win32', 'soft', 'soft', false],
     // The user's own Off is not the theme's doing.
     ['win32', 'off', 'off', false],
-    // Nothing applied yet, or no Windows sync at all.
+    // Nothing applied yet, or no glass sync at all.
     ['win32', 'soft', null, false],
-    ['darwin', 'soft', 'off', false],
+    // macOS derives its coverage too (#3283).
+    ['darwin', 'soft', 'off', true],
+    ['darwin', 'soft', 'soft', false],
+    ['linux', 'soft', 'off', false],
     [undefined, 'soft', 'off', false],
   ] as const)('%s, saved %s, applied %s → %s', (platform, chosen, effective, expected) => {
     expect(themeBlocksWindowGlass(platform, chosen, effective)).toBe(expected);

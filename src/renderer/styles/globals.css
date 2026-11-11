@@ -1230,41 +1230,12 @@ select option {
  * through `color-mix(… 0%, transparent)` rather than the `transparent`
  * keyword, which interpolates through black. */
 /* The sheet's tint stacks on the frame's, so the sidebar's coverage is
- * 1 - (1 - frame)(1 - sheet): on macOS about 29% on Soft and 14% on Clear. Keep the
- * sheet step small, or the sidebar turns opaque long before the frame does. */
-html[data-glass] {
-  --glass-frame: 25%;
-  --glass-sheet: 6%;
-}
-html[data-glass][data-glass-level="clear"] {
-  --glass-frame: 10%;
-  --glass-sheet: 5%;
-}
-/* A strongly hued look (navy, red, violet) keeps more of its own colour over
- * the grey material, or its frame turns a neutral grey beside a hued sheet. */
-html[data-glass]:is([data-theme="stars-and-stripes"], [data-theme="red-dynasty"], [data-theme="catppuccin-mocha"]) {
-  --glass-frame: 55%;
-  --glass-sheet: 20%;
-}
-html[data-glass]:is([data-theme="stars-and-stripes"], [data-theme="red-dynasty"], [data-theme="catppuccin-mocha"])[data-glass-level="clear"] {
-  --glass-frame: 35%;
-  --glass-sheet: 12%;
-}
-/* The light material is milkier than the dark one, so a light look paints
- * less over it to read as see-through as a dark look does. */
-html[data-glass="light"] {
-  --glass-frame: 10%;
-  --glass-sheet: 4%;
-}
-html[data-glass="light"][data-glass-level="clear"] {
-  --glass-frame: 0%;
-  --glass-sheet: 3%;
-}
-/* Windows 11 acrylic has no fixed numbers here: the renderer derives the
- * coverage from the look's tokens so its text stays legible over any
- * backdrop, and sets `--glass-frame` and `--glass-sheet` inline on <html> in
- * the same pass that sets `data-glass` (utils/windowGlass.ts and
- * glassCoverage.ts). Inline, they outrank the macOS rules above. */
+ * 1 - (1 - frame)(1 - sheet). Neither platform has fixed numbers here: the
+ * renderer derives the coverage from the look's tokens so its text stays
+ * legible over any backdrop, and sets `--glass-frame` and `--glass-sheet`
+ * inline on <html> in the same pass that sets `data-glass`
+ * (utils/windowGlass.ts and glassCoverage.ts, which keeps each platform's
+ * old numbers as the floor). */
 /* Glass draws the look's own text tiers and row fills on both platforms
  * (owner decision 2026-10-22): no rule here restates a text colour, so a
  * look that Windows cannot keep legible at the cap is opaque there instead. */
