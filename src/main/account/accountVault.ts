@@ -47,13 +47,16 @@ export interface AccountVaultEntry {
   updatedAt: number;
   /** False when this machine cannot decrypt it (enter it again). */
   usable: boolean;
+  /** The first 8 hex digits of the value's SHA-256, so the owner can tell
+   *  which value is stored; null when it cannot be decrypted here. */
+  fingerprint: string | null;
 }
 
 export type AccountVaultSetResult =
   | { ok: true; entry: AccountVaultEntry }
   | {
       ok: false;
-      code: 'encryption_unavailable' | 'basic_text' | 'invalid_name' | 'invalid_value' | 'too_many' | 'write_failed' | 'store_unreadable';
+      code: 'encryption_unavailable' | 'basic_text' | 'invalid_name' | 'invalid_value' | 'prefix_mismatch' | 'too_many' | 'write_failed' | 'store_unreadable';
       message: string;
     };
 
@@ -179,6 +182,13 @@ export class AccountVault {
     this.publish();
   }
 
+  /** Why nothing can be saved right now (no encryption, no keyring, an
+   *  unreadable file), or null. Read-only: it looks, it never writes. */
+  storeRefusal(): { code: Extract<AccountVaultSetResult, { ok: false }>['code']; message: string } | null {
+    const refused = this.refusal();
+    return refused ? { code: refused.code, message: refused.message } : null;
+  }
+
   /** One account's entries, never values; oldest first. */
   list(accountId: string): AccountVaultEntry[] {
     return [...this.held.values()]
@@ -187,8 +197,8 @@ export class AccountVault {
       .sort((a, b) => a.createdAt - b.createdAt);
   }
 
-  /** Store (or replace) a value. A new entry is injected unless told not to;
-   *  a replaced one keeps its setting. */
+  /** Store (or replace) a value. `inject`, when given, is saved with it;
+   *  otherwise a new entry is injected and a replaced one keeps its setting. */
   set(accountId: string, name: unknown, value: unknown, opts: { inject?: boolean } = {}): AccountVaultSetResult {
     const refused = this.refusal();
     if (refused) return refused;
@@ -215,7 +225,7 @@ export class AccountVault {
       accountId,
       name,
       cipher,
-      inject: prior ? prior.record.inject : opts.inject ?? true,
+      inject: opts.inject ?? (prior ? prior.record.inject : true),
       length: value.length,
       createdAt: prior?.record.createdAt ?? at,
       updatedAt: at,
@@ -312,7 +322,8 @@ export class AccountVault {
 
 function entryOf(h: Held): AccountVaultEntry {
   const r = h.record;
-  return { accountId: r.accountId, name: r.name, inject: r.inject, length: r.length, createdAt: r.createdAt, updatedAt: r.updatedAt, usable: h.value !== null };
+  const fingerprint = h.value === null ? null : crypto.createHash('sha256').update(h.value).digest('hex').slice(0, 8);
+  return { accountId: r.accountId, name: r.name, inject: r.inject, length: r.length, createdAt: r.createdAt, updatedAt: r.updatedAt, usable: h.value !== null, fingerprint };
 }
 
 /** Who may get an account's vault: a pane created on this computer for its
