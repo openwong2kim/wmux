@@ -1,5 +1,6 @@
 import { useStore } from '../stores';
 import { agentDisplayToSlug } from '../../shared/agentIdentity';
+import { chatHoldsPane } from '../components/ChatV2/status';
 
 /**
  * #1210 — drop a pane's detected agent identity once we know the TUI is gone.
@@ -8,6 +9,8 @@ import { agentDisplayToSlug } from '../../shared/agentIdentity';
  * answer was in flight keeps its stamp. A dead process with a foreground
  * command still running may be a relaunch the tracker has not re-armed for yet,
  * so that case keeps the stamp too.
+ * A pane a chat-v2 chat holds is skipped: its agent is the chat's driver, not
+ * a process of the anchor shell, which idles at its prompt the whole time.
  */
 export function clearSurfaceAgentsKnownGone(
   agentAlive: Record<string, boolean>,
@@ -16,10 +19,10 @@ export function clearSurfaceAgentsKnownGone(
 ): void {
   const store = useStore.getState();
   for (const [id, alive] of Object.entries(agentAlive)) {
-    if (alive === false) store.clearSurfaceAgent(id, commandRunning[id] === true ? undefined : requestedAt);
+    if (alive === false && !chatHoldsPane(id)) store.clearSurfaceAgent(id, commandRunning[id] === true ? undefined : requestedAt);
   }
   for (const [id, running] of Object.entries(commandRunning)) {
-    if (running === false) store.clearSurfaceAgent(id, requestedAt);
+    if (running === false && !chatHoldsPane(id)) store.clearSurfaceAgent(id, requestedAt);
   }
 }
 
@@ -61,7 +64,7 @@ export function livenessSnapshotSettled(requestedAt: number): void {
  * settles those.
  */
 export function clearSurfaceAgentOnProcessExit(ptyId: string, slug: string | null, at: number): void {
-  if (!slug) return;
+  if (!slug || chatHoldsPane(ptyId)) return;
   const store = useStore.getState();
   const agent = store.surfaceAgent[ptyId];
   if (!agent?.name) return;

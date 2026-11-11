@@ -126,6 +126,7 @@ import { noteDaemonConnected, noteDaemonDisconnected, noteDaemonGaveUp, noteDaem
 import { planAgentCandidateSeed, planLiveAgentSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { agentSlugToDisplay } from '../../../shared/agentIdentity';
 import { applyProcessExits, clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone, livenessSnapshotRequested, livenessSnapshotSettled } from '../../utils/agentRowLiveness';
+import { startChatStatusMirror } from '../ChatV2/status';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
 import { AgentToolbarStrip } from '../AgentToolbar/ToolbarHost';
@@ -922,6 +923,8 @@ export default function AppLayout() {
   // while yielding to composer copy / SIGINT (see useTerminalCopyShortcut).
   useTerminalCopyShortcut();
   useNotificationListener();
+  // A chat-v2 chat's run state in the same per-pane maps, for the sidebar and Fleet.
+  useEffect(() => startChatStatusMirror(), []);
   useRpcBridge();
   useCustomAgentsHydration();
   // Cross-host A2A: the pane tree for exposure and gone-pane link breaks.
