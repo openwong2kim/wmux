@@ -6,7 +6,7 @@ import { findLeaf } from '../../../shared/paneUtils';
 import { useStore } from '../../stores';
 import PaneComponent from './Pane';
 import { DialogHost, useHasDialogHost } from '../ui/dialogHost';
-import { childCorners } from './paneCorners';
+import { childCorners, shownChildren } from './paneCorners';
 
 /**
  * How far around a divider's 1px line the library lets the pointer grab it
@@ -352,7 +352,7 @@ function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = f
   // Zoom only affects this branch when the zoomed leaf lives somewhere below
   // it; a zoomed pane in another workspace (or none) leaves rendering as-is.
   const zoomInSubtree = zoomedPaneId !== null && findLeaf(pane, zoomedPaneId) !== null;
-  const shown = pane.children.map((child) => !zoomInSubtree || findLeaf(child, zoomedPaneId) !== null);
+  const shown = shownChildren(pane.children, zoomedPaneId);
 
   return (
     <Group

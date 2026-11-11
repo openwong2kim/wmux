@@ -4,8 +4,7 @@
 // column sides glass may stop clipping: both corner panes plain terminals.
 import { describe, expect, it } from 'vitest';
 import type { Pane, PaneLeaf } from '../../../../shared/types';
-import { findLeaf } from '../../../../shared/paneUtils';
-import { ALL_PANE_CORNERS, childCorners, glassCornerSides } from '../paneCorners';
+import { ALL_PANE_CORNERS, childCorners, glassCornerSides, isPlainTerminalPane, shownChildren } from '../paneCorners';
 
 const leaf = (id: string): Pane => ({ id, type: 'leaf', surfaces: [], activeSurfaceId: '' });
 const split = (direction: 'horizontal' | 'vertical', ...children: Pane[]): Pane => ({ id: children.map((c) => c.id).join('+'), type: 'branch', direction, children });
@@ -14,8 +13,7 @@ function corners(root: Pane, zoomed: string | null = null): Record<string, strin
   const out: Record<string, string> = {};
   const walk = (pane: Pane, c: string) => {
     if (pane.type === 'leaf') { out[pane.id] = c; return; }
-    const zoomIn = zoomed !== null && findLeaf(pane, zoomed) !== null;
-    const shown = pane.children.map((child) => zoomed === null || !zoomIn || findLeaf(child, zoomed) !== null);
+    const shown = shownChildren(pane.children, zoomed);
     pane.children.forEach((child, i) => walk(child, childCorners(c, pane.direction, i, shown)));
   };
   walk(root, ALL_PANE_CORNERS);
@@ -44,5 +42,13 @@ describe('pane corners', () => {
     expect(glassCornerSides(tree(term('b', 'chat')), null, false)).toBe('left right');
     expect(glassCornerSides(tree(withBrowser('b')), 'c', false)).toBe('left right');
     expect(glassCornerSides(tree(withBrowser('b')), 'b', false)).toBe('');
+  });
+
+  it('does not count a pane without its active surface as a plain terminal', () => {
+    const stale = { id: 'p', type: 'leaf', activeSurfaceId: 'gone', surfaces: [{ id: 's', surfaceType: 'terminal' }] } as unknown as PaneLeaf;
+    expect(isPlainTerminalPane(leaf('empty') as PaneLeaf, false, false)).toBe(false);
+    expect(isPlainTerminalPane(stale, false, false)).toBe(false);
+    expect(isPlainTerminalPane({ ...stale, activeSurfaceId: 's' }, false, false)).toBe(true);
+    expect(glassCornerSides(leaf('empty'), null, false)).toBe('');
   });
 });

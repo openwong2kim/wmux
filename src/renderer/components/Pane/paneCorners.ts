@@ -25,12 +25,19 @@ export function childCorners(corners: string, orientation: 'horizontal' | 'verti
   }).join(' ');
 }
 
-/** A pane that shows one plain terminal: no work area beside it (Pane's
- *  split) and no chat view over it. Only such a pane rounds its own corner. */
-export function isPlainTerminalPane(pane: PaneLeaf, chatViewEnabled: boolean): boolean {
+/** Which children of a split are shown: all of them, unless the zoomed pane
+ *  lies below one, which then is the only one (PaneContainer hides the rest). */
+export function shownChildren(children: readonly Pane[], zoomedPaneId: string | null): boolean[] {
+  const zoomIn = zoomedPaneId !== null && children.some((child) => findLeaf(child, zoomedPaneId) !== null);
+  return children.map((child) => !zoomIn || findLeaf(child, zoomedPaneId) !== null);
+}
+
+/** A pane that shows one plain terminal: no work area beside it (`split`,
+ *  Pane's splitMode) and no chat view over it. Only such a pane rounds its own
+ *  corner. A pane whose active surface is missing shows no terminal. */
+export function isPlainTerminalPane(pane: PaneLeaf, split: boolean, chatViewEnabled: boolean): boolean {
   const active = pane.surfaces.find((s) => s.id === pane.activeSurfaceId);
-  const split = pane.surfaces.some((s) => isTerminalKindSurfaceType(s.surfaceType)) && pane.surfaces.some((s) => isWorkSurfaceType(s.surfaceType));
-  return !split && isTerminalSurfaceType(active?.surfaceType) && !(chatViewEnabled && active?.viewMode === 'chat');
+  return active !== undefined && !split && isTerminalSurfaceType(active.surfaceType) && !(chatViewEnabled && active.viewMode === 'chat');
 }
 
 /** The column sides ('left', 'right') whose two corner panes are both plain
@@ -40,11 +47,11 @@ export function glassCornerSides(root: Pane, zoomedPaneId: string | null, chatVi
   const walk = (pane: Pane, corners: string) => {
     if (!corners) return;
     if (pane.type === 'leaf') {
-      if (isPlainTerminalPane(pane, chatViewEnabled)) for (const c of corners.split(' ')) plain.add(c);
+      const split = pane.surfaces.some((s) => isTerminalKindSurfaceType(s.surfaceType)) && pane.surfaces.some((s) => isWorkSurfaceType(s.surfaceType));
+      if (isPlainTerminalPane(pane, split, chatViewEnabled)) for (const c of corners.split(' ')) plain.add(c);
       return;
     }
-    const zoomIn = zoomedPaneId !== null && findLeaf(pane, zoomedPaneId) !== null;
-    const shown = pane.children.map((child) => zoomedPaneId === null || !zoomIn || findLeaf(child, zoomedPaneId) !== null);
+    const shown = shownChildren(pane.children, zoomedPaneId);
     pane.children.forEach((child, i) => walk(child, childCorners(corners, pane.direction, i, shown)));
   };
   walk(root, ALL_PANE_CORNERS);

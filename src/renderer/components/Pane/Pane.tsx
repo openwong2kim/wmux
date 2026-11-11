@@ -1110,7 +1110,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // Glass rounds a corner pane's own boxes (ui.css) only when it shows a
         // plain terminal: other surfaces paint their own corners, so the
         // column keeps its clip for them (selectGlassCornerSides).
-        'data-corner': corners && isPlainTerminalPane(pane, chatViewEnabled) ? corners : undefined,
+        'data-corner': corners && isPlainTerminalPane(pane, splitMode, chatViewEnabled) ? corners : undefined,
       }}
       onClick={handleClick}
       data-onboarding-target="pane-area"
