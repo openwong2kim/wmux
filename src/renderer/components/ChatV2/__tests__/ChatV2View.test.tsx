@@ -8,6 +8,7 @@ import { CHATV2_ANSWER_ARM_MS } from '../../../../shared/chatv2/limits';
 import type { Block } from '../../../../shared/chatv2/session';
 import { setChatV2BridgeForTests } from '../bridge';
 import { ApprovalCard, QuestionCard } from '../Cards';
+import { deliverChatDrop } from '../../Chat/chatAttachments';
 import ChatV2View from '../ChatV2View';
 import { SHELL_TAIL_LINES, shellView, TranscriptRowView, type TranscriptActions } from '../Transcript';
 import { createMockHost, type MockHost } from './mockHost';
@@ -556,5 +557,137 @@ describe('ChatV2View', () => {
     expect(host.textContent).toContain('chat.continuedInTerminal');
     expect(host.textContent).not.toContain('chat.showPane');
     expect(host.textContent).not.toContain('chat.openTerminal');
+  });
+
+  const type = async (value: string) => {
+    const box = host.querySelector('textarea') as HTMLTextAreaElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(box, value);
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+  const clickSend = async () => {
+    await act(async () => { (host.querySelector('.wmux-chatv2-send') as HTMLButtonElement).click(); });
+    await flush();
+  };
+  const sent = () => mock.calls.filter((call) => call.method === 'send').map((call) => call.params as { text: string; clientMessageId: string; attachments?: string[] });
+  const queued = () => [...host.querySelectorAll('[data-chatv2-queued] .wmux-chatv2-user')].map((el) => el.textContent);
+  // A split unmounts the pane's view and mounts it again.
+  const remount = async (paneId: string) => {
+    await act(async () => root.render(<div />));
+    await act(async () => root.render(<ChatV2View paneId={paneId} active onTerminal={() => undefined} />));
+    await flush();
+  };
+
+  it('queues a message sent mid-turn, delivers it when the turn ends, and keeps the queue through Stop', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-queue' });
+    await mock.call('create', { paneId: 'daemon-queue', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-queue" active onTerminal={() => undefined} />));
+    await flush();
+    await type('first');
+    await clickSend();
+    expect(sent().map((p) => p.text)).toEqual(['first']);
+    // Mid-turn, Send stays beside Stop and queues.
+    const stop = [...host.querySelectorAll('.wmux-chatv2-btn')].find((el) => el.textContent === 'Stop') as HTMLButtonElement;
+    expect(stop).toBeTruthy();
+    expect(host.querySelector('.wmux-chatv2-send')?.getAttribute('aria-label')).toBe('Queue · sent when the current reply ends');
+    await type('second');
+    await clickSend();
+    await type('third');
+    await clickSend();
+    expect(sent().map((p) => p.text)).toEqual(['first']);
+    expect(queued()).toEqual(['second', 'third']);
+    expect(host.querySelector('.wmux-chatv2-queued-caption')?.textContent).toBe('chat.queued');
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('');
+    // Stop ends the turn only: the queue stays, and its first message goes as the turn ends.
+    await act(async () => { stop.click(); });
+    await flush();
+    expect(mock.calls.some((call) => call.method === 'interrupt')).toBe(true);
+    expect(sent().map((p) => p.text)).toEqual(['first', 'second']);
+    expect(queued()).toEqual(['third']);
+    await act(async () => { mock.emit('daemon-queue', [{ type: 'turn.ended', outcome: 'completed' }]); });
+    await flush();
+    expect(sent().map((p) => p.text)).toEqual(['first', 'second', 'third']);
+    expect(queued()).toEqual([]);
+    expect(new Set(sent().map((p) => p.clientMessageId)).size).toBe(3);
+  });
+
+  it('keeps staged attachments with the draft across a split remount, and clears both on send', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-attach' });
+    await mock.call('create', { paneId: 'daemon-attach', agent: 'claude', mode: 'default' });
+    mock.record('daemon-attach')!.binding.capabilities.images = true;
+    mock.stageAttachment = async (file: string) => ({ ok: true, path: `/staged/${file.split('/').pop()}` });
+    await act(async () => root.render(<ChatV2View paneId="daemon-attach" active onTerminal={() => undefined} />));
+    await flush();
+    await act(async () => { deliverChatDrop('daemon-attach', ['/shots/screen.png']); });
+    await flush();
+    await type('what is in this picture?');
+    await remount('daemon-attach');
+    expect(host.querySelector('[data-attachment]')?.textContent).toBe('screen.png');
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('what is in this picture?');
+    await clickSend();
+    expect(sent()[0]).toMatchObject({ text: 'what is in this picture?', attachments: ['/staged/screen.png'] });
+    expect(host.querySelector('[data-attachment]')).toBeNull();
+    await remount('daemon-attach');
+    expect(host.querySelector('[data-attachment]')).toBeNull();
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('clears a draft whose send finished after a split remount, and keeps edits made since', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-inflight' });
+    await mock.call('create', { paneId: 'daemon-inflight', agent: 'claude', mode: 'default' });
+    const call = mock.call.bind(mock);
+    let release: () => void = () => undefined;
+    mock.call = ((method, params) => (method === 'send'
+      ? new Promise<void>((resolve) => { release = resolve; }).then(() => call(method, params))
+      : call(method, params))) as typeof mock.call;
+    await act(async () => root.render(<ChatV2View paneId="daemon-inflight" active onTerminal={() => undefined} />));
+    await flush();
+    const box = () => host.querySelector('textarea') as HTMLTextAreaElement;
+    await type('hello');
+    await clickSend();
+    await remount('daemon-inflight');
+    // Still in flight: shown, but it cannot be sent a second time.
+    expect(box().value).toBe('hello');
+    expect((host.querySelector('.wmux-chatv2-send') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { release(); });
+    await flush();
+    expect(box().value).toBe('');
+    expect(sent().map((p) => p.text)).toEqual(['hello']);
+    // A send whose draft was edited after the remount keeps the newer text.
+    await act(async () => { mock.emit('daemon-inflight', [{ type: 'turn.ended', outcome: 'completed' }]); });
+    await type('again');
+    await clickSend();
+    await remount('daemon-inflight');
+    await type('again, and more');
+    await act(async () => { release(); });
+    await flush();
+    expect(sent().map((p) => p.text)).toEqual(['hello', 'again']);
+    expect(box().value).toBe('again, and more');
+  });
+
+  it('says new messages arrived below in a polite live region while scrolled up', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-announce' });
+    await mock.call('create', { paneId: 'daemon-announce', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-announce" active onTerminal={() => undefined} />));
+    await flush();
+    await act(async () => { mock.emit('daemon-announce', [{ type: 'user.message', text: 'one', clientMessageId: 'c-00000001' }, { type: 'turn.ended', outcome: 'completed' }]); });
+    const region = () => host.querySelector('[data-chatv2-announce]') as HTMLElement;
+    expect(region().getAttribute('role')).toBe('status');
+    expect(region().getAttribute('aria-live')).toBe('polite');
+    expect(region().textContent).toBe('');
+    const viewport = host.querySelector('.wmux-chatv2-viewport') as HTMLDivElement;
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 2000 });
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 300 });
+    viewport.scrollTop = 100;
+    await act(async () => { viewport.dispatchEvent(new Event('scroll')); });
+    await act(async () => { mock.emit('daemon-announce', [{ type: 'session.error', message: 'boom' }]); });
+    expect(region().textContent).toBe('New messages below');
+    // The region is its own element, not the jump button's label.
+    expect(region().contains(host.querySelector('[data-chatv2-jump]'))).toBe(false);
+    // Back at the end, nothing is left to announce.
+    viewport.scrollTop = 1700;
+    await act(async () => { viewport.dispatchEvent(new Event('scroll')); });
+    expect(region().textContent).toBe('');
   });
 });

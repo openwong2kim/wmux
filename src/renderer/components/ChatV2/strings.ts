@@ -24,6 +24,7 @@ export const S = {
   placeholderNew: (agent: string) => `What should ${agent} do?`,
   placeholderHandedOff: 'This chat continues in Terminal.',
   send: 'Send',
+  sendQueued: 'Queue · sent when the current reply ends',
   stop: 'Stop',
   continueInTerminal: 'Continue in Terminal',
   continueInTerminalHint: 'Stops the chat and resumes the same conversation in this terminal.',
@@ -81,6 +82,7 @@ export const S = {
   findPrev: 'Previous match',
   findClose: 'Close find',
   loadEarlier: 'Load earlier messages',
+  newBelow: 'New messages below',
   status: {
     starting: 'Starting…',
     idle: 'Ready',
