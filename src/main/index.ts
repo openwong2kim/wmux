@@ -431,22 +431,29 @@ if (process.platform === 'win32') {
       let installIcon: string | null = null;
       try { installIcon = shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
 
-      // #863: repair leftover pins after Update.exe is done. The Start Menu
-      // entry is written by the app this launches (notification/
+      // The Start Menu entry is written by the app at startup (notification/
       // startMenuEntry.ts, #2971), never by Update.exe.
-      const finishInstall = () => {
-        try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
-        // Auto-launch app after install
-        spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-        process.exit(0);
-      };
       if (hookPlan.shortcutLocations) {
+        // First install: Update.exe makes the Desktop link on its own, and the
+        // hook quits without waiting for it. Squirrel launches the app itself
+        // (`--squirrel-firstrun`; not after a silent install, on purpose), and
+        // the app repairs pinned shortcuts once per version
+        // (postInstallReconcile.ts, #3263). Update.exe stays the hook's only
+        // child here: a longer-lived one could inherit Squirrel's redirected
+        // output and keep Setup.exe from finishing.
         const installShortcutArgs = ['--createShortcut', target, '--shortcut-locations', hookPlan.shortcutLocations];
         if (installIcon) installShortcutArgs.push('--icon', installIcon);
-        spawn(updateExe, installShortcutArgs, { detached: true, windowsHide: true }).on('close', finishInstall);
+        // Nothing reads its output once the hook is gone, so it gets none.
+        spawn(updateExe, installShortcutArgs, { detached: true, stdio: 'ignore', windowsHide: true })
+          .on('error', (err: Error) => console.warn('[Squirrel] Update.exe --createShortcut failed:', err))
+          .unref();
         app.quit();
       } else {
-        finishInstall();
+        // #863: repair leftover pins, then relaunch the app (an existing
+        // profile: an in-app update or a package-manager upgrade).
+        try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
+        spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+        process.exit(0);
       }
     } else if (squirrelCmd === '--squirrel-updated') {
       // Refresh the startup entry's exe path (it changes on every update) —
@@ -2358,7 +2365,8 @@ app.on('ready', async () => {
   }
 
   // Windows: redo whatever a cancelled Squirrel install hook left undone (CLI
-  // shim, autostart, shortcuts). See postInstallReconcile.ts. `freshInstall`
+  // shim, autostart, shortcuts), and repair pinned shortcuts once per version
+  // (#3263). See postInstallReconcile.ts. `freshInstall`
   // must be read here, before this boot's first session save creates the file
   // and before the profile marker below is written. It is the install hook's
   // own question (installProfile.ts), so both give the same answer.
@@ -2378,6 +2386,8 @@ app.on('ready', async () => {
         firstRun,
         freshInstall,
         desktopDir,
+        userData: app.getPath('userData'),
+        version: app.getVersion(),
       });
     }, 5000);
     reconcileTimer.unref();

@@ -58,6 +58,16 @@ export function mayInstallDarwinCliShim(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
+ * win32: may this boot repair the taskbar/Start pins (postInstallReconcile.ts,
+ * #3263)? Not from an isolated instance: pins belong to the Windows user, not
+ * to a wmux profile, and the "already repaired" marker in the suffixed data
+ * dir would not stop the next isolated run.
+ */
+export function mayRepairPinnedShortcuts(env: NodeJS.ProcessEnv): boolean {
+  return !env.WMUX_DATA_SUFFIX;
+}
+
+/**
  * win32: may this process raise OS toasts, either through Electron's
  * `Notification` or through a web page's Notification API? Not from a
  * packaged copy that runs isolated (any non-empty WMUX_DATA_SUFFIX: a portable
