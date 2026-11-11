@@ -2,13 +2,14 @@
 // drive through one pipe method (`app.action`), listed by `app.action.list`.
 //
 // What an action may touch: the caller's own workspace and what is in it, or
-// one of a few app-wide settings. Main resolves the caller's workspace from
-// what it verified itself (a pane claim, a2aCaller.ts), checks the action id
-// and its arguments against this registry, and only then hands the call to
-// the renderer, which resolves the target in the live store and refuses one
-// outside the caller's workspace. This is a guard against an agent's mistake
-// (renaming or rearranging someone else's workspace), not a boundary against
-// same-user code: a process of the same user can already reach the pipe.
+// one of a few app-wide settings. Main takes the caller's workspace from its
+// pane claim (minted by main's own walk of the caller's parent processes),
+// checks the action id and its arguments against this registry, and only
+// then hands the call to the renderer, which resolves the target in the live
+// store and refuses one outside the caller's workspace. This is a guard
+// against an agent's mistake (renaming or rearranging someone else's
+// workspace), not a boundary against same-user code: a process of the same
+// user can already reach the pipe.
 //
 // Versioning is by action id: a changed meaning gets a new id, never a new
 // method name.

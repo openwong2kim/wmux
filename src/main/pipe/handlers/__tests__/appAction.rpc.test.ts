@@ -131,9 +131,25 @@ describe('app.action identity', () => {
     expect(await run({ id: 'layout.balance' }, { origin: 'local', operator: true, firstParty: true })).toMatchObject({ code: 'no_identity' });
   });
 
-  it('a caller resolved to another workspace than it names is not_owned', async () => {
-    setup({ resolveCaller: async () => ({ ok: false, error: 'app.action: the calling pane is not owned by workspace ws-b' }) });
-    expect(await run({ id: 'layout.balance' }, claimed())).toMatchObject({ ok: false, code: 'not_owned' });
+  it('a pty on the envelope with no claim is refused, even one a workspace owns', async () => {
+    const res = await run({ id: 'layout.balance' }, { origin: 'local', externalWire: true, clientName: 'wmux-cli', callerPtyId: 'pty-a' });
+    expect(res).toMatchObject({ ok: false, code: 'no_identity' });
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('a workspace claim without a pane is refused', async () => {
+    const res = await run({ id: 'layout.balance' }, { origin: 'local', externalWire: true, workspaceClaim: { kind: 'bound', workspaceId: 'ws-a' } });
+    expect(res).toMatchObject({ ok: false, code: 'no_identity' });
+    expect(rendererCalls()).toEqual([]);
+  });
+
+  it('a commander binding alone is not a pane claim', async () => {
+    expect(await run({ id: 'layout.balance' }, { origin: 'local', externalWire: true, commanderWorkspace: 'ws-a' })).toMatchObject({ code: 'no_identity' });
+  });
+
+  it('the claim\'s pane goes to the renderer, not the envelope\'s', async () => {
+    await run({ id: 'tab.rename', args: { name: 'x' } }, { ...claimed('ws-a', 'pty-a'), callerPtyId: 'pty-b' });
+    expect(rendererCalls()[0][2]).toMatchObject({ callerWorkspaceId: 'ws-a', callerPtyId: 'pty-a' });
   });
 
   it('hands the renderer the caller\'s workspace, the target and the checked args', async () => {

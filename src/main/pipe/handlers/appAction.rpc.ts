@@ -1,10 +1,14 @@
 // `app.action` / `app.action.list`: an agent in a wmux pane drives a few wmux
 // features in its own workspace (shared/appActions.ts).
 //
-// Main decides who is calling and whether the call is well formed; the
-// renderer, which owns the workspace tree, resolves the target and refuses one
-// outside the caller's workspace. Main never falls back to the workspace the
-// human is looking at: no verified caller workspace, no action.
+// Main decides which workspace the call is for and whether it is well formed;
+// the renderer, which owns the workspace tree, resolves the target and refuses
+// one outside that workspace. The workspace comes from the caller's pane claim
+// only (the claim main minted from its own walk of the CLI's parent
+// processes), never from a field of the call, and main never falls back to
+// the workspace the human is looking at: no claim, no action. This guards
+// against an agent's mistake; it is not a boundary against same-user code,
+// which can reach the pipe directly.
 
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
@@ -20,7 +24,6 @@ import {
   type AppActionResult,
 } from '../../../shared/appActions';
 import { sendToRenderer } from './_bridge';
-import { a2aCallerWorkspace, type A2aCaller } from './a2aCaller';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -30,25 +33,28 @@ const RENDERER_TIMEOUT_MS = 5000;
 class AppActionTimeout extends Error {}
 
 export interface AppActionRpcDeps {
-  /** Injected in tests; defaults to a2aCallerWorkspace. */
-  resolveCaller?: (method: string, params: Record<string, unknown>, ctx: RpcContext | undefined) => Promise<A2aCaller>;
   timeoutMs?: number;
 }
 
-/** The caller's verified pane, when its identity came with one. */
-function verifiedCallerPty(ctx: RpcContext | undefined): string | undefined {
-  if (ctx?.workspaceClaim?.kind === 'bound' && ctx.workspaceClaim.ptyId) return ctx.workspaceClaim.ptyId;
-  // The envelope's pty is only a hint; the renderer uses it only inside the
-  // caller's own workspace, to pick the caller's own tab or pane.
-  return ctx?.callerPtyId;
+type ClaimedCaller = { ok: true; workspaceId: string; ptyId: string } | { ok: false; error: string };
+
+/**
+ * The caller's workspace and pane, from its pane claim alone. The claim is
+ * looked up in the registry main wrote when it minted it, so a call cannot
+ * name one that resolves; a claim without a pane (an external MCP client's
+ * workspace claim) or a pty stated on the envelope does not count.
+ */
+function claimedCaller(ctx: RpcContext | undefined): ClaimedCaller {
+  const method = APP_ACTION_RPC.run;
+  const claim = ctx?.workspaceClaim;
+  if (claim?.kind === 'stale') return { ok: false, error: `${method}: the workspace you claimed is gone; run the command again` };
+  if (claim?.kind !== 'bound' || !claim.ptyId) {
+    return { ok: false, error: `${method}: run this from a wmux pane (no pane claim came with the call)` };
+  }
+  return { ok: true, workspaceId: claim.workspaceId, ptyId: claim.ptyId };
 }
 
 export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, deps: AppActionRpcDeps = {}): void {
-  const resolveCaller =
-    deps.resolveCaller ??
-    ((method: string, params: Record<string, unknown>, ctx: RpcContext | undefined) =>
-      a2aCallerWorkspace(getWindow, method, params, ctx));
-
   router.register(APP_ACTION_RPC.list, async (_params, ctx) => {
     if (ctx?.origin === 'remote') {
       return appActionRefusal('remote_refused', `${APP_ACTION_RPC.list}: not available to another computer`);
@@ -89,26 +95,16 @@ export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, de
     const args = checkAppActionArgs(spec, params['args']);
     if (!args.ok) return appActionRefusal('invalid_args', args.error);
 
-    // The caller's workspace from what main verified: a pane claim, a
-    // commander binding, or the pane its pty belongs to. Nothing the call
-    // names is an identity here: a stated workspace or sender pane is not
-    // passed on, so it can neither stand in for the claim nor be checked
-    // against it. The operator lane has no workspace of its own and is
-    // refused like any caller without one.
-    const caller = await resolveCaller(method, {}, ctx);
-    if (!caller.ok) {
-      const code = /not owned by workspace/.test(caller.error) ? 'not_owned' : 'no_identity';
-      return appActionRefusal(code, caller.error);
-    }
-    if (caller.trusted) {
-      return appActionRefusal('no_identity', `${method}: acts for a pane's own workspace, and this caller has none`);
-    }
+    // Nothing the call names (a workspace, a sender pane, the envelope's
+    // pty) stands in for the claim. The operator lane carries no claim and
+    // is refused like any caller without one.
+    const caller = claimedCaller(ctx);
+    if (!caller.ok) return appActionRefusal('no_identity', caller.error);
 
     const win = getWindow();
     if (!win || win.isDestroyed()) {
       return appActionRefusal('no_window', `${id}: the wmux window is not open`);
     }
-    const callerPtyId = verifiedCallerPty(ctx);
     let answer: unknown;
     try {
       answer = await sendToRenderer(
@@ -119,7 +115,7 @@ export function registerAppActionRpc(router: RpcRouter, getWindow: GetWindow, de
           args: args.args,
           ...(target ? { target } : {}),
           callerWorkspaceId: caller.workspaceId,
-          ...(callerPtyId ? { callerPtyId } : {}),
+          callerPtyId: caller.ptyId,
         },
         { timeoutMs: deps.timeoutMs ?? RENDERER_TIMEOUT_MS, timeoutError: new AppActionTimeout() },
       );

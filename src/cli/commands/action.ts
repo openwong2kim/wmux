@@ -7,8 +7,10 @@ import type { RpcResponse } from '../../shared/rpc';
  * wmux action --list
  *
  * Runs one app action (shared/appActions.ts) on the workspace of the wmux pane
- * this runs in. Main verifies that pane itself, from its own walk of this
- * process's parents; a terminal outside wmux has no workspace and is refused.
+ * this runs in. Main resolves that workspace from the pane claim it mints from
+ * its own walk of this process's parents; a terminal outside wmux gets no
+ * claim and is refused. A guard against mistakes, not a security boundary
+ * against same-user code.
  */
 
 interface ActionArgs {
@@ -125,7 +127,7 @@ export async function handleAction(args: string[], jsonMode: boolean): Promise<v
 
   // Main's own walk of this process's parents finds the pane and hands back
   // its claim; every request after this carries it. Without one, main refuses
-  // with no_identity (outside a wmux pane, or a wmux app too old to verify).
+  // with no_identity (outside a wmux pane, or a wmux app too old to mint one).
   const self = await resolveSelfContext({
     sendRequest,
     env: process.env,
