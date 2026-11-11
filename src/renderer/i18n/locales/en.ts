@@ -6736,6 +6736,11 @@ export const en = {
   'sidebar.groups.deleteConfirm': "Delete this group? Its workspaces ({count}) go back to the list and stay open.",
   'sidebar.groups.holdsActive': "Holds the open workspace",
   'sidebar.groups.limit': "You have reached the limit of 200 groups.",
+  'workspace.renameRefused.empty': "A workspace name cannot be empty.",
+  'workspace.renameRefused.tooLong': "A workspace name can be at most {max} characters.",
+  'workspace.renameRefused.paneTag': "A workspace name cannot look like a pane tag (w1-2).",
+  'workspace.renameRefused.taken': "Another workspace already has this name, so neither could be addressed by it.",
+  'appAction.settingChanged': "An agent changed {setting} to {value}.",
 } as const;
 
 export type TranslationKey = keyof typeof en;

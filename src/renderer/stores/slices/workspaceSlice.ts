@@ -24,6 +24,8 @@ import { parseMultiviewGroups, promoteMultiviewGroup, pruneSavedMultiviewGroups 
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
 import { decUnread } from './notificationSlice';
+import { ADDRESSABLE_NAME_MAX, workspaceNameRefusal, type NameRefusal } from '../../utils/addressableNames';
+import type { TranslationKey } from '../../i18n/locales/en';
 import { mergeDeadPaneRecovery, normalizeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
 import { chatViewFirstAskFromSession } from '../../components/Chat/chatViewFirstAsk';
@@ -340,7 +342,13 @@ export interface WorkspaceSlice {
   reconcileShadowWorkspaces: (hostId: string) => void;
   /** PC rail: close a shadow. Its tabs only detach; nothing on the host is closed. */
   closeShadowWorkspace: (id: string) => void;
-  renameWorkspace: (id: string, name: string) => void;
+  /**
+   * Rename a workspace. Its name is an address (`#name` scoping), so a name
+   * another local workspace has, one shaped like a pane tag (w1-2), an empty
+   * one or one over the length cap is refused (utils/addressableNames.ts):
+   * the name stays and a toast says why. Returns whether it was renamed.
+   */
+  renameWorkspace: (id: string, name: string) => boolean;
   updateWorkspaceMetadata: (id: string, metadata: Partial<WorkspaceMetadata>) => void;
   /**
    * Set (or clear) a workspace's process profile. Deliberately does NOT publish
@@ -414,6 +422,13 @@ function shadowCopy(name: string) {
     terminal: 'Terminal',
   };
 }
+
+const WORKSPACE_RENAME_REFUSAL_KEY: Record<NameRefusal, TranslationKey> = {
+  empty: 'workspace.renameRefused.empty',
+  'too-long': 'workspace.renameRefused.tooLong',
+  'pane-tag': 'workspace.renameRefused.paneTag',
+  taken: 'workspace.renameRefused.taken',
+};
 
 export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], WorkspaceSlice> = (set, get) => {
   const initial = createWorkspace('Workspace 1', 1);
@@ -1109,10 +1124,20 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // disband still works via the ✕ button or Ctrl+Shift+G (clearMultiview).
     }),
 
-    renameWorkspace: (id, name) => set((state: StoreState) => {
-      const ws = state.workspaces.find((w: Workspace) => w.id === id);
-      if (ws) ws.name = name;
-    }),
+    renameWorkspace: (id, name) => {
+      const { workspaces } = get();
+      if (!workspaces.some((w) => w.id === id)) return false;
+      const refusal = workspaceNameRefusal(workspaces, id, name);
+      if (refusal) {
+        get().pushToast({ level: 'warn', message: i18nT(WORKSPACE_RENAME_REFUSAL_KEY[refusal], { max: ADDRESSABLE_NAME_MAX }) });
+        return false;
+      }
+      set((state: StoreState) => {
+        const ws = state.workspaces.find((w: Workspace) => w.id === id);
+        if (ws) ws.name = name;
+      });
+      return true;
+    },
 
     updateWorkspaceMetadata: (id, metadata) => {
       let publishPayload: { wsId: string; full: WorkspaceMetadata; patch: Partial<WorkspaceMetadata> } | null = null;

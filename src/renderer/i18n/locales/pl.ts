@@ -6691,4 +6691,9 @@ export const pl = {
   'sidebar.groups.deleteConfirm': "Usunąć tę grupę? Jej obszary robocze ({count}) wrócą na listę i pozostaną otwarte.",
   'sidebar.groups.holdsActive': "Zawiera otwarty obszar roboczy",
   'sidebar.groups.limit': "Osiągnięto limit 200 grup.",
+  'workspace.renameRefused.empty': "Nazwa obszaru roboczego nie może być pusta.",
+  'workspace.renameRefused.tooLong': "Nazwa obszaru roboczego może mieć najwyżej {max} znaków.",
+  'workspace.renameRefused.paneTag': "Nazwa obszaru roboczego nie może wyglądać jak znacznik panelu (w1-2).",
+  'workspace.renameRefused.taken': "Inny obszar roboczy ma już tę nazwę, więc żadnego nie dałoby się nią wskazać.",
+  'appAction.settingChanged': "Agent zmienił ustawienie {setting} na {value}.",
 } as const;

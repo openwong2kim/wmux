@@ -6257,4 +6257,9 @@ export const ko = {
   'sidebar.groups.deleteConfirm': "이 그룹을 삭제할까요? 안의 워크스페이스({count})는 목록으로 돌아가며 열린 채로 유지됩니다.",
   'sidebar.groups.holdsActive': "열린 워크스페이스 포함",
   'sidebar.groups.limit': "그룹은 최대 200개까지 만들 수 있습니다.",
+  'workspace.renameRefused.empty': "작업공간 이름은 비워 둘 수 없습니다.",
+  'workspace.renameRefused.tooLong': "작업공간 이름은 최대 {max}자입니다.",
+  'workspace.renameRefused.paneTag': "작업공간 이름은 페인 태그(w1-2)처럼 보일 수 없습니다.",
+  'workspace.renameRefused.taken': "다른 작업공간이 이미 이 이름을 쓰고 있어 어느 쪽도 이 이름으로 가리킬 수 없습니다.",
+  'appAction.settingChanged': "에이전트가 {setting} 설정을 {value}(으)로 바꿨습니다.",
 } as const;
