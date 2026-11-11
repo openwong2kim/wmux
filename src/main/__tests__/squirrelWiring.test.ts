@@ -109,11 +109,9 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     expect(updatedPos).toBeGreaterThan(0);
     expect(uninstallPos).toBeGreaterThan(updatedPos);
     const updatedBranch = indexSrc.slice(updatedPos, uninstallPos);
-    // Same relaunch shape the --squirrel-install branch uses; the
-    // single-instance lock dedupes any double-launch.
-    expect(updatedBranch).toMatch(
-      /spawn\(process\.execPath, \[\], \{ detached: true, stdio: 'ignore', windowsHide: true \}\)\.unref\(\)/,
-    );
+    // Same relaunch the --squirrel-install branch uses (through ShellExecute,
+    // #3280); the single-instance lock dedupes any double-launch.
+    expect(updatedBranch).toContain('relaunchWithoutInheritance(process.execPath)');
   });
 
   // Every in-app update is a Squirrel full install, so --squirrel-install runs
@@ -234,7 +232,7 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     // The existing-profile path still repairs, then relaunches.
     const elseAt = installBranch.indexOf('} else {', quitAt);
     const repairAt = installBranch.indexOf('shortcutHygiene.repairInstalledShortcuts(process.execPath)', elseAt);
-    const launchAt = installBranch.indexOf('spawn(process.execPath, []', repairAt);
+    const launchAt = installBranch.indexOf('relaunchWithoutInheritance(process.execPath)', repairAt);
     expect(elseAt).toBeGreaterThan(quitAt);
     expect(repairAt).toBeGreaterThan(elseAt);
     expect(launchAt).toBeGreaterThan(repairAt);
@@ -244,6 +242,30 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     const call = indexSrc.slice(callAt, indexSrc.indexOf('})', callAt));
     expect(call).toMatch(/userData:\s*app\.getPath\('userData'\)/);
     expect(call).toMatch(/version:\s*app\.getVersion\(\)/);
+  });
+
+  it('no hook relaunches the app as its own child, and the install hook defers to firstrun (#3280)', () => {
+    // A child of the hook inherits Squirrel's output pipe and keeps Setup.exe
+    // waiting until the app exits; the relaunch goes through ShellExecute.
+    const gateAt = indexSrc.indexOf('if (isSquirrelInstallerEvent(squirrelCmd))');
+    const branchEnd = indexSrc.indexOf('// Skip all app initialization during Squirrel installer events.');
+    expect(gateAt).toBeGreaterThan(0);
+    expect(branchEnd).toBeGreaterThan(gateAt);
+    const hooks = indexSrc.slice(gateAt, branchEnd);
+    expect(hooks).not.toMatch(/spawn\(process\.execPath/);
+    const installStart = indexSrc.indexOf("squirrelCmd === '--squirrel-install'");
+    const updatedStart = indexSrc.indexOf("squirrelCmd === '--squirrel-updated'");
+    const uninstallStart = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
+    const installBranch = indexSrc.slice(installStart, updatedStart);
+    expect(installBranch).toMatch(/if\s*\(relaunch\)\s*relaunchWithoutInheritance\(process\.execPath\)/);
+    expect(installBranch).toContain('hookShouldRelaunch(process.env)');
+    expect(indexSrc.slice(updatedStart, uninstallStart)).toContain('relaunchWithoutInheritance(process.execPath)');
+    // The waiter's note to the hook stays out of the app's own environment.
+    const initAt = indexSrc.indexOf('function appInit(): void {');
+    const scrubAt = indexSrc.indexOf('delete process.env[FIRSTRUN_RELAUNCH_ENV]', initAt);
+    expect(initAt).toBeGreaterThan(0);
+    expect(scrubAt).toBeGreaterThan(initAt);
+    expect(scrubAt).toBeLessThan(indexSrc.indexOf("process.env.WMUX_DATA_SUFFIX = '-dev'", initAt));
   });
 
   it('the predicate classifies by exact membership, never a startsWith prefix', () => {

@@ -273,6 +273,7 @@ import { installApplicationMenu } from './menu/appMenu';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
+import { FIRSTRUN_RELAUNCH_ENV, hookShouldRelaunch, relaunchWithoutInheritance } from './squirrelRelaunch';
 import { terminateRunningAppInstances, terminateStagedDaemons } from './squirrelTeardown';
 import { STOPPED_DAEMON_EXIT_WAIT_MS, daemonStageRootIn, removeDaemonRuntimeStagesAfterExit } from './daemon/daemonRuntimeStage';
 // Static imports (NOT require('./...')) so rollup inlines these into the
@@ -450,9 +451,14 @@ if (process.platform === 'win32') {
         app.quit();
       } else {
         // #863: repair leftover pins, then relaunch the app (an existing
-        // profile: an in-app update or a package-manager upgrade).
+        // profile: an in-app update or a package-manager upgrade). Not when
+        // Squirrel's firstrun relaunches it (the in-app updater), and never
+        // as our own child, which would hold Squirrel's output pipe open
+        // until the app exits (#3280; squirrelRelaunch.ts).
         try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
-        spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+        const relaunch = hookShouldRelaunch(process.env);
+        console.log(`[Squirrel] install hook relaunch: ${relaunch ? 'by the hook' : 'left to Squirrel firstrun'}`);
+        if (relaunch) relaunchWithoutInheritance(process.execPath);
         process.exit(0);
       }
     } else if (squirrelCmd === '--squirrel-updated') {
@@ -477,8 +483,9 @@ if (process.platform === 'win32') {
       // #502: relaunch the updated app — the pre-update instance was taken
       // down above (or quit itself in the in-app "Restart to install" flow),
       // and the single-instance lock dedupes if Squirrel also launches one
-      // itself.
-      spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      // itself. Not as our own child: it would hold Squirrel's output pipe
+      // open until the app exits (#3280; squirrelRelaunch.ts).
+      relaunchWithoutInheritance(process.execPath);
       process.exit(0);
     } else if (squirrelCmd === '--squirrel-uninstall') {
       // Squirrel cancels this hook 10 s after starting it (the install hook
@@ -585,6 +592,11 @@ markBoot('module-eval-end');
 }
 
 function appInit(): void {
+
+// The firstrun launch after an in-app update inherits the install waiter's
+// note to the hook (squirrelRelaunch.ts); keep it out of the daemon and the
+// shells it starts.
+delete process.env[FIRSTRUN_RELAUNCH_ENV];
 
 // 인스턴스 격리: dev 빌드(!app.isPackaged)는 packaged 빌드 및 다른 체크아웃의
 // 빌드와 SingletonLock·userData·소켓·~/.wmux를 공유해 충돌한다(둘 다 productName
