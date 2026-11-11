@@ -3,6 +3,7 @@ import { isDaemonModeActive, subscribeDaemonMode } from '../../daemon/daemonMode
 import { getChatV2Bridge } from './bridge';
 import { ChatV2Controller, forgetKnownBinding, knownBinding, onKnownBindings, setKnownBinding, type ChatV2ControllerState, type KnownBinding } from './controller';
 import { forgetDrafts } from './Composer';
+import { getWorkspacePtyIds, type WorkspacePaneOwner } from '../../../shared/paneUtils';
 
 const UNAVAILABLE: ChatV2ControllerState = { phase: 'unavailable', view: null, error: null, hasEarlier: false };
 const LOADING: ChatV2ControllerState = { phase: 'loading', view: null, error: null, hasEarlier: false };
@@ -80,4 +81,15 @@ export function usePaneChatV2Binding(paneId: string | undefined, enabled: boolea
 export function forgetChatV2Pane(paneId: string): void {
   forgetKnownBinding(paneId);
   forgetDrafts(paneId);
+}
+
+/**
+ * Forget a pane only when no surface holds its PTY any more. A split or a
+ * workspace switch unmounts and remounts the same surface, and its unsent
+ * draft has to survive that; a closed surface (or a replaced PTY) is gone
+ * from the store by the time its unmount runs.
+ */
+export function forgetChatV2PaneIfClosed(paneId: string, state: { workspaces: readonly WorkspacePaneOwner[] }): void {
+  if (state.workspaces.some((ws) => getWorkspacePtyIds(ws).includes(paneId))) return;
+  forgetChatV2Pane(paneId);
 }

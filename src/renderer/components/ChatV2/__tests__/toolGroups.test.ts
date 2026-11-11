@@ -110,7 +110,13 @@ describe('groupToolRows', () => {
     expect(again[1]).toBe(first[1]); // unchanged members: the same object
     const after = applyHarnessEvents(before, [{ seq: 50, at: 99_000, event: { type: 'tool.started', callId: 'live', title: 'Read', kind: 'read', status: 'in_progress' } }]);
     const second = groupToolRows(sessionRows(after, cache), cache);
-    expect(second[1]).toMatchObject({ kind: 'toolGroup', key: first[1].key, label: 'Read 4 files', state: 'running' });
+    // The call in flight stays on its own line; the group is untouched.
+    expect(shape(second)).toEqual(['user', 'group:Read 3 files', 'tool', 'footer']);
+    expect(second[1]).toBe(first[1]);
+    expect(second[2]).toMatchObject({ kind: 'tool', state: 'running' });
+    const done = applyHarnessEvents(after, [{ seq: 51, at: 100_000, event: { type: 'tool.updated', callId: 'live', status: 'completed' } }]);
+    const third = groupToolRows(sessionRows(done, cache), cache);
+    expect(third[1]).toMatchObject({ kind: 'toolGroup', key: first[1].key, label: 'Read 4 files', state: 'done' });
   });
 });
 
@@ -125,11 +131,13 @@ describe('groupToolRows across pushes', () => {
     const after = applyHarnessEvents(before, [
       { seq: 90, at: 90_000, event: { type: 'tool.started', callId: 'late', title: 'Read', kind: 'read', status: 'in_progress', preview: { kind: 'read', path: '/repo/z.ts' } } },
     ]);
-    const second = groupToolRows(sessionRows(after, cache), cache);
+    expect(shape(groupToolRows(sessionRows(after, cache), cache))).toEqual(['user', 'group:Ran 4 tool calls', 'tool', 'footer']);
+    const done = applyHarnessEvents(after, [{ seq: 91, at: 91_000, event: { type: 'tool.updated', callId: 'late', status: 'completed' } }]);
+    const second = groupToolRows(sessionRows(done, cache), cache);
     expect(shape(second)).toEqual(['user', 'group:Ran 5 tool calls', 'footer']);
     expect(second[1].key).toBe(first[1].key);
     // Without the earlier render, the same rows split by kind.
-    expect(shape(groupToolRows(sessionRows(after)))).toEqual(['user', 'tool', 'tool', 'group:Read 3 files', 'footer']);
+    expect(shape(groupToolRows(sessionRows(done)))).toEqual(['user', 'tool', 'tool', 'group:Read 3 files', 'footer']);
   });
 
   it('keeps reasoning between two groups inside the first one', () => {
@@ -158,7 +166,8 @@ describe('shellOutput', () => {
 describe('tool label parts', () => {
   it('splits a verb, past-tenses a finished edit, and gives a raw command a verb', () => {
     expect(toolLabelParts('Edit src/a.ts', { command: false, running: false })).toEqual({ verb: 'Edited', object: 'src/a.ts' });
-    expect(toolLabelParts('Edit src/a.ts', { command: false, running: true })).toEqual({ verb: 'Edit', object: 'src/a.ts' });
+    expect(toolLabelParts('Edit src/a.ts', { command: false, running: true })).toEqual({ verb: 'Running', object: 'Edit src/a.ts' });
+    expect(toolLabelParts('npm test', { command: true, running: true })).toEqual({ verb: 'Running', object: 'npm test' });
     expect(toolLabelParts('Read a.ts', { command: false, running: false })).toEqual({ verb: 'Read', object: 'a.ts' });
     expect(toolLabelParts('npm test', { command: true, running: false })).toEqual({ verb: 'Ran', object: 'npm test' });
   });

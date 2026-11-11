@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { applyHarnessEvents } from '../../../../shared/chatv2/apply';
 import type { HarnessEvent } from '../../../../shared/chatv2/harnessEvents';
 import { newChatSession } from '../../../../shared/chatv2/session';
-import { pendingRequests, sessionRows } from '../rows';
-import { formatElapsed, formatWorkingDuration, turnModelLabel } from '../format';
+import { groupToolRows, pendingRequests, sessionRows } from '../rows';
+import { formatElapsed, formatWorkingDuration, toolLabelParts, turnModelLabel } from '../format';
 
 function fold(events: HarnessEvent[], model = 'claude-opus-5-5') {
   let at = 10_000;
@@ -71,6 +71,40 @@ describe('sessionRows (fold-to-view mapping)', () => {
     expect(turnModelLabel('claude', 'claude-sonnet-5-5')).toBe('Sonnet 5.5');
     expect(formatElapsed(65_000)).toBe('1m 5s');
     expect(formatElapsed(400)).toBe('1s');
+  });
+
+  it('never folds a running tool into a past-tense group: it reads "Running" on its own line', () => {
+    const session = fold([
+      { type: 'user.message', text: 'run the e2e suite', clientMessageId: 'c-00000001' },
+      { type: 'tool.started', callId: 't1', title: 'Read', kind: 'read', status: 'in_progress', preview: { kind: 'read', path: '/repo/a.ts' } },
+      { type: 'tool.updated', callId: 't1', status: 'completed' },
+      { type: 'tool.started', callId: 't2', title: 'ls e2e', kind: 'execute', status: 'in_progress' },
+      { type: 'tool.updated', callId: 't2', status: 'completed' },
+      { type: 'tool.started', callId: 't3', title: 'npm run e2e', kind: 'execute', status: 'in_progress' },
+    ]);
+    const rows = groupToolRows(sessionRows(session));
+    // Three calls would fold into "Ran 3 tool calls"; the one in flight is not one of them.
+    expect(rows.map((row) => row.kind)).toEqual(['user', 'tool', 'tool', 'tool', 'footer']);
+    expect(rows[3]).toMatchObject({ kind: 'tool', state: 'running' });
+    expect(toolLabelParts('npm run e2e', { command: true, running: true })).toEqual({ verb: 'Running', object: 'npm run e2e' });
+  });
+
+  it('says the open turn waits on the owner while an approval or a question is pending', () => {
+    const asked = fold([
+      { type: 'user.message', text: 'clean build', clientMessageId: 'c-00000001' },
+      { type: 'tool.started', callId: 't1', title: 'rm -rf dist', kind: 'execute', status: 'pending' },
+      { type: 'approval.requested', requestId: 'r1', title: 'Bash', callId: 't1' },
+    ]);
+    expect(sessionRows(asked).at(-1)).toMatchObject({ kind: 'footer', live: true, waiting: 'approval' });
+    const allowed = applyHarnessEvents(asked, [{ seq: 50, at: 50_000, event: { type: 'approval.resolved', requestId: 'r1', decision: 'allow' } }]);
+    const footer = sessionRows(allowed).at(-1);
+    expect(footer).toMatchObject({ kind: 'footer', live: true });
+    expect(footer && 'waiting' in footer ? footer.waiting : undefined).toBeUndefined();
+    const question = fold([
+      { type: 'user.message', text: 'go', clientMessageId: 'c-00000001' },
+      { type: 'question.asked', requestId: 'q1', questions: [{ id: 'q0', prompt: 'Which?', multiSelect: false, allowCustom: true, options: [{ id: 'a', label: 'A' }] }] },
+    ]);
+    expect(sessionRows(question).at(-1)).toMatchObject({ kind: 'footer', waiting: 'answer' });
   });
 
   it('reuses the rows of blocks a push did not change', () => {
