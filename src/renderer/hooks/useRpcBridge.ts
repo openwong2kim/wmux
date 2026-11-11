@@ -8,6 +8,7 @@ import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName, paneNameFields } from '../utils/paneNaming';
 import { a2aPartyName } from '../utils/a2aPartyName';
 import { resolvePaneName } from '../utils/paneNameResolver';
+import { runAppAction } from '../appActions/runAppAction';
 import { paneForegroundProgram, surfaceForegroundProgram } from '../utils/surfaceProgram';
 import { originFromCaller } from '../utils/fanoutProvenance';
 import { sanitizeFanoutOrigin } from '../../shared/fanoutOrigin';
@@ -1399,6 +1400,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
   if (store.paneGate !== 'ready') {
     return { error: 'wmux is still starting (paneGate=pending)', retryable: true };
   }
+
+  // app.action: an agent's action on its own workspace (appActions/runAppAction.ts).
+  if (method === 'app.action') return runAppAction(params);
 
   // -------------------------------------------------------------------------
   // workspace.*

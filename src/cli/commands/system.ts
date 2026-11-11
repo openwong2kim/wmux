@@ -167,6 +167,11 @@ export async function handleSystem(
           for (const m of methods) {
             console.log(`  ${m}`);
           }
+          const appActions = Array.isArray(result) ? undefined : (result as { features?: { appActions?: unknown } })?.features?.appActions;
+          if (Array.isArray(appActions) && appActions.length > 0) {
+            console.log('App actions (wmux action --list):');
+            for (const a of appActions) console.log(`  ${String(a)}`);
+          }
         } else {
           console.log(JSON.stringify(response.result, null, 2));
         }
