@@ -47,6 +47,9 @@ export interface AccountVaultEntry {
   updatedAt: number;
   /** False when this machine cannot decrypt it (enter it again). */
   usable: boolean;
+  /** The first 8 hex digits of the value's SHA-256, so the owner can tell
+   *  which value is stored; null when it cannot be decrypted here. */
+  fingerprint: string | null;
 }
 
 export type AccountVaultSetResult =
@@ -177,6 +180,13 @@ export class AccountVault {
     }
     if (pruned) this.persist(this.held);
     this.publish();
+  }
+
+  /** Why nothing can be saved right now (no encryption, no keyring, an
+   *  unreadable file), or null. Read-only: it looks, it never writes. */
+  storeRefusal(): { code: Extract<AccountVaultSetResult, { ok: false }>['code']; message: string } | null {
+    const refused = this.refusal();
+    return refused ? { code: refused.code, message: refused.message } : null;
   }
 
   /** One account's entries, never values; oldest first. */
@@ -312,7 +322,8 @@ export class AccountVault {
 
 function entryOf(h: Held): AccountVaultEntry {
   const r = h.record;
-  return { accountId: r.accountId, name: r.name, inject: r.inject, length: r.length, createdAt: r.createdAt, updatedAt: r.updatedAt, usable: h.value !== null };
+  const fingerprint = h.value === null ? null : crypto.createHash('sha256').update(h.value).digest('hex').slice(0, 8);
+  return { accountId: r.accountId, name: r.name, inject: r.inject, length: r.length, createdAt: r.createdAt, updatedAt: r.updatedAt, usable: h.value !== null, fingerprint };
 }
 
 /** Who may get an account's vault: a pane created on this computer for its

@@ -25,7 +25,7 @@ import { envClaudeConfigDir } from '../../../shared/claudeConfigTargets';
 import { claudeConfigDirEnv } from '../../hooks/claudeConfigDirProbe';
 import { installHooksIntoNewAccount } from './hooksBridge.handler';
 import { loadClaudeCredential, credentialFingerprint } from '../../claude/claudeCredential';
-import { appAccountVault, vendorOfAuthName, type AccountVaultSetResult } from '../../account/accountVault';
+import { ACCOUNT_VAULT_PER_ACCOUNT_MAX, appAccountVault, vendorOfAuthName, type AccountVaultSetResult } from '../../account/accountVault';
 import { markClaudeOnboardingDone } from '../../account/claudeOnboardingFlag';
 
 /** The vault name a Claude account signs in with (`claude setup-token`). */
@@ -116,6 +116,17 @@ export interface AccountRow extends Account {
   /** A Claude account whose vault holds a long-lived token: when it was saved,
    *  and whether this machine can decrypt it. Never the value. */
   tokenSignIn?: { createdAt: number; usable: boolean };
+  /** How many values the account's vault holds (0 when it cannot be read). */
+  vaultCount: number;
+}
+
+/** How many values an account's vault holds. */
+function vaultCountOf(a: Account): number {
+  try {
+    return appAccountVault().list(a.id).length;
+  } catch {
+    return 0;
+  }
 }
 
 /** The token sign-in metadata of a Claude account, if its vault holds one. */
@@ -336,6 +347,7 @@ export function registerAccountHandlers(getWindow: () => BrowserWindow | null = 
         status: await credentialStatus(a.vendor, a.configDir),
         loginCommand: buildLoginCommand(a.vendor, a.configDir),
         tokenSignIn: tokenSignInOf(a),
+        vaultCount: vaultCountOf(a),
       })),
     );
     return { accounts: rows, bindings: store.getBindings() };
@@ -423,7 +435,13 @@ export function registerAccountHandlers(getWindow: () => BrowserWindow | null = 
     return id;
   };
   ipcMain.handle(IPC.ACCOUNT_VAULT_LIST, wrapHandler(IPC.ACCOUNT_VAULT_LIST,
-    async (e, args: { accountId: unknown }) => ({ ok: true, entries: appAccountVault().list(knownAccount(e, args?.accountId)) })));
+    async (e, args: { accountId: unknown }) => {
+      const vault = appAccountVault();
+      const entries = vault.list(knownAccount(e, args?.accountId));
+      // What the Settings list needs to say before a save is tried: the
+      // per-account limit, and why nothing can be saved here, if so.
+      return { ok: true, entries, max: ACCOUNT_VAULT_PER_ACCOUNT_MAX, cannotStore: vault.storeRefusal() };
+    }));
 
   // Clipboard → vault (saveClipboardValue).
   ipcMain.handle(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, wrapHandler(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD,

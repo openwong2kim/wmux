@@ -947,6 +947,10 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.ACCOUNT_VAULT_LIST, { accountId }) as Promise<{
           ok: boolean;
           entries: import('../main/account/accountVault').AccountVaultEntry[];
+          /** Most values one account holds. */
+          max: number;
+          /** Why nothing can be saved on this computer, or null. */
+          cannotStore: ReturnType<import('../main/account/accountVault').AccountVault['storeRefusal']>;
         }>,
       saveFromClipboard: (args: { accountId: string; name: string; expectPrefix?: string }) =>
         ipcRenderer.invoke(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, args) as Promise<

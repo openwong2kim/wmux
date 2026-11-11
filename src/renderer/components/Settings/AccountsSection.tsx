@@ -17,6 +17,7 @@ import Select from '../ui/Select';
 import { SettingsSection, useOwnedDialog } from './SettingsLayout';
 import { AccountRotationControls, RotationQuotaBit, useAccountRotation } from './AccountRotationControls';
 import RemoteRowMenu, { type RemoteRowMenuItem } from '../Remote/RemoteRowMenu';
+import { AccountVaultPanel } from './AccountVaultPanel';
 import { useStore } from '../../stores';
 import {
   startAccountLogin,
@@ -471,6 +472,8 @@ export function AccountsSection(): React.ReactElement | null {
   const [move, setMove] = useState<PendingMove | null>(null);
   /** The account whose token sign-in panel is open. */
   const [tokenPanel, setTokenPanel] = useState<string | null>(null);
+  /** The account whose vault is shown under its row. */
+  const [vaultPanel, setVaultPanel] = useState<string | null>(null);
   const workspaces = useStore((s) => s.workspaces);
   // Settings closes on Escape unless something it opened owns the key.
   useOwnedDialog(move !== null || confirmRemove !== null);
@@ -650,6 +653,9 @@ export function AccountsSection(): React.ReactElement | null {
           ? { id: 'token:remove', label: t('accounts.removeToken'), onSelect: () => removeToken(r.id) }
           : { id: 'token:use', label: t('accounts.useToken'), onSelect: () => { setAdding(false); setTokenPanel(r.id); } }] : []),
       ] : []),
+      ...(window.electronAPI?.accounts?.vault ? [vaultPanel === r.id
+        ? { id: 'vault:hide', label: t('accounts.hideVault'), onSelect: () => setVaultPanel(null) }
+        : { id: 'vault:show', label: t('accounts.showVault'), onSelect: () => setVaultPanel(r.id) }] : []),
       { id: 'rename', label: t('accounts.rename'), onSelect: () => { setEditingId(r.id); setEditName(r.name); } },
       { id: 'remove', label: t('common.remove'), danger: true, onSelect: () => setConfirmRemove(r) },
     ];
@@ -676,7 +682,12 @@ export function AccountsSection(): React.ReactElement | null {
           autoFocus
         />
       ) : (
-        <span className="min-w-0 text-[13px] font-medium text-[var(--text-main)] truncate">{r.name}</span>
+        <span className="min-w-0 flex flex-col">
+          <span className="text-[13px] font-medium text-[var(--text-main)] truncate">{r.name}</span>
+          {r.vaultCount > 0 && (
+            <span className="text-[11px] text-[var(--text-sub)] truncate" data-account-vault-count>{t('accounts.vaultCount', { n: r.vaultCount })}</span>
+          )}
+        </span>
       )}
       <AccountRowStatus
         row={r}
@@ -688,6 +699,9 @@ export function AccountsSection(): React.ReactElement | null {
     </div>
     {tokenPanel === r.id && (
       <TokenSignInPanel row={r} onSaved={reload} onClose={() => setTokenPanel(null)} />
+    )}
+    {vaultPanel === r.id && (
+      <AccountVaultPanel account={r} signInName={CLAUDE_TOKEN_NAME} onChanged={reload} />
     )}
     </Fragment>
   );
