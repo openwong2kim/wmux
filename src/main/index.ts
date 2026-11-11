@@ -62,7 +62,7 @@ process.on('uncaughtException', (err) => {
 import { markBoot, emitBootSummary } from './util/bootTrace';
 import * as path from 'path';
 import * as os from 'os';
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, shell } from 'electron';
 import { checkUserDataIsolation, claimPortableDataNotice, mayInstallDarwinCliShim, PORTABLE_DATA_SUFFIX, shouldUsePortableData } from './dataIsolation';
 import { createWindow, loadMainRenderer } from './window/createWindow';
 import { attachDesktopPresenceReporter, reportDesktopPresence } from './window/desktopPresence';
@@ -273,6 +273,7 @@ import { installApplicationMenu } from './menu/appMenu';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
+import { FIRSTRUN_RELAUNCH_ENV, hookShouldRelaunch, relaunchWaitMs, relaunchWithoutInheritance } from './squirrelRelaunch';
 import { terminateRunningAppInstances, terminateStagedDaemons } from './squirrelTeardown';
 import { STOPPED_DAEMON_EXIT_WAIT_MS, daemonStageRootIn, removeDaemonRuntimeStagesAfterExit } from './daemon/daemonRuntimeStage';
 // Static imports (NOT require('./...')) so rollup inlines these into the
@@ -341,8 +342,9 @@ app.commandLine.appendSwitch('lang', 'en-US');
 // Only the four INSTALLER lifecycle events (install/updated/uninstall/obsolete)
 // are handled-and-exited here. '--squirrel-firstrun' is NOT an installer hook —
 // Squirrel passes it on the first normal launch, so it must fall through to
-// appInit() where the single-instance lock dedupes it against the clean instance
-// auto-launched from --squirrel-install. (A bare startsWith('--squirrel-') guard
+// appInit() where the single-instance lock dedupes it against an instance the
+// install hook relaunched (it skips that when the in-app updater says firstrun
+// will, #3280). (A bare startsWith('--squirrel-') guard
 // used to catch firstrun, set the flag, match no handler, never quit, and skip
 // appInit() — leaving an invisible zombie that spawned its own gpu/network procs.
 // See isSquirrelInstallerEvent + src/main/squirrel.ts.)
@@ -352,6 +354,18 @@ let isSquirrelEvent = false;
 const UNINSTALL_HOOK_BUDGET_MS = 8_000;
 /** Kept back from the staged daemon's exit wait for the PATH edit after it. */
 const UNINSTALL_PATH_EDIT_RESERVE_MS = 2_000;
+/**
+ * #3280: the install and updated hooks' last step. Relaunch the app through
+ * the shell unless the in-app updater said Squirrel's firstrun will, then end
+ * the hook once the shell has answered (squirrelRelaunch.ts).
+ */
+function relaunchThenExit(hook: string): void {
+  const relaunch = hookShouldRelaunch(process.env);
+  console.log(`[Squirrel] ${hook} hook relaunch: ${relaunch ? 'by the hook' : 'left to Squirrel firstrun'}`);
+  if (!relaunch) process.exit(0);
+  void relaunchWithoutInheritance(process.execPath, (p) => shell.openPath(p), relaunchWaitMs(process.uptime() * 1000))
+    .finally(() => process.exit(0));
+}
 if (process.platform === 'win32') {
   const squirrelCmd = process.argv[1];
   if (isSquirrelInstallerEvent(squirrelCmd)) {
@@ -450,10 +464,12 @@ if (process.platform === 'win32') {
         app.quit();
       } else {
         // #863: repair leftover pins, then relaunch the app (an existing
-        // profile: an in-app update or a package-manager upgrade).
+        // profile: an in-app update or a package-manager upgrade). Not when
+        // Squirrel's firstrun relaunches it (the in-app updater), and never
+        // as our own child, which would hold Squirrel's output pipe open
+        // until the app exits (#3280; squirrelRelaunch.ts).
         try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
-        spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-        process.exit(0);
+        relaunchThenExit('install');
       }
     } else if (squirrelCmd === '--squirrel-updated') {
       // Refresh the startup entry's exe path (it changes on every update) —
@@ -477,9 +493,9 @@ if (process.platform === 'win32') {
       // #502: relaunch the updated app — the pre-update instance was taken
       // down above (or quit itself in the in-app "Restart to install" flow),
       // and the single-instance lock dedupes if Squirrel also launches one
-      // itself.
-      spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-      process.exit(0);
+      // itself. Not as our own child: it would hold Squirrel's output pipe
+      // open until the app exits (#3280; squirrelRelaunch.ts).
+      relaunchThenExit('updated');
     } else if (squirrelCmd === '--squirrel-uninstall') {
       // Squirrel cancels this hook 10 s after starting it (the install hook
       // gets about 16 s), and a cancelled hook leaves the app folder, the Start
@@ -575,7 +591,10 @@ if (process.platform === 'win32') {
 }
 
 // Skip all app initialization during Squirrel installer events.
-// Squirrel handlers above already called process.exit() in their callbacks.
+// Squirrel handlers above end the process themselves: at once, from a
+// callback, or (install and updated, #3280) once the shell answers the
+// relaunch, up to 5 s later. Module-scope code below this block still runs in
+// a hook process during that wait, so keep startup work inside appInit().
 if (!isSquirrelEvent) {
 appInit();
 // All module-level construction is done (PTYManager, PipeServer ctor's sync
@@ -585,6 +604,11 @@ markBoot('module-eval-end');
 }
 
 function appInit(): void {
+
+// The firstrun launch after an in-app update inherits the install waiter's
+// note to the hook (squirrelRelaunch.ts); keep it out of the daemon and the
+// shells it starts.
+delete process.env[FIRSTRUN_RELAUNCH_ENV];
 
 // 인스턴스 격리: dev 빌드(!app.isPackaged)는 packaged 빌드 및 다른 체크아웃의
 // 빌드와 SingletonLock·userData·소켓·~/.wmux를 공유해 충돌한다(둘 다 productName

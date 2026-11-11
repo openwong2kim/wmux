@@ -62,6 +62,7 @@ import {
   INSTALL_SETUP_UNREADABLE_REASON,
 } from '../../shared/installAbortReasons';
 import { classifyWmuxProcess } from '../squirrelTeardown';
+import { FIRSTRUN_RELAUNCH_ENV } from '../squirrelRelaunch';
 
 /**
  * Marker the waiter writes when it refuses to launch, relative to userData.
@@ -949,6 +950,10 @@ export function buildWaiterScript(plan: WaiterPlan, launchStampPath?: string): s
     `    Write-InstallAbortMarker ${psQuote(INSTALL_SETUP_CHANGED_REASON)}`,
     `    exit 7`,
     `  }`,
+    // #3280 — this Setup.exe runs non-silently, so Squirrel's firstrun brings
+    // the app back; tell the install hook (Setup.exe and Update.exe pass the
+    // environment on) not to relaunch it too (squirrelRelaunch.ts).
+    `  $env:${FIRSTRUN_RELAUNCH_ENV} = '1'`,
     `  try { $setupProc = Start-Process -FilePath $setup -PassThru -ErrorAction Stop } catch { $started = $false; $startErr = $_.Exception }`,
     `  try { $setupHold.Close() } catch { }`,
     `}`,
