@@ -125,6 +125,26 @@ describe('chat status mirror', () => {
     expect(rosterRow()?.status).toBe('running');
   });
 
+  it('leaves an agent someone starts in the shell of a resting chat alone', () => {
+    setKnownBinding(PTY, binding({ status: 'stopped' }));
+    state().setSurfaceAgent(PTY, CLAUDE, 'running');
+    setKnownBinding(PTY, binding({ status: 'stopped', seq: 2 }));
+    expect(state().surfaceAgent[PTY]?.status).toBe('running');
+  });
+
+  it('keeps a long chat turn heard from, so Fleet never calls it unverifiable', () => {
+    vi.useFakeTimers();
+    stop();
+    stop = startChatStatusMirror(1_000);
+    useStore.setState({ commandRunningByPtyId: {} });
+    setKnownBinding(PTY, binding({ status: 'running' }));
+    for (let minute = 0; minute < 40; minute++) {
+      vi.advanceTimersByTime(60_000);
+      state().bumpAgentClock();
+    }
+    expect(fleetPane()).toMatchObject({ agentStatus: 'running', unverifiable: false });
+  });
+
   it('names a Codex chat from its registry row and leaves the pane when the chat closes', () => {
     setKnownBinding(PTY, binding({ agent: 'codex', status: 'running' }));
     expect(rosterRow()).toMatchObject({ agentName: CODEX, status: 'running' });

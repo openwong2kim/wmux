@@ -18,6 +18,7 @@ import type { AgentStatus } from '../../../shared/types';
 import { agentRow } from '../../../shared/agentIdentity';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { useStore } from '../../stores';
+import { HOOK_RUNNING_TTL_MS } from '../../stores/selectors/fleet';
 import { getChatV2Bridge } from './bridge';
 import { knownBinding, onKnownBindings, setKnownBinding } from './controller';
 import { isChatV2Covering } from './coverage';
@@ -100,11 +101,19 @@ function apply(ptyId: string): void {
   const name = chatAgentName(held.agent);
   const slug = agentRow(held.agent)?.slug;
   if (prev && prev.agent === held.agent && prev.status === status) {
-    // No new state. Restore only what another writer dropped (a settle edge
-    // for the anchor shell), without raising the attention mark again.
+    // No new state. While the driver works or waits, restore what another
+    // writer dropped (a settle edge for the anchor shell), without raising the
+    // attention mark again. A resting chat claims nothing about the pane: an
+    // agent someone starts in its shell owns the entry then.
+    if (status !== 'running' && status !== 'awaiting_input') return;
     const agent = store.surfaceAgent[ptyId];
     if (agent?.name !== name || agent.status !== status) store.setSurfaceAgent(ptyId, name, status, slug);
-    if (status === 'running' && store.surfaceTurnOpenAt[ptyId] === undefined) store.markSurfaceTurnOpen(ptyId);
+    if (status === 'running') {
+      if (store.surfaceTurnOpenAt[ptyId] === undefined) store.markSurfaceTurnOpen(ptyId);
+      // A long turn is still heard from: without a fresh stamp Fleet would
+      // call it unverifiable after half an hour of a live driver.
+      if (Date.now() - (store.surfaceActivityAt[ptyId] ?? 0) > HOOK_RUNNING_TTL_MS) store.markSurfaceRunning(ptyId);
+    }
     return;
   }
   mirrored.set(ptyId, { status, agent: held.agent });
