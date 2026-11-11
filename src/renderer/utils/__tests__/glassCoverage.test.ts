@@ -1,8 +1,8 @@
 // @wmux-lane unit
-// Pure functions over the theme tokens: "win32" appears only in a regex that
-// reads globals.css as text, so Windows cannot change the result.
-// Windows glass coverage is derived from each look's tokens so its text stays
-// legible over the worst backdrop (owner decision 2026-10-21). These run the
+// Pure functions over the theme tokens: "win32" and "darwin" are only
+// arguments to them, so the host OS cannot change the result.
+// Window glass coverage is derived from each look's tokens so its text stays
+// legible over the worst backdrop (owner decision 2026-10-21; macOS since #3283). These run the
 // real built-in tokens through the same composite the page paints.
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
@@ -12,11 +12,13 @@ import { isLight, mixHex } from '../../tailwindPalette';
 import {
   GLASS_MAX_COVERAGE,
   GLASS_MIN_CONTRAST,
-  WINDOWS_GLASS_FLOOR,
+  GLASS_FLOOR,
   glassContrast,
-  windowsGlassCoverage,
+  glassCoverage,
+  glassFloor,
   worstBackdrop,
   type GlassCoverage,
+  type GlassPlatform,
   type GlassTokens,
 } from '../glassCoverage';
 
@@ -53,14 +55,16 @@ function meets(tokens: GlassTokens, appearance: 'dark' | 'light', coverage: Glas
   return (Object.keys(GLASS_MIN_CONTRAST) as Array<keyof typeof GLASS_MIN_CONTRAST>).every((tier) => c[tier] >= GLASS_MIN_CONTRAST[tier]);
 }
 
-describe('windowsGlassCoverage over every built-in look', () => {
-  for (const id of THEMES) {
+const PLATFORMS: GlassPlatform[] = ['win32', 'darwin'];
+
+describe('glassCoverage over every built-in look', () => {
+  for (const platform of PLATFORMS) for (const id of THEMES) {
     for (const level of ['soft', 'clear'] as const) {
-      it(`${id} ${level}: glass is legible and minimal over the worst backdrop, or no coverage in range is`, () => {
+      it(`${platform} ${id} ${level}: glass is legible and minimal over the worst backdrop, or no coverage in range is`, () => {
         const appearance = appearanceOf(id);
         const tokens = tokensOf(id);
-        const floor = WINDOWS_GLASS_FLOOR[appearance][level];
-        const coverage = windowsGlassCoverage(tokens, appearance, level);
+        const floor = glassFloor(platform, appearance, level, id);
+        const coverage = glassCoverage(tokens, appearance, level, platform, id);
         if (coverage) {
           expect(coverage.sheet).toBe(floor.sheet);
           expect(coverage.frame).toBeGreaterThanOrEqual(floor.frame);
@@ -111,7 +115,7 @@ describe('windowsGlassCoverage over every built-in look', () => {
     for (const id of THEMES) {
       const want = EXPECTED[id];
       for (const [level, sheet] of [['soft', want?.[1]], ['clear', want?.[2]]] as const) {
-        const got = windowsGlassCoverage(tokensOf(id), appearanceOf(id), level);
+        const got = glassCoverage(tokensOf(id), appearanceOf(id), level, 'win32', id);
         expect(got, `${id} ${level}`).toEqual(want ? { frame: want[0], sheet } : null);
       }
     }
@@ -121,12 +125,24 @@ describe('windowsGlassCoverage over every built-in look', () => {
   });
 
   it('Soft never covers less than Clear', () => {
-    for (const id of THEMES) {
-      const soft = windowsGlassCoverage(tokensOf(id), appearanceOf(id), 'soft');
-      const clear = windowsGlassCoverage(tokensOf(id), appearanceOf(id), 'clear');
+    for (const platform of PLATFORMS) for (const id of THEMES) {
+      const soft = glassCoverage(tokensOf(id), appearanceOf(id), 'soft', platform, id);
+      const clear = glassCoverage(tokensOf(id), appearanceOf(id), 'clear', platform, id);
       if (!soft || !clear) continue;
       expect(soft.frame).toBeGreaterThanOrEqual(clear.frame);
       expect(soft.sheet).toBeGreaterThanOrEqual(clear.sheet);
+    }
+  });
+
+  it('on macOS, keeps a look opaque exactly where Windows does', () => {
+    // Same backdrop model and cap, and the macOS floors sit at or under the
+    // Windows ones except the hued sheet, which the frame decides nothing on.
+    for (const id of THEMES) {
+      for (const level of ['soft', 'clear'] as const) {
+        const win = glassCoverage(tokensOf(id), appearanceOf(id), level, 'win32', id);
+        const mac = glassCoverage(tokensOf(id), appearanceOf(id), level, 'darwin', id);
+        expect(mac === null, `${id} ${level}`).toBe(win === null);
+      }
     }
   });
 });
@@ -137,8 +153,8 @@ describe('windowsGlassCoverage on fixed tokens', () => {
   const fixed: GlassTokens = derived({ frameBg: '#121015', mantle: '#18151C', textMain: '#F4F2F7', textSub: '#C2BDC9', textMuted: '#8A8492' });
 
   it('raises the frame to the smallest legible value and keeps the sheet at its floor', () => {
-    expect(windowsGlassCoverage(fixed, 'dark', 'soft')).toEqual({ frame: 82, sheet: 6 });
-    expect(windowsGlassCoverage(fixed, 'dark', 'clear')).toEqual({ frame: 82, sheet: 5 });
+    expect(glassCoverage(fixed, 'dark', 'soft')).toEqual({ frame: 82, sheet: 6 });
+    expect(glassCoverage(fixed, 'dark', 'clear')).toEqual({ frame: 82, sheet: 5 });
   });
 
   it('measures the old fixed 30%/6% as illegible over a white window', () => {
@@ -148,8 +164,8 @@ describe('windowsGlassCoverage on fixed tokens', () => {
   it('judges the in-between tiers too: a sub2 or subtle the cap cannot keep legible makes the look opaque', () => {
     // The same look with one in-between tier set to its sub or muted neighbour's
     // colour dimmed past the floor: main, sub and muted alone would still pass.
-    expect(windowsGlassCoverage({ ...fixed, textSub2: '#6E6A73' }, 'dark', 'soft')).toBeNull();
-    expect(windowsGlassCoverage({ ...fixed, textSubtle: '#4A4650' }, 'dark', 'soft')).toBeNull();
+    expect(glassCoverage({ ...fixed, textSub2: '#6E6A73' }, 'dark', 'soft')).toBeNull();
+    expect(glassCoverage({ ...fixed, textSubtle: '#4A4650' }, 'dark', 'soft')).toBeNull();
   });
 });
 
@@ -157,33 +173,26 @@ describe('windowsGlassCoverage fallback', () => {
   it('is null (opaque) for a look whose text no coverage in the range keeps legible', () => {
     // Mid-grey text on a near-black frame: even the full 90% leaves it under 3:1 over white.
     const murky: GlassTokens = derived({ frameBg: '#101010', mantle: '#101010', textMain: '#FFFFFF', textSub: '#BBBBBB', textMuted: '#444444' });
-    expect(windowsGlassCoverage(murky, 'dark', 'soft')).toBeNull();
-    expect(windowsGlassCoverage(murky, 'dark', 'clear')).toBeNull();
+    expect(glassCoverage(murky, 'dark', 'soft')).toBeNull();
+    expect(glassCoverage(murky, 'dark', 'clear')).toBeNull();
   });
 });
 
-describe('macOS glass numbers stay in globals.css', () => {
-  const css = fs.readFileSync(path.join(__dirname, '..', '..', 'styles', 'globals.css'), 'utf8');
-  const rule = (selector: string) => {
-    const at = css.indexOf(`${selector} {`);
-    expect(at, selector).toBeGreaterThanOrEqual(0);
-    const body = css.slice(at, css.indexOf('}', at));
-    return { frame: /--glass-frame:\s*([^;]+);/.exec(body)?.[1], sheet: /--glass-sheet:\s*([^;]+);/.exec(body)?.[1] };
-  };
-  const hued = ':is([data-theme="stars-and-stripes"], [data-theme="red-dynasty"], [data-theme="catppuccin-mocha"])';
-
-  it('keeps every macOS rule at its number', () => {
-    expect(rule('html[data-glass]')).toEqual({ frame: '25%', sheet: '6%' });
-    expect(rule('html[data-glass][data-glass-level="clear"]')).toEqual({ frame: '10%', sheet: '5%' });
-    expect(rule(`html[data-glass]${hued}`)).toEqual({ frame: '55%', sheet: '20%' });
-    expect(rule(`html[data-glass]${hued}[data-glass-level="clear"]`)).toEqual({ frame: '35%', sheet: '12%' });
-    expect(rule('html[data-glass="light"]')).toEqual({ frame: '10%', sheet: '4%' });
-    expect(rule('html[data-glass="light"][data-glass-level="clear"]')).toEqual({ frame: '0%', sheet: '3%' });
+describe('glass floors', () => {
+  it('keeps each platform\'s old fixed numbers as its floor', () => {
+    expect(GLASS_FLOOR.darwin).toEqual({
+      dark: { soft: { frame: 25, sheet: 6 }, clear: { frame: 10, sheet: 5 } },
+      light: { soft: { frame: 10, sheet: 4 }, clear: { frame: 0, sheet: 3 } },
+    });
+    expect(glassFloor('darwin', 'dark', 'soft', 'red-dynasty')).toEqual({ frame: 55, sheet: 20 });
+    expect(glassFloor('darwin', 'dark', 'clear', 'catppuccin-mocha')).toEqual({ frame: 35, sheet: 12 });
+    // The hued floor is a macOS one only.
+    expect(glassFloor('win32', 'dark', 'soft', 'red-dynasty')).toEqual(GLASS_FLOOR.win32.dark.soft);
   });
 
-  it('has no fixed Windows numbers left: the renderer derives them', () => {
-    // Any rule gated on win32, whatever its attribute order, that sets a coverage.
-    expect(css).not.toMatch(/\[data-platform="win32"\][^{}]*\{[^}]*--glass-(frame|sheet)\s*:/);
+  it('leaves no fixed coverage in globals.css: the renderer derives it on both platforms', () => {
+    const css = fs.readFileSync(path.join(__dirname, '..', '..', 'styles', 'globals.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(css).not.toMatch(/--glass-(frame|sheet)\s*:/);
   });
 });
 

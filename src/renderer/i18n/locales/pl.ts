@@ -3837,7 +3837,7 @@ export const pl = {
   'settings.windowGlassSoft': 'Delikatne',
   'settings.windowGlassClear': 'Przejrzyste',
   'settings.windowGlassUnsupported': 'Wymaga Windows 11 w wersji 22H2 lub nowszej. W tej wersji Windows okno pozostaje nieprzezroczyste.',
-  'settings.windowGlassThemeOpaque': 'Ten motyw pozostaje nieprzezroczysty w systemie Windows, aby jego tekst był czytelny. Twój wybór zadziała ponownie w motywie, który może zachować szkło.',
+  'settings.windowGlassThemeOpaque': 'Ten motyw pozostaje nieprzezroczysty, aby jego tekst był czytelny na tle pulpitu. Twój wybór zadziała ponownie w motywie, który może zachować szkło.',
   'settings.sidebarLeft': 'Lewo',
   'settings.sidebarRight': 'Prawo',
   'settings.multiviewArrangement': 'Układ multiview',
