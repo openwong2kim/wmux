@@ -16,6 +16,7 @@ import { useStore } from '../../stores';
 import { focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useTranscriptWindow } from '../shared/useTranscriptWindow';
 import { ArrowIcon } from './ArrowIcon';
+import { IconX } from '../icons';
 
 const NEAR_BOTTOM_PX = 48;
 
@@ -323,7 +324,14 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             <div key={item.id} className="wmux-chatv2-queued" data-chatv2-queued>
               <div className="wmux-chatv2-user">{item.text}</div>
               {item.staged.map((file) => <div key={file.path} className="wmux-chatv2-meta">{file.name}</div>)}
-              <div className="wmux-chatv2-queued-caption">{t('chat.queued')}</div>
+              {/* Until it goes, a queued message can be taken back: Edit puts it in the composer, × drops it. */}
+              <div className="wmux-chatv2-queued-caption">
+                <span>{t('chat.queued')}</span>
+                <button type="button" className="wmux-chatv2-link" data-chatv2-queued-edit
+                  onClick={() => { dequeueMessage(draftKey, item.id); restoreToDraft(draftKey, item); }}>{S.editQueued}</button>
+                <button type="button" className="wmux-chatv2-icon" aria-label={S.removeQueued} title={S.removeQueued} data-chatv2-queued-remove
+                  onClick={() => dequeueMessage(draftKey, item.id)}><IconX size={12} /></button>
+              </div>
             </div>
           ))}
         </div>

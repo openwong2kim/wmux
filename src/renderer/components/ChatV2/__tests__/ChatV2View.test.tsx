@@ -597,7 +597,7 @@ describe('ChatV2View', () => {
     await clickSend();
     expect(sent().map((p) => p.text)).toEqual(['first']);
     expect(queued()).toEqual(['second', 'third']);
-    expect(host.querySelector('.wmux-chatv2-queued-caption')?.textContent).toBe('chat.queued');
+    expect(host.querySelector('.wmux-chatv2-queued-caption > span')?.textContent).toBe('chat.queued');
     expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('');
     // Stop ends the turn only: the queue stays, and its first message goes as the turn ends.
     await act(async () => { stop.click(); });
@@ -610,6 +610,39 @@ describe('ChatV2View', () => {
     expect(sent().map((p) => p.text)).toEqual(['first', 'second', 'third']);
     expect(queued()).toEqual([]);
     expect(new Set(sent().map((p) => p.clientMessageId)).size).toBe(3);
+  });
+
+  it('lets a queued message be removed, or taken back to edit, before it goes', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-unqueue' });
+    await mock.call('create', { paneId: 'daemon-unqueue', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-unqueue" active onTerminal={() => undefined} />));
+    await flush();
+    await type('first');
+    await clickSend();
+    await type('wrong one');
+    await clickSend();
+    await type('right one');
+    await clickSend();
+    expect(queued()).toEqual(['wrong one', 'right one']);
+    const remove = host.querySelector('[data-chatv2-queued-remove]') as HTMLButtonElement;
+    // A real button with a name, so it is reached and announced from the keyboard.
+    expect(remove.tagName).toBe('BUTTON');
+    expect(remove.getAttribute('aria-label')).toBe('Remove queued message');
+    await act(async () => { remove.click(); });
+    expect(queued()).toEqual(['right one']);
+    await act(async () => { mock.emit('daemon-unqueue', [{ type: 'turn.ended', outcome: 'completed' }]); });
+    await flush();
+    expect(sent().map((p) => p.text)).toEqual(['first', 'right one']);
+    // Edit takes a queued message back into the composer, unsent.
+    await type('typo');
+    await clickSend();
+    expect(queued()).toEqual(['typo']);
+    await act(async () => { (host.querySelector('[data-chatv2-queued-edit]') as HTMLButtonElement).click(); });
+    expect(queued()).toEqual([]);
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('typo');
+    await act(async () => { mock.emit('daemon-unqueue', [{ type: 'turn.ended', outcome: 'completed' }]); });
+    await flush();
+    expect(sent().map((p) => p.text)).toEqual(['first', 'right one']);
   });
 
   it('keeps staged attachments with the draft across a split remount, and clears both on send', async () => {

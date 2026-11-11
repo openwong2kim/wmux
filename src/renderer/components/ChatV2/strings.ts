@@ -25,6 +25,8 @@ export const S = {
   placeholderHandedOff: 'This chat continues in Terminal.',
   send: 'Send',
   sendQueued: 'Queue · sent when the current reply ends',
+  editQueued: 'Edit',
+  removeQueued: 'Remove queued message',
   stop: 'Stop',
   continueInTerminal: 'Continue in Terminal',
   continueInTerminalHint: 'Stops the chat and resumes the same conversation in this terminal.',

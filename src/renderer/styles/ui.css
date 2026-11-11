@@ -733,7 +733,8 @@
 .wmux-chatv2-user { align-self: flex-end; max-width: 85%; margin-top: 10px; padding: 6px 12px; border-radius: 12px; background: var(--bg-surface); white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere; line-height: 1.55; }
 /* A message sent mid-turn: the same bubble, then a muted Queued line until it runs. */
 .wmux-chatv2-queued { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
-.wmux-chatv2-queued-caption { color: var(--text-muted); font-size: 11px; }
+.wmux-chatv2-queued-caption { display: flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.wmux-chatv2-queued-caption .wmux-chatv2-link { font-size: 11px; }
 /* A reply's code block: its language label and Copy sit as a compact 15px row in the block's top
    padding, and the code starts under it (8px more than the plain padding), so they never cover it. */
 .wmux-chatv2 [data-brain-md-code-rich]:not([data-brain-md-code-view]) > div:first-child { top: 1px; line-height: 15px; }
