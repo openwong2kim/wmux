@@ -427,7 +427,16 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
       break;
     }
     budget.left--;
-    const line = lines[i];
+    let line = lines[i];
+
+    // A fence opener after prose on the same line ("... text ```ts", as models
+    // write it) opens the fence there: the prose is drawn as its own line
+    // first. A line with another ``` run (an inline ```code```) stays as it is.
+    const midFence = line.includes('```') && fenceOpenLength(line) === 0 ? /^(.*\S)[ \t]+(`{3,}[^`\s]*)[ \t]*$/.exec(line) : null;
+    if (midFence && !midFence[1].includes('```')) {
+      out.push(<Fragment key={out.length}>{renderBlocks(midFence[1], opts, depth, budget)}</Fragment>);
+      line = midFence[2];
+    }
 
     // Fenced code block (an unclosed fence swallows to the end — streaming).
     // It closes on a backtick run at least as long as the one it opened with.

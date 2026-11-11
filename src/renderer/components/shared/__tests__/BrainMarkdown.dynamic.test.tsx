@@ -328,6 +328,22 @@ describe('renderBrainMarkdown', () => {
     expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('half of a block');
   });
 
+  it('a fence opener after prose on the same line opens the fence there (the Korean transcript fixture)', () => {
+    // src/daemon/transcript/__tests__/fixtures/korean.jsonl, as Claude wrote it.
+    const reply = "반갑습니다. 한글 답변입니다. ```ts\nconst 인사 = '안녕';\nconst 숫자 = 42;\n```";
+    act(() => { root.render(createElement('div', null, renderBrainMarkdown(reply, { richCode: true }))); });
+    expect([...container.querySelectorAll('[data-brain-md-p]')].map((p) => p.textContent)).toEqual(['반갑습니다. 한글 답변입니다.']);
+    expect(container.querySelectorAll('[data-brain-md-code]')).toHaveLength(1);
+    expect(container.querySelector('[data-brain-md-code] pre')?.textContent).toBe("const 인사 = '안녕';\nconst 숫자 = 42;");
+    expect(container.querySelector('[data-brain-md-code-lang]')?.textContent).toBe('ts');
+    // Inline ```code``` on one line is not an opener, and a line-start fence is unchanged.
+    render('run ```npm test``` now\nafter');
+    expect(container.querySelector('[data-brain-md-code]')).toBeNull();
+    render('- item ```\ncode\n```');
+    expect(container.querySelector('[data-brain-md-li]')?.textContent).toBe('•item');
+    expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('code');
+  });
+
   it('renders headings, bold, italic, and inline code', () => {
     render('## Status\nAll **good**, *mostly* — run `npm test`.');
     const h = container.querySelector('[data-brain-md-heading]');
