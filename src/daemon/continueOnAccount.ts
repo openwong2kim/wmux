@@ -185,8 +185,9 @@ export interface ContinueOnAccountDeps {
 }
 
 /**
- * `copyOnly`: the target account signs in with a token, which reaches a
- * process only at spawn and is never typed. So only the copy is made (step 3,
+ * `copyOnly`: the target account or the pane signs in with a vault value (a
+ * token), which reaches a process only at spawn and is never typed. So only
+ * the copy is made (step 3,
  * after the same checks); the source pane is left as is, and main opens a new
  * pane that resumes the conversation. Nothing is stopped, rebound or typed.
  */

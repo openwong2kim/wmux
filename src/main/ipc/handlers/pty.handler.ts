@@ -20,8 +20,8 @@ import { sanitizePtyText } from '../../../shared/types';
 import { isShadowWorkspaceId } from '../../../shared/pcRail/shadowId';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
-import { getAccountStore, VENDOR_ENV_KEYS, type Account } from '../../account/accountStore';
-import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, vaultAccountsForCreate } from '../../account/accountVault';
+import { getAccountStore, type Account } from '../../account/accountStore';
+import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, noteVaultSignInPane, vaultAccountsForCreate, withAccountFolderEnv } from '../../account/accountVault';
 import { BOT_SECRET_LIMITS } from '../../../shared/botSecret';
 import { withAccountQuota } from '../../account/accountQuotaGate';
 import { botWorkerForCreate, botWorkerLaunchTask, botWorkerSessionRecord, noteGuardedLaunchTyped, clearedLaunchLine, forgetBotWorkerSession, guardedClaudeCwdRefusal, guardedCodexCwdRefusal, guardedCodexLaunch, guardedLaunchOf, isBotWorkerSession, noteBotWorkerSession, paneLaunchFolders, setWorkerMcpResolvers, taskConnectors, taskGatewayNames, withBotWorkerMergeGuard, type BotWorkerCreate, type WorkerGatewayLaunch } from '../../agents/botWorkerMergeGuard';
@@ -482,6 +482,8 @@ function withAccountVaultEnv(
   if (accounts.length === 0) return secretEnv;
   const vaultEnv = appAccountVault().envFor(accounts);
   const { env, dropped } = mergeVaultSecretEnv(secretEnv, vaultEnv);
+  // A pane signed in from a vault cannot switch accounts in place (continueOnAccount.handler.ts).
+  noteVaultSignInPane(sessionId, Object.keys(vaultEnv).filter((name) => !dropped.includes(name) && !(name in (secretEnv ?? {}))));
   if (dropped.length > 0) {
     console.warn(`[account] pane ${sessionId}: vault value(s) ${dropped.join(', ')} left out, over the ${BOT_SECRET_LIMITS.NAMES_PER_FANOUT}-name spawn limit`);
   }
@@ -719,6 +721,8 @@ export function registerPTYHandlers(
           throw err;
         }
       };
+      // Named by the caller, not by a rotated launch (which stageCreate may add).
+      const namedAccount = options?.accountId;
       let staged: Awaited<ReturnType<typeof stageCreate>>;
       try {
         staged = await stageCreate(options, botWorker, gateway?.launch);
@@ -728,8 +732,10 @@ export function registerPTYHandlers(
       }
       options = staged.options;
       // The account this create names for itself, resolved by main; an
-      // unknown one refuses the create.
-      const accountOverride = closingLeases(() => createAccountOverride(options));
+      // unknown one refuses the create. Its folder goes into the pane env, as
+      // a rotated launch's does, so a profile's own folder cannot win over it.
+      const accountOverride = closingLeases(() => createAccountOverride(options, { missingFolder: namedAccount === undefined ? 'skip' : 'refuse' }));
+      if (accountOverride) options = { ...options, env: withAccountFolderEnv(options?.env, accountOverride) };
 
       // X8 exec-style unit: a supervised wmux.json leaf runs its command as the
       // pane's root process under a daemon-chosen wrapper shell (the daemon
@@ -878,7 +884,7 @@ export function registerPTYHandlers(
       // and layer it between baseline and profile. A manual profile
       // CLAUDE_CONFIG_DIR still wins (see resolveSpawnEnv). A bound dir that was
       // deleted on disk falls back to the default credential + a one-line warn.
-      const boundAccountEnv = options?.workspaceId && options.ignoreAccountBinding !== true
+      const accountEnv = options?.workspaceId && options.ignoreAccountBinding !== true
         ? getAccountStore().resolveWorkspaceAccountEnv(options.workspaceId, (acc) =>
             console.warn(
               `[account] pane ${sessionId}: bound account "${acc.name}" (${acc.vendor}) configDir missing on disk ` +
@@ -886,10 +892,6 @@ export function registerPTYHandlers(
             ),
           )
         : undefined;
-      // A create that names its account runs on it, whatever the workspace is bound to.
-      const accountEnv = accountOverride
-        ? { ...boundAccountEnv, [VENDOR_ENV_KEYS[accountOverride.vendor]]: accountOverride.configDir }
-        : boundAccountEnv;
       // Refresh PATH from the live registry (win32) so a daemon-mode pane, whose
       // env is assembled HERE in main, finds tools installed after main started —
       // native-terminal freshness. No-op off win32 / on failure. (Recovery replays

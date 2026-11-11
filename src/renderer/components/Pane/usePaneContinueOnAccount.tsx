@@ -5,9 +5,9 @@
 // account's config dir and resumes the same session id there, in the same
 // pane (src/daemon/continueOnAccount.ts). Offered only while the pane runs
 // Claude Code under the daemon and at least one Claude account is registered.
-// An account that signs in with a token takes the conversation in a new pane
-// beside this one instead (continueOnAccount.handler.ts), and this pane is
-// left as is.
+// When the target account or this pane signs in from a vault (a token), the
+// conversation goes to a new pane beside this one instead
+// (continueOnAccount.handler.ts), and this pane is left as is.
 
 import { useCallback, useMemo, useState } from 'react';
 import { useStore } from '../../stores';
@@ -107,7 +107,7 @@ export function usePaneContinueOnAccount(opts: {
     if (!api || !ptyId) return;
     const { pushToast } = useStore.getState();
     try {
-      const res = await api.continuePane({ ptyId, accountId: account.id });
+      const res = await api.continuePane({ ptyId, accountId: account.id, ...(workspaceId ? { workspaceId } : {}) });
       if (res.ok && res.newPane) {
         if (!openContinuePane(ptyId, res.newPane)) {
           pushToast({ level: 'error', message: t('pane.continueOnAccountFailed') });
@@ -124,7 +124,7 @@ export function usePaneContinueOnAccount(opts: {
     } catch {
       pushToast({ level: 'error', message: t('pane.continueOnAccountFailed') });
     }
-  }, [ptyId, t]);
+  }, [ptyId, workspaceId, t]);
 
   const enabled = ready && accounts.length > 0;
 

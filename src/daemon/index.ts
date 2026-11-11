@@ -10299,10 +10299,10 @@ async function main(): Promise<void> {
   // The user's "Continue on <account>": the pane's own Claude conversation is
   // copied to the account's config dir and resumed there in the same pane
   // (continueOnAccount.ts). main resolves the account to its directory.
-  // `copyOnly` (a token account): only the copy; main opens the new pane.
-  pipeServer.onRpc('session.continueOnAccount', async (rawParams, ctx) => {
+  // `copyOnly` (a pane that cannot switch in place): only the copy; main opens the new pane.
+  const continueOnAccountRpc = (copyOnly: boolean): Parameters<typeof pipeServer.onRpc>[1] => async (rawParams, ctx) => {
     if (!pipeServer.isFirstParty(ctx.clientId)) return { ok: false, code: 'not_authorized' };
-    const p = rawParams as { sessionId?: unknown; configDir?: unknown; copyOnly?: unknown };
+    const p = rawParams as { sessionId?: unknown; configDir?: unknown };
     const id = typeof p.sessionId === 'string' ? p.sessionId : '';
     const configDir = typeof p.configDir === 'string' ? p.configDir : '';
     if (!id || !sessionManager.getSession(id)) return { ok: false, code: 'no_session' };
@@ -10362,11 +10362,15 @@ async function main(): Promise<void> {
           pane.bridge.noteInput(data);
           return true;
         },
-      }, id, configDir, { copyOnly: p.copyOnly === true });
+      }, id, configDir, { copyOnly });
     } catch {
       return { ok: false, code: 'unknown' };
     }
-  });
+  };
+  pipeServer.onRpc('session.continueOnAccount', continueOnAccountRpc(false));
+  // A method of its own, so a daemon without it answers Unknown method and
+  // never moves the pane in place.
+  pipeServer.onRpc('session.copyToAccountV1', continueOnAccountRpc(true));
   // #919 — re-evaluate canonical identity OUTSIDE `session:agent`: the tier
   // inputs change (attribution completes; a watched process dies) while no
   // detector event is in flight, and a wrong label would otherwise sit in

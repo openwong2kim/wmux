@@ -10,7 +10,10 @@ import {
   AccountVault,
   createAccountOverride,
   mergeVaultSecretEnv,
+  noteVaultSignInPane,
+  paneHasVaultSignIn,
   vaultAccountsForCreate,
+  withAccountFolderEnv,
   vaultEligibleCreate,
 } from '../accountVault';
 import type { Account } from '../accountStore';
@@ -185,6 +188,29 @@ describe('the account a create names', () => {
     expect(() => createAccountOverride({ accountId: 'acc-token', ignoreAccountBinding: true }, deps)).toThrow(/takes no account/);
   });
 
+  it('a rotated launch whose account folder went since the pick starts on the bound account instead of failing', () => {
+    const gone = { ...deps, dirOk: () => false, missingFolder: 'skip' as const };
+    expect(createAccountOverride({ accountId: 'acc-token' }, gone)).toBeUndefined();
+    // Only the folder is forgiven: an unknown id still refuses.
+    expect(() => createAccountOverride({ accountId: 'acc-unknown' }, gone)).toThrow(/unknown account/);
+  });
+
+  it('sets its folder in the pane env over a profile folder, in any case', () => {
+    expect(withAccountFolderEnv({ CLAUDE_CONFIG_DIR: '/profile/dir', claude_config_dir: '/x', FOO: '1' }, tokenAccount))
+      .toEqual({ CLAUDE_CONFIG_DIR: '/acc/token', FOO: '1' });
+    expect(withAccountFolderEnv(undefined, { vendor: 'codex', configDir: '/acc/codex' })).toEqual({ CODEX_HOME: '/acc/codex' });
+  });
+
+  it('remembers a pane that spawned with a Claude sign-in name from a vault, and only that', () => {
+    noteVaultSignInPane('daemon-sign', ['GITHUB_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN']);
+    noteVaultSignInPane('daemon-other', ['GITHUB_TOKEN', 'OPENAI_API_KEY']);
+    noteVaultSignInPane('daemon-key', ['ANTHROPIC_API_KEY']);
+    expect(paneHasVaultSignIn('daemon-sign')).toBe(true);
+    expect(paneHasVaultSignIn('daemon-key')).toBe(true);
+    expect(paneHasVaultSignIn('daemon-other')).toBe(false);
+    expect(paneHasVaultSignIn('daemon-never')).toBe(false);
+  });
+
   it('stands in for the bound account of its vendor in the vault, and ineligible creates still get none', () => {
     const binding = (_ws: string, vendor: 'claude' | 'codex') => (vendor === 'claude' ? 'acc-bound' : 'acc-codex');
     expect(vaultAccountsForCreate({ workspaceId: 'ws-1' }, null, binding)).toEqual([
@@ -206,12 +232,15 @@ describe('the account a create names', () => {
     }
   });
 
-  it('is resolved in the create, feeds both the folder env and the vault, and an exec unit gets no vault', () => {
+  it('is resolved in the create, feeds both the pane env and the vault, and an exec unit gets no vault', () => {
     const src = readSourceText(path.join(__dirname, '..', '..', 'ipc', 'handlers', 'pty.handler.ts'));
-    const resolved = src.indexOf('const accountOverride = closingLeases(() => createAccountOverride(options));');
+    const resolved = src.indexOf("const accountOverride = closingLeases(() => createAccountOverride(options, { missingFolder: namedAccount === undefined ? 'skip' : 'refuse' }));");
     expect(resolved).toBeGreaterThan(src.indexOf('options = staged.options;'));
+    // The caller's own id is read before staging, so only a rotated one is forgiven a missing folder.
+    expect(src.indexOf('const namedAccount = options?.accountId;')).toBeLessThan(src.indexOf('staged = await stageCreate(options, botWorker, gateway?.launch);'));
+    expect(src).toContain('if (accountOverride) options = { ...options, env: withAccountFolderEnv(options?.env, accountOverride) };');
     expect(src).toContain('execCommand !== undefined || supervisionPolicy !== undefined, accountOverride));');
-    expect(src).toContain('[VENDOR_ENV_KEYS[accountOverride.vendor]]: accountOverride.configDir');
+    expect(src).toContain('noteVaultSignInPane(sessionId,');
     expect(src).toMatch(/if \(execUnit \|\| !options\?\.workspaceId\) return secretEnv;/);
   });
 });

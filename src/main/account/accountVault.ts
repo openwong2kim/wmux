@@ -25,7 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BOT_SECRET_LIMITS, isBotSecretName } from '../../shared/botSecret';
 import { electronSecretCrypto, type SecretCrypto, type SecretCryptoState } from '../factory/secretStore';
-import { getAccountStore, getAccountsPath, isAccessibleDir, type Account } from './accountStore';
+import { getAccountStore, getAccountsPath, isAccessibleDir, VENDOR_ENV_KEYS, type Account } from './accountStore';
 import { atomicReadJSONSync } from '../../daemon/util/atomicWrite';
 import { isRedactableSecretValue, setRedactedAccountVault } from '../factory/secretRedaction';
 
@@ -333,11 +333,13 @@ export function vaultEligibleCreate(options: {
  * (vaultAccountsForCreate). Only the id of a registered Claude or Codex
  * account whose folder exists; anything else refuses the create, so it never
  * starts on another account. The caller names an id, never env. Undefined
- * when the create names none.
+ * when the create names none. `missingFolder: 'skip'` (a rotated launch, whose
+ * account was picked with its folder present) leaves the pane on the bound
+ * account, as before rotation named one, when the folder went since.
  */
 export function createAccountOverride(
   options: { accountId?: unknown; ignoreAccountBinding?: boolean } | undefined,
-  deps: { account?: (id: string) => Account | undefined; dirOk?: (dir: string) => boolean } = {},
+  deps: { account?: (id: string) => Account | undefined; dirOk?: (dir: string) => boolean; missingFolder?: 'refuse' | 'skip' } = {},
 ): Account | undefined {
   if (options?.accountId === undefined) return undefined;
   const id = options.accountId;
@@ -346,8 +348,47 @@ export function createAccountOverride(
   if (options.ignoreAccountBinding === true) throw new Error('PTY_CREATE: this pane takes no account');
   const account = (deps.account ?? ((i: string) => getAccountStore().getAccount(i)))(id);
   if (!account || (account.vendor !== 'claude' && account.vendor !== 'codex')) throw new Error('PTY_CREATE: unknown account');
-  if (!(deps.dirOk ?? isAccessibleDir)(account.configDir)) throw new Error('PTY_CREATE: the account folder is missing');
+  if (!(deps.dirOk ?? isAccessibleDir)(account.configDir)) {
+    if (deps.missingFolder === 'skip') return undefined;
+    throw new Error('PTY_CREATE: the account folder is missing');
+  }
   return account;
+}
+
+/**
+ * `env` with the account's folder key set over any value of it (any case:
+ * Windows env names are case-insensitive), as a rotated launch sets it: the
+ * pane env is applied after the bound account and the workspace profile, so
+ * a profile's own folder cannot take the pane to another account. Pure.
+ */
+export function withAccountFolderEnv(env: Record<string, string> | undefined, account: Pick<Account, 'vendor' | 'configDir'>): Record<string, string> {
+  const key = VENDOR_ENV_KEYS[account.vendor];
+  const next = Object.fromEntries(Object.entries(env ?? {}).filter(([name]) => name.toUpperCase() !== key));
+  next[key] = account.configDir;
+  return next;
+}
+
+/** Panes of this main run whose spawn got a Claude sign-in value from a vault. */
+const vaultSignInPanes = new Set<string>();
+
+/** Record that `sessionId` spawned with these vault names (values are not looked at). */
+export function noteVaultSignInPane(sessionId: string, names: Iterable<string>): void {
+  for (const name of names) {
+    if (VENDOR_AUTH_NAMES.get(name) === 'claude') {
+      vaultSignInPanes.add(sessionId);
+      return;
+    }
+  }
+}
+
+/** Whether `sessionId` spawned with a Claude sign-in value from a vault, in this main run. */
+export function paneHasVaultSignIn(sessionId: string): boolean {
+  return vaultSignInPanes.has(sessionId);
+}
+
+/** Whether these entries hold a Claude sign-in variable a pane gets (injected, decryptable). Pure. */
+export function holdsClaudeSignIn(entries: ReadonlyArray<Pick<AccountVaultEntry, 'name' | 'inject' | 'usable'>>): boolean {
+  return entries.some((e) => VENDOR_AUTH_NAMES.get(e.name) === 'claude' && e.inject && e.usable);
 }
 
 /** The accounts whose vault a create gets: the workspace's bound Claude and
