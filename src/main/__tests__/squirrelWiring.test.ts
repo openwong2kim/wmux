@@ -201,6 +201,24 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     expect(branch).toMatch(/process\.kill\(process\.pid, 'SIGKILL'\);\s*\}\s*else if \($/);
   });
 
+  it('the install and updated hooks detach the PATH broadcast (#3017)', () => {
+    // The hook's main thread owns top-level windows it cannot pump while it
+    // waits for the PATH edit, so a broadcast it waited for waited 5 s on each
+    // of them, and Squirrel cancelled the install hook at ~16 s.
+    const installStart = indexSrc.indexOf("squirrelCmd === '--squirrel-install'");
+    const updatedStart = indexSrc.indexOf("squirrelCmd === '--squirrel-updated'");
+    const uninstallStart = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
+    expect(installStart).toBeGreaterThan(0);
+    expect(updatedStart).toBeGreaterThan(installStart);
+    expect(uninstallStart).toBeGreaterThan(updatedStart);
+    const installBranch = indexSrc.slice(installStart, updatedStart);
+    const updatedBranch = indexSrc.slice(updatedStart, uninstallStart);
+    for (const branch of [installBranch, updatedBranch]) {
+      expect(branch).toContain('cliShim.installCliShim(process.execPath, { detachBroadcast: true })');
+      expect(branch).not.toMatch(/installCliShim\(process\.execPath\)/);
+    }
+  });
+
   it('the predicate classifies by exact membership, never a startsWith prefix', () => {
     // The most realistic regression is moving the logic into squirrel.ts and
     // using `startsWith('--squirrel-')` there — which would re-swallow firstrun.
