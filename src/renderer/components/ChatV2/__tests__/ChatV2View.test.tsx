@@ -9,6 +9,8 @@ import type { Block } from '../../../../shared/chatv2/session';
 import { setChatV2BridgeForTests } from '../bridge';
 import { ApprovalCard, QuestionCard } from '../Cards';
 import { deliverChatDrop } from '../../Chat/chatAttachments';
+import { chatV2Error } from '../../../../shared/chatv2/ipc';
+import { enqueueMessage, setStaged } from '../Composer';
 import ChatV2View from '../ChatV2View';
 import { SHELL_TAIL_LINES, shellView, TranscriptRowView, type TranscriptActions } from '../Transcript';
 import { createMockHost, type MockHost } from './mockHost';
@@ -610,6 +612,120 @@ describe('ChatV2View', () => {
     expect(sent().map((p) => p.text)).toEqual(['first', 'second', 'third']);
     expect(queued()).toEqual([]);
     expect(new Set(sent().map((p) => p.clientMessageId)).size).toBe(3);
+  });
+
+  // Holds or fails the host's answers to one method, for the review cases below.
+  const intercept = (method: string, answer: (forward: () => Promise<unknown>) => Promise<unknown>) => {
+    const call = mock.call.bind(mock);
+    mock.call = ((m, params) => (m === method ? answer(() => call(m, params)) : call(m, params))) as typeof mock.call;
+  };
+  const startQueued = async (paneId: string) => {
+    await mock.call('subscribe', { paneId });
+    await mock.call('create', { paneId, agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId={paneId} active onTerminal={() => undefined} />));
+    await flush();
+    await type('first');
+    await clickSend();
+    await type('second');
+    await clickSend();
+    expect(queued()).toEqual(['second']);
+  };
+
+  it('keeps a queued message when the bridge fails its delivery, and tries again on the next event', async () => {
+    await startQueued('daemon-reject');
+    let fail = true;
+    intercept('send', (forward) => (fail ? (fail = false, Promise.reject(new Error('bridge gone'))) : forward()));
+    await act(async () => { mock.emit('daemon-reject', [{ type: 'turn.ended', outcome: 'completed' }]); });
+    await flush();
+    expect(queued()).toEqual(['second']);
+    expect(host.querySelector('[data-chatv2-queued-remove]')).not.toBeNull();
+    await act(async () => { mock.emit('daemon-reject', [{ type: 'session.started' }]); });
+    await flush();
+    expect(sent().map((p) => p.text)).toEqual(['first', 'second']);
+    expect(queued()).toEqual([]);
+  });
+
+  it('shows a queued message as sending once its delivery started, with nothing that would pretend to cancel it', async () => {
+    await startQueued('daemon-sending');
+    let release: () => void = () => undefined;
+    let attempts = 0;
+    intercept('send', (forward) => { attempts += 1; return new Promise<void>((resolve) => { release = resolve; }).then(forward); });
+    await act(async () => { mock.emit('daemon-sending', [{ type: 'turn.ended', outcome: 'completed' }]); });
+    await flush();
+    const bubble = host.querySelector('[data-chatv2-queued]') as HTMLElement;
+    expect(bubble.hasAttribute('data-sending')).toBe(true);
+    expect(bubble.querySelector('.wmux-chatv2-queued-caption')?.textContent).toBe('Sending…');
+    expect(bubble.querySelector('[data-chatv2-queued-remove]')).toBeNull();
+    expect(bubble.querySelector('[data-chatv2-queued-edit]')).toBeNull();
+    // A remount meanwhile does not start it a second time.
+    await remount('daemon-sending');
+    expect(host.querySelector('[data-chatv2-queued]')?.hasAttribute('data-sending')).toBe(true);
+    expect(attempts).toBe(1);
+    await act(async () => { release(); });
+    await flush();
+    expect(mock.calls.filter((call) => call.method === 'send').length).toBe(2);
+    expect(queued()).toEqual([]);
+  });
+
+  it('moves queued messages into the composer when their chat is gone', async () => {
+    await startQueued('daemon-gone');
+    await type('newer');
+    await clickSend();
+    intercept('send', async () => chatV2Error('session-not-found', 'No chat for this pane.'));
+    intercept('subscribe', async () => ({ ok: true, binding: null }));
+    await act(async () => { mock.emit('daemon-gone', [{ type: 'turn.ended', outcome: 'completed' }]); });
+    await flush();
+    await flush();
+    expect(host.querySelector('[data-chatv2="empty"]')).not.toBeNull();
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('second\n\nnewer');
+    expect(host.querySelector('[data-tone="error"]')?.textContent).toBe('The chat your queued messages were waiting for is gone. They are back in the composer.');
+  });
+
+  it('keeps the first message of a chat created during a split remount in that chat’s composer', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-create' });
+    let release: () => void = () => undefined;
+    intercept('create', (forward) => new Promise<void>((resolve) => { release = resolve; }).then(forward));
+    await act(async () => root.render(<ChatV2View paneId="daemon-create" active onTerminal={() => undefined} />));
+    await flush();
+    await type('hello');
+    await clickSend();
+    await remount('daemon-create');
+    await act(async () => { release(); });
+    await flush();
+    await flush();
+    expect(host.querySelector('[data-chatv2="ready"]')).not.toBeNull();
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('hello');
+    expect(sent()).toEqual([]);
+  });
+
+  it('queues a message sent while the agent is still starting, and sends it once it is ready', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-starting' });
+    await mock.call('create', { paneId: 'daemon-starting', agent: 'claude', mode: 'default' });
+    mock.record('daemon-starting')!.binding.status = 'starting';
+    await act(async () => root.render(<ChatV2View paneId="daemon-starting" active onTerminal={() => undefined} />));
+    await flush();
+    await type('go');
+    await clickSend();
+    expect(sent()).toEqual([]);
+    expect(queued()).toEqual(['go']);
+    await act(async () => { mock.emit('daemon-starting', [{ type: 'session.started' }]); });
+    await flush();
+    expect(sent().map((p) => p.text)).toEqual(['go']);
+  });
+
+  it('refuses to edit a queued message whose images would not fit in the composer, and keeps it queued', async () => {
+    await startQueued('daemon-full');
+    const key = `daemon-full:${mock.record('daemon-full')!.binding.chatSessionId}`;
+    const image = (n: number) => ({ path: `/staged/${n}.png`, name: `${n}.png` });
+    await act(async () => {
+      setStaged(key, [1, 2, 3, 4, 5].map(image));
+      enqueueMessage(key, { id: 'm-with-image', text: 'look', staged: [image(6)] });
+    });
+    const edit = () => host.querySelectorAll('[data-chatv2-queued-edit]')[1] as HTMLButtonElement;
+    await act(async () => { edit().click(); });
+    expect(queued()).toEqual(['second', 'look']);
+    expect(host.querySelectorAll('[data-attachment]')).toHaveLength(5);
+    expect(host.querySelectorAll('[data-chatv2-queued]')[1].textContent).toContain('The composer has no room for this message’s images.');
   });
 
   it('lets a queued message be removed, or taken back to edit, before it goes', async () => {

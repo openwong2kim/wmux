@@ -13,13 +13,14 @@ import { ArrowIcon } from './ArrowIcon';
 
 // Drafts survive view switches and split remounts, per pane and conversation
 // (`<paneId>:<chatSessionId|new>`): the text, the staged attachments, the
-// messages queued behind a running turn, and whether a send is in flight.
+// messages queued behind a running turn, whether a send is in flight, and
+// which queued message is being delivered.
 export interface StagedAttachment { path: string; name: string }
 /** A message sent mid-turn, delivered when the turn ends. `id` is its clientMessageId. */
 export interface QueuedMessage { id: string; text: string; staged: readonly StagedAttachment[] }
-interface DraftEntry { text: string; staged: readonly StagedAttachment[]; queue: readonly QueuedMessage[]; sending: boolean }
+interface DraftEntry { text: string; staged: readonly StagedAttachment[]; queue: readonly QueuedMessage[]; sending: boolean; delivering: string | null }
 
-const EMPTY_DRAFT: DraftEntry = { text: '', staged: [], queue: [], sending: false };
+const EMPTY_DRAFT: DraftEntry = { text: '', staged: [], queue: [], sending: false, delivering: null };
 const drafts = new Map<string, DraftEntry>();
 const draftListeners = new Set<() => void>();
 
@@ -27,7 +28,7 @@ const draftEntry = (key: string): DraftEntry => drafts.get(key) ?? EMPTY_DRAFT;
 
 function updateDraft(key: string, patch: Partial<DraftEntry>): void {
   const next = { ...draftEntry(key), ...patch };
-  if (!next.text && !next.staged.length && !next.queue.length && !next.sending) drafts.delete(key); else drafts.set(key, next);
+  if (!next.text && !next.staged.length && !next.queue.length && !next.sending && !next.delivering) drafts.delete(key); else drafts.set(key, next);
   for (const listener of [...draftListeners]) listener();
 }
 
@@ -44,6 +45,15 @@ export function useDraft(key: string): DraftEntry {
 /** One conversation's queued messages, kept current (typing does not change it). */
 export function useQueuedMessages(key: string): readonly QueuedMessage[] {
   return useSyncExternalStore(onDrafts, () => draftEntry(key).queue);
+}
+
+/** The id of the queued message whose delivery has started, if any. */
+export function useDeliveringId(key: string): string | null {
+  return useSyncExternalStore(onDrafts, () => draftEntry(key).delivering);
+}
+
+export function setDelivering(key: string, id: string | null): void {
+  if (draftEntry(key).delivering !== id) updateDraft(key, { delivering: id });
 }
 
 export function getDraft(key: string): string {
@@ -75,13 +85,36 @@ export function dequeueMessage(key: string, id: string): void {
   if (queue.some((item) => item.id === id)) updateDraft(key, { queue: queue.filter((item) => item.id !== id) });
 }
 
-/** A message that could not go back in the composer, ahead of what is there now. */
-export function restoreToDraft(key: string, message: { text: string; staged: readonly StagedAttachment[] }): void {
+/**
+ * Put a message back in the composer, ahead of what is there now. False, and
+ * nothing changed, when its attachments would not fit beside the staged ones;
+ * with `force` (a message that has nowhere else to go) every attachment is
+ * kept, over the limit too, for the owner to trim before sending.
+ */
+export function restoreToDraft(key: string, message: { text: string; staged: readonly StagedAttachment[] }, force = false): boolean {
   const { text, staged } = draftEntry(key);
+  if (!force && message.staged.length + staged.length > CHAT_ATTACHMENT_LIMIT) return false;
   updateDraft(key, {
     text: text ? `${message.text}\n\n${text}` : message.text,
-    staged: [...message.staged, ...staged].slice(0, CHAT_ATTACHMENT_LIMIT),
+    staged: [...message.staged, ...staged],
   });
+  return true;
+}
+
+/** Move a draft's text and attachments to another key (a chat created under a remount). */
+export function moveDraft(from: string, to: string): void {
+  const { text, staged } = draftEntry(from);
+  if (from === to || (!text && !staged.length)) return;
+  restoreToDraft(to, { text, staged }, true);
+  updateDraft(from, { text: '', staged: [] });
+}
+
+/** Move every queued message of `from` back into the composer of `to` (its chat is gone), oldest first. */
+export function requeueToDraft(from: string, to: string): void {
+  const queue = draftEntry(from).queue;
+  if (!queue.length) return;
+  updateDraft(from, { queue: [], delivering: null });
+  for (const item of [...queue].reverse()) restoreToDraft(to, item, true);
 }
 
 /** Forget every draft (text, attachments, queue) of a pane that closed. */

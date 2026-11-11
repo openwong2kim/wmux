@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { CHATV2_AGENT_CAPS, type ChatV2Agent, type ChatV2RunMode } from '../../../shared/chatv2/ipc';
-import { Composer, dequeueMessage, enqueueMessage, restoreToDraft, setDraft, useQueuedMessages } from './Composer';
+import { Composer, dequeueMessage, enqueueMessage, moveDraft, requeueToDraft, restoreToDraft, setDelivering, setDraft, useDeliveringId, useDraft, useQueuedMessages } from './Composer';
 import { clientMessageId } from './controller';
 import { shortDir } from '../../utils/shortDir';
 import { FindBar } from './FindBar';
@@ -86,6 +86,9 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   const view = state.view;
   const draftKey = view ? `${paneId}:${view.binding.chatSessionId}` : `${paneId}:new`;
   const queue = useQueuedMessages(draftKey);
+  const deliveringId = useDeliveringId(draftKey);
+  // A queued message whose Edit was refused (no room for its images).
+  const [editRefused, setEditRefused] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findId, setFindId] = useState<string | null>(null);
   const [newModel, setNewModel] = useState('');
@@ -210,21 +213,44 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   const status = view?.binding.status;
   const running = !!view && (!!view.session.busy || status === 'running' || status === 'needs-input');
   const canDeliver = !!view && !running && (status === 'idle' || status === 'stopped') && view.binding.capabilities.send;
-  const delivering = useRef(false);
   const nextQueued = canDeliver ? queue[0] : undefined;
+  // The copy (epoch and seq) a delivery last waited on: it is tried again only
+  // once another event folded (a turn's end, a reload), never in a loop.
+  const heldAt = useRef<string | null>(null);
+  const copyAt = view ? `${view.epoch}:${view.lastSeq}` : '';
   useEffect(() => {
-    if (!nextQueued || !controller || delivering.current) return;
-    delivering.current = true;
+    // The store marks the delivery in flight, so a view that remounted meanwhile does not start it twice.
+    if (!nextQueued || !controller || deliveringId || heldAt.current === copyAt) return;
     const key = draftKey;
-    void controller.deliver({ id: nextQueued.id, text: nextQueued.text, attachments: nextQueued.staged.map((item) => item.path) }).then((outcome) => {
-      delivering.current = false;
-      if (outcome === 'wait') return;
-      dequeueMessage(key, nextQueued.id);
+    const item = nextQueued;
+    setDelivering(key, item.id);
+    const hold = () => { heldAt.current = copyAt; };
+    void controller.deliver({ id: item.id, text: item.text, attachments: item.staged.map((file) => file.path) }).then((outcome) => {
+      setDelivering(key, null);
+      if (outcome === 'wait') { hold(); return; }
+      if (outcome === 'gone') {
+        // Its chat is gone: the queue goes to the composer the pane shows now.
+        const now = controller.current.view;
+        requeueToDraft(key, now ? `${paneId}:${now.binding.chatSessionId}` : `${paneId}:new`);
+        return;
+      }
+      dequeueMessage(key, item.id);
       // Refused: back in the composer, not lost (the error says why).
-      if (outcome === 'failed') restoreToDraft(key, nextQueued);
+      if (outcome === 'failed') restoreToDraft(key, item, true);
+    }, () => {
+      // The bridge failed: it stays queued and is tried again on the next event.
+      setDelivering(key, null);
+      hold();
     });
-    // A wait is tried again on the next folded event (a turn's end, a reload).
-  }, [nextQueued, controller, draftKey, view?.epoch, view?.lastSeq]);
+  }, [nextQueued, controller, draftKey, deliveringId, copyAt, paneId]);
+
+  // A first message whose chat was created after a split remount stays under
+  // the new-chat draft; once the chat shows, it moves to the chat's composer.
+  const newChatDraft = useDraft(`${paneId}:new`);
+  useEffect(() => {
+    if (!view || newChatDraft.sending || (!newChatDraft.text && !newChatDraft.staged.length)) return;
+    moveDraft(`${paneId}:new`, draftKey);
+  }, [view, newChatDraft, paneId, draftKey]);
 
   if (state.phase === 'loading') {
     return <div className="wmux-chatv2" data-chatv2="loading">{kindRow}<div className="wmux-chatv2-state" role="status">{t('chat.loading')}</div></div>;
@@ -321,17 +347,26 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             />
           ))}
           {queue.map((item) => (
-            <div key={item.id} className="wmux-chatv2-queued" data-chatv2-queued>
+            <div key={item.id} className="wmux-chatv2-queued" data-chatv2-queued data-sending={item.id === deliveringId || undefined}>
               <div className="wmux-chatv2-user">{item.text}</div>
               {item.staged.map((file) => <div key={file.path} className="wmux-chatv2-meta">{file.name}</div>)}
-              {/* Until it goes, a queued message can be taken back: Edit puts it in the composer, × drops it. */}
-              <div className="wmux-chatv2-queued-caption">
-                <span>{t('chat.queued')}</span>
-                <button type="button" className="wmux-chatv2-link" data-chatv2-queued-edit
-                  onClick={() => { dequeueMessage(draftKey, item.id); restoreToDraft(draftKey, item); }}>{S.editQueued}</button>
-                <button type="button" className="wmux-chatv2-icon" aria-label={S.removeQueued} title={S.removeQueued} data-chatv2-queued-remove
-                  onClick={() => dequeueMessage(draftKey, item.id)}><IconX size={12} /></button>
-              </div>
+              {/* Until it goes, a queued message can be taken back: Edit puts it in the composer, × drops it.
+                  Once its delivery started neither could stop it, so neither is offered. */}
+              {item.id === deliveringId ? (
+                <div className="wmux-chatv2-queued-caption"><span>{S.queuedSending}</span></div>
+              ) : (
+                <div className="wmux-chatv2-queued-caption">
+                  <span>{editRefused === item.id ? S.editQueuedFull : t('chat.queued')}</span>
+                  <button type="button" className="wmux-chatv2-link" data-chatv2-queued-edit
+                    onClick={() => {
+                      if (!restoreToDraft(draftKey, item)) { setEditRefused(item.id); return; }
+                      setEditRefused(null);
+                      dequeueMessage(draftKey, item.id);
+                    }}>{S.editQueued}</button>
+                  <button type="button" className="wmux-chatv2-icon" aria-label={S.removeQueued} title={S.removeQueued} data-chatv2-queued-remove
+                    onClick={() => dequeueMessage(draftKey, item.id)}><IconX size={12} /></button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -369,8 +404,8 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             chips={{ agent: binding.agent, model: binding.model, effort: view.session.modelSettings.effort ?? '', mode: binding.mode, cwd: view.session.cwd, editable: false }}
             onSend={async (text, staged) => {
               toLatest();
-              // Behind a running turn, or behind what is already queued, so the order holds.
-              if (running || queue.length) { enqueueMessage(draftKey, { id: clientMessageId(), text, staged }); return true; }
+              // Behind a running turn, an agent still starting, or what is already queued, so the order holds.
+              if (running || queue.length || binding.status === 'starting') { enqueueMessage(draftKey, { id: clientMessageId(), text, staged }); return true; }
               return controller.send(text, staged.map((item) => item.path));
             }}
             onStop={() => void controller.interrupt()}

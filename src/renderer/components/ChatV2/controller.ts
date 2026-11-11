@@ -14,6 +14,7 @@ import type {
   ChatV2RunMode,
 } from '../../../shared/chatv2/ipc';
 import { applyPushToView, prependHistory, RESNAPSHOT, stateFromSnapshot, type ChatV2ViewState } from './viewState';
+import { S } from './strings';
 
 export type ChatV2Phase = 'loading' | 'empty' | 'ready' | 'unavailable';
 
@@ -228,9 +229,11 @@ export class ChatV2Controller {
   /**
    * Send a message queued behind a turn. `wait`: the agent is not free yet
    * (the turn's end not folded, a question open) or the view went, so it
-   * stays queued, unsent; `failed`: the host refused it, with the error shown.
+   * stays queued, unsent; `gone`: its chat no longer exists (reloaded by
+   * then), so the queue belongs in the composer of what the pane shows now;
+   * `failed`: the host refused it, with the error shown.
    */
-  async deliver(message: { id: string; text: string; attachments: string[] }): Promise<'sent' | 'wait' | 'failed'> {
+  async deliver(message: { id: string; text: string; attachments: string[] }): Promise<'sent' | 'wait' | 'gone' | 'failed'> {
     const view = this.state.view;
     if (!view) return 'wait';
     const result = await this.post(view, message);
@@ -238,8 +241,14 @@ export class ChatV2Controller {
     if (this.disposed) return 'wait';
     const { code } = result.error;
     if (code === 'turn-running' || code === 'needs-input') return 'wait';
-    // A reload settles these by itself; it is tried again on the new copy.
-    if (code === 'stale-epoch' || code === 'session-not-found') { void this.reload(); return 'wait'; }
+    // A reload settles a stale copy by itself; it is tried again on the new one.
+    if (code === 'stale-epoch') { void this.reload(); return 'wait'; }
+    if (code === 'session-not-found') {
+      await this.reload();
+      if (this.disposed) return 'wait';
+      this.set({ error: { code, message: S.queueMovedToDraft } });
+      return 'gone';
+    }
     this.fail(result.error);
     return 'failed';
   }
