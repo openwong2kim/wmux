@@ -731,6 +731,8 @@
 .wmux-chatv2-runs-in { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; }
 .wmux-chatv2-cwd { max-width: 18em; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); }
 .wmux-chatv2-user { align-self: flex-end; max-width: 85%; margin-top: 10px; padding: 6px 12px; border-radius: 12px; background: var(--bg-surface); white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere; line-height: 1.55; }
+/* A reply's code block: the code starts under the language label and Copy row, so they never cover it. */
+.wmux-chatv2 [data-brain-md-code-rich]:not([data-brain-md-code-view]) > pre { padding-top: 30px; }
 /* keep-all keeps Korean words whole; overflow-wrap still breaks a long URL or path. */
 .wmux-chatv2-assistant, .wmux-chatv2-plan { line-height: 1.65; word-break: keep-all; overflow-wrap: anywhere; }
 .wmux-chatv2-reasoning summary, .wmux-chatv2-tool summary, .wmux-chatv2-subagent summary { cursor: pointer; list-style: none; }
@@ -758,6 +760,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-glyph[data-state="running"] { color: var(--accent); }
 .wmux-chatv2-glyph[data-state="done"] { color: var(--accent-green); }
 .wmux-chatv2-glyph[data-state="failed"] { color: var(--accent-red); }
+.wmux-chatv2-glyph[data-state="waiting"] { color: var(--attention); }
 .wmux-chatv2-steps { margin: 2px 0 2px 4px; padding-left: 10px; box-shadow: inset 1px 0 0 var(--border-soft); }
 .wmux-chatv2-pre { max-height: 280px; overflow: auto; margin: 4px 0 4px 15px; padding: 6px 8px; border-radius: 6px; background: var(--bg-mantle); color: var(--text-sub); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11.5px; line-height: 1.55; white-space: pre; }
 .wmux-chatv2-pre[data-detail] { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -773,6 +776,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-evidence { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; margin: -4px 0 0; padding: 0 8px; color: var(--text-sub); font: inherit; }
 .wmux-chatv2-evidence:hover { color: var(--accent-blue); text-decoration: underline; text-underline-offset: 2px; }
 .wmux-chatv2-shell-command { padding: 0 8px 2px; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.wmux-chatv2-shell-earlier { padding: 0 8px 2px; color: var(--text-muted); }
 .wmux-chatv2-pre[data-shell] > pre, .wmux-chatv2-pre[data-shell] > .wmux-chatv2-body-more { padding: 0 8px; }
 /* Output scrolls past ~9rem; an edge fades while there is more beyond it. */
 .wmux-chatv2-shell-output { max-height: 9rem; }
@@ -791,6 +795,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 0 6px; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .wmux-chatv2-live-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); }
 .wmux-chatv2-footer[data-live] { color: var(--text-sub); }
+.wmux-chatv2-footer[data-waiting] .wmux-chatv2-live-dot { background: var(--attention); }
 .wmux-chatv2-footer [data-outcome] { color: var(--text-sub); }
 /* A card that waits on the owner: its one boundary is the needs-you hairline, no fill. */
 .wmux-chatv2-card { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 4px 15px; padding: 10px 12px; border: 1px solid var(--attention-hairline); border-radius: 10px; background: transparent; }
@@ -815,14 +820,17 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-body-more { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
 .wmux-chatv2-dock { position: relative; display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 46rem; margin: 0 auto; padding: 0 16px 12px; }
 /* Jump to latest: shown only while scrolled up with newer rows below; floats over the transcript, no layout row. */
-.wmux-chatv2-jump { position: absolute; top: -40px; left: 50%; z-index: 1; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 999px; background: var(--bg-surface); color: var(--text-sub); box-shadow: var(--shadow-popover); transform: translateX(-50%); }
-.wmux-chatv2-jump:hover { color: var(--text-main); }
+.wmux-chatv2-jump { position: absolute; top: -44px; left: 50%; z-index: 1; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-surface); color: var(--text-main); box-shadow: var(--shadow-popover); transform: translateX(-50%); }
+.wmux-chatv2-jump:hover { background: var(--selection-hover); }
 .wmux-chatv2-composer { display: flex; flex-direction: column; gap: 4px; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: 12px; background: transparent; transition: border-color 150ms; }
 .wmux-chatv2-composer:focus-within { border-color: var(--line-strong); }
 .wmux-chatv2-textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; resize: none; padding: 4px 0; background: transparent; color: var(--text-main); font: inherit; line-height: 1.55; word-break: keep-all; overflow-wrap: anywhere; outline: none; field-sizing: content; }
 .wmux-chatv2-textarea::placeholder { color: var(--text-muted); }
 .wmux-chatv2-composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
-.wmux-chatv2-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-width: 0; }
+/* One row of chips: a narrow composer scrolls them sideways instead of growing taller (the padding keeps focus rings unclipped). */
+.wmux-chatv2-chips { display: flex; flex: 1 1 auto; flex-wrap: nowrap; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 4px; margin: -4px; }
+.wmux-chatv2-chips::-webkit-scrollbar { display: none; }
+.wmux-chatv2-chips > .wmux-chatv2-chip { flex-shrink: 0; }
 .wmux-chatv2-chip { display: inline-flex; align-items: center; min-height: 26px; padding: 0 8px; border-radius: var(--chip-radius, 6px); background: var(--selection); color: var(--text-sub); font-size: 11.5px; white-space: nowrap; }
 .wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--selection-hover); color: var(--text-main); }
 .wmux-chatv2-chip select { appearance: none; field-sizing: content; background: transparent; color: inherit; font: inherit; cursor: pointer; outline: none; }

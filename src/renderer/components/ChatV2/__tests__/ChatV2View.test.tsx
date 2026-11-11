@@ -9,7 +9,7 @@ import type { Block } from '../../../../shared/chatv2/session';
 import { setChatV2BridgeForTests } from '../bridge';
 import { ApprovalCard, QuestionCard } from '../Cards';
 import ChatV2View from '../ChatV2View';
-import { TranscriptRowView, type TranscriptActions } from '../Transcript';
+import { SHELL_TAIL_LINES, shellView, TranscriptRowView, type TranscriptActions } from '../Transcript';
 import { createMockHost, type MockHost } from './mockHost';
 
 const store = vi.hoisted(() => ({ state: { surfaceAgent: {} as Record<string, { name: string }>, agentAliveByPtyId: {}, commandRunningByPtyId: {} } }));
@@ -54,6 +54,9 @@ describe('tool rows', () => {
     expect(host.querySelector('.wmux-chatv2-tool-verb')?.textContent).toBe('Waiting for approval');
     expect(host.querySelector('.wmux-chatv2-tool-object')?.textContent).toBe('rm -rf dist');
     expect(host.querySelector('.wmux-chatv2-card-title')?.textContent).toBe('Permission needed');
+    // The needs-you ring, not the running dot.
+    expect(host.querySelector('.wmux-chatv2-glyph')?.getAttribute('data-state')).toBe('waiting');
+    expect(host.querySelector('.wmux-chatv2-glyph [data-mark="ring"]')).not.toBeNull();
     await renderRow({ ...block, approval: undefined }, 'done');
     expect(host.querySelector('.wmux-chatv2-tool-verb')?.textContent).toBe('Ran');
     const glyph = host.querySelector('.wmux-chatv2-glyph');
@@ -81,6 +84,41 @@ describe('tool rows', () => {
     expect(toggle().textContent).toBe('Show less');
     await act(async () => { toggle().click(); });
     expect(host.querySelector('.wmux-chatv2-shell-output')?.hasAttribute('data-full')).toBe(false);
+  });
+
+  it('opens a cut long output on its real tail, with how many lines came before and one control', async () => {
+    const log = Array.from({ length: 100 }, (_, i) => `[build] ${String(i).padStart(5, '0')} compiling ok`).join('\n') + '\n';
+    // The fold kept a head that ends mid-line, as a byte cap does.
+    const head = log.slice(0, 100);
+    const reads: string[] = [];
+    const tailActions: TranscriptActions = { answer: async () => true, body: async (_id, field) => { reads.push(field); return { text: log }; } };
+    const block: Block = { id: '8.2', role: 'tool', text: 'npm run build', tool: { callId: 't', title: 'npm run build', kind: 'execute', status: 'completed', preview: { kind: 'shell', command: 'npm run build', output: head } }, overflow: { output: true, detail: true } };
+    await act(async () => root.render(<TranscriptRowView row={{ kind: 'tool', key: block.id, block, state: 'done' }} cwd="/repo" actions={tailActions} findActive={false} />));
+    const output = () => host.querySelector('.wmux-chatv2-shell-output')?.textContent ?? '';
+    // Closed and not read yet: the head's whole lines only, never a cut line.
+    expect(output().endsWith('\n')).toBe(true);
+    expect(output()).toContain('[build] 00002 compiling ok\n');
+    expect(output()).not.toContain('[build] 00003');
+    // Opening the row reads the whole output, so the tail shown is the command's own.
+    const details = host.querySelector('details') as HTMLDetailsElement;
+    await act(async () => { details.open = true; details.dispatchEvent(new Event('toggle')); });
+    await flush();
+    expect(reads).toEqual(['output']);
+    expect(output().split('\n').filter(Boolean)).toHaveLength(SHELL_TAIL_LINES);
+    expect(output()).toContain('[build] 00099 compiling ok\n');
+    expect(host.querySelector('[data-shell-earlier]')?.textContent).toBe(`\u2026 ${100 - SHELL_TAIL_LINES} earlier lines`);
+    // One control, not one per cut field.
+    expect([...host.querySelectorAll('.wmux-chatv2-tool button')].map((b) => b.textContent)).toEqual(['Show full output']);
+    await act(async () => { (host.querySelector('[data-output-toggle]') as HTMLButtonElement).click(); });
+    expect(output()).toBe(log);
+    expect(host.querySelector('[data-shell-earlier]')).toBeNull();
+  });
+
+  it('shows a cut head up to its last whole line, and a complete output\u2019s tail', () => {
+    expect(shellView('a\nb\nc', false, false)).toEqual({ text: 'a\nb\n', earlier: 0 });
+    expect(shellView('one long line', false, false)).toEqual({ text: 'one long line', earlier: 0 });
+    expect(shellView('1\n2\n3\n4\n', true, false, 2)).toEqual({ text: '3\n4\n', earlier: 2 });
+    expect(shellView('1\n2\n3\n4\n', true, true, 2)).toEqual({ text: '1\n2\n3\n4\n', earlier: 0 });
   });
 });
 

@@ -35,6 +35,8 @@ export type TranscriptRow =
       outcome?: Block['outcome'];
       /** The turn is still open: the footer ticks from `startedAt`. */
       live: boolean;
+      /** The open turn is held on the owner: an approval or a question waits. */
+      waiting?: 'approval' | 'answer';
     };
 
 /**
@@ -91,6 +93,9 @@ function blockRow(block: Block): TranscriptRow | null {
 function footer(session: Session, user: Block, open: boolean): TranscriptRow | null {
   const live = open && !!session.busy;
   if (!live && !user.outcome && user.durationMs == null) return null;
+  const waiting = !live ? undefined
+    : session.blocks.some((b) => b.approval && !b.approval.decided) ? 'approval'
+      : session.pendingQuestion ? 'answer' : undefined;
   return {
     kind: 'footer',
     key: `${user.id}:footer`,
@@ -100,6 +105,7 @@ function footer(session: Session, user: Block, open: boolean): TranscriptRow | n
     ...(user.durationMs != null ? { durationMs: user.durationMs } : {}),
     ...(user.outcome ? { outcome: user.outcome } : {}),
     live,
+    ...(waiting ? { waiting } : {}),
   };
 }
 
@@ -114,7 +120,7 @@ const footerCache = new WeakMap<RowCache, WeakMap<Block, TranscriptRow | null>>(
 
 function sameFooter(a: TranscriptRow | null | undefined, b: TranscriptRow | null): boolean {
   if (!a || !b || a.kind !== 'footer' || b.kind !== 'footer') return a === b;
-  return a.live === b.live && a.model === b.model && a.startedAt === b.startedAt && a.durationMs === b.durationMs && a.outcome === b.outcome;
+  return a.live === b.live && a.waiting === b.waiting && a.model === b.model && a.startedAt === b.startedAt && a.durationMs === b.durationMs && a.outcome === b.outcome;
 }
 
 export function sessionRows(session: Session, cache: RowCache = new WeakMap()): TranscriptRow[] {

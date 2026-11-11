@@ -89,6 +89,24 @@ describe('sessionRows (fold-to-view mapping)', () => {
     expect(toolLabelParts('npm run e2e', { command: true, running: true })).toEqual({ verb: 'Running', object: 'npm run e2e' });
   });
 
+  it('says the open turn waits on the owner while an approval or a question is pending', () => {
+    const asked = fold([
+      { type: 'user.message', text: 'clean build', clientMessageId: 'c-00000001' },
+      { type: 'tool.started', callId: 't1', title: 'rm -rf dist', kind: 'execute', status: 'pending' },
+      { type: 'approval.requested', requestId: 'r1', title: 'Bash', callId: 't1' },
+    ]);
+    expect(sessionRows(asked).at(-1)).toMatchObject({ kind: 'footer', live: true, waiting: 'approval' });
+    const allowed = applyHarnessEvents(asked, [{ seq: 50, at: 50_000, event: { type: 'approval.resolved', requestId: 'r1', decision: 'allow' } }]);
+    const footer = sessionRows(allowed).at(-1);
+    expect(footer).toMatchObject({ kind: 'footer', live: true });
+    expect(footer && 'waiting' in footer ? footer.waiting : undefined).toBeUndefined();
+    const question = fold([
+      { type: 'user.message', text: 'go', clientMessageId: 'c-00000001' },
+      { type: 'question.asked', requestId: 'q1', questions: [{ id: 'q0', prompt: 'Which?', multiSelect: false, allowCustom: true, options: [{ id: 'a', label: 'A' }] }] },
+    ]);
+    expect(sessionRows(question).at(-1)).toMatchObject({ kind: 'footer', waiting: 'answer' });
+  });
+
   it('reuses the rows of blocks a push did not change', () => {
     const events: HarnessEvent[] = [
       { type: 'user.message', text: 'go', clientMessageId: 'c-00000001' },

@@ -20,7 +20,8 @@ export interface TranscriptActions {
 /** A status mark drawn as an icon or a shape, never a text glyph: the sidebar's grammar. */
 type Mark = 'check' | 'cross' | 'dot' | 'ring' | 'step';
 
-const TOOL_MARK: Record<ToolState, Mark> = { running: 'dot', done: 'check', failed: 'cross' };
+// A call held for the owner's answer wears the needs-you ring, as in the sidebar.
+const TOOL_MARK: Record<ToolState | 'waiting', Mark> = { running: 'dot', done: 'check', failed: 'cross', waiting: 'ring' };
 
 function MarkIcon({ mark }: { mark: Mark }) {
   if (mark === 'check') return <IconCheck size={12} />;
@@ -28,7 +29,7 @@ function MarkIcon({ mark }: { mark: Mark }) {
   return <span className="wmux-chatv2-mark" data-mark={mark} />;
 }
 
-function StatusGlyph({ state }: { state: ToolState }) {
+function StatusGlyph({ state }: { state: ToolState | 'waiting' }) {
   return <span className="wmux-chatv2-glyph" data-state={state} aria-hidden><MarkIcon mark={TOOL_MARK[state]} /></span>;
 }
 
@@ -67,21 +68,41 @@ function PreviewBody({ preview, cwd }: { preview: ToolPreview; cwd: string }) {
   return preview.output ? <pre className="wmux-chatv2-pre">{preview.output}</pre> : null;
 }
 
+/** How many of a long output's last lines the collapsed box holds. */
+export const SHELL_TAIL_LINES = 40;
+
+/**
+ * What the output box shows. A head the fold cut (`complete` false) is shown
+ * up to its last whole line, never cut mid-line. A complete output, collapsed,
+ * shows its last `tail` lines and how many came before them.
+ */
+export function shellView(text: string, complete: boolean, expanded: boolean, tail = SHELL_TAIL_LINES): { text: string; earlier: number } {
+  const whole = complete ? text : text.slice(0, text.lastIndexOf('\n') + 1) || text;
+  const lines = whole.replace(/\n$/, '').split('\n');
+  if (expanded || !complete || lines.length <= tail) return { text: whole, earlier: 0 };
+  return { text: `${lines.slice(-tail).join('\n')}\n`, earlier: lines.length - tail };
+}
+
 /**
  * A command and what it printed: a dim `$ command` line, then the output,
- * faded where it scrolls. A long output opens on its tail (what the command
- * said last) and offers the whole of it; when the fold cut the output, that
- * also loads the cut part in place.
+ * faded where it scrolls. A long output opens on its real tail (what the
+ * command said last): an output the fold cut is read in full when its row
+ * opens, so the end shown is the command's end, not the cut's. One control
+ * shows the whole output and folds it back.
  */
-function ShellBody({ block, actions, command, output, children }: { block: Block; actions: TranscriptActions; command: string | null; output: string; children?: React.ReactNode }) {
+function ShellBody({ block, field, actions, command, output }: { block: Block; field: 'output' | 'detail'; actions: TranscriptActions; command: string | null; output: string }) {
+  const root = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLPreElement>(null);
-  const cut = !!block.overflow?.output;
-  const full = useFullBody(block, 'output', actions);
-  const text = full.read ? full.read.text : output;
+  const cut = !!block.overflow?.[field];
+  const full = useFullBody(block, field, actions);
+  const fullRef = useRef(full);
+  fullRef.current = full;
+  const complete = !cut || (!!full.read && !full.read.stopped);
   const [expanded, setExpanded] = useState(false);
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
   const [long, setLong] = useState(false);
+  const shown = shellView(full.read ? full.read.text : output, complete, expanded);
   // Which edges have more beyond them: those fade.
   const edges = () => {
     const el = ref.current;
@@ -101,32 +122,44 @@ function ShellBody({ block, actions, command, output, children }: { block: Block
     }
     edges();
   };
-  useLayoutEffect(settle, [text, expanded]);
-  // A closed <details> lays out nothing, so measure again whenever one around it opens.
+  // A cut output is read in full once its row is open, so its tail is the real one.
+  const readIfCut = () => {
+    const body = fullRef.current;
+    if (cut && body.read === undefined && !body.loading) body.load();
+  };
+  useLayoutEffect(settle, [shown.text, expanded]);
+  // A closed <details> lays out nothing, so measure again (and read) whenever one around it opens.
   useEffect(() => {
     const opened: HTMLDetailsElement[] = [];
-    for (let el = ref.current?.parentElement; el; el = el.parentElement) if (el instanceof HTMLDetailsElement) opened.push(el);
-    opened.forEach((el) => el.addEventListener('toggle', settle));
-    return () => opened.forEach((el) => el.removeEventListener('toggle', settle));
-  }, [text]);
+    for (let el = root.current?.parentElement; el; el = el.parentElement) if (el instanceof HTMLDetailsElement) opened.push(el);
+    const onToggle = () => {
+      if (opened.every((el) => el.open)) readIfCut();
+      settle();
+    };
+    if (opened.length && opened.every((el) => el.open)) readIfCut();
+    opened.forEach((el) => el.addEventListener('toggle', onToggle));
+    return () => opened.forEach((el) => el.removeEventListener('toggle', onToggle));
+  }, [shown.text, cut]);
   const toggle = () => {
     if (expanded) { setExpanded(false); return; }
     setExpanded(true);
-    if (cut && full.read === undefined) full.load();
+    readIfCut();
   };
+  const stopped = !!full.read?.stopped || full.read === null;
   return (
-    <div className="wmux-chatv2-pre" data-shell>
+    <div ref={root} className="wmux-chatv2-pre" data-shell>
       {command && <div className="wmux-chatv2-shell-command">$ {command}</div>}
-      {text && <pre ref={ref} className="wmux-chatv2-shell-output" data-full={expanded || undefined} onScroll={edges}>{text}</pre>}
-      {(long || cut) && (
+      {shown.earlier > 0 && <div className="wmux-chatv2-shell-earlier" data-shell-earlier>{`\u2026 ${S.earlierLines(shown.earlier)}`}</div>}
+      {shown.text && <pre ref={ref} className="wmux-chatv2-shell-output" data-full={expanded || undefined} onScroll={edges}>{shown.text}</pre>}
+      {stopped ? (
+        <BodyMore read={full.read} loading={full.loading} load={full.load} first={S.showMore} />
+      ) : (long || shown.earlier > 0 || expanded || cut) && (
         <span className="wmux-chatv2-body-more">
           <button type="button" className="wmux-chatv2-link" data-output-toggle aria-expanded={expanded} disabled={full.loading} onClick={toggle}>
             {full.loading ? S.loadingFull : expanded ? S.showLess : S.showMore}
           </button>
         </span>
       )}
-      {expanded && full.read !== undefined && <BodyMore read={full.read} loading={full.loading} load={full.load} first={S.showMore} />}
-      {children}
     </div>
   );
 }
@@ -245,7 +278,7 @@ function ToolRow({ block, state, cwd, actions, findActive, enter }: { block: Blo
   const diff = !!preview?.lines?.length;
   const line = (
     <>
-      <StatusGlyph state={state} />
+      <StatusGlyph state={waiting ? 'waiting' : state} />
       <ToolLabel verb={label.verb} object={label.object} />
       {summary && <span className="wmux-chatv2-tool-summary">{summary}</span>}
       {stats && <DiffStats additions={stats.additions} deletions={stats.deletions} />}
@@ -258,9 +291,7 @@ function ToolRow({ block, state, cwd, actions, findActive, enter }: { block: Blo
         <details>
           <summary className="wmux-chatv2-tool-line">{line}</summary>
           {shell ? (
-            <ShellBody block={block} actions={actions} command={command} output={output}>
-              {block.overflow?.detail && <FullBody block={block} field="detail" actions={actions} />}
-            </ShellBody>
+            <ShellBody block={block} field={preview?.output ? 'output' : 'detail'} actions={actions} command={command} output={output} />
           ) : (
             <>
               {preview && <PreviewBody preview={preview} cwd={cwd} />}
@@ -343,11 +374,14 @@ function TurnFooter({ row, enter }: { row: Extract<TranscriptRow, { kind: 'foote
     return () => clearInterval(timer);
   }, [row.live]);
   const elapsed = row.live ? (row.startedAt != null ? Math.max(0, now - row.startedAt) : null) : row.durationMs ?? null;
-  const label = formatWorkingDuration(elapsed, row.model, !row.live);
+  // A turn held on the owner says so, instead of reading as work going on.
+  const label = row.live && row.waiting
+    ? `${row.model} ${row.waiting === 'approval' ? S.turnWaitingApproval : S.turnWaitingAnswer}`
+    : formatWorkingDuration(elapsed, row.model, !row.live);
   const endedAt = !row.live && row.startedAt != null && row.durationMs != null ? row.startedAt + row.durationMs : null;
   const outcome = row.outcome === 'interrupted' ? S.interrupted : row.outcome === 'failed' ? S.failed : row.outcome === 'usage-limited' ? S.usageLimited : null;
   return (
-    <div className="wmux-chatv2-footer" data-live={row.live || undefined} data-enter={enter || undefined} aria-live={row.live ? 'off' : undefined}>
+    <div className="wmux-chatv2-footer" data-live={row.live || undefined} data-waiting={(row.live && row.waiting) || undefined} data-enter={enter || undefined} aria-live={row.live ? 'off' : undefined}>
       {row.live && <span className="wmux-chatv2-live-dot" aria-hidden />}
       <span>{label}</span>
       {endedAt != null && <><span aria-hidden>·</span><span>{formatClockTime(endedAt)}</span></>}
