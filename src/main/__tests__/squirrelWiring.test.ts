@@ -219,6 +219,33 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     }
   });
 
+  it('the first-install hook waits for nothing, and the app repairs pins per version (#3263)', () => {
+    // The hook used to repair pins and launch the app on Update.exe's
+    // 'close', but app.quit() ended it first, so neither ever ran.
+    const installStart = indexSrc.indexOf("squirrelCmd === '--squirrel-install'");
+    const updatedStart = indexSrc.indexOf("squirrelCmd === '--squirrel-updated'");
+    const installBranch = indexSrc.slice(installStart, updatedStart);
+    expect(installBranch).not.toContain("on('close'");
+    expect(installBranch).not.toContain('finishInstall');
+    const createAt = installBranch.indexOf("'--createShortcut'");
+    const quitAt = installBranch.indexOf('app.quit()', createAt);
+    expect(createAt).toBeGreaterThan(0);
+    expect(quitAt).toBeGreaterThan(createAt);
+    // The existing-profile path still repairs, then relaunches.
+    const elseAt = installBranch.indexOf('} else {', quitAt);
+    const repairAt = installBranch.indexOf('shortcutHygiene.repairInstalledShortcuts(process.execPath)', elseAt);
+    const launchAt = installBranch.indexOf('spawn(process.execPath, []', repairAt);
+    expect(elseAt).toBeGreaterThan(quitAt);
+    expect(repairAt).toBeGreaterThan(elseAt);
+    expect(launchAt).toBeGreaterThan(repairAt);
+    // The app's reconcile gets what it needs for the once-per-version repair.
+    const callAt = indexSrc.indexOf('runPostInstallReconcile({');
+    expect(callAt).toBeGreaterThan(0);
+    const call = indexSrc.slice(callAt, indexSrc.indexOf('})', callAt));
+    expect(call).toMatch(/userData:\s*app\.getPath\('userData'\)/);
+    expect(call).toMatch(/version:\s*app\.getVersion\(\)/);
+  });
+
   it('the predicate classifies by exact membership, never a startsWith prefix', () => {
     // The most realistic regression is moving the logic into squirrel.ts and
     // using `startsWith('--squirrel-')` there — which would re-swallow firstrun.

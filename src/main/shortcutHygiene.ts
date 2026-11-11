@@ -418,15 +418,25 @@ async function runPassAsync(label: string, build: () => string | null, budgetMs:
   }
 }
 
+/** The repair script for the install `execPath` runs from. */
+function repairScriptFor(execPath: string, locations?: RepairLocations): () => string | null {
+  return () => buildRepairScript(rootFromExecPath(execPath), locations ?? defaultRepairLocations(appDataOrThrow()));
+}
+
 /** Run the repair pass and report whether it actually ran. */
 export function runShortcutRepairPass(
   execPath: string,
   locations?: RepairLocations,
 ): RepairPassResult {
-  return runPassSync('shortcut repair pass', () => {
-    const loc = locations ?? defaultRepairLocations(appDataOrThrow());
-    return buildRepairScript(rootFromExecPath(execPath), loc);
-  }, REPAIR_BUDGET_MS);
+  return runPassSync('shortcut repair pass', repairScriptFor(execPath, locations), REPAIR_BUDGET_MS);
+}
+
+/** The same pass from the running app, off its main thread (postInstallReconcile.ts). */
+export function runShortcutRepairPassAsync(
+  execPath: string,
+  locations?: RepairLocations,
+): Promise<RepairPassResult> {
+  return runPassAsync('shortcut repair pass', repairScriptFor(execPath, locations), REPAIR_BUDGET_MS);
 }
 
 /**

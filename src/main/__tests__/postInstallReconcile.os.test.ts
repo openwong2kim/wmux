@@ -15,6 +15,12 @@ import {
   isEmptyPlan,
   autostartTargetAlive,
   isOnPath,
+  pinRepairDue,
+  parsePinRepairMarker,
+  readPinRepairMarker,
+  writePinRepairMarker,
+  PIN_REPAIR_MARKER,
+  PIN_REPAIR_ATTEMPTS,
   type ReconcileProbe,
 } from '../postInstallReconcile';
 import { parseRunValue } from '../autostart';
@@ -93,6 +99,68 @@ describe('planPostInstallReconcile', () => {
     expect(planPostInstallReconcile(probe({ firstRun: true, desktopShortcutExists: false })).shortcuts).toEqual([]);
     // Ordinary boot.
     expect(planPostInstallReconcile(probe({ freshInstall: true, desktopShortcutExists: false })).shortcuts).toEqual([]);
+  });
+});
+
+// #3263: the install hook never repairs pins on a first install, so the app
+// repairs them once per installed version.
+describe('pinRepairDue', () => {
+  const real: NodeJS.ProcessEnv = {};
+  const isolated: NodeJS.ProcessEnv = { WMUX_DATA_SUFFIX: '-verify' };
+
+  it('repairs on the first boot of a version: no marker yet, or an older one', () => {
+    expect(pinRepairDue(null, '4.16.0', real)).toBe(true);
+    expect(pinRepairDue({ version: '4.15.0', failures: 0 }, '4.16.0', real)).toBe(true);
+    expect(pinRepairDue({ version: '4.15.0', failures: 3 }, '4.16.0', real)).toBe(true);
+  });
+
+  it('does not repair again once the running version is marked', () => {
+    expect(pinRepairDue({ version: '4.16.0', failures: 0 }, '4.16.0', real)).toBe(false);
+  });
+
+  it('retries a pass that could not run, up to the attempt cap', () => {
+    expect(pinRepairDue({ version: '4.16.0', failures: 1 }, '4.16.0', real)).toBe(true);
+    expect(pinRepairDue({ version: '4.16.0', failures: PIN_REPAIR_ATTEMPTS - 1 }, '4.16.0', real)).toBe(true);
+    expect(pinRepairDue({ version: '4.16.0', failures: PIN_REPAIR_ATTEMPTS }, '4.16.0', real)).toBe(false);
+  });
+
+  it('never repairs from an isolated instance: pins are not per profile', () => {
+    expect(pinRepairDue(null, '4.16.0', isolated)).toBe(false);
+    expect(pinRepairDue({ version: '4.15.0', failures: 0 }, '4.16.0', isolated)).toBe(false);
+    // An empty suffix is the real profile.
+    expect(pinRepairDue(null, '4.16.0', { WMUX_DATA_SUFFIX: '' })).toBe(true);
+  });
+});
+
+describe('pin repair marker', () => {
+  let dir: string;
+  beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pin-marker-')); });
+  afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('parses a done version and a version with failed attempts', () => {
+    expect(parsePinRepairMarker('4.16.0')).toEqual({ version: '4.16.0', failures: 0 });
+    expect(parsePinRepairMarker('4.16.0 2\n')).toEqual({ version: '4.16.0', failures: 2 });
+    expect(parsePinRepairMarker('4.16.0-beta.1')).toEqual({ version: '4.16.0-beta.1', failures: 0 });
+    expect(parsePinRepairMarker('  ')).toBeNull();
+    expect(parsePinRepairMarker('4.16.0 two')).toBeNull();
+  });
+
+  it('reads back what was written, and null when missing or blank', () => {
+    const userData = path.join(dir, 'profile');
+    expect(readPinRepairMarker(userData)).toBeNull();
+    writePinRepairMarker(userData, { version: '4.16.0', failures: 1 });
+    expect(fs.readFileSync(path.join(userData, PIN_REPAIR_MARKER), 'utf8')).toBe('4.16.0 1');
+    writePinRepairMarker(userData, { version: '4.16.0', failures: 0 });
+    expect(fs.readFileSync(path.join(userData, PIN_REPAIR_MARKER), 'utf8')).toBe('4.16.0');
+    expect(pinRepairDue(readPinRepairMarker(userData), '4.16.0', {})).toBe(false);
+    fs.writeFileSync(path.join(userData, PIN_REPAIR_MARKER), '  \n');
+    expect(readPinRepairMarker(userData)).toBeNull();
+  });
+
+  it('does not throw when the marker cannot be written', () => {
+    const blocker = path.join(dir, 'a-file');
+    fs.writeFileSync(blocker, 'x');
+    expect(() => writePinRepairMarker(path.join(blocker, 'profile'), { version: '4.16.0', failures: 0 })).not.toThrow();
   });
 });
 
