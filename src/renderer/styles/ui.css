@@ -2676,7 +2676,8 @@ html:not([data-glass]) .wmux-shell-body:not([data-sidebar="hidden"]) .wmux-main-
   border-left: 1px solid var(--sheet-edge);
   border-radius: var(--sheet-radius) 0 0 var(--sheet-radius);
   pointer-events: none;
-  z-index: 30;
+  /* Over the agent toolbar (z-20), under the pane dialog layer (dialogHost.tsx). */
+  z-index: calc(var(--z-pane-dialog) - 1);
 }
 html:not([data-glass]) .wmux-shell-body:not([data-sidebar="hidden"]) .wmux-main-column::before {
   border-left-color: var(--bg-base);
