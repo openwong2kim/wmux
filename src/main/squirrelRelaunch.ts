@@ -39,6 +39,17 @@ export type OpenPath = (target: string) => Promise<string>;
 export const RELAUNCH_WAIT_MS = 5_000;
 
 /**
+ * Squirrel cancels the install and updated hooks about 16 s after starting
+ * them; the wait for the shell ends by this point, counted from process start.
+ */
+export const RELAUNCH_HOOK_DEADLINE_MS = 13_000;
+
+/** The wait for the shell, cut to the hook's time left (at least 1 s). */
+export function relaunchWaitMs(uptimeMs: number): number {
+  return Math.max(1_000, Math.min(RELAUNCH_WAIT_MS, RELAUNCH_HOOK_DEADLINE_MS - uptimeMs));
+}
+
+/**
  * Start `exe` through the shell, so it inherits no handle of this process,
  * and wait for the shell's answer (bounded) so a failure reaches the log
  * before the hook exits. Never rejects.

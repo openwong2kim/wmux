@@ -3,7 +3,14 @@
  * own child, and not at all when Squirrel's firstrun does (squirrelRelaunch.ts).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { FIRSTRUN_RELAUNCH_ENV, hookShouldRelaunch, relaunchWithoutInheritance } from '../squirrelRelaunch';
+import {
+  FIRSTRUN_RELAUNCH_ENV,
+  RELAUNCH_HOOK_DEADLINE_MS,
+  RELAUNCH_WAIT_MS,
+  hookShouldRelaunch,
+  relaunchWaitMs,
+  relaunchWithoutInheritance,
+} from '../squirrelRelaunch';
 
 const EXE = 'C:\\Users\\u\\AppData\\Local\\wmux\\app-4.16.0\\wmux.exe';
 
@@ -14,6 +21,14 @@ describe('hookShouldRelaunch', () => {
     expect(hookShouldRelaunch({})).toBe(true);
     expect(hookShouldRelaunch({ [FIRSTRUN_RELAUNCH_ENV]: '0' })).toBe(true);
     expect(hookShouldRelaunch({ [FIRSTRUN_RELAUNCH_ENV]: '1' })).toBe(false);
+  });
+});
+
+describe('relaunchWaitMs', () => {
+  it('waits the full cap early in the hook, and less as Squirrel\'s cancel nears', () => {
+    expect(relaunchWaitMs(2_000)).toBe(RELAUNCH_WAIT_MS);
+    expect(relaunchWaitMs(RELAUNCH_HOOK_DEADLINE_MS - 2_500)).toBe(2_500);
+    expect(relaunchWaitMs(RELAUNCH_HOOK_DEADLINE_MS + 4_000)).toBe(1_000);
   });
 });
 
