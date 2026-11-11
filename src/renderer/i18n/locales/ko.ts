@@ -4905,6 +4905,7 @@ export const ko = {
   'schedules.lastResult': "최근: {status} {time}",
   'schedules.lastResultNone': "실행 기록 없음",
   'schedules.defaultAccount': "기본 계정",
+  'schedules.tokenAccountOption': "{name} (토큰 로그인, 예약 실행 불가)",
   'schedules.missingAccount': "삭제된 계정",
   'schedules.agentClaude': "Claude",
   'schedules.agentCodex': "Codex",

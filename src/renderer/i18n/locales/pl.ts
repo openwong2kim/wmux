@@ -5431,6 +5431,7 @@ export const pl = {
   'schedules.lastResult': "ostatnio: {status} {time}",
   'schedules.lastResultNone': "brak uruchomień",
   'schedules.defaultAccount': "domyślne konto",
+  'schedules.tokenAccountOption': "{name} (logowanie tokenem, nie uruchamia harmonogramów)",
   'schedules.missingAccount': "usunięte konto",
   'schedules.agentClaude': "Claude",
   'schedules.agentCodex': "Codex",

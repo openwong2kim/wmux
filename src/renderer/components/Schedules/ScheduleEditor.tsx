@@ -392,7 +392,12 @@ export default function ScheduleEditor({ original, review, accounts, initial, pi
                   />
                   <Select value={form.accountId} onChange={(e) => set('accountId', e.target.value)} aria-label={t('schedules.account')}>
                     <option value="">{t('schedules.defaultAccount')}</option>
-                    {vendorAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    {vendorAccounts.map((a) => (
+                      // A token-only account cannot run a schedule; a saved choice stays shown as it is.
+                      <option key={a.id} value={a.id} disabled={a.tokenOnly && a.id !== form.accountId}>
+                        {a.tokenOnly ? t('schedules.tokenAccountOption', { name: a.name }) : a.name}
+                      </option>
+                    ))}
                   </Select>
                 </div>
               )}

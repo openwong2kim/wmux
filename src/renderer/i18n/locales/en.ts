@@ -5503,6 +5503,7 @@ export const en = {
   'schedules.lastResult': "last: {status} {time}",
   'schedules.lastResultNone': "no runs yet",
   'schedules.defaultAccount': "default account",
+  'schedules.tokenAccountOption': "{name} (token sign-in, can't run schedules)",
   'schedules.missingAccount': "removed account",
   'schedules.agentClaude': "Claude",
   'schedules.agentCodex': "Codex",
