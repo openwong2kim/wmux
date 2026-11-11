@@ -2713,8 +2713,9 @@ html:not([data-glass]) .wmux-shell-body.flex-row-reverse:not([data-sidebar="hidd
  * and its lip along the old clip's inner curve. The top-left header starts 1px
  * above the column (the frame's -1px seam margin), so it takes that curve as a
  * clip-path from 1px down: it holds no composited layer, so this clip is painted.
- * The bottom pane's left border sits under the hairline (the clip used to hide
- * it), so it stops painting rather than following the curve. */
+ * The corner panes' borders along the column edges sit under the hairline (the
+ * clip used to hide them), so they stop painting rather than following the
+ * curve. */
 html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"],
 html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] {
   overflow: visible;
@@ -2730,6 +2731,7 @@ html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-rev
 html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-corner~="bl"] {
   border-bottom-left-radius: var(--sheet-radius);
   border-left-color: transparent !important;
+  border-bottom-color: transparent !important;
 }
 html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-corner~="bl"] [data-terminal-engine] {
   border-bottom-left-radius: calc(var(--sheet-radius) - 1px);
@@ -2744,6 +2746,7 @@ html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse 
 html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-corner~="br"] {
   border-bottom-right-radius: var(--sheet-radius);
   border-right-color: transparent !important;
+  border-bottom-color: transparent !important;
 }
 html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-corner~="br"] [data-terminal-engine] {
   border-bottom-right-radius: calc(var(--sheet-radius) - 1px);
@@ -2759,6 +2762,50 @@ html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse 
   height: var(--sheet-radius) !important;
   background: linear-gradient(to top, var(--bg-surface) 2px, transparent 2px) !important;
 }
+/* The pane overlays that reach those corners follow the same curve: the
+ * flash (::after) takes the pane's rounded corner, the top pane rounds its own
+ * box for the ring flash's inset shadow, and the vi copy bar rounds its bottom
+ * corner. A clip on the pane or a clip-path on the overlays would
+ * mask a composited layer (+60 to +160 MB GPU measured), so the unread ring
+ * (::before) instead paints only its inner sides: an inset shadow whose hole is
+ * shifted toward the column edges, on a box grown by the ring's 3px. */
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-corner~="tl"] {
+  border-top-left-radius: calc(var(--sheet-radius) - 1px) calc(var(--sheet-radius) + 1px);
+  border-left-color: transparent !important;
+}
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-corner~="tl"]::after {
+  border-top-left-radius: inherit;
+}
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-corner~="bl"]::after {
+  border-bottom-left-radius: inherit;
+}
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] [data-corner~="bl"] [data-vi-copy-bar] {
+  border-bottom-left-radius: calc(var(--sheet-radius) - 2px);
+}
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-corner~="tr"] {
+  border-top-right-radius: calc(var(--sheet-radius) - 1px) calc(var(--sheet-radius) + 1px);
+  border-right-color: transparent !important;
+}
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-corner~="tr"]::after {
+  border-top-right-radius: inherit;
+}
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-corner~="br"]::after {
+  border-bottom-right-radius: inherit;
+}
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] [data-corner~="br"] [data-vi-copy-bar] {
+  border-bottom-right-radius: calc(var(--sheet-radius) - 2px);
+}
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] .notification-ring:is([data-corner~="tl"], [data-corner~="bl"])::before,
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] .notification-ring:is([data-corner~="tr"], [data-corner~="br"])::before {
+  inset: -3px;
+  border-radius: 0;
+}
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] .notification-ring[data-corner~="tl"]::before { box-shadow: inset -3px -3px rgba(var(--accent-rgb), 0.3); }
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] .notification-ring[data-corner~="bl"]::before { box-shadow: inset -3px 3px rgba(var(--accent-rgb), 0.3); }
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]):not(.flex-row-reverse) .wmux-main-column[data-glass-corners~="left"] .notification-ring[data-corner~="tl"][data-corner~="bl"]::before { box-shadow: inset -3px 0 rgba(var(--accent-rgb), 0.3); }
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] .notification-ring[data-corner~="tr"]::before { box-shadow: inset 3px -3px rgba(var(--accent-rgb), 0.3); }
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] .notification-ring[data-corner~="br"]::before { box-shadow: inset 3px 3px rgba(var(--accent-rgb), 0.3); }
+html[data-glass] .wmux-shell-body:not([data-sidebar="hidden"]).flex-row-reverse .wmux-main-column[data-glass-corners~="right"] .notification-ring[data-corner~="tr"][data-corner~="br"]::before { box-shadow: inset 3px 0 rgba(var(--accent-rgb), 0.3); }
 .wmux-shell-body .wmux-sidebar { box-shadow: none !important; }
 .wmux-shell-body,
 .wmux-shell-body.flex-row-reverse { background: var(--bg-mantle); }
