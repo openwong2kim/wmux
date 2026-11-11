@@ -219,24 +219,41 @@ export function reduceInlineHtml(text: string): string {
   }).join('');
 }
 
+/** The first line-start fence marker (as the fence branch reads one) after a line. */
+interface FenceMarkerAfter {
+  (index: number): string | undefined;
+  /** `count` lines were put back into the text at `at`, after every line asked about so far. */
+  inserted(at: number, count: number): void;
+}
+
 /**
- * For each line, the next line after it that starts with a fence marker (as
- * the fence branch reads one), or undefined. A null line ends the text: no
- * marker past it counts. Built once, on the first ask.
+ * The first fence marker after each line of `lines`, read from `lines` as it
+ * is when asked. A scan resumes from the last answer, so a text read front to
+ * back costs one pass, and `inserted` keeps that answer right when lines are
+ * put back into the text (the <details> branch) instead of starting over.
  */
-function fenceMarkerAfter(lines: readonly (string | null)[]): (index: number) => string | undefined {
-  let next: Int32Array | null = null;
-  return (index) => {
-    if (!next) {
-      next = new Int32Array(lines.length).fill(-1);
-      for (let j = lines.length - 2; j >= 0; j--) {
-        const after = lines[j + 1];
-        next[j] = after === null ? -1 : fenceOpenLength(after) > 0 ? j + 1 : next[j + 1];
-      }
+function fenceMarkerAfter(lines: readonly string[]): FenceMarkerAfter {
+  // Every index in [from, at) has the marker at `at` (lines.length: none).
+  let from = -1;
+  let at = -1;
+  const ask = ((index: number) => {
+    if (index < from || index >= at) {
+      let j = index + 1;
+      while (j < lines.length && fenceOpenLength(lines[j]) === 0) j++;
+      from = index;
+      at = j;
     }
-    const at = next[index];
-    return at >= 0 ? (lines[at] ?? undefined) : undefined;
+    return at < lines.length ? lines[at] : undefined;
+  }) as FenceMarkerAfter;
+  ask.inserted = (where, count) => {
+    if (where > at) return;
+    if (where <= from) { from += count; at += count; return; }
+    // Inside the scanned span: a marker among the new lines comes first.
+    let j = where;
+    while (j < where + count && fenceOpenLength(lines[j]) === 0) j++;
+    at = j < where + count ? j : at + count;
   };
+  return ask;
 }
 
 /**
@@ -258,22 +275,17 @@ function midLineFence(line: string, followingMarker: () => string | undefined): 
   return marker !== undefined && closesFence(marker, fenceOpenLength(m[2])) ? [m[1], m[2]] : null;
 }
 
-const QUOTE_MARKERS = /^(?:\s*>\s?)+/;
-
 /** The whole body, outside code fences: comments and script/style elements
- *  dropped, <br> as a line break. Fences are found as renderBlocks finds
- *  them: at line start, mid-line (midLineFence), and inside a quote once its
- *  `>` markers are stripped, so what it draws as code stays as written. */
-function preprocessGithubHtml(source: string): string {
+ *  dropped, <br> as a line break. It reads fences as renderBlocks does: at
+ *  line start, mid-line (midLineFence), and in a quote one level at a time
+ *  (`depth`, the same cap), each quote's text read on its own, so what
+ *  renderBlocks draws as code stays as written. */
+function preprocessGithubHtml(source: string, depth = 0): string {
   const lines = source.split('\n');
-  // A quoted line's text without its markers; null outside a quote, which ends it.
-  const quoteText = lines.map((l) => (/^\s*>/.test(l) ? l.replace(QUOTE_MARKERS, '') : null));
   const markerAfter = fenceMarkerAfter(lines);
-  const quoteMarkerAfter = fenceMarkerAfter(quoteText);
   const out: string[] = [];
   let chunk: string[] = [];
   let fence = 0;
-  let quoteFence = 0;
   const flush = () => {
     if (chunk.length === 0) return;
     const text = chunk.join('\n')
@@ -293,47 +305,43 @@ function preprocessGithubHtml(source: string): string {
     for (const l of text.split('\n')) out.push(l);
     chunk = [];
   };
-  // Body text before a mid-line opener stays body; the opener goes on its own line.
-  const openMid = (prefix: string, mid: [string, string]): number => {
-    chunk.push(prefix + mid[0]);
-    flush();
-    out.push(prefix + mid[1]);
-    return fenceOpenLength(mid[1]);
-  };
-  lines.forEach((line, index) => {
-    const quoted = quoteText[index];
-    if (quoted === null) quoteFence = 0;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
     if (fence > 0) {
       if (closesFence(line, fence)) fence = 0;
       out.push(line);
-    } else if (quoted !== null) {
-      const prefix = line.slice(0, line.length - quoted.length);
-      const mid = quoteFence === 0 ? midLineFence(quoted, () => quoteMarkerAfter(index)) : null;
-      if (quoteFence > 0) {
-        if (closesFence(quoted, quoteFence)) quoteFence = 0;
-        out.push(line);
-      } else if (mid) {
-        quoteFence = openMid(prefix, mid);
-      } else if (fenceOpenLength(quoted) > 0) {
-        flush();
-        quoteFence = fenceOpenLength(quoted);
-        out.push(line);
-      } else {
-        chunk.push(line);
-      }
-    } else {
-      const mid = midLineFence(line, () => markerAfter(index));
-      if (mid) {
-        fence = openMid('', mid);
-      } else if (fenceOpenLength(line) > 0) {
-        flush();
-        fence = fenceOpenLength(line);
-        out.push(line);
-      } else {
-        chunk.push(line);
-      }
+      i++;
+      continue;
     }
-  });
+    // A quote: its lines one level in, read as a text of their own, then quoted again.
+    if (depth < MAX_QUOTE_DEPTH && /^\s*>/.test(line)) {
+      flush();
+      const quoted: string[] = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) {
+        quoted.push(lines[i].replace(/^\s*>\s?/, ''));
+        i++;
+      }
+      for (const l of preprocessGithubHtml(quoted.join('\n'), depth + 1).split('\n')) out.push(`> ${l}`);
+      continue;
+    }
+    const index = i;
+    const mid = midLineFence(line, () => markerAfter(index));
+    if (mid) {
+      // Body text before the opener stays body; the opener goes on its own line.
+      chunk.push(mid[0]);
+      flush();
+      fence = fenceOpenLength(mid[1]);
+      out.push(mid[1]);
+    } else if (fenceOpenLength(line) > 0) {
+      flush();
+      fence = fenceOpenLength(line);
+      out.push(line);
+    } else {
+      chunk.push(line);
+    }
+    i++;
+  }
   flush();
   return out.join('\n');
 }
@@ -629,6 +637,7 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
         if (rest.trim()) {
           const back = rest.split('\n');
           for (let k = 0; k < back.length; k += SPLICE_CHUNK) lines.splice(i + k, 0, ...back.slice(k, k + SPLICE_CHUNK));
+          markerAfter.inserted(i, back.length);
         }
       }
       // This level's summary: the first one before any nested <details>,
