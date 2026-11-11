@@ -28,6 +28,7 @@ import { electronSecretCrypto, type SecretCrypto, type SecretCryptoState } from 
 import { getAccountStore, getAccountsPath, isAccessibleDir, VENDOR_ENV_KEYS, type Account } from './accountStore';
 import { atomicReadJSONSync } from '../../daemon/util/atomicWrite';
 import { isRedactableSecretValue, setRedactedAccountVault } from '../factory/secretRedaction';
+import { agentRow } from '../../shared/agentIdentity';
 
 export const ACCOUNT_VAULT_FILE_VERSION = 1 as const;
 
@@ -347,7 +348,7 @@ export function createAccountOverride(
   // An agent-setup pane signs in to the default folder, so it takes no account.
   if (options.ignoreAccountBinding === true) throw new Error('PTY_CREATE: this pane takes no account');
   const account = (deps.account ?? ((i: string) => getAccountStore().getAccount(i)))(id);
-  if (!account || (account.vendor !== 'claude' && account.vendor !== 'codex')) throw new Error('PTY_CREATE: unknown account');
+  if (!account || !Object.hasOwn(VENDOR_ENV_KEYS, account.vendor)) throw new Error('PTY_CREATE: unknown account');
   if (!(deps.dirOk ?? isAccessibleDir)(account.configDir)) {
     if (deps.missingFolder === 'skip') return undefined;
     throw new Error('PTY_CREATE: the account folder is missing');
@@ -368,13 +369,20 @@ export function withAccountFolderEnv(env: Record<string, string> | undefined, ac
   return next;
 }
 
+/** A sign-in variable of the vendor whose conversation can move between
+ *  accounts (its agent row's `continueOnAccount`: Claude), so one a pane
+ *  spawned with keeps it on its account over a same-pane move. */
+function isContinueSignInName(name: string): boolean {
+  return agentRow(VENDOR_AUTH_NAMES.get(name))?.continueOnAccount === true;
+}
+
 /** Panes of this main run whose spawn got a Claude sign-in value from a vault. */
 const vaultSignInPanes = new Set<string>();
 
 /** Record that `sessionId` spawned with these vault names (values are not looked at). */
 export function noteVaultSignInPane(sessionId: string, names: Iterable<string>): void {
   for (const name of names) {
-    if (VENDOR_AUTH_NAMES.get(name) === 'claude') {
+    if (isContinueSignInName(name)) {
       vaultSignInPanes.add(sessionId);
       return;
     }
@@ -388,7 +396,7 @@ export function paneHasVaultSignIn(sessionId: string): boolean {
 
 /** Whether these entries hold a Claude sign-in variable a pane gets (injected, decryptable). Pure. */
 export function holdsClaudeSignIn(entries: ReadonlyArray<Pick<AccountVaultEntry, 'name' | 'inject' | 'usable'>>): boolean {
-  return entries.some((e) => VENDOR_AUTH_NAMES.get(e.name) === 'claude' && e.inject && e.usable);
+  return entries.some((e) => isContinueSignInName(e.name) && e.inject && e.usable);
 }
 
 /** The accounts whose vault a create gets: the workspace's bound Claude and
