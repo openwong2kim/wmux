@@ -115,10 +115,12 @@ function ShellBody({ block, field, actions, command, output }: { block: Block; f
   const settle = () => {
     const el = ref.current;
     if (!el) return;
-    if (!expandedRef.current) {
-      el.scrollTop = el.scrollHeight;
-      // A closed <details> measures 0: only an open one says whether the output is long.
-      if (el.clientHeight > 0) setLong(el.scrollHeight > el.clientHeight + 1);
+    // A closed <details> measures 0: only an open one says whether the output is long.
+    if (!expandedRef.current && el.clientHeight > 0) {
+      // Only an output larger than its box opens on its tail; one that fits reads from its top.
+      const over = el.scrollHeight > el.clientHeight + 1;
+      el.scrollTop = over ? el.scrollHeight : 0;
+      setLong(over);
     }
     edges();
   };
@@ -153,7 +155,7 @@ function ShellBody({ block, field, actions, command, output }: { block: Block; f
       {shown.text && <pre ref={ref} className="wmux-chatv2-shell-output" data-full={expanded || undefined} onScroll={edges}>{shown.text}</pre>}
       {stopped ? (
         <BodyMore read={full.read} loading={full.loading} load={full.load} first={S.showMore} />
-      ) : (long || shown.earlier > 0 || expanded || cut) && (
+      ) : (long || shown.earlier > 0 || expanded || (cut && !complete)) && (
         <span className="wmux-chatv2-body-more">
           <button type="button" className="wmux-chatv2-link" data-output-toggle aria-expanded={expanded} disabled={full.loading} onClick={toggle}>
             {full.loading ? S.loadingFull : expanded ? S.showLess : S.showMore}

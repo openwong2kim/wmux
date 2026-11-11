@@ -731,8 +731,13 @@
 .wmux-chatv2-runs-in { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; }
 .wmux-chatv2-cwd { max-width: 18em; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); }
 .wmux-chatv2-user { align-self: flex-end; max-width: 85%; margin-top: 10px; padding: 6px 12px; border-radius: 12px; background: var(--bg-surface); white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere; line-height: 1.55; }
-/* A reply's code block: the code starts under the language label and Copy row, so they never cover it. */
-.wmux-chatv2 [data-brain-md-code-rich]:not([data-brain-md-code-view]) > pre { padding-top: 30px; }
+/* A reply's code block: its language label and Copy sit as a compact 15px row in the block's top
+   padding, and the code starts under it (8px more than the plain padding), so they never cover it. */
+.wmux-chatv2 [data-brain-md-code-rich]:not([data-brain-md-code-view]) > div:first-child { top: 1px; line-height: 15px; }
+.wmux-chatv2 [data-brain-md-code-rich]:not([data-brain-md-code-view]) > pre { padding-top: 16px; }
+.wmux-chatv2 [data-brain-md-code-rich] [data-brain-md-code-copy] { position: relative; height: 15px; line-height: 15px; }
+/* Copy keeps a 24px hit area above and below its compact face. */
+.wmux-chatv2 [data-brain-md-code-rich] [data-brain-md-code-copy]::after { content: ''; position: absolute; inset: -5px 0; }
 /* keep-all keeps Korean words whole; overflow-wrap still breaks a long URL or path. */
 .wmux-chatv2-assistant, .wmux-chatv2-plan { line-height: 1.65; word-break: keep-all; overflow-wrap: anywhere; }
 .wmux-chatv2-reasoning summary, .wmux-chatv2-tool summary, .wmux-chatv2-subagent summary { cursor: pointer; list-style: none; }
@@ -778,10 +783,11 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-shell-command { padding: 0 8px 2px; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .wmux-chatv2-shell-earlier { padding: 0 8px 2px; color: var(--text-muted); }
 .wmux-chatv2-pre[data-shell] > pre, .wmux-chatv2-pre[data-shell] > .wmux-chatv2-body-more { padding: 0 8px; }
-/* Output scrolls past ~9rem; an edge fades while there is more beyond it. */
-.wmux-chatv2-shell-output { max-height: 9rem; }
+/* Output scrolls past its cap; an edge fades while there is more beyond it. */
+/* Collapsed, about 14 lines; an output that fits shows from its top with no control. */
+.wmux-chatv2-shell-output { max-height: 16rem; }
 /* Show full output: the box grows to the whole output. */
-.wmux-chatv2-shell-output[data-full] { max-height: none; }
+.wmux-chatv2-shell-output[data-full] { max-height: 60vh; }
 .wmux-chatv2-shell-output[data-fade="top"] { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 18px); mask-image: linear-gradient(to bottom, transparent, #000 18px); }
 .wmux-chatv2-shell-output[data-fade="bottom"] { -webkit-mask-image: linear-gradient(to top, transparent, #000 18px); mask-image: linear-gradient(to top, transparent, #000 18px); }
 .wmux-chatv2-shell-output[data-fade="both"] { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 18px, #000 calc(100% - 18px), transparent); mask-image: linear-gradient(to bottom, transparent, #000 18px, #000 calc(100% - 18px), transparent); }
@@ -795,7 +801,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 0 6px; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .wmux-chatv2-live-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); }
 .wmux-chatv2-footer[data-live] { color: var(--text-sub); }
-.wmux-chatv2-footer[data-waiting] .wmux-chatv2-live-dot { background: var(--attention); }
+/* The row's ring and the card's hairline already carry needs-you; the footer's words say it, its dot stays neutral. */
+.wmux-chatv2-footer[data-waiting] .wmux-chatv2-live-dot { background: var(--text-muted); }
 .wmux-chatv2-footer [data-outcome] { color: var(--text-sub); }
 /* A card that waits on the owner: its one boundary is the needs-you hairline, no fill. */
 .wmux-chatv2-card { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 4px 15px; padding: 10px 12px; border: 1px solid var(--attention-hairline); border-radius: 10px; background: transparent; }
@@ -827,10 +834,17 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; resize: none; padding: 4px 0; background: transparent; color: var(--text-main); font: inherit; line-height: 1.55; word-break: keep-all; overflow-wrap: anywhere; outline: none; field-sizing: content; }
 .wmux-chatv2-textarea::placeholder { color: var(--text-muted); }
 .wmux-chatv2-composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
-/* One row of chips: a narrow composer scrolls them sideways instead of growing taller (the padding keeps focus rings unclipped). */
-.wmux-chatv2-chips { display: flex; flex: 1 1 auto; flex-wrap: nowrap; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 4px; margin: -4px; }
-.wmux-chatv2-chips::-webkit-scrollbar { display: none; }
+/* One row of chips: a narrow composer scrolls the strip sideways instead of growing taller, and the
+   permissions chip stays outside it, always whole. An edge fades while chips are hidden past it;
+   the padding keeps focus rings unclipped. */
+.wmux-chatv2-chips { display: flex; flex: 1 1 auto; flex-wrap: nowrap; align-items: center; gap: 4px; min-width: 0; }
 .wmux-chatv2-chips > .wmux-chatv2-chip { flex-shrink: 0; }
+.wmux-chatv2-chip-strip { display: flex; flex: 0 1 auto; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; padding: 4px; margin: -4px; }
+.wmux-chatv2-chip-strip::-webkit-scrollbar { display: none; }
+.wmux-chatv2-chip-strip > .wmux-chatv2-chip { flex-shrink: 0; }
+.wmux-chatv2-chip-strip[data-fade="start"] { -webkit-mask-image: linear-gradient(to right, transparent, #000 20px); mask-image: linear-gradient(to right, transparent, #000 20px); }
+.wmux-chatv2-chip-strip[data-fade="end"] { -webkit-mask-image: linear-gradient(to left, transparent, #000 20px); mask-image: linear-gradient(to left, transparent, #000 20px); }
+.wmux-chatv2-chip-strip[data-fade="both"] { -webkit-mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent); mask-image: linear-gradient(to right, transparent, #000 20px, #000 calc(100% - 20px), transparent); }
 .wmux-chatv2-chip { display: inline-flex; align-items: center; min-height: 26px; padding: 0 8px; border-radius: var(--chip-radius, 6px); background: var(--selection); color: var(--text-sub); font-size: 11.5px; white-space: nowrap; }
 .wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--selection-hover); color: var(--text-main); }
 .wmux-chatv2-chip select { appearance: none; field-sizing: content; background: transparent; color: inherit; font: inherit; cursor: pointer; outline: none; }

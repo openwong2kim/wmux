@@ -140,6 +140,25 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
     else if (event.key === 'Escape' && !text && running && canStop) { event.preventDefault(); onStop(); }
   };
 
+  // The chip strip scrolls sideways in a narrow composer; an edge fades while chips are hidden past it.
+  const strip = useRef<HTMLDivElement>(null);
+  const stripEdges = () => {
+    const el = strip.current;
+    if (!el) return;
+    const start = el.scrollLeft > 1;
+    const end = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    const fade = start && end ? 'both' : start ? 'start' : end ? 'end' : '';
+    if (fade) el.dataset.fade = fade; else delete el.dataset.fade;
+  };
+  useEffect(() => {
+    stripEdges();
+    const el = strip.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(stripEdges);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [chips.agent, chips.model, chips.effort, chips.cwd]);
+
   const agent = chips.agent ?? 'claude';
   const caps = CHATV2_AGENT_CAPS[agent];
   const modelKnown = CLAUDE_MODEL_OPTIONS.some((option) => option.value === chips.model);
@@ -170,46 +189,50 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
       />
       <div className="wmux-chatv2-composer-bar">
         <div className="wmux-chatv2-chips">
-          {chips.onAgent ? (
-            <label className="wmux-chatv2-chip" title={S.agent} data-chatv2-agent={agent}>
-              <span className="sr-only">{S.agent}</span>
-              <select value={agent} disabled={!chips.editable} onChange={(event) => chips.onAgent?.(event.target.value as ChatV2Agent)}>
-                {CHATV2_AGENTS.map((id) => <option key={id} value={id}>{S.agentName[id]}</option>)}
-              </select>
-            </label>
-          ) : (
-            <span className="wmux-chatv2-chip" aria-disabled="true" title={S.agentFixed} data-chatv2-agent={agent}>
-              <span className="sr-only">{S.agent}: </span>{S.agentName[agent]}
+          <div ref={strip} className="wmux-chatv2-chip-strip" onScroll={stripEdges}>
+            {chips.onAgent ? (
+              <label className="wmux-chatv2-chip" title={S.agent} data-chatv2-agent={agent}>
+                <span className="sr-only">{S.agent}</span>
+                <select value={agent} disabled={!chips.editable} onChange={(event) => chips.onAgent?.(event.target.value as ChatV2Agent)}>
+                  {CHATV2_AGENTS.map((id) => <option key={id} value={id}>{S.agentName[id]}</option>)}
+                </select>
+              </label>
+            ) : (
+              <span className="wmux-chatv2-chip" aria-disabled="true" title={S.agentFixed} data-chatv2-agent={agent}>
+                <span className="sr-only">{S.agent}: </span>{S.agentName[agent]}
+              </span>
+            )}
+            {!caps.claudeModels ? (
+              <span className="wmux-chatv2-chip" aria-disabled="true" title={S.agentModelHint(S.agentName[agent])}>
+                <span className="sr-only">{S.model}: </span>{chips.model || S.agentModelDefault(S.agentName[agent])}
+              </span>
+            ) : (
+              <label className="wmux-chatv2-chip" title={chips.editable ? S.model : S.modelFixed}>
+                <span className="sr-only">{S.model}</span>
+                <select value={chips.model} disabled={!chips.editable} onChange={(event) => chips.onModel?.(event.target.value)}>
+                  {!modelKnown && <option value={chips.model}>{claudeModelLabel(chips.model)}</option>}
+                  {CLAUDE_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+            )}
+            <span className="wmux-chatv2-chip" aria-disabled="true" title={S.effortFixed}>
+              <span className="sr-only">{S.effort}: </span>{chips.effort || S.effortDefault}
             </span>
-          )}
-          {!caps.claudeModels ? (
-            <span className="wmux-chatv2-chip" aria-disabled="true" title={S.agentModelHint(S.agentName[agent])}>
-              <span className="sr-only">{S.model}: </span>{chips.model || S.agentModelDefault(S.agentName[agent])}
-            </span>
-          ) : (
-            <label className="wmux-chatv2-chip" title={chips.editable ? S.model : S.modelFixed}>
-              <span className="sr-only">{S.model}</span>
-              <select value={chips.model} disabled={!chips.editable} onChange={(event) => chips.onModel?.(event.target.value)}>
-                {!modelKnown && <option value={chips.model}>{claudeModelLabel(chips.model)}</option>}
-                {CLAUDE_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </label>
-          )}
-          <span className="wmux-chatv2-chip" aria-disabled="true" title={S.effortFixed}>
-            <span className="sr-only">{S.effort}: </span>{chips.effort || S.effortDefault}
-          </span>
-          <label className="wmux-chatv2-chip" data-mode={chips.mode} aria-disabled={!caps.bypass || undefined} title={!caps.bypass ? S.alwaysAsks(S.agentName[agent]) : chips.mode === 'bypass' ? S.modeBypassHint : S.modeDefaultHint}>
+            {chips.cwd && (
+              <span className="wmux-chatv2-chip wmux-chatv2-cwd" aria-disabled="true" title={`${S.workingDirectory}: ${chips.cwd}`} data-chatv2-cwd>
+                <span className="sr-only">{S.workingDirectory}: </span>{shortDir(chips.cwd)}
+              </span>
+            )}
+          </div>
+          {/* Permissions say whether the agent asks first: pinned outside the strip, always in full.
+              After it, so the chips still start with the Agent chip (DESIGN.md, Agent chip). */}
+          <label className="wmux-chatv2-chip" data-chatv2-permission data-mode={chips.mode} aria-disabled={!caps.bypass || undefined} title={!caps.bypass ? S.alwaysAsks(S.agentName[agent]) : chips.mode === 'bypass' ? S.modeBypassHint : S.modeDefaultHint}>
             <span className="sr-only">{S.permission}</span>
             <select value={chips.mode} disabled={!chips.editable || !caps.bypass} onChange={(event) => chips.onMode?.(event.target.value as ChatV2RunMode)}>
               <option value="default">{S.modeDefault}</option>
               <option value="bypass">{S.modeBypass}</option>
             </select>
           </label>
-          {chips.cwd && (
-            <span className="wmux-chatv2-chip wmux-chatv2-cwd" aria-disabled="true" title={`${S.workingDirectory}: ${chips.cwd}`} data-chatv2-cwd>
-              <span className="sr-only">{S.workingDirectory}: </span>{shortDir(chips.cwd)}
-            </span>
-          )}
         </div>
         <div className="wmux-chatv2-composer-actions">
           {extra}

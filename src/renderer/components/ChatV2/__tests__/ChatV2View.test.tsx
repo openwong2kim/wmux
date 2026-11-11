@@ -114,6 +114,30 @@ describe('tool rows', () => {
     expect(host.querySelector('[data-shell-earlier]')).toBeNull();
   });
 
+  it('reads an output that fits from its top with no control, and opens a larger one on its tail', async () => {
+    // jsdom lays nothing out: an 18px line in a box that holds 14 of them.
+    const proto = HTMLPreElement.prototype;
+    const lineCount = (el: Element) => (el.textContent ?? '').replace(/\n$/, '').split('\n').length;
+    Object.defineProperty(proto, 'scrollHeight', { configurable: true, get() { return lineCount(this) * 18; } });
+    Object.defineProperty(proto, 'clientHeight', { configurable: true, get() { return Math.min(lineCount(this) * 18, 14 * 18); } });
+    try {
+      const shell = (id: string, lines: number): Block => {
+        const output = Array.from({ length: lines }, (_, i) => `line ${i}`).join('\n') + '\n';
+        return { id, role: 'tool', text: 'git diff', tool: { callId: 't', title: 'git diff', kind: 'execute', status: 'completed', preview: { kind: 'shell', command: 'git diff', output } } };
+      };
+      await renderRow(shell('9.1', 12));
+      const pre = () => host.querySelector('.wmux-chatv2-shell-output') as HTMLPreElement;
+      expect(pre().scrollTop).toBe(0);
+      expect(host.querySelector('[data-output-toggle]')).toBeNull();
+      await renderRow(shell('9.2', 30));
+      expect(pre().scrollTop).toBe(30 * 18);
+      expect(host.querySelector('[data-output-toggle]')?.textContent).toBe('Show full output');
+    } finally {
+      delete (proto as unknown as Record<string, unknown>).scrollHeight;
+      delete (proto as unknown as Record<string, unknown>).clientHeight;
+    }
+  });
+
   it('shows a cut head up to its last whole line, and a complete output\u2019s tail', () => {
     expect(shellView('a\nb\nc', false, false)).toEqual({ text: 'a\nb\n', earlier: 0 });
     expect(shellView('one long line', false, false)).toEqual({ text: 'one long line', earlier: 0 });
@@ -284,6 +308,9 @@ describe('ChatV2View', () => {
     const jump = host.querySelector('[data-chatv2-jump]') as HTMLButtonElement;
     expect(jump?.getAttribute('aria-label')).toBe('chat.scrollToBottom');
     expect(jump.textContent).toBe('');
+    // The permissions chip is never scrolled away with the other chips.
+    expect(host.querySelector('.wmux-chatv2-chips > [data-chatv2-permission]')).not.toBeNull();
+    expect(host.querySelector('.wmux-chatv2-chip-strip [data-chatv2-permission]')).toBeNull();
     // Sending goes back to the end, and the jump is no longer needed.
     const box = host.querySelector('textarea') as HTMLTextAreaElement;
     await act(async () => {
