@@ -385,44 +385,14 @@ describe('renderBrainMarkdown', () => {
       expect([...container.querySelectorAll('[data-brain-md-p]')].find((p) => p.textContent === 'After')?.closest('blockquote')).toBeNull();
     });
 
-    it('GitHub HTML: text a <details> puts back into the stream does not throw off the next fence marker', () => {
-      gh([
-        'Mention ``` here:', '```js', '```',
-        // Each closing line puts its trailing text back as a line of its own.
-        '<details><summary>a</summary>b</details>t1',
-        '<details><summary>c</summary>d</details>t2',
-        'Type ``` to start:', '```py', '```', 'z', '```bash', 'echo', '```',
-      ].join('\n'));
-      expect(paragraphs()).toContain('Type ``` to start:');
-      expect(codes()).toEqual(['', '', 'echo']);
-      expect(container.textContent).toContain('t2');
-    });
-
-    it('GitHub HTML: a nested quote is read one level at a time, as the renderer reads it', () => {
-      gh('> > ```html\n> > <!-- kept -->\n> > ```\n> after <!-- gone -->');
-      expect(container.querySelector('blockquote blockquote [data-brain-md-code]')?.textContent).toBe('<!-- kept -->');
-      expect(container.textContent).not.toContain('gone');
-      // A fence in the inner quote does not reach the outer quote's prose.
-      gh('> > ```\n> <!-- outer -->\n> > ```');
-      expect(container.textContent).not.toContain('outer');
-    });
-
-    it('GitHub HTML: comments and tags inside a fence opened mid-line or in a quote stay code', () => {
-      gh('intro ```html\n<!-- x -->\n<details><summary>s</summary>body</details>\n```\nafter <!-- gone -->');
-      expect(codes()).toEqual(['<!-- x -->\n<details><summary>s</summary>body</details>']);
-      expect(container.querySelector('details')).toBeNull();
-      expect(container.textContent).toContain('intro');
-      expect(container.textContent).not.toContain('gone');
-      gh('> ```html\n> <!-- kept -->\n> ```\nafter <!-- gone -->');
-      expect(container.querySelector('blockquote [data-brain-md-code]')?.textContent).toBe('<!-- kept -->');
-      expect(container.textContent).not.toContain('gone');
-      gh('> Example ```html\n> <!-- also kept -->\n> ```');
-      expect(container.querySelector('blockquote [data-brain-md-code]')?.textContent).toBe('<!-- also kept -->');
-      expect(container.querySelector('blockquote')?.textContent).toContain('Example');
-      // Prose naming ``` before a real block: the comment in the prose goes, the block stays.
-      gh('Type ``` to start <!-- note --> a block:\n```html\n<!-- code -->\n```');
-      expect(codes()).toEqual(['<!-- code -->']);
-      expect(container.textContent).not.toContain('note');
+    it('GitHub HTML: a body renders as on main, never split mid-line (a comment with > lines stays hidden)', () => {
+      // An issue template: the comment holds quoted lines, and a ``` sits mid-line before it.
+      gh('Use ```ts\n<!--\n> template hint\n> more\n-->\nvisible\n```');
+      expect(container.textContent).not.toContain('template hint');
+      expect(container.querySelector('blockquote')).toBeNull();
+      expect(paragraphs()).toEqual(['Use ```ts', 'visible']);
+      // Not split: the line-start ``` opens its own (empty) block, as on main.
+      expect(codes()).toEqual(['']);
     });
   });
 
