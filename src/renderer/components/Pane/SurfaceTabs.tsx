@@ -44,6 +44,7 @@ import { paneHeaderTailGap } from './paneChrome';
 import { RENAME_ACTIVE_TAB_EVENT } from '../../utils/commandActions';
 import { isTerminalSurfaceType } from './surfaceKinds';
 import { ComputerUseDot } from '../shared/ComputerUseDots';
+import { chatTabLabel, useChatTabLabels } from '../ChatV2/status';
 
 export { isTerminalSurfaceType };
 
@@ -430,7 +431,11 @@ export default function SurfaceTabs({
   usageLimitCompact = false,
 }: SurfaceTabsProps) {
   const t = useT();
-  const tabLabel = (s: Surface): string => s.title || (s.surfaceType === 'board' ? t('company.board') : t('surface.terminal'));
+  const chatViewEnabled = useStore((s) => s.chatViewEnabled);
+  // A tab a chat-v2 chat holds in chat view is named after its agent, derived
+  // here and never written to the title, so it ends with the chat.
+  useChatTabLabels(surfaces, chatViewEnabled);
+  const tabLabel = (s: Surface): string => chatTabLabel(s, chatViewEnabled) ?? (s.title || (s.surfaceType === 'board' ? t('company.board') : t('surface.terminal')));
   // "Continue in another agent": a held tab and the tab its work went on in
   // each name the other on a tooltip line of its own, and carry a muted mark
   // before the title (out on the tab the work left, back-arrow on the tab it
@@ -457,7 +462,6 @@ export default function SurfaceTabs({
   // setups, AND by the pane being wide enough to afford it — Pane.tsx combines
   // the two and passes the answer down.
   const paneActionsSetting = useStore((s) => s.paneActionsVisible);
-  const chatViewEnabled = useStore((s) => s.chatViewEnabled);
   // D2 — this pane's role→model binding, subscribed here (same pattern as the
   // zoom state below) rather than prop-threaded: the badge it feeds is part of
   // this strip's layout, so the strip is what has to reserve its width.
