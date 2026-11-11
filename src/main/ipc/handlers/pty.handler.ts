@@ -21,7 +21,8 @@ import { isShadowWorkspaceId } from '../../../shared/pcRail/shadowId';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore, type Account } from '../../account/accountStore';
-import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, noteVaultSignInPane, vaultAccountsForCreate, withAccountFolderEnv } from '../../account/accountVault';
+import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, noteVaultSignInPane, vaultAccountsForCreate, vaultOnlyClaudeAccount, withAccountFolderEnv } from '../../account/accountVault';
+import { loadClaudeCredential } from '../../claude/claudeCredential';
 import { BOT_SECRET_LIMITS } from '../../../shared/botSecret';
 import { withAccountQuota } from '../../account/accountQuotaGate';
 import { botWorkerForCreate, botWorkerLaunchTask, botWorkerSessionRecord, noteGuardedLaunchTyped, clearedLaunchLine, forgetBotWorkerSession, guardedClaudeCwdRefusal, guardedCodexCwdRefusal, guardedCodexLaunch, guardedLaunchOf, isBotWorkerSession, noteBotWorkerSession, paneLaunchFolders, setWorkerMcpResolvers, taskConnectors, taskGatewayNames, withBotWorkerMergeGuard, type BotWorkerCreate, type WorkerGatewayLaunch } from '../../agents/botWorkerMergeGuard';
@@ -1115,6 +1116,22 @@ export function registerPTYHandlers(
       }
       const staged = await stageCreate(options, botWorker);
       options = staged.options;
+      // An account's vault, too, reaches a pane only through the daemon: a
+      // Claude launch on an account signed in only with a token would start
+      // signed out. A plain shell is not refused (what it will run is unknown).
+      const launchLine = options?.initialCommand;
+      if (launchLine && namesClaude(launchLine) && !namesCodex(launchLine)) {
+        const store = getAccountStore();
+        const tokenOnly = await vaultOnlyClaudeAccount(
+          vaultAccountsForCreate(options, botWorker, (ws, vendor) => store.getBinding(ws, vendor)),
+          {
+            entries: (id) => appAccountVault().list(id),
+            account: (id) => store.getAccount(id),
+            folderSignedIn: async (dir) => (await loadClaudeCredential(dir)).ok,
+          },
+        );
+        if (tokenOnly) throw new Error(`PTY_CREATE: "${tokenOnly}" signs in with a long-lived token, which reaches a pane only through the wmux daemon`);
+      }
 
       // X8 — supervision lives inside the daemon (decision ②). In local mode it
       // can't be honored, but a silent drop would be a trust violation: the user

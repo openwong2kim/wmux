@@ -945,6 +945,13 @@ export const zh = {
   'accounts.tokenOnboardingWarning': "令牌已保存，但无法为此账户将 Claude Code 的首次运行设置标记为完成。如果首次启动要求设置，请完成一次。",
   'accounts.tokenSignedIn': "令牌登录 · 无法显示用量 · 约 {date} 过期",
   'accounts.tokenUnreadable': "令牌登录 · 在这台电脑上无法读取，请重新粘贴",
+  'accounts.signInMethod': "登录方式",
+  'accounts.signInBrowser': "浏览器登录",
+  'accounts.signInToken': "长期令牌",
+  'accounts.browserLoginNote': "显示账户的用量和套餐。",
+  'accounts.tokenAccountNote': "令牌账户不显示用量、套餐和 Remote Control。它不能用于计划运行，其 Claude 窗格需要 wmux 守护进程。",
+  'accounts.pasteTokenAndAdd': "粘贴令牌并添加",
+  'accounts.tokenClipboardNotCleared': "令牌已保存，但无法清空剪贴板。请自行清空。",
   // Settings — Accounts — quota-driven account choice for Claude/Codex launches
   'accounts.rotateClaude': "按配额切换 Claude 账号",
   'accounts.rotateCodex': "按配额切换 Codex 账号",

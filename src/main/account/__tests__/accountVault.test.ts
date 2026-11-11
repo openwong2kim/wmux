@@ -15,6 +15,8 @@ import {
   vaultAccountsForCreate,
   withAccountFolderEnv,
   vaultEligibleCreate,
+  vaultOnlyClaudeAccount,
+  type AccountVaultEntry,
 } from '../accountVault';
 import type { Account } from '../accountStore';
 import type { SecretCrypto, SecretCryptoState } from '../../factory/secretStore';
@@ -170,6 +172,28 @@ describe('who gets the vault', () => {
     expect(Object.keys(merged.env ?? {})).toHaveLength(BOT_SECRET_LIMITS.NAMES_PER_FANOUT);
     expect(merged.dropped).toEqual(['HF_TOKEN']);
     expect(mergeVaultSecretEnv(undefined, {})).toEqual({ env: null, dropped: [] });
+  });
+
+  it('names a Claude account that signs in only from its vault, for a launch without the daemon', async () => {
+    const entry = (accountId: string, name: string, over: Partial<AccountVaultEntry> = {}): AccountVaultEntry =>
+      ({ accountId, name, inject: true, usable: true, length: 40, createdAt: 1, updatedAt: 1, ...over });
+    const vaults: Record<string, AccountVaultEntry[]> = {
+      tok: [entry('tok', 'CLAUDE_CODE_OAUTH_TOKEN')],
+      both: [entry('both', 'CLAUDE_CODE_OAUTH_TOKEN')],
+      off: [entry('off', 'CLAUDE_CODE_OAUTH_TOKEN', { inject: false })],
+      gh: [entry('gh', 'GITHUB_TOKEN')],
+    };
+    const deps = {
+      entries: (id: string) => vaults[id] ?? [],
+      account: (id: string) => ({ name: `acct ${id}`, configDir: `/accounts/${id}` }),
+      folderSignedIn: async (dir: string) => dir.endsWith('/both'),
+    };
+    expect(await vaultOnlyClaudeAccount([{ id: 'tok', vendor: 'claude' }], deps)).toBe('acct tok');
+    // A folder with its own login, a value the pane would not get, or no sign-in name: no refusal.
+    expect(await vaultOnlyClaudeAccount([{ id: 'both', vendor: 'claude' }], deps)).toBeNull();
+    expect(await vaultOnlyClaudeAccount([{ id: 'off', vendor: 'claude' }], deps)).toBeNull();
+    expect(await vaultOnlyClaudeAccount([{ id: 'gh', vendor: 'claude' }, { id: 'tok', vendor: 'codex' }], deps)).toBeNull();
+    expect(await vaultOnlyClaudeAccount([], deps)).toBeNull();
   });
 });
 

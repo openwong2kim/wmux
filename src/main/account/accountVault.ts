@@ -399,6 +399,30 @@ export function holdsClaudeSignIn(entries: ReadonlyArray<Pick<AccountVaultEntry,
   return entries.some((e) => isContinueSignInName(e.name) && e.inject && e.usable);
 }
 
+/**
+ * Without the wmux daemon a pane gets no vault value (the spawn-only field is
+ * the daemon's, as for a worker's secrets), so a Claude launch on an account
+ * that signs in only from its vault would start signed out. The name of the
+ * first of `accounts` (vaultAccountsForCreate's) whose vault holds a Claude
+ * sign-in the pane would get while its folder has no login of its own, or null.
+ */
+export async function vaultOnlyClaudeAccount(
+  accounts: ReadonlyArray<{ id: string; vendor: 'claude' | 'codex' }>,
+  deps: {
+    entries: (accountId: string) => ReadonlyArray<AccountVaultEntry>;
+    account: (accountId: string) => Pick<Account, 'name' | 'configDir'> | undefined;
+    folderSignedIn: (configDir: string) => Promise<boolean>;
+  },
+): Promise<string | null> {
+  for (const a of accounts) {
+    const own = deps.entries(a.id).filter((e) => vendorOfAuthName(e.name) === a.vendor);
+    if (!holdsClaudeSignIn(own)) continue;
+    const account = deps.account(a.id);
+    if (account && !(await deps.folderSignedIn(account.configDir).catch(() => false))) return account.name;
+  }
+  return null;
+}
+
 /** The accounts whose vault a create gets: the workspace's bound Claude and
  *  Codex accounts, with `override` in place of the one of its vendor. None
  *  for a create vaultEligibleCreate refuses. Pure. */
