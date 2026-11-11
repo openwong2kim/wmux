@@ -640,10 +640,12 @@ export const WORKER_FENCE_REFUSED_WMUX_TOOLS: readonly string[] = [
 /** The pipe methods behind those of WORKER_FENCE_REFUSED_WMUX_TOOLS that
  *  main runs, which main refuses to a fenced worker's pane as well. The
  *  others (the REPLs and the browser's file tools) run in the MCP server
- *  itself and are refused by the fence's settings and hook only. */
+ *  itself and are refused by the fence's settings and hook only. The app
+ *  actions (shared/appActions.ts) have no tool yet and are refused here too:
+ *  an unattended worker does not rearrange or restyle the owner's app. */
 export const WORKER_FENCE_REFUSED_RPC: ReadonlySet<string> = new Set([
   'input.send', 'input.sendKey', 'surface.new', 'pane.split', 'a2a.remote.spawn', 'computer.act', 'task.fanout.start',
-  'handOut.list', 'handOut.add',
+  'handOut.list', 'handOut.add', 'app.action', 'app.action.list',
 ]);
 
 /** Top-level settings keys: a sandbox of their own, or hooks turned off. */

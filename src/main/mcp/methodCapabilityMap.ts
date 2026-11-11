@@ -279,6 +279,12 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // --- Notifications (substrate-side; bundled UI only) ---
   'notify': { capability: 'wmux.internal' },
 
+  // --- App actions (shared/appActions.ts): an agent renames, lays out and
+  //     sets a few settings in its own workspace. The wmux CLI's tier only;
+  //     no plugin can declare the reserved capability.
+  'app.action':      { capability: 'wmux.internal' },
+  'app.action.list': { capability: 'wmux.internal' },
+
   // --- System introspection. Identity-style bootstrap: any caller can ask
   //     what version of wmux they're talking to or what capabilities are
   //     exposed. No data leak; less than what a probe-by-error would yield.
