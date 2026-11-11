@@ -12,6 +12,10 @@ import { S } from './strings';
 // Drafts survive view switches, per pane and conversation (`<paneId>:<chatSessionId|new>`).
 const drafts = new Map<string, string>();
 
+export function getDraft(key: string): string {
+  return drafts.get(key) ?? '';
+}
+
 export function setDraft(key: string, text: string): void {
   if (text) drafts.set(key, text); else drafts.delete(key);
 }
@@ -54,7 +58,7 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
   onStop: () => void;
   extra?: React.ReactNode;
 }) {
-  const [text, setTextState] = useState(() => drafts.get(draftKey) ?? '');
+  const [text, setTextState] = useState(() => getDraft(draftKey));
   const [staged, setStaged] = useState<Staged[]>([]);
   const [notice, setNotice] = useState('');
   const [sending, setSending] = useState(false);

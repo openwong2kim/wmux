@@ -16,7 +16,7 @@ import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
 import { ChatV2Overlay, useChatSurfaceView } from '../ChatV2/ChatSurface';
 import { ChatViewFirstAskCard } from '../Chat/ChatViewFirstAskCard';
-import { forgetChatV2Pane, usePaneChatV2Binding } from '../ChatV2/useChatV2';
+import { forgetChatV2PaneIfClosed, usePaneChatV2Binding } from '../ChatV2/useChatV2';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import PreviewPanel from '../Preview/PreviewPanel';
@@ -1677,8 +1677,9 @@ function TerminalSurface({ surface, paneId, chatViewEnabled, isActive, visible, 
     if (coveredSearch) useStore.getState().setSearchBarVisible(false);
   }, [coveredSearch]);
   // The surface closed (or its PTY was replaced): forget its chat drafts and binding.
+  // A split remounts the same surface, so only a PTY no surface holds any more is forgotten.
   const ptyId = surface.ptyId;
-  useEffect(() => () => { if (ptyId) forgetChatV2Pane(ptyId); }, [ptyId]);
+  useEffect(() => () => { if (ptyId) forgetChatV2PaneIfClosed(ptyId, useStore.getState()); }, [ptyId]);
   return (
     <>
       <div style={{ display: 'contents' }} inert={chatV2 || undefined}>
