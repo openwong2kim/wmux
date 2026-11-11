@@ -219,6 +219,45 @@ export function reduceInlineHtml(text: string): string {
   }).join('');
 }
 
+/**
+ * The first line-start fence marker (as the fence branch reads one) after
+ * each line of `lines`. A scan resumes from the last answer, so a text read
+ * front to back costs one pass.
+ */
+function fenceMarkerAfter(lines: readonly string[]): (index: number) => string | undefined {
+  // Every index in [from, at) has the marker at `at` (lines.length: none).
+  let from = -1;
+  let at = -1;
+  return (index) => {
+    if (index < from || index >= at) {
+      let j = index + 1;
+      while (j < lines.length && fenceOpenLength(lines[j]) === 0) j++;
+      from = index;
+      at = j;
+    }
+    return at < lines.length ? lines[at] : undefined;
+  };
+}
+
+/**
+ * A fence opener after prose on the same line ("... text ```ts", as models
+ * write it), as `[prose, opener]`: the fence opens there. The opener takes the
+ * info string a line-start fence takes (no backticks after the run). It
+ * counts only when the first fence marker after it (`followingMarker`) is a
+ * bare closer at least as long, the line that would close it. When that
+ * marker opens another block ("```js") or there is none, the ``` is prose
+ * naming it, and splitting would swallow what follows. A line with another
+ * ``` run (inline ```code```) is not one, and neither is a quoted line: the
+ * quote is read once its `>` is stripped.
+ */
+function midLineFence(line: string, followingMarker: () => string | undefined): [string, string] | null {
+  if (!line.includes('```') || fenceOpenLength(line) > 0 || /^\s*>/.test(line)) return null;
+  const m = /^(.*\S)[ \t]+(`{3,}[^`]*)$/.exec(line);
+  if (!m || m[1].includes('```')) return null;
+  const marker = followingMarker();
+  return marker !== undefined && closesFence(marker, fenceOpenLength(m[2])) ? [m[1], m[2]] : null;
+}
+
 /** The whole body, outside code fences: comments and script/style elements
  *  dropped, <br> as a line break. */
 function preprocessGithubHtml(source: string): string {
@@ -419,6 +458,7 @@ interface BlockBudget { left: number; cut?: boolean; cells?: number }
 function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budget: BlockBudget): React.ReactNode[] {
   const lines = source.split('\n');
   const out: React.ReactNode[] = [];
+  const markerAfter = fenceMarkerAfter(lines);
   let i = 0;
   while (i < lines.length) {
     if (budget.left <= 0) {
@@ -427,7 +467,17 @@ function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budg
       break;
     }
     budget.left--;
-    const line = lines[i];
+    let line = lines[i];
+
+    // A fence opened mid-line (midLineFence): the prose is drawn as its own
+    // line first. Chat and agent replies only: GitHub bodies (githubHtml) keep
+    // their fences at line start, as preprocessGithubHtml reads them.
+    const index = i;
+    const midFence = opts.githubHtml ? null : midLineFence(line, () => markerAfter(index));
+    if (midFence) {
+      out.push(<Fragment key={out.length}>{renderBlocks(midFence[0], opts, depth, budget)}</Fragment>);
+      line = midFence[1];
+    }
 
     // Fenced code block (an unclosed fence swallows to the end — streaming).
     // It closes on a backtick run at least as long as the one it opened with.
