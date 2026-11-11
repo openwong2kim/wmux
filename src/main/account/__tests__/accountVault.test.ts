@@ -68,6 +68,25 @@ describe('AccountVault', () => {
     expect(v.list('acc-2')).toEqual([]);
   });
 
+  it('saves inject: false with the value in one write, and an explicit choice wins over a replaced entry', () => {
+    const v = vault();
+    v.load();
+    const writes = vi.spyOn(fs, 'writeFileSync');
+    try {
+      expect(v.set('acc-1', 'GITHUB_TOKEN', TOKEN, { inject: false }).ok).toBe(true);
+      expect(writes).toHaveBeenCalledTimes(1);
+    } finally {
+      writes.mockRestore();
+    }
+    expect(v.list('acc-1')).toEqual([expect.objectContaining({ name: 'GITHUB_TOKEN', inject: false })]);
+    expect(v.envFor([{ id: 'acc-1', vendor: 'claude' }])).toEqual({});
+    // A replace without a choice keeps the setting; one with a choice saves it.
+    v.set('acc-1', 'GITHUB_TOKEN', `${TOKEN}_2`);
+    expect(v.list('acc-1')[0].inject).toBe(false);
+    v.set('acc-1', 'GITHUB_TOKEN', `${TOKEN}_3`, { inject: true });
+    expect(v.list('acc-1')[0].inject).toBe(true);
+  });
+
   it('reloads and decrypts what it wrote, and drops entries of removed accounts', () => {
     const a = vault();
     a.load();
@@ -176,7 +195,7 @@ describe('who gets the vault', () => {
 
   it('names a Claude account that signs in only from its vault, for a launch without the daemon', async () => {
     const entry = (accountId: string, name: string, over: Partial<AccountVaultEntry> = {}): AccountVaultEntry =>
-      ({ accountId, name, inject: true, usable: true, length: 40, createdAt: 1, updatedAt: 1, ...over });
+      ({ accountId, name, inject: true, usable: true, length: 40, createdAt: 1, updatedAt: 1, fingerprint: null, ...over });
     const vaults: Record<string, AccountVaultEntry[]> = {
       tok: [entry('tok', 'CLAUDE_CODE_OAUTH_TOKEN')],
       both: [entry('both', 'CLAUDE_CODE_OAUTH_TOKEN')],

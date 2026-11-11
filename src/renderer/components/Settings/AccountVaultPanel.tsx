@@ -292,8 +292,9 @@ export function AccountVaultPanel({ account, signInName, onChanged }: {
 }
 
 /** The message for a refused save or generate. */
-function refusalText(t: T, res: { code: string; message: string }, prefix: string | undefined): string {
-  if (res.code === 'invalid_value') return prefix ? t('accounts.vaultPrefixMismatch', { prefix }) : t('accounts.vaultValueInvalid');
+export function refusalText(t: T, res: { code: string; message: string }, prefix: string | undefined): string {
+  if (res.code === 'prefix_mismatch') return t('accounts.vaultPrefixMismatch', { prefix: prefix ?? '' });
+  if (res.code === 'invalid_value') return t('accounts.vaultValueInvalid');
   if (res.code === 'too_many') return t('accounts.vaultFullShort');
   if (res.code === 'encryption_unavailable') return t('accounts.vaultNoEncryption');
   if (res.code === 'basic_text') return t('accounts.vaultNoKeyring');
@@ -349,18 +350,11 @@ function SaveFromClipboardForm({ accountId, entries, reserved, block, onDone, on
     setBusy(true);
     setError(null);
     try {
-      const res = await vault.saveFromClipboard({ accountId, name, expectPrefix });
+      // The choice is saved with the value, in one write.
+      const res = await vault.saveFromClipboard({ accountId, name, expectPrefix, inject });
       if (!res.ok) {
         setError(refusalText(t, res, expectPrefix));
         return;
-      }
-      // The save has no inject argument; a new entry is injected by default.
-      if (!inject) {
-        const off = await vault.setInject({ accountId, name, inject: false });
-        if (!off.ok) {
-          setError(t('accounts.vaultInjectOffFailed', { name }));
-          return;
-        }
       }
       onDone();
     } catch (e) {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { AccountVaultTable, parseGenerateLength, vaultAddBlock, vaultNameError } from '../AccountVaultPanel';
+import { AccountVaultTable, parseGenerateLength, refusalText, vaultAddBlock, vaultNameError } from '../AccountVaultPanel';
 import type { AccountVaultEntry } from '../../../../main/account/accountVault';
 
 const TOKEN = 'CLAUDE_CODE_OAUTH_TOKEN';
@@ -34,6 +34,12 @@ describe('vault name and limit rules', () => {
     expect(vaultAddBlock(8, 8, null)).toBe('full');
     expect(vaultAddBlock(0, 8, { code: 'encryption_unavailable' })).toBe('encryption_unavailable');
     expect(vaultAddBlock(8, 8, { code: 'basic_text' })).toBe('basic_text');
+  });
+
+  it('says a prefix mismatch and an invalid value differently', () => {
+    const t = (key: string) => key;
+    expect(refusalText(t, { code: 'prefix_mismatch', message: '' }, 'ghp_')).toBe('accounts.vaultPrefixMismatch');
+    expect(refusalText(t, { code: 'invalid_value', message: '' }, 'ghp_')).toBe('accounts.vaultValueInvalid');
   });
 
   it('reads an empty length as the default and refuses one out of range', () => {

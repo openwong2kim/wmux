@@ -5194,7 +5194,6 @@ export const ko = {
   'accounts.vaultSaveAndClear': "저장하고 클립보드 비우기",
   'accounts.vaultPrefixMismatch': "클립보드 내용이 “{prefix}”로 시작하지 않아 저장하지 않았습니다.",
   'accounts.vaultValueInvalid': "클립보드에 8자 이상의 한 줄 값이 없어 저장하지 않았습니다.",
-  'accounts.vaultInjectOffFailed': "{name}은 저장했지만 “페인에 넣기”를 끄지 못했습니다. 목록에서 끄세요.",
   'accounts.vaultGenerateTitle': "무작위 값 만들기",
   'accounts.vaultGenerateHint': "wmux가 무작위 값을 만들어 금고에 보관합니다. 값은 보이지 않고, 이 계정 페인은 지정한 변수 이름으로 받습니다.",
   'accounts.vaultLengthLabel': "길이",

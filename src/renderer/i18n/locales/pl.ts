@@ -2006,7 +2006,6 @@ export const pl = {
   'accounts.vaultSaveAndClear': "Zapisz i wyczyść schowek",
   'accounts.vaultPrefixMismatch': "Schowek nie zaczyna się od „{prefix}”, więc nic nie zapisano.",
   'accounts.vaultValueInvalid': "Schowek nie zawiera jednowierszowej wartości o długości co najmniej 8 znaków, więc nic nie zapisano.",
-  'accounts.vaultInjectOffFailed': "Zapisano {name}, ale nie udało się wyłączyć „Przekaż do paneli”. Odznacz to na liście.",
   'accounts.vaultGenerateTitle': "Wygeneruj losową wartość",
   'accounts.vaultGenerateHint': "wmux tworzy losową wartość i trzyma ją w sejfie. Nigdy nie jest pokazywana; panele tego konta dostają ją jako podaną zmienną.",
   'accounts.vaultLengthLabel': "Długość",

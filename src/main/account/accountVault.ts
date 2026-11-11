@@ -56,7 +56,7 @@ export type AccountVaultSetResult =
   | { ok: true; entry: AccountVaultEntry }
   | {
       ok: false;
-      code: 'encryption_unavailable' | 'basic_text' | 'invalid_name' | 'invalid_value' | 'too_many' | 'write_failed' | 'store_unreadable';
+      code: 'encryption_unavailable' | 'basic_text' | 'invalid_name' | 'invalid_value' | 'prefix_mismatch' | 'too_many' | 'write_failed' | 'store_unreadable';
       message: string;
     };
 
@@ -197,8 +197,8 @@ export class AccountVault {
       .sort((a, b) => a.createdAt - b.createdAt);
   }
 
-  /** Store (or replace) a value. A new entry is injected unless told not to;
-   *  a replaced one keeps its setting. */
+  /** Store (or replace) a value. `inject`, when given, is saved with it;
+   *  otherwise a new entry is injected and a replaced one keeps its setting. */
   set(accountId: string, name: unknown, value: unknown, opts: { inject?: boolean } = {}): AccountVaultSetResult {
     const refused = this.refusal();
     if (refused) return refused;
@@ -225,7 +225,7 @@ export class AccountVault {
       accountId,
       name,
       cipher,
-      inject: prior ? prior.record.inject : opts.inject ?? true,
+      inject: opts.inject ?? (prior ? prior.record.inject : true),
       length: value.length,
       createdAt: prior?.record.createdAt ?? at,
       updatedAt: at,

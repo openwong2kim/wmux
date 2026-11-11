@@ -185,7 +185,7 @@ function TokenSignInPanel({ row, onSaved, onClose }: { row: AccountRow; onSaved:
     try {
       const res = await vault.saveFromClipboard({ accountId: row.id, name: CLAUDE_TOKEN_NAME, expectPrefix: CLAUDE_TOKEN_PREFIX });
       if (!res.ok) {
-        setError(res.code === 'invalid_value' ? t('accounts.tokenNotInClipboard') : res.message);
+        setError(res.code === 'invalid_value' || res.code === 'prefix_mismatch' ? t('accounts.tokenNotInClipboard') : res.message);
         return;
       }
       onSaved();
@@ -376,7 +376,7 @@ function AddAccountWizard({ groups, onDone, onCancel }: { groups: string[]; onDo
         // or nothing at all.
         const res = await api.addWithToken({ name: name.trim(), share, group: group || undefined });
         if (!res.ok) {
-          setError(res.code === 'invalid_value' ? t('accounts.tokenNotInClipboard') : res.message);
+          setError(res.code === 'invalid_value' || res.code === 'prefix_mismatch' ? t('accounts.tokenNotInClipboard') : res.message);
           setBusy(false);
           return;
         }

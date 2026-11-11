@@ -270,7 +270,7 @@ type ClipboardRefusal = Extract<AccountVaultSetResult, { ok: false }>;
 async function readClipboardValue(expectPrefix: unknown): Promise<{ ok: true; value: string } | ClipboardRefusal> {
   const value = (await clipboard.readText()).trim();
   if (typeof expectPrefix === 'string' && expectPrefix && !value.startsWith(expectPrefix)) {
-    return { ok: false, code: 'invalid_value', message: `The clipboard does not start with "${expectPrefix}", so nothing was saved.` };
+    return { ok: false, code: 'prefix_mismatch', message: `The clipboard does not start with "${expectPrefix}", so nothing was saved.` };
   }
   return { ok: true, value };
 }
@@ -282,10 +282,11 @@ type VaultSaveResult = AccountVaultSetResult & { clipboardCleared?: boolean; cli
  * if it still holds what was saved, so text copied since is not lost; a
  * failed clear is reported (`clipboardCleanupFailed`), never a failed save. A Claude
  * token is read only once first-run setup is marked done in the account's
- * folder; a refusal leaves the token saved and says why.
+ * folder; a refusal leaves the token saved and says why. `inject`, when
+ * given, is saved in the same write (AccountVault.set's default otherwise).
  */
-async function saveClipboardValue(accountId: string, name: unknown, value: string): Promise<VaultSaveResult> {
-  const result = appAccountVault().set(accountId, name, value);
+async function saveClipboardValue(accountId: string, name: unknown, value: string, inject?: boolean): Promise<VaultSaveResult> {
+  const result = appAccountVault().set(accountId, name, value, inject === undefined ? {} : { inject });
   if (!result.ok) return result;
   let clipboardCleared = false;
   let clipboardCleanupFailed = false;
@@ -445,11 +446,13 @@ export function registerAccountHandlers(getWindow: () => BrowserWindow | null = 
 
   // Clipboard → vault (saveClipboardValue).
   ipcMain.handle(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, wrapHandler(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD,
-    async (e, args: { accountId: unknown; name: unknown; expectPrefix?: unknown }): Promise<VaultSaveResult> => {
+    async (e, args: { accountId: unknown; name: unknown; expectPrefix?: unknown; inject?: unknown }): Promise<VaultSaveResult> => {
       const accountId = knownAccount(e, args?.accountId);
+      const inject = args?.inject;
+      if (inject !== undefined && typeof inject !== 'boolean') throw new AccountError('invalid', 'inject must be a boolean');
       const read = await readClipboardValue(args?.expectPrefix);
       if (!read.ok) return read;
-      return saveClipboardValue(accountId, args?.name, read.value);
+      return saveClipboardValue(accountId, args?.name, read.value, inject);
     }));
 
   // A new Claude account straight from a `claude setup-token` token, all or

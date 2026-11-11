@@ -20,7 +20,8 @@ const h = vi.hoisted(() => ({
   wmuxDir: '',
   sourceDir: '',
   store: null as unknown as AccountStore,
-  vaultSet: null as unknown as (accountId: string, name: unknown, value: unknown) => AccountVaultSetResult,
+  vaultSet: null as unknown as (accountId: string, name: unknown, value: unknown, opts?: { inject?: boolean }) => AccountVaultSetResult,
+  setInjectCalls: 0,
   saved: [] as AccountVaultEntry[],
 }));
 
@@ -43,7 +44,8 @@ vi.mock('../../../account/accountStore', async (importOriginal) => ({
 vi.mock('../../../account/accountVault', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../account/accountVault')>()),
   appAccountVault: () => ({
-    set: (accountId: string, name: unknown, value: unknown) => h.vaultSet(accountId, name, value),
+    set: (accountId: string, name: unknown, value: unknown, opts?: { inject?: boolean }) => h.vaultSet(accountId, name, value, opts),
+    setInject: () => { h.setInjectCalls += 1; return true; },
     list: (accountId: string) => h.saved.filter((e) => e.accountId === accountId),
     deleteAccount: () => true,
   }),
@@ -68,6 +70,13 @@ function addWithToken(args: Record<string, unknown>): Promise<unknown> {
   return (call[1] as (e: unknown, a: unknown) => Promise<unknown>)({}, args);
 }
 
+function saveFromClipboard(args: Record<string, unknown>): Promise<unknown> {
+  registerAccountHandlers();
+  const call = vi.mocked(ipcMain.handle).mock.calls.find((c) => c[0] === IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD);
+  if (!call) throw new Error('no ACCOUNT_VAULT_SAVE_CLIPBOARD handler');
+  return (call[1] as (e: unknown, a: unknown) => Promise<unknown>)({}, args);
+}
+
 const accountFolders = (): string[] => {
   const root = path.join(h.wmuxDir, 'accounts');
   return fs.existsSync(root) ? fs.readdirSync(root) : [];
@@ -82,6 +91,7 @@ beforeEach(() => {
   fs.writeFileSync(path.join(h.sourceDir, 'settings.json'), '{}\n');
   h.store = new AccountStore(path.join(tmp, 'data'));
   h.saved = [];
+  h.setInjectCalls = 0;
   h.vaultSet = (accountId, name, value) => {
     const entry = { accountId, name, createdAt: 1, updatedAt: 1, inject: true, usable: true } as unknown as AccountVaultEntry;
     expect(value).toBe(TOKEN);
@@ -99,7 +109,7 @@ describe('ACCOUNT_ADD_WITH_TOKEN', () => {
   it('creates nothing when the clipboard holds no setup-token token', async () => {
     h.clip = 'some other text';
     const res = await addWithToken({ name: 'Work' });
-    expect(res).toMatchObject({ ok: false, code: 'invalid_value' });
+    expect(res).toMatchObject({ ok: false, code: 'prefix_mismatch' });
     expect(h.store.listAccounts()).toEqual([]);
     expect(accountFolders()).toEqual([]);
     expect(h.clip).toBe('some other text');
@@ -179,5 +189,33 @@ describe('ACCOUNT_ADD_WITH_TOKEN', () => {
     expect(res).toMatchObject({ ok: true, clipboardCleared: false, clipboardCleanupFailed: true });
     expect(h.store.listAccounts().map((a) => a.id)).toEqual([res.account.id]);
     expect(h.saved.map((e) => e.name)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN']);
+  });
+});
+
+describe('ACCOUNT_VAULT_SAVE_CLIPBOARD', () => {
+  const VALUE = 'hf_example_value_0123456789';
+
+  it('saves inject: false with the value in one write, with no follow-up setInject', async () => {
+    const account = await h.store.addAccount({ name: 'Codex', vendor: 'codex', configDir: h.sourceDir });
+    const calls: Array<{ inject?: boolean } | undefined> = [];
+    h.vaultSet = (accountId, name, value, opts) => {
+      calls.push(opts);
+      const entry = { accountId, name, createdAt: 1, updatedAt: 1, inject: opts?.inject ?? true, usable: true } as unknown as AccountVaultEntry;
+      return { ok: true, entry };
+    };
+    h.clip = VALUE;
+    const res = await saveFromClipboard({ accountId: account.id, name: 'HF_TOKEN', inject: false });
+    expect(res).toMatchObject({ ok: true, entry: { name: 'HF_TOKEN', inject: false }, clipboardCleared: true });
+    expect(calls).toEqual([{ inject: false }]);
+    expect(h.setInjectCalls).toBe(0);
+  });
+
+  it('tells a prefix mismatch apart from an invalid value', async () => {
+    const account = await h.store.addAccount({ name: 'Codex', vendor: 'codex', configDir: h.sourceDir });
+    h.vaultSet = () => { throw new Error('nothing is saved on a prefix mismatch'); };
+    h.clip = VALUE;
+    const res = await saveFromClipboard({ accountId: account.id, name: 'HF_TOKEN', expectPrefix: 'ghp_' });
+    expect(res).toMatchObject({ ok: false, code: 'prefix_mismatch' });
+    expect(h.clip).toBe(VALUE);
   });
 });

@@ -952,7 +952,7 @@ const electronAPI = {
           /** Why nothing can be saved on this computer, or null. */
           cannotStore: ReturnType<import('../main/account/accountVault').AccountVault['storeRefusal']>;
         }>,
-      saveFromClipboard: (args: { accountId: string; name: string; expectPrefix?: string }) =>
+      saveFromClipboard: (args: { accountId: string; name: string; expectPrefix?: string; inject?: boolean }) =>
         ipcRenderer.invoke(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, args) as Promise<
           import('../main/account/accountVault').AccountVaultSetResult & { clipboardCleared?: boolean; clipboardCleanupFailed?: true; onboardingWarning?: string }
         >,

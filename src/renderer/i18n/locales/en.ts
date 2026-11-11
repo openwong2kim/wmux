@@ -2059,7 +2059,6 @@ export const en = {
   'accounts.vaultSaveAndClear': "Save and clear clipboard",
   'accounts.vaultPrefixMismatch': "The clipboard doesn't start with “{prefix}”, so nothing was saved.",
   'accounts.vaultValueInvalid': "The clipboard doesn't hold a one-line value of 8 or more characters, so nothing was saved.",
-  'accounts.vaultInjectOffFailed': "{name} was saved, but turning off “Put into panes” failed. Untick it in the list.",
   'accounts.vaultGenerateTitle': "Generate a random value",
   'accounts.vaultGenerateHint': "wmux makes a random value and keeps it in the vault. It is never shown; this account's panes get it as the variable you name.",
   'accounts.vaultLengthLabel': "Length",

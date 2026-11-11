@@ -1030,7 +1030,6 @@ export const zh = {
   'accounts.vaultSaveAndClear': "保存并清空剪贴板",
   'accounts.vaultPrefixMismatch': "剪贴板内容不是以“{prefix}”开头，因此未保存任何内容。",
   'accounts.vaultValueInvalid': "剪贴板中没有 8 个字符以上的单行值，因此未保存任何内容。",
-  'accounts.vaultInjectOffFailed': "{name} 已保存，但未能关闭“注入窗格”。请在列表中取消勾选。",
   'accounts.vaultGenerateTitle': "生成随机值",
   'accounts.vaultGenerateHint': "wmux 会生成一个随机值并保存在保险库中。它不会显示；此账号的窗格会以你指定的变量名获得它。",
   'accounts.vaultLengthLabel': "长度",
