@@ -54,6 +54,7 @@ describe('system.rpc — system.capabilities', () => {
     expect(result.features.events.maxRingSize).toBe(RING_CAPACITY);
     expect(typeof result.features.events.bootId).toBe('string');
     expect(result.features.events.bootId.length).toBeGreaterThan(0);
+    expect((result.features as unknown as { appActions: string[] }).appActions).toContain('workspace.rename');
   });
 
   it('M0-f features.paneMetadata is the documented capability object', async () => {

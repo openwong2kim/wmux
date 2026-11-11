@@ -3,6 +3,7 @@ import type { RpcRouter } from '../RpcRouter';
 import { ALL_RPC_METHODS, type PaneMetadataCapabilities } from '../../../shared/rpc';
 import { WMUX_EVENT_TYPES, RING_CAPACITY } from '../../../shared/events';
 import { eventBus } from '../../events/EventBus';
+import { APP_ACTIONS } from '../../../shared/appActions';
 
 /**
  * Shape returned by system.identify.
@@ -58,6 +59,9 @@ export function registerSystemRpc(router: RpcRouter): void {
         // off-layout-but-alive, that list rows carry `stashed`, and that
         // `includeStashed` and PANE_STASHED exist.
         paneStash: true,
+        // The app actions `app.action` runs (shared/appActions.ts), by id;
+        // `app.action.list` describes each.
+        appActions: APP_ACTIONS.map((a) => a.id),
         events: {
           types: WMUX_EVENT_TYPES,
           maxRingSize: RING_CAPACITY,

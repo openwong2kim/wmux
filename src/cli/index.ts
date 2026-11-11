@@ -14,6 +14,7 @@ import { handleSurface } from './commands/surface';
 import { handlePane } from './commands/pane';
 import { handleInput } from './commands/input';
 import { handleNotify } from './commands/notify';
+import { handleAction } from './commands/action';
 import { handleSystem } from './commands/system';
 import { handleBrowser, handleOpen } from './commands/browser';
 import { handleGate } from './commands/gate';
@@ -163,6 +164,16 @@ WEB ACCESS (browser / PWA)
                                     prints the access token). desktop also lets
                                     that computer open new workspaces
 
+APP ACTIONS (your own workspace; run from a wmux pane)
+  action <id> [--target <id|#tag>] [--arg key=value ...]
+                                    Run one app action: rename this workspace or
+                                    a tab, balance the layout, move a pane, read
+                                    or set a few settings, clear notifications.
+                                    Without --target it acts on your own
+                                    workspace, pane or tab; a target in another
+                                    workspace is refused (not_owned)
+  action --list                     List the actions and their arguments
+
 NOTIFICATION COMMANDS
   notify <title> [body]             Show a notification in wmux
          [--type info|warning|error|agent] [--workspace <id>]
@@ -265,6 +276,8 @@ EXAMPLES
   wmux send "echo hello" --submit
   wmux send "run the tests" --submit --to '#w1-2'
   wmux notify "Done" "Build finished"
+  wmux action workspace.rename --arg name=api
+  wmux action settings.set --arg key=terminal.fontSize --arg value=16
   wmux open http://localhost:3000
   wmux identify --json
   wmux browser navigate "https://example.com"
@@ -350,6 +363,8 @@ async function main(): Promise<void> {
       await handleInput(cmd, rest, jsonMode);
     } else if (cmd === 'notify') {
       await handleNotify(rest, jsonMode);
+    } else if (cmd === 'action') {
+      await handleAction(rest, jsonMode);
     } else if (SYSTEM_CMDS.has(cmd)) {
       await handleSystem(cmd, rest, jsonMode);
     } else if (cmd === 'open') {
