@@ -25,7 +25,11 @@ import { git } from '../../../git/git';
 import { BOT_FANOUT_STARTING_NOTE, botLaunchRefusal, countOpenBotWorkers, parseCheckout, registerFanOutRpc, verdictedTaskIds, workersHeldNote, WORKERS_OFF_TEXT, type FanOutBotPort, type HeldFanoutRequest } from '../fanout.rpc';
 import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '../../../worktask/FanOutService';
 import type { RpcRouter } from '../../RpcRouter';
-import { FANOUT_LIVE_TASK_CAP, FanOutGuards } from '../../../worktask/fanoutGuards';
+import { FanOutGuards } from '../../../worktask/fanoutGuards';
+import { getFanoutWorkerPolicyPath } from '../../../worktask/fanoutWorkerPolicy';
+
+/** The live cap these tests set (no cap is the default). */
+const FANOUT_LIVE_TASK_CAP = 8;
 import type { FanoutPreset } from '../../../../shared/fanoutPreset';
 import { DEFAULT_BOT_BUDGETS, type BotProfile, type BotRole } from '../../../../shared/bot';
 import { emptyUsage } from '../../../factory/budget';
@@ -140,7 +144,9 @@ function rig(role: BotRole, over: Partial<BotProfile> = {}, opts: {
   const defaultBranchReads: Rig['defaultBranchReads'] = [];
   let defaultBranchNote: { name: string | null; recorded: boolean } = { name: 'develop', recorded: true };
   const p = profile(role, over);
-  const guards = new FanOutGuards({ dir: fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wp2-fanout-bot-')), countLiveTasks: () => liveTasks, ledgerTaskOwner: () => null });
+  const guardsDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wp2-fanout-bot-'));
+  fs.writeFileSync(getFanoutWorkerPolicyPath(guardsDir), JSON.stringify({ liveTaskCap: FANOUT_LIVE_TASK_CAP, taskCapsVersion: 2 }));
+  const guards = new FanOutGuards({ dir: guardsDir, countLiveTasks: () => liveTasks, ledgerTaskOwner: () => null });
   /** Bot fan-outs booked and not through their start: the holder set counts
    *  them (factory/workerHolders.ts). */
   const booked = (botId?: string): number => guards.reservedTasks().filter((u) => u.botId && (botId === undefined || u.botId === botId)).length;

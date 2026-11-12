@@ -282,9 +282,18 @@ describe('right before the start', () => {
   });
 });
 
+/** The limits that were fixed before the owner could set them: here, set. */
+const SET_LIMITS = { livePerPc: 2, liveTotal: 4, startsPerHour: 3, startsPerDay: 10 };
+
 describe('room', () => {
-  it('two agents running per PC: a third is refused rate-limited; three starts an hour, then rate-limited', async () => {
+  it('with no limits set, a PC starts as many agents as it asks for', async () => {
     await allow();
+    for (let i = 1; i <= 5; i++) await startOne(request(), `n${i}`);
+    expect(starter.liveCount(HOST)).toBe(5);
+  });
+
+  it('two agents running per PC set: a third is refused rate-limited; three starts an hour set, then rate-limited', async () => {
+    await allow({ limits: SET_LIMITS });
     await startOne(request(), 'p1');
     await startOne(request(), 'p2');
     const third = request();
@@ -518,7 +527,7 @@ describe('the start handshake: reserved, stored, then made reachable', () => {
 
 describe('caps on every path', () => {
   it('a card answered when the PC is out of room is refused rate-limited', async () => {
-    await allow();
+    await allow({ limits: SET_LIMITS });
     await startOne(request(), 'q1');
     await startOne(request(), 'q2');
     // Room was there when this card opened (ended links), not when it is answered.
@@ -556,7 +565,7 @@ describe('caps on every path', () => {
   });
 
   it('a claim counts the other starts in flight: no third agent while two start', async () => {
-    await allow({ approval: 'allow-list', rules: [{ hostId: HOST, rootId: 'web', agent: 'claude', sub: 'apps' }] });
+    await allow({ approval: 'allow-list', rules: [{ hostId: HOST, rootId: 'web', agent: 'claude', sub: 'apps' }], limits: SET_LIMITS });
     let live = 0;
     const r = makeReceiver({ liveSpawns: () => live });
     const a = request();

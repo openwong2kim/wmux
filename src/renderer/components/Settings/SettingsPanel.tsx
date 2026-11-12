@@ -44,14 +44,8 @@ import {
   isFanoutWorkerPermissionMode,
   type FanoutWorkerPermissionMode,
 } from '../../../shared/workerLaunch';
-import {
-  DEFAULT_FANOUT_HOURLY_TASK_CAP,
-  DEFAULT_FANOUT_LIVE_TASK_CAP,
-  MAX_FANOUT_HOURLY_TASK_CAP,
-  MAX_FANOUT_LIVE_TASK_CAP,
-  MIN_FANOUT_HOURLY_TASK_CAP,
-  MIN_FANOUT_LIVE_TASK_CAP,
-} from '../../../shared/fanoutTaskCaps';
+import { MAX_FANOUT_HOURLY_TASK_CAP, MAX_FANOUT_LIVE_TASK_CAP } from '../../../shared/fanoutTaskCaps';
+import { SettingLimitInput } from './SettingLimitInput';
 import {
   ADVERTISED_SHORTCUTS,
   builtinCombosFor,
@@ -2149,8 +2143,9 @@ function FanoutWorkersSection() {
   // is the one this row writes.
   const [requireApproval, setRequireApprovalState] = useState(false);
   // Main-side as well: the caps an agent's fan-out is refused past.
-  const [liveTaskCap, setLiveTaskCapState] = useState(DEFAULT_FANOUT_LIVE_TASK_CAP);
-  const [hourlyTaskCap, setHourlyTaskCapState] = useState(DEFAULT_FANOUT_HOURLY_TASK_CAP);
+  // null: no limit (the default).
+  const [liveTaskCap, setLiveTaskCapState] = useState<number | null>(null);
+  const [hourlyTaskCap, setHourlyTaskCapState] = useState<number | null>(null);
   // Main-side as well: main refuses the agy trust write while this is off.
   const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
   // Main-side, per workspace: the worker fence of this workspace's bots.
@@ -2176,12 +2171,12 @@ function FanoutWorkersSection() {
       .catch(() => undefined);
     window.electronAPI?.fanout?.getLiveTaskCap?.()
       .then((v) => {
-        if (!cancelled && typeof v === 'number') setLiveTaskCapState(v);
+        if (!cancelled && (typeof v === 'number' || v === null)) setLiveTaskCapState(v);
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getHourlyTaskCap?.()
       .then((v) => {
-        if (!cancelled && typeof v === 'number') setHourlyTaskCapState(v);
+        if (!cancelled && (typeof v === 'number' || v === null)) setHourlyTaskCapState(v);
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getTrustAgyFolders?.()
@@ -2233,7 +2228,7 @@ function FanoutWorkersSection() {
   };
 
   // The field shows the value at once; main's reply (clamped) confirms it.
-  const onLiveTaskCapChange = (next: number) => {
+  const onLiveTaskCapChange = (next: number | null) => {
     setLiveTaskCapState(next);
     window.electronAPI.fanout
       .setLiveTaskCap(next)
@@ -2241,7 +2236,7 @@ function FanoutWorkersSection() {
       .catch(() => undefined);
   };
 
-  const onHourlyTaskCapChange = (next: number) => {
+  const onHourlyTaskCapChange = (next: number | null) => {
     setHourlyTaskCapState(next);
     window.electronAPI.fanout
       .setHourlyTaskCap(next)
@@ -2288,12 +2283,13 @@ function FanoutWorkersSection() {
         label={t('settings.fanoutLiveTaskCap')}
         description={t('settings.fanoutLiveTaskCapDesc')}
       >
-        <SettingNumberInput
+        <SettingLimitInput
           value={liveTaskCap}
-          min={MIN_FANOUT_LIVE_TASK_CAP}
           max={MAX_FANOUT_LIVE_TASK_CAP}
           label={t('settings.fanoutLiveTaskCap')}
-          onChange={onLiveTaskCapChange}
+          noLimitLabel={t('settings.noLimit')}
+          onCommit={onLiveTaskCapChange}
+          testId="fanout-live-cap"
         />
       </SettingRow>
       <SettingRow
@@ -2301,12 +2297,13 @@ function FanoutWorkersSection() {
         label={t('settings.fanoutHourlyTaskCap')}
         description={t('settings.fanoutHourlyTaskCapDesc')}
       >
-        <SettingNumberInput
+        <SettingLimitInput
           value={hourlyTaskCap}
-          min={MIN_FANOUT_HOURLY_TASK_CAP}
           max={MAX_FANOUT_HOURLY_TASK_CAP}
           label={t('settings.fanoutHourlyTaskCap')}
-          onChange={onHourlyTaskCapChange}
+          noLimitLabel={t('settings.noLimit')}
+          onCommit={onHourlyTaskCapChange}
+          testId="fanout-hourly-cap"
         />
       </SettingRow>
       <SettingRow

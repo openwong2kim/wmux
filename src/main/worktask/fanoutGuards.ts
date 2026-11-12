@@ -10,9 +10,9 @@
 //             ledger row says. A workspace a stamped caller creates inherits
 //             the stamp.
 //   caps    — at most the live cap of live tasks and the hourly cap of
-//             started tasks per rolling hour, app-wide. The owner sets both in
-//             Settings (fanoutWorkerPolicy.ts; defaults FANOUT_LIVE_TASK_CAP
-//             and FANOUT_HOURLY_TASK_CAP), read at every check.
+//             started tasks per rolling hour, app-wide, each only when the
+//             owner set it in Settings (fanoutWorkerPolicy.ts; unset by
+//             default, which is no limit), read at every check.
 //             Checked and reserved synchronously at claim time; over a cap the
 //             call is refused (no dialog, so nothing queues up behind it).
 //   audit   — one jsonl line per fan-out that is about to run: who, where,
@@ -42,16 +42,10 @@ import { getWorkerSlots, parseLaunchToken, type WorkerSlots } from '../factory/w
 import { holderCounts, liveHolders, type LiveHolders, type ReservedTask } from '../factory/workerHolders';
 import { holderInputsChanged } from '../factory/holderInputs';
 import { loadFanoutHourlyTaskCap, loadFanoutLiveTaskCap } from './fanoutWorkerPolicy';
-import {
-  DEFAULT_FANOUT_HOURLY_TASK_CAP,
-  DEFAULT_FANOUT_LIVE_TASK_CAP,
-  MAX_FANOUT_HOURLY_TASK_CAP,
-} from '../../shared/fanoutTaskCaps';
+import { MAX_FANOUT_HOURLY_TASK_CAP } from '../../shared/fanoutTaskCaps';
 
-/** The caps' defaults. The caps in force are the owner's (liveTaskCap(),
- *  hourlyTaskCap()). */
-export const FANOUT_LIVE_TASK_CAP = DEFAULT_FANOUT_LIVE_TASK_CAP;
-export const FANOUT_HOURLY_TASK_CAP = DEFAULT_FANOUT_HOURLY_TASK_CAP;
+// The caps in force are the owner's (liveTaskCap(), hourlyTaskCap()), each
+// unset (no limit) unless the owner set it.
 export const FANOUT_CAP_WINDOW_MS = 60 * 60 * 1000;
 
 /** Oldest lineage stamps are dropped past this many. Task workspaces are
@@ -512,7 +506,8 @@ export class FanOutGuards {
         // A torn caps file must not hand a loop a fresh hour: treat the hour
         // it was last written in as FULL (at the highest cap the owner can
         // set, so raising it does not empty that hour), and keep the file for
-        // inspection.
+        // inspection. It counts only while an hourly cap is set; with none,
+        // nothing is checked against it.
         let mtime = this.now();
         try {
           mtime = fs.statSync(p).mtimeMs;
@@ -532,13 +527,13 @@ export class FanOutGuards {
     return list;
   }
 
-  /** The live cap in force: the owner's setting, read at every check. */
-  liveTaskCap(): number {
+  /** The live cap in force: the owner's setting, read at every check; null: no limit. */
+  liveTaskCap(): number | null {
     return loadFanoutLiveTaskCap(this.dir);
   }
 
-  /** The hourly cap in force: the owner's setting, read at every check. */
-  hourlyTaskCap(): number {
+  /** The hourly cap in force: the owner's setting, read at every check; null: no limit. */
+  hourlyTaskCap(): number | null {
     return loadFanoutHourlyTaskCap(this.dir);
   }
 
@@ -572,14 +567,14 @@ export class FanOutGuards {
       };
     }
     const liveCap = this.liveTaskCap();
-    if (live + count > liveCap) {
+    if (liveCap !== null && live + count > liveCap) {
       return { ok: false, message: liveCapMessage(live, count, this.liveSlotHolders(pendingCount + spawningCount), liveCap) };
     }
 
     const recorded = hourly.reduce((sum, s) => sum + s.count, 0);
     const started = recorded + pendingCount;
     const hourlyCap = this.hourlyTaskCap();
-    if (started + count > hourlyCap) {
+    if (hourlyCap !== null && started + count > hourlyCap) {
       // Walk the recorded window oldest-first to the stamp whose expiry makes
       // room. Pending reservations do not expire on a clock — if the excess is
       // theirs, room frees when those fan-outs start or are dropped.
@@ -672,7 +667,7 @@ export class FanOutGuards {
       .filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS)
       .reduce((sum, s) => sum + s.count, 0);
     const hourlyCap = this.hourlyTaskCap();
-    if (recorded + this.booked('pending') + 1 > hourlyCap) {
+    if (hourlyCap !== null && recorded + this.booked('pending') + 1 > hourlyCap) {
       return {
         ok: false,
         message: `at most ${hourlyCap} fan-out tasks may start per rolling hour across wmux, and the hour is full`,

@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_MESSAGE_ID_RE, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
-import { SPAWN_DECIDED_PER_HOST_MAX, SPAWN_REQUEST_KEEP_MS, SPAWN_TARGETS_LINK_ID } from '../../../shared/a2aSpawn';
+import { SPAWN_DECIDED_PER_HOST_MAX, SPAWN_PENDING_PER_HOST_DEFAULT, SPAWN_REQUEST_KEEP_MS, SPAWN_TARGETS_LINK_ID } from '../../../shared/a2aSpawn';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { acceptInbound, type InboundDeps } from '../inbound';
@@ -479,13 +479,25 @@ describe('replay, resend and room', () => {
     expect(requests.unsent().map((r) => r.spawnId)).not.toContain(lost.linkId);
   });
 
-  it('at most 3 pending per PC: the next one is refused as rate-limited', async () => {
-    await allowHost();
+  it('pending per PC set to 3: the next one is refused as rate-limited', async () => {
+    await allowHost({ limits: { pendingPerPc: 3 } });
     const hang = makeReceiver({ agentInstalled: () => new Promise(() => undefined), checks: new SpawnChecks(8, 60_000) });
     for (let i = 0; i < 3; i++) expect(hang.applyInbound(envelope(), { hostId: HOST })).toEqual({ ok: true, duplicate: false });
     const fourth = envelope();
     expect(hang.applyInbound(fourth, { hostId: HOST })).toEqual({ ok: true, duplicate: false });
     expect(resultsFor(fourth)[0]?.env.spawnResult?.code).toBe('rate-limited');
+  });
+
+  it(`with no pending limit set, ${SPAWN_PENDING_PER_HOST_DEFAULT} per PC; another PC still gets in`, async () => {
+    await allowHost({ hosts: { [HOST]: { allowed: true }, [OTHER]: { allowed: true } } });
+    const hang = makeReceiver({ agentInstalled: () => new Promise(() => undefined), checks: new SpawnChecks(8, 60_000) });
+    for (let i = 0; i < SPAWN_PENDING_PER_HOST_DEFAULT; i++) expect(hang.applyInbound(envelope(), { hostId: HOST })).toEqual({ ok: true, duplicate: false });
+    const over = envelope();
+    hang.applyInbound(over, { hostId: HOST });
+    expect(resultsFor(over)[0]?.env.spawnResult?.code).toBe('rate-limited');
+    const other = envelope();
+    hang.applyInbound(other, { hostId: OTHER });
+    expect(resultsFor(other)).toEqual([]);
   });
 
   it('every result carries a code and the spawnId only: no path, errno or message', async () => {
