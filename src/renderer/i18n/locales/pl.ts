@@ -6583,7 +6583,7 @@ export const pl = {
   'remoteSpawn.limit.startsPerDayDesc': "Ilu agentów jeden komputer może tu uruchomić w dowolnej kroczącej dobie. Puste: bez limitu.",
   'remoteSpawn.limit.pendingPerPc': "Oczekujące żądania na komputer",
   'remoteSpawn.limit.pendingPerPcDesc': "Ile żądań jeden komputer może mieć tu naraz w oczekiwaniu (do 1000). Puste: 100.",
-  'remoteSpawn.limit.pendingDefault': "100 (domyślnie)",
+  'remoteSpawn.limit.pendingDefault': "100",
   'remoteSpawn.save': "Zapisz",
   'remoteSpawn.saved': "Zapisano",
   'remoteSpawn.saveFailed': "Nie udało się zapisać. Spróbuj ponownie, gdy wmux się połączy.",

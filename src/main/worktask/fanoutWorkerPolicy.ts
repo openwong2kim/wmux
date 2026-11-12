@@ -25,10 +25,10 @@
 //
 // A missing file is the defaults (auto, no approval — owner decision
 // 2026-09-24). A file that exists but cannot be read resolves to the SAFE side
-// of each setting: approval required, and the default permission mode. The
-// caps are unset (no limit) either way. A file written before the caps were
-// optional reads its old defaults (8 live, 24 per hour) as unset; see
-// `taskCapsVersion`.
+// of each setting: approval required, the default permission mode, and the
+// caps at their old defaults (8 live, 24 per hour). A missing file has no
+// caps (no limit). A file written before the caps were optional reads those
+// old defaults as unset; see `taskCapsVersion`.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -111,8 +111,9 @@ function loadPolicy(dir?: string): FanoutPolicy {
       permissionMode: DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
       requireApproval: true,
       trustAgyFolders: false,
-      liveTaskCap: null,
-      hourlyTaskCap: null,
+      // The safe side: the brakes the old defaults were, until the file is readable again.
+      liveTaskCap: LEGACY_FANOUT_LIVE_TASK_CAP,
+      hourlyTaskCap: LEGACY_FANOUT_HOURLY_TASK_CAP,
       taskCapsVersion: TASK_CAPS_VERSION,
     };
   }

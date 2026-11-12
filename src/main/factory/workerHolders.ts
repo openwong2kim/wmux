@@ -5,7 +5,7 @@
 //   maxConcurrentAgents        (agentSlots.ts)   bot holders past their reservation, plus bot turns
 //   GLOBAL_CONCURRENT_WORKERS  (fanout.rpc.ts)   bot holders
 //   a bot's worker budget      (fanout.rpc.ts)   bot holders of that bot
-//   FANOUT_LIVE_TASK_CAP       (fanoutGuards.ts) every holder
+//   liveTaskCap (when set)     (fanoutGuards.ts) every holder
 //
 // Each used to derive "who holds a slot" from its own inputs, so a fix to one
 // never reached the others (#2255, #2314, #2321, #2339, #2387). This module

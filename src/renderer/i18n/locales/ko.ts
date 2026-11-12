@@ -6177,7 +6177,7 @@ export const ko = {
   'remoteSpawn.limit.startsPerDayDesc': "한 PC가 최근 24시간 동안 여기서 시작할 수 있는 에이전트 수입니다. 비우면 제한이 없습니다.",
   'remoteSpawn.limit.pendingPerPc': "PC당 대기 요청",
   'remoteSpawn.limit.pendingPerPcDesc': "한 PC가 여기서 동시에 대기시킬 수 있는 요청 수입니다(최대 1,000). 비우면 100입니다.",
-  'remoteSpawn.limit.pendingDefault': "100 (기본)",
+  'remoteSpawn.limit.pendingDefault': "100",
   'remoteSpawn.save': "저장",
   'remoteSpawn.saved': "저장됨",
   'remoteSpawn.saveFailed': "저장하지 못했습니다. wmux가 연결되면 다시 시도하세요.",

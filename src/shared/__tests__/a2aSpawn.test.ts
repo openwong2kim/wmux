@@ -98,16 +98,18 @@ describe('the policy', () => {
     expect(spawnPendingPerHost(loaded!)).toBe(SPAWN_PENDING_PER_HOST_DEFAULT);
   });
 
-  it('takes each limit as an optional positive integer, pending up to the store size; anything else is not a policy', () => {
+  it('takes each limit as an optional positive integer, pending up to the store size; a malformed one is not a policy, an unknown one is left out', () => {
     const base = defaultSpawnPolicy();
     const all = { livePerPc: 2, liveTotal: 4, startsPerHour: 3, startsPerDay: 10, pendingPerPc: SPAWN_REQUESTS_MAX };
     expect(coerceSpawnPolicy({ ...base, limits: all })?.limits).toEqual(all);
     expect(coerceSpawnPolicy({ ...base, limits: { startsPerDay: 1 } })?.limits).toEqual({ startsPerDay: 1 });
     // An empty set is no limits at all.
     expect(coerceSpawnPolicy({ ...base, limits: {} })).not.toHaveProperty('limits');
-    for (const bad of [{ livePerPc: 0 }, { liveTotal: -1 }, { startsPerHour: 1.5 }, { startsPerDay: '3' }, { pendingPerPc: SPAWN_REQUESTS_MAX + 1 }, { other: 1 }, null, []]) {
+    for (const bad of [{ livePerPc: 0 }, { liveTotal: -1 }, { startsPerHour: 1.5 }, { startsPerDay: '3' }, { pendingPerPc: SPAWN_REQUESTS_MAX + 1 }, null, []]) {
       expect(coerceSpawnPolicy({ ...base, limits: bad }), JSON.stringify(bad)).toBeNull();
     }
+    // A later version's limit: the policy still loads, without it.
+    expect(coerceSpawnPolicy({ ...base, limits: { startsPerWeek: 5, livePerPc: 2 } })?.limits).toEqual({ livePerPc: 2 });
     expect(spawnPendingPerHost({ limits: { pendingPerPc: 5 } })).toBe(5);
   });
 

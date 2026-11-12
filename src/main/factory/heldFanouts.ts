@@ -2,7 +2,7 @@
 //
 // A bot's fan-out over its own worker slots (budget.maxConcurrentWorkers),
 // the factory's (WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS) or the wmux-wide
-// live fan-out cap (FANOUT_LIVE_TASK_CAP, the owner's fan-outs counted) is not a budget
+// live fan-out cap (fanoutGuards liveTaskCap when the owner set one, the owner's fan-outs counted) is not a budget
 // refusal: the bot waits for a slot. The fan-out's refusal (fanout.rpc.ts)
 // keeps the request here, at most HELD_PER_BOT_MAX per bot, and once a
 // slot frees for it queues one wake for the bot that carries the request

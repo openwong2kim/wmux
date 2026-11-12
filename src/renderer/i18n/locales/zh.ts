@@ -5398,7 +5398,7 @@ export const zh = {
   'remoteSpawn.limit.startsPerDayDesc': "一台电脑在任意滚动一天内可在此启动的代理数。留空：不限。",
   'remoteSpawn.limit.pendingPerPc': "每台电脑待处理请求",
   'remoteSpawn.limit.pendingPerPcDesc': "一台电脑在此可同时等待的请求数（最多 1000）。留空：100。",
-  'remoteSpawn.limit.pendingDefault': "100（默认）",
+  'remoteSpawn.limit.pendingDefault': "100",
   'remoteSpawn.save': "保存",
   'remoteSpawn.saved': "已保存",
   'remoteSpawn.saveFailed': "无法保存。请在 wmux 连接后重试。",

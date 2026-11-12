@@ -426,13 +426,13 @@ export class A2aSpawnReceiver {
     const r = this.deps.requests;
     const live = this.deps.liveSpawns ?? ((): number => 0);
     const others = (h?: HostId): number => Math.max(0, (r.startingCount?.(h) ?? 0) - 1);
-    const limits = this.deps.policy.get().limits ?? {};
-    const atLimit = (count: number, limit: number | undefined): boolean => limit !== undefined && count >= limit;
-    if (atLimit(live(hostId) + others(hostId), limits.livePerPc)) return false;
-    if (atLimit(live() + others(), limits.liveTotal)) return false;
     const now = this.now();
-    if (limits.startsPerHour !== undefined && atLimit(r.startsSince?.(now - HOUR_MS, hostId, spawnId) ?? 0, limits.startsPerHour)) return false;
-    return limits.startsPerDay === undefined || !atLimit(r.startsSince?.(now - DAY_MS, hostId, spawnId) ?? 0, limits.startsPerDay);
+    return !this.atALimit({
+      livePerPc: () => live(hostId) + others(hostId),
+      liveTotal: () => live() + others(),
+      startsPerHour: () => r.startsSince?.(now - HOUR_MS, hostId, spawnId) ?? 0,
+      startsPerDay: () => r.startsSince?.(now - DAY_MS, hostId, spawnId) ?? 0,
+    });
   }
 
   private async claimNow(hostId: HostId, spawnId: string): Promise<A2aSpawnClaimResult> {
@@ -817,13 +817,23 @@ export class A2aSpawnReceiver {
   /** Starts per PC per hour and per day, and running agents per PC and in all (counting those about to start), against the limits set. */
   private overCaps(hostId: HostId): boolean {
     const r = this.deps.requests;
-    const limits = this.deps.policy.get().limits ?? {};
     const now = this.now();
-    if (limits.startsPerHour !== undefined && (r.approvedSince?.(now - HOUR_MS, hostId) ?? 0) >= limits.startsPerHour) return true;
-    if (limits.startsPerDay !== undefined && (r.approvedSince?.(now - DAY_MS, hostId) ?? 0) >= limits.startsPerDay) return true;
     const live = this.deps.liveSpawns ?? ((): number => 0);
-    if (limits.livePerPc !== undefined && live(hostId) + (r.startingCount?.(hostId) ?? 0) >= limits.livePerPc) return true;
-    return limits.liveTotal !== undefined && live() + (r.startingCount?.() ?? 0) >= limits.liveTotal;
+    return this.atALimit({
+      startsPerHour: () => r.approvedSince?.(now - HOUR_MS, hostId) ?? 0,
+      startsPerDay: () => r.approvedSince?.(now - DAY_MS, hostId) ?? 0,
+      livePerPc: () => live(hostId) + (r.startingCount?.(hostId) ?? 0),
+      liveTotal: () => live() + (r.startingCount?.() ?? 0),
+    });
+  }
+
+  /** Whether any limit the policy sets is reached; each count is read only for a limit that is set. */
+  private atALimit(counts: Record<'livePerPc' | 'liveTotal' | 'startsPerHour' | 'startsPerDay', () => number>): boolean {
+    const limits = this.deps.policy.get().limits ?? {};
+    return (Object.keys(counts) as (keyof typeof counts)[]).some((key) => {
+      const limit = limits[key];
+      return limit !== undefined && counts[key]() >= limit;
+    });
   }
 
   /**

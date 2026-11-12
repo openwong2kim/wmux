@@ -6655,7 +6655,7 @@ export const en = {
   'remoteSpawn.limit.startsPerDayDesc': "Agents one PC may start here in any rolling day. Empty: no limit.",
   'remoteSpawn.limit.pendingPerPc': "Open requests per PC",
   'remoteSpawn.limit.pendingPerPcDesc': "Requests one PC may have waiting here at once (up to 1,000). Empty: 100.",
-  'remoteSpawn.limit.pendingDefault': "100 (default)",
+  'remoteSpawn.limit.pendingDefault': "100",
   'remoteSpawn.save': "Save",
   'remoteSpawn.saved': "Saved",
   'remoteSpawn.saveFailed': "Could not save. Try again once wmux is connected.",

@@ -60,7 +60,7 @@ describe('fan-out policy store', () => {
     expect(loadFanoutTrustAgyFolders(dir)).toBe(false);
   });
 
-  it('fan-out caps: none when missing, torn or not numbers; clamped to bounds; null clears; kept across other writes', async () => {
+  it('fan-out caps: none when missing or not numbers, the old defaults when torn; clamped to bounds; null clears; kept across other writes', async () => {
     const dir = tmp();
     expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([null, null]);
     expect(await setFanoutLiveTaskCap(0, dir)).toBe(1);
@@ -81,13 +81,13 @@ describe('fan-out policy store', () => {
     expect(await setFanoutLiveTaskCap(8, dir)).toBe(8);
     expect(await setFanoutHourlyTaskCap(24, dir)).toBe(24);
     expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([8, 24]);
-    // A hand-edited file is clamped on read; garbage and a torn file are no limit.
+    // A hand-edited file is clamped on read; garbage is no limit, a torn file the safe side (the old defaults).
     fs.writeFileSync(getFanoutWorkerPolicyPath(dir), JSON.stringify({ liveTaskCap: -3, hourlyTaskCap: 1e9, taskCapsVersion: 2 }), 'utf8');
     expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([1, 200]);
     fs.writeFileSync(getFanoutWorkerPolicyPath(dir), JSON.stringify({ liveTaskCap: '50', hourlyTaskCap: null }), 'utf8');
     expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([null, null]);
     fs.writeFileSync(getFanoutWorkerPolicyPath(dir), '{ torn', 'utf8');
-    expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([null, null]);
+    expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([8, 24]);
   });
 
   it('a file from before the caps were optional: the old defaults become unset, other values stay, once', async () => {

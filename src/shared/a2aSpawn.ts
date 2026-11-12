@@ -734,11 +734,13 @@ export function coerceSpawnPolicy(raw: unknown): A2aSpawnPolicyV1 | null {
   }
   if (!Array.isArray(agents) || agents.length > SPAWN_ROOTS_MAX || !agents.every(isAgentSlug)) return null;
   if (!Array.isArray(rules) || rules.length > SPAWN_RULES_MAX) return null;
-  // Limits: each optional; a bad or unknown one makes the policy invalid.
+  // Limits: each optional; a malformed one makes the policy invalid. A key
+  // this version does not know (a later version's limit) is left out, as an
+  // unknown top-level field is, so a newer file still loads.
   const limits = raw['limits'];
   let cleanLimits: A2aSpawnLimitsV1 | undefined;
   if (limits !== undefined) {
-    if (!isPlain(limits) || !onlyKeys(limits, [...SPAWN_LIMIT_KEYS])) return null;
+    if (!isPlain(limits)) return null;
     cleanLimits = {};
     for (const key of SPAWN_LIMIT_KEYS) {
       const v = limits[key];
