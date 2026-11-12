@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type http from 'node:http';
 import https from 'node:https';
-import type net from 'node:net';
+import net from 'node:net';
 import os from 'node:os';
 import {
   A2A_DISCOVER_BODY_MAX,
@@ -135,6 +135,11 @@ export interface A2aServerDeps {
   tailnetIpv4s?: () => string[];
   /** Bind address. Default `0.0.0.0` (PoC); tests bind loopback. */
   bindHost?: string;
+  /**
+   * The bind address set in config.json (`a2aRemote.bindHost`). Like
+   * `bindHost`, and invites, firewall facts and discovery then offer only it.
+   */
+  bindAddress?: string;
   /** Clock for the invite's lifetime and the pairing backoff. Default `Date.now`. */
   now?: () => number;
   /** Test seam; default `loadOrCreateHostIdentity`. */
@@ -235,6 +240,43 @@ export function inviteAlt(ips: readonly string[], host: string, tailnet: Readonl
   return alt;
 }
 
+/** What a listener offers other PCs: the invite host and alternates, and the IPv4s it reports. */
+export interface AdvertisedAddresses {
+  host: string | null;
+  alt: string[];
+  ips: string[];
+  tailnet: string[];
+}
+
+/** The one address a listener is bound to, or null when it binds every interface. */
+export function boundAddress(bindHost: string | undefined): string | null {
+  return bindHost === undefined || bindHost === '0.0.0.0' || bindHost === '::' ? null : bindHost;
+}
+
+/**
+ * Bound to every interface: the machine name (or the best IPv4) with
+ * alternates, and every IPv4. Bound to one address: that address only, with
+ * no name and no alternates.
+ */
+export function advertisedAddresses(
+  bindHost: string | undefined,
+  hostname: string,
+  ips: readonly string[],
+  tailnet: readonly string[],
+): AdvertisedAddresses {
+  const bound = boundAddress(bindHost);
+  if (bound === null) {
+    const host = inviteHost(hostname, ips);
+    return { host, alt: host ? inviteAlt(ips, host, new Set(tailnet)) : [], ips: [...ips], tailnet: [...tailnet] };
+  }
+  return {
+    host: inviteHost(bound, []),
+    alt: [],
+    ips: net.isIPv4(bound) ? [bound] : [],
+    tailnet: tailnet.filter((ip) => ip === bound),
+  };
+}
+
 export class A2aServer {
   private readonly deps: A2aServerDeps;
   private readonly hostname: () => string;
@@ -291,6 +333,7 @@ export class A2aServer {
         status: () => this.status(),
         identity: () => (this.server ? this.identity : null),
         name: () => this.name(),
+        boundAddress: () => boundAddress(this.deps.bindAddress),
       },
       livePeerName: (hostId) => this.deps.peers.listByHost(hostId).find((r) => r.revokedAt === undefined)?.name ?? null,
       version: deps.discoverVersion ?? ((): string => 'unknown'),
@@ -346,7 +389,16 @@ export class A2aServer {
 
   /** What the firewall probe needs: whether it listens, where, and on which addresses another PC is told to connect. */
   firewallFacts(): { listening: boolean; port: number | null; ips: string[]; tailnetIps: string[] } {
-    return { listening: this.server !== null, port: this.port, ips: this.ipv4s(), tailnetIps: this.tailnetIpv4s() };
+    const offered = this.advertised();
+    return { listening: this.server !== null, port: this.port, ips: offered.ips, tailnetIps: offered.tailnet };
+  }
+
+  private listenHost(): string {
+    return this.deps.bindAddress ?? this.deps.bindHost ?? '0.0.0.0';
+  }
+
+  private advertised(): AdvertisedAddresses {
+    return advertisedAddresses(this.deps.bindAddress, this.hostname(), this.ipv4s(), this.tailnetIpv4s());
   }
 
   /**
@@ -358,11 +410,9 @@ export class A2aServer {
     if (!this.server || this.port === null || !this.identity) {
       throw new Error('a2a.remote.pair.begin: the A2A listener is not running');
     }
-    const ips = this.ipv4s();
-    const host = inviteHost(this.hostname(), ips);
+    const { host, alt, tailnet: tailnetIps } = this.advertised();
     if (!host) throw new Error('a2a.remote.pair.begin: this PC has no usable name or IPv4 address');
-    const tailnet = new Set(this.tailnetIpv4s());
-    const alt = inviteAlt(ips, host, tailnet);
+    const tailnet = new Set(tailnetIps);
     const opened = this.pairing.begin({ host, port: this.port, fingerprint256: this.identity.fingerprint256, alt });
     // An invite needs the listener past any discovery window that turned it on.
     this.discovery.keepA2aOn();
@@ -461,7 +511,7 @@ export class A2aServer {
     const inbound = this.inbound;
     bound.server.on('secureConnection', (socket: { remoteAddress?: string }) => inbound.note(socket.remoteAddress));
     if (old) await closeServer(old);
-    this.log('info', `[a2a-remote] listening on ${this.deps.bindHost ?? '0.0.0.0'}:${this.port}`);
+    this.log('info', `[a2a-remote] listening on ${this.listenHost()}:${this.port}`);
   }
 
   private setError(message: string | null, code: string | null = null, port: number | null = null): void {
@@ -507,7 +557,7 @@ export class A2aServer {
     server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
     server.maxConnections = MAX_CONNECTIONS;
 
-    const bindHost = this.deps.bindHost ?? '0.0.0.0';
+    const bindHost = this.listenHost();
     const listenError = await new Promise<NodeJS.ErrnoException | null>((resolve) => {
       const onError = (err: NodeJS.ErrnoException): void => resolve(err);
       server.once('error', onError);

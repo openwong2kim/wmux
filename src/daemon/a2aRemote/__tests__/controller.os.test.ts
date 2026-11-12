@@ -10,6 +10,8 @@ import {
   coerceA2aRemoteConfig,
   coerceA2aRemotePatch,
 } from '../controller';
+import { advertisedAddresses, inviteAlt } from '../server';
+import { inviteHost } from '../pairing';
 import { connectRefused, disposeAll, freePort, makePc } from './a2aServerRig';
 
 afterEach(async () => {
@@ -98,12 +100,44 @@ describe('a2aRemote bind address', () => {
     }
   });
 
+  it('bound to every interface, offers exactly what it offered before', () => {
+    const ips = ['192.168.1.20', '10.0.4.21', '172.16.0.9', '100.64.0.5'];
+    const tailnet = ['100.64.0.5'];
+    const today = {
+      host: inviteHost('office-pc', ips),
+      alt: inviteAlt(ips, inviteHost('office-pc', ips) ?? '', new Set(tailnet)),
+      ips,
+      tailnet,
+    };
+    expect(today).toEqual({ host: 'office-pc', alt: ['192.168.1.20', '10.0.4.21', '172.16.0.9', '100.64.0.5'], ips, tailnet });
+    for (const bindHost of [undefined, '0.0.0.0', '::']) {
+      expect(advertisedAddresses(bindHost, 'office-pc', ips, tailnet)).toEqual(today);
+    }
+    // A name that fails the invite grammar falls back to the best IPv4, as before.
+    expect(advertisedAddresses(undefined, 'no such name', ips, tailnet).host).toBe(inviteHost('no such name', ips));
+  });
+
+  it('bound to one address, offers only that address', () => {
+    const ips = ['192.168.1.20', '100.64.0.5'];
+    const tailnet = ['100.64.0.5'];
+    expect(advertisedAddresses('100.64.0.5', 'office-pc', ips, tailnet)).toEqual({ host: '100.64.0.5', alt: [], ips: ['100.64.0.5'], tailnet: ['100.64.0.5'] });
+    expect(advertisedAddresses('192.168.1.20', 'office-pc', ips, tailnet)).toEqual({ host: '192.168.1.20', alt: [], ips: ['192.168.1.20'], tailnet: [] });
+    expect(advertisedAddresses('127.0.0.1', 'office-pc', ips, tailnet)).toEqual({ host: '127.0.0.1', alt: [], ips: ['127.0.0.1'], tailnet: [] });
+    expect(advertisedAddresses('localhost', 'office-pc', ips, tailnet)).toEqual({ host: 'localhost', alt: [], ips: [], tailnet: [] });
+  });
+
+  it('a listener bound to one address invites and reports only that address', async () => {
+    const pc = await makePc('office-pc', { deps: { bindAddress: '127.0.0.1', ipv4s: () => ['192.168.1.20', '127.0.0.1'] } });
+    expect(pc.server.beginPairing()).toMatchObject({ addresses: ['127.0.0.1'], tailnet: [] });
+    expect(pc.server.firewallFacts()).toMatchObject({ listening: true, ips: ['127.0.0.1'], tailnetIps: [] });
+  });
+
   it('a loopback bind is not reachable on another address of this PC', async () => {
     const other = Object.values(os.networkInterfaces())
       .flat()
       .find((a) => a && a.family === 'IPv4' && !a.internal)?.address;
     const port = await freePort();
-    const pc = await makePc('PC A', { port, deps: { bindHost: '127.0.0.1' } });
+    const pc = await makePc('PC A', { port, deps: { bindHost: undefined, bindAddress: '127.0.0.1' } });
     expect(pc.server.status().listening).toBe(true);
     expect(await connectRefused(port)).toBe(false);
     if (!other) return; // no non-loopback IPv4 on this runner

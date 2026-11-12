@@ -10862,7 +10862,7 @@ async function main(): Promise<void> {
     const a2aServer = new A2aServer({
       controller: a2aRemoteController,
       // `a2aRemote.bindHost` in config.json; absent keeps the default.
-      bindHost: a2aRemoteBindHost(a2aRemoteController.current(), a2aLog),
+      bindAddress: a2aRemoteBindHost(a2aRemoteController.current(), a2aLog),
       identityDir: a2aDir,
       peers: a2aPeers,
       onPeerRevoked: a2aCascade,

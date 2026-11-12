@@ -212,6 +212,8 @@ export interface DiscoveryListener {
   /** This PC's identity while the listener runs. */
   identity(): { hostId: string; fingerprint256: string } | null;
   name(): string;
+  /** The one address the listener is bound to; null (or absent) when it binds every interface. */
+  boundAddress?(): string | null;
 }
 
 export interface DiscoveryDeps {
@@ -387,6 +389,15 @@ export class DiscoveryWindow {
       }
       this.revertTurnOn();
       return { ok: false, reason: 'listen-failed', listen };
+    }
+    const bound = this.deps.listener.boundAddress?.() ?? null;
+    if (bound !== null && !snapshot.selfIps.has(bound)) {
+      this.revertTurnOn();
+      return {
+        ok: false,
+        reason: 'listen-failed',
+        listen: this.listenFacts(`the A2A listener is bound to ${bound}, not to this PC's tailnet address ${selfIp}`),
+      };
     }
     // A concurrent close or settings change may have run while this awaited.
     if (this.win) return { ok: true, status: this.status() };
