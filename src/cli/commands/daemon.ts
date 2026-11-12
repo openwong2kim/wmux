@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { spawn } from 'child_process';
 import { childStdio } from '../consoleStdio';
@@ -341,6 +341,8 @@ export interface HeadlessStatus {
   reason?: string;
   /** Agents a remote start runs here now. */
   running: number;
+  /** Those agents: which start, for which PC, in which worktree, since when. */
+  runningStarts: Array<{ spawnId: string; hostId: string; worktreePath?: string; since: string }>;
   /** Worktrees of starts that ended, kept with their branches (the agent's work). */
   leftovers: string[];
   /** Starts whose agent processes did not all exit yet (cleanup waits for them): `<spawnId>: <worktree> (pid …)`. */
@@ -349,6 +351,15 @@ export interface HeadlessStatus {
   perPc: Record<string, { running: number; kept: number }>;
   /** Where the app check came from: the running daemon, or the data dir alone (no daemon answered). */
   from: 'daemon' | 'files';
+  /**
+   * Start files found corrupt and set aside (`headless-starts.json.corrupt-*`):
+   * the starts they held are no longer listed. Present only when there is one.
+   */
+  setAside?: {
+    files: string[];
+    /** Folders under the worktrees folder named like a remote start's (`remote-sp-*`) that no start record names. */
+    unrecordedWorktrees: string[];
+  };
 }
 
 /** What the running daemon decides from (`daemon.headless.status`), or null when none answers. */
@@ -403,12 +414,37 @@ export function headlessStatus(wmuxDir: string = getWmuxDir(), daemon: DaemonHea
     appAttached,
     ...(reason ? { reason } : {}),
     running: starts.filter((r) => r.phase === 'started' && !r.survivors).length,
+    runningStarts: starts.flatMap((r) => (r.phase === 'started' && !r.survivors
+      ? [{ spawnId: r.spawnId, hostId: r.hostId, ...(r.worktreePath ? { worktreePath: r.worktreePath } : {}), since: r.startedAt }]
+      : [])),
     // Only those still on disk: the owner may have removed some already.
     leftovers: starts.flatMap((r) => (r.phase === 'ended' && !r.survivors && r.worktreePath && existsSync(r.worktreePath) ? [r.worktreePath] : [])),
     heldUp: starts.flatMap((r) => (r.survivors ? [`${r.spawnId}: ${r.worktreePath ?? r.sessionId} (pid ${r.survivors.map((p) => p.pid).join(', ')})`] : [])),
     perPc: perPc(starts),
     from: daemon ? 'daemon' : 'files',
+    ...setAside(wmuxDir, starts),
   };
+}
+
+/** A set-aside start file, and the remote-start worktrees no record names then. */
+function setAside(wmuxDir: string, starts: HeadlessStartRecordV1[]): Pick<HeadlessStatus, 'setAside'> {
+  const list = (dir: string): string[] => {
+    try {
+      return readdirSync(dir);
+    } catch {
+      return [];
+    }
+  };
+  const files = list(join(wmuxDir, 'a2a')).filter((n) => n.startsWith(`${HEADLESS_STARTS_FILE}.corrupt-`)).sort();
+  if (files.length === 0) return {};
+  const worktrees = join(wmuxDir, 'worktrees');
+  const named = new Set(starts.flatMap((r) => [r.worktreePath, r.worktreeIntended].filter((p): p is string => !!p)));
+  const unrecordedWorktrees = list(worktrees)
+    .filter((n) => /^remote-sp-[0-9a-f-]{36}$/.test(n))
+    .map((n) => join(worktrees, n))
+    .filter((p) => !named.has(p))
+    .sort();
+  return { setAside: { files, unrecordedWorktrees } };
 }
 
 function perPc(starts: HeadlessStartRecordV1[]): HeadlessStatus['perPc'] {
@@ -443,6 +479,7 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
     }
     console.log(st.inEffect ? 'Headless mode: on. PCs with an allow rule can start agents here with no person approving.' : `Headless mode: not in effect: ${st.reason}.`);
     console.log(`Agents started remotely, running: ${st.running}`);
+    for (const r of st.runningStarts) console.log(`  ${r.spawnId} from ${r.hostId}, since ${r.since}${r.worktreePath ? `, in ${r.worktreePath}` : ''}`);
     console.log(`Worktrees of ended starts, kept: ${st.leftovers.length}`);
     for (const p of st.leftovers) console.log(`  ${p}`);
     for (const [hostId, n] of Object.entries(st.perPc)) console.log(`  from ${hostId}: ${n.running} running, ${n.kept} kept`);
@@ -450,6 +487,14 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
       console.log(`Starts waiting for their agent's processes to exit (worktree kept until then): ${st.heldUp.length}`);
       for (const p of st.heldUp) console.log(`  ${p}`);
       console.log('Once you checked those processes are gone (or stopped them), drop a hold with `wmux daemon headless release <spawn id>`.');
+    }
+    if (st.setAside) {
+      console.log(`The start file was found unreadable and set aside (${st.setAside.files.join(', ')}): starts recorded before that are not listed above, and their worktrees and branches may remain.`);
+      if (st.setAside.unrecordedWorktrees.length > 0) {
+        console.log('Remote-start worktrees no start record names:');
+        for (const p of st.setAside.unrecordedWorktrees) console.log(`  ${p}`);
+      }
+      console.log('Check them with `git worktree list` in their repository, and remove one you no longer need with `git worktree remove` and `git branch -D`.');
     }
     if (st.from === 'files') console.log('(No daemon answered: read from the data dir only.)');
     return;

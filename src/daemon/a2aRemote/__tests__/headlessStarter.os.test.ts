@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { A2aLinkRecordV1, HostId } from '../../../shared/a2aRemote';
 import type { A2aSpawnClaimResult, A2aSpawnStepResult } from '../../../shared/a2aSpawn';
-import { workerLaunchFlags } from '../../../shared/workerLaunch';
+import { toolRuleCovers, workerLaunchFlags } from '../../../shared/workerLaunch';
 import type { SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
 import { HeadlessStartStore, type HeadlessSurvivor } from '../headlessStartStore';
 import { A2aHeadlessStarter, HEADLESS_EXTRA_DISALLOWED_TOOLS, headlessTreeId, type HeadlessSessionInput, type HeadlessSessionPort, type HeadlessStarterDeps } from '../headlessStarter';
@@ -167,6 +167,12 @@ describe('headless start', () => {
       expect(input.command).toContain(`mcp__wmux__${tool}`);
     }
     expect(input.command).toContain('mcp__wmux__fanout_start');
+    // No tool is both allowed and denied on the line (task_push was, in both lists).
+    const list = (flag: string): string[] => (input.command.match(new RegExp(`${flag} "([^"]*)"`))?.[1] ?? '').split(',');
+    const allowed = list('--allowedTools');
+    const denied = list('--disallowedTools');
+    expect(denied).toContain('mcp__wmux__task_push');
+    expect(allowed.filter((tool) => denied.some((rule) => toolRuleCovers(rule, tool)))).toEqual([]);
     expect(JSON.stringify(input)).not.toContain(PROMPT);
     expect(failed).toEqual([]);
   });
