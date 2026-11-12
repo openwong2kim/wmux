@@ -343,12 +343,43 @@ export interface HeadlessStatus {
   running: number;
   /** Worktrees of starts that ended, kept with their branches (the agent's work). */
   leftovers: string[];
+  /** Worktrees of starts whose agent processes did not all exit yet (cleanup waits for them). */
+  heldUp: string[];
+  /** Where the app check came from: the running daemon, or the data dir alone (no daemon answered). */
+  from: 'daemon' | 'files';
 }
 
-/** What `wmux daemon headless status` reports, read from the daemon's data dir. */
-export function headlessStatus(wmuxDir: string = getWmuxDir()): HeadlessStatus {
+/** What the running daemon decides from (`daemon.headless.status`), or null when none answers. */
+export interface DaemonHeadlessView {
+  appAttached: boolean;
+  optedIn: boolean;
+  inEffect: boolean;
+}
+
+/** Test seam: the running daemon's view. */
+export const headlessIo = {
+  daemonView: async (): Promise<DaemonHeadlessView | null> => {
+    try {
+      const res = await sendDaemonStringRequest('daemon.headless.status', {});
+      const r = res.ok ? (res.result as Partial<DaemonHeadlessView> | undefined) : undefined;
+      return r && typeof r.appAttached === 'boolean' && typeof r.optedIn === 'boolean' && typeof r.inEffect === 'boolean'
+        ? { appAttached: r.appAttached, optedIn: r.optedIn, inEffect: r.inEffect }
+        : null;
+    } catch {
+      return null;
+    }
+  },
+};
+
+/**
+ * What `wmux daemon headless status` reports. The app check is the running
+ * daemon's when one answers (it also knows the app launcher's marker and an
+ * attach it could not record); with no daemon, the data dir's record of an
+ * attach. The starts are read from the data dir.
+ */
+export function headlessStatus(wmuxDir: string = getWmuxDir(), daemon: DaemonHeadlessView | null = null): HeadlessStatus {
   const a2aDir = join(wmuxDir, 'a2a');
-  const appAttached = existsSync(join(wmuxDir, APP_ATTACHED_FILE));
+  const appAttached = existsSync(join(wmuxDir, APP_ATTACHED_FILE)) || daemon?.appAttached === true;
   const optedIn = existsSync(headlessFlagPath(a2aDir));
   let starts: HeadlessStartRecordV1[] = [];
   try {
@@ -367,8 +398,15 @@ export function headlessStatus(wmuxDir: string = getWmuxDir()): HeadlessStatus {
     ...(reason ? { reason } : {}),
     running: starts.filter((r) => r.phase === 'started').length,
     // Only those still on disk: the owner may have removed some already.
-    leftovers: starts.flatMap((r) => (r.phase === 'ended' && r.worktreePath && existsSync(r.worktreePath) ? [r.worktreePath] : [])),
+    leftovers: starts.flatMap((r) => (r.phase === 'ended' && !r.survivors && r.worktreePath && existsSync(r.worktreePath) ? [r.worktreePath] : [])),
+    heldUp: starts.flatMap((r) => (r.survivors ? [r.worktreePath ?? r.sessionId] : [])),
+    from: daemon ? 'daemon' : 'files',
   };
+}
+
+/** The app is known on this install: the daemon says so, or the data dir recorded an attach. */
+async function appKnown(wmuxDir: string): Promise<boolean> {
+  return existsSync(join(wmuxDir, APP_ATTACHED_FILE)) || (await headlessIo.daemonView())?.appAttached === true;
 }
 
 function headlessFail(message: string): never {
@@ -381,7 +419,7 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
   const flag = headlessFlagPath(join(wmuxDir, 'a2a'));
   const say = jsonMode ? console.error : console.log;
   if (verb === 'status') {
-    const st = headlessStatus(wmuxDir);
+    const st = headlessStatus(wmuxDir, await headlessIo.daemonView());
     if (jsonMode) {
       console.log(JSON.stringify(st, null, 2));
       return;
@@ -390,6 +428,11 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
     console.log(`Agents started remotely, running: ${st.running}`);
     console.log(`Worktrees of ended starts, kept: ${st.leftovers.length}`);
     for (const p of st.leftovers) console.log(`  ${p}`);
+    if (st.heldUp.length > 0) {
+      console.log(`Starts waiting for their agent's processes to exit (worktree kept until then): ${st.heldUp.length}`);
+      for (const p of st.heldUp) console.log(`  ${p}`);
+    }
+    if (st.from === 'files') console.log('(No daemon answered: read from the data dir only.)');
     return;
   }
   if (verb === 'off') {
@@ -403,7 +446,8 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
   const env = process.env;
   const marker = env.WMUX_PTY_ID ? 'WMUX_PTY_ID' : Object.keys(env).find((k) => env[k] !== undefined && isNestingMarker(k));
   if (marker) headlessFail(`\`wmux daemon headless on\` is not run from an agent session or a wmux pane (${marker} is set). A person must run it, in a terminal outside wmux.`);
-  if (existsSync(join(wmuxDir, APP_ATTACHED_FILE))) headlessFail('the desktop app has used this install; it starts remote agents here. Headless mode is only for a host without the app.');
+  const APP_USED = 'the desktop app has used this install; it starts remote agents here. Headless mode is only for a host without the app.';
+  if (await appKnown(wmuxDir)) headlessFail(APP_USED);
   if (!policyIo.stdinIsTty()) headlessFail('`wmux daemon headless on` asks for a typed confirmation. Run it in a terminal.');
   if (existsSync(flag)) {
     if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: true, changed: false }, null, 2));
@@ -418,6 +462,8 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
   ].join('\n'));
   const answer = (await policyIo.ask('Type yes to turn it on: ', jsonMode)).trim().toLowerCase();
   if (answer !== 'yes') headlessFail('not confirmed; nothing was changed.');
+  // The app may have attached while the question waited.
+  if (await appKnown(wmuxDir)) headlessFail(APP_USED);
   mkdirSync(join(wmuxDir, 'a2a'), { recursive: true, mode: 0o700 });
   writeFileSync(flag, `${new Date().toISOString()}\n`, { mode: 0o600 });
   if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: true, changed: true }, null, 2));

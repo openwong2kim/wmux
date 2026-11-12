@@ -10,7 +10,7 @@ import type { A2aLinkRecordV1, HostId } from '../../../shared/a2aRemote';
 import type { A2aSpawnClaimResult, A2aSpawnStepResult } from '../../../shared/a2aSpawn';
 import { workerLaunchFlags } from '../../../shared/workerLaunch';
 import type { SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
-import { HeadlessStartStore } from '../headlessStartStore';
+import { HeadlessStartStore, type HeadlessSurvivor } from '../headlessStartStore';
 import { A2aHeadlessStarter, HEADLESS_EXTRA_DISALLOWED_TOOLS, type HeadlessSessionInput, type HeadlessSessionPort, type HeadlessStarterDeps } from '../headlessStarter';
 import type { SpawnRequestRecordV1 } from '../spawnRequestStore';
 
@@ -37,6 +37,10 @@ let sessionPort: HeadlessSessionPort | null;
 let createThrows: boolean;
 let agentBin: string | null;
 let owed: boolean;
+/** Processes the next destroy reports as not exited, and those a recheck still finds. */
+let survivors: HeadlessSurvivor[];
+let stillRunning: HeadlessSurvivor[];
+let onDisk: Set<string>;
 
 function makeSessions(): HeadlessSessionPort {
   return {
@@ -51,7 +55,9 @@ function makeSessions(): HeadlessSessionPort {
     destroy: async (id) => {
       calls.push(`destroy:${id}`);
       live.delete(id);
+      return survivors.length > 0 ? { ok: false, survivors } : { ok: true };
     },
+    stillRunning: async () => stillRunning,
   };
 }
 
@@ -85,6 +91,7 @@ function makeStarter(over: Partial<HeadlessStarterDeps> = {}): A2aHeadlessStarte
         return worktree;
       },
       remove: async (input) => void removedTrees.push(input.spawnId),
+      exists: (p) => onDisk.has(p),
     },
     paneGone: async (workspaceId, paneId) => void gone.push({ workspaceId, paneId }),
     abandon: () => void calls.push('abandon'),
@@ -114,6 +121,9 @@ beforeEach(() => {
   createThrows = false;
   agentBin = '/home/u/.local/bin/claude';
   owed = false;
+  survivors = [];
+  stillRunning = [];
+  onDisk = new Set(['/wt/remote-x']);
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -207,6 +217,7 @@ describe('headless start', () => {
           return worktree;
         },
         remove: async (input) => void removedTrees.push(input.spawnId),
+        exists: () => true,
       },
     });
     await starter.start(HOST, SPAWN);
@@ -225,6 +236,7 @@ describe('headless start', () => {
           removes += 1;
           if (removes === 1) throw new Error('busy');
         },
+        exists: () => true,
       },
     });
     await starter.start(HOST, SPAWN);
@@ -370,6 +382,90 @@ describe('headless reconcile', () => {
     live.add('hl-s1');
     await makeStarter().reconcile();
     expect(live.has('hl-s1')).toBe(false);
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+  });
+});
+
+describe('headless cleanup that waits for the agent to exit', () => {
+  const record = (over: Partial<Parameters<HeadlessStartStore['add']>[0]> = {}): void => starts.add({
+    v: 1, hostId: HOST, spawnId: SPAWN, agent: 'claude', repoPath: '/repo', sessionId: 'hl-s1', workspaceId: 'hl-w1',
+    agentSessionId: '33333333-3333-4333-8333-333333333333', lineage: `remote-spawn:${HOST}`, runId: 'run-1',
+    phase: 'started', worktreePath: '/wt/remote-x', linkId: LINK, startedAt: new Date().toISOString(), ...over,
+  });
+  const SURVIVOR: HeadlessSurvivor = { pid: 4242, reason: 'still running', startTime: 'Thu Nov 12 10:00:00 2026' };
+
+  it('an end whose agent processes do not all exit breaks the link but is not marked ended until they are gone', async () => {
+    record();
+    live.add('hl-s1');
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    active = false;
+    survivors = [SURVIVOR];
+    stillRunning = [SURVIVOR];
+    const starter = makeStarter();
+    await starter.reconcile();
+    expect(gone).toEqual([{ workspaceId: 'hl-w1', paneId: 'hl-s1' }]);
+    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', survivors: [SURVIVOR] });
+    // Still running at the next sweep: nothing changes.
+    await starter.reconcile();
+    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', survivors: [SURVIVOR] });
+    // Gone: the start ends, its worktree kept.
+    survivors = [];
+    stillRunning = [];
+    link = { linkId: LINK, state: 'broken' } as A2aLinkRecordV1;
+    await starter.reconcile();
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+    expect(starts.get(HOST, SPAWN)?.survivors).toBeUndefined();
+    expect(removedTrees).toEqual([]);
+  });
+
+  it('a take-back whose agent processes do not exit keeps the worktree and the record', async () => {
+    record({ phase: 'created', linkId: undefined });
+    live.add('hl-s1');
+    request = { state: 'starting' };
+    survivors = [SURVIVOR];
+    stillRunning = [SURVIVOR];
+    const starter = makeStarter();
+    await starter.reconcile();
+    expect(removedTrees).toEqual([]);
+    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'created', survivors: [SURVIVOR] });
+    survivors = [];
+    stillRunning = [];
+    request = { state: 'decided', code: 'failed' };
+    await starter.reconcile();
+    expect(removedTrees).toEqual([SPAWN]);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('an ended start whose worktree the owner removed is dropped; one still on disk stays listed', async () => {
+    record({ phase: 'ended', endedAt: new Date().toISOString() });
+    await makeStarter().reconcile();
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+    onDisk.clear();
+    await makeStarter().reconcile();
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('headless mode turned off while `started` was answered ends the start right after, not at the next sweep', async () => {
+    const starter = makeStarter({
+      receiver: {
+        claim: async () => {
+          request = { state: 'starting' };
+          return claimResult;
+        },
+        started: async () => {
+          request = { state: 'decided', code: 'started', linkId: LINK };
+          active = false;
+          return { ok: true };
+        },
+        failed: (_h, _s, code) => {
+          failed.push(code);
+          return { ok: true };
+        },
+      },
+    });
+    await starter.start(HOST, SPAWN);
+    await starter.reconcile();
+    expect(live.size).toBe(0);
     expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
   });
 });

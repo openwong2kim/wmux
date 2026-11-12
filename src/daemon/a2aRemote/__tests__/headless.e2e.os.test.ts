@@ -92,7 +92,11 @@ function fakeSessions(): FakeSessions {
       s.live.add(input.sessionId);
     },
     alive: (id) => s.live.has(id),
-    destroy: async (id) => void s.live.delete(id),
+    destroy: async (id) => {
+      s.live.delete(id);
+      return { ok: true };
+    },
+    stillRunning: async () => [],
   };
   return s;
 }
@@ -141,7 +145,11 @@ function headlessParts(opts: {
     activationOwed: (linkId) => opts.spawnLinks.get(linkId)?.phase === 'committed',
     starts,
     sessions: () => opts.sessions,
-    worktrees: { create: (input) => createSpawnWorktree(input, wtOpts), remove: (input) => removeSpawnWorktree(input, wtOpts) },
+    worktrees: {
+      create: (input) => createSpawnWorktree(input, wtOpts),
+      remove: (input) => removeSpawnWorktree(input, wtOpts),
+      exists: (p) => fs.existsSync(p),
+    },
     paneGone: opts.paneGone ?? (async () => undefined),
     abandon: (h, s) => opts.spawnStarter.abandon(h, s),
     runId: opts.runId,

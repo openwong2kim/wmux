@@ -20,7 +20,19 @@ import { isIsoString, isPlainObject, isSafeId, loadStore, storeUnavailable, type
  *
  * `runId` is the daemon run that started the session: a daemon restart ends
  * every agent it ran, so a record of another run is never live.
+ *
+ * `survivors`: processes of the agent's tree that did not exit when its
+ * session was ended. While any is listed the worktree stays and the start is
+ * not taken back or marked ended; each reconcile checks them again.
  */
+
+/** A process of an ended agent's tree that did not exit (as the daemon's tree kill reports it). */
+export interface HeadlessSurvivor {
+  pid: number;
+  reason: string;
+  startTime?: string;
+  unverified?: true;
+}
 
 export const HEADLESS_STARTS_FILE = 'headless-starts.json';
 /** Records kept at most; past it the oldest ended one is dropped (its worktree stays on disk). */
@@ -52,6 +64,7 @@ export interface HeadlessStartRecordV1 {
   linkId?: string;
   startedAt: string;
   endedAt?: string;
+  survivors?: HeadlessSurvivor[];
 }
 
 export interface HeadlessStartStoreOptions {
@@ -135,7 +148,7 @@ export class HeadlessStartStore {
   update(
     hostId: string,
     spawnId: string,
-    patch: Partial<Pick<HeadlessStartRecordV1, 'phase' | 'worktreePath' | 'cwd' | 'linkId' | 'endedAt'>>,
+    patch: Partial<Pick<HeadlessStartRecordV1, 'phase' | 'worktreePath' | 'cwd' | 'linkId' | 'endedAt' | 'survivors'>>,
   ): HeadlessStartRecordV1 {
     const k = key(hostId, spawnId);
     const rec = this.records.get(k);
@@ -168,11 +181,30 @@ export class HeadlessStartStore {
 }
 
 const optionalPath = (v: unknown): v is string | undefined => v === undefined || (typeof v === 'string' && v.length > 0 && v.length <= 4096);
+const SURVIVORS_MAX = 64;
+
+function coerceSurvivors(v: unknown): HeadlessSurvivor[] | null | undefined {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || v.length > SURVIVORS_MAX) return null;
+  const out: HeadlessSurvivor[] = [];
+  for (const s of v) {
+    if (!isPlainObject(s) || !Number.isInteger(s['pid']) || typeof s['reason'] !== 'string') return null;
+    if (s['startTime'] !== undefined && typeof s['startTime'] !== 'string') return null;
+    out.push({
+      pid: s['pid'] as number, reason: (s['reason'] as string).slice(0, 200),
+      ...(typeof s['startTime'] === 'string' ? { startTime: s['startTime'] } : {}),
+      ...(s['unverified'] === true ? { unverified: true as const } : {}),
+    });
+  }
+  return out.length > 0 ? out : undefined;
+}
 
 /** A record as stored, or null when it is not one (also read by `wmux daemon headless status`). */
 export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null {
   if (!isPlainObject(raw) || raw['v'] !== 1) return null;
   const { hostId, spawnId, agent, repoPath, sessionId, workspaceId, agentSessionId, lineage, runId, phase, worktreePath, cwd, linkId, startedAt, endedAt } = raw;
+  const survivors = coerceSurvivors(raw['survivors']);
+  if (survivors === null) return null;
   if (!isHostId(hostId) || !isSpawnId(spawnId) || !isAgentSlug(agent)) return null;
   if (typeof repoPath !== 'string' || !repoPath || repoPath.length > 4096) return null;
   if (!isSafeId(sessionId) || !isSafeId(workspaceId) || !isSafeId(runId)) return null;
@@ -190,5 +222,6 @@ export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null 
     ...(linkId !== undefined ? { linkId } : {}),
     startedAt,
     ...(endedAt !== undefined ? { endedAt } : {}),
+    ...(survivors ? { survivors } : {}),
   };
 }

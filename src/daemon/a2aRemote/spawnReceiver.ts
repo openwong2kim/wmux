@@ -800,6 +800,11 @@ export class A2aSpawnReceiver {
     const sub = normalizeSpawnSub(req.folder.sub);
     const root = policy.roots.find((r) => r.id === req.folder.root);
     if (sub === null || !root) return 'folder-not-allowed';
+    // Headless: a request it would refuse is answered before any disk or PATH check.
+    if (this.deps.headless?.() === true) {
+      const refused = headlessRefusal(policy, hostId, root.id, req.agent, sub);
+      if (refused) return refused;
+    }
     if (!(await this.checks.run(() => this.agentInstalled(req.agent)))) return 'agent-not-installed';
     if (!(await this.folderInside(root.path, sub))) return 'folder-not-allowed';
     // The checks above wait on the disk and the PATH: the human may have
@@ -811,12 +816,11 @@ export class A2aSpawnReceiver {
     if (this.now() > Date.parse(req.expiresAt)) return 'expired';
     if (!this.deps.start) return 'not-supported';
     if (this.overCaps(hostId)) return 'rate-limited';
-    // Headless (no app, owner opted in): a rule or nothing; never `manual` (no person at the pane); only an agent it can start.
-    const headless = this.deps.headless?.() === true;
+    // Headless (no app, owner opted in): checked again on the policy as it is now; no card, no waiting for an app.
+    if (this.deps.headless?.() === true) return headlessRefusal(now, hostId, root.id, req.agent, sub) ?? 'approved';
     // Nothing is shown or started before the app has caught up: the request waits for it, until it expires.
-    if (!headless && this.deps.appReady && !this.deps.appReady()) throw new AppNotReady('the app is not ready');
+    if (this.deps.appReady && !this.deps.appReady()) throw new AppNotReady('the app is not ready');
     const ruled = now.approval === 'allow-list' && now.rules.some((r) => spawnRuleMatches(r, hostId, root.id, req.agent, sub));
-    if (headless) return now.permissionMode === 'manual' || !headlessStartable(req.agent) ? 'not-supported' : ruled ? 'approved' : 'not-allowed';
     return ruled ? 'approved' : 'awaiting';
   }
 
@@ -959,6 +963,17 @@ export class A2aSpawnReceiver {
     }
     return OK;
   }
+}
+
+/**
+ * Why headless mode refuses a request, or null when a rule allows it: only
+ * the allow list approves (no card), never `manual` (no person at the pane),
+ * and only an agent it can start.
+ */
+function headlessRefusal(policy: A2aSpawnPolicyV1, hostId: HostId, rootId: string, agent: AgentSlug, sub: string): A2aSpawnCode | null {
+  if (policy.permissionMode === 'manual' || !headlessStartable(agent)) return 'not-supported';
+  const ruled = policy.approval === 'allow-list' && policy.rules.some((r) => spawnRuleMatches(r, hostId, rootId, agent, sub));
+  return ruled ? null : 'not-allowed';
 }
 
 function inside(rootReal: string, real: string): boolean {

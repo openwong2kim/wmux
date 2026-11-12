@@ -76,6 +76,12 @@ export class HeadlessMode {
     return !this.appAttached && this.optedIn();
   }
 
+  /** No sign of the app on this daemon, at boot or since (asks `appSeen` too). */
+  appStillAbsent(): boolean {
+    this.active();
+    return !this.appAttached;
+  }
+
   /** The app showed up on this daemon: headless mode is off from now on. */
   markAppAttached(): void {
     if (this.appAttached) return;

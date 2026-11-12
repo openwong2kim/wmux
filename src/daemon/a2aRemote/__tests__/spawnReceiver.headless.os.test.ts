@@ -37,6 +37,7 @@ let headless: boolean;
 let receiver: A2aSpawnReceiver;
 let starter: A2aHeadlessStarter;
 let made: string[];
+let installedChecks: number;
 
 beforeEach(() => {
   dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-spawn-headless-')));
@@ -57,12 +58,16 @@ beforeEach(() => {
   sent = [];
   changes = [];
   made = [];
+  installedChecks = 0;
   headless = true;
   receiver = new A2aSpawnReceiver({
     policy,
     requests,
     enqueue: (_h, env) => void sent.push(env.spawnResult?.code ?? ''),
-    agentInstalled: async () => true,
+    agentInstalled: async () => {
+      installedChecks += 1;
+      return true;
+    },
     checks: new SpawnChecks(8),
     refusalCoalesceMs: 0,
     // No app on this host: it never catches up.
@@ -89,7 +94,8 @@ beforeEach(() => {
       resolveAgent: async () => '/opt/fake/claude',
       create: async (input) => void made.push(`session:${input.sessionId}`),
       alive: () => false,
-      destroy: async () => undefined,
+      destroy: async () => ({ ok: true }),
+      stillRunning: async () => [],
     }),
     worktrees: {
       create: async (input) => {
@@ -97,6 +103,7 @@ beforeEach(() => {
         return { ok: false, code: 'failed', detail: 'not in this test' };
       },
       remove: async () => undefined,
+      exists: () => false,
     },
     paneGone: async () => undefined,
     abandon: () => undefined,
@@ -147,6 +154,8 @@ describe('spawn receiver in headless mode', () => {
     expect(sent).toEqual(['not-allowed']);
     expect(changes.some((c) => c.state === 'awaiting' || c.state === 'approved')).toBe(false);
     expect(made).toEqual([]);
+    // Refused before any PATH or disk check.
+    expect(installedChecks).toBe(0);
   });
 
   it('with the ask approval a request is refused too: headless mode has no cards', async () => {

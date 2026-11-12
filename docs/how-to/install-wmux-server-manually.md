@@ -204,7 +204,10 @@ With headless mode on:
   `git branch -D` once you no longer need them.
 
 See whether headless mode is in effect, how many agents run, and which
-worktrees ended agents left:
+worktrees ended agents left. A start whose agent left processes that did not
+exit is listed apart: its worktree stays until they are gone, and the daemon
+checks again every minute. With the daemon running, `status` asks it;
+otherwise it reads the daemon's data folder:
 
 ```bash
 "$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless status

@@ -37,7 +37,7 @@ import { AutomationEngine } from './automation/AutomationEngine';
 import { assertExternalSessionId, registerAutomationRpc } from './automation/rpc';
 import { isTransientTurnFailure, shouldPushTurnFailure } from './automation/transientFailure';
 import { killProcessTree } from './automation/treeKill';
-import { captureProcessTree, matchesRecordedStart, recordedStartOf, treeKillRefusal, type CapturedTree } from './automation/verifiedTreeKill';
+import { captureProcessTree, matchesRecordedStart, recordedStartOf, survivorsStillRunning, treeKillRefusal, type CapturedTree, type VerifiedTreeKillResult } from './automation/verifiedTreeKill';
 import { pendingRemovalRefusalAt } from '../main/worktask/pendingWorktreeRemovals';
 import { recordedRunPtyIds } from './automation/store';
 import { AUTOMATION_EVENT } from '../shared/automation';
@@ -3143,9 +3143,23 @@ function registerRpcHandlers(
     },
     destroy: async (id) => {
       // Any id: one recovery left on disk only is ended too (#2493). The agent's
-      // tree when its root can be proven, else the pane alone (its PTY close ends the agent).
-      await destroySessionRpc({ id, killTree: true }).catch(() => destroySessionRpc({ id }));
+      // tree when its root can be proven; what did not exit is reported, never
+      // taken for gone.
+      const rootPid = sessionManager.getSession(id)?.meta.pid ?? 0;
+      let res: unknown;
+      try {
+        res = await destroySessionRpc({ id, killTree: true });
+      } catch (err) {
+        // The tree cannot be proven (its root's start time is unknown): the pane
+        // alone is closed, and its shell is watched until it is gone.
+        await destroySessionRpc({ id });
+        const reason = `its process tree could not be checked: ${err instanceof Error ? err.message : String(err)}`;
+        return rootPid > 0 ? { ok: false, survivors: [{ pid: rootPid, reason }] } : { ok: true };
+      }
+      const tree = (res as { tree?: VerifiedTreeKillResult } | undefined)?.tree;
+      return tree && !tree.ok ? { ok: false, survivors: tree.survivors } : { ok: true };
     },
+    stillRunning: (survivors) => survivorsStillRunning(survivors),
   };
   // Starts the a2a init could not settle before the session RPCs existed.
   void headlessStarterRef?.reconcile();
@@ -10967,7 +10981,11 @@ async function main(): Promise<void> {
           activationOwed: (linkId) => a2aSpawnLinks.get(linkId)?.phase === 'committed',
           starts: new HeadlessStartStore({ dir: a2aDir, log: a2aLog }),
           sessions: () => headlessSessionsRef,
-          worktrees: { create: (input) => createSpawnWorktree(input), remove: (input) => removeSpawnWorktree(input) },
+          worktrees: {
+            create: (input) => createSpawnWorktree(input),
+            remove: (input) => removeSpawnWorktree(input),
+            exists: (worktreePath) => fs.existsSync(worktreePath),
+          },
           paneGone: async (workspaceId, paneId) => {
             if (paneGone) await paneGone({ workspaceId, paneId, reason: 'pane-closed' });
           },
@@ -10977,6 +10995,13 @@ async function main(): Promise<void> {
         });
         headlessStarterRef = a2aHeadless;
         const headless = a2aHeadless;
+        // Read-only, for `wmux daemon headless status|on` (not an a2a.* method, so
+        // also answered on a host without the app): what this daemon decides from.
+        onA2aRpc('daemon.headless.status', async () => ({
+          appAttached: !headlessMode.appStillAbsent(),
+          optedIn: headlessMode.optedIn(),
+          inEffect: headlessMode.active(),
+        }));
         sessionManager.on('session:died', (payload: { id: string }) => headless.onSessionGone(payload.id));
         sessionManager.on('session:destroyed', (payload: { id: string }) => headless.onSessionGone(payload.id));
         // The app took over: no headless start stays (it has no pane for them).

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { headlessStatus, runHeadless } from '../../cli/commands/daemon';
+import { headlessIo, headlessStatus, runHeadless } from '../../cli/commands/daemon';
 import { policyIo } from '../../cli/commands/remote';
 import { headlessFlagPath } from '../a2aRemote/headlessMode';
 import { HEADLESS_STARTS_FILE } from '../a2aRemote/headlessStartStore';
@@ -30,6 +30,8 @@ beforeEach(() => {
     throw new Error(`exit ${code}`);
   }) as never);
   vi.spyOn(policyIo, 'stdinIsTty').mockReturnValue(true);
+  // No daemon answers unless a case says so (never the real one of whoever runs the tests).
+  vi.spyOn(headlessIo, 'daemonView').mockResolvedValue(null);
 });
 afterEach(() => {
   process.env = savedEnv;
@@ -103,10 +105,45 @@ describe('wmux daemon headless', () => {
         { ...base, spawnId: 'sp-2123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-3', phase: 'ended', worktreePath: path.join(dir, 'gone'), endedAt: new Date().toISOString() },
       ],
     }));
-    expect(headlessStatus(dir)).toEqual({ inEffect: true, optedIn: true, appAttached: false, running: 1, leftovers: [kept] });
+    expect(headlessStatus(dir)).toEqual({ inEffect: true, optedIn: true, appAttached: false, running: 1, leftovers: [kept], heldUp: [], from: 'files' });
     fs.writeFileSync(path.join(dir, APP_ATTACHED_FILE), 'x\n');
     expect(headlessStatus(dir)).toMatchObject({ inEffect: false, reason: expect.stringContaining('desktop app') });
     await runHeadless('status', false, dir);
     expect(out.join('\n')).toContain(kept);
+  });
+
+  it('status and on follow the running daemon: an app it knows of (launcher marker, attach it could not record) counts', async () => {
+    fs.mkdirSync(path.join(dir, 'a2a'));
+    fs.writeFileSync(flag(), 'on\n');
+    const view = { appAttached: true, optedIn: true, inEffect: false };
+    expect(headlessStatus(dir, view)).toMatchObject({ inEffect: false, appAttached: true, from: 'daemon', reason: expect.stringContaining('desktop app') });
+    fs.unlinkSync(flag());
+    vi.spyOn(headlessIo, 'daemonView').mockResolvedValue(view);
+    const ask = vi.spyOn(policyIo, 'ask').mockResolvedValue('yes');
+    await expect(runHeadless('on', false, dir)).rejects.toThrow('exit 1');
+    expect(ask).not.toHaveBeenCalled();
+    expect(fs.existsSync(flag())).toBe(false);
+  });
+
+  it('on: the app attaching while the question waits leaves the flag unwritten', async () => {
+    const free = { appAttached: false, optedIn: false, inEffect: false };
+    vi.spyOn(headlessIo, 'daemonView').mockResolvedValueOnce(free).mockResolvedValue({ ...free, appAttached: true });
+    vi.spyOn(policyIo, 'ask').mockResolvedValue('yes');
+    await expect(runHeadless('on', false, dir)).rejects.toThrow('exit 1');
+    expect(fs.existsSync(flag())).toBe(false);
+  });
+
+  it('status lists the starts still waiting for their agent processes to exit', () => {
+    fs.mkdirSync(path.join(dir, 'a2a'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a2a', HEADLESS_STARTS_FILE), JSON.stringify({
+      v: 1,
+      starts: [{
+        v: 1, hostId: '11111111-1111-4111-8111-111111111111', spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', agent: 'claude',
+        repoPath: '/repo', sessionId: 'hl-1', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
+        lineage: 'remote-spawn:x', runId: 'r', phase: 'started', worktreePath: '/wt/remote-1', startedAt: new Date().toISOString(),
+        survivors: [{ pid: 4242, reason: 'still running' }],
+      }],
+    }));
+    expect(headlessStatus(dir)).toMatchObject({ heldUp: ['/wt/remote-1'], leftovers: [] });
   });
 });

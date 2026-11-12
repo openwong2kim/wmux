@@ -9,7 +9,7 @@ import { workerLaunchFlags } from '../../shared/workerLaunch';
 export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = ['mcp__wmux__remote_spawn'];
 import type { SpawnWorktreeInput, SpawnWorktreeResult } from '../../main/a2aRemote/spawnWorktree';
 import { headlessStartable } from './headlessMode';
-import type { HeadlessStartRecordV1, HeadlessStartStore } from './headlessStartStore';
+import type { HeadlessStartRecordV1, HeadlessStartStore, HeadlessSurvivor } from './headlessStartStore';
 import type { SpawnRequestRecordV1 } from './spawnRequestStore';
 import { errMsg } from './storeFile';
 
@@ -62,9 +62,17 @@ export interface HeadlessSessionPort {
   create(input: HeadlessSessionInput): Promise<void>;
   /** The session exists and its process runs. */
   alive(sessionId: string): boolean;
-  /** End the session and its process tree; nothing when it is gone already. */
-  destroy(sessionId: string): Promise<void>;
+  /**
+   * End the session and its process tree. `ok: false` lists the processes
+   * that did not exit (or could not be proven gone); the session itself is
+   * closed either way. A session that is gone already is `ok`.
+   */
+  destroy(sessionId: string): Promise<HeadlessDestroyResult>;
+  /** Of processes an earlier destroy left, the ones still running. */
+  stillRunning(survivors: readonly HeadlessSurvivor[]): Promise<HeadlessSurvivor[]>;
 }
+
+export type HeadlessDestroyResult = { ok: true } | { ok: false; survivors: HeadlessSurvivor[] };
 
 export interface HeadlessStarterDeps {
   mode: { active(): boolean };
@@ -83,6 +91,8 @@ export interface HeadlessStarterDeps {
   worktrees: {
     create(input: SpawnWorktreeInput): Promise<SpawnWorktreeResult>;
     remove(input: { repoPath: string; spawnId: string }): Promise<void>;
+    /** The folder is still on disk (an ended start's kept worktree). */
+    exists(worktreePath: string): boolean;
   };
   /** The pane of a link is gone: its live links break and their PCs are told. */
   paneGone(workspaceId: string, paneId: string): Promise<void>;
@@ -124,7 +134,11 @@ export class A2aHeadlessStarter {
     this.inFlight.add(k);
     return this.startNow(hostId, spawnId).catch((err: unknown) => {
       this.deps.log('error', `[headless] spawn ${spawnId} from ${hostId}: ${errMsg(err)}`);
-    }).finally(() => this.inFlight.delete(k));
+    }).finally(() => {
+      this.inFlight.delete(k);
+      // Headless mode turned off while it started: what it made ends now, not at the next sweep.
+      if (!this.deps.mode.active() && this.deps.starts.get(hostId, spawnId)) void this.reconcile();
+    });
   }
 
   stop(): void {
@@ -163,10 +177,23 @@ export class A2aHeadlessStarter {
     }
   }
 
-  private async settle(rec: HeadlessStartRecordV1): Promise<void> {
+  private async settle(start: HeadlessStartRecordV1): Promise<void> {
+    let rec = start;
     const sessions = this.deps.sessions();
+    // Processes an earlier end left: nothing more is undone, nor the start marked ended, until they are gone.
+    if (rec.survivors?.length) {
+      if (!sessions) return;
+      const left = await sessions.stillRunning(rec.survivors);
+      rec = this.deps.starts.update(rec.hostId, rec.spawnId, { survivors: left.length > 0 ? left : undefined });
+      if (left.length > 0) {
+        this.deps.log('warn', `[headless] spawn ${rec.spawnId}: ${left.length} process(es) of its agent still run (pid ${left.map((p) => p.pid).join(', ')}); its worktree stays`);
+        return;
+      }
+    }
     if (rec.phase === 'ended') {
-      if (sessions?.alive(rec.sessionId)) await sessions.destroy(rec.sessionId);
+      if (sessions?.alive(rec.sessionId)) await this.destroyOrHold(rec, sessions);
+      // The owner removed its worktree: nothing is left to list.
+      else if (!rec.worktreePath || !this.deps.worktrees.exists(rec.worktreePath)) this.deps.starts.remove(rec.hostId, rec.spawnId);
       return;
     }
     const req = this.deps.requests.get(rec.hostId, rec.spawnId);
@@ -193,10 +220,12 @@ export class A2aHeadlessStarter {
   /** A started start whose agent may no longer count: session ended, link broken, record kept as `ended`. */
   private async end(rec: HeadlessStartRecordV1, link: A2aLinkRecordV1 | undefined, sessions: HeadlessSessionPort): Promise<void> {
     // Whether or not it looks alive: a session recovery brought back (even on disk only) goes too.
-    await sessions.destroy(rec.sessionId);
+    const destroyed = await sessions.destroy(rec.sessionId);
+    // The link breaks either way (nothing is delivered to it, nothing counts it live).
     if (link && !TERMINAL_LINK.has(link.state)) await this.deps.paneGone(rec.workspaceId, rec.sessionId);
     // A link still owed is never made for it.
     this.deps.abandon(rec.hostId, rec.spawnId);
+    if (!destroyed.ok) this.hold(rec, destroyed.survivors);
     this.deps.starts.update(rec.hostId, rec.spawnId, { phase: 'ended', endedAt: new Date(this.now()).toISOString() });
     this.deps.log('info', `[headless] spawn ${rec.spawnId} from ${rec.hostId}: ended; worktree kept at ${rec.worktreePath ?? '(none)'}`);
   }
@@ -209,9 +238,20 @@ export class A2aHeadlessStarter {
    */
   private async takeBack(rec: HeadlessStartRecordV1, sessions: HeadlessSessionPort, why: string): Promise<void> {
     this.deps.log('warn', `[headless] spawn ${rec.spawnId} from ${rec.hostId}: taken back (${why})`);
-    await sessions.destroy(rec.sessionId);
+    await this.destroyOrHold(rec, sessions);
     if (rec.worktreePath) await this.deps.worktrees.remove({ repoPath: rec.repoPath, spawnId: rec.spawnId });
     this.deps.starts.remove(rec.hostId, rec.spawnId);
+  }
+
+  /** End the session; when processes of its tree did not exit, they are recorded and this throws (reconcile tries again). */
+  private async destroyOrHold(rec: HeadlessStartRecordV1, sessions: HeadlessSessionPort): Promise<void> {
+    const destroyed = await sessions.destroy(rec.sessionId);
+    if (!destroyed.ok) this.hold(rec, destroyed.survivors);
+  }
+
+  private hold(rec: HeadlessStartRecordV1, survivors: HeadlessSurvivor[]): never {
+    this.deps.starts.update(rec.hostId, rec.spawnId, { survivors });
+    throw new Error(`${survivors.length} process(es) of its agent did not exit (pid ${survivors.map((p) => p.pid).join(', ')}); its worktree stays until they do`);
   }
 
   private retryLater(k: string, hostId: HostId, spawnId: string, why: string): void {
