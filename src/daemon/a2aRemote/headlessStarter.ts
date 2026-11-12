@@ -10,7 +10,10 @@ import { workerLaunchFlags } from '../../shared/workerLaunch';
  * to other agents, the browser), the wmux tools an agent started for another
  * PC has no use for on this host: asking a PC for more agents, handing work
  * out, messaging every agent, closing or stashing panes, proposing
- * automations, driving the desktop, running code in a wmux REPL.
+ * automations, driving the desktop, running code in a wmux REPL. Joining,
+ * making or inviting to a channel too: a channel member that sits idle is
+ * woken by text typed into its pane, and only the task delivery may type
+ * into this one (headlessDelivery.ts).
  */
 export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = [
   'mcp__wmux__remote_spawn',
@@ -23,6 +26,9 @@ export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = [
   'mcp__wmux__automation_propose',
   'mcp__wmux__computer',
   'mcp__wmux__repl_run',
+  'mcp__wmux__channel_join',
+  'mcp__wmux__channel_create',
+  'mcp__wmux__channel_invite',
 ];
 import type { Git, SpawnWorktreeInput, SpawnWorktreeResult } from '../../main/a2aRemote/spawnWorktree';
 import { headlessStartable } from './headlessMode';
@@ -135,6 +141,11 @@ export interface HeadlessStarterDeps {
   paneGone(workspaceId: string, paneId: string): Promise<void>;
   /** End whatever link a start of `spawnId` made or still owes (spawnStarter.abandon). */
   abandon(hostId: HostId, spawnId: string): void;
+  /**
+   * A started start is about to end, `why` in words for the asking PC: its
+   * open tasks are told (headlessDelivery) while its link can still carry it.
+   */
+  startEnding?(rec: HeadlessStartRecordV1, why: string): Promise<void>;
   /** This daemon run (a restart ends every agent the run before had). */
   runId: string;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
@@ -277,7 +288,11 @@ export class A2aHeadlessStarter {
     if (this.deps.mode.active() && sessionLive && !linkEnded) return;
     // Nothing can be ended before the session service is up: the next reconcile does it.
     if (!sessions) return;
-    await this.end(rec, link, sessions);
+    const why = rec.runId !== this.deps.runId ? 'the daemon restarted'
+      : !this.deps.mode.active() ? 'headless mode was turned off on that PC'
+        : linkEnded ? "the agent's link ended"
+          : "the agent's session ended";
+    await this.end(rec, link, sessions, why);
   }
 
   /**
@@ -348,7 +363,9 @@ export class A2aHeadlessStarter {
   }
 
   /** A started start whose agent may no longer count: session ended, link broken, record kept as `ended`. */
-  private async end(rec: HeadlessStartRecordV1, link: A2aLinkRecordV1 | undefined, sessions: HeadlessSessionPort): Promise<void> {
+  private async end(rec: HeadlessStartRecordV1, link: A2aLinkRecordV1 | undefined, sessions: HeadlessSessionPort, why: string): Promise<void> {
+    // Its open tasks first, while the link can still carry the news (a failing one never blocks the end).
+    if (link && !TERMINAL_LINK.has(link.state)) await this.deps.startEnding?.(rec, why).catch((err) => this.deps.log('warn', `[headless] spawn ${rec.spawnId}: its tasks were not told: ${errMsg(err)}`));
     // Whether or not it looks alive: a session recovery brought back (even on disk only) goes too.
     const destroyed = await sessions.destroy(rec.sessionId);
     const earlier = await this.endEarlierRun(rec, sessions);
