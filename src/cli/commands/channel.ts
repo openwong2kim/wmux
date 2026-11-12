@@ -69,7 +69,7 @@ interface ChannelCallOpts {
 }
 
 /** senderPtyId ladder: verified walk (main pipe) → pane env → ''. */
-async function resolveSenderPtyId(): Promise<string> {
+export async function resolveSenderPtyId(): Promise<string> {
   try {
     const ctx = await resolveSelfContext({
       sendRequest,

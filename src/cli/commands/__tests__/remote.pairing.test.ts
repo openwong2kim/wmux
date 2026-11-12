@@ -1,7 +1,8 @@
 /**
  * `wmux remote join | peers | unpair` — the pairing verbs a daemon-only host
- * uses. They ride the daemon control pipe only (never the app's pipe, never a
- * pane-identity lookup), and never print the invite or its code back.
+ * uses. Their calls ride the daemon control pipe (the only other lookup is the
+ * pane identity, to stamp senderPtyId), and they never print the invite or its
+ * code back.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -73,6 +74,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   // This suite may itself run in a wmux pane; the join/unpair cases below set it themselves.
   delete process.env['WMUX_PTY_ID'];
+  selfContext.mockResolvedValue({});
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
     throw new ExitCalled(code);
   }) as never);
@@ -105,7 +107,8 @@ describe('wmux remote join', () => {
     expect(await run('join', [INVITE])).toBe(0);
     expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.join', { invite: INVITE }, 30_000);
     expect(mainRpc).not.toHaveBeenCalled();
-    expect(selfContext).not.toHaveBeenCalled();
+    // The pane identity is looked up once, only to stamp senderPtyId; outside a pane none is sent.
+    expect(selfContext).toHaveBeenCalledTimes(1);
     expect(printed()).toContain(HOST_ID);
     expect(printed()).toContain(FP);
     expect(printed()).not.toContain(CODE);

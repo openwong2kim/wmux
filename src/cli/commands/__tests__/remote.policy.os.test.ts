@@ -24,11 +24,13 @@ vi.mock('../../identity', () => ({
 }));
 
 import { sendDaemonRequest } from '../../client';
+import { resolveSelfContext } from '../../identity';
 import { handleRemote, policyIo, rootLabel } from '../remote';
 import { defaultSpawnPolicy, type A2aSpawnPolicyV1 } from '../../../shared/a2aSpawn';
 import { isNestingMarker } from '../../../shared/envFilter';
 
 const daemonRpc = sendDaemonRequest as unknown as ReturnType<typeof vi.fn>;
+const selfContext = resolveSelfContext as unknown as ReturnType<typeof vi.fn>;
 
 class ExitCalled extends Error {
   constructor(public readonly code: number | undefined) {
@@ -122,6 +124,8 @@ beforeEach(() => {
       delete process.env[k];
     }
   }
+  // Outside a pane by default: the PID walk finds nothing.
+  selfContext.mockResolvedValue({});
   store = policy();
   hosts = [{ v: 1, hostId: DESK, name: 'desk', addresses: ['desk.local'], port: 7843, fingerprint256: FP, peerId: 'p1', createdAt: '2026-11-12T00:00:00.000Z' }];
   peers = [{ v: 1, peerId: 'p2', hostId: LAPTOP, name: 'laptop', createdAt: '2026-11-12T00:00:00.000Z' }];
@@ -462,7 +466,21 @@ describe('wmux remote revoke', () => {
     expect(store.hosts[DESK]).toBeUndefined();
   });
 
-  it('sends senderPtyId when WMUX_PTY_ID is set, and not otherwise', async () => {
+  it('stamps the pane the PID walk finds as senderPtyId, without the env hint', async () => {
+    selfContext.mockResolvedValue({ ptyId: 'pty-walk' });
+    expect(await run('revoke', ['--from', DESK])).toBe(0);
+    expect(daemonRpc.mock.calls.length).toBeGreaterThan(0);
+    for (const c of daemonRpc.mock.calls) expect(c[1]).toMatchObject({ senderPtyId: 'pty-walk' });
+    expect(selfContext).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends no senderPtyId outside a pane, even when the app pipe is down', async () => {
+    selfContext.mockRejectedValue(new Error('no app'));
+    expect(await run('allowed', [])).toBe(0);
+    expect(daemonRpc.mock.calls.every((c) => !('senderPtyId' in (c[1] as object)))).toBe(true);
+  });
+
+  it('sends senderPtyId from the WMUX_PTY_ID hint when the walk finds none, and not otherwise', async () => {
     expect(await run('revoke', ['--from', DESK])).toBe(0);
     expect(daemonRpc.mock.calls.every((c) => !('senderPtyId' in (c[1] as object)))).toBe(true);
     daemonRpc.mockClear();

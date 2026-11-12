@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline/promises';
 import { sendRequest, sendDaemonRequest, isDefinitelyNotRunning } from '../client';
 import { parseFlag, hasFlag } from '../utils';
 import { resolveSelfContext, getParentPidDefault } from '../identity';
+import { resolveSenderPtyId } from './channel';
 import {
   A2A_SPAWN_PIPE_RPC,
   A2A_SPAWN_RPC,
@@ -127,9 +128,13 @@ const SLOW_DAEMON_CALL_MS = 30_000;
  * readable line on a transport or pipe-level failure; a timeout is passed to
  * `onTimeout` when given, because the daemon may still finish the call.
  */
+/** This command's pane identity (PID walk, then the env hint), resolved once per command. */
+let senderPty: Promise<string> | null = null;
+
 async function daemonCall(method: RpcMethod, rawParams: Record<string, unknown>, onTimeout?: () => never, timeoutMs?: number): Promise<unknown> {
   // From inside a pane, say so: the daemon refuses these calls from one.
-  const pty = process.env.WMUX_PTY_ID;
+  senderPty ??= resolveSenderPtyId();
+  const pty = await senderPty;
   const params = pty ? { ...rawParams, senderPtyId: pty } : rawParams;
   let response: RpcResponse;
   try {
@@ -726,6 +731,7 @@ function promptOf(args: string[]): string {
 }
 
 export async function handleRemote(sub: string | undefined, args: string[], jsonMode: boolean): Promise<void> {
+  senderPty = null;
   if (sub === 'spawn') {
     const pc = args[0] && !args[0].startsWith('-') ? args[0] : '';
     const rest = pc ? args.slice(1) : args;
