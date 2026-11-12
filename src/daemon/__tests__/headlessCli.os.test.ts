@@ -144,6 +144,17 @@ describe('wmux daemon headless', () => {
         survivors: [{ pid: 4242, reason: 'still running' }],
       }],
     }));
-    expect(headlessStatus(dir)).toMatchObject({ heldUp: ['/wt/remote-1'], leftovers: [], running: 0 });
+    expect(headlessStatus(dir)).toMatchObject({ heldUp: ['/wt/remote-1 (pid 4242)'], leftovers: [], running: 0 });
+  });
+
+  it('status takes the daemon\'s own answer: opted in but the starter not built (no task ledger) is not in effect, with the reason', async () => {
+    fs.mkdirSync(path.join(dir, 'a2a'));
+    fs.writeFileSync(flag(), 'on\n');
+    const view = { appAttached: false, optedIn: true, inEffect: false };
+    expect(headlessStatus(dir, view)).toMatchObject({ inEffect: false, optedIn: true, from: 'daemon', reason: expect.stringContaining('task ledger') });
+    vi.spyOn(headlessIo, 'daemonView').mockResolvedValue(view);
+    await runHeadless('status', false, dir);
+    expect(out.join('\n')).toContain('not in effect');
+    expect(headlessStatus(dir, { ...view, inEffect: true })).toMatchObject({ inEffect: true });
   });
 });

@@ -380,7 +380,7 @@ export const headlessIo = {
 export function headlessStatus(wmuxDir: string = getWmuxDir(), daemon: DaemonHeadlessView | null = null): HeadlessStatus {
   const a2aDir = join(wmuxDir, 'a2a');
   const appAttached = existsSync(join(wmuxDir, APP_ATTACHED_FILE)) || daemon?.appAttached === true;
-  const optedIn = existsSync(headlessFlagPath(a2aDir));
+  const optedIn = daemon ? daemon.optedIn : existsSync(headlessFlagPath(a2aDir));
   let starts: HeadlessStartRecordV1[] = [];
   try {
     const raw = JSON.parse(readFileSync(join(a2aDir, HEADLESS_STARTS_FILE), 'utf8')) as { starts?: unknown };
@@ -388,18 +388,22 @@ export function headlessStatus(wmuxDir: string = getWmuxDir(), daemon: DaemonHea
   } catch {
     // No start recorded yet (or the file is being replaced): nothing to list.
   }
+  // The running daemon's own answer when it gives one: it also knows whether
+  // it could build what starts the agents this run.
   const reason = appAttached
     ? 'the desktop app has used this install; it starts remote agents here'
-    : !optedIn ? 'not turned on (wmux daemon headless on)' : undefined;
+    : !optedIn ? 'not turned on (wmux daemon headless on)'
+      : daemon && !daemon.inEffect ? 'the daemon could not set up remote starts this run (its task ledger or remote-PC service is unavailable; see its log)'
+        : undefined;
   return {
-    inEffect: reason === undefined,
+    inEffect: daemon ? daemon.inEffect && reason === undefined : reason === undefined,
     optedIn,
     appAttached,
     ...(reason ? { reason } : {}),
     running: starts.filter((r) => r.phase === 'started' && !r.survivors).length,
     // Only those still on disk: the owner may have removed some already.
     leftovers: starts.flatMap((r) => (r.phase === 'ended' && !r.survivors && r.worktreePath && existsSync(r.worktreePath) ? [r.worktreePath] : [])),
-    heldUp: starts.flatMap((r) => (r.survivors ? [r.worktreePath ?? r.sessionId] : [])),
+    heldUp: starts.flatMap((r) => (r.survivors ? [`${r.worktreePath ?? r.sessionId} (pid ${r.survivors.map((p) => p.pid).join(', ')})`] : [])),
     from: daemon ? 'daemon' : 'files',
   };
 }

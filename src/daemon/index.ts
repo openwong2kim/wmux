@@ -37,7 +37,7 @@ import { AutomationEngine } from './automation/AutomationEngine';
 import { assertExternalSessionId, registerAutomationRpc } from './automation/rpc';
 import { isTransientTurnFailure, shouldPushTurnFailure } from './automation/transientFailure';
 import { killProcessTree } from './automation/treeKill';
-import { captureProcessTree, matchesRecordedStart, recordedStartOf, survivorsStillRunning, treeKillRefusal, type CapturedTree, type VerifiedTreeKillResult } from './automation/verifiedTreeKill';
+import { captureProcessTree, matchesRecordedStart, recordedStartOf, treeKillRefusal, type CapturedTree, type VerifiedTreeKillResult } from './automation/verifiedTreeKill';
 import { pendingRemovalRefusalAt } from '../main/worktask/pendingWorktreeRemovals';
 import { recordedRunPtyIds } from './automation/store';
 import { AUTOMATION_EVENT } from '../shared/automation';
@@ -159,8 +159,9 @@ import { rootIsRepoTop, rootOriginKey } from './a2aRemote/continueRootGit';
 import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../main/a2aRemote/spawnWorktree';
 import { HeadlessMode } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
-import { A2aHeadlessStarter, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
-import { processesWorkingIn } from './a2aRemote/headlessProcs';
+import { A2aHeadlessStarter, type HeadlessDestroyResult, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
+import { snapshotTree, stillHeld } from './a2aRemote/headlessProcs';
+import type { HeadlessSurvivor } from './a2aRemote/headlessStartStore';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
@@ -3147,27 +3148,24 @@ function registerRpcHandlers(
       // tree when its root can be proven; what did not exit is reported, never
       // taken for gone.
       const rootPid = sessionManager.getSession(id)?.meta.pid ?? 0;
+      // The agent's tree as it is before the kill: what holds the start if the kill cannot be confirmed.
+      const before = await snapshotTree(rootPid);
+      const held = (extra: HeadlessSurvivor[], why: string): HeadlessDestroyResult => ({
+        ok: false,
+        survivors: [...(before ?? [{ pid: rootPid, reason: why, unverified: true as const }]), ...extra.filter((s) => !before?.some((b) => b.pid === s.pid))],
+      });
       let res: unknown;
       try {
         res = await destroySessionRpc({ id, killTree: true });
       } catch (err) {
-        // The tree cannot be proven (its root's start time is unknown): the pane
-        // alone is closed, and the start waits until no process works in its worktree.
+        // The tree cannot be proven (its root's start time is unknown): the pane alone is closed.
         await destroySessionRpc({ id });
-        const reason = `its process tree could not be checked: ${err instanceof Error ? err.message : String(err)}`;
-        return { ok: false, survivors: [{ pid: rootPid, reason, unverified: true }] };
+        return held([], `its process tree could not be checked: ${err instanceof Error ? err.message : String(err)}`);
       }
       const tree = (res as { tree?: VerifiedTreeKillResult } | undefined)?.tree;
-      return tree && !tree.ok ? { ok: false, survivors: tree.survivors } : { ok: true };
+      return tree && !tree.ok ? held(tree.survivors, 'did not exit') : { ok: true };
     },
-    stillRunning: async (survivors, worktreePath) => {
-      const verified = await survivorsStillRunning(survivors);
-      const unverified = survivors.filter((s) => s.unverified);
-      if (unverified.length === 0) return verified;
-      // A tree that could not be checked whole: gone only once nothing works in its worktree.
-      const busy = worktreePath ? await processesWorkingIn(worktreePath) : null;
-      return busy === false ? verified : [...verified, ...unverified];
-    },
+    stillRunning: (survivors, worktreePath) => stillHeld(survivors, worktreePath),
   };
   // Starts the a2a init could not settle before the session RPCs existed.
   void headlessStarterRef?.reconcile();
