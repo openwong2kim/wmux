@@ -114,6 +114,57 @@ code 1 on any failure, and `--json` prints the raw result. If `join` reports
 no answer in time, run `remote peers` before trying again: the pairing may
 have completed anyway.
 
+## Let a desktop start agents on the host
+
+Once paired, the desktop can ask the host to start an agent in a folder. The
+host decides what it accepts. Without a desktop app on the host, write that
+policy from its command line:
+
+```bash
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" remote allow \
+  --from <host-id> --root /home/worker/src/project --agent claude
+```
+
+- `--from` is the desktop's host id, as `remote peers` prints it. A name is
+  accepted only when exactly one paired PC has it, and the command then
+  prints that PC's host id and certificate fingerprint for you to check.
+- `--root` must be the top level of a git repository. Each agent works in a
+  fresh worktree of it.
+- `--sub <path>` grants one folder below the root. A rule covers exactly the
+  folder it names, not the folders below it.
+- `--agent` is one of the agents wmux can start unattended (`claude`,
+  `codex`, `grok`, …). The command warns when it cannot find it on the PATH.
+
+Before it saves, the command states what the rule grants and asks you to
+type `yes`. It needs a terminal, and it refuses to run from inside an agent
+session or a wmux pane: a person runs it. What the rule grants:
+
+- That PC can start the agent in that folder, with prompts it writes,
+  without an approval on the host for each request.
+- The agent runs as the account the wmux daemon runs as, with that
+  account's access to the machine. Use a dedicated user account for a
+  worker box, with access only to the repositories it should work on.
+- Saving a rule turns remote spawn on and sets approval to the allow list.
+  Both are policy-wide: rules saved earlier for other PCs take effect as
+  well, and the command names them.
+
+Follow-ups and the permission mode the agent runs in are policy-wide too, so
+they apply to every allowed PC. The command changes them only when asked:
+`--follow-ups ask|direct`, `--permission-mode <mode>`. Running with
+`bypassPermissions` also needs `--bypass-permissions`.
+
+To see or remove what is allowed:
+
+```bash
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" remote allowed
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" remote revoke --from <host-id> --root /home/worker/src/project
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" remote revoke --from <host-id>
+```
+
+`revoke` with `--root` removes that PC's rules for the folder (add `--sub`
+for one sub-folder); with `--from` alone, that PC may no longer ask the host
+to start agents. `unpair` removes a PC's rules as well.
+
 ## Things to know
 
 - **Do not restart `wmux web` with different flags** once devices are paired:

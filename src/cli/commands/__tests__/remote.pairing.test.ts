@@ -82,7 +82,7 @@ describe('wmux remote join', () => {
   it('sends the invite to a2a.remote.join on the daemon pipe only', async () => {
     routeDaemon({ 'a2a.remote.join': { ok: true, host } });
     expect(await run('join', [INVITE])).toBe(0);
-    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.join', { invite: INVITE });
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.join', { invite: INVITE }, 30_000);
     expect(mainRpc).not.toHaveBeenCalled();
     expect(selfContext).not.toHaveBeenCalled();
     expect(printed()).toContain(HOST_ID);
@@ -175,7 +175,7 @@ describe('wmux remote unpair', () => {
   it('removes a joined host and reports whether that PC confirmed', async () => {
     routeDaemon({ 'a2a.remote.hosts.remove': { ok: true, remoteRevoked: true }, 'a2a.remote.peers.list': { peers: [] } });
     expect(await run('unpair', [HOST_ID], true)).toBe(0);
-    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID });
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID }, 30_000);
     expect(JSON.parse(String(logSpy.mock.calls[0][0]))).toEqual({
       ok: true, hostId: HOST_ID, hostRemoved: true, remoteRevoked: true, peersRevoked: 0,
     });
@@ -194,7 +194,7 @@ describe('wmux remote unpair', () => {
   it('accepts an uppercase host id', async () => {
     routeDaemon({ 'a2a.remote.hosts.remove': { ok: true, remoteRevoked: false }, 'a2a.remote.peers.list': { peers: [] } });
     expect(await run('unpair', [HOST_ID.toUpperCase()])).toBe(0);
-    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID });
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID }, 30_000);
   });
 
   it('revokes that PC before the host removal, so a removal timeout cannot skip it', async () => {

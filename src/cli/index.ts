@@ -205,8 +205,14 @@ REMOTE COMMANDS (another paired PC)
   remote join <invite | ->          Join another PC's invite (this PC never listens)
   remote peers                      Paired PCs: host id, name, fingerprint
   remote unpair <host-id>           End the pairing with that PC
+  remote allow --from <host-id> --root <dir> --agent <name> [--sub <path>]
+                                    Let that PC start the agent there without asking (typed confirmation)
+  remote allowed                    What this PC lets other PCs start
+  remote revoke --from <host-id> [--root <dir>] [--sub <path>]
+                                    Remove that PC's rules, or its allowance
 
-  join, peers and unpair talk to the daemon directly (no desktop app needed).
+  join, peers, unpair, allow, allowed and revoke talk to the daemon directly
+  (no desktop app needed).
 
 DIAGNOSTICS
   doctor                            Run health checks (env, daemon, boot phases,
