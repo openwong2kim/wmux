@@ -12,7 +12,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { BrowserReplSession } from '../BrowserReplSession';
 import { BROWSER_REPL_TOOLS, type BridgeCall } from '../bridge';
-import { setBrowserReplRunnerCapForTest, type RunnerProcess } from '../runnerProcess';
+import { RunnerLines, setBrowserReplRunnerCapForTest, type RunnerProcess } from '../runnerProcess';
 import { peerPidOf } from '../../../shared/peerPid';
 import { processStartTime } from '../../../shared/processStartTime';
 import { checkClaim, resetClaimChecks } from '../../../main/pipe/handlers/peerPidShadow';
@@ -49,11 +49,12 @@ async function goneWithin(pid: number, ms: number): Promise<boolean> {
 }
 
 /** A snippet that starts a long-lived grandchild and returns its pid. */
-const START_GRANDCHILD = [
+const startGrandchild = (options = "{ stdio: 'ignore' }") => [
   "const cp = process.getBuiltinModule('child_process');",
-  "globalThis.grandchild = cp.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+  `globalThis.grandchild = cp.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], ${options});`,
   'grandchild.pid',
 ].join('\n');
+const START_GRANDCHILD = startGrandchild();
 
 afterEach(() => {
   for (const s of sessions.splice(0)) s.dispose();
@@ -153,6 +154,52 @@ describe('browser_repl runner process', () => {
     expect(await goneWithin(grandchild, 5000)).toBe(true);
   });
 
+  it('a timeout also kills a process the runtime started in a session of its own', async () => {
+    const session = newSession();
+    const first = await session.run(startGrandchild("{ stdio: 'ignore', detached: true }"), 10_000, bridge);
+    const grandchild = Number(first.result?.text);
+    expect(alive(grandchild)).toBe(true);
+    expect((await session.run('while (true) {}', 500, bridge)).timedOut).toBe(true);
+    expect(await goneWithin(grandchild, 5000)).toBe(true);
+  });
+
+  it('drops what the runtime writes to its channel that is not a message, and goes on', async () => {
+    const session = newSession();
+    const out = await session.run(
+      [
+        "const fs = process.getBuiltinModule('fs');",
+        'fs.writeSync(4, Buffer.from([0, 0, 0, 4, 1, 2, 3, 4]));',
+        "fs.writeSync(4, 'not json\\n{\"w\":\\n');",
+        "'still here'",
+      ].join('\n'),
+      10_000,
+      bridge,
+    );
+    expect(out.ok).toBe(true);
+    expect(out.result?.text).toBe('still here');
+    expect((await session.run('1 + 1', 10_000, bridge)).result?.text).toBe('2');
+  });
+
+  it('ends a runtime that sends a line past the limit', async () => {
+    const session = newSession();
+    const out = await session.run(
+      [
+        // The pipe is non-blocking: write until all of it is out.
+        "const fs = process.getBuiltinModule('fs');",
+        "const big = Buffer.alloc(17 * 1024 * 1024, 120);",
+        'for (let off = 0; off < big.length;) {',
+        "  try { off += fs.writeSync(4, big, off); } catch (e) { if (e.code !== 'EAGAIN') throw e; await new Promise((r) => setTimeout(r, 1)); }",
+        '}',
+        'await new Promise(() => {})',
+      ].join('\n'),
+      20_000,
+      bridge,
+    );
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('over 16 MB');
+    expect((await session.run('1', 10_000, bridge)).freshRuntime).toBe(true);
+  }, 30_000);
+
   it('a runtime that ends on its own takes what it started with it', async () => {
     const session = newSession();
     const first = await session.run(START_GRANDCHILD, 10_000, bridge);
@@ -163,7 +210,8 @@ describe('browser_repl runner process', () => {
     expect(await goneWithin(grandchild, 5000)).toBe(true);
   });
 
-  it('a runner that cannot start frees its slot', async () => {
+  // Windows refuses to remove a directory a process has as its working directory.
+  it.skipIf(process.platform === 'win32')('a runner that cannot start frees its slot', async () => {
     setBrowserReplRunnerCapForTest(1);
     const back = process.cwd();
     const gone = fs.mkdtempSync(path.join(os.tmpdir(), 'brr-gone-'));
@@ -244,4 +292,19 @@ describe('browser_repl runner process', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe('RunnerLines', () => {
+  it('passes whole JSON lines on, drops the rest, and ends at the limit', () => {
+    const got: unknown[] = [];
+    let oversized = 0;
+    const lines = new RunnerLines((m) => got.push(m), () => oversized++, 16);
+    lines.push('{"a":1}\nnot json\n{"b"');
+    lines.push(':2}\n');
+    expect(got).toEqual([{ a: 1 }, { b: 2 }]);
+    lines.push('x'.repeat(17));
+    expect(oversized).toBe(1);
+    lines.push('{"c":3}\n');
+    expect(got).toEqual([{ a: 1 }, { b: 2 }, { c: 3 }]);
+  });
 });

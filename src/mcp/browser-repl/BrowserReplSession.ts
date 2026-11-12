@@ -184,8 +184,11 @@ export class BrowserReplSession {
     // Between runs no run-scoped listener is attached, so a worker that dies
     // then would be found only by the next run's timeout. Notice it now and
     // let that run start a fresh worker instead.
+    // Before it is ready, a death is the start failing: the ready promise
+    // reports that, not as a death between runs.
+    let started = false;
     const onIdleDeath = (reason: string) => {
-      if (this.activeRunId === null && this.worker === worker) this.killWorker(reason);
+      if (started && this.activeRunId === null && this.worker === worker) this.killWorker(reason);
     };
     worker.on('error', (err) => onIdleDeath(
       `crashed between runs: ${workerFailureMessage(err)}`,
@@ -195,6 +198,7 @@ export class BrowserReplSession {
       const timer = setTimeout(() => reject(new Error('browser_repl worker did not start')), READY_TIMEOUT_MS);
       const onMessage = (msg: WorkerMessage) => {
         if (msg?.type === 'ready') {
+          started = true;
           clearTimeout(timer);
           worker.off('message', onMessage);
           resolve();

@@ -4,34 +4,52 @@
  * A child Node process (the one repl_run uses, ReplSession.ts) whose main
  * thread only relays: it starts the runtime's worker thread
  * (workerSource.ts, unchanged) and passes messages between that worker and
- * the parent over the IPC channel. Snippets therefore run in a process of
- * their own, never in the MCP server's: whatever they reach inside their
- * process (its main thread, its memory) is the runner's, not the server's.
- * Browser calls still travel as messages to the parent, which runs them
- * through the session's bridge; the runner opens no connection of its own
- * and gets neither the auth token nor any WMUX_* variable.
+ * the parent. Snippets therefore run in a process of their own, never in the
+ * MCP server's: whatever they reach inside their process (its main thread,
+ * its memory) is the runner's, not the server's. Browser calls still travel
+ * as messages to the parent, which runs them through the session's bridge;
+ * the runner is handed neither the auth token nor any WMUX_* variable. (It
+ * runs as the same user, so this is no boundary on what that user can read.)
+ *
+ * The messages travel as JSON lines over two pipes of their own (fd 3 to the
+ * runner, fd 4 back), not over Node's IPC channel: a snippet can write to any
+ * fd of its process, and Node's channel takes what arrives on it as its own
+ * framing, so a malformed frame there would throw in the MCP server. Here a
+ * line that does not parse is dropped, and an oversized one ends the runner.
+ * What the runner sends is the session's own data either way: a snippet can
+ * forge any message for its own session (each browser call is still checked
+ * against the run in flight).
  *
  * `RunnerProcess` gives BrowserReplSession the part of the Worker interface it
  * uses: `postMessage`, `terminate`, and the `message`, `error` and `exit`
  * events.
  *
- * Teardown:
- * - `terminate()` (a timeout, `dispose`, the idle sweep) kills the runner and
- *   every process it started: its process group on macOS and Linux, its tree
- *   (`taskkill /T`) on Windows.
- * - When the parent dies, the IPC channel closes and the relay does the same
- *   to itself. Snippets never run on the relay's thread, so a busy snippet
- *   cannot keep it from noticing.
+ * Teardown (the runner and every process it started):
+ * - `terminate()` (a timeout, `dispose`, the idle sweep) kills the runner's
+ *   whole tree: descendants found by walking the process table (sessions of
+ *   their own included), then its process group on macOS and Linux;
+ *   `taskkill /T` on Windows (treeKill.ts).
+ * - When the parent dies, the runner's fd 3 reaches end of input and the
+ *   relay ends its own tree the same way. Snippets never run on the relay's
+ *   thread, so a busy snippet cannot keep it from noticing. On Windows the
+ *   runner is also in a kill-on-close job the MCP server holds (paneJob.ts),
+ *   which ends what is left in it when the server dies.
+ * - A runtime that ends on its own (the worker exits) reports its code, and
+ *   the relay ends its tree too.
  */
 import { spawn, type ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
-import * as path from 'path';
+import type { Readable, Writable } from 'stream';
+import { createPaneJob, type PaneJob } from '../../daemon/paneJob';
+import { killProcessTree } from '../../daemon/automation/treeKill';
 import { buildReplChildEnv, resolveNodeBinary } from '../repl/ReplSession';
 import { evalBootstrap } from '../repl/replRunnerSource';
 import { BROWSER_REPL_WORKER_SOURCE } from './workerSource';
 
 /** Live runner processes in this MCP server, across every connection. */
 export const MAX_BROWSER_REPL_RUNNERS = 16;
+/** The longest line the runner may send; a longer one ends it. */
+export const MAX_RUNNER_LINE_BYTES = 16 * 1024 * 1024;
 let runnerCap = MAX_BROWSER_REPL_RUNNERS;
 let liveRunners = 0;
 
@@ -40,97 +58,144 @@ export function setBrowserReplRunnerCapForTest(cap: number | null): void {
   runnerCap = cap ?? MAX_BROWSER_REPL_RUNNERS;
 }
 
-/** taskkill by its absolute path: a bare name resolves through the cwd and PATH first. */
-function taskkillPath(env: NodeJS.ProcessEnv = process.env): string {
-  return path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'taskkill.exe');
+/** Windows: the job runners join, so they end with this process. */
+let runnerJob: PaneJob | null | undefined;
+function job(): PaneJob | null {
+  if (runnerJob === undefined) {
+    runnerJob = process.platform === 'win32'
+      ? createPaneJob({ log: (level, message) => { if (level === 'warn') console.error(message); } })
+      : null;
+  }
+  return runnerJob;
 }
 
 /**
- * The relay, in the child's main thread. Worker messages go up wrapped as
- * `{ w }` and the relay's own reports as `{ c }`. The parent treats both as
- * the session's own: a snippet can write to the channel directly, and what it
- * forges reaches only its own session (each browser call is still checked
- * against the run in flight).
+ * The relay, in the child's main thread. Worker messages go up as
+ * `{"w":…}` lines, the relay's own reports as `{"c":…}`.
  */
 let relayBootstrap: string | null = null;
 function relayArg(): string {
   relayBootstrap ??= evalBootstrap(String.raw`
 'use strict';
+const net = require('net');
+const path = require('path');
 const { Worker } = require('worker_threads');
-const { spawnSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const WORKER_SOURCE = ` + JSON.stringify(BROWSER_REPL_WORKER_SOURCE) + String.raw`;
-const TASKKILL = ` + JSON.stringify(taskkillPath()) + String.raw`;
 
-// End this runner and every process it started (its process group on macOS
-// and Linux, its tree on Windows).
+// End this runner and every process it started: descendants found in the
+// process table (sessions of their own included), leaves first, then its
+// process group. Windows: taskkill /T (the parent's job is the backstop).
 function endTree() {
   try {
     if (process.platform === 'win32') {
-      spawnSync(TASKKILL, ['/PID', String(process.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      const taskkill = path.win32.join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');
+      spawnSync(taskkill, ['/PID', String(process.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
     } else {
-      process.kill(-process.pid, 'SIGKILL');
+      let rows = [];
+      try {
+        rows = execFileSync('/bin/ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8', timeout: 2000 })
+          .split('\n')
+          .map((line) => line.split(' ').filter(Boolean).map(Number))
+          .filter((row) => row.length === 2 && row.every(Number.isInteger));
+      } catch (_) { /* the group kill below still runs */ }
+      const found = [process.pid];
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const [pid, ppid] of rows) {
+          if (pid > 1 && found.includes(ppid) && !found.includes(pid)) { found.push(pid); changed = true; }
+        }
+      }
+      for (const pid of found.slice(1).reverse()) { try { process.kill(pid, 'SIGKILL'); } catch (_) { /* gone */ } }
+      try { process.kill(-process.pid, 'SIGKILL'); } catch (_) { /* gone */ }
     }
   } catch (_) { /* already going */ }
   process.exit(0);
 }
-// The parent is gone.
-process.on('disconnect', endTree);
 
-const up = (message) => { try { process.send(message); } catch (_) { /* parent gone */ } };
+const down = new net.Socket({ fd: 3, readable: true, writable: false });
+const up = new net.Socket({ fd: 4, readable: false, writable: true });
+up.on('error', () => endTree());
+const send = (message, done) => {
+  let line;
+  try { line = JSON.stringify(message) + '\n'; } catch (_) { return false; }
+  up.write(line, done);
+  return true;
+};
+
 const worker = new Worker(WORKER_SOURCE, { eval: true, stdout: true, stderr: true });
 worker.stdout.resume();
 worker.stderr.resume();
-worker.on('message', (message) => up({ w: message }));
-// An Error crosses the channel as its message (the channel's serializer drops
-// its fields); any other thrown value as it is, or as text when it cannot.
+worker.on('message', (message) => {
+  if (send({ w: message })) return;
+  // A call whose arguments cannot travel gets its answer here, or it would wait forever.
+  if (message && message.type === 'call') {
+    worker.postMessage({ type: 'callResult', callId: message.callId, ok: false, error: 'browser.' + message.name + '(args): the arguments cannot be sent' });
+  }
+});
+// An Error travels as its message; any other thrown value as it is, or as text.
 worker.on('error', (error) => {
   const value = error instanceof Error ? { message: error.message } : error;
-  try { process.send({ c: 'error', error: value }); } catch (_) {
+  if (!send({ c: 'error', error: value })) {
     let text;
     try { text = String(value); } catch (_) { text = 'unprintable worker error'; }
-    up({ c: 'error', error: text });
+    send({ c: 'error', error: text });
   }
 });
 // The worker ended on its own: report its code, then end what it started too.
 worker.on('exit', (code) => {
-  try { process.send({ c: 'exit', code }, () => endTree()); } catch (_) { endTree(); }
+  if (!send({ c: 'exit', code }, () => endTree())) endTree();
 });
-process.on('message', (message) => {
-  if (message && typeof message === 'object' && 'w' in message) worker.postMessage(message.w);
+
+// The parent is gone when fd 3 ends.
+let buffered = '';
+down.setEncoding('utf8');
+down.on('data', (chunk) => {
+  buffered += chunk;
+  let nl;
+  while ((nl = buffered.indexOf('\n')) >= 0) {
+    const line = buffered.slice(0, nl);
+    buffered = buffered.slice(nl + 1);
+    let message;
+    try { message = JSON.parse(line); } catch (_) { continue; }
+    worker.postMessage(message);
+  }
 });
+down.on('end', endTree);
+down.on('error', endTree);
 `);
   return relayBootstrap;
 }
 
-/** Kill `child` and every process it started. */
-function killTree(child: ChildProcess): void {
-  const pid = child.pid;
-  if (pid === undefined) return;
-  try {
-    if (process.platform === 'win32') {
-      // A taskkill that cannot start or does not succeed falls back to the runner alone.
-      const fallback = () => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          /* already gone */
-        }
-      };
-      spawn(taskkillPath(), ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
-        .on('error', fallback)
-        .on('exit', (code) => {
-          if (code !== 0) fallback();
-        });
-    } else {
-      // The runner leads its own process group (detached at spawn).
-      process.kill(-pid, 'SIGKILL');
+/** Splits what the runner sends into JSON lines, dropping any that do not parse. */
+export class RunnerLines {
+  private partial = '';
+  constructor(
+    private readonly onMessage: (message: unknown) => void,
+    private readonly onOversized: () => void,
+    private readonly maxBytes = MAX_RUNNER_LINE_BYTES,
+  ) {}
+
+  push(chunk: string): void {
+    let text = this.partial + chunk;
+    let nl: number;
+    while ((nl = text.indexOf('\n')) >= 0) {
+      const line = text.slice(0, nl);
+      text = text.slice(nl + 1);
+      let message: unknown;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      this.onMessage(message);
     }
-  } catch {
-    try {
-      child.kill('SIGKILL');
-    } catch {
-      /* already gone */
+    if (Buffer.byteLength(text) > this.maxBytes) {
+      this.partial = '';
+      this.onOversized();
+      return;
     }
+    this.partial = text;
   }
 }
 
@@ -145,8 +210,12 @@ export function buildRunnerEnv(base: NodeJS.ProcessEnv = process.env): Record<st
 
 export class RunnerProcess extends EventEmitter {
   private readonly child: ChildProcess;
+  private readonly toRunner: Writable;
   private readonly exited: Promise<number>;
-  private alive = true;
+  /** Holds a slot of the cap. */
+  private holding = true;
+  /** The OS has reported the runner's exit: its pid may name another process now. */
+  private reaped = false;
 
   /** Throws when this server already runs its cap of runners. */
   constructor() {
@@ -160,43 +229,55 @@ export class RunnerProcess extends EventEmitter {
     const { command, electronRunAsNode } = resolveNodeBinary();
     const env = buildRunnerEnv();
     if (electronRunAsNode) env.ELECTRON_RUN_AS_NODE = '1';
+    const spawnMark = job()?.spawnMark() ?? null;
     const child = spawn(command, ['-e', relayArg()], {
       // The worker ran in this process's working directory; the runner keeps it.
       cwd: process.cwd(),
       env,
-      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-      serialization: 'advanced',
+      stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'],
       windowsHide: true,
       // Its own process group, so a kill takes what it started too.
       detached: process.platform !== 'win32',
     });
     this.child = child;
     liveRunners++;
+    if (child.pid !== undefined) job()?.contain(child.pid, spawnMark);
+    this.toRunner = child.stdio[3] as Writable;
+    const fromRunner = child.stdio[4] as Readable;
+    // A pipe that breaks when the runner goes is reported by 'close'.
+    this.toRunner.on('error', () => undefined);
+    fromRunner.on('error', () => undefined);
+
     let reported: number | null = null;
+    const lines = new RunnerLines(
+      (raw) => {
+        const message = raw as { w?: unknown; c?: unknown; error?: unknown; code?: unknown } | null;
+        if (!message || typeof message !== 'object') return;
+        if ('w' in message) this.emit('message', message.w);
+        else if (message.c === 'error') this.raise(message.error);
+        else if (message.c === 'exit' && typeof message.code === 'number') reported = message.code;
+      },
+      () => {
+        this.raise(new Error(`it sent a message over ${MAX_RUNNER_LINE_BYTES / (1024 * 1024)} MB`));
+        void this.terminate();
+      },
+    );
+    fromRunner.setEncoding('utf8');
+    fromRunner.on('data', (chunk: string) => lines.push(chunk));
+
+    child.once('exit', () => {
+      this.reaped = true;
+    });
     // 'close', not 'exit': it also comes after a failed spawn (which has no
-    // 'exit'), and only once every message the runner sent has been read.
+    // 'exit'), and only once everything the runner sent has been read.
     this.exited = new Promise<number>((resolve) => {
       child.once('close', (code, signal) => {
+        this.reaped = true;
         this.free();
-        // Whatever it started and left in its group goes too.
-        if (process.platform !== 'win32' && child.pid !== undefined) {
-          try {
-            process.kill(-child.pid, 'SIGKILL');
-          } catch {
-            /* nothing left */
-          }
-        }
         const exitCode = reported ?? (code !== null && code >= 0 ? code : signal || code !== null ? 1 : 0);
         resolve(exitCode);
         this.emit('exit', exitCode);
       });
-    });
-    child.on('message', (raw: unknown) => {
-      const message = raw as { w?: unknown; c?: unknown; error?: unknown; code?: unknown } | null;
-      if (!message || typeof message !== 'object') return;
-      if ('w' in message) this.emit('message', message.w);
-      else if (message.c === 'error') this.raise(message.error);
-      else if (message.c === 'exit' && typeof message.code === 'number') reported = message.code;
     });
     child.on('error', (error) => {
       // A spawn that failed has no process to wait for: its slot is free now.
@@ -205,15 +286,15 @@ export class RunnerProcess extends EventEmitter {
     });
   }
 
-  /** Give the runner's slot back, once. */
-  private free(): void {
-    if (!this.alive) return;
-    this.alive = false;
-    liveRunners--;
-  }
-
   get pid(): number | undefined {
     return this.child.pid;
+  }
+
+  /** Give the runner's slot back, once. */
+  private free(): void {
+    if (!this.holding) return;
+    this.holding = false;
+    liveRunners--;
   }
 
   /** An `error` event, when anyone still listens (an unheard one would throw). */
@@ -222,16 +303,21 @@ export class RunnerProcess extends EventEmitter {
   }
 
   postMessage(message: unknown): void {
+    let line: string;
     try {
-      this.child.send({ w: message });
+      line = JSON.stringify(message) + '\n';
     } catch {
-      /* the runner is gone; its exit reports it */
+      return;
     }
+    if (!this.toRunner.destroyed) this.toRunner.write(line);
   }
 
   /** Kill the runner and what it started; resolves with its exit code. */
   terminate(): Promise<number> {
-    if (this.alive) killTree(this.child);
+    const pid = this.child.pid;
+    if (pid !== undefined && !this.reaped) {
+      void killProcessTree(pid).catch(() => undefined);
+    }
     return this.exited;
   }
 }
