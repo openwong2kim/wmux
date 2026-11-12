@@ -30,10 +30,13 @@
  *   their own included), then its process group on macOS and Linux;
  *   `taskkill /T` on Windows (treeKill.ts).
  * - When the parent dies, the runner's fd 3 reaches end of input and the
- *   relay ends its own tree the same way. Snippets never run on the relay's
- *   thread, so a busy snippet cannot keep it from noticing. On Windows the
- *   runner is also in a kill-on-close job the MCP server holds (paneJob.ts),
- *   which ends what is left in it when the server dies.
+ *   relay ends its own tree the same way. Snippets run on the worker, not the
+ *   relay's thread, so a busy snippet does not keep it from noticing. Code
+ *   that sets out to outlive the runner (by evaluating on the relay's thread
+ *   through the inspector, or by leaving the process tree) is not stopped:
+ *   it runs as the same user. On Windows the runner is also in a kill-on-close
+ *   job the MCP server holds (paneJob.ts), which ends what is left in it when
+ *   the server dies.
  * - A runtime that ends on its own (the worker exits) reports its code, and
  *   the relay ends its tree too.
  */
@@ -182,6 +185,11 @@ export class RunnerLines {
     while ((nl = text.indexOf('\n')) >= 0) {
       const line = text.slice(0, nl);
       text = text.slice(nl + 1);
+      if (Buffer.byteLength(line) > this.maxBytes) {
+        this.partial = '';
+        this.onOversized();
+        return;
+      }
       let message: unknown;
       try {
         message = JSON.parse(line);

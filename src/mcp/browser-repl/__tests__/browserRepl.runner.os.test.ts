@@ -256,6 +256,8 @@ describe('browser_repl runner process', () => {
 
   it('leaves nothing behind when its parent is killed', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'brr-host-'));
+    let host: ReturnType<typeof spawn> | undefined;
+    const reported: number[] = [];
     try {
       const entry = path.join(dir, 'host.ts');
       fs.writeFileSync(
@@ -273,22 +275,31 @@ describe('browser_repl runner process', () => {
       );
       const bundle = path.join(dir, 'host.cjs');
       buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', outfile: bundle, external: ['electron', 'koffi'], logLevel: 'error' });
-      const host = spawn(process.execPath, [bundle], { stdio: ['ignore', 'pipe', 'inherit'] });
+      const started = spawn(process.execPath, [bundle], { stdio: ['ignore', 'pipe', 'inherit'] });
+      host = started;
       const line = await new Promise<string>((resolve, reject) => {
         let buf = '';
-        host.stdout.on('data', (d: Buffer) => {
+        started.stdout?.on('data', (d: Buffer) => {
           buf += d.toString();
           const nl = buf.indexOf('\n');
           if (nl >= 0) resolve(buf.slice(0, nl));
         });
-        host.once('exit', () => reject(new Error('the host exited before it reported')));
+        started.once('exit', () => reject(new Error('the host exited before it reported')));
       });
       const { runner, grandchild } = JSON.parse(line) as { runner: number; grandchild: number };
+      reported.push(runner, grandchild);
       expect(alive(runner) && alive(grandchild)).toBe(true);
-      host.kill('SIGKILL');
+      started.kill('SIGKILL');
       expect(await goneWithin(runner, 10_000)).toBe(true);
       expect(await goneWithin(grandchild, 10_000)).toBe(true);
+      // Both are gone: nothing of theirs is left to end, and their pids may be reused.
+      reported.length = 0;
     } finally {
+      // An assertion that fails early must not leave the host or what it started running.
+      host?.kill('SIGKILL');
+      for (const pid of reported) {
+        try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+      }
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
@@ -306,5 +317,14 @@ describe('RunnerLines', () => {
     expect(oversized).toBe(1);
     lines.push('{"c":3}\n');
     expect(got).toEqual([{ a: 1 }, { b: 2 }, { c: 3 }]);
+  });
+
+  it('ends at a whole line past the limit, never delivering it', () => {
+    const got: unknown[] = [];
+    let oversized = 0;
+    const lines = new RunnerLines((m) => got.push(m), () => oversized++, 16);
+    lines.push(`{"a":"${'x'.repeat(20)}"}\n`);
+    expect(got).toEqual([]);
+    expect(oversized).toBe(1);
   });
 });
