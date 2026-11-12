@@ -246,20 +246,21 @@ it is linked to, the way it briefs a staff pane on this PC:
   PC cannot accept inbound connections, make it the joiner.
 - **Bind address.** The listener binds all interfaces (`0.0.0.0`) by
   default. To bind one address, stop the wmux daemon, set
-  `a2aRemote.bindHost` in wmux's `config.json` to an IP address (for
-  example a tailnet `100.x` address) or `localhost`, and start it again.
+  `a2aRemote.bindHost` in wmux's `config.json` to an IPv4 address (for
+  example a tailnet `100.x` address) or `localhost` (127.0.0.1), and start
+  it again.
   - Invites then offer only that address, with no machine name and no
     alternates, and tailnet discovery opens only when it is this PC's
     tailnet address.
-  - A loopback address (`127.0.0.1`, `::1`, `localhost`) can be reached
-    only from this same PC. `localhost` binds the one address the system
-    resolves it to.
+  - A loopback address (`127.0.0.1`, `localhost`) can be reached only
+    from this same PC, so the firewall check leaves it out.
   - The address must exist when the listener starts. If it does not (a
     tailnet address before Tailscale is up), Settings shows the address
     problem; turn **Accept connections from other PCs** off and on once
     it exists.
-  - A value that is not an IP address or `localhost` is ignored and
-    logged, and the listener keeps binding all interfaces.
+  - A value that is not an IPv4 address or `localhost` (an IPv6 address
+    included: an invite names an IPv4 address) is ignored and logged, and
+    the listener keeps binding all interfaces.
 
   Every request still needs a valid peer credential, and pairing needs an
   open invite.

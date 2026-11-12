@@ -263,7 +263,10 @@ describe('DiscoveryWindow — opening', () => {
     const opened = await rig.win.open({ turnOn: true });
     expect(opened).toMatchObject({ ok: false, reason: 'listen-failed' });
     expect(opened.ok === false && opened.listen?.lastError).toContain('127.0.0.1');
+    expect(opened.ok === false && opened.listen?.lastErrorCode).toBeNull();
+    // Refused before A2A was turned on for the window: nothing was written.
     expect(rig.controller.current().enabled).toBe(false);
+    expect(fs.existsSync(path.join(rig.dir, DISCOVERY_MARKER_FILE))).toBe(false);
 
     const onTailnet = makeRig({ bound: SELF_IP });
     expect(await onTailnet.win.open({ turnOn: false })).toMatchObject({ ok: true });

@@ -16,8 +16,9 @@ export interface A2aRemoteConfig {
   /** Absent = `A2A_REMOTE_DEFAULT_PORT`. */
   port?: number;
   /**
-   * The listener's bind address: an IP literal or `localhost`. Absent = all
-   * interfaces (`0.0.0.0`). Read when the daemon starts; see a2aRemoteBindHost.
+   * The listener's bind address: an IPv4 address or `localhost` (127.0.0.1).
+   * Absent = all interfaces (`0.0.0.0`). Read when the daemon starts; see
+   * a2aRemoteBindHost.
    */
   bindHost?: string;
 }
@@ -54,8 +55,8 @@ export function coerceA2aRemoteConfig(raw: unknown, def: A2aRemoteConfig = defau
 
 /**
  * The bind address the listener should use, or undefined for its default
- * (all interfaces). Anything but an IP literal or `localhost` is logged and
- * left out.
+ * (all interfaces). `localhost` is 127.0.0.1. Anything but an IPv4 address
+ * or `localhost` is logged and left out: an invite names an IPv4 address.
  */
 export function a2aRemoteBindHost(
   slice: A2aRemoteConfig,
@@ -63,10 +64,11 @@ export function a2aRemoteBindHost(
 ): string | undefined {
   const host = slice.bindHost;
   if (host === undefined) return undefined;
-  if (host === 'localhost' || net.isIP(host) !== 0) return host;
+  if (host === 'localhost') return '127.0.0.1';
+  if (net.isIPv4(host)) return host;
   log(
     'warn',
-    `[a2a-remote] ignoring a2aRemote.bindHost ${JSON.stringify(host)}: not an IP address or "localhost"; listening on 0.0.0.0`,
+    `[a2a-remote] ignoring a2aRemote.bindHost ${JSON.stringify(host)}: not an IPv4 address or "localhost"; listening on 0.0.0.0`,
   );
   return undefined;
 }

@@ -212,8 +212,8 @@ export interface DiscoveryListener {
   /** This PC's identity while the listener runs. */
   identity(): { hostId: string; fingerprint256: string } | null;
   name(): string;
-  /** The one address the listener is bound to; null (or absent) when it binds every interface. */
-  boundAddress?(): string | null;
+  /** The one address the listener is bound to; null when it binds every interface. */
+  boundAddress(): string | null;
 }
 
 export interface DiscoveryDeps {
@@ -358,6 +358,21 @@ export class DiscoveryWindow {
     const selfWhois = await this.deps.tailnet.whois(selfIp);
     if (cancelled()) return { ok: false, reason: 'cancelled' };
     if (!selfWhois) return { ok: false, reason: 'tailscale-whois-unsupported' };
+    // A listener bound to another address can never answer on the tailnet:
+    // refuse before A2A is turned on for the window.
+    const bound = this.deps.listener.boundAddress();
+    if (bound !== null && !snapshot.selfIps.has(bound)) {
+      return {
+        ok: false,
+        reason: 'listen-failed',
+        listen: {
+          port: this.deps.listener.status().port,
+          lastError: `the A2A listener is bound to ${bound}, not to this PC's tailnet address ${selfIp}`,
+          lastErrorCode: null,
+          lastErrorPort: null,
+        },
+      };
+    }
 
     if (!this.deps.controller.current().enabled) {
       if (!opts.turnOn) return { ok: false, reason: 'a2a-off' };
@@ -383,22 +398,14 @@ export class DiscoveryWindow {
       const listen = this.listenFacts();
       // While A2A is still on: once it is off again, net.listenProblem has nothing to report.
       if (listen.lastErrorCode) {
-        const failure = { code: listen.lastErrorCode, port: listen.lastErrorPort ?? listen.port, address: null };
+        const failure = { code: listen.lastErrorCode, port: listen.lastErrorPort ?? listen.port, address: this.deps.listener.boundAddress() };
         const report = await (this.deps.diagnoseListen ?? diagnoseListenProblem)(failure).catch(() => null);
         if (report) listen.report = report;
       }
       this.revertTurnOn();
       return { ok: false, reason: 'listen-failed', listen };
     }
-    const bound = this.deps.listener.boundAddress?.() ?? null;
-    if (bound !== null && !snapshot.selfIps.has(bound)) {
-      this.revertTurnOn();
-      return {
-        ok: false,
-        reason: 'listen-failed',
-        listen: this.listenFacts(`the A2A listener is bound to ${bound}, not to this PC's tailnet address ${selfIp}`),
-      };
-    }
+
     // A concurrent close or settings change may have run while this awaited.
     if (this.win) return { ok: true, status: this.status() };
 

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type http from 'node:http';
 import https from 'node:https';
-import net from 'node:net';
+import type net from 'node:net';
 import os from 'node:os';
 import {
   A2A_DISCOVER_BODY_MAX,
@@ -248,15 +248,15 @@ export interface AdvertisedAddresses {
   tailnet: string[];
 }
 
-/** The one address a listener is bound to, or null when it binds every interface. */
+/** The one IPv4 address a listener is bound to, or null when it binds every interface. */
 export function boundAddress(bindHost: string | undefined): string | null {
-  return bindHost === undefined || bindHost === '0.0.0.0' || bindHost === '::' ? null : bindHost;
+  return bindHost === undefined || bindHost === '0.0.0.0' ? null : bindHost;
 }
 
 /**
  * Bound to every interface: the machine name (or the best IPv4) with
- * alternates, and every IPv4. Bound to one address: that address only, with
- * no name and no alternates.
+ * alternates, and every IPv4. Bound to one IPv4 address: that address only,
+ * with no name and no alternates.
  */
 export function advertisedAddresses(
   bindHost: string | undefined,
@@ -269,12 +269,7 @@ export function advertisedAddresses(
     const host = inviteHost(hostname, ips);
     return { host, alt: host ? inviteAlt(ips, host, new Set(tailnet)) : [], ips: [...ips], tailnet: [...tailnet] };
   }
-  return {
-    host: inviteHost(bound, []),
-    alt: [],
-    ips: net.isIPv4(bound) ? [bound] : [],
-    tailnet: tailnet.filter((ip) => ip === bound),
-  };
+  return { host: inviteHost(bound, [bound]), alt: [], ips: [bound], tailnet: tailnet.filter((ip) => ip === bound) };
 }
 
 export class A2aServer {
@@ -388,9 +383,16 @@ export class A2aServer {
   }
 
   /** What the firewall probe needs: whether it listens, where, and on which addresses another PC is told to connect. */
-  firewallFacts(): { listening: boolean; port: number | null; ips: string[]; tailnetIps: string[] } {
+  /** `address`: the one address the listener is bound to (`a2aRemote.bindHost`), else null. */
+  firewallFacts(): { listening: boolean; port: number | null; ips: string[]; tailnetIps: string[]; address: string | null } {
     const offered = this.advertised();
-    return { listening: this.server !== null, port: this.port, ips: offered.ips, tailnetIps: offered.tailnet };
+    return {
+      listening: this.server !== null,
+      port: this.port,
+      ips: offered.ips,
+      tailnetIps: offered.tailnet,
+      address: boundAddress(this.deps.bindAddress),
+    };
   }
 
   private listenHost(): string {

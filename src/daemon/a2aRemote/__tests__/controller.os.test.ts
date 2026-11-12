@@ -85,14 +85,17 @@ describe('a2aRemote bind address', () => {
 
   it('accepts an IP literal or localhost, and leaves the default otherwise', () => {
     const log = vi.fn();
-    for (const host of ['127.0.0.1', '::1', 'localhost', '192.168.1.20', '0.0.0.0']) {
+    for (const host of ['127.0.0.1', '192.168.1.20', '100.64.0.5', '0.0.0.0']) {
       expect(a2aRemoteBindHost({ enabled: true, bindHost: host }, log)).toBe(host);
     }
+    // One address, whatever the resolver puts first.
+    expect(a2aRemoteBindHost({ enabled: true, bindHost: 'localhost' }, log)).toBe('127.0.0.1');
     expect(a2aRemoteBindHost({ enabled: true }, log)).toBeUndefined();
     expect(a2aRemoteBindHost(coerceA2aRemoteConfig(undefined), log)).toBeUndefined();
     expect(log).not.toHaveBeenCalled();
 
-    for (const host of ['example.com', '1.2.3', '127.0.0.1 ', 'localhost:45660']) {
+    // An invite names an IPv4 address, so an IPv6 bind could never be paired with.
+    for (const host of ['example.com', '1.2.3', '127.0.0.1 ', 'localhost:45660', '::1', '::', 'fd7a:115c:a1e0::1']) {
       log.mockClear();
       expect(a2aRemoteBindHost({ enabled: true, bindHost: host }, log)).toBeUndefined();
       expect(log).toHaveBeenCalledWith('warn', expect.stringContaining(JSON.stringify(host)));
@@ -110,7 +113,7 @@ describe('a2aRemote bind address', () => {
       tailnet,
     };
     expect(today).toEqual({ host: 'office-pc', alt: ['192.168.1.20', '10.0.4.21', '172.16.0.9', '100.64.0.5'], ips, tailnet });
-    for (const bindHost of [undefined, '0.0.0.0', '::']) {
+    for (const bindHost of [undefined, '0.0.0.0']) {
       expect(advertisedAddresses(bindHost, 'office-pc', ips, tailnet)).toEqual(today);
     }
     // A name that fails the invite grammar falls back to the best IPv4, as before.
@@ -123,13 +126,12 @@ describe('a2aRemote bind address', () => {
     expect(advertisedAddresses('100.64.0.5', 'office-pc', ips, tailnet)).toEqual({ host: '100.64.0.5', alt: [], ips: ['100.64.0.5'], tailnet: ['100.64.0.5'] });
     expect(advertisedAddresses('192.168.1.20', 'office-pc', ips, tailnet)).toEqual({ host: '192.168.1.20', alt: [], ips: ['192.168.1.20'], tailnet: [] });
     expect(advertisedAddresses('127.0.0.1', 'office-pc', ips, tailnet)).toEqual({ host: '127.0.0.1', alt: [], ips: ['127.0.0.1'], tailnet: [] });
-    expect(advertisedAddresses('localhost', 'office-pc', ips, tailnet)).toEqual({ host: 'localhost', alt: [], ips: [], tailnet: [] });
   });
 
   it('a listener bound to one address invites and reports only that address', async () => {
     const pc = await makePc('office-pc', { deps: { bindAddress: '127.0.0.1', ipv4s: () => ['192.168.1.20', '127.0.0.1'] } });
     expect(pc.server.beginPairing()).toMatchObject({ addresses: ['127.0.0.1'], tailnet: [] });
-    expect(pc.server.firewallFacts()).toMatchObject({ listening: true, ips: ['127.0.0.1'], tailnetIps: [] });
+    expect(pc.server.firewallFacts()).toMatchObject({ listening: true, ips: ['127.0.0.1'], tailnetIps: [], address: '127.0.0.1' });
   });
 
   it('a loopback bind is not reachable on another address of this PC', async () => {

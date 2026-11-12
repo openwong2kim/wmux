@@ -4252,7 +4252,8 @@ function registerRpcHandlers(
       const f = a2aServerRef?.firewallFacts();
       return {
         listener,
-        applicable: f?.listening === true,
+        // Bound to loopback, no other PC reaches it.
+        applicable: f?.listening === true && !(f.address !== null && isLoopbackHost(f.address)),
         port: f?.port ?? null,
         ips: f?.ips ?? [],
         inboundSeenAt: a2aServerRef?.status().inboundSeenAt ?? null,
@@ -4275,7 +4276,9 @@ function registerRpcHandlers(
     failure: (listener) => {
       if (listener === 'a2a') {
         const st = a2aServerRef?.status();
-        return st?.enabled && st.lastErrorCode ? { code: st.lastErrorCode, port: st.lastErrorPort ?? st.port, address: null } : null;
+        return st?.enabled && st.lastErrorCode
+          ? { code: st.lastErrorCode, port: st.lastErrorPort ?? st.port, address: a2aServerRef?.firewallFacts().address ?? null }
+          : null;
       }
       if (listener === 'web') {
         return webListenError && !webServer.status().running ? { code: webListenError.code, port: webListenError.port, address: webListenError.host } : null;
