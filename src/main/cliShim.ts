@@ -49,8 +49,9 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
-import { execFile, execFileSync } from 'child_process';
+import { execFile, execFileSync, spawn } from 'child_process';
 
 /**
  * Batch shim content. Uses `%~dp0` (the shim's own directory, `<squirrelRoot>/bin`)
@@ -171,6 +172,7 @@ export function buildPathEditScript(
   op: 'add' | 'remove',
   subKey = 'Environment',
   backupSubKey = 'Software\\wmux',
+  broadcast = true,
 ): string {
   const escaped = binDir.replace(/'/g, "''");
   // PowerShell single-quoted literals treat `\` literally, so only `'` needs escaping.
@@ -246,17 +248,29 @@ export function buildPathEditScript(
     // ExpandString == REG_EXPAND_SZ — SetEnvironmentVariable would demote to REG_SZ.
     `Set-ItemProperty -Path 'HKCU:\\${key}' -Name 'Path' -Value ($parts -join ';') -Type ExpandString`,
     ``,
-    // WM_SETTINGCHANGE broadcast so new shells pick the change up without
-    // relogin. Cosmetic and Add-Type is blocked under ConstrainedLanguage, so
-    // its failure must never mask a successful write.
-    `try {`,
-    `  $sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);'`,
-    `  $w = Add-Type -MemberDefinition $sig -Name 'Win32SendMessageTimeout' -Namespace 'Wmux' -PassThru`,
-    `  [System.UIntPtr]$res = [System.UIntPtr]::Zero`,
-    `  $null = $w::SendMessageTimeout([System.IntPtr]0xffff, 0x1A, [System.UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$res)`,
-    `} catch { }`,
+    ...(broadcast ? SETTING_CHANGE_LINES : []),
     `exit 0`,
   ].join('\n');
+}
+
+/**
+ * WM_SETTINGCHANGE broadcast so new shells pick the change up without
+ * relogin. Cosmetic and Add-Type is blocked under ConstrainedLanguage, so its
+ * failure must never mask a successful write. Each top-level window may take
+ * the full 5 s, which is why the uninstall hook runs it detached.
+ */
+const SETTING_CHANGE_LINES: readonly string[] = [
+  `try {`,
+  `  $sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);'`,
+  `  $w = Add-Type -MemberDefinition $sig -Name 'Win32SendMessageTimeout' -Namespace 'Wmux' -PassThru`,
+  `  [System.UIntPtr]$res = [System.UIntPtr]::Zero`,
+  `  $null = $w::SendMessageTimeout([System.IntPtr]0xffff, 0x1A, [System.UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$res)`,
+  `} catch { }`,
+];
+
+/** The broadcast alone, for a caller that already wrote PATH without it. */
+export function buildSettingChangeScript(): string {
+  return [`$ErrorActionPreference = 'Stop'`, ...SETTING_CHANGE_LINES, `exit 0`].join('\n');
 }
 
 function powershellExe(): string {
@@ -267,6 +281,23 @@ function powershellExe(): string {
     'v1.0',
     'powershell.exe',
   );
+}
+
+/**
+ * Runs the broadcast in a PowerShell that outlives the caller. Its cwd is the
+ * temp dir and it inherits no handles, so it holds nothing under the install
+ * root that Squirrel deletes next. A late broadcast only tells open windows to
+ * re-read a PATH that is already written.
+ */
+function broadcastSettingChangeDetached(): void {
+  try {
+    spawn(powershellExe(), ['-NoProfile', '-NonInteractive', '-Command', buildSettingChangeScript()], {
+      cwd: os.tmpdir(),
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    }).unref();
+  } catch { /* cosmetic: a new shell picks PATH up at next sign-in anyway */ }
 }
 
 /**
@@ -309,13 +340,13 @@ function handlePathEditError(err: unknown, binDir: string, op: 'add' | 'remove')
   throw err;
 }
 
-function pathEditArgs(binDir: string, op: 'add' | 'remove'): string[] {
-  return ['-NoProfile', '-NonInteractive', '-Command', buildPathEditScript(binDir, op)];
+function pathEditArgs(binDir: string, op: 'add' | 'remove', broadcast = true): string[] {
+  return ['-NoProfile', '-NonInteractive', '-Command', buildPathEditScript(binDir, op, undefined, undefined, broadcast)];
 }
 
-function runPathEdit(binDir: string, op: 'add' | 'remove'): void {
+function runPathEdit(binDir: string, op: 'add' | 'remove', broadcast = true, timeoutMs = 20000): void {
   try {
-    execFileSync(powershellExe(), pathEditArgs(binDir, op), { encoding: 'utf8', windowsHide: true, timeout: 20000 });
+    execFileSync(powershellExe(), pathEditArgs(binDir, op, broadcast), { encoding: 'utf8', windowsHide: true, timeout: timeoutMs });
   } catch (err) {
     handlePathEditError(err, binDir, op);
   }
@@ -362,11 +393,20 @@ export function deriveShimPaths(execPath: string): ShimPaths {
  * Install/refresh the CLI shim and register the bin dir on the user PATH.
  * Best-effort: callers run this inside Squirrel event handlers where a
  * failure must never block install/update — throws are caught and logged.
+ *
+ * `detachBroadcast`: write PATH, then leave the WM_SETTINGCHANGE broadcast to a
+ * detached PowerShell instead of waiting for it. The Squirrel hooks need this:
+ * the hook's main thread owns top-level windows (Chromium's power message
+ * window, the IME window) and pumps no messages while it waits for the PATH
+ * edit, so a broadcast it waits for also waits 5 s on each of them (#3017).
  */
-export function installCliShim(execPath: string): void {
+export function installCliShim(execPath: string, opts: { detachBroadcast?: boolean } = {}): void {
   try {
     const binDir = writeShimFile(execPath);
-    if (binDir) runPathEdit(binDir, 'add');
+    if (binDir) {
+      runPathEdit(binDir, 'add', !opts.detachBroadcast);
+      if (opts.detachBroadcast) broadcastSettingChangeDetached();
+    }
   } catch (err) {
     console.warn('[cliShim] shim install failed (non-fatal):', err);
   }
@@ -557,14 +597,22 @@ export function darwinShimNeedsRepair(
   return false;
 }
 
-/** Remove the shim and strip the bin dir from the user PATH. Best-effort. */
-export function uninstallCliShim(execPath: string): void {
+/**
+ * Remove the shim and strip the bin dir from the user PATH. Best-effort.
+ * `detachBroadcast`: write PATH, then leave the WM_SETTINGCHANGE broadcast to a
+ * detached PowerShell instead of waiting for it. The Squirrel uninstall hook
+ * needs this: Squirrel cancels it at 10 s, and the broadcast alone can take
+ * that long. `timeoutMs` bounds the PATH edit (the hook passes what its budget
+ * leaves).
+ */
+export function uninstallCliShim(execPath: string, opts: { detachBroadcast?: boolean; timeoutMs?: number } = {}): void {
   try {
     const { binDir } = deriveShimPaths(execPath);
     try {
       fs.rmSync(binDir, { recursive: true, force: true });
     } catch { /* best-effort */ }
-    runPathEdit(binDir, 'remove');
+    runPathEdit(binDir, 'remove', !opts.detachBroadcast, opts.timeoutMs);
+    if (opts.detachBroadcast) broadcastSettingChangeDetached();
   } catch (err) {
     console.warn('[cliShim] shim uninstall failed (non-fatal):', err);
   }

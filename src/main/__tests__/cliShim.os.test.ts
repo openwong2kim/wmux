@@ -6,6 +6,7 @@ import nodePath from 'node:path';
 import {
   buildShimCmd,
   buildPathEditScript,
+  buildSettingChangeScript,
   deriveShimPaths,
   explainPathEditExit,
   PATH_EDIT_EXIT,
@@ -309,6 +310,20 @@ describe('buildPathEditScript', () => {
     // Idempotency: only writes when membership actually changes
     expect(script).toContain('if (-not $hit) { $parts += $bin; $changed = $true }');
     expect(script).toContain('if (-not $changed) { exit 0 }');
+  });
+
+  it('broadcast off: writes PATH and leaves out the WM_SETTINGCHANGE broadcast', () => {
+    const script = buildPathEditScript('C:\\wmux\\bin', 'remove', undefined, undefined, false);
+    expect(script).toContain('-Type ExpandString');
+    expect(script).not.toContain('SendMessageTimeout');
+    expect(script).not.toContain('Add-Type');
+  });
+
+  it('the broadcast-only script sends WM_SETTINGCHANGE and never touches the registry', () => {
+    const script = buildSettingChangeScript();
+    expect(script).toContain("SendMessageTimeout([System.IntPtr]0xffff, 0x1A");
+    expect(script).not.toContain('Set-ItemProperty');
+    expect(script).not.toContain('Registry');
   });
 
   it('remove: filters only the exact bin entry', () => {

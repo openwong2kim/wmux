@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'events';
+import { PassThrough } from 'node:stream';
 
 // The launcher's ready state, seen through its public reads. A candidate
 // endpoint being probed counts as running, as it did with cdpPort; a probe
@@ -67,10 +68,13 @@ beforeEach(() => {
   state.portFiles = {};
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
+  // These fakes are a Chrome on a DevTools port, whatever the default transport is.
+  vi.stubEnv('WMUX_CHROME_TRANSPORT', 'port');
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe('ChromeLauncher ready state', () => {
@@ -85,7 +89,7 @@ describe('ChromeLauncher ready state', () => {
         whileProbing ??= seen(launcher);
         expectConsistent(launcher);
       }
-      return ok();
+      return ok('{"webSocketDebuggerUrl":"ws://127.0.0.1:9333/devtools/browser/old"}');
     });
 
     expect(await launcher.ensureRunning()).toBe(9333);
@@ -114,6 +118,51 @@ describe('ChromeLauncher ready state', () => {
     await expect(launcher.ensureRunning()).rejects.toThrow('Chrome exited during startup');
     expect(atSpawn).toEqual({ running: false, port: null });
     expect(seen(launcher)).toEqual({ running: false, port: null });
+  });
+
+  it('quotes what a port Chrome said before it exited, even when stderr ends after the exit', async () => {
+    const launcher = new ChromeLauncher('/tmp/refused-profile');
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+    spawnMock.mockImplementationOnce(() => {
+      const child = new EventEmitter() as FakeChild & { stderr: PassThrough };
+      child.kill = () => undefined;
+      child.stderr = new PassThrough();
+      // Windows Chrome refusing remote debugging: it exits, and its stderr is read after.
+      setTimeout(() => {
+        child.emit('exit', 0);
+        setTimeout(() => {
+          child.stderr.end('DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.\r\n');
+        }, 20);
+      }, 0);
+      return child;
+    });
+
+    const message = await launcher.ensureRunning().then(() => null, (err: Error) => err.message);
+    const [, , opts] = spawnMock.mock.calls[0] as [string, string[], { stdio: unknown }];
+    expect(opts.stdio).toEqual(['ignore', 'ignore', 'pipe']);
+    expect(message).toContain('ChromeLauncher: Chrome exited during startup');
+    expect(message).toContain('Chrome said: DevTools remote debugging requires a non-default data directory');
+    // An exit is not explained by a probe that failed before it.
+    expect(message).not.toContain('last error');
+  });
+
+  it('does not wait long on a stderr that never ends after the exit', async () => {
+    const launcher = new ChromeLauncher('/tmp/held-profile');
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+    spawnMock.mockImplementationOnce(() => {
+      const child = new EventEmitter() as FakeChild & { stderr: PassThrough };
+      child.kill = () => undefined;
+      // A helper process still holds the handle: stderr stays open.
+      child.stderr = new PassThrough();
+      setTimeout(() => child.emit('exit', 1), 0);
+      return child;
+    });
+
+    const started = Date.now();
+    const message = await launcher.ensureRunning().then(() => null, (err: Error) => err.message);
+    expect(message).toBe('ChromeLauncher: Chrome exited during startup');
+    // The bounded wait (500 ms), not a hang.
+    expect(Date.now() - started).toBeLessThan(3_000);
   });
 
   it('reports nothing when the launched Chrome exits while its first probe is in flight', async () => {

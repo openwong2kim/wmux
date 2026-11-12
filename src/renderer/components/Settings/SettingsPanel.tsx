@@ -13,7 +13,7 @@ import { useStore } from '../../stores';
 import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProjections';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
-import { useIpc } from '../../hooks/useIpc';
+import { useIpc, type UseIpcReturn } from '../../hooks/useIpc';
 import { THEME_OPTIONS, THEME_STYLES, type ThemeStyle, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, PRE_CONTRAST_LIFT_TEXT, deriveBuiltinPalette, deriveFullPalette, tokenAttrs, type BuiltinThemeId, type ThemeId, type XtermPaletteId, type UIThemeTokenKey, type TokenRole, type FullCssPalette } from '../../themes';
 import {
   TAILWIND_PALETTE,
@@ -45,13 +45,14 @@ import {
   type FanoutWorkerPermissionMode,
 } from '../../../shared/workerLaunch';
 import {
-  DEFAULT_FANOUT_HOURLY_TASK_CAP,
-  DEFAULT_FANOUT_LIVE_TASK_CAP,
+  DEFAULT_FANOUT_DEPTH,
+  DEFAULT_FANOUT_TASKS_PER_CALL,
+  MAX_FANOUT_DEPTH,
   MAX_FANOUT_HOURLY_TASK_CAP,
   MAX_FANOUT_LIVE_TASK_CAP,
-  MIN_FANOUT_HOURLY_TASK_CAP,
-  MIN_FANOUT_LIVE_TASK_CAP,
+  MAX_FANOUT_TASKS_PER_CALL,
 } from '../../../shared/fanoutTaskCaps';
+import { SettingLimitInput } from './SettingLimitInput';
 import {
   ADVERTISED_SHORTCUTS,
   builtinCombosFor,
@@ -2143,14 +2144,76 @@ function TabBrowser() {
 // ─── Fan-out workers — permission mode + allow-list button ───────────────────
 // The mode is main-side (it can loosen what an unattended worker may do), so
 // it is read and written over IPC, never through the renderer store.
+/**
+ * Saves one fan-out number for its field: the field shows a new value at once,
+ * then the value main stored (clamped). When the save fails, `invoke` raises
+ * the error toast and the field goes back to the value in force, read back from
+ * main, else the last value main confirmed (never an unanswered one), so it
+ * never shows a number that is not stored. Only the latest change's answer
+ * reaches the field: a slower reply to an earlier change is dropped.
+ * `isValue` says what main may answer (a limit the owner may leave unset
+ * accepts null: no limit).
+ */
+export function createFanoutSaver<T extends number | null>(opts: {
+  show: (v: T) => void;
+  save: (v: T) => Promise<unknown>;
+  reload: () => Promise<unknown>;
+  isValue: (v: unknown) => v is T;
+  invoke: UseIpcReturn['invoke'];
+  initial: T;
+}): { confirm: (v: T) => void; change: (next: T) => Promise<void> } {
+  let confirmed = opts.initial;
+  let latest = 0;
+  return {
+    /** The value read from main when the section loads. */
+    confirm: (v) => {
+      confirmed = v;
+    },
+    change: async (next) => {
+      const mine = ++latest;
+      opts.show(next);
+      const saved = await opts.invoke(() => opts.save(next));
+      let stored: T | undefined;
+      if (saved.ok && opts.isValue(saved.data)) {
+        stored = saved.data;
+      } else {
+        try {
+          const v = await opts.reload();
+          if (opts.isValue(v)) stored = v;
+        } catch {
+          /* the last confirmed value stands */
+        }
+      }
+      if (mine !== latest) return;
+      if (stored !== undefined) confirmed = stored;
+      opts.show(confirmed);
+    },
+  };
+}
+
+const isFanoutNumber = (v: unknown): v is number => typeof v === 'number';
+const isFanoutLimit = (v: unknown): v is number | null => v === null || typeof v === 'number';
+
 function FanoutWorkersSection() {
+  const { invoke: ipcInvoke } = useIpc();
   const t = useT();
   // Main-side too: main makes the approval decision, so the switch it reads
   // is the one this row writes.
   const [requireApproval, setRequireApprovalState] = useState(false);
   // Main-side as well: the caps an agent's fan-out is refused past.
-  const [liveTaskCap, setLiveTaskCapState] = useState(DEFAULT_FANOUT_LIVE_TASK_CAP);
-  const [hourlyTaskCap, setHourlyTaskCapState] = useState(DEFAULT_FANOUT_HOURLY_TASK_CAP);
+  // null: no limit (the default).
+  const [liveTaskCap, setLiveTaskCapState] = useState<number | null>(null);
+  const [hourlyTaskCap, setHourlyTaskCapState] = useState<number | null>(null);
+  const [tasksPerCall, setTasksPerCallState] = useState(DEFAULT_FANOUT_TASKS_PER_CALL);
+  const [fanoutDepth, setFanoutDepthState] = useState(DEFAULT_FANOUT_DEPTH);
+  // One saver per field, made once: each pairs its field with its own setter
+  // and getter (window.electronAPI is read when a save runs).
+  const [savers] = useState(() => ({
+    live: createFanoutSaver<number | null>({ show: setLiveTaskCapState, save: (v) => window.electronAPI.fanout.setLiveTaskCap(v), reload: () => window.electronAPI.fanout.getLiveTaskCap(), isValue: isFanoutLimit, invoke: ipcInvoke, initial: null }),
+    hourly: createFanoutSaver<number | null>({ show: setHourlyTaskCapState, save: (v) => window.electronAPI.fanout.setHourlyTaskCap(v), reload: () => window.electronAPI.fanout.getHourlyTaskCap(), isValue: isFanoutLimit, invoke: ipcInvoke, initial: null }),
+    perCall: createFanoutSaver<number>({ show: setTasksPerCallState, save: (v) => window.electronAPI.fanout.setTasksPerCall(v), reload: () => window.electronAPI.fanout.getTasksPerCall(), isValue: isFanoutNumber, invoke: ipcInvoke, initial: DEFAULT_FANOUT_TASKS_PER_CALL }),
+    depth: createFanoutSaver<number>({ show: setFanoutDepthState, save: (v) => window.electronAPI.fanout.setDepth(v), reload: () => window.electronAPI.fanout.getDepth(), isValue: isFanoutNumber, invoke: ipcInvoke, initial: DEFAULT_FANOUT_DEPTH }),
+  }));
   // Main-side as well: main refuses the agy trust write while this is off.
   const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
   // Main-side, per workspace: the worker fence of this workspace's bots.
@@ -2176,12 +2239,22 @@ function FanoutWorkersSection() {
       .catch(() => undefined);
     window.electronAPI?.fanout?.getLiveTaskCap?.()
       .then((v) => {
-        if (!cancelled && typeof v === 'number') setLiveTaskCapState(v);
+        if (!cancelled && isFanoutLimit(v)) { setLiveTaskCapState(v); savers.live.confirm(v); }
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getHourlyTaskCap?.()
       .then((v) => {
-        if (!cancelled && typeof v === 'number') setHourlyTaskCapState(v);
+        if (!cancelled && isFanoutLimit(v)) { setHourlyTaskCapState(v); savers.hourly.confirm(v); }
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getTasksPerCall?.()
+      .then((v) => {
+        if (!cancelled && isFanoutNumber(v)) { setTasksPerCallState(v); savers.perCall.confirm(v); }
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getDepth?.()
+      .then((v) => {
+        if (!cancelled && isFanoutNumber(v)) { setFanoutDepthState(v); savers.depth.confirm(v); }
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getTrustAgyFolders?.()
@@ -2233,21 +2306,10 @@ function FanoutWorkersSection() {
   };
 
   // The field shows the value at once; main's reply (clamped) confirms it.
-  const onLiveTaskCapChange = (next: number) => {
-    setLiveTaskCapState(next);
-    window.electronAPI.fanout
-      .setLiveTaskCap(next)
-      .then((stored) => setLiveTaskCapState(stored))
-      .catch(() => undefined);
-  };
-
-  const onHourlyTaskCapChange = (next: number) => {
-    setHourlyTaskCapState(next);
-    window.electronAPI.fanout
-      .setHourlyTaskCap(next)
-      .then((stored) => setHourlyTaskCapState(stored))
-      .catch(() => undefined);
-  };
+  const onLiveTaskCapChange = (next: number | null) => { void savers.live.change(next); };
+  const onHourlyTaskCapChange = (next: number | null) => { void savers.hourly.change(next); };
+  const onTasksPerCallChange = (next: number) => { void savers.perCall.change(next); };
+  const onFanoutDepthChange = (next: number) => { void savers.depth.change(next); };
 
   const onTrustAgyFoldersChange = (next: boolean) => {
     window.electronAPI.fanout
@@ -2284,16 +2346,48 @@ function FanoutWorkersSection() {
         />
       </SettingRow>
       <SettingRow
+        id="fanouttaskspercall"
+        label={t('settings.fanoutTasksPerCall')}
+        description={t('settings.fanoutTasksPerCallDesc')}
+      >
+        {/* Saved on blur or Enter, not per keystroke: typing 16 must not store a 1 first. */}
+        <SettingLimitInput
+          value={tasksPerCall}
+          max={MAX_FANOUT_TASKS_PER_CALL}
+          label={t('settings.fanoutTasksPerCall')}
+          noLimitLabel={String(DEFAULT_FANOUT_TASKS_PER_CALL)}
+          onCommit={(v) => { if (v !== null) onTasksPerCallChange(v); }}
+          testId="fanout-tasks-per-call"
+          required
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanoutdepth"
+        label={t('settings.fanoutDepth')}
+        description={t('settings.fanoutDepthDesc')}
+      >
+        <SettingLimitInput
+          value={fanoutDepth}
+          max={MAX_FANOUT_DEPTH}
+          label={t('settings.fanoutDepth')}
+          noLimitLabel={String(DEFAULT_FANOUT_DEPTH)}
+          onCommit={(v) => { if (v !== null) onFanoutDepthChange(v); }}
+          testId="fanout-depth"
+          required
+        />
+      </SettingRow>
+      <SettingRow
         id="fanoutlivecap"
         label={t('settings.fanoutLiveTaskCap')}
         description={t('settings.fanoutLiveTaskCapDesc')}
       >
-        <SettingNumberInput
+        <SettingLimitInput
           value={liveTaskCap}
-          min={MIN_FANOUT_LIVE_TASK_CAP}
           max={MAX_FANOUT_LIVE_TASK_CAP}
           label={t('settings.fanoutLiveTaskCap')}
-          onChange={onLiveTaskCapChange}
+          noLimitLabel={t('settings.noLimit')}
+          onCommit={onLiveTaskCapChange}
+          testId="fanout-live-cap"
         />
       </SettingRow>
       <SettingRow
@@ -2301,12 +2395,13 @@ function FanoutWorkersSection() {
         label={t('settings.fanoutHourlyTaskCap')}
         description={t('settings.fanoutHourlyTaskCapDesc')}
       >
-        <SettingNumberInput
+        <SettingLimitInput
           value={hourlyTaskCap}
-          min={MIN_FANOUT_HOURLY_TASK_CAP}
           max={MAX_FANOUT_HOURLY_TASK_CAP}
           label={t('settings.fanoutHourlyTaskCap')}
-          onChange={onHourlyTaskCapChange}
+          noLimitLabel={t('settings.noLimit')}
+          onCommit={onHourlyTaskCapChange}
+          testId="fanout-hourly-cap"
         />
       </SettingRow>
       <SettingRow

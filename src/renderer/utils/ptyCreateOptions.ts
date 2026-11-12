@@ -46,6 +46,10 @@ export interface PtyCreateOptions {
   wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME';
   /** Agent-setup panes: main skips the workspace's bound-account env. */
   ignoreAccountBinding?: boolean;
+  /** Run on this registered account instead of the workspace's bound one of
+   *  its vendor (its folder and vault). Main resolves the id; an unknown one
+   *  refuses the create. */
+  accountId?: string;
   /**
    * Startup command written into the new pane's shell after creation (NOT
    * spawned as the executable — preserves shell-allowlist + quoting behavior).

@@ -14,12 +14,14 @@ import { handleSurface } from './commands/surface';
 import { handlePane } from './commands/pane';
 import { handleInput } from './commands/input';
 import { handleNotify } from './commands/notify';
+import { handleAction } from './commands/action';
 import { handleSystem } from './commands/system';
 import { handleBrowser, handleOpen } from './commands/browser';
 import { handleGate } from './commands/gate';
 import { handleMcp } from './commands/mcp';
 import { handleSetupHooks } from './commands/setupHooks';
 import { handleSetupStatusline } from './commands/setupStatusline';
+import { handleUninstallIntegrations } from './commands/uninstallIntegrations';
 import { handleDoctor } from './commands/doctor';
 import { handleSecrets } from './commands/secretsCheck';
 import { handleRole } from './commands/role';
@@ -162,6 +164,16 @@ WEB ACCESS (browser / PWA)
                                     prints the access token). desktop also lets
                                     that computer open new workspaces
 
+APP ACTIONS (your own workspace; run from a wmux pane)
+  action <id> [--target <id|#tag>] [--arg key=value ...]
+                                    Run one app action: rename this workspace or
+                                    a tab, balance the layout, move a pane, read
+                                    or set a few settings, clear notifications.
+                                    Without --target it acts on your own
+                                    workspace, pane or tab; a target in another
+                                    workspace is refused (not_owned)
+  action --list                     List the actions and their arguments
+
 NOTIFICATION COMMANDS
   notify <title> [body]             Show a notification in wmux
          [--type info|warning|error|agent] [--workspace <id>]
@@ -190,6 +202,17 @@ REMOTE COMMANDS (another paired PC)
   remote spawn <pc> --agent <slug> --root <id> [--sub <path>] <prompt…>
                                     Ask that PC to start an agent; replies come here
   remote spawn-status [<spawnId>]   Your requests, and what each PC lets you ask for
+  remote join <invite | ->          Join another PC's invite (this PC never listens)
+  remote peers                      Paired PCs: host id, name, fingerprint
+  remote unpair <host-id>           End the pairing with that PC
+  remote allow --from <host-id> --root <dir> --agent <name> [--sub <path>]
+                                    Let that PC start the agent there without asking (typed confirmation)
+  remote allowed                    What this PC lets other PCs start
+  remote revoke --from <host-id> [--root <dir>] [--sub <path>]
+                                    Remove that PC's rules, or its allowance
+
+  join, peers, unpair, allow, allowed and revoke talk to the daemon directly
+  (no desktop app needed).
 
 DIAGNOSTICS
   doctor                            Run health checks (env, daemon, boot phases,
@@ -247,6 +270,13 @@ CLAUDE CODE INTEGRATION
               [--remove]            Remove the wmux-owned statusLine entries
               [--status]            Report statusline install state
 
+REMOVING WMUX
+  uninstall-integrations            Remove wmux's MCP entries, hooks, statusline and
+                                    plugins from every agent's config, and report
+                                    each one. Run it before deleting the app on
+                                    macOS or Linux; the Windows uninstaller does it.
+              [--force]             Also remove entries another wmux copy may use
+
 GLOBAL FLAGS
   --json      Output raw JSON (useful for scripting)
   --help      Show this help text
@@ -257,6 +287,8 @@ EXAMPLES
   wmux send "echo hello" --submit
   wmux send "run the tests" --submit --to '#w1-2'
   wmux notify "Done" "Build finished"
+  wmux action workspace.rename --arg name=api
+  wmux action settings.set --arg key=terminal.fontSize --arg value=16
   wmux open http://localhost:3000
   wmux identify --json
   wmux browser navigate "https://example.com"
@@ -342,6 +374,8 @@ async function main(): Promise<void> {
       await handleInput(cmd, rest, jsonMode);
     } else if (cmd === 'notify') {
       await handleNotify(rest, jsonMode);
+    } else if (cmd === 'action') {
+      await handleAction(rest, jsonMode);
     } else if (SYSTEM_CMDS.has(cmd)) {
       await handleSystem(cmd, rest, jsonMode);
     } else if (cmd === 'open') {
@@ -360,6 +394,8 @@ async function main(): Promise<void> {
       handleGate(rest[0] ?? '--list', rest.slice(1), jsonMode);
     } else if (cmd === 'setup-statusline') {
       await handleSetupStatusline(rest, jsonMode);
+    } else if (cmd === 'uninstall-integrations') {
+      await handleUninstallIntegrations(rest, jsonMode);
     } else if (cmd === 'secrets') {
       await handleSecrets(rest);
     } else if (cmd === 'doctor') {

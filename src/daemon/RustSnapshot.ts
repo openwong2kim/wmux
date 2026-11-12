@@ -9,7 +9,9 @@ import { incompleteUtf8SuffixLength } from './util/ansiStreamScan';
 
 interface NativeTerminal {
   feed(bytes: Uint8Array): void;
-  /** ANSI feed; true once the snapshot is refused (stop feeding). */
+  /** ANSI feed; true once the snapshot is refused for good (stop feeding).
+   * An alternate screen's width change is not reported: leaving that screen
+   * later in the stream lifts it, so feeding goes on. */
   feedXterm(bytes: Uint8Array, requestedScrollback: number): boolean;
   feedFrozen(source: NativeFrozenRing, start: number, end: number): void;
   resize(cols: number, rows: number): void;

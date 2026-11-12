@@ -9,11 +9,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::grid::GridCell;
 use crate::index::Column;
-use crate::term::cell::ResetDiscriminant;
+use crate::term::cell::{Flags, ResetDiscriminant};
 
 /// A row in the grid.
 #[derive(Default, Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+// wmux: `hidden` is skipped, and serde's derive would otherwise ask `T: Default`
+// for it; Row deserializes for any `T` it did before.
+#[cfg_attr(feature = "serde", serde(bound(deserialize = "T: Deserialize<'de>")))]
 pub struct Row<T> {
     inner: Vec<T>,
 
@@ -22,6 +25,24 @@ pub struct Row<T> {
     /// This is the upper bound on the number of elements in the row, which have been modified
     /// since the last reset. All cells after this point are guaranteed to be equal.
     pub(crate) occ: usize,
+
+    /// wmux: the cells of an alternate-screen row past a narrower width, kept
+    /// as xterm.js keeps them (its line keeps its length) and shown again by a
+    /// later widen. Only a resize without reflow keeps them (`hide_past`); a
+    /// reset row is a new line, at the current width. Not serialized: a
+    /// serialized grid keeps upstream's format (the ref tests' grids), and a
+    /// deserialized row has none, as a row read back at its width would.
+    #[cfg_attr(feature = "serde", serde(default, skip))]
+    hidden: Option<Box<Vec<T>>>,
+
+    /// wmux: one past the column where the empty cells a widen gave this
+    /// soft-wrapped row, or an erase left at its edge, begin (0: none).
+    /// xterm leaves the cursor's paragraph unreflowed, so a widen's cells stay
+    /// empty there, and an erase leaves empty cells, unlike the blanks a
+    /// program printed up to the wrap. Gone once the row is reset or its
+    /// cells move.
+    #[cfg_attr(feature = "serde", serde(default, skip))]
+    empty_mark: usize,
 }
 
 impl<T: PartialEq> PartialEq for Row<T> {
@@ -52,7 +73,7 @@ impl<T: Default> Row<T> {
             inner.set_len(columns);
         }
 
-        Row { inner, occ: 0 }
+        Row { inner, occ: 0, hidden: None, empty_mark: 0 }
     }
 
     /// Increase the number of columns in the row.
@@ -62,7 +83,31 @@ impl<T: Default> Row<T> {
             return;
         }
 
+        // wmux: kept cells come back first, up to the new width; xterm drops
+        // the rest (its line takes the new width).
+        if let Some(hidden) = self.hidden.take() {
+            let mut hidden = *hidden;
+            hidden.truncate(columns - self.inner.len());
+            self.inner.append(&mut hidden);
+            self.occ = self.inner.len();
+        }
+
         self.inner.resize_with(columns, T::default);
+    }
+
+    /// wmux: narrow to `columns` without reflow, keeping the cells past it in
+    /// front of any already kept (see `hidden`).
+    pub(crate) fn hide_past(&mut self, columns: usize) {
+        if self.inner.len() <= columns {
+            return;
+        }
+
+        let mut cut = self.inner.split_off(columns);
+        if let Some(hidden) = self.hidden.take() {
+            cut.extend(*hidden);
+        }
+        self.occ = min(self.occ, columns);
+        self.hidden = Some(Box::new(cut));
     }
 
     /// Reduce the number of columns in the row.
@@ -82,6 +127,9 @@ impl<T: Default> Row<T> {
         new_row.truncate(index);
 
         self.occ = min(self.occ, columns);
+        if self.empty_mark > columns {
+            self.empty_mark = 0;
+        }
 
         if new_row.is_empty() { None } else { Some(new_row) }
     }
@@ -97,6 +145,10 @@ impl<T: Default> Row<T> {
 
         // Mark all cells as dirty if template cell changed.
         let len = self.inner.len();
+        // wmux: a row with empty cells marked has its wrap flag past `occ`.
+        if self.empty_mark != 0 {
+            self.occ = len;
+        }
         if self.inner[len - 1].discriminant() != template.discriminant() {
             self.occ = len;
         }
@@ -107,6 +159,27 @@ impl<T: Default> Row<T> {
         }
 
         self.occ = 0;
+
+        // wmux: a reset row is a new line, at the current width.
+        self.hidden = None;
+        self.empty_mark = 0;
+    }
+
+    /// wmux: reset over the row's whole physical width, kept cells included,
+    /// as xterm fills a whole erased line (ED); they stay kept.
+    pub(crate) fn reset_keep_width<D>(&mut self, template: &T)
+    where
+        T: ResetDiscriminant<D> + GridCell,
+        D: PartialEq,
+    {
+        let hidden = self.hidden.take();
+        self.reset(template);
+        if let Some(mut hidden) = hidden {
+            for item in hidden.iter_mut() {
+                item.reset(template);
+            }
+            self.hidden = Some(hidden);
+        }
     }
 }
 
@@ -114,7 +187,98 @@ impl<T: Default> Row<T> {
 impl<T> Row<T> {
     #[inline]
     pub fn from_vec(vec: Vec<T>, occ: usize) -> Row<T> {
-        Row { inner: vec, occ }
+        Row { inner: vec, occ, hidden: None, empty_mark: 0 }
+    }
+
+    /// wmux: where the empty cells a widen gave this soft-wrapped row, or an
+    /// erase left at its edge, begin, past anything written since: every
+    /// write through the row moves `occ` past the cells it reaches, so a
+    /// blank printed there later is content.
+    pub fn empty_from(&self) -> Option<usize> {
+        let mark = self.empty_mark.checked_sub(1)?;
+        let from = mark.max(self.occ);
+        (from < self.inner.len()).then_some(from)
+    }
+
+    /// wmux: drop the mark when the row's cells move. An erase's empty run can
+    /// hold its background past `occ`, so `occ` covers the row again.
+    fn forget_mark(&mut self) {
+        if self.empty_mark != 0 {
+            self.occ = self.inner.len();
+            self.empty_mark = 0;
+        }
+    }
+
+    /// wmux: mark the cells from `column` on as the empty ones a widen added.
+    pub(crate) fn set_empty_from(&mut self, column: usize) {
+        if self.empty_mark == 0 || column < self.empty_mark - 1 {
+            self.empty_mark = column + 1;
+        }
+    }
+
+    /// wmux: an erase left the cells from `column` to the edge empty (blanks
+    /// in the default foreground, in the erase background). They count as
+    /// unwritten, so the serializer replays them as erased, not printed;
+    /// `reset` still resets the whole row, as for any mark.
+    pub(crate) fn mark_erased_from(&mut self, column: usize) {
+        self.empty_mark = column + 1;
+        self.occ = min(self.occ, column);
+    }
+
+    /// wmux: take the wrap flag off the last cell without counting it as a
+    /// write (`occ`), so a resize keeps an earlier widen's empty cells.
+    pub(crate) fn take_wrap(&mut self) -> bool
+    where
+        T: GridCell,
+    {
+        let Some(cell) = self.inner.last_mut() else { return false };
+        let wrapped = cell.flags().contains(Flags::WRAPLINE);
+        cell.flags_mut().remove(Flags::WRAPLINE);
+        wrapped
+    }
+
+    /// wmux: set the wrap flag on the last cell. On a row with empty cells
+    /// marked it does not count as a write: `reset` then resets the whole
+    /// row, that flag included.
+    pub(crate) fn put_wrap(&mut self)
+    where
+        T: GridCell,
+    {
+        if self.empty_mark == 0 {
+            self.occ = self.inner.len();
+        }
+        if let Some(cell) = self.inner.last_mut() {
+            cell.flags_mut().insert(Flags::WRAPLINE);
+        }
+    }
+
+    /// wmux: how many cells are kept past the visible width.
+    #[inline]
+    pub fn hidden_len(&self) -> usize {
+        self.hidden.as_ref().map_or(0, |hidden| hidden.len())
+    }
+
+    /// wmux: run `f` over the row's physical cells, the visible ones then the
+    /// kept ones, as xterm's line operations (ICH, DCH, ECH, insert mode) do.
+    pub(crate) fn with_physical<R>(&mut self, f: impl FnOnce(&mut [T]) -> R) -> R {
+        let visible = self.inner.len();
+        self.occ = visible;
+        self.empty_mark = 0;
+        match self.hidden.as_mut() {
+            None => f(&mut self.inner),
+            Some(hidden) => {
+                // Both vectors keep their buffers: no allocation per edit.
+                self.inner.append(hidden);
+                let result = f(&mut self.inner);
+                hidden.extend(self.inner.drain(visible..));
+                result
+            },
+        }
+    }
+
+    /// wmux: forget the kept cells (the row's screen is no longer shown).
+    pub(crate) fn drop_hidden(&mut self) {
+        self.hidden = None;
     }
 
     #[inline]
@@ -138,12 +302,14 @@ impl<T> Row<T> {
     where
         T: GridCell,
     {
+        self.forget_mark();
         self.occ += vec.len();
         self.inner.append(vec);
     }
 
     #[inline]
     pub fn append_front(&mut self, mut vec: Vec<T>) {
+        self.forget_mark();
         self.occ += vec.len();
 
         vec.append(&mut self.inner);
@@ -161,6 +327,7 @@ impl<T> Row<T> {
 
     #[inline]
     pub fn front_split_off(&mut self, at: usize) -> Vec<T> {
+        self.forget_mark();
         self.occ = self.occ.saturating_sub(at);
 
         let mut split = self.inner.split_off(at);

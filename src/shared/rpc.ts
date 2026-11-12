@@ -503,6 +503,8 @@ export type RpcMethod =
   | 'mcp.identify'
   | 'mcp.declarePermissions'
   | 'notify'
+  | 'app.action'
+  | 'app.action.list'
   | 'meta.setStatus'
   | 'meta.setProgress'
   | 'ui.decoratePane'
@@ -558,6 +560,7 @@ export type RpcMethod =
   | 'browser.click.cdp'
   | 'browser.hover.cdp'
   | 'browser.drag.cdp'
+  | 'browser.upload.cdp'
   | 'browser.press.cdp'
   | 'browser.dialog.arm'
   | 'browser.cookies'
@@ -905,6 +908,8 @@ export const ALL_RPC_METHODS = [
   'mcp.identify',
   'mcp.declarePermissions',
   'notify',
+  'app.action',
+  'app.action.list',
   'meta.setStatus',
   'meta.setProgress',
   'ui.decoratePane',
@@ -950,6 +955,7 @@ export const ALL_RPC_METHODS = [
   'browser.click.cdp',
   'browser.hover.cdp',
   'browser.drag.cdp',
+  'browser.upload.cdp',
   'browser.press.cdp',
   'browser.dialog.arm',
   'browser.cookies',

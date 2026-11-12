@@ -68,8 +68,8 @@ export const PROJECT_FANOUT_PORT_MAX = 65535;
 /**
  * Widest window accepted. Assignment probes the window serially by binding, so
  * `"1024-65535"` would mean tens of thousands of binds before the first task
- * spawns. A fan-out is capped at 8 tasks; 512 is already two orders of
- * magnitude of headroom, and a wider window is a typo, not an intent.
+ * spawns. A fan-out has at most FANOUT_MAX_TASKS (64) tasks, 8 by default; 512
+ * is still eight times that maximum, and a wider window is a typo, not an intent.
  */
 export const PROJECT_FANOUT_MAX_RANGE_WIDTH = 512;
 /** Most config files one `fanout.copy` list may name. */

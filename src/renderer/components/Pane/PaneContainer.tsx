@@ -5,6 +5,8 @@ import type { Pane as PaneType, Workspace } from '../../../shared/types';
 import { findLeaf } from '../../../shared/paneUtils';
 import { useStore } from '../../stores';
 import PaneComponent from './Pane';
+import { DialogHost, useHasDialogHost } from '../ui/dialogHost';
+import { childCorners, shownChildren } from './paneCorners';
 
 /**
  * How far around a divider's 1px line the library lets the pointer grab it
@@ -12,6 +14,16 @@ import PaneComponent from './Pane';
  * a double-click lands on exactly the band a drag grabs.
  */
 const SEPARATOR_HIT_TARGET = { coarse: 37, fine: 16 };
+
+/**
+ * The style of each Panel's content box. The library makes it `overflow: auto`,
+ * so a pane taller than its Panel (for a moment in a restructure, before the
+ * Group lays the new panel set out) showed a scrollbar, and the scrollbar took
+ * width from the pane: its terminal fitted a column short. The box still
+ * scrolls, so chrome taller than a very short Panel stays reachable with the
+ * wheel or keyboard, but its scrollbar takes no width.
+ */
+export const PANEL_CONTENT_STYLE = { scrollbarWidth: 'none' } as const;
 
 /** The band the library grabs with — it picks coarse or fine from this same
  *  media query, not per event. */
@@ -101,9 +113,24 @@ interface PaneContainerProps {
    *  render tree — the global zoomedPaneId alone cannot tell whether a pane
    *  in a DIFFERENT (still visible) workspace tree is affected. */
   isZoomHidden?: boolean;
+  /** The workspace column's corners this subtree reaches (paneCorners.ts);
+   *  set only for the active single-view workspace. */
+  corners?: string;
 }
 
-export default function PaneContainer({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = false }: PaneContainerProps) {
+/**
+ * The panes of one workspace. The outermost container also keeps the dialog
+ * host (ui/dialogHost): each pane root is its own stacking context, so a
+ * dialog a pane opens renders there, out of the panes, and hides while the
+ * workspace does.
+ */
+export default function PaneContainer(props: PaneContainerProps) {
+  const nested = useHasDialogHost();
+  const tree = <PaneTree {...props} />;
+  return nested ? tree : <DialogHost visible={props.isWorkspaceVisible ?? true}>{tree}</DialogHost>;
+}
+
+function PaneTree({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = false, corners }: PaneContainerProps) {
   const activePaneId = useStore((s) => {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     return ws?.activePaneId || '';
@@ -315,6 +342,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
         isActive={pane.id === activePaneId}
         isWorkspaceVisible={isWorkspaceVisible}
         isZoomHidden={isZoomHidden}
+        corners={corners}
       />
     );
   }
@@ -324,6 +352,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
   // Zoom only affects this branch when the zoomed leaf lives somewhere below
   // it; a zoomed pane in another workspace (or none) leaves rendering as-is.
   const zoomInSubtree = zoomedPaneId !== null && findLeaf(pane, zoomedPaneId) !== null;
+  const shown = shownChildren(pane.children, zoomedPaneId);
 
   return (
     <Group
@@ -340,7 +369,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
         // spread onto the Panel's OUTER flex-item div (className would land
         // on the inner one), and the globals.css rule beats the library's
         // inline display with !important.
-        const zoomHidden = zoomInSubtree && findLeaf(child, zoomedPaneId) === null;
+        const zoomHidden = !shown[i];
         return (
           <Fragment key={child.id}>
             {i > 0 && (
@@ -361,6 +390,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
               // the default layout of a panel set it has no cached layout for.
               defaultSize={`${pane.sizes?.[i] ?? 100 / pane.children.length}%`}
               minSize={10}
+              style={PANEL_CONTENT_STYLE}
               {...(zoomHidden ? { 'data-wmux-zoom-hidden': true } : {})}
             >
               <PaneContainer
@@ -368,6 +398,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
                 workspace={workspace}
                 isWorkspaceVisible={isWorkspaceVisible}
                 isZoomHidden={isZoomHidden || zoomHidden}
+                corners={childCorners(corners ?? '', orientation, i, shown)}
               />
             </Panel>
           </Fragment>

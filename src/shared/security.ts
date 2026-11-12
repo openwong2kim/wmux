@@ -262,7 +262,7 @@ function icaclsPath(): string {
  * "we didn't touch it so it must be fine" (which is exactly wrong on an
  * upgrade boot, where the pre-existing ACL is the weak one).
  *
- * icacls /save resolves every principal to a raw SID in the SDDL, so the
+ * icacls /save resolves every principal to a SID (or an SDDL alias) in the SDDL, so the
  * comparison is codepage-proof (#90). Runs with cwd = the file's directory
  * because /save records the given (relative) name in its output header.
  */
@@ -271,7 +271,7 @@ function icaclsPath(): string {
  * path had to fall back to an ASCII account name (`getCurrentUserSid()`
  * returned null, e.g. whoami was momentarily unavailable). Uses whoami again
  * rather than %USERNAME%: a name cannot be compared against `icacls /save`
- * output, which renders every principal as a raw SID.
+ * output, which renders every principal as a SID or an SDDL alias.
  *
  * Verification-only, so it never widens the #90 codepage rule — the ACL that
  * gets APPLIED still refuses a non-ASCII name. Failing to resolve here just
@@ -286,7 +286,7 @@ function resolveSidForVerification(): string | null {
  *  sddlIsOwnerOnly honest across icacls format variations. @internal */
 export function verifyOwnerOnlyDaclSync(filePath: string, sid: string | null): boolean {
   // No SID: fall back to resolving the ASCII account name to one, purely for
-  // this comparison. `icacls /save` always renders principals as raw SIDs, so
+  // this comparison. `icacls /save` renders principals as SIDs, never names, so
   // without a SID there is nothing to compare against and every verification
   // would return false — which would delete a previous token we never touched
   // and may well be correctly hardened (review finding). Resolution is a plain
@@ -356,6 +356,10 @@ async function verifyOwnerOnlyDaclAsync(filePath: string, sid: string | null): P
  * weak ACL. Structural parse rather than one exact-match regex so real-world
  * control-flag orderings do not turn transient collisions destructive
  * (GLM round-2 P2); the dynamic harness pins this against live icacls output.
+ *
+ * SDDL writes the machine's built-in Administrator (RID 500, as on a GitHub
+ * Windows runner) as the alias LA, not its SID. The owner's RID is all there is
+ * to go on here, so a domain's RID 500 account would also accept an LA ACE.
  */
 function sddlIsOwnerOnly(saveOutput: string, sid: string): boolean {
   const lines = saveOutput
@@ -370,7 +374,8 @@ function sddlIsOwnerOnly(saveOutput: string, sid: string): boolean {
   if (!flags.includes('P')) return false; // must be inheritance-protected
   if (!/^(?:P|AI|AR)+$/.test(flags)) return false; // no unknown control flags
   const aces = m[2].split(')(');
-  return aces.length === 1 && aces[0] === `A;;FA;;;${sid}`;
+  if (aces.length !== 1) return false;
+  return aces[0] === `A;;FA;;;${sid}` || (/-500$/.test(sid) && aces[0] === 'A;;FA;;;LA');
 }
 
 function applyRestrictiveAclViaIcacls(

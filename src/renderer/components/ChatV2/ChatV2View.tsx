@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { CHATV2_AGENT_CAPS, type ChatV2Agent, type ChatV2RunMode } from '../../../shared/chatv2/ipc';
-import { Composer, setDraft } from './Composer';
+import { Composer, dequeueMessage, enqueueMessage, moveDraft, requeueToDraft, restoreToDraft, setDelivering, setDraft, useDeliveringId, useDraft, useQueuedMessages } from './Composer';
+import { clientMessageId } from './controller';
 import { shortDir } from '../../utils/shortDir';
 import { FindBar } from './FindBar';
 import { groupToolRows, sessionRows, type RowCache, type TranscriptRow } from './rows';
@@ -14,6 +15,8 @@ import { ContinueInChat, usePaneMove } from './ContinueInChat';
 import { useStore } from '../../stores';
 import { focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useTranscriptWindow } from '../shared/useTranscriptWindow';
+import { ArrowIcon } from './ArrowIcon';
+import { IconX } from '../icons';
 
 const NEAR_BOTTOM_PX = 48;
 
@@ -81,6 +84,11 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   const t = useT();
   const { state, controller, retry } = useChatV2(paneId, active);
   const view = state.view;
+  const draftKey = view ? `${paneId}:${view.binding.chatSessionId}` : `${paneId}:new`;
+  const queue = useQueuedMessages(draftKey);
+  const deliveringId = useDeliveringId(draftKey);
+  // A queued message whose Edit was refused (no room for its images).
+  const [editRefused, setEditRefused] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
   const [findId, setFindId] = useState<string | null>(null);
   const [newModel, setNewModel] = useState('');
@@ -98,6 +106,11 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   const [draftRev, setDraftRev] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
+  // Rows arrived below while the reader was scrolled up: offer the way back,
+  // and say so to a screen reader (a polite live region, apart from the button).
+  const [newBelow, setNewBelow] = useState(false);
+  const [announce, setAnnounce] = useState('');
+  const lastRowKey = useRef<string | undefined>(undefined);
 
   const rowCache = useRef<RowCache>(new WeakMap());
   const rows = useMemo(() => (view ? groupToolRows(sessionRows(view.session, rowCache.current), rowCache.current) : []), [view]);
@@ -111,6 +124,7 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     entered.current = new Set();
     // Its window opens at the tail, so the view follows it from there.
     pinned.current = true;
+    lastRowKey.current = undefined;
   }
   knownKeys.current = enteringKeys(rows, knownKeys.current, entered.current);
   // A long transcript mounts its recent rows; earlier ones are read in on the way up.
@@ -126,18 +140,36 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     body: (blockId, field, offset) => controller?.body(blockId, field, offset) ?? Promise.resolve(null),
   }), [controller]);
 
-  // Stay at the bottom while the reader is there.
+  // Stay at the bottom while the reader is there; otherwise note that a row
+  // arrived below (the live footer only ticks, so it does not count).
+  const lastKey = rows.findLast((row) => row.kind !== 'footer')?.key;
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (el && pinned.current && !findId) el.scrollTop = el.scrollHeight;
-  }, [transcriptWindow.visible, findId]);
+    const arrived = lastRowKey.current !== undefined && lastKey !== lastRowKey.current;
+    lastRowKey.current = lastKey;
+    if (el && pinned.current && !findId) { el.scrollTop = el.scrollHeight; setNewBelow(false); setAnnounce(''); }
+    else if (arrived) { setNewBelow(true); setAnnounce(S.newBelow); }
+  }, [transcriptWindow.visible, findId, lastKey, queue.length]);
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
     // The bottom of a window cut short (after find) is not the end of the chat.
     pinned.current = atBottom && transcriptWindow.laterCount === 0;
+    if (pinned.current) { setNewBelow(false); setAnnounce(''); }
     transcriptWindow.onScroll(atBottom);
+  };
+  // Back to the newest row, and keep following from there (also on send).
+  // An open find holds the view on its match and may have cut the window
+  // short, so it ends first.
+  const toLatest = () => {
+    if (findOpen || findId) { setFindOpen(false); setFindId(null); }
+    pinned.current = true;
+    setNewBelow(false);
+    setAnnounce('');
+    transcriptWindow.toTail();
+    const el = scroller.current;
+    if (el) el.scrollTop = el.scrollHeight;
   };
   // A match the window hides is revealed first, then scrolled to once.
   const shownFind = useRef<string | null>(null);
@@ -173,6 +205,52 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     pinned.current = true;
     transcriptWindow.toTail();
   };
+
+  // Messages sent mid-turn wait here (DESIGN.md, Chat feedback: Queued until
+  // it runs) and go one at a time once the agent is free. The chat-v2 host
+  // refuses a send while a turn runs, so the queue is the renderer's; each
+  // item keeps its message id, so a resend after a remount is a duplicate.
+  const status = view?.binding.status;
+  const running = !!view && (!!view.session.busy || status === 'running' || status === 'needs-input');
+  const canDeliver = !!view && !running && (status === 'idle' || status === 'stopped') && view.binding.capabilities.send;
+  const nextQueued = canDeliver ? queue[0] : undefined;
+  // The copy (epoch and seq) a delivery last waited on: it is tried again only
+  // once another event folded (a turn's end, a reload), never in a loop.
+  const heldAt = useRef<string | null>(null);
+  const copyAt = view ? `${view.epoch}:${view.lastSeq}` : '';
+  useEffect(() => {
+    // The store marks the delivery in flight, so a view that remounted meanwhile does not start it twice.
+    if (!nextQueued || !controller || deliveringId || heldAt.current === copyAt) return;
+    const key = draftKey;
+    const item = nextQueued;
+    setDelivering(key, item.id);
+    const hold = () => { heldAt.current = copyAt; };
+    void controller.deliver({ id: item.id, text: item.text, attachments: item.staged.map((file) => file.path) }).then((outcome) => {
+      setDelivering(key, null);
+      if (outcome === 'wait') { hold(); return; }
+      if (outcome === 'gone') {
+        // Its chat is gone: the queue goes to the composer the pane shows now.
+        const now = controller.current.view;
+        requeueToDraft(key, now ? `${paneId}:${now.binding.chatSessionId}` : `${paneId}:new`);
+        return;
+      }
+      dequeueMessage(key, item.id);
+      // Refused: back in the composer, not lost (the error says why).
+      if (outcome === 'failed') restoreToDraft(key, item, true);
+    }, () => {
+      // The bridge failed: it stays queued and is tried again on the next event.
+      setDelivering(key, null);
+      hold();
+    });
+  }, [nextQueued, controller, draftKey, deliveringId, copyAt, paneId]);
+
+  // A first message whose chat was created after a split remount stays under
+  // the new-chat draft; once the chat shows, it moves to the chat's composer.
+  const newChatDraft = useDraft(`${paneId}:new`);
+  useEffect(() => {
+    if (!view || newChatDraft.sending || (!newChatDraft.text && !newChatDraft.staged.length)) return;
+    moveDraft(`${paneId}:new`, draftKey);
+  }, [view, newChatDraft, paneId, draftKey]);
 
   if (state.phase === 'loading') {
     return <div className="wmux-chatv2" data-chatv2="loading">{kindRow}<div className="wmux-chatv2-state" role="status">{t('chat.loading')}</div></div>;
@@ -220,7 +298,8 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             canStop={false}
             canAttach={false}
             chips={{ agent: newAgent, model: newModel, effort: '', mode: newMode, editable: true, onModel: setNewModel, onMode: setNewMode, onAgent: pickAgent }}
-            onSend={async (text, attachments) => {
+            onSend={async (text, staged) => {
+              const attachments = staged.map((item) => item.path);
               if (!(await controller.create({ agent: newAgent, mode: newMode, model: newModel }))) return false;
               setDraft(`${paneId}:new`, '');
               const chatSessionId = controller.current.view?.binding.chatSessionId;
@@ -241,7 +320,6 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   // Handed off because a terminal agent in another pane took the conversation.
   const continuedIn = handedOff ? binding.continuedIn : undefined;
   const continuedInPane = continuedIn?.paneId;
-  const running = !!view.session.busy || binding.status === 'running' || binding.status === 'needs-input';
   const canHandOff = binding.capabilities.toTerminal && !handedOff && !running && binding.status !== 'starting';
   const continueInTerminal = async () => {
     setHandingOff(true);
@@ -268,9 +346,38 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
               enter={entered.current.has(row.key)}
             />
           ))}
+          {queue.map((item) => (
+            <div key={item.id} className="wmux-chatv2-queued" data-chatv2-queued data-sending={item.id === deliveringId || undefined}>
+              <div className="wmux-chatv2-user">{item.text}</div>
+              {item.staged.map((file) => <div key={file.path} className="wmux-chatv2-meta">{file.name}</div>)}
+              {/* Until it goes, a queued message can be taken back: Edit puts it in the composer, × drops it.
+                  Once its delivery started neither could stop it, so neither is offered. */}
+              {item.id === deliveringId ? (
+                <div className="wmux-chatv2-queued-caption"><span>{S.queuedSending}</span></div>
+              ) : (
+                <div className="wmux-chatv2-queued-caption">
+                  <span>{editRefused === item.id ? S.editQueuedFull : t('chat.queued')}</span>
+                  <button type="button" className="wmux-chatv2-link" data-chatv2-queued-edit
+                    onClick={() => {
+                      if (!restoreToDraft(draftKey, item)) { setEditRefused(item.id); return; }
+                      setEditRefused(null);
+                      dequeueMessage(draftKey, item.id);
+                    }}>{S.editQueued}</button>
+                  <button type="button" className="wmux-chatv2-icon" aria-label={S.removeQueued} title={S.removeQueued} data-chatv2-queued-remove
+                    onClick={() => dequeueMessage(draftKey, item.id)}><IconX size={12} /></button>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </div>
       <div className="wmux-chatv2-dock">
+        <div className="sr-only" role="status" aria-live="polite" data-chatv2-announce>{announce}</div>
+        {newBelow && (
+          <button type="button" className="wmux-chatv2-jump" aria-label={t('chat.scrollToBottom')} title={t('chat.scrollToBottom')} data-chatv2-jump onClick={toLatest}>
+            <ArrowIcon dir="down" />
+          </button>
+        )}
         {error}
         {handedOff ? (
           <div className="wmux-chatv2-notice wmux-chatv2-handed-off">
@@ -289,13 +396,18 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
             key={`${binding.chatSessionId}:${draftRev}`}
             paneId={paneId}
             canAttach={binding.capabilities.images}
-            draftKey={`${paneId}:${binding.chatSessionId}`}
+            draftKey={draftKey}
             placeholder={S.placeholder(S.agentName[binding.agent])}
             disabled={!binding.capabilities.send || binding.status === 'failed'}
             running={running}
             canStop={binding.capabilities.interrupt}
             chips={{ agent: binding.agent, model: binding.model, effort: view.session.modelSettings.effort ?? '', mode: binding.mode, cwd: view.session.cwd, editable: false }}
-            onSend={(text, attachments) => controller.send(text, attachments)}
+            onSend={async (text, staged) => {
+              toLatest();
+              // Behind a running turn, an agent still starting, or what is already queued, so the order holds.
+              if (running || queue.length || binding.status === 'starting') { enqueueMessage(draftKey, { id: clientMessageId(), text, staged }); return true; }
+              return controller.send(text, staged.map((item) => item.path));
+            }}
             onStop={() => void controller.interrupt()}
             extra={canHandOff ? (
               <button type="button" className="wmux-chatv2-btn" title={S.continueInTerminalHint} disabled={handingOff} onClick={() => void continueInTerminal()}>

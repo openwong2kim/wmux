@@ -7,21 +7,26 @@
  * module replaces that path with an explicit isolation step:
  *
  *   1. Rename the offender into `{dir}/corrupted/{basename}.{ts}.bak`.
- *   2. Emit a `CORRUPT_FILE` structured log to stderr so operators can
- *      grep for the event and correlate it with surrounding writes.
+ *   2. Emit a `CORRUPT_FILE` structured log to stderr, which the main and
+ *      daemon log sinks tee to disk, so operators can grep for the event
+ *      and correlate it with surrounding writes. A plain line beside it
+ *      carries the level token `wmux doctor` counts.
  *   3. Enforce retention on `corrupted/` (default: 30 days / 10 files)
  *      so the subtree does not grow unbounded.
  *
  * Scope guards, mirroring `core.ts` / `rotation.ts`:
  *
- *   - Node stdlib only. No Electron, no daemon-specific state. The
- *     quarantine subtree is addressed purely by path, so both the
- *     daemon and the main process can call in once wiring lands.
- *   - `rename` only — never `copy`. Staying on a single volume keeps
- *     the move as a metadata-only op.
- *   - Every I/O path is best-effort. A failing quarantine must not
- *     take the caller down; it returns `null` (or swallows) and lets
- *     the read fallback chain carry on.
+ *   - Node stdlib and `shared/security` (itself stdlib only). No Electron,
+ *     no daemon-specific state. The quarantine subtree is addressed purely
+ *     by path, so both the daemon and the main process can call in once
+ *     wiring lands.
+ *   - `rename`, not `copy`, to isolate a file. Staying on a single volume
+ *     keeps the move as a metadata-only op. `copyToQuarantineSync` is the
+ *     exception: it keeps a copy of a file that stays where it is until a
+ *     write replaces it.
+ *   - Every I/O path is best-effort, those a write relies on aside. A failing
+ *     quarantine must not take the caller down; it returns `null` (or
+ *     swallows) and lets the read fallback chain carry on.
  *   - Logs go to `process.stderr.write` as a JSON line per event. We
  *     deliberately do NOT reach for a logger dep — this module stays
  *     importable from any layer.
@@ -37,6 +42,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+
+import { reHardenTokenFileAcl } from '../../../shared/security';
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -155,9 +162,30 @@ function unlinkIfExistsSync(p: string): void {
   }
 }
 
+/**
+ * Age a kept file from when it was kept. A rename and a win32 copy both carry the
+ * source's mtime, and cleanup goes by mtime, so a file unwritten for longer than
+ * the retention would be deleted the moment it is kept. False if it could not be
+ * done, and the caller then leaves cleanup for another time.
+ */
+function markKeptNowSync(keptPath: string, ts: number): boolean {
+  try {
+    const when = new Date(ts);
+    fs.utimesSync(keptPath, when, when);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function emitLog(entry: CorruptFileLog): void {
   try {
     process.stderr.write(`${JSON.stringify(entry)}\n`);
+    // The line above is for grep. This one carries the level token `wmux doctor`
+    // counts in the main and daemon logs, which stderr is teed into.
+    process.stderr.write(
+      `[${new Date(entry.ts).toISOString()}] [${entry.level}] [quarantine] ${entry.path} kept as ${entry.quarantined_to}: ${entry.reason}\n`,
+    );
   } catch {
     // Logging must never throw — a failed write on stderr is
     // preferable to crashing the caller.
@@ -216,6 +244,7 @@ export async function quarantineFile(
   } catch {
     return null;
   }
+  const aged = markKeptNowSync(target, ts);
 
   const entry: CorruptFileLog = {
     event: 'CORRUPT_FILE',
@@ -228,6 +257,7 @@ export async function quarantineFile(
     sha256_prefix: shaPrefix,
   };
   emitLog(entry);
+  if (!aged) return { quarantined_to: target };
 
   // Fire-and-forget cleanup so the caller resumes. Swallow any error
   // so the unhandled rejection handler stays quiet — but emit a
@@ -281,6 +311,7 @@ export function quarantineFileSync(
   } catch {
     return null;
   }
+  const aged = markKeptNowSync(target, ts);
 
   const entry: CorruptFileLog = {
     event: 'CORRUPT_FILE',
@@ -293,6 +324,7 @@ export function quarantineFileSync(
     sha256_prefix: shaPrefix,
   };
   emitLog(entry);
+  if (!aged) return { quarantined_to: target };
 
   try {
     cleanupQuarantineSync(dir, opts);
@@ -301,6 +333,149 @@ export function quarantineFileSync(
   }
 
   return { quarantined_to: target };
+}
+
+// ── Public API: keeping a primary a write replaces ──────────────────
+
+/** Kept beside the file when `corrupted/` cannot take it. Only the newest stay. */
+const KEPT_BESIDE_INFIX = '.kept-';
+const KEPT_BESIDE_MAX = 2;
+
+/** Every copy of `sourcePath` kept in `corrupted/` or beside it. */
+export function keptCopiesOf(sourcePath: string): string[] {
+  const base = path.basename(sourcePath);
+  const list = (dir: string, wanted: (name: string) => boolean): string[] => {
+    try {
+      return fs.readdirSync(dir).filter(wanted).map((name) => path.join(dir, name));
+    } catch {
+      return [];
+    }
+  };
+  return [
+    ...list(quarantineDirFor(sourcePath), (n) => n.startsWith(`${base}.`) && n.endsWith('.bak')),
+    ...list(path.dirname(sourcePath), (n) => n.startsWith(`${base}${KEPT_BESIDE_INFIX}`)),
+  ];
+}
+
+// Adapted from yetone/magpie@c7ebb6f8d (internal/lastgood/lastgood.go), MIT
+/** The newest kept copy, when it holds the same bytes as the file. A primary a
+ *  failing commit leaves in place is judged again on every save, and each copy
+ *  would push an older, different one out. */
+function newestCopyIfSame(sourcePath: string): string | null {
+  try {
+    const size = fs.statSync(sourcePath).size;
+    const newest = keptCopiesOf(sourcePath)
+      .map((p) => ({ p, stat: fs.statSync(p) }))
+      .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)[0];
+    if (!newest || newest.stat.size !== size) return null;
+    return fs.readFileSync(newest.p).equals(fs.readFileSync(sourcePath)) ? newest.p : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Keep a copy of `sourcePath` in `corrupted/`, leaving the file where it is, for
+ * a judgement that could be wrong or a file that is still in use. Throws when it
+ * cannot be done, removing whatever part of it was made.
+ *
+ * Synchronous in both write paths: a primary needs this rarely, and the win32
+ * owner-only step has no async form that reports its outcome.
+ */
+export function copyToQuarantineSync(
+  sourcePath: string,
+  reason: string,
+  opts?: QuarantineOptions,
+): { quarantined_to: string } {
+  const clock = resolveClock(opts);
+  const ts = clock();
+  const same = newestCopyIfSame(sourcePath);
+  if (same) {
+    markKeptNowSync(same, ts);
+    return { quarantined_to: same };
+  }
+  const dir = quarantineDirFor(sourcePath);
+  const target = quarantineTargetFor(sourcePath, ts);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.copyFileSync(sourcePath, target);
+  try {
+    // A copy keeps the source's mode on POSIX. On win32 it takes the folder's
+    // inherited rules instead, so it is held to the owner explicitly: a store's
+    // file can be owner-only, and nothing says which ones are from here.
+    if (process.platform === 'win32' && reHardenTokenFileAcl(target) === 'failed') {
+      throw new Error(`could not restrict "${target}" to its owner`);
+    }
+    if (!markKeptNowSync(target, ts)) throw new Error(`could not date "${target}"`);
+  } catch (err) {
+    unlinkIfExistsSync(target);
+    throw err;
+  }
+  emitLog({
+    event: 'CORRUPT_FILE',
+    ts,
+    level: 'warn',
+    code: 'CORRUPT_FILE',
+    path: sourcePath,
+    quarantined_to: target,
+    reason,
+    sha256_prefix: computeShaPrefixSync(target),
+  });
+  try {
+    cleanupQuarantineSync(dir, opts);
+  } catch {
+    // best-effort retention
+  }
+  return { quarantined_to: target };
+}
+
+/** Rename the file beside itself. Needs only what the commit rename needs, and a
+ *  rename keeps the file's own access rules. Throws when it cannot be done. */
+function moveBesideSync(sourcePath: string, reason: string, opts?: QuarantineOptions): string {
+  const ts = resolveClock(opts)();
+  const target = `${sourcePath}${KEPT_BESIDE_INFIX}${ts}`;
+  fs.renameSync(sourcePath, target);
+  const beside = keptCopiesOf(sourcePath)
+    .filter((p) => path.dirname(p) === path.dirname(sourcePath))
+    .sort((a, b) => Number(b.split(KEPT_BESIDE_INFIX).pop()) - Number(a.split(KEPT_BESIDE_INFIX).pop()));
+  for (const old of beside.slice(KEPT_BESIDE_MAX)) unlinkIfExistsSync(old);
+  emitLog({
+    event: 'CORRUPT_FILE',
+    ts,
+    level: 'warn',
+    code: 'CORRUPT_FILE',
+    path: sourcePath,
+    quarantined_to: target,
+    reason,
+    sha256_prefix: computeShaPrefixSync(target),
+  });
+  return target;
+}
+
+/**
+ * Keep a copy before a write replaces the file, or, when `corrupted/` cannot take
+ * one (read-only, out of space), move the file beside itself so the write can
+ * still go ahead. Returns where it moved to, if it did; throws if neither worked.
+ */
+export function keepCopyOrMoveSync(
+  sourcePath: string,
+  reason: string,
+  opts?: QuarantineOptions,
+): string | undefined {
+  try {
+    copyToQuarantineSync(sourcePath, reason, opts);
+    return undefined;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[quarantine] could not copy "${sourcePath}" aside, moving it beside itself:`, err);
+    return moveBesideSync(sourcePath, reason, opts);
+  }
+}
+
+/** Move a file that cannot be read out of the way of a write: into `corrupted/`,
+ *  or beside itself. Returns where it went; throws if neither worked. */
+export function moveAsideSync(sourcePath: string, reason: string, opts?: QuarantineOptions): string {
+  return quarantineFileSync(sourcePath, reason, opts)?.quarantined_to
+    ?? moveBesideSync(sourcePath, reason, opts);
 }
 
 // ── Public API: cleanupQuarantine ───────────────────────────────────

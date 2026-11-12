@@ -101,7 +101,13 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     };
   });
 
+  let deniedDir: string | null = null;
   afterEach(() => {
+    if (deniedDir) {
+      const icacls = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'icacls.exe');
+      try { execFileSync(icacls, [deniedDir, '/remove:d', '*S-1-1-0'], { windowsHide: true }); } catch { /* rmSync reports it */ }
+      deniedDir = null;
+    }
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
@@ -198,11 +204,32 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     fs.chmodSync(pin, 0o444);
     ps(`Set-ItemProperty -LiteralPath ${q(pin)} -Name IsReadOnly -Value $true`);
     try {
-      expect(repair()).toEqual([]);
+      const result = runShortcutRepairPass(execPath, loc);
+      expect(result.failure).toBeNull();
+      expect(result.actions).toEqual([]);
+      // ...and reports it, so the caller does not record the pass as complete.
+      expect(result.saveFailures).toBe(1);
+      expect(result.enumErrors).toBe(0);
+      expect(result.unreadLinks).toBe(0);
       expect(readLnk(pin).target.toLowerCase()).toBe(deadTarget.toLowerCase());
     } finally {
       ps(`Set-ItemProperty -LiteralPath ${q(pin)} -Name IsReadOnly -Value $false`);
     }
+  });
+
+  it('reports a pin folder it could not list instead of reading it as empty', () => {
+    const pin = path.join(pinDir, 'wmux-pin.lnk');
+    makeLnk(pin, path.join(root, 'app-0.9.0', 'wmux.exe'));
+    const icacls = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'icacls.exe');
+    // Deny listing to Everyone; the folder still exists, so Test-Path passes.
+    // afterEach lifts the deny before the sandbox is removed.
+    execFileSync(icacls, [pinDir, '/deny', '*S-1-1-0:(RD)'], { windowsHide: true });
+    deniedDir = pinDir;
+    const result = runShortcutRepairPass(execPath, loc);
+    expect(result.failure).toBeNull();
+    expect(result.actions).toEqual([]);
+    expect(result.enumErrors).toBe(1);
+    expect(result.saveFailures).toBe(0);
   });
 
   it("repairs under a profile path containing an apostrophe and a dollar sign", () => {

@@ -109,11 +109,9 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     expect(updatedPos).toBeGreaterThan(0);
     expect(uninstallPos).toBeGreaterThan(updatedPos);
     const updatedBranch = indexSrc.slice(updatedPos, uninstallPos);
-    // Same relaunch shape the --squirrel-install branch uses; the
-    // single-instance lock dedupes any double-launch.
-    expect(updatedBranch).toMatch(
-      /spawn\(process\.execPath, \[\], \{ detached: true, stdio: 'ignore', windowsHide: true \}\)\.unref\(\)/,
-    );
+    // Same relaunch the --squirrel-install branch uses (through the shell,
+    // #3280); the single-instance lock dedupes any double-launch.
+    expect(updatedBranch).toContain("relaunchThenExit('updated')");
   });
 
   // Every in-app update is a Squirrel full install, so --squirrel-install runs
@@ -176,6 +174,105 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     const markPos = indexSrc.indexOf("markProfileActive(app.getPath('userData'));");
     expect(readPos).toBeGreaterThan(obsoletePos);
     expect(markPos).toBeGreaterThan(readPos);
+  });
+
+  it('the uninstall hook stops the staged daemon and starts --removeShortcut before the PATH edit, whose broadcast is detached', () => {
+    // Squirrel cancels the uninstall hook at 10 s, and the PATH edit's
+    // WM_SETTINGCHANGE broadcast alone took that long on a CI runner, so nothing
+    // after it ran: the daemon kept running and the app folder stayed.
+    const start = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
+    const branch = indexSrc.slice(start, indexSrc.indexOf("squirrelCmd === '--squirrel-obsolete'", start));
+    const pathEdit = branch.indexOf('uninstallCliShim(');
+    expect(pathEdit).toBeGreaterThan(branch.indexOf('terminateStagedDaemons('));
+    expect(pathEdit).toBeGreaterThan(branch.indexOf("'--removeShortcut'"));
+    expect(pathEdit).toBeGreaterThan(branch.indexOf('removeToastEntries('));
+    expect(branch).toContain('uninstallCliShim(process.execPath, { detachBroadcast: true, timeoutMs: Math.max(1_000, hookTimeLeft()) })');
+    // The staged daemon's listing and kills get a bound from the budget too.
+    expect(branch).toMatch(/terminateStagedDaemons\(stageRoot, Math\.max\(1_000, hookTimeLeft\(\)/);
+    // The daemon's exit wait is cut to what the budget leaves.
+    expect(branch).toMatch(/removeDaemonRuntimeStagesAfterExit\([^)]*waitMs/);
+    expect(branch).toContain('hookTimeLeft()');
+    // The hook ends itself once its steps are done: it never waits on a
+    // child's 'close' event, which left it running until Squirrel's cancel.
+    expect(branch).not.toMatch(/\.on\(\s*'close'/);
+    // process.exit() and app.exit() never return in this hook process.
+    expect(branch).toMatch(/process\.kill\(process\.pid, 'SIGKILL'\);\s*\}\s*else if \($/);
+  });
+
+  it('the install and updated hooks detach the PATH broadcast (#3017)', () => {
+    // The hook's main thread owns top-level windows it cannot pump while it
+    // waits for the PATH edit, so a broadcast it waited for waited 5 s on each
+    // of them, and Squirrel cancelled the install hook at ~16 s.
+    const installStart = indexSrc.indexOf("squirrelCmd === '--squirrel-install'");
+    const updatedStart = indexSrc.indexOf("squirrelCmd === '--squirrel-updated'");
+    const uninstallStart = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
+    expect(installStart).toBeGreaterThan(0);
+    expect(updatedStart).toBeGreaterThan(installStart);
+    expect(uninstallStart).toBeGreaterThan(updatedStart);
+    const installBranch = indexSrc.slice(installStart, updatedStart);
+    const updatedBranch = indexSrc.slice(updatedStart, uninstallStart);
+    for (const branch of [installBranch, updatedBranch]) {
+      expect(branch).toContain('cliShim.installCliShim(process.execPath, { detachBroadcast: true })');
+      expect(branch).not.toMatch(/installCliShim\(process\.execPath\)/);
+    }
+  });
+
+  it('the first-install hook waits for nothing, and the app repairs pins per version (#3263)', () => {
+    // The hook used to repair pins and launch the app on Update.exe's
+    // 'close', but app.quit() ended it first, so neither ever ran.
+    const installStart = indexSrc.indexOf("squirrelCmd === '--squirrel-install'");
+    const updatedStart = indexSrc.indexOf("squirrelCmd === '--squirrel-updated'");
+    const installBranch = indexSrc.slice(installStart, updatedStart);
+    expect(installBranch).not.toContain("on('close'");
+    expect(installBranch).not.toContain('finishInstall');
+    const createAt = installBranch.indexOf("'--createShortcut'");
+    const quitAt = installBranch.indexOf('app.quit()', createAt);
+    expect(createAt).toBeGreaterThan(0);
+    expect(quitAt).toBeGreaterThan(createAt);
+    // The existing-profile path still repairs, then relaunches.
+    const elseAt = installBranch.indexOf('} else {', quitAt);
+    const repairAt = installBranch.indexOf('shortcutHygiene.repairInstalledShortcuts(process.execPath)', elseAt);
+    const launchAt = installBranch.indexOf("relaunchThenExit('install')", repairAt);
+    expect(elseAt).toBeGreaterThan(quitAt);
+    expect(repairAt).toBeGreaterThan(elseAt);
+    expect(launchAt).toBeGreaterThan(repairAt);
+    // The app's reconcile gets what it needs for the once-per-version repair.
+    const callAt = indexSrc.indexOf('runPostInstallReconcile({');
+    expect(callAt).toBeGreaterThan(0);
+    const call = indexSrc.slice(callAt, indexSrc.indexOf('})', callAt));
+    expect(call).toMatch(/userData:\s*app\.getPath\('userData'\)/);
+    expect(call).toMatch(/version:\s*app\.getVersion\(\)/);
+  });
+
+  it('no hook relaunches the app as its own child, and the install hook defers to firstrun (#3280)', () => {
+    // A child of the hook inherits Squirrel's output pipe and keeps Setup.exe
+    // waiting until the app exits; the relaunch goes through ShellExecute.
+    const gateAt = indexSrc.indexOf('if (isSquirrelInstallerEvent(squirrelCmd))');
+    const branchEnd = indexSrc.indexOf('// Skip all app initialization during Squirrel installer events.');
+    expect(gateAt).toBeGreaterThan(0);
+    expect(branchEnd).toBeGreaterThan(gateAt);
+    const hooks = indexSrc.slice(gateAt, branchEnd);
+    expect(hooks).not.toMatch(/spawn\(process\.execPath/);
+    const installStart = indexSrc.indexOf("squirrelCmd === '--squirrel-install'");
+    const updatedStart = indexSrc.indexOf("squirrelCmd === '--squirrel-updated'");
+    const uninstallStart = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
+    const installBranch = indexSrc.slice(installStart, updatedStart);
+    // The hook exits only once the shell has answered, so a failed relaunch is
+    // logged first; when firstrun relaunches, it exits at once.
+    const helperAt = indexSrc.indexOf('function relaunchThenExit(hook: string): void {');
+    expect(helperAt).toBeGreaterThan(0);
+    const helper = indexSrc.slice(helperAt, indexSrc.indexOf('\n}', helperAt));
+    expect(helper).toContain('hookShouldRelaunch(process.env)');
+    expect(helper).toMatch(/if \(!relaunch\) process\.exit\(0\);/);
+    expect(helper).toMatch(/relaunchWithoutInheritance\(process\.execPath, \((\w+)\) => shell\.openPath\(\1\),[^;]*\.finally\(\(\) => process\.exit\(0\)\)/);
+    expect(installBranch).toContain("relaunchThenExit('install')");
+    expect(indexSrc.slice(updatedStart, uninstallStart)).toContain("relaunchThenExit('updated')");
+    // The waiter's note to the hook stays out of the app's own environment.
+    const initAt = indexSrc.indexOf('function appInit(): void {');
+    const scrubAt = indexSrc.indexOf('delete process.env[FIRSTRUN_RELAUNCH_ENV]', initAt);
+    expect(initAt).toBeGreaterThan(0);
+    expect(scrubAt).toBeGreaterThan(initAt);
+    expect(scrubAt).toBeLessThan(indexSrc.indexOf("process.env.WMUX_DATA_SUFFIX = '-dev'", initAt));
   });
 
   it('the predicate classifies by exact membership, never a startsWith prefix', () => {

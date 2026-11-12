@@ -57,6 +57,7 @@ import { IPC } from '../../../../shared/constants';
 import type { RemoteAttachmentDescriptor, RemoteHost, RemoteHostPublic, RemoteWorkspacesResponse } from '../../../../shared/remoteHosts';
 import { REMOTE_POLL_INTERVAL_MS } from '../../../../shared/remoteHosts';
 import type { RemoteHostClient, RemoteMetaEvent, RemoteResizeEvent, RemoteDataEvent, RemoteExitEvent, RemoteErrorEvent } from '../../../remote/RemoteHostClient';
+import { RemoteUnknownWorkspaceError } from '../../../remote/RemoteHostClient';
 
 function getHandler(channel: string): (...args: unknown[]) => unknown {
   const fn = ipcHandlers.get(channel);
@@ -663,6 +664,17 @@ describe('remote.handler — workspaceCreate (#1001)', () => {
 
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/workspaceId must match/);
+  });
+
+  it('carries the host\'s unknown-workspace-id refusal as a reason the dialog can word', async () => {
+    const store = fakeStore([host]);
+    const client = fakeClient(host);
+    client.createWorkspace.mockRejectedValueOnce(new RemoteUnknownWorkspaceError('no live pane is running in that workspace'));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, clientFactory: () => client });
+
+    const res = await getHandler(IPC.REMOTE_WORKSPACE_CREATE)({}, 'h1', 'remote-pane-x') as { ok: false; error: string; reason?: string };
+
+    expect(res).toMatchObject({ ok: false, reason: 'unknown-workspace-id' });
   });
 
   it('reports unknown host without touching a client', async () => {

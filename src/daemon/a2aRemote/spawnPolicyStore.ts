@@ -13,7 +13,10 @@ import { loadStore, storeUnavailable, type StoreLog } from './storeFile';
  * new agent, where, and which agents. A missing file is the default: off,
  * nobody allowed.
  *
- * Only the app's own human changes it (`wmux.internal` RPCs). That is not a
+ * The app's own human changes it (`wmux.internal` RPCs), and on a host the
+ * app does not use, a person through `wmux remote allow|revoke` on the daemon
+ * pipe (DaemonPipeServer HEADLESS_REMOTE_METHODS), which may not name a PC
+ * that is not paired (spawnReceiver `unpairedHostNamed`). That is not a
  * boundary against code running as the same user on this PC; the boundary is
  * this PC's per-PC opt-in and its approval of each request.
  *

@@ -8,7 +8,7 @@
 // effects. A refusal posts nothing, and the action then sends the same input
 // as real input (the foreground path in Actions.cs). What the action itself
 // asks for (Background.ActionRefusal) is decided before any window state is
-// read, so a chord or a scroll costs no cross-process call.
+// read, so a chord or a horizontal scroll costs no cross-process call.
 //
 // The receiver of a click is the child a real click at the point would hit:
 // from the target window down, the topmost child in z-order that is visible,
@@ -47,6 +47,10 @@ internal static unsafe class BackgroundInput
     private const int EditControlType = 50004;
     private const int HasKeyboardFocusProperty = 30008;
     private const uint WmNcHitTest = 0x0084;
+    private const uint EmGetFirstVisibleLine = 0x00CE;
+    private const uint EmGetLineCount = 0x00BA;
+    /// <summary>How long the control may take to show the posted wheel's scroll.</summary>
+    private const int WheelSettleMs = 300;
     private const nint HtTransparent = -1;
 
     private static readonly Guid ClsidVirtualDesktopManager = new(0xAA509086, 0x5CA9, 0x4C25, 0x8F, 0x95, 0x58, 0x9D, 0x3C, 0x07, 0xB4, 0x8A);
@@ -72,6 +76,51 @@ internal static unsafe class BackgroundInput
         return Run(plan, target, (x, y),
             click: () => Post(at!.Value, Background.Click(at.Value.ClientX, at.Value.ClientY)),
             keys: null, readBack: () => false);
+    }
+
+    /// <summary>
+    /// `notches` of the vertical wheel posted as WM_MOUSEWHEEL to the window
+    /// a click at the point would hit, only a multiline Edit or RichEdit
+    /// control, with the same receiver checks as a posted click. Verified
+    /// when the control's first visible line moved the way the wheel turned
+    /// and its line count stayed. A horizontal wheel, any other window, and a
+    /// control that does not say where it is scrolled to are refused before
+    /// posting.
+    /// </summary>
+    public static BackgroundOutcome Scroll(ControlTarget target, double x, double y, int notches, bool up, bool horizontal)
+    {
+        var request = new BackgroundRequest(InputAction.Scroll, Horizontal: horizontal);
+        var early = Background.ActionRefusal(request);
+        if (early != BackgroundRefusal.None) return BackgroundOutcome.Refused(early);
+        var window = WindowState(target);
+        Target? at = Background.WindowRefusal(window) == BackgroundRefusal.None ? AtPoint(target, x, y, secrecy: false) : null;
+        // Only a control that takes the wheel is asked where it is scrolled to.
+        var before = new ScrollPosition(null, null);
+        if (at is { } found && Background.AcceptsPostedWheel(found.Info.ClassName))
+        {
+            bool multiline = WindowStyle(found.Hwnd) is { } style && (style & Background.EsMultiline) != 0;
+            if (multiline) before = Position(found.Hwnd);
+            at = found with { Info = found.Info with { Multiline = multiline, ScrollUnread = multiline && (before.FirstLine == null || before.LineCount == null) } };
+        }
+        var plan = Background.Plan(window, request, at?.Info);
+        if (plan.Refused) return Run(plan, target, null, null, null, () => false);
+        var to = at!.Value;
+        var screen = (X: (int)Math.Round(x), Y: (int)Math.Round(y));
+        return Run(plan, target, (x, y),
+            click: () => Post(to, Background.Wheel(screen.X, screen.Y, notches, up)),
+            keys: null,
+            readBack: () => Poll.Until(() => Background.WheelScrolled(before, Position(to.Hwnd), up),
+                WheelSettleMs, () => Environment.TickCount64, Sta.Sleep));
+    }
+
+    /// <summary>EM_GETFIRSTVISIBLELINE and EM_GETLINECOUNT of an Edit or RichEdit control; null where it did not answer in time.</summary>
+    private static ScrollPosition Position(HWND hwnd) => new(Ask(hwnd, EmGetFirstVisibleLine), Ask(hwnd, EmGetLineCount));
+
+    private static int? Ask(HWND hwnd, uint message)
+    {
+        nuint answer;
+        if (PInvoke.SendMessageTimeout(hwnd, message, 0, 0, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, HitTestTimeoutMs, &answer) == 0) return null;
+        return (int)answer;
     }
 
     private static int Post(Target to, IReadOnlyList<PostedMessage> messages) => Input.PostMessages(to.Hwnd, to.Pid, to.Tid, messages);
@@ -278,7 +327,7 @@ internal static unsafe class BackgroundInput
     /// GetLastInputInfo's tick: it moves with the user's real input (and
     /// SendInput), never with posted messages. 0 when it cannot be read.
     /// </summary>
-    private static uint LastInputTick()
+    public static uint LastInputTick()
     {
         var info = new LASTINPUTINFO { cbSize = (uint)sizeof(LASTINPUTINFO) };
         return PInvoke.GetLastInputInfo(ref info) ? info.dwTime : 0;

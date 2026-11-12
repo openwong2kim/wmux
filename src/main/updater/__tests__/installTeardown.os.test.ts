@@ -10,6 +10,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
+import { FIRSTRUN_RELAUNCH_ENV } from '../../squirrelRelaunch';
 import {
   isSafePsPathLiteral,
   freeSpaceShortfall,
@@ -75,6 +76,14 @@ describe('buildWaiterScript — ordering is the whole contract', () => {
     // installer while anything still holds the install root.
     expect(handleWait).toBeLessThan(start);
     expect(lockProbe).toBeLessThan(start);
+  });
+
+  it('#3280: tells the install hook that Squirrel firstrun relaunches, before starting Setup.exe', () => {
+    const s = buildWaiterScript(PLAN) ?? '';
+    const note = s.indexOf(`$env:${FIRSTRUN_RELAUNCH_ENV} = '1'`);
+    const start = s.indexOf('Start-Process -FilePath $setup');
+    expect(note).toBeGreaterThan(-1);
+    expect(note).toBeLessThan(start);
   });
 
   it('aborts with a marker instead of launching when the root stays locked', () => {

@@ -8,13 +8,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_MESSAGE_ID_RE, A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
-import { SPAWN_DECIDED_PER_HOST_MAX, SPAWN_REQUEST_KEEP_MS, SPAWN_TARGETS_LINK_ID } from '../../../shared/a2aSpawn';
+import { SPAWN_DECIDED_PER_HOST_MAX, SPAWN_PENDING_PER_HOST_DEFAULT, SPAWN_REQUEST_KEEP_MS, SPAWN_TARGETS_LINK_ID } from '../../../shared/a2aSpawn';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { acceptInbound, type InboundDeps } from '../inbound';
 import { LinkStore } from '../linkStore';
 import { linkAlias } from '../outbound';
-import { A2aSpawnReceiver, registerSpawnRpc, type SpawnReceiverDeps } from '../spawnReceiver';
+import { A2aSpawnReceiver, registerSpawnRpc, unpairedHostNamed, type SpawnReceiverDeps } from '../spawnReceiver';
 import { SpawnPolicyStore, samePath } from '../spawnPolicyStore';
 import { SpawnRequestStore } from '../spawnRequestStore';
 import { CheckBusy, CheckTimeout, SpawnChecks, realpathNative } from '../spawnChecks';
@@ -479,13 +479,51 @@ describe('replay, resend and room', () => {
     expect(requests.unsent().map((r) => r.spawnId)).not.toContain(lost.linkId);
   });
 
-  it('at most 3 pending per PC: the next one is refused as rate-limited', async () => {
-    await allowHost();
+  it('pending per PC set to 3: the next one is refused as rate-limited', async () => {
+    await allowHost({ limits: { pendingPerPc: 3 } });
     const hang = makeReceiver({ agentInstalled: () => new Promise(() => undefined), checks: new SpawnChecks(8, 60_000) });
     for (let i = 0; i < 3; i++) expect(hang.applyInbound(envelope(), { hostId: HOST })).toEqual({ ok: true, duplicate: false });
     const fourth = envelope();
     expect(hang.applyInbound(fourth, { hostId: HOST })).toEqual({ ok: true, duplicate: false });
     expect(resultsFor(fourth)[0]?.env.spawnResult?.code).toBe('rate-limited');
+  });
+
+  it(`with no pending limit set, ${SPAWN_PENDING_PER_HOST_DEFAULT} per PC; another PC still gets in`, async () => {
+    await allowHost({ hosts: { [HOST]: { allowed: true }, [OTHER]: { allowed: true } } });
+    const hang = makeReceiver({ agentInstalled: () => new Promise(() => undefined), checks: new SpawnChecks(8, 60_000) });
+    for (let i = 0; i < SPAWN_PENDING_PER_HOST_DEFAULT; i++) expect(hang.applyInbound(envelope(), { hostId: HOST })).toEqual({ ok: true, duplicate: false });
+    const over = envelope();
+    hang.applyInbound(over, { hostId: HOST });
+    expect(resultsFor(over)[0]?.env.spawnResult?.code).toBe('rate-limited');
+    const other = envelope();
+    hang.applyInbound(other, { hostId: OTHER });
+    expect(resultsFor(other)).toEqual([]);
+  });
+
+  it('a prompt longer than this PC accepts is refused not-allowed, and nothing is kept', async () => {
+    await allowHost({ limits: { maxPromptKiB: 1 } });
+    const long = envelope({ spawn: { text: 'x'.repeat(1025) } });
+    expect(await decide(long)).toBe('not-allowed');
+    expect(requests.get(HOST, long.linkId)).toBeUndefined();
+    const fits = envelope({ spawn: { text: 'x'.repeat(1024) } });
+    receiver.applyInbound(fits, { hostId: HOST });
+    expect(requests.get(HOST, fits.linkId)).toBeDefined();
+  });
+
+  it('a request that asks to wait longer than this PC allows ends sooner here; the request is kept as sent', async () => {
+    await allowHost({ limits: { maxWaitHours: 1 } });
+    const env = envelope({ expiresIn: 5 * 3600_000 });
+    const before = Date.now();
+    receiver.applyInbound(env, { hostId: HOST });
+    const rec = requests.get(HOST, env.linkId)!;
+    expect(Date.parse(rec.expiresAt) - before).toBeLessThanOrEqual(3600_000 + 1000);
+    expect(rec.request?.expiresAt).toBe(env.spawn?.expiresAt);
+    // A resend of the same request is the same request (no conflict).
+    expect(receiver.applyInbound(env, { hostId: HOST })).toMatchObject({ ok: true, duplicate: true });
+    // A shorter ask than the limit is untouched.
+    const short = envelope({ expiresIn: 1800_000 });
+    receiver.applyInbound(short, { hostId: HOST });
+    expect(requests.get(HOST, short.linkId)?.expiresAt).toBe(short.spawn?.expiresAt);
   });
 
   it('every result carries a code and the spawnId only: no path, errno or message', async () => {
@@ -600,6 +638,58 @@ describe('as the PC asked: telling other PCs what they may ask for', () => {
     queued = false;
     r.sendTargets();
     expect(targetsSent()).toHaveLength(1);
+  });
+});
+
+describe('a policy saved from outside the app', () => {
+  type Handler = (p: Record<string, unknown>, ctx?: { clientId: string }) => Promise<unknown>;
+  const THIRD = '33333333-3333-4333-8333-333333333333';
+  function register(paired: Set<string>): Map<string, Handler> {
+    const handlers = new Map<string, Handler>();
+    registerSpawnRpc((m, h) => void handlers.set(m, h), {
+      policy, requests,
+      outsideApp: { isApp: (clientId) => clientId === 'app', isPaired: (hostId) => paired.has(hostId) },
+    });
+    return handlers;
+  }
+  const body = (over: Record<string, unknown>) => ({
+    policy: {
+      v: 1, enabled: true, approval: 'allow-list', followUps: 'ask', permissionMode: 'auto', hosts: {}, roots: [{ id: 'web', label: 'Web', path: repo }],
+      agents: ['claude'], rules: [], version: policy.get().version, ...over,
+    },
+  });
+
+  it('may not name or allow a PC that is not paired, in hosts or in a rule; the app may', async () => {
+    const save = register(new Set([HOST])).get('a2a.remote.spawnPolicy.set')!;
+    expect(await save(body({ hosts: { [OTHER]: { allowed: true } } }), { clientId: 'cli' })).toEqual({ ok: false, error: `${OTHER} is not paired with this PC` });
+    expect(await save(body({ hosts: { [OTHER]: { allowed: false } } }), { clientId: 'cli' })).toMatchObject({ ok: false });
+    expect(await save(body({ rules: [{ hostId: OTHER, rootId: 'web', agent: 'claude' }] }), { clientId: 'cli' })).toMatchObject({ ok: false });
+    expect(policy.get().hosts).toEqual({});
+    // A paired PC saves from outside the app; the app's own connection saves anything, as before.
+    expect(await save(body({ hosts: { [HOST]: { allowed: true } }, rules: [{ hostId: HOST, rootId: 'web', agent: 'claude' }] }), { clientId: 'cli' })).toMatchObject({ ok: true });
+    expect(await save(body({ hosts: { [HOST]: { allowed: true }, [OTHER]: { allowed: true } } }), { clientId: 'app' })).toMatchObject({ ok: true });
+  });
+
+  it('writes back what the saved policy already holds for a PC no longer paired, and nothing more for it', async () => {
+    await allowHost({ hosts: { [HOST]: { allowed: true }, [OTHER]: { allowed: true } }, rules: [{ hostId: OTHER, rootId: 'web', agent: 'claude' }] });
+    const save = register(new Set([HOST])).get('a2a.remote.spawnPolicy.set')!;
+    const held = { [HOST]: { allowed: true }, [OTHER]: { allowed: true } };
+    const heldRule = { hostId: OTHER, rootId: 'web', agent: 'claude' };
+    // Read and written back (here with a new rule for the paired PC): saves.
+    expect(await save(body({ hosts: held, rules: [heldRule, { hostId: HOST, rootId: 'web', agent: 'claude' }] }), { clientId: 'cli' })).toMatchObject({ ok: true });
+    // A new rule for the unpaired PC, or a third unpaired PC: refused.
+    expect(await save(body({ hosts: held, rules: [heldRule, { hostId: OTHER, rootId: 'web', agent: 'claude', sub: 'apps' }] }), { clientId: 'cli' })).toMatchObject({ ok: false, error: `${OTHER} is not paired with this PC` });
+    expect(await save(body({ hosts: { ...held, [THIRD]: { allowed: false } }, rules: [heldRule] }), { clientId: 'cli' })).toMatchObject({ ok: false, error: `${THIRD} is not paired with this PC` });
+    // Dropping the unpaired PC is always fine.
+    expect(await save(body({ hosts: { [HOST]: { allowed: true } }, rules: [] }), { clientId: 'cli' })).toMatchObject({ ok: true });
+  });
+
+  it('passes what is not shaped like a policy on to the store, which refuses it', async () => {
+    const save = register(new Set()).get('a2a.remote.spawnPolicy.set')!;
+    for (const raw of [undefined, 'x', [], { hosts: [], rules: 'x' }]) {
+      expect(unpairedHostNamed(raw, policy.get(), () => false)).toBeNull();
+      expect(await save({ policy: raw }, { clientId: 'cli' })).toMatchObject({ ok: false });
+    }
   });
 });
 

@@ -18,6 +18,8 @@ export interface NotificationSlice {
   markAllReadForWorkspace: (workspaceId: string) => void;
   jumpToUnread: () => string | null;
   clearNotifications: () => void;
+  /** Remove one workspace's notifications; the others stay, and so does each one `keep` holds. */
+  clearNotificationsForWorkspace: (workspaceId: string, keep?: (n: Notification) => boolean) => void;
   // Daemon security notices still waiting on the user (shared/securityNotice.ts),
   // oldest first. Pinned above the list: the read / clear actions above never
   // touch them; only acknowledging one moves it into `notifications`.
@@ -158,6 +160,16 @@ export const createNotificationSlice: StateCreator<StoreState, [['zustand/immer'
   clearNotifications: () => set((state: StoreState) => {
     state.notifications = [];
     state.unreadBySurfaceId = {};
+    assertUnreadInvariant(state);
+  }),
+
+  clearNotificationsForWorkspace: (workspaceId, keep) => set((state: StoreState) => {
+    const kept: Notification[] = [];
+    for (const n of state.notifications) {
+      if (n.workspaceId !== workspaceId || keep?.(n)) { kept.push(n); continue; }
+      if (!n.read && n.surfaceId) decUnread(state.unreadBySurfaceId, n.surfaceId);
+    }
+    state.notifications = kept;
     assertUnreadInvariant(state);
   }),
 

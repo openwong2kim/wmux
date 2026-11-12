@@ -17,6 +17,7 @@ import { memo, useEffect, useRef } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import PaneContainer from '../Pane/PaneContainer';
+import { ALL_PANE_CORNERS } from '../Pane/paneCorners';
 import { multiviewGridStyle, type MultiviewArrangement } from '../../utils/multiviewGrid';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import { selectWorkerPanelHost } from '../../stores/slices/roomSlice';
@@ -52,7 +53,7 @@ export const WorkspaceSlot = memo(function WorkspaceSlot({
       }}
     >
       {parked ? null : (
-        <PaneContainer pane={workspace.rootPane} workspace={workspace} isWorkspaceVisible={isActive} />
+        <PaneContainer pane={workspace.rootPane} workspace={workspace} isWorkspaceVisible={isActive} corners={isActive ? ALL_PANE_CORNERS : undefined} />
       )}
     </div>
   );

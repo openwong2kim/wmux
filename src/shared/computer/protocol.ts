@@ -46,7 +46,27 @@ export const HELPER_IDLE_EXIT_MS = 5 * 60_000;
 
 // === Agent-facing actions ===
 
-export const COMPUTER_OBSERVE_ACTIONS = ['capabilities', 'listApps', 'listWindows', 'getAppState'] as const;
+export const COMPUTER_OBSERVE_ACTIONS = ['capabilities', 'listApps', 'listWindows', 'getAppState', 'desktop'] as const;
+
+/**
+ * The read-only agent-desktop commands the `desktop` action takes (macOS);
+ * main validates each one's args (src/main/computer/desktopCommands.ts).
+ */
+export const DESKTOP_COMMANDS = ['snapshot', 'find', 'get', 'is', 'list-surfaces', 'wait'] as const;
+/**
+ * The agent-desktop ref actions the `desktop` action takes (macOS). Each acts
+ * on one ref from a window snapshot this agent took, in the background; they
+ * go through computer.act, never through getAppState.
+ */
+export const DESKTOP_ACTION_COMMANDS = ['click', 'focus', 'select', 'toggle', 'check', 'uncheck', 'expand', 'collapse', 'scroll'] as const;
+/** Longest single agent-desktop run; the runner cuts a longer request to this. */
+export const DESKTOP_RUN_MAX_MS = 35_000;
+/** What main waits beyond a run's own deadline for the runner's answer. */
+export const DESKTOP_RUN_GRACE_MS = 5_000;
+/** The list-apps run that checks an app name, before and after a command that names it. */
+export const DESKTOP_LIST_APPS_TIMEOUT_MS = 10_000;
+/** How long the per-app consent prompt waits for the person. */
+export const COMPUTER_CONSENT_DEADLINE_MS = 120_000;
 export const COMPUTER_CONTROL_ACTIONS = ['openApp', 'click', 'setValue', 'type', 'pressKey', 'hotkey', 'scroll'] as const;
 
 /**
@@ -359,6 +379,15 @@ export type ForegroundMode = 'allow' | 'refuse';
 
 export const FOREGROUND_MODES: readonly ForegroundMode[] = ['allow', 'refuse'];
 
+/*
+ * `keepFront` on an input method (optional, default false): after real input
+ * or an accessibility call that brought the target window to the front, the
+ * Windows helper gives the front back to the window that had it, which closes
+ * anything in the target that goes away on focus loss (a menu, a command
+ * palette, a flyout). `keepFront: true` leaves the target in front. The
+ * result's note says when the front was given back or why it was not.
+ */
+
 /**
  * Methods a helper implements. Coordinates here are window logical points.
  *
@@ -407,26 +436,27 @@ export interface HelperMethods {
       clickCount: number;
       modifiers: Modifier[];
       foreground?: ForegroundMode;
+      keepFront?: boolean;
       marker?: AgentMarker;
     };
     result: ActionResult;
   };
   setValue: {
-    params: { snapshotId: string; target: ControlTarget; index: number; value: string; foreground?: ForegroundMode; marker?: AgentMarker };
+    params: { snapshotId: string; target: ControlTarget; index: number; value: string; foreground?: ForegroundMode; keepFront?: boolean; marker?: AgentMarker };
     result: ActionResult;
   };
   type: {
-    params: { snapshotId: string; target: ControlTarget; index?: number; text: string; foreground?: ForegroundMode; marker?: AgentMarker };
+    params: { snapshotId: string; target: ControlTarget; index?: number; text: string; foreground?: ForegroundMode; keepFront?: boolean; marker?: AgentMarker };
     result: ActionResult;
   };
   /** `key` is canonical (normalizeKey); never a modifier on its own. */
   pressKey: {
-    params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number; foreground?: ForegroundMode; marker?: AgentMarker };
+    params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number; foreground?: ForegroundMode; keepFront?: boolean; marker?: AgentMarker };
     result: ActionResult;
   };
   /** Modifiers down in MODIFIERS order, `key` down/up, modifiers up in reverse. */
   hotkey: {
-    params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key; foreground?: ForegroundMode; marker?: AgentMarker };
+    params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key; foreground?: ForegroundMode; keepFront?: boolean; marker?: AgentMarker };
     result: ActionResult;
   };
   scroll: {
@@ -438,6 +468,7 @@ export interface HelperMethods {
       direction: ScrollDirection;
       amount: number;
       foreground?: ForegroundMode;
+      keepFront?: boolean;
       marker?: AgentMarker;
     };
     result: ActionResult;

@@ -14,7 +14,8 @@ import { useStore } from '../../stores';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
 import { openTaskDiff } from '../../utils/openTaskDiff';
 import { generateId } from '../../../shared/types';
-import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../shared/workTask';
+import { FANOUT_PROMPT_MAX_BYTES } from '../../../shared/workTask';
+import { DEFAULT_FANOUT_TASKS_PER_CALL } from '../../../shared/fanoutTaskCaps';
 import { ORCH_ROLES, promptFlagForLauncher } from '../../../shared/orchestratorRole';
 import { useT } from '../../hooks/useT';
 import { t } from '../../i18n';
@@ -33,6 +34,9 @@ import {
   saveLastAgentCmd,
   supportsSkipPermissions,
 } from './fanoutAgentCmd';
+
+/** Count buttons this dialog shows at most (its row holds eight); a larger fan-out is an agent's call. */
+const DIALOG_MAX_TASKS = 8;
 
 // 리뷰 발견(Codex+GLM+Claude 3/3 합의) — compete 모드에서 `mode === 'parallel' ?
 // taskPrompts : []`처럼 인라인 배열 리터럴을 useEffect 의존성에 넣으면 매 렌더마다
@@ -80,6 +84,19 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
   const [mode, setMode] = useState<'compete' | 'parallel'>('parallel');
   const [prompt, setPrompt] = useState('');
   const [n, setN] = useState(2);
+  // The owner's tasks-per-call setting bounds the choices (at most DIALOG_MAX_TASKS).
+  const [perCall, setPerCall] = useState(DEFAULT_FANOUT_TASKS_PER_CALL);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI?.fanout?.getTasksPerCall?.()
+      .then((v) => {
+        if (cancelled || typeof v !== 'number') return;
+        setPerCall(v);
+        setN((cur) => Math.min(cur, v));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
   const [titles, setTitles] = useState<string[]>([]);
   const [titlesEdited, setTitlesEdited] = useState<boolean[]>([]);
   const [taskPrompts, setTaskPrompts] = useState<string[]>([]);
@@ -304,7 +321,7 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
 
       <label className={label}>{t('fanout.taskCount', { n })}</label>
       <div className="flex gap-1 mb-3" data-testid="fanout-n">
-        {Array.from({ length: FANOUT_MAX_TASKS }, (_, i) => i + 1).map((count) => (
+        {Array.from({ length: Math.min(perCall, DIALOG_MAX_TASKS) }, (_, i) => i + 1).map((count) => (
           <button
             key={count}
             type="button"

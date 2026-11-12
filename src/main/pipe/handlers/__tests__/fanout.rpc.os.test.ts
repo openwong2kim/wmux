@@ -41,6 +41,7 @@ import { registerFanOutRpc, FANOUT_WIRE_AGENT_CMD, FANOUT_IDEMPOTENCY_KEY_MAX_BY
 import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '../../../worktask/FanOutService';
 import type { RpcRouter } from '../../RpcRouter';
 import { FanOutGuards, setDormantRefresh, setFanOutGuardsForTests } from '../../../worktask/fanoutGuards';
+import { getFanoutWorkerPolicyPath, setFanoutDepth, setFanoutTasksPerCall } from '../../../worktask/fanoutWorkerPolicy';
 import { setHolderSource } from '../../../factory/workerHolders';
 import type { LedgerEntry } from '../../../../shared/ledger';
 import type { FanoutPreset } from '../../../../shared/fanoutPreset';
@@ -1229,6 +1230,7 @@ describe('R4 — origin allowlist is fail-closed', () => {
 // ── R5 ────────────────────────────────────────────────────────────────────
 // The GUI offers 1..8; the wire does not go through the GUI.
 describe('R5 — task count is capped server-side', () => {
+  afterEach(async () => { await setFanoutTasksPerCall(8); });
   it(`rejects more than ${FANOUT_MAX_TASKS} titles`, async () => {
     const h = setup();
     const titles = Array.from({ length: FANOUT_MAX_TASKS + 1 }, (_, k) => `task ${k}`);
@@ -1248,7 +1250,20 @@ describe('R5 — task count is capped server-side', () => {
     expect(h.start).not.toHaveBeenCalled();
   });
 
-  it(`accepts exactly ${FANOUT_MAX_TASKS}`, async () => {
+  it('refuses past the tasks-per-call setting (default 8), naming it', async () => {
+    const h = setup();
+    const err = errorOf(await h.call(goodParams({ titles: Array.from({ length: 9 }, (_, k) => `task ${k}`) })));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    expect(err.message).toMatch(/exceeds the tasks-per-call limit of 8 \(Settings › Roles & fan-out\)/);
+    await setFanoutTasksPerCall(3);
+    const three = errorOf(await h.call(goodParams({ idempotencyKey: 'tpc-3', titles: ['a', 'b', 'c', 'd'] })));
+    expect(three.message).toMatch(/tasks-per-call limit of 3/);
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it(`accepts exactly ${FANOUT_MAX_TASKS} when the setting allows it`, async () => {
+    await setFanoutTasksPerCall(FANOUT_MAX_TASKS);
     const h = setup();
     const titles = Array.from({ length: FANOUT_MAX_TASKS }, (_, k) => `task ${k}`);
     const res = await h.call(goodParams({ titles }));
@@ -1422,11 +1437,18 @@ function guardsIn(dir: string, opts: { ledger?: (ws: string) => string | null; l
   });
 }
 
+/** The caps set to their old defaults (no cap is the default), for the tests of a cap. */
+function capped(dir: string): string {
+  fs.writeFileSync(getFanoutWorkerPolicyPath(dir), JSON.stringify({ liveTaskCap: 8, hourlyTaskCap: 24, taskCapsVersion: 2 }));
+  return dir;
+}
+
 function tmp(): string {
   return tempDir('wmux-fanout-brakes-');
 }
 
 describe('task.fanout.start — depth-1', () => {
+  afterEach(async () => { await setFanoutDepth(1); });
   it('refuses a caller whose workspace carries the lineage stamp', async () => {
     const g = guardsIn(tmp());
     g.markTask(CALLER_WS, 'ws-brain');
@@ -1452,6 +1474,37 @@ describe('task.fanout.start — depth-1', () => {
     const h = setup({ guards: g });
     const res = await h.call(goodParams({ senderPtyId: undefined }), { origin: 'local', commanderWorkspace: CALLER_WS });
     expect(errorOf(res).code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('with the depth setting at 2, a task fans out and its own task does not', async () => {
+    await setFanoutDepth(2);
+    const g = guardsIn(tmp());
+    g.markTask(CALLER_WS, 'ws-brain');
+    const h = setup({ guards: g });
+    expect(await h.call(goodParams())).toMatchObject({ ok: true, status: 'accepted' });
+    const g2 = guardsIn(tmp());
+    g2.markTask('ws-brain', 'ws-root');
+    g2.markTask(CALLER_WS, 'ws-brain');
+    const h2 = setup({ guards: g2 });
+    const err = errorOf(await h2.call(goodParams({ idempotencyKey: 'depth-2b' })));
+    expect(err.code).toBe('NOT_AUTHORIZED');
+    expect(err.message).toMatch(/2 levels deep .*may go 2 levels deep \(Settings › Roles & fan-out\)/);
+  });
+
+  it('a fan-out started while depth 2 was allowed is still polled and cancelled after the setting drops to 1; a new one is refused', async () => {
+    await setFanoutDepth(2);
+    const g = guardsIn(tmp());
+    g.markTask(CALLER_WS, 'ws-brain');
+    const h = setup({ guards: g });
+    expect(await h.call(goodParams({ idempotencyKey: 'k-wait' }))).toMatchObject({ ok: true, status: 'accepted' });
+    await h.flush();
+    await setFanoutDepth(1);
+    expect(await h.call(goodParams({ idempotencyKey: 'k-wait' }))).toMatchObject({ ok: true, status: 'completed' });
+    expect(await h.call(goodParams({ idempotencyKey: 'k-wait', cancelPending: true }))).toMatchObject({ ok: true, status: 'pending_cancelled', dropped: 2 });
+    const fresh = errorOf(await h.call(goodParams({ idempotencyKey: 'k-new' })));
+    expect(fresh.code).toBe('NOT_AUTHORIZED');
+    expect(fresh.message).toMatch(/one level deep/);
+    expect(h.start).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed when the lineage store cannot be read', async () => {
@@ -1524,7 +1577,7 @@ describe('task.fanout.start — usage reserve', () => {
 
 describe('task.fanout.start — global caps', () => {
   it('refuses with RESOURCE_EXHAUSTED and raises no approval prompt', async () => {
-    const h = setup({ guards: guardsIn(tmp(), { live: () => 7 }) });
+    const h = setup({ guards: guardsIn(capped(tmp()), { live: () => 7 }) });
     const err = errorOf(await h.call(goodParams()));
     expect(err.code).toBe('RESOURCE_EXHAUSTED');
     expect(err.message).toMatch(/at most 8 fan-out tasks may be live/);
@@ -1533,7 +1586,7 @@ describe('task.fanout.start — global caps', () => {
   });
 
   it('holds the reservation while one fan-out is awaiting approval', async () => {
-    const h = setup({ guards: guardsIn(tmp()), approval: 'hang' });
+    const h = setup({ guards: guardsIn(capped(tmp())), approval: 'hang' });
     expect((await h.call(goodParams({ idempotencyKey: 'a', titles: ['1', '2', '3', '4', '5'] }))).status).toBe('accepted');
     const err = errorOf(await h.call(goodParams({ idempotencyKey: 'b', titles: ['1', '2', '3', '4'] })));
     expect(err.code).toBe('RESOURCE_EXHAUSTED');
@@ -1696,7 +1749,7 @@ describe('task.fanout.start — review follow-ups', () => {
   });
 
   it('holds the live cap against N concurrent callers with different keys', async () => {
-    const h = setup({ approval: 'hang' });
+    const h = setup({ approval: 'hang', guards: guardsIn(capped(tmp())) });
     const results = await Promise.all(
       [0, 1, 2, 3, 4].map((k) => h.call(goodParams({ idempotencyKey: `k${k}`, titles: ['a', 'b'] }))),
     );
@@ -1707,7 +1760,7 @@ describe('task.fanout.start — review follow-ups', () => {
   });
 
   it('releases the reservation and records a denial when the detached run throws before spawning', async () => {
-    const g = guardsIn(tmp());
+    const g = guardsIn(capped(tmp()));
     const h = setup({ guards: g });
     // The approval-time repo re-derivation blows up (a git failure, not a
     // non-repo answer) — nothing may stay booked or awaiting.

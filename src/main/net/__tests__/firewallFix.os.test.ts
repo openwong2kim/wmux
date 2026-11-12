@@ -45,7 +45,7 @@ function setup(opts: {
     elevateMac: vi.fn(async () => ({ kind: 'ok' as const })),
     facts: { exists: () => true, onLocalFixedDrive: () => true },
     scope: opts.scope ?? (() => SCOPE),
-    selfExe: opts.selfExe ?? EXE,
+    selfExe: () => opts.selfExe ?? EXE,
     stagedExe: () => opts.stagedExe ?? null,
     platform: 'win32',
     tokenType: () => 3,

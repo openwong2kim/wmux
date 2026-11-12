@@ -31,6 +31,14 @@
  *     it is missing. A user who deleted it must not see it come back on the
  *     next update. The Start Menu entry is not Update.exe's to write: the app
  *     writes it at every startup (notification/startMenuEntry.ts, #2971).
+ *   - Pinned shortcuts (#863, #3263): once per installed version, the
+ *     taskbar/Start pins that still name a deleted `app-X.Y.Z` are retargeted
+ *     to the root stub (shortcutHygiene.ts). The install hook's own repair
+ *     never runs on a first install (it quits while Update.exe makes the
+ *     Desktop link), and none runs after a silent install or a cancelled hook;
+ *     a reinstall into the same root leaves the old pins dead until then. A
+ *     userData marker holds the version last repaired, and an isolated
+ *     instance (WMUX_DATA_SUFFIX) never repairs: pins are not per profile.
  *
  * The decision is a pure function (`planPostInstallReconcile`) so it is unit
  * tested directly; `runPostInstallReconcile` is the thin OS layer, win32-only
@@ -43,6 +51,8 @@ import { spawn } from 'child_process';
 import * as autostart from './autostart';
 import * as cliShim from './cliShim';
 import * as shortcutHygiene from './shortcutHygiene';
+import type { RepairPassResult } from './shortcutHygiene';
+import { mayRepairPinnedShortcuts } from './dataIsolation';
 import { squirrelInstallRootFor } from './updater/installIntegrity';
 
 /** Update.exe writes only the Desktop link; the Start Menu entry is the app's (#2971). */
@@ -114,6 +124,100 @@ export function isOnPath(binDir: string, pathValue: string | undefined): boolean
   return (pathValue ?? '').split(';').some((p) => p.trim().replace(/[\\/]+$/, '').toLowerCase() === want);
 }
 
+/** The userData file holding the version whose pins were last repaired. */
+export const PIN_REPAIR_MARKER = 'shortcut-repair-version';
+
+/** Boots that may try one version's repair before it stops for that version. */
+export const PIN_REPAIR_ATTEMPTS = 3;
+
+/**
+ * The marker: `<version>` once that version's pass ran complete, `<version> <n>`
+ * after `n` passes that could not run or missed links (a pin folder or WScript.Shell blocked by
+ * policy fails the same way every boot, and must not start PowerShell forever).
+ */
+export interface PinRepairMarker {
+  version: string;
+  failures: number;
+}
+
+export function parsePinRepairMarker(text: string): PinRepairMarker | null {
+  const m = /^(\S+)(?:\s+(\d+))?$/.exec(text.trim());
+  return m ? { version: m[1], failures: m[2] ? Number(m[2]) : 0 } : null;
+}
+
+/**
+ * Whether this boot repairs pinned shortcuts: not from an isolated instance,
+ * and the running version has neither been repaired nor used up its attempts.
+ */
+export function pinRepairDue(marker: PinRepairMarker | null, version: string, env: NodeJS.ProcessEnv): boolean {
+  if (!mayRepairPinnedShortcuts(env)) return false;
+  if (!marker || marker.version !== version) return true;
+  return marker.failures > 0 && marker.failures < PIN_REPAIR_ATTEMPTS;
+}
+
+/** The marker, or null when there is none or it cannot be read. */
+export function readPinRepairMarker(userData: string): PinRepairMarker | null {
+  try {
+    return parsePinRepairMarker(fs.readFileSync(path.join(userData, PIN_REPAIR_MARKER), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The marker a finished pass leaves. Only a pass that ran and reported that
+ * it listed every pin folder, read every link and saved every retarget marks
+ * the version done. Anything else, a missing count included, uses one of the
+ * version's attempts, so the next boot tries again (a folder that could not
+ * be listed or a link locked for a moment is usually gone by then).
+ */
+export function nextPinRepairMarker(
+  prev: PinRepairMarker | null,
+  version: string,
+  result: Pick<RepairPassResult, 'failure' | 'enumErrors' | 'saveFailures' | 'unreadLinks'>,
+): PinRepairMarker {
+  const complete = result.failure === null &&
+    result.enumErrors === 0 && result.saveFailures === 0 && result.unreadLinks === 0;
+  if (complete) return { version, failures: 0 };
+  return { version, failures: (prev?.version === version ? prev.failures : 0) + 1 };
+}
+
+export function writePinRepairMarker(userData: string, marker: PinRepairMarker): void {
+  try {
+    fs.mkdirSync(userData, { recursive: true });
+    const text = marker.failures > 0 ? `${marker.version} ${marker.failures}` : marker.version;
+    fs.writeFileSync(path.join(userData, PIN_REPAIR_MARKER), text, 'utf8');
+  } catch (err) {
+    console.warn('[postInstall] pin repair marker not written:', err);
+  }
+}
+
+/**
+ * Repair pinned shortcuts once for this version (module header). A pass that
+ * could not run or missed links counts as an attempt; one with no root stub to point pins at
+ * yet does not, so it is simply tried again next boot.
+ */
+async function repairPinsOnce(execPath: string, root: string, userData: string, version: string): Promise<void> {
+  const marker = readPinRepairMarker(userData);
+  if (!pinRepairDue(marker, version, process.env)) return;
+  if (!fs.existsSync(path.join(root, 'wmux.exe'))) {
+    console.warn('[postInstall] pin repair skipped: no root stub yet');
+    return;
+  }
+  // The icon a retargeted pin points at; the hook stages it, unless cancelled.
+  try { shortcutHygiene.stageRootIcon(execPath); } catch { /* best-effort */ }
+  const result = await shortcutHygiene.runShortcutRepairPassAsync(execPath);
+  if (result.actions.length > 0) console.log(`[postInstall] pins repaired: ${result.actions.length}`);
+  const next = nextPinRepairMarker(marker, version, result);
+  if (next.failures > 0) {
+    const why = result.failure !== null
+      ? `did not run: ${result.failure}`
+      : `incomplete: pin folders not listed ${result.enumErrors ?? '?'}, links not read ${result.unreadLinks ?? '?'}, retargets not saved ${result.saveFailures ?? '?'}`;
+    console.warn(`[postInstall] pin repair ${why} (attempt ${next.failures} of ${PIN_REPAIR_ATTEMPTS})`);
+  }
+  writePinRepairMarker(userData, next);
+}
+
 export function isEmptyPlan(plan: ReconcilePlan): boolean {
   return !plan.installCliShim && plan.autostart === null && plan.shortcuts.length === 0;
 }
@@ -156,6 +260,10 @@ export interface ReconcileOptions {
   firstRun: boolean;
   freshInstall: boolean;
   desktopDir?: string;
+  /** Where the pin repair marker lives (app.getPath('userData')). */
+  userData: string;
+  /** The running version (app.getVersion()). */
+  version: string;
 }
 
 /**
@@ -178,20 +286,21 @@ export async function runPostInstallReconcile(opts: ReconcileOptions): Promise<R
       autostartTargetExists: target !== null && autostartTargetAlive(target, root),
       desktopShortcutExists: desktopShortcutExists(opts.desktopDir),
     });
-    if (isEmptyPlan(plan)) return plan;
-
-    console.log(
-      `[postInstall] install hook work missing, redoing: shim=${plan.installCliShim} ` +
-        `autostart=${plan.autostart ?? 'none'} shortcuts=${plan.shortcuts.join(',') || 'none'}`,
-    );
-    if (plan.autostart) autostart.enableAutostart(opts.execPath);
-    if (plan.shortcuts.length > 0) {
-      const locations = plan.shortcuts;
-      setTimeout(() => {
-        try { createShortcuts(opts.execPath, root, locations); } catch { /* best-effort */ }
-      }, SHORTCUT_DELAY_MS).unref();
+    if (!isEmptyPlan(plan)) {
+      console.log(
+        `[postInstall] install hook work missing, redoing: shim=${plan.installCliShim} ` +
+          `autostart=${plan.autostart ?? 'none'} shortcuts=${plan.shortcuts.join(',') || 'none'}`,
+      );
+      if (plan.autostart) autostart.enableAutostart(opts.execPath);
+      if (plan.shortcuts.length > 0) {
+        const locations = plan.shortcuts;
+        setTimeout(() => {
+          try { createShortcuts(opts.execPath, root, locations); } catch { /* best-effort */ }
+        }, SHORTCUT_DELAY_MS).unref();
+      }
+      if (plan.installCliShim) await cliShim.installCliShimAsync(opts.execPath);
     }
-    if (plan.installCliShim) await cliShim.installCliShimAsync(opts.execPath);
+    await repairPinsOnce(opts.execPath, root, opts.userData, opts.version);
     return plan;
   } catch (err) {
     console.warn('[postInstall] reconcile failed (non-fatal):', err);

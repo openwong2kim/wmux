@@ -47,6 +47,19 @@ function readSettings(t: { settingsPath: string }): Record<string, unknown> {
 }
 
 describe('installStatusline', () => {
+  it('reads a settings.json saved with a byte order mark and keeps the mark', () => {
+    const t = target('acc-bom');
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(t.settingsPath, '\uFEFF{"model":"opus"}', 'utf8');
+
+    const outcome = installStatusline(makePaths([t]));
+
+    expect(outcome.targets[0].outcome).toBe('installed');
+    const raw = fs.readFileSync(t.settingsPath, 'utf8');
+    expect(raw.charCodeAt(0)).toBe(0xfeff);
+    expect(JSON.parse(raw.slice(1)).model).toBe('opus');
+  });
+
   it('copies the script and writes statusLine into a fresh settings.json', () => {
     const t = target('acc-a');
     const paths = makePaths([t]);

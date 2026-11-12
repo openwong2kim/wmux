@@ -4,11 +4,11 @@
 // window state, posts the messages and reads the effect back.
 //
 // The order is fixed:
-//   1. What the action asks for (ActionRefusal): a chord, the wheel, another
+//   1. What the action asks for (ActionRefusal): a chord, a horizontal wheel, another
 //      button, a multi-click, text that moves focus. Decided before any
 //      window state is read, so these go straight to real input.
 //   2. The target's state and the window that would receive (Plan).
-//   3. Post: the click, then (for `type` with a field) confirm that the field
+//   3. Post: the click (or the wheel), then (for `type` with a field) confirm that the field
 //      took focus and still covers the clicked point before any key is
 //      posted, then the keys. Every message re-checks its receiver
 //      (PostSequence).
@@ -52,6 +52,8 @@ public enum BackgroundRefusal
     NoFocusedControl,
     PopupAtPoint,
     UnsupportedFramework,
+    WheelUnsupported,
+    NotAnswering,
     ChromiumNeedsClick,
     NotATextControl,
     SecretField,
@@ -66,8 +68,9 @@ public readonly record struct TargetWindowState(bool Iconic, bool Visible, bool?
 /// <summary>
 /// What the action needs. `HasField`: `type` with an element index, so there
 /// is a field to click before the keys. `Text`: what `type` types.
+/// `Horizontal`: `scroll` left or right.
 /// </summary>
-public readonly record struct BackgroundRequest(InputAction Action, int Button = 0, int ClickCount = 1, int Modifiers = 0, bool HasField = false, string? Text = null);
+public readonly record struct BackgroundRequest(InputAction Action, int Button = 0, int ClickCount = 1, int Modifiers = 0, bool HasField = false, string? Text = null, bool Horizontal = false);
 
 /// <summary>
 /// The window that would get the messages. For a pointer action (and `type`
@@ -88,8 +91,13 @@ public readonly record struct BackgroundRequest(InputAction Action, int Button =
 /// <param name="ChildrenTruncated">A window on the way had more children than the walk reads, so the receiver may be wrong.</param>
 /// <param name="WindowDpi">GetDpiForWindow of the receiver (or of the target window, when it already differs); 0 when unread.</param>
 /// <param name="MonitorDpi">The effective DPI of the monitor at the point; 0 when unread.</param>
+/// <param name="Multiline">For `scroll`: the receiver has ES_MULTILINE. A single-line Edit hands the wheel to its parent (a combo box would change its selection).</param>
+/// <param name="ScrollUnread">For `scroll`: the receiver did not answer where it is scrolled to, so a posted wheel could not be read back.</param>
 public readonly record struct Receiver(string ClassName, bool InTargetProcess, bool InClientArea = true, bool PopupAtPoint = false, bool TextControl = false, bool Secret = false, bool HitTestFailed = false,
-    bool ChildrenTruncated = false, uint WindowDpi = 96, uint MonitorDpi = 96);
+    bool ChildrenTruncated = false, uint WindowDpi = 96, uint MonitorDpi = 96, bool Multiline = false, bool ScrollUnread = false);
+
+/// <summary>Where an Edit or RichEdit control is scrolled to: its first visible line and its line count (null: unanswered).</summary>
+public readonly record struct ScrollPosition(int? FirstLine, int? LineCount);
 
 /// <summary>A plan: refused, or post (a click first, then keys, or a click alone, or keys alone).</summary>
 public readonly record struct BackgroundPlan(BackgroundRefusal Refusal, bool ClickFirst, bool Keys)
@@ -141,7 +149,7 @@ public readonly record struct SideEffectProbe(bool CursorAtPointBefore, bool Cur
 public readonly record struct FieldCheck(bool Focused, bool AtPoint);
 
 /// <summary>The steps of a posted action; Execute calls them in its fixed order.</summary>
-/// <param name="Click">Posts the click; returns how many messages went in (0: none).</param>
+/// <param name="Click">Posts the click (for `scroll`, the wheel notches); returns how many messages went in (0: none).</param>
 /// <param name="FieldAfterClick">After the click, before any key: the field's focus and frame. Gets whether the field had focus before the click (then the helper lets the click settle first, so an old focus does not pass).</param>
 /// <param name="Keys">Posts the keys; returns how many messages went in (0: none). Throws for a failure after its first message.</param>
 /// <param name="ReadBack">Re-reads the effect; true only when it is confirmed.</param>
@@ -200,7 +208,10 @@ public static class Background
     public const uint WmKeyUp = 0x0101;
     public const uint WmChar = 0x0102;
     public const uint WmCancelMode = 0x001F;
+    public const uint WmMouseWheel = 0x020A;
     public const nuint MkLButton = 0x0001;
+    /// <summary>One wheel notch (WHEEL_DELTA).</summary>
+    public const int WheelDelta = 120;
 
     /// <summary>Chromium's (and so Electron's) render widget.</summary>
     public const string ChromiumWidgetClass = "Chrome_RenderWidgetHostHWND";
@@ -232,6 +243,23 @@ public static class Background
         if (className.StartsWith("RichEdit", StringComparison.OrdinalIgnoreCase)) return true; // RichEdit20W, RICHEDIT50W, RichEditD2DPT
         return string.Equals(className, "Edit", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// The window classes a posted vertical wheel goes to: only those it was
+    /// measured to scroll while covered, with nothing taken from the user:
+    /// the plain Edit, RichEdit20W and RICHEDIT50W. Chromium and Electron
+    /// ignore it while covered (0/6 each). RichEditD2DPT (Notepad's own
+    /// RichEdit, not a system class) was not measured, and a control that
+    /// ignored the wheel would end unverified where real input would have
+    /// scrolled, so it keeps real input.
+    /// </summary>
+    public static bool AcceptsPostedWheel(string className) =>
+        IsPlainEdit(className)
+        || string.Equals(className, "RichEdit20W", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(className, "RICHEDIT50W", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>ES_MULTILINE (Edit and RichEdit).</summary>
+    public const uint EsMultiline = 0x0004;
 
     /// <summary>ES_PASSWORD: an Edit control that masks what is typed.</summary>
     public const uint EsPassword = 0x0020;
@@ -292,14 +320,14 @@ public static class Background
     /// <summary>
     /// What the action asks for that is never posted, whatever the target:
     /// messages carry no keyboard state (modifiers, chords), only a single
-    /// left click was measured, the wheel was not, and text that can move
-    /// focus needs the per-chunk check of real input.
+    /// left click and the vertical wheel were measured, and text that can
+    /// move focus needs the per-chunk check of real input.
     /// </summary>
     public static BackgroundRefusal ActionRefusal(BackgroundRequest r)
     {
         switch (r.Action)
         {
-            case InputAction.Scroll:
+            case InputAction.Scroll when r.Horizontal:
                 return BackgroundRefusal.Scroll;
             case InputAction.Click:
                 if (r.Button != 0) return BackgroundRefusal.Button;
@@ -358,6 +386,14 @@ public static class Background
             case InputAction.Click:
                 refusal = PointerReceiverRefusal(receiver);
                 return refusal != BackgroundRefusal.None ? BackgroundPlan.Refuse(refusal) : new(BackgroundRefusal.None, true, false);
+            case InputAction.Scroll:
+                // The wheel goes where a click at the point would, with the
+                // same checks; its notches are the plan's pointer step.
+                refusal = PointerReceiverRefusal(receiver);
+                if (refusal != BackgroundRefusal.None) return BackgroundPlan.Refuse(refusal);
+                if (!AcceptsPostedWheel(receiver!.Value.ClassName) || !receiver.Value.Multiline) return BackgroundPlan.Refuse(BackgroundRefusal.WheelUnsupported);
+                if (receiver.Value.ScrollUnread) return BackgroundPlan.Refuse(BackgroundRefusal.NotAnswering);
+                return new(BackgroundRefusal.None, true, false);
             case InputAction.Type when request.HasField:
                 // The field is clicked first, always: Chromium drops posted
                 // keys that no posted click preceded, and for any other app it
@@ -439,6 +475,27 @@ public static class Background
     /// exactly that element.
     /// </summary>
     public static bool PatternCallAllowed(bool refuseForeground, bool targetInFront) => !refuseForeground || targetInFront;
+
+    /// <summary>
+    /// Whether the click ladder first tries LegacyIAccessible DoDefaultAction:
+    /// only where every other pattern call would answer needs_foreground, that
+    /// is under `refuse` with the target not in front. Measured on Windows 11
+    /// (WinForms, Electron, Chrome, Calculator) with the target covered:
+    /// DoDefaultAction never took the foreground, while Invoke, Toggle,
+    /// SelectionItem, ExpandCollapse, Scroll and UIA SetFocus each did.
+    /// </summary>
+    public static bool DefaultActionFirst(bool refuseForeground, bool targetInFront) => refuseForeground && !targetInFront;
+
+    /// <summary>
+    /// Whether an element's default action is a press: a button, hyperlink,
+    /// menu item, check box or radio button with a non-empty default action.
+    /// A list, tree or data item's default action is often the double-click
+    /// action, which opens things, so those never take this rung.
+    /// </summary>
+    public static bool DefaultActionIsPress(int controlType, string? defaultAction) =>
+        !string.IsNullOrWhiteSpace(defaultAction) && controlType is ButtonType or CheckBoxType or HyperlinkType or MenuItemType or RadioButtonType;
+
+    private const int ButtonType = 50000, CheckBoxType = 50002, HyperlinkType = 50005, MenuItemType = 50011, RadioButtonType = 50013;
 
     /// <summary>
     /// After the background attempt. `refuseForeground`: main sent
@@ -541,7 +598,7 @@ public static class Background
         BackgroundRefusal.Modifiers => "posted clicks cannot carry modifier keys",
         BackgroundRefusal.Button => "only a left click is posted",
         BackgroundRefusal.MultiClick => "only a single click is posted",
-        BackgroundRefusal.Scroll => "the wheel is not posted",
+        BackgroundRefusal.Scroll => "a horizontal wheel is not posted",
         BackgroundRefusal.Chord => "posted keys cannot carry modifier keys",
         BackgroundRefusal.FocusMovingText => "the text has a Tab or another control character that can move focus",
         BackgroundRefusal.NoReceiver => "no window of the target process is at that point",
@@ -553,6 +610,8 @@ public static class Background
         BackgroundRefusal.NoFocusedControl => "the target has no focused control to post keys to",
         BackgroundRefusal.PopupAtPoint => "a popup or menu of the target is at that point",
         BackgroundRefusal.UnsupportedFramework => "that window is not one posted input is known to work with",
+        BackgroundRefusal.WheelUnsupported => "a posted wheel is known to scroll only multiline Edit and RichEdit controls",
+        BackgroundRefusal.NotAnswering => "the control at that point did not answer in time",
         BackgroundRefusal.ChromiumNeedsClick => "a Chromium-based app takes posted keys only after a posted click; pass the field's index",
         BackgroundRefusal.NotATextControl => "the focused control is not a plain text control",
         BackgroundRefusal.SecretField => "the field is a password field, or wmux could not tell",
@@ -576,6 +635,31 @@ public static class Background
             new(WmLButtonUp, 0, at),
         ];
     }
+
+    /// <summary>
+    /// `notches` vertical wheel notches at a screen point, one WM_MOUSEWHEEL
+    /// each: WHEEL_DELTA up (positive) or down in the high word of wParam, no
+    /// key or button state in its low word, and the point in screen
+    /// coordinates (the wheel's lParam, unlike a click's).
+    /// </summary>
+    public static List<PostedMessage> Wheel(int screenX, int screenY, int notches, bool up)
+    {
+        var wParam = (nuint)((uint)(ushort)(short)(up ? WheelDelta : -WheelDelta) << 16);
+        var at = PointLParam(screenX, screenY);
+        var list = new List<PostedMessage>(notches);
+        for (int n = 0; n < notches; n++) list.Add(new(WmMouseWheel, wParam, at));
+        return list;
+    }
+
+    /// <summary>
+    /// The wheel's read-back: the control's first visible line moved the way
+    /// it turned (up: an earlier line) and its text kept its line count, so
+    /// the move is not a log that grew and scrolled by itself. Unread on
+    /// either side, or not moved (already at the end), is not confirmed.
+    /// </summary>
+    public static bool WheelScrolled(ScrollPosition before, ScrollPosition after, bool up) =>
+        before.FirstLine is { } b && after.FirstLine is { } a && (up ? a < b : a > b)
+        && before.LineCount is { } nb && after.LineCount == nb;
 
     /// <summary>
     /// WM_KEYDOWN / WM_KEYUP lParam: repeat count 1, the scan code in bits

@@ -12,18 +12,17 @@ import type { LedgerEntry } from '../../../shared/ledger';
 import {
   FANOUT_AUDIT_FILENAME,
   FANOUT_CAP_WINDOW_MS,
-  FANOUT_HOURLY_TASK_CAP,
   FANOUT_LINEAGE_FILENAME,
-  FANOUT_LIVE_TASK_CAP,
   FanOutGuards,
   launchedAuditTask,
+  lineageDepth,
   liveCapMessage,
   promptDigest,
   setFanOutGuardsForTests,
   stampFanoutTaskPane,
   type FanOutAuditRecord,
 } from '../fanoutGuards';
-import { setFanoutHourlyTaskCap, setFanoutLiveTaskCap } from '../fanoutWorkerPolicy';
+import { getFanoutWorkerPolicyPath, setFanoutHourlyTaskCap, setFanoutLiveTaskCap } from '../fanoutWorkerPolicy';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 
 afterEach(() => {
@@ -56,6 +55,14 @@ function tmpDir(prefix = 'wmux-fanout-guards-'): string {
   return trackedTempDir(prefix);
 }
 
+/** Caps set to the values the defaults used to be, for the tests that exercise a cap. */
+const FANOUT_LIVE_TASK_CAP = 8;
+const FANOUT_HOURLY_TASK_CAP = 24;
+function capped(dir: string): string {
+  fs.writeFileSync(getFanoutWorkerPolicyPath(dir), JSON.stringify({ liveTaskCap: FANOUT_LIVE_TASK_CAP, hourlyTaskCap: FANOUT_HOURLY_TASK_CAP, taskCapsVersion: 2 }));
+  return dir;
+}
+
 function guards(dir: string, opts: {
   now?: () => number;
   live?: () => number;
@@ -70,6 +77,22 @@ function guards(dir: string, opts: {
     ledgerBotTask: opts.ledgerBot ?? (() => null),
   });
 }
+
+describe('lineageDepth', () => {
+  const chain = (m: Record<string, string>) => (ws: string) => m[ws] ?? null;
+  it('counts hops of started-for-someone, ends at another PC, and stops at the ceiling', () => {
+    expect(lineageDepth(chain({}), 'ws-a')).toBe(0);
+    expect(lineageDepth(chain({ 'ws-a': 'ws-root' }), 'ws-a')).toBe(1);
+    expect(lineageDepth(chain({ 'ws-a': 'ws-b', 'ws-b': 'ws-root' }), 'ws-a')).toBe(2);
+    expect(lineageDepth(chain({ 'ws-a': 'remote-spawn:11111111-1111-4111-8111-111111111111' }), 'ws-a')).toBe(1);
+    expect(lineageDepth(chain({ 'ws-a': 'ws-b', 'ws-b': 'ws-c', 'ws-c': 'ws-d', 'ws-d': 'ws-e' }), 'ws-a')).toBe(3);
+  });
+
+  it('throws on a loop, and when a read throws', () => {
+    expect(() => lineageDepth(chain({ 'ws-a': 'ws-b', 'ws-b': 'ws-a' }), 'ws-a')).toThrow(/loops back/);
+    expect(() => lineageDepth(() => { throw new Error('unreadable'); }, 'ws-a')).toThrow(/unreadable/);
+  });
+});
 
 describe('lineage stamp', () => {
   it('stamps a task workspace and reads it back after a restart', () => {
@@ -94,8 +117,25 @@ describe('lineage stamp', () => {
 });
 
 describe('global caps', () => {
-  it('stamps a dependent task on the hour when it starts, not when the fan-out is accepted', () => {
+  it('with no caps set (the default), nothing is refused for being past a cap, and a torn caps file does not count', () => {
     const dir = tmpDir();
+    let now = 10 * FANOUT_CAP_WINDOW_MS;
+    const g = guards(dir, { now: () => now, live: () => 100 });
+    for (let k = 0; k < 40; k++) {
+      expect(g.reserve(`u${k}`, 8)).toEqual({ ok: true });
+      g.commitStart(`u${k}`);
+      g.settleStarted(`u${k}`);
+      now += 1000;
+    }
+    expect(g.liveTaskCap()).toBeNull();
+    expect(g.hourlyTaskCap()).toBeNull();
+    const torn = tmpDir();
+    fs.writeFileSync(path.join(torn, 'fanout-caps.json'), '{ torn', 'utf8');
+    expect(guards(torn).reserve('k', 1)).toEqual({ ok: true });
+  });
+
+  it('stamps a dependent task on the hour when it starts, not when the fan-out is accepted', () => {
+    const dir = capped(tmpDir());
     let now = 10 * FANOUT_CAP_WINDOW_MS;
     const g = guards(dir, { now: () => now });
     expect(g.reserve('dep', 3)).toEqual({ ok: true });
@@ -115,7 +155,7 @@ describe('global caps', () => {
   });
 
   it(`refuses past ${FANOUT_LIVE_TASK_CAP} live tasks, counting ledger rows and in-flight reservations`, () => {
-    const g = guards(tmpDir(), { live: () => 5 });
+    const g = guards(capped(tmpDir()), { live: () => 5 });
     expect(g.reserve('a', 3)).toEqual({ ok: true });
     g.commitStart('a');
     const over = g.reserve('b', 1);
@@ -127,7 +167,7 @@ describe('global caps', () => {
   });
 
   it(`refuses past ${FANOUT_HOURLY_TASK_CAP} starts per rolling hour, names when room frees, and survives a restart`, () => {
-    const dir = tmpDir();
+    const dir = capped(tmpDir());
     let now = 10 * FANOUT_CAP_WINDOW_MS;
     const clock = () => now;
     const first = guards(dir, { now: clock });
@@ -166,7 +206,7 @@ describe('global caps', () => {
   });
 
   it('fills the hour with started fan-outs, and frees a reservation that never started', () => {
-    const dir = tmpDir();
+    const dir = capped(tmpDir());
     const g = guards(dir);
     for (let k = 0; k < FANOUT_HOURLY_TASK_CAP / 8; k++) {
       expect(g.reserve(`p${k}`, 8)).toEqual({ ok: true });
@@ -176,7 +216,7 @@ describe('global caps', () => {
     }
     expect(g.reserve('one-more', 1).ok).toBe(false);
 
-    const fresh = guards(tmpDir());
+    const fresh = guards(capped(tmpDir()));
     for (let k = 0; k < FANOUT_HOURLY_TASK_CAP / 8; k++) expect(fresh.reserve(`d${k}`, 8).ok).toBe(k === 0);
     fresh.release('d0');
     expect(fresh.reserve('after-release', 8)).toEqual({ ok: true });
@@ -295,8 +335,8 @@ describe('review follow-ups', () => {
     expect(raw.starts.reduce((n, s) => n + s.count, 0)).toBe(9);
   });
 
-  it('treats a torn caps file as a full hour from its mtime, and keeps the file', () => {
-    const dir = tmpDir();
+  it('treats a torn caps file as a full hour from its mtime while an hourly cap is set, and keeps the file', () => {
+    const dir = capped(tmpDir());
     fs.writeFileSync(path.join(dir, 'fanout-caps.json'), '{ torn', 'utf8');
     const g = new FanOutGuards({ dir, countLiveTasks: () => 0, ledgerTaskOwner: () => null });
     const r = g.reserve('k', 1);
@@ -306,7 +346,7 @@ describe('review follow-ups', () => {
   });
 
   it('names the pending fan-outs, not a clock, when they are what fills the hour', () => {
-    const g = guards(tmpDir());
+    const g = guards(capped(tmpDir()));
     for (let k = 0; k < 3; k++) {
       expect(g.reserve(`p${k}`, 8)).toEqual({ ok: true });
       g.commitStart(`p${k}`);
@@ -316,7 +356,7 @@ describe('review follow-ups', () => {
     const r = g.reserve('x', 1);
     expect(!r.ok && r.message).toMatch(/Room frees at/);
 
-    const pendingOnly = guards(tmpDir(), { live: () => -100 });
+    const pendingOnly = guards(capped(tmpDir()), { live: () => -100 });
     for (let k = 0; k < 3; k++) expect(pendingOnly.reserve(`q${k}`, 8)).toEqual({ ok: true });
     const r2 = pendingOnly.reserve('y', 1);
     expect(!r2.ok && r2.message).toMatch(/waiting to start/);
@@ -498,7 +538,7 @@ describe('ended tasks hold no live slot (F25)', () => {
       { id: 'p-stuck', agentProcessAlive: undefined, commandRunning: false },
       { id: 'p-run', agentProcessAlive: true },
     ];
-    const g = new FanOutGuards({ dir: tmpDir(), now: () => 1_000_000, openWorkspaceIds: () => [...rows.keys()], ledgerTaskOwner: () => null, ledgerBotTask: () => null });
+    const g = new FanOutGuards({ dir: capped(tmpDir()), now: () => 1_000_000, openWorkspaceIds: () => [...rows.keys()], ledgerTaskOwner: () => null, ledgerBotTask: () => null });
     for (const ws of rows.keys()) g.markTask(ws, 'ws-owner');
     const open = [...rows.keys()];
     const ledger = [...rows].map(([ws, r]) => ledgerRow(r.id, ws, r.status as LedgerEntry['status']));
@@ -532,7 +572,7 @@ describe('ended tasks hold no live slot (F25)', () => {
       'ws-3': { title: 'docs', status: 'completed' },
     };
     const open = ['ws-1', 'ws-2', 'ws-3', 'ws-4', 'ws-5', 'ws-6', 'ws-7', 'ws-8'];
-    const g = new FanOutGuards({ dir: tmpDir(), now: () => 1_000_000, openWorkspaceIds: () => open, ledgerTaskOwner: () => null, ledgerTaskOf: (ws) => tasks[ws] ?? null });
+    const g = new FanOutGuards({ dir: capped(tmpDir()), now: () => 1_000_000, openWorkspaceIds: () => open, ledgerTaskOwner: () => null, ledgerTaskOf: (ws) => tasks[ws] ?? null });
     for (const ws of open) g.markTask(ws, 'ws-owner');
     const r = g.reserve('k', 1);
     expect(r.ok).toBe(false);

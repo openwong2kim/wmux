@@ -214,7 +214,20 @@ snapshot is the v1.1 token saver.
   screenshot; `getAppState` goes when no observation mode is left.
 
 - **Action ladder.** Use the semantic action first (UIA Invoke / Toggle /
-  Value / ExpandCollapse; AXPress / AXSetValue), then synthetic input.
+  Value / ExpandCollapse; AXPress / AXSetValue), then synthetic input. On
+  Windows, LegacyIAccessible DoDefaultAction goes first on a covered target
+  without the foreground lease: it is the only press that does not take
+  the front (`docs/computer-use-windows.md`).
+- **Giving the front back (Windows).** After an input action brought the
+  target to the front, the window the user had in front gets it back,
+  unless the user's own input arrived, a menu or new window is open, input
+  is held, or the action passed `keepFront: true` (for a palette or flyout
+  that closes on focus loss). Keyboard actions under `allow` bring the
+  target forward themselves, as a click does, and give it back the same
+  way. Under `allow` an action first waits up to a second while the user
+  is typing, then answers `user_input_active`
+  (`not_delivered`; main passes it on as is, with no lease waiting).
+  Details: `docs/computer-use-windows.md`, Giving the front back.
 - **`setValue` is in v1.** It bypasses the IME, so it is the right path for
   Korean and other composed text.
 - **`type`.** Short text goes through `SendInput` with `KEYEVENTF_UNICODE`
@@ -327,10 +340,13 @@ snapshot is the v1.1 token saver.
     their slot they take the lease, at once or `input_busy`. Which actions
     those are follows the helper's OS (`foregroundCertain(req, os)`), so
     each list is its own helper's refusals that depend on the action alone:
-    - Windows, row for row the Windows helper's own refusals: scroll, a
-      button other than left, a click with modifiers or more than one
-      click, a hotkey with modifiers, and `type` text with a control
-      character other than one trailing newline.
+    - Windows, row for row the Windows helper's own refusals: a scroll
+      left or right, a button other than left, a click with modifiers or
+      more than one click, a hotkey with modifiers, and `type` text with
+      a control character other than one trailing newline. A scroll up or
+      down goes with `refuse`: the helper posts it to a multiline Edit,
+      RichEdit20W or RICHEDIT50W control and answers `needs_foreground`
+      for any other window.
     - macOS, the rows of the macOS helper's `foregroundReason` that depend
       on the action alone: a button other than left, and more than two
       clicks. A scroll, a double click, a click or hotkey with modifiers
@@ -344,7 +360,8 @@ snapshot is the v1.1 token saver.
       Windows a UIA pattern call brings a covered window to the front, so
       the Windows helper answers `needs_foreground` under `refuse` before
       such a call (`setValue`, the click ladder) on a target that is not in
-      front (`docs/computer-use-windows.md`).
+      front, after trying DoDefaultAction for a click
+      (`docs/computer-use-windows.md`).
   - Everything else is sent with `foreground: 'refuse'`. A helper that
     cannot post it answers `needs_foreground`, and only when nothing was
     sent for that action (no event, posted message, pattern call or focus
@@ -639,7 +656,9 @@ Behaviour and UX only:
   delivery notes
 - vercel-labs/agent-desktop (Apache-2.0): the three delivery outcomes (not
   delivered, delivered but unverified, delivered), never trusting an input
-  API's success as proof, and holding the input lock only around the real send
+  API's success as proof, and holding the input lock only around the real send;
+  a DoDefaultAction rung in the click ladder (`crates/windows/src/actions/dispatch.rs`
+  @b43ac4f6; here it goes first, on a covered target only)
 - openclaw/Peekaboo: snapshot-bound element IDs, permission onboarding
 - CursorTouch/Windows-MCP: UIA control-type filtering and caching
 - mediar-ai/terminator: pre-action checks, click result reporting

@@ -16,7 +16,7 @@ import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
 import { ChatV2Overlay, useChatSurfaceView } from '../ChatV2/ChatSurface';
 import { ChatViewFirstAskCard } from '../Chat/ChatViewFirstAskCard';
-import { forgetChatV2Pane, usePaneChatV2Binding } from '../ChatV2/useChatV2';
+import { forgetChatV2PaneIfClosed, usePaneChatV2Binding } from '../ChatV2/useChatV2';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import PreviewPanel from '../Preview/PreviewPanel';
@@ -37,6 +37,7 @@ import SurfaceTabs, {
 import { PANE_CORNER_GUTTER, paneHeaderTailGap } from './paneChrome';
 import { readRemoteSpawnedBy } from '../../utils/remoteSpawnedBy';
 import { isTerminalKindSurfaceType, isTerminalSurfaceType, isWorkSurfaceType, pickSplitShownSurfaces } from './surfaceKinds';
+import { isPlainTerminalPane } from './paneCorners';
 import { AUTO_RESUME_AGENTS } from '../../stores/selectors/surfaceShown';
 import WorkTabs from './WorkTabs';
 import { useElementWidth } from '../../hooks/useElementWidth';
@@ -67,6 +68,8 @@ interface PaneProps {
   isWorkspaceVisible?: boolean;
   /** This leaf is hidden because another pane in ITS tree is zoomed (#517). */
   isZoomHidden?: boolean;
+  /** The workspace column's corners this pane reaches (paneCorners.ts). */
+  corners?: string;
 }
 
 /**
@@ -106,11 +109,12 @@ export function composePaneClassName(opts: {
   // rather than the hole. Contained, the scale inside a pane is purely local
   // and no future pane-internal element can express the collision at all.
   //
-  // Safe only because nothing inside a pane needs to escape it any more. The
-  // agent toolbar's popovers used to and were the stated blocker, but the bar
-  // moved out to the workspace column on 2026-08-18 (DESIGN.md) and now sits
-  // in ToolbarHost's own `absolute z-20` context; the terminal context menu
-  // was the last one, and it portals to document.body as of this change.
+  // Safe only because what must escape a pane does so on its own. The agent
+  // toolbar's popovers used to be the stated blocker, but the bar moved out
+  // to the workspace column on 2026-08-18 (DESIGN.md) and now sits in
+  // ToolbarHost's own `absolute z-20` context; the terminal context menu
+  // portals to document.body; and every ui/Dialog a pane opens renders into
+  // the dialog host PaneContainer keeps beside the panes (ui/dialogHost).
   const classes = ['flex', 'flex-col', 'h-full', 'w-full', 'relative', 'isolate', 'box-border'];
   if (hasUnread) classes.push('notification-ring');
   if (completeBlink) {
@@ -487,7 +491,7 @@ export function planAutoResume(args: {
   return args.wasRunning === true ? `${line} "${AUTO_RESUME_CONTINUE_PROMPT}"` : line;
 }
 
-export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true, isZoomHidden = false }: PaneProps) {
+export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true, isZoomHidden = false, corners }: PaneProps) {
   const t = useT();
   const { invoke: ipcInvoke } = useIpc();
   const [flashing, setFlashing] = useState(false);
@@ -1103,6 +1107,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // inside the tile it started in under multiview.
         'data-pane-root': pane.id,
         'data-pane-workspace': workspace.id,
+        // Glass rounds a corner pane's own boxes (ui.css) only when it shows a
+        // plain terminal: other surfaces paint their own corners, so the
+        // column keeps its clip for them (selectGlassCornerSides).
+        'data-corner': corners && isPlainTerminalPane(pane, splitMode, chatViewEnabled) ? corners : undefined,
       }}
       onClick={handleClick}
       data-onboarding-target="pane-area"
@@ -1676,8 +1684,9 @@ function TerminalSurface({ surface, paneId, chatViewEnabled, isActive, visible, 
     if (coveredSearch) useStore.getState().setSearchBarVisible(false);
   }, [coveredSearch]);
   // The surface closed (or its PTY was replaced): forget its chat drafts and binding.
+  // A split remounts the same surface, so only a PTY no surface holds any more is forgotten.
   const ptyId = surface.ptyId;
-  useEffect(() => () => { if (ptyId) forgetChatV2Pane(ptyId); }, [ptyId]);
+  useEffect(() => () => { if (ptyId) forgetChatV2PaneIfClosed(ptyId, useStore.getState()); }, [ptyId]);
   return (
     <>
       <div style={{ display: 'contents' }} inert={chatV2 || undefined}>

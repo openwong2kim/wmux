@@ -51,7 +51,7 @@ describe('#747 — a deferred fit must be recorded and settled', () => {
     // sendResize dedupe. A hand-rolled fitAddon.fit() in the handler would
     // resize xterm while leaving the PTY on the old size — the same class of
     // desync this fixes.
-    const start = src.indexOf('const runFit = () => {');
+    const start = src.indexOf('const runFit = (adoptFirst = false): boolean => {');
     expect(start).toBeGreaterThan(-1);
     // Bound the block by the next declaration rather than an indentation
     // pattern — a formatter change must not silently shrink or widen the slice.
@@ -130,7 +130,7 @@ describe('#1255 — every fit() apply site is floor-gated, every recovery re-ass
     const fonts = src.slice(src.indexOf('document.fonts.ready'), src.indexOf('document.fonts.ready') + 1400);
     expect(fonts).toMatch(/runFit\(\)/);
     expect(fonts).not.toMatch(/fitAddon\.fit\(\)/);
-    const runFitStart = src.indexOf('const runFit = () => {');
+    const runFitStart = src.indexOf('const runFit = (adoptFirst = false): boolean => {');
     const runFit = src.slice(runFitStart, src.indexOf('const autoCopy = createAutoSelectionCopy', runFitStart));
     // BEFORE claimFit: a floor skip records no selection debt — the settled
     // layout re-fires the ResizeObserver, which is the retry.
@@ -138,7 +138,7 @@ describe('#1255 — every fit() apply site is floor-gated, every recovery re-ass
     // those dims to the PTY before xterm applies them), so anchor on the
     // capture + its early return rather than the old one-liner.
     const gate = runFit.indexOf('const proposed = proposedSafeDimensions(fitAddon, container);');
-    expect(runFit.slice(gate)).toMatch(/const proposed = proposedSafeDimensions\(fitAddon, container\);\s+if \(!proposed\) return;/);
+    expect(runFit.slice(gate)).toMatch(/const proposed = proposedSafeDimensions\(fitAddon, container\);\s+if \(!proposed\) return false;/);
     const claim = runFit.indexOf('claimFit(');
     expect(gate).toBeGreaterThan(-1);
     expect(claim).toBeGreaterThan(gate);

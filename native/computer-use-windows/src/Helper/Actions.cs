@@ -184,10 +184,12 @@ internal static unsafe class Focus
             {
                 try
                 {
+                    GiveBack.NoteOwnInput(call: true);
                     el->SetFocus();
                 }
                 finally
                 {
+                    GiveBack.CallDone();
                     el->Release();
                 }
             }
@@ -226,6 +228,87 @@ internal static unsafe class Focus
     public static bool InFront(ControlTarget target) => Win.InTargetWindow(Win.Root(PInvoke.GetForegroundWindow()), target.Window, target.Pid);
 
     /// <summary>
+    /// Under `allow`, a keyboard action (pressKey, hotkey, type without an
+    /// index) on a target that is not in front brings it forward first, as a
+    /// click does: UIA SetFocus on its window (activation gives keyboard
+    /// focus back to the control that had it), then SetForegroundWindow.
+    /// Keys go out only once the target is in front with keyboard focus
+    /// inside it (KeyboardPreflight, and again right before SendInput), so
+    /// they can never land in another window; if Windows refuses the change,
+    /// the action fails and nothing is sent. GiveBack then returns the front.
+    /// </summary>
+    public static void BringForwardForKeys(ControlTarget target)
+    {
+        InputDesktop.Require();
+        RequireShown(target);
+        RequireNotElevated(target);
+        if (KeyboardReady(target, out _)) return;
+        // SetForegroundWindow first: activation gives focus back to the
+        // control that had it. UIA SetFocus on the window element would move
+        // Chromium's focus to the document root, so it is only the fallback
+        // (it carries the foreground right a background process lacks).
+        PInvoke.SetForegroundWindow(target.Window);
+        if (!InFront(target))
+        {
+            try
+            {
+                var el = Uia.Automation->ElementFromHandle(target.Window);
+                if (el != null)
+                {
+                    try
+                    {
+                        GiveBack.NoteOwnInput(call: true);
+                        el->SetFocus();
+                    }
+                    finally
+                    {
+                        GiveBack.CallDone();
+                        el->Release();
+                    }
+                }
+            }
+            catch (Exception e) when (e is not HelperError)
+            {
+            }
+            if (!InFront(target)) PInvoke.SetForegroundWindow(target.Window);
+        }
+        // Activation hands keyboard focus back to the control that had it a
+        // moment later: WinForms moves it from the form to its ActiveControl,
+        // and Chromium restores the focused element in the page through its
+        // renderer, so the first key after activation can be lost. The focus
+        // must read the same twice, both the window (Win32) and the element
+        // (UIA), before the keys go out.
+        for (int i = 0; i < 10; i++)
+        {
+            if (KeyboardReady(target, out var first))
+            {
+                var element = Uia.FocusedRuntimeId();
+                Sta.Sleep(50);
+                // No UIA focus element (an empty runtime id) both times: the
+                // two equal HWND reads decide.
+                if (KeyboardReady(target, out var again) && again == first
+                    && Uia.FocusedRuntimeId().AsSpan().SequenceEqual(element)) return;
+            }
+            Sta.Sleep(50);
+        }
+        throw new HelperError("window_not_focused", "the target window could not be brought to the front with keyboard focus (Windows may have refused the change); nothing was sent");
+    }
+
+    private static bool KeyboardReady(ControlTarget target, out HWND focus)
+    {
+        try
+        {
+            focus = KeyboardPreflight(target);
+            return true;
+        }
+        catch (HelperError)
+        {
+            focus = HWND.Null;
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Before every UIA pattern call (Invoke, Toggle, SetValue, SetFocus…).
     /// A pattern call is not input, but it brings a covered target window to
     /// the front (Core Background.PatternCallAllowed), so it is foreground
@@ -238,6 +321,20 @@ internal static unsafe class Focus
     /// its lease.
     /// </summary>
     public static void RequireSemantic(ControlTarget target, IUIAutomationElement* el, bool refuseForeground)
+    {
+        RequireSemanticTarget(target, el);
+        if (!Background.PatternCallAllowed(refuseForeground, InFront(target)))
+        {
+            Wire.Log("accessibility call: needs foreground (it would bring the target window to the front)");
+            throw new HelperError("needs_foreground", "an accessibility call would bring the target window to the front; nothing was sent");
+        }
+    }
+
+    /// <summary>
+    /// RequireSemantic without the foreground gate, for the one call that does
+    /// not bring a covered target to the front (DoDefaultAction).
+    /// </summary>
+    public static void RequireSemanticTarget(ControlTarget target, IUIAutomationElement* el)
     {
         Input.ThrowIfStopping();
         InputDesktop.Require();
@@ -260,13 +357,20 @@ internal static unsafe class Focus
         // A popup the target window owns (a menu flyout) counts as inside it.
         if (pid != target.Pid || !Win.InTargetWindow(top, target.Window, target.Pid))
         {
-            throw new HelperError("element_stale", "the element is no longer in the target window");
+            throw new HelperError("element_stale", "the element is no longer in the target window" + CoveredChromiumHint(target));
         }
-        if (!Background.PatternCallAllowed(refuseForeground, InFront(target)))
-        {
-            Wire.Log("accessibility call: needs foreground (it would bring the target window to the front)");
-            throw new HelperError("needs_foreground", "an accessibility call would bring the target window to the front; nothing was sent");
-        }
+    }
+
+    /// <summary>
+    /// Chromium (Chrome, Edge, Electron, VS Code) drops a window's page from
+    /// accessibility while the window is fully covered (its native occlusion
+    /// tracking), so every element of the last snapshot reads as gone. Say so,
+    /// and what works instead, rather than only "the element went away".
+    /// </summary>
+    private static string CoveredChromiumHint(ControlTarget target)
+    {
+        if (!Win.ClassName(target.Window).StartsWith("Chrome_WidgetWin", StringComparison.Ordinal) || InFront(target)) return "";
+        return ". This is a Chromium window (Chrome, Edge, Electron, VS Code) behind other windows: Chromium stops exposing a fully covered window's page to accessibility, so its elements cannot be pressed in the background. Ask the user to bring the window up, then call getAppState again; keys (pressKey, hotkey, type without an index) still bring it forward themselves";
     }
 }
 
@@ -373,6 +477,75 @@ internal static unsafe class Actions
     }
 
     /// <summary>
+    /// The background rung of the click ladder: LegacyIAccessible
+    /// DoDefaultAction, only on an element whose default action is a press
+    /// (Core Background.DefaultActionIsPress) and that is not a secret field.
+    /// The target checks of the other rungs run first, without the foreground
+    /// gate. An error that certainly did nothing (Chromium answers
+    /// UIA_E_ELEMENTNOTENABLED on a covered window) returns null, and the
+    /// ladder goes on to answer needs_foreground; a returned success is never
+    /// followed by another way, since the press may have happened. Verified
+    /// only when a check box's toggle state or a radio button's selection is
+    /// read back changed.
+    /// </summary>
+    private static (string Note, bool Verified)? PressByDefaultAction(ControlTarget target, IUIAutomationElement* el, int type)
+    {
+        string? action;
+        try
+        {
+            action = Uia.CurrentString(el, Uia.LegacyIAccessibleDefaultActionProperty);
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return null;
+        }
+        if (!Background.DefaultActionIsPress(type, action) || Uia.IsSecretElement(el)) return null;
+        var legacy = (IUIAutomationLegacyIAccessiblePattern*)Pattern(el, Uia.LegacyIAccessiblePattern, IUIAutomationLegacyIAccessiblePattern.IID_Guid);
+        if (legacy == null) return null;
+        try
+        {
+            Focus.RequireSemanticTarget(target, el);
+            int? toggleBefore = ReadQuietly(() => Uia.CurrentInt(el, Uia.ToggleStateProperty));
+            bool? selectedBefore = ReadQuietly(() => (bool?)Uia.CurrentBool(el, Uia.SelectionItemIsSelectedProperty));
+            try
+            {
+                Input.CountSemantic();
+                legacy->DoDefaultAction();
+                GiveBack.CallDone();
+            }
+            catch (Exception e) when (e is not HelperError)
+            {
+                EndIfAmbiguous(e, "DoDefaultAction");
+                Wire.Log($"click: DoDefaultAction did not run ({Uia.Describe(e)})");
+                return null;
+            }
+            bool verified = type switch
+            {
+                50002 /* CheckBox */ => toggleBefore is int t0 && ReadQuietly(() => Uia.CurrentInt(el, Uia.ToggleStateProperty)) is int t1 && t1 != t0,
+                50013 /* RadioButton */ => selectedBefore == false && ReadQuietly(() => (bool?)Uia.CurrentBool(el, Uia.SelectionItemIsSelectedProperty)) == true,
+                _ => false,
+            };
+            return ("pressed through accessibility (DoDefaultAction), without bringing the window to the front", verified);
+        }
+        finally
+        {
+            legacy->Release();
+        }
+    }
+
+    private static T? ReadQuietly<T>(Func<T?> read) where T : struct
+    {
+        try
+        {
+            return read();
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// A pattern call failed. If it certainly did nothing (not supported,
     /// disabled, not implemented) the ladder may try the next way; anything
     /// else may have run (a timeout on a call the app is still executing), so
@@ -390,11 +563,14 @@ internal static unsafe class Actions
     }
 
     /// <summary>
-    /// The action ladder for a plain left click on an element: its primary
-    /// UIA pattern (Invoke; Toggle for a check box; SelectionItem; then
-    /// ExpandCollapse). Null when no pattern applies; then the caller clicks.
+    /// The action ladder for a plain left click on an element. Under `refuse`
+    /// with the target not in front it starts with DoDefaultAction, the one
+    /// press that does not bring the window to the front
+    /// (Core Background.DefaultActionFirst). Then its primary UIA pattern
+    /// (Invoke; Toggle for a check box; SelectionItem; then ExpandCollapse).
+    /// Null when no pattern applies; then the caller clicks.
     /// </summary>
-    private static string? ClickSemantically(ControlTarget target, IUIAutomationElement* el, bool refuse)
+    private static (string Note, bool Verified)? ClickSemantically(ControlTarget target, IUIAutomationElement* el, bool refuse)
     {
         int type;
         try
@@ -404,6 +580,10 @@ internal static unsafe class Actions
         catch (Exception e) when (e is not HelperError)
         {
             return null;
+        }
+        if (Background.DefaultActionFirst(refuse, Focus.InFront(target)) && PressByDefaultAction(target, el, type) is { } pressed)
+        {
+            return pressed;
         }
         if (type != 50002 /* CheckBox */)
         {
@@ -415,7 +595,8 @@ internal static unsafe class Actions
                     Focus.RequireSemantic(target, el, refuse);
                     Input.CountSemantic();
                     invoke->Invoke();
-                    return "pressed through accessibility (Invoke)";
+                    GiveBack.CallDone();
+                    return ("pressed through accessibility (Invoke)", false);
                 }
                 catch (Exception e) when (e is not HelperError)
                 {
@@ -435,7 +616,8 @@ internal static unsafe class Actions
                 Focus.RequireSemantic(target, el, refuse);
                 Input.CountSemantic();
                 toggle->Toggle();
-                return "toggled through accessibility (Toggle)";
+                GiveBack.CallDone();
+                return ("toggled through accessibility (Toggle)", false);
             }
             catch (Exception e) when (e is not HelperError)
             {
@@ -454,7 +636,8 @@ internal static unsafe class Actions
                 Focus.RequireSemantic(target, el, refuse);
                 Input.CountSemantic();
                 select->Select();
-                return "selected through accessibility (SelectionItem)";
+                GiveBack.CallDone();
+                return ("selected through accessibility (SelectionItem)", false);
             }
             catch (Exception e) when (e is not HelperError)
             {
@@ -485,7 +668,8 @@ internal static unsafe class Actions
                     Input.CountSemantic();
                     if (collapsed) expand->Expand();
                     else expand->Collapse();
-                    return "expanded or collapsed through accessibility (ExpandCollapse)";
+                    GiveBack.CallDone();
+                    return ("expanded or collapsed through accessibility (ExpandCollapse)", false);
                 }
                 catch (Exception e) when (e is not HelperError)
                 {
@@ -525,7 +709,7 @@ internal static unsafe class Actions
     {
         var next = Background.Next(posted, refuseForeground, Input.Sent != sentAtStart);
         // Refusals that depend on the target's state are logged; what the
-        // action asks for (a chord, the wheel) never posts, so it is not.
+        // action asks for (a chord, a horizontal wheel) never posts, so it is not.
         if (next is AfterAttempt.RealInput or AfterAttempt.NeedsForeground && !Background.IsActionRefusal(posted.Refusal))
         {
             var why = Background.Describe(posted.Refusal);
@@ -569,21 +753,22 @@ internal static unsafe class Actions
         if (element != 0 && button == 0 && count == 1 && mods.Count == 0)
         {
             bool frontBefore = Focus.InFront(target);
-            string? note;
+            (string Note, bool Verified)? pressed;
             try
             {
                 // Under `refuse` a pattern call on a covered target answers
-                // needs_foreground (Focus.RequireSemantic) before it is made.
-                note = ClickSemantically(target, (IUIAutomationElement*)element, refuse);
+                // needs_foreground (Focus.RequireSemantic) before it is made,
+                // after DoDefaultAction, which stays in the background.
+                pressed = ClickSemantically(target, (IUIAutomationElement*)element, refuse);
             }
             catch (HelperError e)
             {
                 throw SayIfCameToFront(e, target, frontBefore);
             }
-            if (note != null)
+            if (pressed is { } done)
             {
                 Overlay.Press(marker.Id, x, y);
-                return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
+                return Result("accessibility", done.Verified, SemanticDelivery(target, frontBefore), done.Note);
             }
             ladderRaised = !frontBefore && Focus.InFront(target);
         }
@@ -666,6 +851,7 @@ internal static unsafe class Actions
             {
                 Input.CountSemantic();
                 pattern->SetValue(new BSTR((char*)bstr));
+                GiveBack.CallDone();
             }
             catch (Exception e) when (e is not HelperError)
             {
@@ -794,7 +980,15 @@ internal static unsafe class Actions
                 try
                 {
                     Focus.RequireSemantic(target, el, refuse);
-                    el->SetFocus();
+                    GiveBack.NoteOwnInput(call: true);
+                    try
+                    {
+                        el->SetFocus();
+                    }
+                    finally
+                    {
+                        GiveBack.CallDone();
+                    }
                 }
                 catch (Exception e) when (e is not HelperError)
                 {
@@ -836,6 +1030,7 @@ internal static unsafe class Actions
                 if (Verified(result)) Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target));
                 return result;
             }
+            if (!refuse) Focus.BringForwardForKeys(target);
         }
 
         // The marker's caret lookup is UIA work, so it comes before the
@@ -1039,7 +1234,14 @@ internal static unsafe class Actions
             if (end == null) return false;
             end->MoveEndpointByRange(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End);
             Input.CountSemantic();
-            end->Select();
+            try
+            {
+                end->Select();
+            }
+            finally
+            {
+                GiveBack.CallDone();
+            }
             now = Selection(el);
             if (now == null) return false;
             if (SameRange(end, now)) return true;
@@ -1151,7 +1353,15 @@ internal static unsafe class Actions
         }
         try
         {
-            before->Select();
+            GiveBack.NoteOwnInput(call: true);
+            try
+            {
+                before->Select();
+            }
+            finally
+            {
+                GiveBack.CallDone();
+            }
         }
         catch (Exception e) when (e is not HelperError)
         {
@@ -1183,6 +1393,7 @@ internal static unsafe class Actions
         Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret);
         var posted = BackgroundInput.Key(target, keyName, repeat, 0, "pressKey");
         if (AfterBackground("pressKey", posted, refuse, sentAtStart) is { } result) return result;
+        if (!refuse) Focus.BringForwardForKeys(target);
         for (int n = 0; n < repeat; n++)
         {
             if (n > 0) Sta.Sleep(4);
@@ -1198,6 +1409,7 @@ internal static unsafe class Actions
                 throw new HelperError(e.Code, $"{e.Message} (after {n} of {repeat} presses; the rest were not sent)");
             }
         }
+        GiveBack.KeysSent(target.Window);
         return Result("synthetic", false, "foreground");
     }
 
@@ -1216,10 +1428,12 @@ internal static unsafe class Actions
         // Posted keys carry no modifier state, so a chord is always real input.
         var posted = BackgroundInput.Key(target, keyName, 1, mods.Count, "hotkey");
         if (AfterBackground("hotkey", posted, refuse, sentAtStart) is { } result) return result;
+        if (!refuse) Focus.BringForwardForKeys(target);
         var keyPreflight = Focus.RequireKeyboard(target);
         // "using your keyboard" once the check passed; a posted command, not UIA.
         Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret, realInput: true);
         Input.Tap(key, mods, keyPreflight);
+        GiveBack.KeysSent(target.Window);
         return Result("synthetic", false, "foreground");
     }
 
@@ -1238,8 +1452,13 @@ internal static unsafe class Actions
             _ => throw new HelperError("invalid_argument", "direction must be up, down, left or right"),
         };
         var (x, y, _) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
-        // Always real input: WM_MOUSEWHEEL was not measured (Core Background.ActionRefusal).
-        AfterBackground("scroll", BackgroundOutcome.Refused(BackgroundRefusal.Scroll), refuse, sentAtStart);
+        // The agent's pointer moves to the point (Overlay.cs: a posted command, no wait).
+        Overlay.Show(marker, MarkerVerb.Scrolling, target, (x, y));
+        // A vertical wheel over an Edit or RichEdit control is posted
+        // (BackgroundInput.Scroll); anything else is real input, as before.
+        Input.ThrowIfStopping();
+        var posted = BackgroundInput.Scroll(target, x, y, amount, up: dy > 0, horizontal: dx != 0);
+        if (AfterBackground("scroll", posted, refuse, sentAtStart) is { } result) return result;
         // The preflight re-runs the hit-test before every notch: a window that
         // moves over the point mid-scroll must not receive the rest.
         var preflight = Focus.RequirePointer(target, x, y);

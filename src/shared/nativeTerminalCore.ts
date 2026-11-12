@@ -11,11 +11,15 @@ export interface NativeRingStorage {
   readonly allocatedBytes: number;
   readonly totalBytesWritten: number;
   readonly hasGeometryChanges: boolean;
+  /** Whether the newest geometry mark is provisional (see RingBuffer.noteGeometry). Absent on an older core. */
+  readonly geometryTailProvisional?: boolean;
   write(data: Uint8Array): void;
   writeChunk?(chunk: NativeOutputChunk): void;
   clear(): void;
   readAll(): Buffer;
-  noteGeometry(cols: number, rows: number): void;
+  noteGeometry(cols: number, rows: number, applied?: boolean): void;
+  /** Absent on an older core. */
+  settleGeometry?(): void;
   readAllWithGeometry(): { data: Buffer; writtenAt: number; geometry?: ReplayGeometry | null };
   dispose(): void;
   freeze(): NativeFrozenRing;

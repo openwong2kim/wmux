@@ -596,6 +596,8 @@
  * 아래에 기준값으로만 문서화한다. 온보딩 모듈의 자체 클러스터(9999/10000/
  * 10001)도 내부 결합이 강해 인라인 유지한다.
  *
+ *   30    pane-dialog  dialogs a pane opens: over the agent toolbar (z-20),
+ *                        under a rail page (.wmux-page, 40)
  *   40    cheatsheet   기준선(z-50) 아래
  *   50    overlay      드롭다운·메뉴·패널 (표준 Tailwind z-50)
  *   60    modal        설정·자동업데이트 모달
@@ -607,6 +609,7 @@
  *   10000 modal-top    워크스페이스 프로필 모달
  *   99999 critical     드래그 오버레이(최상단) */
 :root {
+  --z-pane-dialog: 30;
   --z-cheatsheet: 40;
   --z-overlay: 50;
   --z-modal: 60;

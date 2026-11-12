@@ -4,7 +4,8 @@
 // the ONLY place spawn env is resolved. The renderer edits names/bindings and
 // drives onboarding, but never sees or writes a token.
 
-import { ipcMain } from 'electron';
+import { clipboard, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { isMainWindowSender } from '../mainWindowSender';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -19,8 +20,20 @@ import {
   type Vendor,
   type Account,
 } from '../../account/accountStore';
-import { provisionAccountDir } from '../../account/accountProvision';
+import { copiesSettingsJson, provisionAccountDir, type ProvisionResult } from '../../account/accountProvision';
+import { envClaudeConfigDir } from '../../../shared/claudeConfigTargets';
+import { claudeConfigDirEnv } from '../../hooks/claudeConfigDirProbe';
+import { installHooksIntoNewAccount } from './hooksBridge.handler';
 import { loadClaudeCredential, credentialFingerprint } from '../../claude/claudeCredential';
+import { ACCOUNT_VAULT_PER_ACCOUNT_MAX, appAccountVault, vendorOfAuthName, type AccountVaultSetResult } from '../../account/accountVault';
+import { markClaudeOnboardingDone } from '../../account/claudeOnboardingFlag';
+
+/** The vault name a Claude account signs in with (`claude setup-token`). */
+const CLAUDE_TOKEN_NAME = 'CLAUDE_CODE_OAUTH_TOKEN';
+/** How a `claude setup-token` token starts. */
+const CLAUDE_TOKEN_PREFIX = 'sk-ant-oat';
+/** The vendor an account added from a token belongs to. */
+const TOKEN_VENDOR: Vendor = 'claude';
 
 function isVendor(v: unknown): v is Vendor {
   return v === 'claude' || v === 'codex';
@@ -49,19 +62,23 @@ function assertSafeId(v: unknown, field: string): string {
 function assertReadableAccountDir(configDir: string): string {
   const canonical = path.resolve(configDir);
   const registered = getAccountStore().listAccounts().some((a) => a.configDir === canonical);
+  if (!registered && !isUnderAccountsRoot(canonical)) {
+    throw new AccountError('invalid', 'config directory is not an account directory');
+  }
+  return canonical;
+}
+
+/** True when `dir` is strictly inside the wmux-owned `<wmuxDir>/accounts` root. */
+function isUnderAccountsRoot(dir: string): boolean {
   const accountsRoot = path.resolve(getWmuxDir(), 'accounts');
   // Onboarding hands out the realpath'd dir, so also accept the realpath'd root
   // (e.g. a symlinked home directory).
   let realRoot = accountsRoot;
   try { realRoot = fs.realpathSync.native(accountsRoot); } catch { /* root not created yet */ }
-  const underAccountsRoot = [accountsRoot, realRoot].some((root) => {
-    const rel = path.relative(root, canonical);
+  return [accountsRoot, realRoot].some((root) => {
+    const rel = path.relative(root, dir);
     return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
   });
-  if (!registered && !underAccountsRoot) {
-    throw new AccountError('invalid', 'config directory is not an account directory');
-  }
-  return canonical;
 }
 
 export interface CredentialStatus {
@@ -96,6 +113,31 @@ export interface AccountRow extends Account {
   status: CredentialStatus;
   /** Copy-able fallback for users who log in from their own terminal. */
   loginCommand: string;
+  /** A Claude account whose vault holds a long-lived token: when it was saved,
+   *  and whether this machine can decrypt it. Never the value. */
+  tokenSignIn?: { createdAt: number; usable: boolean };
+  /** How many values the account's vault holds (0 when it cannot be read). */
+  vaultCount: number;
+}
+
+/** How many values an account's vault holds. */
+function vaultCountOf(a: Account): number {
+  try {
+    return appAccountVault().list(a.id).length;
+  } catch {
+    return 0;
+  }
+}
+
+/** The token sign-in metadata of a Claude account, if its vault holds one. */
+function tokenSignInOf(a: Account): AccountRow['tokenSignIn'] {
+  if (vendorOfAuthName(CLAUDE_TOKEN_NAME) !== a.vendor) return undefined;
+  try {
+    const entry = appAccountVault().list(a.id).find((e) => e.name === CLAUDE_TOKEN_NAME);
+    return entry ? { createdAt: entry.createdAt, usable: entry.usable } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Build the platform-correct, properly-escaped, process-scoped login command
@@ -127,7 +169,154 @@ export interface OnboardPrepareResult {
   loginCommand: string;
 }
 
-export function registerAccountHandlers(): () => void {
+/**
+ * Provision an isolated config dir for a NEW account (hybrid share when
+ * `share`), with wmux's hooks installed, and return its canonical path: the
+ * same string ACCOUNT_ADD stores. `created` (the folder's identity) is set
+ * only when this call made the folder; a rollback leaves any other alone.
+ */
+async function provisionNewAccountDir(vendor: Vendor, share: boolean): Promise<{ provisioned: ProvisionResult; created: DirIdentity | null }> {
+  const configDir = path.join(getWmuxDir(), 'accounts', `${vendor}-${randomUUID().slice(0, 8)}`);
+  const existed = fs.existsSync(configDir);
+  // An account that keeps Claude's settings.json shares from the folder
+  // Claude itself reads:
+  // CLAUDE_CONFIG_DIR when set, else ~/.claude.
+  const sourceDir = copiesSettingsJson(vendor) ? envClaudeConfigDir(await claudeConfigDirEnv()).dir ?? undefined : undefined;
+  const result = provisionAccountDir({ configDir, vendor, share, sourceDir });
+  // wmux's hooks there too, when the primary folder has them (its copied
+  // settings may predate them, or there was no copy at all).
+  if (copiesSettingsJson(vendor)) {
+    try {
+      const hooks = await installHooksIntoNewAccount(configDir);
+      if (hooks && !hooks.ok) console.warn(`[account] wmux hooks not installed in the new account: ${hooks.error}`);
+    } catch (err) {
+      console.warn('[account] wmux hooks not installed in the new account:', err);
+    }
+  }
+  // Hand out the same canonical string ACCOUNT_ADD will store: the login
+  // tab exports it as CLAUDE_CONFIG_DIR and the macOS keychain item is keyed
+  // on that exact string, so every later read must use the identical path.
+  const canonical = canonicalizeConfigDir(result.configDir);
+  return { provisioned: { ...result, configDir: canonical }, created: existed ? null : dirIdentity(canonical) };
+}
+
+/** A directory's device and inode, read without following a link (bigint:
+ *  Windows file ids exceed 2^53). Null when the path is not a real directory. */
+type DirIdentity = { dev: bigint; ino: bigint };
+function dirIdentity(dir: string): DirIdentity | null {
+  try {
+    const st = fs.lstatSync(dir, { bigint: true });
+    return st.isDirectory() && !st.isSymbolicLink() ? { dev: st.dev, ino: st.ino } : null;
+  } catch {
+    return null;
+  }
+}
+
+function sameDir(dir: string, expected: DirIdentity): boolean {
+  const now = dirIdentity(dir);
+  return !!now && now.dev === expected.dev && now.ino === expected.ino;
+}
+
+/** Remove a link itself, never its target. A directory link on Windows (a
+ *  junction or directory symlink) is dropped with a non-recursive rmdir, which
+ *  removes only the reparse point. */
+function removeLinkOnly(p: string): void {
+  if (process.platform === 'win32') {
+    let pointsAtDir = false;
+    try { pointsAtDir = fs.statSync(p).isDirectory(); } catch { /* dangling link */ }
+    if (pointsAtDir) {
+      fs.rmdirSync(p);
+      return;
+    }
+  }
+  fs.unlinkSync(p);
+}
+
+/**
+ * Undo a folder provisionNewAccountDir created. Only what provisioning puts
+ * there is removed: each link (the link only, never followed) and each plain
+ * file directly inside, then the folder itself. Nothing is removed
+ * recursively: a real subdirectory is left in place, so the folder stays and
+ * a warning says so — a leftover folder is harmless, a deleted shared target
+ * is not. Nothing outside `<wmuxDir>/accounts` is touched, and nothing at all
+ * when the path is no longer the directory provisioning made (replaced by a
+ * link, a junction or another folder): readdir would follow a link.
+ */
+function discardProvisionedDir(configDir: string, identity: DirIdentity): void {
+  if (!isUnderAccountsRoot(configDir)) return;
+  if (!sameDir(configDir, identity)) {
+    console.warn(`[account] the unused account folder ${configDir} was replaced since it was made; left as it is`);
+    return;
+  }
+  try {
+    for (const entry of fs.readdirSync(configDir)) {
+      const p = path.join(configDir, entry);
+      const st = fs.lstatSync(p);
+      if (st.isSymbolicLink()) removeLinkOnly(p);
+      else if (st.isFile()) fs.unlinkSync(p);
+    }
+    // Fails (and keeps the folder) when anything was left above.
+    if (!sameDir(configDir, identity)) throw new Error('replaced while it was being emptied');
+    fs.rmdirSync(configDir);
+  } catch (err) {
+    console.warn(`[account] could not remove the unused account folder ${configDir}: ${String(err)}`);
+  }
+}
+
+type ClipboardRefusal = Extract<AccountVaultSetResult, { ok: false }>;
+
+/** The clipboard's text, read here in main, or a refusal when it does not
+ *  start with `expectPrefix` (when one is given). Never logged. */
+async function readClipboardValue(expectPrefix: unknown): Promise<{ ok: true; value: string } | ClipboardRefusal> {
+  const value = (await clipboard.readText()).trim();
+  if (typeof expectPrefix === 'string' && expectPrefix && !value.startsWith(expectPrefix)) {
+    return { ok: false, code: 'prefix_mismatch', message: `The clipboard does not start with "${expectPrefix}", so nothing was saved.` };
+  }
+  return { ok: true, value };
+}
+
+type VaultSaveResult = AccountVaultSetResult & { clipboardCleared?: boolean; clipboardCleanupFailed?: true; onboardingWarning?: string };
+
+/**
+ * Save a clipboard value to an account's vault. The clipboard is cleared only
+ * if it still holds what was saved, so text copied since is not lost; a
+ * failed clear is reported (`clipboardCleanupFailed`), never a failed save. A Claude
+ * token is read only once first-run setup is marked done in the account's
+ * folder; a refusal leaves the token saved and says why. `inject`, when
+ * given, is saved in the same write (AccountVault.set's default otherwise).
+ */
+async function saveClipboardValue(accountId: string, name: unknown, value: string, inject?: boolean): Promise<VaultSaveResult> {
+  const result = appAccountVault().set(accountId, name, value, inject === undefined ? {} : { inject });
+  if (!result.ok) return result;
+  let clipboardCleared = false;
+  let clipboardCleanupFailed = false;
+  try {
+    if ((await clipboard.readText()).trim() === value) {
+      await clipboard.clear();
+      clipboardCleared = true;
+    }
+  } catch {
+    clipboardCleanupFailed = true;
+  }
+  let onboardingWarning: string | undefined;
+  const account = getAccountStore().getAccount(accountId);
+  if (name === CLAUDE_TOKEN_NAME && account && tokenSignInOf(account)) {
+    const flag = markClaudeOnboardingDone(account.configDir, path.resolve(getWmuxDir(), 'accounts'));
+    if (!flag.ok) onboardingWarning = flag.message;
+  }
+  return {
+    ...result,
+    clipboardCleared,
+    ...(clipboardCleanupFailed ? { clipboardCleanupFailed: true as const } : {}),
+    ...(onboardingWarning ? { onboardingWarning } : {}),
+  };
+}
+
+export type AddWithTokenResult =
+  | { ok: true; account: Account; clipboardCleared: boolean; clipboardCleanupFailed?: true; onboardingWarning?: string; groupFailed?: boolean }
+  | ClipboardRefusal;
+
+export function registerAccountHandlers(getWindow: () => BrowserWindow | null = () => null): () => void {
   const channels = [
     IPC.ACCOUNT_LIST,
     IPC.ACCOUNT_ONBOARD_PREPARE,
@@ -137,6 +326,12 @@ export function registerAccountHandlers(): () => void {
     IPC.ACCOUNT_REMOVE,
     IPC.ACCOUNT_SET_BINDING,
     IPC.ACCOUNT_CREDENTIAL_STATUS,
+    IPC.ACCOUNT_VAULT_LIST,
+    IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD,
+    IPC.ACCOUNT_VAULT_GENERATE,
+    IPC.ACCOUNT_VAULT_SET_INJECT,
+    IPC.ACCOUNT_VAULT_DELETE,
+    IPC.ACCOUNT_ADD_WITH_TOKEN,
   ];
   for (const c of channels) ipcMain.removeHandler(c);
 
@@ -152,6 +347,8 @@ export function registerAccountHandlers(): () => void {
         ...a,
         status: await credentialStatus(a.vendor, a.configDir),
         loginCommand: buildLoginCommand(a.vendor, a.configDir),
+        tokenSignIn: tokenSignInOf(a),
+        vaultCount: vaultCountOf(a),
       })),
     );
     return { accounts: rows, bindings: store.getBindings() };
@@ -164,17 +361,8 @@ export function registerAccountHandlers(): () => void {
     async (_e, args: { vendor: unknown; share?: unknown }): Promise<OnboardPrepareResult> => {
       if (!isVendor(args?.vendor)) throw new AccountError('invalid', 'invalid vendor');
       const share = args.share !== false; // default: hybrid share ON
-      const configDir = path.join(getWmuxDir(), 'accounts', `${args.vendor}-${randomUUID().slice(0, 8)}`);
-      const result = provisionAccountDir({ configDir, vendor: args.vendor, share });
-      // Hand out the same canonical string ACCOUNT_ADD will store: the login
-      // tab exports it as CLAUDE_CONFIG_DIR and the macOS keychain item is keyed
-      // on that exact string, so every later read must use the identical path.
-      const canonical = canonicalizeConfigDir(result.configDir);
-      return {
-        ...result,
-        configDir: canonical,
-        loginCommand: buildLoginCommand(args.vendor, canonical),
-      };
+      const { provisioned } = await provisionNewAccountDir(args.vendor, share);
+      return { ...provisioned, loginCommand: buildLoginCommand(args.vendor, provisioned.configDir) };
     }));
 
   // Register an account (post-login). configDir is canonicalized + deduped in
@@ -204,7 +392,10 @@ export function registerAccountHandlers(): () => void {
   // Remove = unregister only (never deletes the dir). Returns affected workspaces.
   ipcMain.handle(IPC.ACCOUNT_REMOVE, wrapHandler(IPC.ACCOUNT_REMOVE,
     async (_e, args: { id: unknown }) => {
-      const affected = await getAccountStore().removeAccount(assertString(args?.id, 'id'));
+      const id = assertString(args?.id, 'id');
+      const affected = await getAccountStore().removeAccount(id);
+      // Its vault goes with it; a failed write is dropped at the next load.
+      try { appAccountVault().deleteAccount(id); } catch { /* best-effort */ }
       return { ok: true, affectedWorkspaceIds: affected };
     }));
 
@@ -231,6 +422,105 @@ export function registerAccountHandlers(): () => void {
       const dir = assertReadableAccountDir(assertString(args?.configDir, 'configDir'));
       return credentialStatus(args.vendor, dir);
     }));
+
+  // ── Account vault (accountVault.ts). No value crosses to the renderer:
+  // the clipboard is read here, and replies carry names and metadata only.
+  // Only the main window's top frame may touch the vault, as for bot secrets.
+  const assertMainWindow = (e: IpcMainInvokeEvent): void => {
+    if (!isMainWindowSender(e, getWindow())) throw new AccountError('invalid', 'not allowed from this window');
+  };
+  const knownAccount = (e: IpcMainInvokeEvent, v: unknown): string => {
+    assertMainWindow(e);
+    const id = assertSafeId(v, 'accountId');
+    if (!getAccountStore().getAccount(id)) throw new AccountError('not-found', 'no such account');
+    return id;
+  };
+  ipcMain.handle(IPC.ACCOUNT_VAULT_LIST, wrapHandler(IPC.ACCOUNT_VAULT_LIST,
+    async (e, args: { accountId: unknown }) => {
+      const vault = appAccountVault();
+      const entries = vault.list(knownAccount(e, args?.accountId));
+      // What the Settings list needs to say before a save is tried: the
+      // per-account limit, and why nothing can be saved here, if so.
+      return { ok: true, entries, max: ACCOUNT_VAULT_PER_ACCOUNT_MAX, cannotStore: vault.storeRefusal() };
+    }));
+
+  // Clipboard → vault (saveClipboardValue).
+  ipcMain.handle(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, wrapHandler(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD,
+    async (e, args: { accountId: unknown; name: unknown; expectPrefix?: unknown; inject?: unknown }): Promise<VaultSaveResult> => {
+      const accountId = knownAccount(e, args?.accountId);
+      const inject = args?.inject;
+      if (inject !== undefined && typeof inject !== 'boolean') throw new AccountError('invalid', 'inject must be a boolean');
+      const read = await readClipboardValue(args?.expectPrefix);
+      if (!read.ok) return read;
+      return saveClipboardValue(accountId, args?.name, read.value, inject);
+    }));
+
+  // A new Claude account straight from a `claude setup-token` token, all or
+  // nothing: the clipboard is checked before anything is created, and a failed
+  // registration or vault save removes the account and the folder again.
+  ipcMain.handle(IPC.ACCOUNT_ADD_WITH_TOKEN, wrapHandler(IPC.ACCOUNT_ADD_WITH_TOKEN,
+    async (e, args: { name: unknown; share?: unknown; group?: unknown }): Promise<AddWithTokenResult> => {
+      assertMainWindow(e);
+      const name = assertString(args?.name, 'name');
+      const read = await readClipboardValue(CLAUDE_TOKEN_PREFIX);
+      if (!read.ok) return read;
+      const store = getAccountStore();
+      const { provisioned, created } = await provisionNewAccountDir(TOKEN_VENDOR, args?.share !== false);
+      // Unregister first, so no account is left pointing at a removed folder;
+      // if that fails, the folder stays.
+      const rollBack = async (accountId: string | undefined): Promise<void> => {
+        if (accountId) {
+          try {
+            await store.removeAccount(accountId);
+          } catch (err) {
+            console.warn('[account] could not remove the half-added account:', err);
+            return;
+          }
+          // A token saved before a later step threw goes with the account.
+          try { appAccountVault().deleteAccount(accountId); } catch { /* best-effort, as in ACCOUNT_REMOVE */ }
+        }
+        if (created) discardProvisionedDir(provisioned.configDir, created);
+      };
+      let account: Account | undefined;
+      try {
+        account = await store.addAccount({ name, vendor: TOKEN_VENDOR, configDir: provisioned.configDir });
+        // As after a browser login: a group that does not stick is a warning.
+        let groupFailed = false;
+        if (typeof args?.group === 'string' && args.group) {
+          try { await store.setAccountGroup(account.id, args.group); } catch { groupFailed = true; }
+        }
+        const saved = await saveClipboardValue(account.id, CLAUDE_TOKEN_NAME, read.value);
+        if (!saved.ok) {
+          await rollBack(account.id);
+          return saved;
+        }
+        return {
+          ok: true,
+          account: store.getAccount(account.id) ?? account,
+          clipboardCleared: saved.clipboardCleared ?? false,
+          ...(saved.clipboardCleanupFailed ? { clipboardCleanupFailed: true as const } : {}),
+          ...(saved.onboardingWarning ? { onboardingWarning: saved.onboardingWarning } : {}),
+          ...(groupFailed ? { groupFailed } : {}),
+        };
+      } catch (err) {
+        await rollBack(account?.id);
+        throw err;
+      }
+    }));
+
+  ipcMain.handle(IPC.ACCOUNT_VAULT_GENERATE, wrapHandler(IPC.ACCOUNT_VAULT_GENERATE,
+    async (e, args: { accountId: unknown; name: unknown; length?: unknown }) =>
+      appAccountVault().generate(knownAccount(e, args?.accountId), args?.name, typeof args?.length === 'number' ? args.length : undefined)));
+
+  ipcMain.handle(IPC.ACCOUNT_VAULT_SET_INJECT, wrapHandler(IPC.ACCOUNT_VAULT_SET_INJECT,
+    async (e, args: { accountId: unknown; name: unknown; inject: unknown }) => {
+      if (typeof args?.inject !== 'boolean') throw new AccountError('invalid', 'inject must be a boolean');
+      return { ok: appAccountVault().setInject(knownAccount(e, args?.accountId), assertString(args?.name, 'name'), args.inject) };
+    }));
+
+  ipcMain.handle(IPC.ACCOUNT_VAULT_DELETE, wrapHandler(IPC.ACCOUNT_VAULT_DELETE,
+    async (e, args: { accountId: unknown; name: unknown }) =>
+      ({ ok: appAccountVault().delete(knownAccount(e, args?.accountId), assertString(args?.name, 'name')) })));
 
   return () => {
     for (const c of channels) ipcMain.removeHandler(c);

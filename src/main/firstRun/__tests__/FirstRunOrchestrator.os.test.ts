@@ -455,6 +455,25 @@ describe('FirstRunOrchestrator', () => {
     expect(reg.register).not.toHaveBeenCalled();
   });
 
+  it('registerMcp() accepts a ~/.claude.json saved with a byte order mark', async () => {
+    vi.mocked(fs.stat).mockResolvedValue({ isDirectory: () => true } as never);
+    vi.mocked(fs.readFile).mockResolvedValue('\uFEFF{}' as never);
+    vi.mocked(fs.access).mockResolvedValue(undefined as never);
+
+    const reg = makeMcpRegistrar({ registered: true });
+    const orch = new FirstRunOrchestrator(
+      makePtyManager() as never,
+      makePtyBridge() as never,
+      () => null,
+      reg as never,
+      () => 'token',
+      () => makeWindow() as never,
+    );
+
+    await orch.registerMcp();
+    expect(reg.register).toHaveBeenCalled();
+  });
+
   // ── 8. registerMcp() — malformed JSON → PARSE ──────────────────────────────
   it('registerMcp() maps malformed ~/.claude.json to {ok:false, code:PARSE}', async () => {
     vi.mocked(fs.stat).mockResolvedValue({ isDirectory: () => true } as never);

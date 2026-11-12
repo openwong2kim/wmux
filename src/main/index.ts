@@ -62,7 +62,7 @@ process.on('uncaughtException', (err) => {
 import { markBoot, emitBootSummary } from './util/bootTrace';
 import * as path from 'path';
 import * as os from 'os';
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, shell } from 'electron';
 import { checkUserDataIsolation, claimPortableDataNotice, mayInstallDarwinCliShim, PORTABLE_DATA_SUFFIX, shouldUsePortableData } from './dataIsolation';
 import { createWindow, loadMainRenderer } from './window/createWindow';
 import { attachDesktopPresenceReporter, reportDesktopPresence } from './window/desktopPresence';
@@ -100,6 +100,7 @@ import { registerHandOutHandlers } from './ipc/handlers/handOut.handler';
 import { registerApprovalsRpc } from './pipe/handlers/approvals.rpc';
 import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
+import { registerAppActionRpc } from './pipe/handlers/appAction.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerCodexRpc } from './pipe/handlers/codex.rpc';
@@ -134,6 +135,7 @@ import { setUsageClientVersion, type UsageSnapshot } from './claude/UsageApi';
 import { AccountUsageService } from './account/AccountUsageService';
 import { getAccountRotationService } from './account/AccountRotationService';
 import { getAccountStore } from './account/accountStore';
+import { appAccountVault } from './account/accountVault';
 import { IPC, getWmuxHomeDir, dataSuffix } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { sampleDaemonProcess } from '../shared/daemon/daemonProgress';
@@ -223,7 +225,7 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { identitySummary, notePeerReadCheck, setBrokerIdentitySource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
-import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
+import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, releaseCdpPortOnExit } from './browser-session/cdpPort';
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { registerBrowserPrivateNetworkIpc } from './ipc/handlers/browserPrivateNetwork.handler';
@@ -261,7 +263,7 @@ import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
 import { ensureDaemon, killDaemonByPidFile, describeDaemonKillOutcome, killVerifiedDaemonPid, checkProcessLiveness, isDaemonPipeGone } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
 import { createDaemonExitWatch } from './daemon/daemonExitWatch';
-import { loadConfig, getWmuxDir } from '../daemon/config';
+import { loadConfig, getWmuxDir, isFailClosedConfig } from '../daemon/config';
 import { atomicWriteJSON } from '../daemon/util/atomicWrite';
 import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
 import { claudeFileSendPath, readClaudeFileSend } from '../daemon/claudeFileSendSetting';
@@ -271,8 +273,9 @@ import { installApplicationMenu } from './menu/appMenu';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
+import { FIRSTRUN_RELAUNCH_ENV, hookShouldRelaunch, relaunchWaitMs, relaunchWithoutInheritance } from './squirrelRelaunch';
 import { terminateRunningAppInstances, terminateStagedDaemons } from './squirrelTeardown';
-import { daemonStageRootIn, removeDaemonRuntimeStagesAfterExit } from './daemon/daemonRuntimeStage';
+import { STOPPED_DAEMON_EXIT_WAIT_MS, daemonStageRootIn, removeDaemonRuntimeStagesAfterExit } from './daemon/daemonRuntimeStage';
 // Static imports (NOT require('./...')) so rollup inlines these into the
 // single .vite/build/index.js bundle. A dynamic require left literal in the
 // bundle has no adjacent chunk to resolve at runtime and throws
@@ -281,6 +284,7 @@ import { daemonStageRootIn, removeDaemonRuntimeStagesAfterExit } from './daemon/
 // Squirrel events entirely (issue #463).
 import * as autostart from './autostart';
 import * as cliShim from './cliShim';
+import { SQUIRREL_INTEGRATIONS_BUDGET_MS, formatIntegrationItem, removeAgentIntegrations } from '../cli/commands/uninstallIntegrations';
 import * as shortcutHygiene from './shortcutHygiene';
 import { runPostInstallReconcile } from './postInstallReconcile';
 import {
@@ -297,8 +301,12 @@ import {
 } from '../cli/commands/setupStatusline';
 import {
   refreshHookBridgeAtBoot,
+  refreshHookBridgeAtBootFor,
+  refreshClaudeNativeAtBootFor,
+  hookTargets,
   defaultPaths as defaultHooksPaths,
 } from '../cli/commands/setupHooks';
+import { claudeConfigDirEnv } from './hooks/claudeConfigDirProbe';
 import { refreshWslHookAtBoot } from '../shared/wslGlobalHook';
 import { findWslClaudeBridge } from '../shared/wslIntegration';
 import { detectStalePluginGates } from './hooks/stalePluginGate';
@@ -334,12 +342,30 @@ app.commandLine.appendSwitch('lang', 'en-US');
 // Only the four INSTALLER lifecycle events (install/updated/uninstall/obsolete)
 // are handled-and-exited here. '--squirrel-firstrun' is NOT an installer hook —
 // Squirrel passes it on the first normal launch, so it must fall through to
-// appInit() where the single-instance lock dedupes it against the clean instance
-// auto-launched from --squirrel-install. (A bare startsWith('--squirrel-') guard
+// appInit() where the single-instance lock dedupes it against an instance the
+// install hook relaunched (it skips that when the in-app updater says firstrun
+// will, #3280). (A bare startsWith('--squirrel-') guard
 // used to catch firstrun, set the flag, match no handler, never quit, and skip
 // appInit() — leaving an invisible zombie that spawned its own gpu/network procs.
 // See isSquirrelInstallerEvent + src/main/squirrel.ts.)
 let isSquirrelEvent = false;
+/** The uninstall hook's time, counted from process start: Squirrel cancels it
+ *  at 10 s, and this leaves room for Electron's boot and a slow machine. */
+const UNINSTALL_HOOK_BUDGET_MS = 8_000;
+/** Kept back from the staged daemon's exit wait for the PATH edit after it. */
+const UNINSTALL_PATH_EDIT_RESERVE_MS = 2_000;
+/**
+ * #3280: the install and updated hooks' last step. Relaunch the app through
+ * the shell unless the in-app updater said Squirrel's firstrun will, then end
+ * the hook once the shell has answered (squirrelRelaunch.ts).
+ */
+function relaunchThenExit(hook: string): void {
+  const relaunch = hookShouldRelaunch(process.env);
+  console.log(`[Squirrel] ${hook} hook relaunch: ${relaunch ? 'by the hook' : 'left to Squirrel firstrun'}`);
+  if (!relaunch) process.exit(0);
+  void relaunchWithoutInheritance(process.execPath, (p) => shell.openPath(p), relaunchWaitMs(process.uptime() * 1000))
+    .finally(() => process.exit(0));
+}
 if (process.platform === 'win32') {
   const squirrelCmd = process.argv[1];
   if (isSquirrelInstallerEvent(squirrelCmd)) {
@@ -347,7 +373,7 @@ if (process.platform === 'win32') {
     // eslint-disable-next-line @typescript-eslint/no-var-requires -- Preserve installer-only module loading.
     const path = require('path');
     // eslint-disable-next-line @typescript-eslint/no-var-requires -- Preserve installer-only module loading.
-    const { spawn } = require('child_process');
+    const { spawn, execFileSync } = require('child_process');
     const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
     const target = path.basename(process.execPath);
 
@@ -409,30 +435,41 @@ if (process.platform === 'win32') {
       } catch { /* best-effort */ }
 
       // X4: drop the `wmux` CLI shim into <root>\bin and register it on the
-      // user PATH. Internally best-effort — never blocks the install.
-      try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
+      // user PATH. Internally best-effort — never blocks the install. The
+      // broadcast is detached: this thread owns windows it cannot pump while
+      // it waits, and a broadcast it waited for waited 5 s on each (#3017).
+      try { cliShim.installCliShim(process.execPath, { detachBroadcast: true }); } catch { /* best-effort */ }
 
       // #863: stage <root>\app.ico from the packaged icon so shortcut icons
       // stop depending on Squirrel's iconUrl download. Best-effort.
       let installIcon: string | null = null;
       try { installIcon = shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
 
-      // #863: repair leftover pins after Update.exe is done. The Start Menu
-      // entry is written by the app this launches (notification/
+      // The Start Menu entry is written by the app at startup (notification/
       // startMenuEntry.ts, #2971), never by Update.exe.
-      const finishInstall = () => {
-        try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
-        // Auto-launch app after install
-        spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-        process.exit(0);
-      };
       if (hookPlan.shortcutLocations) {
+        // First install: Update.exe makes the Desktop link on its own, and the
+        // hook quits without waiting for it. Squirrel launches the app itself
+        // (`--squirrel-firstrun`; not after a silent install, on purpose), and
+        // the app repairs pinned shortcuts once per version
+        // (postInstallReconcile.ts, #3263). Update.exe stays the hook's only
+        // child here: a longer-lived one could inherit Squirrel's redirected
+        // output and keep Setup.exe from finishing.
         const installShortcutArgs = ['--createShortcut', target, '--shortcut-locations', hookPlan.shortcutLocations];
         if (installIcon) installShortcutArgs.push('--icon', installIcon);
-        spawn(updateExe, installShortcutArgs, { detached: true, windowsHide: true }).on('close', finishInstall);
+        // Nothing reads its output once the hook is gone, so it gets none.
+        spawn(updateExe, installShortcutArgs, { detached: true, stdio: 'ignore', windowsHide: true })
+          .on('error', (err: Error) => console.warn('[Squirrel] Update.exe --createShortcut failed:', err))
+          .unref();
         app.quit();
       } else {
-        finishInstall();
+        // #863: repair leftover pins, then relaunch the app (an existing
+        // profile: an in-app update or a package-manager upgrade). Not when
+        // Squirrel's firstrun relaunches it (the in-app updater), and never
+        // as our own child, which would hold Squirrel's output pipe open
+        // until the app exits (#3280; squirrelRelaunch.ts).
+        try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
+        relaunchThenExit('install');
       }
     } else if (squirrelCmd === '--squirrel-updated') {
       // Refresh the startup entry's exe path (it changes on every update) —
@@ -441,8 +478,8 @@ if (process.platform === 'win32') {
       try { autostart.refreshAutostartEntry(process.execPath); } catch { /* best-effort */ }
 
       // X4: regenerate the CLI shim — it embeds the absolute app-X.Y.Z path,
-      // which changes on every update.
-      try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
+      // which changes on every update. Broadcast detached, as in the install hook.
+      try { cliShim.installCliShim(process.execPath, { detachBroadcast: true }); } catch { /* best-effort */ }
 
       // #863: same shortcut hygiene as the install hook — an update is when
       // versioned shortcut targets (old app-X.Y.Z paths) actually die. The
@@ -456,10 +493,17 @@ if (process.platform === 'win32') {
       // #502: relaunch the updated app — the pre-update instance was taken
       // down above (or quit itself in the in-app "Restart to install" flow),
       // and the single-instance lock dedupes if Squirrel also launches one
-      // itself.
-      spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-      process.exit(0);
+      // itself. Not as our own child: it would hold Squirrel's output pipe
+      // open until the app exits (#3280; squirrelRelaunch.ts).
+      relaunchThenExit('updated');
     } else if (squirrelCmd === '--squirrel-uninstall') {
+      // Squirrel cancels this hook 10 s after starting it (the install hook
+      // gets about 16 s), and a cancelled hook leaves the app folder, the Start
+      // Menu link and a running daemon behind. So every step fits inside
+      // UNINSTALL_HOOK_BUDGET_MS of process start, and one that doesn't is
+      // logged as skipped instead of running into the cancel.
+      const hookTimeLeft = (): number => UNINSTALL_HOOK_BUDGET_MS - process.uptime() * 1000;
+
       // Remove startup registry entry
       try { autostart.disableAutostart(); } catch { /* best-effort */ }
 
@@ -467,34 +511,79 @@ if (process.platform === 'win32') {
       // a first install again (autostart on, Desktop shortcut).
       try { if (hookUserData !== null) markProfileUninstalled(hookUserData); } catch { /* best-effort */ }
 
-      // X4: remove the CLI shim + strip <root>\bin from the user PATH.
-      try { cliShim.uninstallCliShim(process.execPath); } catch { /* best-effort */ }
+      // Take wmux out of the other agents' configs while the install still
+      // stands, so none is left on a dead MCP server or failing hooks. Only this
+      // branch: an update runs --squirrel-updated and --squirrel-obsolete. The
+      // running instances were stopped above, so none can write them back.
+      try {
+        const report = removeAgentIntegrations({
+          home: os.homedir(),
+          startDir: __dirname,
+          // Squirrel runs this hook on the installed copy; its root holds every app-*.
+          copy: { installed: true, roots: [path.dirname(path.dirname(process.execPath))] },
+          deadlineMs: SQUIRREL_INTEGRATIONS_BUDGET_MS,
+        });
+        if (report.skipped) console.log(`[Squirrel] ${report.skipped}`);
+        for (const item of report.items) {
+          if (item.outcome !== 'not-present') console.log(`[Squirrel] ${formatIntegrationItem(item)}`);
+        }
+      } catch { /* best-effort */ }
 
       // The daemon runs from a copy outside the install (daemonRuntimeStage.ts),
       // which Squirrel's uninstall neither stops nor deletes: stop its daemon,
-      // then remove the copies.
+      // then remove the copies. Its exit wait leaves time for the PATH edit.
       try {
         const stageRoot = daemonStageRootIn(getWmuxDir());
-        const found = terminateStagedDaemons(stageRoot);
+        // Listing and kills are bounded too, so a slow query cannot eat the
+        // time the shortcut and PATH steps need.
+        const found = terminateStagedDaemons(stageRoot, Math.max(1_000, hookTimeLeft() - UNINSTALL_PATH_EDIT_RESERVE_MS));
         if (found === null) {
           // Not knowing whether a daemon runs from a copy is not "none": keep them.
           console.warn(`[Squirrel] could not list the staged daemons; ${stageRoot} is left for the next run`);
         } else {
           if (found.length > 0) console.log(`[Squirrel] stopping the staged daemon(s) before uninstall: ${found.join(', ')}`);
-          const { exiting, removed } = removeDaemonRuntimeStagesAfterExit(stageRoot, found, { liveness: checkProcessLiveness });
+          const waitMs = Math.max(0, Math.min(STOPPED_DAEMON_EXIT_WAIT_MS, hookTimeLeft() - UNINSTALL_PATH_EDIT_RESERVE_MS));
+          const { exiting, removed } = removeDaemonRuntimeStagesAfterExit(stageRoot, found, { liveness: checkProcessLiveness, waitMs });
           if (exiting.length > 0) console.warn(`[Squirrel] staged daemon(s) ${exiting.join(', ')} still exiting; ${stageRoot} is left for the next run`);
           else if (!removed) console.warn(`[Squirrel] could not remove ${stageRoot} completely`);
         }
       } catch { /* best-effort */ }
 
-      spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
-        .on('close', () => process.exit(0));
+      // Update.exe removes its own shortcuts. The hook waits for it here and
+      // then exits itself, instead of exiting from the spawned child's 'close'
+      // event: a runner trace showed the hook still alive 7 s after its last
+      // step, until Squirrel cancelled it, and the app folder stayed.
+      try {
+        execFileSync(updateExe, ['--removeShortcut', target], {
+          windowsHide: true,
+          stdio: 'ignore',
+          timeout: Math.max(1_000, hookTimeLeft()),
+        });
+      } catch { /* best-effort */ }
 
       // #2971: the Start Menu entry and the toast activator classes Electron's
       // toast setup wrote are not Update.exe's, so --removeShortcut leaves
       // them. Done while Update.exe works, so it never delays --removeShortcut.
       try { shortcutHygiene.removeToastEntries(process.execPath); } catch { /* best-effort */ }
-      app.quit();
+
+      // X4: remove the CLI shim + strip <root>\bin from the user PATH. The
+      // WM_SETTINGCHANGE broadcast runs detached: it alone can outlast the hook.
+      if (hookTimeLeft() > 0) {
+        try { cliShim.uninstallCliShim(process.execPath, { detachBroadcast: true, timeoutMs: Math.max(1_000, hookTimeLeft()) }); } catch { /* best-effort */ }
+      } else {
+        console.warn('[Squirrel] out of time before the PATH edit; <root>\\bin stays on the user PATH');
+      }
+      console.log(`[Squirrel] uninstall hook done at ${Math.round(process.uptime() * 1000)} ms`);
+      // Ends the process at once. In this hook process neither process.exit()
+      // nor app.exit() returns or emits 'exit': runner probes of both stayed
+      // alive until Squirrel cancelled the hook at 10 s, while a self-kill
+      // ended it at 1.5 s and Squirrel finished cleanly. The steps above write
+      // synchronously, so nothing is left to flush. (In the install hook the
+      // same hang was traced to koffi's DLL detach, which calls
+      // FlushFileBuffers on stdout: on Squirrel's pipe, unread until the hook
+      // exits, that never returns. #3017 stopped main loading koffi at module
+      // load; the self-kill also covers any native module loaded later.)
+      process.kill(process.pid, 'SIGKILL');
     } else if (squirrelCmd === '--squirrel-obsolete') {
       process.exit(0);
     }
@@ -502,7 +591,10 @@ if (process.platform === 'win32') {
 }
 
 // Skip all app initialization during Squirrel installer events.
-// Squirrel handlers above already called process.exit() in their callbacks.
+// Squirrel handlers above end the process themselves: at once, from a
+// callback, or (install and updated, #3280) once the shell answers the
+// relaunch, up to 5 s later. Module-scope code below this block still runs in
+// a hook process during that wait, so keep startup work inside appInit().
 if (!isSquirrelEvent) {
 appInit();
 // All module-level construction is done (PTYManager, PipeServer ctor's sync
@@ -512,6 +604,11 @@ markBoot('module-eval-end');
 }
 
 function appInit(): void {
+
+// The firstrun launch after an in-app update inherits the install waiter's
+// note to the hook (squirrelRelaunch.ts); keep it out of the daemon and the
+// shells it starts.
+delete process.env[FIRSTRUN_RELAUNCH_ENV];
 
 // 인스턴스 격리: dev 빌드(!app.isPackaged)는 packaged 빌드 및 다른 체크아웃의
 // 빌드와 SingletonLock·userData·소켓·~/.wmux를 공유해 충돌한다(둘 다 productName
@@ -592,10 +689,19 @@ if (process.platform === 'win32' && app.isPackaged) {
 // in the app: CDP only needs a loopback socket, unlike other same-user vectors
 // which need filesystem or process control. See docs/SECURITY.md §3.
 dropDebuggingSwitches(app.commandLine);
+const bootConfig = loadConfig();
+// An unusable config.json turns CDP off for the session (failClosedConfig);
+// say that, not "disabled by configuration", which points at a setting.
+const cdpOffForUnusableConfig = process.env.WMUX_DISABLE_CDP !== 'true' && isFailClosedConfig(bootConfig);
 const cdpEnabled =
   process.env.WMUX_DISABLE_CDP !== 'true' &&
-  loadConfig().browser?.cdp?.enabled !== false;
+  bootConfig.browser?.cdp?.enabled !== false;
 let cdpPort = 0;
+// Gives the claim back; replaced below once there is one. Process exit runs
+// it; a Windows session end, which runs no exit handlers, calls it itself, as
+// does the duplicate that loses the single-instance lock (it claims before it
+// finds out).
+let releaseCdpClaim = (): void => undefined;
 if (cdpEnabled) {
   // The port is still drawn at random within the range, to keep it
   // unpredictable to a scanner — but it is CLAIMED rather than merely drawn
@@ -605,6 +711,7 @@ if (cdpEnabled) {
   // tool was dead with nothing anywhere to say why.
   const claim = claimCdpPort();
   cdpPort = claim.port;
+  releaseCdpClaim = releaseCdpPortOnExit(claim, process);
   app.commandLine.appendSwitch('remote-debugging-port', cdpPort.toString());
   // REQUESTED, not enabled. Whether it is enabled is not knowable yet: the
   // switch is a request to Chromium, which has not started. The truth is
@@ -614,6 +721,8 @@ if (cdpEnabled) {
       (claim.claimed ? '' : ' (port not claimed exclusively — every port in the range is held)'),
   );
 
+} else if (cdpOffForUnusableConfig) {
+  console.log('[WinMux] CDP off — config.json could not be used (see the warning above); fix it and restart wmux');
 } else {
   console.log('[WinMux] CDP disabled — browser automation will be unavailable (enable via ~/.wmux/config.json browser.cdp.enabled)');
 }
@@ -654,6 +763,7 @@ const gotLock = app.requestSingleInstanceLock();
 console.log(`[DEBUG] gotLock = ${gotLock}`);
 if (!gotLock) {
   console.log('[DEBUG] failed to get single instance lock, quitting');
+  releaseCdpClaim();
   app.quit();
   return;
 } else {
@@ -736,6 +846,9 @@ void app.whenReady().then(() => { try { warnOnInstallIntegrityGap(); } catch { /
 void app.whenReady().then(() => { void warmLoginShellPath(); });
 // Screen-reader users only: watch for a screen reader (screenReader.ts).
 void app.whenReady().then(() => { startScreenReaderMonitor(); });
+// The account vault loads at once, so its values are redacted from the first
+// bot-facing read on (a pane that survived the restart may still show one).
+void app.whenReady().then(() => { try { appAccountVault(); } catch { /* best-effort */ } });
 // #2971: the installed app writes its one Start Menu entry through Electron's
 // toast setup, so it exists from the first launch rather than the first toast.
 void app.whenReady().then(() => {
@@ -832,7 +945,13 @@ const mcpRegistrar = new McpRegistrar();
 const mcpBrokerSupervisor = new BrokerSupervisor();
 setBrokerIdentitySource(() => mcpBrokerSupervisor.identity);
 const webviewCdpManager = new WebviewCdpManager(0);
-webviewCdpManager.setCdpFailureReason(cdpEnabled ? 'CDP ownership verification pending' : 'CDP disabled by configuration');
+webviewCdpManager.setCdpFailureReason(
+  cdpEnabled
+    ? 'CDP ownership verification pending'
+    : cdpOffForUnusableConfig
+      ? 'CDP is off because config.json could not be used; fix it and restart wmux'
+      : 'CDP disabled by configuration',
+);
 webviewCdpManager.setCdpDisabled(!cdpEnabled);
 // "Agent is driving" marker + Stop / Take over for in-app browser tabs. Activity
 // is the surface's automation lease count; Stop and Take over end the leases in
@@ -1239,6 +1358,7 @@ ipcMain.handle(IPC.DECK_FANOUT_CALLER_SUBMIT, (event, payload: unknown) =>
 registerApprovalsRpc(rpcRouter, () => daemonClient);
 registerDeckRpc(rpcRouter, () => mainWindow);
 registerNotifyRpc(rpcRouter, () => mainWindow);
+registerAppActionRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerCodexRpc(rpcRouter, () => mainWindow, () => daemonClient);
@@ -1301,6 +1421,8 @@ const chromeRegistry = new ChromeLauncherRegistry({
   // main's filtering proxy (and is restarted when that changes).
   protection: (profile) =>
     browserPolicyStore.protectionPlanFor(profile, { paneBindings: () => chromeProfileStore.getPaneBindings() }),
+  // With the target grant flag, a download in a tab no agent holds lands here, as Chrome's own would.
+  downloadsDir: () => app.getPath('downloads'),
 });
 browserPolicyStore.onChange(() => {
   // #2063: every policy change (an Allow included) starts the recently-blocked
@@ -2275,7 +2397,8 @@ app.on('ready', async () => {
   }
 
   // Windows: redo whatever a cancelled Squirrel install hook left undone (CLI
-  // shim, autostart, shortcuts). See postInstallReconcile.ts. `freshInstall`
+  // shim, autostart, shortcuts), and repair pinned shortcuts once per version
+  // (#3263). See postInstallReconcile.ts. `freshInstall`
   // must be read here, before this boot's first session save creates the file
   // and before the profile marker below is written. It is the install hook's
   // own question (installProfile.ts), so both give the same answer.
@@ -2295,6 +2418,8 @@ app.on('ready', async () => {
         firstRun,
         freshInstall,
         desktopDir,
+        userData: app.getPath('userData'),
+        version: app.getVersion(),
       });
     }, 5000);
     reconcileTimer.unref();
@@ -2326,10 +2451,43 @@ app.on('ready', async () => {
       } catch (err) {
         console.warn('[statusline] script refresh failed (non-fatal):', err);
       }
-      try {
-        const br = refreshHookBridgeAtBoot(defaultHooksPaths());
+      // One bridge file serves every Claude folder; it is refreshed when any
+      // of them references it: ~/.claude and the accounts now, the
+      // CLAUDE_CONFIG_DIR folder once the login-shell probe has answered.
+      // Then the one wmux-claude-hook copy, after the bridge (a new copy pins
+      // the new bridge), judged against whichever folder's entries name it:
+      // at once for ~/.claude and the accounts, and again once the probe has
+      // answered only when none of them named it (the env folder may). Neither
+      // writes settings.
+      const logBridge = (br: ReturnType<typeof refreshHookBridgeAtBoot>) => {
         if (br === 'refreshed' || br === 'isolated') logLine('info', 'main', `hook bridge refresh: ${br}`);
         else if (br === 'failed' || br === 'no-source') logLine('warn', 'main', `hook bridge refresh: ${br}`);
+      };
+      try {
+        const base = defaultHooksPaths();
+        const initial = hookTargets({ action: 'install', env: undefined, wmuxDir: getWmuxDir(), base }).targets;
+        const br = refreshHookBridgeAtBootFor(initial);
+        logBridge(br);
+        const logCopy = (nr: Awaited<ReturnType<typeof refreshClaudeNativeAtBootFor>>) => {
+          if (nr === 'refreshed') logLine('info', 'main', `claude hook copy refresh: ${nr}`);
+          else if (nr === 'kept' || nr === 'stale-bridge') logLine('warn', 'main', `claude hook copy refresh: ${nr}`);
+        };
+        const copyNow = refreshClaudeNativeAtBootFor(initial, br).then((nr) => {
+          logCopy(nr);
+          return nr;
+        });
+        // Asked once per boot, in the background (macOS/Linux; Windows reads
+        // its own env): the in-app install awaits the same answer.
+        void Promise.all([claudeConfigDirEnv(), copyNow]).then(async ([env, copied]) => {
+          if (!env) return;
+          const targets = hookTargets({ action: 'install', env, wmuxDir: getWmuxDir(), base }).targets;
+          let bridge = br;
+          if (br === 'not-installed') {
+            bridge = refreshHookBridgeAtBootFor(targets.filter((t) => t.kind === 'env'));
+            logBridge(bridge);
+          }
+          if (copied === 'not-in-use') logCopy(await refreshClaudeNativeAtBootFor(targets, bridge));
+        }).catch((err: unknown) => console.warn('[hooks] bridge or claude hook copy refresh failed (non-fatal):', err));
       } catch (err) {
         console.warn('[hooks] bridge refresh failed (non-fatal):', err);
       }
@@ -3975,6 +4133,10 @@ async function onWindowsSessionEnd(event?: Electron.WindowSessionEndEvent): Prom
   if (sessionEndHandled) return;
   sessionEndHandled = true;
   console.log('[Main] session-end received — flush pending session write + daemon race');
+  // Windows ends the process after this returns, with no exit handlers, and
+  // Fast Startup keeps the uptime, so the next boot could not tell the claim
+  // is stale.
+  releaseCdpClaim();
   try {
     // v2 RCA fix (reboot-reattach): the previous block built a FRESH
     // `new SessionManager()`, `load()`ed the on-disk snapshot, and `save()`d

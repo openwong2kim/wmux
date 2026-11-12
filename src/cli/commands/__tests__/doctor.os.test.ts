@@ -8,8 +8,12 @@ import {
   AV_TAX_PHASE_WARN_MS,
   type DoctorDeps,
   type DaemonPingResult,
+  resolveUserDataDir,
 } from '../doctor';
 import type { RpcResponse } from '../../../shared/rpc';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { EDGE_SIGNED_IN_HINT } from '../edgeProfileSignin';
 
 // ---- fixtures ----------------------------------------------------------------
 
@@ -248,6 +252,60 @@ describe('environment section', () => {
   });
 });
 
+describe('Edge profile account line', () => {
+  const signedInPrefs = readFileSync(join(__dirname, 'fixtures', 'edge-signed-in.Preferences.json'), 'utf8');
+  const profiles: Array<[string, string]> = [['default', '/ud/chrome-agent-profile'], ['work', '/ud/chrome-profiles/work']];
+
+  it('warns, naming the signed-in profile but never the account', async () => {
+    const files: Record<string, string> = { [join('/ud/chrome-agent-profile', 'Default', 'Preferences')]: signedInPrefs };
+    const base = makeDeps();
+    const deps = makeDeps({
+      browserProfiles: () => profiles,
+      readTextFile: vi.fn((p: string) => files[p] ?? base.readTextFile(p)),
+    });
+    const report = await buildDoctorReport(deps);
+    const line = report.environment.lines.find((l) => l.label === 'Edge profile account');
+    expect(line).toEqual({
+      label: 'Edge profile account',
+      value: 'signed in (default)',
+      verdict: 'WARN',
+      hint: "wmux's Edge profile is signed in to a Microsoft account, so agents using it carry that sign-in. " +
+        "If you didn't sign it in yourself, sign it out in edge://settings/profiles.",
+    });
+    expect(line?.hint).toBe(EDGE_SIGNED_IN_HINT);
+    expect(JSON.stringify(report)).not.toMatch(/example\.com|0003BFFD|Test User/);
+  });
+
+  it('finds an account in another profile folder Local State lists', async () => {
+    const files: Record<string, string> = {
+      [join('/ud/chrome-profiles/work', 'Local State')]: JSON.stringify({ profile: { info_cache: { Default: {}, 'Profile 1': {} } } }),
+      [join('/ud/chrome-profiles/work', 'Profile 1', 'Preferences')]: signedInPrefs,
+    };
+    const base = makeDeps();
+    const report = await buildDoctorReport(makeDeps({ browserProfiles: () => profiles, readTextFile: vi.fn((p: string) => files[p] ?? base.readTextFile(p)) }));
+    expect(report.environment.lines.find((l) => l.label === 'Edge profile account')?.value).toBe('signed in (work)');
+  });
+
+  it('adds no line when no wmux profile is signed in', async () => {
+    const report = await buildDoctorReport(makeDeps({ browserProfiles: () => profiles }));
+    expect(report.environment.lines.some((l) => l.label === 'Edge profile account')).toBe(false);
+  });
+
+  it('looks for the profiles of the instance the env snapshot names', async () => {
+    const seen: Array<string | undefined> = [];
+    await buildDoctorReport(makeDeps({ env: { WMUX_DATA_SUFFIX: '-x' }, browserProfiles: (env) => { seen.push(env.WMUX_DATA_SUFFIX); return []; } }));
+    expect(seen).toEqual(['-x']);
+  });
+});
+
+describe('resolveUserDataDir', () => {
+  it('treats an empty APPDATA or XDG_CONFIG_HOME as unset', () => {
+    expect(resolveUserDataDir({ APPDATA: '', WMUX_DATA_SUFFIX: '-a' }, 'win32', '/h')).toBe(join('/h', 'AppData', 'Roaming', 'wmux-a'));
+    expect(resolveUserDataDir({ XDG_CONFIG_HOME: '' }, 'linux', '/h')).toBe(join('/h', '.config', 'wmux'));
+    expect(resolveUserDataDir({ WMUX_DATA_SUFFIX: '-b' }, 'darwin', '/h')).toBe(join('/h', 'Library', 'Application Support', 'wmux-b'));
+  });
+});
+
 // ---- daemon section ----------------------------------------------------------
 
 describe('daemon section', () => {
@@ -440,6 +498,13 @@ describe('logs section', () => {
     expect(read.mock.calls.some((c) => String(c[0]).includes('auth'))).toBe(true);
   });
 
+  it('names the newest hang dump, and says nothing when there is none', async () => {
+    const r = await buildDoctorReport(makeDeps({ newestHangDump: () => ({ path: '/logs/daemon-hang-1-0.txt', writtenAt: 0 }) }));
+    expect(r.logs.lines.find((l) => l.label === 'daemon hang dump')?.value).toBe('/logs/daemon-hang-1-0.txt — 1970-01-01T00:00:00.000Z');
+    const none = await buildDoctorReport(makeDeps({ newestHangDump: () => null }));
+    expect(none.logs.lines.some((l) => l.label === 'daemon hang dump')).toBe(false);
+  });
+
   it('WARNs when today\'s daemon log has error lines (real daemon format)', async () => {
     // Ground truth: the daemon logger writes `[<iso>] [daemon/<level>] <msg>`
     // (src/daemon/index.ts log()), NOT `[error] [daemon] ...`. This fixture
@@ -481,5 +546,76 @@ describe('overall verdict + rendering', () => {
     const text = renderReport(r);
     expect(text).toContain('recovery:');
     expect(text).toContain('[FAIL]');
+  });
+});
+
+describe('buildDoctorReport — claude hook runtime', () => {
+  it('shows the state, with its detail, at the severity setup-hooks gives it', async () => {
+    const cases = [
+      [{ state: 'native', severity: 'ok', detail: 'native: ~/.wmux/hooks/wmux-claude-hook' }, 'OK'],
+      [{ state: 'pin-mismatch', severity: 'warn', detail: 'each run hands over to node' }, 'WARN'],
+      [{ state: 'node-missing', severity: 'warn', detail: 'no node on PATH' }, 'WARN'],
+      [{ state: 'copy-missing', severity: 'fail', detail: 'every hook fails' }, 'FAIL'],
+    ] as const;
+    for (const [hooks, verdict] of cases) {
+      const r = await buildDoctorReport(makeDeps({ hooks: () => ({ ...hooks }) }));
+      expect(r.hooks).toEqual({ verdict, lines: [{ label: 'claude hook runtime', value: hooks.state, verdict, hint: hooks.detail }] });
+      expect(renderReport(r)).toContain(`claude hook runtime: ${hooks.state}`);
+      if (verdict === 'FAIL') expect(r.overall).toBe('FAIL');
+    }
+    expect((await buildDoctorReport(makeDeps())).hooks).toBeUndefined();
+  });
+});
+
+describe('buildDoctorReport — the claude hook self-test', () => {
+  const nativeReport = { state: 'native' as const, severity: 'ok' as const, detail: 'native: /h/wmux-claude-hook', copy: '/h/wmux-claude-hook' };
+  const run = async (result: Awaited<ReturnType<NonNullable<DoctorDeps['hookSelfTest']>>>, report: ReturnType<NonNullable<DoctorDeps['hooks']>> = nativeReport) => {
+    const hookSelfTest = vi.fn(async () => result);
+    const r = await buildDoctorReport(makeDeps({ hooks: () => report, hookSelfTest }));
+    return { r, hookSelfTest, line: r.hooks?.lines.find((l) => l.label === 'claude hook self-test') };
+  };
+
+  it('runs the copy native entries name, once, and passes on this build\'s line', async () => {
+    const { r, hookSelfTest, line } = await run({ outcome: 'pass' });
+    expect(hookSelfTest).toHaveBeenCalledTimes(1);
+    expect(hookSelfTest).toHaveBeenCalledWith('/h/wmux-claude-hook');
+    expect(line).toMatchObject({ value: 'passed', verdict: 'OK' });
+    expect(r.hooks?.verdict).toBe('OK');
+  });
+
+  it('a wrong line or a copy that cannot start: failed, what it said, and --reprobe', async () => {
+    const wrong = await run({ outcome: 'fail', printed: 'usage: wmux-native' });
+    expect(wrong.line).toMatchObject({ value: 'failed', verdict: 'FAIL' });
+    expect(wrong.line?.hint).toContain('"usage: wmux-native"');
+    expect(wrong.line?.hint).toContain('wmux setup-hooks --reprobe');
+    expect(wrong.r.overall).toBe('FAIL');
+    const unstartable = await run({ outcome: 'unstartable', error: 'EACCES: permission denied' });
+    expect(unstartable.line).toMatchObject({ value: 'failed', verdict: 'FAIL' });
+    expect(unstartable.line?.hint).toContain('EACCES: permission denied');
+    expect(unstartable.line?.hint).toContain('wmux setup-hooks --reprobe');
+  });
+
+  it('an answer for another bridge: it runs, and the runs hand over to node', async () => {
+    const { line, r } = await run({ outcome: 'other-pin', printed: `wmux-claude-hook protocol 1 pin ${'a'.repeat(64)}` });
+    expect(line).toMatchObject({ value: 'runs, pins another bridge', verdict: 'WARN' });
+    expect(line?.hint).not.toContain('--reprobe');
+    expect(r.hooks?.verdict).toBe('WARN');
+  });
+
+  it('a timeout reads as no answer, not as failed', async () => {
+    const { line } = await run({ outcome: 'timeout' });
+    expect(line).toMatchObject({ value: 'no answer in 5 s', verdict: 'WARN' });
+    expect(line?.hint).not.toContain('--reprobe');
+  });
+
+  it('runs nothing when no entry is native, or the copy is gone', async () => {
+    for (const report of [
+      { state: 'node' as const, severity: 'ok' as const, detail: 'node' },
+      { ...nativeReport, state: 'copy-missing' as const, severity: 'fail' as const },
+    ]) {
+      const { hookSelfTest, line } = await run({ outcome: 'pass' }, report);
+      expect(hookSelfTest).not.toHaveBeenCalled();
+      expect(line).toBeUndefined();
+    }
   });
 });

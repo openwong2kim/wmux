@@ -10,7 +10,10 @@ import {
   probeCdpEndpointWithRetry,
   claimDir,
   dropDebuggingSwitches,
+  releaseCdpPort,
+  releaseCdpPortOnExit,
 } from '../cdpPort';
+import { readSourceText } from '../../../test-utils/sourceText';
 
 // #1331 — the port used to be a bare draw handed to --remote-debugging-port and
 // announced as enabled. A second wmux instance drawing the same number left
@@ -59,7 +62,7 @@ describe('claimCdpPort', () => {
   it('claims the drawn port and records the pid', () => {
     const claim = claimCdpPort({ dir, pid: 4242, isAlive: alive, firstOffset: 7 });
     expect(claim).toEqual({ port: CDP_PORT_MIN + 7, claimed: true });
-    expect(fs.readFileSync(path.join(dir, `wmux-cdp-${CDP_PORT_MIN + 7}.lock`), 'utf8')).toBe('4242');
+    expect(fs.readFileSync(path.join(dir, `wmux-cdp-${CDP_PORT_MIN + 7}.lock`), 'utf8')).toMatch(/^4242 uptime=\d+$/);
   });
 
   it('steps past a port a LIVE instance holds — the reported collision', () => {
@@ -72,10 +75,10 @@ describe('claimCdpPort', () => {
   it('reclaims a port whose holder is gone', () => {
     claimCdpPort({ dir, pid: 999, isAlive: alive, firstOffset: 3 });
     // The crash case: nothing ran at exit, so the file is still there. The pid
-    // being gone is what releases it — which is why no exit handler is needed.
+    // being gone is what releases it — which is why a crash needs no exit handler.
     const next = claimCdpPort({ dir, pid: 1000, isAlive: dead, firstOffset: 3 });
     expect(next).toEqual({ port: CDP_PORT_MIN + 3, claimed: true });
-    expect(fs.readFileSync(path.join(dir, `wmux-cdp-${CDP_PORT_MIN + 3}.lock`), 'utf8')).toBe('1000');
+    expect(fs.readFileSync(path.join(dir, `wmux-cdp-${CDP_PORT_MIN + 3}.lock`), 'utf8')).toMatch(/^1000 uptime=\d+$/);
   });
 
   it('wraps around the range rather than giving up at the top', () => {
@@ -101,6 +104,148 @@ describe('claimCdpPort', () => {
     fs.writeFileSync(held, 'not-a-pid');
     const claim = claimCdpPort({ dir, pid: 7, isAlive: alive, firstOffset: 5 });
     expect(claim.port).not.toBe(CDP_PORT_MIN + 5);
+  });
+});
+
+describe('claimCdpPort — claims from an earlier boot (#3286)', () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cdp-test-')); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  const lock = (port: number) => path.join(dir, `wmux-cdp-${port}.lock`);
+  const uptime = () => 600;
+
+  it('records the uptime after the pid', () => {
+    const claim = claimCdpPort({ dir, pid: 4242, isAlive: () => true, firstOffset: 2, uptime });
+    expect(fs.readFileSync(lock(claim.port), 'utf8')).toBe('4242 uptime=600');
+  });
+
+  it('reclaims a claim written at a higher uptime, whose pid the OS has handed to another process', () => {
+    // The pid reads as alive, but the uptime says the writer ran in an earlier
+    // boot, so nothing that wrote it still runs.
+    fs.writeFileSync(lock(CDP_PORT_MIN + 4), '7752 uptime=172800');
+    const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 4, uptime });
+    expect(claim).toEqual({ port: CDP_PORT_MIN + 4, claimed: true });
+    expect(fs.readFileSync(lock(CDP_PORT_MIN + 4), 'utf8')).toBe('1234 uptime=600');
+  });
+
+  it('respects a live claim written earlier in this boot', () => {
+    fs.writeFileSync(lock(CDP_PORT_MIN + 6), '4242 uptime=599');
+    const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 6, uptime });
+    expect(claim.port).not.toBe(CDP_PORT_MIN + 6);
+    expect(fs.readFileSync(lock(CDP_PORT_MIN + 6), 'utf8')).toBe('4242 uptime=599');
+  });
+
+  it('compares with a sample taken after the read: a claim written after the walk began is not from an earlier boot', () => {
+    // The walk samples 600; another instance then writes its claim at 650, and
+    // our read of that file comes after. A later sample (700) shows it is from
+    // this boot, so only a live pid decides, and this one is alive.
+    let calls = 0;
+    const ticking = () => (calls++ === 0 ? 600 : 700);
+    fs.writeFileSync(lock(CDP_PORT_MIN + 11), '4242 uptime=650');
+    const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 11, uptime: ticking });
+    expect(claim.port).not.toBe(CDP_PORT_MIN + 11);
+    expect(fs.readFileSync(lock(CDP_PORT_MIN + 11), 'utf8')).toBe('4242 uptime=650');
+    // Our own claim carries the walk's sample.
+    expect(fs.readFileSync(lock(claim.port), 'utf8')).toBe('1234 uptime=600');
+  });
+
+  it('respects a live claim written in the same second', () => {
+    fs.writeFileSync(lock(CDP_PORT_MIN + 7), '4242 uptime=600');
+    const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 7, uptime });
+    expect(claim.port).not.toBe(CDP_PORT_MIN + 7);
+  });
+
+  it('keeps the pid rule alone for an older wmux\'s claim, which has no uptime', () => {
+    fs.writeFileSync(lock(CDP_PORT_MIN + 8), '4242');
+    expect(claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 8, uptime }).port).not.toBe(CDP_PORT_MIN + 8);
+    expect(claimCdpPort({ dir, pid: 1235, isAlive: () => false, firstOffset: 8, uptime }).port).toBe(CDP_PORT_MIN + 8);
+  });
+
+  it('writes a claim an older wmux still reads: parseInt gives the pid', () => {
+    // An older wmux (and control-wmux-lib's claimOwnedBy) read the claim with
+    // Number.parseInt, which stops at the space.
+    const claim = claimCdpPort({ dir, pid: 4242, isAlive: () => true, firstOffset: 9, uptime });
+    expect(Number.parseInt(fs.readFileSync(lock(claim.port), 'utf8').trim(), 10)).toBe(4242);
+  });
+});
+
+describe('releaseCdpPort', () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cdp-test-')); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  const lock = (port: number) => path.join(dir, `wmux-cdp-${port}.lock`);
+
+  it('removes our own claim, so the next launch finds the port free', () => {
+    const claim = claimCdpPort({ dir, pid: 4242, isAlive: () => true, firstOffset: 7 });
+    releaseCdpPort(claim, { dir, pid: 4242 });
+    expect(fs.existsSync(lock(claim.port))).toBe(false);
+  });
+
+  it('leaves a claim that names another pid: the port is theirs now', () => {
+    const claim = claimCdpPort({ dir, pid: 4242, isAlive: () => true, firstOffset: 7 });
+    fs.writeFileSync(lock(claim.port), '5151 uptime=9');
+    releaseCdpPort(claim, { dir, pid: 4242 });
+    expect(fs.readFileSync(lock(claim.port), 'utf8')).toBe('5151 uptime=9');
+  });
+
+  it('touches nothing for a port that was only drawn, not claimed', () => {
+    fs.writeFileSync(lock(CDP_PORT_MIN + 12), '4242');
+    releaseCdpPort({ port: CDP_PORT_MIN + 12, claimed: false }, { dir, pid: 4242 });
+    expect(fs.existsSync(lock(CDP_PORT_MIN + 12))).toBe(true);
+  });
+
+  it('does not throw, or create the directory, when there is nothing to release', () => {
+    const missing = path.join(dir, 'missing');
+    expect(() => releaseCdpPort({ port: CDP_PORT_MIN, claimed: true }, { dir: missing, pid: 1 })).not.toThrow();
+    expect(fs.existsSync(missing)).toBe(false);
+  });
+});
+
+describe('releaseCdpPortOnExit', () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cdp-test-')); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  const lock = (port: number) => path.join(dir, `wmux-cdp-${port}.lock`);
+
+  it('releases on process exit, and only on exit', () => {
+    const events: string[] = [];
+    let exit = (): void => undefined;
+    const claim = claimCdpPort({ dir, pid: 77, isAlive: () => true, firstOffset: 9 });
+    releaseCdpPortOnExit(claim, { on: (event, listener) => { events.push(event); exit = listener; } }, { dir, pid: 77 });
+    expect(events).toEqual(['exit']);
+    expect(fs.existsSync(lock(claim.port))).toBe(true);
+    exit();
+    expect(fs.existsSync(lock(claim.port))).toBe(false);
+  });
+
+  it('returns the release, for an end that runs no exit handlers', () => {
+    const claim = claimCdpPort({ dir, pid: 78, isAlive: () => true, firstOffset: 10 });
+    const release = releaseCdpPortOnExit(claim, { on: () => undefined }, { dir, pid: 78 });
+    release();
+    expect(fs.existsSync(lock(claim.port))).toBe(false);
+  });
+});
+
+describe('index.ts wiring', () => {
+  // index.ts runs appInit() at import, so its wiring is pinned over the source
+  // text (the pattern of squirrelWiring.test.ts).
+  const src = readSourceText(path.join(__dirname, '..', '..', 'index.ts'));
+
+  it('registers the release on process exit right after the claim', () => {
+    expect(src).toMatch(/const claim = claimCdpPort\(\);[^;]*;\s*releaseCdpClaim = releaseCdpPortOnExit\(claim, process\);/);
+  });
+
+  it('the duplicate that loses the single-instance lock releases its claim before quitting', () => {
+    // The claim is taken before the lock is asked for, so the loser holds one.
+    expect(src.indexOf('claimCdpPort()')).toBeLessThan(src.indexOf('requestSingleInstanceLock()'));
+    expect(src).toMatch(/if \(!gotLock\) \{[^}]*releaseCdpClaim\(\);\s*app\.quit\(\);/);
+  });
+
+  it('a Windows session end releases the claim before its first await', () => {
+    const body = src.slice(src.indexOf('async function onWindowsSessionEnd'));
+    const release = body.indexOf('releaseCdpClaim();');
+    expect(release).toBeGreaterThan(0);
+    expect(release).toBeLessThan(body.indexOf('await '));
   });
 });
 

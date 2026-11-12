@@ -74,7 +74,6 @@ function describeMode(mode: Mode): void {
   let profile: TempChromeProfile | null = null;
   let skipReason: string | null = null;
   let chrome: ReturnType<typeof createPhoneChromeDeps>;
-  const realUserProfile = process.env.WMUX_TEST_REAL_HOME;
 
   beforeAll(async () => {
     server = http.createServer(serve);
@@ -82,8 +81,6 @@ function describeMode(mode: Mode): void {
     port = (server.address() as AddressInfo).port;
     profile = tempChromeProfile('wmux-focus-chrome-');
     const dir = profile.dir;
-    const savedProfile = process.env.USERPROFILE;
-    if (process.platform === 'win32' && realUserProfile) process.env.USERPROFILE = realUserProfile;
     try {
       launcher = new ChromeLauncher(dir, {
         portEnvVar: null,
@@ -93,8 +90,6 @@ function describeMode(mode: Mode): void {
       await launcher.ensureRunning();
     } catch (err) {
       skipReason = `Chrome could not be launched here: ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`;
-    } finally {
-      if (process.platform === 'win32') process.env.USERPROFILE = savedProfile;
     }
     const own = launcher;
     chrome = createPhoneChromeDeps({

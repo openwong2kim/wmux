@@ -65,8 +65,10 @@ export interface FirewallFixDeps {
   facts: PathFacts;
   /** Read per action, not once: the data suffix is set after this module loads. */
   scope: () => RuleScope;
-  /** Main's own program (process.execPath): one of the two a rule may name. */
-  selfExe: string;
+  /** Main's own program (process.execPath): one of the two a rule may name.
+   *  Read per action: its long form comes from koffi, which must not load when
+   *  the module does (a Squirrel hook process then hangs on exit, #3017). */
+  selfExe: () => string;
   /** The other: the copy of main's program this build's daemon runs from
    *  (daemonRuntimeStage.ts), or null where the daemon runs the install's. */
   stagedExe?: () => string | null;
@@ -137,7 +139,7 @@ export class FirewallFixer {
   private isSelf(exe: string): boolean {
     const win = (this.deps.platform ?? process.platform) === 'win32';
     const same = (a: string, b: string) => (win ? a.toLowerCase() === b.toLowerCase() : a === b);
-    if (same(exe, this.deps.selfExe)) return true;
+    if (same(exe, this.deps.selfExe())) return true;
     const staged = this.deps.stagedExe?.() ?? null;
     return staged !== null && same(exe, staged);
   }

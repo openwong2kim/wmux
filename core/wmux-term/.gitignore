@@ -9,3 +9,4 @@ node_modules/
 
 # napi CLI가 자동 생성할 수 있는 파일
 *.node
+/vendor/alacritty_terminal/target/

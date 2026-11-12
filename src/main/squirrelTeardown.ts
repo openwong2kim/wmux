@@ -128,7 +128,8 @@ export function parseCimProcessJson(stdout: string): WmuxProcessRow[] {
  * pruned at the daemon (its parent pid is the app), at ourselves and at any
  * concurrent Squirrel hook, so none of those, nor anything under them, is
  * killed. The prune applies whatever the image name: sparing a daemon-shaped
- * process is the safe direction.
+ * process is the safe direction. Inside a daemon's subtree, only a process
+ * with Chromium helpers is taken as an app instance (#3018).
  */
 export function selectAppTreeKillPids(
   rows: readonly WmuxProcessRow[],
@@ -136,10 +137,6 @@ export function selectAppTreeKillPids(
   exeName: string,
 ): { appPids: number[]; descendantPids: number[] } {
   const image = exeName.toLowerCase();
-  const appPids = selectAppInstancePids(
-    rows.filter((row) => (row.name ?? '').toLowerCase() === image),
-    ownPid,
-  );
   const childrenOf = new Map<number, WmuxProcessRow[]>();
   for (const row of rows) {
     const parent = row.parentPid ?? 0;
@@ -148,6 +145,27 @@ export function selectAppTreeKillPids(
     if (siblings) siblings.push(row);
     else childrenOf.set(parent, [row]);
   }
+  // Under a daemon, our image also runs as Node with a plain command line
+  // (the shareReader is `wmux.exe -e <source>`, node-pty forks a console
+  // agent), which classifies as 'app' (#3018). There a process counts as a
+  // GUI instance only when it has Chromium helpers of its own. A stale parent
+  // pid can only pull a row in here, where a GUI is still known by its helpers.
+  const daemonSubtree = new Set<number>();
+  const pending = rows.filter((row) => classifyWmuxProcess(row, ownPid) === 'daemon').map((row) => row.pid);
+  while (pending.length > 0) {
+    const pid = pending.pop() as number;
+    if (daemonSubtree.has(pid)) continue;
+    daemonSubtree.add(pid);
+    for (const child of childrenOf.get(pid) ?? []) pending.push(child.pid);
+  }
+  const ourImage = (row: WmuxProcessRow): boolean => (row.name ?? '').toLowerCase() === image;
+  // A GUI's helpers are our own image; another program may take --type= too.
+  const hasHelpers = (pid: number): boolean =>
+    (childrenOf.get(pid) ?? []).some((child) => ourImage(child) && classifyWmuxProcess(child, ownPid) === 'helper');
+  const appPids = selectAppInstancePids(
+    rows.filter((row) => ourImage(row) && (!daemonSubtree.has(row.pid) || hasHelpers(row.pid))),
+    ownPid,
+  );
   // `seen` doubles as the cycle guard: Windows recycles pids, so a stale
   // parent reference can close a loop.
   const seen = new Set<number>(appPids);
@@ -212,12 +230,13 @@ export function terminateRunningAppInstances(): number[] {
  * so the caller waits on each one; null when the processes could not be
  * listed, which must not be read as "no daemon".
  */
-export function terminateStagedDaemons(stageRoot: string): number[] | null {
-  return terminateSameImage((rows) => selectStagedDaemonPids(rows, process.pid, stageRoot))?.found ?? null;
+export function terminateStagedDaemons(stageRoot: string, timeoutMs = 10_000): number[] | null {
+  return terminateSameImage((rows) => selectStagedDaemonPids(rows, process.pid, stageRoot), timeoutMs)?.found ?? null;
 }
 
-/** null: the processes could not be listed. */
-function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { found: number[]; killed: number[] } | null {
+/** null: the processes could not be listed. `timeoutMs` bounds the listing
+ *  and each kill (the uninstall hook passes what its budget leaves). */
+function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[], timeoutMs = 10_000): { found: number[]; killed: number[] } | null {
   if (process.platform !== 'win32') return { found: [], killed: [] };
   const exeName = path.basename(process.execPath);
   // The name lands inside a CIM filter string — refuse anything that could
@@ -225,7 +244,7 @@ function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { fou
   if (!/^[\w][\w .-]*\.exe$/i.test(exeName) || exeName.includes("'")) return null;
 
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-  const rows = listProcesses(systemRoot, ` -Filter "Name='${exeName}'"`, 'ProcessId,CommandLine');
+  const rows = listProcesses(systemRoot, ` -Filter "Name='${exeName}'"`, 'ProcessId,CommandLine', timeoutMs);
   if (!rows) return null;
 
   const targets = select(rows);
@@ -234,7 +253,7 @@ function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { fou
   for (const pid of targets) {
     try {
       execFileSync(taskkill, ['/PID', String(pid), '/T', '/F'], {
-        timeout: 10_000,
+        timeout: timeoutMs,
         windowsHide: true,
         stdio: 'ignore',
       });
@@ -247,7 +266,7 @@ function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { fou
 }
 
 /** null: the processes could not be listed. */
-function listProcesses(systemRoot: string, filter: string, fields: string): WmuxProcessRow[] | null {
+function listProcesses(systemRoot: string, filter: string, fields: string, timeoutMs = 10_000): WmuxProcessRow[] | null {
   const powershell = path.join(
     systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
   );
@@ -260,7 +279,7 @@ function listProcesses(systemRoot: string, filter: string, fields: string): Wmux
         `Get-CimInstance Win32_Process${filter} -ErrorAction Stop | Select-Object ${fields} | ConvertTo-Json -Compress`,
       ],
       // The full table with command lines can pass the 1 MB default.
-      { encoding: 'utf-8', timeout: 10_000, windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+      { encoding: 'utf-8', timeout: timeoutMs, windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
     );
   } catch {
     // -ErrorAction Stop: a failed query exits nonzero and lands here, while a

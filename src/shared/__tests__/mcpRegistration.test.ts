@@ -17,6 +17,8 @@ import {
   codexWmuxLauncher,
 } from '../mcpRegistration';
 import { upsertCodexHooksToml } from '../configIO';
+import { ClaudeConfigLockedError } from '../claudeConfigLock';
+import { ConfigChangedError } from '../../main/surfaces/safeWrite/snapshot';
 import { getWmuxHomeDir } from '../constants';
 
 let home = '';
@@ -725,5 +727,76 @@ describe('codexWmuxLauncher', () => {
     expect(codexWmuxLauncher(configPath, '/e/index.js')).toEqual({ kind: 'node', script: '/e/index.js' });
     fs.writeFileSync(configPath, '[mcp_servers.wmux]\ncommand = "/Users/u/.wmux/mcp/wmux-native"\nargs = ["mcp-shim"]\n');
     expect(codexWmuxLauncher(configPath, '/e/index.js')).toEqual({ kind: 'native', binary: '/Users/u/.wmux/mcp/wmux-native' });
+  });
+});
+
+describe('registerTarget — a config another program also edits', () => {
+  const claudeJson = (): string => claudeTarget.configPath(home);
+  const lockDir = (): string => `${claudeJson()}.lock`;
+
+  it('registers in a config saved with a byte order mark and keeps the mark', () => {
+    fs.writeFileSync(claudeJson(), '\uFEFF{"theme":"dark"}');
+    const r = registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(r.skipped).toBeNull();
+    const raw = fs.readFileSync(claudeJson(), 'utf8');
+    expect(raw.charCodeAt(0)).toBe(0xfeff);
+    expect(JSON.parse(raw.slice(1)).theme).toBe('dark');
+    expect(readTargetStatus(claudeTarget, home).wmux.registered).toBe(true);
+
+    expect(unregisterTarget(claudeTarget, home).removed).toEqual(['wmux']);
+    expect(fs.readFileSync(claudeJson(), 'utf8').charCodeAt(0)).toBe(0xfeff);
+  });
+
+  it('writes through a symlinked config and leaves the link in place', () => {
+    const real = path.join(home, 'dotfiles', 'claude.json');
+    fs.mkdirSync(path.dirname(real));
+    fs.writeFileSync(real, '{"theme":"dark"}');
+    fs.symlinkSync(real, claudeJson());
+
+    registerTarget(claudeTarget, home, WMUX_SCRIPT);
+
+    expect(fs.lstatSync(claudeJson()).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(fs.readFileSync(real, 'utf8')).mcpServers.wmux.args).toEqual([WMUX_SCRIPT]);
+  });
+
+  it('refuses when the file changes between the read and the write', () => {
+    fs.writeFileSync(claudeJson(), '{"theme":"dark"}');
+    // ownedKeys is touched after the read and before the write.
+    class SavesMeanwhile extends Set<string> {
+      add(key: string): this {
+        fs.writeFileSync(claudeJson(), '{"theme":"light"}');
+        return super.add(key);
+      }
+    }
+    expect(() => registerTarget(claudeTarget, home, WMUX_SCRIPT, new SavesMeanwhile())).toThrow(ConfigChangedError);
+    expect(fs.readFileSync(claudeJson(), 'utf8')).toBe('{"theme":"light"}');
+  });
+
+  it('holds the Claude lock only for the edit', () => {
+    registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    expect(fs.existsSync(lockDir())).toBe(false);
+  });
+
+  it('leaves the file alone and reports a lock another holder keeps', () => {
+    fs.writeFileSync(claudeJson(), '{"theme":"dark"}');
+    fs.mkdirSync(lockDir());
+    expect(() => registerTarget(claudeTarget, home, WMUX_SCRIPT)).toThrow(ClaudeConfigLockedError);
+    expect(fs.readFileSync(claudeJson(), 'utf8')).toBe('{"theme":"dark"}');
+  }, 20_000);
+
+  it('takes over a lock left stale and edits the file', () => {
+    fs.mkdirSync(lockDir());
+    const old = new Date(Date.now() - 20_000);
+    fs.utimesSync(lockDir(), old, old);
+    expect(registerTarget(claudeTarget, home, WMUX_SCRIPT).wrote).toEqual(['wmux']);
+    expect(fs.existsSync(lockDir())).toBe(false);
+  });
+
+  it('does not take the Claude lock for another agent', () => {
+    const config = geminiTarget.configPath(home);
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(config, '{}');
+    fs.mkdirSync(`${config}.lock`);
+    expect(registerTarget(geminiTarget, home, WMUX_SCRIPT).wrote).toEqual(['wmux']);
   });
 });

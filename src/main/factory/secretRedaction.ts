@@ -50,9 +50,10 @@ export function secretForms(value: string): string[] {
 type RedactedEntries = ReadonlyArray<{ name: string; value: string }>;
 
 /** Each source's values: the secret store's, the bots' Claude API key
- *  (claudeApiKey.ts) and the bearers of bot workers' connection gateways
- *  (main/connectors/workerGateway.ts), so none replaces another's. */
-const sources = new Map<'store' | 'claudeApiKey' | 'connectorLeases', RedactedEntries>();
+ *  (claudeApiKey.ts), the bearers of bot workers' connection gateways
+ *  (main/connectors/workerGateway.ts) and the account vault's, so none
+ *  replaces another's. */
+const sources = new Map<'store' | 'claudeApiKey' | 'connectorLeases' | 'accountVault', RedactedEntries>();
 
 /** Replace the set of values matched (the secret store calls this on load,
  *  set and delete). */
@@ -65,6 +66,12 @@ export function setRedactedSecrets(entries: RedactedEntries): void {
  *  bearer is not a stored value, so the store's set never holds it. */
 export function setRedactedConnectorLeases(entries: RedactedEntries): void {
   sources.set('connectorLeases', entries);
+  rebuildNeedles();
+}
+
+/** Replace the account vault's values matched (main/account/accountVault.ts). */
+export function setRedactedAccountVault(entries: RedactedEntries): void {
+  sources.set('accountVault', entries);
   rebuildNeedles();
 }
 

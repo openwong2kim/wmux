@@ -117,7 +117,7 @@ ${WMUX_SKILL_MARKER}
 
 # Fan out — N tasks, N worktrees, one call
 
-\`fanout_start\` turns one job into up to ${FANOUT_MAX_TASKS} parallel tasks. Each task gets its
+\`fanout_start\` turns one job into parallel tasks: as many as the user's tasks-per-call setting allows (8 unless they changed it, at most ${FANOUT_MAX_TASKS}). Each task gets its
 own git worktree on a fresh \`wtask/\` branch, its own workspace with an agent
 pane already launched on the prompt, and its own mission channel.
 

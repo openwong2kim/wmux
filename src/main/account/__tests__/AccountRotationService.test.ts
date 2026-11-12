@@ -99,6 +99,20 @@ describe('AccountRotationService', () => {
     expect(refreshNow).not.toHaveBeenCalled(); // readings were fresh
   });
 
+  it('never picks an account whose folder is missing, also one that goes during the reads', async () => {
+    const gone = new Set(['c']);
+    const s = make([acct('a', 'claude'), acct('b', 'claude'), acct('c', 'claude')], { dirExists: (dir) => !gone.has(path.basename(dir)) });
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'a';
+    usageEntries = [usage('a', 99), usage('b', 50), usage('c', 20)];
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'switch', accountId: 'b', env: { CLAUDE_CONFIG_DIR: '/acc/b' } });
+    // 'c' is there for the pick's first look and gone once the others were read.
+    gone.clear();
+    refreshNow.mockImplementation(async () => { gone.add('c'); });
+    usageEntries = [usage('a', 99), usage('b', 50), usage('c', 20, NOW - 60 * 60_000)];
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'switch', accountId: 'b', env: { CLAUDE_CONFIG_DIR: '/acc/b' } });
+  });
+
   it('refreshes a stale Claude reading before deciding', async () => {
     const s = make([acct('a', 'claude'), acct('b', 'claude')]);
     await s.setEnabled('claude', true);

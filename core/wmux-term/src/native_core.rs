@@ -3,11 +3,11 @@
 
 use crate::native_output::NativeOutputChunk;
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
-use alacritty_terminal::vte::ansi::{Processor, Timeout};
+use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Timeout};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -195,8 +195,32 @@ pub struct NativeTerminal {
     scrollback: u32,
     /// `feed_xterm` state besides the grid.
     feed: XtermFeed,
-    /// Why the ANSI snapshot of this stream cannot match xterm's.
+    /// Why the ANSI snapshot of this stream cannot match xterm's, for good
+    /// (an alternate screen's width change is XtermFeed::alt_reflow).
     refusal: Option<&'static str>,
+    /// The text feed's trailing ESC (advance_indexing).
+    text_held: Vec<u8>,
+}
+
+/// Whether narrowing to `cols` reflows a row below the cursor's paragraph on
+/// this grid: a soft-wrapped row there, or a row with content past the new
+/// width. A widen follows xterm's cursor rule (vendor grow_columns).
+fn reflows_below_cursor<T: GridCell>(grid: &Grid<T>, cols: usize) -> bool {
+    let old = grid.columns();
+    if cols >= old {
+        return false;
+    }
+    let last = Column(old - 1);
+    let lines = grid.screen_lines() as i32;
+    let mut y = grid.cursor.point.line.0;
+    while y + 1 < lines && grid[Line(y)][last].flags().contains(Flags::WRAPLINE) {
+        y += 1;
+    }
+    ((y + 1)..lines).any(|y| {
+        let row = &grid[Line(y)];
+        row[last].flags().contains(Flags::WRAPLINE)
+            || (cols..old).any(|x| !row[Column(x)].is_empty())
+    })
 }
 
 /// The longest unfinished sequence `feed_xterm` holds for its next bytes.
@@ -218,8 +242,12 @@ struct XtermFeed {
     tail: Vec<u8>,
     tail_units: usize,
     tail_overflow: bool,
-    /// DECSTBM margins in effect (MarginTracker).
-    margins: bool,
+    /// DECSTBM margins in effect on the main and the alternate screen, kept
+    /// per screen as xterm does (MarginTracker).
+    main_margins: bool,
+    alt_margins: bool,
+    /// xterm's alternate screen is active (?47, ?1047, ?1049).
+    alt_screen: bool,
     /// DECTCEM off (CursorVisibilityTracker).
     cursor_hidden: bool,
     /// SGR-pixels mouse encoding, ?1016 (SgrMouseEncodingTracker). Alacritty
@@ -238,6 +266,13 @@ struct XtermFeed {
     shifted: bool,
     /// A control Alacritty parses differently from xterm.
     divergent: bool,
+    /// The alternate screen changed width with a soft-wrapped row on it
+    /// (NativeTerminal::resize). Unlike the other refusals this one ends:
+    /// leaving that screen discards the rows that differ.
+    alt_reflow: bool,
+    /// The sequence just tracked resets 47, 1047 or 1049, or is RIS: it may
+    /// leave the alternate screen, whatever this tracker thinks is shown.
+    may_leave_alt: bool,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -317,7 +352,8 @@ impl XtermFeed {
         }
     }
 
-    fn track(&mut self, sequence: &[u8]) {
+    /// `rows`: the screen height the sequence is parsed at.
+    fn track(&mut self, sequence: &[u8], rows: usize) {
         // C0 controls inside a sequence execute and are not part of it.
         let filtered: Vec<u8>;
         let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
@@ -331,10 +367,14 @@ impl XtermFeed {
             sequence
         };
         let numeric = |params: &[u8]| params.iter().all(|&b| b.is_ascii_digit() || b == b';');
-        if sequence == b"\x1bc" || sequence == b"\x1b[!p" {
-            self.margins = false;
+        if sequence == b"\x1b[!p" {
+            self.set_margins(false);
         }
+        self.may_leave_alt = sequence == b"\x1bc";
         if sequence == b"\x1bc" {
+            self.main_margins = false;
+            self.alt_margins = false;
+            self.alt_screen = false;
             self.sgr_pixels = false;
             self.sgr_mouse = false;
             self.mouse = 0;
@@ -347,7 +387,7 @@ impl XtermFeed {
             .and_then(|s| s.strip_suffix(b"r"))
         {
             if numeric(params) {
-                self.margins = params.iter().any(u8::is_ascii_digit);
+                self.scroll_region(params, rows);
             }
         }
         if let Some((&last, params)) = sequence
@@ -369,6 +409,23 @@ impl XtermFeed {
                         Some(1006) => self.sgr_mouse = set,
                         Some(protocol @ (9 | 1000 | 1002 | 1003)) => {
                             self.mouse = if set { protocol } else { 0 };
+                        }
+                        Some(47 | 1047 | 1049) => {
+                            self.may_leave_alt |= !set;
+                            if set && !self.alt_screen {
+                                // xterm's alternate screen starts with its own
+                                // full region; Alacritty keeps one region, so
+                                // the alternate screen inherits the main one's.
+                                self.divergent |= self.main_margins;
+                            }
+                            if !set && self.alt_screen {
+                                // xterm clears the alternate screen's region on
+                                // leaving it; Alacritty keeps one region for
+                                // both screens, so the main screen inherits it.
+                                self.divergent |= self.alt_margins;
+                                self.alt_margins = false;
+                            }
+                            self.alt_screen = set;
                         }
                         _ => {}
                     }
@@ -417,6 +474,12 @@ impl XtermFeed {
                 erase_like_xterm(parser, term, sequence[2] == b'2');
                 from = at + len;
                 next = Some(at + len);
+            } else if sequence == b"\x1bD" || sequence == b"\x1bE" {
+                // IND and NEL keep the paragraph, as xterm's `index` does.
+                parser.advance(term, &data[from..at]);
+                index_like_xterm(parser, term, sequence);
+                from = at + len;
+                next = Some(at + len);
             } else if is_restricting(sequence) {
                 // xterm's ICH, DCH and ECH first restrict the cursor, which
                 // drops a pending wrap; Alacritty keeps it.
@@ -441,14 +504,81 @@ impl XtermFeed {
                 // Alacritty repeats whatever was printed last.
                 self.divergent |=
                     crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
-                self.track(sequence);
+                // An escape cut short by DEL or a byte past ASCII: both
+                // parsers ignore DEL there, so `ESC DEL D` is still IND,
+                // which this scan would not see as one.
+                self.divergent |= sequence.get(1) != Some(&b'[')
+                    && !(0x30..=0x7e).contains(&sequence[len - 1])
+                    && data.get(at + len).is_some_and(|&b| b == 0x7f || b >= 0x80);
+                self.track(sequence, term.screen_lines());
                 next = Some(at + len);
+                if self.alt_reflow && self.may_leave_alt {
+                    // Leaving the alternate screen, or a reset there, drops
+                    // its rows on both (xterm at once, Alacritty on the next
+                    // entry), and with them the wrap flags a width change
+                    // lost. Decided by Alacritty's own mode at this byte, not
+                    // this tracker's: past 32 parameters, for one, they
+                    // disagree on whether a leave happened.
+                    parser.advance(term, &data[from..at + len]);
+                    from = at + len;
+                    let synchronized = parser.sync_timeout().pending_timeout();
+                    if synchronized {
+                        parser.stop_sync(term);
+                    }
+                    self.alt_reflow = term.mode().contains(TermMode::ALT_SCREEN);
+                    if synchronized {
+                        parser.advance(term, b"\x1b[?2026h");
+                    }
+                }
             }
             printed = false;
         }
         // A held sequence or an unfinished string ends the stream so far.
         self.printed = printed && self.held.is_empty() && !self.in_string;
         parser.advance(term, &data[from..]);
+    }
+
+    /// DECSTBM as xterm's setScrollRegion reads it (MarginTracker): top
+    /// defaults to 1, bottom to the rows, 0 is the default, a bottom past the
+    /// screen is the screen, and a region whose bottom is not below its top
+    /// is ignored. Only a region narrower than the screen is active.
+    fn scroll_region(&mut self, params: &[u8], rows: usize) {
+        let mut values = params.split(|&b| b == b';').map(|digits| {
+            digits.iter().fold(0usize, |n, &d| {
+                n.saturating_mul(10).saturating_add(usize::from(d - b'0'))
+            })
+        });
+        let first = values.next().unwrap_or(0);
+        let second = values.next().unwrap_or(0);
+        let top = first.max(1);
+        let bottom = if second == 0 || second > rows {
+            rows
+        } else {
+            second
+        };
+        if bottom > top {
+            self.set_margins(top != 1 || bottom != rows);
+        } else {
+            // xterm ignores it; Alacritty keeps a bottom past the screen
+            // (saturated to u16) and applies any top above it.
+            let cap = usize::from(u16::MAX);
+            self.divergent |= second > rows && top.min(cap) < second.min(cap);
+        }
+    }
+
+    /// Set the active screen's margins.
+    fn set_margins(&mut self, narrowed: bool) {
+        if self.alt_screen {
+            self.alt_margins = narrowed;
+        } else {
+            self.main_margins = narrowed;
+        }
+    }
+
+    /// A region narrower than the screen on either screen: the snapshot
+    /// restores neither.
+    fn margins(&self) -> bool {
+        self.main_margins || self.alt_margins
     }
 
     /// The bytes that leave a replaying parser where this one is: the
@@ -464,9 +594,83 @@ impl XtermFeed {
     }
 }
 
+/// IND or NEL (`sequence`, C0 controls or DEL inside included) as xterm's
+/// `index`.
+fn index_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, sequence: &[u8]) {
+    // vte runs IND and NEL through the line feed, which ends the paragraph of
+    // the row it enters as xterm's `lineFeed` does (vendor `line_down`);
+    // xterm's `index` keeps it. Put back the flag it cleared, which it does
+    // only when the cursor moved down one row.
+    let synchronized = parser.sync_timeout().pending_timeout();
+    if synchronized {
+        parser.stop_sync(term);
+    }
+    let line = term.grid().cursor.point.line;
+    let last = term.grid().last_column();
+    let wrapped = term.grid()[line][last].flags.contains(Flags::WRAPLINE);
+    parser.advance(term, sequence);
+    if wrapped && term.grid().cursor.point.line == line + 1 {
+        term.grid_mut()[line][last].flags.insert(Flags::WRAPLINE);
+    }
+    if synchronized {
+        parser.advance(term, b"\x1b[?2026h");
+    }
+}
+
+/// `parser.advance` for a stream no XtermFeed scans (the text snapshot), with
+/// IND and NEL as xterm's `index`. Both parsers execute C0 controls and ignore
+/// DEL between the ESC and its final byte. An ESC still waiting for that byte
+/// at the end of `bytes` waits in `held` with what follows it, up to
+/// MAX_HELD bytes as XtermFeed holds; past that it goes to the parser as is.
+fn advance_indexing(
+    parser: &mut Processor,
+    term: &mut Term<VoidListener>,
+    held: &mut Vec<u8>,
+    bytes: &[u8],
+) {
+    let joined;
+    let bytes = if held.is_empty() {
+        bytes
+    } else {
+        let mut data = std::mem::take(held);
+        data.extend_from_slice(bytes);
+        joined = data;
+        &joined[..]
+    };
+    let mut from = 0;
+    let mut at = 0;
+    while let Some(found) = bytes[at..].iter().position(|&b| b == 0x1b) {
+        let esc = at + found;
+        let mut end = esc + 1;
+        while bytes
+            .get(end)
+            .is_some_and(|&b| (b < 0x20 && !matches!(b, 0x18 | 0x1a | 0x1b)) || b == 0x7f)
+        {
+            end += 1;
+        }
+        match bytes.get(end) {
+            None if bytes.len() - esc <= MAX_HELD => {
+                parser.advance(term, &bytes[from..esc]);
+                held.extend_from_slice(&bytes[esc..]);
+                return;
+            }
+            None => break,
+            Some(b'D' | b'E') => {
+                parser.advance(term, &bytes[from..esc]);
+                index_like_xterm(parser, term, &bytes[esc..=end]);
+                from = end + 1;
+                at = from;
+            }
+            Some(_) => at = esc + 1,
+        }
+    }
+    parser.advance(term, &bytes[from..]);
+}
+
 /// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
-/// screen scrolls the screen into history, and its ED 1 skips the top row
-/// when the cursor is on the second. The renderer is xterm.
+/// screen scrolls the screen into history (its ED 1 used to skip the top row
+/// from the second; the vendored handler now matches xterm). The renderer is
+/// xterm.
 fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: bool) {
     // A real ESC [ ends any string or sequence in progress; Alacritty
     // ignores DECSED, so this ends it the same way and does nothing else.
@@ -477,17 +681,18 @@ fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: 
     if synchronized {
         parser.stop_sync(term);
     }
-    let grid = term.grid_mut();
     if all {
-        grid.reset_region(..);
+        // Whole lines over their physical width: an alternate-screen row
+        // keeps cells past a narrower width, and xterm erases those too.
+        term.grid_mut().reset_region_keep_width(..);
+        // No row is a continuation any more (xterm's isWrapped): the reset
+        // rows lost their wraps; the top row's comes from history.
+        term.end_wrap_into(Line(0));
     } else {
-        let cursor = grid.cursor.point;
-        grid.reset_region(..cursor.line);
-        let bg = grid.cursor.template.bg;
-        let end = (cursor.column.0 + 1).min(grid.columns());
-        for cell in &mut grid[cursor.line][..Column(end)] {
-            *cell = bg.into();
-        }
+        // The vendored ED 1 is xterm's: the rows above reset over their
+        // physical width, the cursor's row erased up to it, its wraps and
+        // empty run kept as xterm keeps them.
+        term.clear_screen(ClearMode::Above);
     }
     if synchronized {
         parser.advance(term, b"\x1b[?2026h");
@@ -515,6 +720,7 @@ impl NativeTerminal {
             scrollback,
             feed: XtermFeed::default(),
             refusal: None,
+            text_held: Vec::new(),
         })
     }
 
@@ -526,15 +732,16 @@ impl NativeTerminal {
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
         // Parser retains incomplete UTF-8 / escape state across feeds.
         // VoidListener intentionally discards all PTY replies and clipboard events.
-        self.parser.advance(term, &bytes);
+        advance_indexing(&mut self.parser, term, &mut self.text_held, &bytes);
         Ok(())
     }
 
     /// `feed` for an ANSI snapshot replayed by xterm: ED 1 and ED 2 erase as
     /// xterm does (see erase_like_xterm). Returns whether the snapshot is
-    /// already refused, so the caller can stop parsing: a control Alacritty
+    /// refused for good, so the caller can stop parsing: a control Alacritty
     /// parses differently, or a history past this terminal's cap when the
-    /// request asked for more.
+    /// request asked for more. An alternate screen's width change is not
+    /// reported: leaving that screen later in the stream lifts it.
     #[napi(catch_unwind)]
     pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool> {
         let term = self
@@ -568,7 +775,7 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        self.parser.advance(term, bytes);
+        advance_indexing(&mut self.parser, term, &mut self.text_held, bytes);
         Ok(())
     }
 
@@ -584,33 +791,53 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // Rows a narrower reflow adds above the cursor go into Alacritty's
-        // history even with room below; xterm moves the cursor down instead.
-        let before = |term: &Term<VoidListener>| {
-            [term.grid(), term.inactive_grid()].map(|grid| {
-                let room = grid.cursor.point.line.0 + 1 < grid.screen_lines() as i32;
-                (grid.history_size(), room)
-            })
-        };
         // vte holds bytes back inside a synchronized update; xterm parsed them
         // at the old size. Apply them first, then re-enter the update.
         let synchronized = self.parser.sync_timeout().pending_timeout();
         if synchronized {
             self.parser.stop_sync(term);
         }
-        let start = before(term);
+        // xterm never reflows or cuts the alternate screen: its rows keep
+        // their cells and wrap flags across a resize. The vendored grid keeps
+        // a row's cells past a narrower width and shows them again when it
+        // widens, as xterm's does (vendor/alacritty_terminal WMUX-PATCH.md),
+        // but a width change with a soft-wrapped row on screen loses the
+        // flags, until the screen is left.
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            let grid = term.grid();
+            let old = grid.columns();
+            if old != cols as usize
+                && (0..grid.screen_lines() as i32).any(|y| {
+                    grid[Line(y)][Column(old - 1)]
+                        .flags
+                        .contains(Flags::WRAPLINE)
+                })
+            {
+                self.feed.alt_reflow = true;
+            }
+        }
+        // Narrower, a paragraph below the cursor's that reflows: xterm moves
+        // its cursor row by the rows that adds as if they were above it and
+        // clips a different row than Alacritty does. (A widen follows xterm's
+        // rule in the vendored grow_columns.)
+        let primary = if term.mode().contains(TermMode::ALT_SCREEN) {
+            term.inactive_grid()
+        } else {
+            term.grid()
+        };
+        if reflows_below_cursor(primary, cols as usize) {
+            self.refusal.get_or_insert(
+                "unsupported-reflow: a paragraph below the cursor reflows, which moves xterm's cursor off its row",
+            );
+        }
+        // Both terminals reset the margins of both screens on a size change.
+        if term.columns() != size.columns() || term.screen_lines() != size.screen_lines() {
+            self.feed.main_margins = false;
+            self.feed.alt_margins = false;
+        }
         term.resize(size);
-        let end = before(term);
         if synchronized {
             self.parser.advance(term, b"\x1b[?2026h");
-        }
-        if start
-            .iter()
-            .zip(end.iter())
-            .any(|(&(history, room), &(after, _))| room && after > history)
-        {
-            self.refusal
-                .get_or_insert("unsupported-reflow: a resize scrolled rows xterm keeps on screen");
         }
         Ok(())
     }
@@ -621,6 +848,8 @@ impl NativeTerminal {
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        let held = std::mem::take(&mut self.text_held);
+        self.parser.advance(term, &held);
         // A text read must include bytes in an unfinished synchronized update.
         // This finalizes the batch; this API does not promise ANSI replay state.
         self.parser.stop_sync(term);
@@ -699,6 +928,11 @@ impl NativeTerminal {
         if let Some(refusal) = self.refusal {
             return Err(Error::from_reason(refusal));
         }
+        if self.feed.alt_reflow {
+            return Err(Error::from_reason(
+                "unsupported-reflow: the alternate screen changed width, which xterm leaves uncut",
+            ));
+        }
         if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
             && [term.grid(), term.inactive_grid()]
                 .iter()
@@ -709,7 +943,7 @@ impl NativeTerminal {
             ));
         }
         // xterm's SerializeAddon drops margins: both paths replay raw then.
-        if self.feed.margins {
+        if self.feed.margins() {
             return Err(Error::from_reason("margins"));
         }
         let tail = self.feed.pending_tail().map_err(Error::from_reason)?;
@@ -1069,6 +1303,8 @@ pub struct NativeRing {
     write_pos: usize,
     total_written: u64,
     geometry: Vec<GeometryMark>,
+    /// The newest mark is provisional: the next mark replaces it.
+    geometry_tail_provisional: bool,
 }
 
 #[napi]
@@ -1085,6 +1321,7 @@ impl NativeRing {
             write_pos: 0,
             total_written: 0,
             geometry: Vec::new(),
+            geometry_tail_provisional: false,
         })
     }
 
@@ -1138,29 +1375,62 @@ impl NativeRing {
         Ok(())
     }
 
+    /// The same rules as RingBuffer.noteGeometry (TS): an applied mark is
+    /// kept even with no bytes at it; a provisional one (`applied` false) is
+    /// replaced by the next mark unless it is the window's only size; an
+    /// applied repeat of a provisional tail makes it applied; a run of marks
+    /// with no bytes between them keeps the one with the fewest rows and the
+    /// newest. `applied` defaults to true.
     #[napi(catch_unwind)]
-    pub fn note_geometry(&mut self, cols: u32, rows: u32) -> Result<()> {
+    pub fn note_geometry(&mut self, cols: u32, rows: u32, applied: Option<bool>) -> Result<()> {
         if self.capacity == 0 {
             return Err(Error::from_reason("Ring disposed"));
         }
         if cols == 0 || rows == 0 {
             return Ok(());
         }
+        let applied = applied.unwrap_or(true);
         if let Some(last) = self.geometry.last() {
             if last.cols == cols && last.rows == rows {
+                if applied {
+                    self.geometry_tail_provisional = false;
+                }
                 return Ok(());
             }
-            if last.at == self.total_written {
+        }
+        if self.geometry_tail_provisional {
+            self.prune_geometry();
+            if self.geometry.len() > 1 {
                 self.geometry.pop();
+                self.geometry_tail_provisional = false;
+                if let Some(last) = self.geometry.last() {
+                    if last.cols == cols && last.rows == rows {
+                        return Ok(());
+                    }
+                }
             }
+            self.geometry_tail_provisional = false;
         }
         self.geometry.push(GeometryMark {
             at: self.total_written,
             cols,
             rows,
         });
+        self.geometry_tail_provisional = !applied;
+        self.compact_geometry_run();
         self.prune_geometry();
         Ok(())
+    }
+
+    /// A viewer's replay is out: a provisional newest mark is kept.
+    #[napi(catch_unwind)]
+    pub fn settle_geometry(&mut self) {
+        self.geometry_tail_provisional = false;
+    }
+
+    #[napi(getter, catch_unwind)]
+    pub fn geometry_tail_provisional(&self) -> bool {
+        self.geometry_tail_provisional && !self.geometry.is_empty()
     }
 
     #[napi(getter, catch_unwind)]
@@ -1203,6 +1473,7 @@ impl NativeRing {
         self.length = 0;
         self.write_pos = 0;
         self.geometry.clear();
+        self.geometry_tail_provisional = false;
     }
 }
 
@@ -1262,6 +1533,31 @@ impl NativeRing {
         result
     }
 
+    /// A run of marks at the newest mark's offset keeps the one with the
+    /// fewest rows and the newest (RingBuffer.compactGeometryRun).
+    fn compact_geometry_run(&mut self) {
+        let Some(at) = self.geometry.last().map(|m| m.at) else {
+            return;
+        };
+        let end = self.geometry.len() - 1;
+        let mut start = end;
+        while start > 0 && self.geometry[start - 1].at == at {
+            start -= 1;
+        }
+        if end - start < 2 {
+            return;
+        }
+        let mut keep = start;
+        for i in start + 1..end {
+            let (m, k) = (&self.geometry[i], &self.geometry[keep]);
+            if m.rows < k.rows || (m.rows == k.rows && m.cols < k.cols) {
+                keep = i;
+            }
+        }
+        let kept = self.geometry[keep].clone();
+        self.geometry.splice(start..end, [kept]);
+    }
+
     fn prune_geometry(&mut self) {
         let start = self.total_written - self.length as u64;
         let keep = self
@@ -1272,8 +1568,11 @@ impl NativeRing {
         if keep > 0 {
             self.geometry.drain(..keep);
         }
+        // Past the cap, the oldest marks after the first go: the first is the
+        // size the window's first bytes were written at.
         if self.geometry.len() > 256 {
-            self.geometry.drain(..self.geometry.len() - 256);
+            let excess = self.geometry.len() - 256;
+            self.geometry.drain(1..1 + excess);
         }
     }
 }
@@ -1306,7 +1605,7 @@ pub(crate) fn fed_for_test(
 mod tests {
     use super::{Size, XtermFeed};
     use alacritty_terminal::event::VoidListener;
-    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::{Processor, Timeout};
@@ -1372,11 +1671,11 @@ mod tests {
 
     #[test]
     fn a_split_divergent_control_is_seen() {
-        let (_, _, feed) = feed_with(&["hello\x1b(", "0q"]);
+        let (_, _, feed) = feed_with(&["hello\x1b(", "A#"]);
         assert!(feed.divergent);
-        let (_, _, feed) = feed_with(&["\x1b]0;\x1b(0 in a title\x07"]);
+        let (_, _, feed) = feed_with(&["\x1b]0;\x1b(A in a title\x07"]);
         assert!(feed.divergent, "ESC ends the string, then designates");
-        let (_, _, feed) = feed_with(&["\x1b]0;(0 in a title\x07ok"]);
+        let (_, _, feed) = feed_with(&["\x1b]0;(A in a title\x07ok"]);
         assert!(!feed.divergent);
     }
 
@@ -1452,13 +1751,295 @@ mod tests {
     fn margins_and_cursor_follow_the_stream_trackers() {
         let state = |chunks: &[&str]| {
             let (_, _, feed) = feed_with(chunks);
-            (feed.margins, feed.cursor_hidden)
+            (feed.margins(), feed.cursor_hidden)
         };
         assert_eq!(state(&["\x1b[2;4r"]), (true, false));
         assert_eq!(state(&["\x1b[2;4r\x1b[r"]), (false, false));
         assert_eq!(state(&["\x1b[2;4r\x1bc"]), (false, false));
+        // xterm's setScrollRegion over 3 rows: 0 reads as the default, a
+        // bottom past the screen is the screen, an empty region is ignored.
+        for reset in [
+            "\x1b[0;0r",
+            "\x1b[0r",
+            "\x1b[1r",
+            "\x1b[;3r",
+            "\x1b[1;9r",
+            "\x1b[1;3;2r",
+        ] {
+            assert_eq!(state(&["\x1b[2;4r", reset]), (false, false), "{reset:?}");
+        }
+        for region in ["\x1b[2r", "\x1b[1;2r", "\x1b[0;2r"] {
+            assert_eq!(state(&[region]), (true, false), "{region:?}");
+        }
+        assert_eq!(state(&["\x1b[3;2r"]), (false, false));
+        assert_eq!(state(&["\x1b[2;4r\x1b[3;2r"]), (true, false));
         assert_eq!(state(&["\x1b[?1;25l"]), (false, true));
         assert_eq!(state(&["\x1b[?25l\x1b[?25h"]), (false, false));
+    }
+
+    #[test]
+    fn margins_follow_xterm_per_screen() {
+        let margins = |chunks: &[&str]| feed_with(chunks).2.margins();
+        // The main screen's region outlives an alternate screen that resets its own.
+        assert!(margins(&["\x1b[2;3r\x1b[?1049h\x1b[r\x1b[?1049l"]));
+        assert!(margins(&["\x1b[2;3r\x1b[?1049h\x1b[r"]));
+        // The alternate screen's region goes with it.
+        assert!(margins(&["\x1b[?1049h\x1b[2;3r"]));
+        assert!(!margins(&["\x1b[?1049h\x1b[2;3r", "\x1b[?1049l"]));
+        assert!(!margins(&["\x1b[2;3r\x1b[?1049h\x1b[1;2r\x1bc\x1b[?1049l"]));
+    }
+
+    #[test]
+    fn alacritty_keeps_the_alternate_region_on_the_main_screen() {
+        // xterm leaves the main screen's full region in place; Alacritty has
+        // one region, so main-screen output keeps scrolling inside rows 1-2.
+        let chunks = ["\x1b[?1049h\x1b[1;2r\x1b[?1049l\x1b[Ha\r\nb\r\nc\r\nd"];
+        let (term, _, feed) = feed_with(&chunks);
+        assert_eq!(
+            (row(&term, 0), row(&term, 1), row(&term, 2)),
+            ("c".into(), "d".into(), String::new())
+        );
+        assert!(feed.divergent);
+    }
+
+    #[test]
+    fn alacritty_carries_the_main_region_into_the_alternate_screen() {
+        // xterm's alternate screen scrolls in full and ends with a, b, c;
+        // Alacritty keeps rows 1-2 as the region, so LF on row 3 stays there.
+        let chunks = ["\x1b[1;2r\x1b[?1049h\x1b[3;1Ha\r\nb\r\nc"];
+        let (term, _, feed) = feed_with(&chunks);
+        assert_eq!(
+            (row(&term, 0), row(&term, 1), row(&term, 2)),
+            (String::new(), String::new(), "c".into())
+        );
+        assert!(feed.divergent);
+        // A region the alternate screen sets for itself is no divergence.
+        assert!(!feed_with(&["\x1b[?1049h\x1b[1;2r"]).2.divergent);
+        // Nor is the full region it starts with when the main screen has one.
+        assert!(!feed_with(&["\x1b[1;3r\x1b[?1049h"]).2.divergent);
+    }
+
+    #[test]
+    fn a_region_only_alacritty_applies_is_divergent() {
+        let divergent = |chunks: &[&str]| feed_with(chunks).2.divergent;
+        // Top at or past the last of 3 rows: xterm ignores it, Alacritty
+        // keeps the bottom it was given and homes the cursor.
+        assert!(divergent(&["ab\x1b[3;9r"]));
+        assert!(divergent(&["ab\x1b[4;9r"]));
+        assert!(!divergent(&["ab\x1b[3;3r"]), "both ignore it");
+        assert!(!divergent(&["ab\x1b[2;9r"]), "both apply it");
+    }
+
+    #[test]
+    fn leaving_the_alternate_screen_lifts_its_width_change() {
+        // As NativeTerminal::resize leaves it after a width change there.
+        let lifted = |chunks: &[&str]| {
+            let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+            let mut parser: Processor = Processor::new();
+            let mut feed = XtermFeed::default();
+            feed.feed(&mut parser, &mut term, b"\x1b[?1049h");
+            feed.alt_reflow = true;
+            for chunk in chunks {
+                feed.feed(&mut parser, &mut term, chunk.as_bytes());
+            }
+            !feed.alt_reflow
+        };
+        assert!(lifted(&["x\x1b[?1049l"]));
+        assert!(lifted(&["\x1b[?10", "49l"]), "split across chunks");
+        // Left and entered again in one chunk: the new screen is a fresh one.
+        assert!(lifted(&["\x1b[?1049l$ less\r\n\x1b[?1049hpage"]));
+        assert!(!lifted(&["more output"]));
+        assert!(!lifted(&["\x1b[?1049h"]), "entering again while on it");
+        assert!(lifted(&["\x1bc"]), "a reset leaves it too");
+        assert!(
+            lifted(&["\x1b[?2026h\x1b[?1049l"]),
+            "inside a synchronized update"
+        );
+        // Past 32 parameters Alacritty (and xterm) drop the rest: no leave,
+        // though this tracker reads every one.
+        let overflow = format!("\x1b[?{}1049l", "1;".repeat(32));
+        assert!(!lifted(&[overflow.as_str()]));
+        assert!(
+            lifted(&[overflow.as_str(), "\x1b[?1049l"]),
+            "a real leave after it"
+        );
+    }
+
+    #[test]
+    fn erases_and_cell_edits_keep_or_end_a_paragraph_as_xterm_s() {
+        use alacritty_terminal::term::cell::Flags;
+        // On 10 columns: `para` wraps row 0 into row 1; `para3` wraps rows 0
+        // and 1; `history` also wraps the history row into screen row 0.
+        let para = "xxxxxxxxxxxxxxx\x1b[1;1H";
+        let para3 = "xxxxxxxxxxxxxxxxxxxxxxxxx\x1b[1;1H";
+        let history = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        let wraps = |term: &Term<VoidListener>, line: i32| {
+            term.grid()[Line(line)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        };
+        // xterm keeps the wrap as the next row's isWrapped: no EL, ECH, ICH,
+        // DCH or print touches it, also from a pending wrap.
+        for edit in [
+            "\x1b[1;5H\x1b[K",
+            "\x1b[1;5H\x1b[44m\x1b[K",
+            "\x1b[1;10H\x1b[1K",
+            "\x1b[1;10HX\x1b[1K",
+            "\x1b[2K",
+            "\x1b[1;10HX\x1b[K",
+            "\x1b[1;8H\x1b[5X",
+            "\x1b[10X",
+            "\x1b[1;3H\x1b[2@",
+            "\x1b[1;3H\x1b[2P",
+            "\x1b[1;10HX\x1b[P",
+            "\x1b[4h\x1b[1;3HAB\x1b[4l",
+        ] {
+            assert!(wraps(&feed(&[para, edit]), 0), "{edit:?}");
+        }
+        let term = feed(&[para, "\x1b[1;10HZ"]);
+        assert!(wraps(&term, 0) && term.grid()[Line(0)][Column(9)].c == 'Z');
+        // EL 2, or EL 0 from column 0, ends the row's own: the row above no
+        // longer wraps into it. The row still wraps into the next.
+        for edit in ["\x1b[2;1H\x1b[K", "\x1b[2;4H\x1b[2K"] {
+            let term = feed(&[para3, edit]);
+            assert!(!wraps(&term, 0) && wraps(&term, 1), "{edit:?}");
+        }
+        for edit in ["\x1b[2;4H\x1b[K", "\x1b[2;4H\x1b[1K"] {
+            let term = feed(&[para3, edit]);
+            assert!(wraps(&term, 0) && wraps(&term, 1), "{edit:?}");
+        }
+        // ED resets the rows after the cursor's; from column 0 the cursor's
+        // row is no longer a continuation either.
+        let term = feed(&[para3, "\x1b[2;4H\x1b[J"]);
+        assert!(wraps(&term, 0) && !wraps(&term, 1));
+        let term = feed(&[para3, "\x1b[2;1H\x1b[J"]);
+        assert!(!wraps(&term, 0) && !wraps(&term, 1));
+        // A pending wrap: its cursor is past the last column, so ED erases
+        // nothing on its row, and the pending wrap stays.
+        let term = feed(&[para, "\x1b[1;10HX\x1b[J"]);
+        assert!(!wraps(&term, 0) && term.grid()[Line(0)][Column(9)].c == 'X');
+        assert!(term.grid().cursor.input_needs_wrap);
+        // ED 1 resets the rows above; the cursor's row keeps its wrap unless
+        // the erase reached its last column.
+        assert!(wraps(&feed(&[para3, "\x1b[2;4H\x1b[1J"]), 1));
+        assert!(!wraps(&feed(&[para3, "\x1b[2;10H\x1b[1J"]), 1));
+        // The history row stops wrapping into the top row it no longer
+        // continues, and only then.
+        for edit in [
+            "\x1b[1;1H\x1b[2K",
+            "\x1b[1;1H\x1b[K",
+            "\x1b[1;1H\x1b[J",
+            "\x1b[1;3H\x1b[1J",
+            "\x1b[2J",
+        ] {
+            assert!(!wraps(&feed(&[history, edit]), -1), "{edit:?}");
+        }
+        assert!(wraps(&feed(&[history, "\x1b[1;3H\x1b[K"]), -1));
+        // The text feed (no XtermFeed) takes Alacritty's own ED 1 the same way.
+        let plain = |bytes: &str| {
+            let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+            let mut parser: Processor = Processor::new();
+            parser.advance(&mut term, bytes.as_bytes());
+            term
+        };
+        let term = plain(&format!("{para3}\x1b[3;4H\x1b[1J"));
+        assert!(!wraps(&term, 1));
+        assert!(!wraps(&plain(&format!("{history}\x1b[1;3H\x1b[1J")), -1));
+        // From the second row it resets the top row too, as xterm does.
+        let term = plain(&format!("{para3}\x1b[2;4H\x1b[1J"));
+        assert!(row(&term, 0).is_empty() && !wraps(&term, 0) && wraps(&term, 1));
+    }
+
+    #[test]
+    fn a_line_feed_into_a_continuation_ends_its_paragraph_as_xterm_s() {
+        use alacritty_terminal::term::cell::Flags;
+        // 15 x on 10 columns: row 1 continues row 0.
+        let wrapped = |chunks: &[&str]| {
+            let term = feed(chunks);
+            term.grid()[Line(0)][Column(9)]
+                .flags
+                .contains(Flags::WRAPLINE)
+        };
+        let para = "xxxxxxxxxxxxxxx\x1b[1;1H";
+        assert!(wrapped(&[para]));
+        // xterm's lineFeed: LF, VT and FF clear the entered row's wrap.
+        for lf in ["\n", "\x0b", "\x0c"] {
+            assert!(!wrapped(&[para, lf]), "{lf:?}");
+        }
+        assert!(
+            !wrapped(&[para, "\x1b[1;2r\x1b[1;1H\n"]),
+            "inside a region, above its bottom"
+        );
+        // xterm's index: IND and NEL keep it, also in an update or a split.
+        for index in ["\x1bD", "\x1bE", "\x1b[?2026h\x1bD"] {
+            assert!(wrapped(&[para, index]), "{index:?}");
+        }
+        assert!(wrapped(&[para, "\x1b", "D"]), "split across chunks");
+        // With a C0 inside, the feed leaves IND and NEL to the reference.
+        assert!(crate::native_serialize::divergent(b"\x1b\x07D"));
+        assert!(crate::native_serialize::divergent(b"\x1b\x00E"));
+        // Both drop a pending wrap: the next glyph lands in the last column.
+        for down in ["\n", "\x1bD"] {
+            let term = feed(&["xxxxxxxxxx", down, "Y"]);
+            assert_eq!(term.grid()[Line(1)][Column(9)].c, 'Y', "{down:?}");
+        }
+        // The text feed (no XtermFeed) keeps IND's paragraph too.
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut held = Vec::new();
+        for chunk in [para.as_bytes(), b"\x1b", b"D"] {
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+        }
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        // DEL inside, split after it: both parsers ignore DEL there.
+        for chunk in [para.as_bytes(), b"\x1b\x7f", b"D"] {
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+        }
+        assert!(held.is_empty());
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        // An ESC followed by an endless run of C0 controls and DEL, a few
+        // bytes per feed: the held bytes stay under the cap, so each feed
+        // rescans at most that much, and the run reaches the parser.
+        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b");
+        let mut most = 0;
+        for i in 0..100_000 {
+            let chunk: &[u8] = if i % 2 == 0 { b"\x00\x7f\x07" } else { b"\x7f" };
+            super::advance_indexing(&mut parser, &mut term, &mut held, chunk);
+            most = most.max(held.len());
+        }
+        assert!(most <= super::MAX_HELD, "{most}");
+        assert!(held.len() <= super::MAX_HELD);
+        // The ANSI feed leaves that spelling to the reference.
+        assert!(feed_with(&[para, "\x1b\x7fD"]).2.divergent);
+        assert!(
+            !feed_with(&[para, "\x1b7\u{e9}"]).2.divergent,
+            "a complete escape before UTF-8"
+        );
+        super::advance_indexing(&mut parser, &mut term, &mut held, b"\x1b[1;1H\n");
+        assert!(!term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        // An auto-wrap below a scroll region keeps its wrap.
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 5 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut feed = XtermFeed::default();
+        feed.feed(&mut parser, &mut term, b"\x1b[1;2r\x1b[4;1Hxxxxxxxxxxxxxxx");
+        assert!(term.grid()[Line(3)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        // At the bottom a line feed scrolls; the paragraph moves up intact.
+        let (term, _, _) = feed_with(&["\x1b[3;1Hxxxxxxxxxxxxxxx\x1b[3;1H\n"]);
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
+        let (term, _, _) = feed_with(&["\x1b[3;1Hxxxxxxxxxxxxxxx\x1b[3;1H\x1bD"]);
+        assert!(term.grid()[Line(0)][Column(9)]
+            .flags
+            .contains(Flags::WRAPLINE));
     }
 
     #[test]
@@ -1468,5 +2049,480 @@ mod tests {
         assert!(!pixels(&["\x1b[?1016h\x1b[?1016l"]));
         assert!(!pixels(&["\x1b[?1016h\x1bc"]));
         assert!(pixels(&["\x1b[?10", "16h"]), "split across chunks");
+    }
+}
+
+/// The alternate screen's cells past a narrower width, against xterm.js
+/// (headless, the daemon's options): a 20x4 alternate screen narrowed to 10,
+/// driven, then widened. Each expectation is what xterm showed.
+#[cfg(test)]
+mod alt_kept_cells_tests {
+    use super::{Size, XtermFeed};
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::cell::Flags;
+    use alacritty_terminal::term::{Config, Term};
+    use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor};
+
+    enum Step {
+        Out(&'static str),
+        Size(usize, usize),
+    }
+    use Step::{Out, Size as To};
+
+    const N: Step = To(10, 4);
+    const W: Step = To(20, 4);
+    const R0: &str = "0000000000ABCDEFGHIJ";
+    const R1: &str = "1111111111KLMNOPQRST";
+    const R2: &str = "2222222222abcdefghij";
+    const R3: &str = "3333333333klmnopqrst";
+    const BLANK: &str = "....................";
+
+    /// Rows as text ('.' for a blank, a wide char's spacer skipped), and the
+    /// columns of each row with a red background (base 36).
+    /// The terminal after `steps`, from the 20x4 alternate screen.
+    fn run_term(steps: &[Step]) -> (Term<VoidListener>, ()) {
+        let mut term = Term::new(Config::default(), &Size { cols: 20, rows: 4 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut feed = XtermFeed::default();
+        let start = format!("\x1b[?1049h\x1b[H{R0}\r\n{R1}\r\n{R2}\r\n{R3}");
+        feed.feed(&mut parser, &mut term, start.as_bytes());
+        for step in steps {
+            match step {
+                Out(bytes) => feed.feed(&mut parser, &mut term, bytes.as_bytes()),
+                To(cols, rows) => {
+                    parser.advance(&mut term, &std::mem::take(&mut feed.held));
+                    term.resize(Size {
+                        cols: *cols,
+                        rows: *rows,
+                    });
+                }
+            }
+        }
+        parser.advance(&mut term, &feed.held);
+        (term, ())
+    }
+
+    fn run(steps: &[Step]) -> (Vec<String>, Vec<String>) {
+        let (term, _) = run_term(steps);
+        let grid = term.grid();
+        let mut text = Vec::new();
+        let mut red = Vec::new();
+        for y in 0..grid.screen_lines() {
+            let row = &grid[Line(y as i32)];
+            let mut line = String::new();
+            let mut bg = String::new();
+            for x in 0..grid.columns() {
+                let cell = &row[Column(x)];
+                if cell.bg == Color::Named(NamedColor::Red) {
+                    bg.push(std::char::from_digit(x as u32, 36).unwrap());
+                }
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    continue;
+                }
+                line.push(if cell.c == ' ' { '.' } else { cell.c });
+            }
+            text.push(line);
+            red.push(bg);
+        }
+        (text, red)
+    }
+
+    fn rows(steps: &[Step]) -> Vec<String> {
+        run(steps).0
+    }
+
+    /// Rows as cells: '_' for a wide glyph's spacer (xterm's width-0 cell).
+    fn cells(steps: &[Step]) -> Vec<String> {
+        let (term, _) = run_term(steps);
+        let grid = term.grid();
+        (0..grid.screen_lines())
+            .map(|y| {
+                let row = &grid[Line(y as i32)];
+                (0..grid.columns())
+                    .map(|x| {
+                        let cell = &row[Column(x)];
+                        if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                            '_'
+                        } else if cell.c == ' ' {
+                            '.'
+                        } else {
+                            cell.c
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_large_dch_clears_from_the_cursor_only_with_or_without_kept_cells() {
+        assert_eq!(
+            rows(&[Out("\x1b[1;6H\x1b[999P")])[0],
+            "00000..............."
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[999P"), W])[0],
+            "00000..............."
+        );
+    }
+
+    #[test]
+    fn insert_mode_wraps_a_wide_glyph_before_it_shifts_anything() {
+        let shown = cells(&[N, Out("\x1b[4h\x1b[2;10H\u{4e2d}\x1b[4l"), W]);
+        assert_eq!(shown[1], "111111111.KLMNOPQRST");
+        assert_eq!(shown[2], "\u{4e2d}_2222222222abcdefgh");
+        // With autowrap off the glyph is dropped, and nothing shifts.
+        assert_eq!(
+            cells(&[
+                N,
+                Out("\x1b[?7l\x1b[4h\x1b[2;10H\u{4e2d}\x1b[4l\x1b[?7h"),
+                W
+            ]),
+            all([R0, R1, R2, R3])
+        );
+    }
+
+    #[test]
+    fn insert_mode_blanks_a_wide_glyph_shifted_into_the_last_visible_column() {
+        assert_eq!(
+            cells(&[N, Out("\x1b[1;8H\u{4e2d}\x1b[4h\x1b[1;1Hxy\x1b[4l"), W])[0],
+            "xy0000000._0ABCDEFGH"
+        );
+        assert_eq!(
+            cells(&[Out("\x1b[1;18H\u{4e2d}\x1b[4h\x1b[1;1Hxy\x1b[4l")])[0],
+            "xy0000000000ABCDEFG."
+        );
+    }
+
+    #[test]
+    fn insert_and_delete_at_a_wide_glyph_cut_it_as_xterm_does() {
+        for narrowed in [true, false] {
+            let around = |edit: &'static str| {
+                let mut steps = vec![];
+                if narrowed {
+                    steps.push(To(10, 4));
+                }
+                steps.push(Out("\x1b[1;3H\u{4e2d}\x1b[1;4H"));
+                steps.push(Out(edit));
+                if narrowed {
+                    steps.push(To(20, 4));
+                }
+                cells(&steps)[0].clone()
+            };
+            assert_eq!(
+                around("\x1b[1@"),
+                "00.._000000ABCDEFGHI",
+                "ICH at the spacer, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around("\x1b[1P"),
+                "00.000000ABCDEFGHIJ.",
+                "DCH at the spacer, narrowed={narrowed}"
+            );
+        }
+        assert_eq!(
+            cells(&[Out("\x1b[1;19H\u{4e2d}"), N, Out("\x1b[1;1H\x1b[1@"), W])[0],
+            ".0000000000ABCDEFGH.",
+            "pushed off the physical end"
+        );
+    }
+
+    #[test]
+    fn erase_at_a_wide_glyph_cuts_it_as_xterm_does() {
+        for narrowed in [true, false] {
+            let around = |glyph: &'static str, edit: &'static str| {
+                let mut steps = vec![Out(glyph)];
+                if narrowed {
+                    steps.insert(0, To(10, 4));
+                }
+                steps.push(Out(edit));
+                if narrowed {
+                    steps.push(To(20, 4));
+                }
+                (cells(&steps)[0].clone(), run(&steps).1[0].clone())
+            };
+            let glyph = "\x1b[1;3H\u{4e2d}";
+            assert_eq!(
+                around(glyph, "\x1b[1;4H\x1b[1X").0,
+                "00..000000ABCDEFGHIJ",
+                "ECH at the spacer, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around(glyph, "\x1b[1;2H\x1b[2X").0,
+                "0...000000ABCDEFGHIJ",
+                "ECH ending on the lead, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around(glyph, "\x1b[1;3H\x1b[2X").0,
+                "00..000000ABCDEFGHIJ",
+                "ECH over the glyph, narrowed={narrowed}"
+            );
+            assert_eq!(
+                around(glyph, "\x1b[1;4H\x1b[41m\x1b[1X\x1b[m"),
+                ("00..000000ABCDEFGHIJ".to_string(), "23".to_string()),
+                "the cut lead takes the fill, narrowed={narrowed}"
+            );
+        }
+        assert_eq!(
+            cells(&[Out("\x1b[1;13H\u{4e2d}"), N, Out("\x1b[1;9H\x1b[5X"), W])[0],
+            "00000000......EFGHIJ",
+            "ECH into kept cells, ending on a kept lead"
+        );
+    }
+
+    #[test]
+    fn the_alternate_screen_keeps_no_cells_while_it_is_not_shown() {
+        let (term, _) = run_term(&[N, Out("\x1b[?1049l"), To(8, 4)]);
+        let alt = term.inactive_grid();
+        assert!((0..alt.screen_lines()).all(|y| alt[Line(y as i32)].hidden_len() == 0));
+        let (term, _) = run_term(&[N, Out("\x1b[?1049l")]);
+        let alt = term.inactive_grid();
+        assert!((0..alt.screen_lines()).all(|y| alt[Line(y as i32)].hidden_len() == 0));
+    }
+
+    fn all(rows: [&str; 4]) -> Vec<String> {
+        rows.iter().map(|r| r.to_string()).collect()
+    }
+
+    #[test]
+    fn a_widen_shows_the_cells_a_narrow_kept() {
+        assert_eq!(rows(&[N, W]), all([R0, R1, R2, R3]));
+        assert_eq!(
+            rows(&[N, To(5, 4), W]),
+            all([R0, R1, R2, R3]),
+            "narrows never cut"
+        );
+        let wide: Vec<String> = [R0, R1, R2, R3]
+            .iter()
+            .map(|r| format!("{r}.........."))
+            .collect();
+        assert_eq!(rows(&[N, To(30, 4)]), wide);
+    }
+
+    #[test]
+    fn a_partial_widen_drops_what_lies_past_it() {
+        assert_eq!(
+            rows(&[N, To(15, 4), W]),
+            all([
+                "0000000000ABCDE.....",
+                "1111111111KLMNO.....",
+                "2222222222abcde.....",
+                "3333333333klmno....."
+            ])
+        );
+    }
+
+    #[test]
+    fn printing_and_line_erase_touch_the_visible_cells_only() {
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6Hxyz"), W])[0],
+            "00000xyz00ABCDEFGHIJ"
+        );
+        let wrapped = rows(&[N, Out("\x1b[1;9Hxyzw"), W]);
+        assert_eq!(
+            wrapped[..2],
+            [
+                "00000000xyABCDEFGHIJ".to_string(),
+                "zw11111111KLMNOPQRST".to_string()
+            ]
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[K"), W])[0],
+            "00000.....ABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[1K"), W])[0],
+            "......0000ABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;6H\x1b[2K"), W])[0],
+            "..........ABCDEFGHIJ"
+        );
+        assert_eq!(rows(&[N, Out("\x1b[1;20Hz"), W])[0], "000000000zABCDEFGHIJ");
+        assert_eq!(
+            rows(&[Out("\x1b[1;16H"), N, Out("Z"), W])[0],
+            "000000000ZABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;1H\t\t\tq"), W])[0],
+            "000000000qABCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3Ha\x1b[15b"), W])[..2],
+            [
+                "00aaaaaaaaABCDEFGHIJ".to_string(),
+                "aaaaaaaa11KLMNOPQRST".to_string()
+            ]
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;10HQ\x1b[K"), W])[0],
+            "000000000QABCDEFGHIJ",
+            "a pending wrap"
+        );
+    }
+
+    #[test]
+    fn display_erase_fills_whole_lines_and_the_current_one_visibly() {
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;6H\x1b[J"), W]),
+            all([R0, "11111.....KLMNOPQRST", BLANK, BLANK])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;6H\x1b[1J"), W]),
+            all([BLANK, "......1111KLMNOPQRST", R2, R3])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2J"), W]),
+            all([BLANK, BLANK, BLANK, BLANK])
+        );
+        assert_eq!(rows(&[N, Out("\x1b[3J"), W]), all([R0, R1, R2, R3]));
+    }
+
+    #[test]
+    fn character_insert_delete_and_erase_run_over_the_physical_line() {
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[3@"), W])[0],
+            "00...00000000ABCDEFG"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[3P"), W])[0],
+            "0000000ABCDEFGHIJ..."
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[15X"), W])[0],
+            "00...............HIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;9H\x1b[3X"), W])[0],
+            "00000000...BCDEFGHIJ"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[30X"), W])[0],
+            "00.................."
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[4h\x1b[1;3Hxy\x1b[4l"), W])[0],
+            "00xy00000000ABCDEFGH",
+            "insert mode"
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;3H\x1b[3P"), To(15, 4), W])[0],
+            "0000000ABCDEFGH....."
+        );
+        assert_eq!(
+            rows(&[
+                N,
+                Out("\x1b[1;3H\x1b[3@"),
+                To(5, 4),
+                Out("\x1b[1;1H\x1b[2@"),
+                W
+            ])[0],
+            "..00...00000000ABCDE"
+        );
+    }
+
+    #[test]
+    fn lines_move_with_their_kept_cells_and_new_lines_take_the_current_width() {
+        assert_eq!(rows(&[N, Out("\x1b[4;1H\n"), W]), all([R1, R2, R3, BLANK]));
+        assert_eq!(
+            rows(&[N, Out("\x1b[1;1H\x1bM"), W]),
+            all([BLANK, R0, R1, R2])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;1H\x1b[L"), W]),
+            all([R0, BLANK, R1, R2])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;1H\x1b[M"), W]),
+            all([R0, R2, R3, BLANK])
+        );
+        assert_eq!(rows(&[N, Out("\x1b[S"), W]), all([R1, R2, R3, BLANK]));
+        assert_eq!(rows(&[N, Out("\x1b[T"), W]), all([BLANK, R0, R1, R2]));
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;3r\x1b[S\x1b[r"), W]),
+            all([R0, R2, BLANK, R3])
+        );
+        assert_eq!(
+            rows(&[N, Out("\x1b[2;3r\x1b[3;1H\n\x1b[r"), W]),
+            all([R0, R2, BLANK, R3])
+        );
+        assert_eq!(rows(&[To(10, 3), To(20, 4)]), all([R1, R2, R3, BLANK]));
+        assert_eq!(rows(&[To(10, 6), To(20, 4)]), all([R0, R1, R2, R3]));
+        let grown = rows(&[To(10, 6), Out("\x1b[6;1Hsixth"), To(20, 6)]);
+        assert_eq!(grown[..4], all([R0, R1, R2, R3])[..]);
+        assert_eq!(
+            grown[4..],
+            [
+                "....................".to_string(),
+                "sixth...............".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn decaln_fills_the_physical_line() {
+        assert_eq!(
+            rows(&[N, Out("\x1b#8"), W]),
+            all(["EEEEEEEEEEEEEEEEEEEE"; 4])
+        );
+    }
+
+    #[test]
+    fn leaving_the_alternate_screen_or_a_reset_drops_the_kept_cells() {
+        assert_eq!(
+            rows(&[N, Out("\x1b[?1049l"), W, Out("\x1b[?1049h")]),
+            all([BLANK; 4])
+        );
+        // ?47 and ?1047 are divergent controls (native_serialize): a stream
+        // with them never gets a native snapshot.
+        assert_eq!(rows(&[N, Out("\x1bc"), W]), all([BLANK; 4]));
+    }
+
+    #[test]
+    fn a_wide_char_cut_at_the_narrow_edge_comes_back_whole() {
+        assert_eq!(
+            rows(&[Out("\x1b[1;10H\u{4e2d}"), N, W])[0],
+            "000000000\u{4e2d}BCDEFGHIJ"
+        );
+    }
+
+    #[test]
+    fn the_erase_background_reaches_kept_cells_as_xterm_s_does() {
+        let red = |steps: &[Step]| run(steps).1;
+        let full = "0123456789abcdefghij".to_string();
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[2J\x1b[0m"), W]),
+            vec![full.clone(); 4]
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[2;6H\x1b[J\x1b[0m"), W]),
+            vec!["".into(), "56789".into(), full.clone(), full.clone()]
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;6H\x1b[K\x1b[0m"), W])[0],
+            "56789"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[3P\x1b[0m"), W])[0],
+            "hij"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[3@\x1b[0m"), W])[0],
+            "234"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[1;3H\x1b[15X\x1b[0m"), W])[0],
+            "23456789abcdefg"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[4;1H\n\x1b[0m"), W])[3],
+            "0123456789"
+        );
+        assert_eq!(
+            red(&[N, Out("\x1b[41m\x1b[2;1H\x1b[L\x1b[0m"), W])[1],
+            "0123456789"
+        );
     }
 }

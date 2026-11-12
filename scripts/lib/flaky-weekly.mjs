@@ -22,9 +22,12 @@
 //   one call to list a run's artifacts and one per artifact. The workflows
 //   upload the retry reports as `test-report-retries-*` only when one lists a
 //   retried test (scripts/flaky-report.mjs sets the step output), so most runs
-//   have none, and the repository's artifact listing (100 per call) says which
-//   runs do: only those are downloaded. If the limit is hit anyway,
-//   downloading stops and the rendered coverage line says so.
+//   have none, and the repository's artifact listing says which runs do: only
+//   those are downloaded. If the limit is hit anyway, downloading stops and the
+//   rendered coverage line says so.
+// - That listing does not reliably serve a page of 100: GitHub answers with a
+//   502 or a cut-off body, on this repository on every try. 50 is served, with
+//   the occasional failure at any size, so a failed page is asked for again.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -39,6 +42,10 @@ export const ISSUE_LABEL = 'flaky';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RUN_FIELDS = 'databaseId,headBranch,event,conclusion,createdAt,url';
 const ignore = () => undefined;
+const ARTIFACT_PAGE_SIZE = 50;
+const LISTING_RETRY_DELAYS_MS = [2000, 5000, 10000];
+const TRANSIENT_LISTING = /unexpected end of JSON input|HTTP 5\d\d\b/i;
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 /** YYYY-MM-DD in UTC. */
 export function utcDay(date) {
@@ -109,20 +116,28 @@ export function listRuns(gh, { workflows = WORKFLOWS, window, repo, warn = ignor
   return runs.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/** One page of the artifact listing, asked for again while GitHub fails it. */
+function listArtifactPage(gh, endpoint, sleep) {
+  for (const delay of LISTING_RETRY_DELAYS_MS) {
+    const result = gh(['api', endpoint]);
+    if (result.status === 0 || !TRANSIENT_LISTING.test(result.stderr || '')) {
+      return ghJson(() => result, [], 'listing artifacts');
+    }
+    sleep(delay);
+  }
+  return ghJson(gh, ['api', endpoint], 'listing artifacts');
+}
+
 /**
  * Run ids that have an unexpired `<prefix>*` artifact created inside the
  * window, from the repository's artifact listing (newest first, so paging
  * stops once a page has nothing inside the window).
  */
-export function runsWithReports(gh, { window, repo, prefix = ARTIFACT_PREFIX }) {
+export function runsWithReports(gh, { window, repo, prefix = ARTIFACT_PREFIX, sleep = sleepSync }) {
   const base = repo ? `repos/${repo}` : 'repos/{owner}/{repo}';
   const ids = new Set();
   for (let page = 1; ; page++) {
-    const body = ghJson(
-      gh,
-      ['api', `${base}/actions/artifacts?per_page=100&page=${page}`],
-      'listing artifacts',
-    );
+    const body = listArtifactPage(gh, `${base}/actions/artifacts?per_page=${ARTIFACT_PAGE_SIZE}&page=${page}`, sleep);
     const artifacts = body?.artifacts ?? [];
     let inWindow = 0;
     for (const a of artifacts) {
@@ -135,7 +150,7 @@ export function runsWithReports(gh, { window, repo, prefix = ARTIFACT_PREFIX }) 
     // The listing is newest id first, and created_at only roughly follows the
     // id, so stop at the first page with nothing inside the window rather
     // than at the first artifact outside it.
-    if (inWindow === 0 || artifacts.length < 100) return ids;
+    if (inWindow === 0 || artifacts.length < ARTIFACT_PAGE_SIZE) return ids;
   }
 }
 

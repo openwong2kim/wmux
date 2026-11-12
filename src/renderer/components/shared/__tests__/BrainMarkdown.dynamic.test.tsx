@@ -328,6 +328,74 @@ describe('renderBrainMarkdown', () => {
     expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('half of a block');
   });
 
+  describe('a fence opener after prose on the same line', () => {
+    const paragraphs = () => [...container.querySelectorAll('[data-brain-md-p]')].map((p) => p.textContent);
+    const codes = () => [...container.querySelectorAll('[data-brain-md-code]')].map((c) => c.textContent);
+
+    it('opens the fence there when the next fence marker closes it (the Korean transcript fixture)', () => {
+      // src/daemon/transcript/__tests__/fixtures/korean.jsonl, as Claude wrote it.
+      const reply = "반갑습니다. 한글 답변입니다. ```ts\nconst 인사 = '안녕';\nconst 숫자 = 42;\n```";
+      act(() => { root.render(createElement('div', null, renderBrainMarkdown(reply, { richCode: true }))); });
+      expect(paragraphs()).toEqual(['반갑습니다. 한글 답변입니다.']);
+      expect(container.querySelectorAll('[data-brain-md-code]')).toHaveLength(1);
+      expect(container.querySelector('[data-brain-md-code] pre')?.textContent).toBe("const 인사 = '안녕';\nconst 숫자 = 42;");
+      expect(container.querySelector('[data-brain-md-code-lang]')?.textContent).toBe('ts');
+    });
+
+    it('takes the info string a line-start fence takes', () => {
+      render('Here: ```ts title=example.ts\nconst a = 1;\n```\nafter');
+      expect(codes()).toEqual(['const a = 1;']);
+      expect(paragraphs()).toEqual(['Here:', 'after']);
+      render('Here: ``` ts\ncode\n```\nafter');
+      expect(codes()).toEqual(['code']);
+    });
+
+    it('leaves prose that names ``` as prose when the next marker opens a real block', () => {
+      render('Type ``` to start a block:\n```js\nconst a = 1;\n```\nafter');
+      expect(paragraphs()).toEqual(['Type ``` to start a block:', 'after']);
+      expect(codes()).toEqual(['const a = 1;']);
+      render('It mentions ``` and the language name:\n```bash\nnpm test\n```');
+      expect(paragraphs()).toEqual(['It mentions ``` and the language name:']);
+      expect(codes()).toEqual(['npm test']);
+    });
+
+    it('leaves it as prose with no closer after it, or one shorter than the opener', () => {
+      render('Wrap it in ``` some words\nand the rest of the message.');
+      expect(codes()).toEqual([]);
+      expect(paragraphs()).toEqual(['Wrap it in ``` some words', 'and the rest of the message.']);
+      render('Here: ````ts\ncode\n```');
+      expect(paragraphs()).toEqual(['Here: ````ts', 'code']);
+      // A quote's closer is not this text's closer.
+      render('Here: ```ts\n> ```\nafter');
+      expect(paragraphs()).toContain('Here: ```ts');
+      // Inline ```code``` on one line is not an opener.
+      render('run ```npm test``` now\nafter');
+      expect(codes()).toEqual([]);
+    });
+
+    it('keeps a quoted fence in its quote, and splits inside a quote only', () => {
+      render('> ```ts\n> const a = 1;\n> ```\nAfter');
+      expect(container.querySelector('blockquote [data-brain-md-code]')?.textContent).toBe('const a = 1;');
+      expect(codes()).toHaveLength(1);
+      expect(paragraphs()).toEqual(['After']);
+      render('> Example ```ts\n> const b = 2;\n> ```\nAfter');
+      expect(container.querySelector('blockquote')?.textContent).toContain('Example');
+      expect(container.querySelector('blockquote [data-brain-md-code]')?.textContent).toBe('const b = 2;');
+      expect(codes()).toHaveLength(1);
+      expect([...container.querySelectorAll('[data-brain-md-p]')].find((p) => p.textContent === 'After')?.closest('blockquote')).toBeNull();
+    });
+
+    it('GitHub HTML: a body renders as on main, never split mid-line (a comment with > lines stays hidden)', () => {
+      // An issue template: the comment holds quoted lines, and a ``` sits mid-line before it.
+      gh('Use ```ts\n<!--\n> template hint\n> more\n-->\nvisible\n```');
+      expect(container.textContent).not.toContain('template hint');
+      expect(container.querySelector('blockquote')).toBeNull();
+      expect(paragraphs()).toEqual(['Use ```ts', 'visible']);
+      // Not split: the line-start ``` opens its own (empty) block, as on main.
+      expect(codes()).toEqual(['']);
+    });
+  });
+
   it('renders headings, bold, italic, and inline code', () => {
     render('## Status\nAll **good**, *mostly* — run `npm test`.');
     const h = container.querySelector('[data-brain-md-heading]');

@@ -171,6 +171,22 @@ describe('prepareProbedNative', () => {
     expect(recordedProbe(dir, keyOf('broken v9'))).toBe('fail');
   });
 
+  // One record serves every copy in the directory (the compat wmux-native and
+  // the Claude hook's wmux-claude-hook): one copy's refreshes must not evict
+  // the verdict of another copy still in place.
+  it('never evicts the verdict of any copy in the directory, whoever writes the record', async () => {
+    ship('good other');
+    const other = path.join(dir, 'wmux-claude-hook');
+    await prepare({ destinationPath: other });
+    expect(recordedProbe(dir, keyOf('good other'))).toBe('pass');
+    for (let i = 1; i <= 9; i++) {
+      ship(`good v${i}`);
+      await prepare();
+    }
+    expect(recordedProbe(dir, keyOf('good other'))).toBe('pass');
+    expect(recordedProbe(dir, keyOf('good v9'))).toBe('pass');
+  });
+
   it('reads a version 1 record as empty, so the copy is probed once more', async () => {
     ship('good v1');
     await prepare();

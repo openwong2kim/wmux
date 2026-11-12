@@ -98,8 +98,18 @@ function serveTabs(getList: () => Array<{ id: string; url: string; title: string
     if (String(url).includes('/json/list')) {
       return fetchOk(spawnMock.mock.calls.length > 0 && created === 0 ? [STARTUP_TAB] : getList());
     }
+    // Whatever Chrome wrote the port file answers on its port as that browser.
+    if (String(url).includes('/json/version')) return fetchOk({ webSocketDebuggerUrl: recordedEndpoint(String(url)) });
     return fetchOk({});
   });
+}
+
+/** The browser endpoint the port file naming `url`'s port records. */
+function recordedEndpoint(url: string): string | undefined {
+  const port = /:(\d+)\//.exec(url)?.[1];
+  const raw = Object.values(state.portFiles).find((r) => r.startsWith(`${port}\n`));
+  const path = raw?.split('\n')[1];
+  return path ? `ws://127.0.0.1:${port}${path}` : undefined;
 }
 
 function pageTarget(id: string): { id: string; url: string; title: string; type: string } {
@@ -112,10 +122,13 @@ beforeEach(() => {
   nextPort = 21001;
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
+  // These fakes are a Chrome on a DevTools port, whatever the default transport is.
+  vi.stubEnv('WMUX_CHROME_TRANSPORT', 'port');
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
 });
 
@@ -298,5 +311,28 @@ describe('ChromeLauncher stable surface ids', () => {
     const launcher = new ChromeLauncher('/tmp/sfc-8');
     const opened = await launcher.openTab('https://a.test/', 'ws-1');
     expect((await launcher.listTargets('ws-1')).map((t) => t.surfaceId)).toEqual([opened.surfaceId]);
+  });
+});
+
+describe('ChromeLauncher target lists with grants (C3b)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('shows a workspace its own tabs only, never one filed under no workspace, as the pipe grants them; without grants, as before', async () => {
+    spawnWritesPortFile(makeChild());
+    serveTabs(() => [pageTarget('tgt-1'), pageTarget('tgt-2'), pageTarget('tgt-3')]);
+    const launcher = new ChromeLauncher('/tmp/sfc-grant');
+    const own = await launcher.openTab('https://a.test/', 'ws-1');
+    const other = await launcher.openTab('https://b.test/', 'ws-2');
+    const nobody = await launcher.openTab('https://c.test/');
+    const ids = async (ws?: string) => (await launcher.listTargets(ws)).map((t) => t.surfaceId).sort();
+
+    expect(await ids('ws-1')).toEqual([own.surfaceId, nobody.surfaceId].sort());
+    vi.stubEnv('WMUX_CDP_TARGET_GRANT', '1');
+    expect(await ids('ws-1')).toEqual([own.surfaceId]);
+    expect(await ids('ws-2')).toEqual([other.surfaceId]);
+    // Main's own unscoped list still shows every tab.
+    expect(await ids()).toEqual([own.surfaceId, other.surfaceId, nobody.surfaceId].sort());
   });
 });

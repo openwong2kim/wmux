@@ -152,6 +152,17 @@ import { isLocalExternalWireContext } from '../../mcp/rpcProvenance';
 import type { BrowserAgentControl } from '../../browser-session/BrowserAgentControl';
 import { heldBrowserSurfaceRefusal } from './surface.rpc';
 import { agentControlRefusal } from '../../../shared/browserAgentControl';
+import { getWmuxDir } from '../../../daemon/config';
+import { randomBytes } from 'node:crypto';
+import { topWorld } from '../../phone/PhoneBrowserFocus';
+import {
+  DEFAULT_FILE_INPUT_SELECTOR,
+  UPLOAD_MAX_TIMEOUT_MS,
+  checkUploadPath,
+  uploadLookupExpression,
+  uploadRootIn,
+  type UploadPathRefusal,
+} from '../../../shared/browserUpload';
 import { withDeadline } from '../../pty/portWatch';
 
 type GetWindow = () => BrowserWindow | null;
@@ -183,6 +194,129 @@ const PROTECTED_GATE_EXEMPT: ReadonlySet<string> = new Set([
   'browser.navigationPolicy.get',
 ]);
 
+/** Most files one upload may set, and the longest selector it takes. */
+const UPLOAD_MAX_FILES = 64;
+const UPLOAD_MAX_SELECTOR_CHARS = 2048;
+
+/** How long the page may take to take the files: the default, and the cap. */
+const UPLOAD_DEFAULT_TIMEOUT_MS = 120_000;
+
+/** The isolated world the file input is looked up in. */
+const UPLOAD_WORLD = 'wmux-upload';
+
+/** Why main will not hand a path to the page, worded for the RPC caller. */
+function uploadRefusalText(input: unknown, refusal: UploadPathRefusal): string {
+  const shown = typeof input === 'string' ? JSON.stringify(input) : 'a path';
+  switch (refusal.reason) {
+    case 'empty':
+      return 'empty path';
+    case 'aliased':
+      return `${shown} has a name Windows opens as a different file`;
+    case 'missing':
+      return `${shown} does not exist`;
+    case 'not-a-file':
+      return `${shown} is not a regular file`;
+    case 'unresolvable':
+      return `${shown} exists but its real path cannot be resolved`;
+    default:
+      return `${shown} is outside the upload root`;
+  }
+}
+
+/**
+ * What an upload into one guest came to. `missing` means nothing was sent to
+ * the page: the selector matched nothing (`match`), a ref's mark is on more
+ * than one element (`ambiguous`), no input is near the anchor (`near`), the
+ * selector is not CSS the page can parse (`invalid`), or the page did not
+ * answer the lookup in time (`unanswered`, with the wait that actually ran:
+ * the caller's ask, capped).
+ */
+export type UploadOutcome =
+  | { uploaded: true; count: number }
+  | { uploaded: false; missing: 'match' | 'ambiguous' | 'near' | 'invalid'; detail?: string }
+  | { uploaded: false; missing: 'unanswered'; waitedMs: number };
+
+/**
+ * Set a file input's files in one guest, by path.
+ *
+ * The guest's debugger is shared with capture, the phone stream and the focus
+ * watcher, so this changes no state any of them depends on: no DOM agent
+ * (DOM.getDocument would enable it), no domain enable or disable, no attach or
+ * detach. The input is looked up in an isolated world — page script cannot
+ * answer the lookup there — and handed to DOM.setFileInputFiles as a remote
+ * object, which needs no DOM agent. The remote objects live in a group of
+ * this call's own, so a concurrent call's release cannot take them away. Top
+ * frame only, as the selector route and data-wmux-ref tags always were.
+ *
+ * `near`: the selector names a ref's anchor (usually the visible upload
+ * button). It must match exactly one element, and the input is the one
+ * findFileInputNearElement finds around it, also in the isolated world.
+ *
+ * `timeoutMs` bounds the whole call. Expiring before the files were sent is a
+ * miss (`unanswered`, nothing happened); expiring after is an error, since the
+ * page may still take them.
+ */
+export async function setFilesInIsolatedWorld(
+  send: CdpSend,
+  files: string[],
+  selector: string,
+  near: boolean,
+  timeoutMs: number = UPLOAD_DEFAULT_TIMEOUT_MS,
+): Promise<UploadOutcome> {
+  const group = `wmux-upload-${randomBytes(8).toString('hex')}`;
+  let sent = false;
+  // Set when the wait runs out. The caller may already have been told nothing
+  // was set, so a lookup that lands after that must not set anything either.
+  let gaveUp = false;
+  const run = async (): Promise<UploadOutcome> => {
+    let contextId: number | undefined;
+    try {
+      contextId = await topWorld(send, UPLOAD_WORLD);
+    } catch {
+      contextId = undefined;
+    }
+    if (contextId === undefined) throw new Error('browser.upload.cdp: the page has no context to upload into');
+    const expression = uploadLookupExpression(selector, near);
+    try {
+      const reply = (await send('Runtime.evaluate', { expression, contextId, objectGroup: group })) as {
+        result?: { objectId?: string; subtype?: string; value?: unknown };
+        exceptionDetails?: { exception?: { description?: string }; text?: string };
+      } | null;
+      if (reply?.exceptionDetails) {
+        const why = (reply.exceptionDetails.exception?.description ?? reply.exceptionDetails.text ?? '').split('\n')[0];
+        if (why.startsWith('SyntaxError')) return { uploaded: false, missing: 'invalid', detail: why };
+        throw new Error(`browser.upload.cdp: ${why || 'lookup failed'}`);
+      }
+      const result = reply?.result;
+      if (!result?.objectId || result.subtype !== 'node') {
+        const value = result?.value;
+        return { uploaded: false, missing: value === 'anchor' ? 'near' : value === 'many' ? 'ambiguous' : 'match' };
+      }
+      if (gaveUp) return { uploaded: false, missing: 'unanswered', waitedMs: timeoutMs };
+      sent = true;
+      await send('DOM.setFileInputFiles', { files, objectId: result.objectId });
+      return { uploaded: true, count: files.length };
+    } finally {
+      await send('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => undefined);
+    }
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<'expired'>((resolve) => {
+    timer = setTimeout(() => {
+      gaveUp = true;
+      resolve('expired');
+    }, timeoutMs);
+  });
+  try {
+    const outcome = await Promise.race([run(), expired]);
+    if (outcome !== 'expired') return outcome;
+    if (!sent) return { uploaded: false, missing: 'unanswered', waitedMs: timeoutMs };
+    throw new Error(`browser.upload.cdp: the page did not take the files within ${timeoutMs} ms`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Methods a protected pane may not call at all, with the reason. Agent-authored
  * page code (evaluate) waits for the consent grant in PR B; profile-wide cookie
@@ -198,6 +332,7 @@ const PROTECTED_DENIED_METHODS: ReadonlyMap<string, string> = new Map([
   ['browser.cdp.target', 'a protected pane has no builtin browser target'],
   ['browser.dialog.arm', 'a protected pane has no builtin browser target'],
   ['browser.siteGuides.match', 'site guides are off on a protected pane'],
+  ['browser.upload.cdp', 'a protected pane has no builtin browser target'],
 ]);
 
 /** Agent input that can raise a page dialog on the RPC lane. */
@@ -4196,6 +4331,11 @@ export function registerBrowserRpc(
    * server-pinned callers, and source-qualified first-party wire clients.
    * Approved third-party and legacy callers still receive target metadata, but
    * not the primitive that bypasses the tool-layer capability and lease checks.
+   *
+   * A dedicated Chrome on a debugging pipe has no port: a caller that may
+   * attach and asks with `relay: true` (the engine, only when it is about to
+   * connect) gets `relay`, the relay's endpoint and a one-time token for it,
+   * minted for this caller on every such call.
    */
   router.register('browser.cdp.info', async (params, ctx) => {
     // Refuse before disclosing anything, including whether CDP is enabled.
@@ -4217,9 +4357,24 @@ export function registerBrowserRpc(
       // match; a random user tab still never becomes the default pin).
       const chromeTargets = await launcher.cdpInfoTargets(callerWorkspaceId || undefined);
       const disclose = canDiscloseBrowserAttachInfo(ctx);
+      const decision = protectedDecisionOf(ctx);
+      const relay = disclose && ep.piped && params.relay === true && launcher.relayGrant
+        ? await launcher.relayGrant({
+          ...(callerWorkspaceId && { workspaceId: callerWorkspaceId }),
+          profile: chrome.profile,
+          ...(decision && { protectedEpoch: decision.epoch }),
+          // The operator lane: with grants (C3b), every target, as on the port. From the
+          // authenticated caller only, never from params.
+          ...(ctx?.operator === true && { everyTarget: true }),
+        })
+        : undefined;
       return {
         ...(disclose && ep.cdpPort !== undefined && { cdpPort: ep.cdpPort }),
         ...(disclose && ep.wsEndpoint && { wsEndpoint: ep.wsEndpoint }),
+        ...(relay && { relay }),
+        // Reached through the relay: an engine checking a live connection asks
+        // again with relay: true only when this is set.
+        ...(disclose && ep.piped && { piped: true }),
         ...(callerWorkspaceId && { targetsScoped: true }),
         workspaceBackend: 'chrome' as const,
         // The profile this caller resolved to (its pane's own, its workspace's,
@@ -4229,7 +4384,7 @@ export function registerBrowserRpc(
         // Protected panes: the policy epoch this connection is good for. The
         // engine drops its connection (and every cached Page) when it moves,
         // which is how a rebind or a protection change reaches the MCP lane.
-        ...(protectedDecisionOf(ctx) && { protected: true, policyEpoch: protectedDecisionOf(ctx)?.epoch }),
+        ...(decision && { protected: true, policyEpoch: decision.epoch }),
         // Live only: the write-scope policy in force, so the MCP lane can apply
         // the SAME gate on the writes it drives over CDP without main seeing
         // them. Disclosed unconditionally, unlike wsEndpoint/cdpPort — it is a
@@ -4709,6 +4864,44 @@ export function registerBrowserRpc(
     });
 
     return { ok: true, x, y, dispatch: 'mouse' };
+  });
+
+  /**
+   * browser.upload.cdp
+   * Set a file input's files by path, so an upload works without a Playwright
+   * page. Main checks every path itself and hands the page only what that
+   * check returned; what the caller checked is not relied on.
+   * params: { files: string[], selector?: string, near?: boolean, timeoutMs?: number, surfaceId?: string }
+   * returns UploadOutcome
+   */
+  registerLeased('browser.upload.cdp', async (params, scope) => {
+    const files = params['files'];
+    if (!Array.isArray(files) || files.length === 0 || files.length > UPLOAD_MAX_FILES) {
+      throw new Error(`browser.upload.cdp: "files" must hold 1 to ${UPLOAD_MAX_FILES} paths`);
+    }
+    const root = uploadRootIn(getWmuxDir());
+    const safe = files.map((file: unknown) => {
+      const checked = checkUploadPath(file, root);
+      if (!checked.ok) throw new Error(`browser.upload.cdp blocked: ${uploadRefusalText(file, checked)}`);
+      return checked.path;
+    });
+    const selector =
+      typeof params['selector'] === 'string' && params['selector'] ? params['selector'] : DEFAULT_FILE_INPUT_SELECTOR;
+    if (selector.length > UPLOAD_MAX_SELECTOR_CHARS) throw new Error('browser.upload.cdp: "selector" is too long');
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const asked = params['timeoutMs'];
+    const timeoutMs =
+      typeof asked === 'number' && Number.isFinite(asked) && asked >= 1
+        ? Math.min(Math.floor(asked), UPLOAD_MAX_TIMEOUT_MS)
+        : UPLOAD_DEFAULT_TIMEOUT_MS;
+    const wc = resolveWc(surfaceId, 'browser.upload.cdp', scope);
+    return setFilesInIsolatedWorld(
+      (method, cmdParams) => wc.debugger.sendCommand(method, cmdParams),
+      safe,
+      selector,
+      params['near'] === true,
+      timeoutMs,
+    );
   });
 
   /**

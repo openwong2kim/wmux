@@ -22,7 +22,7 @@
  * the section verdicts without spawning a daemon or touching the real FS.
  */
 
-import { readFileSync, openSync, fstatSync, readSync, closeSync } from 'fs';
+import { readFileSync, readdirSync, openSync, fstatSync, readSync, closeSync } from 'fs';
 import { join, dirname } from 'path';
 import * as os from 'os';
 import { sendRequest, sendDaemonRequest } from '../client';
@@ -44,6 +44,7 @@ import {
 } from '../../shared/bootPhases';
 import type { RpcResponse } from '../../shared/rpc';
 import { handleDoctorDetect } from './doctorDetect';
+import { newestHangDump } from '../../daemon/hangEvidence';
 import {
   isAppMemoryDiagnostics, isDaemonMemoryDiagnostics,
   type AppMemoryDiagnostics, type DaemonMemoryDiagnostics,
@@ -55,6 +56,9 @@ import { fileSha256, probeKey, recordedProbe } from '../../shared/probedNative';
 import { BROKER_TOOL_NAME_RE, type McpSessionsSummary } from '../../shared/mcpSessions';
 import { CLAIM_REFUSALS, type IdentityClaimsSummary } from '../../shared/identityClaims';
 import { homeRelative } from '../../shared/homeRelative';
+import { EDGE_SIGNED_IN_HINT, edgeAccountSignedIn, edgeProfileDirs } from './edgeProfileSignin';
+import { claudeHookRuntimeReport, defaultPaths as defaultHooksPaths, type ClaudeHookRuntimeReport } from './setupHooks';
+import { claudeSelfTestLine, selfTestClaudeCopy, type ClaudeSelfTestResult } from '../../shared/hooks/claudeNativeHook';
 
 // --- public report model -----------------------------------------------------
 
@@ -105,6 +109,8 @@ export interface DoctorReport {
   mcp?: { verdict: Verdict; lines: CheckLine[] };
   /** How main takes pid claims, from the same summary as the mcp section. */
   identity?: { verdict: Verdict; lines: CheckLine[] };
+  /** How the Claude hook entries run; present when the run was given it. */
+  hooks?: { verdict: Verdict; lines: CheckLine[] };
 }
 
 // --- injected dependencies (the seam unit tests substitute) ------------------
@@ -148,6 +154,8 @@ export interface DoctorDeps {
   mainLogPath: string;
   /** Resolved absolute path to today's daemon log file. */
   daemonLogPath: string;
+  /** The newest file a stuck daemon left (src/daemon/hangWatchdog.ts), if any. */
+  newestHangDump?: () => { path: string; writtenAt: number } | null;
   /** Reads a file's full text, or returns null if it does not exist / errors. */
   readTextFile: (path: string) => string | null;
   /** Reads at most the trailing `maxBytes` of a file as UTF-8 text (or null if
@@ -159,8 +167,19 @@ export interface DoctorDeps {
   tailReadTextFile: (path: string, maxBytes: number) => string | null;
   /** Process env snapshot — only WMUX_DATA_SUFFIX is consulted today. */
   env: Record<string, string | undefined>;
+  /**
+   * wmux's own browser profile folders (the dedicated profile and each named
+   * one), as `[name, dir]`. Each one's `Default/Preferences` is read with
+   * readTextFile to tell whether Edge signed it in to an account. Absent: no check.
+   */
+  browserProfiles?: (env: Record<string, string | undefined>) => Array<[name: string, dir: string]>;
   /** The MCP section's inputs; the section is left out without them. */
   mcp?: McpDoctorDeps;
+  /** How the Claude hook entries run (setupHooks' claudeHookRuntimeReport). */
+  hooks?: () => ClaudeHookRuntimeReport;
+  /** Runs the copy native entries name once (`--self-test`) against this
+   *  build's line; null when that line cannot be read. Doctor alone runs it. */
+  hookSelfTest?: (copy: string) => Promise<ClaudeSelfTestResult | null>;
 }
 
 export interface McpDoctorDeps {
@@ -235,6 +254,7 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
   const built = deps.mcp ? await buildMcpSection(deps.mcp, appPipeReachable) : undefined;
   const mcp = built && { verdict: built.verdict, lines: built.lines };
   const identity = built?.identity;
+  const hooks = deps.hooks ? await buildHooksSection(deps.hooks(), deps.hookSelfTest) : undefined;
 
   const overall = worst([
     environment.verdict,
@@ -244,9 +264,40 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
     logs.verdict,
     ...(mcp ? [mcp.verdict] : []),
     ...(identity ? [identity.verdict] : []),
+    ...(hooks ? [hooks.verdict] : []),
   ]);
 
-  return { overall, environment, daemon, bootPhases, avHint, logs, ...(mcp ? { mcp } : {}), ...(identity ? { identity } : {}) };
+  return {
+    overall, environment, daemon, bootPhases, avHint, logs,
+    ...(mcp ? { mcp } : {}), ...(identity ? { identity } : {}), ...(hooks ? { hooks } : {}),
+  };
+}
+
+const HOOK_RUNTIME_VERDICT: Record<ClaudeHookRuntimeReport['severity'], Verdict> = { ok: 'OK', warn: 'WARN', fail: 'FAIL' };
+
+async function buildHooksSection(
+  report: ClaudeHookRuntimeReport,
+  selfTest?: (copy: string) => Promise<ClaudeSelfTestResult | null>,
+): Promise<{ verdict: Verdict; lines: CheckLine[] }> {
+  const lines: CheckLine[] = [{ label: 'claude hook runtime', value: report.state, verdict: HOOK_RUNTIME_VERDICT[report.severity], hint: report.detail }];
+  // A recorded pass says nothing about today (a home turned noexec): run the
+  // copy once, here and nowhere else.
+  if (selfTest && report.copy && report.state !== 'copy-missing') lines.push(selfTestLine(await selfTest(report.copy)));
+  return { verdict: worst(lines.map((l) => l.verdict)), lines };
+}
+
+const REPROBE = 'run `wmux setup-hooks --reprobe`';
+
+function selfTestLine(result: ClaudeSelfTestResult | null): CheckLine {
+  const label = 'claude hook self-test';
+  if (!result) return { label, value: 'not run', verdict: 'SKIP', hint: 'no bridge could be read, beside the copy or in this build' };
+  switch (result.outcome) {
+    case 'pass': return { label, value: 'passed', verdict: 'OK' };
+    case 'other-pin': return { label, value: 'runs, pins another bridge', verdict: 'WARN', hint: 'each run hands over to node; `wmux setup-hooks` brings the copy and the bridge in step' };
+    case 'fail': return { label, value: 'failed', verdict: 'FAIL', hint: `the copy printed ${JSON.stringify(result.printed)}, not the expected line; ${REPROBE}` };
+    case 'unstartable': return { label, value: 'failed', verdict: 'FAIL', hint: `the copy could not start (${result.error}); ${REPROBE}` };
+    case 'timeout': return { label, value: 'no answer in 5 s', verdict: 'WARN', hint: 'a slow antivirus scan is no evidence; run `wmux doctor` again' };
+  }
 }
 
 function buildEnvironment(
@@ -295,6 +346,21 @@ function buildEnvironment(
       ? 'Instance-isolation suffix is set; this is a dev/isolated build, not the packaged install.'
       : undefined,
   });
+
+  // Shown only when a profile is signed in: profile names, never the account.
+  // Every profile folder of each user-data-dir (Local State's info_cache), not only Default.
+  const signedIn = (deps.browserProfiles?.(deps.env) ?? [])
+    .filter(([, dir]) => edgeProfileDirs(deps.readTextFile(join(dir, 'Local State')))
+      .some((folder) => edgeAccountSignedIn(deps.readTextFile(join(dir, folder, 'Preferences')))))
+    .map(([name]) => name);
+  if (signedIn.length > 0) {
+    lines.push({
+      label: 'Edge profile account',
+      value: `signed in (${signedIn.join(', ')})`,
+      verdict: 'WARN',
+      hint: EDGE_SIGNED_IN_HINT,
+    });
+  }
 
   return { verdict: worst(lines.map((l) => l.verdict)), lines };
 }
@@ -473,6 +539,11 @@ function buildLogs(deps: DoctorDeps): DoctorReport['logs'] {
       verdict: errors > 0 ? 'WARN' : 'OK',
       hint: errors > 0 ? `${errors} error line(s) in today's log — inspect the tail for the cause.` : undefined,
     });
+  }
+
+  const dump = deps.newestHangDump?.();
+  if (dump) {
+    lines.push({ label: 'daemon hang dump', value: `${dump.path} — ${new Date(dump.writtenAt).toISOString()}`, verdict: 'OK' });
   }
 
   return { verdict: worst(lines.map((l) => l.verdict)), lines };
@@ -831,6 +902,19 @@ function getFallbackVersion(): string {
  *   - Linux:   ~/.config/<appName><suffix>/logs/main-YYYY-MM-DD.log
  * The Windows path is the dogfood-verified one; the others are best-effort.
  */
+/**
+ * Electron's userData for this instance: productName `wmux` plus
+ * WMUX_DATA_SUFFIX, under APPDATA (Windows), Application Support (macOS) or
+ * XDG_CONFIG_HOME (elsewhere). An empty variable counts as unset, as in
+ * resolveMainLogPath.
+ */
+export function resolveUserDataDir(env: Record<string, string | undefined>, platform: string, home: string): string {
+  const name = `wmux${env.WMUX_DATA_SUFFIX || ''}`;
+  if (platform === 'win32') return join(env.APPDATA || join(home, 'AppData', 'Roaming'), name);
+  if (platform === 'darwin') return join(home, 'Library', 'Application Support', name);
+  return join(env.XDG_CONFIG_HOME || join(home, '.config'), name);
+}
+
 export function resolveMainLogPath(date: string): string {
   const appName = 'wmux';
   const suffix = dataSuffix();
@@ -857,6 +941,22 @@ export function resolveDaemonLogPath(date: string): string {
 /** UTC date in YYYY-MM-DD — matches logSink's `todayUtc()`. */
 export function todayUtc(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
+}
+
+/**
+ * wmux's browser profile folders under the app's userData (main's
+ * ChromeLauncherRegistry): `chrome-agent-profile` is the default profile and
+ * `chrome-profiles/<name>` the named ones.
+ */
+function wmuxBrowserProfiles(env: Record<string, string | undefined>): Array<[string, string]> {
+  const userData = resolveUserDataDir(env, process.platform, os.homedir());
+  const out: Array<[string, string]> = [['default', join(userData, 'chrome-agent-profile')]];
+  try {
+    for (const entry of readdirSync(join(userData, 'chrome-profiles'), { withFileTypes: true })) {
+      if (entry.isDirectory()) out.push([entry.name, join(userData, 'chrome-profiles', entry.name)]);
+    }
+  } catch { /* no named profiles */ }
+  return out;
 }
 
 function readTextFileSafe(path: string): string | null {
@@ -970,6 +1070,7 @@ export function renderReport(report: DoctorReport): string {
 
   if (report.mcp) section('mcp', report.mcp.verdict, report.mcp.lines);
   if (report.identity) section('identity', report.identity.verdict, report.identity.lines);
+  if (report.hooks) section('hooks', report.hooks.verdict, report.hooks.lines);
   section('antivirus tax hint', report.avHint.verdict, report.avHint.lines);
   section('logs', report.logs.verdict, report.logs.lines);
 
@@ -1005,14 +1106,23 @@ export async function handleDoctor(args: string[], jsonMode: boolean): Promise<v
     authTokenPath: getAuthTokenPath(),
     mainLogPath: resolveMainLogPath(date),
     daemonLogPath: resolveDaemonLogPath(date),
+    newestHangDump: () => newestHangDump(join(getWmuxHomeDir(), 'logs')),
     readTextFile: readTextFileSafe,
     tailReadTextFile: tailReadTextFileSafe,
     env: process.env,
+    browserProfiles: wmuxBrowserProfiles,
     mcp: {
       home: os.homedir(),
       targets: () => readAllTargetStatuses(os.homedir()),
       recordedVerdict: recordedNativeVerdict,
       sessions: () => sendRequest('mcp.sessions.summary', {}),
+    },
+    hooks: () => claudeHookRuntimeReport(defaultHooksPaths()),
+    // Held to the bridge beside the copy, the one its runs hand over to;
+    // this build's when none is there.
+    hookSelfTest: async (copy) => {
+      const line = claudeSelfTestLine(join(dirname(copy), 'wmux-bridge.mjs')) ?? claudeSelfTestLine(defaultHooksPaths().bridgeSource);
+      return line ? selfTestClaudeCopy(copy, line) : null;
     },
   };
 

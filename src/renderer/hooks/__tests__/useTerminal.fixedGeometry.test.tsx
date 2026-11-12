@@ -73,11 +73,14 @@ afterEach(() => {
   resize.mockClear();
 });
 
-async function mount(fixedGeometry: { cols: number; rows: number } | undefined) {
+// Each case mounts its own pty: a pane unmounted at the end of one case is
+// parked for one task, and a mount of the same ptyId in the next would adopt
+// that terminal instead of making its own.
+async function mount(fixedGeometry: { cols: number; rows: number } | undefined, ptyId = 'p1') {
   const { useTerminal, terminalRegistry } = await import('../useTerminal');
   function Harness({ geometry }: { geometry: { cols: number; rows: number } | undefined }) {
     const ref = useRef<HTMLDivElement>(null);
-    useTerminal(ref, { ptyId: 'p1', isVisible: true, fixedGeometry: geometry });
+    useTerminal(ref, { ptyId, isVisible: true, fixedGeometry: geometry });
     return <div ref={ref} style={{ width: 800, height: 600 }} />;
   }
   host = document.createElement('div');
@@ -88,7 +91,7 @@ async function mount(fixedGeometry: { cols: number; rows: number } | undefined) 
   const rerender = async (g: { cols: number; rows: number } | undefined) => {
     await act(async () => { root!.render(<Harness geometry={g} />); });
   };
-  return { term: () => terminalRegistry.get('p1')!, rerender };
+  return { term: () => terminalRegistry.get(ptyId)!, rerender };
 }
 
 // The first case pays for importing the whole hook under jsdom.
@@ -121,9 +124,12 @@ describe('useTerminal fixedGeometry', { timeout: 60_000 }, () => {
     // jsdom measures no glyphs, so stand in for the container measurement.
     const propose = vi.spyOn(FitAddon.prototype, 'proposeDimensions').mockReturnValue({ cols: 90, rows: 20 });
     try {
-      const { term } = await mount(undefined);
+      const { term } = await mount(undefined, 'p2');
       expect(term().cols).toBe(90);
-      expect(resize).toHaveBeenCalledWith('p1', 90, 20);
+      // A fresh mount sends its first resize once its first-resize gate opens.
+      await act(async () => {
+        await vi.waitFor(() => expect(resize).toHaveBeenCalledWith('p2', 90, 20), { timeout: 5_000 });
+      });
     } finally {
       propose.mockRestore();
     }

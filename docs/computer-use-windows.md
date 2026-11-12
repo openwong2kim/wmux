@@ -243,9 +243,10 @@ section); that result says `delivery: "foreground"`. A posted one says
 - **Per action.** Checked first, before any window state is read: what the
   action asks for.
   - `click`: a single left click with no modifiers, after the UIA ladder
-    (Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern. Under
-    `foreground: 'refuse'`, a ladder pattern on a target that is not in
-    front answers `needs_foreground` instead (see below).
+    (DoDefaultAction on a covered target under `foreground: 'refuse'`, then
+    Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern. Under
+    `refuse`, a ladder pattern other than DoDefaultAction on a target that
+    is not in front answers `needs_foreground` instead (see below).
     Right and middle buttons, double and triple clicks, and modifiers go the
     real way: posted messages carry no keyboard state, and the rest was not
     measured.
@@ -279,13 +280,63 @@ section); that result says `delivery: "foreground"`. A posted one says
     focus (to the next field of a page, or through a dialog) so the rest
     would land where no check was made. Only one trailing newline is
     posted: a trailing `\n` (backslash, n) types Enter in the same action.
-  - `hotkey` with modifiers and `scroll`: always the real way (a chord
-    cannot be posted; `WM_MOUSEWHEEL` was not measured).
-  - `setValue` and the UIA click ladder are not input, but each of their
-    pattern calls (Invoke, Toggle, SelectionItem, ExpandCollapse, Value)
-    brought a covered target window to the front, with WinForms and with
-    Electron (a ScrollIntoView or a property read did not). Their results
-    say `background` unless the target window came to the front during the
+  - `hotkey` with modifiers: always the real way (a chord cannot be
+    posted).
+  - `scroll` up or down: one `WM_MOUSEWHEEL` per notch (`WHEEL_DELTA`,
+    the point in screen coordinates, no key or button state), posted to the
+    window a click at the point would hit, with the same receiver checks as
+    a posted click. Only the classes it was measured to scroll get it, and
+    only multiline (`ES_MULTILINE`): `Edit`, `RichEdit20W` and
+    `RICHEDIT50W`. A single-line `Edit` hands the wheel to its parent (a
+    combo box would change its selection). A Chromium or Electron window,
+    and any other class, goes the real way. So does `RichEditD2DPT`
+    (Notepad's own RichEdit, not a system class), which was not measured
+    with the wheel, and a WinForms `RichTextBox`, which registers its own
+    class (`WindowsForms10.RichEdit20W.*`), as it does for posted clicks
+    and keys. The control's first visible line and
+    line count (`EM_GETFIRSTVISIBLELINE`, `EM_GETLINECOUNT`) are read
+    before posting; a control that does not answer in time goes the real
+    way. Verified when, within 300 ms, the first visible line moved the way
+    the wheel turned and the line count stayed (a log that grows can scroll
+    by itself); a control already at that end is `unverified`. `scroll`
+    left or right is always the real way (`WM_MOUSEHWHEEL` was not
+    measured).
+
+    Posted `WM_MOUSEWHEEL` (3 notches down) to the window a posted click
+    would hit, with the target covered by another window, 6 calls each:
+
+    | Target window class | Scrolled | Foreground taken | Raised | Cursor moved |
+    | --- | --- | --- | --- | --- |
+    | `Edit` (raw Win32, multiline) | 6/6 | 0 | 0 | 0 |
+    | WinForms `RichTextBox` (a `RichEdit20W` superclass) | 6/6 | 0 | 0 | 0 |
+    | Electron 42, scrollable `div` | 0/6 | 0 | 0 | 0 |
+    | Chrome 157, scrollable `div` | 0/6 | 0 | 0 | 0 |
+
+    Chromium ignores it while covered (the same post with the target in
+    front scrolls, 4/4), so Chromium and Electron keep real input. Neither
+    page had a child window at the point, so the post went to the top-level
+    `Chrome_WidgetWin_1`.
+
+    The helper's own `scroll` on a covered window (3 notches, by element
+    index):
+
+    | Target | `foreground` | Result | First visible line | Front window, cursor |
+    | --- | --- | --- | --- | --- |
+    | `Edit`, down then up | `allow` | `background`, `verified` (5/5) | 0 → 9 → 18 → 27 → 18 → 9 | unchanged |
+    | `Edit`, down | `refuse` | `background`, `verified` (3/3) | 0 → 9 → 18 → 27 | unchanged |
+    | `Edit` at the top, up | `allow` | `background`, `unverified` (2/2) | 0 → 0 | unchanged |
+    | `RICHEDIT50W`, down then up | `allow`, `refuse` | `background`, `verified` (5/5) | 0 → 27 → 9 | unchanged |
+    | `RichEdit20W`, down then up | `allow`, `refuse` | `background`, `verified` (5/5) | 0 → 27 → 9 | unchanged |
+    | single-line `Edit`, down | `refuse` | `needs_foreground`, nothing sent | 0 → 0 | unchanged |
+    | `RichEditD2DPT` (Notepad) | | not measured: real input | | |
+    | `Edit`, right | `refuse` | `needs_foreground`, nothing sent | 0 → 0 | unchanged |
+    | WinForms `RichTextBox`, list box, Electron | `refuse` | `needs_foreground`, nothing sent | unchanged | unchanged |
+    | WinForms `RichTextBox`, Electron | `allow` | `foreground` (real input, as before) | `RichTextBox` 0 → 27; Electron not read | target came to the front; cursor back |
+  - `setValue` and the UIA click ladder are not input, but their pattern
+    calls (Invoke, Toggle, SelectionItem, ExpandCollapse, Value) bring a
+    covered target window to the front (the table below). DoDefaultAction,
+    ScrollIntoView and property reads do not. Their results say
+    `background` unless the target window came to the front during the
     call (the foreground is read before the call's checks).
 - **Refused before posting** (`not_delivered`, then real input), besides
   the above: the target window is minimized, hidden or cloaked, on another
@@ -304,8 +355,9 @@ section); that result says `delivery: "foreground"`. A posted one says
   app acted on it. A posted action is `unverified` (`delivered_unverified`)
   unless a re-read confirms it: for `type`, the field's UIA value is the
   value before with exactly the typed text inserted (the same rule as real
-  input, but read from the target field, not the system focus). Clicks and
-  keys are `unverified`.
+  input, but read from the target field, not the system focus); for
+  `scroll`, the control's first visible line moved the way the wheel
+  turned and its line count stayed. Clicks and keys are `unverified`.
 - **Our side effects.** The cursor position and the foreground window are
   read before posting and again at least 60 ms after it. If the cursor now
   sits on the target point and did not before, or the foreground window
@@ -340,9 +392,11 @@ section); that result says `delivery: "foreground"`. A posted one says
   with nothing posted and the sent counter unchanged since the action
   began becomes `needs_foreground`; a stop after posting started (no focus
   after the click, the field moved, the keys refused) keeps its own answer.
-  `scroll` and a `hotkey` with modifiers answer `needs_foreground` at once.
-  The pattern calls of `setValue` and the UIA click ladder raise a covered
-  target, so they are foreground input (Core
+  A `scroll` left or right and a `hotkey` with modifiers answer
+  `needs_foreground` at once; a `scroll` up or down over a window that does
+  not take the posted wheel answers it after the receiver checks.
+  The pattern calls of `setValue` and the UIA click ladder take the front
+  from a covered target's owner, so they are foreground input (Core
   `Background.PatternCallAllowed`). Under `refuse` one is made only when
   the target window is the foreground window, read right before the call
   and after the element checks (gone, stale, elevated), where it cannot
@@ -353,16 +407,64 @@ section); that result says `delivery: "foreground"`. A posted one says
   click lands on whatever is at the element's point, and the pattern call
   presses exactly that element. An index click on an element with no
   ladder pattern is posted as before.
-  Under `allow` such a call can still bring a covered target to the
-  front: an Invoke or ExpandCollapse call did with WinForms and Electron
-  (a ScrollIntoView did not). A result then says `foreground`, and an
-  error says so in its message, as does a click that went on another way
-  after such a call certainly did not run.
+  The one exception is LegacyIAccessible `DoDefaultAction` (Core
+  `Background.DefaultActionFirst`). Under `refuse` with the target not in
+  front, the click ladder tries it first, before the gate above, on an
+  element whose default action is a press: a button, hyperlink, menu
+  item, check box or radio button with a non-empty `DefaultAction`
+  (`Background.DefaultActionIsPress`; a list, tree or data item's default
+  action can be the double click, which opens things). The other target
+  checks (gone, stale, elevated, a secret field) run first. An error that
+  certainly did nothing falls through to `needs_foreground`; Chromium and
+  Electron answer `UIA_E_ELEMENTNOTENABLED` on a covered window in some
+  sessions. A returned success never goes on another way, since the press
+  may have happened: the result is `delivery: background`, `unverified`
+  unless a check box's toggle state or a radio button's selection is read
+  back changed.
+  Under `allow` a pattern call can still bring a covered target to the
+  front. A result then says `foreground`, and an error says so in its
+  message, as does a click that went on another way after such a call
+  certainly did not run.
   The sent counter's baseline for a request is taken after the release of
   keys a dead helper left down, so those up events never decide an
   action's `not_delivered` or `needs_foreground`. The helper's stderr says
   `needs foreground (…)` for such a refusal under `refuse`, and
   `real input, not background (…)` under `allow`.
+- **What takes the front** (measured on Windows 11, November 2026,
+  WinForms on .NET Framework 4.8, Electron 42, Chrome 157, Calculator and
+  Settings, the target covered by another process's foreground window,
+  sampled every millisecond; calls that took effect / took the foreground
+  / raised the window, of the calls made; blank: not run or not exposed):
+
+  | call | WinForms | Electron | Chrome | Calculator | Settings |
+  | --- | --- | --- | --- | --- | --- |
+  | Invoke | 12/12/0 of 12 | 18/18/18 of 18 | 18/18/18 of 18 | 10/10/10 of 10 | |
+  | Toggle | 12/12/0 of 12 | 18/18/18 of 18 | 18/18/18 of 18 | | |
+  | SelectionItem | 12/12/12 of 12 | 18/18/18 of 18 | 18/18/18 of 18 | | |
+  | ExpandCollapse | 12/12/4 of 12 (tree) | 31/36/36 of 36 | 30/36/36 of 36 | | 9/9/9 of 9 |
+  | ScrollPattern | 21/21/21 of 21 | 18/18/18 of 18 | 18/18/18 of 18 | | 9/9/9 of 9 |
+  | UIA `SetFocus` | 7/7/4 of 8 | 12/12/12 of 12 | 11/11/11 of 12 | | |
+  | ScrollIntoView | | 7/0/0 of 18 | 7/0/0 of 18 | | 6/0/0 of 9 |
+  | DoDefaultAction | 12/0/0 of 12 | 6/0/0 of 18 | 9/0/0 of 18 | 8/0/0 of 8 | |
+
+  - Each call that took the front injected a key pair (the reserved
+    virtual key `0xB9`, down and up) at the call, which passes the
+    foreground lock even with `SPI_GETFOREGROUNDLOCKTIMEOUT` at its
+    maximum. Whether the caller was started by the foreground process
+    made no difference.
+  - WinForms Invoke, Toggle, `SetFocus` on a button and Expand on a tree
+    item activate the target **without raising it**: the covering window
+    stays on screen while keyboard focus moves to the hidden target, so
+    the user's next keys go there.
+  - ScrollIntoView and DoDefaultAction never took the front. On Chromium
+    and Electron both act on a covered window in some sessions only, all
+    or nothing per session (the misses: `UIA_E_ELEMENTNOTENABLED` from
+    DoDefaultAction, no scroll from ScrollIntoView); with the target in
+    front they always did. A WinForms ListBox item has no ScrollItem and a
+    WinForms ComboBox no ExpandCollapse.
+  - Not run: Notepad (a RichEdit in a WinForms window stands in for it in
+    the ScrollPattern row), Explorer, and Toggle on Calculator and
+    Settings (a system setting or always-on-top).
 - Measured on Windows 11 with Chrome 155, Electron 42 and Notepad
   (`RichEditD2DPT`): posted clicks move the caret or land as
   `pointerType: mouse`, posted keys insert text, and the cursor, foreground
@@ -415,7 +517,7 @@ section); that result says `delivery: "foreground"`. A posted one says
   virtual desktop) gets no real input at all: it could take a click or keys
   only by being shown, given the foreground or switched to, so the answer
   is `window_not_focused` before anything is done to it.
-- The user's cursor: a `scroll` notch moves the cursor to the point (a real
+- The user's cursor: a real `scroll` notch moves the cursor to the point (a real
   wheel event goes to the window under the cursor), turns the wheel and
   moves the cursor back to where it was before the scroll (read under the
   input lock before the first notch), each notch one `SendInput` call, so
@@ -489,6 +591,118 @@ section); that result says `delivery: "foreground"`. A posted one says
   main's `releaseInput` to a fresh helper (`HelperProcess.ts`) are the
   release path; because every batch is a single `SendInput` call, a kill
   practically never leaves anything down.
+
+## Giving the front back
+
+Real input, a UIA pattern call and UIA `SetFocus` all bring the target
+window to the front (Background input, What takes the front). The window
+the user had in front gets it back once the action is done (Core
+`ForegroundReturn`, Helper `GiveBack`, around every input method in
+`Server`).
+
+- **Before the action** (`GiveBack.Begin`): the foreground window, its
+  owner, the cursor, the target process's visible top-level windows, and
+  GetLastInputInfo's tick. Under `foreground: 'allow'`, if the user's own
+  input is younger than a second, the action waits in 50 ms slices for a
+  second of quiet, at most a second in all, then goes on or answers
+  `user_input_active` (`not_delivered`; nothing was sent, and keys are
+  never queued). Under `refuse` nothing takes the front, so it does not
+  wait.
+- **The user's input, told from ours.** SendInput moves GetLastInputInfo,
+  and so does a UIA pattern or `SetFocus` call, which injects a `0xB9` key
+  pair. Each of those notes its own tick (`GiveBack.NoteOwnInput`, with
+  GetLastInputInfo read before the SendInput): a tick up to 20 ms after our
+  SendInput, or during a UIA call and 20 ms after it returns
+  (`GiveBack.CallDone`), is ours; anything later is the user's. SendInput's
+  events are stamped while it runs, so 20 ms covers one tick of the clock
+  and no more: key presses a few tens of milliseconds apart do not hide the
+  user's typing between them. Input from before the action began (the tick
+  `Begin` read) is never this action's. A newer tick seen before our next
+  input is remembered, since GetLastInputInfo keeps only the latest. Real
+  input within those 20 ms, or during a UIA call, reads as ours, which errs
+  toward giving the front back. A batch stamped later than that reads as
+  the user's, which errs toward leaving the target in front.
+- **After the action**, whether it succeeded or failed: nothing happens
+  unless the foreground window is now the target window or one it owns,
+  or no window at all, and was not before. The foreground window is
+  compared, not the Z order: WinForms activates a covered window without
+  raising it. A UIA call can also deactivate the user's window without
+  the target activating (seen on a WinForms target, about one action in
+  twenty in some runs, with and without this change); the user's window
+  then gets the front back as well, even under `keepFront`, unless the
+  user's own input arrived (they may be switching windows themselves).
+  The note then says no window was given the front, never that the target
+  is in front. The target is left in front, and the
+  note or message says why, when:
+  - the action passed `keepFront: true` (and the target is in front);
+  - the user's own input arrived;
+  - a key or button the helper pressed is still down;
+  - the target thread is in menu or popup-menu mode (`GUI_INMENUMODE`,
+    `GUI_POPUPMENUMODE`, from `GetGUIThreadInfo`);
+  - the target process has a visible top-level window it did not have
+    before (a dropdown, a dialog, a popup menu); tooltips, hover cards and
+    click-through windows (`WS_EX_NOACTIVATE`, `WS_EX_TRANSPARENT`,
+    `tooltips_class32`) do not count;
+  - the previous window is gone, minimized, or runs above the helper's
+    integrity level (or its process cannot be read).
+- **Giving it back:** when the action sent input of its own,
+  `SendMessageTimeout(WM_NULL)` to the target first, at most 200 ms, so it
+  has handled our input (a click or a UIA call can activate it a moment
+  after the call returns); then the checks above, then
+  `SetForegroundWindow` to the previous window, only if its handle still
+  names the same window (the pid and class `Begin` saw), and the
+  foreground is read back before the note says it went back. The cursor
+  goes back only if it is still where our last pointer batch left it. The
+  reply goes out
+  then, with a note that the front went back: anything in the target that
+  closes on focus loss (a menu, a command palette, a flyout) may have
+  closed, and `keepFront: true` keeps it open. Windows refuses the change
+  when the helper sent no input of its own (posted input) and the target
+  came forward by itself (a posted click on a covered Chrome window). The
+  helper then sends the no-op key pair UIA sends before it moves the
+  foreground (`VK 0xB9`, which no app or layout maps to anything), once
+  per action and only if no user input arrived since the action began, and
+  tries once more. The pair is the helper's own input. If that is refused
+  too, the note says the target is still in front.
+- **Keys after a click.** Under `allow`, `pressKey`, `hotkey` and `type`
+  without an index bring a target that is not in front forward themselves
+  (`Focus.BringForwardForKeys`: `SetForegroundWindow`, so activation gives
+  keyboard focus back to the control that had it; UIA `SetFocus` on the
+  window only if Windows refused, since in Chromium it moves focus to the
+  document), wait until keyboard focus reads the same twice (window and
+  element), send the keys, and the front goes back as after a click. A
+  Chromium window (Chrome, Edge, Electron, VS Code) handles keys in its
+  renderer process after the browser window has answered `WM_NULL`, and
+  drops any that arrive after it lost the front. No Win32 signal says the
+  renderer is done, so after `pressKey` or `hotkey` into a Chromium window
+  the front stays 150 ms (`ChromiumKeySettleMs`) before it goes back.
+  Measured with a click on a page button and then one key, 10 tries per
+  app on Chrome and Electron: with no wait, Space landed 0 of 10 and Enter
+  5 to 6 of 10; with 75 ms or 150 ms, 10 of 10 for both keys. 150 ms
+  leaves a margin; it adds about that much to the reply. `type` needs no
+  wait: it waits until the field shows the text. So click a field, then press a key, works without `keepFront`.
+  The keys go out only once the target is in front with keyboard focus
+  inside it, checked again right before SendInput; if Windows refuses the
+  change, the action answers `window_not_focused` and nothing is sent.
+  Under `refuse` they still need the target in front already.
+- **A covered Chromium window.** Chromium (Chrome, Edge, Electron, VS
+  Code) drops a window's page from accessibility while the window is fully
+  covered (its native occlusion tracking). Measured on Chrome and Electron
+  with default flags, fully covered: `getAppState` still lists the
+  elements, but every press answers `element_stale`, and the message says
+  why and to ask the user to bring the window up. Keys still work: they
+  bring the window forward themselves. A posted click on a covered Chrome
+  window makes Chrome come forward by itself; the give-back takes the
+  no-op key pair above. So a fully covered Chromium window cannot be driven
+  by element in the background.
+- **One re-check**, 300 ms later on a timer, after a give-back or after
+  an action that sent input without moving the front: if the target took
+  the front by itself (Chrome activates after a click, or an activation
+  came late) and the checks still pass, `SetForegroundWindow` once more,
+  silently. A new request, the stop
+  key (`releaseInput`) or shutdown cancels it. It never loops. Posted input
+  doesn't count as sent input here, so a window that activates after a posted
+  click, later than the reply, is not re-checked and keeps the front.
 
 ## Agent overlay
 
@@ -657,9 +871,13 @@ node native\computer-use-windows\probe.mjs <exe> getAppState '{"app":"notepad","
     with another app. `click` an element and `type` with an index into a
     text field of each: the text lands, the results say
     `delivery: "background"`, and the mouse pointer, the window in front and
-    the focused control of the covering app do not change. A right click,
-    a double click, `scroll` and a `hotkey` with modifiers come back
-    `delivery: "foreground"` (real input, as before). The helper's stderr
+    the focused control of the covering app do not change. `scroll` down
+    then up over a multiline `Edit` or raw `RichEdit` control of a covered
+    window comes back `delivery: "background"` and `verified`, with the
+    same pointer, front window and focus. A right click, a double click,
+    `scroll` over Chrome or Electron, `scroll` left or right and a
+    `hotkey` with modifiers come back `delivery: "foreground"` (real
+    input, as before). The helper's stderr
     names why a click or typing that could have been posted was not.
 
 ### 4. Explorer windows

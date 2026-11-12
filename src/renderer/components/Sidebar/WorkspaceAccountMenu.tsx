@@ -8,7 +8,7 @@ import type { CredentialStatus } from '../../../main/ipc/handlers/account.handle
 import { accountGroupOf, groupAccountsBoundFirst } from '../../../shared/accountGroup';
 
 type Vendor = 'claude' | 'codex';
-type AccountRow = Account & { status: CredentialStatus };
+type AccountRow = Account & { status: CredentialStatus; tokenSignIn?: { createdAt: number; usable: boolean } };
 
 /**
  * Workspace right-click → per-vendor account submenu (M1: BIND ONLY).
@@ -123,13 +123,14 @@ export default function WorkspaceAccountMenu({
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-[13px] text-left transition-colors hover:bg-[var(--bg-overlay)]"
                     style={{ color: 'var(--text-main)' }}
                     onClick={() => bind(vendor, r.id)}
-                    title={r.status.loggedIn
+                    title={r.status.loggedIn || r.tokenSignIn?.usable
                       ? (r.status.subscriptionType ? `${r.status.subscriptionType}` : t('accounts.loggedIn'))
                       : t('accounts.notLoggedIn')}
                   >
                     <span className="w-3 shrink-0 text-[var(--accent)]">{boundId === r.id ? '●' : ''}</span>
                     <span className="truncate flex-1">{r.name}</span>
-                    {!r.status.loggedIn && (
+                    {/* A long-lived token signs the account's new panes in without a browser login. */}
+                    {!r.status.loggedIn && !r.tokenSignIn?.usable && (
                       <span className="text-[11px] text-[var(--accent-red)] shrink-0">{t('accounts.loggedOut')}</span>
                     )}
                     {r.status.subscriptionType && (

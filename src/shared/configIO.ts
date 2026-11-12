@@ -32,6 +32,7 @@ import { parse as parseTomlText } from 'smol-toml';
 import type { McpConfigFormat } from './mcpTargets';
 import { CORE_MODE_ARG } from './coreSurface';
 import { COMMANDER_MODE_ARG } from './commanderSurface';
+import { stripBom } from './stripBom';
 
 /** Thrown when a config file is present but unparseable. Callers choose: abort
  *  a write (never clobber a file we can't understand) vs. report "not
@@ -172,13 +173,14 @@ function serversKey(format: McpConfigFormat): 'mcp_servers' | 'mcpServers' {
  * fresh file → `{}`. Throws {@link ConfigParseError} on malformed input.
  */
 export function parseConfig(text: string, format: McpConfigFormat): Record<string, unknown> {
-  if (!text.trim()) return {};
+  const bare = stripBom(text);
+  if (!bare.trim()) return {};
   let parsed: unknown;
   try {
     parsed = format === 'json'
-      ? JSON.parse(text, (key, value) =>
+      ? JSON.parse(bare, (key, value) =>
           key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : value)
-      : parseTomlText(text);
+      : parseTomlText(bare);
   } catch (e) {
     throw new ConfigParseError(e instanceof Error ? e.message : String(e));
   }
@@ -343,8 +345,12 @@ function isAnyTableHeader(line: string): boolean {
   return /^\s*\[\[?[^\]]/.test(line);
 }
 
-/** Range [start, end) of lines spanning the `[mcp_servers.<key>]` table and any
- *  child sub-tables (e.g. `[mcp_servers.<key>.env]`). null when absent. */
+/** Range [start, end) of the lines that are the `[mcp_servers.<key>]` table's
+ *  own, child sub-tables (e.g. `[mcp_servers.<key>.env]`) included. null when
+ *  absent. A comment past the last key belongs to what follows when a blank
+ *  line or nothing at all separates it from the next header, so it stays; only
+ *  a comment touching the last key, with neither of those, goes with the table.
+ *  A wmux hooks marker is never the table's: it bounds another block. */
 function findTomlBlockRange(lines: string[], key: string): [number, number] | null {
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -363,10 +369,24 @@ function findTomlBlockRange(lines: string[], key: string): [number, number] | nu
       break;
     }
   }
-  // Exclude trailing blank lines from the block so the separator before the
-  // next table (or EOF) is preserved in the surrounding text, not swallowed.
-  while (end > start + 1 && lines[end - 1].trim() === '') end--;
-  return [start, end];
+  // Walk by value, not by line: a multi-line value can hold a line that reads
+  // as a comment or a blank.
+  let lastOwn = start;
+  for (let i = start + 1; i < end; i++) {
+    const eq = tomlKeyValueEq(lines[i]);
+    if (eq !== -1) i = tomlValueEndRow(lines, i, eq);
+    if (eq !== -1 || isAnyTableHeader(lines[i])) lastOwn = Math.min(i, end - 1);
+  }
+  let tail = lastOwn + 1;
+  while (tail < end && isTableOwnComment(lines[tail])) tail++;
+  const touchesNextHeader = tail === end && end < lines.length;
+  return [start, touchesNextHeader ? lastOwn + 1 : tail];
+}
+
+function isTableOwnComment(line: string): boolean {
+  return /^\s*#/.test(line)
+    && !markerLine(CODEX_HOOKS_MANAGED_MARKER, line)
+    && !markerLine(CODEX_HOOKS_MANAGED_END_MARKER, line);
 }
 
 /** Emit a key segment for a TOML header: bare when allowed, else basic-string. */
@@ -500,6 +520,16 @@ function removeToml(text: string, keys: string[]): string {
 
 // ── Unified text→text API used by McpRegistrar + CLI ─────────────────────────
 
+/** Run an edit on the text without its byte order mark and put the mark back,
+ *  so the file stays as its last writer saved it. The editors work line by
+ *  line, and a mark left on the first line would hide a table header there. */
+function keepingBom(text: string, edit: (bare: string) => string): string {
+  const bare = stripBom(text);
+  if (bare === text) return edit(text);
+  const out = edit(bare);
+  return out ? text[0] + out : out;
+}
+
 /** Return new file text with `key` set to the wmux `node <script>` entry.
  *  Throws ConfigParseError if the existing text is malformed (caller aborts).
  *
@@ -512,18 +542,20 @@ export function upsertMcpServer(
   launcher: WmuxLauncherInput,
   profile?: WmuxMcpEntryProfile,
 ): string {
-  // Validate parseability up-front so a malformed file aborts instead of being
-  // clobbered (TOML append would otherwise blindly tack a block onto garbage).
-  const parsed = parseConfig(text, format);
-  const command = launcherCommand(launcher);
-  const args = wmuxEntryArgs(launcher, profile, getMcpServerEntry(parsed, format, key));
-  const out = format === 'json' ? upsertJson(text, key, command, args) : upsertToml(text, key, command, args);
-  // Never RETURN invalid TOML: the line-based surgical editor can't target an
-  // inline-table entry (`wmux = { ... }` under `[mcp_servers]`) and would append
-  // a duplicate table. Validate the output and throw rather than hand a caller a
-  // string it might persist. (JSON re-stringify is always valid.)
-  if (format === 'toml') parseConfig(out, format);
-  return out;
+  return keepingBom(text, (bare) => {
+    // Validate parseability up-front so a malformed file aborts instead of being
+    // clobbered (TOML append would otherwise blindly tack a block onto garbage).
+    const parsed = parseConfig(bare, format);
+    const command = launcherCommand(launcher);
+    const args = wmuxEntryArgs(launcher, profile, getMcpServerEntry(parsed, format, key));
+    const out = format === 'json' ? upsertJson(bare, key, command, args) : upsertToml(bare, key, command, args);
+    // Never RETURN invalid TOML: the line-based surgical editor can't target an
+    // inline-table entry (`wmux = { ... }` under `[mcp_servers]`) and would append
+    // a duplicate table. Validate the output and throw rather than hand a caller a
+    // string it might persist. (JSON re-stringify is always valid.)
+    if (format === 'toml') parseConfig(out, format);
+    return out;
+  });
 }
 
 /** Return new file text with the given wmux keys removed (only those keys). */
@@ -532,8 +564,10 @@ export function removeMcpServers(
   format: McpConfigFormat,
   keys: string[],
 ): string {
-  parseConfig(text, format);
-  return format === 'json' ? removeJson(text, keys) : removeToml(text, keys);
+  return keepingBom(text, (bare) => {
+    parseConfig(bare, format);
+    return format === 'json' ? removeJson(bare, keys) : removeToml(bare, keys);
+  });
 }
 
 // ── Codex `notify` (root-level array) read/write ─────────────────────────────
@@ -583,6 +617,10 @@ function notifyLineText(scriptPath: string): string {
  * decided the slot is ours-or-absent (skip-if-foreign lives in registerCodexNotify).
  */
 export function upsertNotifyToml(text: string, scriptPath: string): string {
+  return keepingBom(text, (bare) => upsertNotifyBare(bare, scriptPath));
+}
+
+function upsertNotifyBare(text: string, scriptPath: string): string {
   parseConfig(text, 'toml'); // abort on malformed rather than append to garbage
   const eol = detectEol(text);
   const lines = text.split(/\r?\n/);
@@ -620,6 +658,10 @@ export function upsertNotifyToml(text: string, scriptPath: string): string {
 /** Return new TOML text with a wmux-owned root `notify` line removed. Leaves a
  *  foreign notify untouched. No-op (returns input) when absent/foreign. */
 export function removeNotifyToml(text: string): string {
+  return keepingBom(text, (bare) => removeNotifyBare(bare));
+}
+
+function removeNotifyBare(text: string): string {
   const parsed = parseConfig(text, 'toml');
   if (!isWmuxOwnedNotify(getNotify(parsed))) return text;
   const eol = detectEol(text);
@@ -736,7 +778,7 @@ export function findCodexHooksBlock(text: string):
   | CodexHooksBlockRegion
   | { unterminated: true }
   | null {
-  const lines = text.split(/\r?\n/);
+  const lines = stripBom(text).split(/\r?\n/);
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
     if (markerLine(CODEX_HOOKS_MANAGED_MARKER, lines[i])) { start = i; break; }
@@ -795,6 +837,10 @@ export function findCodexHooksBlock(text: string):
  * bound is a block we must not rewrite.
  */
 export function upsertCodexHooksToml(text: string, bridgeScript: string): string {
+  return keepingBom(text, (bare) => upsertCodexHooksBare(bare, bridgeScript));
+}
+
+function upsertCodexHooksBare(text: string, bridgeScript: string): string {
   parseConfig(text, 'toml'); // abort on malformed rather than append to garbage
   const eol = detectEol(text);
   const block = findCodexHooksBlock(text);
@@ -826,6 +872,10 @@ export function upsertCodexHooksToml(text: string, bridgeScript: string): string
  * input) when the region is absent or unterminated — never guesses a boundary.
  */
 export function removeCodexHooksToml(text: string): string {
+  return keepingBom(text, (bare) => removeCodexHooksBare(bare));
+}
+
+function removeCodexHooksBare(text: string): string {
   parseConfig(text, 'toml');
   const block = findCodexHooksBlock(text);
   if (!block || 'unterminated' in block) return text;

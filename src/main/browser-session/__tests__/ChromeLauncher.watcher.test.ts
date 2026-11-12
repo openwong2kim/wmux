@@ -226,7 +226,8 @@ function spawnWritesPortFile(child: FakeChild, port: number): void {
     const dir = (args.find((a) => a.startsWith('--user-data-dir=')) ?? '')
       .slice('--user-data-dir='.length)
       .replace(/\\/g, '/');
-    state.portFiles[dir] = `${port}\n/devtools/browser/uuid-${port}\n`;
+    // The path the fake Chrome answers with (WS_URL): it wrote this file.
+    state.portFiles[dir] = `${port}\n/devtools/browser/watcher-uuid\n`;
     return child;
   });
 }
@@ -248,10 +249,13 @@ beforeEach(() => {
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
   vi.stubGlobal('WebSocket', FakeBrowserWs);
+  // These fakes are a Chrome on a DevTools port, whatever the default transport is.
+  vi.stubEnv('WMUX_CHROME_TRANSPORT', 'port');
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   delete process.env.WMUX_CHROME_TARGET_WATCHER;
 });
 
@@ -406,7 +410,7 @@ describe('ChromeLauncher tab-target watcher', () => {
     // Chrome outlived wmux AND swapped the page inside the tracked tab, so
     // revival rule (2) (targetId still listed) cannot help - only the tab
     // anchor can. No spawn: DevToolsActivePort answers.
-    state.portFiles['/tmp/watch-5'] = '22001\n/devtools/browser/x\n';
+    state.portFiles['/tmp/watch-5'] = '22001\n/devtools/browser/watcher-uuid\n';
     serveChrome();
     tabs.set('tab-1', 'page-new');
     listedPages = ['page-new'];
@@ -526,7 +530,7 @@ describe('ChromeLauncher tabs its own tabs open (target=_blank, window.open)', (
 
   it('never adopts the pages discovery replays when the watcher starts, only pages made after it', async () => {
     // Chrome outlived wmux with the record's tab and a popup of it open.
-    state.portFiles['/tmp/pop-4'] = '22001\n/devtools/browser/x\n';
+    state.portFiles['/tmp/pop-4'] = '22001\n/devtools/browser/watcher-uuid\n';
     serveChrome();
     tabs.set('tab-1', 'page-1');
     listedPages = ['page-1', 'page-old'];

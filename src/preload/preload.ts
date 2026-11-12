@@ -852,10 +852,15 @@ const electronAPI = {
     getRequireApproval: () => ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_GET) as Promise<boolean>,
     setRequireApproval: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_SET, value) as Promise<boolean>,
-    getLiveTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_GET) as Promise<number>,
-    setLiveTaskCap: (value: number) => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_SET, value) as Promise<number>,
-    getHourlyTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_GET) as Promise<number>,
-    setHourlyTaskCap: (value: number) => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_SET, value) as Promise<number>,
+    // null: no limit.
+    getLiveTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_GET) as Promise<number | null>,
+    setLiveTaskCap: (value: number | null) => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_SET, value) as Promise<number | null>,
+    getHourlyTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_GET) as Promise<number | null>,
+    setHourlyTaskCap: (value: number | null) => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_SET, value) as Promise<number | null>,
+    getTasksPerCall: () => ipcRenderer.invoke(IPC.FANOUT_TASKS_PER_CALL_GET) as Promise<number>,
+    setTasksPerCall: (value: number) => ipcRenderer.invoke(IPC.FANOUT_TASKS_PER_CALL_SET, value) as Promise<number>,
+    getDepth: () => ipcRenderer.invoke(IPC.FANOUT_DEPTH_GET) as Promise<number>,
+    setDepth: (value: number) => ipcRenderer.invoke(IPC.FANOUT_DEPTH_SET, value) as Promise<number>,
     getTrustAgyFolders: () => ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_GET) as Promise<boolean>,
     setTrustAgyFolders: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, value) as Promise<boolean>,
@@ -920,6 +925,12 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.ACCOUNT_ADD, args) as Promise<
         import('../main/account/accountStore').Account
       >,
+    // A new Claude account from the `claude setup-token` token on the
+    // clipboard; main reads the clipboard, so no value crosses here.
+    addWithToken: (args: { name: string; share?: boolean; group?: string }) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_ADD_WITH_TOKEN, args) as Promise<
+        import('../main/ipc/handlers/account.handler').AddWithTokenResult
+      >,
     rename: (args: { id: string; name: string }) =>
       ipcRenderer.invoke(IPC.ACCOUNT_RENAME, args) as Promise<{ ok: boolean }>,
     setGroup: (args: { id: string; group: string }) =>
@@ -935,8 +946,30 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.ACCOUNT_CREDENTIAL_STATUS, args) as Promise<
         import('../main/ipc/handlers/account.handler').CredentialStatus
       >,
-    // Continue the pane's own Claude conversation on another account (same pane).
-    continuePane: (args: { ptyId: string; accountId: string }) =>
+    // Account vault: names and metadata only; no call sends or returns a value.
+    vault: {
+      list: (accountId: string) =>
+        ipcRenderer.invoke(IPC.ACCOUNT_VAULT_LIST, { accountId }) as Promise<{
+          ok: boolean;
+          entries: import('../main/account/accountVault').AccountVaultEntry[];
+          /** Most values one account holds. */
+          max: number;
+          /** Why nothing can be saved on this computer, or null. */
+          cannotStore: ReturnType<import('../main/account/accountVault').AccountVault['storeRefusal']>;
+        }>,
+      saveFromClipboard: (args: { accountId: string; name: string; expectPrefix?: string; inject?: boolean }) =>
+        ipcRenderer.invoke(IPC.ACCOUNT_VAULT_SAVE_CLIPBOARD, args) as Promise<
+          import('../main/account/accountVault').AccountVaultSetResult & { clipboardCleared?: boolean; clipboardCleanupFailed?: true; onboardingWarning?: string }
+        >,
+      generate: (args: { accountId: string; name: string; length?: number }) =>
+        ipcRenderer.invoke(IPC.ACCOUNT_VAULT_GENERATE, args) as Promise<import('../main/account/accountVault').AccountVaultSetResult>,
+      setInject: (args: { accountId: string; name: string; inject: boolean }) =>
+        ipcRenderer.invoke(IPC.ACCOUNT_VAULT_SET_INJECT, args) as Promise<{ ok: boolean }>,
+      remove: (args: { accountId: string; name: string }) =>
+        ipcRenderer.invoke(IPC.ACCOUNT_VAULT_DELETE, args) as Promise<{ ok: boolean }>,
+    },
+    // Continue the pane's own Claude conversation on another account (same pane, or a new one).
+    continuePane: (args: { ptyId: string; accountId: string; workspaceId?: string }) =>
       ipcRenderer.invoke(IPC.ACCOUNT_CONTINUE_PANE, args) as Promise<
         import('../main/account/continueOnAccount.handler').ContinuePaneResult
       >,

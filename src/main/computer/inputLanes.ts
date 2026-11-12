@@ -21,7 +21,7 @@
 // waits, so no cycle can form.
 
 import { ComputerError } from '../../shared/computer/errors';
-import type { ComputerControlAction, HelperHello, Modifier, MouseButton } from '../../shared/computer/protocol';
+import type { ComputerControlAction, HelperHello, Modifier, MouseButton, ScrollDirection } from '../../shared/computer/protocol';
 
 export const INPUT_LOCK_IDLE_MS = 15_000;
 
@@ -184,6 +184,7 @@ export interface LaneRequest {
   clickCount?: number;
   modifiers?: Modifier[];
   text?: string;
+  direction?: ScrollDirection;
 }
 
 /**
@@ -192,7 +193,9 @@ export interface LaneRequest {
  *
  * win32, row for row the Windows helper's Core `Background.ActionRefusal`
  * (native/computer-use-windows/src/Core/Background.cs):
- *   - scroll: always;
+ *   - scroll: left or right only. The vertical wheel is posted to an Edit or
+ *     RichEdit control, and the helper answers needs_foreground for any
+ *     other window;
  *   - click: a button other than left, any modifiers, more than one click;
  *   - hotkey: only with modifiers (one without is a plain key there);
  *   - type: text that can move focus (Core `Background.MovesFocus`);
@@ -217,7 +220,7 @@ export function foregroundCertain(req: LaneRequest, os: HelperHello['os']): bool
   }
   switch (req.action) {
     case 'scroll':
-      return true;
+      return req.direction === 'left' || req.direction === 'right';
     case 'click':
       return (req.button ?? 'left') !== 'left' || (req.modifiers?.length ?? 0) > 0 || (req.clickCount ?? 1) !== 1;
     case 'hotkey':

@@ -31,6 +31,12 @@ export interface ProjectPaneSeed {
    * Never read from wmux.json.
    */
   wslDistro?: string;
+  /**
+   * The registered account the pane runs on instead of the workspace's bound
+   * one (a conversation continued on a token account). Main resolves the id.
+   * Never read from wmux.json.
+   */
+  accountId?: string;
   url?: string;
   /** X8 supervision policy carried from the leaf (terminal leaves only). The
    * AppLayout funnel turns a set `restart` into an exec-style supervised

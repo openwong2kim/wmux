@@ -177,6 +177,8 @@ export interface PaneSlice {
   equalizePaneSizes: () => void;
   /** Rebalance every split of the active workspace's whole layout (see balancePaneSizes). */
   balanceLayout: () => void;
+  /** balanceLayout for a named workspace, whichever one is shown. False when there is no such workspace. */
+  balanceWorkspaceLayout: (workspaceId: string) => boolean;
   // Sparse map of per-pane visual notification rings. Missing entry = no ring.
   // T11 will consume this for the flash→glow CSS treatment around each pane.
   paneNotificationRing: Record<string, 'flash' | 'glow'>;
@@ -1771,6 +1773,17 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
     if (ws) balancePaneSizes(ws.rootPane);
   }),
+
+  balanceWorkspaceLayout: (workspaceId) => {
+    let found = false;
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === workspaceId);
+      if (!ws) return;
+      balancePaneSizes(ws.rootPane);
+      found = true;
+    });
+    return found;
+  },
 
   focusPaneDirection: (direction) => {
     let event: { wsId: string; paneId: string; previousActiveId: string } | null = null;

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { parse as parseTomlText } from 'smol-toml';
+import { stripBom } from '../../../shared/stripBom';
 import type { CliRunner, InventoryDeps } from './types';
 
 export function normalizePath(p: string, baseDir?: string): string {
@@ -80,7 +81,7 @@ export function safeParseJson<T = unknown>(
 ): T | null {
   if (content === null) return null;
   try {
-    return JSON.parse(content) as T;
+    return JSON.parse(stripBom(content)) as T;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     warnings.push(`Failed to parse JSON at ${filePath}: ${msg}`);

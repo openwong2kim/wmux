@@ -41,6 +41,11 @@ pub struct Cursor<T> {
     /// Currently configured graphic character sets.
     pub charsets: Charsets,
 
+    /// wmux: the set ASCII is mapped to (SI/SO). Kept with the cursor so that
+    /// DECSC/DECRC and the alternate screen's save restore it, as xterm.js
+    /// saves its G-level with the cursor.
+    pub active_charset: CharsetIndex,
+
     /// Tracks if the next call to input will need to first handle wrapping.
     ///
     /// This is true after the last column is set with the input function. Any function that
@@ -116,6 +121,11 @@ pub struct Grid<T> {
     #[cfg_attr(feature = "serde", serde(skip))]
     pub saved_cursor: Cursor<T>,
 
+    /// wmux: DECSC, or entering the alternate screen, set `saved_cursor`
+    /// since the last reset. xterm.js restores no designations otherwise.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub cursor_saved: bool,
+
     /// Lines in the grid. Each row holds a list of cells corresponding to the
     /// columns in that row.
     raw: Storage<T>,
@@ -144,6 +154,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
             max_scroll_limit,
             display_offset: 0,
             saved_cursor: Cursor::default(),
+            cursor_saved: false,
             cursor: Cursor::default(),
             lines,
             columns,
@@ -306,6 +317,23 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         }
     }
 
+    /// wmux: move lines in `region` toward the top without moving any into
+    /// history, as xterm.js deletes lines; the freed rows at the bottom take
+    /// the cursor template.
+    pub fn scroll_up_in_place<D>(&mut self, region: &Range<Line>, positions: usize)
+    where
+        T: ResetDiscriminant<D>,
+        D: PartialEq,
+    {
+        let positions = min(positions, (region.end - region.start).0 as usize);
+        for i in (region.start.0..region.end.0 - positions as i32).map(Line::from) {
+            self.raw.swap(i, i + positions);
+        }
+        for i in (region.end.0 - positions as i32..region.end.0).map(Line::from) {
+            self.raw[i].reset(&self.cursor.template);
+        }
+    }
+
     pub fn clear_viewport<D>(&mut self)
     where
         T: ResetDiscriminant<D>,
@@ -341,6 +369,7 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
         self.clear_history();
 
         self.saved_cursor = Cursor::default();
+        self.cursor_saved = false;
         self.cursor = Cursor::default();
         self.display_offset = 0;
 
@@ -355,6 +384,33 @@ impl<T: GridCell + Default + PartialEq> Grid<T> {
 impl<T> Grid<T> {
     /// Reset a visible region within the grid.
     pub fn reset_region<D, R: RangeBounds<Line>>(&mut self, bounds: R)
+    where
+        T: ResetDiscriminant<D> + GridCell + Default,
+        D: PartialEq,
+    {
+        self.reset_lines(bounds, false);
+    }
+
+    /// wmux: reset a visible region over each row's whole physical width, as
+    /// xterm's ED fills whole lines: cells kept past a narrower width are
+    /// erased with the template, and stay kept.
+    pub fn reset_region_keep_width<D, R: RangeBounds<Line>>(&mut self, bounds: R)
+    where
+        T: ResetDiscriminant<D> + GridCell + Default,
+        D: PartialEq,
+    {
+        self.reset_lines(bounds, true);
+    }
+
+    /// wmux: forget every visible row's kept cells (row.rs `hidden`): the
+    /// alternate screen's, once it is no longer the active one.
+    pub fn drop_kept_cells(&mut self) {
+        for line in (0..self.screen_lines() as i32).map(Line::from) {
+            self.raw[line].drop_hidden();
+        }
+    }
+
+    fn reset_lines<D, R: RangeBounds<Line>>(&mut self, bounds: R, keep_width: bool)
     where
         T: ResetDiscriminant<D> + GridCell + Default,
         D: PartialEq,
@@ -375,7 +431,11 @@ impl<T> Grid<T> {
         debug_assert!(end <= self.screen_lines() as i32);
 
         for line in (start.0..end.0).map(Line::from) {
-            self.raw[line].reset(&self.cursor.template);
+            if keep_width {
+                self.raw[line].reset_keep_width(&self.cursor.template);
+            } else {
+                self.raw[line].reset(&self.cursor.template);
+            }
         }
     }
 

@@ -20,7 +20,10 @@ import { sanitizePtyText } from '../../../shared/types';
 import { isShadowWorkspaceId } from '../../../shared/pcRail/shadowId';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
-import { getAccountStore } from '../../account/accountStore';
+import { getAccountStore, type Account } from '../../account/accountStore';
+import { appAccountVault, createAccountOverride, mergeVaultSecretEnv, noteVaultSignInPane, vaultAccountsForCreate, vaultOnlyClaudeAccount, withAccountFolderEnv } from '../../account/accountVault';
+import { loadClaudeCredential } from '../../claude/claudeCredential';
+import { BOT_SECRET_LIMITS } from '../../../shared/botSecret';
 import { withAccountQuota } from '../../account/accountQuotaGate';
 import { botWorkerForCreate, botWorkerLaunchTask, botWorkerSessionRecord, noteGuardedLaunchTyped, clearedLaunchLine, forgetBotWorkerSession, guardedClaudeCwdRefusal, guardedCodexCwdRefusal, guardedCodexLaunch, guardedLaunchOf, isBotWorkerSession, noteBotWorkerSession, paneLaunchFolders, setWorkerMcpResolvers, taskConnectors, taskGatewayNames, withBotWorkerMergeGuard, type BotWorkerCreate, type WorkerGatewayLaunch } from '../../agents/botWorkerMergeGuard';
 import { isPlainCmdLaunchLine, namesClaude } from '../../../shared/botWorkerGuard';
@@ -88,7 +91,7 @@ import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import { wslDistroArgs, isWslDistroSpawnArgs, isValidWslDistroName } from '../../../shared/wslDistro';
 import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
-import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane } from '../../worktask/fanoutGuards';
+import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane, taskOfWorkspace } from '../../worktask/fanoutGuards';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 import {
   removeSessionPromptSchedulesForPty,
@@ -154,6 +157,13 @@ type PtyCreateOptions = {
    * default config dir the card's detection reads.
    */
   ignoreAccountBinding?: boolean;
+  /**
+   * This pane runs on this registered account instead of the workspace's
+   * bound one of its vendor: its folder env and its vault (a pane continued
+   * on a token account, a rotated launch). Main resolves the id; an unknown
+   * one refuses the create (createAccountOverride). Daemon mode only.
+   */
+  accountId?: string;
   shell?: string;
   cwd?: string;
   /**
@@ -451,6 +461,36 @@ export function secretCreateCwdRefusal(granted: unknown, resolution: ResolvedPty
   return null;
 }
 
+/**
+ * `secretEnv` plus the vault values of the workspace's bound Claude and Codex
+ * accounts (or the account the create names, for its vendor), for a create
+ * that may have them (vaultEligibleCreate). Logs the names of values left out
+ * over the daemon's limit, never a value.
+ */
+function withAccountVaultEnv(
+  sessionId: string,
+  options: PtyCreateOptions | undefined,
+  botWorker: unknown,
+  secretEnv: Record<string, string> | undefined,
+  execUnit: boolean,
+  override: Account | undefined,
+): Record<string, string> | undefined {
+  if (execUnit || !options?.workspaceId) return secretEnv;
+  // A task or remote-spawn workspace is known here, whatever the create says.
+  if (taskOfWorkspace(options.workspaceId)) return secretEnv;
+  const store = getAccountStore();
+  const accounts = vaultAccountsForCreate(options, botWorker, (ws, vendor) => store.getBinding(ws, vendor), override);
+  if (accounts.length === 0) return secretEnv;
+  const vaultEnv = appAccountVault().envFor(accounts);
+  const { env, dropped } = mergeVaultSecretEnv(secretEnv, vaultEnv);
+  // A pane signed in from a vault cannot switch accounts in place (continueOnAccount.handler.ts).
+  noteVaultSignInPane(sessionId, Object.keys(vaultEnv).filter((name) => !dropped.includes(name) && !(name in (secretEnv ?? {}))));
+  if (dropped.length > 0) {
+    console.warn(`[account] pane ${sessionId}: vault value(s) ${dropped.join(', ')} left out, over the ${BOT_SECRET_LIMITS.NAMES_PER_FANOUT}-name spawn limit`);
+  }
+  return env ?? undefined;
+}
+
 function logCwdResolution(
   sessionId: string,
   incoming: string | undefined,
@@ -682,6 +722,8 @@ export function registerPTYHandlers(
           throw err;
         }
       };
+      // Named by the caller, not by a rotated launch (which stageCreate may add).
+      const namedAccount = options?.accountId;
       let staged: Awaited<ReturnType<typeof stageCreate>>;
       try {
         staged = await stageCreate(options, botWorker, gateway?.launch);
@@ -690,6 +732,11 @@ export function registerPTYHandlers(
         throw err;
       }
       options = staged.options;
+      // The account this create names for itself, resolved by main; an
+      // unknown one refuses the create. Its folder goes into the pane env, as
+      // a rotated launch's does, so a profile's own folder cannot win over it.
+      const accountOverride = closingLeases(() => createAccountOverride(options, { missingFolder: namedAccount === undefined ? 'skip' : 'refuse' }));
+      if (accountOverride) options = { ...options, env: withAccountFolderEnv(options?.env, accountOverride) };
 
       // X8 exec-style unit: a supervised wmux.json leaf runs its command as the
       // pane's root process under a daemon-chosen wrapper shell (the daemon
@@ -740,6 +787,12 @@ export function registerPTYHandlers(
       // The leases are this pane's: they end with its session.
       gateway?.open.bind(sessionId);
       logCwdResolution(sessionId, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
+      // The bound accounts' vault values (accountVault.ts): spawn-only like
+      // `secretEnv`, joined after the grant's folder check, which binds only a
+      // bot worker. Never for a bot, a fan-out task, another PC's pane or a
+      // wmux.json exec unit.
+      const createSecretEnv = closingLeases(() => withAccountVaultEnv(
+        sessionId, options, botWorker, secretEnv, execCommand !== undefined || supervisionPolicy !== undefined, accountOverride));
       // Recorded before the session exists, so a restart always knows it.
       closingLeases(() => {
         if (botWorker) {
@@ -888,7 +941,7 @@ export function registerPTYHandlers(
           rows: options?.rows || 24,
           env: resolvedEnv,
           wslAccountLoginEnvKey: options?.wslAccountLoginEnvKey,
-          ...(secretEnv ? { secretEnv } : {}),
+          ...(createSecretEnv ? { secretEnv: createSecretEnv } : {}),
           ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),
           ...(supervisionPolicy !== undefined ? { supervision: supervisionPolicy } : {}),
         }, isWslShell(shell) ? { timeoutMs: WSL_RPC_TIMEOUT_MS } : undefined);
@@ -1063,6 +1116,22 @@ export function registerPTYHandlers(
       }
       const staged = await stageCreate(options, botWorker);
       options = staged.options;
+      // An account's vault, too, reaches a pane only through the daemon: a
+      // Claude launch on an account signed in only with a token would start
+      // signed out. A plain shell is not refused (what it will run is unknown).
+      const launchLine = options?.initialCommand;
+      if (launchLine && namesClaude(launchLine) && !namesCodex(launchLine)) {
+        const store = getAccountStore();
+        const tokenOnly = await vaultOnlyClaudeAccount(
+          vaultAccountsForCreate(options, botWorker, (ws, vendor) => store.getBinding(ws, vendor)),
+          {
+            entries: (id) => appAccountVault().list(id),
+            account: (id) => store.getAccount(id),
+            folderSignedIn: async (dir) => (await loadClaudeCredential(dir)).ok,
+          },
+        );
+        if (tokenOnly) throw new Error(`PTY_CREATE: "${tokenOnly}" signs in with a long-lived token, which reaches a pane only through the wmux daemon`);
+      }
 
       // X8 — supervision lives inside the daemon (decision ②). In local mode it
       // can't be honored, but a silent drop would be a trust violation: the user

@@ -77,10 +77,13 @@ beforeEach(() => {
   nextPort = 17001;
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
+  // These fakes are a Chrome on a DevTools port, whatever the default transport is.
+  vi.stubEnv('WMUX_CHROME_TRANSPORT', 'port');
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe('ChromeLauncher', () => {
@@ -689,7 +692,7 @@ describe('ChromeLauncherRegistry', () => {
 describe('ChromeLauncher zombie adoption', () => {
   it('a quit landing after ensureRunning resolved still keeps endpoint() from answering', async () => {
     state.portFiles['/tmp/adopt-quit-2'] = '18936\n/devtools/browser/x\n';
-    fetchMock.mockResolvedValue(fetchOk({}));
+    fetchMock.mockResolvedValue(fetchOk({ webSocketDebuggerUrl: 'ws://127.0.0.1:18936/devtools/browser/x' }));
     const launcher = new ChromeLauncher('/tmp/adopt-quit-2');
     const inner = launcher.ensureRunning.bind(launcher);
     // Dispose right after ensureRunning's own gate passed, before endpoint() resumes.
@@ -724,7 +727,7 @@ describe('ChromeLauncher zombie adoption', () => {
 
   it('adopts an existing instance when DevToolsActivePort answers, without spawning', async () => {
     state.portFiles['/tmp/adopt-prof'] = '18933\n/devtools/browser/x\n';
-    fetchMock.mockResolvedValue(fetchOk({ Browser: 'Chrome/151' }));
+    fetchMock.mockResolvedValue(fetchOk({ Browser: 'Chrome/151', webSocketDebuggerUrl: 'ws://127.0.0.1:18933/devtools/browser/x' }));
 
     const launcher = new ChromeLauncher('/tmp/adopt-prof');
     const port = await launcher.ensureRunning();
@@ -733,10 +736,68 @@ describe('ChromeLauncher zombie adoption', () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
+  it('does not adopt another browser that holds the recorded port by now, and starts its own', async () => {
+    // The file says /devtools/browser/mine; the browser answering on that port is another one.
+    state.portFiles['/tmp/adopt-foreign'] = '18937\n/devtools/browser/mine\n';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const port = spawnWritesPortFile(makeChild());
+    fetchMock.mockImplementation(async (url: string) => fetchOk(String(url).includes(':18937/')
+      ? { Browser: 'Chrome/151', webSocketDebuggerUrl: 'ws://127.0.0.1:18937/devtools/browser/someone-else' }
+      : { webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/uuid-${port}` }));
+    const launcher = new ChromeLauncher('/tmp/adopt-foreign');
+    expect(await launcher.ensureRunning()).toBe(port);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('not as the browser that recorded it (another browser)'));
+    // Nothing was asked of the other browser beyond who it is, once.
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes(':18937/')).map(([u]) => new URL(String(u)).pathname))
+      .toEqual(['/json/version']);
+    warn.mockRestore();
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('does not adopt a server on the recorded port that names no browser endpoint, and starts its own', async () => {
+    state.portFiles['/tmp/adopt-notchrome'] = '18938\n/devtools/browser/mine\n';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const port = spawnWritesPortFile(makeChild());
+    fetchMock.mockImplementation(async (url: string) => fetchOk(String(url).includes(':18938/')
+      ? { hello: 'a dev server' }
+      : { webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/uuid-${port}` }));
+    const launcher = new ChromeLauncher('/tmp/adopt-notchrome');
+    expect(await launcher.ensureRunning()).toBe(port);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('not as the browser that recorded it (no browser endpoint)'));
+    warn.mockRestore();
+    await launcher.dispose({ immediate: true });
+  });
+
+  it('says why it adopts nothing: a server that answers with an error, or a port file that records no browser', async () => {
+    for (const [dir, file, answer, why] of [
+      ['/tmp/adopt-404', '18939\n/devtools/browser/mine\n', { ok: false, status: 404, text: async () => 'Not Found' }, 'it answers HTTP 404'],
+      ['/tmp/adopt-noline', '18940\n', fetchOk({ webSocketDebuggerUrl: 'ws://127.0.0.1:18940/devtools/browser/mine' }), 'the port file records no browser'],
+    ] as const) {
+      spawnMock.mockReset();
+      state.portFiles[dir] = file;
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const port = spawnWritesPortFile(makeChild());
+      const recordedPort = file.split('\n')[0];
+      fetchMock.mockImplementation(async (url: string) => (String(url).includes(`:${recordedPort}/`)
+        ? answer
+        : fetchOk({ webSocketDebuggerUrl: `ws://127.0.0.1:${port}/devtools/browser/uuid-${port}` })));
+      const launcher = new ChromeLauncher(dir);
+      expect(await launcher.ensureRunning()).toBe(port);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`(${why})`));
+      warn.mockRestore();
+      await launcher.dispose({ immediate: true });
+    }
+  });
+
   it('never closes the tabs of an adopted instance: they are the ones its records re-bind to', async () => {
     state.portFiles['/tmp/adopt-prof-2'] = '18934\n/devtools/browser/x\n';
     fetchMock.mockImplementation(async (url: string) =>
-      fetchOk(String(url).endsWith('/json/list') ? [{ id: 'live-1', url: 'https://a.test/', title: 'A', type: 'page' }] : {}),
+      fetchOk(String(url).endsWith('/json/list')
+        ? [{ id: 'live-1', url: 'https://a.test/', title: 'A', type: 'page' }]
+        : { webSocketDebuggerUrl: 'ws://127.0.0.1:18934/devtools/browser/x' }),
     );
 
     await new ChromeLauncher('/tmp/adopt-prof-2').ensureRunning();

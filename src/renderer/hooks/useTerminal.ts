@@ -30,7 +30,7 @@ import { pasteClipboardImage } from '../utils/imagePaste';
 import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { claimFit } from '../utils/fitGuard';
-import { createFitScheduler } from '../utils/layoutTransitionGate';
+import { createFitScheduler, fitsHeld } from '../utils/layoutTransitionGate';
 import { installAltClickTrackingGuard } from '../utils/altClickUnderMouseTracking';
 import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
 import { agentSelectsOnDrag, installPlainDragSelect, installWheelClearsSelectionHint, mouseOwnedHintApplies } from '../utils/plainDragSelect';
@@ -66,6 +66,7 @@ import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { WEBGL_UPGRADE_HIDE_MAX_MS, webglUpgradeQueue } from '../terminal/webglUpgradeQueue';
 import { syncInlineImages } from '../terminal/inlineImages';
 import { forceCharSizeMeasure, onCharSizeChange } from '../terminal/charSizeRefit';
+import { createFirstResizeGate, primaryFontLoaded, FIRST_RESIZE_GATE_BOUND_MS, type FirstResizeGate } from '../terminal/firstResizeGate';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { atlasGuard } from '../terminal/atlasGuard';
 import { decideViewerVisibility } from '../terminal/viewerVisibility';
@@ -1094,12 +1095,43 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const promoteRef = useRef(surfaceShown);
   promoteRef.current = surfaceShown;
   const deferredAttachRef = useRef(false);
+  // The mount's first-resize gate (firstResizeGate.ts): while it is closed no
+  // PTY resize goes out, and the mount's reattach waits for it.
+  const resizeGateRef = useRef<FirstResizeGate | null>(null);
+  // A reattach's stored-size send (#1847) the closed gate held back, sent
+  // when it opens on a pane that cannot measure itself. Fit sizes are not
+  // kept: they are the fallback font's, and the gate refits instead.
+  const heldResizeRef = useRef<{ ptyId: string; cols: number; rows: number } | null>(null);
   const firstShowReattachRef = useRef<(() => Promise<void> | undefined) | null>(null);
   // #1002 — set by the main effect when this mount adopted a parked terminal.
   // Read by the daemon reattach effect (which runs later in the same commit)
   // to skip its active-at-mount reconnect: the session pipe never detached, so
   // asking for one only buys the ring-buffer replay adoption exists to avoid.
   const adoptedAtMountRef = useRef(false);
+  // An adopted terminal is moved into a container inside a Panel the layout
+  // Group has not sized yet: the Group lays its new panel set out from its own
+  // ResizeObserver, after this mount's effects. Until then the Panel keeps its
+  // old or default size, the pane's chrome can overflow it (the Panel's inner
+  // div scrolls, so a scrollbar takes width), and a fit reads a grid the pane
+  // never keeps: a column short, rows of the old panel. Every fit site waits
+  // while this is set; the container's first ResizeObserver callback, which
+  // comes after the Group's layout, clears it and fits.
+  const adoptFitPendingRef = useRef(false);
+  // The adoption's first fit, set by the main effect: runs it when the layout
+  // has arrived and no WebGL upgrade is still to come (`force`: the upgrade
+  // has settled one way or the other). A park drops the WebGL renderer, and
+  // until the upgrade rebuilds it xterm measures the DOM renderer's cell,
+  // which at a fractional device pixel ratio is wider than WebGL's: a fit then
+  // comes out a column short and the upgrade's refit sends the real width.
+  const adoptSettleRef = useRef<((force?: boolean) => void) | null>(null);
+  // Every fit site asks this first: while an adoption's first fit is held it
+  // returns true (skip), after nudging that fit, which runs only once the
+  // layout and the renderer are both in.
+  const holdForAdopt = useCallback((): boolean => {
+    if (!adoptFitPendingRef.current) return false;
+    adoptSettleRef.current?.();
+    return true;
+  }, []);
   const retryReconnectRef = useRef<(() => Promise<void> | undefined) | null>(null);
   const onRecoveryErrorRef = useRef(options.onRecoveryError);
   onRecoveryErrorRef.current = options.onRecoveryError;
@@ -1161,10 +1193,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // Returns the in-flight resize so a caller that must not touch xterm before
   // the daemon has applied the geometry (#1436's shrink path) can wait on it.
   // Every other caller ignores it, exactly as before.
-  const sendResize = useCallback((targetPtyId: string, cols: number, rows: number): Promise<void> => {
+  const sendResize = useCallback((targetPtyId: string, cols: number, rows: number, storedSize = false): Promise<void> => {
     // The grid belongs to someone else (see `fixedGeometry`): never resize the
     // PTY. Gated here, not at the callers, so no fit path can get around it.
     if (fixedGeometryRef.current) return Promise.resolve();
+    // Before the first-resize gate opens the grid is still the fallback
+    // font's: keep the PTY at its size. The gate's own send (mount effect)
+    // goes out unconditionally when it opens, so a caller that recorded
+    // this size as sent is corrected then.
+    if (resizeGateRef.current && !resizeGateRef.current.isOpen) {
+      if (storedSize) heldResizeRef.current = { ptyId: targetPtyId, cols, rows };
+      return Promise.resolve();
+    }
     return window.electronAPI.pty.resize(targetPtyId, cols, rows).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('rate limited')) return; // not-found / other: handled upstream
@@ -1464,6 +1504,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const fit = useCallback(() => {
     const container = containerRef.current;
     if (!fitAddonRef.current || !terminalRef.current || !container) return;
+    // An adoption's first fit runs once its layout and renderer are in.
+    if (holdForAdopt()) return;
     // Guard: skip fit entirely when the container is hidden (zero dimensions).
     // Calling fit() on a display:none element produces 0 cols/rows which
     // corrupts the xterm buffer and causes the "infinite copy downward" bug.
@@ -1713,6 +1755,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // A parked terminal of the other engine is disposed, not adopted (R6).
     const adopted = adoptTerminal(ptyId, (parked) => engineOf(parked) === paneEngine);
     adoptedAtMountRef.current = adopted !== null;
+    adoptFitPendingRef.current = adopted !== null;
     console.log(`[wmux:pane-adopt] ptyId=${ptyId} mount=${adopted ? 'adopted' : 'fresh'}`);
 
     // wongtty failed to build or open this pane: every pane goes back to
@@ -2294,6 +2337,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // callback; disposeWebgl is its "evict" callback (reverts to DOM renderer).
     // `replaces`: the addon a rebuild replaces, whose kind (stock or shared
     // context) the new one keeps — see sharedWebglAddonClassFor.
+    // Set when building the WebGL renderer failed: the first-resize gate then
+    // stops waiting for it.
+    let webglBuildFailed = false;
     function loadWebgl(replaces?: WebglAddon) {
       if (webglAddonRef.current) return; // already loaded
       try {
@@ -2325,6 +2371,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       } catch {
         console.warn('WebGL addon failed, using DOM renderer');
         webglAddonRef.current = null;
+        webglBuildFailed = true;
       }
     }
     loadWebglRef.current = wongttyModule ? null : loadWebgl;
@@ -2425,20 +2472,45 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
     }
 
+    // A fresh mount's first PTY resize waits for the grid it will keep: the
+    // bundled webfont loaded and WebGL in (firstResizeGate.ts). An adoption,
+    // an engine swap and a fixed grid keep a live grid and send at once.
+    // A WebGL renderer is still to come for this pane: the reveal effect builds
+    // it on webglUpgradeQueue. The first-resize gate (a fresh mount) and an
+    // adoption's first fit both wait for it rather than fit the DOM cell.
+    const webglUpgradePending = () => isVisibleRef.current && !!loadWebglRef.current && !webglAddonRef.current
+      && !webglBuildFailed && !webglContextPool.acquireWouldEvict(webglTokenRef.current);
+    resizeGateRef.current?.dispose();
+    const firstResizeGate = adopted || carry || wongttyModule || fixedGeometryRef.current
+      ? null
+      : createFirstResizeGate({
+        shown: () => isVisibleRef.current,
+        fontReady: () => primaryFontLoaded(document.fonts, terminal.options.fontFamily, terminal.options.fontSize),
+        rendererPending: webglUpgradePending,
+        proposal: () => {
+          const dims = proposedSafeDimensions(fitAddon, container);
+          return dims ? `${dims.cols}x${dims.rows}` : null;
+        },
+        requestFrame: (cb) => requestAnimationFrame(cb),
+        cancelFrame: (handle) => cancelAnimationFrame(handle),
+        setTimer: (cb, ms) => setTimeout(cb, ms),
+        clearTimer: (handle) => clearTimeout(handle),
+      }, FIRST_RESIZE_GATE_BOUND_MS, WEBGL_UPGRADE_HIDE_MAX_MS);
+    resizeGateRef.current = firstResizeGate;
+    heldResizeRef.current = null;
+
     let pendingAdoptViewport: ParkedTerminal | null = null;
     // #1255: sub-floor proposals (mid-split/restoring container) are treated
     // exactly like a hidden container — no fit, and an adoption holds its
     // parked viewport until a real fit runs.
-    const initialFitRan = container.offsetWidth > 0 && container.offsetHeight > 0 && !!proposedSafeDimensions(fitAddon, container);
+    // An adoption does not fit here: its container is not laid out yet
+    // (adoptFitPendingRef). Its first fit is the ResizeObserver's, after the
+    // layout, and that fit restores the parked viewport (pendingAdoptViewport):
+    // the fit can change how many rows the viewport holds, which moves what
+    // "the bottom" means, so a pane parked at the bottom lands at the bottom.
+    const initialFitRan = !adopted && container.offsetWidth > 0 && container.offsetHeight > 0 && !!proposedSafeDimensions(fitAddon, container);
     if (initialFitRan) {
       fitAddon.fit();
-      // #1002: the fit runs AFTER the adopted element is back in the DOM and
-      // can change how many rows the viewport holds, which moves what "the
-      // bottom" means — so put the user's scroll position back on this side of
-      // it. A pane parked at the bottom (the case the issue is about) lands at
-      // the bottom, not scrolled up by the height difference between the
-      // pre-split and post-split panel.
-      if (adopted) restoreParkedViewport(adopted);
     } else if (adopted) {
       pendingAdoptViewport = adopted;
     }
@@ -2506,34 +2578,42 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // the handle for that deferred local fit lives here — teardown and a newer
     // resize both have to be able to drop it.
     let cancelOrderedFit: CancelOrderedFit | null = null;
-    const runFit = () => {
+    // `adoptFirst`: an adoption's first fit (the ResizeObserver below). It is
+    // the one fit the hold lets through, and it does not wait for a selection
+    // to be released: the adopted grid is the pre-restructure one, clipped by
+    // its new box, and the mount fit it replaces never waited either. True when
+    // a fit ran (or was handed to the ordered path), false when it was skipped.
+    const runFit = (adoptFirst = false): boolean => {
       try {
         const term = terminalRef.current;
-        if (!term) return;
+        if (!term) return false;
         // Identity guard, as at every other async site in this hook (fonts.ready,
         // hydrateForRead, …). A ptyId change re-runs this effect; a frame queued
         // by the previous one would otherwise fit against the OLD container and
         // fitAddon and then send those dimensions to ptyIdRef.current — which by
         // then points at the NEW pty.
-        if (term !== terminal) return;
+        if (term !== terminal) return false;
 
-        if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
+        // An adoption's first fit runs once its layout and renderer are in.
+        if (!adoptFirst && holdForAdopt()) return false;
+
+        if (container.offsetWidth === 0 || container.offsetHeight === 0) return false;
 
         // #1255: floor gate BEFORE the selection guard — a sub-floor proposal
         // records no fit debt: layout settling re-fires the ResizeObserver,
         // which is the retry. (Checked before claimFit so the debt mechanism
         // stays reserved for selection-deferred fits.)
         const proposed = proposedSafeDimensions(fitAddon, container);
-        if (!proposed) return;
+        if (!proposed) return false;
 
         // Selection-preservation guard: xterm's SelectionService clears the
         // active selection on any rowsChanged event from fit(). While the user
         // is dragging out a selection (or while one is live waiting to be
         // copied) skip this fit and record the debt — releasing the selection
         // fires no ResizeObserver tick, so without this the fit is simply lost.
-        if (!claimFit(term, pendingFitRef)) {
+        if (!adoptFirst && !claimFit(term, pendingFitRef)) {
           console.debug('[Terminal] resize fit deferred — active selection');
-          return;
+          return false;
         }
         pendingFitRef.current = false;
 
@@ -2606,8 +2686,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             }
           },
         });
+        return true;
       } catch {
         // ignore fit errors during unmount
+        return false;
       }
     };
 
@@ -4056,11 +4138,42 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Resize PTY on initial fit — only when that fit ran. Unfitted, xterm still
     // holds its 80x24 default, which would shrink a background pane's PTY to
     // a size nothing displays; the first fit after reveal sends the real one.
-    const { cols, rows } = terminal;
-    if (initialFitRan && cols > 0 && rows > 0) {
-      lastSentCols = cols;
-      lastSentRows = rows;
-      sendResize(ptyId, cols, rows);
+    // A fresh mount sends once its first-resize gate opens, refitted with the
+    // cell it will keep, and unconditionally: fits before it recorded sizes
+    // they never sent (sendResize).
+    if (firstResizeGate) {
+      void firstResizeGate.opened.then((outcome) => {
+        if (outcome === 'disposed' || terminalRef.current !== terminal || ptyIdRef.current !== ptyId) return;
+        revealTiming(ptyId, 'first-resize-gate', `open=${outcome}`);
+        forceCharSizeMeasure(terminal);
+        const held = heldResizeRef.current;
+        heldResizeRef.current = null;
+        const dims = proposedSafeDimensions(fitAddon, container);
+        if (!dims) {
+          // Hidden or mid-layout now: fits while the gate was closed recorded
+          // sizes they never sent, so let the next fit send. A reattach's held
+          // stored-size send goes now: it is what unmutes the session (#1847).
+          lastSentCols = 0;
+          lastSentRows = 0;
+          if (held && held.ptyId === ptyId) void sendResize(held.ptyId, held.cols, held.rows);
+          return;
+        }
+        // Usually the last fit already landed here (the WebGL upgrade's refit).
+        if (dims.cols !== terminal.cols || dims.rows !== terminal.rows) fitAddon.fit();
+        const { cols: gateCols, rows: gateRows } = terminal;
+        if (gateCols > 0 && gateRows > 0) {
+          lastSentCols = gateCols;
+          lastSentRows = gateRows;
+          void sendResize(ptyId, gateCols, gateRows);
+        }
+      });
+    } else {
+      const { cols, rows } = terminal;
+      if (initialFitRan && cols > 0 && rows > 0) {
+        lastSentCols = cols;
+        lastSentRows = rows;
+        sendResize(ptyId, cols, rows);
+      }
     }
 
     // Terminal registry registration is now per-branch above:
@@ -4202,7 +4315,76 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         });
       },
     });
-    const resizeObserver = new ResizeObserver(() => resizeScheduler.onResize());
+    // An adoption's first fit waits for two things. The layout: a new
+    // container is observed afresh, so it gets a callback even when its size
+    // equals the old one's, and by the time the frame delivers it the Group has
+    // applied the new panel set's layout (measured on Windows: the first
+    // callback carried the size the pane keeps after a split under, a close
+    // and a split right, where a fit at mount had read a column short). And the
+    // renderer: the park dropped WebGL, and the reveal effect rebuilds it on
+    // webglUpgradeQueue with the pane hidden meanwhile, so a fit before that
+    // measures the DOM renderer's cell (the condition the first-resize gate
+    // waits on for a fresh mount). Whichever comes second fits, once. The hold
+    // stays until a fit actually runs: a callback on a box with no size (a
+    // hidden workspace, a window that is not painting) or under #1255's floor
+    // is not the laid-out size, and the next one is. Should a callback ever
+    // carry a size the layout then changes, that change is an ordinary resize
+    // through the scheduler. During an animated layout change the fit goes to
+    // the scheduler, like any other.
+    let adoptLaidOut = false;
+    // Latched when the upgrade job has settled (built, skipped or failed): a
+    // grant freed later must not make the first fit wait again.
+    let adoptRendererSettled = false;
+    // The renderer wait is bounded, like the first-resize gate's for a fresh
+    // mount (the pane stays hidden for the same WEBGL_UPGRADE_HIDE_MAX_MS, so
+    // the wait shows nothing). Every exit of the upgrade settles it, so the
+    // bound is not expected to fire. If it does, the pane fits with the cell it
+    // has rather than ignore every resize, and the upgrade's own refit, if one
+    // ever comes, corrects the column. Armed once the layout is in, at most
+    // once per mount.
+    let adoptRendererBound: ReturnType<typeof setTimeout> | null = null;
+    let adoptRendererBoundArmed = false;
+    const clearAdoptRendererBound = () => {
+      if (adoptRendererBound !== null) { clearTimeout(adoptRendererBound); adoptRendererBound = null; }
+    };
+    adoptSettleRef.current = (rendererSettled = false) => {
+      if (terminalRef.current !== terminal) return;
+      if (rendererSettled) {
+        adoptRendererSettled = true;
+        clearAdoptRendererBound();
+      }
+      if (!adoptFitPendingRef.current || !adoptLaidOut) return;
+      if (!adoptRendererSettled && webglUpgradePending()) {
+        if (!adoptRendererBoundArmed) {
+          adoptRendererBoundArmed = true;
+          adoptRendererBound = setTimeout(() => {
+            adoptRendererBound = null;
+            if (!adoptFitPendingRef.current || terminalRef.current !== terminal) return;
+            console.warn(`[wmux:pane-adopt] ptyId=${ptyId} first fit: renderer not settled after ${WEBGL_UPGRADE_HIDE_MAX_MS}ms, fitting with the current cell`);
+            adoptSettleRef.current?.(true);
+          }, WEBGL_UPGRADE_HIDE_MAX_MS);
+        }
+        return;
+      }
+      // An animated layout change: the scheduler holds the fit as debt and
+      // runs it on release, which comes back here through runFit.
+      if (fitsHeld()) {
+        resizeScheduler.onResize();
+        return;
+      }
+      if (runFit(true)) {
+        adoptFitPendingRef.current = false;
+        clearAdoptRendererBound();
+      }
+    };
+    const resizeObserver = new ResizeObserver(() => {
+      if (adoptFitPendingRef.current && terminalRef.current === terminal) {
+        adoptLaidOut = true;
+        adoptSettleRef.current?.();
+        return;
+      }
+      resizeScheduler.onResize();
+    });
     resizeObserver.observe(container);
 
     return () => {
@@ -4248,6 +4430,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // the Retry banner, so it would be stuck unattached; dispose instead
         // and let the fresh mount reattach.
         : reconnectPendingRef.current ? 'reconnect-pending'
+        // The mount's own attach is still waiting on its first-resize gate.
+        // It dies with this run, and the adopting mount skips active-at-mount,
+        // so the pane would end up with no session pipe: dispose instead and
+        // let the fresh mount attach.
+        : firstResizeGate && !firstResizeGate.isOpen ? 'first-resize-pending'
         // Two live instances on one ptyId (the fast unmount→remount ordering
         // the WebGL pool note describes): if the registry no longer points at
         // us, a later mount already owns this pane and ours is the stale copy.
@@ -4326,6 +4513,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       selectionDisposable.dispose();
       charSizeDisposable?.dispose();
       document.fonts.removeEventListener('loadingdone', onFontsLoadingDone);
+      firstResizeGate?.dispose();
+      if (resizeGateRef.current === firstResizeGate) resizeGateRef.current = null;
       hardWrappedLinkDisposable.dispose();
       pathLinkDisposable.dispose();
       osc52Disposable.dispose();
@@ -4343,6 +4532,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       document.removeEventListener('mouseup', onHintMouseUp);
       cancelOrderedFit?.();
       resizeObserver.disconnect();
+      clearAdoptRendererBound();
       // #929: cancel any pending resting-cursor show before dispose — a late
       // inject into a disposed xterm is the #582 class of bug.
       restingCursor.dispose();
@@ -4509,6 +4699,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // this run must no longer touch the pane's shared refs, which belong to
     // the next run now.
     let disposed = false;
+    // Attempts started by this run: a deferred at-mount attach checks it.
+    let attachAttempts = 0;
     const noteDeferred = (deferred: boolean, resume?: ResumeHint, armResume = true) => {
       deferredAttachRef.current = deferred;
       // No session pipe either: refuses the park, like a pending reattach.
@@ -4520,6 +4712,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // session suspended: wait it out, then promote if it did. A stop key
       // only waits it out: it never promotes.
       if (disposed) return undefined;
+      // The mount's own attach waits for its first-resize gate, so the daemon
+      // serves the replay at the size the pane keeps, not the fallback font's
+      // (firstResizeGate.ts). Any attach that ran meanwhile covers it: a second
+      // one would replay the ring again and tear down the new pipe. A gate
+      // disposed by a remount of the same pane still lets it through.
+      const atMountGate = reason === 'active-at-mount' ? resizeGateRef.current : null;
+      if (atMountGate && !atMountGate.isOpen) {
+        const attemptsBefore = attachAttempts;
+        return atMountGate.opened.then(() => (attachAttempts === attemptsBefore ? reattach(reason) : undefined));
+      }
       if (inFlight) {
         if (reason === 'stop-key') return current;
         // The user's Retry (or Start fresh, which promoted first) is never
@@ -4540,6 +4742,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // #2398 — a stop key (ctrl+c, escape) is never what starts a session:
       // it attaches without promoting, shown pane or not, arms no resume on
       // start, and leaves the pane's own retry schedule as it was.
+      attachAttempts++;
       const stopKey = reason === 'stop-key';
       stopKeyInFlight = stopKey;
       if (stopKey) stopKeyFoundNotRunning = false;
@@ -4601,7 +4804,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           if (isSafeGeometry(stored.cols, stored.rows) && (term.cols !== stored.cols || term.rows !== stored.rows)) {
             term.resize(stored.cols, stored.rows);
           }
-          sendResize(id, stored.cols, stored.rows);
+          sendResize(id, stored.cols, stored.rows, true);
         })
         // #2398 — shown while a hidden attempt was in flight (its first show
         // found nothing to promote yet), or left suspended with a conversation
@@ -4733,6 +4936,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       console.debug('[Terminal] font/theme fit skipped — container has zero dimensions');
       return;
     }
+    // An adoption's first fit runs once its layout and renderer are in, with
+    // the font settings in place by then.
+    if (holdForAdopt()) return;
     // #1255: floor gate — a font change re-measures the container; skip
     // sub-floor proposals instead of reflowing the buffer at a broken width.
     if (!proposedSafeDimensions(fitAddonRef.current, container)) {
@@ -4829,7 +5035,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       let cancelUpgrade: (() => void) | null = null;
       let upgradeFitRaf: number | null = null;
-      let showAfterUpgrade: (() => void) | null = null;
+      let showAfterUpgrade: ((settled?: boolean) => void) | null = null;
       if (
         loadWebglRef.current &&
         disposeWebglRef.current &&
@@ -4847,12 +5053,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // callbacks, so the queued build may never run: show the pane after
           // a bounded wait whatever happens.
           let hideTimer: ReturnType<typeof setTimeout> | null = null;
-          showAfterUpgrade = () => {
+          // `settled`: the upgrade job ran to an end (built, skipped or
+          // failed), which is what an adoption's first fit waits for. The
+          // bounded wait and the effect's cleanup only show the pane: the
+          // renderer is still to come, or another reveal will build it.
+          showAfterUpgrade = (settled = false) => {
             if (hideTimer !== null) { clearTimeout(hideTimer); hideTimer = null; }
+            if (settled) adoptSettleRef.current?.(true);
             if (el) el.style.opacity = '';
           };
           const show = showAfterUpgrade;
-          hideTimer = setTimeout(show, WEBGL_UPGRADE_HIDE_MAX_MS);
+          hideTimer = setTimeout(() => show(), WEBGL_UPGRADE_HIDE_MAX_MS);
           cancelUpgrade = webglUpgradeQueue.enqueue(() => {
             if (
               !isVisibleRef.current ||
@@ -4860,18 +5071,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
               !disposeWebglRef.current ||
               webglContextPool.acquireWouldEvict(token)
             ) {
-              show();
+              show(true);
               return;
             }
             const hadAddon = webglAddonRef.current !== null;
             try {
               webglContextPool.acquire(token, loadWebglRef.current, disposeWebglRef.current);
             } catch (err) {
-              show();
+              show(true);
               throw err;
             }
             if (hadAddon || !webglAddonRef.current) {
-              show();
+              show(true);
               return;
             }
             // The reveal's fit measured the DOM renderer's cell. WebGL rounds
@@ -4887,11 +5098,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
               try {
                 if (claimFit(terminalRef.current, pendingFitRef)) fit();
               } finally {
-                show();
+                show(true);
               }
             });
           });
         }
+      } else {
+        // No upgrade will run for this reveal, so a slot freed later must not
+        // make an adoption's first fit wait for one.
+        adoptSettleRef.current?.(true);
       }
       // Defer fit to allow CSS display change to take effect before measuring.
       // Selection-preservation guard — workspace/tab switch then immediate

@@ -37,7 +37,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          RELEVANT: '^(core/wmux-native/|integrations/shared/|integrations/claude/(bin/wmux-bridge\.mjs$|__tests__/)|src/shared/hooks/|src/main/pipe/|src/shared/lifecycleIntegrations\.ts$|src/shared/rpc\.ts$|src/cli/commands/setupHooks\.ts$|src/daemon/DaemonPipeServer\.ts$|src/main/mcp/hookBridge\.ts$|src/main/mcp/__tests__/hookBridge\.lockstep\.test\.ts$|src/mcp/(shim|broker|brokerPeer)\.ts$|src/shared/peerPid\.ts$|src/mcp/__tests__/identityMatrix\.os\.test\.ts$|src/main/mcp/(nativeLauncher\.ts|__tests__/nativeLauncher\.os\.test\.ts)$|src/shared/(mcpLauncher\.ts|__tests__/mcpLauncher\.os\.test\.ts)$|src/mcp/__tests__/nativeShim\.parity\.os\.test\.ts$|src/shared/(constants|roleSurfaces|commanderSurface|coreSurface)\.ts$|scripts/build-mcp\.js$|scripts/build-native-hooks\.mjs$|scripts/__tests__/(buildNativeHooks\.os\.test|nativeHooksRelease\.test)\.mjs$|forge\.config\.ts$|package(-lock)?\.json$|\.github/workflows/(native-hooks|release)\.yml$)'
+          RELEVANT: '^(core/wmux-native/|integrations/shared/|integrations/claude/(bin/wmux-bridge\.mjs$|__tests__/)|src/shared/hooks/|src/main/pipe/|src/shared/lifecycleIntegrations\.ts$|src/shared/rpc\.ts$|src/cli/commands/(setupHooks|doctor)\.ts$|src/shared/probedNative\.ts$|src/main/ipc/handlers/hooksBridge\.handler\.ts$|src/cli/commands/__tests__/setupHooks\.(native|downgrade)\.os\.test\.ts$|scripts/fetch-last-release-cli\.mjs$|scripts/__tests__/fetchLastReleaseCli\.test\.mjs$|scripts/lib/last-release\.mjs$|src/daemon/DaemonPipeServer\.ts$|src/main/mcp/hookBridge\.ts$|src/main/mcp/__tests__/hookBridge\.lockstep\.test\.ts$|src/mcp/(shim|broker|brokerPeer)\.ts$|src/shared/peerPid\.ts$|src/mcp/__tests__/identityMatrix\.os\.test\.ts$|src/main/mcp/(nativeLauncher\.ts|__tests__/nativeLauncher\.os\.test\.ts)$|src/shared/(mcpLauncher\.ts|__tests__/mcpLauncher\.os\.test\.ts)$|src/mcp/__tests__/nativeShim\.parity\.os\.test\.ts$|src/shared/(constants|roleSurfaces|commanderSurface|coreSurface)\.ts$|scripts/build-mcp\.js$|scripts/build-native-hooks\.mjs$|scripts/__tests__/(buildNativeHooks\.os\.test|nativeHooksRelease\.test)\.mjs$|forge\.config\.ts$|package(-lock)?\.json$|\.github/workflows/(native-hooks|release)\.yml$)'
         run: |
           if [ "$EVENT" != "pull_request" ]; then echo "relevant=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           files="$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')"
@@ -90,7 +90,7 @@ jobs:
         run: node scripts/build-native-hooks.mjs
       - name: Parity with the Node bridge and the Node MCP shim, lockstep, installer
         if: needs.changes.outputs.relevant != 'false'
-        run: npx vitest run integrations/shared/__tests__/hooksBridgeNative.parity.os.test.ts src/mcp/__tests__/nativeShim.parity.os.test.ts integrations/shared/__tests__/hookFlavours.lockstep.test.ts integrations/shared/__tests__/hooksBridgeShells.os.test.ts src/shared/hooks/__tests__/compatHookInstall.os.test.ts src/main/mcp/__tests__/hookBridge.lockstep.test.ts scripts/__tests__/buildNativeHooks.os.test.mjs scripts/__tests__/nativeHooksRelease.test.mjs src/shared/__tests__/mcpLauncher.os.test.ts src/main/mcp/__tests__/nativeLauncher.os.test.ts src/mcp/__tests__/identityMatrix.os.test.ts
+        run: npx vitest run integrations/shared/__tests__/hooksBridgeNative.parity.os.test.ts src/mcp/__tests__/nativeShim.parity.os.test.ts integrations/shared/__tests__/hookFlavours.lockstep.test.ts integrations/shared/__tests__/hooksBridgeShells.os.test.ts src/shared/hooks/__tests__/compatHookInstall.os.test.ts src/main/mcp/__tests__/hookBridge.lockstep.test.ts scripts/__tests__/buildNativeHooks.os.test.mjs scripts/__tests__/nativeHooksRelease.test.mjs src/shared/__tests__/mcpLauncher.os.test.ts src/main/mcp/__tests__/nativeLauncher.os.test.ts src/shared/hooks/__tests__/claudeNativeHook.os.test.ts src/cli/commands/__tests__/setupHooks.native.os.test.ts src/mcp/__tests__/identityMatrix.os.test.ts
         env:
           WMUX_REQUIRE_NATIVE_HOOKS: '1'
           WMUX_NATIVE_HOOKS_BIN: ${{ github.workspace }}/dist/native-hooks/${{ runner.os == 'Windows' && 'wmux-native.exe' || 'wmux-native' }}
@@ -108,6 +108,15 @@ jobs:
           # The argv a Claude settings entry carries: the bridge path in argv[1].
           # claudeHookContract.test.ts does not read WMUX_CLAUDE_HOOK_IMPL: once is enough.
           WMUX_CLAUDE_HOOK_IMPL="$stage/wmux-native $stage/wmux-bridge.mjs" npx vitest run integrations/claude/__tests__/claudeHookCharacterisation.os.test.ts
+      - name: The last release's CLI against this build's native Claude entries
+        # One platform is enough: the CLI bundle is plain JavaScript. The test
+        # skips without WMUX_LAST_RELEASE_CLI, so here it must be set.
+        if: needs.changes.outputs.relevant != 'false' && matrix.name == 'linux-x64'
+        run: |
+          # The script picks the newest vX.Y.Z tag; the checkout has none.
+          git fetch --quiet --no-tags --depth=1 origin '+refs/tags/v*:refs/tags/v*'
+          cli="$(node scripts/fetch-last-release-cli.mjs "$RUNNER_TEMP/last-release")"
+          WMUX_LAST_RELEASE_CLI="$cli" npx vitest run src/cli/commands/__tests__/setupHooks.downgrade.os.test.ts
       - name: Retain the staged binary
         if: needs.changes.outputs.relevant != 'false'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

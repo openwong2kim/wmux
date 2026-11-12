@@ -30,6 +30,7 @@ import {
 } from '../../shared/computer/blocklist';
 import {
   COMPUTER_CONTROL_ACTIONS,
+  DESKTOP_LIST_APPS_TIMEOUT_MS,
   MODIFIERS,
   OBSERVATION_MODES,
   SNAPSHOT_TTL_MS,
@@ -60,6 +61,24 @@ import type { AgentMarkers } from './agentMarkers';
 import { appBundleSelector } from './appBundleId';
 import { thinTreeReason } from './axFirst';
 import { ForegroundLease, INPUT_LOCK_IDLE_MS, PidLanes, foregroundCertain, type LeaseTicket } from './inputLanes';
+import { createHash } from 'node:crypto';
+import {
+  desktopSchema,
+  listAppsArgv,
+  namedPids,
+  parseDesktopReply,
+  planDesktopAction,
+  planDesktopCommand,
+  refmapEntries,
+  refmapKey,
+  refmapPids,
+  samePinned,
+  type DesktopRef,
+  type DesktopReply,
+  type DesktopSurface,
+  type PinnedEntry,
+} from './desktopCommands';
+import type { RunnerResult } from './RunnerProcess';
 
 export { INPUT_LOCK_IDLE_MS };
 
@@ -165,7 +184,54 @@ export interface ComputerServiceDeps {
   onControl?: (event: { agent: ComputerAgent; action: ComputerControlAction; window: WindowInfo }) => void;
   /** Each agent's colour and name on screen; without it input carries no marker. */
   markers?: AgentMarkers;
+  /**
+   * The nested agent-desktop binary, through the helper's runner mode
+   * (RunnerProcess.ts). Absent where there is none (every OS but macOS).
+   */
+  desktop?: DesktopDeps;
 }
+
+export interface DesktopDeps {
+  /** `onStarted` fires once the runner has started agent-desktop for this run. */
+  run(argv: string[], timeoutMs: number, onStarted?: () => void): Promise<RunnerResult>;
+  /** A snapshot's refmap.json in agent-desktop's state directory; '' when it has none. */
+  readRefmap(snapshotId: string): Promise<string>;
+  /** Kills every run in flight (the stop key). */
+  abort(): void;
+  /** Ends the runner and removes the snapshots agent-desktop saved (quit, or computer use turned off). */
+  dispose(): void;
+}
+
+interface DesktopSnapshotRecord {
+  agentKey: string;
+  app: AppInfo;
+  window: WindowInfo;
+  /** SHA-256 of the snapshot's refmap.json as it stood after the last run this agent made. */
+  refmapHash: string;
+  /** Each ref's element, process and states as the snapshot recorded them; a later run may not change them. */
+  pinned: Map<string, PinnedEntry>;
+  /**
+   * The surface the snapshot was taken of; null when the command that made it
+   * names none (a wait). Actions take refs from a window snapshot only.
+   */
+  surface: DesktopSurface | null;
+  /**
+   * Whether agent-desktop said it read the whole tree, for this run and every
+   * run this snapshot was drilled from (a textfield's states are trusted only then).
+   */
+  complete: boolean;
+  expiresAt: number;
+}
+
+/** agent-desktop runs in flight across all agents; past this a call is refused with input_busy. */
+export const DESKTOP_MAX_RUNS = 8;
+/** One agent's desktop calls running or waiting their turn; past this a call is refused with input_busy. */
+export const DESKTOP_QUEUE_PER_AGENT = 4;
+/** Desktop snapshots remembered at once; the oldest goes first. */
+const DESKTOP_SNAPSHOT_LIMIT = 256;
+/** A snapshot id as agent-desktop prints it; it names a directory, so nothing else is read. */
+const DESKTOP_SNAPSHOT_ID = /^[a-z0-9]{1,64}$/;
+const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 
 interface SnapshotRecord {
   agentKey: string;
@@ -199,6 +265,8 @@ export interface ControlParams {
   keys?: string[];
   direction?: ScrollDirection;
   amount?: number;
+  /** Leave the target in front after the action (protocol `keepFront`). */
+  keepFront?: boolean;
 }
 
 let shutDown = false;
@@ -227,6 +295,11 @@ export class ComputerService {
   private readonly deps: ComputerServiceDeps;
   private helper: HelperLike | null = null;
   private readonly snapshots = new Map<string, SnapshotRecord>();
+  private readonly desktopSnapshots = new Map<string, DesktopSnapshotRecord>();
+  /** Each agent's desktop calls, one after another: a run may rewrite a snapshot's refmap the next call checks. */
+  private readonly desktopQueues = new Map<string, Promise<unknown>>();
+  private readonly desktopQueued = new Map<string, number>();
+  private desktopRuns = 0;
   private readonly grants = new Map<string, boolean>();
   private readonly consentInflight = new Map<string, Promise<ConsentAnswer>>();
   /** Aborted (and replaced) by every stop: withdraws the open consent prompts. */
@@ -261,6 +334,7 @@ export class ComputerService {
     if (!this.deps.isEnabled()) {
       // Turned off, possibly by editing the file by hand: give the chord back.
       this.deps.stopKey.release();
+      this.endDesktop();
       fail('turned_off', 'computer use is turned off. The user turns it on in Settings › Computer use');
     }
     if (!this.deps.createHelper) {
@@ -396,6 +470,319 @@ export class ComputerService {
     return { ...state, mode, ...(screenshotAdded && { screenshotAdded }) };
   }
 
+  /**
+   * A read-only agent-desktop command (desktopCommands.ts), on the same
+   * terms as getAppState: the app is resolved by the helper and vetted
+   * (blocklist, consent) before anything runs, and a ref is accepted only
+   * from a snapshot this agent took, whose refmap is unchanged since. The
+   * reply must be for the vetted process and window, or it is discarded.
+   */
+  async desktop(
+    agent: ComputerAgent,
+    params: { command: unknown; args?: unknown; app?: string; window?: string },
+  ): Promise<DesktopReply> {
+    return this.inDesktopQueue(agent, () => this.desktopNow(agent, params));
+  }
+
+  /**
+   * A ref action (DESKTOP_ACTION_COMMANDS), an input action in the
+   * background: in the same per-agent queue as the agent's observations,
+   * then in its app's slot like any input action, under the stop key, the
+   * rate cap and the marker, never under the foreground lease.
+   */
+  async desktopAct(agent: ComputerAgent, params: { command: unknown; args?: unknown }): Promise<ActionResult> {
+    return this.inDesktopQueue(agent, async () => {
+      const sent = { requested: false, done: false };
+      try {
+        const result = await this.dispatchDesktopAction(agent, params, sent);
+        return { ...result, disposition: result.disposition ?? (result.verification === 'verified' ? 'delivered' : 'delivered_unverified') };
+      } catch (err) {
+        throw inputActionError(err, sent.requested, sent.done);
+      }
+    });
+  }
+
+  /** One agent's desktop calls, observations and actions alike, run one after another. */
+  private inDesktopQueue<T>(agent: ComputerAgent, run: () => Promise<T>): Promise<T> {
+    const queued = this.desktopQueued.get(agent.key) ?? 0;
+    if (queued >= DESKTOP_QUEUE_PER_AGENT) {
+      fail('input_busy', `${DESKTOP_QUEUE_PER_AGENT} desktop commands of this agent are already queued; try again when one finishes`);
+    }
+    this.desktopQueued.set(agent.key, queued + 1);
+    const previous = this.desktopQueues.get(agent.key) ?? Promise.resolve();
+    const call = previous.catch(() => undefined).then(run);
+    const settled = call.catch(() => undefined).finally(() => {
+      const left = (this.desktopQueued.get(agent.key) ?? 1) - 1;
+      if (left > 0) this.desktopQueued.set(agent.key, left);
+      else this.desktopQueued.delete(agent.key);
+      if (this.desktopQueues.get(agent.key) === settled) this.desktopQueues.delete(agent.key);
+    });
+    this.desktopQueues.set(agent.key, settled);
+    return call;
+  }
+
+  /** One agent-desktop run, counted against DESKTOP_MAX_RUNS while it is in flight. */
+  private async desktopRun(
+    desktop: DesktopDeps,
+    argv: string[],
+    timeoutMs: number,
+    generation: number,
+    action?: { onStarted: () => void },
+  ): Promise<DesktopReply> {
+    if (this.desktopRuns >= DESKTOP_MAX_RUNS) {
+      fail('input_busy', `${DESKTOP_MAX_RUNS} desktop commands are already running; try again when one finishes`);
+    }
+    this.desktopRuns += 1;
+    let result: RunnerResult;
+    try {
+      result = await desktop.run(argv, timeoutMs, action?.onStarted);
+    } finally {
+      this.desktopRuns -= 1;
+    }
+    this.assertCurrent(generation);
+    return parseDesktopReply(result.stdout, { action: action !== undefined });
+  }
+
+  /** Whether the vetted process is the only app agent-desktop takes for its display name. */
+  private async soleByName(desktop: DesktopDeps, app: AppInfo, generation: number): Promise<boolean> {
+    const pids = namedPids(await this.desktopRun(desktop, listAppsArgv(app.name), DESKTOP_LIST_APPS_TIMEOUT_MS, generation), app.name);
+    return pids !== null && pids.length === 1 && pids[0] === app.pid;
+  }
+
+  private async desktopNow(
+    agent: ComputerAgent,
+    params: { command: unknown; args?: unknown; app?: string; window?: string },
+  ): Promise<DesktopReply> {
+    const helper = this.ensureReady();
+    const desktop = this.deps.desktop;
+    if (!desktop) fail('unsupported_platform', `desktop commands are not available on ${this.deps.platform ?? process.platform}`);
+    const plan = planDesktopCommand(params.command, params.args);
+    const generation = this.generation;
+    const now = this.now();
+    if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
+
+    let target: { app: AppInfo; window: WindowInfo } | null = null;
+    const used = plan.refs.map((r) => ({ id: r.snapshotId, record: this.checkDesktopSnapshot(agent, r.snapshotId, now) }));
+    if (used.length > 0) {
+      const { app, window } = used[0].record;
+      if (used.some((u) => u.record.app.pid !== app.pid || u.record.window.id !== window.id)) {
+        fail('invalid_argument', 'the refs of one call must come from snapshots of one window');
+      }
+      target = { app, window };
+      await this.vet(agent, app, window, generation);
+      for (const u of used) {
+        const refmap = await desktop.readRefmap(u.id);
+        this.assertCurrent(generation);
+        if (sha256(refmap) !== u.record.refmapHash) {
+          this.desktopSnapshots.delete(u.id);
+          fail('snapshot_unknown', `snapshot ${u.id} changed since it was taken; take a new one with command "snapshot"`);
+        }
+      }
+    } else if (plan.scope === 'window' || plan.scope === 'app') {
+      if (!params.app) fail('invalid_argument', `${plan.command} needs app. ${desktopSchema(plan.command)}`);
+      const resolved = await helper.request('resolveTarget', { app: params.app, ...(params.window && { window: params.window }) });
+      this.assertCurrent(generation);
+      await this.vet(agent, resolved.app, resolved.window, generation);
+      assertConsistent(resolved.app, resolved.window);
+      target = resolved;
+    }
+
+    // Without a ref, agent-desktop finds the app by display name. A snapshot
+    // is tied to the vetted process by its refmap and window; any other
+    // reply by that name naming the vetted process alone, before the run
+    // and after it.
+    const byName = target && used.length === 0 && plan.command !== 'snapshot' ? target.app : null;
+    if (byName && !(await this.soleByName(desktop, byName, generation))) {
+      fail('policy_denied', `${byName.name} is not the only app by that name (or it quit), so agent-desktop cannot be pointed at the one wmux checked`);
+    }
+    const reply = await this.desktopRun(desktop, plan.argv(target && { appName: target.app.name, windowId: target.window.id }), plan.timeoutMs, generation);
+    if (!target) return reply;
+
+    const discard = (): never =>
+      fail('policy_denied', `agent-desktop answered for something other than ${target.app.name}; its reply was discarded`);
+    if (byName && !(await this.soleByName(desktop, byName, generation))) discard();
+    // A reply that names its process must name the vetted one, bracket or not.
+    if (reply.data.pid !== undefined && reply.data.pid !== target.app.pid) discard();
+    const window = reply.data.window as { id?: unknown } | undefined;
+    if (plan.checksWindow && window?.id !== `w-${target.window.id}`) discard();
+    const snapshotId = reply.data.snapshot_id;
+
+    // agent-desktop may rewrite a snapshot's refmap when it resolves a ref:
+    // its refs must still name what the snapshot recorded.
+    for (const u of used) {
+      if (u.id === snapshotId) continue;
+      const record = this.desktopSnapshots.get(u.id);
+      if (!record) continue;
+      const refmap = await desktop.readRefmap(u.id);
+      this.assertCurrent(generation);
+      if (!this.keepSnapshotAfterRun(u.id, record, refmap)) discard();
+    }
+
+    if (snapshotId !== undefined) {
+      if (typeof snapshotId !== 'string' || !DESKTOP_SNAPSHOT_ID.test(snapshotId)) discard();
+      const refmap = await desktop.readRefmap(snapshotId as string);
+      this.assertCurrent(generation);
+      if (refmap) {
+        const pids = refmapPids(refmap);
+        if (!pids || pids.some((pid) => pid !== target.app.pid)) discard();
+      } else {
+        // No refmap to prove whose refs these are: only a reply that lists no
+        // refs, or a snapshot of the window checked above, is kept.
+        const listsRefs = plan.command === 'find'
+          ? (Array.isArray(reply.data.matches) && reply.data.matches.length > 0) || reply.data.match !== undefined
+          : !plan.checksWindow;
+        if (listsRefs) discard();
+      }
+      for (const [id, record] of this.desktopSnapshots) {
+        if (record.expiresAt < now || this.desktopSnapshots.size >= DESKTOP_SNAPSHOT_LIMIT) this.desktopSnapshots.delete(id);
+        else break;
+      }
+      // A --root run rewrites its root's snapshot in place and keeps its other refs.
+      const prior = this.desktopSnapshots.get(snapshotId as string);
+      this.desktopSnapshots.set(snapshotId as string, {
+        agentKey: agent.key,
+        app: target.app,
+        window: target.window,
+        refmapHash: sha256(refmap),
+        pinned: (refmap && refmapEntries(refmap)) || new Map(),
+        // A --root run is of the surface its root came from.
+        surface: used.length > 0 ? used[0].record.surface : plan.surface,
+        complete: reply.data.complete === true && used.every((u) => u.record.complete) && (prior?.complete ?? true),
+        expiresAt: now + SNAPSHOT_TTL_MS,
+      });
+    }
+    return reply;
+  }
+
+  /**
+   * A snapshot's refmap after a run: every ref it recorded still names the
+   * same element of the same process in the same state, and every entry is
+   * the app's. Only then is what the run left what the next call compares
+   * with; otherwise the snapshot is dropped.
+   */
+  private keepSnapshotAfterRun(id: string, record: DesktopSnapshotRecord, refmap: string): boolean {
+    const entries = refmapEntries(refmap);
+    const intact = entries !== null && [...entries.values()].every((e) => e.pid === record.app.pid)
+      && [...record.pinned].every(([key, pin]) => {
+        const entry = entries.get(key);
+        return entry !== undefined && samePinned(entry, pin);
+      });
+    if (!intact) {
+      this.desktopSnapshots.delete(id);
+      return false;
+    }
+    record.refmapHash = sha256(refmap);
+    return true;
+  }
+
+  /**
+   * The ref an action names, against its snapshot as recorded: an unchanged
+   * refmap, the same element of the app's process, and no password field.
+   */
+  private async checkActionRef(desktop: DesktopDeps, ref: DesktopRef, record: DesktopSnapshotRecord, generation: number): Promise<void> {
+    const refmap = await desktop.readRefmap(ref.snapshotId);
+    this.assertCurrent(generation);
+    if (sha256(refmap) !== record.refmapHash) {
+      this.desktopSnapshots.delete(ref.snapshotId);
+      fail('snapshot_unknown', `snapshot ${ref.snapshotId} changed since it was taken; take a new one with command "snapshot"`);
+    }
+    const key = refmapKey(ref);
+    const entry = refmapEntries(refmap)?.get(key);
+    const pin = record.pinned.get(key);
+    if (!entry || !pin || !samePinned(entry, pin) || entry.pid !== record.app.pid) {
+      fail('snapshot_unknown', `${ref.ref} is not an element of snapshot ${ref.snapshotId} any more; take a new snapshot`);
+    }
+    if (entry.states?.includes('secure')) fail('policy_denied', 'that element is a password field; desktop actions do not act on it');
+    // A password field reads as an ordinary text field by its role, so its
+    // states decide, and only when a snapshot that read the whole tree
+    // recorded them readably. A role agent-desktop could not read or map
+    // (it writes "unknown") could be a text field too.
+    const maybeTextField = entry.role === 'textfield' || entry.role === 'unknown' || entry.role === null;
+    if (maybeTextField && (!record.complete || entry.states === null)) {
+      const what = entry.role === 'textfield' ? 'that text field' : 'that element (its role could not be read)';
+      fail('policy_denied', `wmux cannot tell whether ${what} is a password field (an incomplete snapshot, or unreadable states); take a new snapshot`);
+    }
+  }
+
+  private async dispatchDesktopAction(
+    agent: ComputerAgent,
+    params: { command: unknown; args?: unknown },
+    sent: { requested: boolean; done: boolean },
+  ): Promise<ActionResult> {
+    this.ensureReady();
+    const desktop = this.deps.desktop;
+    if (!desktop) fail('unsupported_platform', `desktop commands are not available on ${this.deps.platform ?? process.platform}`);
+    // No input without a working emergency stop.
+    if (!this.deps.stopKey.arm()) fail('stop_key_unavailable', STOP_KEY_UNAVAILABLE);
+    const plan = planDesktopAction(params.command, params.args);
+    const generation = this.generation;
+    const { ref } = plan;
+    const record = this.checkDesktopSnapshot(agent, ref.snapshotId, this.now());
+    if (record.surface !== 'window') {
+      fail('invalid_argument', `actions take refs from a snapshot or find of a window; ${ref.ref} comes from ${record.surface ? `a ${record.surface} snapshot` : 'a wait'}`);
+    }
+    await this.vet(agent, record.app, record.window, generation);
+    this.assertCurrent(generation);
+    // The app's slot, as every input action on it takes; never the lease:
+    // these actions stay in the background.
+    const release = await this.lanes.acquire(record.window.pid);
+    try {
+      // Everything that may have changed while waiting for consent or the slot.
+      const now = this.now();
+      this.assertCurrent(generation);
+      if (!this.deps.stopKey.arm()) fail('stop_key_unavailable', STOP_KEY_UNAVAILABLE);
+      const current = this.checkDesktopSnapshot(agent, ref.snapshotId, now);
+      if (!this.vetWithoutPrompt(agent, current.app, current.window)) {
+        fail('snapshot_unknown', `consent for ${current.app.name} is not given for this agent any more; take a snapshot to ask again`);
+      }
+      await this.checkActionRef(desktop, ref, current, generation);
+      // Refused before the rate slot and the marker, which only a run that starts may take.
+      if (this.desktopRuns >= DESKTOP_MAX_RUNS) {
+        fail('input_busy', `${DESKTOP_MAX_RUNS} desktop commands are already running; try again when one finishes`);
+      }
+      this.checkRate(agent.key, now);
+      this.deps.onControl?.({ agent, action: plan.marker, window: current.window });
+      let reply: DesktopReply;
+      try {
+        reply = await this.desktopRun(desktop, plan.argv, plan.timeoutMs, generation, {
+          onStarted: () => {
+            sent.requested = true;
+          },
+        });
+      } catch (err) {
+        // A stop or a timeout can settle the run before the runner's
+        // "started" line is read, while agent-desktop is already running.
+        if (err instanceof ComputerError && (err.code === 'aborted' || err.code === 'timeout')) sent.requested = true;
+        throw err;
+      }
+      sent.done = true;
+      const delivery = (reply.data.disposition as { delivery?: unknown } | undefined)?.delivery;
+      const refmap = await desktop.readRefmap(ref.snapshotId);
+      if (refmap === '') {
+        // agent-desktop pruned the snapshot (another run saved newer ones): it is gone, not changed.
+        this.desktopSnapshots.delete(ref.snapshotId);
+      } else if (!this.keepSnapshotAfterRun(ref.snapshotId, current, refmap)) {
+        fail('policy_denied', `snapshot ${ref.snapshotId} changed during the action; take a new snapshot`);
+      }
+      this.assertCurrent(generation);
+      // agent-desktop found the element already as asked and sent nothing (check on a checked box).
+      if (delivery === 'not_delivered') return { method: 'accessibility', verification: 'verified', delivery: 'background', disposition: 'not_delivered' };
+      return { method: 'accessibility', verification: delivery === 'delivered_verified' ? 'verified' : 'unverified', delivery: 'background' };
+    } finally {
+      release();
+    }
+  }
+
+  private checkDesktopSnapshot(agent: ComputerAgent, snapshotId: string, now: number): DesktopSnapshotRecord {
+    if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
+    const record = this.desktopSnapshots.get(snapshotId);
+    if (!record || record.expiresAt < now) {
+      fail('snapshot_unknown', `snapshot ${snapshotId} is unknown or expired; take one with command "snapshot" on that app`);
+    }
+    if (record.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
+    return record;
+  }
+
   private async observe(
     agent: ComputerAgent,
     helper: HelperLike,
@@ -488,7 +875,12 @@ export class ComputerService {
     const marker = this.deps.markers?.markerFor(agent);
     const waiting = marker && { marker, ...target };
     const send = (foreground?: 'allow' | 'refuse'): Promise<ActionResult> =>
-      helper.request(call.method, { ...call.params, ...(marker && { marker }), ...(foreground && { foreground }) } as never) as Promise<ActionResult>;
+      helper.request(call.method, {
+        ...call.params,
+        ...(marker && { marker }),
+        ...(foreground && { foreground }),
+        ...(params.keepFront === true && { keepFront: true }),
+      } as never) as Promise<ActionResult>;
 
     if (!defer) {
       // A helper that cannot defer real input: the single lease of before,
@@ -506,6 +898,7 @@ export class ComputerService {
       clickCount: clampInt(params.clickCount ?? 1, 1, 3),
       modifiers: keys?.modifiers ?? params.modifiers,
       text: params.text,
+      direction: params.direction,
     }, os);
     // Every action on this app takes its slot first, foreground or not, so
     // one app's actions run in arrival order; other apps' agents never wait
@@ -765,6 +1158,7 @@ export class ComputerService {
     // no markerClear is needed (or could reach it: a request now would start
     // a fresh helper).
     this.helper?.abort('stopped by the user');
+    this.deps.desktop?.abort();
     this.lease.clear();
     // Every action still waiting for its app's slot ends `aborted` without
     // reaching the helper.
@@ -786,6 +1180,19 @@ export class ComputerService {
     this.helper?.dispose();
     this.helper = null;
     this.snapshots.clear();
+    this.endDesktop();
+  }
+
+  /** Computer use was turned off: stop everything, then end the desktop runner and its snapshots. */
+  turnedOff(): void {
+    if (this.disposed) return;
+    this.abort();
+    this.endDesktop();
+  }
+
+  private endDesktop(): void {
+    this.deps.desktop?.dispose();
+    this.desktopSnapshots.clear();
   }
 
   private withdrawConsentPrompts(): void {

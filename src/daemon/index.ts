@@ -73,6 +73,7 @@ import { createDaemonLogWriter } from './logWriter';
 import { DaemonSessionManager, type ManagedSession } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
+import { applyAppHostAtBoot, registerClientIdentify, takeAppSpawnedMarker } from './appHostMarker';
 import { SessionPipe } from './SessionPipe';
 import { WebTerminalServer } from './web/WebTerminalServer';
 import { SessionAuthorizationExpiredError } from './web/WebTerminalServer';
@@ -159,7 +160,7 @@ import { gitRunner } from '../main/a2aRemote/spawnWorktree';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STREAM_PING, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STREAM_PING, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -221,6 +222,7 @@ import { SHA_RE } from '../shared/commitOrigin';
 import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink, isBrokenPipeError, stdioErrorsConsumed } from './util/logSink';
 import { installExitEvidence, noteExitReason } from './exitEvidence';
+import { startHangWatchdog } from './hangWatchdog';
 import { newerTimestamp } from './util/idleAnchor';
 import type { DaemonSession, DaemonState } from './types';
 import { retireAdopted, withDiskOnlySessions } from './diskOnlySessions';
@@ -1265,6 +1267,10 @@ initDaemonLogSink(wmuxDir);
 const SPAWNED_BY_VERSION: string =
   process.env[ENV_KEYS.SPAWNED_BY_VERSION] || 'unknown';
 
+// Whether the desktop app's launcher started this daemon. Read once and taken
+// out of the environment, so nothing this daemon starts carries it on.
+const APP_SPAWNED: boolean = takeAppSpawnedMarker(process.env);
+
 // The release this daemon's own code belongs to, for `wmux daemon status
 // --json`. The bundle sits at `<root>/daemon-bundle/index.js` in a dev checkout
 // and at `<ver>/resources/daemon-bundle/index.js` in the server runtime, so
@@ -1411,6 +1417,10 @@ installExitEvidence(process, {
   ignoreError: (err) => !stdioErrorsConsumed() && isBrokenPipeError(err),
   reportDir: path.join(wmuxDir, 'crash-reports'),
 });
+
+// A main thread that stops turning leaves a file saying what it was doing, for
+// the respawn that follows. Bundle line numbers mean nothing without the version.
+startHangWatchdog({ logsDir: path.join(wmuxDir, 'logs'), log, version: DAEMON_VERSION ?? SPAWNED_BY_VERSION });
 
 // === X6 resume on replay ===
 // Compute the NON-persisted launch command for a supervised exec session being
@@ -2665,6 +2675,12 @@ async function restartSupervisedSession(
 
 // === RPC handler registration ===
 
+/**
+ * Sessions whose daemon.attachSession is replacing their pipe: a size sent
+ * meanwhile is provisional (setReplayPendingProbe).
+ */
+const attachesInFlight = new Set<string>();
+
 function registerRpcHandlers(
   pipeServer: DaemonPipeServer,
   sessionManager: DaemonSessionManager,
@@ -3154,10 +3170,17 @@ function registerRpcHandlers(
       // Stop existing SessionPipe if still listening (prevents EADDRINUSE on reconnect)
       const existingPipe = sessionPipes.get(p.id);
       if (existingPipe) {
-        // Input the old client already sent still reaches the PTY (#3073).
-        await existingPipe.releaseClient().catch(() => undefined);
-        await existingPipe.stop().catch(() => undefined);
-        sessionPipes.delete(p.id);
+        // The new viewer's replay is due while the old pipe goes: a size it
+        // sends meanwhile is provisional (setReplayPendingProbe below).
+        attachesInFlight.add(p.id);
+        try {
+          // Input the old client already sent still reaches the PTY (#3073).
+          await existingPipe.releaseClient().catch(() => undefined);
+          await existingPipe.stop().catch(() => undefined);
+          sessionPipes.delete(p.id);
+        } finally {
+          attachesInFlight.delete(p.id);
+        }
       }
 
       // TASK-10: dims provider enables the attach-flush snapshot (large ring
@@ -5075,16 +5098,7 @@ function registerRpcHandlers(
     });
   }
 
-  pipeServer.onRpc('daemon.client.identify', async (params, ctx) => {
-    const role = typeof params['role'] === 'string' ? params['role'] : '';
-    if (role !== 'main') return { ok: false };
-    // Keep classification as the first side effect. New clients no longer rely
-    // on synchronous handler completion for correctness — they retry subscribe
-    // after this reply settles — but doing the cheap mark first still minimizes
-    // the refusal window for every caller.
-    pipeServer.markFirstParty(ctx.clientId);
-    return { ok: true };
-  });
+  registerClientIdentify(pipeServer, wmuxDir, (message) => log('warn', message));
 
   // Pushed events are opt-in (issue #659). A client that never calls this reads
   // nothing but replies to its own requests, so "write a request, read one line
@@ -9635,6 +9649,7 @@ async function main(): Promise<void> {
     pushSender.notify(buildTurnFailedPushPayload(sessionId, failure), { collapseId: turnFailedPushCollapseId(sessionId) });
   };
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
+  applyAppHostAtBoot(pipeServer, wmuxDir, APP_SPAWNED);
   // N4 — main folds these into one notice per agent and account, and drops it
   // when any pane or run of that account is seen to work. Nothing about the
   // account beyond its folder is sent. A loss makes the login gate forget the
@@ -10281,7 +10296,8 @@ async function main(): Promise<void> {
   // The user's "Continue on <account>": the pane's own Claude conversation is
   // copied to the account's config dir and resumed there in the same pane
   // (continueOnAccount.ts). main resolves the account to its directory.
-  pipeServer.onRpc('session.continueOnAccount', async (rawParams, ctx) => {
+  // `copyOnly` (a pane that cannot switch in place): only the copy; main opens the new pane.
+  const continueOnAccountRpc = (copyOnly: boolean): Parameters<typeof pipeServer.onRpc>[1] => async (rawParams, ctx) => {
     if (!pipeServer.isFirstParty(ctx.clientId)) return { ok: false, code: 'not_authorized' };
     const p = rawParams as { sessionId?: unknown; configDir?: unknown };
     const id = typeof p.sessionId === 'string' ? p.sessionId : '';
@@ -10343,11 +10359,15 @@ async function main(): Promise<void> {
           pane.bridge.noteInput(data);
           return true;
         },
-      }, id, configDir);
+      }, id, configDir, { copyOnly });
     } catch {
       return { ok: false, code: 'unknown' };
     }
-  });
+  };
+  pipeServer.onRpc('session.continueOnAccount', continueOnAccountRpc(false));
+  // A method of its own, so a daemon without it answers Unknown method and
+  // never moves the pane in place.
+  pipeServer.onRpc('session.copyToAccountV1', continueOnAccountRpc(true));
   // #919 — re-evaluate canonical identity OUTSIDE `session:agent`: the tier
   // inputs change (attribution completes; a watched process dies) while no
   // detector event is in flight, and a wrong label would otherwise sit in
@@ -10758,7 +10778,7 @@ async function main(): Promise<void> {
     a2aServerRef = a2aServer;
     // A discovery window ends with the app connection that opened it.
     pipeServer.onClientClose((clientId) => a2aServer.discovery.clientGone(clientId));
-    const onA2aRpc = (method: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void =>
+    const onA2aRpc = (method: string, handler: (params: Record<string, unknown>, ctx: { clientId: string }) => Promise<unknown>): void =>
       pipeServer.onRpc(method, handler);
     const a2aRemoteRpc = registerA2aRemoteRpc(onA2aRpc, {
       controller: a2aRemoteController,
@@ -10771,7 +10791,16 @@ async function main(): Promise<void> {
     // An outgoing discovery request ends with the app connection that made it, or with the daemon.
     a2aDiscoverRef = a2aRemoteRpc.discover;
     pipeServer.onClientClose((clientId) => a2aRemoteRpc.discover.clientGone(clientId));
-    registerSpawnRpc(onA2aRpc, { policy: a2aSpawnPolicy, requests: a2aSpawnRequests, onSaved: (previous) => a2aSpawn.sendTargets(previous) });
+    registerSpawnRpc(onA2aRpc, {
+      policy: a2aSpawnPolicy,
+      requests: a2aSpawnRequests,
+      onSaved: (previous) => a2aSpawn.sendTargets(previous),
+      outsideApp: {
+        isApp: (clientId) => pipeServer.isFirstParty(clientId),
+        isPaired: (hostId) => (isHostId(hostId) && a2aRemoteHosts.get(hostId) !== undefined)
+          || a2aPeers.list().some((p) => p.hostId === hostId && !p.revokedAt),
+      },
+    });
     // Starting a conversation this PC received: main makes the worktree and the pane, the daemon places the files.
     registerContinueRpc(onA2aRpc, {
       receiver: a2aContinue,
@@ -10908,6 +10937,7 @@ async function main(): Promise<void> {
   // renderer answers the startup DA1 itself; before that the bytes only reach
   // it through the (query-stripped) ring replay, and the daemon answers.
   sessionManager.setLiveRendererProbe((id) => sessionPipes.get(id)?.isFlushed === true);
+  sessionManager.setReplayPendingProbe((id) => attachesInFlight.has(id) || sessionPipes.get(id)?.awaitingReplay === true);
   // #2388: a task folder whose removal did not finish takes no new pane,
   // whoever asks (the desktop, a phone, an automation, a recovery).
   sessionManager.setSpawnCwdRefusal((cwd, session) => pendingRemovalRefusalAt(getWmuxDir(), cwd, session));

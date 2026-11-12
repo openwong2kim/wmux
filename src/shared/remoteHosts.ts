@@ -287,8 +287,11 @@ export type PairFailureReason =
  *  credential (its `wmux web` was restarted or stopped, which revokes paired
  *  devices, or this device was revoked). Retrying cannot help — the only way
  *  back is to pair again. A 403 is never this: the host's 403s are feature
- *  gates (`--allow-input`, transcript access), not a rejected credential. */
-export type RemoteErrorReason = 'auth-rejected' | 'insecure-transport';
+ *  gates (`--allow-input`, transcript access), not a rejected credential.
+ *  `unknown-workspace-id`: the host refused a new pane in a workspace it has
+ *  no live pane in, which is what a pairing without the workspace grant gets
+ *  for every new pane this desktop starts. */
+export type RemoteErrorReason = 'auth-rejected' | 'insecure-transport' | 'unknown-workspace-id';
 
 /**
  * A paired host as the Remote hub shows it (status = dot + text):

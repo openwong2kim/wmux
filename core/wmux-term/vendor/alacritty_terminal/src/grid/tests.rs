@@ -172,19 +172,15 @@ fn shrink_reflow() {
 
     grid.resize(true, 1, 2);
 
-    assert_eq!(grid.total_lines(), 3);
-
-    assert_eq!(grid[Line(-2)].len(), 2);
-    assert_eq!(grid[Line(-2)][Column(0)], cell('1'));
-    assert_eq!(grid[Line(-2)][Column(1)], wrap_cell('2'));
-
-    assert_eq!(grid[Line(-1)].len(), 2);
-    assert_eq!(grid[Line(-1)][Column(0)], cell('3'));
-    assert_eq!(grid[Line(-1)][Column(1)], wrap_cell('4'));
+    // wmux: the cursor (at its default 0,0) is in this paragraph. xterm does
+    // not reflow the cursor's paragraph (reflowCursorLine=false: Buffer.ts
+    // `_reflowSmaller` lines 391-397, BufferReflow.ts
+    // `reflowLargerGetLinesToRemove` lines 45-52), so neither does the grid.
+    assert_eq!(grid.total_lines(), 1);
 
     assert_eq!(grid[Line(0)].len(), 2);
-    assert_eq!(grid[Line(0)][Column(0)], cell('5'));
-    assert_eq!(grid[Line(0)][Column(1)], Cell::default());
+    assert_eq!(grid[Line(0)][Column(0)], cell('1'));
+    assert_eq!(grid[Line(0)][Column(1)], cell('2'));
 }
 
 #[test]
@@ -199,19 +195,15 @@ fn shrink_reflow_twice() {
     grid.resize(true, 1, 4);
     grid.resize(true, 1, 2);
 
-    assert_eq!(grid.total_lines(), 3);
-
-    assert_eq!(grid[Line(-2)].len(), 2);
-    assert_eq!(grid[Line(-2)][Column(0)], cell('1'));
-    assert_eq!(grid[Line(-2)][Column(1)], wrap_cell('2'));
-
-    assert_eq!(grid[Line(-1)].len(), 2);
-    assert_eq!(grid[Line(-1)][Column(0)], cell('3'));
-    assert_eq!(grid[Line(-1)][Column(1)], wrap_cell('4'));
+    // wmux: the cursor (at its default 0,0) is in this paragraph. xterm does
+    // not reflow the cursor's paragraph (reflowCursorLine=false: Buffer.ts
+    // `_reflowSmaller` lines 391-397, BufferReflow.ts
+    // `reflowLargerGetLinesToRemove` lines 45-52), so neither does the grid.
+    assert_eq!(grid.total_lines(), 1);
 
     assert_eq!(grid[Line(0)].len(), 2);
-    assert_eq!(grid[Line(0)][Column(0)], cell('5'));
-    assert_eq!(grid[Line(0)][Column(1)], Cell::default());
+    assert_eq!(grid[Line(0)][Column(0)], cell('1'));
+    assert_eq!(grid[Line(0)][Column(1)], cell('2'));
 }
 
 #[test]
@@ -225,31 +217,22 @@ fn shrink_reflow_empty_cell_inside_line() {
 
     grid.resize(true, 1, 2);
 
-    assert_eq!(grid.total_lines(), 2);
-
-    assert_eq!(grid[Line(-1)].len(), 2);
-    assert_eq!(grid[Line(-1)][Column(0)], cell('1'));
-    assert_eq!(grid[Line(-1)][Column(1)], wrap_cell(' '));
+    // wmux: the cursor (at its default 0,0) is in this paragraph. xterm does
+    // not reflow the cursor's paragraph (reflowCursorLine=false: Buffer.ts
+    // `_reflowSmaller` lines 391-397, BufferReflow.ts
+    // `reflowLargerGetLinesToRemove` lines 45-52), so neither does the grid.
+    assert_eq!(grid.total_lines(), 1);
 
     assert_eq!(grid[Line(0)].len(), 2);
-    assert_eq!(grid[Line(0)][Column(0)], cell('3'));
-    assert_eq!(grid[Line(0)][Column(1)], cell('4'));
+    assert_eq!(grid[Line(0)][Column(0)], cell('1'));
+    assert_eq!(grid[Line(0)][Column(1)], Cell::default());
 
     grid.resize(true, 1, 1);
 
-    assert_eq!(grid.total_lines(), 4);
-
-    assert_eq!(grid[Line(-3)].len(), 1);
-    assert_eq!(grid[Line(-3)][Column(0)], wrap_cell('1'));
-
-    assert_eq!(grid[Line(-2)].len(), 1);
-    assert_eq!(grid[Line(-2)][Column(0)], wrap_cell(' '));
-
-    assert_eq!(grid[Line(-1)].len(), 1);
-    assert_eq!(grid[Line(-1)][Column(0)], wrap_cell('3'));
+    assert_eq!(grid.total_lines(), 1);
 
     assert_eq!(grid[Line(0)].len(), 1);
-    assert_eq!(grid[Line(0)][Column(0)], cell('4'));
+    assert_eq!(grid[Line(0)][Column(0)], cell('1'));
 }
 
 #[test]
@@ -262,16 +245,20 @@ fn grow_reflow() {
 
     grid.resize(true, 2, 3);
 
+    // wmux: the cursor (at its default 0,0) is in this paragraph. xterm does
+    // not reflow the cursor's paragraph (reflowCursorLine=false: Buffer.ts
+    // `_reflowSmaller` lines 391-397, BufferReflow.ts
+    // `reflowLargerGetLinesToRemove` lines 45-52), so neither does the grid.
+    // The rows only grow, and the wrap stays on the first row's last cell.
     assert_eq!(grid.total_lines(), 2);
 
     assert_eq!(grid[Line(0)].len(), 3);
     assert_eq!(grid[Line(0)][Column(0)], cell('1'));
     assert_eq!(grid[Line(0)][Column(1)], cell('2'));
-    assert_eq!(grid[Line(0)][Column(2)], cell('3'));
+    assert_eq!(grid[Line(0)][Column(2)], wrap_cell(' '));
 
-    // Make sure rest of grid is empty.
     assert_eq!(grid[Line(1)].len(), 3);
-    assert_eq!(grid[Line(1)][Column(0)], Cell::default());
+    assert_eq!(grid[Line(1)][Column(0)], cell('3'));
     assert_eq!(grid[Line(1)][Column(1)], Cell::default());
     assert_eq!(grid[Line(1)][Column(2)], Cell::default());
 }
@@ -288,23 +275,108 @@ fn grow_reflow_multiline() {
 
     grid.resize(true, 3, 6);
 
+    // wmux: the cursor (at its default 0,0) is in this paragraph. xterm does
+    // not reflow the cursor's paragraph (reflowCursorLine=false: Buffer.ts
+    // `_reflowSmaller` lines 391-397, BufferReflow.ts
+    // `reflowLargerGetLinesToRemove` lines 45-52), so neither does the grid.
+    // The rows only grow, each wrap staying on its row's last cell.
     assert_eq!(grid.total_lines(), 3);
 
-    assert_eq!(grid[Line(0)].len(), 6);
+    let expected = [('1', '2', true), ('3', '4', true), ('5', '6', false)];
+    for (r, &(a, b, wrapped)) in expected.iter().enumerate() {
+        let row = &grid[Line(r as i32)];
+        assert_eq!(row.len(), 6);
+        assert_eq!(row[Column(0)], cell(a));
+        assert_eq!(row[Column(1)], cell(b));
+        for c in 2..5 {
+            assert_eq!(row[Column(c)], Cell::default());
+        }
+        assert_eq!(row[Column(5)], if wrapped { wrap_cell(' ') } else { Cell::default() });
+    }
+}
+
+// wmux: upstream's reflow cases above keep the cursor in the paragraph, which
+// does not reflow; these keep it below, where it does.
+#[test]
+fn shrink_reflow_cursor_below() {
+    let mut grid = Grid::<Cell>::new(2, 5, 2);
+    for (x, c) in "12345".chars().enumerate() {
+        grid[Line(0)][Column(x)] = cell(c);
+    }
+    grid.cursor.point.line = Line(1);
+
+    grid.resize(true, 2, 2);
+
+    // No room below the cursor: the added rows go to history, as in xterm.
+    assert_eq!(grid.total_lines(), 4);
+    assert_eq!(grid[Line(-2)][Column(0)], cell('1'));
+    assert_eq!(grid[Line(-2)][Column(1)], wrap_cell('2'));
+    assert_eq!(grid[Line(-1)][Column(0)], cell('3'));
+    assert_eq!(grid[Line(-1)][Column(1)], wrap_cell('4'));
+    assert_eq!(grid[Line(0)][Column(0)], cell('5'));
+    assert_eq!(grid.cursor.point.line, Line(1));
+}
+
+#[test]
+fn grow_reflow_below_the_cursor_moves_it_up_as_xterm() {
+    // wmux: xterm counts every row a widen removes, below the cursor too:
+    // each takes a history row first, then moves the cursor (and the saved
+    // cursor) up one row (Buffer.ts `_reflowLargerAdjustViewport`).
+    let paragraphs = |grid: &mut Grid<Cell>, from: i32| {
+        for y in [from, from + 2] {
+            grid[Line(y)][Column(0)] = cell('a');
+            grid[Line(y)][Column(1)] = wrap_cell('b');
+            grid[Line(y + 1)][Column(0)] = cell('c');
+        }
+    };
+    // No history: two rows removed below, both cursors go up two.
+    let mut grid = Grid::<Cell>::new(8, 2, 0);
+    paragraphs(&mut grid, 4);
+    grid.cursor.point.line = Line(3);
+    grid.saved_cursor.point.line = Line(7);
+    grid.resize(true, 8, 3);
+    assert_eq!(grid.cursor.point.line, Line(1));
+    assert_eq!(grid.saved_cursor.point.line, Line(5));
+    // Clamped at the top.
+    let mut grid = Grid::<Cell>::new(6, 2, 0);
+    paragraphs(&mut grid, 1);
+    grid.cursor.point.line = Line(0);
+    grid.resize(true, 6, 3);
+    assert_eq!(grid.cursor.point.line, Line(0));
+    // One history row: it takes the first removed row, the cursors the other.
+    let mut grid = Grid::<Cell>::new(6, 2, 10);
+    grid.scroll_up(&(Line(0)..Line(6)), 1);
+    paragraphs(&mut grid, 2);
+    grid.cursor.point.line = Line(1);
+    grid.saved_cursor.point.line = Line(5);
+    assert_eq!(grid.history_size(), 1);
+    grid.resize(true, 6, 3);
+    assert_eq!(grid.history_size(), 0);
+    assert_eq!(grid.cursor.point.line, Line(0));
+    assert_eq!(grid.saved_cursor.point.line, Line(4));
+}
+
+#[test]
+fn grow_reflow_cursor_below() {
+    let mut grid = Grid::<Cell>::new(3, 2, 0);
+    grid[Line(0)][Column(0)] = cell('1');
+    grid[Line(0)][Column(1)] = wrap_cell('2');
+    grid[Line(1)][Column(0)] = cell('3');
+    grid.cursor.point.line = Line(2);
+
+    grid.resize(true, 3, 3);
+
+    // Unwrapped with no history: the cursor moves up and a blank row comes in.
+    assert_eq!(grid.total_lines(), 3);
     assert_eq!(grid[Line(0)][Column(0)], cell('1'));
     assert_eq!(grid[Line(0)][Column(1)], cell('2'));
     assert_eq!(grid[Line(0)][Column(2)], cell('3'));
-    assert_eq!(grid[Line(0)][Column(3)], cell('4'));
-    assert_eq!(grid[Line(0)][Column(4)], cell('5'));
-    assert_eq!(grid[Line(0)][Column(5)], cell('6'));
-
-    // Make sure rest of grid is empty.
-    for r in (1..3).map(Line::from) {
-        assert_eq!(grid[r].len(), 6);
-        for c in 0..6 {
-            assert_eq!(grid[r][Column(c)], Cell::default());
+    for r in 1..3 {
+        for c in 0..3 {
+            assert_eq!(grid[Line(r)][Column(c)], Cell::default());
         }
     }
+    assert_eq!(grid.cursor.point.line, Line(1));
 }
 
 #[test]

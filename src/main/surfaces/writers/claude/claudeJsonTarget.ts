@@ -4,6 +4,7 @@ import type { SurfaceFileEdit } from '../../../../shared/tokenUsage/surfaceTypes
 import { normalizePath } from '../../inventory/helpers';
 import type { JsonEdit } from '../../safeWrite';
 import type { ResolvedChange, WriterDeps } from '../types';
+import { stripBom } from '../../../../shared/stripBom';
 
 export function getClaudeJsonPath(deps: WriterDeps): string {
   return path.join(deps.homeDir, '.claude.json');
@@ -40,7 +41,7 @@ export function buildClaudeJsonEdits(
         : null;
   if (text !== null) {
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(stripBom(text));
     } catch {
       parsed = {};
     }

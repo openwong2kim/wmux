@@ -491,4 +491,24 @@ describe.skipIf(!rustRingAvailable && !RUST_PROMISED)('a hibernated rust ring', 
       frozen?.dispose();
     }
   });
+
+  it('keeps a provisional newest size provisional across a sleep and a wake', async () => {
+    const ring = new RingBuffer(1.5 * MB, 'rust');
+    fillRing(ring);
+    ring.noteGeometry(118, 44, false);
+    const marks = ring.readAllWithGeometry().geometry;
+    sessions.push(fakeSession('p1', ring));
+    await createBufferHibernation(deps({ minBytes: MB })).sweep();
+    expect(ring.isHibernated).toBe(true);
+    expect(ring.geometryPending).toBe(true);
+
+    expect(ring.readAllWithGeometry().geometry).toEqual(marks);
+    expect(ring.isHibernated).toBe(false);
+    expect(ring.geometryPending).toBe(true);
+    // Still provisional once woken: the next size replaces it.
+    ring.noteGeometry(100, 30);
+    const changes = ring.readAllWithGeometry().geometry?.changes ?? [];
+    expect(changes.at(-1)).toMatchObject({ cols: 100, rows: 30 });
+    expect(changes.some((c) => c.cols === 118 && c.rows === 44)).toBe(false);
+  });
 });

@@ -67,6 +67,6 @@ mod tests {
 
     #[test]
     fn a_split_divergent_control_is_reported() {
-        assert!(fed(10, 3, 100, &["a\x1b(", "0q"]).divergent);
+        assert!(fed(10, 3, 100, &["a\x1b(", "A#"]).divergent);
     }
 }

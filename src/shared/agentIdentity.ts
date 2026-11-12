@@ -76,6 +76,8 @@ export interface AgentMcpTargetSpec {
   readonly configPath: readonly string[];
   /** See `McpTarget.createIfMissing` (src/shared/mcpTargets.ts). */
   readonly createIfMissing: boolean;
+  /** See `McpTarget.savesUnderLock`. */
+  readonly savesUnderLock?: boolean;
   /** See `McpTarget.verified`. */
   readonly verified: boolean;
   /** See `McpTarget.autoRegister`. */
@@ -322,7 +324,7 @@ export const AGENT_IDENTITIES = [
     apiErrorTurnEnd: true,
     teammateTranscripts: true,
     wslTranscript: true,
-    mcp: { format: 'json', configPath: ['.claude.json'], createIfMissing: true, verified: true, autoRegister: true },
+    mcp: { format: 'json', configPath: ['.claude.json'], createIfMissing: true, savesUnderLock: true, verified: true, autoRegister: true },
     tuiComposer: true,
     dialogs: 'claude',
     sendQueue: true,

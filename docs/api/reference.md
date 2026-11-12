@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v4.15.0-beta.1 sources.** This file is produced by
+> **Generated from wmux v4.15.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **320** methods (`ALL_RPC_METHODS` in
+Total: **323** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -152,6 +152,7 @@ Total: **320** methods (`ALL_RPC_METHODS` in
 | `browser.click.cdp` | `browser.click` | `browser` |
 | `browser.hover.cdp` | `browser.click` | `browser` |
 | `browser.drag.cdp` | `browser.click` | `browser` |
+| `browser.upload.cdp` | `browser.upload` | `browser` |
 | `browser.press.cdp` | `browser.type` | `browser` |
 | `browser.dialog.arm` | `browser.click` | `browser` |
 | `browser.cookies` | `browser.cookies` | `browser` |
@@ -347,6 +348,8 @@ Total: **320** methods (`ALL_RPC_METHODS` in
 | `fleet.triage` | `terminal.read` | `terminal-content` |
 | `handOut.list` | `a2a.read` | `a2a` |
 | `handOut.add` | `a2a.send` | `a2a` |
+| `app.action` | `wmux.internal` |  |
+| `app.action.list` | `wmux.internal` |  |
 | `ui.decoratePane` | `ui.pane-decoration` | `ui` |
 | `codex.relay.prepare` | `wmux.internal` |  |
 | `codex.relay.close` | `wmux.internal` |  |

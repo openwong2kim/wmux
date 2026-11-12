@@ -16,6 +16,7 @@ import {
   parseSpawnTargets,
   spawnClockOk,
   spawnHostAllowed,
+  spawnPendingPerHost,
   spawnTargetsFor,
   type A2aSpawnCardV1,
   type A2aSpawnClaimResult,
@@ -81,14 +82,10 @@ import { errMsg, isPlainObject } from './storeFile';
  * this PC sent and that has no final answer yet, and only newer targets.
  */
 
-/** Requests one PC may have open here at once (deciding, on a card, or starting). */
-export const SPAWN_PENDING_PER_HOST_MAX = 3;
-/** Starts one PC may get here per hour, and per day. */
-export const SPAWN_STARTS_PER_HOUR_MAX = 3;
-export const SPAWN_STARTS_PER_DAY_MAX = 10;
-/** Agents a remote start made running at once: per PC, and in all. */
-export const SPAWN_LIVE_PER_HOST_MAX = 2;
-export const SPAWN_LIVE_MAX = 4;
+// Requests open per PC, starts per hour and day, and agents running per PC and
+// in all: the owner's `limits` in the policy (A2aSpawnLimitsV1), read at each
+// check. Absent means no limit, except requests open per PC
+// (SPAWN_PENDING_PER_HOST_DEFAULT).
 /** A claimed start main never reported back on ends `failed` after this. */
 export const SPAWN_STARTING_MAX_MS = 10 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -358,7 +355,7 @@ export class A2aSpawnReceiver {
       permissionMode: policy.permissionMode,
       followUps: policy.followUps,
       text: req.text,
-      expiresAt: req.expiresAt,
+      expiresAt: rec.expiresAt,
     };
   }
 
@@ -429,11 +426,13 @@ export class A2aSpawnReceiver {
     const r = this.deps.requests;
     const live = this.deps.liveSpawns ?? ((): number => 0);
     const others = (h?: HostId): number => Math.max(0, (r.startingCount?.(h) ?? 0) - 1);
-    if (live(hostId) + others(hostId) >= SPAWN_LIVE_PER_HOST_MAX) return false;
-    if (live() + others() >= SPAWN_LIVE_MAX) return false;
     const now = this.now();
-    if ((r.startsSince?.(now - HOUR_MS, hostId, spawnId) ?? 0) >= SPAWN_STARTS_PER_HOUR_MAX) return false;
-    return (r.startsSince?.(now - DAY_MS, hostId, spawnId) ?? 0) < SPAWN_STARTS_PER_DAY_MAX;
+    return !this.atALimit({
+      livePerPc: () => live(hostId) + others(hostId),
+      liveTotal: () => live() + others(),
+      startsPerHour: () => r.startsSince?.(now - HOUR_MS, hostId, spawnId) ?? 0,
+      startsPerDay: () => r.startsSince?.(now - DAY_MS, hostId, spawnId) ?? 0,
+    });
   }
 
   private async claimNow(hostId: HostId, spawnId: string): Promise<A2aSpawnClaimResult> {
@@ -451,7 +450,7 @@ export class A2aSpawnReceiver {
     };
     const policy = this.deps.policy.get();
     if (!spawnHostAllowed(policy, hostId)) return refuse('not-allowed');
-    if (this.now() > Date.parse(req.expiresAt)) return refuse('expired');
+    if (this.now() > Date.parse(rec.expiresAt)) return refuse('expired');
     if (!policy.agents.includes(req.agent) || !isSpawnableAgent(req.agent)) return refuse('agent-not-allowed');
     const sub = normalizeSpawnSub(req.folder.sub);
     const root = policy.roots.find((r) => r.id === req.folder.root);
@@ -475,7 +474,7 @@ export class A2aSpawnReceiver {
     if (!spawnHostAllowed(now, hostId) || !now.agents.includes(req.agent) || !now.roots.some((r) => r.id === root.id && r.path === root.path)) {
       return refuse('not-allowed');
     }
-    if (this.now() > Date.parse(req.expiresAt)) return refuse('expired');
+    if (this.now() > Date.parse(rec.expiresAt)) return refuse('expired');
     if (!this.roomFor(hostId, spawnId)) return refuse('rate-limited');
     try {
       this.deps.requests.noteClaimedRoot?.(hostId, spawnId, root.path);
@@ -519,7 +518,7 @@ export class A2aSpawnReceiver {
     let refused: A2aSpawnCode | undefined;
     if (!spawnHostAllowed(policy, hostId) || !policy.agents.includes(req.agent)) refused = 'not-allowed';
     else if (sub === null || !policy.roots.some((r) => r.id === req.folder.root && r.path === rec.claimedRoot)) refused = 'folder-not-allowed';
-    else if (this.now() > Date.parse(req.expiresAt)) refused = 'expired';
+    else if (this.now() > Date.parse(rec.expiresAt)) refused = 'expired';
     if (refused) {
       this.finish(hostId, spawnId, refused);
       return { ok: false, error: refused };
@@ -670,12 +669,22 @@ export class A2aSpawnReceiver {
     // grow this PC's files. Its resend is refused the same way again.
     let refused: A2aSpawnCode | undefined;
     if (!spawnClockOk(sentAt, req.expiresAt, this.now())) refused = 'expired';
-    else if (this.deps.requests.pendingCount(hostId) >= SPAWN_PENDING_PER_HOST_MAX) refused = 'rate-limited';
+    else if (this.deps.requests.pendingCount(hostId) >= spawnPendingPerHost(this.deps.policy.get())) refused = 'rate-limited';
     if (refused) return this.refuse(hostId, req.spawnId, refused);
+
+    // This PC's own limits on what it takes (the wire allows more).
+    const limits = this.deps.policy.get().limits ?? {};
+    if (limits.maxPromptKiB !== undefined && Buffer.byteLength(req.text, 'utf8') > limits.maxPromptKiB * 1024) {
+      this.deps.log('info', `[a2a-remote] spawn request ${req.spawnId} from ${hostId}: its prompt is longer than the ${limits.maxPromptKiB} KiB this PC accepts`);
+      return this.refuse(hostId, req.spawnId, 'not-allowed');
+    }
+    const localExpiresAt = limits.maxWaitHours !== undefined && Date.parse(req.expiresAt) > this.now() + limits.maxWaitHours * HOUR_MS
+      ? new Date(this.now() + limits.maxWaitHours * HOUR_MS).toISOString()
+      : undefined;
 
     let got: ReturnType<SpawnReceiverDeps['requests']['receive']>;
     try {
-      got = this.deps.requests.receive(hostId, req);
+      got = this.deps.requests.receive(hostId, req, localExpiresAt);
     } catch (err) {
       this.deps.log('warn', `[a2a-remote] spawn request from ${hostId} not stored: ${errMsg(err)}`);
       return UNAVAILABLE;
@@ -792,7 +801,7 @@ export class A2aSpawnReceiver {
     const policy = this.deps.policy.get();
     // The policy may have changed since the request arrived.
     if (!spawnHostAllowed(policy, hostId)) return 'not-allowed';
-    if (this.now() > Date.parse(req.expiresAt)) return 'expired';
+    if (this.now() > Date.parse(rec.expiresAt)) return 'expired';
     if (!policy.agents.includes(req.agent) || !isSpawnableAgent(req.agent)) return 'agent-not-allowed';
     // Nothing that could leave the root reaches the disk (parsed so already; checked again here).
     const sub = normalizeSpawnSub(req.folder.sub);
@@ -806,7 +815,7 @@ export class A2aSpawnReceiver {
     const now = this.deps.policy.get();
     if (!spawnHostAllowed(now, hostId)) return 'not-allowed';
     if (!now.agents.includes(req.agent) || !now.roots.some((r) => r.id === root.id && r.path === root.path)) return 'not-allowed';
-    if (this.now() > Date.parse(req.expiresAt)) return 'expired';
+    if (this.now() > Date.parse(rec.expiresAt)) return 'expired';
     if (!this.deps.start) return 'not-supported';
     if (this.overCaps(hostId)) return 'rate-limited';
     // Nothing is shown or started before the app has caught up: the request waits for it, until it expires.
@@ -815,15 +824,26 @@ export class A2aSpawnReceiver {
     return ruled ? 'approved' : 'awaiting';
   }
 
-  /** Starts per PC per hour and per day, and running agents per PC and in all (counting those about to start). */
+  /** Starts per PC per hour and per day, and running agents per PC and in all (counting those about to start), against the limits set. */
   private overCaps(hostId: HostId): boolean {
     const r = this.deps.requests;
     const now = this.now();
-    if ((r.approvedSince?.(now - HOUR_MS, hostId) ?? 0) >= SPAWN_STARTS_PER_HOUR_MAX) return true;
-    if ((r.approvedSince?.(now - DAY_MS, hostId) ?? 0) >= SPAWN_STARTS_PER_DAY_MAX) return true;
     const live = this.deps.liveSpawns ?? ((): number => 0);
-    if (live(hostId) + (r.startingCount?.(hostId) ?? 0) >= SPAWN_LIVE_PER_HOST_MAX) return true;
-    return live() + (r.startingCount?.() ?? 0) >= SPAWN_LIVE_MAX;
+    return this.atALimit({
+      startsPerHour: () => r.approvedSince?.(now - HOUR_MS, hostId) ?? 0,
+      startsPerDay: () => r.approvedSince?.(now - DAY_MS, hostId) ?? 0,
+      livePerPc: () => live(hostId) + (r.startingCount?.(hostId) ?? 0),
+      liveTotal: () => live() + (r.startingCount?.() ?? 0),
+    });
+  }
+
+  /** Whether any limit the policy sets is reached; each count is read only for a limit that is set. */
+  private atALimit(counts: Record<'livePerPc' | 'liveTotal' | 'startsPerHour' | 'startsPerDay', () => number>): boolean {
+    const limits = this.deps.policy.get().limits ?? {};
+    return (Object.keys(counts) as (keyof typeof counts)[]).some((key) => {
+      const limit = limits[key];
+      return limit !== undefined && counts[key]() >= limit;
+    });
   }
 
   /**
@@ -967,7 +987,42 @@ async function agentOnPath(agent: AgentSlug): Promise<boolean> {
   return false;
 }
 
-type RpcHandler = (params: Record<string, unknown>) => Promise<unknown>;
+type RpcHandler = (params: Record<string, unknown>, ctx?: { clientId: string }) => Promise<unknown>;
+
+/** Key-order-independent equality of two JSON values. */
+function sameJson(a: unknown, b: unknown): boolean {
+  const canon = (v: unknown): unknown => (v && typeof v === 'object' && !Array.isArray(v)
+    ? Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, canon((v as Record<string, unknown>)[k])]))
+    : Array.isArray(v) ? v.map(canon) : v);
+  return JSON.stringify(canon(a)) === JSON.stringify(canon(b));
+}
+
+/**
+ * The first PC a policy saved from outside the app names, in `hosts` or in a
+ * rule, that is not paired with this one and that the saved policy does not
+ * already name the same way. A rule or an allow for an unpaired id would
+ * apply the moment that id pairs. Entries the saved policy already holds pass
+ * unchanged, so a policy read and written back still saves. Anything not
+ * shaped like a policy passes here; the store refuses it.
+ */
+export function unpairedHostNamed(raw: unknown, previous: A2aSpawnPolicyV1, isPaired: (hostId: string) => boolean): string | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const p = raw as { hosts?: unknown; rules?: unknown };
+  const hosts = p.hosts && typeof p.hosts === 'object' && !Array.isArray(p.hosts) ? p.hosts as Record<string, unknown> : {};
+  const rules = Array.isArray(p.rules) ? p.rules : [];
+  const ids = new Set<string>(Object.keys(hosts));
+  for (const r of rules) if (r && typeof r === 'object' && typeof (r as { hostId?: unknown }).hostId === 'string') ids.add((r as { hostId: string }).hostId);
+  const prevHosts = previous.hosts as Record<string, unknown>;
+  for (const id of ids) {
+    if (isPaired(id)) continue;
+    if (id in hosts && !(Object.prototype.hasOwnProperty.call(prevHosts, id) && sameJson(hosts[id], prevHosts[id]))) return id;
+    const known = previous.rules.filter((r) => r.hostId === id);
+    for (const r of rules) {
+      if ((r as { hostId?: unknown })?.hostId === id && !known.some((k) => sameJson(k, r))) return id;
+    }
+  }
+  return null;
+}
 
 /** The machine-local policy RPCs (`wmux.internal`). */
 export function registerSpawnRpc(
@@ -977,11 +1032,22 @@ export function registerSpawnRpc(
     requests: Pick<SpawnRequestStore, 'summaries'>;
     /** A saved policy: tell the PCs it concerns what they may ask for now. */
     onSaved?: (previous: A2aSpawnPolicyV1) => void;
+    /**
+     * Whether a caller is the app, and whether a PC is paired with this one.
+     * A save from outside the app may not name a PC that is not paired
+     * (`unpairedHostNamed`). Without it, every caller saves as the app does.
+     */
+    outsideApp?: { isApp: (clientId: string) => boolean; isPaired: (hostId: string) => boolean };
   },
 ): void {
   onRpc(A2A_SPAWN_RPC.policyGet, async () => ({ policy: deps.policy.get() }));
-  onRpc(A2A_SPAWN_RPC.policySet, async (params) => {
+  onRpc(A2A_SPAWN_RPC.policySet, async (params, ctx) => {
     const previous = deps.policy.get();
+    const outside = deps.outsideApp;
+    if (outside && !outside.isApp(ctx?.clientId ?? '')) {
+      const unpaired = unpairedHostNamed(params['policy'], previous, outside.isPaired);
+      if (unpaired) return { ok: false, error: `${unpaired} is not paired with this PC` };
+    }
     const res = await deps.policy.set(params['policy']);
     if (res.ok) deps.onSaved?.(previous);
     return res;

@@ -45,3 +45,17 @@ describe('withAccountQuota and agent-setup panes', () => {
     }
   });
 });
+
+describe('withAccountQuota and the account a create names', () => {
+  it('a switch names its account on the create, so the vault follows it', async () => {
+    const { run } = gate({ kind: 'switch', accountId: 'b', env: { CLAUDE_CONFIG_DIR: '/acc/b' } }, 'claude');
+    expect(await run).toMatchObject({ accountId: 'b', env: { CLAUDE_CONFIG_DIR: '/acc/b' } });
+  });
+
+  it('a create that already names its account is not rotated', async () => {
+    const prepareLaunch = vi.fn();
+    const options: QuotaLaunchOptions = { initialCommand: 'claude', workspaceId: 'ws', accountId: 'a' };
+    expect(await withAccountQuota(options, { prepareLaunch, platform: 'darwin' })).toBe(options);
+    expect(prepareLaunch).not.toHaveBeenCalled();
+  });
+});

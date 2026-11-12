@@ -163,6 +163,10 @@ export const IPC = {
   FANOUT_LIVE_CAP_SET: 'fanout:liveTaskCap:set',
   FANOUT_HOURLY_CAP_GET: 'fanout:hourlyTaskCap:get',
   FANOUT_HOURLY_CAP_SET: 'fanout:hourlyTaskCap:set',
+  FANOUT_TASKS_PER_CALL_GET: 'fanout:tasksPerCall:get',
+  FANOUT_TASKS_PER_CALL_SET: 'fanout:tasksPerCall:set',
+  FANOUT_DEPTH_GET: 'fanout:depth:get',
+  FANOUT_DEPTH_SET: 'fanout:depth:set',
   FANOUT_TRUST_AGY_FOLDERS_GET: 'fanout:trustAgyFolders:get',
   FANOUT_TRUST_AGY_FOLDERS_SET: 'fanout:trustAgyFolders:set',
   WORKER_FENCE_OFF_GET: 'workerFence:off:get',
@@ -285,6 +289,15 @@ export const IPC = {
   ACCOUNT_REMOVE: 'account:remove',
   ACCOUNT_SET_BINDING: 'account:set-binding',
   ACCOUNT_CREDENTIAL_STATUS: 'account:credential-status',
+  // Account vault (main/account/accountVault.ts): names and metadata only;
+  // values never cross to the renderer.
+  ACCOUNT_VAULT_LIST: 'account:vault:list',
+  ACCOUNT_VAULT_SAVE_CLIPBOARD: 'account:vault:save-clipboard',
+  ACCOUNT_VAULT_GENERATE: 'account:vault:generate',
+  ACCOUNT_VAULT_SET_INJECT: 'account:vault:set-inject',
+  ACCOUNT_VAULT_DELETE: 'account:vault:delete',
+  // A new Claude account from a `claude setup-token` token on the clipboard.
+  ACCOUNT_ADD_WITH_TOKEN: 'account:add-with-token',
   // Continue a pane's Claude conversation on another account (invoke,
   // renderer → main → daemon `session.continueOnAccount`).
   ACCOUNT_CONTINUE_PANE: 'account:continue-pane',
@@ -1133,6 +1146,11 @@ export const ENV_KEYS = {
   // a daemon-spawned PTY, so a conditional (??=) injection would inherit the
   // OLD daemon's version and poison the staleness gate.
   SPAWNED_BY_VERSION: 'WMUX_SPAWNED_BY_VERSION',
+  // Set to '1' only by the desktop app's own launcher deps (main/daemon/
+  // launcher.ts), scrubbed by the shared launcher core for every other caller,
+  // and read then removed by the daemon at load: a daemon the app spawned
+  // refuses the daemon-only pairing calls from its first request.
+  APP_SPAWNED_DAEMON: 'WMUX_APP_SPAWNED_DAEMON',
 } as const;
 
 /** Id prefix every orchestrator brain pty is minted with (ClaudePtyBrainAdapter).

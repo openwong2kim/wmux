@@ -124,6 +124,10 @@ describe('WMUX_CLI_METHODS source invariant', () => {
       'codex.relay.close',
       // `wmux doctor`: read-only counts plus the broker's own pid.
       'mcp.sessions.summary',
+      // `wmux action`: the caller's own workspace only, from its pane claim;
+      // a target elsewhere is refused, and a fenced worker cannot call it.
+      'app.action',
+      'app.action.list',
     ]);
     const leaked = reserved
       .filter((m) => WMUX_CLI_METHODS.has(m))

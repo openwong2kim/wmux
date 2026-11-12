@@ -43,6 +43,12 @@ describe('isolateDataDir setup', () => {
     expect(process.env.WMUX_DATA_SUFFIX).toBe('-vitest');
   });
 
+  it.runIf(process.platform === 'win32')('gives the temp USERPROFILE the folders a browser resolves through it', () => {
+    for (const dir of ['AppData\\Local', 'AppData\\LocalLow', 'AppData\\Roaming', 'Desktop', 'Documents', 'Downloads']) {
+      expect(fs.statSync(path.join(os.homedir(), dir)).isDirectory(), dir).toBe(true);
+    }
+  });
+
   it('getWmuxHomeDir() does not equal the real home path', () => {
     const realHome = process.env.WMUX_TEST_REAL_HOME;
     expect(realHome).toBeDefined();
