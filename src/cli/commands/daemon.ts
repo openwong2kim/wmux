@@ -485,7 +485,8 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
       return;
     }
     console.log(st.inEffect ? 'Headless mode: on. PCs with an allow rule can start agents here with no person approving.' : `Headless mode: not in effect: ${st.reason}.`);
-    if (st.inEffect) console.log(HEADLESS_STAYS_UP);
+    // Only a daemon that answered is known to be up and holding.
+    if (st.inEffect && st.from === 'daemon') console.log(HEADLESS_STAYS_UP);
     console.log(`Agents started remotely, running: ${st.running}`);
     for (const r of st.runningStarts) console.log(`  ${r.spawnId} from ${r.hostId}, since ${r.since}${r.worktreePath ? `, in ${r.worktreePath}` : ''}`);
     console.log(`Worktrees of ended starts, kept: ${st.leftovers.length}`);
@@ -510,7 +511,7 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
   if (verb === 'off') {
     if (existsSync(flag)) unlinkSync(flag);
     if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: false }, null, 2));
-    else console.log('Headless mode: off. No new remote start here. Agents it started that still run end within a minute; their worktrees and branches are kept.');
+    else console.log('Headless mode: off. No new remote start here. Agents it started that still run end within a minute; their worktrees and branches are kept. With nothing attached, the daemon exits when idle again.');
     return;
   }
   if (verb !== 'on' && verb !== 'release') headlessFail('Usage: wmux daemon headless on | off | status | release <spawn id>');
@@ -525,6 +526,7 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
   if (existsSync(flag)) {
     if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: true, changed: false }, null, 2));
     else console.log('Headless mode is on already.');
+    say(HEADLESS_STAYS_UP);
     return;
   }
   say([

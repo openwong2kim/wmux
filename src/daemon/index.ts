@@ -10588,9 +10588,11 @@ async function main(): Promise<void> {
       // file an earlier identify wrote, or a reconciled pane snapshot (only the app publishes one).
       appSeen: () => pipeServer.appAttached() || fs.existsSync(path.join(wmuxDir, APP_ATTACHED_FILE)) || a2aExposedPanes.isReconciled(),
     });
+    // In effect: opted in, the app never seen here, and the starter built this run (below).
+    const headlessInEffect = (): boolean => headlessMode.active() && a2aHeadless !== null;
     // A host in headless mode waits for other PCs, with no client and no session of its own:
     // the idle timeout does not stop it. Off for good once the app is seen here (a desktop install).
-    idleHoldForRemoteStarts = () => headlessMode.active();
+    idleHoldForRemoteStarts = headlessInEffect;
     // Read-only, for `wmux daemon headless status|on` (not an a2a.* method, so
     // also answered on a host without the app): what this daemon decides from.
     // Registered before anything else of the a2a stack can fail, so the app
@@ -10598,7 +10600,7 @@ async function main(): Promise<void> {
     pipeServer.onRpc('daemon.headless.status', async () => ({
       appAttached: !headlessMode.appStillAbsent(),
       optedIn: headlessMode.optedIn(),
-      inEffect: headlessMode.active() && a2aHeadless !== null,
+      inEffect: headlessInEffect(),
     }));
     const a2aLinks = new LinkStore({
       dir: a2aDir,

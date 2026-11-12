@@ -53,6 +53,8 @@ export class Watchdog {
   private sessionsBlocked = false;
   private checkCount = 0;
   private idleShutdownFired = false;
+  /** Last check headless mode held the daemon: the idle window starts no earlier than that. */
+  private lastRemoteHoldAt: number | null = null;
   // #2375: the health source passed to start(), kept so a create can re-sample
   // memory on demand instead of waiting up to a full interval for the block
   // to lift. lastRecheckAt rate-limits that on-demand sample.
@@ -246,6 +248,9 @@ export class Watchdog {
     const pendingApprovals = info.pendingApprovals ?? 0;
     const automations = info.automations ?? 0;
     const remoteStarts = info.remoteStarts ?? 0;
+    // A hold that lasted days must not make the release an instant exit (`headless off`
+    // with nothing attached): the full idle window runs from the last held check.
+    if (remoteStarts > 0) this.lastRemoteHoldAt = now;
     if (info.connections > 0 || info.sessions > 0 || pendingApprovals > 0 || automations > 0 || remoteStarts > 0) {
       if (traceIdle) {
         console.log(
@@ -255,7 +260,7 @@ export class Watchdog {
       return;
     }
 
-    const lastActivityAt = info.lastDisconnectAt ?? startTime;
+    const lastActivityAt = Math.max(info.lastDisconnectAt ?? startTime, this.lastRemoteHoldAt ?? 0);
     const idleMs = now - lastActivityAt;
     if (idleMs < idleTimeoutMs) {
       if (traceIdle) {

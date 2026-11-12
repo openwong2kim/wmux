@@ -356,7 +356,7 @@ describe('Watchdog', () => {
       expect(onIdleShutdown).not.toHaveBeenCalled();
     });
 
-    it('does not fire while headless mode is in effect (other PCs ask this host), and fires once it is not', () => {
+    it('does not fire while headless mode is in effect (other PCs ask this host), and fires a full idle window after it is not', () => {
       const onIdleShutdown = vi.fn();
       let remoteStarts = 1;
       const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });
@@ -371,7 +371,14 @@ describe('Watchdog', () => {
       });
       wd.evaluateIdle();
       expect(onIdleShutdown).not.toHaveBeenCalled();
+      // Held for a day, then released: not an instant exit, the idle window starts at the last held check.
+      vi.advanceTimersByTime(24 * 60 * 60_000);
+      wd.evaluateIdle();
       remoteStarts = 0;
+      vi.advanceTimersByTime(30_000);
+      wd.evaluateIdle();
+      expect(onIdleShutdown).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(30_000);
       wd.evaluateIdle();
       expect(onIdleShutdown).toHaveBeenCalledTimes(1);
     });

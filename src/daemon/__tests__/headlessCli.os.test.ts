@@ -51,6 +51,10 @@ describe('wmux daemon headless', () => {
     expect(fs.existsSync(flag())).toBe(true);
     // Turned on: it says the daemon now stays up, and how it comes back after a reboot.
     expect(out).toContain(HEADLESS_STAYS_UP);
+    // Run again on a box already on (one turned on before this line existed): said too.
+    out.length = 0;
+    await runHeadless('on', false, dir);
+    expect(out).toEqual(['Headless mode is on already.', HEADLESS_STAYS_UP]);
     expect(headlessStatus(dir)).toMatchObject({ inEffect: true, optedIn: true, appAttached: false });
   });
 
@@ -114,6 +118,11 @@ describe('wmux daemon headless', () => {
     // What runs is named in the text too: the start, its PC, since when and where.
     await runHeadless('status', false, dir);
     expect(out.join('\n')).toContain(`  ${running.spawnId} from ${running.hostId}, since ${running.since}, in /wt/remote-1`);
+    // No daemon answered: nothing is known to be up, so it is not said to stay up.
+    expect(out).not.toContain(HEADLESS_STAYS_UP);
+    out.length = 0;
+    vi.spyOn(headlessIo, 'daemonView').mockResolvedValueOnce({ appAttached: false, optedIn: true, inEffect: true });
+    await runHeadless('status', false, dir);
     expect(out).toContain(HEADLESS_STAYS_UP);
     out.length = 0;
     fs.writeFileSync(path.join(dir, APP_ATTACHED_FILE), 'x\n');
@@ -200,6 +209,8 @@ describe('wmux daemon headless', () => {
     vi.spyOn(headlessIo, 'daemonView').mockResolvedValue(view);
     await runHeadless('status', false, dir);
     expect(out.join('\n')).toContain('not in effect');
+    // The daemon does not hold itself up then (no starter built), so the line is not said.
+    expect(out).not.toContain(HEADLESS_STAYS_UP);
     expect(headlessStatus(dir, { ...view, inEffect: true })).toMatchObject({ inEffect: true });
   });
 

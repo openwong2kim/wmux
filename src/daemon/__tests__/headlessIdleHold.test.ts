@@ -14,8 +14,11 @@ describe('idle shutdown and headless mode (index.ts wiring)', () => {
     expect(check).toMatch(/remoteStarts: idleHoldForRemoteStarts\(\) \? 1 : 0/);
   });
 
-  it('the hold is headless mode being in effect, off until the a2a stack sets it', () => {
+  it('the hold is headless mode in effect, as `headless status` reports it, off until the a2a stack sets it', () => {
     expect(src).toMatch(/let idleHoldForRemoteStarts: \(\) => boolean = \(\) => false;/);
-    expect(src).toMatch(/idleHoldForRemoteStarts = \(\) => headlessMode\.active\(\);/);
+    // Not only opted in: the starter must be built this run, or the host would stay up unable to start anything.
+    expect(src).toMatch(/const headlessInEffect = \(\): boolean => headlessMode\.active\(\) && a2aHeadless !== null;/);
+    expect(src).toMatch(/idleHoldForRemoteStarts = headlessInEffect;/);
+    expect(src).toMatch(/inEffect: headlessInEffect\(\),/);
   });
 });
