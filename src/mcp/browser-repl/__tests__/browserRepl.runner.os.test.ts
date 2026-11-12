@@ -14,6 +14,8 @@ import { BrowserReplSession } from '../BrowserReplSession';
 import { BROWSER_REPL_TOOLS, type BridgeCall } from '../bridge';
 import { setBrowserReplRunnerCapForTest, type RunnerProcess } from '../runnerProcess';
 import { peerPidOf } from '../../../shared/peerPid';
+import { processStartTime } from '../../../shared/processStartTime';
+import { checkClaim, resetClaimChecks } from '../../../main/pipe/handlers/peerPidShadow';
 
 const bridge: BridgeCall = async () => ({ ok: false, error: 'no browser in this test', ledger: 'refused' });
 const sessions: BrowserReplSession[] = [];
@@ -85,7 +87,7 @@ describe('browser_repl runner process', () => {
     expect(Number(out.result?.text)).not.toBe(process.pid);
   });
 
-  it.skipIf(process.platform === 'win32')('connects as its own pid: a server reads the runner, not this process, as the peer', async () => {
+  it.skipIf(process.platform === 'win32')('connects as its own pid: main takes a claim over that connection for the runner only', async () => {
     const sock = path.join('/tmp', `brr-${process.pid}-${Date.now()}.sock`);
     const peers: Array<number | null> = [];
     const server = net.createServer((socket) => {
@@ -105,8 +107,17 @@ describe('browser_repl runner process', () => {
       );
       expect(out.ok).toBe(true);
       expect(peers).toHaveLength(1);
-      expect(peers[0]).toBe(runnerPid(session));
+      const runner = runnerPid(session) as number;
+      expect(peers[0]).toBe(runner);
       expect(peers[0]).not.toBe(process.pid);
+      // main's claim check over such a connection: the runner's own pid is
+      // taken, the MCP server's (or anyone else's) is not.
+      resetClaimChecks();
+      const ctx = { externalWire: true, peerPid: runner, peerStartedAt: String(processStartTime(runner)) } as Parameters<typeof checkClaim>[1];
+      const quiet = { log: () => undefined };
+      expect(checkClaim('callerPid', ctx, runner, quiet)).toEqual({ ok: true, via: 'same' });
+      expect(checkClaim('callerPid', ctx, process.pid, quiet)).toEqual({ ok: false, reason: 'other-pid' });
+      resetClaimChecks();
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       fs.rmSync(sock, { force: true });
