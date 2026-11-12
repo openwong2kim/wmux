@@ -412,9 +412,14 @@ function newRootId(name: string, taken: readonly string[]): string {
   }
 }
 
-function rootLabel(real: string): string {
-  // By code point, so a character outside the BMP is never cut in half.
-  const label = [...printable(path.basename(real)).trim()].slice(0, SPAWN_LABEL_MAX).join('');
+export function rootLabel(real: string): string {
+  // Whole code points, within the daemon's limit in UTF-16 units: a character
+  // outside the BMP is never cut in half, and the label never runs long.
+  let label = '';
+  for (const ch of printable(path.basename(real)).trim()) {
+    if (label.length + ch.length > SPAWN_LABEL_MAX) break;
+    label += ch;
+  }
   return label || 'folder';
 }
 

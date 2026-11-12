@@ -24,7 +24,7 @@ vi.mock('../../identity', () => ({
 }));
 
 import { sendDaemonRequest } from '../../client';
-import { handleRemote, policyIo } from '../remote';
+import { handleRemote, policyIo, rootLabel } from '../remote';
 import { defaultSpawnPolicy, type A2aSpawnPolicyV1 } from '../../../shared/a2aSpawn';
 import { isNestingMarker } from '../../../shared/envFilter';
 
@@ -328,6 +328,14 @@ describe('wmux remote allow', () => {
     expect(await run('allow', allowArgs())).toBe(0);
     expect(printed()).toContain(`take effect too: laptop (${LAPTOP})`);
     expect(store.roots).toHaveLength(1);
+  });
+});
+
+describe('rootLabel', () => {
+  it('stays within 64 UTF-16 units without splitting a character', () => {
+    const label = rootLabel(`/x/${'😀'.repeat(40)}`);
+    expect(label.length).toBeLessThanOrEqual(64);
+    expect(label).toBe('😀'.repeat(32));
   });
 });
 
