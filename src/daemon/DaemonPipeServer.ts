@@ -946,6 +946,11 @@ export class DaemonPipeServer {
     this.appAttachedSinceStart = true;
   }
 
+  /** The app is known on this daemon (markAppHost at boot, or an identify since start). Read-only. */
+  appAttached(): boolean {
+    return this.appAttachedSinceStart;
+  }
+
   /** Did this client claim the first-party role? See `markFirstParty`. */
   isFirstParty(clientId: string): boolean {
     return this.firstPartyClients.has(clientId);

@@ -10596,10 +10596,11 @@ async function main(): Promise<void> {
     let a2aHeadless: A2aHeadlessStarter | null = null;
     const headlessMode = new HeadlessMode({
       a2aDir,
-      // The app's launcher started this daemon, or the app attached here before (the boot signals, read again with no pipe to mark).
-      appHostAtBoot: applyAppHostAtBoot({ markAppHost: () => undefined }, wmuxDir, APP_SPAWNED),
-      // The app in this run: its identify records `app-attached`, and only the app publishes a reconciled pane snapshot.
-      appSeen: () => fs.existsSync(path.join(wmuxDir, APP_ATTACHED_FILE)) || a2aExposedPanes.isReconciled(),
+      // The app's launcher started this daemon, or the app attached here before (applyAppHostAtBoot marked the pipe).
+      appHostAtBoot: pipeServer.appAttached(),
+      // The app in this run: an identify (even one whose `app-attached` write failed), the
+      // file an earlier identify wrote, or a reconciled pane snapshot (only the app publishes one).
+      appSeen: () => pipeServer.appAttached() || fs.existsSync(path.join(wmuxDir, APP_ATTACHED_FILE)) || a2aExposedPanes.isReconciled(),
     });
     const a2aLinks = new LinkStore({
       dir: a2aDir,

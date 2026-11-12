@@ -395,7 +395,7 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
   if (verb === 'off') {
     if (existsSync(flag)) unlinkSync(flag);
     if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: false }, null, 2));
-    else console.log('Headless mode: off. No new remote start here; agents started remotely end within a minute (their worktrees are kept).');
+    else console.log('Headless mode: off. No new remote start here. Agents it started that still run end within a minute; their worktrees and branches are kept.');
     return;
   }
   if (verb !== 'on') headlessFail('Usage: wmux daemon headless on | off | status');
