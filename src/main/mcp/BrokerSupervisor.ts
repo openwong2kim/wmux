@@ -181,11 +181,19 @@ export class BrokerSupervisor {
     // this, and main takes a claim through the broker only with it.
     const stamp = crypto.randomBytes(32).toString('hex');
     this.childStamp = Buffer.from(stamp, 'utf8');
-    if (child.pid !== undefined && child.connected) {
-      const message: BrokerStampMessage = { wmuxBroker: 'stamp', stamp };
-      child.send(message, (err) => {
-        if (err && this.child === child) console.error('[BrokerSupervisor] could not hand the broker its stamp');
-      });
+    // A broker that never gets its stamp could vouch for no session, so it is
+    // ended and the usual restart spawns one with a new stamp.
+    const noStamp = () => {
+      if (this.child !== child) return;
+      console.error('[BrokerSupervisor] could not hand the broker its stamp; restarting it');
+      child.kill();
+    };
+    if (child.pid !== undefined) {
+      if (!child.connected) noStamp();
+      else {
+        const message: BrokerStampMessage = { wmuxBroker: 'stamp', stamp };
+        child.send(message, (err) => { if (err) noStamp(); });
+      }
     }
     this.connections = 0;
     this.inflight = [];

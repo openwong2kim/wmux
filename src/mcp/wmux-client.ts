@@ -293,8 +293,9 @@ function attemptRpc(
     if (callerPtyId !== undefined) envelope.callerPtyId = callerPtyId;
     const mcpSession = getMcpSessionId();
     if (mcpSession !== undefined) envelope.mcpSession = mcpSession;
-    // Over the pipe only: main reads it on the broker's own connection, never over TCP.
-    const brokerStamp = typeof target === 'string' ? brokerStampFor(method, params) : undefined;
+    // Over the unix socket only: main reads it on the broker's own connection,
+    // never over TCP, and Windows reads no peer for it to count against.
+    const brokerStamp = typeof target === 'string' && process.platform !== 'win32' ? brokerStampFor(method, params) : undefined;
     if (brokerStamp !== undefined) envelope.brokerStamp = brokerStamp;
     const request = JSON.stringify(envelope) + '\n';
 

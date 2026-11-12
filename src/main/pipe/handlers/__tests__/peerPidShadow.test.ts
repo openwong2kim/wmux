@@ -107,8 +107,16 @@ describe('claimStillHeld', () => {
     expect(identitySummary('darwin').refusals).toMatchObject({ restarted: 1, 'start-unread': 1 });
   });
 
-  it('holds a broker claim as taken, and never a refused one', () => {
-    expect(claimStillHeld('callerPid', wire(500, '50'), 4242, { ok: true, via: 'broker' }, () => undefined)).toBe(true);
+  it('holds a broker claim only while that broker is still the one main runs, and never a refused one', () => {
+    const broker = { ok: true, via: 'broker' } as const;
+    setBrokerIdentitySource(() => ({ pid: 500, startedAt: '50' }));
+    expect(claimStillHeld('callerPid', wire(500, '50'), 4242, broker, () => undefined)).toBe(true);
+    // The broker was replaced (or is gone) during the handler's awaits.
+    setBrokerIdentitySource(() => ({ pid: 501, startedAt: '51' }));
+    expect(claimStillHeld('callerPid', wire(500, '50'), 4242, broker, () => undefined)).toBe(false);
+    setBrokerIdentitySource(() => null);
+    expect(claimStillHeld('callerPid', wire(500, '50'), 4242, broker, () => undefined)).toBe(false);
+    expect(identitySummary('darwin').refusals['broker-unverified']).toBe(2);
     expect(claimStillHeld('callerPid', wire(), 100, { ok: false, reason: 'no-peer' }, () => undefined)).toBe(false);
   });
 });

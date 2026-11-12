@@ -33,14 +33,16 @@ describe('brokerStampFor', () => {
     expect(read()).toBe(STAMP);
   });
 
-  it('stamps only an identity call from a verified session that names that session\'s pid', () => {
+  it('stamps only an identity call from a verified session that claims that session\'s pid', () => {
     acceptBrokerStamp({ wmuxBroker: 'stamp', stamp: STAMP });
     const scope = verified(42);
     const inScope = (method: string, params: Record<string, unknown>) =>
       runInConnectionScope(scope, () => brokerStampFor(method, params));
     expect(inScope('a2a.resolve.identity', { callerPid: 42 })).toBe(STAMP);
     expect(inScope('a2a.resolve.identity', { codexThreadId: 't', codexCallerPid: 42 })).toBe(STAMP);
-    expect(inScope('a2a.resolve.identity', {})).toBe(STAMP);
+    // A call that claims no pid carries none.
+    expect(inScope('a2a.resolve.identity', {})).toBeUndefined();
+    expect(inScope('a2a.resolve.identity', { hintedPtyId: 'p' })).toBeUndefined();
     // Another method, another pid, or a pid of another type.
     expect(inScope('pane.list', { callerPid: 42 })).toBeUndefined();
     expect(inScope('a2a.resolve.identity', { callerPid: 43 })).toBeUndefined();

@@ -22,16 +22,15 @@ const CLAIM_KEYS = ['callerPid', 'codexCallerPid'] as const;
 
 /**
  * The stamp for an outgoing call, or undefined: only `a2a.resolve.identity`,
- * only inside a session the broker verified, and only when every pid the call
- * claims is that session's verified pid.
+ * only inside a session the broker verified, and only when the call claims a
+ * pid and every pid it claims is that session's verified pid.
  */
 export function brokerStampFor(method: string, params: Record<string, unknown>): string | undefined {
   if (stamp === null || method !== 'a2a.resolve.identity') return undefined;
   const verified = getConnectionScope()?.verifiedCallerPid;
   if (verified === undefined) return undefined;
-  for (const key of CLAIM_KEYS) {
-    if (key in params && params[key] !== verified) return undefined;
-  }
+  const claimed = CLAIM_KEYS.filter((key) => key in params);
+  if (claimed.length === 0 || claimed.some((key) => params[key] !== verified)) return undefined;
   return stamp;
 }
 

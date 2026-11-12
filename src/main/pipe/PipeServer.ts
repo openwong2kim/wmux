@@ -387,8 +387,9 @@ export class PipeServer {
     }
 
     // The broker's stamp is read here and removed, so nothing past this point
-    // (handlers, responses, logs) sees it. It counts only on the spawned
-    // broker's own connection (brokerStampHolds).
+    // (handlers, responses, logs) sees it. It counts only on an
+    // a2a.resolve.identity call over the spawned broker's own connection
+    // (brokerStampHolds).
     let stamp: unknown;
     if (request !== null && typeof request === 'object') {
       stamp = (request as { brokerStamp?: unknown }).brokerStamp;
@@ -456,7 +457,8 @@ export class PipeServer {
         ...(this.peerPids.has(socket) ? { peerPid: this.peerPids.get(socket) } : {}),
         ...(this.peerStartedAts.has(socket) ? { peerStartedAt: this.peerStartedAts.get(socket) } : {}),
         ...(this.tcpSockets.has(socket) ? { viaTcp: true as const } : {}),
-        ...(stamp !== undefined && brokerStampHolds(this.peerPids.get(socket), this.peerStartedAts.get(socket), stamp)
+        ...(stamp !== undefined && request.method === 'a2a.resolve.identity'
+          && brokerStampHolds(this.peerPids.get(socket), this.peerStartedAts.get(socket), stamp)
           ? { brokerStamped: true as const }
           : {}),
       })

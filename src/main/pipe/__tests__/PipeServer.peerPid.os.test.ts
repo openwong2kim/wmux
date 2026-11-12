@@ -89,7 +89,7 @@ describe.runIf(supported)('PipeServer broker stamp', () => {
 
   it('marks a call stamped when its connection is the spawned broker and the stamp is the one sent', async () => {
     asBroker(process.pid);
-    const { request, ctx } = seen(await sendOne({ brokerStamp: STAMP }));
+    const { request, ctx } = seen(await sendOne({ method: 'a2a.resolve.identity', brokerStamp: STAMP }));
     expect(ctx.brokerStamped).toBe(true);
     // Removed before dispatch: no handler sees it.
     expect('brokerStamp' in request).toBe(false);
@@ -97,25 +97,32 @@ describe.runIf(supported)('PipeServer broker stamp', () => {
 
   it('does not mark a call with another stamp, or with none, from the same connection', async () => {
     asBroker(process.pid);
-    const wrong = seen(await sendOne({ brokerStamp: 'd'.repeat(64) }));
+    const wrong = seen(await sendOne({ method: 'a2a.resolve.identity', brokerStamp: 'd'.repeat(64) }));
     expect('brokerStamped' in wrong.ctx).toBe(false);
     expect('brokerStamp' in wrong.request).toBe(false);
     server?.stop();
-    const none = seen(await sendOne());
+    const none = seen(await sendOne({ method: 'a2a.resolve.identity' }));
     expect('brokerStamped' in none.ctx).toBe(false);
   });
 
   it('refuses the stamp on a connection that is not the spawned broker, even when it matches', async () => {
     asBroker(process.ppid);
-    const { request, ctx } = seen(await sendOne({ brokerStamp: STAMP }));
+    const { request, ctx } = seen(await sendOne({ method: 'a2a.resolve.identity', brokerStamp: STAMP }));
     expect(ctx.peerPid).toBe(process.pid);
     expect('brokerStamped' in ctx).toBe(false);
     expect('brokerStamp' in request).toBe(false);
   });
 
+  it('marks only a2a.resolve.identity, whatever else carries the stamp', async () => {
+    asBroker(process.pid);
+    const { request, ctx } = seen(await sendOne({ brokerStamp: STAMP }));
+    expect(request.method).toBe('system.identify');
+    expect('brokerStamped' in ctx).toBe(false);
+  });
+
   it('takes no stamped mark from the request itself', async () => {
     asBroker(process.ppid);
-    const { ctx } = seen(await sendOne({ brokerStamped: true }));
+    const { ctx } = seen(await sendOne({ method: 'a2a.resolve.identity', brokerStamped: true }));
     expect('brokerStamped' in ctx).toBe(false);
   });
 });

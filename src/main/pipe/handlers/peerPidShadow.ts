@@ -126,7 +126,9 @@ export function checkClaim(
 /**
  * Whether a claim checkClaim took is still good when it is minted, after the
  * handler's awaits: a claim taken from the process itself needs that pid's
- * start time unchanged since accept (otherwise it is refused and counted).
+ * start time unchanged since accept, and one taken through the broker needs
+ * that broker still to be the one main runs (otherwise it is refused and
+ * counted).
  */
 export function claimStillHeld(
   kind: string,
@@ -135,6 +137,12 @@ export function claimStillHeld(
   verdict: ClaimVerdict,
   log: (line: string) => void = (line) => console.log(line),
 ): boolean {
+  if (verdict.ok && verdict.via === 'broker') {
+    const broker = brokerIdentity();
+    if (broker && broker.pid === ctx?.peerPid && broker.startedAt !== null && broker.startedAt === ctx.peerStartedAt) return true;
+    refuse(kind, 'broker-unverified', ctx, log);
+    return false;
+  }
   if (!verdict.ok || verdict.via !== 'same') return verdict.ok;
   const now = startTimeOf(claimedPid);
   if (now !== null && String(now) === ctx?.peerStartedAt) return true;
@@ -170,5 +178,6 @@ export function resetClaimChecks(): void {
   peerRead = null;
   brokerIdentity = () => null;
   brokerUnowned = () => false;
+  brokerStampMatches = () => false;
   startTimeOf = processStartTime;
 }

@@ -15,6 +15,8 @@ interface FakeChild extends EventEmitter {
   pid: number;
   stderr: EventEmitter;
   kill: ReturnType<typeof vi.fn>;
+  connected: boolean;
+  send: ReturnType<typeof vi.fn>;
 }
 
 function makeChild(): FakeChild {
@@ -22,6 +24,8 @@ function makeChild(): FakeChild {
   c.pid = 4321;
   c.stderr = new EventEmitter();
   c.kill = vi.fn();
+  c.connected = true;
+  c.send = vi.fn();
   return c;
 }
 
@@ -430,14 +434,8 @@ describe('BrokerSupervisor.identity', () => {
 });
 
 describe('BrokerSupervisor stamp', () => {
-  type StampedChild = FakeChild & { connected: boolean; send: ReturnType<typeof vi.fn> };
-  const stampedChild = (): StampedChild => {
-    const c = makeChild() as StampedChild;
-    c.connected = true;
-    c.send = vi.fn();
-    return c;
-  };
-  const sentStamp = (c: StampedChild): string => (c.send.mock.calls[0][0] as { stamp: string }).stamp;
+  const stampedChild = makeChild;
+  const sentStamp = (c: FakeChild): string => (c.send.mock.calls[0][0] as { stamp: string }).stamp;
 
   it('sends each spawned broker a stamp of its own, and matches only the current one', () => {
     const first = stampedChild();
@@ -482,5 +480,25 @@ describe('BrokerSupervisor stamp', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('ends a broker it could not hand its stamp to, so the restart gives the next one a stamp', () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const failing = stampedChild();
+    failing.send.mockImplementation((_m: unknown, cb: (err: Error | null) => void) => cb(new Error('channel closed')));
+    vi.mocked(spawn).mockReturnValueOnce(failing as never);
+    const sup = new BrokerSupervisor({ startTimeOf: () => 1n });
+    sup.start();
+    expect(failing.kill).toHaveBeenCalledTimes(1);
+    sup.stop();
+
+    const unconnected = stampedChild();
+    unconnected.connected = false;
+    vi.mocked(spawn).mockReturnValueOnce(unconnected as never);
+    const other = new BrokerSupervisor({ startTimeOf: () => 1n });
+    other.start();
+    expect(unconnected.send).not.toHaveBeenCalled();
+    expect(unconnected.kill).toHaveBeenCalledTimes(1);
+    other.stop();
   });
 });
