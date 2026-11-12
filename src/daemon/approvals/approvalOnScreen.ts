@@ -31,8 +31,9 @@ export function approvalOnScreen(screenText: string): boolean {
   return looksLikeApprovalPrompt(rows) || parseTerminalPrompt(rows.slice(lastKeyRow + 1)) !== null || open;
 }
 
-/** A full-width rule of Claude Code's input box. */
-const BOX_RULE = /^─{8,}$/;
+/** A full-width rule of Claude Code's input box, drawn from column 0 (a draft's
+ *  own rows are indented by two, so a rule typed in a draft is not one). */
+const BOX_RULE = /^─{8,}\s*$/;
 /** The input box's first row: the prompt glyph, then the draft (or nothing). */
 const BOX_PROMPT = /^[❯>](?:\s|$)/;
 
@@ -41,20 +42,23 @@ const CHOICE_ROW = /^\s*\d{1,2}[.)]\s+\S/;
 
 /**
  * The index of the bottom rule of Claude Code's input box when the box is the
- * last one drawn (a rule, the prompt row, the draft's continuation rows
- * indented by two, a rule, and no numbered choice under it), or -1. A dialog
- * drawn with rules of its own (the question tool's) has a header row under
- * its top rule, and a choice under its bottom one.
+ * last one drawn, or -1. The box is the last rule with no numbered choice
+ * under it and the nearest rule above it that encloses the prompt row and the
+ * draft's continuation rows (indented by two, or blank). A dialog drawn with
+ * rules of its own (the question tool's) has a header row under its top rule,
+ * and a choice under its bottom one.
  */
 function composerBottom(rows: readonly string[]): number {
   const rules: number[] = [];
-  rows.forEach((row, i) => { if (BOX_RULE.test(row.trim())) rules.push(i); });
+  rows.forEach((row, i) => { if (BOX_RULE.test(row)) rules.push(i); });
   if (rules.length < 2) return -1;
   const bottom = rules[rules.length - 1];
-  const top = rules[rules.length - 2];
-  if (bottom - top < 2 || !BOX_PROMPT.test(rows[top + 1])) return -1;
-  for (let i = top + 2; i < bottom; i++) {
-    if (rows[i].trim() !== '' && !rows[i].startsWith('  ')) return -1;
+  if (rows.slice(bottom + 1).some((row) => CHOICE_ROW.test(row))) return -1;
+  for (let k = rules.length - 2; k >= 0; k--) {
+    const top = rules[k];
+    if (bottom - top < 2 || !BOX_PROMPT.test(rows[top + 1])) continue;
+    const draft = rows.slice(top + 2, bottom);
+    if (draft.every((row) => row.trim() === '' || row.startsWith('  '))) return bottom;
   }
-  return rows.slice(bottom + 1).some((row) => CHOICE_ROW.test(row)) ? -1 : bottom;
+  return -1;
 }

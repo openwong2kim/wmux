@@ -73,6 +73,13 @@ const ECHO = { cols: 50, rows: 24, screen: ['❯ 1. fix the lint errors', '  2. 
 /** The same pane with a scheduled prompt that starts with "1." pasted into its input box. */
 const ECHO_DRAFT = { ...ECHO, screen: [...ECHO.screen.slice(0, 6), '❯ 1. Run the nightly report', ...ECHO.screen.slice(7)] };
 
+const RULE = '──────────────────────────────────────────────────';
+/** A numbered draft with a rule of its own inside Claude's input box. */
+const RULED_DRAFT = { cols: 50, rows: 24, screen: ['⏺ Ready.', '', RULE, '❯ 1. Run the report', '  ──────────', '  Then summarize it.', RULE, '  ? for shortcuts'] };
+/** The same with two rules in the draft. */
+const TWO_RULED_DRAFT = { cols: 50, rows: 24, screen: ['⏺ Ready.', '', RULE, '❯ 1. Run the report', '  ──────────', '  2. Then summarize it.', '  ──────────', '  3. Post it.', RULE, '  ? for shortcuts'] };
+const IDLE_BOX = { cols: 50, rows: 24, screen: ['⏺ Ready.', '', RULE, '❯ ', RULE, '  ? for shortcuts'] };
+
 const NUDGE = '[wmux] fan-out task 6k7g7szw updated — channel_mission_list';
 
 const callers: Array<[string, AgentStatus, (deps: ScheduledPromptDeliveryDeps) => Promise<unknown>]> = [
@@ -133,6 +140,14 @@ describe('automated prompt delivery and a dialog on screen', () => {
     const { deps, writes } = wired(ECHO, 'idle', { onPaste: ECHO_DRAFT });
     expect(await deliverScheduledPrompt('claude', 'inc-1', '1. Run the nightly report', deps)).toBe('sent');
     expect(writes.at(-1)).toBe('\r');
+  });
+
+  it('a numbered draft with rules of its own is still the input box, and is submitted', async () => {
+    expect(approvalOnScreen(RULED_DRAFT.screen.join('\n'))).toBe(false);
+    expect(approvalOnScreen(TWO_RULED_DRAFT.screen.join('\n'))).toBe(false);
+    const { deps, writes } = wired(IDLE_BOX, 'idle', { onPaste: RULED_DRAFT });
+    expect(await deliverScheduledPrompt('claude', 'inc-1', '1. Run the report\n──────────\nThen summarize it.', deps)).toBe('sent');
+    expect(writes.at(-1)).toBe('\r\r');
   });
 
   it('a dialog beside cells the ring no longer covers still stops a writer that accepts those', async () => {
