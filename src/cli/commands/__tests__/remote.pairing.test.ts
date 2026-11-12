@@ -3,7 +3,7 @@
  * uses. They ride the daemon control pipe only (never the app's pipe, never a
  * pane-identity lookup), and never print the invite or its code back.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../client', () => ({
   sendRequest: vi.fn(),
@@ -71,11 +71,32 @@ async function run(sub: string, args: string[], json = false): Promise<number | 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // This suite may itself run in a wmux pane; the join/unpair cases below set it themselves.
+  delete process.env['WMUX_PTY_ID'];
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
     throw new ExitCalled(code);
   }) as never);
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+});
+
+describe('senderPtyId from inside a pane', () => {
+  afterEach(() => {
+    delete process.env['WMUX_PTY_ID'];
+  });
+
+  it('join and unpair carry WMUX_PTY_ID as senderPtyId when it is set', async () => {
+    process.env['WMUX_PTY_ID'] = 'pty-3';
+    routeDaemon({
+      'a2a.remote.join': { ok: true, host },
+      'a2a.remote.peers.list': { peers: [] },
+      'a2a.remote.hosts.remove': { ok: true, remoteRevoked: true },
+    });
+    expect(await run('join', [INVITE])).toBe(0);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.join', { invite: INVITE, senderPtyId: 'pty-3' }, 30_000);
+    expect(await run('unpair', [HOST_ID])).toBe(0);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID, senderPtyId: 'pty-3' }, 30_000);
+  });
 });
 
 describe('wmux remote join', () => {

@@ -433,6 +433,18 @@ describe('wmux remote revoke', () => {
     expect(store.rules).toHaveLength(4);
   });
 
+  it('says what approval means once the last rule is gone', async () => {
+    store = { ...store, rules: [{ hostId: DESK, rootId: 'repo-aaaaaa', agent: 'claude' }] };
+    expect(await run('revoke', ['--from', DESK, '--root', repo])).toBe(0);
+    expect(store.approval).toBe('allow-list');
+    expect(printed()).toContain('Approval is still "allow list", and no rule is left');
+  });
+
+  it('does not say it while rules remain', async () => {
+    expect(await run('revoke', ['--from', DESK, '--root', repo])).toBe(0);
+    expect(printed()).not.toContain('no rule is left');
+  });
+
   it('exits 1 when nothing matches', async () => {
     expect(await run('revoke', ['--from', DESK, '--root', plainDir])).toBe(1);
     expect(sets).toHaveLength(0);
@@ -448,6 +460,17 @@ describe('wmux remote revoke', () => {
     expect(await run('revoke', ['--from', DESK])).toBe(0);
     expect(sets).toHaveLength(2);
     expect(store.hosts[DESK]).toBeUndefined();
+  });
+
+  it('sends senderPtyId when WMUX_PTY_ID is set, and not otherwise', async () => {
+    expect(await run('revoke', ['--from', DESK])).toBe(0);
+    expect(daemonRpc.mock.calls.every((c) => !('senderPtyId' in (c[1] as object)))).toBe(true);
+    daemonRpc.mockClear();
+    store = policy({ hosts: { [DESK]: { allowed: true } } });
+    process.env['WMUX_PTY_ID'] = 'pty-7';
+    expect(await run('revoke', ['--from', DESK])).toBe(0);
+    expect(daemonRpc.mock.calls.length).toBeGreaterThan(0);
+    for (const c of daemonRpc.mock.calls) expect(c[1]).toMatchObject({ senderPtyId: 'pty-7' });
   });
 
   it('needs no terminal and runs inside an agent session', async () => {

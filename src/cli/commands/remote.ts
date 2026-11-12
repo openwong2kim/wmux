@@ -127,7 +127,10 @@ const SLOW_DAEMON_CALL_MS = 30_000;
  * readable line on a transport or pipe-level failure; a timeout is passed to
  * `onTimeout` when given, because the daemon may still finish the call.
  */
-async function daemonCall(method: RpcMethod, params: Record<string, unknown>, onTimeout?: () => never, timeoutMs?: number): Promise<unknown> {
+async function daemonCall(method: RpcMethod, rawParams: Record<string, unknown>, onTimeout?: () => never, timeoutMs?: number): Promise<unknown> {
+  // From inside a pane, say so: the daemon refuses these calls from one.
+  const pty = process.env.WMUX_PTY_ID;
+  const params = pty ? { ...rawParams, senderPtyId: pty } : rawParams;
   let response: RpcResponse;
   try {
     response = await (timeoutMs === undefined ? sendDaemonRequest(method, params) : sendDaemonRequest(method, params, timeoutMs));
@@ -699,6 +702,10 @@ async function remoteRevoke(args: string[], jsonMode: boolean): Promise<void> {
       console.log(rootIds === null
         ? `${pcLabel(pc)} may no longer ask this PC to start agents (${removed} rule${removed === 1 ? '' : 's'} removed).`
         : `Removed ${removed} rule${removed === 1 ? '' : 's'} for ${pcLabel(pc)}.`);
+      const stillAllowed = res.policy.enabled && Object.values(res.policy.hosts).some((h) => h.allowed);
+      if (res.policy.approval === 'allow-list' && res.policy.rules.length === 0 && stillAllowed) {
+        console.log('Approval is still "allow list", and no rule is left: a request from a PC still allowed here waits for approval on this PC until it expires.');
+      }
       return;
     }
     if (!res.conflict) fail(`the daemon did not save it: ${res.error}`);
