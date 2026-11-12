@@ -1,16 +1,22 @@
+import https from 'node:https';
 import net from 'node:net';
+import os from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_DEFAULT_PORT } from '../../../shared/a2aRemote';
 import type { DaemonConfig } from '../../types';
 import {
   A2A_REMOTE_CONFIG_CHANGED,
   A2aRemoteController,
+  a2aRemoteBindHost,
   coerceA2aRemoteConfig,
   coerceA2aRemotePatch,
 } from '../controller';
+import { advertisedAddresses, inviteAlt } from '../server';
+import { inviteHost } from '../pairing';
 import { connectRefused, disposeAll, freePort, makePc } from './a2aServerRig';
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await disposeAll();
 });
 
@@ -20,6 +26,11 @@ describe('a2aRemote config slice', () => {
     expect(coerceA2aRemoteConfig([])).toEqual({ enabled: false });
     expect(coerceA2aRemoteConfig({ enabled: 'yes', port: 80 })).toEqual({ enabled: false });
     expect(coerceA2aRemoteConfig({ enabled: true, port: 50000 })).toEqual({ enabled: true, port: 50000 });
+    // A set bind address is kept even when it cannot be used, so it is reported, not dropped.
+    for (const [bindHost, kept] of [['', ''], [127001, '127001'], [null, 'null'], [['100.64.0.5'], '["100.64.0.5"]']] as const) {
+      expect(coerceA2aRemoteConfig({ enabled: true, bindHost }).bindHost).toBe(kept);
+      expect(a2aRemoteBindHost(coerceA2aRemoteConfig({ enabled: true, bindHost }), () => undefined)).toHaveProperty('error');
+    }
   });
 
   it('rejects a malformed configure patch instead of persisting it', () => {
@@ -66,6 +77,135 @@ describe('a2aRemote config slice', () => {
 
   it('the default port is clear of the web (7681) and LanLink (45651) defaults', () => {
     expect([7681, 45651]).not.toContain(A2A_REMOTE_DEFAULT_PORT);
+  });
+});
+
+describe('a2aRemote bind address', () => {
+  it('keeps the configured address through load and a later configure', () => {
+    const slice = coerceA2aRemoteConfig({ enabled: true, port: 50000, bindHost: '127.0.0.1' });
+    expect(slice).toEqual({ enabled: true, port: 50000, bindHost: '127.0.0.1' });
+    const config = { a2aRemote: slice } as unknown as DaemonConfig;
+    const controller = new A2aRemoteController({ config, persist: () => undefined });
+    expect(controller.configure({ port: 50001 })).toEqual({ enabled: true, port: 50001, bindHost: '127.0.0.1' });
+    expect(controller.configure({ enabled: false }).bindHost).toBe('127.0.0.1');
+  });
+
+  it('accepts an IPv4 address or localhost; unset or 0.0.0.0 is every interface', () => {
+    const log = vi.fn();
+    for (const host of ['127.0.0.1', '192.168.1.20', '100.64.0.5']) {
+      expect(a2aRemoteBindHost({ enabled: true, bindHost: host }, log)).toEqual({ host });
+    }
+    // One address, whatever the resolver puts first.
+    expect(a2aRemoteBindHost({ enabled: true, bindHost: 'localhost' }, log)).toEqual({ host: '127.0.0.1' });
+    expect(a2aRemoteBindHost({ enabled: true, bindHost: '0.0.0.0' }, log)).toEqual({ host: undefined });
+    expect(a2aRemoteBindHost({ enabled: true }, log)).toEqual({ host: undefined });
+    expect(a2aRemoteBindHost(coerceA2aRemoteConfig(undefined), log)).toEqual({ host: undefined });
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it('a set value it cannot use is an error, never every interface', () => {
+    const log = vi.fn();
+    // An invite names an IPv4 address, so an IPv6 bind could never be paired with.
+    for (const host of ['example.com', '1.2.3', '127.0.0.1 ', 'localhost:45660', '::1', '::', 'fd7a:115c:a1e0::1']) {
+      log.mockClear();
+      const answer = a2aRemoteBindHost({ enabled: true, bindHost: host }, log);
+      expect(answer).toEqual({ error: expect.stringContaining(JSON.stringify(host)) });
+      expect(log).toHaveBeenCalledWith('error', expect.stringContaining(JSON.stringify(host)));
+    }
+  });
+
+  it('bound to every interface, offers exactly what it offered before', () => {
+    const ips = ['192.168.1.20', '10.0.4.21', '172.16.0.9', '100.64.0.5'];
+    const tailnet = ['100.64.0.5'];
+    const today = {
+      host: inviteHost('office-pc', ips),
+      alt: inviteAlt(ips, inviteHost('office-pc', ips) ?? '', new Set(tailnet)),
+      ips,
+      tailnet,
+    };
+    expect(today).toEqual({ host: 'office-pc', alt: ['192.168.1.20', '10.0.4.21', '172.16.0.9', '100.64.0.5'], ips, tailnet });
+    for (const bindHost of [undefined, '0.0.0.0']) {
+      expect(advertisedAddresses(bindHost, 'office-pc', ips, tailnet)).toEqual(today);
+    }
+    // A name that fails the invite grammar falls back to the best IPv4, as before.
+    expect(advertisedAddresses(undefined, 'no such name', ips, tailnet).host).toBe(inviteHost('no such name', ips));
+  });
+
+  it('bound to one address, offers only that address', () => {
+    const ips = ['192.168.1.20', '100.64.0.5'];
+    const tailnet = ['100.64.0.5'];
+    expect(advertisedAddresses('100.64.0.5', 'office-pc', ips, tailnet)).toEqual({ host: '100.64.0.5', alt: [], ips: ['100.64.0.5'], tailnet: ['100.64.0.5'] });
+    expect(advertisedAddresses('192.168.1.20', 'office-pc', ips, tailnet)).toEqual({ host: '192.168.1.20', alt: [], ips: ['192.168.1.20'], tailnet: [] });
+    expect(advertisedAddresses('127.0.0.1', 'office-pc', ips, tailnet)).toEqual({ host: '127.0.0.1', alt: [], ips: ['127.0.0.1'], tailnet: [] });
+  });
+
+  it('a listener bound to one address invites and reports only that address', async () => {
+    const pc = await makePc('office-pc', { deps: { bindAddress: '127.0.0.1', ipv4s: () => ['192.168.1.20', '127.0.0.1'] } });
+    expect(pc.server.beginPairing()).toMatchObject({ addresses: ['127.0.0.1'], tailnet: [] });
+    expect(pc.server.firewallFacts()).toMatchObject({ listening: true, ips: ['127.0.0.1'], tailnetIps: [], address: '127.0.0.1' });
+  });
+
+  it('an unusable bind address leaves the listener down with a readable error, listening nowhere', async () => {
+    const listen = vi.spyOn(https.Server.prototype, 'listen');
+    const answer = a2aRemoteBindHost({ enabled: true, bindHost: 'example.com' }, () => undefined);
+    const pc = await makePc('PC A', { deps: { bindHost: undefined, bindError: 'error' in answer ? answer.error : undefined } });
+    expect(pc.server.status()).toMatchObject({ enabled: true, listening: false, lastErrorCode: null });
+    expect(pc.server.status().lastError).toContain('"example.com"');
+    expect(listen).not.toHaveBeenCalled();
+    // A port change or a toggle tries nothing either.
+    pc.controller.configure({ port: await freePort() });
+    await pc.server.whenIdle();
+    expect(listen).not.toHaveBeenCalled();
+    expect(pc.server.status().listening).toBe(false);
+  });
+
+  it('an address this PC does not have is address-gone, with no listener and no fallback', async () => {
+    const listen = vi.spyOn(https.Server.prototype, 'listen');
+    // 192.0.2.0/24 is reserved for documentation: no machine has it.
+    const pc = await makePc('PC A', { deps: { bindHost: undefined, bindAddress: '192.0.2.1' } });
+    expect(pc.server.status()).toMatchObject({ listening: false, lastErrorCode: 'EADDRNOTAVAIL' });
+    expect(listen.mock.calls.map((call) => call[1])).toEqual(['192.0.2.1']);
+  });
+
+  it('binds the configured address from the first listen on, through a port change and a toggle', async () => {
+    const listen = vi.spyOn(https.Server.prototype, 'listen');
+    const pc = await makePc('PC A', { deps: { bindHost: undefined, bindAddress: '127.0.0.1' } });
+    expect(pc.server.status().listening).toBe(true);
+    pc.controller.configure({ port: await freePort() });
+    await pc.server.whenIdle();
+    pc.controller.configure({ enabled: false });
+    await pc.server.whenIdle();
+    pc.controller.configure({ enabled: true });
+    await pc.server.whenIdle();
+    expect(pc.server.status().listening).toBe(true);
+    const hosts = listen.mock.calls.map((call) => call[1]);
+    expect(hosts.length).toBe(3);
+    expect(new Set(hosts)).toEqual(new Set(['127.0.0.1']));
+  });
+
+  it('a loopback bind is not reachable on another address of this PC', async () => {
+    const other = Object.values(os.networkInterfaces())
+      .flat()
+      .find((a) => a && a.family === 'IPv4' && !a.internal)?.address;
+    const port = await freePort();
+    const pc = await makePc('PC A', { port, deps: { bindHost: undefined, bindAddress: '127.0.0.1' } });
+    expect(pc.server.status().listening).toBe(true);
+    expect(await connectRefused(port)).toBe(false);
+    if (!other) return; // no non-loopback IPv4 on this runner
+    const refused = await new Promise<boolean>((resolve) => {
+      const s = net.connect(port, other);
+      // A firewall that drops instead of refusing also means nothing answers there.
+      s.setTimeout(3_000, () => {
+        s.destroy();
+        resolve(true);
+      });
+      s.once('connect', () => {
+        s.destroy();
+        resolve(false);
+      });
+      s.once('error', () => resolve(true));
+    });
+    expect(refused).toBe(true);
   });
 });
 

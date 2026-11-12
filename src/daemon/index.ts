@@ -122,7 +122,7 @@ import { LanLinkServer } from './lanlink/server';
 import { QUERY_TIMEOUT_MS } from './lanlink/netCategory';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { A2aRemoteController } from './a2aRemote/controller';
+import { A2aRemoteController, a2aRemoteBindHost } from './a2aRemote/controller';
 import { A2aServer, rankedExternalIpv4s } from './a2aRemote/server';
 import { registerNetRpc } from './net/rpc';
 import { FirewallRecordStore } from './net/firewallRecord';
@@ -4202,7 +4202,8 @@ function registerRpcHandlers(
       const f = a2aServerRef?.firewallFacts();
       return {
         listener,
-        applicable: f?.listening === true,
+        // Bound to loopback, no other PC reaches it.
+        applicable: f?.listening === true && !(f.address !== null && isLoopbackHost(f.address)),
         port: f?.port ?? null,
         ips: f?.ips ?? [],
         inboundSeenAt: a2aServerRef?.status().inboundSeenAt ?? null,
@@ -4225,7 +4226,9 @@ function registerRpcHandlers(
     failure: (listener) => {
       if (listener === 'a2a') {
         const st = a2aServerRef?.status();
-        return st?.enabled && st.lastErrorCode ? { code: st.lastErrorCode, port: st.lastErrorPort ?? st.port, address: null } : null;
+        return st?.enabled && st.lastErrorCode
+          ? { code: st.lastErrorCode, port: st.lastErrorPort ?? st.port, address: a2aServerRef?.boundAddress() ?? null }
+          : null;
       }
       if (listener === 'web') {
         return webListenError && !webServer.status().running ? { code: webListenError.code, port: webListenError.port, address: webListenError.host } : null;
@@ -10817,8 +10820,12 @@ async function main(): Promise<void> {
         },
         log: a2aLog,
       });
+    // `a2aRemote.bindHost` in config.json: unset binds every interface; a value
+    // that cannot be used keeps the listener down.
+    const a2aBind = a2aRemoteBindHost(a2aRemoteController.current(), a2aLog);
     const a2aServer = new A2aServer({
       controller: a2aRemoteController,
+      ...('error' in a2aBind ? { bindError: a2aBind.error } : { bindAddress: a2aBind.host }),
       identityDir: a2aDir,
       peers: a2aPeers,
       onPeerRevoked: a2aCascade,

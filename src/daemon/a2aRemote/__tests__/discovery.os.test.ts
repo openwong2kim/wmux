@@ -95,7 +95,7 @@ function deferred(): { promise: Promise<void>; release: () => void } {
 
 const dirs: string[] = [];
 
-function makeRig(opts: { enabled?: boolean; deps?: Partial<DiscoveryDeps>; status?: () => TailnetStatus | null } = {}): Rig {
+function makeRig(opts: { enabled?: boolean; deps?: Partial<DiscoveryDeps>; status?: () => TailnetStatus | null; bound?: string; bindError?: string } = {}): Rig {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-discovery-'));
   dirs.push(dir);
   const config = { a2aRemote: { enabled: opts.enabled ?? true } } as unknown as DaemonConfig;
@@ -141,6 +141,8 @@ function makeRig(opts: { enabled?: boolean; deps?: Partial<DiscoveryDeps>; statu
       }),
       identity: () => (controller.current().enabled && listening.value ? { hostId: SELF_HOST, fingerprint256: FS } : null),
       name: () => 'RECV',
+      boundAddress: () => opts.bound ?? null,
+      bindError: () => opts.bindError ?? null,
     },
     livePeerName: () => null,
     version: () => '9.9.9',
@@ -255,6 +257,29 @@ describe('DiscoveryWindow — opening', () => {
     expect(opened).toMatchObject({ ok: true, status: { open: true, turnedOn: true, name: 'RECV' } });
     expect(rig.controller.current().enabled).toBe(true);
     expect(fs.existsSync(path.join(rig.dir, DISCOVERY_MARKER_FILE))).toBe(true);
+  });
+
+  it('does not open while the listener is bound to an address other than the tailnet one', async () => {
+    const rig = makeRig({ enabled: false, bound: '127.0.0.1' });
+    const opened = await rig.win.open({ turnOn: true });
+    expect(opened).toMatchObject({ ok: false, reason: 'listen-failed' });
+    expect(opened.ok === false && opened.listen?.lastError).toContain('127.0.0.1');
+    expect(opened.ok === false && opened.listen?.lastErrorCode).toBeNull();
+    // Refused before A2A was turned on for the window: nothing was written.
+    expect(rig.controller.current().enabled).toBe(false);
+    expect(fs.existsSync(path.join(rig.dir, DISCOVERY_MARKER_FILE))).toBe(false);
+
+    const onTailnet = makeRig({ bound: SELF_IP });
+    expect(await onTailnet.win.open({ turnOn: false })).toMatchObject({ ok: true });
+  });
+
+  it('does not open while the configured bind address cannot be used', async () => {
+    const rig = makeRig({ enabled: false, bindError: 'a2aRemote.bindHost "example.com" is not an IPv4 address' });
+    const opened = await rig.win.open({ turnOn: true });
+    expect(opened).toMatchObject({ ok: false, reason: 'listen-failed' });
+    expect(opened.ok === false && opened.listen?.lastError).toContain('"example.com"');
+    expect(rig.controller.current().enabled).toBe(false);
+    expect(fs.existsSync(path.join(rig.dir, DISCOVERY_MARKER_FILE))).toBe(false);
   });
 
   it('turns A2A off again when the listener cannot start, reporting the problem found before that', async () => {

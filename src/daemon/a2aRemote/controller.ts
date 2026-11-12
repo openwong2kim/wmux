@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import net from 'node:net';
 import type { DaemonConfig } from '../types';
 import { A2A_REMOTE_DEFAULT_PORT } from '../../shared/a2aRemote';
 
@@ -14,6 +15,12 @@ export interface A2aRemoteConfig {
   enabled: boolean;
   /** Absent = `A2A_REMOTE_DEFAULT_PORT`. */
   port?: number;
+  /**
+   * The listener's bind address: an IPv4 address or `localhost` (127.0.0.1).
+   * Absent = all interfaces (`0.0.0.0`). Read when the daemon starts; see
+   * a2aRemoteBindHost.
+   */
+  bindHost?: string;
 }
 
 export interface A2aRemoteConfigurePatch {
@@ -41,7 +48,30 @@ export function coerceA2aRemoteConfig(raw: unknown, def: A2aRemoteConfig = defau
   const o = raw as Record<string, unknown>;
   const out: A2aRemoteConfig = { enabled: typeof o['enabled'] === 'boolean' ? o['enabled'] : def.enabled };
   if (isValidPort(o['port'])) out.port = o['port'];
+  // Any set value is kept, as written or as JSON when it is not a string:
+  // a2aRemoteBindHost reports a value it cannot use instead of dropping it.
+  if (o['bindHost'] !== undefined) out.bindHost = typeof o['bindHost'] === 'string' ? o['bindHost'] : JSON.stringify(o['bindHost']);
   return out;
+}
+
+/**
+ * The bind address the listener should use: `host` undefined for every
+ * interface (unset or `0.0.0.0`), `localhost` as 127.0.0.1. A set value that
+ * is not an IPv4 address or `localhost` is an `error`, logged here: the
+ * listener then stays down rather than bind every interface. (An invite
+ * names an IPv4 address, so an IPv6 one is refused too.)
+ */
+export function a2aRemoteBindHost(
+  slice: A2aRemoteConfig,
+  log: (level: 'error', msg: string) => void,
+): { host: string | undefined } | { error: string } {
+  const host = slice.bindHost;
+  if (host === undefined || host === '0.0.0.0') return { host: undefined };
+  if (host === 'localhost') return { host: '127.0.0.1' };
+  if (net.isIPv4(host)) return { host };
+  const error = `a2aRemote.bindHost ${JSON.stringify(host)} is not an IPv4 address or "localhost", so the listener is not started`;
+  log('error', `[a2a-remote] ${error}`);
+  return { error };
 }
 
 /** Strict RPC-boundary validation: only present keys, throws on a malformed one. */
@@ -102,6 +132,7 @@ export class A2aRemoteController extends EventEmitter {
     const next: A2aRemoteConfig = { enabled: patch.enabled ?? cur.enabled };
     const port = patch.port ?? cur.port;
     if (port !== undefined) next.port = port;
+    if (cur.bindHost !== undefined) next.bindHost = cur.bindHost;
     if (next.enabled === cur.enabled && (next.port ?? null) === (cur.port ?? null)) return cur;
     this.persist({ ...this.config, a2aRemote: next });
     this.config.a2aRemote = next;
