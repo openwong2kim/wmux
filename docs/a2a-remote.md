@@ -252,6 +252,9 @@ it is linked to, the way it briefs a staff pane on this PC:
   - Invites then offer only that address, with no machine name and no
     alternates, and tailnet discovery opens only when it is this PC's
     tailnet address.
+  - A PC paired before the change keeps the addresses its invite named
+    and may try ones the listener no longer answers on first. Pair it
+    again to give it only the bound address.
   - A loopback address (`127.0.0.1`, `localhost`) can be reached only
     from this same PC, so the firewall check leaves it out.
   - The address must exist when the listener starts. If it does not (a

@@ -48,8 +48,9 @@ export function coerceA2aRemoteConfig(raw: unknown, def: A2aRemoteConfig = defau
   const o = raw as Record<string, unknown>;
   const out: A2aRemoteConfig = { enabled: typeof o['enabled'] === 'boolean' ? o['enabled'] : def.enabled };
   if (isValidPort(o['port'])) out.port = o['port'];
-  // Kept as written: a2aRemoteBindHost reports a value it cannot use.
-  if (typeof o['bindHost'] === 'string' && o['bindHost'] !== '') out.bindHost = o['bindHost'];
+  // Any set value is kept, as written or as JSON when it is not a string:
+  // a2aRemoteBindHost reports a value it cannot use instead of dropping it.
+  if (o['bindHost'] !== undefined) out.bindHost = typeof o['bindHost'] === 'string' ? o['bindHost'] : JSON.stringify(o['bindHost']);
   return out;
 }
 

@@ -330,7 +330,8 @@ export class A2aServer {
         status: () => this.status(),
         identity: () => (this.server ? this.identity : null),
         name: () => this.name(),
-        boundAddress: () => boundAddress(this.deps.bindAddress),
+        boundAddress: () => this.boundAddress(),
+        bindError: () => this.deps.bindError ?? null,
       },
       livePeerName: (hostId) => this.deps.peers.listByHost(hostId).find((r) => r.revokedAt === undefined)?.name ?? null,
       version: deps.discoverVersion ?? ((): string => 'unknown'),
@@ -393,8 +394,13 @@ export class A2aServer {
       port: this.port,
       ips: offered.ips,
       tailnetIps: offered.tailnet,
-      address: boundAddress(this.deps.bindAddress),
+      address: this.boundAddress(),
     };
+  }
+
+  /** The one address the listener is bound to (`a2aRemote.bindHost`), else null. */
+  boundAddress(): string | null {
+    return boundAddress(this.deps.bindAddress);
   }
 
   private listenHost(): string {

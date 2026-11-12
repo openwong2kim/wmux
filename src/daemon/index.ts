@@ -4301,7 +4301,7 @@ function registerRpcHandlers(
       if (listener === 'a2a') {
         const st = a2aServerRef?.status();
         return st?.enabled && st.lastErrorCode
-          ? { code: st.lastErrorCode, port: st.lastErrorPort ?? st.port, address: a2aServerRef?.firewallFacts().address ?? null }
+          ? { code: st.lastErrorCode, port: st.lastErrorPort ?? st.port, address: a2aServerRef?.boundAddress() ?? null }
           : null;
       }
       if (listener === 'web') {

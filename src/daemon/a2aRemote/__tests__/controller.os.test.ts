@@ -26,6 +26,11 @@ describe('a2aRemote config slice', () => {
     expect(coerceA2aRemoteConfig([])).toEqual({ enabled: false });
     expect(coerceA2aRemoteConfig({ enabled: 'yes', port: 80 })).toEqual({ enabled: false });
     expect(coerceA2aRemoteConfig({ enabled: true, port: 50000 })).toEqual({ enabled: true, port: 50000 });
+    // A set bind address is kept even when it cannot be used, so it is reported, not dropped.
+    for (const [bindHost, kept] of [['', ''], [127001, '127001'], [null, 'null'], [['100.64.0.5'], '["100.64.0.5"]']] as const) {
+      expect(coerceA2aRemoteConfig({ enabled: true, bindHost }).bindHost).toBe(kept);
+      expect(a2aRemoteBindHost(coerceA2aRemoteConfig({ enabled: true, bindHost }), () => undefined)).toHaveProperty('error');
+    }
   });
 
   it('rejects a malformed configure patch instead of persisting it', () => {
@@ -189,6 +194,11 @@ describe('a2aRemote bind address', () => {
     if (!other) return; // no non-loopback IPv4 on this runner
     const refused = await new Promise<boolean>((resolve) => {
       const s = net.connect(port, other);
+      // A firewall that drops instead of refusing also means nothing answers there.
+      s.setTimeout(3_000, () => {
+        s.destroy();
+        resolve(true);
+      });
       s.once('connect', () => {
         s.destroy();
         resolve(false);
