@@ -301,6 +301,19 @@ describe('wmux remote allow', () => {
     expect(askSpy).not.toHaveBeenCalled();
   });
 
+  it('maps a not_first_party refusal of a call from a pane to running outside wmux', async () => {
+    selfContext.mockResolvedValue({ ptyId: 'pty-9' });
+    daemonRpc.mockResolvedValue({
+      id: 'x', ok: false, code: 'not_first_party',
+      error: "not_first_party: a2a.remote.spawnPolicy.get is accepted only from the app's own connection",
+    });
+    expect(await run('allowed', [])).toBe(1);
+    const out = printed();
+    expect(out).toContain('not accepted from inside a wmux pane');
+    expect(out).toContain('terminal outside wmux');
+    expect(out).not.toContain('Remote page');
+  });
+
   it('maps a not_first_party refusal to where the settings are managed', async () => {
     daemonRpc.mockResolvedValue({
       id: 'x', ok: false, code: 'not_first_party',
@@ -442,6 +455,19 @@ describe('wmux remote revoke', () => {
     expect(await run('revoke', ['--from', DESK, '--root', repo])).toBe(0);
     expect(store.approval).toBe('allow-list');
     expect(printed()).toContain('Approval is still "allow list", and no rule is left');
+  });
+
+  it('says it when --from alone removes the only PC and its last rule', async () => {
+    store = policy({
+      enabled: true, approval: 'allow-list', agents: ['claude'], hosts: { [DESK]: { allowed: true } },
+      roots: [{ id: 'repo-aaaaaa', label: 'repo', path: repo }],
+      rules: [{ hostId: DESK, rootId: 'repo-aaaaaa', agent: 'claude' }],
+    });
+    expect(await run('revoke', ['--from', DESK])).toBe(0);
+    const out = printed();
+    expect(out).toContain('may no longer ask this PC to start agents (1 rule removed)');
+    expect(out).toContain('Approval is still "allow list", and no rule is left');
+    expect(store.approval).toBe('allow-list');
   });
 
   it('does not say it while rules remain', async () => {

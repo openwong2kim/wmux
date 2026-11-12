@@ -149,7 +149,10 @@ async function daemonCall(method: RpcMethod, rawParams: Record<string, unknown>,
     console.error(/^Unknown method/.test(response.error ?? '')
       ? 'Error: pairing between PCs is not available in this wmux daemon (it is older, or that part failed to start; see its log).'
       : response.code === NOT_FIRST_PARTY || (response.error ?? '').startsWith(`${NOT_FIRST_PARTY}:`)
-        ? 'Error: this wmux daemon takes pairing and remote spawn settings only from the desktop app. On a PC that runs the desktop app, pairing and the allow rules are managed from the app\'s Remote page.'
+        // The daemon's text is the same for both refusals; what this call sent tells them apart.
+        ? pty
+          ? 'Error: these commands are not accepted from inside a wmux pane. Run them in a terminal outside wmux.'
+          : 'Error: this wmux daemon takes pairing and remote spawn settings only from the desktop app. On a PC that runs the desktop app, pairing and the allow rules are managed from the app\'s Remote page.'
         : `Error: ${response.error}`);
     process.exit(1);
   }
@@ -707,9 +710,12 @@ async function remoteRevoke(args: string[], jsonMode: boolean): Promise<void> {
       console.log(rootIds === null
         ? `${pcLabel(pc)} may no longer ask this PC to start agents (${removed} rule${removed === 1 ? '' : 's'} removed).`
         : `Removed ${removed} rule${removed === 1 ? '' : 's'} for ${pcLabel(pc)}.`);
-      const stillAllowed = res.policy.enabled && Object.values(res.policy.hosts).some((h) => h.allowed);
-      if (res.policy.approval === 'allow-list' && res.policy.rules.length === 0 && stillAllowed) {
-        console.log('Approval is still "allow list", and no rule is left: a request from a PC still allowed here waits for approval on this PC until it expires.');
+      // The last rule went (with --from alone, often with the last allowed PC too).
+      if (removed > 0 && res.policy.approval === 'allow-list' && res.policy.rules.length === 0) {
+        const stillAllowed = res.policy.enabled && Object.values(res.policy.hosts).some((h) => h.allowed);
+        console.log(stillAllowed
+          ? 'Approval is still "allow list", and no rule is left: a request from a PC still allowed here waits for approval on this PC until it expires.'
+          : 'Approval is still "allow list", and no rule is left: a PC allowed again later has its requests wait for approval on this PC until they expire, until a rule is added.');
       }
       return;
     }
