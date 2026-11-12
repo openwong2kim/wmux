@@ -366,9 +366,10 @@ const config: ForgeConfig = {
       const koromixSrc = path.join(__dirname, 'node_modules', '@koromix', koromixName);
       const koffiPresent = fs.existsSync(koffiSrc) && fs.existsSync(koromixSrc);
       if (wantKoffi && !koffiPresent && koffiPlatform !== 'win32') {
-        // Main and the daemon only log peer pids, so for them this is a
-        // warning; the MCP broker decides on them, and step 5b below fails the
-        // package without koffi.
+        // Without koffi, main refuses every pid claim (wmux doctor says why)
+        // and the daemon only loses its peer pid logs, so for them this is a
+        // warning; the MCP broker cannot host sessions at all, and step 5b
+        // below fails the package without koffi.
         console.warn(`[postPackage] koffi prebuilt missing (${koffiSrc} / ${koromixSrc}) — peer pids will be unavailable in this ${koffiPlatform}-${koffiArch} package.`);
       }
       if (wantKoffi && !koffiPresent && koffiPlatform === 'win32') {

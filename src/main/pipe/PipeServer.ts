@@ -296,11 +296,14 @@ export class PipeServer {
     if (peer.pid === null) {
       if (!this.peerPidMisses.has(peer.reason)) {
         this.peerPidMisses.add(peer.reason);
-        console.warn(`[PipeServer] peer pid unavailable: ${peer.reason}`);
+        console.warn(`[PipeServer] peer pid unavailable: ${peer.reason}; pid claims on this connection are refused (see wmux doctor)`);
       }
       return;
     }
     this.peerPids.set(socket, peer.pid);
+    // Read right after the pid, not with it: should the peer exit and its pid
+    // pass to a new process between the two reads, both then describe that new
+    // process. That window is not closed here.
     const startedAt = processStartTime(peer.pid);
     if (startedAt !== null) this.peerStartedAts.set(socket, String(startedAt));
     // Linux only: SO_PEERCRED carries the uid, macOS's LOCAL_PEERPID does not.

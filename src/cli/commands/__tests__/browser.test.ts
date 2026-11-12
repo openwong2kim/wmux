@@ -142,3 +142,29 @@ describe('wmux open / browser close caller scoping (#922 PR-C)', () => {
     expect(setWorkspaceToken).toHaveBeenCalledWith('claim-self');
   });
 });
+
+describe('wmux browser / open when main did not take the claim', () => {
+  it('names the reason main gave and points at wmux doctor', async () => {
+    selfContext.mockResolvedValue({ workspaceId: 'ws-self', ptyId: 'pty-self', claimRefused: 'start-unread' });
+    const message = await expectRefusedOutsidePane(() => handleOpen(['https://example.com'], false));
+    expect(message).toContain('start time');
+    expect(message).toContain('another user');
+    expect(message).toContain('wmux doctor');
+    // Not the "older app" advice: main is new enough to give a reason.
+    expect(message).not.toContain('older than');
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it('says main cannot read the connection\'s process when that is the reason', async () => {
+    selfContext.mockResolvedValue({ claimRefused: 'no-peer' });
+    const message = await expectRefusedOutsidePane(() => handleBrowser(['navigate', 'https://example.com'], false));
+    expect(message).toContain('cannot read which process');
+    expect(message).toContain('wmux doctor');
+  });
+
+  it('points at wmux doctor outside a pane too', async () => {
+    selfContext.mockResolvedValue({});
+    const message = await expectRefusedOutsidePane(() => handleBrowser(['navigate', 'https://example.com'], false));
+    expect(message).toContain('wmux doctor');
+  });
+});

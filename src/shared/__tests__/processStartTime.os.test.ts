@@ -66,3 +66,12 @@ describe('statStartTime', () => {
     expect(statStartTime('garbage')).toBeNull();
   });
 });
+
+describe.runIf(process.platform === 'darwin' && process.getuid?.() !== 0)('processStartTime on macOS, another user', () => {
+  // proc_pidinfo refuses another user's process (EPERM), so no start time is
+  // read for it and main refuses its claim as `start-unread`. launchd (pid 1)
+  // runs as root.
+  it('reads no start time for a process running as another user', () => {
+    expect(processStartTime(1)).toBeNull();
+  });
+});

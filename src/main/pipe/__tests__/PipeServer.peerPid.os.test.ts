@@ -51,12 +51,15 @@ async function sendOne(extra: Record<string, unknown> = {}) {
 
 describe.runIf(supported)('PipeServer peer pid', () => {
   it('dispatches with the pid of the process that connected, and its start time', async () => {
-    const dispatch = await sendOne({ peerPid: 1, peerStartedAt: '1' });
+    // Values the request names for these are ignored.
+    const dispatch = await sendOne({ peerPid: 1, peerStartedAt: '1', viaTcp: true });
     expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ id: 'r1' }), expect.objectContaining({
       externalWire: true,
       peerPid: process.pid,
       peerStartedAt: String(processStartTime(process.pid)),
     }));
+    const ctx = (dispatch.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect('viaTcp' in ctx).toBe(false);
   });
 
   it('dispatches with the pid alone when the start time cannot be read', async () => {

@@ -54,6 +54,7 @@ import { getHandOutStore, type HandOutStore } from '../../handOut/handOutStore';
 import { isHandOutId } from '../../../shared/handOut';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
 import { checkClaim, claimStartTime, claimStillHeld, type ClaimVerdict } from './peerPidShadow';
+import type { ClaimRefusal } from '../../../shared/identityClaims';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
   isRemoteWorkspaceId,
@@ -918,7 +919,9 @@ export function registerA2aRpc(
     // for existing MCP clients.
     const entries: Array<{ pid: string; ptyId: string; workspaceId: string }> = [];
     try {
-      if (!fs.existsSync(dir)) return { mappings, entries, resolved: null };
+      if (!fs.existsSync(dir)) {
+        return { mappings, entries, resolved: null, ...(callerVerdict && !callerVerdict.ok && { claimRefused: callerVerdict.reason }) };
+      }
 
       for (const file of fs.readdirSync(dir)) {
         let value: string;
@@ -1157,11 +1160,14 @@ export function registerA2aRpc(
     // the one the connection came from when its claim is minted. Nothing is
     // minted or refreshed before this holds.
     let callerHeld: boolean | null = null;
+    // Why the caller's claim was not taken, for the caller to say (no pid, no path).
+    let claimRefused: ClaimRefusal | undefined = callerVerdict && !callerVerdict.ok ? callerVerdict.reason : undefined;
     if ((resolved || runTarget) && callerPid != null && callerVerdict) {
       callerHeld = claimStillHeld('callerPid', ctx, callerPid, callerVerdict);
       if (!callerHeld) {
         resolved = null;
         runTarget = null;
+        claimRefused = claimStartTime(callerPid) === null ? 'start-unread' : 'restarted';
       }
     }
     const runClaim = runTarget ? claimTokenForRun(runTarget.workspaceId, runTarget.ptyId) : null;
@@ -1208,6 +1214,7 @@ export function registerA2aRpc(
       ...(workspaceToken && { workspaceToken }),
       ...(threadClaim && { threadClaim }),
       ...(hintedPane && { hintedPane }),
+      ...(claimRefused && { claimRefused }),
     };
   });
 

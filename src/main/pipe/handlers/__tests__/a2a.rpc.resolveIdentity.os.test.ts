@@ -1108,6 +1108,7 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
   type PeerResult = ResolveResult & {
     workspaceToken?: string;
     threadClaim?: { ptyId: string };
+    claimRefused?: string;
   };
 
   beforeEach(() => {
@@ -1160,6 +1161,7 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
     const result = await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' });
     expect(result.resolved).toEqual(live);
     expect(typeof result.workspaceToken).toBe('string');
+    expect(result.claimRefused).toBeUndefined();
   });
 
   it('takes the broker\'s claim for the pid it names, when the broker is the one main spawned', async () => {
@@ -1174,6 +1176,8 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
       const result = await resolveAs({ callerPid: 39876 }, { pid: peer, startedAt: String(started.get(peer)) });
       expect(result.resolved, String(peer)).toBeNull();
       expect(result.workspaceToken, String(peer)).toBeUndefined();
+      // The caller is told why, with no pid.
+      expect(result.claimRefused, String(peer)).toBe('other-pid');
       // The caller's own walk still gets the live entries.
       expect(result.entries.map((e) => e.ptyId).sort()).toEqual(['daemon-other', 'daemon-shell']);
     }
@@ -1204,6 +1208,7 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
     const result = await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' });
     expect(result.resolved).toBeNull();
     expect(result.workspaceToken).toBeUndefined();
+    expect(result.claimRefused).toBe('restarted');
   });
 
   it('counts one refusal for a call that names the same pid as caller and Codex caller', async () => {
@@ -1323,6 +1328,28 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
       else process.env.CODEX_HOME = previous;
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it('forgets every Codex caller class once more than 256 are kept', async () => {
+    const classified: number[] = [];
+    const router = new RpcRouter();
+    registerA2aRpc(router, () => fakeWindow, makeWorker(), {
+      snapshot: async () => ({ ppidByPid: tree, listeners: [] }),
+      createdAt: () => null,
+      classifyCodexCaller: async (pid: number) => { classified.push(pid); return 'other'; },
+    });
+    setClaimStartTimeSource((pid) => (pid >= 70000 ? 1n : null));
+    const call = (pid: number) =>
+      resolveAs({ codexThreadId: '019a0000-0000-7000-8000-0000000000f1', codexCallerPid: pid }, { pid, startedAt: '1' }, router);
+    await call(70000);
+    await call(70000);
+    // Kept: the second call is answered from the cache.
+    expect(classified).toEqual([70000]);
+    for (let pid = 70001; pid <= 70257; pid++) await call(pid);
+    expect(classified).toHaveLength(258);
+    // The 258th class cleared the cache, so the first pid is classified again.
+    await call(70000);
+    expect(classified).toHaveLength(259);
   });
 
   it('takes a claim as sent on Windows, where no peer pid is read', async () => {
