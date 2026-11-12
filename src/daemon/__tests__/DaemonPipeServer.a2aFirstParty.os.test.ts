@@ -444,7 +444,8 @@ describe('`wmux remote peers` over a real daemon pipe', () => {
     constructor(readonly code: number | undefined) { super(`exit(${code})`); }
   }
 
-  async function runPeers(pipe: string, token: string): Promise<{ out: string; err: string; exit: number | undefined }> {
+  /** `wmux remote peers` (two daemon calls at once); with `refusals`, waits for that many error lines before restoring the mocks. */
+  async function runPeers(pipe: string, token: string, refusals = 0): Promise<{ out: string; err: string[]; exit: number | undefined }> {
     // The CLI finds the daemon through the hint file and the token file in its
     // (per-test-file temp) home.
     fs.mkdirSync(getWmuxHomeDir(), { recursive: true });
@@ -462,8 +463,10 @@ describe('`wmux remote peers` over a real daemon pipe', () => {
       if (!(e instanceof ExitCalled)) throw e;
       exit = e.code;
     }
+    // The first refusal ends the command; the other call's answer may still be on its way.
+    await waitFor(() => err.length >= refusals);
     vi.restoreAllMocks();
-    return { out: out.join('\n'), err: err.join('\n'), exit };
+    return { out: out.join('\n'), err, exit };
   }
 
   it('lists the pairings of a daemon no app has used, and is refused once one has', async () => {
@@ -472,14 +475,15 @@ describe('`wmux remote peers` over a real daemon pipe', () => {
     server.onRpc('a2a.remote.peers.list', async () => ({ peers: [] }));
 
     const headless = await runPeers(pipe, token);
-    expect(headless).toMatchObject({ exit: undefined, err: '' });
+    expect(headless).toMatchObject({ exit: undefined, err: [] });
     expect(JSON.parse(headless.out)).toEqual({ hosts: [], peers: [] });
 
     const app = await connect(pipe);
     app.socket.write(line('id', 'daemon.client.identify', token, { role: 'main' }));
     await waitFor(() => app.replies.has('id'));
-    const desktop = await runPeers(pipe, token);
+    const desktop = await runPeers(pipe, token, 2);
     expect(desktop.exit).toBe(1);
-    expect(desktop.err).toMatch(/^Error: not_first_party: a2a\.remote\.(hosts|peers)\.list is accepted only from the app's own connection$/);
+    expect(desktop.err.sort()).toEqual(['a2a.remote.hosts.list', 'a2a.remote.peers.list']
+      .map((m) => `Error: ${NOT_FIRST_PARTY}: ${m} is accepted only from the app's own connection`));
   });
 });

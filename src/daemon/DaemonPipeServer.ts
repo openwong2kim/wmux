@@ -5,6 +5,7 @@ import type { RpcRequest, RpcResponse } from '../shared/rpc';
 import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../shared/security';
 import { getDaemonAuthTokenPath } from '../shared/constants';
 import { NOT_FIRST_PARTY, isAppOnlyDaemonMethod } from '../shared/daemonFirstParty';
+import { A2A_SPAWN_RPC } from '../shared/a2aSpawn';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -152,10 +153,8 @@ export class DaemonPipeServer {
     'a2a.remote.hosts.remove',
     'a2a.remote.peers.list',
     'a2a.remote.peers.revoke',
-    // A2A_SPAWN_RPC.policyGet / policySet (shared/a2aSpawn), spelled out to
-    // keep that module's imports out of the pipe server.
-    'a2a.remote.spawnPolicy.get',
-    'a2a.remote.spawnPolicy.set',
+    A2A_SPAWN_RPC.policyGet,
+    A2A_SPAWN_RPC.policySet,
   ]);
   // Set by the first `markFirstParty` and never cleared, not even by `stop`:
   // a daemon the app has used keeps refusing HEADLESS_REMOTE_METHODS while the
