@@ -54,23 +54,23 @@ export function coerceA2aRemoteConfig(raw: unknown, def: A2aRemoteConfig = defau
 }
 
 /**
- * The bind address the listener should use, or undefined for its default
- * (all interfaces). `localhost` is 127.0.0.1. Anything but an IPv4 address
- * or `localhost` is logged and left out: an invite names an IPv4 address.
+ * The bind address the listener should use: `host` undefined for every
+ * interface (unset or `0.0.0.0`), `localhost` as 127.0.0.1. A set value that
+ * is not an IPv4 address or `localhost` is an `error`, logged here: the
+ * listener then stays down rather than bind every interface. (An invite
+ * names an IPv4 address, so an IPv6 one is refused too.)
  */
 export function a2aRemoteBindHost(
   slice: A2aRemoteConfig,
-  log: (level: 'warn', msg: string) => void,
-): string | undefined {
+  log: (level: 'error', msg: string) => void,
+): { host: string | undefined } | { error: string } {
   const host = slice.bindHost;
-  if (host === undefined) return undefined;
-  if (host === 'localhost') return '127.0.0.1';
-  if (net.isIPv4(host)) return host;
-  log(
-    'warn',
-    `[a2a-remote] ignoring a2aRemote.bindHost ${JSON.stringify(host)}: not an IPv4 address or "localhost"; listening on 0.0.0.0`,
-  );
-  return undefined;
+  if (host === undefined || host === '0.0.0.0') return { host: undefined };
+  if (host === 'localhost') return { host: '127.0.0.1' };
+  if (net.isIPv4(host)) return { host };
+  const error = `a2aRemote.bindHost ${JSON.stringify(host)} is not an IPv4 address or "localhost", so the listener is not started`;
+  log('error', `[a2a-remote] ${error}`);
+  return { error };
 }
 
 /** Strict RPC-boundary validation: only present keys, throws on a malformed one. */

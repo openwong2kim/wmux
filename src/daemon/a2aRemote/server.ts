@@ -140,6 +140,8 @@ export interface A2aServerDeps {
    * `bindHost`, and invites, firewall facts and discovery then offer only it.
    */
   bindAddress?: string;
+  /** A `bindHost` setting that cannot be used: the listener stays down with this as its error. */
+  bindError?: string;
   /** Clock for the invite's lifetime and the pairing backoff. Default `Date.now`. */
   now?: () => number;
   /** Test seam; default `loadOrCreateHostIdentity`. */
@@ -469,6 +471,10 @@ export class A2aServer {
       this.discovery.listenerStopped();
       await this.closeCurrent();
       this.setError(null);
+      return;
+    }
+    if (this.deps.bindError !== undefined) {
+      this.setError(this.deps.bindError);
       return;
     }
     const port = this.deps.controller.effectivePort();

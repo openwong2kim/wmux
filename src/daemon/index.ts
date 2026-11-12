@@ -10862,10 +10862,12 @@ async function main(): Promise<void> {
         },
         log: a2aLog,
       });
+    // `a2aRemote.bindHost` in config.json: unset binds every interface; a value
+    // that cannot be used keeps the listener down.
+    const a2aBind = a2aRemoteBindHost(a2aRemoteController.current(), a2aLog);
     const a2aServer = new A2aServer({
       controller: a2aRemoteController,
-      // `a2aRemote.bindHost` in config.json; absent keeps the default.
-      bindAddress: a2aRemoteBindHost(a2aRemoteController.current(), a2aLog),
+      ...('error' in a2aBind ? { bindError: a2aBind.error } : { bindAddress: a2aBind.host }),
       identityDir: a2aDir,
       peers: a2aPeers,
       onPeerRevoked: a2aCascade,

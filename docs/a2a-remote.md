@@ -259,8 +259,9 @@ it is linked to, the way it briefs a staff pane on this PC:
     problem; turn **Accept connections from other PCs** off and on once
     it exists.
   - A value that is not an IPv4 address or `localhost` (an IPv6 address
-    included: an invite names an IPv4 address) is ignored and logged, and
-    the listener keeps binding all interfaces.
+    included: an invite names an IPv4 address) keeps the listener down.
+    The daemon log and Settings name the value; fix it and restart the
+    daemon. `0.0.0.0` is the same as no setting.
 
   Every request still needs a valid peer credential, and pairing needs an
   open invite.
