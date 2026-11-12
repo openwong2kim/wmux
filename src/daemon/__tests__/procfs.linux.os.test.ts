@@ -8,6 +8,7 @@
  * formatting cases run.
  */
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parsePsOutput } from '../AgentProcessTracker';
 import { argsFromCmdline, formatLstart, procComm, procLstart, procStartMs, procState, procTable } from '../procfs';
@@ -52,12 +53,12 @@ describe('formatting', () => {
     expect(argsFromCmdline('', 'sh', 'Z')).toBe('[sh] <defunct>');
   });
 
-  it.skipIf(linux)('answers nothing off Linux, so the caller asks ps', () => {
+  it.skipIf(linux)('answers nothing off Linux, so the caller asks ps', async () => {
     expect(procState(process.pid)).toBeNull();
     expect(procComm(process.pid)).toBeNull();
     expect(procLstart(process.pid)).toBeNull();
     expect(procStartMs(process.pid)).toBeNull();
-    expect(procTable()).toBeNull();
+    await expect(procTable()).resolves.toBeNull();
   });
 });
 
@@ -87,6 +88,15 @@ describe.runIf(linux)('/proc readers match ps', () => {
     expect(procState(GONE)).toEqual({ value: null });
   });
 
+  it('a thread id is no process, as ps -p says', () => {
+    const tid = fs.readdirSync('/proc/self/task').map(Number).find((t) => t !== process.pid);
+    expect(tid, 'node runs more than one thread').toBeDefined();
+    expect(() => ps('stat', tid as number)).toThrow();
+    expect(procState(tid as number)).toEqual({ value: null });
+    expect(procComm(tid as number)).toEqual({ value: null });
+    expect(procLstart(tid as number)).toEqual({ value: null });
+  });
+
   it('comm', () => {
     const sleeper = child('sleep', ['60']);
     for (const pid of [process.pid, 1, sleeper.pid as number]) {
@@ -95,7 +105,7 @@ describe.runIf(linux)('/proc readers match ps', () => {
     expect(procComm(GONE)).toEqual({ value: null });
   });
 
-  it('lstart, byte for byte, in this locale and time zone and in another zone', () => {
+  it('lstart, byte for byte, in this time zone and another, whatever the locale', () => {
     const sleeper = child('sleep', ['60']);
     const pids = [process.pid, 1, sleeper.pid as number];
     for (const pid of pids) expect(procLstart(pid)).toEqual({ value: ps('lstart', pid) });
@@ -105,6 +115,8 @@ describe.runIf(linux)('/proc readers match ps', () => {
     process.env.TZ = 'Asia/Kolkata'; // a half-hour offset
     try {
       for (const pid of pids) expect(procLstart(pid)).toEqual({ value: ps('lstart', pid, { ...process.env, TZ: 'Asia/Kolkata' }) });
+      // ps prints ctime(3): a locale does not change the text.
+      for (const pid of pids) expect(procLstart(pid)).toEqual({ value: ps('lstart', pid, { ...process.env, TZ: 'Asia/Kolkata', LC_ALL: 'C.UTF-8', LANG: 'ko_KR.UTF-8' }) });
     } finally {
       if (tz === undefined) delete process.env.TZ;
       else process.env.TZ = tz;
@@ -124,11 +136,11 @@ describe.runIf(linux)('/proc readers match ps', () => {
 
   it('the process table is ps -ww -axo pid=,ppid=,args=, row for row', async () => {
     const spaced = child(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)', 'an argument with spaces']);
-    await waitFor(() => procTable()?.some((r) => r.pid === spaced.pid && r.args.includes('an argument with spaces')) === true, 10_000, 'the child');
-    const asRows = (rows: ReturnType<typeof procTable>) => parsePsOutput((rows ?? []).map((r) => `${r.pid} ${r.ppid} ${r.args}`).join('\n'));
-    const before = new Map(asRows(procTable()).map((e) => [e.pid, e]));
+    await waitFor(() => ps('args', spaced.pid as number).includes('an argument with spaces'), 10_000, 'the child');
+    const asRows = (rows: Awaited<ReturnType<typeof procTable>>) => parsePsOutput((rows ?? []).map((r) => `${r.pid} ${r.ppid} ${r.args}`).join('\n'));
+    const before = new Map(asRows(await procTable()).map((e) => [e.pid, e]));
     const fromPs = parsePsOutput(execFileSync('ps', ['-ww', '-axo', 'pid=,ppid=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
-    const after = new Map(asRows(procTable()).map((e) => [e.pid, e]));
+    const after = new Map(asRows(await procTable()).map((e) => [e.pid, e]));
     // Only rows that did not change across the ps run (ps itself, a process
     // that exec'd), and no kernel thread: a kworker renames itself as it works.
     let compared = 0;
@@ -138,7 +150,7 @@ describe.runIf(linux)('/proc readers match ps', () => {
       expect(a).toEqual(row);
       compared++;
     }
-    expect(compared).toBeGreaterThan(10);
+    expect(compared).toBeGreaterThan(2); // a container sees only its own few
     expect([...before.values()].some((e) => e.cmdline?.includes('an argument with spaces'))).toBe(true);
   });
 });

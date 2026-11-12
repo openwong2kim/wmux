@@ -88,6 +88,17 @@ jobs:
         run: |
           npx vitest run src/daemon/__tests__/procfs.linux.os.test.ts
           npx vitest run --config vitest.runtime.config.ts src/daemon/__tests__/ProcessMonitor.runtime.test.ts
+      # The same comparison against procps 4 (ubuntu-22.04 ships 3.3), in an
+      # ubuntu:24.04 container running this job's node.
+      - name: /proc readers match procps 4 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          prefix="$(dirname "$(dirname "$(command -v node)")")"
+          docker run --rm -v "$PWD:/w" -v "$prefix:$prefix:ro" -w /w ubuntu:24.04 bash -euc "
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq procps tzdata > /dev/null
+            ps -V
+            '$prefix/bin/node' node_modules/vitest/vitest.mjs run src/daemon/__tests__/procfs.linux.os.test.ts"
       # Stub WMUX_RUST_SNAPSHOT_MODULE, which WMUX_TERMINAL_CORE_MODULE would override.
       - name: Opt-in snapshot module contracts
         run: npx vitest run src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/AnsiSnapshotBackend.test.ts src/daemon/__tests__/RustSnapshot.test.ts

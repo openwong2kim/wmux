@@ -4,6 +4,7 @@
 // then asks `ps` as before. `{ value: null }` means the pid does not exist.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import { statStartTime } from '../shared/processStartTime';
 
 /** An answer from /proc: `value` null when no process has the pid. */
@@ -18,14 +19,25 @@ export interface ProcRow {
 
 const isLinux = (): boolean => process.platform === 'linux';
 
-/** `/proc/<pid>/<file>`, `gone` when the pid does not exist, null when it cannot be read. */
+const isGone = (err: unknown): boolean => {
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ESRCH';
+};
+
+/**
+ * `/proc/<pid>/<file>`, `gone` when no process has the pid, null when it
+ * cannot be read. A thread id has a /proc entry too, but `ps -p` finds no
+ * process for it: only a pid that is its own thread group counts.
+ */
 function readPid(pid: number, file: string): string | 'gone' | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
+    const tgid = /^Tgid:\s*(\d+)$/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1];
+    if (tgid === undefined) return null;
+    if (Number(tgid) !== pid) return 'gone';
     return fs.readFileSync(`/proc/${pid}/${file}`, 'utf8');
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    return code === 'ENOENT' || code === 'ESRCH' ? 'gone' : null;
+    return isGone(err) ? 'gone' : null;
   }
 }
 
@@ -62,9 +74,12 @@ function ticksPerSecond(): number | null {
   clockTicks = null;
   try {
     const auxv = fs.readFileSync('/proc/self/auxv');
-    const word = process.arch.includes('64') ? 8 : 4;
+    const word = ['ia32', 'arm', 'mips', 'mipsel', 'ppc'].includes(process.arch) ? 4 : 8;
+    const le = os.endianness() === 'LE';
     const read = (at: number): number =>
-      word === 8 ? Number(auxv.readBigUInt64LE(at)) : auxv.readUInt32LE(at);
+      word === 8
+        ? Number(le ? auxv.readBigUInt64LE(at) : auxv.readBigUInt64BE(at))
+        : le ? auxv.readUInt32LE(at) : auxv.readUInt32BE(at);
     for (let at = 0; at + 2 * word <= auxv.length; at += 2 * word) {
       const type = read(at);
       if (type === 0) break;
@@ -113,15 +128,12 @@ export function formatLstart(epochSeconds: number): string {
   return `${DAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${day} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())} ${d.getFullYear()}`;
 }
 
-/** Whether `ps` would print dates in English: a locale that may name days otherwise is left to `ps`. */
-function englishDates(env: NodeJS.ProcessEnv = process.env): boolean {
-  const locale = env.LC_ALL || env.LC_TIME || env.LANG || '';
-  return locale === '' || /^(C|POSIX|en)([._@]|$)/.test(locale);
-}
-
-/** The start time of `pid` as `ps -o lstart=` prints it, byte for byte. */
+/**
+ * The start time of `pid` as `ps -o lstart=` prints it, byte for byte: procps
+ * prints ctime(3), which follows TZ but not the locale.
+ */
 export function procLstart(pid: number): ProcAnswer<string> {
-  if (!isLinux() || !englishDates()) return null;
+  if (!isLinux()) return null;
   const start = startSeconds(pid);
   if (start === null || start.value === null) return start as ProcAnswer<string>;
   // `ps` truncates the start to whole seconds after adding it to the boot time.
@@ -144,27 +156,49 @@ export function argsFromCmdline(cmdline: string, comm: string, state: string): s
   return argv.replace(/\0/g, ' ').replace(/[\x00-\x1f\x7f]/g, '?');
 }
 
-/** Every process: pid, ppid and `ps -o args=`'s text; null when /proc cannot be listed. */
-export function procTable(): ProcRow[] | null {
-  if (!isLinux()) return null;
+const TABLE_TIMEOUT_MS = 10_000;
+let tableStuck = false;
+
+async function readRow(pid: number): Promise<ProcRow | null> {
+  try {
+    const [stat, cmdline] = await Promise.all([
+      fs.promises.readFile(`/proc/${pid}/stat`, 'utf8'),
+      fs.promises.readFile(`/proc/${pid}/cmdline`, 'utf8'),
+    ]);
+    const tail = statTail(stat);
+    if (!tail) return null;
+    const comm = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
+    return { pid, ppid: Number(tail[1]), args: argsFromCmdline(cmdline, comm, tail[0]) };
+  } catch {
+    // A process that exits between the listing and the read is simply not in the table.
+    return null;
+  }
+}
+
+/**
+ * Every process: pid, ppid and `ps -o args=`'s text; null when /proc cannot be
+ * listed. The reads run off the event loop: reading a command line waits on
+ * the process's memory map, which a process stuck in the kernel can hold. A
+ * table that is not read within the `ps` path's 10 s is given up on, and from
+ * then on the caller asks `ps`, which it can time out and kill.
+ */
+export async function procTable(): Promise<ProcRow[] | null> {
+  if (!isLinux() || tableStuck) return null;
   let names: string[];
   try {
-    names = fs.readdirSync('/proc');
+    names = await fs.promises.readdir('/proc');
   } catch {
     return null;
   }
-  const rows: ProcRow[] = [];
-  for (const name of names) {
-    if (!/^\d+$/.test(name)) continue;
-    const pid = Number(name);
-    const stat = readPid(pid, 'stat');
-    const cmdline = readPid(pid, 'cmdline');
-    // A process that exits between the listing and the read is simply not in the table.
-    if (stat === null || stat === 'gone' || cmdline === null || cmdline === 'gone') continue;
-    const tail = statTail(stat);
-    if (!tail) continue;
-    const comm = stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'));
-    rows.push({ pid, ppid: Number(tail[1]), args: argsFromCmdline(cmdline, comm, tail[0]) });
-  }
-  return rows;
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      tableStuck = true;
+      resolve(null);
+    }, TABLE_TIMEOUT_MS);
+  });
+  const rows = Promise.all(names.filter((n) => /^\d+$/.test(n)).map((n) => readRow(Number(n))));
+  const result = await Promise.race([rows, timedOut]);
+  clearTimeout(timer);
+  return result === null ? null : result.filter((r): r is ProcRow => r !== null);
 }

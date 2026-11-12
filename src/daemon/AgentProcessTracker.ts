@@ -842,7 +842,7 @@ async function enumerateProcesses(): Promise<ProcessTreeEntry[]> {
     );
     return parsePipeDelimited(stdout as string);
   }
-  const rows = procTable();
+  const rows = await procTable();
   if (rows) return parsePsOutput(rows.map((r) => `${r.pid} ${r.ppid} ${r.args}`).join('\n'));
   const { stdout } = await execFileAsync(
     'ps',
