@@ -63,7 +63,7 @@ runner; no new public diagnostics RPC has been added.
 
 ## Validation
 
-- 51 unit tests across text selection, loader ABI, shadow and headless text/ANSI
+- 51 unit tests across text selection, loader ABI, the since-removed shadow mode and headless text/ANSI
   behavior; strict daemon TypeScript and ESLint pass.
 - 31 differential text fixtures pass. The production flag is also checked for
   every fixture: immutable requests must actually use Rust, live-drain requests

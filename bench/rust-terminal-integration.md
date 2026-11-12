@@ -228,7 +228,7 @@ including structurally incomplete invalid prefixes and final EOF. The remaining
 u16 cell flag now retains SGR 5 blink (SGR 6 is ignored, matching xterm), without
 increasing the 24-byte cell layout. ANSI requests require the optional `ansi-v2`
 capability; older serializers fall back before replay. Blink now passes delivery
-and shadow parity. The eligibility scan distinguishes color operands from SGR
+and the parity checks. The eligibility scan distinguishes color operands from SGR
 commands, so RGB/palette values 53 and 55 no longer cause false overline refusals. ANSI remains separately opt-in; live drains and unqualified
 state retain the reference backend.
 

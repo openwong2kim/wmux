@@ -55,9 +55,9 @@ resize cases and an incomplete UTF-8 case. It covers incomplete CSI and
 synchronized output, alternate screens, styles, cursor state and continuation.
 This finite coverage is not a proof of complete terminal equivalence: private
 parser state, saved cursors, hyperlink metadata and extended underline details
-are not all represented in the fingerprint. Native blink support remains a
-known mismatch. Integration tests deliberately trigger it and verify that
-xterm's blinking output still reaches the caller.
+are not all compared by the parity checks. Native blink was a known mismatch
+when this was written; the compatibility fork now retains it, and
+`bench/rust-snapshot-parity.ts` checks that it survives a restore.
 
 Backend selection tests (`TextSnapshotBackend.test.ts`, `AnsiSnapshotBackend.test.ts`)
 cover fallback, live-drain routing and missing-module handling. This is not a
@@ -127,6 +127,6 @@ loads the Node-built binary without rebuilding for Electron.
 4. Test a packaged isolated daemon over RPC, client reconnects and long-running
    workloads; validate signed packaging and supported platforms beyond macOS arm64.
 5. Measure retained daemon RSS and latency before choosing any replacement flag
-   or default. Shadow mode itself increases work.
+   or default.
 
 See [bot-memory.md](bot-memory.md) for the independent CLI/MCP memory findings.
