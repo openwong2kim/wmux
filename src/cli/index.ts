@@ -157,6 +157,9 @@ WEB ACCESS (browser / PWA)
                                     the sign-in, and the proxy must drop a
                                     client's own copy of the header
         [--status]                  Show whether the web server is running
+        [--show-token]              Also print the access token and the
+                                    addresses that carry it (left out by
+                                    default, --json included)
         [--stop]                    Stop the web server and revoke all web
                                     credentials
   web pair --name <device>          Start a pairing on the RUNNING web server
