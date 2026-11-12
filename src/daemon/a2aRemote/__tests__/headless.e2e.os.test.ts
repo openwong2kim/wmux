@@ -421,7 +421,12 @@ describe('headless remote spawn, two PCs and no app', () => {
     expect(fs.readFileSync(path.join(wt, 'out', 'report.md'), 'utf8')).toBe('the agent\'s work\n');
   });
 
-  it('a start cut between the worktree and the session leaves nothing after a restart', async () => {
+  /**
+   * B's daemon "dies" with the worktree made and no session; `cut` changes what
+   * it left on disk. Then a new daemon run over the same files reconciles:
+   * nothing of the start is left, its branch and git's worktree entry included.
+   */
+  async function cutThenRestart(cut: (b: Pc, hostId: string, spawnId: string, wt: string) => void = () => undefined): Promise<void> {
     const a = await makePc('PC-A', { asking: true });
     const b = await makePc('PC-B', { headless: true });
     await pair(a, b);
@@ -432,6 +437,7 @@ describe('headless remote spawn, two PCs and no app', () => {
     const wt = path.join(b.dir, 'worktrees', `remote-${spawnId}`);
     await until(() => fs.existsSync(wt) && b.starts!.get(a.hostId, spawnId)?.worktreePath !== undefined);
     b.headless!.stop();
+    cut(b, a.hostId, spawnId, wt);
 
     // A new daemon run over the same files: its stores, receiver and starter.
     const a2aDir = path.join(b.dir, 'a2a');
@@ -467,5 +473,24 @@ describe('headless remote spawn, two PCs and no app', () => {
     expect(answers).toContain('failed');
     expect(spawnStarter.liveCount()).toBe(0);
     expect(sessions.made).toEqual([]);
+    const git = (...args: string[]): string => execFileSync('git', ['-C', path.join(b.dir, 'repo'), ...args], { env: { ...process.env, ...gitEnv }, encoding: 'utf8' });
+    expect(git('worktree', 'list', '--porcelain')).not.toContain(`remote-${spawnId}`);
+    expect(git('branch', '--list', `wmux/remote/${spawnId}`).trim()).toBe('');
+  }
+
+  it('a start cut between the worktree and the session leaves nothing after a restart', async () => {
+    await cutThenRestart();
+  });
+
+  it('a start cut inside `git worktree add` (path not recorded yet, worktree still locked) leaves nothing after a restart', async () => {
+    await cutThenRestart((b, hostId, spawnId, wt) => {
+      // Only the path it was about to use is on record, and git still holds
+      // the worktree locked, as a `git worktree add` killed mid-checkout leaves it.
+      b.starts!.update(hostId, spawnId, { worktreePath: undefined, cwd: undefined, baseCommit: undefined });
+      expect(b.starts!.get(hostId, spawnId)?.worktreeIntended).toBe(wt);
+      execFileSync('git', ['-C', path.join(b.dir, 'repo'), 'worktree', 'lock', '--reason', 'initializing', wt], {
+        env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(b.dir, 'global.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' },
+      });
+    });
   });
 });
