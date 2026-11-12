@@ -2145,18 +2145,20 @@ function TabBrowser() {
 // The mode is main-side (it can loosen what an unattended worker may do), so
 // it is read and written over IPC, never through the renderer store.
 /**
- * Saves a required fan-out number: the field shows `next` at once, then the
- * value main stored (clamped). When the save fails, `invoke` raises the error
- * toast and the field goes back to the value in force, read back from main
- * (else the last confirmed one), so it never shows a number that is not stored.
+ * Saves a fan-out number: the field shows `next` at once, then the value main
+ * stored (clamped). When the save fails, `invoke` raises the error toast and
+ * the field goes back to the value in force, read back from main (else the
+ * last confirmed one), so it never shows a number that is not stored. A limit
+ * the owner may leave unset passes `nullable`: null (no limit) is a value too.
  */
-export async function saveFanoutNumber(
-  next: number,
-  confirmed: number,
-  show: (v: number) => void,
-  save: () => Promise<number>,
+export async function saveFanoutNumber<T extends number | null>(
+  next: T,
+  confirmed: T,
+  show: (v: T) => void,
+  save: () => Promise<T>,
   reload: () => Promise<unknown>,
   invoke: UseIpcReturn['invoke'],
+  nullable = false,
 ): Promise<void> {
   show(next);
   const saved = await invoke(save);
@@ -2166,7 +2168,7 @@ export async function saveFanoutNumber(
   }
   try {
     const v = await reload();
-    show(typeof v === 'number' ? v : confirmed);
+    show(typeof v === 'number' || (nullable && v === null) ? (v as T) : confirmed);
   } catch {
     show(confirmed);
   }
@@ -2277,19 +2279,13 @@ function FanoutWorkersSection() {
 
   // The field shows the value at once; main's reply (clamped) confirms it.
   const onLiveTaskCapChange = (next: number | null) => {
-    setLiveTaskCapState(next);
-    window.electronAPI.fanout
-      .setLiveTaskCap(next)
-      .then((stored) => setLiveTaskCapState(stored))
-      .catch(() => undefined);
+    const api = window.electronAPI.fanout;
+    void saveFanoutNumber(next, liveTaskCap, setLiveTaskCapState, () => api.setLiveTaskCap(next), () => api.getLiveTaskCap(), ipcInvoke, true);
   };
 
   const onHourlyTaskCapChange = (next: number | null) => {
-    setHourlyTaskCapState(next);
-    window.electronAPI.fanout
-      .setHourlyTaskCap(next)
-      .then((stored) => setHourlyTaskCapState(stored))
-      .catch(() => undefined);
+    const api = window.electronAPI.fanout;
+    void saveFanoutNumber(next, hourlyTaskCap, setHourlyTaskCapState, () => api.setHourlyTaskCap(next), () => api.getHourlyTaskCap(), ipcInvoke, true);
   };
 
   const onTasksPerCallChange = (next: number) => {

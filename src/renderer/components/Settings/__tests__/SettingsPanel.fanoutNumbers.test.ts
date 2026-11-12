@@ -21,6 +21,22 @@ describe('saveFanoutNumber', () => {
     expect(toast).toHaveBeenCalledTimes(1);
   });
 
+  it('an optional limit: a failed save goes back to the stored no-limit (null), and a failed clear to the stored cap', async () => {
+    const shown: Array<number | null> = [];
+    const fail = async (): Promise<number | null> => { throw new Error('[UNKNOWN] write failed'); };
+    const toast = vi.fn();
+    await saveFanoutNumber<number | null>(4, null, (v) => shown.push(v), fail, async () => null, createInvoke(undefined, toast), true);
+    await saveFanoutNumber<number | null>(null, 6, (v) => shown.push(v), fail, async () => 6, createInvoke(undefined, toast), true);
+    expect(shown).toEqual([4, null, null, 6]);
+    expect(toast).toHaveBeenCalledTimes(2);
+  });
+
+  it('a required number does not take null from the read-back: the last confirmed value comes back', async () => {
+    const shown: number[] = [];
+    await saveFanoutNumber(5, 8, (v) => shown.push(v), async () => { throw new Error('x'); }, async () => null, createInvoke({ toastOnError: false }, vi.fn()));
+    expect(shown).toEqual([5, 8]);
+  });
+
   it('when the read-back fails too, the last confirmed value comes back', async () => {
     const shown: number[] = [];
     await saveFanoutNumber(3, 1, (v) => shown.push(v), async () => { throw new Error('x'); }, async () => { throw new Error('y'); }, createInvoke({ toastOnError: false }, vi.fn()));
