@@ -1491,6 +1491,22 @@ describe('task.fanout.start — depth-1', () => {
     expect(err.message).toMatch(/2 levels deep .*may go 2 levels deep \(Settings › Roles & fan-out\)/);
   });
 
+  it('a fan-out started while depth 2 was allowed is still polled and cancelled after the setting drops to 1; a new one is refused', async () => {
+    await setFanoutDepth(2);
+    const g = guardsIn(tmp());
+    g.markTask(CALLER_WS, 'ws-brain');
+    const h = setup({ guards: g });
+    expect(await h.call(goodParams({ idempotencyKey: 'k-wait' }))).toMatchObject({ ok: true, status: 'accepted' });
+    await h.flush();
+    await setFanoutDepth(1);
+    expect(await h.call(goodParams({ idempotencyKey: 'k-wait' }))).toMatchObject({ ok: true, status: 'completed' });
+    expect(await h.call(goodParams({ idempotencyKey: 'k-wait', cancelPending: true }))).toMatchObject({ ok: true, status: 'pending_cancelled', dropped: 2 });
+    const fresh = errorOf(await h.call(goodParams({ idempotencyKey: 'k-new' })));
+    expect(fresh.code).toBe('NOT_AUTHORIZED');
+    expect(fresh.message).toMatch(/one level deep/);
+    expect(h.start).toHaveBeenCalledTimes(1);
+  });
+
   it('fails closed when the lineage store cannot be read', async () => {
     const dir = tmp();
     fs.writeFileSync(nodePath.join(dir, 'fanout-lineage.json'), 'garbage', 'utf8');

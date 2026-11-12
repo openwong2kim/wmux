@@ -13,7 +13,7 @@ import { useStore } from '../../stores';
 import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProjections';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
-import { useIpc } from '../../hooks/useIpc';
+import { useIpc, type UseIpcReturn } from '../../hooks/useIpc';
 import { THEME_OPTIONS, THEME_STYLES, type ThemeStyle, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, PRE_CONTRAST_LIFT_TEXT, deriveBuiltinPalette, deriveFullPalette, tokenAttrs, type BuiltinThemeId, type ThemeId, type XtermPaletteId, type UIThemeTokenKey, type TokenRole, type FullCssPalette } from '../../themes';
 import {
   TAILWIND_PALETTE,
@@ -2144,7 +2144,36 @@ function TabBrowser() {
 // ─── Fan-out workers — permission mode + allow-list button ───────────────────
 // The mode is main-side (it can loosen what an unattended worker may do), so
 // it is read and written over IPC, never through the renderer store.
+/**
+ * Saves a required fan-out number: the field shows `next` at once, then the
+ * value main stored (clamped). When the save fails, `invoke` raises the error
+ * toast and the field goes back to the value in force, read back from main
+ * (else the last confirmed one), so it never shows a number that is not stored.
+ */
+export async function saveFanoutNumber(
+  next: number,
+  confirmed: number,
+  show: (v: number) => void,
+  save: () => Promise<number>,
+  reload: () => Promise<unknown>,
+  invoke: UseIpcReturn['invoke'],
+): Promise<void> {
+  show(next);
+  const saved = await invoke(save);
+  if (saved.ok) {
+    show(saved.data);
+    return;
+  }
+  try {
+    const v = await reload();
+    show(typeof v === 'number' ? v : confirmed);
+  } catch {
+    show(confirmed);
+  }
+}
+
 function FanoutWorkersSection() {
+  const { invoke: ipcInvoke } = useIpc();
   const t = useT();
   // Main-side too: main makes the approval decision, so the switch it reads
   // is the one this row writes.
@@ -2264,19 +2293,13 @@ function FanoutWorkersSection() {
   };
 
   const onTasksPerCallChange = (next: number) => {
-    setTasksPerCallState(next);
-    window.electronAPI.fanout
-      .setTasksPerCall(next)
-      .then((stored) => setTasksPerCallState(stored))
-      .catch(() => undefined);
+    const api = window.electronAPI.fanout;
+    void saveFanoutNumber(next, tasksPerCall, setTasksPerCallState, () => api.setTasksPerCall(next), () => api.getTasksPerCall(), ipcInvoke);
   };
 
   const onFanoutDepthChange = (next: number) => {
-    setFanoutDepthState(next);
-    window.electronAPI.fanout
-      .setDepth(next)
-      .then((stored) => setFanoutDepthState(stored))
-      .catch(() => undefined);
+    const api = window.electronAPI.fanout;
+    void saveFanoutNumber(next, fanoutDepth, setFanoutDepthState, () => api.setDepth(next), () => api.getDepth(), ipcInvoke);
   };
 
   const onTrustAgyFoldersChange = (next: boolean) => {
