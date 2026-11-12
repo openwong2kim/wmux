@@ -143,6 +143,24 @@ export class DaemonPipeServer {
     'a2a.channel.post',
     'a2a.channel.invite',
   ]);
+  // The pairing and spawn-policy calls `wmux remote` makes on a host that runs
+  // only the daemon. Honoured only while no app has identified on this daemon
+  // since it started (`appAttachedSinceStart`), and never from a pane.
+  private static readonly HEADLESS_REMOTE_METHODS: ReadonlySet<string> = new Set([
+    'a2a.remote.join',
+    'a2a.remote.hosts.list',
+    'a2a.remote.hosts.remove',
+    'a2a.remote.peers.list',
+    'a2a.remote.peers.revoke',
+    // A2A_SPAWN_RPC.policyGet / policySet (shared/a2aSpawn), spelled out to
+    // keep that module's imports out of the pipe server.
+    'a2a.remote.spawnPolicy.get',
+    'a2a.remote.spawnPolicy.set',
+  ]);
+  // Set by the first `markFirstParty` and never cleared, not even by `stop`:
+  // a daemon the app has used keeps refusing HEADLESS_REMOTE_METHODS while the
+  // app restarts.
+  private appAttachedSinceStart = false;
 
   private static readonly MAX_CONNECTIONS = 20;
   private static readonly GLOBAL_RATE_LIMIT = 200;
@@ -913,7 +931,9 @@ export class DaemonPipeServer {
    * before this method existed.
    */
   markFirstParty(clientId: string): void {
-    if (clientId) this.firstPartyClients.add(clientId);
+    if (!clientId) return;
+    this.firstPartyClients.add(clientId);
+    this.appAttachedSinceStart = true;
   }
 
   /** Did this client claim the first-party role? See `markFirstParty`. */
@@ -1027,7 +1047,7 @@ export class DaemonPipeServer {
     // A2A and task-mission methods act for whichever workspace or pane the call
     // names, and only main checks that name against the caller (src/main/pipe/
     // handlers/a2aCaller.ts, a2a.channel.rpc.ts). So they answer only the app's
-    // own connection, except the
+    // own connection, except HEADLESS_REMOTE_METHODS (see there) and the
     // channel calls a pane's own tools make headless (`wmux channel`): those
     // take the caller's workspace from the daemon's session record for its
     // senderPtyId (channels/channelCallerIdentity.ts), and a workspace stamp
@@ -1036,7 +1056,12 @@ export class DaemonPipeServer {
     // a CLI or an agent tool that holds the token from going around main's
     // check, not a local attacker.
     if (isAppOnlyDaemonMethod(request.method) && !this.isFirstParty(clientId)) {
-      if (!DaemonPipeServer.HEADLESS_CHANNEL_METHODS.has(request.method)) {
+      // The pairing calls of `wmux remote` pass on a host that runs only the
+      // daemon, and not from a pane; where the app runs, they stay its own.
+      const headlessRemote = DaemonPipeServer.HEADLESS_REMOTE_METHODS.has(request.method)
+        && !this.appAttachedSinceStart
+        && !Object.prototype.hasOwnProperty.call(params, 'senderPtyId');
+      if (!headlessRemote && !DaemonPipeServer.HEADLESS_CHANNEL_METHODS.has(request.method)) {
         return {
           id: request.id,
           ok: false,
