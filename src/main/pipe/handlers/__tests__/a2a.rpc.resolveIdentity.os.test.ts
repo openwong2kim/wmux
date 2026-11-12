@@ -1210,6 +1210,19 @@ describe('a2a.resolve.identity — a claim is taken only from the process it nam
     expect(identitySummary('darwin').refusals['no-peer']).toBe(1);
   });
 
+  it('counts one refusal for a call naming the same pid twice whose process changed before the mint', async () => {
+    const { identitySummary } = await import('../peerPidShadow');
+    let reads = 0;
+    setClaimStartTimeSource((pid) => (pid === 39876 ? (reads++ === 0 ? 100n : 101n) : null));
+    const result = await resolveAs(
+      { callerPid: 39876, codexThreadId: '019a0000-0000-7000-8000-0000000000ef', codexCallerPid: 39876 },
+      { pid: 39876, startedAt: '100' },
+    );
+    expect(result.resolved).toBeNull();
+    expect(result.threadClaim).toBeUndefined();
+    expect(identitySummary('darwin').refusals.restarted).toBe(1);
+  });
+
   it('refuses a claim from the broker\'s pid with another start time, or with none recorded', async () => {
     setBrokerIdentitySource(() => ({ pid: 777, startedAt: '900' }));
     expect((await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '901' })).resolved).toBeNull();
@@ -1264,11 +1277,12 @@ describe('a2a.resolve.identity — a claim is taken only from the process it nam
     process.env.CODEX_HOME = home;
     // One router, so its class cache lives across the calls.
     let cls: 'shared-server' | 'other' = 'shared-server';
+    let duringClassification: (() => void) | null = null;
     const router = new RpcRouter();
     registerA2aRpc(router, () => fakeWindow, makeWorker(), {
       snapshot: async () => ({ ppidByPid: tree, listeners: [] }),
       createdAt: () => null,
-      classifyCodexCaller: async () => cls,
+      classifyCodexCaller: async () => { duringClassification?.(); return cls; },
     });
     const now = new Map(started);
     setClaimStartTimeSource((pid) => now.get(pid) ?? null);
@@ -1286,6 +1300,15 @@ describe('a2a.resolve.identity — a claim is taken only from the process it nam
       expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeDefined();
       cls = 'other';
       now.set(60001, 301n);
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeUndefined();
+      // The pid passes to another process while it is classified: that
+      // answer is neither used nor kept.
+      cls = 'shared-server';
+      now.set(60001, 302n);
+      duringClassification = () => now.set(60001, 303n);
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeUndefined();
+      duringClassification = null;
+      cls = 'other';
       expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeUndefined();
       // No start time: nothing is kept, so every call classifies.
       now.delete(60001);

@@ -692,11 +692,13 @@ export function registerA2aRpc(
   const classifyCodexCaller = opts.classifyCodexCaller ?? (async (pid: number) => classifyMcpParent(await readParentChain(pid)));
   // A shared app-server's MCP child lives as long as the server, so a
   // confirmed answer is kept a minute rather than re-reading argv every call.
-  // It is kept under the process's pid and start time, so a later process
-  // given the same pid is classified afresh; with no start time it is not
-  // kept. 'unknown' is never kept.
+  // On macOS and Linux it is kept under the process's pid and start time, so
+  // a later process given the same pid is classified afresh; with no start
+  // time it is not kept. Windows takes the pid as sent and keeps it by pid
+  // alone. 'unknown' is never kept.
   const codexCallerClass = new Map<string, { cls: McpParentClass; at: number }>();
-  async function isSharedServerChild(pid: number, startedAt: string | null): Promise<boolean> {
+  async function isSharedServerChild(pid: number, verdict: ClaimVerdict, ctx: RpcContext | undefined): Promise<boolean> {
+    const startedAt = process.platform === 'win32' ? '' : classStartTime(pid, verdict, ctx);
     const key = startedAt === null ? null : `${pid}:${startedAt}`;
     const hit = key === null ? undefined : codexCallerClass.get(key);
     if (hit && Date.now() - hit.at < 60_000) return hit.cls === 'shared-server';
@@ -706,6 +708,9 @@ export function registerA2aRpc(
     } catch {
       cls = 'unknown';
     }
+    // The pid may have passed to a later process while it was classified: the
+    // answer is that process's, so it is neither kept nor used.
+    if (startedAt && String(claimStartTime(pid)) !== startedAt) return false;
     if (cls !== 'unknown' && key !== null) {
       if (codexCallerClass.size > 256) codexCallerClass.clear();
       codexCallerClass.set(key, { cls, at: Date.now() });
@@ -716,7 +721,7 @@ export function registerA2aRpc(
    *  claim taken from the process itself, else the one the OS reports now. */
   function classStartTime(pid: number, verdict: ClaimVerdict, ctx: RpcContext | undefined): string | null {
     if (verdict.ok && verdict.via === 'same') return ctx?.peerStartedAt ?? null;
-    const now = process.platform === 'win32' ? createdAt(pid) : claimStartTime(pid);
+    const now = claimStartTime(pid);
     return now === null ? null : String(now);
   }
   let snapInflight: Promise<PortSnapshot | null> | null = null;
@@ -1147,16 +1152,20 @@ export function registerA2aRpc(
     // reconnect invalidated gets no claim and no `resolved`; the caller still
     // has the re-judged entries for its own walk, and its next resolve walks
     // those. A run's own claim does not rest on them.
-    const confirmed = resolved ? await confirmEntriesConnection() : null;
+    const confirmed = resolved && !runTarget ? await confirmEntriesConnection() : null;
     // The walk and the checks above awaited: the claimed process must still be
     // the one the connection came from when its claim is minted. Nothing is
     // minted or refreshed before this holds.
-    if ((resolved || runTarget) && callerPid != null && callerVerdict && !claimStillHeld('callerPid', ctx, callerPid, callerVerdict)) {
-      resolved = null;
-      runTarget = null;
+    let callerHeld: boolean | null = null;
+    if ((resolved || runTarget) && callerPid != null && callerVerdict) {
+      callerHeld = claimStillHeld('callerPid', ctx, callerPid, callerVerdict);
+      if (!callerHeld) {
+        resolved = null;
+        runTarget = null;
+      }
     }
     const runClaim = runTarget ? claimTokenForRun(runTarget.workspaceId, runTarget.ptyId) : null;
-    if (runClaim && runTarget) resolved = runTarget;
+    if (runTarget) resolved = runClaim ? runTarget : null;
     else if (resolved && !stillConfirmed(confirmed)) resolved = null;
     const workspaceToken = resolved ? (runClaim ?? claimTokenForPane(resolved.workspaceId, resolved.ptyId)) : null;
     // A call from a shared Codex app-server names its thread instead: the pane
@@ -1173,9 +1182,14 @@ export function registerA2aRpc(
       const codexVerdict = codexCallerPid == null ? null
         : codexCallerPid === callerPid && callerVerdict ? callerVerdict : checkClaim('codexCallerPid', ctx, codexCallerPid);
       const sharedServerChild = codexCallerPid != null && codexVerdict !== null && codexVerdict.ok
-        && await isSharedServerChild(codexCallerPid, classStartTime(codexCallerPid, codexVerdict, ctx));
+        && await isSharedServerChild(codexCallerPid, codexVerdict, ctx);
       const confirmed = await confirmEntriesConnection();
-      if (stillConfirmed(confirmed) && codexCallerPid != null && codexVerdict && claimStillHeld('codexCallerPid', ctx, codexCallerPid, codexVerdict)) {
+      // A shared claim the caller check already found changed is not checked
+      // (or counted) again.
+      const held = codexCallerPid != null && codexVerdict !== null
+        && !(codexVerdict === callerVerdict && callerHeld === false)
+        && claimStillHeld('codexCallerPid', ctx, codexCallerPid, codexVerdict);
+      if (stillConfirmed(confirmed) && codexCallerPid != null && held) {
         threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
       }
     }
