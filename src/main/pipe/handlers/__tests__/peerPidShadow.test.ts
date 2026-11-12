@@ -57,7 +57,7 @@ describe('checkClaim', () => {
     expect(identitySummary('win32').tcpClaims).toBe(1);
   });
 
-  it('logs a refusal once per reason and client, with no pid in it, under a cap', () => {
+  it('logs a refusal once per reason and client, with no pid in it', () => {
     const log = vi.fn();
     checkClaim('callerPid', wire(60001, '1'), 39876, { platform: 'darwin', log });
     checkClaim('callerPid', wire(60001, '1'), 39876, { platform: 'darwin', log });
@@ -67,8 +67,14 @@ describe('checkClaim', () => {
       '[peer-pid] codexCallerPid claim refused (other-pid) for client "claude-code"; counted in wmux doctor',
     ]);
     for (const [line] of log.mock.calls) expect(line).not.toMatch(/39876|60001/);
-    for (let i = 0; i < 100; i++) checkClaim('callerPid', wire(1), 2, { platform: 'darwin', log: (l) => log(l) });
-    expect(log.mock.calls.length).toBeLessThanOrEqual(64);
+  });
+
+  it('logs at most 64 distinct refusals, and still counts every one', () => {
+    const log = vi.fn();
+    for (let i = 0; i < 100; i++) checkClaim('callerPid', wire(1, '1', `client-${i}`), 2, { platform: 'darwin', log });
+    expect(log).toHaveBeenCalledTimes(64);
+    expect(new Set(log.mock.calls.map(([line]) => line)).size).toBe(64);
+    expect(identitySummary('darwin').refusals['other-pid']).toBe(100);
   });
 });
 
