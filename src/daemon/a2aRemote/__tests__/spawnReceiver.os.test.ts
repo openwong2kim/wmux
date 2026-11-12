@@ -629,6 +629,19 @@ describe('as the PC asked: telling other PCs what they may ask for', () => {
     expect(targetsSent()).toEqual([]);
   });
 
+  it('asked with an agent, the policy read says whether a request for that agent would find it here', async () => {
+    const handlers = new Map<string, (p: Record<string, unknown>) => Promise<unknown>>();
+    registerSpawnRpc((m, h) => void handlers.set(m, h), { policy, requests, agentInstalled: async (agent) => installed.has(agent) });
+    const get = (params: Record<string, unknown>) => handlers.get('a2a.remote.spawnPolicy.get')!(params);
+    installed = new Set(['claude']);
+    expect(await get({ agent: 'claude' })).toMatchObject({ policy: policy.get(), agentInstalled: true });
+    installed = new Set();
+    expect(await get({ agent: 'claude' })).toMatchObject({ agentInstalled: false });
+    // Without an agent, or with one that cannot be started from another PC: the policy only.
+    expect(await get({})).toEqual({ policy: policy.get() });
+    expect(await get({ agent: 'not-an-agent' })).toEqual({ policy: policy.get() });
+  });
+
   it('on start, each allowed PC gets its targets unless they are still queued for it', async () => {
     await allowHost();
     let queued = true;

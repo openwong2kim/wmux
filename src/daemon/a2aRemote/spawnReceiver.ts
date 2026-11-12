@@ -1066,9 +1066,17 @@ export function registerSpawnRpc(
      * (`unpairedHostNamed`). Without it, every caller saves as the app does.
      */
     outsideApp?: { isApp: (clientId: string) => boolean; isPaired: (hostId: string) => boolean };
+    /** Whether an agent's launcher is found here (default: as a request for it is checked, `agent-not-installed`). */
+    agentInstalled?: (agent: AgentSlug) => Promise<boolean>;
   },
 ): void {
-  onRpc(A2A_SPAWN_RPC.policyGet, async () => ({ policy: deps.policy.get() }));
+  // Asked with an agent (`wmux remote allow`), it also says whether a request for that agent would find it here.
+  onRpc(A2A_SPAWN_RPC.policyGet, async (params) => {
+    const agent = params['agent'];
+    if (!isSpawnableAgent(agent)) return { policy: deps.policy.get() };
+    const installed = await (deps.agentInstalled ?? agentOnPath)(agent).catch(() => undefined);
+    return { policy: deps.policy.get(), ...(installed === undefined ? {} : { agentInstalled: installed }) };
+  });
   onRpc(A2A_SPAWN_RPC.policySet, async (params, ctx) => {
     const previous = deps.policy.get();
     const outside = deps.outsideApp;

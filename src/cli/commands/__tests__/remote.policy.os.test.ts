@@ -67,6 +67,8 @@ let peers: unknown[];
 let beforeSet: ((p: A2aSpawnPolicyV1) => void) | null;
 let sets: A2aSpawnPolicyV1[];
 let setRefusal: string | null;
+/** What the daemon answers when asked whether it finds an agent; undefined: it does not say (an older daemon). */
+let agentFound: boolean | undefined;
 
 function policy(patch: Partial<A2aSpawnPolicyV1> = {}): A2aSpawnPolicyV1 {
   return { ...defaultSpawnPolicy(), ...patch };
@@ -78,7 +80,8 @@ function fakeDaemon(): void {
     switch (method) {
       case 'a2a.remote.hosts.list': return ok({ hosts });
       case 'a2a.remote.peers.list': return ok({ peers });
-      case 'a2a.remote.spawnPolicy.get': return ok({ policy: structuredClone(store) });
+      case 'a2a.remote.spawnPolicy.get':
+        return ok({ policy: structuredClone(store), ...(params['agent'] !== undefined && agentFound !== undefined ? { agentInstalled: agentFound } : {}) });
       case 'a2a.remote.spawnPolicy.set': {
         const next = params['policy'] as A2aSpawnPolicyV1;
         sets.push(structuredClone(next));
@@ -131,6 +134,7 @@ beforeEach(() => {
   peers = [{ v: 1, peerId: 'p2', hostId: LAPTOP, name: 'laptop', createdAt: '2026-11-12T00:00:00.000Z' }];
   beforeSet = null;
   setRefusal = null;
+  agentFound = undefined;
   sets = [];
   fakeDaemon();
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -169,6 +173,22 @@ describe('wmux remote allow', () => {
     expect(out).toContain("access to this machine");
     expect(out).toContain('Policy-wide, applying to every allowed PC: remote spawn turns on; approval changes from ask to allow-list');
     expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.spawnPolicy.set', expect.anything(), 30_000);
+  });
+
+  it('warns only when the daemon says it does not find the agent, whatever this shell\'s PATH holds', async () => {
+    const warning = 'the daemon did not find claude on the login PATH or in ~/.local/bin of the account it runs as';
+    agentFound = false;
+    expect(await run('allow', allowArgs())).toBe(0);
+    expect(printed()).toContain(warning);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.spawnPolicy.get', { agent: 'claude' });
+    for (const found of [true, undefined]) {
+      errSpy.mockClear();
+      logSpy.mockClear();
+      store = policy();
+      agentFound = found;
+      expect(await run('allow', allowArgs())).toBe(0);
+      expect(printed()).not.toContain('did not find');
+    }
   });
 
   it('saves nothing when the answer is not yes', async () => {
