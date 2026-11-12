@@ -33,4 +33,16 @@ describe('koffi ships with the MCP broker bundle', () => {
     expect(step).toMatch(/if \(!koffiPresent\) \{\s*throw new Error/);
     expect(step).toMatch(/copyKoffiInto\(path\.join\(mcpBundleDir, 'node_modules'\)\);/);
   });
+
+  it('build:mcp leaves koffi external to the single-agent bundle, for browser_repl\'s Windows job', () => {
+    const src = fs.readFileSync(path.join(repo, 'scripts', 'build-mcp.js'), 'utf8');
+    const main = src.slice(src.indexOf("entryPoints: ['dist/mcp/mcp/entry.js']"));
+    expect(main.slice(0, main.indexOf('});'))).toMatch(/external: \[[^\]]*'koffi'[^\]]*\]/);
+  });
+
+  it('postPackage copies koffi into mcp-bundle/node_modules on Windows when it is present', () => {
+    const src = fs.readFileSync(path.join(repo, 'forge.config.ts'), 'utf8');
+    const step = src.slice(src.indexOf('// 5b.'), src.indexOf('// 6.'));
+    expect(step).toMatch(/if \(koffiPlatform === 'win32' && koffiPresent && fs\.existsSync\(mcpBundleDir\)\) \{\s*copyKoffiInto\(path\.join\(mcpBundleDir, 'node_modules'\)\);/);
+  });
 });
