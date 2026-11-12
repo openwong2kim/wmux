@@ -41,6 +41,7 @@ let owed: boolean;
 let survivors: HeadlessSurvivor[];
 let stillRunning: HeadlessSurvivor[];
 let onDisk: Set<string>;
+let checkedIn: Array<string | undefined>;
 
 function makeSessions(): HeadlessSessionPort {
   return {
@@ -57,7 +58,10 @@ function makeSessions(): HeadlessSessionPort {
       live.delete(id);
       return survivors.length > 0 ? { ok: false, survivors } : { ok: true };
     },
-    stillRunning: async () => stillRunning,
+    stillRunning: async (_s, worktreePath) => {
+      checkedIn.push(worktreePath);
+      return stillRunning;
+    },
   };
 }
 
@@ -124,6 +128,7 @@ beforeEach(() => {
   survivors = [];
   stillRunning = [];
   onDisk = new Set(['/wt/remote-x']);
+  checkedIn = [];
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -405,9 +410,10 @@ describe('headless cleanup that waits for the agent to exit', () => {
     await starter.reconcile();
     expect(gone).toEqual([{ workspaceId: 'hl-w1', paneId: 'hl-s1' }]);
     expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', survivors: [SURVIVOR] });
-    // Still running at the next sweep: nothing changes.
+    // Still running at the next sweep: nothing changes. The check is told the worktree (for an unverified tree).
     await starter.reconcile();
     expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', survivors: [SURVIVOR] });
+    expect(checkedIn).toEqual(['/wt/remote-x']);
     // Gone: the start ends, its worktree kept.
     survivors = [];
     stillRunning = [];

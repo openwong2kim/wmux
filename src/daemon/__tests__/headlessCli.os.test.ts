@@ -144,6 +144,6 @@ describe('wmux daemon headless', () => {
         survivors: [{ pid: 4242, reason: 'still running' }],
       }],
     }));
-    expect(headlessStatus(dir)).toMatchObject({ heldUp: ['/wt/remote-1'], leftovers: [] });
+    expect(headlessStatus(dir)).toMatchObject({ heldUp: ['/wt/remote-1'], leftovers: [], running: 0 });
   });
 });

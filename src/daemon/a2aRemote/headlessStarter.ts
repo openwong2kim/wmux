@@ -68,8 +68,13 @@ export interface HeadlessSessionPort {
    * closed either way. A session that is gone already is `ok`.
    */
   destroy(sessionId: string): Promise<HeadlessDestroyResult>;
-  /** Of processes an earlier destroy left, the ones still running. */
-  stillRunning(survivors: readonly HeadlessSurvivor[]): Promise<HeadlessSurvivor[]>;
+  /**
+   * Of processes an earlier destroy left, the ones that may still run. An
+   * unverified entry (a tree that could not be checked whole) stays until a
+   * check of `worktreePath` shows no process working in it; where that check
+   * is not possible it stays.
+   */
+  stillRunning(survivors: readonly HeadlessSurvivor[], worktreePath: string | undefined): Promise<HeadlessSurvivor[]>;
 }
 
 export type HeadlessDestroyResult = { ok: true } | { ok: false; survivors: HeadlessSurvivor[] };
@@ -183,7 +188,7 @@ export class A2aHeadlessStarter {
     // Processes an earlier end left: nothing more is undone, nor the start marked ended, until they are gone.
     if (rec.survivors?.length) {
       if (!sessions) return;
-      const left = await sessions.stillRunning(rec.survivors);
+      const left = await sessions.stillRunning(rec.survivors, rec.worktreePath);
       rec = this.deps.starts.update(rec.hostId, rec.spawnId, { survivors: left.length > 0 ? left : undefined });
       if (left.length > 0) {
         this.deps.log('warn', `[headless] spawn ${rec.spawnId}: ${left.length} process(es) of its agent still run (pid ${left.map((p) => p.pid).join(', ')}); its worktree stays`);

@@ -477,6 +477,11 @@ export class A2aSpawnReceiver {
     if (!spawnHostAllowed(now, hostId) || !now.agents.includes(req.agent) || !now.roots.some((r) => r.id === root.id && r.path === root.path)) {
       return refuse('not-allowed');
     }
+    // Headless: only a rule approved it, so the rule (removed meanwhile?) is read again too.
+    if (this.deps.headless?.() === true) {
+      const refused = headlessRefusal(now, hostId, root.id, req.agent, sub);
+      if (refused) return refuse(refused);
+    }
     if (this.now() > Date.parse(rec.expiresAt)) return refuse('expired');
     if (!this.roomFor(hostId, spawnId)) return refuse('rate-limited');
     try {

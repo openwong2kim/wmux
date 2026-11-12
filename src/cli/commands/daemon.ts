@@ -396,7 +396,7 @@ export function headlessStatus(wmuxDir: string = getWmuxDir(), daemon: DaemonHea
     optedIn,
     appAttached,
     ...(reason ? { reason } : {}),
-    running: starts.filter((r) => r.phase === 'started').length,
+    running: starts.filter((r) => r.phase === 'started' && !r.survivors).length,
     // Only those still on disk: the owner may have removed some already.
     leftovers: starts.flatMap((r) => (r.phase === 'ended' && !r.survivors && r.worktreePath && existsSync(r.worktreePath) ? [r.worktreePath] : [])),
     heldUp: starts.flatMap((r) => (r.survivors ? [r.worktreePath ?? r.sessionId] : [])),

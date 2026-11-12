@@ -160,6 +160,7 @@ import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../main/a2a
 import { HeadlessMode } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
 import { A2aHeadlessStarter, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
+import { processesWorkingIn } from './a2aRemote/headlessProcs';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
@@ -3151,15 +3152,22 @@ function registerRpcHandlers(
         res = await destroySessionRpc({ id, killTree: true });
       } catch (err) {
         // The tree cannot be proven (its root's start time is unknown): the pane
-        // alone is closed, and its shell is watched until it is gone.
+        // alone is closed, and the start waits until no process works in its worktree.
         await destroySessionRpc({ id });
         const reason = `its process tree could not be checked: ${err instanceof Error ? err.message : String(err)}`;
-        return rootPid > 0 ? { ok: false, survivors: [{ pid: rootPid, reason }] } : { ok: true };
+        return { ok: false, survivors: [{ pid: rootPid, reason, unverified: true }] };
       }
       const tree = (res as { tree?: VerifiedTreeKillResult } | undefined)?.tree;
       return tree && !tree.ok ? { ok: false, survivors: tree.survivors } : { ok: true };
     },
-    stillRunning: (survivors) => survivorsStillRunning(survivors),
+    stillRunning: async (survivors, worktreePath) => {
+      const verified = await survivorsStillRunning(survivors);
+      const unverified = survivors.filter((s) => s.unverified);
+      if (unverified.length === 0) return verified;
+      // A tree that could not be checked whole: gone only once nothing works in its worktree.
+      const busy = worktreePath ? await processesWorkingIn(worktreePath) : null;
+      return busy === false ? verified : [...verified, ...unverified];
+    },
   };
   // Starts the a2a init could not settle before the session RPCs existed.
   void headlessStarterRef?.reconcile();
@@ -10622,6 +10630,15 @@ async function main(): Promise<void> {
       // file an earlier identify wrote, or a reconciled pane snapshot (only the app publishes one).
       appSeen: () => pipeServer.appAttached() || fs.existsSync(path.join(wmuxDir, APP_ATTACHED_FILE)) || a2aExposedPanes.isReconciled(),
     });
+    // Read-only, for `wmux daemon headless status|on` (not an a2a.* method, so
+    // also answered on a host without the app): what this daemon decides from.
+    // Registered before anything else of the a2a stack can fail, so the app
+    // check is answered even when the starter is not built this run.
+    pipeServer.onRpc('daemon.headless.status', async () => ({
+      appAttached: !headlessMode.appStillAbsent(),
+      optedIn: headlessMode.optedIn(),
+      inEffect: headlessMode.active() && a2aHeadless !== null,
+    }));
     const a2aLinks = new LinkStore({
       dir: a2aDir,
       log: a2aLog,
@@ -10995,13 +11012,6 @@ async function main(): Promise<void> {
         });
         headlessStarterRef = a2aHeadless;
         const headless = a2aHeadless;
-        // Read-only, for `wmux daemon headless status|on` (not an a2a.* method, so
-        // also answered on a host without the app): what this daemon decides from.
-        onA2aRpc('daemon.headless.status', async () => ({
-          appAttached: !headlessMode.appStillAbsent(),
-          optedIn: headlessMode.optedIn(),
-          inEffect: headlessMode.active(),
-        }));
         sessionManager.on('session:died', (payload: { id: string }) => headless.onSessionGone(payload.id));
         sessionManager.on('session:destroyed', (payload: { id: string }) => headless.onSessionGone(payload.id));
         // The app took over: no headless start stays (it has no pane for them).

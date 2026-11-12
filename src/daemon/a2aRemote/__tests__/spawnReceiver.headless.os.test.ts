@@ -38,6 +38,7 @@ let receiver: A2aSpawnReceiver;
 let starter: A2aHeadlessStarter;
 let made: string[];
 let installedChecks: number;
+let autoStart: boolean;
 
 beforeEach(() => {
   dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-spawn-headless-')));
@@ -59,6 +60,7 @@ beforeEach(() => {
   changes = [];
   made = [];
   installedChecks = 0;
+  autoStart = true;
   headless = true;
   receiver = new A2aSpawnReceiver({
     policy,
@@ -75,7 +77,7 @@ beforeEach(() => {
     headless: () => headless,
     onChange: (h, spawnId, state) => {
       changes.push({ spawnId, state });
-      if (state === 'approved') void starter.start(h, spawnId);
+      if (state === 'approved' && autoStart) void starter.start(h, spawnId);
     },
     start: spawnStarter,
     abandon: (h, s) => spawnStarter.abandon(h, s),
@@ -186,6 +188,16 @@ describe('spawn receiver in headless mode', () => {
     // The starter claimed it and tried the worktree (refused by this test's port, so answered `failed`).
     await vi.waitFor(() => expect(requests.get(HOST, spawnId)).toMatchObject({ state: 'decided', code: 'failed' }), { timeout: 5_000 });
     expect(made).toEqual([`worktree:${spawnId}`]);
+  });
+
+  it('a rule removed after the approval refuses the claim (`not-allowed`)', async () => {
+    autoStart = false;
+    await allow({ rules: [RULE] });
+    const spawnId = await ask();
+    expect(requests.get(HOST, spawnId)?.state).toBe('approved');
+    await allow({ rules: [] });
+    expect(await receiver.claim(HOST, spawnId)).toMatchObject({ ok: false, code: 'not-allowed' });
+    expect(requests.get(HOST, spawnId)).toMatchObject({ state: 'decided', code: 'not-allowed' });
   });
 
   it('headless mode off: a host without the app keeps waiting for it, and nothing is approved or created', async () => {
