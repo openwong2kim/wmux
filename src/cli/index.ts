@@ -202,6 +202,11 @@ REMOTE COMMANDS (another paired PC)
   remote spawn <pc> --agent <slug> --root <id> [--sub <path>] <prompt…>
                                     Ask that PC to start an agent; replies come here
   remote spawn-status [<spawnId>]   Your requests, and what each PC lets you ask for
+  remote join <invite | ->          Join another PC's invite (this PC never listens)
+  remote peers                      Paired PCs: host id, name, fingerprint
+  remote unpair <host-id>           End the pairing with that PC
+
+  join, peers and unpair talk to the daemon directly (no desktop app needed).
 
 DIAGNOSTICS
   doctor                            Run health checks (env, daemon, boot phases,

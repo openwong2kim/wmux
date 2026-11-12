@@ -85,6 +85,35 @@ install produces the same layout, so the app picks it up afterwards.
 Then add the PC from the desktop app. It finds the running server and keeps
 its port and flags.
 
+## Pair the host with a desktop for agent-to-agent work
+
+The host can join a desktop's pairing invite from the command line, with no
+desktop app on the host. The host only connects out to the desktop; nothing
+on it starts listening.
+
+1. On the desktop, open Settings → LAN and make an invite. Copy the
+   `wmux-a2a://…` line.
+2. On the host, join it. With `-` the invite is read from stdin, so it stays
+   out of your shell history:
+
+   ```bash
+   "$W/node/bin/node" "$W/resources/cli-bundle/index.js" remote join -
+   ```
+
+   Paste the invite, then press Ctrl-D. The command prints the desktop's host
+   id and certificate fingerprint.
+3. List what the host is paired with, or end a pairing:
+
+   ```bash
+   "$W/node/bin/node" "$W/resources/cli-bundle/index.js" remote peers
+   "$W/node/bin/node" "$W/resources/cli-bundle/index.js" remote unpair <host-id>
+   ```
+
+All three talk to the daemon, so it must be running (step 4). They exit with
+code 1 on any failure, and `--json` prints the raw result. If `join` reports
+no answer in time, run `remote peers` before trying again: the pairing may
+have completed anyway.
+
 ## Things to know
 
 - **Do not restart `wmux web` with different flags** once devices are paired:
