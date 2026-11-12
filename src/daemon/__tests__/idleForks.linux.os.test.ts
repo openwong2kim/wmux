@@ -88,23 +88,36 @@ class Control {
 
 /** Every process `pid` starts while `during` runs, as strace lines. */
 async function traceStarts(pid: number, during: () => Promise<void>): Promise<string[]> {
-  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-idle-trace-')), 'trace.txt');
-  const tracer = spawn('sudo', ['-n', 'strace', '-f', '-qq', '-e', 'trace=fork,vfork,clone,clone3,execve', '-p', String(pid), '-o', out], {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-idle-trace-'));
+  const out = path.join(dir, 'trace.txt');
+  const pidFile = path.join(dir, 'strace.pid');
+  // strace's own pid, written before exec: sudo does not pass on a signal sent to it by another sudo.
+  const tracer = spawn('sudo', ['-n', 'sh', '-c', 'echo $$ > "$1"; exec strace -f -qq -e trace=fork,vfork,clone,clone3,execve -p "$2" -o "$3"', 'sh', pidFile, String(pid), out], {
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   let stderr = '';
   tracer.stderr?.on('data', (d) => (stderr += String(d)));
+  const exited = new Promise<void>((resolve) => tracer.once('exit', () => resolve()));
   // Attached once strace has created its output file.
   const deadline = Date.now() + 10_000;
-  while (!fs.existsSync(out)) {
+  while (!fs.existsSync(out) || !fs.existsSync(pidFile)) {
     if (Date.now() > deadline || tracer.exitCode !== null) throw new Error(`strace did not attach: ${stderr}`);
     await new Promise((r) => setTimeout(r, 50));
   }
+  const stracePid = fs.readFileSync(pidFile, 'utf8').trim();
   await deliberateSleep(500, 'strace attaches every thread after it opens its output file');
   await during();
-  const exited = new Promise<void>((resolve) => tracer.once('exit', () => resolve()));
-  spawnSync('sudo', ['-n', 'kill', '-INT', String(tracer.pid)]);
-  await exited;
+  spawnSync('sudo', ['-n', 'kill', '-INT', stracePid]);
+  let timer: NodeJS.Timeout | undefined;
+  const stopped = await Promise.race([
+    exited.then(() => true),
+    new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), 15_000))),
+  ]);
+  clearTimeout(timer);
+  if (!stopped) {
+    spawnSync('sudo', ['-n', 'kill', '-KILL', stracePid]);
+    throw new Error(`strace did not stop on SIGINT: ${stderr}`);
+  }
   return processStarts(fs.readFileSync(out, 'utf8'));
 }
 
@@ -154,7 +167,7 @@ describe.runIf(enabled)('an idle Linux daemon starts no process', { timeout: IDL
 
   it('the tracer sees the daemon start a session (control)', async () => {
     const starts = await traceStarts(daemon?.pid as number, async () => {
-      await control?.rpc('daemon.createSession', { id: 'idle-control', cmd: '/bin/sh', cwd: path.join(home, 'pane'), cols: 100, rows: 30 });
+      await control?.rpc('daemon.createSession', { id: `idle-control-${randomUUID()}`, cmd: '/bin/sh', cwd: path.join(home, 'pane'), cols: 100, rows: 30 });
       await deliberateSleep(2_000, 'the session spawn completes inside the trace');
     });
     expect(starts.length).toBeGreaterThan(0);
