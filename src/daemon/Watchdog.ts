@@ -25,6 +25,10 @@ export interface WatchdogCallbacks {
    *   not keep the daemon alive. A pending approval must.
    * - `automations`: enabled schedules plus live scheduled runs (optional,
    *   0 when omitted). A schedule can only fire while the daemon is up.
+   * - `remoteStarts`: 1 while headless mode is in effect (optional, 0 when
+   *   omitted). Such a host waits for other PCs to ask it to start agents,
+   *   with no client and no session of its own, and only a running daemon
+   *   can answer them.
    */
   onIdleCheck?: () => {
     connections: number;
@@ -32,6 +36,7 @@ export interface WatchdogCallbacks {
     lastDisconnectAt: number | null;
     pendingApprovals?: number;
     automations?: number;
+    remoteStarts?: number;
   };
   /**
    * Fired when the watchdog determines the daemon has been idle long
@@ -209,8 +214,8 @@ export class Watchdog {
    *   2. Already fired once → never fire again (the daemon is on its
    *      way down; firing twice would spam `onIdleShutdown` calls).
    *   3. Still inside grace window → too early to even ask.
-   *   4. Active connections OR live sessions OR pending approvals → the
-   *      daemon is in use. A pending approval counts even with no client
+   *   4. Active connections OR live sessions OR pending approvals (or
+   *      held automations, or headless mode in effect) → the daemon is in use. A pending approval counts even with no client
    *      attached: shutting down would strand the request nobody answered.
    *   5. Compute idle window from `lastDisconnectAt ?? startTime` —
    *      a daemon that booted and never saw a client counts grace +
@@ -240,10 +245,11 @@ export class Watchdog {
 
     const pendingApprovals = info.pendingApprovals ?? 0;
     const automations = info.automations ?? 0;
-    if (info.connections > 0 || info.sessions > 0 || pendingApprovals > 0 || automations > 0) {
+    const remoteStarts = info.remoteStarts ?? 0;
+    if (info.connections > 0 || info.sessions > 0 || pendingApprovals > 0 || automations > 0 || remoteStarts > 0) {
       if (traceIdle) {
         console.log(
-          `[Watchdog] idle-eval: held alive by connections=${info.connections} liveSessions=${info.sessions} pendingApprovals=${pendingApprovals} automations=${automations} (pid=${process.pid})`,
+          `[Watchdog] idle-eval: held alive by connections=${info.connections} liveSessions=${info.sessions} pendingApprovals=${pendingApprovals} automations=${automations} remoteStarts=${remoteStarts} (pid=${process.pid})`,
         );
       }
       return;

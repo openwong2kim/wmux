@@ -182,6 +182,12 @@ been used: there the app starts the agents.
 
 With headless mode on:
 
+- The daemon keeps running while it waits for requests. Without headless
+  mode it exits about six minutes after its last client and terminal are
+  gone. It is not started again by itself after a reboot or a crash: start it
+  with `daemon start` as above, or run
+  `"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon run` from a
+  service manager, which keeps it in the foreground for the manager to watch.
 - A request an allow rule matches is started at once: the daemon makes a
   fresh worktree of the folder (branch `wmux/remote/sp-…`, named after the
   asking PC and its spawn id), starts the

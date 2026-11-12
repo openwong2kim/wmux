@@ -356,6 +356,26 @@ describe('Watchdog', () => {
       expect(onIdleShutdown).not.toHaveBeenCalled();
     });
 
+    it('does not fire while headless mode is in effect (other PCs ask this host), and fires once it is not', () => {
+      const onIdleShutdown = vi.fn();
+      let remoteStarts = 1;
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });
+      wd.setCallbacks({
+        onIdleCheck: () => ({
+          connections: 0,
+          sessions: 0,
+          lastDisconnectAt: Date.now() - 90_000,
+          remoteStarts,
+        }),
+        onIdleShutdown,
+      });
+      wd.evaluateIdle();
+      expect(onIdleShutdown).not.toHaveBeenCalled();
+      remoteStarts = 0;
+      wd.evaluateIdle();
+      expect(onIdleShutdown).toHaveBeenCalledTimes(1);
+    });
+
     it('fires when pendingApprovals is 0 and every other signal is empty', () => {
       const onIdleShutdown = vi.fn();
       const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });
