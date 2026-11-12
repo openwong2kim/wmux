@@ -159,7 +159,7 @@ import { rootIsRepoTop, rootOriginKey } from './a2aRemote/continueRootGit';
 import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../main/a2aRemote/spawnWorktree';
 import { HeadlessMode, headlessReleases } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
-import { A2aHeadlessStarter, type HeadlessDestroyResult, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
+import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessDestroyResult, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
 import { snapshotTree, stillHeld } from './a2aRemote/headlessProcs';
 import type { HeadlessSurvivor } from './a2aRemote/headlessStartStore';
 import { linkAlias } from './a2aRemote/outbound';
@@ -11036,13 +11036,7 @@ async function main(): Promise<void> {
               const sha = out.stdout.trim();
               return out.code === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
             },
-            pristine: async (worktreePath, base) => {
-              const git = gitRunner(worktreePath, {});
-              const head = await git(['rev-parse', 'HEAD']);
-              if (head.code !== 0 || head.stdout.trim() !== base) return false;
-              const status = await git(['status', '--porcelain', '--untracked-files=all', '--ignored=no']);
-              return status.code === 0 && status.stdout.trim() === '';
-            },
+            pristine: (worktreePath, base) => worktreeUnchanged(gitRunner(worktreePath, {}), base),
           },
           releases: headlessReleases(a2aDir),
           paneGone: async (workspaceId, paneId) => {

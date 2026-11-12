@@ -21,7 +21,7 @@ import { ExposedPaneCache } from '../exposedPanes';
 import { ExposureStore } from '../exposureStore';
 import { HeadlessMode, headlessFlagPath, headlessReleases } from '../headlessMode';
 import { HeadlessStartStore } from '../headlessStartStore';
-import { A2aHeadlessStarter, type HeadlessSessionInput, type HeadlessSessionPort } from '../headlessStarter';
+import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionInput, type HeadlessSessionPort } from '../headlessStarter';
 import { remoteTaskId } from '../ids';
 import { joinRemoteHost } from '../joiner';
 import { registerA2aLinkRpc } from '../linkRpc';
@@ -157,10 +157,7 @@ function headlessParts(opts: {
         const out = await gitRunner(wt, wtOpts)(['rev-parse', 'HEAD']);
         return out.code === 0 ? out.stdout.trim() : null;
       },
-      pristine: async (wt, base) => {
-        const git = gitRunner(wt, wtOpts);
-        return (await git(['rev-parse', 'HEAD'])).stdout.trim() === base && (await git(['status', '--porcelain', '--untracked-files=all'])).stdout.trim() === '';
-      },
+      pristine: (wt, base) => worktreeUnchanged(gitRunner(wt, wtOpts), base),
     },
     releases: headlessReleases(opts.a2aDir),
     paneGone: opts.paneGone ?? (async () => undefined),
@@ -404,6 +401,24 @@ describe('headless remote spawn, two PCs and no app', () => {
     // Its worktree was left unchanged (no commit, clean): removed with its branch, and nothing is left to list.
     expect(b.starts!.get(a.hostId, spawnId)).toBeUndefined();
     expect(fs.existsSync(path.join(b.dir, 'worktrees', `remote-${spawnId}`))).toBe(false);
+  });
+
+  it('a worktree holding only ignored files the agent wrote is kept', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    await pair(a, b);
+    await allow(b, a.hostId, [{ hostId: a.hostId, rootId: 'web', agent: 'claude' }]);
+    const spawnId = await ask(a, b);
+    await until(() => a.asks!.list(spawnId).requests[0]?.state === 'started');
+    const wt = path.join(b.dir, 'worktrees', `remote-${spawnId}`);
+    // No commit, nothing git status lists by default: the agent's output is all ignored.
+    fs.appendFileSync(path.join(b.dir, 'repo', '.git', 'info', 'exclude'), 'out/\n');
+    fs.mkdirSync(path.join(wt, 'out'));
+    fs.writeFileSync(path.join(wt, 'out', 'report.md'), 'the agent\'s work\n');
+    b.links.forgetHost(a.hostId as HostId);
+    await b.headless!.reconcile();
+    expect(b.starts!.get(a.hostId, spawnId)?.phase).toBe('ended');
+    expect(fs.readFileSync(path.join(wt, 'out', 'report.md'), 'utf8')).toBe('the agent\'s work\n');
   });
 
   it('a start cut between the worktree and the session leaves nothing after a restart', async () => {

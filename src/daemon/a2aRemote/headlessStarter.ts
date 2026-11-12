@@ -7,7 +7,7 @@ import { workerLaunchFlags } from '../../shared/workerLaunch';
 
 /** Beyond the worker deny list: an agent started for another PC asks no PC for more agents. */
 export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = ['mcp__wmux__remote_spawn'];
-import type { SpawnWorktreeInput, SpawnWorktreeResult } from '../../main/a2aRemote/spawnWorktree';
+import type { Git, SpawnWorktreeInput, SpawnWorktreeResult } from '../../main/a2aRemote/spawnWorktree';
 import { headlessStartable } from './headlessMode';
 import type { HeadlessStartRecordV1, HeadlessStartStore, HeadlessSurvivor } from './headlessStartStore';
 import type { SpawnRequestRecordV1 } from './spawnRequestStore';
@@ -424,4 +424,17 @@ export class A2aHeadlessStarter {
     }
     this.deps.log('info', `[headless] spawn ${spawnId} from ${hostId}: started ${claim.agent} in session ${rec.sessionId}`);
   }
+}
+
+/**
+ * Whether a start's worktree is as it was made: HEAD still at `base` and
+ * nothing in it that git lists, ignored files included. An agent's output may
+ * be all ignored files (a report under an ignored folder, a build), and
+ * removing the worktree would delete them.
+ */
+export async function worktreeUnchanged(git: Git, base: string): Promise<boolean> {
+  const head = await git(['rev-parse', 'HEAD']);
+  if (head.code !== 0 || head.stdout.trim() !== base) return false;
+  const status = await git(['status', '--porcelain', '--untracked-files=all', '--ignored=traditional']);
+  return status.code === 0 && status.stdout.trim() === '';
 }
