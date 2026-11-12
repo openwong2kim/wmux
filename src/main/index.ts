@@ -223,7 +223,7 @@ import { readDaemonPid } from './updater/installTeardown';
 import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
-import { setBrokerPidSource } from './pipe/handlers/peerPidShadow';
+import { identitySummary, notePeerReadCheck, setBrokerIdentitySource, setUnownedBrokerSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, releaseCdpPortOnExit } from './browser-session/cdpPort';
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
@@ -943,7 +943,8 @@ const mcpRegistrar = new McpRegistrar();
 // be) listening when the first shim spawns — the shim retries connect with
 // backoff, so start order is a latency nicety, not a correctness gate.
 const mcpBrokerSupervisor = new BrokerSupervisor();
-setBrokerPidSource(() => mcpBrokerSupervisor.pid);
+setBrokerIdentitySource(() => mcpBrokerSupervisor.identity);
+setUnownedBrokerSource(() => mcpBrokerSupervisor.standingDown);
 const webviewCdpManager = new WebviewCdpManager(0);
 webviewCdpManager.setCdpFailureReason(
   cdpEnabled
@@ -1370,6 +1371,7 @@ registerMcpSessionsRpc(rpcRouter, {
   brokerEnabled: isMcpBrokerEnabled,
   brokerStatus: () => mcpBrokerSupervisor.status(),
   tracker: mcpSessionTracker,
+  identity: () => identitySummary(),
 });
 // Desktop computer use. Built on first call, so an install that never opts in
 // (Settings › Computer use) never constructs it or spawns a helper. Consent rides
@@ -3485,7 +3487,10 @@ app.on('ready', async () => {
     await mcpRegistrar.register(authToken);
   }
   pipeServer.start();
-  void selfCheckPeerPid().then((verdict) => { if (verdict) console.log(`[peer-pid] main: ${verdict}`); });
+  void selfCheckPeerPid().then((verdict) => {
+    notePeerReadCheck(verdict);
+    if (verdict) console.log(`[peer-pid] main: ${verdict}`);
+  });
   void factoryHost.start();
   autoUpdater.start();
   markBoot('ready-end');

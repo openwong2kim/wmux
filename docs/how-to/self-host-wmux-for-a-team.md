@@ -121,7 +121,7 @@ warning.
   identity header from the browser's request before it sets its own.
 - **The token still works.** The token address remains a fallback, for
   example for a script. Read the token with
-  `docker compose -f compose.example.yaml exec alice wmux web --status`. Open
+  `docker compose -f compose.example.yaml exec alice wmux web --status --show-token`. Open
   the address and sign in first, then the token address: a token in the
   address during sign-in travels to the identity provider inside the return
   address.

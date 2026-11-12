@@ -567,6 +567,43 @@ describe('buildDoctorReport — claude hook runtime', () => {
   });
 });
 
+describe('buildDoctorReport — the identity and hooks sections together', () => {
+  const summary = {
+    broker: { enabled: true, running: true, pid: 4321, uptimeS: 60, connections: 1, crashExits: 0, spawnFailures: 0, standDowns: 0, standingDown: false, downReason: null },
+    bundle: { recent: 0, capped: false, ttlS: 600 },
+    identity: {
+      peerRead: { state: 'unavailable', reason: 'koffi unavailable' },
+      startTimes: 'ok',
+      refusals: { 'no-peer': 2, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0 },
+    },
+  };
+  const mcp: NonNullable<DoctorDeps['mcp']> = {
+    home: '/home/alice',
+    targets: () => [],
+    recordedVerdict: () => undefined,
+    sessions: () => Promise.resolve({ id: '1', ok: true, result: summary }),
+  };
+
+  it('carries both sections, renders both, and both feed the overall verdict', async () => {
+    const ok = { state: 'native' as const, severity: 'ok' as const, detail: 'native' };
+    const r = await buildDoctorReport(makeDeps({ mcp, hooks: () => ok }));
+    expect(r.identity?.verdict).toBe('WARN');
+    expect(r.hooks?.verdict).toBe('OK');
+    expect(r.overall).toBe('WARN');
+    const text = renderReport(r);
+    expect(text).toContain('peer read: unavailable (koffi unavailable)');
+    expect(text).toContain('claude hook runtime: native');
+    // Section headers are lines of their own: `<verdict tag> <title>`.
+    const header = (title: string) => text.split('\n').findIndex((line) => /^\S.*\] /.test(line) && line.endsWith(`] ${title}`));
+    expect(header('identity')).toBeGreaterThan(-1);
+    expect(header('identity')).toBeLessThan(header('hooks'));
+    const failing = { state: 'copy-missing' as const, severity: 'fail' as const, detail: 'every hook fails' };
+    const worse = await buildDoctorReport(makeDeps({ mcp, hooks: () => failing }));
+    expect(worse.identity?.verdict).toBe('WARN');
+    expect(worse.overall).toBe('FAIL');
+  });
+});
+
 describe('buildDoctorReport — the claude hook self-test', () => {
   const nativeReport = { state: 'native' as const, severity: 'ok' as const, detail: 'native: /h/wmux-claude-hook', copy: '/h/wmux-claude-hook' };
   const run = async (result: Awaited<ReturnType<NonNullable<DoctorDeps['hookSelfTest']>>>, report: ReturnType<NonNullable<DoctorDeps['hooks']>> = nativeReport) => {

@@ -53,7 +53,7 @@ import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFr
 import { getHandOutStore, type HandOutStore } from '../../handOut/handOutStore';
 import { isHandOutId } from '../../../shared/handOut';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
-import { notePeerPidClaim } from './peerPidShadow';
+import { checkClaim, claimStartTime, claimStillHeld, type ClaimVerdict } from './peerPidShadow';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
   isRemoteWorkspaceId,
@@ -692,11 +692,15 @@ export function registerA2aRpc(
   const classifyCodexCaller = opts.classifyCodexCaller ?? (async (pid: number) => classifyMcpParent(await readParentChain(pid)));
   // A shared app-server's MCP child lives as long as the server, so a
   // confirmed answer is kept a minute rather than re-reading argv every call.
-  // 'unknown' is never kept.
-  const codexCallerClass = new Map<number, { cls: McpParentClass; at: number }>();
-  async function isSharedServerChild(pid: number | null): Promise<boolean> {
-    if (pid === null) return false;
-    const hit = codexCallerClass.get(pid);
+  // On macOS and Linux it is kept under the process's pid and start time, so
+  // a later process given the same pid is classified afresh; with no start
+  // time it is not kept. Windows takes the pid as sent and keeps it by pid
+  // alone. 'unknown' is never kept.
+  const codexCallerClass = new Map<string, { cls: McpParentClass; at: number }>();
+  async function isSharedServerChild(pid: number, verdict: ClaimVerdict, ctx: RpcContext | undefined): Promise<boolean> {
+    const startedAt = process.platform === 'win32' ? '' : classStartTime(pid, verdict, ctx);
+    const key = startedAt === null ? null : `${pid}:${startedAt}`;
+    const hit = key === null ? undefined : codexCallerClass.get(key);
     if (hit && Date.now() - hit.at < 60_000) return hit.cls === 'shared-server';
     let cls: McpParentClass = 'unknown';
     try {
@@ -704,11 +708,21 @@ export function registerA2aRpc(
     } catch {
       cls = 'unknown';
     }
-    if (cls !== 'unknown') {
+    // The pid may have passed to a later process while it was classified: the
+    // answer is that process's, so it is neither kept nor used.
+    if (startedAt && String(claimStartTime(pid)) !== startedAt) return false;
+    if (cls !== 'unknown' && key !== null) {
       if (codexCallerClass.size > 256) codexCallerClass.clear();
-      codexCallerClass.set(pid, { cls, at: Date.now() });
+      codexCallerClass.set(key, { cls, at: Date.now() });
     }
     return cls === 'shared-server';
+  }
+  /** The start time that keys a caller's class: the one read at accept for a
+   *  claim taken from the process itself, else the one the OS reports now. */
+  function classStartTime(pid: number, verdict: ClaimVerdict, ctx: RpcContext | undefined): string | null {
+    if (verdict.ok && verdict.via === 'same') return ctx?.peerStartedAt ?? null;
+    const now = claimStartTime(pid);
+    return now === null ? null : String(now);
   }
   let snapInflight: Promise<PortSnapshot | null> | null = null;
   async function getCoalescedSnapshot(): Promise<PortSnapshot | null> {
@@ -877,14 +891,13 @@ export function registerA2aRpc(
     // keeps the legacy contract verbatim (the client walks the returned map), so
     // older MCP builds are unaffected.
     //
-    // SECURITY: callerPid is caller-asserted (the pipe does not bind the
-    // connection to a pid), so a same-user caller could pass a foreign pid to
-    // resolve another pane's identity. That stays within the #113 same-user
-    // ceiling — a caller holding the pipe token can already claim a recognised
-    // client name (before #1111 it did not even need that) — so this is a
-    // reliability mechanism, not a new security boundary.
+    // callerPid names the caller's own process. On macOS and Linux the claim is taken only from the process it names, as
+    // the OS reports it for the connection, or from the MCP broker main spawned
+    // (peerPidShadow.checkClaim). A claim not taken gets no walk and no claim;
+    // `entries` still go back for the caller's own walk.
     const callerPid = normalizeCallerPid((params as { callerPid?: unknown }).callerPid);
-    notePeerPidClaim('callerPid', callerPid, ctx);
+    const callerVerdict = callerPid != null ? checkClaim('callerPid', ctx, callerPid) : null;
+    const callerRefused = callerVerdict !== null && !callerVerdict.ok;
     // Start the snapshot CONCURRENTLY and bound the wait (at the walk below) to the
     // RPC budget: it feeds only the final walk, so it must never delay — or, past
     // the client's ~10s RPC deadline, SINK — the legacy mappings/entries fallback
@@ -895,7 +908,7 @@ export function registerA2aRpc(
     // pay nothing); resolves to a table containing callerPid, or null.
     const startedAt = Date.now();
     const snapshotPromise: Promise<PortSnapshot | null> =
-      callerPid != null ? snapshotForCaller(callerPid) : Promise.resolve(null);
+      callerPid != null && !callerRefused ? snapshotForCaller(callerPid) : Promise.resolve(null);
 
     const dir = getPidMapDir();
     const mappings: Record<string, string> = {};
@@ -981,7 +994,7 @@ export function registerA2aRpc(
     // below (claimTokenForPane, the thread claim) take these entries as proof
     // that the pane's shell is live.
     const claimParams = params as { codexThreadId?: unknown; hintedPtyId?: unknown };
-    const mayMintClaim = callerPid != null || claimParams.codexThreadId !== undefined || claimParams.hintedPtyId !== undefined;
+    const mayMintClaim = (callerPid != null && !callerRefused) || claimParams.codexThreadId !== undefined || claimParams.hintedPtyId !== undefined;
     const scannedEntries = [...entries];
     const scannedMappings = { ...mappings };
     const applyLiveEntries = (live: typeof entries): void => {
@@ -1032,6 +1045,19 @@ export function registerA2aRpc(
       return { client };
     };
 
+    /** The live pane anchors in `entries`, keyed by shell pid. */
+    const paneAnchors = (): Map<number, OwningAnchor> => {
+      const anchorByPid = new Map<number, OwningAnchor>();
+      for (const e of entries) {
+        const pid = Number(e.pid);
+        if (Number.isInteger(pid) && pid > 0) {
+          anchorByPid.set(pid, { ptyId: e.ptyId, workspaceId: e.workspaceId });
+        }
+      }
+      return anchorByPid;
+    };
+
+
     // Server-side walk: from callerPid's PARENT up the live tree to the first
     // ancestor that is a known live anchor. `entries` is already the set of LIVE
     // PID→ptyId→workspace anchors resolved above, so the walk reuses it — no
@@ -1050,7 +1076,7 @@ export function registerA2aRpc(
     // multiply it). The concurrently-started snapshot just resolves and is dropped
     // (coalesced, so a boot burst shares one).
     let resolved: { workspaceId: string; ptyId: string } | null = null;
-    if (callerPid != null && entries.length > 0) {
+    if (callerPid != null && !callerRefused && entries.length > 0) {
       const snapshot = await withDeadline(
         snapshotPromise,
         RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt),
@@ -1065,13 +1091,7 @@ export function registerA2aRpc(
           ? snapshot.ppidByPid
           : await readAncestry(callerPid, RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt));
       if (ppidByPid) {
-        const anchorByPid = new Map<number, OwningAnchor>();
-        for (const e of entries) {
-          const pid = Number(e.pid);
-          if (Number.isInteger(pid) && pid > 0) {
-            anchorByPid.set(pid, { ptyId: e.ptyId, workspaceId: e.workspaceId });
-          }
-        }
+        const anchorByPid = paneAnchors();
         const parentPid = ppidByPid.get(callerPid);
         // Creation times reject a reused parent pid: a Codex app-server that
         // updated itself is orphaned, and its dead parent's pid may now be a
@@ -1093,17 +1113,18 @@ export function registerA2aRpc(
     // anchors (no renderer surface carries them), so the daemon lists the live
     // ones with their shell pid and the same walk is tried against those. A
     // hit gets a browser-only claim on the identity's workspace.
-    let runClaim: string | null = null;
+    // The run is only found here; its claim is minted below, after the
+    // checks that the claimed process is still the one that connected.
+    let runTarget: OwningAnchor | null = null;
     // The same holds when the walk hit a pane whose PTY IS such a run: the
     // operator opened the run's terminal, which anchors it in whatever
     // workspace it opened in. The run still acts under its granted identity,
     // so its own claim wins over the pane one.
-    if (callerPid != null && (!resolved || isIdentityRunPty(resolved.ptyId))) {
+    if (callerPid != null && !callerRefused && (!resolved || isIdentityRunPty(resolved.ptyId))) {
       const runs = await liveIdentityRunAnchors();
       const own = resolved ? runs.find((r) => r.ptyId === resolved?.ptyId) : undefined;
       if (own) {
-        runClaim = claimTokenForRun(own.workspaceId, own.ptyId);
-        if (runClaim) resolved = { workspaceId: own.workspaceId, ptyId: own.ptyId };
+        runTarget = { workspaceId: own.workspaceId, ptyId: own.ptyId };
       } else if (!resolved && runs.length > 0) {
         const snapshot = await withDeadline(
           snapshotPromise,
@@ -1120,23 +1141,32 @@ export function registerA2aRpc(
             runs.map((r) => [r.pid, { ptyId: r.ptyId, workspaceId: r.workspaceId }]),
           );
           const hit = walkToOwningAnchor(parentPid, ppidByPid, runAnchors, { createdAt, child: callerPid });
-          if (hit) {
-            runClaim = claimTokenForRun(hit.anchor.workspaceId, hit.anchor.ptyId);
-            if (runClaim) resolved = { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId };
-          }
+          if (hit) runTarget = { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId };
         }
       }
     }
 
     // A pane claim from the walk rests on `entries`: confirm they were judged
-    // over the connection installed now. The synchronous re-check and the mint
-    // run with no await between them. A walk hit whose entries a reconnect
-    // invalidated gets no claim and no `resolved`; the caller still has the
-    // re-judged entries for its own walk, and its next resolve walks those.
-    if (resolved && !runClaim) {
-      const confirmed = await confirmEntriesConnection();
-      if (!stillConfirmed(confirmed)) resolved = null;
+    // over the connection installed now (re-checked below, with no await
+    // between that re-check and the mint). A walk hit whose entries a
+    // reconnect invalidated gets no claim and no `resolved`; the caller still
+    // has the re-judged entries for its own walk, and its next resolve walks
+    // those. A run's own claim does not rest on them.
+    const confirmed = resolved && !runTarget ? await confirmEntriesConnection() : null;
+    // The walk and the checks above awaited: the claimed process must still be
+    // the one the connection came from when its claim is minted. Nothing is
+    // minted or refreshed before this holds.
+    let callerHeld: boolean | null = null;
+    if ((resolved || runTarget) && callerPid != null && callerVerdict) {
+      callerHeld = claimStillHeld('callerPid', ctx, callerPid, callerVerdict);
+      if (!callerHeld) {
+        resolved = null;
+        runTarget = null;
+      }
     }
+    const runClaim = runTarget ? claimTokenForRun(runTarget.workspaceId, runTarget.ptyId) : null;
+    if (runTarget) resolved = runClaim ? runTarget : null;
+    else if (resolved && !stillConfirmed(confirmed)) resolved = null;
     const workspaceToken = resolved ? (runClaim ?? claimTokenForPane(resolved.workspaceId, resolved.ptyId)) : null;
     // A call from a shared Codex app-server names its thread instead: the pane
     // comes from the thread's owner record (written by wmux's Codex hooks from
@@ -1146,10 +1176,22 @@ export function registerA2aRpc(
     let threadClaim: ReturnType<typeof resolveCodexThreadClaim> = null;
     if (codexThreadId !== undefined) {
       const codexCallerPid = normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid);
-      notePeerPidClaim('codexCallerPid', codexCallerPid, ctx);
-      const sharedServerChild = await isSharedServerChild(codexCallerPid);
+      // The thread claim rests on codexCallerPid being the shared server's
+      // child, so that pid is held to the same check as callerPid.
+      // One call that names the same pid for both is checked (and counted) once.
+      const codexVerdict = codexCallerPid == null ? null
+        : codexCallerPid === callerPid && callerVerdict ? callerVerdict : checkClaim('codexCallerPid', ctx, codexCallerPid);
+      const sharedServerChild = codexCallerPid != null && codexVerdict !== null && codexVerdict.ok
+        && await isSharedServerChild(codexCallerPid, codexVerdict, ctx);
       const confirmed = await confirmEntriesConnection();
-      if (stillConfirmed(confirmed)) threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
+      // A shared claim the caller check already found changed is not checked
+      // (or counted) again.
+      const held = codexCallerPid != null && codexVerdict !== null
+        && !(codexVerdict === callerVerdict && callerHeld === false)
+        && claimStillHeld('codexCallerPid', ctx, codexCallerPid, codexVerdict);
+      if (stillConfirmed(confirmed) && codexCallerPid != null && held) {
+        threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
+      }
     }
     // The walk missed but the caller's env names a pane. Main says whether
     // that pane is live, and attests it only when the daemon follows a live

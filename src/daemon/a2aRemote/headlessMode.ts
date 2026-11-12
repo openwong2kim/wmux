@@ -23,6 +23,32 @@ export function headlessFlagPath(a2aDir: string): string {
 }
 
 /**
+ * Where `wmux daemon headless release <spawnId>` leaves its word: one empty
+ * file per start whose hold the owner checked and wants dropped. The daemon
+ * reads it at its next reconcile and removes it.
+ */
+export const HEADLESS_RELEASE_DIR = 'headless-release';
+
+export function headlessReleasePath(a2aDir: string, spawnId: string): string {
+  return path.join(a2aDir, HEADLESS_RELEASE_DIR, spawnId);
+}
+
+export function headlessReleases(a2aDir: string): { requested(spawnId: string): boolean; clear(spawnId: string): void } {
+  const safe = (spawnId: string): boolean => /^sp-[0-9a-f-]{36}$/.test(spawnId);
+  return {
+    requested: (spawnId) => safe(spawnId) && fs.existsSync(headlessReleasePath(a2aDir, spawnId)),
+    clear: (spawnId) => {
+      if (!safe(spawnId)) return;
+      try {
+        fs.unlinkSync(headlessReleasePath(a2aDir, spawnId));
+      } catch {
+        // Gone already.
+      }
+    },
+  };
+}
+
+/**
  * An agent the daemon can start with nobody at the pane: its launch takes a
  * pinned conversation id (so its transcript is found without hooks) and the
  * worker permission flags.

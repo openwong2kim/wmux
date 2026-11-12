@@ -9,7 +9,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { headlessIo, headlessStatus, runHeadless } from '../../cli/commands/daemon';
 import { policyIo } from '../../cli/commands/remote';
-import { headlessFlagPath } from '../a2aRemote/headlessMode';
+import { headlessFlagPath, headlessReleasePath } from '../a2aRemote/headlessMode';
 import { HEADLESS_STARTS_FILE } from '../a2aRemote/headlessStartStore';
 import { APP_ATTACHED_FILE } from '../appHostMarker';
 
@@ -105,7 +105,8 @@ describe('wmux daemon headless', () => {
         { ...base, spawnId: 'sp-2123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-3', phase: 'ended', worktreePath: path.join(dir, 'gone'), endedAt: new Date().toISOString() },
       ],
     }));
-    expect(headlessStatus(dir)).toEqual({ inEffect: true, optedIn: true, appAttached: false, running: 1, leftovers: [kept], heldUp: [], from: 'files' });
+    expect(headlessStatus(dir)).toEqual({ inEffect: true, optedIn: true, appAttached: false, running: 1, leftovers: [kept], heldUp: [], from: 'files',
+      perPc: { '11111111-1111-4111-8111-111111111111': { running: 1, kept: 1 } } });
     fs.writeFileSync(path.join(dir, APP_ATTACHED_FILE), 'x\n');
     expect(headlessStatus(dir)).toMatchObject({ inEffect: false, reason: expect.stringContaining('desktop app') });
     await runHeadless('status', false, dir);
@@ -144,7 +145,7 @@ describe('wmux daemon headless', () => {
         survivors: [{ pid: 4242, reason: 'still running' }],
       }],
     }));
-    expect(headlessStatus(dir)).toMatchObject({ heldUp: ['/wt/remote-1 (pid 4242)'], leftovers: [], running: 0 });
+    expect(headlessStatus(dir)).toMatchObject({ heldUp: ['sp-0123abcd-4567-89ab-cdef-0123456789ab: /wt/remote-1 (pid 4242)'], leftovers: [], running: 0 });
   });
 
   it('status takes the daemon\'s own answer: opted in but the starter not built (no task ledger) is not in effect, with the reason', async () => {
@@ -156,5 +157,32 @@ describe('wmux daemon headless', () => {
     await runHeadless('status', false, dir);
     expect(out.join('\n')).toContain('not in effect');
     expect(headlessStatus(dir, { ...view, inEffect: true })).toMatchObject({ inEffect: true });
+  });
+
+  it('release: drops the hold on a listed start after a typed yes (person only), and nothing else', async () => {
+    const ID = 'sp-0123abcd-4567-89ab-cdef-0123456789ab';
+    fs.mkdirSync(path.join(dir, 'a2a'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a2a', HEADLESS_STARTS_FILE), JSON.stringify({
+      v: 1,
+      starts: [{
+        v: 1, hostId: '11111111-1111-4111-8111-111111111111', spawnId: ID, agent: 'claude',
+        repoPath: '/repo', sessionId: 'hl-1', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
+        lineage: 'remote-spawn:x', runId: 'r', phase: 'started', worktreePath: '/wt/remote-1', startedAt: new Date().toISOString(),
+        survivors: [{ pid: 4242, reason: 'still running' }],
+      }],
+    }));
+    const marker = headlessReleasePath(path.join(dir, 'a2a'), ID);
+    // Not from a pane.
+    process.env = { ...process.env, WMUX_PTY_ID: 'pane-1' };
+    await expect(runHeadless('release', false, dir, ID)).rejects.toThrow('exit 1');
+    process.env = { PATH: savedEnv.PATH, HOME: dir };
+    // Not for a start that is not held.
+    await expect(runHeadless('release', false, dir, 'sp-9999abcd-4567-89ab-cdef-0123456789ab')).rejects.toThrow('exit 1');
+    const ask = vi.spyOn(policyIo, 'ask').mockResolvedValue('no');
+    await expect(runHeadless('release', false, dir, ID)).rejects.toThrow('exit 1');
+    expect(fs.existsSync(marker)).toBe(false);
+    ask.mockResolvedValue('yes');
+    await runHeadless('release', false, dir, ID);
+    expect(fs.existsSync(marker)).toBe(true);
   });
 });
