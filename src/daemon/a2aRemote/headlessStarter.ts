@@ -364,8 +364,8 @@ export class A2aHeadlessStarter {
 
   /** A started start whose agent may no longer count: session ended, link broken, record kept as `ended`. */
   private async end(rec: HeadlessStartRecordV1, link: A2aLinkRecordV1 | undefined, sessions: HeadlessSessionPort, why: string): Promise<void> {
-    // Its open tasks first, while the link can still carry the news (a failing one never blocks the end).
-    if (link && !TERMINAL_LINK.has(link.state)) await this.deps.startEnding?.(rec, why).catch((err) => this.deps.log('warn', `[headless] spawn ${rec.spawnId}: its tasks were not told: ${errMsg(err)}`));
+    // Its open tasks first, while a link that has not ended yet can still carry the news (a failing one never blocks the end).
+    await this.deps.startEnding?.(rec, why).catch((err) => this.deps.log('warn', `[headless] spawn ${rec.spawnId}: its tasks were not told: ${errMsg(err)}`));
     // Whether or not it looks alive: a session recovery brought back (even on disk only) goes too.
     const destroyed = await sessions.destroy(rec.sessionId);
     const earlier = await this.endEarlierRun(rec, sessions);

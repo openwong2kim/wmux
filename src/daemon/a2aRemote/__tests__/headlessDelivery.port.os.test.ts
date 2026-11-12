@@ -143,19 +143,19 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
       mark: async (input) => {
         marks.push(input);
         if (input.delivered) m().delivered = true;
-        if (input.held) m().held = input.held;
         if (input.attempted !== undefined) m().attempted = input.attempted;
         return { ok: true };
       },
       // As index.ts: the session's screen read for a dialog (the same check), its agent state and
       // input fence, its PTY write noted as input.
-      deliver: async (id, agent, prompt, authorized) => {
+      deliver: async (id, agent, prompt, authorized, onWrite) => {
         const managed = mgr.getSession(id)!;
         // As index.ts: no incarnation yet reads as not ready.
         const incarnationId = managed.meta.incarnationId;
         if (!incarnationId) return 'unavailable';
         const result = await deliverScheduledPrompt(agent, incarnationId, prompt, {
           authorized: async () => authorized(),
+          onWrite: () => onWrite(),
           folderTrustBlocks: async () => {
             const verdict = await folderTrustRefusal(mgr, id, 'headless-delivery', { refuseUnknown: true, refuseDialog: true, log: () => undefined });
             verdicts.push(verdict);
@@ -226,15 +226,16 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
     expect(h.moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
   }, 60_000);
 
-  it('a dialog that opens between the paste and Enter: no Enter, held, failed, never typed again', async () => {
+  it('a dialog that opens between the paste and Enter: no Enter, the task ends with the reason, never typed again', async () => {
     const h = await harness('enter');
     await h.run(() => h.moves.length > 0);
     expect(h.results).toEqual(['error']);
     // Clear before the paste, the dialog after it.
     expect(h.verdicts[0]).toBeNull();
     expect(h.verdicts).toContain('dialog');
-    expect(h.marks.at(-1)).toMatchObject({ held: 'delivery-unconfirmed' });
-    expect(h.moves).toEqual([{ to: 'failed', summary: 'the task may have reached the agent only in part' }]);
+    // The attempt stays recorded; the task was never taken, so it is canceled with the reason.
+    expect(h.marks).toEqual([{ taskId: expect.any(String), attempted: true }]);
+    expect(h.moves).toEqual([{ to: 'canceled', summary: 'the task may have reached the agent only in part' }]);
     await deliberateSleep(500, 'a negative check: an Enter would have reached the stub by now');
     await h.delivery.tick();
     // The agent never got an Enter: no prompt recorded, and nothing typed again.

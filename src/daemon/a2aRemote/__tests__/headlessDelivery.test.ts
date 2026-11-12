@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import type { SessionPromptScheduleResult } from '../../../shared/sessionPromptSchedule';
-import type { Task } from '../../../shared/types';
+import { VALID_TRANSITIONS, type Task } from '../../../shared/types';
 import { USAGE_LIMIT_CONTINUE_PROMPT } from '../../../shared/usageLimit';
 import { HeadlessDelivery, assistantTextOf, type HeadlessDeliveryDeps } from '../headlessDelivery';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
@@ -25,7 +25,7 @@ let transcript: string;
 let active: boolean;
 let rec: HeadlessStartRecordV1;
 let task: Task;
-let results: SessionPromptScheduleResult[];
+let results: Array<SessionPromptScheduleResult | 'error!'>;
 let delivered: Array<{ sessionId: string; prompt: string }>;
 let marks: Array<Record<string, unknown>>;
 let replies: Array<{ taskId: string; workspaceId: string; text: string }>;
@@ -82,18 +82,17 @@ function deps(over: Partial<HeadlessDeliveryDeps> = {}): HeadlessDeliveryDeps {
       if (input.delivered) {
         m.delivered = true;
         delete m.attempted;
-      } else if (input.held) {
-        m.held = input.held;
-        delete m.attempted;
       } else if (input.attempted === true) m.attempted = true;
       else if (input.attempted === false) delete m.attempted;
       return { ok: true };
     },
-    deliver: async (sessionId, _agent, prompt, authorized) => {
+    deliver: async (sessionId, _agent, prompt, authorized, onWrite) => {
       gateAnswers.push(authorized());
       const result = results.shift() ?? 'sent';
+      // `sent` and a real `error` wrote; `error!` is an error before any write (the gate said no).
+      if (result === 'sent' || result === 'error') onWrite();
       if (result === 'sent') delivered.push({ sessionId, prompt });
-      return result;
+      return (result === 'error!' ? 'error' : result) as SessionPromptScheduleResult;
     },
     transcriptPath: () => (bound ? transcript : null),
     transcriptSize: (file) => (fs.existsSync(file) ? fs.statSync(file).size : 0),
@@ -103,7 +102,9 @@ function deps(over: Partial<HeadlessDeliveryDeps> = {}): HeadlessDeliveryDeps {
       task.history.push({ kind: 'message', messageId: `r${replies.length}`, role: 'agent', parts: [{ kind: 'text', text: input.text }] });
       return { ok: true };
     },
+    // The ledger's own rule: only a legal transition is committed.
     transition: async ({ to, summary }) => {
+      if (!VALID_TRANSITIONS[task.status.state].includes(to)) return { ok: false, error: `illegal ${task.status.state} -> ${to}` };
       moves.push({ to, ...(summary ? { summary } : {}) });
       task.status = { state: to, timestamp: new Date().toISOString() };
       return { ok: true };
@@ -185,12 +186,12 @@ describe('typing the task in', () => {
     expect(moves).toEqual([{ to: 'working' }]);
   });
 
-  it('error may have written part of it: held, failed, never typed again', async () => {
+  it('error may have written part of it: the task ends with the reason (canceled, it was never taken), never typed again', async () => {
     results = ['error'];
     const d = new HeadlessDelivery(deps());
     await d.tick();
-    expect(marks).toEqual([{ taskId: TASK, attempted: true }, { taskId: TASK, held: 'delivery-unconfirmed' }]);
-    expect(moves).toEqual([{ to: 'failed', summary: 'the task may have reached the agent only in part' }]);
+    expect(marks).toEqual([{ taskId: TASK, attempted: true }]);
+    expect(moves).toEqual([{ to: 'canceled', summary: 'the task may have reached the agent only in part' }]);
     clock += 60_000;
     await d.tick();
     expect(delivered).toEqual([]);
@@ -202,7 +203,7 @@ describe('typing the task in', () => {
       results = [result];
       moves = [];
       await new HeadlessDelivery(deps()).tick();
-      expect(moves).toEqual([{ to: 'failed', summary: `the agent could not take the task (${result})` }]);
+      expect(moves).toEqual([{ to: 'canceled', summary: `the agent could not take the task (${result})` }]);
       expect(marker().attempted).toBeUndefined();
     }
   });
@@ -211,8 +212,8 @@ describe('typing the task in', () => {
     marker().attempted = true;
     await new HeadlessDelivery(deps()).tick();
     expect(delivered).toEqual([]);
-    expect(marks).toEqual([{ taskId: TASK, held: 'delivery-unconfirmed' }]);
-    expect(moves).toEqual([{ to: 'failed', summary: 'the task may have reached the agent only in part' }]);
+    expect(marks).toEqual([]);
+    expect(moves).toEqual([{ to: 'canceled', summary: 'the task may have reached the agent only in part' }]);
   });
 
   it('only into a started start of this run, with headless mode on, and only while that holds', async () => {
@@ -256,6 +257,67 @@ describe('typing the task in', () => {
     expect(armed).toEqual([]);
   });
 
+  it('an error before anything was written (the gate said no) is not a partial write: tried again', async () => {
+    results = ['error!'];
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    expect(marks).toEqual([{ taskId: TASK, attempted: true }, { taskId: TASK, attempted: false }]);
+    expect(moves).toEqual([]);
+    clock += 2000;
+    await d.tick();
+    expect(delivered).toHaveLength(1);
+  });
+
+  it('a mark that does not go through is tried again, and the task is never typed twice for it', async () => {
+    // The attempt is recorded, the delivered mark is not.
+    const realMark = deps().mark;
+    let n = 0;
+    const flaky = new HeadlessDelivery(deps({ mark: async (input) => (++n === 2 ? { ok: false, error: 'store unavailable' } : realMark(input)) }));
+    await flaky.tick();
+    expect(delivered).toHaveLength(1);
+    expect(marker().delivered).not.toBe(true);
+    await flaky.tick();
+    expect(marker().delivered).toBe(true);
+    expect(delivered).toHaveLength(1);
+    expect(moves.filter((m) => m.to === 'canceled' || m.to === 'failed')).toEqual([]);
+  });
+
+  it('a start that is ending gets nothing typed in, even by a pass already under way', async () => {
+    const d = new HeadlessDelivery(deps({ deliver: async (_s, _a, _p, authorized, onWrite) => {
+      // The start begins to end while the paste waits for its Enter.
+      await d.startEnding(rec, 'the daemon restarted');
+      gateAnswers.push(authorized());
+      onWrite();
+      return 'error';
+    } }));
+    await d.tick();
+    expect(gateAnswers).toEqual([false]);
+    expect(moves).toEqual([{ to: 'canceled', summary: 'the daemon restarted' }]);
+    await d.tick();
+    expect(gateAnswers).toEqual([false]);
+  });
+
+  it('one failing task does not stop the pass', async () => {
+    const other = inboundTask('second');
+    other.id = `rt-${'2'.padStart(32, '0')}`;
+    let typed = 0;
+    const d = new HeadlessDelivery(deps({
+      tasks: { pending: () => [task, other], remote: () => [task, other], get: (id) => (id === task.id ? task : id === other.id ? other : undefined) },
+      starts: { list: () => [rec, startRecord({ sessionId: 'hl-22222222-2222-4333-8444-555555555555', workspaceId: 'hl-second' })] },
+      mark: async (input) => {
+        if (input.taskId === task.id) throw new Error('store broke');
+        return { ok: true };
+      },
+      deliver: async () => {
+        typed += 1;
+        return 'sent';
+      },
+    }));
+    other.metadata.to = { workspaceId: 'hl-second', name: 'box', paneId: 'hl-22222222-2222-4333-8444-555555555555' };
+    await d.tick();
+    expect(typed).toBe(1);
+  });
+
   it('one task at a time per agent: the next waits until the open one ended', async () => {
     const d = new HeadlessDelivery(deps());
     await d.tick();
@@ -293,6 +355,39 @@ describe('the reply, from the transcript', () => {
       assistantLine('Linux', true, [{ type: 'thinking', thinking: 'hmm' }]));
     await d.tick();
     expect(replies.map((r) => r.text)).toEqual(['Linux']);
+  });
+
+  it('the prompt is recognized on the raw entry: a long one the parser shortens, one the parser reads as a command', async () => {
+    for (const prompt of ['x'.repeat(9000), '/review the build log']) {
+      task = inboundTask(prompt);
+      moves = [];
+      replies = [];
+      const d = new HeadlessDelivery(deps());
+      await d.tick();
+      write(userLine(prompt), assistantLine('done'));
+      await d.tick();
+      expect(replies.map((r) => r.text)).toEqual(['done']);
+      expect(moves.at(-1)).toEqual({ to: 'input-required' });
+    }
+  });
+
+  it('a turn that stops for a reason other than a tool call ends it (max_tokens), with what it wrote', async () => {
+    const d = await delivering();
+    write(userLine(PROMPT), JSON.stringify({ type: 'assistant', uuid: 'mx', timestamp: stamp(),
+      message: { role: 'assistant', content: [{ type: 'text', text: 'PONG, cut short' }], stop_reason: 'max_tokens' } }));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG, cut short']);
+  });
+
+  it('a session bound to another conversation after the write: not this turn, failed', async () => {
+    const d = await delivering();
+    write(userLine(PROMPT));
+    await d.tick();
+    transcript = path.join(dir, 'other.jsonl');
+    write(userLine('something else'), assistantLine('not ours'));
+    await d.tick();
+    expect(replies).toEqual([]);
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's conversation was replaced on this PC" });
   });
 
   it('the turn may come over several passes; nothing is sent before it ends', async () => {
@@ -393,14 +488,24 @@ describe('the reply, from the transcript', () => {
     expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's conversation was replaced on this PC" });
   });
 
-  it('a start that ends fails its open task with why (a restart: "the daemon restarted")', async () => {
-    const d = await delivering();
+  it('a start that ends fails its open task with why (a restart: "the daemon restarted"), and cancels an answered one', async () => {
+    let d = await delivering();
     await d.startEnding(rec, 'the daemon restarted');
     expect(moves.at(-1)).toEqual({ to: 'failed', summary: 'the daemon restarted' });
     // The episode is gone with it: a later turn end sends nothing.
     write(userLine(PROMPT), assistantLine('late'));
     await d.tick();
     expect(replies).toEqual([]);
+
+    // Answered, waiting for more: canceled, with why.
+    task = inboundTask();
+    moves = [];
+    d = await delivering();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(moves.at(-1)).toEqual({ to: 'input-required' });
+    await d.startEnding(rec, "the agent's session ended");
+    expect(moves.at(-1)).toEqual({ to: 'canceled', summary: "the agent ended: the agent's session ended" });
   });
 });
 

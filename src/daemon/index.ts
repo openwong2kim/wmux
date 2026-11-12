@@ -6352,10 +6352,10 @@ function registerRpcHandlers(
     });
   // A remote task into a headless agent: the same checked paste and Enter, asked
   // again before each write whether the delivery still owns the session.
-  headlessDeliverRef = async (id, agent, prompt, authorized) => {
+  headlessDeliverRef = async (id, agent, prompt, authorized, onWrite) => {
     const incarnationId = readDaemonAgentState(id).incarnationId;
     if (!incarnationId) return 'unavailable';
-    return deliverPromptToSessionNow(id, agent, incarnationId, prompt, { authorized: async () => authorized(), acceptError: false }, 'headless-delivery', { refuseUnknown: true });
+    return deliverPromptToSessionNow(id, agent, incarnationId, prompt, { authorized: async () => authorized(), onWrite: () => onWrite(), acceptError: false }, 'headless-delivery', { refuseUnknown: true });
   };
   pipeServer.onRpc('daemon.deliverScheduledPromptV2', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
@@ -10998,7 +10998,7 @@ async function main(): Promise<void> {
             get: (taskId) => taskSvc.getTask(taskId),
           },
           mark: (input) => deliveryCall(A2A_REMOTE_RPC.mark, input),
-          deliver: (sessionId, agent, prompt, authorized) => (headlessDeliverRef ? headlessDeliverRef(sessionId, agent, prompt, authorized) : Promise.resolve('unavailable')),
+          deliver: (sessionId, agent, prompt, authorized, onWrite) => (headlessDeliverRef ? headlessDeliverRef(sessionId, agent, prompt, authorized, onWrite) : Promise.resolve('unavailable')),
           // Its own sessions only (the delivery asks for no other): a no-op once the agent is tracked.
           armAgent: (sessionId) => {
             const managed = sessionManager.getSession(sessionId);

@@ -312,8 +312,9 @@ async function makePc(name: string, opts: { headless?: boolean; asking?: boolean
       tasks: { pending: () => tasks.listRemotePending(), remote: () => tasks.listRemote(), get: (id) => tasks.getTask(id) },
       mark: (input) => call('a2a.remote.mark', input),
       // The fake agent: records the prompt and writes its turn as Claude Code would.
-      deliver: async (sessionId, _agent, prompt, authorized) => {
+      deliver: async (sessionId, _agent, prompt, authorized, onWrite) => {
         if (!authorized()) return 'busy';
+        onWrite();
         sessions.typed.push({ sessionId, prompt });
         const at = (n: number): string => new Date(Date.now() + n).toISOString();
         fs.appendFileSync(path.join(transcripts, `${sessionId}.jsonl`), [
