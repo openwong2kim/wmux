@@ -14,7 +14,7 @@ import MiniSidebar from '../Sidebar/MiniSidebar';
 import { SidebarSlot } from './SidebarSlot';
 import { WorkspaceCenter } from './WorkspaceCenter';
 import { EmptyLeafFunnel } from './EmptyLeafFunnel';
-import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
+import { selectGlassCornerSides, selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
 import { selectPcRailPersisted } from '../../stores/selectors/pcRail';
 import { shouldShowInstallError, shouldReannounceAfterError, isSmartAppControlHold, refusedInstallNotice } from './updateNoticePolicy';
@@ -832,6 +832,8 @@ export default function AppLayout() {
   // stores/selectors/appLayout.ts) that don't change on churn or switch.
   const hasActiveWorkspace = useStore((s) => s.workspaces.some((w) => w.id === s.activeWorkspaceId));
   const projectCwdSignature = useStore(selectProjectCwdSignature);
+  // Window glass: which column sides have plain terminal panes in both corners (ui.css).
+  const glassCornerSides = useStore(selectGlassCornerSides);
   // Fix 0 startup gate. See state machine diagram at top of file.
   const paneGate = useStore((s) => s.paneGate);
   const setPaneGate = useStore((s) => s.setPaneGate);
@@ -2354,7 +2356,7 @@ export default function AppLayout() {
       <ErrorBoundary name="Main">
       {/* `relative` anchors ToolbarHost: the agent toolbar overlays this column
           rather than taking a row, so revealing it never resizes a PTY. */}
-      <div className="wmux-main-column flex-1 min-w-0 flex flex-col relative">
+      <div className="wmux-main-column flex-1 min-w-0 flex flex-col relative" data-glass-corners={glassCornerSides || undefined}>
         {/* P1.5 — the status strip moved into the Titlebar (owner feedback:
             the empty titlebar center + a second status row doubled the top
             chrome). This column now starts directly with the pane area. */}

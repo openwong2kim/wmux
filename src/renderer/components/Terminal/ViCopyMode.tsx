@@ -84,8 +84,9 @@ export default function ViCopyMode({ terminal, onExit }: ViCopyModeProps) {
       {/* Cursor highlight block */}
       <div style={cursorStyle} aria-hidden="true" />
 
-      {/* Status bar */}
+      {/* Status bar (data-vi-copy-bar: glass corner panes round it, ui.css) */}
       <div
+        data-vi-copy-bar
         className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-3 py-0.5 text-xs font-mono select-none"
         style={{
           zIndex: 20,
