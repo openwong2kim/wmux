@@ -75,9 +75,13 @@ describe.runIf(linux)('/proc readers match ps', () => {
       return zombie > 0 && ps('stat', stopped.pid as number).startsWith('T');
     }, 10_000, 'a stopped and a zombie process');
 
-    for (const pid of [process.pid, 1, stopped.pid as number, zombie]) {
+    const sleeping = child('sleep', ['60']);
+    await waitFor(() => ps('stat', sleeping.pid as number).startsWith('S'), 10_000, 'a sleeping process');
+    // States that hold still while ps runs (this process is running as it reads itself, and sleeps while ps does).
+    for (const pid of [sleeping.pid as number, stopped.pid as number, zombie]) {
       expect(procState(pid)).toEqual({ value: ps('stat', pid)[0] });
     }
+    expect(procState(process.pid)?.value).toBe('R');
     expect(procState(stopped.pid as number)?.value).toBe('T');
     expect(procState(zombie)?.value).toBe('Z');
     expect(procState(GONE)).toEqual({ value: null });
@@ -118,17 +122,19 @@ describe.runIf(linux)('/proc readers match ps', () => {
     expect(procStartMs(GONE)).toEqual({ value: null });
   });
 
-  it('the process table is ps -ww -axo pid=,ppid=,args=, row for row', () => {
-    child('sh', ['-c', 'exec sleep 60 "an argument with spaces"']);
+  it('the process table is ps -ww -axo pid=,ppid=,args=, row for row', async () => {
+    const spaced = child('sh', ['-c', 'exec sleep 60 "an argument with spaces"']);
+    await waitFor(() => ps('args', spaced.pid as number).includes('an argument with spaces'), 10_000, 'the exec');
     const asRows = (rows: ReturnType<typeof procTable>) => parsePsOutput((rows ?? []).map((r) => `${r.pid} ${r.ppid} ${r.args}`).join('\n'));
     const before = new Map(asRows(procTable()).map((e) => [e.pid, e]));
     const fromPs = parsePsOutput(execFileSync('ps', ['-ww', '-axo', 'pid=,ppid=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
     const after = new Map(asRows(procTable()).map((e) => [e.pid, e]));
-    // Only rows that did not change across the ps run (ps itself, a process that exec'd).
+    // Only rows that did not change across the ps run (ps itself, a process
+    // that exec'd), and no kernel thread: a kworker renames itself as it works.
     let compared = 0;
     for (const row of fromPs) {
       const a = before.get(row.pid);
-      if (!a || JSON.stringify(a) !== JSON.stringify(after.get(row.pid))) continue;
+      if (!a || JSON.stringify(a) !== JSON.stringify(after.get(row.pid)) || row.pid === 2 || row.ppid === 2) continue;
       expect(a).toEqual(row);
       compared++;
     }
