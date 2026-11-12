@@ -27,13 +27,17 @@ function asOrchRole(raw: unknown): string {
 import type { FanOutRequest, FanOutResult, FanOutService } from '../../worktask/FanOutService';
 import { getFanOutGuards, launchedAuditTask, promptDigest } from '../../worktask/fanoutGuards';
 import {
+  loadFanoutDepth,
   loadFanoutHourlyTaskCap,
   loadFanoutLiveTaskCap,
+  loadFanoutTasksPerCall,
   loadFanoutRequireApproval,
   loadFanoutTrustAgyFolders,
   loadFanoutWorkerPermissionMode,
+  setFanoutDepth,
   setFanoutHourlyTaskCap,
   setFanoutLiveTaskCap,
+  setFanoutTasksPerCall,
   setFanoutRequireApproval,
   setFanoutTrustAgyFolders,
   setFanoutWorkerPermissionMode,
@@ -131,6 +135,31 @@ export function registerFanOutHandler(service: FanOutService): () => void {
       setFanoutHourlyTaskCap(value),
     ),
   );
+  // Tasks per call and depth: written only here too.
+  ipcMain.removeHandler(IPC.FANOUT_TASKS_PER_CALL_GET);
+  ipcMain.handle(
+    IPC.FANOUT_TASKS_PER_CALL_GET,
+    wrapHandler(IPC.FANOUT_TASKS_PER_CALL_GET, async () => loadFanoutTasksPerCall()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_TASKS_PER_CALL_SET);
+  ipcMain.handle(
+    IPC.FANOUT_TASKS_PER_CALL_SET,
+    wrapHandler(IPC.FANOUT_TASKS_PER_CALL_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
+      setFanoutTasksPerCall(value),
+    ),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_DEPTH_GET);
+  ipcMain.handle(
+    IPC.FANOUT_DEPTH_GET,
+    wrapHandler(IPC.FANOUT_DEPTH_GET, async () => loadFanoutDepth()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_DEPTH_SET);
+  ipcMain.handle(
+    IPC.FANOUT_DEPTH_SET,
+    wrapHandler(IPC.FANOUT_DEPTH_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
+      setFanoutDepth(value),
+    ),
+  );
 
   // The worker fence's off switch, per workspace (workerFencePolicy.ts).
   ipcMain.removeHandler(IPC.WORKER_FENCE_OFF_GET);
@@ -211,6 +240,10 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ipcMain.removeHandler(IPC.FANOUT_LIVE_CAP_SET);
     ipcMain.removeHandler(IPC.FANOUT_HOURLY_CAP_GET);
     ipcMain.removeHandler(IPC.FANOUT_HOURLY_CAP_SET);
+    ipcMain.removeHandler(IPC.FANOUT_TASKS_PER_CALL_GET);
+    ipcMain.removeHandler(IPC.FANOUT_TASKS_PER_CALL_SET);
+    ipcMain.removeHandler(IPC.FANOUT_DEPTH_GET);
+    ipcMain.removeHandler(IPC.FANOUT_DEPTH_SET);
     ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_GET);
     ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET);
     ipcMain.removeHandler(IPC.WORKER_FENCE_OFF_GET);

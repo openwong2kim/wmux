@@ -18,7 +18,8 @@ import { A2A_SPAWN_PIPE_RPC, REMOTE_SPAWN_LINEAGE_PREFIX } from '../../../shared
 import { isAgentSlug } from '../../../shared/agentIdentity';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import type { DaemonClient } from '../../DaemonClient';
-import { getFanOutGuards, type FanOutGuards } from '../../worktask/fanoutGuards';
+import { getFanOutGuards, lineageDepth, type FanOutGuards } from '../../worktask/fanoutGuards';
+import { loadFanoutDepth } from '../../worktask/fanoutWorkerPolicy';
 import { resolvePaneForPty, resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 
 type GetWindow = () => BrowserWindow | null;
@@ -61,14 +62,18 @@ export function registerRemoteSpawnRpc(router: RpcRouter, getWindow: GetWindow, 
     const caller = senderPtyId ? await resolveCaller(senderPtyId) : null;
     if (!caller) return deny('NOT_AUTHORIZED', `${A2A_SPAWN_PIPE_RPC.spawn} requires a verifiable caller (no resolvable senderPtyId)`);
     if (caller.workspaceId === HUMAN_WORKSPACE_ID) return deny('NOT_AUTHORIZED', `'${HUMAN_WORKSPACE_ID}' cannot ask from the pipe`);
-    // Depth 1: a fan-out task, or an agent another PC started, does not ask for more.
+    // Depth: a fan-out task, or an agent another PC started, asks for more only
+    // as deep as the fan-out depth setting allows (default 1: not at all).
     let owner: string | null;
+    let depth = 0;
     try {
-      owner = (deps.guards ?? getFanOutGuards()).fanoutOwnerOf(caller.workspaceId);
+      const guards = deps.guards ?? getFanOutGuards();
+      owner = guards.fanoutOwnerOf(caller.workspaceId);
+      if (owner !== null) depth = lineageDepth((ws) => guards.fanoutOwnerOf(ws), caller.workspaceId);
     } catch (err) {
       return deny('FAILED_PRECONDITION', `the fan-out lineage store could not be read, so it cannot rule out that the caller was itself started for someone (${(err as Error).message})`);
     }
-    if (owner !== null) {
+    if (owner !== null && depth >= loadFanoutDepth()) {
       const by = owner.startsWith(REMOTE_SPAWN_LINEAGE_PREFIX) ? 'another PC' : owner;
       return deny('NOT_AUTHORIZED', `workspace ${caller.workspaceId} was started by ${by}, and an agent started for someone does not ask another PC to start one`);
     }

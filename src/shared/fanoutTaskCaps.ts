@@ -14,6 +14,33 @@ export const MAX_FANOUT_LIVE_TASK_CAP = 32;
 export const MIN_FANOUT_HOURLY_TASK_CAP = 1;
 export const MAX_FANOUT_HOURLY_TASK_CAP = 200;
 
+/** Tasks one fan-out call may start: the owner's setting, up to the wire's FANOUT_MAX_TASKS. */
+export const DEFAULT_FANOUT_TASKS_PER_CALL = 8;
+export const MIN_FANOUT_TASKS_PER_CALL = 1;
+export const MAX_FANOUT_TASKS_PER_CALL = 64;
+
+/**
+ * How deep fan-out may go: a workspace started for someone (a fan-out task,
+ * or an agent another PC started) at depth N may start more only while N is
+ * below this. 1 (the default): a task cannot fan out again. The ceiling keeps
+ * the setting from making it unbounded.
+ */
+export const DEFAULT_FANOUT_DEPTH = 1;
+export const MIN_FANOUT_DEPTH = 1;
+export const MAX_FANOUT_DEPTH = 3;
+
+/** A stored tasks-per-call setting, in bounds; anything but a number is the default. */
+export function clampFanoutTasksPerCall(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_FANOUT_TASKS_PER_CALL;
+  return Math.min(MAX_FANOUT_TASKS_PER_CALL, Math.max(MIN_FANOUT_TASKS_PER_CALL, Math.round(value)));
+}
+
+/** A stored depth setting, in bounds; anything but a number is the default. */
+export function clampFanoutDepth(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_FANOUT_DEPTH;
+  return Math.min(MAX_FANOUT_DEPTH, Math.max(MIN_FANOUT_DEPTH, Math.round(value)));
+}
+
 /**
  * The defaults before the caps became optional. A policy file written before
  * then always held a value, these unless the owner changed them: the one-time

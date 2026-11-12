@@ -104,8 +104,8 @@ import { git as runGit } from '../../git/git';
 import type { DaemonClient } from '../../DaemonClient';
 import { hostCwdForPane, type DaemonRpc } from '../../pty/wslCallerCwd';
 import type { FanOutRequest, FanOutService, FanOutTaskResult } from '../../worktask/FanOutService';
-import { getFanOutGuards, launchedAuditTask, promptDigest, refreshDormantTaskWorkspaces, type FanOutGuards } from '../../worktask/fanoutGuards';
-import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
+import { getFanOutGuards, launchedAuditTask, lineageDepth, promptDigest, refreshDormantTaskWorkspaces, type FanOutGuards } from '../../worktask/fanoutGuards';
+import { loadFanoutDepth, loadFanoutRequireApproval, loadFanoutTasksPerCall, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
 import { callerPaneRunsBypass, inheritWorkerMode, type FanoutWorkerModeSource } from '../../worktask/fanoutInheritedMode';
 import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
 import { loadFanoutPresets } from '../../worktask/fanoutPresets';
@@ -597,6 +597,11 @@ function parseTasks(
   // rejected on length, not after N trims.
   if (rawTitles.length > FANOUT_MAX_TASKS) {
     return { error: `task count ${rawTitles.length} exceeds the cap of ${FANOUT_MAX_TASKS}` };
+  }
+  // The limit in force is the owner's setting, at most the wire's maximum above.
+  const perCall = loadFanoutTasksPerCall();
+  if (rawTitles.length > perCall) {
+    return { error: `task count ${rawTitles.length} exceeds the tasks-per-call limit of ${perCall} (Settings › Roles & fan-out)` };
   }
   if (params['taskPrompts'] !== undefined && !Array.isArray(params['taskPrompts'])) {
     return { error: 'taskPrompts must be an array of strings when provided' };
@@ -1177,25 +1182,32 @@ export function registerFanOutRpc(
         `'${HUMAN_WORKSPACE_ID}' is the reserved human workspace and cannot fan out from the pipe`,
       );
     }
-    // ── Depth-1: a fan-out task cannot fan out ───────────────────────────
+    // ── Depth: a fan-out task fans out only as deep as the owner allows ──
     // The caller's workspace carries the lineage stamp FanOutService wrote
     // before its agent launched (or the one a workspace it created inherited),
     // or the ledger knows it as a task workspace. Both reads ignore the ledger
     // STATUS: a worker that marks itself `failed` is still a worker. A store
-    // that cannot be read refuses — "maybe a task" is not "not a task".
+    // that cannot be read refuses — "maybe a task" is not "not a task". Only
+    // the comparison reads the depth setting (default 1: a task cannot fan out).
     let fanoutOwner: string | null;
+    let depth = 0;
     try {
-      fanoutOwner = guardsOf().fanoutOwnerOf(callerWorkspaceId);
+      const guards = guardsOf();
+      fanoutOwner = guards.fanoutOwnerOf(callerWorkspaceId);
+      if (fanoutOwner !== null) depth = lineageDepth((ws) => guards.fanoutOwnerOf(ws), callerWorkspaceId);
     } catch (err) {
       return deny(
         'FAILED_PRECONDITION',
         `task.fanout.start could not read the fan-out lineage store, so it cannot rule out that the caller is itself a fan-out task (${(err as Error).message})`,
       );
     }
-    if (fanoutOwner !== null) {
+    const allowedDepth = loadFanoutDepth();
+    if (fanoutOwner !== null && depth >= allowedDepth) {
       return deny(
         'NOT_AUTHORIZED',
-        `task.fanout.start refused: workspace ${callerWorkspaceId} is a fan-out task of ${fanoutOwner}, and fan-out is one level deep — ` +
+        (allowedDepth === 1
+          ? `task.fanout.start refused: workspace ${callerWorkspaceId} is a fan-out task of ${fanoutOwner}, and fan-out is one level deep — `
+          : `task.fanout.start refused: workspace ${callerWorkspaceId} is a fan-out task ${depth} levels deep (owner ${fanoutOwner}), and fan-out may go ${allowedDepth} levels deep (Settings › Roles & fan-out) — `) +
           'record your result with ledger_update and let the owner fan out instead',
       );
     }

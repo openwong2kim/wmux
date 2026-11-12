@@ -1005,7 +1005,7 @@ describe('프리플라이트 거부 — 태스크 생성 0', () => {
     });
     const res = await svc.start(baseReq({ titles: Array.from({ length: 9 }, (_, i) => `T${i}`) }));
     expect(res.ok).toBe(false);
-    expect(res.error).toMatch(/exceeds cap/);
+    expect(res.error).toMatch(/exceeds the tasks-per-call limit of 8/);
   });
 });
 

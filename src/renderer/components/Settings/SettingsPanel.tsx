@@ -44,7 +44,16 @@ import {
   isFanoutWorkerPermissionMode,
   type FanoutWorkerPermissionMode,
 } from '../../../shared/workerLaunch';
-import { MAX_FANOUT_HOURLY_TASK_CAP, MAX_FANOUT_LIVE_TASK_CAP } from '../../../shared/fanoutTaskCaps';
+import {
+  DEFAULT_FANOUT_DEPTH,
+  DEFAULT_FANOUT_TASKS_PER_CALL,
+  MAX_FANOUT_DEPTH,
+  MAX_FANOUT_HOURLY_TASK_CAP,
+  MAX_FANOUT_LIVE_TASK_CAP,
+  MAX_FANOUT_TASKS_PER_CALL,
+  MIN_FANOUT_DEPTH,
+  MIN_FANOUT_TASKS_PER_CALL,
+} from '../../../shared/fanoutTaskCaps';
 import { SettingLimitInput } from './SettingLimitInput';
 import {
   ADVERTISED_SHORTCUTS,
@@ -2146,6 +2155,8 @@ function FanoutWorkersSection() {
   // null: no limit (the default).
   const [liveTaskCap, setLiveTaskCapState] = useState<number | null>(null);
   const [hourlyTaskCap, setHourlyTaskCapState] = useState<number | null>(null);
+  const [tasksPerCall, setTasksPerCallState] = useState(DEFAULT_FANOUT_TASKS_PER_CALL);
+  const [fanoutDepth, setFanoutDepthState] = useState(DEFAULT_FANOUT_DEPTH);
   // Main-side as well: main refuses the agy trust write while this is off.
   const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
   // Main-side, per workspace: the worker fence of this workspace's bots.
@@ -2177,6 +2188,16 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getHourlyTaskCap?.()
       .then((v) => {
         if (!cancelled && (typeof v === 'number' || v === null)) setHourlyTaskCapState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getTasksPerCall?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'number') setTasksPerCallState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getDepth?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'number') setFanoutDepthState(v);
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getTrustAgyFolders?.()
@@ -2244,6 +2265,22 @@ function FanoutWorkersSection() {
       .catch(() => undefined);
   };
 
+  const onTasksPerCallChange = (next: number) => {
+    setTasksPerCallState(next);
+    window.electronAPI.fanout
+      .setTasksPerCall(next)
+      .then((stored) => setTasksPerCallState(stored))
+      .catch(() => undefined);
+  };
+
+  const onFanoutDepthChange = (next: number) => {
+    setFanoutDepthState(next);
+    window.electronAPI.fanout
+      .setDepth(next)
+      .then((stored) => setFanoutDepthState(stored))
+      .catch(() => undefined);
+  };
+
   const onTrustAgyFoldersChange = (next: boolean) => {
     window.electronAPI.fanout
       .setTrustAgyFolders(next)
@@ -2276,6 +2313,32 @@ function FanoutWorkersSection() {
           checked={requireApproval}
           onChange={onRequireApprovalChange}
           label={t('settings.fanoutRequireApproval')}
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanouttaskspercall"
+        label={t('settings.fanoutTasksPerCall')}
+        description={t('settings.fanoutTasksPerCallDesc')}
+      >
+        <SettingNumberInput
+          value={tasksPerCall}
+          min={MIN_FANOUT_TASKS_PER_CALL}
+          max={MAX_FANOUT_TASKS_PER_CALL}
+          label={t('settings.fanoutTasksPerCall')}
+          onChange={onTasksPerCallChange}
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanoutdepth"
+        label={t('settings.fanoutDepth')}
+        description={t('settings.fanoutDepthDesc')}
+      >
+        <SettingNumberInput
+          value={fanoutDepth}
+          min={MIN_FANOUT_DEPTH}
+          max={MAX_FANOUT_DEPTH}
+          label={t('settings.fanoutDepth')}
+          onChange={onFanoutDepthChange}
         />
       </SettingRow>
       <SettingRow

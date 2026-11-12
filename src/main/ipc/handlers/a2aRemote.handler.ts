@@ -3,7 +3,8 @@ import { IPC } from '../../../shared/constants';
 import { A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
 import { A2A_SPAWN_OUTGOING_EVENT, SPAWN_REQUEST_KEY_RE, coerceSpawnPolicy, type A2aSpawnUiAsk } from '../../../shared/a2aSpawn';
 import { isAgentSlug } from '../../../shared/agentIdentity';
-import { getFanOutGuards } from '../../worktask/fanoutGuards';
+import { getFanOutGuards, lineageDepth } from '../../worktask/fanoutGuards';
+import { loadFanoutDepth } from '../../worktask/fanoutWorkerPolicy';
 import type {
   A2aRemoteExposureGetResult,
   A2aRemoteHostStatus,
@@ -205,14 +206,18 @@ export function registerA2aRemoteHandlers(daemonClient: DaemonClient | null, opt
         const workspaceId = str(p.end?.workspaceId);
         const paneId = str(p.end?.paneId);
         if (!publisher.hasPane(workspaceId, paneId)) return { ok: false, error: 'bad-request', message: 'that pane is not open on this PC' };
-        // Depth 1, as for an agent's ask: replies do not go to a fan-out task or an agent another PC started.
+        // Depth, as for an agent's ask: replies go to a fan-out task or an agent another PC
+        // started only as deep as the fan-out depth setting allows (default 1: not at all).
         let owner: string | null;
+        let depth = 0;
         try {
-          owner = getFanOutGuards().fanoutOwnerOf(workspaceId);
+          const guards = getFanOutGuards();
+          owner = guards.fanoutOwnerOf(workspaceId);
+          if (owner !== null) depth = lineageDepth((ws) => guards.fanoutOwnerOf(ws), workspaceId);
         } catch {
           return { ok: false, error: 'unavailable', message: 'could not tell whether that pane was itself started for someone' };
         }
-        if (owner !== null) return { ok: false, error: 'bad-request', message: 'replies cannot go to a pane that was itself started for someone' };
+        if (owner !== null && depth >= loadFanoutDepth()) return { ok: false, error: 'bad-request', message: 'replies cannot go to a pane that was itself started for someone' };
         if (!isAgentSlug(p.agent) || typeof p.text !== 'string' || typeof p.folder?.root !== 'string') return { ok: false, error: 'bad-request' };
         if (p.expiresInHours !== undefined && !(Number.isInteger(p.expiresInHours) && p.expiresInHours >= 1 && p.expiresInHours <= 72)) return { ok: false, error: 'bad-request' };
         if (p.requestKey !== undefined && (typeof p.requestKey !== 'string' || !SPAWN_REQUEST_KEY_RE.test(p.requestKey))) return { ok: false, error: 'bad-request' };

@@ -500,6 +500,32 @@ describe('replay, resend and room', () => {
     expect(resultsFor(other)).toEqual([]);
   });
 
+  it('a prompt longer than this PC accepts is refused not-allowed, and nothing is kept', async () => {
+    await allowHost({ limits: { maxPromptKiB: 1 } });
+    const long = envelope({ spawn: { text: 'x'.repeat(1025) } });
+    expect(await decide(long)).toBe('not-allowed');
+    expect(requests.get(HOST, long.linkId)).toBeUndefined();
+    const fits = envelope({ spawn: { text: 'x'.repeat(1024) } });
+    receiver.applyInbound(fits, { hostId: HOST });
+    expect(requests.get(HOST, fits.linkId)).toBeDefined();
+  });
+
+  it('a request that asks to wait longer than this PC allows ends sooner here; the request is kept as sent', async () => {
+    await allowHost({ limits: { maxWaitHours: 1 } });
+    const env = envelope({ expiresIn: 5 * 3600_000 });
+    const before = Date.now();
+    receiver.applyInbound(env, { hostId: HOST });
+    const rec = requests.get(HOST, env.linkId)!;
+    expect(Date.parse(rec.expiresAt) - before).toBeLessThanOrEqual(3600_000 + 1000);
+    expect(rec.request?.expiresAt).toBe(env.spawn?.expiresAt);
+    // A resend of the same request is the same request (no conflict).
+    expect(receiver.applyInbound(env, { hostId: HOST })).toMatchObject({ ok: true, duplicate: true });
+    // A shorter ask than the limit is untouched.
+    const short = envelope({ expiresIn: 1800_000 });
+    receiver.applyInbound(short, { hostId: HOST });
+    expect(requests.get(HOST, short.linkId)?.expiresAt).toBe(short.spawn?.expiresAt);
+  });
+
   it('every result carries a code and the spawnId only: no path, errno or message', async () => {
     await allowHost();
     installed.clear();

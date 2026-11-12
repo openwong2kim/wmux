@@ -155,13 +155,19 @@ export const WORKTASK_MAX_OPEN_PER_WORKSPACE = 256;
 export const WORKTASK_IDEMPOTENCY_CAP = 1000;
 
 /**
- * fan-out 1회 호출당 태스크 상한(J1 §2 — 워크스페이스·PTY 폭주 방어). J0 open
- * 캡(WORKTASK_MAX_OPEN_PER_WORKSPACE=256)과 별개로, 단일 fanout:start 호출이
- * 찍을 수 있는 태스크 수를 8로 제한한다. 초과 시 프리플라이트에서 즉시 거부.
+ * The most tasks one fan-out call can carry: the technical maximum of the wire
+ * shape (the MCP schema's maxItems, the pipe preflight, held records). The
+ * limit in force is the owner's tasks-per-call setting (default 8,
+ * shared/fanoutTaskCaps.ts), checked at run time; it can be set up to this.
  */
-export const FANOUT_MAX_TASKS = 8;
+export const FANOUT_MAX_TASKS = 64;
 
 /**
+ * Fixed on purpose, not a setting: the prompt and the wmux preamble reach the
+ * agent as ONE argv entry, and cmd.exe caps a command line at 8191 characters
+ * (CreateProcess at 32,767, and PowerShell 5.1's legacy quoting doubles every
+ * quote). A larger value would break launches on Windows.
+ *
  * fan-out 프롬프트 본문 캡(J1 §4 G5 — argv 한계). `{agentCmd} "$(cat {path})"`의
  * `$(cat)` 치환 결과가 단일 argv가 되므로 Windows 명령줄 한계(8191자)·ARG_MAX를
  * 고려한 플랫폼 최소공배수 8KB. 초과 시 명시 에러("프롬프트를 줄이고 상세는

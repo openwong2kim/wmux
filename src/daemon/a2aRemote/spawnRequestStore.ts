@@ -212,8 +212,12 @@ export class SpawnRequestStore {
     return [...this.records.values()].filter((r) => r.state === 'decided' && !r.sent).map((r) => structuredClone(r));
   }
 
-  /** Record a request that passed the cheap checks, pending its decision. */
-  receive(hostId: HostId, req: A2aSpawnRequestV1): SpawnReceive {
+  /**
+   * Record a request that passed the cheap checks, pending its decision.
+   * `localExpiresAt`: when it ends here, if this PC keeps it for less time
+   * than the request asks (the record's `expiresAt`; the request is kept as sent).
+   */
+  receive(hostId: HostId, req: A2aSpawnRequestV1, localExpiresAt?: string): SpawnReceive {
     this.assertWritable();
     const fingerprint = spawnFingerprint(req);
     const known = this.records.get(key(hostId, req.spawnId));
@@ -231,7 +235,7 @@ export class SpawnRequestStore {
       state: 'pending',
       request: structuredClone(req),
       receivedAt: new Date(this.now()).toISOString(),
-      expiresAt: req.expiresAt,
+      expiresAt: localExpiresAt ?? req.expiresAt,
     };
     this.commit((m) => m.set(key(hostId, req.spawnId), rec));
     return { kind: 'new', rec: structuredClone(rec) };

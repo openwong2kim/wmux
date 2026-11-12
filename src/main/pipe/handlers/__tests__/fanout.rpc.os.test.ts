@@ -41,7 +41,7 @@ import { registerFanOutRpc, FANOUT_WIRE_AGENT_CMD, FANOUT_IDEMPOTENCY_KEY_MAX_BY
 import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '../../../worktask/FanOutService';
 import type { RpcRouter } from '../../RpcRouter';
 import { FanOutGuards, setDormantRefresh, setFanOutGuardsForTests } from '../../../worktask/fanoutGuards';
-import { getFanoutWorkerPolicyPath } from '../../../worktask/fanoutWorkerPolicy';
+import { getFanoutWorkerPolicyPath, setFanoutDepth, setFanoutTasksPerCall } from '../../../worktask/fanoutWorkerPolicy';
 import { setHolderSource } from '../../../factory/workerHolders';
 import type { LedgerEntry } from '../../../../shared/ledger';
 import type { FanoutPreset } from '../../../../shared/fanoutPreset';
@@ -1230,6 +1230,7 @@ describe('R4 — origin allowlist is fail-closed', () => {
 // ── R5 ────────────────────────────────────────────────────────────────────
 // The GUI offers 1..8; the wire does not go through the GUI.
 describe('R5 — task count is capped server-side', () => {
+  afterEach(async () => { await setFanoutTasksPerCall(8); });
   it(`rejects more than ${FANOUT_MAX_TASKS} titles`, async () => {
     const h = setup();
     const titles = Array.from({ length: FANOUT_MAX_TASKS + 1 }, (_, k) => `task ${k}`);
@@ -1249,7 +1250,20 @@ describe('R5 — task count is capped server-side', () => {
     expect(h.start).not.toHaveBeenCalled();
   });
 
-  it(`accepts exactly ${FANOUT_MAX_TASKS}`, async () => {
+  it('refuses past the tasks-per-call setting (default 8), naming it', async () => {
+    const h = setup();
+    const err = errorOf(await h.call(goodParams({ titles: Array.from({ length: 9 }, (_, k) => `task ${k}`) })));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    expect(err.message).toMatch(/exceeds the tasks-per-call limit of 8 \(Settings › Roles & fan-out\)/);
+    await setFanoutTasksPerCall(3);
+    const three = errorOf(await h.call(goodParams({ idempotencyKey: 'tpc-3', titles: ['a', 'b', 'c', 'd'] })));
+    expect(three.message).toMatch(/tasks-per-call limit of 3/);
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it(`accepts exactly ${FANOUT_MAX_TASKS} when the setting allows it`, async () => {
+    await setFanoutTasksPerCall(FANOUT_MAX_TASKS);
     const h = setup();
     const titles = Array.from({ length: FANOUT_MAX_TASKS }, (_, k) => `task ${k}`);
     const res = await h.call(goodParams({ titles }));
@@ -1434,6 +1448,7 @@ function tmp(): string {
 }
 
 describe('task.fanout.start — depth-1', () => {
+  afterEach(async () => { await setFanoutDepth(1); });
   it('refuses a caller whose workspace carries the lineage stamp', async () => {
     const g = guardsIn(tmp());
     g.markTask(CALLER_WS, 'ws-brain');
@@ -1459,6 +1474,21 @@ describe('task.fanout.start — depth-1', () => {
     const h = setup({ guards: g });
     const res = await h.call(goodParams({ senderPtyId: undefined }), { origin: 'local', commanderWorkspace: CALLER_WS });
     expect(errorOf(res).code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('with the depth setting at 2, a task fans out and its own task does not', async () => {
+    await setFanoutDepth(2);
+    const g = guardsIn(tmp());
+    g.markTask(CALLER_WS, 'ws-brain');
+    const h = setup({ guards: g });
+    expect(await h.call(goodParams())).toMatchObject({ ok: true, status: 'accepted' });
+    const g2 = guardsIn(tmp());
+    g2.markTask('ws-brain', 'ws-root');
+    g2.markTask(CALLER_WS, 'ws-brain');
+    const h2 = setup({ guards: g2 });
+    const err = errorOf(await h2.call(goodParams({ idempotencyKey: 'depth-2b' })));
+    expect(err.code).toBe('NOT_AUTHORIZED');
+    expect(err.message).toMatch(/2 levels deep .*may go 2 levels deep \(Settings › Roles & fan-out\)/);
   });
 
   it('fails closed when the lineage store cannot be read', async () => {
