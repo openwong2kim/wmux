@@ -281,6 +281,27 @@ describe('wmux remote allow', () => {
     expect(printed()).toContain('cannot be started from another PC');
   });
 
+  it('refuses a flag given without its value instead of reading it as absent', async () => {
+    expect(await run('allow', allowArgs(['--sub']))).toBe(1);
+    expect(await run('allow', allowArgs(['--sub', '--json']))).toBe(1);
+    expect(printed()).toContain('--sub needs a value');
+    expect(sets).toHaveLength(0);
+  });
+
+  it('--json keeps stdout to the result: the statement and prompt go to stderr', async () => {
+    expect(await run('allow', ['--from', 'desk', '--root', repo, '--agent', 'claude'], true)).toBe(0);
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(logSpy.mock.calls[0][0]))).toMatchObject({ ok: true, changed: true });
+    expect(askSpy).toHaveBeenCalledWith(expect.any(String), true);
+    expect(errSpy.mock.calls.join('\n')).toContain('will be able to start claude');
+  });
+
+  it('names allowed PCs without rules that can send requests again when the feature turns on', async () => {
+    store = policy({ hosts: { [LAPTOP]: { allowed: true } } });
+    expect(await run('allow', allowArgs())).toBe(0);
+    expect(printed()).toContain(`can send requests again: laptop (${LAPTOP})`);
+  });
+
   it('refuses a --sub that leaves the root', async () => {
     expect(await run('allow', allowArgs(['--sub', '../x']))).toBe(1);
     expect(sets).toHaveLength(0);
@@ -369,6 +390,12 @@ describe('wmux remote revoke', () => {
     expect(store.hosts[DESK]).toBeUndefined();
     expect(store.rules).toEqual([{ hostId: LAPTOP, rootId: 'repo-aaaaaa', agent: 'claude' }]);
     expect(store.agents).toEqual(['claude']);
+  });
+
+  it('refuses --root without a value instead of revoking the whole allowance', async () => {
+    expect(await run('revoke', ['--from', DESK, '--root'])).toBe(1);
+    expect(sets).toHaveLength(0);
+    expect(store.hosts[DESK]).toEqual({ allowed: true });
   });
 
   it('exits 1 when nothing matches', async () => {

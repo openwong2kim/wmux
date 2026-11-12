@@ -27,6 +27,7 @@ import {
 import { INVITE_CODE_RE, isHostId, parseInvite, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId } from '../../shared/a2aRemote';
 import { AGENT_ROWS, agentLauncherStem, agentRow, type AgentSlug } from '../../shared/agentIdentity';
 import { isNestingMarker } from '../../shared/envFilter';
+import { getExecEnv } from '../../shared/execEnv';
 import { FANOUT_WORKER_PERMISSION_MODES, isFanoutWorkerPermissionMode } from '../../shared/workerLaunch';
 import type { A2aRemoteHostsRemoveResult, A2aRemoteJoinError, A2aRemoteJoinResult, RpcMethod, RpcResponse } from '../../shared/rpc';
 
@@ -281,8 +282,8 @@ async function remoteUnpair(args: string[], jsonMode: boolean): Promise<void> {
 /** Terminal input, replaced in tests. */
 export const policyIo = {
   stdinIsTty: (): boolean => process.stdin.isTTY === true,
-  ask: async (question: string): Promise<string> => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
+  ask: async (question: string, toStderr = false): Promise<string> => {
+    const rl = createInterface({ input: process.stdin, output: toStderr ? process.stderr : process.stdout });
     try {
       return await rl.question(question);
     } finally {
@@ -372,7 +373,7 @@ function samePath(a: string, b: string): boolean {
 /** The repository top level of `dir` (as git prints it), or null when it is not in one or git cannot run. */
 function gitToplevel(dir: string): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile('git', ['-c', 'core.fsmonitor=false', '-C', dir, 'rev-parse', '--show-toplevel'], { timeout: 10_000, windowsHide: true }, (err, stdout) => {
+    execFile('git', ['-c', 'core.fsmonitor=false', '-C', dir, 'rev-parse', '--show-toplevel'], { env: getExecEnv(), timeout: 10_000, windowsHide: true, maxBuffer: 64 * 1024 }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim() || null);
     });
   });
@@ -412,7 +413,8 @@ function newRootId(name: string, taken: readonly string[]): string {
 }
 
 function rootLabel(real: string): string {
-  const label = printable(path.basename(real)).trim().slice(0, SPAWN_LABEL_MAX);
+  // By code point, so a character outside the BMP is never cut in half.
+  const label = [...printable(path.basename(real)).trim()].slice(0, SPAWN_LABEL_MAX).join('');
   return label || 'folder';
 }
 
@@ -489,11 +491,14 @@ export function allowStatement(before: A2aSpawnPolicyV1, next: A2aSpawnPolicyV1,
   if (before.permissionMode !== next.permissionMode) wide.push(`permission mode changes from ${before.permissionMode} to ${next.permissionMode}`);
   if (before.followUps !== next.followUps) wide.push(`follow-ups change from ${before.followUps} to ${next.followUps}`);
   if (wide.length > 0) lines.push(`Policy-wide, applying to every allowed PC: ${wide.join('; ')}.`);
+  const label = (id: string): string => pcLabel(pcs.find((p) => p.hostId === id) ?? { hostId: id, name: '' });
+  const othersAllowed = Object.entries(next.hosts).filter(([id, h]) => h.allowed && id !== c.hostId).map(([id]) => id);
+  if (!before.enabled && othersAllowed.length > 0) {
+    lines.push(`These PCs, already allowed here, can send requests again: ${othersAllowed.map(label).join(', ')}.`);
+  }
   if (!before.enabled || before.approval !== 'allow-list') {
-    const others = Object.entries(next.hosts)
-      .filter(([id, h]) => h.allowed && id !== c.hostId && next.rules.some((r) => r.hostId === id))
-      .map(([id]) => pcLabel(pcs.find((p) => p.hostId === id) ?? { hostId: id, name: '' }));
-    if (others.length > 0) lines.push(`The rules already saved for these PCs take effect too: ${others.join(', ')}.`);
+    const ruled = othersAllowed.filter((id) => next.rules.some((r) => r.hostId === id));
+    if (ruled.length > 0) lines.push(`The rules already saved for these PCs take effect too: ${ruled.map(label).join(', ')}.`);
   }
   const newRoot = next.roots.find((r) => !before.roots.some((b) => b.id === r.id));
   const newAgent = !before.agents.includes(c.agent);
@@ -519,26 +524,33 @@ function agentSessionMarker(env: NodeJS.ProcessEnv): string | undefined {
   return Object.keys(env).find((k) => env[k] !== undefined && isNestingMarker(k));
 }
 
+/** A flag's value; exits when the flag is given without one (never read as "not given"). */
+function flagValue(args: string[], flag: string): string | undefined {
+  const v = parseFlag(args, flag);
+  if (v === undefined && hasFlag(args, flag)) fail(`${flag} needs a value.`);
+  return v;
+}
+
 const ALLOW_USAGE = 'Usage: wmux remote allow --from <host-id> --root <dir> --agent <name> [--sub <path>] [--follow-ups ask|direct] [--permission-mode <mode> [--bypass-permissions]]';
 
 async function remoteAllow(args: string[], jsonMode: boolean): Promise<void> {
   const marker = agentSessionMarker(process.env);
   if (marker) fail(`\`wmux remote allow\` is not run from an agent session or a wmux pane (${marker} is set). A person must run it, in a terminal outside wmux.`);
   if (!policyIo.stdinIsTty()) fail('`wmux remote allow` asks for a typed confirmation. Run it in a terminal.');
-  const from = parseFlag(args, '--from');
-  const rootArg = parseFlag(args, '--root');
-  const agentArg = parseFlag(args, '--agent');
+  const from = flagValue(args, '--from');
+  const rootArg = flagValue(args, '--root');
+  const agentArg = flagValue(args, '--agent');
   if (!from || !rootArg || !agentArg) fail(ALLOW_USAGE.replace(/^Usage: /, 'usage: '));
-  const sub = normalizeSpawnSub(parseFlag(args, '--sub'));
+  const sub = normalizeSpawnSub(flagValue(args, '--sub'));
   if (sub === null) fail('--sub must be a relative path below the root, without `..`, a drive or a backslash.');
   if (!isSpawnableAgent(agentArg)) {
     const ok = AGENT_ROWS.filter((a) => isSpawnableAgent(a.slug)).map((a) => a.slug).join(', ');
     fail(`${agentArg} cannot be started from another PC. Agents that can: ${ok}.`);
   }
   const agent = agentArg;
-  const followArg = parseFlag(args, '--follow-ups');
+  const followArg = flagValue(args, '--follow-ups');
   if (hasFlag(args, '--follow-ups') && followArg !== 'ask' && followArg !== 'direct') fail('--follow-ups takes ask or direct.');
-  const modeArg = parseFlag(args, '--permission-mode');
+  const modeArg = flagValue(args, '--permission-mode');
   if (hasFlag(args, '--permission-mode') && !isFanoutWorkerPermissionMode(modeArg)) {
     fail(`--permission-mode takes one of: ${FANOUT_WORKER_PERMISSION_MODES.join(', ')}.`);
   }
@@ -550,11 +562,13 @@ async function remoteAllow(args: string[], jsonMode: boolean): Promise<void> {
   const installed = agentOnPath(agent);
   if (installed === false) console.error(`Warning: ${agent} was not found on this shell's PATH. A request for it is refused until it is installed for the account the daemon runs as.`);
 
+  // With --json, stdout carries only the result: what a person reads goes to stderr.
+  const say = jsonMode ? console.error : console.log;
   const pcs = await knownPcs();
   const { pc, byName } = resolvePc(from, pcs);
   if (byName) {
-    console.log(`"${printable(from)}" is ${pc.hostId}.`);
-    console.log(`Certificate fingerprint: ${pc.fingerprint ?? 'none recorded here (that PC joined this one)'}`);
+    say(`"${printable(from)}" is ${pc.hostId}.`);
+    say(`Certificate fingerprint: ${pc.fingerprint ?? 'none recorded here (that PC joined this one)'}`);
   }
   const change: AllowChange = {
     hostId: pc.hostId, rootPath, agent, sub,
@@ -576,9 +590,9 @@ async function remoteAllow(args: string[], jsonMode: boolean): Promise<void> {
     if (next.rules.length > SPAWN_RULES_MAX) fail(`this PC already holds ${SPAWN_RULES_MAX} rules, the most it can. Revoke some first.`);
     const statement = allowStatement(before, next, change, pc, pcs).join('\n');
     if (confirmed === null) {
-      console.log(statement);
+      say(statement);
       // eslint-disable-next-line no-await-in-loop -- one question, then the save
-      const answer = (await policyIo.ask(`Type ${CONFIRM_WORD} to save this: `)).trim().toLowerCase();
+      const answer = (await policyIo.ask(`Type ${CONFIRM_WORD} to save this: `, jsonMode)).trim().toLowerCase();
       if (answer !== CONFIRM_WORD) fail('not confirmed; nothing was saved.');
       confirmed = statement;
     } else if (statement !== confirmed) {
@@ -597,12 +611,11 @@ async function remoteAllow(args: string[], jsonMode: boolean): Promise<void> {
 }
 
 async function remoteAllowed(jsonMode: boolean): Promise<void> {
-  const policy = await readPolicy();
   if (jsonMode) {
-    console.log(JSON.stringify({ policy }, null, 2));
+    console.log(JSON.stringify({ policy: await readPolicy() }, null, 2));
     return;
   }
-  const pcs = await knownPcs();
+  const [policy, pcs] = await Promise.all([readPolicy(), knownPcs()]);
   const rootOf = (id: string): string => policy.roots.find((r) => r.id === id)?.path ?? id;
   console.log(`Remote spawn: ${policy.enabled ? 'on' : 'off'}`);
   console.log('For every allowed PC:');
@@ -640,18 +653,18 @@ export function withoutRules(policy: A2aSpawnPolicyV1, hostId: HostId, rootIds: 
 }
 
 async function remoteRevoke(args: string[], jsonMode: boolean): Promise<void> {
-  const from = parseFlag(args, '--from');
+  const from = flagValue(args, '--from');
   if (!from) fail('usage: wmux remote revoke --from <host-id> [--root <dir>] [--sub <path>]');
-  const rootArg = parseFlag(args, '--root');
-  const subArg = parseFlag(args, '--sub');
+  const rootArg = flagValue(args, '--root');
+  const subArg = flagValue(args, '--sub');
   if (subArg !== undefined && !rootArg) fail('--sub goes with --root.');
   const sub = subArg === undefined ? null : normalizeSpawnSub(subArg);
   if (sub === null && subArg !== undefined) fail('--sub must be a relative path below the root, without `..`, a drive or a backslash.');
-  const pcs = await knownPcs();
-  let first = await readPolicy();
+  const [pcs, firstRead] = await Promise.all([knownPcs(), readPolicy()]);
+  let first = firstRead;
   const inPolicy = [...Object.keys(first.hosts), ...first.rules.map((r) => r.hostId)];
   const { pc, byName } = resolvePc(from, pcs, inPolicy);
-  if (byName) console.log(`"${printable(from)}" is ${pc.hostId}.`);
+  if (byName) (jsonMode ? console.error : console.log)(`"${printable(from)}" is ${pc.hostId}.`);
   // A folder that is gone from disk can still be named by the path it was saved under.
   let wanted: string | null = null;
   if (rootArg) {
