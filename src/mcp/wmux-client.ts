@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../shared/constants';
 import { getConnectionScope } from './connectionScope';
+import { brokerStampFor } from './brokerStamp';
 
 /**
  * Default per-call RPC deadline. Every tool gets this unless it asks for
@@ -292,6 +293,9 @@ function attemptRpc(
     if (callerPtyId !== undefined) envelope.callerPtyId = callerPtyId;
     const mcpSession = getMcpSessionId();
     if (mcpSession !== undefined) envelope.mcpSession = mcpSession;
+    // Over the pipe only: main reads it on the broker's own connection, never over TCP.
+    const brokerStamp = typeof target === 'string' ? brokerStampFor(method, params) : undefined;
+    if (brokerStamp !== undefined) envelope.brokerStamp = brokerStamp;
     const request = JSON.stringify(envelope) + '\n';
 
     const socket = typeof target === 'string' ? net.connect(target) : net.connect(target);

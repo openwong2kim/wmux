@@ -1,10 +1,11 @@
 import { spawn, type ChildProcess } from 'child_process';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
 import { canConnectBrokerPipe } from './brokerProbe';
 import { brokerOffEffects, type BrokerOffEffects } from './brokerOffMarker';
-import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStatus } from '../../shared/mcpSessions';
+import { parseBrokerConnectionsReport, type BrokerDownReason, type BrokerStampMessage, type BrokerStatus } from '../../shared/mcpSessions';
 import { processStartTime } from '../../shared/processStartTime';
 
 /**
@@ -53,6 +54,8 @@ export class BrokerSupervisor {
   private childStartedAt: number | null = null;
   /** The current child's start time as the OS reports it, read right after the spawn. */
   private childProcessStartedAt: string | null = null;
+  /** The stamp sent to the current child, new for each spawn; null while none runs. */
+  private childStamp: Buffer | null = null;
   /** Open connections, as the current child last reported them. */
   private connections = 0;
   private crashExits = 0;
@@ -82,6 +85,17 @@ export class BrokerSupervisor {
   get identity(): { pid: number; startedAt: string | null } | null {
     const pid = this.child?.pid;
     return pid === undefined ? null : { pid, startedAt: this.childProcessStartedAt };
+  }
+
+  /**
+   * Whether `stamp` is the one sent to the broker running now (compared in
+   * constant time). Always false while none runs.
+   */
+  stampMatches(stamp: string): boolean {
+    const expected = this.childStamp;
+    if (expected === null) return false;
+    const got = Buffer.from(stamp, 'utf8');
+    return got.length === expected.length && crypto.timingSafeEqual(got, expected);
   }
 
   /** True while another broker serves the pipe and this supervisor stands down for it. */
@@ -163,6 +177,16 @@ export class BrokerSupervisor {
     this.childStartedAt = startedAt;
     const processStartedAt = child.pid === undefined ? null : this.startTimeOf(child.pid);
     this.childProcessStartedAt = processStartedAt === null ? null : String(processStartedAt);
+    // The broker stamps the identity calls of the sessions it verified with
+    // this, and main takes a claim through the broker only with it.
+    const stamp = crypto.randomBytes(32).toString('hex');
+    this.childStamp = Buffer.from(stamp, 'utf8');
+    if (child.pid !== undefined && child.connected) {
+      const message: BrokerStampMessage = { wmuxBroker: 'stamp', stamp };
+      child.send(message, (err) => {
+        if (err && this.child === child) console.error('[BrokerSupervisor] could not hand the broker its stamp');
+      });
+    }
     this.connections = 0;
     this.inflight = [];
     console.log(`[BrokerSupervisor] broker started pid=${child.pid}`);
@@ -242,6 +266,7 @@ export class BrokerSupervisor {
     this.child = null;
     this.childStartedAt = null;
     this.childProcessStartedAt = null;
+    this.childStamp = null;
     this.connections = 0;
     this.inflight = [];
   }

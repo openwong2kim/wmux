@@ -20,10 +20,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, execFileSync, type ChildProcess } from 'child_process';
 import { buildSync } from 'esbuild';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { peerPidOf } from '../../shared/peerPid';
 import { processStartTime } from '../../shared/processStartTime';
-import { checkClaim, setBrokerIdentitySource, type ClaimVerdict } from '../../main/pipe/handlers/peerPidShadow';
+import { brokerStampHolds, checkClaim, setBrokerIdentitySource, setBrokerStampSource, type ClaimVerdict } from '../../main/pipe/handlers/peerPidShadow';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
@@ -60,13 +60,14 @@ interface Recorded {
  * A stub main: plants panes for pids, answers what the server asks, records it.
  * It reads each connection's OS peer at accept, as PipeServer does, and puts
  * every pid claim through main's real check, with this world's broker as the
- * one main spawned.
+ * one main spawned and the stamp it was sent.
  */
 class StubMain {
   readonly calls: Recorded[] = [];
   panes = new Map<number, { ws: string; pty: string }>();
   protectedPane = false;
   broker: { pid: number; startedAt: string | null } | null = null;
+  readonly stamp = randomBytes(32).toString('hex');
   private server: net.Server;
   constructor(readonly pipe: string) {
     this.server = net.createServer((sock) => {
@@ -83,14 +84,17 @@ class StubMain {
         let nl;
         while ((nl = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-          let m: { id?: unknown; method?: string; params?: Record<string, unknown>; commanderToken?: unknown; callerPtyId?: unknown };
+          let m: { id?: unknown; method?: string; params?: Record<string, unknown>; commanderToken?: unknown; callerPtyId?: unknown; brokerStamp?: unknown };
           try { m = JSON.parse(line); } catch { continue; }
           const params = m.params ?? {};
           const verdicts: Record<string, ClaimVerdict> = {};
           if (m.method === 'a2a.resolve.identity') {
             setBrokerIdentitySource(() => this.broker);
+            setBrokerStampSource((s) => s === this.stamp);
+            // As PipeServer: the stamp counts only on the spawned broker's own connection.
+            const callCtx = brokerStampHolds(ctx.peerPid, ctx.peerStartedAt, m.brokerStamp) ? { ...ctx, brokerStamped: true as const } : ctx;
             for (const kind of ['callerPid', 'codexCallerPid']) {
-              if (typeof params[kind] === 'number') verdicts[kind] = checkClaim(kind, ctx, params[kind] as number, { log: () => undefined });
+              if (typeof params[kind] === 'number') verdicts[kind] = checkClaim(kind, callCtx, params[kind] as number, { log: () => undefined });
             }
           }
           this.calls.push({ method: String(m.method), params, commanderToken: m.commanderToken, callerPtyId: m.callerPtyId, verdicts });
@@ -198,11 +202,13 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
     await main.listen();
     const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home, WMUX_DATA_SUFFIX: suffix, TMPDIR: process.env.TMPDIR };
     if (koffi) env.NODE_PATH = path.join(REPO_ROOT, 'node_modules');
-    const broker = spawn(process.execPath, [path.join(res, 'mcp-bundle', 'broker.js')], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+    const broker = spawn(process.execPath, [path.join(res, 'mcp-bundle', 'broker.js')], { env, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
     owned.push(broker);
-    // The broker main spawned, as BrokerSupervisor records it: pid and start time right after the spawn.
+    // The broker main spawned, as BrokerSupervisor records it: pid and start
+    // time right after the spawn, and the stamp sent to it.
     const startedAt = processStartTime(broker.pid as number);
     main.broker = { pid: broker.pid as number, startedAt: startedAt === null ? null : String(startedAt) };
+    broker.send({ wmuxBroker: 'stamp', stamp: main.stamp });
     // The Codex thread's owner record, as wmux's pane relay writes it in the
     // default CODEX_HOME (Codex passes none to the MCP servers it spawns).
     const owners = path.join(home, '.codex', 'wmux-thread-owners');

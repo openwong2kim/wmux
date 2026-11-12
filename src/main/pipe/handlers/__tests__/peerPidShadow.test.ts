@@ -4,12 +4,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RpcContext } from '../../../../shared/rpc';
 import {
+  brokerStampHolds,
   checkClaim,
   claimStillHeld,
   identitySummary,
   notePeerReadCheck,
   resetClaimChecks,
   setBrokerIdentitySource,
+  setBrokerStampSource,
   setClaimStartTimeSource,
   setUnownedBrokerSource,
 } from '../peerPidShadow';
@@ -20,6 +22,7 @@ const wire = (peerPid?: number, peerStartedAt?: string, clientName = 'claude-cod
   ...(peerPid !== undefined && { peerPid }),
   ...(peerStartedAt !== undefined && { peerStartedAt }),
 }) as RpcContext;
+const stamped = (ctx: RpcContext): RpcContext => ({ ...ctx, brokerStamped: true });
 const quiet = { platform: 'darwin' as const, log: () => undefined };
 
 beforeEach(() => {
@@ -32,9 +35,16 @@ describe('checkClaim', () => {
     expect(checkClaim('callerPid', wire(100, '10'), 100, quiet)).toEqual({ ok: true, via: 'same' });
   });
 
-  it('takes any pid from the broker main spawned, by its pid and start time', () => {
+  it('takes any pid from the broker main spawned, by its pid and start time, on a stamped call', () => {
     setBrokerIdentitySource(() => ({ pid: 500, startedAt: '50' }));
-    expect(checkClaim('callerPid', wire(500, '50'), 4242, quiet)).toEqual({ ok: true, via: 'broker' });
+    expect(checkClaim('callerPid', stamped(wire(500, '50')), 4242, quiet)).toEqual({ ok: true, via: 'broker' });
+  });
+
+  it('refuses a call from the broker\'s pid and start time that carries no stamp', () => {
+    setBrokerIdentitySource(() => ({ pid: 500, startedAt: '50' }));
+    expect(checkClaim('callerPid', wire(500, '50'), 4242, quiet)).toEqual({ ok: false, reason: 'broker-unverified' });
+    // Nor its own pid: a connection from the broker is never taken as the process itself.
+    expect(checkClaim('callerPid', wire(500, '50'), 500, quiet)).toEqual({ ok: false, reason: 'broker-unverified' });
   });
 
   it('names the reason for each claim it refuses', () => {
@@ -44,7 +54,7 @@ describe('checkClaim', () => {
       [wire(101, '10'), 100, 'other-pid'],
       [wire(100), 100, 'start-unread'],
       [wire(100, '9'), 100, 'restarted'],
-      [wire(500, '51'), 4242, 'broker-unverified'],
+      [stamped(wire(500, '51')), 4242, 'broker-unverified'],
     ];
     for (const [ctx, pid, reason] of cases) expect(checkClaim('callerPid', ctx, pid, quiet), reason).toEqual({ ok: false, reason });
     setClaimStartTimeSource(() => null);
@@ -136,5 +146,34 @@ describe('identitySummary (wmux doctor)', () => {
   it('reads nothing on Windows', () => {
     notePeerReadCheck('available');
     expect(identitySummary('win32')).toMatchObject({ peerRead: { state: 'not-read' }, startTimes: 'not-read', tcpClaims: 0 });
+  });
+});
+
+describe('brokerStampHolds', () => {
+  beforeEach(() => {
+    setBrokerIdentitySource(() => ({ pid: 500, startedAt: '50' }));
+    setBrokerStampSource((stamp) => stamp === 'a'.repeat(64));
+  });
+
+  it('holds for the stamp main sent, on the spawned broker\'s connection', () => {
+    expect(brokerStampHolds(500, '50', 'a'.repeat(64))).toBe(true);
+  });
+
+  it('does not hold for another stamp, or for no stamp', () => {
+    expect(brokerStampHolds(500, '50', 'b'.repeat(64))).toBe(false);
+    expect(brokerStampHolds(500, '50', undefined)).toBe(false);
+    expect(brokerStampHolds(500, '50', 7)).toBe(false);
+  });
+
+  it('does not hold for the right stamp on any other connection', () => {
+    const right = 'a'.repeat(64);
+    expect(brokerStampHolds(501, '50', right)).toBe(false);
+    expect(brokerStampHolds(500, '51', right)).toBe(false);
+    expect(brokerStampHolds(500, undefined, right)).toBe(false);
+    expect(brokerStampHolds(undefined, undefined, right)).toBe(false);
+    setBrokerIdentitySource(() => ({ pid: 500, startedAt: null }));
+    expect(brokerStampHolds(500, '50', right)).toBe(false);
+    setBrokerIdentitySource(() => null);
+    expect(brokerStampHolds(500, '50', right)).toBe(false);
   });
 });

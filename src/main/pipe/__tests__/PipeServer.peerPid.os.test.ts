@@ -24,10 +24,17 @@ vi.mock('../../../shared/processStartTime', async (importOriginal) => {
 
 import { PipeServer } from '../PipeServer';
 import { processStartTime } from '../../../shared/processStartTime';
+import { setBrokerIdentitySource, setBrokerStampSource } from '../handlers/peerPidShadow';
 
 const supported = process.platform === 'darwin' || process.platform === 'linux';
 let server: PipeServer | null = null;
-afterEach(() => { server?.stop(); server = null; startTime.unreadable = false; });
+afterEach(() => {
+  server?.stop();
+  server = null;
+  startTime.unreadable = false;
+  setBrokerIdentitySource(() => null);
+  setBrokerStampSource(() => false);
+});
 
 /** One request over a real socket from this process; the dispatch mock that saw it. */
 async function sendOne(extra: Record<string, unknown> = {}) {
@@ -65,5 +72,50 @@ describe.runIf(supported)('PipeServer peer pid', () => {
     const ctx = (dispatch.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
     expect(ctx.peerPid).toBe(process.pid);
     expect('peerStartedAt' in ctx).toBe(false);
+  });
+});
+
+describe.runIf(supported)('PipeServer broker stamp', () => {
+  const STAMP = 'c'.repeat(64);
+  const asBroker = (pid: number) => {
+    const startedAt = processStartTime(pid);
+    setBrokerIdentitySource(() => ({ pid, startedAt: startedAt === null ? null : String(startedAt) }));
+    setBrokerStampSource((stamp) => stamp === STAMP);
+  };
+  const seen = (dispatch: Awaited<ReturnType<typeof sendOne>>) => {
+    const [request, ctx] = dispatch.mock.calls[0] as unknown as [Record<string, unknown>, Record<string, unknown>];
+    return { request, ctx };
+  };
+
+  it('marks a call stamped when its connection is the spawned broker and the stamp is the one sent', async () => {
+    asBroker(process.pid);
+    const { request, ctx } = seen(await sendOne({ brokerStamp: STAMP }));
+    expect(ctx.brokerStamped).toBe(true);
+    // Removed before dispatch: no handler sees it.
+    expect('brokerStamp' in request).toBe(false);
+  });
+
+  it('does not mark a call with another stamp, or with none, from the same connection', async () => {
+    asBroker(process.pid);
+    const wrong = seen(await sendOne({ brokerStamp: 'd'.repeat(64) }));
+    expect('brokerStamped' in wrong.ctx).toBe(false);
+    expect('brokerStamp' in wrong.request).toBe(false);
+    server?.stop();
+    const none = seen(await sendOne());
+    expect('brokerStamped' in none.ctx).toBe(false);
+  });
+
+  it('refuses the stamp on a connection that is not the spawned broker, even when it matches', async () => {
+    asBroker(process.ppid);
+    const { request, ctx } = seen(await sendOne({ brokerStamp: STAMP }));
+    expect(ctx.peerPid).toBe(process.pid);
+    expect('brokerStamped' in ctx).toBe(false);
+    expect('brokerStamp' in request).toBe(false);
+  });
+
+  it('takes no stamped mark from the request itself', async () => {
+    asBroker(process.ppid);
+    const { ctx } = seen(await sendOne({ brokerStamped: true }));
+    expect('brokerStamped' in ctx).toBe(false);
   });
 });

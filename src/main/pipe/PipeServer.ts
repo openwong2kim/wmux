@@ -6,6 +6,7 @@ import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../../shared/se
 import type { RpcRequest } from '../../shared/rpc';
 import { RpcRouter } from './RpcRouter';
 import { peerPidOf } from '../../shared/peerPid';
+import { brokerStampHolds } from './handlers/peerPidShadow';
 import { processStartTime } from '../../shared/processStartTime';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
@@ -385,6 +386,15 @@ export class PipeServer {
       return;
     }
 
+    // The broker's stamp is read here and removed, so nothing past this point
+    // (handlers, responses, logs) sees it. It counts only on the spawned
+    // broker's own connection (brokerStampHolds).
+    let stamp: unknown;
+    if (request !== null && typeof request === 'object') {
+      stamp = (request as { brokerStamp?: unknown }).brokerStamp;
+      delete (request as { brokerStamp?: unknown }).brokerStamp;
+    }
+
     // Authenticate first: reject unauthenticated requests before consuming rate limit budget.
     // This prevents unauthenticated attackers from exhausting rate limits to DoS legitimate clients.
     const tokenBuf = Buffer.from(request.token || '');
@@ -446,6 +456,9 @@ export class PipeServer {
         ...(this.peerPids.has(socket) ? { peerPid: this.peerPids.get(socket) } : {}),
         ...(this.peerStartedAts.has(socket) ? { peerStartedAt: this.peerStartedAts.get(socket) } : {}),
         ...(this.tcpSockets.has(socket) ? { viaTcp: true as const } : {}),
+        ...(stamp !== undefined && brokerStampHolds(this.peerPids.get(socket), this.peerStartedAts.get(socket), stamp)
+          ? { brokerStamped: true as const }
+          : {}),
       })
       .then((response) => {
         if (!socket.destroyed) {
