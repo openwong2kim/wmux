@@ -122,7 +122,7 @@ import { LanLinkServer } from './lanlink/server';
 import { QUERY_TIMEOUT_MS } from './lanlink/netCategory';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { A2aRemoteController } from './a2aRemote/controller';
+import { A2aRemoteController, a2aRemoteBindHost } from './a2aRemote/controller';
 import { A2aServer, rankedExternalIpv4s } from './a2aRemote/server';
 import { registerNetRpc } from './net/rpc';
 import { FirewallRecordStore } from './net/firewallRecord';
@@ -10767,6 +10767,8 @@ async function main(): Promise<void> {
       });
     const a2aServer = new A2aServer({
       controller: a2aRemoteController,
+      // `a2aRemote.bindHost` in config.json; absent keeps the default.
+      bindHost: a2aRemoteBindHost(a2aRemoteController.current(), a2aLog),
       identityDir: a2aDir,
       peers: a2aPeers,
       onPeerRevoked: a2aCascade,

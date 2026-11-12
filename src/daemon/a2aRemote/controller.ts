@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import net from 'node:net';
 import type { DaemonConfig } from '../types';
 import { A2A_REMOTE_DEFAULT_PORT } from '../../shared/a2aRemote';
 
@@ -14,6 +15,11 @@ export interface A2aRemoteConfig {
   enabled: boolean;
   /** Absent = `A2A_REMOTE_DEFAULT_PORT`. */
   port?: number;
+  /**
+   * The listener's bind address: an IP literal or `localhost`. Absent = all
+   * interfaces (`0.0.0.0`). Read when the daemon starts; see a2aRemoteBindHost.
+   */
+  bindHost?: string;
 }
 
 export interface A2aRemoteConfigurePatch {
@@ -41,7 +47,28 @@ export function coerceA2aRemoteConfig(raw: unknown, def: A2aRemoteConfig = defau
   const o = raw as Record<string, unknown>;
   const out: A2aRemoteConfig = { enabled: typeof o['enabled'] === 'boolean' ? o['enabled'] : def.enabled };
   if (isValidPort(o['port'])) out.port = o['port'];
+  // Kept as written: a2aRemoteBindHost reports a value it cannot use.
+  if (typeof o['bindHost'] === 'string' && o['bindHost'] !== '') out.bindHost = o['bindHost'];
   return out;
+}
+
+/**
+ * The bind address the listener should use, or undefined for its default
+ * (all interfaces). Anything but an IP literal or `localhost` is logged and
+ * left out.
+ */
+export function a2aRemoteBindHost(
+  slice: A2aRemoteConfig,
+  log: (level: 'warn', msg: string) => void,
+): string | undefined {
+  const host = slice.bindHost;
+  if (host === undefined) return undefined;
+  if (host === 'localhost' || net.isIP(host) !== 0) return host;
+  log(
+    'warn',
+    `[a2a-remote] ignoring a2aRemote.bindHost ${JSON.stringify(host)}: not an IP address or "localhost"; listening on 0.0.0.0`,
+  );
+  return undefined;
 }
 
 /** Strict RPC-boundary validation: only present keys, throws on a malformed one. */
@@ -102,6 +129,7 @@ export class A2aRemoteController extends EventEmitter {
     const next: A2aRemoteConfig = { enabled: patch.enabled ?? cur.enabled };
     const port = patch.port ?? cur.port;
     if (port !== undefined) next.port = port;
+    if (cur.bindHost !== undefined) next.bindHost = cur.bindHost;
     if (next.enabled === cur.enabled && (next.port ?? null) === (cur.port ?? null)) return cur;
     this.persist({ ...this.config, a2aRemote: next });
     this.config.a2aRemote = next;

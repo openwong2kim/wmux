@@ -1,10 +1,12 @@
 import net from 'node:net';
+import os from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_DEFAULT_PORT } from '../../../shared/a2aRemote';
 import type { DaemonConfig } from '../../types';
 import {
   A2A_REMOTE_CONFIG_CHANGED,
   A2aRemoteController,
+  a2aRemoteBindHost,
   coerceA2aRemoteConfig,
   coerceA2aRemotePatch,
 } from '../controller';
@@ -66,6 +68,54 @@ describe('a2aRemote config slice', () => {
 
   it('the default port is clear of the web (7681) and LanLink (45651) defaults', () => {
     expect([7681, 45651]).not.toContain(A2A_REMOTE_DEFAULT_PORT);
+  });
+});
+
+describe('a2aRemote bind address', () => {
+  it('keeps the configured address through load and a later configure', () => {
+    const slice = coerceA2aRemoteConfig({ enabled: true, port: 50000, bindHost: '127.0.0.1' });
+    expect(slice).toEqual({ enabled: true, port: 50000, bindHost: '127.0.0.1' });
+    const config = { a2aRemote: slice } as unknown as DaemonConfig;
+    const controller = new A2aRemoteController({ config, persist: () => undefined });
+    expect(controller.configure({ port: 50001 })).toEqual({ enabled: true, port: 50001, bindHost: '127.0.0.1' });
+    expect(controller.configure({ enabled: false }).bindHost).toBe('127.0.0.1');
+  });
+
+  it('accepts an IP literal or localhost, and leaves the default otherwise', () => {
+    const log = vi.fn();
+    for (const host of ['127.0.0.1', '::1', 'localhost', '192.168.1.20', '0.0.0.0']) {
+      expect(a2aRemoteBindHost({ enabled: true, bindHost: host }, log)).toBe(host);
+    }
+    expect(a2aRemoteBindHost({ enabled: true }, log)).toBeUndefined();
+    expect(a2aRemoteBindHost(coerceA2aRemoteConfig(undefined), log)).toBeUndefined();
+    expect(log).not.toHaveBeenCalled();
+
+    for (const host of ['example.com', '1.2.3', '127.0.0.1 ', 'localhost:45660']) {
+      log.mockClear();
+      expect(a2aRemoteBindHost({ enabled: true, bindHost: host }, log)).toBeUndefined();
+      expect(log).toHaveBeenCalledWith('warn', expect.stringContaining(JSON.stringify(host)));
+      expect(log.mock.calls[0][1]).toContain('0.0.0.0');
+    }
+  });
+
+  it('a loopback bind is not reachable on another address of this PC', async () => {
+    const other = Object.values(os.networkInterfaces())
+      .flat()
+      .find((a) => a && a.family === 'IPv4' && !a.internal)?.address;
+    const port = await freePort();
+    const pc = await makePc('PC A', { port, deps: { bindHost: '127.0.0.1' } });
+    expect(pc.server.status().listening).toBe(true);
+    expect(await connectRefused(port)).toBe(false);
+    if (!other) return; // no non-loopback IPv4 on this runner
+    const refused = await new Promise<boolean>((resolve) => {
+      const s = net.connect(port, other);
+      s.once('connect', () => {
+        s.destroy();
+        resolve(false);
+      });
+      s.once('error', () => resolve(true));
+    });
+    expect(refused).toBe(true);
   });
 });
 
