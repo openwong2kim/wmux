@@ -88,6 +88,8 @@ DAEMON (headless lifecycle, no Electron/GUI required)
   daemon install-service            Linux: start the daemon at boot and keep it
                                     after logout (systemd --user unit)
   daemon uninstall-service          Remove that unit (the running daemon stays)
+  daemon headless on|off|status     Host without the desktop app: let the daemon
+                                    start agents that paired PCs' allow rules match
 
 WEB ACCESS (browser / PWA)
   web                               Serve wmux panes to a browser (read-only,

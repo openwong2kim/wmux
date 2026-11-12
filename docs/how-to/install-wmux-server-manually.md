@@ -165,6 +165,64 @@ To see or remove what is allowed:
 for one sub-folder); with `--from` alone, that PC may no longer ask the host
 to start agents. `unpair` removes a PC's rules as well.
 
+## Let the daemon start the agents itself (headless mode)
+
+On a desktop, the desktop app starts an agent a paired PC asked for. A host
+that runs only the daemon has no app to do it, so a request there waits. To
+have the daemon start agents itself, turn on headless mode:
+
+```bash
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless on
+```
+
+The command states what it turns on and asks you to type `yes`. Like
+`remote allow`, it needs a terminal and refuses to run from inside an agent
+session or a wmux pane. It is refused on an install where the desktop app has
+been used: there the app starts the agents.
+
+With headless mode on:
+
+- A request an allow rule matches is started at once: the daemon makes a
+  fresh worktree of the folder (branch `wmux/remote/<spawn id>`), starts the
+  agent in it with the permission mode set by `remote allow`, and tells the
+  asking PC which session it runs in. In this version the asking PC's prompt
+  is kept as the agent's first task but not typed in yet, so the agent waits
+  idle until its link ends; typing it in and sending the reply back come in a
+  later version.
+- A request no rule matches is refused at once (the asking PC sees
+  `not-allowed`); nothing waits for an approval. A policy with the
+  `manual` permission mode is refused too: nobody is at the host to answer
+  the agent's questions.
+- Only Claude Code is started this way. Its launcher (`claude`) must be on
+  the login PATH of the account the daemon runs as, or in `~/.local/bin`,
+  where its installer puts it. The agent must be signed in on that account.
+- An agent ends when its link ends (the asking PC closes it, or `unpair`),
+  and the link breaks when the agent's session ends. Restarting the daemon
+  ends every agent it started: they do not come back.
+- When an agent ends, its worktree and branch are kept, with whatever the
+  agent wrote there. Remove them yourself with `git worktree remove` and
+  `git branch -D` once you no longer need them.
+
+See whether headless mode is in effect, how many agents run, and which
+worktrees ended agents left. A start whose agent left processes that did not
+exit is listed apart: its worktree stays until they are gone, and the daemon
+checks again every minute. With the daemon running, `status` asks it;
+otherwise it reads the daemon's data folder:
+
+```bash
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless status
+```
+
+Turn it off (no question asked). No new agent is started, and the ones
+running end within a minute; their worktrees are kept:
+
+```bash
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless off
+```
+
+If the desktop app is ever used on this install, headless mode turns off for
+good, and the agents the daemon started end.
+
 ## Things to know
 
 - **Do not restart `wmux web` with different flags** once devices are paired:
