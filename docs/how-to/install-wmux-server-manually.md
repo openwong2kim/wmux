@@ -196,10 +196,18 @@ With headless mode on:
   fresh worktree of the folder (branch `wmux/remote/sp-…`, named after the
   asking PC and its spawn id), starts the
   agent in it with the permission mode set by `remote allow`, and tells the
-  asking PC which session it runs in. In this version the asking PC's prompt
-  is kept as the agent's first task but not typed in yet, so the agent waits
-  idle until its link ends; typing it in and sending the reply back come in a
-  later version.
+  asking PC which session it runs in.
+- The asking PC's prompt is typed into the agent as soon as it is ready, and
+  when the agent's turn ends, its last answer goes back to the asking PC as
+  the reply (the task then waits for more input there). The answer is read
+  from the agent's own conversation file, so no hooks are installed on the
+  host. The task fails, with the reason shown on the asking PC, when the
+  agent is given other input on the host during its turn, when its turn is
+  interrupted or ends on an error, or when the agent ends before answering
+  (its session ends, its link ends, headless mode is turned off, or the
+  daemon restarts). A usage-limit pause is waited out. In this version only
+  the first task is typed in; messages the asking PC sends afterwards are not
+  yet, and an answer larger than 32 KiB fails the task.
 - A request no rule matches is refused at once; nothing waits for an
   approval. The asking PC sees `not-allowed` when it may not ask this host,
   `agent-not-allowed` when it may but not for that agent, and
