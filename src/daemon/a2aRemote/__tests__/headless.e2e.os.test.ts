@@ -21,7 +21,7 @@ import { ExposedPaneCache } from '../exposedPanes';
 import { ExposureStore } from '../exposureStore';
 import { HeadlessMode, headlessFlagPath, headlessReleases } from '../headlessMode';
 import { HeadlessStartStore } from '../headlessStartStore';
-import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionInput, type HeadlessSessionPort } from '../headlessStarter';
+import { A2aHeadlessStarter, headlessTreeId, worktreeUnchanged, type HeadlessSessionInput, type HeadlessSessionPort } from '../headlessStarter';
 import { remoteTaskId } from '../ids';
 import { joinRemoteHost } from '../joiner';
 import { registerA2aLinkRpc } from '../linkRpc';
@@ -361,7 +361,7 @@ describe('headless remote spawn, two PCs and no app', () => {
 
     const rec = b.starts!.get(a.hostId, spawnId)!;
     expect(rec).toMatchObject({ phase: 'started', lineage: `remote-spawn:${a.hostId}` });
-    expect(fs.existsSync(path.join(b.dir, 'worktrees', `remote-${spawnId}`))).toBe(true);
+    expect(fs.existsSync(path.join(b.dir, 'worktrees', `remote-${headlessTreeId(a.hostId, spawnId)}`))).toBe(true);
     expect(b.sessions.made).toHaveLength(1);
     expect(b.sessions.made[0]).toMatchObject({ sessionId: rec.sessionId, workspaceId: rec.workspaceId, agentBin: '/opt/fake/bin/claude' });
     expect(JSON.stringify(b.sessions.made[0])).not.toContain(PROMPT);
@@ -373,7 +373,7 @@ describe('headless remote spawn, two PCs and no app', () => {
     expect(task?.history[0].parts).toEqual([{ kind: 'text', text: PROMPT }]);
 
     // The agent wrote something: its worktree is kept when it ends.
-    fs.writeFileSync(path.join(b.dir, 'worktrees', `remote-${spawnId}`, 'notes.txt'), 'work\n');
+    fs.writeFileSync(path.join(b.dir, 'worktrees', `remote-${headlessTreeId(a.hostId, spawnId)}`, 'notes.txt'), 'work\n');
     // The agent's session ends: its link breaks on both PCs and nothing counts as live.
     b.sessions.live.delete(rec.sessionId);
     b.headless!.onSessionGone(rec.sessionId);
@@ -382,7 +382,7 @@ describe('headless remote spawn, two PCs and no app', () => {
     await until(() => a.links.get(linkId)?.state === 'broken');
     expect(b.starts!.get(a.hostId, spawnId)?.phase).toBe('ended');
     // The worktree (the agent's work) is kept.
-    expect(fs.existsSync(path.join(b.dir, 'worktrees', `remote-${spawnId}`))).toBe(true);
+    expect(fs.existsSync(path.join(b.dir, 'worktrees', `remote-${headlessTreeId(a.hostId, spawnId)}`))).toBe(true);
   });
 
   it('removing the asking PC ends its agent here', async () => {
@@ -400,7 +400,7 @@ describe('headless remote spawn, two PCs and no app', () => {
     expect(b.sessions.live.has(rec.sessionId)).toBe(false);
     // Its worktree was left unchanged (no commit, clean): removed with its branch, and nothing is left to list.
     expect(b.starts!.get(a.hostId, spawnId)).toBeUndefined();
-    expect(fs.existsSync(path.join(b.dir, 'worktrees', `remote-${spawnId}`))).toBe(false);
+    expect(fs.existsSync(path.join(b.dir, 'worktrees', `remote-${headlessTreeId(a.hostId, spawnId)}`))).toBe(false);
   });
 
   it('a worktree holding only ignored files the agent wrote is kept', async () => {
@@ -410,7 +410,7 @@ describe('headless remote spawn, two PCs and no app', () => {
     await allow(b, a.hostId, [{ hostId: a.hostId, rootId: 'web', agent: 'claude' }]);
     const spawnId = await ask(a, b);
     await until(() => a.asks!.list(spawnId).requests[0]?.state === 'started');
-    const wt = path.join(b.dir, 'worktrees', `remote-${spawnId}`);
+    const wt = path.join(b.dir, 'worktrees', `remote-${headlessTreeId(a.hostId, spawnId)}`);
     // No commit, nothing git status lists by default: the agent's output is all ignored.
     fs.appendFileSync(path.join(b.dir, 'repo', '.git', 'info', 'exclude'), 'out/\n');
     fs.mkdirSync(path.join(wt, 'out'));
@@ -428,7 +428,7 @@ describe('headless remote spawn, two PCs and no app', () => {
     await allow(b, a.hostId, [{ hostId: a.hostId, rootId: 'web', agent: 'claude' }]);
     const spawnId = await ask(a, b);
     await until(() => a.asks!.list(spawnId).requests[0]?.state === 'started');
-    const wt = path.join(b.dir, 'worktrees', `remote-${spawnId}`);
+    const wt = path.join(b.dir, 'worktrees', `remote-${headlessTreeId(a.hostId, spawnId)}`);
     const git = (...args: string[]): string => execFileSync('git', ['-C', wt, ...args], {
       env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(b.dir, 'global.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }, encoding: 'utf8',
     }).trim();
@@ -442,7 +442,7 @@ describe('headless remote spawn, two PCs and no app', () => {
     b.links.forgetHost(a.hostId as HostId);
     await b.headless!.reconcile();
     expect(b.starts!.get(a.hostId, spawnId)?.phase).toBe('ended');
-    expect(git('rev-parse', `refs/heads/wmux/remote/${spawnId}`)).toBe(work);
+    expect(git('rev-parse', `refs/heads/wmux/remote/${headlessTreeId(a.hostId, spawnId)}`)).toBe(work);
     expect(fs.existsSync(wt)).toBe(true);
   });
 
@@ -459,7 +459,7 @@ describe('headless remote spawn, two PCs and no app', () => {
     // The session never comes: the daemon "dies" with the worktree made.
     b.sessions.hold = new Promise<void>(() => undefined);
     const spawnId = await ask(a, b);
-    const wt = path.join(b.dir, 'worktrees', `remote-${spawnId}`);
+    const wt = path.join(b.dir, 'worktrees', `remote-${headlessTreeId(a.hostId, spawnId)}`);
     await until(() => fs.existsSync(wt) && b.starts!.get(a.hostId, spawnId)?.worktreePath !== undefined);
     b.headless!.stop();
     cut(b, a.hostId, spawnId, wt);

@@ -14,7 +14,7 @@ import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { ExposureStore } from '../exposureStore';
 import { HeadlessStartStore } from '../headlessStartStore';
-import { A2aHeadlessStarter } from '../headlessStarter';
+import { A2aHeadlessStarter, headlessTreeId } from '../headlessStarter';
 import { LinkStore } from '../linkStore';
 import { linkAlias } from '../outbound';
 import { SpawnChecks } from '../spawnChecks';
@@ -195,7 +195,7 @@ describe('spawn receiver in headless mode', () => {
     expect(changes).toContainEqual({ spawnId, state: 'approved' });
     // The starter claimed it and tried the worktree (refused by this test's port, so answered `failed`).
     await vi.waitFor(() => expect(requests.get(HOST, spawnId)).toMatchObject({ state: 'decided', code: 'failed' }), { timeout: 5_000 });
-    expect(made).toEqual([`worktree:${spawnId}`]);
+    expect(made).toEqual([`worktree:${headlessTreeId(HOST, spawnId)}`]);
   });
 
   it('a rule removed after the approval refuses the claim (`not-allowed`)', async () => {

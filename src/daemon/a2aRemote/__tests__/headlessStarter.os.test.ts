@@ -11,13 +11,14 @@ import type { A2aSpawnClaimResult, A2aSpawnStepResult } from '../../../shared/a2
 import { workerLaunchFlags } from '../../../shared/workerLaunch';
 import type { SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
 import { HeadlessStartStore, type HeadlessSurvivor } from '../headlessStartStore';
-import { A2aHeadlessStarter, HEADLESS_EXTRA_DISALLOWED_TOOLS, type HeadlessSessionInput, type HeadlessSessionPort, type HeadlessStarterDeps } from '../headlessStarter';
+import { A2aHeadlessStarter, HEADLESS_EXTRA_DISALLOWED_TOOLS, headlessTreeId, type HeadlessSessionInput, type HeadlessSessionPort, type HeadlessStarterDeps } from '../headlessStarter';
 import type { SpawnRequestRecordV1 } from '../spawnRequestStore';
 
 const HOST = '11111111-1111-4111-8111-111111111111' as HostId;
 const SPAWN = 'sp-0123abcd-4567-89ab-cdef-0123456789ab';
 const LINK = '22222222-2222-4222-8222-222222222222';
 const PROMPT = 'fix the build';
+const TREE = headlessTreeId(HOST, SPAWN);
 
 let dir: string;
 let starts: HeadlessStartStore;
@@ -45,6 +46,7 @@ let checkedIn: Array<string | undefined>;
 let earlierSurvivors: HeadlessSurvivor[];
 let pristine: boolean;
 let released: Set<string>;
+let allLinks: A2aLinkRecordV1[];
 
 function makeSessions(): HeadlessSessionPort {
   return {
@@ -93,7 +95,7 @@ function makeStarter(over: Partial<HeadlessStarterDeps> = {}): A2aHeadlessStarte
       },
     },
     requests: { get: () => request as SpawnRequestRecordV1 | undefined },
-    links: { get: (id) => (link && link.linkId === id ? link : undefined) },
+    links: { get: (id) => (link && link.linkId === id ? link : undefined), list: () => allLinks },
     activationOwed: () => owed,
     starts,
     sessions: () => sessionPort,
@@ -132,7 +134,7 @@ beforeEach(() => {
   failed = [];
   gone = [];
   removedTrees = [];
-  worktree = { ok: true, worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps', branch: `wmux/remote/${SPAWN}` };
+  worktree = { ok: true, worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps', branch: `wmux/remote/${TREE}` };
   sessionPort = makeSessions();
   createThrows = false;
   agentBin = '/home/u/.local/bin/claude';
@@ -144,13 +146,14 @@ beforeEach(() => {
   earlierSurvivors = [];
   pristine = false;
   released = new Set();
+  allLinks = [];
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 describe('headless start', () => {
   it('claims, records, makes the worktree and the session, then reports the session it made', async () => {
     await makeStarter().start(HOST, SPAWN);
-    expect(calls).toEqual(['claim', 'worktree', 'create', expect.stringMatching(/^started:hl-0123abcd-4567-89ab-cdef-0123456789ab:hl-[0-9a-f-]{36}$/)]);
+    expect(calls).toEqual(['claim', 'worktree', 'create', `started:hl-${TREE.slice(3)}:${starts.get(HOST, SPAWN)?.sessionId}`]);
     const rec = starts.get(HOST, SPAWN)!;
     expect(rec).toMatchObject({ phase: 'started', linkId: LINK, lineage: `remote-spawn:${HOST}`, runId: 'run-1', worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps' });
     expect(created).toHaveLength(1);
@@ -160,7 +163,9 @@ describe('headless start', () => {
     expect(input.agentBin).toBe('/home/u/.local/bin/claude');
     // The worker flags and the pinned conversation id; never the prompt.
     expect(input.command).toBe(`claude --session-id ${rec.agentSessionId} ${workerLaunchFlags('auto', HEADLESS_EXTRA_DISALLOWED_TOOLS)}`);
-    expect(input.command).toContain('mcp__wmux__remote_spawn');
+    for (const tool of ['remote_spawn', 'hand_out', 'a2a_broadcast', 'pane_close', 'automation_propose', 'computer', 'repl_run', 'terminal_send']) {
+      expect(input.command).toContain(`mcp__wmux__${tool}`);
+    }
     expect(input.command).toContain('mcp__wmux__fanout_start');
     expect(JSON.stringify(input)).not.toContain(PROMPT);
     expect(failed).toEqual([]);
@@ -214,7 +219,7 @@ describe('headless start', () => {
     createThrows = true;
     await makeStarter().start(HOST, SPAWN);
     expect(failed).toEqual(['failed']);
-    expect(removedTrees).toEqual([SPAWN]);
+    expect(removedTrees).toEqual([TREE]);
     expect(live.size).toBe(0);
     expect(starts.list()).toEqual([]);
   });
@@ -224,7 +229,7 @@ describe('headless start', () => {
     await makeStarter().start(HOST, SPAWN);
     expect(live.size).toBe(0);
     expect(calls.some((c) => c.startsWith('destroy:hl-'))).toBe(true);
-    expect(removedTrees).toEqual([SPAWN]);
+    expect(removedTrees).toEqual([TREE]);
     expect(failed).toEqual(['failed']);
     expect(starts.list()).toEqual([]);
   });
@@ -245,7 +250,7 @@ describe('headless start', () => {
     });
     await starter.start(HOST, SPAWN);
     expect(created).toEqual([]);
-    expect(removedTrees).toEqual([SPAWN]);
+    expect(removedTrees).toEqual([TREE]);
     expect(failed).toEqual(['failed']);
   });
 
@@ -284,7 +289,7 @@ describe('headless start', () => {
 
 describe('headless reconcile', () => {
   const record = (over: Partial<Parameters<HeadlessStartStore['add']>[0]> = {}): void => starts.add({
-    v: 1, hostId: HOST, spawnId: SPAWN, agent: 'claude', repoPath: '/repo', sessionId: 'hl-s1', workspaceId: 'hl-w1',
+    v: 1, hostId: HOST, spawnId: SPAWN, treeId: TREE, agent: 'claude', repoPath: '/repo', sessionId: 'hl-11111111-2222-4333-8444-555555555555', workspaceId: 'hl-w1',
     agentSessionId: '33333333-3333-4333-8333-333333333333', lineage: `remote-spawn:${HOST}`, runId: 'run-1',
     phase: 'started', worktreePath: '/wt/remote-x', linkId: LINK, startedAt: new Date().toISOString(), ...over,
   });
@@ -293,14 +298,14 @@ describe('headless reconcile', () => {
     record({ phase: 'prepared', linkId: undefined, runId: 'run-0' });
     request = { state: 'decided', code: 'failed' };
     await makeStarter().reconcile();
-    expect(removedTrees).toEqual([SPAWN]);
-    expect(calls).toContain('destroy:hl-s1');
+    expect(removedTrees).toEqual([TREE]);
+    expect(calls).toContain('destroy:hl-11111111-2222-4333-8444-555555555555');
     expect(starts.list()).toEqual([]);
   });
 
   it('a created start whose request is still starting is refused and taken back', async () => {
     record({ phase: 'created', linkId: undefined });
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = { state: 'starting' };
     await makeStarter().reconcile();
     expect(live.size).toBe(0);
@@ -310,7 +315,7 @@ describe('headless reconcile', () => {
 
   it('a live start stays', async () => {
     record();
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = { state: 'decided', code: 'started', linkId: LINK };
     await makeStarter().reconcile();
     expect(starts.get(HOST, SPAWN)?.phase).toBe('started');
@@ -319,11 +324,11 @@ describe('headless reconcile', () => {
 
   it('an agent of an earlier daemon run (relaunched by recovery) is ended, its link broken, its worktree kept', async () => {
     record({ runId: 'run-0' });
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = { state: 'decided', code: 'started', linkId: LINK };
     await makeStarter().reconcile();
-    expect(live.has('hl-s1')).toBe(false);
-    expect(gone).toEqual([{ workspaceId: 'hl-w1', paneId: 'hl-s1' }]);
+    expect(live.has('hl-11111111-2222-4333-8444-555555555555')).toBe(false);
+    expect(gone).toEqual([{ workspaceId: 'hl-w1', paneId: 'hl-11111111-2222-4333-8444-555555555555' }]);
     expect(calls).toContain('abandon');
     expect(removedTrees).toEqual([]);
     expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'ended', worktreePath: '/wt/remote-x', endedAt: expect.any(String) });
@@ -333,38 +338,38 @@ describe('headless reconcile', () => {
     record();
     request = { state: 'decided', code: 'started', linkId: LINK };
     const starter = makeStarter();
-    starter.onSessionGone('hl-s1');
+    starter.onSessionGone('hl-11111111-2222-4333-8444-555555555555');
     await starter.reconcile();
-    expect(gone).toEqual([{ workspaceId: 'hl-w1', paneId: 'hl-s1' }]);
+    expect(gone).toEqual([{ workspaceId: 'hl-w1', paneId: 'hl-11111111-2222-4333-8444-555555555555' }]);
     expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
   });
 
   it('a link that ended ends its session', async () => {
     record();
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = { state: 'decided', code: 'started', linkId: LINK };
     link = { linkId: LINK, state: 'revoked' } as A2aLinkRecordV1;
     const starter = makeStarter();
     starter.onLinkTransition(link);
     await starter.reconcile();
-    expect(live.has('hl-s1')).toBe(false);
+    expect(live.has('hl-11111111-2222-4333-8444-555555555555')).toBe(false);
     expect(gone).toEqual([]);
     expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
   });
 
   it('the app attaching (headless off) ends every start', async () => {
     record();
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = { state: 'decided', code: 'started', linkId: LINK };
     active = false;
     await makeStarter().reconcile();
-    expect(live.has('hl-s1')).toBe(false);
+    expect(live.has('hl-11111111-2222-4333-8444-555555555555')).toBe(false);
     expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
   });
 
   it('a start stored `started` whose record was not updated is finished, not taken back', async () => {
     record({ phase: 'created', linkId: undefined });
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = { state: 'decided', code: 'started', linkId: LINK };
     await makeStarter().reconcile();
     expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', linkId: LINK });
@@ -373,22 +378,22 @@ describe('headless reconcile', () => {
 
   it('a start whose link is gone (its PC removed) is ended', async () => {
     record();
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = undefined;
     link = undefined;
     await makeStarter().reconcile();
-    expect(live.has('hl-s1')).toBe(false);
+    expect(live.has('hl-11111111-2222-4333-8444-555555555555')).toBe(false);
     expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
   });
 
   it('a start whose link is still being made stays', async () => {
     record();
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = { state: 'decided', code: 'started', linkId: LINK };
     link = undefined;
     owed = true;
     await makeStarter().reconcile();
-    expect(live.has('hl-s1')).toBe(true);
+    expect(live.has('hl-11111111-2222-4333-8444-555555555555')).toBe(true);
     expect(starts.get(HOST, SPAWN)?.phase).toBe('started');
   });
 
@@ -399,22 +404,22 @@ describe('headless reconcile', () => {
     await starter.start(HOST, SPAWN);
     expect(calls.some((c) => c.startsWith('started:'))).toBe(false);
     expect(failed).toEqual(['failed']);
-    expect(removedTrees).toEqual([SPAWN]);
+    expect(removedTrees).toEqual([TREE]);
     expect(starts.list()).toEqual([]);
   });
 
   it('an ended start whose session is somehow back is ended again', async () => {
     record({ phase: 'ended', endedAt: new Date().toISOString() });
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     await makeStarter().reconcile();
-    expect(live.has('hl-s1')).toBe(false);
+    expect(live.has('hl-11111111-2222-4333-8444-555555555555')).toBe(false);
     expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
   });
 });
 
 describe('headless cleanup that waits for the agent to exit', () => {
   const record = (over: Partial<Parameters<HeadlessStartStore['add']>[0]> = {}): void => starts.add({
-    v: 1, hostId: HOST, spawnId: SPAWN, agent: 'claude', repoPath: '/repo', sessionId: 'hl-s1', workspaceId: 'hl-w1',
+    v: 1, hostId: HOST, spawnId: SPAWN, treeId: TREE, agent: 'claude', repoPath: '/repo', sessionId: 'hl-11111111-2222-4333-8444-555555555555', workspaceId: 'hl-w1',
     agentSessionId: '33333333-3333-4333-8333-333333333333', lineage: `remote-spawn:${HOST}`, runId: 'run-1',
     phase: 'started', worktreePath: '/wt/remote-x', linkId: LINK, startedAt: new Date().toISOString(), ...over,
   });
@@ -422,14 +427,14 @@ describe('headless cleanup that waits for the agent to exit', () => {
 
   it('an end whose agent processes do not all exit breaks the link but is not marked ended until they are gone', async () => {
     record();
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = { state: 'decided', code: 'started', linkId: LINK };
     active = false;
     survivors = [SURVIVOR];
     stillRunning = [SURVIVOR];
     const starter = makeStarter();
     await starter.reconcile();
-    expect(gone).toEqual([{ workspaceId: 'hl-w1', paneId: 'hl-s1' }]);
+    expect(gone).toEqual([{ workspaceId: 'hl-w1', paneId: 'hl-11111111-2222-4333-8444-555555555555' }]);
     expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', survivors: [SURVIVOR] });
     // Still running at the next sweep: nothing changes. The check is told the worktree (for an unverified tree).
     await starter.reconcile();
@@ -447,7 +452,7 @@ describe('headless cleanup that waits for the agent to exit', () => {
 
   it('a take-back whose agent processes do not exit keeps the worktree and the record', async () => {
     record({ phase: 'created', linkId: undefined });
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = { state: 'starting' };
     survivors = [SURVIVOR];
     stillRunning = [SURVIVOR];
@@ -459,7 +464,7 @@ describe('headless cleanup that waits for the agent to exit', () => {
     stillRunning = [];
     request = { state: 'decided', code: 'failed' };
     await starter.reconcile();
-    expect(removedTrees).toEqual([SPAWN]);
+    expect(removedTrees).toEqual([TREE]);
     expect(starts.list()).toEqual([]);
   });
 
@@ -498,9 +503,9 @@ describe('headless cleanup that waits for the agent to exit', () => {
 });
 
 describe('headless starts across a crash, a restart, and an unchanged worktree', () => {
-  const INTENDED = `/wt/remote-${SPAWN}`;
+  const INTENDED = `/wt/remote-${TREE}`;
   const record = (over: Partial<Parameters<HeadlessStartStore['add']>[0]> = {}): void => starts.add({
-    v: 1, hostId: HOST, spawnId: SPAWN, agent: 'claude', repoPath: '/repo', sessionId: 'hl-s1', workspaceId: 'hl-w1',
+    v: 1, hostId: HOST, spawnId: SPAWN, treeId: TREE, agent: 'claude', repoPath: '/repo', sessionId: 'hl-11111111-2222-4333-8444-555555555555', workspaceId: 'hl-w1',
     agentSessionId: '33333333-3333-4333-8333-333333333333', lineage: `remote-spawn:${HOST}`, runId: 'run-1',
     phase: 'started', worktreePath: '/wt/remote-x', linkId: LINK, startedAt: new Date().toISOString(), ...over,
   });
@@ -522,14 +527,14 @@ describe('headless starts across a crash, a restart, and an unchanged worktree',
     });
     await starter.start(HOST, SPAWN);
     expect(seen).toEqual([INTENDED]);
-    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', rootPid: 777, rootStart: 'Thu Nov 12 10:00:00 2026', baseCommit: 'b'.repeat(40), branch: `wmux/remote/${SPAWN}` });
+    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', rootPid: 777, rootStart: 'Thu Nov 12 10:00:00 2026', baseCommit: 'b'.repeat(40), branch: `wmux/remote/${TREE}` });
   });
 
   it('a daemon that died between `worktree add` and recording it: the next run takes the path back', async () => {
     record({ phase: 'prepared', worktreePath: undefined, linkId: undefined, worktreeIntended: INTENDED, runId: 'run-0' });
     request = { state: 'decided', code: 'failed' };
     await makeStarter().reconcile();
-    expect(removedTrees).toEqual([SPAWN]);
+    expect(removedTrees).toEqual([TREE]);
     expect(starts.list()).toEqual([]);
   });
 
@@ -567,7 +572,7 @@ describe('headless starts across a crash, a restart, and an unchanged worktree',
 
   it('an ended start whose worktree is unchanged (no commit, clean) has it removed with its branch; a changed one is kept', async () => {
     record({ baseCommit: 'a'.repeat(40) });
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     request = { state: 'decided', code: 'started', linkId: LINK };
     active = false;
     await makeStarter().reconcile();
@@ -576,15 +581,15 @@ describe('headless starts across a crash, a restart, and an unchanged worktree',
     // Unchanged, but a record that does not name its branch (written before it was recorded): kept.
     starts.remove(HOST, SPAWN);
     record({ baseCommit: 'a'.repeat(40) });
-    live.add('hl-s1');
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     pristine = true;
     await makeStarter().reconcile();
     expect(removedTrees).toEqual([]);
     starts.remove(HOST, SPAWN);
-    record({ baseCommit: 'a'.repeat(40), branch: `wmux/remote/${SPAWN}` });
-    live.add('hl-s1');
+    record({ baseCommit: 'a'.repeat(40), branch: `wmux/remote/${TREE}` });
+    live.add('hl-11111111-2222-4333-8444-555555555555');
     await makeStarter().reconcile();
-    expect(removedTrees).toEqual([SPAWN]);
+    expect(removedTrees).toEqual([TREE]);
     expect(starts.list()).toEqual([]);
   });
 
@@ -600,8 +605,41 @@ describe('headless starts across a crash, a restart, and an unchanged worktree',
     earlierSurvivors = [];
     stillRunning = [];
     await makeStarter().reconcile();
-    expect(removedTrees).toEqual([SPAWN]);
+    expect(removedTrees).toEqual([TREE]);
     expect(starts.list()).toEqual([]);
+  });
+});
+
+describe('links a lost start record left behind', () => {
+  it('a live link whose local pane is a headless session no record knows: its session ends and the link breaks', async () => {
+    const orphan = 'hl-99999999-2222-4333-8444-555555555555';
+    allLinks = [
+      { linkId: LINK, state: 'active', local: { kind: 'pane', workspaceId: 'hl-w9', paneId: orphan } } as A2aLinkRecordV1,
+      // Not a headless session, or already ended: left alone.
+      { linkId: '33333333-3333-4333-8333-333333333333', state: 'active', local: { kind: 'pane', workspaceId: 'ws-1', paneId: 'pane-1' } } as A2aLinkRecordV1,
+      { linkId: '44444444-3333-4333-8333-333333333333', state: 'broken', local: { kind: 'pane', workspaceId: 'hl-w8', paneId: 'hl-88888888-2222-4333-8444-555555555555' } } as A2aLinkRecordV1,
+    ];
+    live.add(orphan);
+    await makeStarter().reconcile();
+    expect(live.has(orphan)).toBe(false);
+    expect(gone).toEqual([{ workspaceId: 'hl-w9', paneId: orphan }]);
+  });
+
+  it('a record whose session id is not a headless one is not read back', () => {
+    fs.writeFileSync(path.join(dir, 'headless-starts.json'), JSON.stringify({ v: 1, starts: [{
+      v: 1, hostId: HOST, spawnId: SPAWN, treeId: TREE, agent: 'claude', repoPath: '/repo', sessionId: '../../etc', workspaceId: 'hl-w1',
+      agentSessionId: '33333333-3333-4333-8333-333333333333', lineage: 'x', runId: 'r', phase: 'started', startedAt: new Date().toISOString(),
+    }] }));
+    expect(new HeadlessStartStore({ dir, scheduleHarden: () => undefined }).list()).toEqual([]);
+  });
+});
+
+describe('headless worktree names', () => {
+  it('two PCs that send the same spawn id get different worktrees, branches and workspaces', () => {
+    const other = '22222222-2222-4222-8222-222222222222';
+    expect(headlessTreeId(HOST, SPAWN)).not.toBe(headlessTreeId(other, SPAWN));
+    expect(headlessTreeId(HOST, SPAWN)).toBe(headlessTreeId(HOST, SPAWN));
+    expect(headlessTreeId(HOST, SPAWN)).toMatch(/^sp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 });
 
@@ -610,14 +648,14 @@ describe('headless start store', () => {
     const small = new HeadlessStartStore({ dir, scheduleHarden: () => undefined });
     const add = (i: number, phase: 'started' | 'ended'): void => small.add({
       v: 1, hostId: HOST, spawnId: `sp-${String(i).padStart(8, '0')}-4567-89ab-cdef-0123456789ab`, agent: 'claude', repoPath: '/repo',
-      sessionId: `hl-${i}`, workspaceId: `hl-w${i}`, agentSessionId: '33333333-3333-4333-8333-333333333333', lineage: 'remote-spawn:x', runId: 'r',
+      sessionId: `hl-00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, workspaceId: `hl-w${i}`, agentSessionId: '33333333-3333-4333-8333-333333333333', lineage: 'remote-spawn:x', runId: 'r',
       phase, startedAt: new Date(1_000 + i).toISOString(), ...(phase === 'ended' ? { endedAt: new Date(2_000 + i).toISOString() } : {}),
     });
     for (let i = 0; i < 1000; i++) add(i, i < 2 ? 'ended' : 'started');
     add(1000, 'started');
     expect(small.list()).toHaveLength(1000);
-    expect(small.phaseOfSession('hl-0')).toBeUndefined();
-    expect(small.phaseOfSession('hl-1')).toBe('ended');
+    expect(small.phaseOfSession('hl-00000000-0000-4000-8000-000000000000')).toBeUndefined();
+    expect(small.phaseOfSession('hl-00000000-0000-4000-8000-000000000001')).toBe('ended');
     add(1001, 'started');
     expect(() => add(1002, 'started')).toThrow(/1000 are recorded/);
   });

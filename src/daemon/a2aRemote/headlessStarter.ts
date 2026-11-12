@@ -5,11 +5,28 @@ import type { HostId, A2aLinkRecordV1 } from '../../shared/a2aRemote';
 import { REMOTE_SPAWN_LINEAGE_PREFIX, type A2aSpawnClaimResult, type A2aSpawnStepResult } from '../../shared/a2aSpawn';
 import { workerLaunchFlags } from '../../shared/workerLaunch';
 
-/** Beyond the worker deny list: an agent started for another PC asks no PC for more agents. */
-export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = ['mcp__wmux__remote_spawn'];
+/**
+ * Beyond the worker deny list (fan-out, typing into or opening panes, messages
+ * to other agents, the browser), the wmux tools an agent started for another
+ * PC has no use for on this host: asking a PC for more agents, handing work
+ * out, messaging every agent, closing or stashing panes, proposing
+ * automations, driving the desktop, running code in a wmux REPL.
+ */
+export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = [
+  'mcp__wmux__remote_spawn',
+  'mcp__wmux__hand_out',
+  'mcp__wmux__task_push',
+  'mcp__wmux__a2a_broadcast',
+  'mcp__wmux__pane_close',
+  'mcp__wmux__pane_stash',
+  'mcp__wmux__surface_close',
+  'mcp__wmux__automation_propose',
+  'mcp__wmux__computer',
+  'mcp__wmux__repl_run',
+];
 import type { Git, SpawnWorktreeInput, SpawnWorktreeResult } from '../../main/a2aRemote/spawnWorktree';
 import { headlessStartable } from './headlessMode';
-import type { HeadlessStartRecordV1, HeadlessStartStore, HeadlessSurvivor } from './headlessStartStore';
+import { HEADLESS_SESSION_ID_RE, type HeadlessStartRecordV1, type HeadlessStartStore, type HeadlessSurvivor } from './headlessStartStore';
 import type { SpawnRequestRecordV1 } from './spawnRequestStore';
 import { errMsg } from './storeFile';
 
@@ -94,7 +111,7 @@ export interface HeadlessStarterDeps {
     failed(hostId: HostId, spawnId: string, code: 'folder-not-allowed' | 'failed'): A2aSpawnStepResult;
   };
   requests: { get(hostId: HostId, spawnId: string): SpawnRequestRecordV1 | undefined };
-  links: { get(linkId: string): A2aLinkRecordV1 | undefined };
+  links: { get(linkId: string): A2aLinkRecordV1 | undefined; list(): A2aLinkRecordV1[] };
   /** The link is stored `started` and still being made (spawn-links.json `committed`). */
   activationOwed(linkId: string): boolean;
   starts: Pick<HeadlessStartStore, 'get' | 'list' | 'phaseOfLink' | 'phaseOfSession' | 'add' | 'update' | 'remove'>;
@@ -126,6 +143,19 @@ export interface HeadlessStarterDeps {
 }
 
 export const HEADLESS_START_RETRY_MS = 10_000;
+
+/**
+ * The id a headless start's worktree, branch and workspace are named with
+ * (`sp-<uuid>`, as createSpawnWorktree takes it): derived from the asking PC
+ * and its spawn id, so two PCs that send the same spawn id never collide.
+ */
+export function headlessTreeId(hostId: string, spawnId: string): string {
+  const h = crypto.createHash('sha256').update(`${hostId}:${spawnId}`).digest('hex');
+  return `sp-${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/** Records written before the tree id existed are named by their spawn id. */
+const treeOf = (rec: HeadlessStartRecordV1): string => rec.treeId ?? rec.spawnId;
 const TERMINAL_LINK: ReadonlySet<string> = new Set(['revoked', 'broken']);
 
 export class A2aHeadlessStarter {
@@ -186,6 +216,7 @@ export class A2aHeadlessStarter {
   }
 
   private async reconcileNow(): Promise<void> {
+    await this.endOrphans();
     for (const rec of this.deps.starts.list()) {
       if (this.inFlight.has(`${rec.hostId}:${rec.spawnId}`)) continue;
       try {
@@ -242,6 +273,38 @@ export class A2aHeadlessStarter {
     await this.end(rec, link, sessions);
   }
 
+  /**
+   * Links whose local end is a headless session no start record knows (the
+   * start file was corrupt and set aside, or a record could not be read):
+   * nothing would ever end them, so their session goes and they break now.
+   */
+  private async endOrphans(): Promise<void> {
+    const known = new Set(this.deps.starts.list().map((r) => r.sessionId));
+    const sessions = this.deps.sessions();
+    for (const link of this.deps.links.list()) {
+      if (TERMINAL_LINK.has(link.state) || link.local.kind !== 'pane') continue;
+      const paneId = link.local.paneId;
+      if (!paneId || !HEADLESS_SESSION_ID_RE.test(paneId) || known.has(paneId) || this.inFlightSession(paneId)) continue;
+      this.deps.log('warn', `[headless] link ${link.linkId}: its session ${paneId} has no start record; ended`);
+      try {
+        // eslint-disable-next-line no-await-in-loop -- one at a time
+        if (sessions) await sessions.destroy(paneId);
+        // eslint-disable-next-line no-await-in-loop -- one at a time
+        await this.deps.paneGone(link.local.workspaceId, paneId);
+      } catch (err) {
+        this.deps.log('warn', `[headless] link ${link.linkId}: not ended yet: ${errMsg(err)}`);
+      }
+    }
+  }
+
+  /** A start being made now reserved this session id (its record may not be written yet). */
+  private inFlightSession(sessionId: string): boolean {
+    return [...this.inFlight].some((k) => {
+      const [hostId, spawnId] = k.split(':');
+      return this.deps.starts.get(hostId, spawnId)?.sessionId === sessionId;
+    });
+  }
+
   /** A started start whose agent may no longer count: session ended, link broken, record kept as `ended`. */
   private async end(rec: HeadlessStartRecordV1, link: A2aLinkRecordV1 | undefined, sessions: HeadlessSessionPort): Promise<void> {
     // Whether or not it looks alive: a session recovery brought back (even on disk only) goes too.
@@ -256,7 +319,7 @@ export class A2aHeadlessStarter {
     this.deps.starts.update(rec.hostId, rec.spawnId, { phase: 'ended', endedAt: new Date(this.now()).toISOString() });
     // Nothing done in it (no commit beyond where it started, a clean tree): it goes, with its branch.
     if (rec.worktreePath && rec.baseCommit && rec.branch && await this.deps.worktrees.pristine(rec.worktreePath, rec.baseCommit, rec.branch)) {
-      await this.deps.worktrees.remove({ repoPath: rec.repoPath, spawnId: rec.spawnId });
+      await this.deps.worktrees.remove({ repoPath: rec.repoPath, spawnId: treeOf(rec) });
       this.deps.starts.remove(rec.hostId, rec.spawnId);
       this.deps.log('info', `[headless] spawn ${rec.spawnId} from ${rec.hostId}: ended; its worktree was left unchanged and was removed`);
       return;
@@ -277,7 +340,7 @@ export class A2aHeadlessStarter {
     const earlier = await this.endEarlierRun(rec, sessions);
     if (!earlier.ok) this.hold(rec, earlier.survivors);
     // Made by this start, or about to be when it stopped (nothing was there when it was recorded).
-    if (rec.worktreePath || rec.worktreeIntended) await this.deps.worktrees.remove({ repoPath: rec.repoPath, spawnId: rec.spawnId });
+    if (rec.worktreePath || rec.worktreeIntended) await this.deps.worktrees.remove({ repoPath: rec.repoPath, spawnId: treeOf(rec) });
     this.deps.starts.remove(rec.hostId, rec.spawnId);
   }
 
@@ -339,10 +402,14 @@ export class A2aHeadlessStarter {
     if (!agentBin) return refuse(`${stem} was not found on the login PATH or in ~/.local/bin of the account the daemon runs as`);
     if (!this.deps.mode.active()) return refuse('headless mode was turned off');
 
+    const treeId = headlessTreeId(hostId, spawnId);
     const rec: HeadlessStartRecordV1 = {
       v: 1, hostId, spawnId, agent: claim.agent, repoPath: claim.repoPath,
       sessionId: `hl-${crypto.randomUUID()}`,
-      workspaceId: `hl-${spawnId.slice(3)}`,
+      // The worktree, its branch and the workspace are named for this PC's request, not its spawn id
+      // alone: two PCs that send the same spawn id never share one.
+      treeId,
+      workspaceId: `hl-${treeId.slice(3)}`,
       agentSessionId: crypto.randomUUID(),
       lineage: `${REMOTE_SPAWN_LINEAGE_PREFIX}${hostId}`,
       runId: this.deps.runId,
@@ -372,7 +439,7 @@ export class A2aHeadlessStarter {
 
     // The path is recorded before `git worktree add`, so a daemon that dies in between still takes it back.
     // Only a free one: one that is there already is another start's and is never recorded (nor touched).
-    const intended = this.deps.worktrees.pathFor(spawnId);
+    const intended = this.deps.worktrees.pathFor(treeId);
     if (this.deps.worktrees.exists(intended)) return undo('failed', `${intended} is there already`);
     try {
       this.deps.starts.update(hostId, spawnId, { worktreeIntended: intended });
@@ -381,7 +448,7 @@ export class A2aHeadlessStarter {
     }
     let made: SpawnWorktreeResult;
     try {
-      made = await this.deps.worktrees.create({ repoPath: claim.repoPath, sub: claim.sub, spawnId });
+      made = await this.deps.worktrees.create({ repoPath: claim.repoPath, sub: claim.sub, spawnId: treeId });
     } catch (err) {
       made = { ok: false, code: 'failed', detail: errMsg(err) };
     }

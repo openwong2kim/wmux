@@ -183,7 +183,8 @@ been used: there the app starts the agents.
 With headless mode on:
 
 - A request an allow rule matches is started at once: the daemon makes a
-  fresh worktree of the folder (branch `wmux/remote/<spawn id>`), starts the
+  fresh worktree of the folder (branch `wmux/remote/sp-…`, named after the
+  asking PC and its spawn id), starts the
   agent in it with the permission mode set by `remote allow`, and tells the
   asking PC which session it runs in. In this version the asking PC's prompt
   is kept as the agent's first task but not typed in yet, so the agent waits

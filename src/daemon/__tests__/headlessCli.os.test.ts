@@ -99,10 +99,10 @@ describe('wmux daemon headless', () => {
     fs.writeFileSync(path.join(dir, 'a2a', HEADLESS_STARTS_FILE), JSON.stringify({
       v: 1,
       starts: [
-        { ...base, spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-1', phase: 'started', worktreePath: '/wt/remote-1' },
-        { ...base, spawnId: 'sp-1123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-2', phase: 'ended', worktreePath: kept, endedAt: new Date().toISOString() },
+        { ...base, spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-00000001-0000-4000-8000-000000000000', phase: 'started', worktreePath: '/wt/remote-1' },
+        { ...base, spawnId: 'sp-1123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-00000002-0000-4000-8000-000000000000', phase: 'ended', worktreePath: kept, endedAt: new Date().toISOString() },
         // Removed by the owner already: not listed.
-        { ...base, spawnId: 'sp-2123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-3', phase: 'ended', worktreePath: path.join(dir, 'gone'), endedAt: new Date().toISOString() },
+        { ...base, spawnId: 'sp-2123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-00000003-0000-4000-8000-000000000000', phase: 'ended', worktreePath: path.join(dir, 'gone'), endedAt: new Date().toISOString() },
       ],
     }));
     expect(headlessStatus(dir)).toEqual({ inEffect: true, optedIn: true, appAttached: false, running: 1, leftovers: [kept], heldUp: [], from: 'files',
@@ -140,7 +140,7 @@ describe('wmux daemon headless', () => {
       v: 1,
       starts: [{
         v: 1, hostId: '11111111-1111-4111-8111-111111111111', spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', agent: 'claude',
-        repoPath: '/repo', sessionId: 'hl-1', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
+        repoPath: '/repo', sessionId: 'hl-00000001-0000-4000-8000-000000000000', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
         lineage: 'remote-spawn:x', runId: 'r', phase: 'started', worktreePath: '/wt/remote-1', startedAt: new Date().toISOString(),
         survivors: [{ pid: 4242, reason: 'still running' }],
       }],
@@ -166,7 +166,7 @@ describe('wmux daemon headless', () => {
       v: 1,
       starts: [{
         v: 1, hostId: '11111111-1111-4111-8111-111111111111', spawnId: ID, agent: 'claude',
-        repoPath: '/repo', sessionId: 'hl-1', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
+        repoPath: '/repo', sessionId: 'hl-00000001-0000-4000-8000-000000000000', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
         lineage: 'remote-spawn:x', runId: 'r', phase: 'started', worktreePath: '/wt/remote-1', startedAt: new Date().toISOString(),
         survivors: [{ pid: 4242, reason: 'still running' }],
       }],
