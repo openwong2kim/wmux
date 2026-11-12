@@ -593,7 +593,10 @@ describe('buildDoctorReport — the identity and hooks sections together', () =>
     const text = renderReport(r);
     expect(text).toContain('peer read: unavailable (koffi unavailable)');
     expect(text).toContain('claude hook runtime: native');
-    expect(text.indexOf('identity')).toBeLessThan(text.indexOf('claude hook runtime'));
+    // Section headers are lines of their own: `<verdict tag> <title>`.
+    const header = (title: string) => text.split('\n').findIndex((line) => /^\S.*\] /.test(line) && line.endsWith(`] ${title}`));
+    expect(header('identity')).toBeGreaterThan(-1);
+    expect(header('identity')).toBeLessThan(header('hooks'));
     const failing = { state: 'copy-missing' as const, severity: 'fail' as const, detail: 'every hook fails' };
     const worse = await buildDoctorReport(makeDeps({ mcp, hooks: () => failing }));
     expect(worse.identity?.verdict).toBe('WARN');
