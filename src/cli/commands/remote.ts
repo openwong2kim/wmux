@@ -2,7 +2,7 @@ import { sendRequest, sendDaemonRequest, isDefinitelyNotRunning } from '../clien
 import { parseFlag } from '../utils';
 import { resolveSelfContext, getParentPidDefault } from '../identity';
 import { A2A_SPAWN_PIPE_RPC, type A2aSpawnAskResult, type A2aSpawnOutgoingList } from '../../shared/a2aSpawn';
-import { INVITE_CODE_RE, isHostId, type A2aPeerRecordV1, type A2aRemoteHostRecordV1 } from '../../shared/a2aRemote';
+import { INVITE_CODE_RE, isHostId, parseInvite, type A2aPeerRecordV1, type A2aRemoteHostRecordV1 } from '../../shared/a2aRemote';
 import type { A2aRemoteHostsRemoveResult, A2aRemoteJoinError, A2aRemoteJoinResult, RpcMethod, RpcResponse } from '../../shared/rpc';
 
 export const REMOTE_HELP = `
@@ -113,7 +113,8 @@ const JOIN_ERRORS: Record<A2aRemoteJoinError, string> = {
 
 /** Text with the invite, and its code, cut out: neither is ever printed back. */
 function redactInvite(text: string, invite: string): string {
-  const code = /\/([^/#?\s]+)#sha256=/.exec(invite)?.[1];
+  const parsed = parseInvite(invite);
+  const code = parsed.ok ? parsed.invite.code : /\/([A-HJ-NP-Z2-9]{8})(?=[#/?\s]|$)/.exec(invite)?.[1];
   let out = text.split(invite).join('<invite>');
   if (code && INVITE_CODE_RE.test(code)) out = out.split(code).join('<code>');
   return out;
@@ -163,8 +164,10 @@ async function remoteJoin(args: string[], jsonMode: boolean): Promise<void> {
 }
 
 async function remotePeers(jsonMode: boolean): Promise<void> {
-  const { hosts } = (await daemonCall('a2a.remote.hosts.list', {})) as { hosts?: A2aRemoteHostRecordV1[] };
-  const { peers } = (await daemonCall('a2a.remote.peers.list', {})) as { peers?: A2aPeerRecordV1[] };
+  const [{ hosts }, { peers }] = (await Promise.all([
+    daemonCall('a2a.remote.hosts.list', {}),
+    daemonCall('a2a.remote.peers.list', {}),
+  ])) as [{ hosts?: A2aRemoteHostRecordV1[] }, { peers?: A2aPeerRecordV1[] }];
   const joined = hosts ?? [];
   const joinedUs = peers ?? [];
   if (jsonMode) {
@@ -184,21 +187,23 @@ async function remotePeers(jsonMode: boolean): Promise<void> {
 }
 
 async function remoteUnpair(args: string[], jsonMode: boolean): Promise<void> {
-  const hostId = args.find((a) => !a.startsWith('-'));
+  const hostId = args.find((a) => !a.startsWith('-'))?.toLowerCase();
   if (!hostId || !isHostId(hostId)) {
     console.error('Usage: wmux remote unpair <host-id>   (the host id `wmux remote peers` shows)');
     process.exit(1);
   }
-  const removed = (await daemonCall('a2a.remote.hosts.remove', { hostId }, () => {
-    console.error('Error: no answer from the daemon in time. Run `wmux remote peers` to see whether the pairing is gone.');
-    process.exit(1);
-  })) as A2aRemoteHostsRemoveResult;
+  // Revoke that PC's access here first: it is local and quick, while the host
+  // removal below contacts the other PC and may outlast the CLI's wait.
   const { peers } = (await daemonCall('a2a.remote.peers.list', {})) as { peers?: A2aPeerRecordV1[] };
   let peersRevoked = 0;
   for (const p of (peers ?? []).filter((x) => x.hostId === hostId && !x.revokedAt)) {
     const r = (await daemonCall('a2a.remote.peers.revoke', { peerId: p.peerId })) as { ok?: boolean };
     if (r.ok) peersRevoked += 1;
   }
+  const removed = (await daemonCall('a2a.remote.hosts.remove', { hostId }, () => {
+    console.error(`Error: no answer from the daemon in time${peersRevoked > 0 ? ` (${hostId}'s access to this PC is already revoked)` : ''}. Run \`wmux remote peers\` to see whether the pairing is gone.`);
+    process.exit(1);
+  })) as A2aRemoteHostsRemoveResult;
   const ok = removed.ok === true || peersRevoked > 0;
   const out = { ok, hostId, hostRemoved: removed.ok === true, remoteRevoked: removed.remoteRevoked === true, peersRevoked };
   if (jsonMode) {

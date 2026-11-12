@@ -191,6 +191,23 @@ describe('wmux remote unpair', () => {
     expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.peers.revoke', { peerId: 'peer-2' });
   });
 
+  it('accepts an uppercase host id', async () => {
+    routeDaemon({ 'a2a.remote.hosts.remove': { ok: true, remoteRevoked: false }, 'a2a.remote.peers.list': { peers: [] } });
+    expect(await run('unpair', [HOST_ID.toUpperCase()])).toBe(0);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID });
+  });
+
+  it('revokes that PC before the host removal, so a removal timeout cannot skip it', async () => {
+    daemonRpc.mockImplementation(async (method: string) => {
+      if (method === 'a2a.remote.peers.list') return okEnvelope({ peers: [{ v: 1, peerId: 'peer-3', hostId: HOST_ID, name: 'desk', createdAt: 'x' }] });
+      if (method === 'a2a.remote.peers.revoke') return okEnvelope({ ok: true });
+      throw new Error('Request timed out after 15 seconds.');
+    });
+    expect(await run('unpair', [HOST_ID])).toBe(1);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.peers.revoke', { peerId: 'peer-3' });
+    expect(printed()).toContain('already revoked');
+  });
+
   it('exits 1 when the host is not paired at all', async () => {
     routeDaemon({ 'a2a.remote.hosts.remove': { ok: false, remoteRevoked: false }, 'a2a.remote.peers.list': { peers: [] } });
     expect(await run('unpair', [HOST_ID])).toBe(1);
