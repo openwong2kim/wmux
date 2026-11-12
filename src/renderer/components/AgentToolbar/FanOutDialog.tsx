@@ -16,9 +16,6 @@ import { openTaskDiff } from '../../utils/openTaskDiff';
 import { generateId } from '../../../shared/types';
 import { FANOUT_PROMPT_MAX_BYTES } from '../../../shared/workTask';
 import { DEFAULT_FANOUT_TASKS_PER_CALL } from '../../../shared/fanoutTaskCaps';
-
-/** Count buttons this dialog shows at most (its row holds eight); a larger fan-out is an agent's call. */
-const DIALOG_MAX_TASKS = 8;
 import { ORCH_ROLES, promptFlagForLauncher } from '../../../shared/orchestratorRole';
 import { useT } from '../../hooks/useT';
 import { t } from '../../i18n';
@@ -37,6 +34,9 @@ import {
   saveLastAgentCmd,
   supportsSkipPermissions,
 } from './fanoutAgentCmd';
+
+/** Count buttons this dialog shows at most (its row holds eight); a larger fan-out is an agent's call. */
+const DIALOG_MAX_TASKS = 8;
 
 // 리뷰 발견(Codex+GLM+Claude 3/3 합의) — compete 모드에서 `mode === 'parallel' ?
 // taskPrompts : []`처럼 인라인 배열 리터럴을 useEffect 의존성에 넣으면 매 렌더마다

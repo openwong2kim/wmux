@@ -8,6 +8,8 @@
 // cannot set its own brakes. Shared so the Settings field and main clamp to
 // the same bounds.
 
+import { FANOUT_MAX_TASKS } from './workTask';
+
 export const MIN_FANOUT_LIVE_TASK_CAP = 1;
 export const MAX_FANOUT_LIVE_TASK_CAP = 32;
 
@@ -17,7 +19,7 @@ export const MAX_FANOUT_HOURLY_TASK_CAP = 200;
 /** Tasks one fan-out call may start: the owner's setting, up to the wire's FANOUT_MAX_TASKS. */
 export const DEFAULT_FANOUT_TASKS_PER_CALL = 8;
 export const MIN_FANOUT_TASKS_PER_CALL = 1;
-export const MAX_FANOUT_TASKS_PER_CALL = 64;
+export const MAX_FANOUT_TASKS_PER_CALL = FANOUT_MAX_TASKS;
 
 /**
  * How deep fan-out may go: a workspace started for someone (a fan-out task,

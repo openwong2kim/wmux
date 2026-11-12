@@ -51,8 +51,6 @@ import {
   MAX_FANOUT_HOURLY_TASK_CAP,
   MAX_FANOUT_LIVE_TASK_CAP,
   MAX_FANOUT_TASKS_PER_CALL,
-  MIN_FANOUT_DEPTH,
-  MIN_FANOUT_TASKS_PER_CALL,
 } from '../../../shared/fanoutTaskCaps';
 import { SettingLimitInput } from './SettingLimitInput';
 import {
@@ -2320,12 +2318,15 @@ function FanoutWorkersSection() {
         label={t('settings.fanoutTasksPerCall')}
         description={t('settings.fanoutTasksPerCallDesc')}
       >
-        <SettingNumberInput
+        {/* Saved on blur or Enter, not per keystroke: typing 16 must not store a 1 first. */}
+        <SettingLimitInput
           value={tasksPerCall}
-          min={MIN_FANOUT_TASKS_PER_CALL}
           max={MAX_FANOUT_TASKS_PER_CALL}
           label={t('settings.fanoutTasksPerCall')}
-          onChange={onTasksPerCallChange}
+          noLimitLabel={String(DEFAULT_FANOUT_TASKS_PER_CALL)}
+          onCommit={(v) => { if (v !== null) onTasksPerCallChange(v); }}
+          testId="fanout-tasks-per-call"
+          required
         />
       </SettingRow>
       <SettingRow
@@ -2333,12 +2334,14 @@ function FanoutWorkersSection() {
         label={t('settings.fanoutDepth')}
         description={t('settings.fanoutDepthDesc')}
       >
-        <SettingNumberInput
+        <SettingLimitInput
           value={fanoutDepth}
-          min={MIN_FANOUT_DEPTH}
           max={MAX_FANOUT_DEPTH}
           label={t('settings.fanoutDepth')}
-          onChange={onFanoutDepthChange}
+          noLimitLabel={String(DEFAULT_FANOUT_DEPTH)}
+          onCommit={(v) => { if (v !== null) onFanoutDepthChange(v); }}
+          testId="fanout-depth"
+          required
         />
       </SettingRow>
       <SettingRow

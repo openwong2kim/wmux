@@ -75,7 +75,7 @@ export function registerRemoteSpawnRpc(router: RpcRouter, getWindow: GetWindow, 
     }
     if (owner !== null && depth >= loadFanoutDepth()) {
       const by = owner.startsWith(REMOTE_SPAWN_LINEAGE_PREFIX) ? 'another PC' : owner;
-      return deny('NOT_AUTHORIZED', `workspace ${caller.workspaceId} was started by ${by}, and an agent started for someone does not ask another PC to start one`);
+      return deny('NOT_AUTHORIZED', `workspace ${caller.workspaceId} was started by ${by}, and an agent started for someone asks another PC to start one only as deep as the fan-out depth setting allows (Settings › Roles & fan-out)`);
     }
     const agent = str(params['agent']);
     const root = str(params['root']);

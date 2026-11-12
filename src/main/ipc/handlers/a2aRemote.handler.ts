@@ -217,7 +217,7 @@ export function registerA2aRemoteHandlers(daemonClient: DaemonClient | null, opt
         } catch {
           return { ok: false, error: 'unavailable', message: 'could not tell whether that pane was itself started for someone' };
         }
-        if (owner !== null && depth >= loadFanoutDepth()) return { ok: false, error: 'bad-request', message: 'replies cannot go to a pane that was itself started for someone' };
+        if (owner !== null && depth >= loadFanoutDepth()) return { ok: false, error: 'bad-request', message: 'replies cannot go to a pane that was itself started for someone, past the fan-out depth setting (Settings › Roles & fan-out)' };
         if (!isAgentSlug(p.agent) || typeof p.text !== 'string' || typeof p.folder?.root !== 'string') return { ok: false, error: 'bad-request' };
         if (p.expiresInHours !== undefined && !(Number.isInteger(p.expiresInHours) && p.expiresInHours >= 1 && p.expiresInHours <= 72)) return { ok: false, error: 'bad-request' };
         if (p.requestKey !== undefined && (typeof p.requestKey !== 'string' || !SPAWN_REQUEST_KEY_RE.test(p.requestKey))) return { ok: false, error: 'bad-request' };
