@@ -64,6 +64,13 @@ function resolveDaemonScriptCandidates(): string[] {
   ];
 }
 
+/** `env` without `ENV_KEYS.APP_SPAWNED_DAEMON`: only the desktop app's launcher may start a daemon with it. */
+export function withoutAppSpawnedMarker(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out = { ...env };
+  delete out[ENV_KEYS.APP_SPAWNED_DAEMON];
+  return out;
+}
+
 /**
  * Reads the nearest `package.json` relative to this bundle to stamp a real
  * version. `doctor.ts` / `system.ts` use the same relative-lookup idiom for
@@ -275,8 +282,9 @@ function runForeground(): void {
   const child = spawn(process.execPath, daemonProcessArgs(script), {
     // The daemon writes where this CLI does, including a console its fds 1 and 2 do not reach.
     stdio: childStdio(),
+    // Never the desktop app's launch marker, even when this CLI inherited one.
     env: {
-      ...process.env,
+      ...withoutAppSpawnedMarker(process.env),
       [ENV_KEYS.SPAWNED_BY_VERSION]: resolveSpawnedByVersion(),
       [DAEMON_SUPERVISED_ENV]: '1',
     },

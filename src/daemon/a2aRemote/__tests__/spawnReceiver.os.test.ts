@@ -14,7 +14,7 @@ import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { acceptInbound, type InboundDeps } from '../inbound';
 import { LinkStore } from '../linkStore';
 import { linkAlias } from '../outbound';
-import { A2aSpawnReceiver, registerSpawnRpc, type SpawnReceiverDeps } from '../spawnReceiver';
+import { A2aSpawnReceiver, registerSpawnRpc, unpairedHostNamed, type SpawnReceiverDeps } from '../spawnReceiver';
 import { SpawnPolicyStore, samePath } from '../spawnPolicyStore';
 import { SpawnRequestStore } from '../spawnRequestStore';
 import { CheckBusy, CheckTimeout, SpawnChecks, realpathNative } from '../spawnChecks';
@@ -600,6 +600,58 @@ describe('as the PC asked: telling other PCs what they may ask for', () => {
     queued = false;
     r.sendTargets();
     expect(targetsSent()).toHaveLength(1);
+  });
+});
+
+describe('a policy saved from outside the app', () => {
+  type Handler = (p: Record<string, unknown>, ctx?: { clientId: string }) => Promise<unknown>;
+  const THIRD = '33333333-3333-4333-8333-333333333333';
+  function register(paired: Set<string>): Map<string, Handler> {
+    const handlers = new Map<string, Handler>();
+    registerSpawnRpc((m, h) => void handlers.set(m, h), {
+      policy, requests,
+      outsideApp: { isApp: (clientId) => clientId === 'app', isPaired: (hostId) => paired.has(hostId) },
+    });
+    return handlers;
+  }
+  const body = (over: Record<string, unknown>) => ({
+    policy: {
+      v: 1, enabled: true, approval: 'allow-list', followUps: 'ask', permissionMode: 'auto', hosts: {}, roots: [{ id: 'web', label: 'Web', path: repo }],
+      agents: ['claude'], rules: [], version: policy.get().version, ...over,
+    },
+  });
+
+  it('may not name or allow a PC that is not paired, in hosts or in a rule; the app may', async () => {
+    const save = register(new Set([HOST])).get('a2a.remote.spawnPolicy.set')!;
+    expect(await save(body({ hosts: { [OTHER]: { allowed: true } } }), { clientId: 'cli' })).toEqual({ ok: false, error: `${OTHER} is not paired with this PC` });
+    expect(await save(body({ hosts: { [OTHER]: { allowed: false } } }), { clientId: 'cli' })).toMatchObject({ ok: false });
+    expect(await save(body({ rules: [{ hostId: OTHER, rootId: 'web', agent: 'claude' }] }), { clientId: 'cli' })).toMatchObject({ ok: false });
+    expect(policy.get().hosts).toEqual({});
+    // A paired PC saves from outside the app; the app's own connection saves anything, as before.
+    expect(await save(body({ hosts: { [HOST]: { allowed: true } }, rules: [{ hostId: HOST, rootId: 'web', agent: 'claude' }] }), { clientId: 'cli' })).toMatchObject({ ok: true });
+    expect(await save(body({ hosts: { [HOST]: { allowed: true }, [OTHER]: { allowed: true } } }), { clientId: 'app' })).toMatchObject({ ok: true });
+  });
+
+  it('writes back what the saved policy already holds for a PC no longer paired, and nothing more for it', async () => {
+    await allowHost({ hosts: { [HOST]: { allowed: true }, [OTHER]: { allowed: true } }, rules: [{ hostId: OTHER, rootId: 'web', agent: 'claude' }] });
+    const save = register(new Set([HOST])).get('a2a.remote.spawnPolicy.set')!;
+    const held = { [HOST]: { allowed: true }, [OTHER]: { allowed: true } };
+    const heldRule = { hostId: OTHER, rootId: 'web', agent: 'claude' };
+    // Read and written back (here with a new rule for the paired PC): saves.
+    expect(await save(body({ hosts: held, rules: [heldRule, { hostId: HOST, rootId: 'web', agent: 'claude' }] }), { clientId: 'cli' })).toMatchObject({ ok: true });
+    // A new rule for the unpaired PC, or a third unpaired PC: refused.
+    expect(await save(body({ hosts: held, rules: [heldRule, { hostId: OTHER, rootId: 'web', agent: 'claude', sub: 'apps' }] }), { clientId: 'cli' })).toMatchObject({ ok: false, error: `${OTHER} is not paired with this PC` });
+    expect(await save(body({ hosts: { ...held, [THIRD]: { allowed: false } }, rules: [heldRule] }), { clientId: 'cli' })).toMatchObject({ ok: false, error: `${THIRD} is not paired with this PC` });
+    // Dropping the unpaired PC is always fine.
+    expect(await save(body({ hosts: { [HOST]: { allowed: true } }, rules: [] }), { clientId: 'cli' })).toMatchObject({ ok: true });
+  });
+
+  it('passes what is not shaped like a policy on to the store, which refuses it', async () => {
+    const save = register(new Set()).get('a2a.remote.spawnPolicy.set')!;
+    for (const raw of [undefined, 'x', [], { hosts: [], rules: 'x' }]) {
+      expect(unpairedHostNamed(raw, policy.get(), () => false)).toBeNull();
+      expect(await save({ policy: raw }, { clientId: 'cli' })).toMatchObject({ ok: false });
+    }
   });
 });
 

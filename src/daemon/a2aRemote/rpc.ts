@@ -15,7 +15,10 @@ import type { A2aServer } from './server';
 /**
  * `a2a.remote.*` — the machine-local control-pipe RPCs behind Settings → LAN.
  * Never registered on the A2A listener itself, and `wmux.internal` in the
- * capability map, so no plugin or MCP caller reaches them.
+ * capability map, so no plugin or MCP caller reaches them through main. On
+ * the daemon pipe they answer only the app's connection, except the pairing
+ * calls of `wmux remote` on a host the app does not use (DaemonPipeServer
+ * HEADLESS_REMOTE_METHODS).
  */
 
 /** `ctx.clientId`: the control-pipe connection the call arrived on. */
