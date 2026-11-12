@@ -183,7 +183,8 @@ been used: there the app starts the agents.
 With headless mode on:
 
 - A request an allow rule matches is started at once: the daemon makes a
-  fresh worktree of the folder (branch `wmux/remote/<spawn id>`), starts the
+  fresh worktree of the folder (branch `wmux/remote/sp-…`, named after the
+  asking PC and its spawn id), starts the
   agent in it with the permission mode set by `remote allow`, and tells the
   asking PC which session it runs in. In this version the asking PC's prompt
   is kept as the agent's first task but not typed in yet, so the agent waits
@@ -209,12 +210,15 @@ With headless mode on:
   unchanged (no commit, nothing modified or added) is removed with its
   branch.
 
-See whether headless mode is in effect, how many agents run, and which
-worktrees ended agents left, in all and per asking PC. A start whose agent
-left processes that did not exit is listed apart, with its spawn id and their
-pids: its worktree stays until they are gone, and the daemon checks again
-every minute. With the daemon running, `status` asks it; otherwise it reads
-the daemon's data folder:
+See whether headless mode is in effect, which agents run (each with its spawn
+id, the asking PC, since when and its worktree), and which worktrees ended
+agents left, in all and per asking PC. A start whose agent left processes that
+did not exit is listed apart, with its spawn id and their pids: its worktree
+stays until they are gone, and the daemon checks again every minute. If the
+daemon ever found its record of starts unreadable, it set that file aside and
+started over: `status` then says so and lists the `remote-sp-*` worktrees no
+record names, which you check and remove yourself. With the daemon running,
+`status` asks it; otherwise it reads the daemon's data folder:
 
 ```bash
 "$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless status

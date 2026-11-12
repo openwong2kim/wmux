@@ -99,18 +99,55 @@ describe('wmux daemon headless', () => {
     fs.writeFileSync(path.join(dir, 'a2a', HEADLESS_STARTS_FILE), JSON.stringify({
       v: 1,
       starts: [
-        { ...base, spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-1', phase: 'started', worktreePath: '/wt/remote-1' },
-        { ...base, spawnId: 'sp-1123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-2', phase: 'ended', worktreePath: kept, endedAt: new Date().toISOString() },
+        { ...base, spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-00000001-0000-4000-8000-000000000000', phase: 'started', worktreePath: '/wt/remote-1' },
+        { ...base, spawnId: 'sp-1123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-00000002-0000-4000-8000-000000000000', phase: 'ended', worktreePath: kept, endedAt: new Date().toISOString() },
         // Removed by the owner already: not listed.
-        { ...base, spawnId: 'sp-2123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-3', phase: 'ended', worktreePath: path.join(dir, 'gone'), endedAt: new Date().toISOString() },
+        { ...base, spawnId: 'sp-2123abcd-4567-89ab-cdef-0123456789ab', sessionId: 'hl-00000003-0000-4000-8000-000000000000', phase: 'ended', worktreePath: path.join(dir, 'gone'), endedAt: new Date().toISOString() },
       ],
     }));
-    expect(headlessStatus(dir)).toEqual({ inEffect: true, optedIn: true, appAttached: false, running: 1, leftovers: [kept], heldUp: [], from: 'files',
+    const running = { spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', hostId: base.hostId, worktreePath: '/wt/remote-1', since: base.startedAt };
+    expect(headlessStatus(dir)).toEqual({ inEffect: true, optedIn: true, appAttached: false, running: 1, runningStarts: [running], leftovers: [kept], heldUp: [], from: 'files',
       perPc: { '11111111-1111-4111-8111-111111111111': { running: 1, kept: 1 } } });
+    // What runs is named in the text too: the start, its PC, since when and where.
+    await runHeadless('status', false, dir);
+    expect(out.join('\n')).toContain(`  ${running.spawnId} from ${running.hostId}, since ${running.since}, in /wt/remote-1`);
     fs.writeFileSync(path.join(dir, APP_ATTACHED_FILE), 'x\n');
     expect(headlessStatus(dir)).toMatchObject({ inEffect: false, reason: expect.stringContaining('desktop app') });
     await runHeadless('status', false, dir);
     expect(out.join('\n')).toContain(kept);
+  });
+
+  it('a start file set aside as corrupt is said, with the remote-start worktrees no record names', async () => {
+    const a2a = path.join(dir, 'a2a');
+    fs.mkdirSync(a2a, { recursive: true });
+    const lost = path.join(dir, 'worktrees', 'remote-sp-0123abcd-4567-89ab-cdef-0123456789ab');
+    fs.mkdirSync(lost, { recursive: true });
+    fs.mkdirSync(path.join(dir, 'worktrees', 'task-other'), { recursive: true });
+    expect(headlessStatus(dir).setAside).toBeUndefined();
+    fs.writeFileSync(path.join(a2a, `${HEADLESS_STARTS_FILE}.corrupt-1794516000000`), '{broken');
+    // Listed by their resolved path (Windows temp dirs come as 8.3 short names).
+    const lostReal = fs.realpathSync.native(lost);
+    expect(headlessStatus(dir).setAside).toEqual({ files: [`${HEADLESS_STARTS_FILE}.corrupt-1794516000000`], unrecordedWorktrees: [lostReal] });
+    await runHeadless('status', false, dir);
+    const text = out.join('\n');
+    expect(text).toContain('set aside');
+    expect(text).toContain(`  ${lostReal}`);
+    expect(text).not.toContain('task-other');
+    expect(text).toContain('git worktree list');
+    // A worktree a record names, reached through a symlinked data dir, is not listed as unrecorded.
+    const linked = `${dir}-link`;
+    // A junction on Windows (no privilege needed); the type is ignored elsewhere.
+    fs.symlinkSync(dir, linked, 'junction');
+    try {
+      fs.writeFileSync(path.join(a2a, HEADLESS_STARTS_FILE), JSON.stringify({ v: 1, starts: [{
+        v: 1, hostId: '11111111-1111-4111-8111-111111111111', spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', agent: 'claude', repoPath: '/repo',
+        sessionId: 'hl-00000001-0000-4000-8000-000000000000', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
+        lineage: 'remote-spawn:x', runId: 'r', phase: 'ended', worktreePath: lostReal, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+      }] }));
+      expect(headlessStatus(linked).setAside?.unrecordedWorktrees).toEqual([]);
+    } finally {
+      fs.unlinkSync(linked);
+    }
   });
 
   it('status and on follow the running daemon: an app it knows of (launcher marker, attach it could not record) counts', async () => {
@@ -140,7 +177,7 @@ describe('wmux daemon headless', () => {
       v: 1,
       starts: [{
         v: 1, hostId: '11111111-1111-4111-8111-111111111111', spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', agent: 'claude',
-        repoPath: '/repo', sessionId: 'hl-1', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
+        repoPath: '/repo', sessionId: 'hl-00000001-0000-4000-8000-000000000000', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
         lineage: 'remote-spawn:x', runId: 'r', phase: 'started', worktreePath: '/wt/remote-1', startedAt: new Date().toISOString(),
         survivors: [{ pid: 4242, reason: 'still running' }],
       }],
@@ -166,7 +203,7 @@ describe('wmux daemon headless', () => {
       v: 1,
       starts: [{
         v: 1, hostId: '11111111-1111-4111-8111-111111111111', spawnId: ID, agent: 'claude',
-        repoPath: '/repo', sessionId: 'hl-1', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
+        repoPath: '/repo', sessionId: 'hl-00000001-0000-4000-8000-000000000000', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
         lineage: 'remote-spawn:x', runId: 'r', phase: 'started', worktreePath: '/wt/remote-1', startedAt: new Date().toISOString(),
         survivors: [{ pid: 4242, reason: 'still running' }],
       }],

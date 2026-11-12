@@ -41,6 +41,8 @@ export const HEADLESS_STARTS_MAX = 1000;
 export type HeadlessStartPhase = 'prepared' | 'created' | 'started' | 'ended';
 const PHASES: ReadonlySet<string> = new Set<HeadlessStartPhase>(['prepared', 'created', 'started', 'ended']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** The id of a session a headless start made (`hl-<uuid>`): also the link's local pane id. */
+export const HEADLESS_SESSION_ID_RE = /^hl-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export interface HeadlessStartRecordV1 {
   v: 1;
@@ -49,6 +51,8 @@ export interface HeadlessStartRecordV1 {
   agent: AgentSlug;
   /** The allowed root the claim checked (a git repository's top level). */
   repoPath: string;
+  /** What the worktree, its branch and the workspace are named with (headlessTreeId); absent on older records (the spawn id). */
+  treeId?: string;
   /** The daemon session the agent runs in (also the link's local pane id). */
   sessionId: string;
   /** The link's local workspace id. */
@@ -212,12 +216,13 @@ function coerceSurvivors(v: unknown): HeadlessSurvivor[] | null | undefined {
 /** A record as stored, or null when it is not one (also read by `wmux daemon headless status`). */
 export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null {
   if (!isPlainObject(raw) || raw['v'] !== 1) return null;
-  const { hostId, spawnId, agent, repoPath, sessionId, workspaceId, agentSessionId, lineage, runId, phase, worktreeIntended, worktreePath, cwd, baseCommit, branch, rootPid, rootStart, linkId, startedAt, endedAt } = raw;
+  const { hostId, spawnId, agent, repoPath, treeId, sessionId, workspaceId, agentSessionId, lineage, runId, phase, worktreeIntended, worktreePath, cwd, baseCommit, branch, rootPid, rootStart, linkId, startedAt, endedAt } = raw;
   const survivors = coerceSurvivors(raw['survivors']);
   if (survivors === null) return null;
   if (!isHostId(hostId) || !isSpawnId(spawnId) || !isAgentSlug(agent)) return null;
+  if (treeId !== undefined && !isSpawnId(treeId)) return null;
   if (typeof repoPath !== 'string' || !repoPath || repoPath.length > 4096) return null;
-  if (!isSafeId(sessionId) || !isSafeId(workspaceId) || !isSafeId(runId)) return null;
+  if (typeof sessionId !== 'string' || !HEADLESS_SESSION_ID_RE.test(sessionId) || !isSafeId(workspaceId) || !isSafeId(runId)) return null;
   if (typeof agentSessionId !== 'string' || !UUID_RE.test(agentSessionId)) return null;
   if (typeof lineage !== 'string' || lineage.length > 128) return null;
   if (typeof phase !== 'string' || !PHASES.has(phase)) return null;
@@ -229,7 +234,7 @@ export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null 
   if (linkId !== undefined && (typeof linkId !== 'string' || !UUID_RE.test(linkId))) return null;
   if (!isIsoString(startedAt) || (endedAt !== undefined && !isIsoString(endedAt))) return null;
   return {
-    v: 1, hostId, spawnId, agent, repoPath, sessionId, workspaceId, agentSessionId, lineage, runId,
+    v: 1, hostId, spawnId, agent, repoPath, ...(treeId !== undefined ? { treeId: treeId as string } : {}), sessionId, workspaceId, agentSessionId, lineage, runId,
     phase: phase as HeadlessStartPhase,
     ...(worktreeIntended !== undefined ? { worktreeIntended } : {}),
     ...(worktreePath !== undefined ? { worktreePath } : {}),
