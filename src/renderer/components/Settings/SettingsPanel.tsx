@@ -2145,32 +2145,54 @@ function TabBrowser() {
 // The mode is main-side (it can loosen what an unattended worker may do), so
 // it is read and written over IPC, never through the renderer store.
 /**
- * Saves a required fan-out number: the field shows `next` at once, then the
- * value main stored (clamped). When the save fails, `invoke` raises the error
- * toast and the field goes back to the value in force, read back from main
- * (else the last confirmed one), so it never shows a number that is not stored.
+ * Saves one fan-out number for its field: the field shows a new value at once,
+ * then the value main stored (clamped). When the save fails, `invoke` raises
+ * the error toast and the field goes back to the value in force, read back from
+ * main, else the last value main confirmed (never an unanswered one), so it
+ * never shows a number that is not stored. Only the latest change's answer
+ * reaches the field: a slower reply to an earlier change is dropped.
+ * `isValue` says what main may answer (a limit the owner may leave unset
+ * accepts null: no limit).
  */
-export async function saveFanoutNumber(
-  next: number,
-  confirmed: number,
-  show: (v: number) => void,
-  save: () => Promise<number>,
-  reload: () => Promise<unknown>,
-  invoke: UseIpcReturn['invoke'],
-): Promise<void> {
-  show(next);
-  const saved = await invoke(save);
-  if (saved.ok) {
-    show(saved.data);
-    return;
-  }
-  try {
-    const v = await reload();
-    show(typeof v === 'number' ? v : confirmed);
-  } catch {
-    show(confirmed);
-  }
+export function createFanoutSaver<T extends number | null>(opts: {
+  show: (v: T) => void;
+  save: (v: T) => Promise<unknown>;
+  reload: () => Promise<unknown>;
+  isValue: (v: unknown) => v is T;
+  invoke: UseIpcReturn['invoke'];
+  initial: T;
+}): { confirm: (v: T) => void; change: (next: T) => Promise<void> } {
+  let confirmed = opts.initial;
+  let latest = 0;
+  return {
+    /** The value read from main when the section loads. */
+    confirm: (v) => {
+      confirmed = v;
+    },
+    change: async (next) => {
+      const mine = ++latest;
+      opts.show(next);
+      const saved = await opts.invoke(() => opts.save(next));
+      let stored: T | undefined;
+      if (saved.ok && opts.isValue(saved.data)) {
+        stored = saved.data;
+      } else {
+        try {
+          const v = await opts.reload();
+          if (opts.isValue(v)) stored = v;
+        } catch {
+          /* the last confirmed value stands */
+        }
+      }
+      if (mine !== latest) return;
+      if (stored !== undefined) confirmed = stored;
+      opts.show(confirmed);
+    },
+  };
 }
+
+const isFanoutNumber = (v: unknown): v is number => typeof v === 'number';
+const isFanoutLimit = (v: unknown): v is number | null => v === null || typeof v === 'number';
 
 function FanoutWorkersSection() {
   const { invoke: ipcInvoke } = useIpc();
@@ -2184,6 +2206,14 @@ function FanoutWorkersSection() {
   const [hourlyTaskCap, setHourlyTaskCapState] = useState<number | null>(null);
   const [tasksPerCall, setTasksPerCallState] = useState(DEFAULT_FANOUT_TASKS_PER_CALL);
   const [fanoutDepth, setFanoutDepthState] = useState(DEFAULT_FANOUT_DEPTH);
+  // One saver per field, made once: each pairs its field with its own setter
+  // and getter (window.electronAPI is read when a save runs).
+  const [savers] = useState(() => ({
+    live: createFanoutSaver<number | null>({ show: setLiveTaskCapState, save: (v) => window.electronAPI.fanout.setLiveTaskCap(v), reload: () => window.electronAPI.fanout.getLiveTaskCap(), isValue: isFanoutLimit, invoke: ipcInvoke, initial: null }),
+    hourly: createFanoutSaver<number | null>({ show: setHourlyTaskCapState, save: (v) => window.electronAPI.fanout.setHourlyTaskCap(v), reload: () => window.electronAPI.fanout.getHourlyTaskCap(), isValue: isFanoutLimit, invoke: ipcInvoke, initial: null }),
+    perCall: createFanoutSaver<number>({ show: setTasksPerCallState, save: (v) => window.electronAPI.fanout.setTasksPerCall(v), reload: () => window.electronAPI.fanout.getTasksPerCall(), isValue: isFanoutNumber, invoke: ipcInvoke, initial: DEFAULT_FANOUT_TASKS_PER_CALL }),
+    depth: createFanoutSaver<number>({ show: setFanoutDepthState, save: (v) => window.electronAPI.fanout.setDepth(v), reload: () => window.electronAPI.fanout.getDepth(), isValue: isFanoutNumber, invoke: ipcInvoke, initial: DEFAULT_FANOUT_DEPTH }),
+  }));
   // Main-side as well: main refuses the agy trust write while this is off.
   const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
   // Main-side, per workspace: the worker fence of this workspace's bots.
@@ -2209,22 +2239,22 @@ function FanoutWorkersSection() {
       .catch(() => undefined);
     window.electronAPI?.fanout?.getLiveTaskCap?.()
       .then((v) => {
-        if (!cancelled && (typeof v === 'number' || v === null)) setLiveTaskCapState(v);
+        if (!cancelled && isFanoutLimit(v)) { setLiveTaskCapState(v); savers.live.confirm(v); }
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getHourlyTaskCap?.()
       .then((v) => {
-        if (!cancelled && (typeof v === 'number' || v === null)) setHourlyTaskCapState(v);
+        if (!cancelled && isFanoutLimit(v)) { setHourlyTaskCapState(v); savers.hourly.confirm(v); }
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getTasksPerCall?.()
       .then((v) => {
-        if (!cancelled && typeof v === 'number') setTasksPerCallState(v);
+        if (!cancelled && isFanoutNumber(v)) { setTasksPerCallState(v); savers.perCall.confirm(v); }
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getDepth?.()
       .then((v) => {
-        if (!cancelled && typeof v === 'number') setFanoutDepthState(v);
+        if (!cancelled && isFanoutNumber(v)) { setFanoutDepthState(v); savers.depth.confirm(v); }
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getTrustAgyFolders?.()
@@ -2276,31 +2306,10 @@ function FanoutWorkersSection() {
   };
 
   // The field shows the value at once; main's reply (clamped) confirms it.
-  const onLiveTaskCapChange = (next: number | null) => {
-    setLiveTaskCapState(next);
-    window.electronAPI.fanout
-      .setLiveTaskCap(next)
-      .then((stored) => setLiveTaskCapState(stored))
-      .catch(() => undefined);
-  };
-
-  const onHourlyTaskCapChange = (next: number | null) => {
-    setHourlyTaskCapState(next);
-    window.electronAPI.fanout
-      .setHourlyTaskCap(next)
-      .then((stored) => setHourlyTaskCapState(stored))
-      .catch(() => undefined);
-  };
-
-  const onTasksPerCallChange = (next: number) => {
-    const api = window.electronAPI.fanout;
-    void saveFanoutNumber(next, tasksPerCall, setTasksPerCallState, () => api.setTasksPerCall(next), () => api.getTasksPerCall(), ipcInvoke);
-  };
-
-  const onFanoutDepthChange = (next: number) => {
-    const api = window.electronAPI.fanout;
-    void saveFanoutNumber(next, fanoutDepth, setFanoutDepthState, () => api.setDepth(next), () => api.getDepth(), ipcInvoke);
-  };
+  const onLiveTaskCapChange = (next: number | null) => { void savers.live.change(next); };
+  const onHourlyTaskCapChange = (next: number | null) => { void savers.hourly.change(next); };
+  const onTasksPerCallChange = (next: number) => { void savers.perCall.change(next); };
+  const onFanoutDepthChange = (next: number) => { void savers.depth.change(next); };
 
   const onTrustAgyFoldersChange = (next: boolean) => {
     window.electronAPI.fanout
