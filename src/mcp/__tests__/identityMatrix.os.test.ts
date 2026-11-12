@@ -77,7 +77,7 @@ class StubMain {
         externalWire: true,
         ...(peer.pid !== null && { peerPid: peer.pid }),
         ...(startedAt !== null && { peerStartedAt: String(startedAt) }),
-      } as Parameters<typeof checkClaim>[1];
+      } as NonNullable<Parameters<typeof checkClaim>[1]>;
       let buf = '';
       sock.on('data', (d) => {
         buf += d;
