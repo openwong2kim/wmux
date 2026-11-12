@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { HeadlessMode, headlessFlagPath } from '../headlessMode';
+import { HeadlessMode, headlessFlagPath, headlessStartable } from '../headlessMode';
 
 let dir: string;
 beforeEach(() => {
@@ -42,5 +42,12 @@ describe('headless mode', () => {
     expect(mode.active()).toBe(false);
     mode.markAppAttached();
     expect(told).toBe(1);
+  });
+
+  it('starts only an agent whose launch pins its conversation and takes the worker permission flags', () => {
+    expect(headlessStartable('claude')).toBe(true);
+    expect(headlessStartable('codex')).toBe(false);
+    expect(headlessStartable('qwen')).toBe(false);
+    expect(headlessStartable('nope')).toBe(false);
   });
 });

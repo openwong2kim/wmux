@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { agentRow } from '../../shared/agentIdentity';
+import { agentSupportsPermissionFlag } from '../../shared/agentResume';
 
 /**
  * Whether this daemon starts and feeds remote-spawned agents itself (headless
@@ -18,6 +20,15 @@ export const HEADLESS_FLAG_FILE = 'headless-worker';
 
 export function headlessFlagPath(a2aDir: string): string {
   return path.join(a2aDir, HEADLESS_FLAG_FILE);
+}
+
+/**
+ * An agent the daemon can start with nobody at the pane: its launch takes a
+ * pinned conversation id (so its transcript is found without hooks) and the
+ * worker permission flags.
+ */
+export function headlessStartable(agent: string): boolean {
+  return !!agentRow(agent)?.resume?.pin && agentSupportsPermissionFlag(agent);
 }
 
 export interface HeadlessModeDeps {

@@ -8,6 +8,7 @@ import { workerLaunchFlags } from '../../shared/workerLaunch';
 /** Beyond the worker deny list: an agent started for another PC asks no PC for more agents. */
 export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = ['mcp__wmux__remote_spawn'];
 import type { SpawnWorktreeInput, SpawnWorktreeResult } from '../../main/a2aRemote/spawnWorktree';
+import { headlessStartable } from './headlessMode';
 import type { HeadlessStartRecordV1, HeadlessStartStore } from './headlessStartStore';
 import type { SpawnRequestRecordV1 } from './spawnRequestStore';
 import { errMsg } from './storeFile';
@@ -243,8 +244,8 @@ export class A2aHeadlessStarter {
       this.deps.log('warn', `[headless] spawn ${spawnId} from ${hostId}: not started: ${why}`);
       this.deps.receiver.failed(hostId, spawnId, 'failed');
     };
-    // Claude Code only in this version; `manual` needs a person at the pane.
-    if (claim.agent !== 'claude') return refuse(`${claim.agent} is not started on a host without the app`);
+    // Claude Code only in this version (headlessStartable); `manual` needs a person at the pane.
+    if (!headlessStartable(claim.agent)) return refuse(`${claim.agent} is not started on a host without the app`);
     if (claim.permissionMode === 'manual') return refuse('the manual permission mode needs a person at the pane');
     const row = agentRow(claim.agent);
     if (!row) return refuse(`unknown agent ${claim.agent}`);
