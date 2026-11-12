@@ -8,8 +8,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { deliverScheduledPrompt, type ScheduledPromptDeliveryDeps } from '../sessionPromptDelivery';
 import { deliverCallerNudge } from '../callerNudgeDelivery';
-import { folderTrustRefusal, type FolderTrustSession } from '../folderTrustState';
+import { folderTrustRefusal, readFolderTrust, type FolderTrustSession } from '../folderTrustState';
 import { RingBuffer } from '../RingBuffer';
+import { approvalOnScreen } from '../approvals/approvalOnScreen';
 import { USAGE_LIMIT_CONTINUE_PROMPT } from '../../shared/usageLimit';
 import type { AgentStatus } from '../../shared/types';
 
@@ -67,6 +68,11 @@ function wired(screen: Screen, status: AgentStatus, opts: { onPaste?: Screen; on
 /** A selection menu under a cursor, as an agent shows when a turn stops on its usage limit. */
 const MENU = { cols: 50, rows: 24, screen: ['⏺ You have reached your usage limit.', '', '  What do you want to do?', '', '❯ 1. Stop and wait for the reset', '  2. Switch to another plan'] };
 
+/** Claude Code at rest after a person sent a numbered list: the transcript echoes it after `❯`. */
+const ECHO = { cols: 50, rows: 24, screen: ['❯ 1. fix the lint errors', '  2. rerun CI', '', '⏺ Both done.', '', '──────────────────────────────────────────────────', '❯ ', '──────────────────────────────────────────────────', '  ? for shortcuts'] };
+/** The same pane with a scheduled prompt that starts with "1." pasted into its input box. */
+const ECHO_DRAFT = { ...ECHO, screen: [...ECHO.screen.slice(0, 6), '❯ 1. Run the nightly report', ...ECHO.screen.slice(7)] };
+
 const NUDGE = '[wmux] fan-out task 6k7g7szw updated — channel_mission_list';
 
 const callers: Array<[string, AgentStatus, (deps: ScheduledPromptDeliveryDeps) => Promise<unknown>]> = [
@@ -121,6 +127,36 @@ describe('automated prompt delivery and a dialog on screen', () => {
     expect(await deliverScheduledPrompt('claude', 'inc-1', 'Run the nightly report.', deps)).toBe('error');
     expect(writes).toHaveLength(1);
     expect(writes[0]).not.toContain('\r');
+  });
+
+  it('a numbered prompt, echoed or in the input box, is not a dialog', async () => {
+    const { deps, writes } = wired(ECHO, 'idle', { onPaste: ECHO_DRAFT });
+    expect(await deliverScheduledPrompt('claude', 'inc-1', '1. Run the nightly report', deps)).toBe('sent');
+    expect(writes.at(-1)).toBe('\r');
+  });
+
+  it('a dialog beside cells the ring no longer covers still stops a writer that accepts those', async () => {
+    // A small ring that lost the screen's start: only the dialog's own rows are drawn by what it holds.
+    const ring = new RingBuffer(2048);
+    ring.noteGeometry(50, 24);
+    ring.write(Buffer.from('\x1b[0m'.repeat(1000)));
+    ring.write(Buffer.from(PERMISSION.screen.slice(-8).map((row, i) => `\x1b[${17 + i};1H${row}`).join('')));
+    const s = { meta: { state: 'attached', cols: 50, rows: 24 }, ptyProcess: { cols: 50, rows: 24 }, ringBuffer: ring,
+      bridge: { isMuted: false, outputModes: null, heldOutput: () => null } } as unknown as FolderTrustSession;
+    const read = (refuseDialog: boolean) => folderTrustRefusal({ getSession: () => s }, 'pane', 'test writer', { refuseUnknown: false, refuseDialog, log: () => undefined });
+    expect(await readFolderTrust({ getSession: () => s }, 'pane')).toEqual({ state: 'unknown', reason: 'unseen-cells', dialog: true });
+    expect(await read(false)).toBeNull();
+    expect(await read(true)).toBe('dialog');
+  });
+
+  it('the shared dialog test: the input box bounds it, real dialogs still count', () => {
+    const text = (sc: { screen: string[] }) => sc.screen.join('\n');
+    expect(approvalOnScreen(text(ECHO))).toBe(false);
+    expect(approvalOnScreen(text(ECHO_DRAFT))).toBe(false);
+    expect(approvalOnScreen(text(PERMISSION))).toBe(true);
+    expect(approvalOnScreen(text(MENU))).toBe(true);
+    expect(approvalOnScreen(text(fixture('terminal-prompts', 'claude-ask-single-01-initial')))).toBe(true);
+    expect(approvalOnScreen(text(fixture('terminal-prompts', 'claude-ask-multi-07-other-text')))).toBe(true);
   });
 
   it('a scheduled prompt still reaches an idle composer', async () => {

@@ -6457,10 +6457,12 @@ function registerRpcHandlers(
       // A person's Continue stops only at a prompt seen (a dialog is one).
       // Any refusal answers 'folder_trust', which waits without spending the
       // busy retries.
+      // A refusal after the paste stays 'error', so the continue is never
+      // pasted twice.
       let refused = false;
       const result = await deliverContinueMessage(id, expected.slug, expected.incarnationId, stillWanted,
         'usage-limit continue', { refuseUnknown: armed, onRefused: () => { refused = true; } });
-      return refused ? 'folder_trust' : result;
+      return refused && result !== 'error' ? 'folder_trust' : result;
     },
     log: (message) => log('info', message),
   });
@@ -6617,10 +6619,11 @@ function registerRpcHandlers(
       ? 'busy'
       : deliverPromptToSessionNow(id, slug, incarnationId, prompt, onWrite ? { onWrite } : {}, 'automation run')),
     // A pane held at a usage limit is that registry's to resume. The trust
-    // checks run before the paste and before Enter: 'unknown' before any
-    // write answers 'busy' (the engine asks again within its grace), a
-    // prompt on screen 'folder_trust' (final), and either after the paste
-    // 'error' (final: the continue is never pasted twice).
+    // checks run before the paste and before Enter: 'unknown' or another
+    // dialog before any write answers 'busy' (the engine asks again within
+    // its grace), a folder-trust prompt on screen 'folder_trust' (final), and
+    // any of them after the paste 'error' (final: the continue is never
+    // pasted twice).
     deliverContinue: async (id, slug, incarnationId, stillWanted) => (usageLimits?.holds(id)
       ? 'busy'
       : deliverContinueMessage(id, slug, incarnationId, stillWanted, 'automation retry', { refuseUnknown: true })),

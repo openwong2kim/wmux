@@ -46,9 +46,11 @@ export interface UsageLimitRegistryDeps {
    * Paste and submit the continue message through the scheduled-prompt proof,
    * expecting the agent recorded when the limit was seen. `stillWanted` is
    * asked again right before the paste and right before the Enter. `armed`:
-   * the automatic resume (a person's Continue is not). 'folder_trust': a
-   * folder-trust prompt is in the way, or (armed) a screen that cannot rule
-   * one out.
+   * the automatic resume (a person's Continue is not). 'folder_trust',
+   * before anything was written: a folder-trust prompt or another dialog (a
+   * selection menu, the agent's own limit menu among them) is in the way, or
+   * (armed) a screen that cannot rule one out. The resume then waits for it
+   * to go.
    */
   deliverContinue: (
     sessionId: string,

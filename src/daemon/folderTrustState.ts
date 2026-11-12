@@ -35,9 +35,9 @@ export type FolderTrustUnknownReason = 'unseen-cells' | 'cut-choices' | 'unreada
 export interface FolderTrustReading {
   state: FolderTrustState;
   reason?: FolderTrustUnknownReason;
-  /** On a 'clear' verdict: another dialog (a permission prompt, a selection
-   *  menu) is the live screen, by main's own test (approvalOnScreen).
-   *  Automated delivery waits while one is up. */
+  /** On a 'clear' or 'unknown' verdict: another dialog (a permission prompt,
+   *  a selection menu) shows in the cells that were read, by main's own test
+   *  (approvalOnScreen). Automated delivery waits while one is up. */
   dialog?: true;
 }
 
@@ -262,8 +262,11 @@ function verdictOf(frame: AwaitingFrame): FolderTrustReading {
   const onScreen = readFolderTrustScreen(lines.slice(-60));
   if (onScreen === 'trust') return { state: 'trust' };
   if (onScreen === 'unreadable') return { state: 'unknown', reason: 'cut-choices' };
-  if (frame.unknown && unknownWhereADialogWouldBe(frame.unknown)) return { state: 'unknown', reason: 'unseen-cells' };
-  return approvalOnScreen(lines.slice(-60).join('\n')) ? CLEAR_UNDER_DIALOG : CLEAR;
+  const dialog = approvalOnScreen(lines.slice(-60).join('\n'));
+  if (frame.unknown && unknownWhereADialogWouldBe(frame.unknown)) {
+    return dialog ? { state: 'unknown', reason: 'unseen-cells', dialog: true } : { state: 'unknown', reason: 'unseen-cells' };
+  }
+  return dialog ? CLEAR_UNDER_DIALOG : CLEAR;
 }
 
 /** The whole-ring verdict, while the output holds no newer byte (`mark`), the mute is unchanged and the size is the one it was read at. */
@@ -459,7 +462,9 @@ export async function folderTrustRefusal<D extends boolean = false>(
     { getSession: (sid) => sessions.getSession(sid), ...(opts.budgetMs !== undefined ? { timeoutMs: opts.budgetMs } : {}) },
     id,
   );
-  if (verdict === 'clear' && dialog && opts.refuseDialog) {
+  // A dialog in the cells read stops such a writer even where unread cells
+  // leave the verdict 'unknown' and the writer accepts that.
+  if (verdict !== 'trust' && dialog && opts.refuseDialog) {
     opts.log(`[folder-trust] refused ${writer} on pane ${id}: a dialog is on screen`);
     return 'dialog' as D extends true ? 'dialog' : never;
   }
