@@ -69,6 +69,19 @@ jobs:
           WMUX_REQUIRE_RUST_CORE: '1'
           # The checkout's build is never found on its own: name it.
           WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
+      # An idle daemon starts no process: the real daemon bundle with a few
+      # sessions, its forks and execs counted by strace over an idle window.
+      # strace attaches through sudo (Yama's ptrace_scope refuses a non-child).
+      - name: Idle daemon starts no process (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          command -v strace || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends strace; }
+          npm run build:daemon
+          npx vitest run src/daemon/__tests__/idleForks.linux.os.test.ts
+        env:
+          WMUX_IDLE_FORK_TEST: '1'
+          WMUX_REQUIRE_RUST_CORE: '1'
+          WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
       # Stub WMUX_RUST_SNAPSHOT_MODULE, which WMUX_TERMINAL_CORE_MODULE would override.
       - name: Opt-in snapshot module contracts
         run: npx vitest run src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/AnsiSnapshotBackend.test.ts src/daemon/__tests__/RustSnapshot.test.ts
