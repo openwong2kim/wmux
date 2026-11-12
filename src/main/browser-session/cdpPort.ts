@@ -39,9 +39,14 @@ export const CDP_PORT_MIN = 18800;
 /** How many ports the range holds (18800–18899). */
 export const CDP_PORT_COUNT = 100;
 
+/** Where claims live, without creating it (a quit must not make the directory). */
+function claimDirPath(home = os.homedir()): string {
+  return path.join(home, '.cache', 'wmux-cdp');
+}
+
 /** Shared across Dock/shell launches and data suffixes, independent of TMPDIR. */
 export function claimDir(home = os.homedir()): string {
-  const dir = path.join(home, '.cache', 'wmux-cdp');
+  const dir = claimDirPath(home);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
@@ -115,7 +120,8 @@ export interface CdpPortClaim {
  * A claim left behind by a crashed instance is reclaimed: the file records the
  * pid, and a pid that is gone releases the port. Nothing has to run at exit for
  * this to be correct, which matters because a crash is precisely when no exit
- * handler runs.
+ * handler runs. A clean quit still gives the claim back (releaseCdpPortOnQuit),
+ * so stale files are left only by crashes.
  */
 export function claimCdpPort(deps: ClaimCdpPortDeps = {}): CdpPortClaim {
   let dir: string;
@@ -166,6 +172,50 @@ function tryClaim(dir: string, port: number, pid: number, isAlive: (pid: number)
     return false;
   }
   return writeClaim(file, pid);
+}
+
+/**
+ * Give our claim back at quit. A claim nobody releases is only reclaimed when a
+ * later launch happens to try that port, so without this every port wmux has
+ * ever used keeps a file, and a file whose pid Windows has since handed to
+ * another process holds its port for as long as that process runs.
+ *
+ * Only a file that still names `pid` is removed: if it names anyone else, the
+ * port is theirs now. Synchronous and silent, because it runs from a process
+ * `exit` handler, where nothing can be awaited and nothing may throw.
+ */
+export function releaseCdpPort(claim: CdpPortClaim, deps: { dir?: string; pid?: number } = {}): void {
+  if (!claim.claimed) return;
+  const file = claimPath(deps.dir ?? claimDirPath(), claim.port);
+  const pid = deps.pid ?? process.pid;
+  try {
+    if (Number.parseInt(fs.readFileSync(file, 'utf8').trim(), 10) !== pid) return;
+    fs.unlinkSync(file);
+  } catch {
+    /* already gone, or unreadable: nothing of ours to remove */
+  }
+}
+
+/**
+ * Release `claim` on the first of `will-quit` and process `exit`. `will-quit`
+ * is the normal quit; `exit` also covers `app.exit()`, which skips will-quit
+ * (the quit deadlines in index.ts use it). Returns the release itself, for a
+ * caller that ends the process another way before either fires.
+ */
+export function releaseCdpPortOnQuit(
+  claim: CdpPortClaim,
+  hooks: { onWillQuit(listener: () => void): void; onExit(listener: () => void): void },
+  deps: { dir?: string; pid?: number } = {},
+): () => void {
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    releaseCdpPort(claim, deps);
+  };
+  hooks.onWillQuit(release);
+  hooks.onExit(release);
+  return release;
 }
 
 /** Create the claim file exclusively. False = somebody else holds it, or we cannot write. */

@@ -225,7 +225,7 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { setBrokerPidSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
-import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
+import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, releaseCdpPortOnQuit } from './browser-session/cdpPort';
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { registerBrowserPrivateNetworkIpc } from './ipc/handlers/browserPrivateNetwork.handler';
@@ -697,6 +697,10 @@ const cdpEnabled =
   process.env.WMUX_DISABLE_CDP !== 'true' &&
   bootConfig.browser?.cdp?.enabled !== false;
 let cdpPort = 0;
+// Gives the claim back; replaced below once there is one. The duplicate
+// instance that loses the single-instance lock claims before it finds out, so
+// it calls this itself on its way out.
+let releaseCdpClaim = (): void => undefined;
 if (cdpEnabled) {
   // The port is still drawn at random within the range, to keep it
   // unpredictable to a scanner — but it is CLAIMED rather than merely drawn
@@ -706,6 +710,10 @@ if (cdpEnabled) {
   // tool was dead with nothing anywhere to say why.
   const claim = claimCdpPort();
   cdpPort = claim.port;
+  releaseCdpClaim = releaseCdpPortOnQuit(claim, {
+    onWillQuit: (listener) => app.on('will-quit', listener),
+    onExit: (listener) => process.on('exit', listener),
+  });
   app.commandLine.appendSwitch('remote-debugging-port', cdpPort.toString());
   // REQUESTED, not enabled. Whether it is enabled is not knowable yet: the
   // switch is a request to Chromium, which has not started. The truth is
@@ -757,6 +765,7 @@ const gotLock = app.requestSingleInstanceLock();
 console.log(`[DEBUG] gotLock = ${gotLock}`);
 if (!gotLock) {
   console.log('[DEBUG] failed to get single instance lock, quitting');
+  releaseCdpClaim();
   app.quit();
   return;
 } else {
