@@ -6,6 +6,7 @@ import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../../shared/se
 import type { RpcRequest } from '../../shared/rpc';
 import { RpcRouter } from './RpcRouter';
 import { peerPidOf } from '../../shared/peerPid';
+import { processStartTime } from '../../shared/processStartTime';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -30,6 +31,10 @@ export class PipeServer {
   private readonly connectedSockets = new Set<net.Socket>();
   /** The pid the OS reports for each socket's peer, where it reports one (shared/peerPid.ts). */
   private readonly peerPids = new Map<net.Socket, number>();
+  /** Each peer's start time (shared/processStartTime.ts), read with its pid. */
+  private readonly peerStartedAts = new Map<net.Socket, string>();
+  /** Connections accepted by the loopback TCP fallback (Windows). */
+  private readonly tcpSockets = new Set<net.Socket>();
   /** Why peer pids were unavailable, each logged once. */
   private readonly peerPidMisses = new Set<string>();
   /**
@@ -134,6 +139,7 @@ export class PipeServer {
         this.connectedSockets.delete(socket);
         this.rateLimits.delete(socket);
         this.peerPids.delete(socket);
+        this.peerStartedAts.delete(socket);
       });
       this.handleConnection(socket);
     });
@@ -166,10 +172,10 @@ export class PipeServer {
     // On Unix, remove stale socket file before listening
     if (process.platform !== 'win32') {
       try {
-        const stat = require('fs').lstatSync(pipeName);
+        const stat = fs.lstatSync(pipeName);
         // Only remove if it's a socket (not a symlink to something else)
         if (stat.isSocket()) {
-          require('fs').unlinkSync(pipeName);
+          fs.unlinkSync(pipeName);
         } else {
           console.warn(`[PipeServer] ${pipeName} exists but is not a socket — skipping removal`);
         }
@@ -205,9 +211,9 @@ export class PipeServer {
         if (process.platform !== 'win32') {
           const stopPipeName = getPipeName();
           try {
-            const stat = require('fs').lstatSync(stopPipeName);
+            const stat = fs.lstatSync(stopPipeName);
             if (stat.isSocket()) {
-              require('fs').unlinkSync(stopPipeName);
+              fs.unlinkSync(stopPipeName);
             } else {
               console.warn(`[PipeServer] ${stopPipeName} exists but is not a socket — skipping removal`);
             }
@@ -234,9 +240,11 @@ export class PipeServer {
     this.tcpServer = net.createServer((socket) => {
       if (!this.admitConnection(socket)) return;
       this.connectedSockets.add(socket);
+      this.tcpSockets.add(socket);
       socket.on('close', () => {
         this.connectedSockets.delete(socket);
         this.rateLimits.delete(socket);
+        this.tcpSockets.delete(socket);
       });
       this.handleConnection(socket);
     });
@@ -277,8 +285,9 @@ export class PipeServer {
 
   /**
    * Read the peer's pid now, in the connection callback, before the fd can be
-   * closed and reused. Measurement only: handlers see it as ctx.peerPid and
-   * nothing decides on it yet.
+   * closed and reused, and that process's start time with it. Handlers see
+   * them as ctx.peerPid and ctx.peerStartedAt; a2a.resolve.identity checks
+   * claims against them.
    */
   private notePeerPid(socket: net.Socket): void {
     // Named pipes have no peer pid to read here.
@@ -292,6 +301,8 @@ export class PipeServer {
       return;
     }
     this.peerPids.set(socket, peer.pid);
+    const startedAt = processStartTime(peer.pid);
+    if (startedAt !== null) this.peerStartedAts.set(socket, String(startedAt));
     // Linux only: SO_PEERCRED carries the uid, macOS's LOCAL_PEERPID does not.
     const ownUid = process.getuid?.();
     if (peer.uid !== undefined && ownUid !== undefined && peer.uid !== ownUid && !this.peerPidMisses.has('uid')) {
@@ -433,6 +444,8 @@ export class PipeServer {
         externalWire: true,
         ...(signal ? { signal } : {}),
         ...(this.peerPids.has(socket) ? { peerPid: this.peerPids.get(socket) } : {}),
+        ...(this.peerStartedAts.has(socket) ? { peerStartedAt: this.peerStartedAts.get(socket) } : {}),
+        ...(this.tcpSockets.has(socket) ? { viaTcp: true as const } : {}),
       })
       .then((response) => {
         if (!socket.destroyed) {

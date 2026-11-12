@@ -20,6 +20,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawn, execFileSync, type ChildProcess } from 'child_process';
 import { buildSync } from 'esbuild';
+import { createHash } from 'crypto';
+import { peerPidOf } from '../../shared/peerPid';
+import { processStartTime } from '../../shared/processStartTime';
+import { checkClaim, setBrokerIdentitySource, type ClaimVerdict } from '../../main/pipe/handlers/peerPidShadow';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
@@ -28,6 +32,8 @@ import * as path from 'path';
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const isWin = process.platform === 'win32';
 const TOKEN = 'identity-matrix-token';
+/** The Codex thread the thread-mode case calls from; its owner record names pane pty-host. */
+const THREAD_ID = '019a0000-0000-7000-8000-00000000c0de';
 
 function nativeBinary(): string | null {
   const candidates = [
@@ -41,16 +47,36 @@ const NATIVE = isWin ? null : nativeBinary();
 // Windows runs none of it (the describe below skips there), so it needs no binary.
 if (!isWin && !NATIVE && process.env.WMUX_REQUIRE_NATIVE_HOOKS) throw new Error('identity matrix: no wmux-native binary (set WMUX_NATIVE_HOOKS_BIN)');
 
-interface Recorded { method: string; params: Record<string, unknown>; commanderToken?: unknown; callerPtyId?: unknown }
+interface Recorded {
+  method: string;
+  params: Record<string, unknown>;
+  commanderToken?: unknown;
+  callerPtyId?: unknown;
+  /** Main's own check of each pid the call claims (peerPidShadow.checkClaim), on the connection's OS peer. */
+  verdicts?: Record<string, ClaimVerdict>;
+}
 
-/** A stub main: plants panes for pids, answers what the server asks, records it. */
+/**
+ * A stub main: plants panes for pids, answers what the server asks, records it.
+ * It reads each connection's OS peer at accept, as PipeServer does, and puts
+ * every pid claim through main's real check, with this world's broker as the
+ * one main spawned.
+ */
 class StubMain {
   readonly calls: Recorded[] = [];
   panes = new Map<number, { ws: string; pty: string }>();
   protectedPane = false;
+  broker: { pid: number; startedAt: string | null } | null = null;
   private server: net.Server;
   constructor(readonly pipe: string) {
     this.server = net.createServer((sock) => {
+      const peer = peerPidOf(sock);
+      const startedAt = peer.pid === null ? null : processStartTime(peer.pid);
+      const ctx = {
+        externalWire: true,
+        ...(peer.pid !== null && { peerPid: peer.pid }),
+        ...(startedAt !== null && { peerStartedAt: String(startedAt) }),
+      } as Parameters<typeof checkClaim>[1];
       let buf = '';
       sock.on('data', (d) => {
         buf += d;
@@ -60,8 +86,15 @@ class StubMain {
           let m: { id?: unknown; method?: string; params?: Record<string, unknown>; commanderToken?: unknown; callerPtyId?: unknown };
           try { m = JSON.parse(line); } catch { continue; }
           const params = m.params ?? {};
-          this.calls.push({ method: String(m.method), params, commanderToken: m.commanderToken, callerPtyId: m.callerPtyId });
-          sock.write(JSON.stringify({ id: m.id, ok: true, result: this.answer(String(m.method), params) }) + '\n');
+          const verdicts: Record<string, ClaimVerdict> = {};
+          if (m.method === 'a2a.resolve.identity') {
+            setBrokerIdentitySource(() => this.broker);
+            for (const kind of ['callerPid', 'codexCallerPid']) {
+              if (typeof params[kind] === 'number') verdicts[kind] = checkClaim(kind, ctx, params[kind] as number, { log: () => undefined });
+            }
+          }
+          this.calls.push({ method: String(m.method), params, commanderToken: m.commanderToken, callerPtyId: m.callerPtyId, verdicts });
+          sock.write(JSON.stringify({ id: m.id, ok: true, result: this.answer(String(m.method), params, verdicts) }) + '\n');
         }
       });
       sock.on('error', () => undefined);
@@ -69,11 +102,16 @@ class StubMain {
   }
   listen(): Promise<void> { return new Promise((r) => this.server.listen(this.pipe, () => r())); }
   close(): void { this.server.close(); }
-  private answer(method: string, params: Record<string, unknown>): unknown {
+  private answer(method: string, params: Record<string, unknown>, verdicts: Record<string, ClaimVerdict>): unknown {
     const entries = [...this.panes].map(([pid, p]) => ({ pid: String(pid), workspaceId: p.ws, ptyId: p.pty }));
     switch (method) {
       case 'a2a.resolve.identity':
-        return { mappings: Object.fromEntries(entries.map((e) => [e.pid, e.workspaceId])), entries };
+        // A thread claim, as main mints one, only when its pid claim is taken.
+        return {
+          mappings: Object.fromEntries(entries.map((e) => [e.pid, e.workspaceId])),
+          entries,
+          ...(params.codexThreadId === THREAD_ID && verdicts.codexCallerPid?.ok && { threadClaim: { workspaceId: 'ws-host', ptyId: 'pty-host', workspaceToken: 'thread-token' } }),
+        };
       case 'workspace.list':
         return { workspaces: [...new Set(entries.map((e) => e.workspaceId))].map((id) => ({ id, name: id })) };
       case 'a2a.whoami':
@@ -95,7 +133,8 @@ const HOST_SOURCE = String.raw`
 const { spawn } = require('child_process');
 const net = require('net');
 const readline = require('readline');
-const spec = JSON.parse(process.argv[2]);
+// Last: a shared app-server stand-in runs as "codex app-server --managed-daemon <spec>".
+const spec = JSON.parse(process.argv[process.argv.length - 1]);
 if (spec.claimShim) {
   // A shim that names a false parent: handshake, drop the ack line, then pump.
   const sock = net.connect(spec.claimShim.pipe);
@@ -132,8 +171,9 @@ const text = (m) => (m.result && m.result.content || []).map((c) => c.text || ''
   const tools = (list.result && list.result.tools || []).map((t) => t.name).sort();
   console.log(JSON.stringify({ ready: true, pid: process.pid, mcpPid: child.pid }));
   await nextLine();
-  const whoami = await req('tools/call', { name: 'a2a_whoami', arguments: {} });
-  const repl = await req('tools/call', { name: 'repl_run', arguments: { code: '1' } });
+  const meta = spec.threadId ? { _meta: { threadId: spec.threadId } } : {};
+  const whoami = await req('tools/call', { name: 'a2a_whoami', arguments: {}, ...meta });
+  const repl = await req('tools/call', { name: 'repl_run', arguments: { code: '1' }, ...meta });
   console.log(JSON.stringify({ tools, whoami: text(whoami), replRefused: Boolean(repl.result && repl.result.isError), replText: text(repl).slice(0, 160) }));
   await nextLine();
   child.stdin.end(); setTimeout(() => { try { child.kill(); } catch {} process.exit(0); }, 500);
@@ -145,6 +185,7 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
   let res = '';
   let bin = '';
   let hostScript = '';
+  let appServerDir = '';
   let peerWorld: World;
   let blindWorld: World;
   const owned: ChildProcess[] = [];
@@ -159,6 +200,17 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
     if (koffi) env.NODE_PATH = path.join(REPO_ROOT, 'node_modules');
     const broker = spawn(process.execPath, [path.join(res, 'mcp-bundle', 'broker.js')], { env, stdio: ['ignore', 'ignore', 'pipe'] });
     owned.push(broker);
+    // The broker main spawned, as BrokerSupervisor records it: pid and start time right after the spawn.
+    const startedAt = processStartTime(broker.pid as number);
+    main.broker = { pid: broker.pid as number, startedAt: startedAt === null ? null : String(startedAt) };
+    // The Codex thread's owner record, as wmux's pane relay writes it in the
+    // default CODEX_HOME (Codex passes none to the MCP servers it spawns).
+    const owners = path.join(home, '.codex', 'wmux-thread-owners');
+    fs.mkdirSync(owners, { recursive: true });
+    const digest = (v: string) => createHash('sha256').update(v).digest('hex');
+    const ownerEnv = { WMUX_PTY_ID: 'pty-host', WMUX_WORKSPACE_ID: 'ws-host', WMUX_SURFACE_ID: '', WMUX_DATA_SUFFIX: suffix, WMUX_PIPE_NAME: '', WMUX_HOOKS_TO_MAIN: '' };
+    fs.writeFileSync(path.join(owners, `thread-${digest(THREAD_ID)}.json`), JSON.stringify({ version: 1, id: THREAD_ID, env: ownerEnv, nonce: 'n1' }));
+    fs.writeFileSync(path.join(owners, `pane-${digest(JSON.stringify([suffix, 'pty-host']))}.json`), JSON.stringify({ id: THREAD_ID, nonce: 'n1' }));
     let log = '';
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`broker did not start: ${log}`)), 20_000);
@@ -173,7 +225,9 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
 
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join('/tmp', 'idm-'));
-    res = path.join(root, 'res');
+    // Named as in an installed app: a native launcher under resources/ is wmux's own,
+    // so a parent check looks past it to the agent host.
+    res = path.join(root, 'resources');
     fs.mkdirSync(path.join(res, 'mcp-bundle'), { recursive: true });
     fs.mkdirSync(path.join(res, 'native-hooks'), { recursive: true });
     const common = { bundle: true, platform: 'node' as const, format: 'cjs' as const, logLevel: 'error' as const,
@@ -187,6 +241,10 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
     for (const host of ['claude', 'codex', 'gemini', 'opencode']) fs.symlinkSync(process.execPath, path.join(bin, host));
     hostScript = path.join(root, 'host.cjs');
     fs.writeFileSync(hostScript, HOST_SOURCE);
+    // A shared Codex app-server stand-in runs this file as "codex app-server …".
+    appServerDir = path.join(root, 'app-server-host');
+    fs.mkdirSync(appServerDir);
+    fs.writeFileSync(path.join(appServerDir, 'app-server'), HOST_SOURCE);
     peerWorld = await makeWorld('peer', true);
     blindWorld = await makeWorld('blind', false);
     expect(peerWorld.log()).toContain('peer-pid: available');
@@ -202,7 +260,11 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
   });
 
   type Chain = 'bundle' | 'shim' | 'fallback';
-  interface Case { host: string; clientName: string; env?: Record<string, string>; args?: string[]; protectedPane?: boolean }
+  interface Case {
+    host: string; clientName: string; env?: Record<string, string>; args?: string[]; protectedPane?: boolean;
+    /** Run the host as a shared Codex app-server and call from THREAD_ID. */
+    sharedServer?: boolean;
+  }
   interface Outcome { tools: string[]; whoami: string; replRefused: boolean; callerParentIsHost: boolean; mcpPid: number; callerPid: unknown; calls: Recorded[]; stderr: string }
 
   /** Run one host through one chain; the host's own pid is planted as pane pty-host in ws-host. */
@@ -218,7 +280,9 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
       : chain === 'bundle'
         ? { clientName: c.clientName, cmd: process.execPath, args: [path.join(res, 'mcp-bundle', 'index.js'), ...(c.args ?? [])], env }
         : { clientName: c.clientName, cmd: path.join(res, 'native-hooks', 'wmux-native'), args: ['mcp-shim', ...(c.args ?? [])], env };
-    const host = spawn(path.join(bin, c.host), [hostScript, JSON.stringify(spec)], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const host = c.sharedServer
+      ? spawn(path.join(bin, 'codex'), ['app-server', '--managed-daemon', JSON.stringify({ ...spec, threadId: THREAD_ID })], { cwd: appServerDir, stdio: ['pipe', 'pipe', 'pipe'] })
+      : spawn(path.join(bin, c.host), [hostScript, JSON.stringify(spec)], { stdio: ['pipe', 'pipe', 'pipe'] });
     owned.push(host);
     let stderr = '';
     host.stderr?.on('data', (d) => { stderr += d; });
@@ -239,7 +303,7 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
     host.stdin?.write('go\n');
     const done = await line(1);
     const resolveCall = world.main.calls.find((x) => x.method === 'a2a.resolve.identity');
-    const callerPid = resolveCall?.params.callerPid;
+    const callerPid = resolveCall?.params.callerPid ?? resolveCall?.params.codexCallerPid;
     let callerParentIsHost = false;
     if (typeof callerPid === 'number') {
       try { callerParentIsHost = Number(execFileSync('ps', ['-o', 'ppid=', '-p', String(callerPid)]).toString().trim()) === host.pid; } catch { /* gone */ }
@@ -264,7 +328,8 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
 
   const CASES: Array<[string, Case]> = [
     ['Claude with pane hints', { host: 'claude', clientName: 'claude-code', env: { WMUX_PTY_ID: 'pty-host', WMUX_WORKSPACE_ID: 'ws-host' } }],
-    ['Codex, env stripped', { host: 'codex', clientName: 'codex-mcp-client' }],
+    ['Codex per-pane, env stripped', { host: 'codex', clientName: 'codex-mcp-client' }],
+    ['Codex thread mode, shared app-server, env stripped', { host: 'codex', clientName: 'codex-mcp-client', sharedServer: true }],
     ['Gemini', { host: 'gemini', clientName: 'gemini-cli-mcp-client' }],
     ['OpenCode', { host: 'opencode', clientName: 'opencode' }],
     ['a remote pane hint', { host: 'claude', clientName: 'claude-code', env: { WMUX_PTY_ID: 'remote-peer-pty' } }],
@@ -287,6 +352,24 @@ describe.skipIf(isWin || !NATIVE)('identity across the bundle, shim and fallback
     expect(fallback.callerPid).toBe(fallback.mcpPid);
     expect(agreed(shim)).toEqual(agreed(bundle));
     expect(agreed(fallback)).toEqual(agreed(bundle));
+    // Main takes every pid claim: from the process that named it (bundle,
+    // fallback), or from the broker main spawned (shim).
+    for (const [chain, o, via] of [['bundle', bundle, 'same'], ['shim', shim, 'broker'], ['fallback', fallback, 'same']] as const) {
+      const resolves = o.calls.filter((x) => x.method === 'a2a.resolve.identity');
+      expect(resolves.length, chain).toBeGreaterThan(0);
+      for (const call of resolves) {
+        expect(Object.keys(call.verdicts ?? {}).length, chain).toBeGreaterThan(0);
+        for (const verdict of Object.values(call.verdicts ?? {})) expect(verdict, chain).toEqual({ ok: true, via });
+      }
+    }
+    if (c.sharedServer) {
+      // Thread mode: the claim names the thread and the caller's pid, never a walk.
+      for (const o of [bundle, shim, fallback]) {
+        const call = o.calls.find((x) => x.method === 'a2a.resolve.identity');
+        expect(call?.params).toMatchObject({ codexThreadId: THREAD_ID, codexCallerPid: o.mcpPid });
+        expect(call?.params).not.toHaveProperty('callerPid');
+      }
+    }
   }, 120_000);
 
   it('a client that names a false parent to the broker is still walked from its own', async () => {
