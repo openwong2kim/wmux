@@ -631,6 +631,36 @@ describe('links a lost start record left behind', () => {
     expect(gone).toEqual([{ workspaceId: 'hl-w9', paneId: orphan }]);
   });
 
+  it('an orphan whose processes did not exit: the link breaks, and they are ended by pid at the next reconciles', async () => {
+    const orphan = 'hl-99999999-2222-4333-8444-555555555555';
+    allLinks = [{ linkId: LINK, state: 'active', local: { kind: 'pane', workspaceId: 'hl-w9', paneId: orphan } } as A2aLinkRecordV1];
+    live.add(orphan);
+    survivors = [
+      { pid: 4343, reason: 'in the agent process tree when it was ended', startTime: 'Thu Nov 12 10:00:00 2026' },
+      { pid: 4344, reason: 'tree unknown', unverified: true },
+    ];
+    const starter = makeStarter();
+    await starter.reconcile();
+    expect(gone).toEqual([{ workspaceId: 'hl-w9', paneId: orphan }]);
+    // The verified one is ended again by its pid and start time; the unverified one never by pid alone.
+    allLinks = [];
+    earlierSurvivors = [survivors[0]];
+    await starter.reconcile();
+    expect(calls.filter((c) => c.startsWith('killEarlier:'))).toEqual(['killEarlier:4343']);
+    earlierSurvivors = [];
+    await starter.reconcile();
+    await starter.reconcile();
+    expect(calls.filter((c) => c.startsWith('killEarlier:'))).toEqual(['killEarlier:4343', 'killEarlier:4343']);
+  });
+
+  it('with the session service not up, an orphan link is left for a later reconcile', async () => {
+    const orphan = 'hl-99999999-2222-4333-8444-555555555555';
+    allLinks = [{ linkId: LINK, state: 'active', local: { kind: 'pane', workspaceId: 'hl-w9', paneId: orphan } } as A2aLinkRecordV1];
+    sessionPort = null;
+    await makeStarter().reconcile();
+    expect(gone).toEqual([]);
+  });
+
   it('a record whose session id is not a headless one is not read back', () => {
     fs.writeFileSync(path.join(dir, 'headless-starts.json'), JSON.stringify({ v: 1, starts: [{
       v: 1, hostId: HOST, spawnId: SPAWN, treeId: TREE, agent: 'claude', repoPath: '/repo', sessionId: '../../etc', workspaceId: 'hl-w1',

@@ -163,6 +163,13 @@ export class A2aHeadlessStarter {
   private readonly now: () => number;
   private readonly inFlight = new Set<string>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Processes an orphan session's end left (by session id): no record holds
+   * them, so each is ended by its pid and start time at the next reconciles
+   * until it is gone. One whose start time could not be read is not killed by
+   * pid alone (it may name another process now): it is logged for the owner.
+   */
+  private readonly orphanSurvivors = new Map<string, HeadlessSurvivor[]>();
   private settling: Promise<void> = Promise.resolve();
   private stopped = false;
 
@@ -279,8 +286,11 @@ export class A2aHeadlessStarter {
    * nothing would ever end them, so their session goes and they break now.
    */
   private async endOrphans(): Promise<void> {
-    const known = new Set(this.deps.starts.list().map((r) => r.sessionId));
     const sessions = this.deps.sessions();
+    // Nothing is ended, nor any link broken, before the session service is up: the next reconcile does it.
+    if (!sessions) return;
+    await this.endOrphanSurvivors(sessions);
+    const known = new Set(this.deps.starts.list().map((r) => r.sessionId));
     for (const link of this.deps.links.list()) {
       if (TERMINAL_LINK.has(link.state) || link.local.kind !== 'pane') continue;
       const paneId = link.local.paneId;
@@ -288,12 +298,44 @@ export class A2aHeadlessStarter {
       this.deps.log('warn', `[headless] link ${link.linkId}: its session ${paneId} has no start record; ended`);
       try {
         // eslint-disable-next-line no-await-in-loop -- one at a time
-        if (sessions) await sessions.destroy(paneId);
+        const destroyed = await sessions.destroy(paneId);
+        if (!destroyed.ok) this.keepOrphanSurvivors(paneId, destroyed.survivors);
+        // The link breaks either way: nothing can be delivered to a session no start accounts for.
         // eslint-disable-next-line no-await-in-loop -- one at a time
         await this.deps.paneGone(link.local.workspaceId, paneId);
       } catch (err) {
         this.deps.log('warn', `[headless] link ${link.linkId}: not ended yet: ${errMsg(err)}`);
       }
+    }
+  }
+
+  private keepOrphanSurvivors(sessionId: string, survivors: readonly HeadlessSurvivor[]): void {
+    const verified = survivors.filter((s) => !s.unverified && s.startTime !== undefined);
+    const unverified = survivors.filter((s) => !verified.includes(s));
+    if (unverified.length > 0) {
+      this.deps.log('warn', `[headless] session ${sessionId}: process(es) pid ${unverified.map((s) => s.pid).join(', ')} may still run and could not be verified; check and stop them yourself`);
+    }
+    if (verified.length > 0) {
+      this.deps.log('warn', `[headless] session ${sessionId}: pid ${verified.map((s) => s.pid).join(', ')} did not exit; ended again at the next reconciles`);
+      this.orphanSurvivors.set(sessionId, verified);
+    }
+  }
+
+  /** Orphan processes an earlier reconcile could not end: each by its own pid and start time. */
+  private async endOrphanSurvivors(sessions: HeadlessSessionPort): Promise<void> {
+    for (const [sessionId, survivors] of [...this.orphanSurvivors]) {
+      const left: HeadlessSurvivor[] = [];
+      for (const s of survivors) {
+        try {
+          // eslint-disable-next-line no-await-in-loop -- one at a time
+          const res = await sessions.killEarlier(s.pid, s.startTime);
+          if (!res.ok) left.push(...res.survivors);
+        } catch {
+          left.push(s);
+        }
+      }
+      this.orphanSurvivors.delete(sessionId);
+      if (left.length > 0) this.keepOrphanSurvivors(sessionId, left);
     }
   }
 

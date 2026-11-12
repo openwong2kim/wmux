@@ -132,6 +132,19 @@ describe('wmux daemon headless', () => {
     expect(text).toContain(`  ${lost}`);
     expect(text).not.toContain('task-other');
     expect(text).toContain('git worktree list');
+    // A worktree a record names, reached through a symlinked data dir, is not listed as unrecorded.
+    const linked = `${dir}-link`;
+    fs.symlinkSync(dir, linked);
+    try {
+      fs.writeFileSync(path.join(a2a, HEADLESS_STARTS_FILE), JSON.stringify({ v: 1, starts: [{
+        v: 1, hostId: '11111111-1111-4111-8111-111111111111', spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', agent: 'claude', repoPath: '/repo',
+        sessionId: 'hl-00000001-0000-4000-8000-000000000000', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
+        lineage: 'remote-spawn:x', runId: 'r', phase: 'ended', worktreePath: fs.realpathSync.native(lost), startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+      }] }));
+      expect(headlessStatus(linked).setAside?.unrecordedWorktrees).toEqual([]);
+    } finally {
+      fs.unlinkSync(linked);
+    }
   });
 
   it('status and on follow the running daemon: an app it knows of (launcher marker, attach it could not record) counts', async () => {

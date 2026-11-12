@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
+import { readFileSync, readdirSync, realpathSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { spawn } from 'child_process';
 import { childStdio } from '../consoleStdio';
@@ -437,7 +437,11 @@ function setAside(wmuxDir: string, starts: HeadlessStartRecordV1[]): Pick<Headle
   };
   const files = list(join(wmuxDir, 'a2a')).filter((n) => n.startsWith(`${HEADLESS_STARTS_FILE}.corrupt-`)).sort();
   if (files.length === 0) return {};
-  const worktrees = join(wmuxDir, 'worktrees');
+  // Recorded paths are real paths (the worktree step resolves its root): compare against the resolved root.
+  let worktrees = join(wmuxDir, 'worktrees');
+  try {
+    worktrees = realpathSync.native(worktrees);
+  } catch { /* no such folder: nothing to list */ }
   const named = new Set(starts.flatMap((r) => [r.worktreePath, r.worktreeIntended].filter((p): p is string => !!p)));
   const unrecordedWorktrees = list(worktrees)
     .filter((n) => /^remote-sp-[0-9a-f-]{36}$/.test(n))
