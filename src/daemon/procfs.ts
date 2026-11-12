@@ -148,12 +148,15 @@ export function procStartMs(pid: number): ProcAnswer<number> {
   return { value: Math.floor(start.value * 1000) };
 }
 
-/** A command line as `ps -o args=` prints it: argv joined by spaces, control characters as `?`. */
+/**
+ * A command line as `ps -o args=` prints it: procps turns each NUL and
+ * newline into a space, then any other control character into `?`.
+ */
 export function argsFromCmdline(cmdline: string, comm: string, state: string): string {
   const argv = cmdline.replace(/\0+$/, '');
   if (argv === '') return state === 'Z' ? `[${comm}] <defunct>` : `[${comm}]`;
   // eslint-disable-next-line no-control-regex -- the characters `ps` replaces
-  return argv.replace(/\0/g, ' ').replace(/[\x00-\x1f\x7f]/g, '?');
+  return argv.replace(/[\0\n]/g, ' ').replace(/[\x00-\x1f\x7f]/g, '?');
 }
 
 const TABLE_TIMEOUT_MS = 10_000;

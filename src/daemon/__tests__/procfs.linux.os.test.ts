@@ -46,9 +46,10 @@ describe('formatting', () => {
     expect(formatLstart(at + 0.99)).toBe('Tue Nov  3 07:05:09 2026');
   });
 
-  it('args joins argv with spaces, shows control characters as ?, and names an empty one by comm', () => {
+  it('args joins argv with spaces, turns newlines into spaces and other control characters into ?, and names an empty one by comm', () => {
     expect(argsFromCmdline('node\0/opt/a b.js\0--x\0', 'node', 'S')).toBe('node /opt/a b.js --x');
-    expect(argsFromCmdline('sh\0-c\0echo\nhi\0', 'sh', 'S')).toBe('sh -c echo?hi');
+    expect(argsFromCmdline('sh\0-c\0echo\nhi\0', 'sh', 'S')).toBe('sh -c echo hi');
+    expect(argsFromCmdline('sh\0-c\0a\tb\x1bc\0', 'sh', 'S')).toBe('sh -c a?b?c');
     expect(argsFromCmdline('', 'kthreadd', 'S')).toBe('[kthreadd]');
     expect(argsFromCmdline('', 'sh', 'Z')).toBe('[sh] <defunct>');
   });
@@ -135,7 +136,8 @@ describe.runIf(linux)('/proc readers match ps', () => {
   });
 
   it('the process table is ps -ww -axo pid=,ppid=,args=, row for row', async () => {
-    const spaced = child(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)', 'an argument with spaces']);
+    // Spaces, a newline, a tab and an escape inside arguments.
+    const spaced = child(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)', 'an argument with spaces', 'line\nbreak', 'tab\there', 'esc\x1bhere']);
     await waitFor(() => ps('args', spaced.pid as number).includes('an argument with spaces'), 10_000, 'the child');
     const asRows = (rows: Awaited<ReturnType<typeof procTable>>) => parsePsOutput((rows ?? []).map((r) => `${r.pid} ${r.ppid} ${r.args}`).join('\n'));
     const before = new Map(asRows(await procTable()).map((e) => [e.pid, e]));
