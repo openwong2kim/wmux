@@ -84,6 +84,11 @@ export class BrokerSupervisor {
     return pid === undefined ? null : { pid, startedAt: this.childProcessStartedAt };
   }
 
+  /** True while another broker serves the pipe and this supervisor stands down for it. */
+  get standingDown(): boolean {
+    return this.reclaimTimer !== null;
+  }
+
   /** Counts for `wmux doctor` (mcp.sessions.summary). */
   status(): BrokerStatus {
     const pid = this.child?.pid ?? null;
@@ -95,7 +100,7 @@ export class BrokerSupervisor {
       crashExits: this.crashExits,
       spawnFailures: this.spawnFailures,
       standDowns: this.standDowns,
-      standingDown: this.reclaimTimer !== null,
+      standingDown: this.standingDown,
       downReason: this.downReason(),
       lastCrashTools: [...this.lastCrashTools],
     };

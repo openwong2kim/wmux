@@ -11,6 +11,7 @@ import {
   resetClaimChecks,
   setBrokerIdentitySource,
   setClaimStartTimeSource,
+  setUnownedBrokerSource,
 } from '../peerPidShadow';
 
 const wire = (peerPid?: number, peerStartedAt?: string, clientName = 'claude-code'): RpcContext => ({
@@ -48,6 +49,18 @@ describe('checkClaim', () => {
     for (const [ctx, pid, reason] of cases) expect(checkClaim('callerPid', ctx, pid, quiet), reason).toEqual({ ok: false, reason });
     setClaimStartTimeSource(() => null);
     expect(checkClaim('callerPid', wire(100, '10'), 100, quiet)).toEqual({ ok: false, reason: 'start-unread' });
+  });
+
+  it('names a claim from another process unowned-broker while a broker main did not start serves the agents', () => {
+    setUnownedBrokerSource(() => true);
+    expect(checkClaim('callerPid', wire(888, '1'), 100, quiet)).toEqual({ ok: false, reason: 'unowned-broker' });
+    // The process itself is still taken, and a broker main spawned is still its own.
+    expect(checkClaim('callerPid', wire(100, '10'), 100, quiet)).toEqual({ ok: true, via: 'same' });
+    setBrokerIdentitySource(() => ({ pid: 500, startedAt: '50' }));
+    expect(checkClaim('callerPid', wire(888, '1'), 100, quiet)).toEqual({ ok: false, reason: 'other-pid' });
+    setUnownedBrokerSource(() => false);
+    setBrokerIdentitySource(() => null);
+    expect(checkClaim('callerPid', wire(888, '1'), 100, quiet)).toEqual({ ok: false, reason: 'other-pid' });
   });
 
   it('takes every claim as sent on Windows, and counts those that came over TCP', () => {
@@ -97,13 +110,13 @@ describe('claimStillHeld', () => {
 
 describe('identitySummary (wmux doctor)', () => {
   it('counts every refusal by reason, starting from zero', () => {
-    expect(identitySummary('darwin').refusals).toEqual({ 'no-peer': 0, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0 });
+    expect(identitySummary('darwin').refusals).toEqual({ 'no-peer': 0, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0, 'unowned-broker': 0 });
     checkClaim('callerPid', wire(), 100, quiet);
     checkClaim('callerPid', wire(), 100, quiet);
     checkClaim('callerPid', wire(101, '10'), 100, quiet);
     checkClaim('callerPid', wire(100, '9'), 100, quiet);
     checkClaim('callerPid', wire(100, '10'), 100, quiet);
-    expect(identitySummary('darwin').refusals).toEqual({ 'no-peer': 2, 'other-pid': 1, 'start-unread': 0, restarted: 1, 'broker-unverified': 0 });
+    expect(identitySummary('darwin').refusals).toEqual({ 'no-peer': 2, 'other-pid': 1, 'start-unread': 0, restarted: 1, 'broker-unverified': 0, 'unowned-broker': 0 });
   });
 
   it('says whether main reads peers and start times, and why not', () => {

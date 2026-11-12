@@ -574,7 +574,7 @@ describe('buildDoctorReport — the identity and hooks sections together', () =>
     identity: {
       peerRead: { state: 'unavailable', reason: 'koffi unavailable' },
       startTimes: 'ok',
-      refusals: { 'no-peer': 2, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0 },
+      refusals: { 'no-peer': 2, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0, 'unowned-broker': 0 },
     },
   };
   const mcp: NonNullable<DoctorDeps['mcp']> = {

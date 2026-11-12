@@ -693,7 +693,7 @@ export function buildIdentitySection(id: IdentityClaimsSummary): { verdict: Verd
       label: 'refused claims',
       value: refused.map((r) => `${r} ${id.refusals[r]}`).join(', '),
       verdict: 'OK',
-      hint: 'These callers got no pane claim and used their own walk. other-pid: the call came from another process than the one it named, or from one in another pid namespace (a container). no-peer or start-unread with the lines above unavailable: main\'s reading is down, not the caller.',
+      hint: 'These callers got no pane claim and used their own walk. other-pid: the call came from another process than the one it named, or from one in another pid namespace (a container). unowned-broker: an MCP broker this app did not start (another wmux instance, or one left running) serves the agents, so main cannot vouch for the calls it relays; quit the other instance or restart wmux. no-peer or start-unread with the lines above unavailable: main\'s reading is down, not the caller.',
     });
   if (id.tcpClaims !== undefined) lines.push({ label: 'claims over TCP', value: String(id.tcpClaims), verdict: 'OK' });
   return { verdict: worst(lines.map((l) => l.verdict)), lines };

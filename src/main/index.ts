@@ -223,7 +223,7 @@ import { readDaemonPid } from './updater/installTeardown';
 import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
-import { identitySummary, notePeerReadCheck, setBrokerIdentitySource } from './pipe/handlers/peerPidShadow';
+import { identitySummary, notePeerReadCheck, setBrokerIdentitySource, setUnownedBrokerSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, releaseCdpPortOnExit } from './browser-session/cdpPort';
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
@@ -944,6 +944,7 @@ const mcpRegistrar = new McpRegistrar();
 // backoff, so start order is a latency nicety, not a correctness gate.
 const mcpBrokerSupervisor = new BrokerSupervisor();
 setBrokerIdentitySource(() => mcpBrokerSupervisor.identity);
+setUnownedBrokerSource(() => mcpBrokerSupervisor.standingDown);
 const webviewCdpManager = new WebviewCdpManager(0);
 webviewCdpManager.setCdpFailureReason(
   cdpEnabled

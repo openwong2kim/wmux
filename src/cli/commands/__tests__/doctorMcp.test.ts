@@ -181,7 +181,7 @@ describe('doctor mcp section', () => {
 
 describe('doctor identity section', () => {
   const withIdentity = (identity: unknown) => deps({ sessions: () => Promise.resolve({ id: '1', ok: true, result: { ...summary, identity } }) });
-  const zero = { 'no-peer': 0, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0 };
+  const zero = { 'no-peer': 0, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0, 'unowned-broker': 0 };
   const lines = async (identity: unknown) => {
     const section = (await buildMcpSection(withIdentity(identity))).identity;
     return section && Object.fromEntries(section.lines.map((l) => [l.label, l]));
@@ -216,6 +216,12 @@ describe('doctor identity section', () => {
     expect(byLabel?.['peer read']).toMatchObject({ value: 'unavailable (koffi unavailable: no binary)', verdict: 'WARN' });
     expect(byLabel?.['peer read'].hint).toMatch(/every pid claim is refused/);
     expect(byLabel?.['refused claims']).toMatchObject({ value: 'no-peer 4', verdict: 'OK' });
+  });
+
+  it('names the claims a broker this app did not start relayed, and what to do about it', async () => {
+    const byLabel = await lines({ peerRead: { state: 'ok' }, startTimes: 'ok', refusals: { ...zero, 'unowned-broker': 3 } });
+    expect(byLabel?.['refused claims']).toMatchObject({ value: 'unowned-broker 3', verdict: 'OK' });
+    expect(byLabel?.['refused claims'].hint).toMatch(/unowned-broker: an MCP broker this app did not start/);
   });
 
   it('reports no refusals as OK, and an unchecked read as skipped', async () => {

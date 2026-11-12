@@ -22,11 +22,17 @@ export type ClaimVerdict =
 type BrokerIdentity = { pid: number; startedAt: string | null } | null;
 
 let brokerIdentity: () => BrokerIdentity = () => null;
+let brokerUnowned: () => boolean = () => false;
 let startTimeOf: (pid: number) => bigint | null = processStartTime;
 
 /** Where the running MCP broker's identity comes from (main's BrokerSupervisor). */
 export function setBrokerIdentitySource(source: () => BrokerIdentity): void {
   brokerIdentity = source;
+}
+
+/** Whether main stands down for an MCP broker it did not start (main's BrokerSupervisor). */
+export function setUnownedBrokerSource(source: () => boolean): void {
+  brokerUnowned = source;
 }
 
 /** Test seam: the start time reader (shared/processStartTime.ts). */
@@ -90,7 +96,7 @@ export function checkClaim(
       ? { ok: true, via: 'broker' }
       : refuse(kind, 'broker-unverified', ctx, log);
   }
-  if (peer !== claimedPid) return refuse(kind, 'other-pid', ctx, log);
+  if (peer !== claimedPid) return refuse(kind, !broker && brokerUnowned() ? 'unowned-broker' : 'other-pid', ctx, log);
   const now = startTimeOf(claimedPid);
   if (ctx?.peerStartedAt === undefined || now === null) return refuse(kind, 'start-unread', ctx, log);
   return String(now) === ctx.peerStartedAt ? { ok: true, via: 'same' } : refuse(kind, 'restarted', ctx, log);
@@ -141,5 +147,6 @@ export function resetClaimChecks(): void {
   tcpClaims = 0;
   peerRead = null;
   brokerIdentity = () => null;
+  brokerUnowned = () => false;
   startTimeOf = processStartTime;
 }
