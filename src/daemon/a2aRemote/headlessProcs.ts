@@ -16,7 +16,9 @@ import type { HeadlessSurvivor } from './headlessStartStore';
  *     never in the snapshot).
  * The hold is released only when both are known to be clear. Whatever cannot
  * be read keeps it: the process table, a tracked pid's row (one whose start
- * time cannot be compared counts as the same process), /proc.
+ * time cannot be compared counts as the same process), a missing snapshot.
+ * Without /proc (macOS) only the snapshot can be checked, and its being gone
+ * releases the hold.
  */
 
 export interface HeadlessProcDeps {
@@ -98,8 +100,12 @@ export async function stillHeld(
     return !row.start || row.start === s.startTime;
   });
   if (anyAlive || !worktreePath) return all;
+  // The whole tree as it was before the kill is gone. Where /proc can be read,
+  // nothing may work in the worktree either (an orphan started after the
+  // snapshot); without /proc (macOS) the snapshot is what there is, so its
+  // being gone releases the hold rather than holding it for good.
   const busy = await processesWorkingIn(worktreePath, deps.procRoot);
-  return busy === false ? [] : all;
+  return busy === true ? all : [];
 }
 
 /**

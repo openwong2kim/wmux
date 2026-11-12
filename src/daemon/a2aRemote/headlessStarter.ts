@@ -59,7 +59,8 @@ export interface HeadlessSessionInput {
 export interface HeadlessSessionPort {
   /** The agent's launcher on the PATH the daemon runs agents with; null when it is not there. */
   resolveAgent(agent: AgentSlug): Promise<string | null>;
-  create(input: HeadlessSessionInput): Promise<void>;
+  /** Start the session; its process (pid and start time, waited for briefly) so it can be found again after a restart. */
+  create(input: HeadlessSessionInput): Promise<{ rootPid?: number; rootStart?: string }>;
   /** The session exists and its process runs. */
   alive(sessionId: string): boolean;
   /**
@@ -68,6 +69,12 @@ export interface HeadlessSessionPort {
    * closed either way. A session that is gone already is `ok`.
    */
   destroy(sessionId: string): Promise<HeadlessDestroyResult>;
+  /**
+   * An agent of an earlier daemon run, by the pid and start time recorded
+   * when it started: ended with its tree when it still runs (a pid that now
+   * names another process is left alone); what did not exit is reported.
+   */
+  killEarlier(rootPid: number, rootStart: string | undefined): Promise<HeadlessDestroyResult>;
   /**
    * Of processes an earlier destroy left, the ones that may still run. An
    * unverified entry (a tree that could not be checked whole) stays until a
@@ -98,7 +105,15 @@ export interface HeadlessStarterDeps {
     remove(input: { repoPath: string; spawnId: string }): Promise<void>;
     /** The folder is still on disk (an ended start's kept worktree). */
     exists(worktreePath: string): boolean;
+    /** Where the worktree of `spawnId` is made. */
+    pathFor(spawnId: string): string;
+    /** The commit a new worktree is at; null when it cannot be read. */
+    baseOf(worktreePath: string): Promise<string | null>;
+    /** Nothing beyond `base` and a clean tree (true); anything else, or unknown, is false. */
+    pristine(worktreePath: string, base: string): Promise<boolean>;
   };
+  /** The owner asked (`wmux daemon headless release <spawnId>`) to drop the hold on this start. */
+  releases: { requested(spawnId: string): boolean; clear(spawnId: string): void };
   /** The pane of a link is gone: its live links break and their PCs are told. */
   paneGone(workspaceId: string, paneId: string): Promise<void>;
   /** End whatever link a start of `spawnId` made or still owes (spawnStarter.abandon). */
@@ -186,6 +201,11 @@ export class A2aHeadlessStarter {
     let rec = start;
     const sessions = this.deps.sessions();
     // Processes an earlier end left: nothing more is undone, nor the start marked ended, until they are gone.
+    if (rec.survivors?.length && this.deps.releases.requested(rec.spawnId)) {
+      this.deps.log('warn', `[headless] spawn ${rec.spawnId}: hold on pid ${rec.survivors.map((p) => p.pid).join(', ')} released by the owner`);
+      rec = this.deps.starts.update(rec.hostId, rec.spawnId, { survivors: undefined });
+      this.deps.releases.clear(rec.spawnId);
+    }
     if (rec.survivors?.length) {
       if (!sessions) return;
       const left = await sessions.stillRunning(rec.survivors, rec.worktreePath);
@@ -226,25 +246,39 @@ export class A2aHeadlessStarter {
   private async end(rec: HeadlessStartRecordV1, link: A2aLinkRecordV1 | undefined, sessions: HeadlessSessionPort): Promise<void> {
     // Whether or not it looks alive: a session recovery brought back (even on disk only) goes too.
     const destroyed = await sessions.destroy(rec.sessionId);
+    // An agent of an earlier daemon run is not in that session any more: found by its own pid and start time.
+    const earlier = rec.runId !== this.deps.runId && rec.rootPid !== undefined
+      ? await sessions.killEarlier(rec.rootPid, rec.rootStart)
+      : { ok: true as const };
     // The link breaks either way (nothing is delivered to it, nothing counts it live).
     if (link && !TERMINAL_LINK.has(link.state)) await this.deps.paneGone(rec.workspaceId, rec.sessionId);
     // A link still owed is never made for it.
     this.deps.abandon(rec.hostId, rec.spawnId);
-    if (!destroyed.ok) this.hold(rec, destroyed.survivors);
+    const survivors = [...(destroyed.ok ? [] : destroyed.survivors), ...(earlier.ok ? [] : earlier.survivors)];
+    if (survivors.length > 0) this.hold(rec, survivors);
     this.deps.starts.update(rec.hostId, rec.spawnId, { phase: 'ended', endedAt: new Date(this.now()).toISOString() });
+    // Nothing done in it (no commit beyond where it started, a clean tree): it goes, with its branch.
+    if (rec.worktreePath && rec.baseCommit && await this.deps.worktrees.pristine(rec.worktreePath, rec.baseCommit)) {
+      await this.deps.worktrees.remove({ repoPath: rec.repoPath, spawnId: rec.spawnId });
+      this.deps.starts.remove(rec.hostId, rec.spawnId);
+      this.deps.log('info', `[headless] spawn ${rec.spawnId} from ${rec.hostId}: ended; its worktree was left unchanged and was removed`);
+      return;
+    }
     this.deps.log('info', `[headless] spawn ${rec.spawnId} from ${rec.hostId}: ended; worktree kept at ${rec.worktreePath ?? '(none)'}`);
   }
 
   /**
    * Session and worktree of a start that did not finish go, then its record.
-   * The worktree only when this start recorded making it: a `remote-<spawnId>`
+   * The worktree only when this start recorded making it (or, before
+   * `git worktree add`, the free path it was about to use): a `remote-<spawnId>`
    * that was there before (another start's kept work) is never touched. A
    * step that fails keeps the record (tried again).
    */
   private async takeBack(rec: HeadlessStartRecordV1, sessions: HeadlessSessionPort, why: string): Promise<void> {
     this.deps.log('warn', `[headless] spawn ${rec.spawnId} from ${rec.hostId}: taken back (${why})`);
     await this.destroyOrHold(rec, sessions);
-    if (rec.worktreePath) await this.deps.worktrees.remove({ repoPath: rec.repoPath, spawnId: rec.spawnId });
+    // Made by this start, or about to be when it stopped (nothing was there when it was recorded).
+    if (rec.worktreePath || rec.worktreeIntended) await this.deps.worktrees.remove({ repoPath: rec.repoPath, spawnId: rec.spawnId });
     this.deps.starts.remove(rec.hostId, rec.spawnId);
   }
 
@@ -316,26 +350,41 @@ export class A2aHeadlessStarter {
     } catch (err) {
       return refuse(`the start was not recorded: ${errMsg(err)}`);
     }
-    const undo = async (code: 'folder-not-allowed' | 'failed', why: string): Promise<void> => {
+    /** `notOurs`: the worktree step failed, so whatever is at its path is not this start's (never removed). */
+    const undo = async (code: 'folder-not-allowed' | 'failed', why: string, notOurs = false): Promise<void> => {
       this.deps.log('warn', `[headless] spawn ${spawnId} from ${hostId}: not started (${code}): ${why}`);
       try {
-        const current = this.deps.starts.get(hostId, spawnId) ?? rec;
-        await this.takeBack(rec.worktreePath && !current.worktreePath ? { ...current, worktreePath: rec.worktreePath } : current, sessions, why);
+        // Not left in the record either, where a later reconcile would take it back.
+        if (notOurs && this.deps.starts.get(hostId, spawnId)?.worktreeIntended) this.deps.starts.update(hostId, spawnId, { worktreeIntended: undefined });
+        const stored = this.deps.starts.get(hostId, spawnId) ?? rec;
+        const current = rec.worktreePath && !stored.worktreePath ? { ...stored, worktreePath: rec.worktreePath } : stored;
+        const { worktreeIntended: _intended, worktreePath: _path, ...withoutTree } = current;
+        await this.takeBack(notOurs ? withoutTree : current, sessions, why);
       } catch (err) {
         this.deps.log('warn', `[headless] spawn ${spawnId}: left for the next reconcile: ${errMsg(err)}`);
       }
       this.deps.receiver.failed(hostId, spawnId, code);
     };
 
+    // The path is recorded before `git worktree add`, so a daemon that dies in between still takes it back.
+    // Only a free one: one that is there already is another start's and is never recorded (nor touched).
+    const intended = this.deps.worktrees.pathFor(spawnId);
+    if (this.deps.worktrees.exists(intended)) return undo('failed', `${intended} is there already`);
+    try {
+      this.deps.starts.update(hostId, spawnId, { worktreeIntended: intended });
+    } catch (err) {
+      return undo('failed', `the worktree was not recorded: ${errMsg(err)}`);
+    }
     let made: SpawnWorktreeResult;
     try {
       made = await this.deps.worktrees.create({ repoPath: claim.repoPath, sub: claim.sub, spawnId });
     } catch (err) {
       made = { ok: false, code: 'failed', detail: errMsg(err) };
     }
-    if (!made.ok) return undo(made.code, made.detail);
+    if (!made.ok) return undo(made.code, made.detail, true);
     try {
-      this.deps.starts.update(hostId, spawnId, { worktreePath: made.worktreePath, cwd: made.cwd });
+      const baseCommit = await this.deps.worktrees.baseOf(made.worktreePath).catch(() => null);
+      this.deps.starts.update(hostId, spawnId, { worktreePath: made.worktreePath, cwd: made.cwd, ...(baseCommit ? { baseCommit } : {}) });
     } catch (err) {
       // Made by this start, so it goes, recorded or not.
       rec.worktreePath = made.worktreePath;
@@ -347,8 +396,12 @@ export class A2aHeadlessStarter {
     // Claude Code stops on its folder-trust prompt, as a fan-out worker would.
     const command = `${stem} --session-id ${rec.agentSessionId} ${workerLaunchFlags(claim.permissionMode, HEADLESS_EXTRA_DISALLOWED_TOOLS)}`;
     try {
-      await sessions.create({ sessionId: rec.sessionId, workspaceId: rec.workspaceId, cwd: made.cwd, agentBin, command, env: firstRunEnvForAgent(stem) });
-      this.deps.starts.update(hostId, spawnId, { phase: 'created' });
+      const root = await sessions.create({ sessionId: rec.sessionId, workspaceId: rec.workspaceId, cwd: made.cwd, agentBin, command, env: firstRunEnvForAgent(stem) });
+      this.deps.starts.update(hostId, spawnId, {
+        phase: 'created',
+        ...(root.rootPid !== undefined ? { rootPid: root.rootPid } : {}),
+        ...(root.rootStart ? { rootStart: root.rootStart } : {}),
+      });
     } catch (err) {
       return undo('failed', `the session did not start: ${errMsg(err)}`);
     }

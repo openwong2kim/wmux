@@ -14,12 +14,12 @@ import { asSpawnLinkId, spawnFirstMessageId } from '../../../shared/a2aSpawn';
 import type { DaemonConfig } from '../../types';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
-import { createSpawnWorktree, removeSpawnWorktree } from '../../../main/a2aRemote/spawnWorktree';
+import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../../../main/a2aRemote/spawnWorktree';
 import { A2aRemoteController } from '../controller';
 import { A2aRemoteDelivery } from '../delivery';
 import { ExposedPaneCache } from '../exposedPanes';
 import { ExposureStore } from '../exposureStore';
-import { HeadlessMode, headlessFlagPath } from '../headlessMode';
+import { HeadlessMode, headlessFlagPath, headlessReleases } from '../headlessMode';
 import { HeadlessStartStore } from '../headlessStartStore';
 import { A2aHeadlessStarter, type HeadlessSessionInput, type HeadlessSessionPort } from '../headlessStarter';
 import { remoteTaskId } from '../ids';
@@ -90,12 +90,14 @@ function fakeSessions(): FakeSessions {
       if (s.hold) await s.hold;
       s.made.push(input);
       s.live.add(input.sessionId);
+      return {};
     },
     alive: (id) => s.live.has(id),
     destroy: async (id) => {
       s.live.delete(id);
       return { ok: true };
     },
+    killEarlier: async () => ({ ok: true }),
     stillRunning: async () => [],
   };
   return s;
@@ -149,7 +151,18 @@ function headlessParts(opts: {
       create: (input) => createSpawnWorktree(input, wtOpts),
       remove: (input) => removeSpawnWorktree(input, wtOpts),
       exists: (p) => fs.existsSync(p),
+      // `dir` is a realpath already, as createSpawnWorktree resolves its root.
+      pathFor: (spawnId) => path.join(wtOpts.worktreesRoot, `remote-${spawnId}`),
+      baseOf: async (wt) => {
+        const out = await gitRunner(wt, wtOpts)(['rev-parse', 'HEAD']);
+        return out.code === 0 ? out.stdout.trim() : null;
+      },
+      pristine: async (wt, base) => {
+        const git = gitRunner(wt, wtOpts);
+        return (await git(['rev-parse', 'HEAD'])).stdout.trim() === base && (await git(['status', '--porcelain', '--untracked-files=all'])).stdout.trim() === '';
+      },
     },
+    releases: headlessReleases(opts.a2aDir),
     paneGone: opts.paneGone ?? (async () => undefined),
     abandon: (h, s) => opts.spawnStarter.abandon(h, s),
     runId: opts.runId,
@@ -362,6 +375,8 @@ describe('headless remote spawn, two PCs and no app', () => {
     expect(task?.metadata.to).toMatchObject({ workspaceId: rec.workspaceId, paneId: rec.sessionId });
     expect(task?.history[0].parts).toEqual([{ kind: 'text', text: PROMPT }]);
 
+    // The agent wrote something: its worktree is kept when it ends.
+    fs.writeFileSync(path.join(b.dir, 'worktrees', `remote-${spawnId}`, 'notes.txt'), 'work\n');
     // The agent's session ends: its link breaks on both PCs and nothing counts as live.
     b.sessions.live.delete(rec.sessionId);
     b.headless!.onSessionGone(rec.sessionId);
@@ -386,7 +401,9 @@ describe('headless remote spawn, two PCs and no app', () => {
     b.links.forgetHost(a.hostId as HostId);
     await b.headless!.reconcile();
     expect(b.sessions.live.has(rec.sessionId)).toBe(false);
-    expect(b.starts!.get(a.hostId, spawnId)?.phase).toBe('ended');
+    // Its worktree was left unchanged (no commit, clean): removed with its branch, and nothing is left to list.
+    expect(b.starts!.get(a.hostId, spawnId)).toBeUndefined();
+    expect(fs.existsSync(path.join(b.dir, 'worktrees', `remote-${spawnId}`))).toBe(false);
   });
 
   it('a start cut between the worktree and the session leaves nothing after a restart', async () => {

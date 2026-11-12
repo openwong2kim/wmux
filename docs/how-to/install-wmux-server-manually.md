@@ -201,16 +201,27 @@ With headless mode on:
   ends every agent it started: they do not come back.
 - When an agent ends, its worktree and branch are kept, with whatever the
   agent wrote there. Remove them yourself with `git worktree remove` and
-  `git branch -D` once you no longer need them.
+  `git branch -D` once you no longer need them. A worktree the agent left
+  unchanged (no commit, nothing modified or added) is removed with its
+  branch.
 
 See whether headless mode is in effect, how many agents run, and which
-worktrees ended agents left. A start whose agent left processes that did not
-exit is listed apart: its worktree stays until they are gone, and the daemon
-checks again every minute. With the daemon running, `status` asks it;
-otherwise it reads the daemon's data folder:
+worktrees ended agents left, in all and per asking PC. A start whose agent
+left processes that did not exit is listed apart, with its spawn id and their
+pids: its worktree stays until they are gone, and the daemon checks again
+every minute. With the daemon running, `status` asks it; otherwise it reads
+the daemon's data folder:
 
 ```bash
 "$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless status
+```
+
+If such a start stays listed after you checked those processes are gone (or
+stopped them yourself), drop its hold. Like `on`, this asks for a typed `yes`
+and refuses to run from inside an agent session or a wmux pane:
+
+```bash
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless release <spawn id>
 ```
 
 Turn it off (no question asked). No new agent is started, and the ones

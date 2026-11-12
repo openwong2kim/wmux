@@ -527,6 +527,8 @@ export class A2aSpawnReceiver {
     if (!spawnHostAllowed(policy, hostId) || !policy.agents.includes(req.agent)) refused = 'not-allowed';
     else if (sub === null || !policy.roots.some((r) => r.id === req.folder.root && r.path === rec.claimedRoot)) refused = 'folder-not-allowed';
     else if (this.now() > Date.parse(rec.expiresAt)) refused = 'expired';
+    // Headless: the rule that approved it, read once more (removed between the claim and now?).
+    else if (this.deps.headless?.() === true) refused = headlessRefusal(policy, hostId, req.folder.root, req.agent, sub) ?? undefined;
     if (refused) {
       this.finish(hostId, spawnId, refused);
       return { ok: false, error: refused };

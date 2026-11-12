@@ -88,8 +88,13 @@ describe.skipIf(process.platform === 'win32')('the hold on a start whose agent t
     expect(await stillHeld([tracked(11)], worktree, deps([row(30, 1)]))).toHaveLength(1);
   });
 
-  it('no snapshot (unverified), or no /proc to read, keeps the hold', async () => {
+  it('no snapshot (unverified) keeps the hold', async () => {
     expect(await stillHeld([{ pid: 10, reason: 'tree unknown', unverified: true }], worktree, deps([]))).toHaveLength(1);
-    expect(await stillHeld([tracked(11)], worktree, { ...deps([]), procRoot: path.join(dir, 'no-proc') })).toHaveLength(1);
+  });
+
+  it('without /proc (macOS) the whole snapshot being gone releases it, so it is not held for good', async () => {
+    const noProc = { ...deps([]), procRoot: path.join(dir, 'no-proc') };
+    expect(await stillHeld([tracked(11)], worktree, noProc)).toEqual([]);
+    expect(await stillHeld([tracked(11)], worktree, { ...noProc, listProcesses: async () => [row(11, 1)] })).toHaveLength(1);
   });
 });

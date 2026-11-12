@@ -42,6 +42,9 @@ let survivors: HeadlessSurvivor[];
 let stillRunning: HeadlessSurvivor[];
 let onDisk: Set<string>;
 let checkedIn: Array<string | undefined>;
+let earlierSurvivors: HeadlessSurvivor[];
+let pristine: boolean;
+let released: Set<string>;
 
 function makeSessions(): HeadlessSessionPort {
   return {
@@ -51,12 +54,17 @@ function makeSessions(): HeadlessSessionPort {
       if (createThrows) throw new Error('pty refused');
       created.push(input);
       live.add(input.sessionId);
+      return { rootPid: 777, rootStart: 'Thu Nov 12 10:00:00 2026' };
     },
     alive: (id) => live.has(id),
     destroy: async (id) => {
       calls.push(`destroy:${id}`);
       live.delete(id);
       return survivors.length > 0 ? { ok: false, survivors } : { ok: true };
+    },
+    killEarlier: async (pid) => {
+      calls.push(`killEarlier:${pid}`);
+      return earlierSurvivors.length > 0 ? { ok: false, survivors: earlierSurvivors } : { ok: true };
     },
     stillRunning: async (_s, worktreePath) => {
       checkedIn.push(worktreePath);
@@ -96,7 +104,11 @@ function makeStarter(over: Partial<HeadlessStarterDeps> = {}): A2aHeadlessStarte
       },
       remove: async (input) => void removedTrees.push(input.spawnId),
       exists: (p) => onDisk.has(p),
+      pathFor: (spawnId) => `/wt/remote-${spawnId}`,
+      baseOf: async () => 'a'.repeat(40),
+      pristine: async () => pristine,
     },
+    releases: { requested: (id) => released.has(id), clear: (id) => void released.delete(id) },
     paneGone: async (workspaceId, paneId) => void gone.push({ workspaceId, paneId }),
     abandon: () => void calls.push('abandon'),
     runId: 'run-1',
@@ -129,6 +141,9 @@ beforeEach(() => {
   stillRunning = [];
   onDisk = new Set(['/wt/remote-x']);
   checkedIn = [];
+  earlierSurvivors = [];
+  pristine = false;
+  released = new Set();
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -222,7 +237,10 @@ describe('headless start', () => {
           return worktree;
         },
         remove: async (input) => void removedTrees.push(input.spawnId),
-        exists: () => true,
+        exists: () => false,
+        pathFor: (spawnId: string) => `/wt/remote-${spawnId}`,
+        baseOf: async () => null,
+        pristine: async () => false,
       },
     });
     await starter.start(HOST, SPAWN);
@@ -241,7 +259,10 @@ describe('headless start', () => {
           removes += 1;
           if (removes === 1) throw new Error('busy');
         },
-        exists: () => true,
+        exists: () => false,
+        pathFor: (spawnId: string) => `/wt/remote-${spawnId}`,
+        baseOf: async () => null,
+        pristine: async () => false,
       },
     });
     await starter.start(HOST, SPAWN);
@@ -473,6 +494,92 @@ describe('headless cleanup that waits for the agent to exit', () => {
     await starter.reconcile();
     expect(live.size).toBe(0);
     expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+  });
+});
+
+describe('headless starts across a crash, a restart, and an unchanged worktree', () => {
+  const INTENDED = `/wt/remote-${SPAWN}`;
+  const record = (over: Partial<Parameters<HeadlessStartStore['add']>[0]> = {}): void => starts.add({
+    v: 1, hostId: HOST, spawnId: SPAWN, agent: 'claude', repoPath: '/repo', sessionId: 'hl-s1', workspaceId: 'hl-w1',
+    agentSessionId: '33333333-3333-4333-8333-333333333333', lineage: `remote-spawn:${HOST}`, runId: 'run-1',
+    phase: 'started', worktreePath: '/wt/remote-x', linkId: LINK, startedAt: new Date().toISOString(), ...over,
+  });
+
+  it('records the worktree path before making it, and the agent process once started', async () => {
+    const seen: Array<string | undefined> = [];
+    const starter = makeStarter({
+      worktrees: {
+        create: async () => {
+          seen.push(starts.get(HOST, SPAWN)?.worktreeIntended);
+          return worktree;
+        },
+        remove: async (input) => void removedTrees.push(input.spawnId),
+        exists: () => false,
+        pathFor: (spawnId) => `/wt/remote-${spawnId}`,
+        baseOf: async () => 'b'.repeat(40),
+        pristine: async () => false,
+      },
+    });
+    await starter.start(HOST, SPAWN);
+    expect(seen).toEqual([INTENDED]);
+    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', rootPid: 777, rootStart: 'Thu Nov 12 10:00:00 2026', baseCommit: 'b'.repeat(40) });
+  });
+
+  it('a daemon that died between `worktree add` and recording it: the next run takes the path back', async () => {
+    record({ phase: 'prepared', worktreePath: undefined, linkId: undefined, worktreeIntended: INTENDED, runId: 'run-0' });
+    request = { state: 'decided', code: 'failed' };
+    await makeStarter().reconcile();
+    expect(removedTrees).toEqual([SPAWN]);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('a path that is there already is never recorded nor touched', async () => {
+    onDisk.add(INTENDED);
+    await makeStarter().start(HOST, SPAWN);
+    expect(removedTrees).toEqual([]);
+    expect(failed).toEqual(['failed']);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('a worktree step that fails leaves its path alone, now and at later reconciles', async () => {
+    worktree = { ok: false, code: 'failed', detail: 'branch already exists' };
+    await makeStarter().start(HOST, SPAWN);
+    expect(removedTrees).toEqual([]);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('after a restart, the agent of the earlier run is ended by its recorded pid; one that does not exit holds the start', async () => {
+    record({ runId: 'run-0', rootPid: 4242, rootStart: 'Thu Nov 12 10:00:00 2026' });
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    earlierSurvivors = [{ pid: 4242, reason: 'still running', startTime: 'Thu Nov 12 10:00:00 2026' }];
+    stillRunning = earlierSurvivors;
+    await makeStarter().reconcile();
+    expect(calls).toContain('killEarlier:4242');
+    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', survivors: earlierSurvivors });
+    // The owner checked it and released the hold: the start ends.
+    released.add(SPAWN);
+    earlierSurvivors = [];
+    link = { linkId: LINK, state: 'broken' } as A2aLinkRecordV1;
+    await makeStarter().reconcile();
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+    expect(released.size).toBe(0);
+  });
+
+  it('an ended start whose worktree is unchanged (no commit, clean) has it removed with its branch; a changed one is kept', async () => {
+    record({ baseCommit: 'a'.repeat(40) });
+    live.add('hl-s1');
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    active = false;
+    await makeStarter().reconcile();
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+    expect(removedTrees).toEqual([]);
+    starts.remove(HOST, SPAWN);
+    record({ baseCommit: 'a'.repeat(40) });
+    live.add('hl-s1');
+    pristine = true;
+    await makeStarter().reconcile();
+    expect(removedTrees).toEqual([SPAWN]);
+    expect(starts.list()).toEqual([]);
   });
 });
 

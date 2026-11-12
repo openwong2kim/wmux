@@ -157,7 +157,7 @@ import { ContinuePlacer } from './a2aRemote/continuePlacer';
 import { registerContinueRpc } from './a2aRemote/continueRpc';
 import { rootIsRepoTop, rootOriginKey } from './a2aRemote/continueRootGit';
 import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../main/a2aRemote/spawnWorktree';
-import { HeadlessMode } from './a2aRemote/headlessMode';
+import { HeadlessMode, headlessReleases } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
 import { A2aHeadlessStarter, type HeadlessDestroyResult, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
 import { snapshotTree, stillHeld } from './a2aRemote/headlessProcs';
@@ -239,7 +239,7 @@ import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { gitDirMapperFor, gitWatchCwdFor } from './gitWatchCwd';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
-import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, dataSuffix, isBrainPty } from '../shared/constants';
+import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, dataSuffix, getWmuxHomeDir, isBrainPty } from '../shared/constants';
 import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, hasAuthoritativeTranscript, transcriptRelocated, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { alignResumeCwd } from './alignResumeCwd';
@@ -3120,6 +3120,16 @@ function registerRpcHandlers(
   // line that says the agent ended, so a restart never brings an agent back
   // without its task (headless reconcile then ends that session).
   const shellQuotable = (s: string): boolean => !/['\n\r\0]/.test(s);
+  /** A live session's recorded start time, waited for up to 3 s (it is read right after the spawn). */
+  const headlessStartTimeOf = async (id: string): Promise<string | undefined> => {
+    for (let waited = 0; ; waited += 100) {
+      const meta = sessionManager.getSession(id)?.meta;
+      if (!meta || (meta.state !== 'attached' && meta.state !== 'detached')) return undefined;
+      const start = process.platform === 'win32' ? meta.pidCreatedAtFt : meta.pidStartTime;
+      if (start || waited >= 3000) return start;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  };
   const HEADLESS_REPLAY_LINE = "echo 'wmux: this agent was started for another PC and ended when the daemon restarted.'";
   headlessSessionsRef = {
     resolveAgent: async (agent) => {
@@ -3138,6 +3148,11 @@ function registerRpcHandlers(
         { id: sessionId, exec: { command: HEADLESS_REPLAY_LINE }, cwd, env: { ...base, ...extra, PATH: agentPath } },
         { execLaunchCommand: launch, remoteDurable: true },
       );
+      // Its process, with the start time the daemon reads right after the spawn (waited for, so a
+      // later tree kill is not refused and a later run can find it again).
+      const rootStart = await headlessStartTimeOf(sessionId);
+      const rootPid = sessionManager.getSession(sessionId)?.meta.pid;
+      return { ...(rootPid && rootPid > 1 ? { rootPid } : {}), ...(rootStart ? { rootStart } : {}) };
     },
     alive: (id) => {
       const state = sessionManager.getSession(id)?.meta.state;
@@ -3147,6 +3162,8 @@ function registerRpcHandlers(
       // Any id: one recovery left on disk only is ended too (#2493). The agent's
       // tree when its root can be proven; what did not exit is reported, never
       // taken for gone.
+      // A tree kill is refused while the session's start time is not read yet: wait for it (briefly).
+      await headlessStartTimeOf(id);
       const rootPid = sessionManager.getSession(id)?.meta.pid ?? 0;
       // The agent's tree as it is before the kill: what holds the start if the kill cannot be confirmed.
       const before = await snapshotTree(rootPid);
@@ -3164,6 +3181,13 @@ function registerRpcHandlers(
       }
       const tree = (res as { tree?: VerifiedTreeKillResult } | undefined)?.tree;
       return tree && !tree.ok ? held(tree.survivors, 'did not exit') : { ok: true };
+    },
+    killEarlier: async (rootPid, rootStart) => {
+      // Only the process recorded at its start: a pid that names another process now is left alone.
+      const captured = await captureProcessTree(rootPid, { rootIsOurs: (start) => matchesRecordedStart(rootStart, start) });
+      if (!captured) return { ok: true };
+      const tree = await captured.kill();
+      return tree.ok ? { ok: true } : { ok: false, survivors: tree.survivors };
     },
     stillRunning: (survivors, worktreePath) => stillHeld(survivors, worktreePath),
   };
@@ -11000,7 +11024,27 @@ async function main(): Promise<void> {
             create: (input) => createSpawnWorktree(input),
             remove: (input) => removeSpawnWorktree(input),
             exists: (worktreePath) => fs.existsSync(worktreePath),
+            // As createSpawnWorktree names it: `<wmux home>/worktrees/remote-<spawnId>` (the root resolved).
+            pathFor: (spawnId) => {
+              const root = path.join(getWmuxHomeDir(), 'worktrees');
+              let real = root;
+              try { real = fs.realpathSync.native(root); } catch { /* not made yet: the plain path */ }
+              return path.join(real, `remote-${spawnId}`);
+            },
+            baseOf: async (worktreePath) => {
+              const out = await gitRunner(worktreePath, {})(['rev-parse', 'HEAD']);
+              const sha = out.stdout.trim();
+              return out.code === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
+            },
+            pristine: async (worktreePath, base) => {
+              const git = gitRunner(worktreePath, {});
+              const head = await git(['rev-parse', 'HEAD']);
+              if (head.code !== 0 || head.stdout.trim() !== base) return false;
+              const status = await git(['status', '--porcelain', '--untracked-files=all', '--ignored=no']);
+              return status.code === 0 && status.stdout.trim() === '';
+            },
           },
+          releases: headlessReleases(a2aDir),
           paneGone: async (workspaceId, paneId) => {
             if (paneGone) await paneGone({ workspaceId, paneId, reason: 'pane-closed' });
           },
