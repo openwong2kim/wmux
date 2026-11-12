@@ -10,6 +10,7 @@ function make(over: Partial<FanoutCallerSubmitPorts> = {}) {
     deliveryGate: async () => null,
     ownerOf: async () => 'ws-owner',
     agentState: async () => ({ agentName: 'Claude Code', agentVerified: true, incarnationId: 'inc-1' }),
+    log: () => undefined,
     deliver,
     ...over,
   };
@@ -45,6 +46,40 @@ describe('createFanoutCallerSubmit', () => {
       expect(await api.submit(REQ)).toEqual({ result, pasted: false });
       expect(deliver).not.toHaveBeenCalled();
     }
+  });
+
+  it('logs a gate refusal once per pane and reason, and again after one passes the gate', async () => {
+    let gate: 'approval_pending' | 'usage_limited' | null = 'approval_pending';
+    const log = vi.fn();
+    const { api } = make({ log, deliveryGate: async () => (gate ? { ok: false, reason: gate, detail: '' } : null) });
+    await api.submit(REQ);
+    await api.submit(REQ);
+    await api.submit({ ...REQ, ptyId: 'pty-d' });
+    expect(log.mock.calls.map(([line]) => line)).toEqual([
+      '[fanout] delivery gate refused a caller nudge on pane "pty-c": approval_pending',
+      '[fanout] delivery gate refused a caller nudge on pane "pty-d": approval_pending',
+    ]);
+    gate = 'usage_limited';
+    await api.submit(REQ);
+    gate = null;
+    expect(await api.submit(REQ)).toEqual({ result: 'sent', pasted: true });
+    gate = 'usage_limited';
+    await api.submit(REQ);
+    expect(log.mock.calls.slice(2).map(([line]) => line)).toEqual([
+      '[fanout] delivery gate refused a caller nudge on pane "pty-c": usage_limited',
+      '[fanout] delivery gate refused a caller nudge on pane "pty-c": usage_limited',
+    ]);
+  });
+
+  it('remembers a bounded number of panes, and quotes the pane id', async () => {
+    const log = vi.fn();
+    const { api } = make({ log, deliveryGate: async () => ({ ok: false, reason: 'gate_unavailable', detail: '' }) });
+    await api.submit({ ...REQ, ptyId: 'pty-0\n[fanout] forged' });
+    expect(log.mock.calls[0][0]).toBe('[fanout] delivery gate refused a caller nudge on pane "pty-0\\n[fanout] forged": gate_unavailable');
+    for (let i = 1; i <= 256; i++) await api.submit({ ...REQ, ptyId: `pty-${i}` });
+    // The first pane was forgotten, so its next refusal is logged again.
+    await api.submit({ ...REQ, ptyId: 'pty-0\n[fanout] forged' });
+    expect(log).toHaveBeenCalledTimes(258);
   });
 
   it('a PR owner line is written only while the pane still shows that PR, number and url', async () => {
