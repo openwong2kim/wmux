@@ -29,7 +29,7 @@ export interface HeadlessProcDeps {
 export const defaultHeadlessProcDeps: HeadlessProcDeps = {
   listProcesses: () =>
     new Promise((resolve, reject) => {
-      execFile('/bin/ps', ['-axo', 'pid=,ppid=,stat=,lstart='], { timeout: 2000, maxBuffer: 8 * 1024 * 1024 }, (error, output) => {
+      execFile('/bin/ps', ['-axo', 'pid=,ppid=,stat=,lstart='], { timeout: 2000, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (error, output) => {
         if (error) reject(error);
         else resolve(parsePsIdentityRows(output ?? ''));
       });
