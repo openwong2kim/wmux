@@ -123,8 +123,8 @@ describe.runIf(linux)('/proc readers match ps', () => {
   });
 
   it('the process table is ps -ww -axo pid=,ppid=,args=, row for row', async () => {
-    const spaced = child('sh', ['-c', 'exec sleep 60 "an argument with spaces"']);
-    await waitFor(() => ps('args', spaced.pid as number).includes('an argument with spaces'), 10_000, 'the exec');
+    const spaced = child(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)', 'an argument with spaces']);
+    await waitFor(() => procTable()?.some((r) => r.pid === spaced.pid && r.args.includes('an argument with spaces')) === true, 10_000, 'the child');
     const asRows = (rows: ReturnType<typeof procTable>) => parsePsOutput((rows ?? []).map((r) => `${r.pid} ${r.ppid} ${r.args}`).join('\n'));
     const before = new Map(asRows(procTable()).map((e) => [e.pid, e]));
     const fromPs = parsePsOutput(execFileSync('ps', ['-ww', '-axo', 'pid=,ppid=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
