@@ -69,10 +69,11 @@ describe('daemonLauncherCore — launch strategy', () => {
     fs.rmSync(wmuxDir, { recursive: true, force: true });
   });
 
-  function deps(launchd: boolean): DaemonLauncherDeps {
+  function deps(launchd: boolean, appSpawned?: boolean): DaemonLauncherDeps {
     return {
       resolveDaemonScriptCandidates: () => [scriptPath],
       resolveSpawnedByVersion: () => '9.9.9-test',
+      ...(appSpawned !== undefined ? { appSpawned } : {}),
       askUserToRecoverFromStalePid: async () => false,
       isElectronHost: () => true,
       launchViaLaunchdOnDarwin: launchd,
@@ -101,6 +102,28 @@ describe('daemonLauncherCore — launch strategy', () => {
     expect(argvIdentifiesDaemonScript(opts.programArguments, [scriptPath])).toBe(true);
     expect(opts.env.ELECTRON_RUN_AS_NODE).toBe('1');
     expect(opts.env.WMUX_SPAWNED_BY_VERSION).toBe('9.9.9-test');
+    expect(opts.env).not.toHaveProperty('WMUX_APP_SPAWNED_DAEMON');
+  });
+
+  it('stamps the app launch marker only for the app launcher, and drops an inherited one otherwise', async () => {
+    const exited = {
+      label: 'com.wmux.daemon.x', pid: 777, isAlive: () => false,
+      onExit: (cb: (c: number | null) => void) => cb(1), dispose: noop,
+    };
+    const prev = process.env.WMUX_APP_SPAWNED_DAEMON;
+    process.env.WMUX_APP_SPAWNED_DAEMON = '1';
+    try {
+      for (const [appSpawned, expected] of [[true, '1'], [false, undefined], [undefined, undefined]] as const) {
+        startMock.mockReset();
+        startMock.mockResolvedValue(exited);
+        await expect(ensureDaemon(deps(true, appSpawned))).rejects.toThrow(/exited during startup/);
+        const [opts] = startMock.mock.calls[0] as [{ env: Record<string, string | undefined> }];
+        expect(opts.env.WMUX_APP_SPAWNED_DAEMON, String(appSpawned)).toBe(expected);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_APP_SPAWNED_DAEMON;
+      else process.env.WMUX_APP_SPAWNED_DAEMON = prev;
+    }
   });
 
   it('maps an early yield exit of the launchd job to EDAEMON_ALREADY_RUNNING handling', async () => {

@@ -202,6 +202,7 @@ export function killVerifiedDaemonPid(
 const electronDeps: DaemonLauncherDeps = {
   resolveDaemonScriptCandidates,
   resolveSpawnedByVersion: () => app.getVersion(),
+  appSpawned: true,
   askUserToRecoverFromStalePid,
   isElectronHost: () => true,
   // macOS: run the daemon as a launchd job so quitting the app (which

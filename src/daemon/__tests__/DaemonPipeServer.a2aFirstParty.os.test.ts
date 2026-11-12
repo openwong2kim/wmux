@@ -13,6 +13,8 @@ import { DaemonPipeServer } from '../DaemonPipeServer';
 import { DaemonClient } from '../../main/DaemonClient';
 import { NOT_FIRST_PARTY } from '../../shared/daemonFirstParty';
 import { waitFor } from '../../test-utils/waitFor';
+import { readSourceText } from '../../test-utils/sourceText';
+import { APP_ATTACHED_FILE, applyAppHostAtBoot, registerClientIdentify, takeAppSpawnedMarker } from '../appHostMarker';
 import { A2A_SPAWN_RPC } from '../../shared/a2aSpawn';
 import { getDaemonAuthTokenPath, getWmuxHomeDir } from '../../shared/constants';
 import { handleRemote } from '../../cli/commands/remote';
@@ -414,6 +416,29 @@ describe('the pairing calls of `wmux remote` on a daemon-only host', () => {
     expect(ran.size).toBe(0);
   });
 
+  it('refuses them from the first request on a daemon the app launcher started', async () => {
+    const { server, pipe, token, ran, identify } = await startServer('remote-app-host', REMOTE_METHODS);
+    server.markAppHost();
+    const replies = await callEach(pipe, token, REMOTE_METHODS);
+    for (const m of REMOTE_METHODS) {
+      expect(replies.get(m), m).toMatchObject({ ok: false, error: `${NOT_FIRST_PARTY}: ${m} is accepted only from the app's own connection` });
+    }
+    expect(identify.calls).toBe(0);
+    expect(ran.size).toBe(0);
+  });
+
+  it('wires the app-host signals into the daemon: launcher marker at load, data-dir marker at boot, identify', () => {
+    const daemon = readSourceText(path.join(__dirname, '..', 'index.ts'));
+    expect(daemon).toContain('const APP_SPAWNED: boolean = takeAppSpawnedMarker(process.env);');
+    expect(daemon).toContain('const pipeServer = new DaemonPipeServer(config.daemon.pipeName);\n  applyAppHostAtBoot(pipeServer, wmuxDir, APP_SPAWNED);');
+    expect(daemon).toContain('registerClientIdentify(pipeServer, wmuxDir,');
+    expect(daemon).not.toContain("onRpc('daemon.client.identify'");
+    // Only the app's own launcher deps set it; `wmux daemon start` goes through the shared core without it.
+    const launcher = readSourceText(path.join(__dirname, '..', '..', 'main', 'daemon', 'launcher.ts'));
+    expect(launcher).toMatch(/const electronDeps: DaemonLauncherDeps = \{[^}]*appSpawned: true,/);
+    expect(readSourceText(path.join(__dirname, '..', '..', 'cli', 'commands', 'daemon.ts'))).not.toMatch(/appSpawned/);
+  });
+
   it('refuses them once the app has identified, also after it disconnects', async () => {
     const { server, pipe, token, ran } = await startServer('remote-attached', REMOTE_METHODS);
     const app = await connect(pipe);
@@ -485,5 +510,77 @@ describe('`wmux remote peers` over a real daemon pipe', () => {
     expect(desktop.exit).toBe(1);
     expect(desktop.err.sort()).toEqual(['a2a.remote.hosts.list', 'a2a.remote.peers.list']
       .map((m) => `Error: ${NOT_FIRST_PARTY}: ${m} is accepted only from the app's own connection`));
+  });
+});
+
+describe('the app-host signals of a daemon (appHostMarker)', () => {
+  const dirs: string[] = [];
+  afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
+
+  /** A pipe server wired as daemon/index.ts wires it, on its own data dir. */
+  async function boot(suffix: string, opts: { attachedBefore?: boolean; spawnedByApp?: boolean } = {}): Promise<{ pipe: string; token: string; dataDir: string; ran: Set<string> }> {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-apphost-'));
+    dirs.push(dataDir);
+    if (opts.attachedBefore) fs.writeFileSync(path.join(dataDir, APP_ATTACHED_FILE), 'earlier\n');
+    const pipe = testPipeName(suffix);
+    const token = `t-${crypto.randomUUID()}`;
+    const server = new DaemonPipeServer(pipe);
+    servers.push(server);
+    server.setAuthToken(token);
+    applyAppHostAtBoot(server, dataDir, opts.spawnedByApp === true);
+    registerClientIdentify(server, dataDir, () => undefined);
+    const ran = new Set<string>();
+    for (const m of REMOTE_METHODS) server.onRpc(m, async () => { ran.add(m); return { ok: true }; });
+    await server.start();
+    return { pipe, token, dataDir, ran };
+  }
+  const refused = (m: string) => ({ ok: false, error: `${NOT_FIRST_PARTY}: ${m} is accepted only from the app's own connection` });
+
+  it('takes the launcher marker out of the environment, once', () => {
+    const env: NodeJS.ProcessEnv = { WMUX_APP_SPAWNED_DAEMON: '1', PATH: '/bin' };
+    expect(takeAppSpawnedMarker(env)).toBe(true);
+    expect(env).toEqual({ PATH: '/bin' });
+    expect(takeAppSpawnedMarker(env)).toBe(false);
+  });
+
+  it('refuses the seven from the first request when the app attached on this install before', async () => {
+    const { pipe, token, ran } = await boot('apphost-before', { attachedBefore: true });
+    const replies = await callEach(pipe, token, REMOTE_METHODS);
+    for (const m of REMOTE_METHODS) expect(replies.get(m), m).toMatchObject(refused(m));
+    expect(ran.size).toBe(0);
+  });
+
+  it('refuses the seven from the first request when the app launcher started the daemon', async () => {
+    const { pipe, token, ran } = await boot('apphost-spawned', { spawnedByApp: true });
+    const replies = await callEach(pipe, token, REMOTE_METHODS);
+    for (const m of REMOTE_METHODS) expect(replies.get(m), m).toMatchObject(refused(m));
+    expect(ran.size).toBe(0);
+  });
+
+  it('records the first main identify in the data dir; a later boot then refuses the seven', async () => {
+    const first = await boot('apphost-record');
+    const app = await connect(first.pipe);
+    app.socket.write(line('id', 'daemon.client.identify', first.token, { role: 'main' }));
+    await waitFor(() => app.replies.has('id'));
+    expect(app.replies.get('id')).toMatchObject({ ok: true });
+    expect(fs.existsSync(path.join(first.dataDir, APP_ATTACHED_FILE))).toBe(true);
+
+    expect(applyAppHostAtBoot({ markAppHost: () => undefined }, first.dataDir, false)).toBe(true);
+  });
+
+  it('a non-main identify writes nothing and leaves the seven open, with params omitted or sent as an array', async () => {
+    const { pipe, token, dataDir, ran } = await boot('apphost-other');
+    const client = await connect(pipe);
+    client.socket.write(line('id', 'daemon.client.identify', token, { role: 'mcp' }));
+    await waitFor(() => client.replies.has('id'));
+    expect(client.replies.get('id')).toMatchObject({ ok: true });
+    expect(fs.existsSync(path.join(dataDir, APP_ATTACHED_FILE))).toBe(false);
+
+    client.socket.write(JSON.stringify({ id: 'omitted', method: 'a2a.remote.peers.list', token }) + '\n');
+    client.socket.write(JSON.stringify({ id: 'array', method: 'a2a.remote.hosts.list', params: ['senderPtyId'], token }) + '\n');
+    await waitFor(() => client.replies.has('omitted') && client.replies.has('array'));
+    expect(client.replies.get('omitted')).toMatchObject({ ok: true });
+    expect(client.replies.get('array')).toMatchObject({ ok: true });
+    expect([...ran].sort()).toEqual(['a2a.remote.hosts.list', 'a2a.remote.peers.list']);
   });
 });

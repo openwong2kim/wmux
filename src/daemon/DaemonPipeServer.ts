@@ -130,7 +130,8 @@ export class DaemonPipeServer {
   // The channel calls a pane's own tools may make without the app (see
   // `dispatch`): each stamps its caller from the daemon's session record.
   // Every other app-only method (shared/daemonFirstParty) answers only the
-  // app's own connection.
+  // app's own connection, except HEADLESS_REMOTE_METHODS on a host the app
+  // has not used.
   private static readonly HEADLESS_CHANNEL_METHODS: ReadonlySet<string> = new Set([
     'a2a.channel.list',
     'a2a.channel.get',
@@ -145,8 +146,11 @@ export class DaemonPipeServer {
     'a2a.channel.invite',
   ]);
   // The pairing and spawn-policy calls `wmux remote` makes on a host that runs
-  // only the daemon. Honoured only while no app has identified on this daemon
-  // since it started (`appAttachedSinceStart`), and never from a pane.
+  // only the daemon. Honoured only on a daemon the app is not known to use
+  // (`appAttachedSinceStart`: the app's launcher marker, an earlier attach
+  // recorded in the data dir, or an identify; see appHostMarker.ts), and not
+  // from a client that declares a pane (`senderPtyId`). That last check stops
+  // a client that says it is a pane, no more.
   private static readonly HEADLESS_REMOTE_METHODS: ReadonlySet<string> = new Set([
     'a2a.remote.join',
     'a2a.remote.hosts.list',
@@ -156,8 +160,10 @@ export class DaemonPipeServer {
     A2A_SPAWN_RPC.policyGet,
     A2A_SPAWN_RPC.policySet,
   ]);
-  // Set by the first `markFirstParty` and never cleared, not even by `stop`:
-  // a daemon the app has used keeps refusing HEADLESS_REMOTE_METHODS while the
+  // Set by the first `markFirstParty`, or at boot by `markAppHost` (the app's
+  // launcher started this daemon, or the app attached on this install before),
+  // and never cleared, not even by `stop`:
+  // a daemon the app uses keeps refusing HEADLESS_REMOTE_METHODS while the
   // app restarts.
   private appAttachedSinceStart = false;
 
@@ -935,6 +941,11 @@ export class DaemonPipeServer {
     this.appAttachedSinceStart = true;
   }
 
+  /** The app runs on this host (appHostMarker.ts): refuse HEADLESS_REMOTE_METHODS from the first request. */
+  markAppHost(): void {
+    this.appAttachedSinceStart = true;
+  }
+
   /** Did this client claim the first-party role? See `markFirstParty`. */
   isFirstParty(clientId: string): boolean {
     return this.firstPartyClients.has(clientId);
@@ -1055,8 +1066,9 @@ export class DaemonPipeServer {
     // a CLI or an agent tool that holds the token from going around main's
     // check, not a local attacker.
     if (isAppOnlyDaemonMethod(request.method) && !this.isFirstParty(clientId)) {
-      // The pairing calls of `wmux remote` pass on a host that runs only the
-      // daemon, and not from a pane; where the app runs, they stay its own.
+      // The pairing calls of `wmux remote` pass on a host the app does not
+      // use, unless the client declares a pane; where the app runs, they stay
+      // its own.
       const headlessRemote = DaemonPipeServer.HEADLESS_REMOTE_METHODS.has(request.method)
         && !this.appAttachedSinceStart
         && !Object.prototype.hasOwnProperty.call(params, 'senderPtyId');
