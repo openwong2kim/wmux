@@ -404,3 +404,27 @@ describe('BrokerSupervisor crash-loop breaker', () => {
     vi.useRealTimers();
   });
 });
+
+describe('BrokerSupervisor.identity', () => {
+  it('is the spawned pid with the start time read right after the spawn, until that child exits', () => {
+    const child = makeChild();
+    vi.mocked(spawn).mockReturnValueOnce(child as never);
+    const startTimeOf = vi.fn(() => 777n);
+    const sup = new BrokerSupervisor({ startTimeOf });
+    expect(sup.identity).toBeNull();
+    sup.start();
+    expect(startTimeOf).toHaveBeenCalledWith(4321);
+    expect(sup.identity).toEqual({ pid: 4321, startedAt: '777' });
+    sup.stop();
+    child.emit('exit', 0, null);
+    expect(sup.identity).toBeNull();
+  });
+
+  it('carries no start time when it could not be read', () => {
+    vi.mocked(spawn).mockReturnValueOnce(makeChild() as never);
+    const sup = new BrokerSupervisor({ startTimeOf: () => null });
+    sup.start();
+    expect(sup.identity).toEqual({ pid: 4321, startedAt: null });
+    sup.stop();
+  });
+});

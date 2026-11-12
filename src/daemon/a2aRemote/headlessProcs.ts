@@ -16,7 +16,9 @@ import type { HeadlessSurvivor } from './headlessStartStore';
  *     never in the snapshot).
  * The hold is released only when both are known to be clear. Whatever cannot
  * be read keeps it: the process table, a tracked pid's row (one whose start
- * time cannot be compared counts as the same process), /proc.
+ * time cannot be compared counts as the same process), a missing snapshot.
+ * Without /proc (macOS) only the snapshot can be checked, and its being gone
+ * releases the hold.
  */
 
 export interface HeadlessProcDeps {
@@ -98,14 +100,19 @@ export async function stillHeld(
     return !row.start || row.start === s.startTime;
   });
   if (anyAlive || !worktreePath) return all;
-  const busy = await processesWorkingIn(worktreePath, deps.procRoot);
-  return busy === false ? [] : all;
+  // The whole tree as it was before the kill is gone. Where /proc can be read,
+  // nothing may work in the worktree either (an orphan started after the
+  // snapshot); without /proc (macOS) the snapshot is what there is, so its
+  // being gone releases the hold rather than holding it for good.
+  // A /proc that is there but cannot be read: it cannot be told, the hold stays.
+  const busy = await processesWorkingIn(worktreePath, deps.procRoot).catch(() => true);
+  return busy === true ? all : [];
 }
 
 /**
  * Whether any process of this user works inside `dir` (its current folder is
- * `dir` or below it), read from /proc. Null where it cannot be told (no /proc,
- * as on macOS). A process whose folder cannot be read is another user's (the
+ * `dir` or below it), read from /proc. Null where there is no /proc (macOS);
+ * a /proc that is there but cannot be listed throws. A process whose folder cannot be read is another user's (the
  * agent runs as the daemon's user) and is skipped; the agent's own tree is
  * tracked by pid and start time instead (`stillHeld`).
  */
@@ -113,8 +120,9 @@ export async function processesWorkingIn(dir: string, procRoot = '/proc'): Promi
   let entries: string[];
   try {
     entries = await fs.promises.readdir(procRoot);
-  } catch {
-    return null;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
   }
   const inside = (p: string): boolean => p === dir || p.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
   for (const name of entries) {

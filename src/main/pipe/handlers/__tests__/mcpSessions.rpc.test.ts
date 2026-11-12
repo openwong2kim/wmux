@@ -26,6 +26,17 @@ describe('mcp.sessions.summary', () => {
     expect(JSON.stringify(res)).not.toContain('a'.repeat(32));
   });
 
+  it('carries how main takes pid claims, as counts', async () => {
+    const identity = {
+      peerRead: { state: 'ok' as const }, startTimes: 'ok' as const,
+      refusals: { 'no-peer': 0, 'other-pid': 2, 'start-unread': 0, restarted: 0, 'broker-unverified': 0 },
+    };
+    const router = new RpcRouter();
+    registerMcpSessionsRpc(router, { brokerEnabled: () => false, brokerStatus: () => broker, tracker: new McpSessionTracker({ now: () => 0 }), identity: () => identity });
+    const res = await router.dispatch({ id: '1', method: 'mcp.sessions.summary', params: {} });
+    expect((res as { result: { identity?: unknown } }).result.identity).toEqual(identity);
+  });
+
   it('is an internal method the CLI tier reaches', () => {
     expect(METHOD_CAPABILITY['mcp.sessions.summary']).toEqual({ capability: 'wmux.internal' });
     expect(WMUX_CLI_METHODS.has('mcp.sessions.summary')).toBe(true);

@@ -6,9 +6,10 @@
 // for its uid) and Linux SO_PEERCRED for a unix socket. This reads that answer
 // through koffi.
 //
-// The MCP broker decides on it (src/mcp/brokerPeer.ts); main and the daemon
-// only log it next to what a call claimed. Windows named pipes and the
-// loopback TCP fallback have no answer here yet (null).
+// The MCP broker and main decide on it (src/mcp/brokerPeer.ts,
+// src/main/pipe/handlers/peerPidShadow.ts), and the daemon logs it next to
+// what a call claimed. Windows named pipes and the loopback TCP fallback have
+// no answer here (null).
 //
 // Linux SO_PEERCRED names the process that connected. macOS LOCAL_PEERPID
 // names the socket's last_pid, the last process to use the peer's end. Neither

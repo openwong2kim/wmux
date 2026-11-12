@@ -5,6 +5,8 @@
  * broker, the bundle, main and the CLI agree on the shapes.
  */
 
+import type { IdentityClaimsSummary } from './identityClaims';
+
 /** A tool name as a report may carry it: never arguments or paths. */
 export const BROKER_TOOL_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 /** Tool names one report carries at most. */
@@ -75,4 +77,6 @@ export interface BrokerStatus {
 export interface McpSessionsSummary {
   broker: BrokerStatus & { enabled: boolean };
   bundle: { recent: number; capped: boolean; ttlS: number };
+  /** How main takes pid claims (shared/identityClaims.ts); absent from older apps. */
+  identity?: IdentityClaimsSummary;
 }

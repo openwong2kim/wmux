@@ -189,8 +189,10 @@ With headless mode on:
   is kept as the agent's first task but not typed in yet, so the agent waits
   idle until its link ends; typing it in and sending the reply back come in a
   later version.
-- A request no rule matches is refused at once (the asking PC sees
-  `not-allowed`); nothing waits for an approval. A policy with the
+- A request no rule matches is refused at once; nothing waits for an
+  approval. The asking PC sees `not-allowed` when it may not ask this host,
+  `agent-not-allowed` when it may but not for that agent, and
+  `folder-not-allowed` when the folder is outside what it may use. A policy with the
   `manual` permission mode is refused too: nobody is at the host to answer
   the agent's questions.
 - Only Claude Code is started this way. Its launcher (`claude`) must be on
@@ -198,19 +200,32 @@ With headless mode on:
   where its installer puts it. The agent must be signed in on that account.
 - An agent ends when its link ends (the asking PC closes it, or `unpair`),
   and the link breaks when the agent's session ends. Restarting the daemon
-  ends every agent it started: they do not come back.
+  ends every agent it started: they do not come back. The restarted daemon
+  ends them within moments of starting; `daemon headless status` then lists
+  the worktrees they left, and the daemon log has one line per agent ended.
 - When an agent ends, its worktree and branch are kept, with whatever the
   agent wrote there. Remove them yourself with `git worktree remove` and
-  `git branch -D` once you no longer need them.
+  `git branch -D` once you no longer need them. A worktree the agent left
+  unchanged (no commit, nothing modified or added) is removed with its
+  branch.
 
 See whether headless mode is in effect, how many agents run, and which
-worktrees ended agents left. A start whose agent left processes that did not
-exit is listed apart: its worktree stays until they are gone, and the daemon
-checks again every minute. With the daemon running, `status` asks it;
-otherwise it reads the daemon's data folder:
+worktrees ended agents left, in all and per asking PC. A start whose agent
+left processes that did not exit is listed apart, with its spawn id and their
+pids: its worktree stays until they are gone, and the daemon checks again
+every minute. With the daemon running, `status` asks it; otherwise it reads
+the daemon's data folder:
 
 ```bash
 "$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless status
+```
+
+If such a start stays listed after you checked those processes are gone (or
+stopped them yourself), drop its hold. Like `on`, this asks for a typed `yes`
+and refuses to run from inside an agent session or a wmux pane:
+
+```bash
+"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon headless release <spawn id>
 ```
 
 Turn it off (no question asked). No new agent is started, and the ones

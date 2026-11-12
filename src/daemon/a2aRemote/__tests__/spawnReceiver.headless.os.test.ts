@@ -94,9 +94,13 @@ beforeEach(() => {
     starts: new HeadlessStartStore(store),
     sessions: () => ({
       resolveAgent: async () => '/opt/fake/claude',
-      create: async (input) => void made.push(`session:${input.sessionId}`),
+      create: async (input) => {
+        made.push(`session:${input.sessionId}`);
+        return {};
+      },
       alive: () => false,
       destroy: async () => ({ ok: true }),
+      killEarlier: async () => ({ ok: true }),
       stillRunning: async () => [],
     }),
     worktrees: {
@@ -106,7 +110,11 @@ beforeEach(() => {
       },
       remove: async () => undefined,
       exists: () => false,
+      pathFor: (spawnId) => path.join(dir, 'worktrees', `remote-${spawnId}`),
+      baseOf: async () => null,
+      pristine: async () => false,
     },
+    releases: { requested: () => false, clear: () => undefined },
     paneGone: async () => undefined,
     abandon: () => undefined,
     runId: 'run-1',
@@ -197,6 +205,16 @@ describe('spawn receiver in headless mode', () => {
     expect(requests.get(HOST, spawnId)?.state).toBe('approved');
     await allow({ rules: [] });
     expect(await receiver.claim(HOST, spawnId)).toMatchObject({ ok: false, code: 'not-allowed' });
+    expect(requests.get(HOST, spawnId)).toMatchObject({ state: 'decided', code: 'not-allowed' });
+  });
+
+  it('a rule removed between the claim and `started` refuses the start (`not-allowed`)', async () => {
+    autoStart = false;
+    await allow({ rules: [RULE] });
+    const spawnId = await ask();
+    expect(await receiver.claim(HOST, spawnId)).toMatchObject({ ok: true });
+    await allow({ rules: [] });
+    expect(await receiver.started(HOST, spawnId, { workspaceId: 'hl-w', paneId: 'hl-s' })).toEqual({ ok: false, error: 'not-allowed' });
     expect(requests.get(HOST, spawnId)).toMatchObject({ state: 'decided', code: 'not-allowed' });
   });
 

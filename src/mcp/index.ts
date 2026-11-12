@@ -1121,15 +1121,11 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   // the path that lets Codex (and any agent whose client-side walk is blocked)
   // resolve identity at all.
   //
-  // Provenance: main correlates from the LIVE process table, but the STARTING
-  // pid is caller-asserted — we send our own process.pid and the pipe does not
-  // bind the connection to a pid. So MY_PTY_ID set here is server-correlated, NOT
-  // as strong as the client walk's own-ancestry proof: a same-user caller could
-  // assert a foreign pid to adopt that pane's ptyId. This stays within the #113
-  // same-user trust ceiling (a same-user caller already holds the pipe token and
-  // can claim a recognised client name; before #1111 it did not even need
-  // that), so the channel sender gate treats MY_PTY_ID as a reliability
-  // mechanism, not a same-user security boundary.
+  // Provenance: main correlates from the LIVE process table, starting at the
+  // pid we send (ctx.callerPid). Where main reads the connection's peer
+  // (macOS, Linux), it takes that pid only from the process itself or from the
+  // broker main spawned (main/pipe/handlers/peerPidShadow.ts). The channel
+  // sender gate treats MY_PTY_ID as a reliability mechanism.
   if (
     resolved &&
     typeof resolved.workspaceId === 'string' && resolved.workspaceId &&
