@@ -55,6 +55,7 @@ import { AGENT_ROWS, AGENT_SLUG_SET, type AgentSlug } from '../shared/agentIdent
 import { customProcessNameForm } from '../shared/customAgents';
 import type { WslAgentLocation, WslReportedAgent, WslWatchedAgent } from './wslAgentProcess';
 import { readNativeProcessTable, type NativeProcessRow } from './nativeProcessTable';
+import { procTable } from './procfs';
 
 const execFileAsync = promisify(execFile);
 
@@ -816,8 +817,9 @@ export function isAgentImage(
  *  the native core's table when it is packaged (nativeProcessTable.ts); else,
  *  as tasklist has no PPID, it shells out to Windows PowerShell 5.1 (always
  *  present, absolute System32 path — no PATH trust) for a single CIM
- *  enumeration. POSIX uses one `ps`. Throws on failure — the caller stays
- *  undecided. */
+ *  enumeration. Linux reads /proc, the same rows `ps` prints; other POSIX,
+ *  or Linux when /proc cannot be listed, uses one `ps`. Throws on failure —
+ *  the caller stays undecided. */
 async function enumerateProcesses(): Promise<ProcessTreeEntry[]> {
   if (process.platform === 'win32') {
     const rows = await readNativeProcessTable(true);
@@ -840,6 +842,8 @@ async function enumerateProcesses(): Promise<ProcessTreeEntry[]> {
     );
     return parsePipeDelimited(stdout as string);
   }
+  const rows = procTable();
+  if (rows) return parsePsOutput(rows.map((r) => `${r.pid} ${r.ppid} ${r.args}`).join('\n'));
   const { stdout } = await execFileAsync(
     'ps',
     // `-ww`: never cut argv to a width (a conversation id past the cut would read as absent).

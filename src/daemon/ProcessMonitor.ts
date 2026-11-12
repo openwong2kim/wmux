@@ -9,6 +9,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import { nativeProcessTable, readNativeProcessTable, type NativeProcessRow } from './nativeProcessTable';
+import { procState } from './procfs';
 
 const execFileAsync = promisify(execFile);
 
@@ -75,6 +76,9 @@ export class ProcessMonitor {
    */
   static async isRunning(pid: number): Promise<boolean> {
     if (process.platform === 'win32') return true;
+    // Linux: the state letter from /proc; `ps` when it cannot be read.
+    const proc = procState(pid);
+    if (proc) return proc.value !== null && proc.value !== 'T' && proc.value !== 't' && proc.value !== 'Z';
     try {
       const { stdout } = await execFileAsync(
         'ps',

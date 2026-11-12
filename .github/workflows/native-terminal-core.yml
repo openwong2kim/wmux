@@ -82,6 +82,12 @@ jobs:
           WMUX_IDLE_FORK_TEST: '1'
           WMUX_REQUIRE_RUST_CORE: '1'
           WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
+      # The daemon's /proc readers answer what `ps` answers, on a real Linux.
+      - name: /proc readers match ps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          npx vitest run src/daemon/__tests__/procfs.linux.os.test.ts
+          npx vitest run --config vitest.runtime.config.ts src/daemon/__tests__/ProcessMonitor.runtime.test.ts
       # Stub WMUX_RUST_SNAPSHOT_MODULE, which WMUX_TERMINAL_CORE_MODULE would override.
       - name: Opt-in snapshot module contracts
         run: npx vitest run src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/AnsiSnapshotBackend.test.ts src/daemon/__tests__/RustSnapshot.test.ts
