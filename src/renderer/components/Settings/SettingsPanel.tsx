@@ -13,7 +13,7 @@ import { useStore } from '../../stores';
 import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProjections';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
-import { useIpc } from '../../hooks/useIpc';
+import { useIpc, type UseIpcReturn } from '../../hooks/useIpc';
 import { THEME_OPTIONS, THEME_STYLES, type ThemeStyle, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, PRE_CONTRAST_LIFT_TEXT, deriveBuiltinPalette, deriveFullPalette, tokenAttrs, type BuiltinThemeId, type ThemeId, type XtermPaletteId, type UIThemeTokenKey, type TokenRole, type FullCssPalette } from '../../themes';
 import {
   TAILWIND_PALETTE,
@@ -44,7 +44,14 @@ import {
   isFanoutWorkerPermissionMode,
   type FanoutWorkerPermissionMode,
 } from '../../../shared/workerLaunch';
-import { MAX_FANOUT_HOURLY_TASK_CAP, MAX_FANOUT_LIVE_TASK_CAP } from '../../../shared/fanoutTaskCaps';
+import {
+  DEFAULT_FANOUT_DEPTH,
+  DEFAULT_FANOUT_TASKS_PER_CALL,
+  MAX_FANOUT_DEPTH,
+  MAX_FANOUT_HOURLY_TASK_CAP,
+  MAX_FANOUT_LIVE_TASK_CAP,
+  MAX_FANOUT_TASKS_PER_CALL,
+} from '../../../shared/fanoutTaskCaps';
 import { SettingLimitInput } from './SettingLimitInput';
 import {
   ADVERTISED_SHORTCUTS,
@@ -2137,7 +2144,36 @@ function TabBrowser() {
 // ─── Fan-out workers — permission mode + allow-list button ───────────────────
 // The mode is main-side (it can loosen what an unattended worker may do), so
 // it is read and written over IPC, never through the renderer store.
+/**
+ * Saves a required fan-out number: the field shows `next` at once, then the
+ * value main stored (clamped). When the save fails, `invoke` raises the error
+ * toast and the field goes back to the value in force, read back from main
+ * (else the last confirmed one), so it never shows a number that is not stored.
+ */
+export async function saveFanoutNumber(
+  next: number,
+  confirmed: number,
+  show: (v: number) => void,
+  save: () => Promise<number>,
+  reload: () => Promise<unknown>,
+  invoke: UseIpcReturn['invoke'],
+): Promise<void> {
+  show(next);
+  const saved = await invoke(save);
+  if (saved.ok) {
+    show(saved.data);
+    return;
+  }
+  try {
+    const v = await reload();
+    show(typeof v === 'number' ? v : confirmed);
+  } catch {
+    show(confirmed);
+  }
+}
+
 function FanoutWorkersSection() {
+  const { invoke: ipcInvoke } = useIpc();
   const t = useT();
   // Main-side too: main makes the approval decision, so the switch it reads
   // is the one this row writes.
@@ -2146,6 +2182,8 @@ function FanoutWorkersSection() {
   // null: no limit (the default).
   const [liveTaskCap, setLiveTaskCapState] = useState<number | null>(null);
   const [hourlyTaskCap, setHourlyTaskCapState] = useState<number | null>(null);
+  const [tasksPerCall, setTasksPerCallState] = useState(DEFAULT_FANOUT_TASKS_PER_CALL);
+  const [fanoutDepth, setFanoutDepthState] = useState(DEFAULT_FANOUT_DEPTH);
   // Main-side as well: main refuses the agy trust write while this is off.
   const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
   // Main-side, per workspace: the worker fence of this workspace's bots.
@@ -2177,6 +2215,16 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getHourlyTaskCap?.()
       .then((v) => {
         if (!cancelled && (typeof v === 'number' || v === null)) setHourlyTaskCapState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getTasksPerCall?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'number') setTasksPerCallState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getDepth?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'number') setFanoutDepthState(v);
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getTrustAgyFolders?.()
@@ -2244,6 +2292,16 @@ function FanoutWorkersSection() {
       .catch(() => undefined);
   };
 
+  const onTasksPerCallChange = (next: number) => {
+    const api = window.electronAPI.fanout;
+    void saveFanoutNumber(next, tasksPerCall, setTasksPerCallState, () => api.setTasksPerCall(next), () => api.getTasksPerCall(), ipcInvoke);
+  };
+
+  const onFanoutDepthChange = (next: number) => {
+    const api = window.electronAPI.fanout;
+    void saveFanoutNumber(next, fanoutDepth, setFanoutDepthState, () => api.setDepth(next), () => api.getDepth(), ipcInvoke);
+  };
+
   const onTrustAgyFoldersChange = (next: boolean) => {
     window.electronAPI.fanout
       .setTrustAgyFolders(next)
@@ -2276,6 +2334,37 @@ function FanoutWorkersSection() {
           checked={requireApproval}
           onChange={onRequireApprovalChange}
           label={t('settings.fanoutRequireApproval')}
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanouttaskspercall"
+        label={t('settings.fanoutTasksPerCall')}
+        description={t('settings.fanoutTasksPerCallDesc')}
+      >
+        {/* Saved on blur or Enter, not per keystroke: typing 16 must not store a 1 first. */}
+        <SettingLimitInput
+          value={tasksPerCall}
+          max={MAX_FANOUT_TASKS_PER_CALL}
+          label={t('settings.fanoutTasksPerCall')}
+          noLimitLabel={String(DEFAULT_FANOUT_TASKS_PER_CALL)}
+          onCommit={(v) => { if (v !== null) onTasksPerCallChange(v); }}
+          testId="fanout-tasks-per-call"
+          required
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanoutdepth"
+        label={t('settings.fanoutDepth')}
+        description={t('settings.fanoutDepthDesc')}
+      >
+        <SettingLimitInput
+          value={fanoutDepth}
+          max={MAX_FANOUT_DEPTH}
+          label={t('settings.fanoutDepth')}
+          noLimitLabel={String(DEFAULT_FANOUT_DEPTH)}
+          onCommit={(v) => { if (v !== null) onFanoutDepthChange(v); }}
+          testId="fanout-depth"
+          required
         />
       </SettingRow>
       <SettingRow

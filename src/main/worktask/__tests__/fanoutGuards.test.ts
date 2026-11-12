@@ -15,6 +15,7 @@ import {
   FANOUT_LINEAGE_FILENAME,
   FanOutGuards,
   launchedAuditTask,
+  lineageDepth,
   liveCapMessage,
   promptDigest,
   setFanOutGuardsForTests,
@@ -76,6 +77,22 @@ function guards(dir: string, opts: {
     ledgerBotTask: opts.ledgerBot ?? (() => null),
   });
 }
+
+describe('lineageDepth', () => {
+  const chain = (m: Record<string, string>) => (ws: string) => m[ws] ?? null;
+  it('counts hops of started-for-someone, ends at another PC, and stops at the ceiling', () => {
+    expect(lineageDepth(chain({}), 'ws-a')).toBe(0);
+    expect(lineageDepth(chain({ 'ws-a': 'ws-root' }), 'ws-a')).toBe(1);
+    expect(lineageDepth(chain({ 'ws-a': 'ws-b', 'ws-b': 'ws-root' }), 'ws-a')).toBe(2);
+    expect(lineageDepth(chain({ 'ws-a': 'remote-spawn:11111111-1111-4111-8111-111111111111' }), 'ws-a')).toBe(1);
+    expect(lineageDepth(chain({ 'ws-a': 'ws-b', 'ws-b': 'ws-c', 'ws-c': 'ws-d', 'ws-d': 'ws-e' }), 'ws-a')).toBe(3);
+  });
+
+  it('throws on a loop, and when a read throws', () => {
+    expect(() => lineageDepth(chain({ 'ws-a': 'ws-b', 'ws-b': 'ws-a' }), 'ws-a')).toThrow(/loops back/);
+    expect(() => lineageDepth(() => { throw new Error('unreadable'); }, 'ws-a')).toThrow(/unreadable/);
+  });
+});
 
 describe('lineage stamp', () => {
   it('stamps a task workspace and reads it back after a restart', () => {

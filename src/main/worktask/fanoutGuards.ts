@@ -42,7 +42,7 @@ import { getWorkerSlots, parseLaunchToken, type WorkerSlots } from '../factory/w
 import { holderCounts, liveHolders, type LiveHolders, type ReservedTask } from '../factory/workerHolders';
 import { holderInputsChanged } from '../factory/holderInputs';
 import { loadFanoutHourlyTaskCap, loadFanoutLiveTaskCap } from './fanoutWorkerPolicy';
-import { MAX_FANOUT_HOURLY_TASK_CAP } from '../../shared/fanoutTaskCaps';
+import { MAX_FANOUT_DEPTH, MAX_FANOUT_HOURLY_TASK_CAP } from '../../shared/fanoutTaskCaps';
 
 // The caps in force are the owner's (liveTaskCap(), hourlyTaskCap()), each
 // unset (no limit) unless the owner set it.
@@ -885,6 +885,30 @@ export function stampFanoutTaskPane(
   if (task) guards.markTask(ws, owner, origin ?? undefined, task);
   else if (origin) guards.markTask(ws, owner, origin);
   else guards.markTask(ws, owner);
+}
+
+/**
+ * How many hops of "started for someone" lie above `workspaceId`: 0 for a
+ * workspace nobody started, 1 for a fan-out task or an agent another PC
+ * started, 2 for a task of a task, and so on, counted up to `ceiling` (the
+ * walk stops there). A workspace another PC started ends the walk. Throws as
+ * `ownerOf` (fanoutOwnerOf) does, and when the lineage loops: a caller
+ * refuses on a throw, as for the depth check itself.
+ */
+export function lineageDepth(ownerOf: (workspaceId: string) => string | null, workspaceId: string, ceiling = MAX_FANOUT_DEPTH): number {
+  let depth = 0;
+  let current = workspaceId;
+  const seen = new Set([current]);
+  while (depth < ceiling) {
+    const owner = ownerOf(current);
+    if (owner === null) return depth;
+    depth++;
+    if (owner.startsWith(REMOTE_SPAWN_LINEAGE_PREFIX)) return depth;
+    if (seen.has(owner)) throw new Error(`the fan-out lineage of ${workspaceId} loops back to ${owner}`);
+    seen.add(owner);
+    current = owner;
+  }
+  return depth;
 }
 
 /**

@@ -358,7 +358,7 @@ export class A2aSpawnReceiver {
       permissionMode: policy.permissionMode,
       followUps: policy.followUps,
       text: req.text,
-      expiresAt: req.expiresAt,
+      expiresAt: rec.expiresAt,
     };
   }
 
@@ -453,7 +453,7 @@ export class A2aSpawnReceiver {
     };
     const policy = this.deps.policy.get();
     if (!spawnHostAllowed(policy, hostId)) return refuse('not-allowed');
-    if (this.now() > Date.parse(req.expiresAt)) return refuse('expired');
+    if (this.now() > Date.parse(rec.expiresAt)) return refuse('expired');
     if (!policy.agents.includes(req.agent) || !isSpawnableAgent(req.agent)) return refuse('agent-not-allowed');
     const sub = normalizeSpawnSub(req.folder.sub);
     const root = policy.roots.find((r) => r.id === req.folder.root);
@@ -477,7 +477,7 @@ export class A2aSpawnReceiver {
     if (!spawnHostAllowed(now, hostId) || !now.agents.includes(req.agent) || !now.roots.some((r) => r.id === root.id && r.path === root.path)) {
       return refuse('not-allowed');
     }
-    if (this.now() > Date.parse(req.expiresAt)) return refuse('expired');
+    if (this.now() > Date.parse(rec.expiresAt)) return refuse('expired');
     if (!this.roomFor(hostId, spawnId)) return refuse('rate-limited');
     try {
       this.deps.requests.noteClaimedRoot?.(hostId, spawnId, root.path);
@@ -521,7 +521,7 @@ export class A2aSpawnReceiver {
     let refused: A2aSpawnCode | undefined;
     if (!spawnHostAllowed(policy, hostId) || !policy.agents.includes(req.agent)) refused = 'not-allowed';
     else if (sub === null || !policy.roots.some((r) => r.id === req.folder.root && r.path === rec.claimedRoot)) refused = 'folder-not-allowed';
-    else if (this.now() > Date.parse(req.expiresAt)) refused = 'expired';
+    else if (this.now() > Date.parse(rec.expiresAt)) refused = 'expired';
     if (refused) {
       this.finish(hostId, spawnId, refused);
       return { ok: false, error: refused };
@@ -675,9 +675,19 @@ export class A2aSpawnReceiver {
     else if (this.deps.requests.pendingCount(hostId) >= spawnPendingPerHost(this.deps.policy.get())) refused = 'rate-limited';
     if (refused) return this.refuse(hostId, req.spawnId, refused);
 
+    // This PC's own limits on what it takes (the wire allows more).
+    const limits = this.deps.policy.get().limits ?? {};
+    if (limits.maxPromptKiB !== undefined && Buffer.byteLength(req.text, 'utf8') > limits.maxPromptKiB * 1024) {
+      this.deps.log('info', `[a2a-remote] spawn request ${req.spawnId} from ${hostId}: its prompt is longer than the ${limits.maxPromptKiB} KiB this PC accepts`);
+      return this.refuse(hostId, req.spawnId, 'not-allowed');
+    }
+    const localExpiresAt = limits.maxWaitHours !== undefined && Date.parse(req.expiresAt) > this.now() + limits.maxWaitHours * HOUR_MS
+      ? new Date(this.now() + limits.maxWaitHours * HOUR_MS).toISOString()
+      : undefined;
+
     let got: ReturnType<SpawnReceiverDeps['requests']['receive']>;
     try {
-      got = this.deps.requests.receive(hostId, req);
+      got = this.deps.requests.receive(hostId, req, localExpiresAt);
     } catch (err) {
       this.deps.log('warn', `[a2a-remote] spawn request from ${hostId} not stored: ${errMsg(err)}`);
       return UNAVAILABLE;
@@ -794,7 +804,7 @@ export class A2aSpawnReceiver {
     const policy = this.deps.policy.get();
     // The policy may have changed since the request arrived.
     if (!spawnHostAllowed(policy, hostId)) return 'not-allowed';
-    if (this.now() > Date.parse(req.expiresAt)) return 'expired';
+    if (this.now() > Date.parse(rec.expiresAt)) return 'expired';
     if (!policy.agents.includes(req.agent) || !isSpawnableAgent(req.agent)) return 'agent-not-allowed';
     // Nothing that could leave the root reaches the disk (parsed so already; checked again here).
     const sub = normalizeSpawnSub(req.folder.sub);
@@ -813,7 +823,7 @@ export class A2aSpawnReceiver {
     const now = this.deps.policy.get();
     if (!spawnHostAllowed(now, hostId)) return 'not-allowed';
     if (!now.agents.includes(req.agent) || !now.roots.some((r) => r.id === root.id && r.path === root.path)) return 'not-allowed';
-    if (this.now() > Date.parse(req.expiresAt)) return 'expired';
+    if (this.now() > Date.parse(rec.expiresAt)) return 'expired';
     if (!this.deps.start) return 'not-supported';
     if (this.overCaps(hostId)) return 'rate-limited';
     // Headless (no app, owner opted in): checked again on the policy as it is now; no card, no waiting for an app.

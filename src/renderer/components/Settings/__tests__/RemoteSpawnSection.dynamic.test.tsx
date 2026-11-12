@@ -102,6 +102,8 @@ describe('RemoteSpawnSection', () => {
       expect(field(key).placeholder).toBe('No limit');
     }
     expect(field('pendingPerPc').placeholder).toBe('100');
+    expect(field('maxPromptKiB').placeholder).toBe('32');
+    expect(field('maxWaitHours').placeholder).toBe('72');
     const type = async (key: string, text: string) => {
       const el = field(key);
       await act(async () => {

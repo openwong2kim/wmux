@@ -230,9 +230,22 @@ export interface A2aSpawnLimitsV1 {
   startsPerDay?: number;
   /** Requests one PC may have open here at once; at most SPAWN_REQUESTS_MAX. */
   pendingPerPc?: number;
+  /**
+   * The longest prompt this PC accepts from another PC, in KiB; at most the
+   * wire's SPAWN_TEXT_MAX (32 KiB), which is what absent means. A longer one is
+   * refused `not-allowed` (no new wire code: an older asker drops a result
+   * whose code it does not know).
+   */
+  maxPromptKiB?: number;
+  /**
+   * The longest a request may wait here for a decision, in hours; at most the
+   * wire's SPAWN_TTL_MAX_MS (72 h), which is what absent means. Applied by
+   * shortening the stored expiry here only; nothing changes on the wire.
+   */
+  maxWaitHours?: number;
 }
 
-export const SPAWN_LIMIT_KEYS = ['livePerPc', 'liveTotal', 'startsPerHour', 'startsPerDay', 'pendingPerPc'] as const;
+export const SPAWN_LIMIT_KEYS = ['livePerPc', 'liveTotal', 'startsPerHour', 'startsPerDay', 'pendingPerPc', 'maxPromptKiB', 'maxWaitHours'] as const;
 export type A2aSpawnLimitKey = typeof SPAWN_LIMIT_KEYS[number];
 /** The largest value each limit takes. */
 export const SPAWN_LIMIT_MAX: Readonly<Record<A2aSpawnLimitKey, number>> = Object.freeze({
@@ -241,6 +254,8 @@ export const SPAWN_LIMIT_MAX: Readonly<Record<A2aSpawnLimitKey, number>> = Objec
   startsPerHour: 1_000_000,
   startsPerDay: 1_000_000,
   pendingPerPc: SPAWN_REQUESTS_MAX,
+  maxPromptKiB: SPAWN_TEXT_MAX / 1024,
+  maxWaitHours: SPAWN_TTL_MAX_MS / (60 * 60 * 1000),
 });
 
 /** A limit as stored: a positive integer up to its maximum, or undefined (no limit). */

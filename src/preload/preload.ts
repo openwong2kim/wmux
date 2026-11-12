@@ -857,6 +857,10 @@ const electronAPI = {
     setLiveTaskCap: (value: number | null) => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_SET, value) as Promise<number | null>,
     getHourlyTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_GET) as Promise<number | null>,
     setHourlyTaskCap: (value: number | null) => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_SET, value) as Promise<number | null>,
+    getTasksPerCall: () => ipcRenderer.invoke(IPC.FANOUT_TASKS_PER_CALL_GET) as Promise<number>,
+    setTasksPerCall: (value: number) => ipcRenderer.invoke(IPC.FANOUT_TASKS_PER_CALL_SET, value) as Promise<number>,
+    getDepth: () => ipcRenderer.invoke(IPC.FANOUT_DEPTH_GET) as Promise<number>,
+    setDepth: (value: number) => ipcRenderer.invoke(IPC.FANOUT_DEPTH_SET, value) as Promise<number>,
     getTrustAgyFolders: () => ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_GET) as Promise<boolean>,
     setTrustAgyFolders: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, value) as Promise<boolean>,

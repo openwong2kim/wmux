@@ -83,7 +83,7 @@ import { workerTempEnv } from './fanoutTempDir';
 import { inheritTaskAutonomy } from './taskAutonomy';
 import { getFanOutGuards, type FanOutGuards } from './fanoutGuards';
 import { getWorkerSlots, type WorkerSlots } from '../factory/workerSlots';
-import { loadFanoutWorkerPermissionMode } from './fanoutWorkerPolicy';
+import { loadFanoutTasksPerCall, loadFanoutWorkerPermissionMode } from './fanoutWorkerPolicy';
 import { commandChoosesModel, promptFlagForLauncher, type RoleBinding } from '../../shared/orchestratorRole';
 import {
   MODEL_ENV_MARKER,
@@ -848,6 +848,11 @@ export class FanOutService {
     }
     if (n > FANOUT_MAX_TASKS) {
       return { ok: false, error: `fanout:start: task count ${n} exceeds cap ${FANOUT_MAX_TASKS}`, tasks: [] };
+    }
+    // The owner's tasks-per-call setting (default 8), at most the maximum above.
+    const perCall = loadFanoutTasksPerCall();
+    if (n > perCall) {
+      return { ok: false, error: `fanout:start: task count ${n} exceeds the tasks-per-call limit of ${perCall} (Settings › Roles & fan-out)`, tasks: [] };
     }
     // files[k] / dependsOn[k] are indices into the titles AS SENT, so a dropped
     // empty title would shift every later task onto its neighbour's scope.

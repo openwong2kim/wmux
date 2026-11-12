@@ -19,7 +19,10 @@ vi.mock('../../github/PrProvider', () => ({ detectRemote: vi.fn(async () => null
 
 // Lineage owners by workspace: what main's fan-out guards would say.
 const lineage = new Map<string, string>();
-vi.mock('../../worktask/fanoutGuards', () => ({ getFanOutGuards: () => ({ fanoutOwnerOf: (ws: string) => lineage.get(ws) ?? null }) }));
+vi.mock('../../worktask/fanoutGuards', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../worktask/fanoutGuards')>()),
+  getFanOutGuards: () => ({ fanoutOwnerOf: (ws: string) => lineage.get(ws) ?? null }),
+}));
 
 import * as electron from 'electron';
 import { IPC } from '../../../shared/constants';
