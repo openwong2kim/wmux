@@ -152,11 +152,13 @@ export function claimCdpPort(deps: ClaimCdpPortDeps = {}): CdpPortClaim {
   const pid = deps.pid ?? process.pid;
   const isAlive = deps.isAlive ?? defaultIsAlive;
   const start = deps.firstOffset ?? crypto.randomInt(CDP_PORT_COUNT);
-  const uptime = (deps.uptime ?? defaultUptime)();
+  const readUptime = deps.uptime ?? defaultUptime;
+  // Written into our claim. A comparison takes its own, later sample.
+  const uptime = readUptime();
 
   for (let i = 0; i < CDP_PORT_COUNT; i++) {
     const port = CDP_PORT_MIN + ((start + i) % CDP_PORT_COUNT);
-    if (tryClaim(dir, port, pid, isAlive, uptime)) return { port, claimed: true };
+    if (tryClaim(dir, port, pid, isAlive, uptime, readUptime)) return { port, claimed: true };
   }
 
   // Everything is spoken for, or the directory is unwritable. Draw and carry
@@ -164,7 +166,10 @@ export function claimCdpPort(deps: ClaimCdpPortDeps = {}): CdpPortClaim {
   return { port: CDP_PORT_MIN + (start % CDP_PORT_COUNT), claimed: false };
 }
 
-function tryClaim(dir: string, port: number, pid: number, isAlive: (pid: number) => boolean, uptime: number): boolean {
+function tryClaim(
+  dir: string, port: number, pid: number, isAlive: (pid: number) => boolean,
+  uptime: number, readUptime: () => number,
+): boolean {
   const file = claimPath(dir, port);
   if (writeClaim(file, pid, uptime)) return true;
 
@@ -187,7 +192,11 @@ function tryClaim(dir: string, port: number, pid: number, isAlive: (pid: number)
   // shutdown; an earlier boot that ended before reaching our current uptime; a
   // pid reused within one boot after a crash; and claims from an older wmux,
   // which carry no uptime and keep the pid rule alone.
-  if (claim.uptime !== null && claim.uptime > uptime) return replaceStaleClaim(file, pid, uptime);
+  // The comparison sample is taken after the read, not at the start of the walk:
+  // another instance may have written this claim since then, a whole second
+  // later, and a claim already written cannot carry a higher uptime than a
+  // sample taken after it within one boot.
+  if (claim.uptime !== null && claim.uptime > readUptime()) return replaceStaleClaim(file, pid, uptime);
   const holder = claim.pid;
   // Same answer for a claim we cannot make sense of — including the EMPTY one
   // another instance leaves for the instant between creating the file and

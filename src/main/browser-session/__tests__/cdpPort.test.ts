@@ -135,6 +135,20 @@ describe('claimCdpPort — claims from an earlier boot (#3286)', () => {
     expect(fs.readFileSync(lock(CDP_PORT_MIN + 6), 'utf8')).toBe('4242 uptime=599');
   });
 
+  it('compares with a sample taken after the read: a claim written after the walk began is not from an earlier boot', () => {
+    // The walk samples 600; another instance then writes its claim at 650, and
+    // our read of that file comes after. A later sample (700) shows it is from
+    // this boot, so only a live pid decides, and this one is alive.
+    let calls = 0;
+    const ticking = () => (calls++ === 0 ? 600 : 700);
+    fs.writeFileSync(lock(CDP_PORT_MIN + 11), '4242 uptime=650');
+    const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 11, uptime: ticking });
+    expect(claim.port).not.toBe(CDP_PORT_MIN + 11);
+    expect(fs.readFileSync(lock(CDP_PORT_MIN + 11), 'utf8')).toBe('4242 uptime=650');
+    // Our own claim carries the walk's sample.
+    expect(fs.readFileSync(lock(claim.port), 'utf8')).toBe('1234 uptime=600');
+  });
+
   it('respects a live claim written in the same second', () => {
     fs.writeFileSync(lock(CDP_PORT_MIN + 7), '4242 uptime=600');
     const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 7, uptime });
