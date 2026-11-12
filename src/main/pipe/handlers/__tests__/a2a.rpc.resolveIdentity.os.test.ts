@@ -1187,18 +1187,20 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
     const result = await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '99' });
     expect(result.resolved).toBeNull();
     expect(result.workspaceToken).toBeUndefined();
+    expect(result.claimRefused).toBe('restarted');
   });
 
   it('refuses a claim when the start time was not read at accept, or cannot be read now', async () => {
-    expect((await resolveAs({ callerPid: 39876 }, { pid: 39876 })).resolved).toBeNull();
+    expect(await resolveAs({ callerPid: 39876 }, { pid: 39876 })).toMatchObject({ resolved: null, claimRefused: 'start-unread' });
     setClaimStartTimeSource(() => null);
-    expect((await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' })).resolved).toBeNull();
+    expect(await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' })).toMatchObject({ resolved: null, claimRefused: 'start-unread' });
   });
 
   it('refuses a claim over a connection with no peer pid, and still says whether the hinted pane is live', async () => {
     const result = await resolveAs({ callerPid: 39876, hintedPtyId: 'daemon-shell' });
     expect(result.resolved).toBeNull();
     expect(result.workspaceToken).toBeUndefined();
+    expect(result.claimRefused).toBe('no-peer');
     expect(result).toHaveProperty('hintedPane');
   });
 

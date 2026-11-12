@@ -114,11 +114,24 @@ export function claimStillHeld(
   verdict: ClaimVerdict,
   log: (line: string) => void = (line) => console.log(line),
 ): boolean {
-  if (!verdict.ok || verdict.via !== 'same') return verdict.ok;
+  return claimHeldRefusal(kind, ctx, claimedPid, verdict, log) === null;
+}
+
+/** As claimStillHeld, giving the reason the claim is not held (null while it is). */
+export function claimHeldRefusal(
+  kind: string,
+  ctx: RpcContext | undefined,
+  claimedPid: number,
+  verdict: ClaimVerdict,
+  log: (line: string) => void = (line) => console.log(line),
+): ClaimRefusal | null {
+  if (!verdict.ok) return verdict.reason;
+  if (verdict.via !== 'same') return null;
   const now = startTimeOf(claimedPid);
-  if (now !== null && String(now) === ctx?.peerStartedAt) return true;
-  refuse(kind, now === null ? 'start-unread' : 'restarted', ctx, log);
-  return false;
+  if (now !== null && String(now) === ctx?.peerStartedAt) return null;
+  const reason: ClaimRefusal = now === null ? 'start-unread' : 'restarted';
+  refuse(kind, reason, ctx, log);
+  return reason;
 }
 
 /** main's startup peer read check (selfCheckPeerPid): null where the OS gives none. */

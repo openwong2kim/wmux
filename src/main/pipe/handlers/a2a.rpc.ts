@@ -53,7 +53,7 @@ import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFr
 import { getHandOutStore, type HandOutStore } from '../../handOut/handOutStore';
 import { isHandOutId } from '../../../shared/handOut';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
-import { checkClaim, claimStartTime, claimStillHeld, type ClaimVerdict } from './peerPidShadow';
+import { checkClaim, claimHeldRefusal, claimStartTime, claimStillHeld, type ClaimVerdict } from './peerPidShadow';
 import type { ClaimRefusal } from '../../../shared/identityClaims';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
@@ -898,7 +898,9 @@ export function registerA2aRpc(
     // `entries` still go back for the caller's own walk.
     const callerPid = normalizeCallerPid((params as { callerPid?: unknown }).callerPid);
     const callerVerdict = callerPid != null ? checkClaim('callerPid', ctx, callerPid) : null;
-    const callerRefused = callerVerdict !== null && !callerVerdict.ok;
+    // Why the caller's claim was not taken, for the caller to say (no pid, no path).
+    let claimRefused: ClaimRefusal | undefined = callerVerdict && !callerVerdict.ok ? callerVerdict.reason : undefined;
+    const callerRefused = claimRefused !== undefined;
     // Start the snapshot CONCURRENTLY and bound the wait (at the walk below) to the
     // RPC budget: it feeds only the final walk, so it must never delay — or, past
     // the client's ~10s RPC deadline, SINK — the legacy mappings/entries fallback
@@ -919,9 +921,7 @@ export function registerA2aRpc(
     // for existing MCP clients.
     const entries: Array<{ pid: string; ptyId: string; workspaceId: string }> = [];
     try {
-      if (!fs.existsSync(dir)) {
-        return { mappings, entries, resolved: null, ...(callerVerdict && !callerVerdict.ok && { claimRefused: callerVerdict.reason }) };
-      }
+      if (!fs.existsSync(dir)) return { mappings, entries, resolved: null };
 
       for (const file of fs.readdirSync(dir)) {
         let value: string;
@@ -1160,14 +1160,13 @@ export function registerA2aRpc(
     // the one the connection came from when its claim is minted. Nothing is
     // minted or refreshed before this holds.
     let callerHeld: boolean | null = null;
-    // Why the caller's claim was not taken, for the caller to say (no pid, no path).
-    let claimRefused: ClaimRefusal | undefined = callerVerdict && !callerVerdict.ok ? callerVerdict.reason : undefined;
     if ((resolved || runTarget) && callerPid != null && callerVerdict) {
-      callerHeld = claimStillHeld('callerPid', ctx, callerPid, callerVerdict);
-      if (!callerHeld) {
+      const notHeld = claimHeldRefusal('callerPid', ctx, callerPid, callerVerdict);
+      callerHeld = notHeld === null;
+      if (notHeld !== null) {
         resolved = null;
         runTarget = null;
-        claimRefused = claimStartTime(callerPid) === null ? 'start-unread' : 'restarted';
+        claimRefused = notHeld;
       }
     }
     const runClaim = runTarget ? claimTokenForRun(runTarget.workspaceId, runTarget.ptyId) : null;

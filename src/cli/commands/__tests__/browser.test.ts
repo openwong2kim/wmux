@@ -20,7 +20,7 @@ vi.mock('../../identity', () => ({
 
 import { sendRequest, setWorkspaceToken } from '../../client';
 import { getParentPidDefault, resolveSelfContext } from '../../identity';
-import { handleBrowser, handleOpen } from '../browser';
+import { claimRefusalText, handleBrowser, handleOpen } from '../browser';
 
 const rpc = sendRequest as unknown as ReturnType<typeof vi.fn>;
 const selfContext = resolveSelfContext as unknown as ReturnType<typeof vi.fn>;
@@ -130,10 +130,11 @@ describe('wmux open / browser close caller scoping (#922 PR-C)', () => {
     expect(rpc).not.toHaveBeenCalledWith('workspace.current', expect.anything());
   });
 
-  it('asks to update the app when main finds the pane but mints no claim (older main)', async () => {
+  it('asks to update an older app, or run wmux doctor, when main finds the pane but mints no claim', async () => {
     selfContext.mockResolvedValue({ ptyId: 'pty-self', workspaceId: 'ws-self' });
     const message = await expectRefusedOutsidePane(() => handleBrowser(['navigate', 'https://example.com'], false));
-    expect(message).toContain('Update the wmux app');
+    expect(message).toContain('update the wmux app');
+    expect(message).toContain('wmux doctor');
     expect(rpc).not.toHaveBeenCalled();
   });
 
@@ -148,7 +149,6 @@ describe('wmux browser / open when main did not take the claim', () => {
     selfContext.mockResolvedValue({ workspaceId: 'ws-self', ptyId: 'pty-self', claimRefused: 'start-unread' });
     const message = await expectRefusedOutsidePane(() => handleOpen(['https://example.com'], false));
     expect(message).toContain('start time');
-    expect(message).toContain('another user');
     expect(message).toContain('wmux doctor');
     // Not the "older app" advice: main is new enough to give a reason.
     expect(message).not.toContain('older than');
@@ -166,5 +166,13 @@ describe('wmux browser / open when main did not take the claim', () => {
     selfContext.mockResolvedValue({});
     const message = await expectRefusedOutsidePane(() => handleBrowser(['navigate', 'https://example.com'], false));
     expect(message).toContain('wmux doctor');
+  });
+});
+
+describe('claimRefusalText', () => {
+  it('names another user as the cause of an unread start time on macOS only', () => {
+    expect(claimRefusalText('start-unread', 'darwin')).toContain('another user');
+    expect(claimRefusalText('start-unread', 'linux')).not.toContain('another user');
+    expect(claimRefusalText('start-unread', 'linux')).toContain('/proc');
   });
 });

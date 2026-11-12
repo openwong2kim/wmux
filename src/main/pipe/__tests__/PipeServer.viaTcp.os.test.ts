@@ -26,7 +26,7 @@ afterEach(() => { server?.stop(); server = null; });
 function request(target: string | { host: string; port: number }, token: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const send = () => client.write(JSON.stringify({ id: 'r1', method: 'system.identify', params: {}, token }) + '\n');
-    const client = typeof target === 'string' ? net.connect(target, send) : net.connect(target, send);
+    const client = net.connect(typeof target === 'string' ? { path: target } : target, send);
     client.on('data', () => { client.destroy(); resolve(); });
     client.on('error', reject);
   });
