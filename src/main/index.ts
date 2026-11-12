@@ -225,7 +225,7 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { setBrokerPidSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
-import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
+import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, releaseCdpPortOnExit } from './browser-session/cdpPort';
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { registerBrowserPrivateNetworkIpc } from './ipc/handlers/browserPrivateNetwork.handler';
@@ -697,6 +697,11 @@ const cdpEnabled =
   process.env.WMUX_DISABLE_CDP !== 'true' &&
   bootConfig.browser?.cdp?.enabled !== false;
 let cdpPort = 0;
+// Gives the claim back; replaced below once there is one. Process exit runs
+// it; a Windows session end, which runs no exit handlers, calls it itself, as
+// does the duplicate that loses the single-instance lock (it claims before it
+// finds out).
+let releaseCdpClaim = (): void => undefined;
 if (cdpEnabled) {
   // The port is still drawn at random within the range, to keep it
   // unpredictable to a scanner — but it is CLAIMED rather than merely drawn
@@ -706,6 +711,7 @@ if (cdpEnabled) {
   // tool was dead with nothing anywhere to say why.
   const claim = claimCdpPort();
   cdpPort = claim.port;
+  releaseCdpClaim = releaseCdpPortOnExit(claim, process);
   app.commandLine.appendSwitch('remote-debugging-port', cdpPort.toString());
   // REQUESTED, not enabled. Whether it is enabled is not knowable yet: the
   // switch is a request to Chromium, which has not started. The truth is
@@ -757,6 +763,7 @@ const gotLock = app.requestSingleInstanceLock();
 console.log(`[DEBUG] gotLock = ${gotLock}`);
 if (!gotLock) {
   console.log('[DEBUG] failed to get single instance lock, quitting');
+  releaseCdpClaim();
   app.quit();
   return;
 } else {
@@ -4122,6 +4129,10 @@ async function onWindowsSessionEnd(event?: Electron.WindowSessionEndEvent): Prom
   if (sessionEndHandled) return;
   sessionEndHandled = true;
   console.log('[Main] session-end received — flush pending session write + daemon race');
+  // Windows ends the process after this returns, with no exit handlers, and
+  // Fast Startup keeps the uptime, so the next boot could not tell the claim
+  // is stale.
+  releaseCdpClaim();
   try {
     // v2 RCA fix (reboot-reattach): the previous block built a FRESH
     // `new SessionManager()`, `load()`ed the on-disk snapshot, and `save()`d

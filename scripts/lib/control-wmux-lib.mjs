@@ -83,8 +83,9 @@ export function findClaimedPort(dir, pid) {
 
 /**
  * The CDP port of the app `pid`: the port its own log says it requested, once
- * the claim for that port names the pid. Claims are never cleaned up, so a
- * stale one left by an earlier process whose pid the app now reuses names
+ * the claim for that port names the pid. A clean quit removes its claim, but
+ * a crashed process's claim stays until a later launch reclaims that port, so
+ * a stale one left by an earlier process whose pid the app now reuses names
  * the pid too; only the log decides. Until the app has logged that line
  * there is no port, and the caller keeps polling.
  */
