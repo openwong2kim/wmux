@@ -1,9 +1,10 @@
 /**
  * `wmux remote join | peers | unpair` — the pairing verbs a daemon-only host
- * uses. They ride the daemon control pipe only (never the app's pipe, never a
- * pane-identity lookup), and never print the invite or its code back.
+ * uses. Their calls ride the daemon control pipe (the only other lookup is the
+ * pane identity, to stamp senderPtyId), and they never print the invite or its
+ * code back.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../client', () => ({
   sendRequest: vi.fn(),
@@ -71,6 +72,9 @@ async function run(sub: string, args: string[], json = false): Promise<number | 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // This suite may itself run in a wmux pane; the join/unpair cases below set it themselves.
+  delete process.env['WMUX_PTY_ID'];
+  selfContext.mockResolvedValue({});
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
     throw new ExitCalled(code);
   }) as never);
@@ -78,13 +82,33 @@ beforeEach(() => {
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 });
 
+describe('senderPtyId from inside a pane', () => {
+  afterEach(() => {
+    delete process.env['WMUX_PTY_ID'];
+  });
+
+  it('join and unpair carry WMUX_PTY_ID as senderPtyId when it is set', async () => {
+    process.env['WMUX_PTY_ID'] = 'pty-3';
+    routeDaemon({
+      'a2a.remote.join': { ok: true, host },
+      'a2a.remote.peers.list': { peers: [] },
+      'a2a.remote.hosts.remove': { ok: true, remoteRevoked: true },
+    });
+    expect(await run('join', [INVITE])).toBe(0);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.join', { invite: INVITE, senderPtyId: 'pty-3' }, 30_000);
+    expect(await run('unpair', [HOST_ID])).toBe(0);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID, senderPtyId: 'pty-3' }, 30_000);
+  });
+});
+
 describe('wmux remote join', () => {
   it('sends the invite to a2a.remote.join on the daemon pipe only', async () => {
     routeDaemon({ 'a2a.remote.join': { ok: true, host } });
     expect(await run('join', [INVITE])).toBe(0);
-    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.join', { invite: INVITE });
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.join', { invite: INVITE }, 30_000);
     expect(mainRpc).not.toHaveBeenCalled();
-    expect(selfContext).not.toHaveBeenCalled();
+    // The pane identity is looked up once, only to stamp senderPtyId; outside a pane none is sent.
+    expect(selfContext).toHaveBeenCalledTimes(1);
     expect(printed()).toContain(HOST_ID);
     expect(printed()).toContain(FP);
     expect(printed()).not.toContain(CODE);
@@ -175,7 +199,7 @@ describe('wmux remote unpair', () => {
   it('removes a joined host and reports whether that PC confirmed', async () => {
     routeDaemon({ 'a2a.remote.hosts.remove': { ok: true, remoteRevoked: true }, 'a2a.remote.peers.list': { peers: [] } });
     expect(await run('unpair', [HOST_ID], true)).toBe(0);
-    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID });
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID }, 30_000);
     expect(JSON.parse(String(logSpy.mock.calls[0][0]))).toEqual({
       ok: true, hostId: HOST_ID, hostRemoved: true, remoteRevoked: true, peersRevoked: 0,
     });
@@ -194,7 +218,7 @@ describe('wmux remote unpair', () => {
   it('accepts an uppercase host id', async () => {
     routeDaemon({ 'a2a.remote.hosts.remove': { ok: true, remoteRevoked: false }, 'a2a.remote.peers.list': { peers: [] } });
     expect(await run('unpair', [HOST_ID.toUpperCase()])).toBe(0);
-    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID });
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.remote.hosts.remove', { hostId: HOST_ID }, 30_000);
   });
 
   it('revokes that PC before the host removal, so a removal timeout cannot skip it', async () => {

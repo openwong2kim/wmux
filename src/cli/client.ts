@@ -303,24 +303,29 @@ export function sendRequestToPipe(
   method: RpcMethod,
   params: Record<string, unknown> = {},
   token: string | undefined,
+  timeoutMs = TIMEOUT_MS,
 ): Promise<RpcResponse> {
-  return attemptRequest(pipeName, method, params, token);
+  return attemptRequest(pipeName, method, params, token, timeoutMs);
 }
 
 /**
  * Ping the daemon over its OWN control pipe (not the main process pipe).
  * Resolves the daemon pipe + token, then issues `daemon.ping`. Rejects if the
  * daemon is unreachable — the caller (doctor) maps that to the "down" verdict.
+ * `timeoutMs` is for calls the daemon may legitimately work on for longer than
+ * the default (pairing, saving a policy that checks folders).
  */
 export function sendDaemonRequest(
   method: RpcMethod,
   params: Record<string, unknown> = {},
+  timeoutMs = TIMEOUT_MS,
 ): Promise<RpcResponse> {
   return sendRequestToPipe(
     resolveDaemonPipeName(),
     method,
     params,
     resolveDaemonAuthToken(),
+    timeoutMs,
   );
 }
 
