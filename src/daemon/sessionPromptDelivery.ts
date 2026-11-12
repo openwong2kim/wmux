@@ -50,14 +50,18 @@ export interface ScheduledPromptDeliveryDeps {
    *  `submit`: called immediately before the submit write; `queued` is true
    *  when the prompt was accepted while the turn ran. */
   onWrite?: (stage: 'paste' | 'submit', queued?: boolean) => void;
-  /** The folder-trust verdict that stops a write, or null. Asked first,
-   *  again right before the paste, and again right before Enter. Before
-   *  anything is written, 'trust' answers `folder_trust` and 'unknown' (a
-   *  screen that cannot rule one out) answers `busy`, so the caller tries
-   *  again as it would at a busy pane. Once a paste may be visible, either
-   *  answers `error`: a retry would paste again. */
-  folderTrustBlocks?: () => Promise<'trust' | 'unknown' | null>;
+  /** The screen verdict that stops a write, or null. Asked first, again
+   *  right before the paste, and again right before Enter. Before anything is
+   *  written, 'trust' answers `folder_trust`; 'unknown' (a screen that cannot
+   *  rule one out) and 'dialog' (another dialog or a selection menu on
+   *  screen) answer `busy`, so the caller tries again as it would at a busy
+   *  pane. Once a paste may be visible, any answers `error`: a retry
+   *  would paste again. */
+  folderTrustBlocks?: () => Promise<ScreenBlock | null>;
 }
+
+/** Why the screen stops a delivery: see `folderTrustBlocks`. */
+export type ScreenBlock = 'trust' | 'unknown' | 'dialog';
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -102,7 +106,7 @@ export async function deliverScheduledPrompt(
   deps: ScheduledPromptDeliveryDeps,
 ): Promise<SessionPromptScheduleResult> {
   // A read that fails cannot rule a trust prompt out.
-  const trustBlock = async (): Promise<'trust' | 'unknown' | null> => {
+  const trustBlock = async (): Promise<ScreenBlock | null> => {
     try {
       return (await deps.folderTrustBlocks?.()) ?? null;
     } catch {
@@ -110,7 +114,7 @@ export async function deliverScheduledPrompt(
     }
   };
   /** Nothing written yet: refuse cleanly, so the caller can come back. */
-  const refusedBeforeWrite = (verdict: 'trust' | 'unknown'): SessionPromptScheduleResult =>
+  const refusedBeforeWrite = (verdict: ScreenBlock): SessionPromptScheduleResult =>
     (verdict === 'trust' ? 'folder_trust' : 'busy');
   // Asked before the agent state is read, so the readiness, quiet-input and
   // revision checks below stay as close to the first paste as before.
@@ -188,9 +192,9 @@ export async function deliverScheduledPrompt(
     return 'error';
   }
 
-  // A trust prompt that opened inside the submit delay must not get the
-  // Enter (it would answer the prompt). The paste may be visible, so this is
-  // final: a retry would paste again.
+  // A trust prompt or other dialog that opened inside the submit delay must
+  // not get the Enter (it would answer the prompt). The paste may be
+  // visible, so this is final: a retry would paste again.
   if (await trustBlock()) return 'error';
 
   // A grant withdrawn inside the submit delay must not be pressed through.

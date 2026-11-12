@@ -310,7 +310,7 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { handleLiveness } from '../shared/processHandleLiveness';
-import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
+import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliveryDeps, type ScreenBlock } from './sessionPromptDelivery';
 import { deliverCallerNudge } from './callerNudgeDelivery';
 import { paneTurnClosed, stopAgentTree } from './agentStop';
 import { continueOnAccount } from './continueOnAccount';
@@ -6370,14 +6370,15 @@ function registerRpcHandlers(
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string,
     opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized' | 'onWrite'>,
     writer: string,
-    trust: { refuseUnknown?: boolean; onRefused?: (verdict: 'trust' | 'unknown') => void } = {},
+    trust: { refuseUnknown?: boolean; onRefused?: (verdict: ScreenBlock) => void } = {},
   ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       ...opts,
       // Each of these is tried again later: one log line per pane while the
       // refusal holds. No person waits on them, so the read may take longer.
+      // Each presses Enter on its own, so any dialog on screen stops it too.
       folderTrustBlocks: async () => {
-        const refused = await trustRefusal(sessionManager, id, writer, trust.refuseUnknown ?? true, { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS });
+        const refused = await trustRefusal(sessionManager, id, writer, trust.refuseUnknown ?? true, { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS, refuseDialog: true });
         if (refused) trust.onRefused?.(refused);
         return refused;
       },
@@ -6451,7 +6452,7 @@ function registerRpcHandlers(
   // Both pass the same folder-trust checks as any automated writer.
   const deliverContinueMessage = async (
     id: string, slug: AgentSlug, incarnationId: string, stillWanted: () => boolean,
-    writer: string, trust: { refuseUnknown?: boolean; onRefused?: (verdict: 'trust' | 'unknown') => void },
+    writer: string, trust: { refuseUnknown?: boolean; onRefused?: (verdict: ScreenBlock) => void },
   ): Promise<SessionPromptScheduleResult> => {
     // A human draft in the composer is a wait, not a failure: answering
     // 'busy' keeps the pane armed and retries once the draft is sent or cleared.
@@ -6477,12 +6478,15 @@ function registerRpcHandlers(
       return slug && state.agentVerified && state.incarnationId ? { slug, incarnationId: state.incarnationId } : null;
     },
     deliverContinue: async (id, expected, stillWanted, armed) => {
-      // A person's Continue stops only at a prompt seen. Any refusal answers
-      // 'folder_trust', which waits without spending the busy retries.
+      // A person's Continue stops only at a prompt seen (a dialog is one).
+      // Any refusal answers 'folder_trust', which waits without spending the
+      // busy retries.
+      // A refusal after the paste stays 'error', so the continue is never
+      // pasted twice.
       let refused = false;
       const result = await deliverContinueMessage(id, expected.slug, expected.incarnationId, stillWanted,
         'usage-limit continue', { refuseUnknown: armed, onRefused: () => { refused = true; } });
-      return refused ? 'folder_trust' : result;
+      return refused && result !== 'error' ? 'folder_trust' : result;
     },
     log: (message) => log('info', message),
   });
@@ -6639,10 +6643,11 @@ function registerRpcHandlers(
       ? 'busy'
       : deliverPromptToSessionNow(id, slug, incarnationId, prompt, onWrite ? { onWrite } : {}, 'automation run')),
     // A pane held at a usage limit is that registry's to resume. The trust
-    // checks run before the paste and before Enter: 'unknown' before any
-    // write answers 'busy' (the engine asks again within its grace), a
-    // prompt on screen 'folder_trust' (final), and either after the paste
-    // 'error' (final: the continue is never pasted twice).
+    // checks run before the paste and before Enter: 'unknown' or another
+    // dialog before any write answers 'busy' (the engine asks again within
+    // its grace), a folder-trust prompt on screen 'folder_trust' (final), and
+    // any of them after the paste 'error' (final: the continue is never
+    // pasted twice).
     deliverContinue: async (id, slug, incarnationId, stillWanted) => (usageLimits?.holds(id)
       ? 'busy'
       : deliverContinueMessage(id, slug, incarnationId, stillWanted, 'automation retry', { refuseUnknown: true })),
@@ -9017,13 +9022,16 @@ let diskOnlySessions: DaemonSession[] = [];
 
 /** What every save writes: the managed sessions, then the disk-only records they have not taken. */
 /** Why a daemon writer must not type into `id` now (folderTrustState.ts):
- *  'trust' always, 'unknown' when `refuseUnknown` (an automated writer).
+ *  'trust' always, 'unknown' when `refuseUnknown` (an automated writer),
+ *  'dialog' when `refuseDialog` (a writer that presses Enter on its own).
  *  `budgetMs`: the read budget, for a writer no person waits on. */
-function trustRefusal(
-  sessionManager: DaemonSessionManager, id: string, writer: string, refuseUnknown: boolean, opts: { once?: boolean; budgetMs?: number } = {},
-): Promise<'trust' | 'unknown' | null> {
-  return folderTrustRefusal(sessionManager, id, writer, {
+function trustRefusal<D extends boolean = false>(
+  sessionManager: DaemonSessionManager, id: string, writer: string, refuseUnknown: boolean,
+  opts: { once?: boolean; budgetMs?: number; refuseDialog?: D } = {},
+): Promise<'trust' | 'unknown' | (D extends true ? 'dialog' : never) | null> {
+  return folderTrustRefusal<D>(sessionManager, id, writer, {
     refuseUnknown,
+    ...(opts.refuseDialog !== undefined ? { refuseDialog: opts.refuseDialog } : {}),
     ...(opts.budgetMs !== undefined ? { budgetMs: opts.budgetMs } : {}),
     log: (message) => {
       // A writer that tries again (`once`) logs a refusal once per pane while it holds.

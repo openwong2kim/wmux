@@ -1,4 +1,5 @@
 import { readFolderTrustScreen } from './approvals/approvalKeystrokes';
+import { approvalOnScreen } from './approvals/approvalOnScreen';
 import { AWAITING_RENDER_WINDOW_BYTES, liveGeometry, renderPaneScreen, type AwaitingFrame, type RenderablePane } from './AwaitingScreenVerifier';
 import { createSnapshotLane, generateTextSnapshotUnqueued, runSmallSnapshotJob } from './HeadlessSnapshot';
 import { UNKNOWN_CELL } from './sessionTextReplay';
@@ -34,6 +35,10 @@ export type FolderTrustUnknownReason = 'unseen-cells' | 'cut-choices' | 'unreada
 export interface FolderTrustReading {
   state: FolderTrustState;
   reason?: FolderTrustUnknownReason;
+  /** On a 'clear' or 'unknown' verdict: another dialog (a permission prompt,
+   *  a selection menu) shows in the cells that were read, by main's own test
+   *  (approvalOnScreen). Automated delivery waits while one is up. */
+  dialog?: true;
 }
 
 /** The longest budget a caller may ask for (`daemon.folderTrustState`'s
@@ -213,6 +218,7 @@ export async function readFolderTrust(deps: FolderTrustDeps, id: string): Promis
 }
 
 const CLEAR: FolderTrustReading = { state: 'clear' };
+const CLEAR_UNDER_DIALOG: FolderTrustReading = { state: 'clear', dialog: true };
 const MUTED: FolderTrustReading = { state: 'unknown', reason: 'muted' };
 
 /**
@@ -256,7 +262,11 @@ function verdictOf(frame: AwaitingFrame): FolderTrustReading {
   const onScreen = readFolderTrustScreen(lines.slice(-60));
   if (onScreen === 'trust') return { state: 'trust' };
   if (onScreen === 'unreadable') return { state: 'unknown', reason: 'cut-choices' };
-  return frame.unknown && unknownWhereADialogWouldBe(frame.unknown) ? { state: 'unknown', reason: 'unseen-cells' } : CLEAR;
+  const dialog = approvalOnScreen(lines.slice(-60).join('\n'));
+  if (frame.unknown && unknownWhereADialogWouldBe(frame.unknown)) {
+    return dialog ? { state: 'unknown', reason: 'unseen-cells', dialog: true } : { state: 'unknown', reason: 'unseen-cells' };
+  }
+  return dialog ? CLEAR_UNDER_DIALOG : CLEAR;
 }
 
 /** The whole-ring verdict, while the output holds no newer byte (`mark`), the mute is unchanged and the size is the one it was read at. */
@@ -429,27 +439,35 @@ export function registerFolderTrustRpc(pipeServer: Pick<DaemonPipeServer, 'onRpc
       : undefined;
     // `reason` is additive: a main that predates it reads `state` alone, and
     // one that predates `budgetMs` gets the default budget.
-    return readFolderTrust({ getSession: (sid) => sessions.getSession(sid), ...(timeoutMs !== undefined ? { timeoutMs } : {}) }, id);
+    const { state, reason } = await readFolderTrust({ getSession: (sid) => sessions.getSession(sid), ...(timeoutMs !== undefined ? { timeoutMs } : {}) }, id);
+    return reason ? { state, reason } : { state };
   });
 }
 
 /**
  * The verdict that keeps a daemon writer from typing into `id` now, or null
  * when it may write: 'trust' always; 'unknown' only for an automated writer
- * (`refuseUnknown`), never for a person's own input. One log line per
- * refusal, naming the writer and the verdict. `budgetMs` as for
- * `daemon.folderTrustState`.
+ * (`refuseUnknown`), never for a person's own input; 'dialog' (another dialog
+ * on screen) only for a writer that presses Enter on its own
+ * (`refuseDialog`). One log line per refusal, naming the writer and the
+ * verdict. `budgetMs` as for `daemon.folderTrustState`.
  */
-export async function folderTrustRefusal(
+export async function folderTrustRefusal<D extends boolean = false>(
   sessions: FolderTrustSessions,
   id: string,
   writer: string,
-  opts: { refuseUnknown: boolean; log: (message: string) => void; budgetMs?: number },
-): Promise<'trust' | 'unknown' | null> {
-  const { state: verdict, reason } = await readFolderTrust(
+  opts: { refuseUnknown: boolean; refuseDialog?: D; log: (message: string) => void; budgetMs?: number },
+): Promise<'trust' | 'unknown' | (D extends true ? 'dialog' : never) | null> {
+  const { state: verdict, reason, dialog } = await readFolderTrust(
     { getSession: (sid) => sessions.getSession(sid), ...(opts.budgetMs !== undefined ? { timeoutMs: opts.budgetMs } : {}) },
     id,
   );
+  // A dialog in the cells read stops such a writer even where unread cells
+  // leave the verdict 'unknown' and the writer accepts that.
+  if (verdict !== 'trust' && dialog && opts.refuseDialog) {
+    opts.log(`[folder-trust] refused ${writer} on pane ${id}: a dialog is on screen`);
+    return 'dialog' as D extends true ? 'dialog' : never;
+  }
   if (verdict === 'clear' || (verdict === 'unknown' && !opts.refuseUnknown)) return null;
   opts.log(`[folder-trust] refused ${writer} on pane ${id}: folder-trust ${verdict}${reason ? ` (${reason})` : ''}`);
   return verdict;
