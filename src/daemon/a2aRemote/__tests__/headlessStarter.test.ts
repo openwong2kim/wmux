@@ -11,7 +11,7 @@ import type { A2aSpawnClaimResult, A2aSpawnStepResult } from '../../../shared/a2
 import { workerLaunchFlags } from '../../../shared/workerLaunch';
 import type { SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
 import { HeadlessStartStore } from '../headlessStartStore';
-import { A2aHeadlessStarter, type HeadlessSessionInput, type HeadlessSessionPort, type HeadlessStarterDeps } from '../headlessStarter';
+import { A2aHeadlessStarter, HEADLESS_EXTRA_DISALLOWED_TOOLS, type HeadlessSessionInput, type HeadlessSessionPort, type HeadlessStarterDeps } from '../headlessStarter';
 import type { SpawnRequestRecordV1 } from '../spawnRequestStore';
 
 const HOST = '11111111-1111-4111-8111-111111111111' as HostId;
@@ -61,6 +61,7 @@ function makeStarter(over: Partial<HeadlessStarterDeps> = {}): A2aHeadlessStarte
     receiver: {
       claim: async () => {
         calls.push('claim');
+        if (claimResult.ok) request = { state: 'starting' };
         return claimResult;
       },
       started: async (_h, _s, end) => {
@@ -100,7 +101,7 @@ beforeEach(() => {
   active = true;
   claimResult = { ok: true, claim: { hostId: HOST, hostName: 'PC-A', spawnId: SPAWN, agent: 'claude', repoPath: '/repo', sub: 'apps', permissionMode: 'auto' } };
   startedResult = { ok: true };
-  request = { state: 'starting' };
+  request = { state: 'approved' };
   link = { linkId: LINK, state: 'active' } as A2aLinkRecordV1;
   calls = [];
   created = [];
@@ -128,7 +129,9 @@ describe('headless start', () => {
     expect(input.cwd).toBe('/wt/remote-x/apps');
     expect(input.agentBin).toBe('/home/u/.local/bin/claude');
     // The worker flags and the pinned conversation id; never the prompt.
-    expect(input.command).toBe(`claude --session-id ${rec.agentSessionId} ${workerLaunchFlags('auto')}`);
+    expect(input.command).toBe(`claude --session-id ${rec.agentSessionId} ${workerLaunchFlags('auto', HEADLESS_EXTRA_DISALLOWED_TOOLS)}`);
+    expect(input.command).toContain('mcp__wmux__remote_spawn');
+    expect(input.command).toContain('mcp__wmux__fanout_start');
     expect(JSON.stringify(input)).not.toContain(PROMPT);
     expect(failed).toEqual([]);
   });
@@ -162,13 +165,19 @@ describe('headless start', () => {
     });
   }
 
-  it('a worktree that cannot be made answers its code and keeps no record', async () => {
-    worktree = { ok: false, code: 'folder-not-allowed', detail: 'not a repository top level' };
+  it('a worktree that cannot be made answers its code and keeps no record; a folder of that name that was there is not touched', async () => {
+    worktree = { ok: false, code: 'failed', detail: 'remote-x already exists' };
     await makeStarter().start(HOST, SPAWN);
-    expect(failed).toEqual(['folder-not-allowed']);
+    expect(failed).toEqual(['failed']);
     expect(calls.filter((c) => c === 'create')).toEqual([]);
-    expect(removedTrees).toEqual([SPAWN]);
+    expect(removedTrees).toEqual([]);
     expect(starts.list()).toEqual([]);
+  });
+
+  it('a request that is no longer approved is not claimed (nor retried)', async () => {
+    request = { state: 'decided', code: 'expired' };
+    await makeStarter().start(HOST, SPAWN);
+    expect(calls).toEqual([]);
   });
 
   it('a session that does not start takes the worktree back', async () => {
@@ -362,5 +371,23 @@ describe('headless reconcile', () => {
     await makeStarter().reconcile();
     expect(live.has('hl-s1')).toBe(false);
     expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+  });
+});
+
+describe('headless start store', () => {
+  it('when full, the oldest ended start makes room; with none ended, a new start is refused', () => {
+    const small = new HeadlessStartStore({ dir, scheduleHarden: () => undefined });
+    const add = (i: number, phase: 'started' | 'ended'): void => small.add({
+      v: 1, hostId: HOST, spawnId: `sp-${String(i).padStart(8, '0')}-4567-89ab-cdef-0123456789ab`, agent: 'claude', repoPath: '/repo',
+      sessionId: `hl-${i}`, workspaceId: `hl-w${i}`, agentSessionId: '33333333-3333-4333-8333-333333333333', lineage: 'remote-spawn:x', runId: 'r',
+      phase, startedAt: new Date(1_000 + i).toISOString(), ...(phase === 'ended' ? { endedAt: new Date(2_000 + i).toISOString() } : {}),
+    });
+    for (let i = 0; i < 1000; i++) add(i, i < 2 ? 'ended' : 'started');
+    add(1000, 'started');
+    expect(small.list()).toHaveLength(1000);
+    expect(small.phaseOfSession('hl-0')).toBeUndefined();
+    expect(small.phaseOfSession('hl-1')).toBe('ended');
+    add(1001, 'started');
+    expect(() => add(1002, 'started')).toThrow(/1000 are recorded/);
   });
 });

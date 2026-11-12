@@ -120,14 +120,14 @@ async function allow(over: Record<string, unknown> = {}): Promise<void> {
   expect(res.ok).toBe(true);
 }
 
-async function ask(): Promise<string> {
+async function ask(agent: 'claude' | 'codex' = 'claude'): Promise<string> {
   const spawnId = `sp-${crypto.randomUUID()}`;
   const now = Date.now();
   const env: A2aRemoteEnvelope = {
     protocol: A2A_REMOTE_PROTOCOL, linkId: spawnId, linkVersion: 0, messageId: 'req', kind: 'link',
     link: { state: 'spawn', version: 0 },
     spawn: {
-      v: 1, spawnId, agent: 'claude', folder: { root: 'web' }, text: 'fix the build',
+      v: 1, spawnId, agent, folder: { root: 'web' }, text: 'fix the build',
       expiresAt: new Date(now + 3600_000).toISOString(), from: { kind: 'pane', workspaceId: 'ws-a', paneId: 'pane-a' },
     },
     sentAt: new Date(now).toISOString(),
@@ -159,6 +159,13 @@ describe('spawn receiver in headless mode', () => {
   it('the manual permission mode is never started (`not-supported`)', async () => {
     await allow({ rules: [RULE], permissionMode: 'manual' });
     const spawnId = await ask();
+    expect(requests.get(HOST, spawnId)).toMatchObject({ state: 'decided', code: 'not-supported' });
+    expect(made).toEqual([]);
+  });
+
+  it('an agent other than Claude Code is not started (`not-supported`)', async () => {
+    await allow({ agents: ['claude', 'codex'], rules: [{ ...RULE, agent: 'codex' }] });
+    const spawnId = await ask('codex');
     expect(requests.get(HOST, spawnId)).toMatchObject({ state: 'decided', code: 'not-supported' });
     expect(made).toEqual([]);
   });

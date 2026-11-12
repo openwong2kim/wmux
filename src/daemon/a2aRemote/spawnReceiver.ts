@@ -811,12 +811,12 @@ export class A2aSpawnReceiver {
     if (this.now() > Date.parse(req.expiresAt)) return 'expired';
     if (!this.deps.start) return 'not-supported';
     if (this.overCaps(hostId)) return 'rate-limited';
-    // Headless (no app, owner opted in): a rule or nothing, and never `manual` (no person at the pane).
+    // Headless (no app, owner opted in): a rule or nothing; never `manual` (no person at the pane); Claude Code only.
     const headless = this.deps.headless?.() === true;
     // Nothing is shown or started before the app has caught up: the request waits for it, until it expires.
     if (!headless && this.deps.appReady && !this.deps.appReady()) throw new AppNotReady('the app is not ready');
     const ruled = now.approval === 'allow-list' && now.rules.some((r) => spawnRuleMatches(r, hostId, root.id, req.agent, sub));
-    if (headless) return now.permissionMode === 'manual' ? 'not-supported' : ruled ? 'approved' : 'not-allowed';
+    if (headless) return now.permissionMode === 'manual' || req.agent !== 'claude' ? 'not-supported' : ruled ? 'approved' : 'not-allowed';
     return ruled ? 'approved' : 'awaiting';
   }
 

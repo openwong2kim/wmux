@@ -4,6 +4,9 @@ import { firstRunEnvForAgent } from '../../shared/agentFirstRun';
 import type { HostId, A2aLinkRecordV1 } from '../../shared/a2aRemote';
 import { REMOTE_SPAWN_LINEAGE_PREFIX, type A2aSpawnClaimResult, type A2aSpawnStepResult } from '../../shared/a2aSpawn';
 import { workerLaunchFlags } from '../../shared/workerLaunch';
+
+/** Beyond the worker deny list: an agent started for another PC asks no PC for more agents. */
+export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = ['mcp__wmux__remote_spawn'];
 import type { SpawnWorktreeInput, SpawnWorktreeResult } from '../../main/a2aRemote/spawnWorktree';
 import type { HeadlessStartRecordV1, HeadlessStartStore } from './headlessStartStore';
 import type { SpawnRequestRecordV1 } from './spawnRequestStore';
@@ -19,7 +22,7 @@ import { errMsg } from './storeFile';
  *   1. claim it (the receiver checks everything again; one claimer wins);
  *   2. record the start: the session id it will use, the PC it is for (the
  *      lineage: an agent started remotely does not fan out again; its launch
- *      denies the tools that would);
+ *      denies the tools that would, the worker list and remote_spawn);
  *   3. make the worktree (createSpawnWorktree, as main does);
  *   4. create the session: `<agent> --session-id <uuid>` with the worker
  *      permission flags (workerLaunchFlags), never the prompt: the prompt is
@@ -73,7 +76,7 @@ export interface HeadlessStarterDeps {
   links: { get(linkId: string): A2aLinkRecordV1 | undefined };
   /** The link is stored `started` and still being made (spawn-links.json `committed`). */
   activationOwed(linkId: string): boolean;
-  starts: Pick<HeadlessStartStore, 'get' | 'list' | 'bySession' | 'add' | 'update' | 'remove'>;
+  starts: Pick<HeadlessStartStore, 'get' | 'list' | 'phaseOfLink' | 'phaseOfSession' | 'add' | 'update' | 'remove'>;
   /** Null until the daemon's session RPCs exist. */
   sessions: () => HeadlessSessionPort | null;
   worktrees: {
@@ -111,6 +114,8 @@ export class A2aHeadlessStarter {
   start(hostId: HostId, spawnId: string): Promise<void> {
     const k = `${hostId}:${spawnId}`;
     if (this.stopped || this.inFlight.has(k) || this.timers.has(k) || !this.deps.mode.active()) return Promise.resolve();
+    // Only an approved request is started (one decided, expired or claimed meanwhile is not retried).
+    if (this.deps.requests.get(hostId, spawnId)?.state !== 'approved') return Promise.resolve();
     if (!this.deps.sessions()) {
       this.retryLater(k, hostId, spawnId, 'the session service is not up yet');
       return Promise.resolve();
@@ -129,13 +134,13 @@ export class A2aHeadlessStarter {
 
   /** Any link changed: a start whose link ended loses its session. */
   onLinkTransition(link: A2aLinkRecordV1): void {
-    if (TERMINAL_LINK.has(link.state) && this.deps.starts.list().some((r) => r.linkId === link.linkId && r.phase === 'started')) void this.reconcile();
+    if (TERMINAL_LINK.has(link.state) && this.deps.starts.phaseOfLink(link.linkId) === 'started') void this.reconcile();
   }
 
   /** A session died or was closed: the start it ran ends (its link breaks). */
   onSessionGone(sessionId: string): void {
-    const rec = this.deps.starts.bySession(sessionId);
-    if (rec && rec.phase !== 'ended') void this.reconcile();
+    const phase = this.deps.starts.phaseOfSession(sessionId);
+    if (phase && phase !== 'ended') void this.reconcile();
   }
 
   /** Settle every record (see the file comment). Runs one at a time. */
@@ -195,11 +200,16 @@ export class A2aHeadlessStarter {
     this.deps.log('info', `[headless] spawn ${rec.spawnId} from ${rec.hostId}: ended; worktree kept at ${rec.worktreePath ?? '(none)'}`);
   }
 
-  /** Session and worktree of a start that did not finish go, then its record. A step that fails keeps the record (tried again). */
+  /**
+   * Session and worktree of a start that did not finish go, then its record.
+   * The worktree only when this start recorded making it: a `remote-<spawnId>`
+   * that was there before (another start's kept work) is never touched. A
+   * step that fails keeps the record (tried again).
+   */
   private async takeBack(rec: HeadlessStartRecordV1, sessions: HeadlessSessionPort, why: string): Promise<void> {
     this.deps.log('warn', `[headless] spawn ${rec.spawnId} from ${rec.hostId}: taken back (${why})`);
     await sessions.destroy(rec.sessionId);
-    await this.deps.worktrees.remove({ repoPath: rec.repoPath, spawnId: rec.spawnId });
+    if (rec.worktreePath) await this.deps.worktrees.remove({ repoPath: rec.repoPath, spawnId: rec.spawnId });
     this.deps.starts.remove(rec.hostId, rec.spawnId);
   }
 
@@ -263,7 +273,8 @@ export class A2aHeadlessStarter {
     const undo = async (code: 'folder-not-allowed' | 'failed', why: string): Promise<void> => {
       this.deps.log('warn', `[headless] spawn ${spawnId} from ${hostId}: not started (${code}): ${why}`);
       try {
-        await this.takeBack(rec, sessions, why);
+        const current = this.deps.starts.get(hostId, spawnId) ?? rec;
+        await this.takeBack(rec.worktreePath && !current.worktreePath ? { ...current, worktreePath: rec.worktreePath } : current, sessions, why);
       } catch (err) {
         this.deps.log('warn', `[headless] spawn ${spawnId}: left for the next reconcile: ${errMsg(err)}`);
       }
@@ -280,13 +291,15 @@ export class A2aHeadlessStarter {
     try {
       this.deps.starts.update(hostId, spawnId, { worktreePath: made.worktreePath, cwd: made.cwd });
     } catch (err) {
+      // Made by this start, so it goes, recorded or not.
+      rec.worktreePath = made.worktreePath;
       return undo('failed', `the worktree was not recorded: ${errMsg(err)}`);
     }
     if (!this.deps.mode.active()) return undo('failed', 'headless mode was turned off');
 
     // The worktree is a folder nobody opened here: without the first-run env
     // Claude Code stops on its folder-trust prompt, as a fan-out worker would.
-    const command = `${stem} --session-id ${rec.agentSessionId} ${workerLaunchFlags(claim.permissionMode)}`;
+    const command = `${stem} --session-id ${rec.agentSessionId} ${workerLaunchFlags(claim.permissionMode, HEADLESS_EXTRA_DISALLOWED_TOOLS)}`;
     try {
       await sessions.create({ sessionId: rec.sessionId, workspaceId: rec.workspaceId, cwd: made.cwd, agentBin, command, env: firstRunEnvForAgent(stem) });
       this.deps.starts.update(hostId, spawnId, { phase: 'created' });

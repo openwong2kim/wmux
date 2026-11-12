@@ -23,7 +23,7 @@ import { isIsoString, isPlainObject, isSafeId, loadStore, storeUnavailable, type
  */
 
 export const HEADLESS_STARTS_FILE = 'headless-starts.json';
-/** Records kept at most (ended ones included; they name a worktree on disk). */
+/** Records kept at most; past it the oldest ended one is dropped (its worktree stays on disk). */
 export const HEADLESS_STARTS_MAX = 1000;
 
 export type HeadlessStartPhase = 'prepared' | 'created' | 'started' | 'ended';
@@ -98,8 +98,15 @@ export class HeadlessStartStore {
     return rec ? structuredClone(rec) : undefined;
   }
 
-  bySession(sessionId: string): HeadlessStartRecordV1 | undefined {
-    for (const rec of this.records.values()) if (rec.sessionId === sessionId) return structuredClone(rec);
+  /** The phase of the start that runs in `sessionId`, if any (no copy made). */
+  phaseOfSession(sessionId: string): HeadlessStartPhase | undefined {
+    for (const rec of this.records.values()) if (rec.sessionId === sessionId) return rec.phase;
+    return undefined;
+  }
+
+  /** The phase of the start that made `linkId`, if any (no copy made). */
+  phaseOfLink(linkId: string): HeadlessStartPhase | undefined {
+    for (const rec of this.records.values()) if (rec.linkId === linkId) return rec.phase;
     return undefined;
   }
 
@@ -113,8 +120,14 @@ export class HeadlessStartStore {
     if (!clean) throw new Error('headless start: invalid record');
     const k = key(clean.hostId, clean.spawnId);
     if (this.records.has(k)) throw new Error(`headless start ${clean.spawnId}: already recorded`);
-    if (this.records.size >= HEADLESS_STARTS_MAX) throw new Error(`headless starts: ${HEADLESS_STARTS_MAX} are recorded already`);
     const next = new Map(this.records);
+    // Full: the oldest ended start makes room (its worktree stays on disk, only no longer listed).
+    if (next.size >= HEADLESS_STARTS_MAX) {
+      const oldest = [...next.entries()].filter(([, r]) => r.phase === 'ended')
+        .sort(([, a], [, b]) => Date.parse(a.endedAt ?? a.startedAt) - Date.parse(b.endedAt ?? b.startedAt))[0];
+      if (!oldest) throw new Error(`headless starts: ${HEADLESS_STARTS_MAX} are recorded already`);
+      next.delete(oldest[0]);
+    }
     next.set(k, clean);
     this.save(next);
   }

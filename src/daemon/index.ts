@@ -3112,9 +3112,13 @@ function registerRpcHandlers(
   // The panes a headless remote start runs its agent in (a2aRemote/headlessStarter.ts).
   // The launcher is looked up on the PATH agents run with (the login shell's,
   // plus ~/.local/bin and the other per-user fallbacks) and the spawn is
-  // pinned to it, as a phone-created pane's is (webPaneSpawn); the persisted
-  // line is the plain one. Kept alive with no client attached (remoteDurable).
+  // pinned to it, as a phone-created pane's is (webPaneSpawn). Kept alive with
+  // no client attached (remoteDurable). The agent's line is the spawn's only:
+  // what is persisted, and what a recovery after a restart would run, is a
+  // line that says the agent ended, so a restart never brings an agent back
+  // without its task (headless reconcile then ends that session).
   const shellQuotable = (s: string): boolean => !/['\n\r\0]/.test(s);
+  const HEADLESS_REPLAY_LINE = "echo 'wmux: this agent was started for another PC and ended when the daemon restarted.'";
   headlessSessionsRef = {
     resolveAgent: async (agent) => {
       const row = agentRow(agent);
@@ -3129,7 +3133,7 @@ function registerRpcHandlers(
       const space = command.indexOf(' ');
       const launch = `/usr/bin/env PATH='${agentPath}' '${agentBin}'${space < 0 ? '' : command.slice(space)}`;
       await createSessionRpc(
-        { id: sessionId, exec: { command }, cwd, env: { ...base, ...extra, PATH: agentPath } },
+        { id: sessionId, exec: { command: HEADLESS_REPLAY_LINE }, cwd, env: { ...base, ...extra, PATH: agentPath } },
         { execLaunchCommand: launch, remoteDurable: true },
       );
     },
@@ -9191,6 +9195,8 @@ async function shutdown(
   // Best-effort — must never block the shutdown path.
   try { lanLinkServerRef?.dispose(); } catch { /* best effort */ }
   try { void a2aDeliveryRef?.stop(); } catch { /* best effort */ }
+  // No headless start begins while the daemon goes down (its retries would only fail).
+  headlessStarterRef?.stop();
   try { a2aServerRef?.dispose(); } catch { /* best effort */ }
   try { a2aDiscoverRef?.dispose(); } catch { /* best effort */ }
   paneSupervisorRef = null;
@@ -10695,8 +10701,8 @@ async function main(): Promise<void> {
         if (!a2aDelivery) throw new Error('messages between PCs are not carried this run');
         a2aDelivery.outbox.enqueue(hostId, envelope);
       },
-      // Nothing is shown or started before the app has caught up with its panes (headless: no app to wait for).
-      appReady: () => headlessMode.active() || a2aExposedPanes.isReconciled(),
+      // Nothing is shown or started before the app has caught up with its panes (headless mode does not wait for it).
+      appReady: () => a2aExposedPanes.isReconciled(),
       headless: () => headlessMode.active(),
       liveSpawns: (hostId) => a2aStarter?.liveCount(hostId) ?? 0,
       onChange: (hostId, spawnId, state) => {
