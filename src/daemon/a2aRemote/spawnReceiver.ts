@@ -967,7 +967,42 @@ async function agentOnPath(agent: AgentSlug): Promise<boolean> {
   return false;
 }
 
-type RpcHandler = (params: Record<string, unknown>) => Promise<unknown>;
+type RpcHandler = (params: Record<string, unknown>, ctx?: { clientId: string }) => Promise<unknown>;
+
+/** Key-order-independent equality of two JSON values. */
+function sameJson(a: unknown, b: unknown): boolean {
+  const canon = (v: unknown): unknown => (v && typeof v === 'object' && !Array.isArray(v)
+    ? Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, canon((v as Record<string, unknown>)[k])]))
+    : Array.isArray(v) ? v.map(canon) : v);
+  return JSON.stringify(canon(a)) === JSON.stringify(canon(b));
+}
+
+/**
+ * The first PC a policy saved from outside the app names, in `hosts` or in a
+ * rule, that is not paired with this one and that the saved policy does not
+ * already name the same way. A rule or an allow for an unpaired id would
+ * apply the moment that id pairs. Entries the saved policy already holds pass
+ * unchanged, so a policy read and written back still saves. Anything not
+ * shaped like a policy passes here; the store refuses it.
+ */
+export function unpairedHostNamed(raw: unknown, previous: A2aSpawnPolicyV1, isPaired: (hostId: string) => boolean): string | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const p = raw as { hosts?: unknown; rules?: unknown };
+  const hosts = p.hosts && typeof p.hosts === 'object' && !Array.isArray(p.hosts) ? p.hosts as Record<string, unknown> : {};
+  const rules = Array.isArray(p.rules) ? p.rules : [];
+  const ids = new Set<string>(Object.keys(hosts));
+  for (const r of rules) if (r && typeof r === 'object' && typeof (r as { hostId?: unknown }).hostId === 'string') ids.add((r as { hostId: string }).hostId);
+  const prevHosts = previous.hosts as Record<string, unknown>;
+  for (const id of ids) {
+    if (isPaired(id)) continue;
+    if (id in hosts && !(Object.prototype.hasOwnProperty.call(prevHosts, id) && sameJson(hosts[id], prevHosts[id]))) return id;
+    const known = previous.rules.filter((r) => r.hostId === id);
+    for (const r of rules) {
+      if ((r as { hostId?: unknown })?.hostId === id && !known.some((k) => sameJson(k, r))) return id;
+    }
+  }
+  return null;
+}
 
 /** The machine-local policy RPCs (`wmux.internal`). */
 export function registerSpawnRpc(
@@ -977,11 +1012,22 @@ export function registerSpawnRpc(
     requests: Pick<SpawnRequestStore, 'summaries'>;
     /** A saved policy: tell the PCs it concerns what they may ask for now. */
     onSaved?: (previous: A2aSpawnPolicyV1) => void;
+    /**
+     * Whether a caller is the app, and whether a PC is paired with this one.
+     * A save from outside the app may not name a PC that is not paired
+     * (`unpairedHostNamed`). Without it, every caller saves as the app does.
+     */
+    outsideApp?: { isApp: (clientId: string) => boolean; isPaired: (hostId: string) => boolean };
   },
 ): void {
   onRpc(A2A_SPAWN_RPC.policyGet, async () => ({ policy: deps.policy.get() }));
-  onRpc(A2A_SPAWN_RPC.policySet, async (params) => {
+  onRpc(A2A_SPAWN_RPC.policySet, async (params, ctx) => {
     const previous = deps.policy.get();
+    const outside = deps.outsideApp;
+    if (outside && !outside.isApp(ctx?.clientId ?? '')) {
+      const unpaired = unpairedHostNamed(params['policy'], previous, outside.isPaired);
+      if (unpaired) return { ok: false, error: `${unpaired} is not paired with this PC` };
+    }
     const res = await deps.policy.set(params['policy']);
     if (res.ok) deps.onSaved?.(previous);
     return res;

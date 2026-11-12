@@ -19,7 +19,7 @@ vi.mock('fs', () => ({
   readFileSync: (...args: unknown[]) => readFileSyncMock(...args),
 }));
 
-import { resolveSpawnedByVersion } from '../daemon';
+import { resolveSpawnedByVersion, withoutAppSpawnedMarker } from '../daemon';
 import { isDaemonOlder } from '../../../main/daemon/daemonReplacement';
 
 describe('resolveSpawnedByVersion — installed-layout regression (#1019 review)', () => {
@@ -62,5 +62,13 @@ describe('resolveSpawnedByVersion — installed-layout regression (#1019 review)
     // reads this file's prose.
     const verdict = isDaemonOlder({ spawnedByVersion: '0.0.0' }, '3.46.0', 1);
     expect(verdict.older).toBe(true);
+  });
+});
+
+describe('withoutAppSpawnedMarker', () => {
+  it('drops the desktop app\'s launch marker a CLI run from a wmux pane may have inherited, and nothing else', () => {
+    const env = { PATH: '/bin', WMUX_APP_SPAWNED_DAEMON: '1', WMUX_DATA_SUFFIX: '-x' };
+    expect(withoutAppSpawnedMarker(env)).toEqual({ PATH: '/bin', WMUX_DATA_SUFFIX: '-x' });
+    expect(env.WMUX_APP_SPAWNED_DAEMON).toBe('1');
   });
 });

@@ -73,6 +73,7 @@ import { createDaemonLogWriter } from './logWriter';
 import { DaemonSessionManager, type ManagedSession } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
+import { applyAppHostAtBoot, registerClientIdentify, takeAppSpawnedMarker } from './appHostMarker';
 import { SessionPipe } from './SessionPipe';
 import { WebTerminalServer } from './web/WebTerminalServer';
 import { SessionAuthorizationExpiredError } from './web/WebTerminalServer';
@@ -159,7 +160,7 @@ import { gitRunner } from '../main/a2aRemote/spawnWorktree';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STREAM_PING, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STREAM_PING, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -1265,6 +1266,10 @@ initDaemonLogSink(wmuxDir);
 // as older; the gate falls back to the stale banner instead of destruction).
 const SPAWNED_BY_VERSION: string =
   process.env[ENV_KEYS.SPAWNED_BY_VERSION] || 'unknown';
+
+// Whether the desktop app's launcher started this daemon. Read once and taken
+// out of the environment, so nothing this daemon starts carries it on.
+const APP_SPAWNED: boolean = takeAppSpawnedMarker(process.env);
 
 // The release this daemon's own code belongs to, for `wmux daemon status
 // --json`. The bundle sits at `<root>/daemon-bundle/index.js` in a dev checkout
@@ -5093,16 +5098,7 @@ function registerRpcHandlers(
     });
   }
 
-  pipeServer.onRpc('daemon.client.identify', async (params, ctx) => {
-    const role = typeof params['role'] === 'string' ? params['role'] : '';
-    if (role !== 'main') return { ok: false };
-    // Keep classification as the first side effect. New clients no longer rely
-    // on synchronous handler completion for correctness — they retry subscribe
-    // after this reply settles — but doing the cheap mark first still minimizes
-    // the refusal window for every caller.
-    pipeServer.markFirstParty(ctx.clientId);
-    return { ok: true };
-  });
+  registerClientIdentify(pipeServer, wmuxDir, (message) => log('warn', message));
 
   // Pushed events are opt-in (issue #659). A client that never calls this reads
   // nothing but replies to its own requests, so "write a request, read one line
@@ -9653,6 +9649,7 @@ async function main(): Promise<void> {
     pushSender.notify(buildTurnFailedPushPayload(sessionId, failure), { collapseId: turnFailedPushCollapseId(sessionId) });
   };
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
+  applyAppHostAtBoot(pipeServer, wmuxDir, APP_SPAWNED);
   // N4 — main folds these into one notice per agent and account, and drops it
   // when any pane or run of that account is seen to work. Nothing about the
   // account beyond its folder is sent. A loss makes the login gate forget the
@@ -10781,7 +10778,7 @@ async function main(): Promise<void> {
     a2aServerRef = a2aServer;
     // A discovery window ends with the app connection that opened it.
     pipeServer.onClientClose((clientId) => a2aServer.discovery.clientGone(clientId));
-    const onA2aRpc = (method: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void =>
+    const onA2aRpc = (method: string, handler: (params: Record<string, unknown>, ctx: { clientId: string }) => Promise<unknown>): void =>
       pipeServer.onRpc(method, handler);
     const a2aRemoteRpc = registerA2aRemoteRpc(onA2aRpc, {
       controller: a2aRemoteController,
@@ -10794,7 +10791,16 @@ async function main(): Promise<void> {
     // An outgoing discovery request ends with the app connection that made it, or with the daemon.
     a2aDiscoverRef = a2aRemoteRpc.discover;
     pipeServer.onClientClose((clientId) => a2aRemoteRpc.discover.clientGone(clientId));
-    registerSpawnRpc(onA2aRpc, { policy: a2aSpawnPolicy, requests: a2aSpawnRequests, onSaved: (previous) => a2aSpawn.sendTargets(previous) });
+    registerSpawnRpc(onA2aRpc, {
+      policy: a2aSpawnPolicy,
+      requests: a2aSpawnRequests,
+      onSaved: (previous) => a2aSpawn.sendTargets(previous),
+      outsideApp: {
+        isApp: (clientId) => pipeServer.isFirstParty(clientId),
+        isPaired: (hostId) => (isHostId(hostId) && a2aRemoteHosts.get(hostId) !== undefined)
+          || a2aPeers.list().some((p) => p.hostId === hostId && !p.revokedAt),
+      },
+    });
     // Starting a conversation this PC received: main makes the worktree and the pane, the daemon places the files.
     registerContinueRpc(onA2aRpc, {
       receiver: a2aContinue,

@@ -1142,6 +1142,11 @@ export const ENV_KEYS = {
   // a daemon-spawned PTY, so a conditional (??=) injection would inherit the
   // OLD daemon's version and poison the staleness gate.
   SPAWNED_BY_VERSION: 'WMUX_SPAWNED_BY_VERSION',
+  // Set to '1' only by the desktop app's own launcher deps (main/daemon/
+  // launcher.ts), scrubbed by the shared launcher core for every other caller,
+  // and read then removed by the daemon at load: a daemon the app spawned
+  // refuses the daemon-only pairing calls from its first request.
+  APP_SPAWNED_DAEMON: 'WMUX_APP_SPAWNED_DAEMON',
 } as const;
 
 /** Id prefix every orchestrator brain pty is minted with (ClaudePtyBrainAdapter).

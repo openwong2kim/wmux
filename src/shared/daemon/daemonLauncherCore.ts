@@ -58,6 +58,13 @@ export interface DaemonLauncherDeps {
   /** Stamped into `ENV_KEYS.SPAWNED_BY_VERSION` — see the call site below for why this must never be empty. */
   resolveSpawnedByVersion(): string;
   /**
+   * The desktop app's own launcher only: stamp `ENV_KEYS.APP_SPAWNED_DAEMON`
+   * so the daemon knows the app runs on this host from its first request.
+   * Any other caller (`wmux daemon start`) leaves it unset, and an inherited
+   * value is removed.
+   */
+  appSpawned?: boolean;
+  /**
    * Ask whether to clean up and spawn over a PID whose liveness could not be
    * verified. Returning `false` takes the existing "refuse" branch — the
    * daemon is a stateful process holding live PTYs, so a headless caller must
@@ -932,6 +939,8 @@ function spawnDaemon(
     // itself runs inside a daemon-spawned PTY (wmux-in-wmux dogfood), and an
     // inherited stale version would poison the staleness gate.
     env[ENV_KEYS.SPAWNED_BY_VERSION] = deps.resolveSpawnedByVersion();
+    if (deps.appSpawned === true) env[ENV_KEYS.APP_SPAWNED_DAEMON] = '1';
+    else delete env[ENV_KEYS.APP_SPAWNED_DAEMON];
 
     // Shared by both launch mechanisms once a process exists: readiness poll
     // plus fast-fail on an early exit.
