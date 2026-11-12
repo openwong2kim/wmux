@@ -4,8 +4,8 @@
 
 The native text snapshot is faster and uses less peak memory in the measured
 synthetic workloads. xterm remains the default. The experiment now has an opt-in
-[text delivery path with fallback](rust-text-backend.md) as well as shadow
-comparison. ANSI remains on xterm. Team-mode CLI/MCP memory is a
+[text delivery path with fallback](rust-text-backend.md). (A shadow comparison
+mode was used during the experiment and has since been removed.) ANSI remains on xterm. Team-mode CLI/MCP memory is a
 separate workstream delegated to Claude; these results do not predict its savings.
 
 ## Implemented
@@ -29,23 +29,11 @@ inside the crate. No RPC or WebSocket schema changed, and no extra daemon proces
 was added. Fork provenance and maintenance obligations are recorded in
 [WMUX-PATCH.md](../core/wmux-term/vendor/alacritty_terminal/WMUX-PATCH.md).
 
-In `WMUX_RUST_SNAPSHOT=shadow` mode, `HeadlessSnapshot` invokes `SnapshotShadow`: xterm produces the
-real result, live-drain bytes are captured once, and Rust is compared using the
-same input. The returned result is always xterm's original object. Native loading
-failures, mismatches and unsupported states do not replace that result. Disabled
-by default; the module is not loaded when disabled. Diagnostic counters remain
-internal and contain no terminal text.
-
-To opt a separately launched experimental daemon into comparison:
-
-```sh
-export WMUX_RUST_SNAPSHOT=shadow
-export WMUX_RUST_SNAPSHOT_MODULE="$PWD/core/wmux-term/dist/native-core/index.cjs"
-```
-
-Shadow comparison deliberately adds CPU and memory work. It is a correctness
-instrument, not a memory-saving setting. It rejects oversized inputs/grids and
-caps live capture. The running user application was not restarted or opted in.
+The `WMUX_RUST_SNAPSHOT=shadow` comparison mode (xterm authoritative, Rust
+compared on the same input) has been removed. A daemon started with that value
+now selects the default snapshot backend for its terminal engine. Parity is
+checked by the Rust parity suites (`src/daemon/__tests__/Rust*Parity.test.ts`)
+and `bench/rust-snapshot-parity.ts`.
 
 ## Correctness
 
@@ -71,10 +59,9 @@ are not all represented in the fingerprint. Native blink support remains a
 known mismatch. Integration tests deliberately trigger it and verify that
 xterm's blinking output still reaches the caller.
 
-Production-function shadow tests verify matching text/ANSI, live-drain capture,
-missing-module fallback and mismatch diagnostics. Unit tests cover disabled
-loading, result identity, one-time drain consumption and capture overflow.
-This is not a full packaged-daemon RPC or multi-client soak test.
+Backend selection tests (`TextSnapshotBackend.test.ts`, `AnsiSnapshotBackend.test.ts`)
+cover fallback, live-drain routing and missing-module handling. This is not a
+full packaged-daemon RPC or multi-client soak test.
 
 PTY checks cover UTF-8, resize via `stty size`, exit status 7, lossless delayed
 consumption of 2 MiB, kill/reap, close/reap, twenty spawn/exit cycles, missing
@@ -118,7 +105,7 @@ node scripts/rust-terminal-core-bench.mjs out/rust-terminal-core/new-verify.json
 node scripts/rust-snapshot-verify.mjs out/rust-terminal-core/new-ansi.json
 node_modules/.bin/electron core/wmux-term/spike/native-electron.cjs
 npx tsc -p tsconfig.daemon.json --noEmit
-npx vitest run src/daemon/__tests__/SnapshotShadow.test.ts src/daemon/__tests__/HeadlessSnapshot.test.ts src/daemon/__tests__/RingBuffer.test.ts
+npx vitest run src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/HeadlessSnapshot.test.ts src/daemon/__tests__/RingBuffer.test.ts
 cargo clippy --manifest-path core/wmux-term/Cargo.toml --features native-core --lib -- -D warnings
 cargo test --manifest-path core/wmux-term/Cargo.toml --no-default-features
 cargo check --manifest-path core/wmux-term/Cargo.toml --target wasm32-unknown-unknown

@@ -181,8 +181,9 @@ beside the bundle (the server runtime, and the `dist/wmux-native` that
 `core/wmux-term/dist/native-core` build is used only when named. The older
 `WMUX_RUST_SNAPSHOT_MODULE` remains available for snapshot-only experiments.
 
-`WMUX_RUST_SNAPSHOT` independently overrides snapshot selection: `text`, `shadow`,
-`off`, and the separately experimental `ansi`/`all` modes. The combined Rust flag
+`WMUX_RUST_SNAPSHOT` independently overrides snapshot selection: `text`, `off`,
+and the separately experimental `ansi`/`all` modes. The removed `shadow` value
+reads as unset. The combined Rust flag
 alone selects eligible immutable text requests; ANSI and live tee requests keep
 xterm. ANSI delivery refuses known unsupported state: overline, OSC, saved
 cursors, character-set/tab configuration, clipped wide-character edges and margins.

@@ -21,7 +21,7 @@ import { nativeCorePath } from '../../shared/nativeTerminalCore';
 import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
 import { generateSnapshotUnqueued, type SnapshotRequest } from '../HeadlessSnapshot';
 import { generateRustSnapshot } from '../RustSnapshot';
-import { snapshotTestTerminal, writeTerminal } from '../snapshotFingerprint';
+import { snapshotTestTerminal, writeTerminal } from './_xtermTestTerminal';
 
 export const modulePath = nativeCorePath();
 export const available = fs.existsSync(modulePath);

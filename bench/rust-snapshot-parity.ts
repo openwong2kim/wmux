@@ -3,9 +3,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { generateRustSnapshot } from '../src/daemon/RustSnapshot';
 import type { Terminal } from '@xterm/headless';
-import { snapshotTestTerminal, writeTerminal } from '../src/daemon/snapshotFingerprint';
-import { generateSnapshot, generateTextSnapshot, type SnapshotRequest } from '../src/daemon/HeadlessSnapshot';
-import { getSnapshotShadowDiagnostics } from '../src/daemon/SnapshotShadow';
+import { snapshotTestTerminal, writeTerminal } from '../src/daemon/__tests__/_xtermTestTerminal';
+import { generateSnapshot, type SnapshotRequest } from '../src/daemon/HeadlessSnapshot';
 
 const cases = [
   ['\x1b[5mblink\x1b[25m plain', 20], ['\x1b[6mrapid\x1b[0m reset', 20],
@@ -122,35 +121,23 @@ async function main() {
   assert.deepEqual(margins, { ok: false, reason: 'margins' });
   // Keep the existing fallback contract as the reference, too.
   assert.equal((await generateSnapshot({ cols: 20, rows: 6, initial: Buffer.from('ready') })).ok, true);
-  const shadowBefore = getSnapshotShadowDiagnostics();
+  // The native compatibility fork retains blink in cells and cursor state.
+  const blink = await generateRustSnapshot({ cols: 20, rows: 6, initial: Buffer.from('\x1b[5mblink') }, 'ansi');
+  assert(blink.ok && 'payload' in blink);
+  const restored = snapshotTestTerminal(20, 6);
+  try { await writeTerminal(restored, blink.payload); assert(restored.buffer.active.getLine(0)?.getCell(0)?.isBlink()); }
+  finally { restored.dispose(); }
+  // A native module that cannot load still leaves a working snapshot (the xterm fallback).
   const originalModule = process.env.WMUX_RUST_SNAPSHOT_MODULE;
-  process.env.WMUX_RUST_SNAPSHOT = 'shadow';
+  process.env.WMUX_RUST_SNAPSHOT = 'ansi';
+  process.env.WMUX_RUST_SNAPSHOT_MODULE = '/definitely/missing/wmux-native.node';
   try {
-    const ordinary = await generateSnapshot({ cols: 20, rows: 6, initial: Buffer.from('\x1b[31mready') });
-    assert(ordinary.ok);
-    assert.equal(getSnapshotShadowDiagnostics().last?.status, 'matched');
-    let drains = 0;
-    const text = await generateTextSnapshot({ cols: 20, rows: 6, initial: Buffer.from('hello'),
-      drainQueue: () => ++drains === 1 ? [Buffer.from(' world')] : [] });
-    assert(text.ok && text.rows[0].text === 'hello world');
-    assert.equal(drains, 2);
-    assert.equal(getSnapshotShadowDiagnostics().last?.status, 'matched');
-    // The native compatibility fork now retains blink in cells and cursor state.
-    const blink = await generateSnapshot({ cols: 20, rows: 6, initial: Buffer.from('\x1b[5mblink') });
-    assert(blink.ok);
-    assert.equal(getSnapshotShadowDiagnostics().last?.status, 'matched');
-    const restored = snapshotTestTerminal(20, 6);
-    try { await writeTerminal(restored, blink.payload); assert(restored.buffer.active.getLine(0)?.getCell(0)?.isBlink()); }
-    finally { restored.dispose(); }
-    process.env.WMUX_RUST_SNAPSHOT_MODULE = '/definitely/missing/wmux-native.node';
     assert((await generateSnapshot({ cols: 20, rows: 6, initial: Buffer.from('still works') })).ok);
-    assert.equal(getSnapshotShadowDiagnostics().last?.status, 'error');
   } finally {
     delete process.env.WMUX_RUST_SNAPSHOT;
     process.env.WMUX_RUST_SNAPSHOT_MODULE = originalModule;
   }
-  const shadowAfter = getSnapshotShadowDiagnostics();
   console.log(JSON.stringify({ passed: results.filter(r => 'initial' in r ? r.initial && r.continued && r.returned : r.fallbackVerified).length,
-    supported: results.filter(r => r.supported).length, total: results.length, shadowBefore, shadowAfter, results }));
+    supported: results.filter(r => r.supported).length, total: results.length, results }));
 }
 main().catch(e => { console.error(e); process.exitCode = 1; });

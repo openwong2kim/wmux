@@ -22,10 +22,10 @@ automatically. Changing an app's environment does not reconfigure a daemon that
 is already running. Use an isolated `WMUX_DATA_SUFFIX` when evaluating; no
 running user instance was restarted or opted in during this work.
 
-For comparison-only validation use `WMUX_RUST_SNAPSHOT=shadow`: xterm remains
-authoritative and Rust is compared with it. This adds work. Unset the variable
-or set it to `off` before starting the daemon to use xterm exclusively. Unknown
-mode values also leave the xterm path selected.
+Unset the variable or set it to `off` before starting the daemon to use xterm
+exclusively. Unknown mode values also leave the xterm path selected, except the
+removed comparison mode `shadow`, which reads as unset (the default for the
+terminal engine).
 
 ## Fallback contract
 
@@ -53,8 +53,8 @@ mode values also leave the xterm path selected.
   RPC/WebSocket schema is introduced.
 
 The fallback handles reported errors, not an undetected semantic mismatch or a
-fatal native process crash. The finite parity corpus and shadow mode remain
-important adoption gates; this is not a default-on release decision.
+fatal native process crash. The finite parity corpus remains an
+important adoption gate; this is not a default-on release decision.
 
 `getTextSnapshotBackendDiagnostics()` exposes internal success, fallback and
 skip counters, the last backend/reason and the current module failure state.
