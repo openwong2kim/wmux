@@ -26,6 +26,7 @@ import {
 } from '../../shared/a2aSpawn';
 import { INVITE_CODE_RE, isHostId, parseInvite, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId } from '../../shared/a2aRemote';
 import { AGENT_ROWS, agentLauncherStem, agentRow, type AgentSlug } from '../../shared/agentIdentity';
+import { NOT_FIRST_PARTY } from '../../shared/daemonFirstParty';
 import { isNestingMarker } from '../../shared/envFilter';
 import { getExecEnv } from '../../shared/execEnv';
 import { FANOUT_WORKER_PERMISSION_MODES, isFanoutWorkerPermissionMode } from '../../shared/workerLaunch';
@@ -139,7 +140,9 @@ async function daemonCall(method: RpcMethod, params: Record<string, unknown>, on
   if (!response.ok) {
     console.error(/^Unknown method/.test(response.error ?? '')
       ? 'Error: pairing between PCs is not available in this wmux daemon (it is older, or that part failed to start; see its log).'
-      : `Error: ${response.error}`);
+      : response.code === NOT_FIRST_PARTY || (response.error ?? '').startsWith(`${NOT_FIRST_PARTY}:`)
+        ? 'Error: this wmux daemon takes pairing and remote spawn settings only from the desktop app. On a PC that runs the desktop app, pairing and the allow rules are managed from the app\'s Remote page.'
+        : `Error: ${response.error}`);
     process.exit(1);
   }
   return response.result ?? {};
@@ -548,6 +551,8 @@ async function remoteAllow(args: string[], jsonMode: boolean): Promise<void> {
   if (!from || !rootArg || !agentArg) fail(ALLOW_USAGE.replace(/^Usage: /, 'usage: '));
   const sub = normalizeSpawnSub(flagValue(args, '--sub'));
   if (sub === null) fail('--sub must be a relative path below the root, without `..`, a drive or a backslash.');
+  // An explicit --sub that names the root itself (`""`, `./`, an empty variable) is a mistake, not a grant of the root.
+  if (sub === '' && hasFlag(args, '--sub')) fail('--sub names no folder below the root. Leave it out to allow the root itself.');
   if (!isSpawnableAgent(agentArg)) {
     const ok = AGENT_ROWS.filter((a) => isSpawnableAgent(a.slug)).map((a) => a.slug).join(', ');
     fail(`${agentArg} cannot be started from another PC. Agents that can: ${ok}.`);
@@ -665,6 +670,7 @@ async function remoteRevoke(args: string[], jsonMode: boolean): Promise<void> {
   if (subArg !== undefined && !rootArg) fail('--sub goes with --root.');
   const sub = subArg === undefined ? null : normalizeSpawnSub(subArg);
   if (sub === null && subArg !== undefined) fail('--sub must be a relative path below the root, without `..`, a drive or a backslash.');
+  if (sub === '') fail('--sub names no folder below the root. Leave it out to revoke the rules for the whole folder.');
   const [pcs, firstRead] = await Promise.all([knownPcs(), readPolicy()]);
   let first = firstRead;
   const inPolicy = [...Object.keys(first.hosts), ...first.rules.map((r) => r.hostId)];

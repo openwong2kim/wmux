@@ -288,6 +288,26 @@ describe('wmux remote allow', () => {
     expect(sets).toHaveLength(0);
   });
 
+  it('refuses an explicit --sub that names the root itself', async () => {
+    for (const sub of ['', './', './/.']) {
+      expect(await run('allow', allowArgs(['--sub', sub]))).toBe(1);
+    }
+    expect(printed()).toContain('--sub names no folder below the root');
+    expect(sets).toHaveLength(0);
+    expect(askSpy).not.toHaveBeenCalled();
+  });
+
+  it('maps a not_first_party refusal to where the settings are managed', async () => {
+    daemonRpc.mockResolvedValue({
+      id: 'x', ok: false, code: 'not_first_party',
+      error: "not_first_party: a2a.remote.spawnPolicy.get is accepted only from the app's own connection",
+    });
+    expect(await run('allowed', [])).toBe(1);
+    const out = printed();
+    expect(out).toContain("managed from the app's Remote page");
+    expect(out).not.toContain('accepted only from');
+  });
+
   it('--json keeps stdout to the result: the statement and prompt go to stderr', async () => {
     expect(await run('allow', ['--from', 'desk', '--root', repo, '--agent', 'claude'], true)).toBe(0);
     expect(logSpy).toHaveBeenCalledTimes(1);
@@ -404,6 +424,13 @@ describe('wmux remote revoke', () => {
     expect(await run('revoke', ['--from', DESK, '--root'])).toBe(1);
     expect(sets).toHaveLength(0);
     expect(store.hosts[DESK]).toEqual({ allowed: true });
+  });
+
+  it('refuses an explicit --sub that names the root itself', async () => {
+    expect(await run('revoke', ['--from', DESK, '--root', repo, '--sub', './'])).toBe(1);
+    expect(printed()).toContain('--sub names no folder below the root');
+    expect(sets).toHaveLength(0);
+    expect(store.rules).toHaveLength(4);
   });
 
   it('exits 1 when nothing matches', async () => {
