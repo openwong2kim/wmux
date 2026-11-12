@@ -205,9 +205,15 @@ With headless mode on:
   agent is given other input on the host during its turn, when its turn is
   interrupted or ends on an error, or when the agent ends before answering
   (its session ends, its link ends, headless mode is turned off, or the
-  daemon restarts). A usage-limit pause is waited out. In this version only
-  the first task is typed in; messages the asking PC sends afterwards are not
-  yet, and an answer larger than 32 KiB fails the task.
+  daemon restarts). A usage-limit pause is waited out. Limits in this
+  version:
+  - only the first task is typed in; messages the asking PC sends afterwards
+    are not yet;
+  - an answer larger than 32 KiB fails the task;
+  - images sent with the task are not passed to the agent;
+  - an agent that stops on a question (a permission prompt, say) waits there,
+    and the task stays open until the agent ends: use a permission mode that
+    lets it work on its own, such as `auto`.
 - A request no rule matches is refused at once; nothing waits for an
   approval. The asking PC sees `not-allowed` when it may not ask this host,
   `agent-not-allowed` when it may but not for that agent, and
