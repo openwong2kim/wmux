@@ -119,6 +119,8 @@ export interface SpawnReceiverDeps {
   onResult?: (hostId: HostId, result: A2aSpawnResultV1) => Promise<boolean>;
   /** The app has caught up with this daemon (it knows which panes exist). Until then a request waits. Default: ready. */
   appReady?: () => boolean;
+  /** This daemon starts agents itself (headless mode): only a rule approves, no card waits. Default: off. */
+  headless?: () => boolean;
   /** Live links remote starts made here: of `hostId`, or of every PC. Default: none. */
   liveSpawns?: (hostId?: HostId) => number;
   /** A request moved to a state main acts on (the `A2A_SPAWN_EVENT` broadcast). */
@@ -809,9 +811,12 @@ export class A2aSpawnReceiver {
     if (this.now() > Date.parse(req.expiresAt)) return 'expired';
     if (!this.deps.start) return 'not-supported';
     if (this.overCaps(hostId)) return 'rate-limited';
+    // Headless (no app, owner opted in): a rule or nothing, and never `manual` (no person at the pane).
+    const headless = this.deps.headless?.() === true;
     // Nothing is shown or started before the app has caught up: the request waits for it, until it expires.
-    if (this.deps.appReady && !this.deps.appReady()) throw new AppNotReady('the app is not ready');
+    if (!headless && this.deps.appReady && !this.deps.appReady()) throw new AppNotReady('the app is not ready');
     const ruled = now.approval === 'allow-list' && now.rules.some((r) => spawnRuleMatches(r, hostId, root.id, req.agent, sub));
+    if (headless) return now.permissionMode === 'manual' ? 'not-supported' : ruled ? 'approved' : 'not-allowed';
     return ruled ? 'approved' : 'awaiting';
   }
 

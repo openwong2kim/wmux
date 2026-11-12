@@ -1,0 +1,366 @@
+// The daemon's own start of a remote spawn on a host without the app, on fake
+// ports: what each step makes, what each failure takes back, and what a
+// reconcile does with every record it finds (a start cut short, one whose
+// agent or link is gone, one of an earlier daemon run).
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { A2aLinkRecordV1, HostId } from '../../../shared/a2aRemote';
+import type { A2aSpawnClaimResult, A2aSpawnStepResult } from '../../../shared/a2aSpawn';
+import { workerLaunchFlags } from '../../../shared/workerLaunch';
+import type { SpawnWorktreeResult } from '../../../main/a2aRemote/spawnWorktree';
+import { HeadlessStartStore } from '../headlessStartStore';
+import { A2aHeadlessStarter, type HeadlessSessionInput, type HeadlessSessionPort, type HeadlessStarterDeps } from '../headlessStarter';
+import type { SpawnRequestRecordV1 } from '../spawnRequestStore';
+
+const HOST = '11111111-1111-4111-8111-111111111111' as HostId;
+const SPAWN = 'sp-0123abcd-4567-89ab-cdef-0123456789ab';
+const LINK = '22222222-2222-4222-8222-222222222222';
+const PROMPT = 'fix the build';
+
+let dir: string;
+let starts: HeadlessStartStore;
+let active: boolean;
+let claimResult: A2aSpawnClaimResult;
+let startedResult: A2aSpawnStepResult;
+let request: Partial<SpawnRequestRecordV1> | undefined;
+let link: A2aLinkRecordV1 | undefined;
+let calls: string[];
+let created: HeadlessSessionInput[];
+let live: Set<string>;
+let failed: string[];
+let gone: Array<{ workspaceId: string; paneId: string }>;
+let removedTrees: string[];
+let worktree: SpawnWorktreeResult;
+let sessionPort: HeadlessSessionPort | null;
+let createThrows: boolean;
+let agentBin: string | null;
+let owed: boolean;
+
+function makeSessions(): HeadlessSessionPort {
+  return {
+    resolveAgent: async () => agentBin,
+    create: async (input) => {
+      calls.push('create');
+      if (createThrows) throw new Error('pty refused');
+      created.push(input);
+      live.add(input.sessionId);
+    },
+    alive: (id) => live.has(id),
+    destroy: async (id) => {
+      calls.push(`destroy:${id}`);
+      live.delete(id);
+    },
+  };
+}
+
+function makeStarter(over: Partial<HeadlessStarterDeps> = {}): A2aHeadlessStarter {
+  return new A2aHeadlessStarter({
+    mode: { active: () => active },
+    receiver: {
+      claim: async () => {
+        calls.push('claim');
+        return claimResult;
+      },
+      started: async (_h, _s, end) => {
+        calls.push(`started:${end.workspaceId}:${end.paneId}`);
+        if (startedResult.ok) request = { state: 'decided', code: 'started', linkId: LINK };
+        return startedResult;
+      },
+      failed: (_h, _s, code) => {
+        failed.push(code);
+        return { ok: true };
+      },
+    },
+    requests: { get: () => request as SpawnRequestRecordV1 | undefined },
+    links: { get: (id) => (link && link.linkId === id ? link : undefined) },
+    activationOwed: () => owed,
+    starts,
+    sessions: () => sessionPort,
+    worktrees: {
+      create: async () => {
+        calls.push('worktree');
+        return worktree;
+      },
+      remove: async (input) => void removedTrees.push(input.spawnId),
+    },
+    paneGone: async (workspaceId, paneId) => void gone.push({ workspaceId, paneId }),
+    abandon: () => void calls.push('abandon'),
+    runId: 'run-1',
+    log: () => undefined,
+    retryMs: 60_000,
+    ...over,
+  });
+}
+
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'headless-start-'));
+  starts = new HeadlessStartStore({ dir, scheduleHarden: () => undefined });
+  active = true;
+  claimResult = { ok: true, claim: { hostId: HOST, hostName: 'PC-A', spawnId: SPAWN, agent: 'claude', repoPath: '/repo', sub: 'apps', permissionMode: 'auto' } };
+  startedResult = { ok: true };
+  request = { state: 'starting' };
+  link = { linkId: LINK, state: 'active' } as A2aLinkRecordV1;
+  calls = [];
+  created = [];
+  live = new Set();
+  failed = [];
+  gone = [];
+  removedTrees = [];
+  worktree = { ok: true, worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps', branch: `wmux/remote/${SPAWN}` };
+  sessionPort = makeSessions();
+  createThrows = false;
+  agentBin = '/home/u/.local/bin/claude';
+  owed = false;
+});
+afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+describe('headless start', () => {
+  it('claims, records, makes the worktree and the session, then reports the session it made', async () => {
+    await makeStarter().start(HOST, SPAWN);
+    expect(calls).toEqual(['claim', 'worktree', 'create', expect.stringMatching(/^started:hl-0123abcd-4567-89ab-cdef-0123456789ab:hl-[0-9a-f-]{36}$/)]);
+    const rec = starts.get(HOST, SPAWN)!;
+    expect(rec).toMatchObject({ phase: 'started', linkId: LINK, lineage: `remote-spawn:${HOST}`, runId: 'run-1', worktreePath: '/wt/remote-x', cwd: '/wt/remote-x/apps' });
+    expect(created).toHaveLength(1);
+    const [input] = created;
+    expect(input.sessionId).toBe(rec.sessionId);
+    expect(input.cwd).toBe('/wt/remote-x/apps');
+    expect(input.agentBin).toBe('/home/u/.local/bin/claude');
+    // The worker flags and the pinned conversation id; never the prompt.
+    expect(input.command).toBe(`claude --session-id ${rec.agentSessionId} ${workerLaunchFlags('auto')}`);
+    expect(JSON.stringify(input)).not.toContain(PROMPT);
+    expect(failed).toEqual([]);
+  });
+
+  it('starts nothing while headless mode is off', async () => {
+    active = false;
+    await makeStarter().start(HOST, SPAWN);
+    expect(calls).toEqual([]);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('a claim the receiver refused (and answered) is left alone', async () => {
+    claimResult = { ok: false, error: 'not-allowed', code: 'not-allowed' };
+    await makeStarter().start(HOST, SPAWN);
+    expect(calls).toEqual(['claim']);
+    expect(failed).toEqual([]);
+    expect(starts.list()).toEqual([]);
+  });
+
+  for (const [name, set] of [
+    ['an agent other than Claude Code', () => { claimResult = { ...claimResult, claim: { ...(claimResult as { claim: object }).claim, agent: 'codex' } } as A2aSpawnClaimResult; }],
+    ['the manual permission mode', () => { claimResult = { ...claimResult, claim: { ...(claimResult as { claim: object }).claim, permissionMode: 'manual' } } as A2aSpawnClaimResult; }],
+    ['a launcher that is not found', () => { agentBin = null; }],
+  ] as const) {
+    it(`${name} is refused before anything is made`, async () => {
+      set();
+      await makeStarter().start(HOST, SPAWN);
+      expect(calls).toEqual(['claim']);
+      expect(failed).toEqual(['failed']);
+      expect(starts.list()).toEqual([]);
+    });
+  }
+
+  it('a worktree that cannot be made answers its code and keeps no record', async () => {
+    worktree = { ok: false, code: 'folder-not-allowed', detail: 'not a repository top level' };
+    await makeStarter().start(HOST, SPAWN);
+    expect(failed).toEqual(['folder-not-allowed']);
+    expect(calls.filter((c) => c === 'create')).toEqual([]);
+    expect(removedTrees).toEqual([SPAWN]);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('a session that does not start takes the worktree back', async () => {
+    createThrows = true;
+    await makeStarter().start(HOST, SPAWN);
+    expect(failed).toEqual(['failed']);
+    expect(removedTrees).toEqual([SPAWN]);
+    expect(live.size).toBe(0);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('a `started` the receiver refuses ends the session and takes the worktree back', async () => {
+    startedResult = { ok: false, error: 'expired' };
+    await makeStarter().start(HOST, SPAWN);
+    expect(live.size).toBe(0);
+    expect(calls.some((c) => c.startsWith('destroy:hl-'))).toBe(true);
+    expect(removedTrees).toEqual([SPAWN]);
+    expect(failed).toEqual(['failed']);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('headless mode turned off during the start takes back what it made', async () => {
+    const starter = makeStarter({
+      worktrees: {
+        create: async () => {
+          active = false;
+          return worktree;
+        },
+        remove: async (input) => void removedTrees.push(input.spawnId),
+      },
+    });
+    await starter.start(HOST, SPAWN);
+    expect(created).toEqual([]);
+    expect(removedTrees).toEqual([SPAWN]);
+    expect(failed).toEqual(['failed']);
+  });
+
+  it('a take-back that fails keeps the record for the next reconcile', async () => {
+    createThrows = true;
+    let removes = 0;
+    const starter = makeStarter({
+      worktrees: {
+        create: async () => worktree,
+        remove: async () => {
+          removes += 1;
+          if (removes === 1) throw new Error('busy');
+        },
+      },
+    });
+    await starter.start(HOST, SPAWN);
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('prepared');
+    request = { state: 'decided', code: 'failed' };
+    await starter.reconcile();
+    expect(removes).toBe(2);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('waits for the session service instead of refusing', async () => {
+    sessionPort = null;
+    const starter = makeStarter();
+    await starter.start(HOST, SPAWN);
+    expect(calls).toEqual([]);
+    starter.stop();
+  });
+});
+
+describe('headless reconcile', () => {
+  const record = (over: Partial<Parameters<HeadlessStartStore['add']>[0]> = {}): void => starts.add({
+    v: 1, hostId: HOST, spawnId: SPAWN, agent: 'claude', repoPath: '/repo', sessionId: 'hl-s1', workspaceId: 'hl-w1',
+    agentSessionId: '33333333-3333-4333-8333-333333333333', lineage: `remote-spawn:${HOST}`, runId: 'run-1',
+    phase: 'started', worktreePath: '/wt/remote-x', linkId: LINK, startedAt: new Date().toISOString(), ...over,
+  });
+
+  it('a start cut between the worktree and the session (then a restart) leaves no worktree, session or record', async () => {
+    record({ phase: 'prepared', linkId: undefined, runId: 'run-0' });
+    request = { state: 'decided', code: 'failed' };
+    await makeStarter().reconcile();
+    expect(removedTrees).toEqual([SPAWN]);
+    expect(calls).toContain('destroy:hl-s1');
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('a created start whose request is still starting is refused and taken back', async () => {
+    record({ phase: 'created', linkId: undefined });
+    live.add('hl-s1');
+    request = { state: 'starting' };
+    await makeStarter().reconcile();
+    expect(live.size).toBe(0);
+    expect(failed).toEqual(['failed']);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('a live start stays', async () => {
+    record();
+    live.add('hl-s1');
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    await makeStarter().reconcile();
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('started');
+    expect(calls).toEqual([]);
+  });
+
+  it('an agent of an earlier daemon run (relaunched by recovery) is ended, its link broken, its worktree kept', async () => {
+    record({ runId: 'run-0' });
+    live.add('hl-s1');
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    await makeStarter().reconcile();
+    expect(live.has('hl-s1')).toBe(false);
+    expect(gone).toEqual([{ workspaceId: 'hl-w1', paneId: 'hl-s1' }]);
+    expect(calls).toContain('abandon');
+    expect(removedTrees).toEqual([]);
+    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'ended', worktreePath: '/wt/remote-x', endedAt: expect.any(String) });
+  });
+
+  it('a session that died ends its start', async () => {
+    record();
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    const starter = makeStarter();
+    starter.onSessionGone('hl-s1');
+    await starter.reconcile();
+    expect(gone).toEqual([{ workspaceId: 'hl-w1', paneId: 'hl-s1' }]);
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+  });
+
+  it('a link that ended ends its session', async () => {
+    record();
+    live.add('hl-s1');
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    link = { linkId: LINK, state: 'revoked' } as A2aLinkRecordV1;
+    const starter = makeStarter();
+    starter.onLinkTransition(link);
+    await starter.reconcile();
+    expect(live.has('hl-s1')).toBe(false);
+    expect(gone).toEqual([]);
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+  });
+
+  it('the app attaching (headless off) ends every start', async () => {
+    record();
+    live.add('hl-s1');
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    active = false;
+    await makeStarter().reconcile();
+    expect(live.has('hl-s1')).toBe(false);
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+  });
+
+  it('a start stored `started` whose record was not updated is finished, not taken back', async () => {
+    record({ phase: 'created', linkId: undefined });
+    live.add('hl-s1');
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    await makeStarter().reconcile();
+    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', linkId: LINK });
+    expect(removedTrees).toEqual([]);
+  });
+
+  it('a start whose link is gone (its PC removed) is ended', async () => {
+    record();
+    live.add('hl-s1');
+    request = undefined;
+    link = undefined;
+    await makeStarter().reconcile();
+    expect(live.has('hl-s1')).toBe(false);
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+  });
+
+  it('a start whose link is still being made stays', async () => {
+    record();
+    live.add('hl-s1');
+    request = { state: 'decided', code: 'started', linkId: LINK };
+    link = undefined;
+    owed = true;
+    await makeStarter().reconcile();
+    expect(live.has('hl-s1')).toBe(true);
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('started');
+  });
+
+  it('an agent that exits as soon as it starts is not reported started', async () => {
+    const starter = makeStarter({
+      sessions: () => ({ ...makeSessions(), alive: () => false }),
+    });
+    await starter.start(HOST, SPAWN);
+    expect(calls.some((c) => c.startsWith('started:'))).toBe(false);
+    expect(failed).toEqual(['failed']);
+    expect(removedTrees).toEqual([SPAWN]);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('an ended start whose session is somehow back is ended again', async () => {
+    record({ phase: 'ended', endedAt: new Date().toISOString() });
+    live.add('hl-s1');
+    await makeStarter().reconcile();
+    expect(live.has('hl-s1')).toBe(false);
+    expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
+  });
+});

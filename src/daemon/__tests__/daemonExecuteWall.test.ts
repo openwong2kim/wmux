@@ -67,3 +67,30 @@ describe('daemon execute-wall — process-boundary invariant (LanLink C1)', () =
     expect(violations).toEqual([]);
   });
 });
+
+// Headless remote spawn: the daemon starts and feeds remote agents itself on a
+// host without the app. Under src/daemon/a2aRemote only its two files may name
+// the pane and prompt functions, which index.ts hands them; every other file
+// there stays a transport that cannot open a pane or type into one.
+const A2A_REMOTE_DIR = path.join(DAEMON_DIR, 'a2aRemote');
+const PANE_OWNERS: ReadonlySet<string> = new Set(['headlessStarter.ts', 'headlessDelivery.ts']);
+const PANE_FUNCTIONS = /\b(createSession\w*|destroySession\w*|createWebPane|deliverPromptToSession\w*|deliverScheduledPrompt|ptyProcess|sessionManager|HeadlessSessionPort|HeadlessPromptPort)\b|\bsessions\(\)/;
+
+describe('daemon execute-wall — headless remote spawn', () => {
+  it('only the headless starter and delivery under a2aRemote name the pane and prompt functions', () => {
+    const named = collectTsFiles(A2A_REMOTE_DIR)
+      .filter((file) => PANE_FUNCTIONS.test(fs.readFileSync(file, 'utf-8')))
+      .map((file) => path.basename(file))
+      .filter((name) => !PANE_OWNERS.has(name));
+    expect(named).toEqual([]);
+  });
+
+  it('the headless files import no pane or prompt machinery themselves (it is injected)', () => {
+    for (const name of PANE_OWNERS) {
+      const file = path.join(A2A_REMOTE_DIR, name);
+      if (!fs.existsSync(file)) continue;
+      const imports = fs.readFileSync(file, 'utf-8').split('\n').filter((l) => /^import\b/.test(l)).join('\n');
+      expect(imports).not.toMatch(/DaemonSessionManager|sessionPromptDelivery|from '\.\.\/index'|web\/webPaneEnv|node-pty/);
+    }
+  });
+});

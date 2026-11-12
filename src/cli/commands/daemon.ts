@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { spawn } from 'child_process';
 import { childStdio } from '../consoleStdio';
@@ -12,7 +12,12 @@ import {
 import type { RpcResponse } from '../../shared/rpc';
 import type { DaemonStatusJson } from '../../shared/sshPcContract';
 import { ENV_KEYS } from '../../shared/constants';
-import { DAEMON_SUPERVISED_ENV } from '../../daemon/config';
+import { DAEMON_SUPERVISED_ENV, getWmuxDir } from '../../daemon/config';
+import { APP_ATTACHED_FILE } from '../../daemon/appHostMarker';
+import { headlessFlagPath } from '../../daemon/a2aRemote/headlessMode';
+import { HEADLESS_STARTS_FILE, coerceHeadlessStart, type HeadlessStartRecordV1 } from '../../daemon/a2aRemote/headlessStartStore';
+import { isNestingMarker } from '../../shared/envFilter';
+import { policyIo } from './remote';
 import {
   defaultDaemonServiceDeps,
   installDaemonService,
@@ -325,8 +330,104 @@ async function daemonAnswers(): Promise<boolean> {
   }
 }
 
-export async function handleDaemon(sub: string | undefined, _rest: string[], jsonMode: boolean): Promise<void> {
+// ─── Headless mode: on | off | status ───────────────────────────────────────
+
+export interface HeadlessStatus {
+  /** The daemon starts remote agents itself. */
+  inEffect: boolean;
+  optedIn: boolean;
+  appAttached: boolean;
+  /** Why it is not in effect, when it is not. */
+  reason?: string;
+  /** Agents a remote start runs here now. */
+  running: number;
+  /** Worktrees of starts that ended, kept with their branches (the agent's work). */
+  leftovers: string[];
+}
+
+/** What `wmux daemon headless status` reports, read from the daemon's data dir. */
+export function headlessStatus(wmuxDir: string = getWmuxDir()): HeadlessStatus {
+  const a2aDir = join(wmuxDir, 'a2a');
+  const appAttached = existsSync(join(wmuxDir, APP_ATTACHED_FILE));
+  const optedIn = existsSync(headlessFlagPath(a2aDir));
+  let starts: HeadlessStartRecordV1[] = [];
+  try {
+    const raw = JSON.parse(readFileSync(join(a2aDir, HEADLESS_STARTS_FILE), 'utf8')) as { starts?: unknown };
+    starts = (Array.isArray(raw.starts) ? raw.starts : []).flatMap((r) => coerceHeadlessStart(r) ?? []);
+  } catch {
+    // No start recorded yet (or the file is being replaced): nothing to list.
+  }
+  const reason = appAttached
+    ? 'the desktop app has used this install; it starts remote agents here'
+    : !optedIn ? 'not turned on (wmux daemon headless on)' : undefined;
+  return {
+    inEffect: reason === undefined,
+    optedIn,
+    appAttached,
+    ...(reason ? { reason } : {}),
+    running: starts.filter((r) => r.phase === 'started').length,
+    // Only those still on disk: the owner may have removed some already.
+    leftovers: starts.flatMap((r) => (r.phase === 'ended' && r.worktreePath && existsSync(r.worktreePath) ? [r.worktreePath] : [])),
+  };
+}
+
+function headlessFail(message: string): never {
+  console.error(`Error: ${message}`);
+  process.exit(1);
+}
+
+/** `wmux daemon headless on | off | status`; `wmuxDir` is the daemon's data dir (a test seam). */
+export async function runHeadless(verb: string | undefined, jsonMode: boolean, wmuxDir: string = getWmuxDir()): Promise<void> {
+  const flag = headlessFlagPath(join(wmuxDir, 'a2a'));
+  const say = jsonMode ? console.error : console.log;
+  if (verb === 'status') {
+    const st = headlessStatus(wmuxDir);
+    if (jsonMode) {
+      console.log(JSON.stringify(st, null, 2));
+      return;
+    }
+    console.log(st.inEffect ? 'Headless mode: on. PCs with an allow rule can start agents here with no person approving.' : `Headless mode: not in effect: ${st.reason}.`);
+    console.log(`Agents started remotely, running: ${st.running}`);
+    console.log(`Worktrees of ended starts, kept: ${st.leftovers.length}`);
+    for (const p of st.leftovers) console.log(`  ${p}`);
+    return;
+  }
+  if (verb === 'off') {
+    if (existsSync(flag)) unlinkSync(flag);
+    if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: false }, null, 2));
+    else console.log('Headless mode: off. No new remote start here; agents started remotely end within a minute (their worktrees are kept).');
+    return;
+  }
+  if (verb !== 'on') headlessFail('Usage: wmux daemon headless on | off | status');
+  // A person decides this, in a terminal outside wmux: an agent may not turn it on for itself.
+  const env = process.env;
+  const marker = env.WMUX_PTY_ID ? 'WMUX_PTY_ID' : Object.keys(env).find((k) => env[k] !== undefined && isNestingMarker(k));
+  if (marker) headlessFail(`\`wmux daemon headless on\` is not run from an agent session or a wmux pane (${marker} is set). A person must run it, in a terminal outside wmux.`);
+  if (existsSync(join(wmuxDir, APP_ATTACHED_FILE))) headlessFail('the desktop app has used this install; it starts remote agents here. Headless mode is only for a host without the app.');
+  if (!policyIo.stdinIsTty()) headlessFail('`wmux daemon headless on` asks for a typed confirmation. Run it in a terminal.');
+  if (existsSync(flag)) {
+    if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: true, changed: false }, null, 2));
+    else console.log('Headless mode is on already.');
+    return;
+  }
+  say([
+    'Headless mode: this daemon starts agents itself for other PCs.',
+    'Every PC with an allow rule here (see `wmux remote allowed`) can then start an agent on this host with no person approving each start.',
+    'Each agent runs in a new git worktree of the allowed folder, in the permission mode set with `wmux remote allow`, as the account this daemon runs as.',
+    'A request no rule matches is refused at once. Turn it off with `wmux daemon headless off`.',
+  ].join('\n'));
+  const answer = (await policyIo.ask('Type yes to turn it on: ', jsonMode)).trim().toLowerCase();
+  if (answer !== 'yes') headlessFail('not confirmed; nothing was changed.');
+  mkdirSync(join(wmuxDir, 'a2a'), { recursive: true, mode: 0o700 });
+  writeFileSync(flag, `${new Date().toISOString()}\n`, { mode: 0o600 });
+  if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: true, changed: true }, null, 2));
+  else console.log('Headless mode: on.');
+}
+
+export async function handleDaemon(sub: string | undefined, rest: string[], jsonMode: boolean): Promise<void> {
   switch (sub) {
+    case 'headless':
+      return runHeadless(rest[0], jsonMode);
     case 'start':
       return runStart(jsonMode);
     case 'status':
@@ -343,7 +444,7 @@ export async function handleDaemon(sub: string | undefined, _rest: string[], jso
       if (jsonMode) {
         console.log(JSON.stringify({ ok: false, error: `unknown subcommand: ${sub ?? '(none)'}` }, null, 2));
       } else {
-        console.error(`Usage: wmux daemon start | stop | status | run | install-service | uninstall-service`);
+        console.error(`Usage: wmux daemon start | stop | status | run | install-service | uninstall-service | headless on|off|status`);
       }
       process.exitCode = 1;
   }
