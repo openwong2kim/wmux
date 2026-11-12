@@ -14,7 +14,7 @@ vi.mock('../tailscale', async (importOriginal) => ({
   startWebTransport: startWebTransportMock,
 }));
 
-import { handleWeb } from '../commands/web';
+import { handleWeb, withoutToken } from '../commands/web';
 
 const TOKEN = '6f1c2d3e-0000-4000-8000-0123456789ab';
 const LAN = `http://192.168.1.20:7681/?token=${TOKEN}`;
@@ -117,6 +117,20 @@ describe('wmux web: the access token is hidden unless --show-token', () => {
     out = [];
     await handleWeb(['--status', '--show-token'], true);
     expect(JSON.parse(out.join('\n'))).toEqual(info());
+  });
+
+  it('keeps an address `new URL` cannot read, without the token', () => {
+    const odd = `https://fe80::1/?token=${TOKEN}`;
+    expect(withoutToken({ token: TOKEN, urls: [odd, LAN] }).urls).toEqual(['https://fe80::1/', 'http://192.168.1.20:7681/']);
+  });
+
+  it.each([[''], [null]])('marks nothing hidden for an empty token (%j)', (token) => {
+    expect(withoutToken({ running: true, token, urls: [] })).toEqual({ running: true, token, urls: [] });
+  });
+
+  it('names the status read in the hint, which does not restart the server', async () => {
+    await start(['--new-token'], false, info());
+    expect(out.join('\n')).toContain('`wmux web --status --show-token`');
   });
 
   it('says nothing about a token the daemon did not report', async () => {

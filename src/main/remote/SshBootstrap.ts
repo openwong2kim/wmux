@@ -15,7 +15,8 @@
 //     processes); the upgrade then waits for the user;
 //   - install next to a wmux desktop app on the host (they would share
 //     ~/.wmux and the desktop's daemon gate would kill the runtime's daemon);
-//   - parse `wmux web --status --json`, which prints the operator token.
+//   - parse `wmux web --status --json`, which prints the operator token
+//     with --show-token.
 
 import * as crypto from 'crypto';
 import * as fs from 'fs';
@@ -195,7 +196,8 @@ exec "$R/${RUNTIME_NODE_REL}" "$R/${RUNTIME_CLI_REL}" "$@"
 
 /**
  * CLI_SCRIPT with stdout thrown away ON THE HOST. `wmux web` starts print the
- * server's status, operator token included; it must never reach this laptop.
+ * server's status (the operator token with --show-token); it must never reach
+ * this laptop.
  */
 export const CLI_QUIET_SCRIPT = `
 V="$1"; shift

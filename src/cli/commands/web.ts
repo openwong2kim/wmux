@@ -541,18 +541,24 @@ export function deviceCredentialWarning(info: Pick<WebInfo, 'deviceCredentials'>
  * left out). `tokenHidden` says a token was there.
  */
 export function withoutToken(result: Record<string, unknown>): Record<string, unknown> {
-  if (!('token' in result)) return result;
+  const token = result['token'];
+  if (typeof token !== 'string' || token === '') return result;
   const rest = { ...result };
   delete rest['token'];
   const urls = Array.isArray(result['urls'])
-    ? result['urls'].flatMap((url) => {
+    ? result['urls'].flatMap((raw) => {
+        const url = String(raw);
+        let bare: string;
         try {
-          const parsed = new URL(String(url));
+          const parsed = new URL(url);
           parsed.searchParams.delete('token');
-          return [parsed.toString()];
+          bare = parsed.toString();
         } catch {
-          return [];
+          // Not a URL `new URL` reads (an unbracketed IPv6 host): cut the
+          // parameter out of the text instead.
+          bare = url.replace(`?token=${token}`, '').replace(`&token=${token}`, '');
         }
+        return bare.includes(token) ? [] : [bare];
       })
     : undefined;
   return { ...rest, ...(urls ? { urls } : {}), tokenHidden: true };
@@ -656,8 +662,8 @@ function report(
   }
   if (info.tokenHidden) {
     console.log('');
-    console.log('  The access token is hidden. Add --show-token to print it and the');
-    console.log('  addresses that sign in with it.');
+    console.log('  The access token is hidden. `wmux web --status --show-token` prints');
+    console.log('  it and the addresses that sign in with it, without a restart.');
   }
 
   // Pairing code: far easier to key in on a phone than the 36-char UUID token.

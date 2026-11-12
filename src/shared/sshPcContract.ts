@@ -61,7 +61,8 @@ export const DEVICE_GRANT_CREATE_WORKSPACE = 'canCreateWorkspace' as const;
 /**
  * `wmux web pair --name <laptop> --kind desktop --json`.
  * Calls the daemon's pairStart and prints ONLY this object. The desktop never
- * parses `wmux web --status --json`, which carries the operator token.
+ * parses `wmux web --status --json`, which carries the operator token with
+ * --show-token.
  * Never restarts the web server and never changes its flags (a transport
  * change revokes every paired device on the host).
  */
