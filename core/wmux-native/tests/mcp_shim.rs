@@ -376,7 +376,7 @@ fn expected_handshake(child: &Child, middle: &str) -> String {
 }
 
 #[test]
-fn the_handshake_then_raw_bytes_both_ways_and_stdin_eof_exits_0() {
+fn the_handshake_then_lines_both_ways_and_stdin_eof_exits_0() {
     let sb = Sandbox::new();
     // JS trim: the BOM and the line end go, the inner text stays.
     sb.write_token(" \u{feff}tok-π\r\n");
@@ -401,15 +401,20 @@ fn the_handshake_then_raw_bytes_both_ways_and_stdin_eof_exits_0() {
     );
     ack(&mut conn);
 
-    // No framing: a partial line and non-UTF-8 bytes pass through untouched.
+    // Lines, non-UTF-8 bytes included, pass through untouched; a partial
+    // line waits for its newline.
     let mut stdin = child.stdin.take().unwrap();
-    let up = b"{\"jsonrpc\":\"2.0\"\x00\xff partial";
-    stdin.write_all(up).unwrap();
+    stdin.write_all(b"{\"jsonrpc\":\"2.0\"\x00\xff partial").unwrap();
     stdin.flush().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    stdin.write_all(b" end\n").unwrap();
+    stdin.flush().unwrap();
+    let up = b"{\"jsonrpc\":\"2.0\"\x00\xff partial end\n";
     assert_eq!(read_exact(&mut conn, up.len()), up);
-    let down = b"\xfe\x00down\n no newline yet";
-    conn.write_all(down).unwrap();
-    assert_eq!(recv_exact(&out, down.len()), down);
+    conn.write_all(b"\xfe\x00down\n no newline yet").unwrap();
+    assert_eq!(recv_exact(&out, 7), b"\xfe\x00down\n");
+    conn.write_all(b"\n").unwrap();
+    assert_eq!(recv_exact(&out, 16), b" no newline yet\n");
 
     drop(stdin);
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
@@ -924,11 +929,13 @@ fn broker_bundle() -> Result<PathBuf, String> {
     }
 }
 
-/// On macOS and Linux the broker hosts the session and a broker kill ends it.
-/// On Windows it refuses the session (a named pipe gives it no peer pid) and the
-/// full bundle serves it instead.
+/// On macOS and Linux the broker hosts the session, and after a broker kill
+/// the full bundle (the repository's dist/mcp/mcp/entry.js beside this target
+/// directory) serves the rest of it. On Windows the broker refuses the session
+/// (a named pipe gives it no peer pid) and the full bundle serves it from the
+/// start.
 #[test]
-fn against_the_real_broker_initialize_list_call_then_a_broker_kill_exits_1() {
+fn against_the_real_broker_initialize_list_call_then_a_broker_kill_hands_over_to_the_bundle() {
     let bundle = match broker_bundle() {
         Ok(p) => p,
         Err(why) if std::env::var_os("WMUX_REQUIRE_BROKER_E2E").is_some() => panic!("{why}"),
@@ -995,9 +1002,17 @@ fn against_the_real_broker_initialize_list_call_then_a_broker_kill_exits_1() {
 
     broker.0.kill().expect("kill broker");
     let _ = broker.0.wait();
-    assert_eq!(wait_within(&mut shim, WAIT).code(), Some(1));
+    // Nothing was in flight. The bundle took the session over with the
+    // replayed initialize (its reply never reaches the host) and serves the
+    // next call.
+    send(r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"workspace_list","arguments":{}}}"#);
+    let next = recv_line_with(&out, r#""id""#);
+    assert!(next.contains(r#""id":4"#) && next.contains(r#""result""#), "{next}");
+    drop(stdin);
+    assert_eq!(wait_within(&mut shim, WAIT).code(), Some(0));
     let err = err.join().unwrap();
     assert!(err.starts_with("[wmux-mcp-shim] broker connection "), "{err}");
+    assert!(err.contains("[wmux-mcp-shim] running the full server for the rest of the session\n"), "{err}");
 }
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"native-shim-e2e","version":"0"}}}"#;
@@ -1489,10 +1504,37 @@ fn bot_arguments_always_take_the_full_bundle() {
     let _ = wait_within(&mut child, WAIT);
 }
 
-/// Once the session is acknowledged there is no fallback: a drop is exit 1
-/// even with the full bundle beside the binary.
+const STUB_INITIALIZED: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"stub","version":"0"}}}"#;
+
+/// The error a call in flight gets when the broker goes away.
+fn may_have_run(id: &str) -> String {
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32000,\"message\":\"The wmux MCP broker stopped \
+         while this call was in flight. It may have run; it was not retried. Later calls go to a new wmux MCP server.\"}}}}"
+    )
+}
+
+/// A stub broker that hosts the session, answers initialize, takes
+/// `initialized` and a tools/call it never answers, then goes away.
+fn initialize_then_drop_with_a_call_in_flight(stdin: &mut impl Write, out: &Receiver<String>, mut conn: stub::Conn) {
+    read_line(&mut conn);
+    ack(&mut conn);
+    writeln!(stdin, "{INITIALIZE}").unwrap();
+    assert_eq!(read_line(&mut conn), format!("{INITIALIZE}\n"));
+    writeln!(conn, "{STUB_INITIALIZED}").unwrap();
+    assert_eq!(out.recv_timeout(WAIT).expect("the initialize reply"), STUB_INITIALIZED);
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#).unwrap();
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":"call-2","method":"tools/call","params":{{"name":"workspace_list","arguments":{{}}}}}}"#).unwrap();
+    read_line(&mut conn);
+    read_line(&mut conn);
+    drop(conn);
+}
+
+/// After the ack a drop hands the session to a bundle child: the call in
+/// flight gets an error and is not sent again, the bundle gets the cached
+/// initialize (its reply never reaches the host) and serves the next call.
 #[test]
-fn a_drop_after_the_ack_exits_1_without_falling_back() {
+fn a_drop_after_the_ack_hands_the_session_to_a_bundle_child() {
     let sb = Sandbox::new();
     sb.write_token("tok");
     let Some(install) = Install::new(&sb, Layout::Marked) else {
@@ -1501,12 +1543,45 @@ fn a_drop_after_the_ack_exits_1_without_falling_back() {
     let listener = stub::bind(&sb.pipe());
     let mut child = spawn(&mut install.shim(&sb, &[])).expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
-    let mut conn = listener.accept(WAIT);
-    read_line(&mut conn);
-    ack(&mut conn);
-    drop(conn);
+    let out = lines(child.stdout.take().unwrap());
+    let mut stdin = child.stdin.take().unwrap();
+    initialize_then_drop_with_a_call_in_flight(&mut stdin, &out, listener.accept(WAIT));
+    assert_eq!(out.recv_timeout(WAIT).expect("the error"), may_have_run(r#""call-2""#));
+    writeln!(stdin, r#"{{"jsonrpc":"2.0","id":3,"method":"tools/list"}}"#).unwrap();
+    let next = out.recv_timeout(Duration::from_secs(30)).expect("the bundle's reply");
+    assert!(next.contains(r#""id":3"#) && next.contains(r#""tools":["#), "{next}");
+    drop(stdin);
+    assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
+    ends(&out);
+    let err = err.join().unwrap();
+    assert!(
+        err.starts_with(
+            "[wmux-mcp-shim] broker connection closed\n[wmux-mcp-shim] running the full server for the rest of the session\n"
+        ),
+        "{err}"
+    );
+}
+
+/// With no bundle to hand over to, the calls in flight still get their error,
+/// then the shim exits 1.
+#[test]
+fn a_drop_after_the_ack_with_no_bundle_answers_what_was_in_flight_and_exits_1() {
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
+    let listener = stub::bind(&sb.pipe());
+    let mut child = spawn(&mut lone.shim(&sb, &[])).expect("spawn shim");
+    let err = collect(child.stderr.take().unwrap());
+    let out = lines(child.stdout.take().unwrap());
+    let mut stdin = child.stdin.take().unwrap();
+    initialize_then_drop_with_a_call_in_flight(&mut stdin, &out, listener.accept(WAIT));
+    assert_eq!(out.recv_timeout(WAIT).expect("the error"), may_have_run(r#""call-2""#));
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(1));
-    assert_eq!(err.join().unwrap(), "[wmux-mcp-shim] broker connection closed\n");
+    ends(&out);
+    assert_eq!(
+        err.join().unwrap(),
+        format!("[wmux-mcp-shim] broker connection closed\n{}", lone.no_bundle_line())
+    );
 }
 
 /// A refusal longer than one read (the ack reader takes 1 KiB at a time),
