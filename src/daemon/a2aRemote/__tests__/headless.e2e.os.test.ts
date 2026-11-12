@@ -499,8 +499,9 @@ describe('headless remote spawn, two PCs and no app', () => {
     expect(spawnStarter.liveCount()).toBe(0);
     expect(sessions.made).toEqual([]);
     const git = (...args: string[]): string => execFileSync('git', ['-C', path.join(b.dir, 'repo'), ...args], { env: { ...process.env, ...gitEnv }, encoding: 'utf8' });
-    expect(git('worktree', 'list', '--porcelain')).not.toContain(`remote-${spawnId}`);
-    expect(git('branch', '--list', `wmux/remote/${spawnId}`).trim()).toBe('');
+    const tree = headlessTreeId(a.hostId, spawnId);
+    expect(git('worktree', 'list', '--porcelain')).not.toContain(`remote-${tree}`);
+    expect(git('branch', '--list', `wmux/remote/${tree}`).trim()).toBe('');
   }
 
   it('a start cut between the worktree and the session leaves nothing after a restart', async () => {
