@@ -184,10 +184,14 @@ With headless mode on:
 
 - The daemon keeps running while it waits for requests. Without headless
   mode it exits about six minutes after its last client and terminal are
-  gone. It is not started again by itself after a reboot or a crash: start it
-  with `daemon start` as above, or run
-  `"$W/node/bin/node" "$W/resources/cli-bundle/index.js" daemon run` from a
-  service manager, which keeps it in the foreground for the manager to watch.
+  gone. It is not started again by itself after a reboot or a crash: on Linux,
+  `daemon install-service` installs a systemd user unit that starts it at boot
+  (it runs `daemon run`, the foreground entry, for the manager to watch);
+  otherwise start it with `daemon start` as above. `headless on` and
+  `headless status` say this too.
+- While the daemon is down, a PC that asks for an agent here sees its request
+  as sent and waiting. It is started once the daemon is back, unless the
+  request expired first.
 - A request an allow rule matches is started at once: the daemon makes a
   fresh worktree of the folder (branch `wmux/remote/sp-…`, named after the
   asking PC and its spawn id), starts the

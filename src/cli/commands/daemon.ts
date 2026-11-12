@@ -466,6 +466,9 @@ async function appKnown(wmuxDir: string): Promise<boolean> {
   return existsSync(join(wmuxDir, APP_ATTACHED_FILE)) || (await headlessIo.daemonView())?.appAttached === true;
 }
 
+/** Said by `headless on` and `headless status`: an idle daemon stays up now, and what brings it back after a reboot. */
+export const HEADLESS_STAYS_UP = 'While headless mode is on, the daemon stays running when idle. It does not start again by itself after a reboot or a crash: on Linux, `wmux daemon install-service` starts it at boot; otherwise run `wmux daemon start` again.';
+
 function headlessFail(message: string): never {
   console.error(`Error: ${message}`);
   process.exit(1);
@@ -482,6 +485,7 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
       return;
     }
     console.log(st.inEffect ? 'Headless mode: on. PCs with an allow rule can start agents here with no person approving.' : `Headless mode: not in effect: ${st.reason}.`);
+    if (st.inEffect) console.log(HEADLESS_STAYS_UP);
     console.log(`Agents started remotely, running: ${st.running}`);
     for (const r of st.runningStarts) console.log(`  ${r.spawnId} from ${r.hostId}, since ${r.since}${r.worktreePath ? `, in ${r.worktreePath}` : ''}`);
     console.log(`Worktrees of ended starts, kept: ${st.leftovers.length}`);
@@ -537,6 +541,7 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
   writeFileSync(flag, `${new Date().toISOString()}\n`, { mode: 0o600 });
   if (jsonMode) console.log(JSON.stringify({ ok: true, optedIn: true, changed: true }, null, 2));
   else console.log('Headless mode: on.');
+  say(HEADLESS_STAYS_UP);
 }
 
 /**
