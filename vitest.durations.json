@@ -471,7 +471,6 @@
     "src/daemon/__tests__/RingBuffer.geometry.test.ts": 50,
     "src/daemon/__tests__/RingBuffer.test.ts": 90,
     "src/daemon/__tests__/RustSnapshot.test.ts": 50,
-    "src/daemon/__tests__/SnapshotShadow.test.ts": 50,
     "src/daemon/__tests__/StateWriter.scrub.test.ts": 80,
     "src/daemon/__tests__/StateWriter.test.ts": 200,
     "src/daemon/__tests__/TextSnapshotBackend.test.ts": 110,
