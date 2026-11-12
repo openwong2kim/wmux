@@ -34,6 +34,11 @@ export function setClaimStartTimeSource(source: (pid: number) => bigint | null):
   startTimeOf = source;
 }
 
+/** The start time of the process that has `pid` now, as claims are checked against it. */
+export function claimStartTime(pid: number): bigint | null {
+  return startTimeOf(pid);
+}
+
 const refusals = new Map<ClaimRefusal, number>();
 let tcpClaims = 0;
 let peerRead: IdentityClaimsSummary['peerRead'] | null = null;

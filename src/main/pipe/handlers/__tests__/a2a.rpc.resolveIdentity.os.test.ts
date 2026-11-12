@@ -1125,8 +1125,12 @@ describe('a2a.resolve.identity — a claim is taken only from the process it nam
   }
 
   /** Dispatch over a connection whose OS peer is `peer` (pid, and the start time read at accept). */
-  async function resolveAs(params: Record<string, unknown>, peer?: { pid: number; startedAt?: string }): Promise<PeerResult> {
-    const res = await peerRouter().dispatch(
+  async function resolveAs(
+    params: Record<string, unknown>,
+    peer?: { pid: number; startedAt?: string },
+    router: RpcRouter = peerRouter(),
+  ): Promise<PeerResult> {
+    const res = await router.dispatch(
       { id: 'pp', method: 'a2a.resolve.identity', params },
       { externalWire: true, ...(peer && { peerPid: peer.pid }), ...(peer?.startedAt !== undefined && { peerStartedAt: peer.startedAt }) },
     );
@@ -1222,6 +1226,59 @@ describe('a2a.resolve.identity — a claim is taken only from the process it nam
       // Another process, even in the same pane, and no peer at all.
       expect((await resolveAs(params, { pid: 39876, startedAt: '100' })).threadClaim).toBeUndefined();
       expect((await resolveAs(params)).threadClaim).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previous;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('classifies a Codex caller afresh when its pid now belongs to a process that started later', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-reuse-'));
+    const threadId = '019a0000-0000-7000-8000-0000000000de';
+    const digest = (v: string) => createHash('sha256').update(v).digest('hex');
+    const dir = path.join(home, 'wmux-thread-owners');
+    fs.mkdirSync(dir, { recursive: true });
+    const suffix = process.env.WMUX_DATA_SUFFIX || '';
+    const env = {
+      WMUX_PTY_ID: 'daemon-shell', WMUX_WORKSPACE_ID: 'ws-frozen', WMUX_SURFACE_ID: '', WMUX_DATA_SUFFIX: suffix,
+      WMUX_PIPE_NAME: '', WMUX_HOOKS_TO_MAIN: '',
+    };
+    fs.writeFileSync(path.join(dir, `thread-${digest(threadId)}.json`), JSON.stringify({ version: 1, id: threadId, env, nonce: 'n4' }));
+    fs.writeFileSync(path.join(dir, `pane-${digest(JSON.stringify([suffix, 'daemon-shell']))}.json`), JSON.stringify({ id: threadId, nonce: 'n4' }));
+    const previous = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = home;
+    // One router, so its class cache lives across the calls.
+    let cls: 'shared-server' | 'other' = 'shared-server';
+    const router = new RpcRouter();
+    registerA2aRpc(router, () => fakeWindow, makeWorker(), {
+      snapshot: async () => ({ ppidByPid: tree, listeners: [] }),
+      createdAt: () => null,
+      classifyCodexCaller: async () => cls,
+    });
+    const now = new Map(started);
+    setClaimStartTimeSource((pid) => now.get(pid) ?? null);
+    try {
+      // From the process itself: keyed by the start time read at accept.
+      const own = { codexThreadId: threadId, codexCallerPid: 60002 };
+      expect((await resolveAs(own, { pid: 60002, startedAt: '200' }, router)).threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
+      cls = 'other';
+      now.set(60002, 201n);
+      expect((await resolveAs(own, { pid: 60002, startedAt: '201' }, router)).threadClaim).toBeUndefined();
+      // Through the broker: keyed by the start time read at classification.
+      setBrokerIdentitySource(() => ({ pid: 777, startedAt: '900' }));
+      const relayed = { codexThreadId: threadId, codexCallerPid: 60001 };
+      cls = 'shared-server';
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeDefined();
+      cls = 'other';
+      now.set(60001, 301n);
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeUndefined();
+      // No start time: nothing is kept, so every call classifies.
+      now.delete(60001);
+      cls = 'shared-server';
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeDefined();
+      cls = 'other';
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeUndefined();
     } finally {
       if (previous === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previous;

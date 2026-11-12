@@ -53,7 +53,7 @@ import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFr
 import { getHandOutStore, type HandOutStore } from '../../handOut/handOutStore';
 import { isHandOutId } from '../../../shared/handOut';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
-import { checkClaim, claimStillHeld } from './peerPidShadow';
+import { checkClaim, claimStartTime, claimStillHeld, type ClaimVerdict } from './peerPidShadow';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
   isRemoteWorkspaceId,
@@ -692,11 +692,13 @@ export function registerA2aRpc(
   const classifyCodexCaller = opts.classifyCodexCaller ?? (async (pid: number) => classifyMcpParent(await readParentChain(pid)));
   // A shared app-server's MCP child lives as long as the server, so a
   // confirmed answer is kept a minute rather than re-reading argv every call.
-  // 'unknown' is never kept.
-  const codexCallerClass = new Map<number, { cls: McpParentClass; at: number }>();
-  async function isSharedServerChild(pid: number | null): Promise<boolean> {
-    if (pid === null) return false;
-    const hit = codexCallerClass.get(pid);
+  // It is kept under the process's pid and start time, so a later process
+  // given the same pid is classified afresh; with no start time it is not
+  // kept. 'unknown' is never kept.
+  const codexCallerClass = new Map<string, { cls: McpParentClass; at: number }>();
+  async function isSharedServerChild(pid: number, startedAt: string | null): Promise<boolean> {
+    const key = startedAt === null ? null : `${pid}:${startedAt}`;
+    const hit = key === null ? undefined : codexCallerClass.get(key);
     if (hit && Date.now() - hit.at < 60_000) return hit.cls === 'shared-server';
     let cls: McpParentClass = 'unknown';
     try {
@@ -704,11 +706,18 @@ export function registerA2aRpc(
     } catch {
       cls = 'unknown';
     }
-    if (cls !== 'unknown') {
+    if (cls !== 'unknown' && key !== null) {
       if (codexCallerClass.size > 256) codexCallerClass.clear();
-      codexCallerClass.set(pid, { cls, at: Date.now() });
+      codexCallerClass.set(key, { cls, at: Date.now() });
     }
     return cls === 'shared-server';
+  }
+  /** The start time that keys a caller's class: the one read at accept for a
+   *  claim taken from the process itself, else the one the OS reports now. */
+  function classStartTime(pid: number, verdict: ClaimVerdict, ctx: RpcContext | undefined): string | null {
+    if (verdict.ok && verdict.via === 'same') return ctx?.peerStartedAt ?? null;
+    const now = process.platform === 'win32' ? createdAt(pid) : claimStartTime(pid);
+    return now === null ? null : String(now);
   }
   let snapInflight: Promise<PortSnapshot | null> | null = null;
   async function getCoalescedSnapshot(): Promise<PortSnapshot | null> {
@@ -1163,7 +1172,8 @@ export function registerA2aRpc(
       // One call that names the same pid for both is checked (and counted) once.
       const codexVerdict = codexCallerPid == null ? null
         : codexCallerPid === callerPid && callerVerdict ? callerVerdict : checkClaim('codexCallerPid', ctx, codexCallerPid);
-      const sharedServerChild = codexVerdict !== null && codexVerdict.ok && await isSharedServerChild(codexCallerPid);
+      const sharedServerChild = codexCallerPid != null && codexVerdict !== null && codexVerdict.ok
+        && await isSharedServerChild(codexCallerPid, classStartTime(codexCallerPid, codexVerdict, ctx));
       const confirmed = await confirmEntriesConnection();
       if (stillConfirmed(confirmed) && codexCallerPid != null && codexVerdict && claimStillHeld('codexCallerPid', ctx, codexCallerPid, codexVerdict)) {
         threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
