@@ -259,7 +259,31 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
  *      the native layer produced (this class cannot reach that logger).
  *  - 'session:stateChanged' → { id: string, state: DaemonSessionState }
  */
+/**
+ * The listener limit for one event on the daemon's session manager. Every
+ * subscriber is a long-lived part of the daemon that subscribes once at boot
+ * and stays for the daemon's life; none subscribes per session or per
+ * reconnect. The busiest events now:
+ *  - 'session:died' (12): promote bookkeeping, Codex thread-owner cleanup,
+ *    usage-limit holds, folder-trust refusal log, watched prompts, the
+ *    awaiting verifier, the lifecycle broadcast/save, git and port context
+ *    watchers, the detection agreement log, headless remote starts, the pane
+ *    supervisor, the channel wake worker (src/daemon/index.ts, codexThreadOwner.ts);
+ *  - 'session:destroyed' (14): the same subsystems' cleanups, plus the
+ *    tool-refusal tracker and the destroy broadcast.
+ * Node's default of 10 warned (MaxListenersExceededWarning) on every daemon
+ * start without any leak. A new subscriber updates this list and the count in
+ * DaemonSessionManager.listeners.test.ts; the headroom is for that, not for
+ * per-session listeners, which would be a leak.
+ */
+export const SESSION_MANAGER_MAX_LISTENERS = 24;
+
 export class DaemonSessionManager extends EventEmitter {
+  constructor() {
+    super();
+    this.setMaxListeners(SESSION_MANAGER_MAX_LISTENERS);
+  }
+
   private sessions = new Map<string, ManagedSession>();
   private config: DaemonConfig | null = null;
 
