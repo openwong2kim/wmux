@@ -11,12 +11,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DaemonSessionManager } from '../../DaemonSessionManager';
+import { folderTrustRefusal } from '../../folderTrustState';
 import { deliverScheduledPrompt, deliveryInputFence } from '../../sessionPromptDelivery';
 import { buildWebPaneEnv } from '../../web/webPaneEnv';
 import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import type { Task } from '../../../shared/types';
-import { waitFor } from '../../../test-utils/waitFor';
+import { deliberateSleep, waitFor } from '../../../test-utils/waitFor';
 import { HeadlessDelivery } from '../headlessDelivery';
 import { createHeadlessSessions } from '../headlessSessions';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
@@ -47,11 +48,15 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
       "const id = process.argv[process.argv.indexOf('--session-id') + 1];",
       `const file = ${JSON.stringify(transcripts)} + '/' + id + '.jsonl';`,
       "process.stdin.setRawMode(true);",
+      // STUB_DIALOG=start: a permission dialog on screen for a while; =enter: one opens the moment a paste ends.
+      "const dialog = () => process.stdout.write('\\x1b[2J\\x1b[HBash command\\n\\n  uname -s\\n\\nDo you want to proceed?\\n\\u276f 1. Yes\\n  2. No\\n');",
+      "const idle = () => process.stdout.write('\\x1b[2J\\x1b[Hready> ');",
+      "if (process.env.STUB_DIALOG === 'start') { dialog(); setTimeout(() => { idle(); fs.writeFileSync(file + '.cleared', ''); }, 2500); } else idle();",
       "fs.writeFileSync(file + '.ready', '');",
-      "process.stdout.write('ready> ');",
       "let buf = '';",
       "process.stdin.on('data', (d) => {",
       "  buf += d.toString('utf8');",
+      "  if (process.env.STUB_DIALOG === 'enter' && buf.includes('\\x1b[201~') && !buf.includes('\\r')) dialog();",
       "  const m = /\\x1b\\[200~([\\s\\S]*?)\\x1b\\[201~\\r/.exec(buf);",
       "  if (!m) return;",
       "  buf = buf.slice(m.index + m[0].length);",
@@ -79,7 +84,8 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
     for (const m of managers.splice(0)) m.disposeAll();
   });
 
-  it('a task typed into a real session reaches the agent once, and its answer comes back as the reply', async () => {
+  /** A stub agent in a real session, and the delivery wired to it as index.ts wires the real one. */
+  async function harness(stubDialog?: 'start' | 'enter') {
     const mgr = new DaemonSessionManager();
     managers.push(mgr);
     const sessions = createHeadlessSessions({
@@ -100,10 +106,11 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
     const workspaceId = `hl-${crypto.randomUUID()}`;
     await sessions.create({
       sessionId, workspaceId, cwd: path.join(root, 'wt'), agentBin: stub,
-      command: `claude --session-id ${uuid} --permission-mode acceptEdits`, env: {},
+      command: `claude --session-id ${uuid} --permission-mode acceptEdits`, env: stubDialog ? { STUB_DIALOG: stubDialog } : {},
     });
+    const file = path.join(transcripts, `${uuid}.jsonl`);
     // The stub is up (raw input on) when it leaves its marker.
-    await waitFor(() => fs.existsSync(path.join(transcripts, `${uuid}.jsonl.ready`)), WAIT_MS, 'the stub agent');
+    await waitFor(() => fs.existsSync(`${file}.ready`), WAIT_MS, 'the stub agent');
 
     const rec: HeadlessStartRecordV1 = {
       v: 1, hostId: '22222222-2222-4222-8222-222222222222', spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', agent: 'claude', repoPath: '/repo',
@@ -119,8 +126,10 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
     } as unknown as Task;
     const m = (): A2aRemoteTaskState => task.metadata.remote as A2aRemoteTaskState;
     const replies: string[] = [];
-    const moves: string[] = [];
-    const file = path.join(transcripts, `${uuid}.jsonl`);
+    const moves: Array<{ to: string; summary?: string }> = [];
+    const results: string[] = [];
+    const marks: Array<Record<string, unknown>> = [];
+    const verdicts: Array<string | null> = [];
 
     const delivery = new HeadlessDelivery({
       mode: { active: () => true },
@@ -132,17 +141,27 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
         get: () => task,
       },
       mark: async (input) => {
+        marks.push(input);
         if (input.delivered) m().delivered = true;
         if (input.held) m().held = input.held;
         if (input.attempted !== undefined) m().attempted = input.attempted;
         return { ok: true };
       },
-      // As index.ts: the session's agent state and input fence, its PTY write noted as input.
-      deliver: (id, agent, prompt, authorized) => {
+      // As index.ts: the session's screen read for a dialog (the same check), its agent state and
+      // input fence, its PTY write noted as input.
+      deliver: async (id, agent, prompt, authorized) => {
         const managed = mgr.getSession(id)!;
-        return deliverScheduledPrompt(agent, managed.meta.incarnationId, prompt, {
+        // As index.ts: no incarnation yet reads as not ready.
+        const incarnationId = managed.meta.incarnationId;
+        if (!incarnationId) return 'unavailable';
+        const result = await deliverScheduledPrompt(agent, incarnationId, prompt, {
           authorized: async () => authorized(),
-          getAgentState: () => ({ slug: 'claude', incarnationId: managed.meta.incarnationId, status: 'idle', ...deliveryInputFence(managed.bridge) }),
+          folderTrustBlocks: async () => {
+            const verdict = await folderTrustRefusal(mgr, id, 'headless-delivery', { refuseUnknown: true, refuseDialog: true, log: () => undefined });
+            verdicts.push(verdict);
+            return verdict;
+          },
+          getAgentState: () => ({ slug: 'claude', incarnationId, status: 'idle', ...deliveryInputFence(managed.bridge) }),
           isAgentProcessAlive: async () => true,
           write: (data) => {
             managed.ptyProcess.write(data);
@@ -150,6 +169,8 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
             return true;
           },
         });
+        results.push(result);
+        return result;
       },
       transcriptPath: () => file,
       transcriptSize: (f) => (fs.existsSync(f) ? fs.statSync(f).size : 0),
@@ -157,27 +178,67 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
         replies.push(text);
         return { ok: true };
       },
-      transition: async ({ to }) => {
-        moves.push(to);
+      transition: async ({ to, summary }) => {
+        moves.push({ to, ...(summary ? { summary } : {}) });
         task.status = { state: to, timestamp: new Date().toISOString() };
         return { ok: true };
       },
       log: () => undefined,
     });
+    /** Passes until `done` (or the time is up). */
+    const run = async (done: () => boolean): Promise<void> => {
+      const end = Date.now() + WAIT_MS;
+      while (!done() && Date.now() < end) {
+        await delivery.tick();
+        await new Promise((r) => setTimeout(r, 100));
+      }
+    };
+    const prompts = (): unknown[] => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n') : [])
+      .map((l) => JSON.parse(l) as { type: string; message: { content: unknown } })
+      .filter((l) => l.type === 'user')
+      .map((l) => l.message.content);
+    return { delivery, file, replies, moves, results, marks, verdicts, run, prompts };
+  }
 
-    await delivery.tick();
-    expect(moves).toEqual(['working']);
-    await waitFor(() => fs.existsSync(file), WAIT_MS, 'the agent to record the prompt');
-    for (let i = 0; i < 100 && replies.length === 0; i++) {
-      await delivery.tick();
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    expect(replies).toEqual([`PONG\n\`\`\`\n${os.type()}\n\`\`\``]);
-    expect(moves).toEqual(['working', 'input-required']);
+  it('a task typed into a real session reaches the agent once, and its answer comes back as the reply', async () => {
+    const h = await harness();
+    await h.run(() => h.replies.length > 0);
+    expect(h.replies).toEqual([`PONG\n\`\`\`\n${os.type()}\n\`\`\`\n`.trimEnd()]);
+    expect(h.moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
     // What the agent was given is the task, as typed (a multi-line paste, one prompt).
-    const lines = fs.readFileSync(file, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { type: string; message: { content: unknown } });
-    expect(lines.filter((l) => l.type === 'user').map((l) => l.message.content)).toEqual([PROMPT]);
-    await delivery.tick();
-    expect(lines.filter((l) => l.type === 'user')).toHaveLength(1);
+    expect(h.prompts()).toEqual([PROMPT]);
+    await h.delivery.tick();
+    expect(h.prompts()).toHaveLength(1);
+  }, 60_000);
+
+  it('a permission dialog on screen: nothing is typed (busy), and the task goes in once it is gone', async () => {
+    const h = await harness('start');
+    await h.run(() => h.results.length > 0);
+    expect(h.results[0]).toBe('busy');
+    // Busy because of the dialog the screen shows (the screen itself could be read).
+    expect(h.verdicts[0]).toBe('dialog');
+    expect(h.prompts()).toEqual([]);
+    expect(h.marks.slice(0, 2)).toEqual([{ taskId: expect.any(String), attempted: true }, { taskId: expect.any(String), attempted: false }]);
+    await h.run(() => h.replies.length > 0);
+    expect(fs.existsSync(`${h.file}.cleared`)).toBe(true);
+    expect(h.results.at(-1)).toBe('sent');
+    expect(h.prompts()).toEqual([PROMPT]);
+    expect(h.moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
+  }, 60_000);
+
+  it('a dialog that opens between the paste and Enter: no Enter, held, failed, never typed again', async () => {
+    const h = await harness('enter');
+    await h.run(() => h.moves.length > 0);
+    expect(h.results).toEqual(['error']);
+    // Clear before the paste, the dialog after it.
+    expect(h.verdicts[0]).toBeNull();
+    expect(h.verdicts).toContain('dialog');
+    expect(h.marks.at(-1)).toMatchObject({ held: 'delivery-unconfirmed' });
+    expect(h.moves).toEqual([{ to: 'failed', summary: 'the task may have reached the agent only in part' }]);
+    await deliberateSleep(500, 'a negative check: an Enter would have reached the stub by now');
+    await h.delivery.tick();
+    // The agent never got an Enter: no prompt recorded, and nothing typed again.
+    expect(h.prompts()).toEqual([]);
+    expect(h.results).toEqual(['error']);
   }, 60_000);
 });

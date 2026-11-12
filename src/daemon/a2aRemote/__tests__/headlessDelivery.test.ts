@@ -240,6 +240,22 @@ describe('typing the task in', () => {
     expect(gateAnswers).toEqual([false]);
   });
 
+  it('the agent process is looked for on its own session only, before each try', async () => {
+    const armed: string[] = [];
+    results = ['unavailable'];
+    const d = new HeadlessDelivery(deps({ armAgent: (id) => void armed.push(id) }));
+    await d.tick();
+    clock += 2000;
+    await d.tick();
+    expect(armed).toEqual([SESSION, SESSION]);
+    // Not for a task this delivery does not own.
+    armed.length = 0;
+    rec = startRecord({ runId: 'run-0' });
+    task = inboundTask();
+    await new HeadlessDelivery(deps({ armAgent: (id) => void armed.push(id) })).tick();
+    expect(armed).toEqual([]);
+  });
+
   it('one task at a time per agent: the next waits until the open one ended', async () => {
     const d = new HeadlessDelivery(deps());
     await d.tick();

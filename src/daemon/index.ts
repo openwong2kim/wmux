@@ -10999,6 +10999,11 @@ async function main(): Promise<void> {
           },
           mark: (input) => deliveryCall(A2A_REMOTE_RPC.mark, input),
           deliver: (sessionId, agent, prompt, authorized) => (headlessDeliverRef ? headlessDeliverRef(sessionId, agent, prompt, authorized) : Promise.resolve('unavailable')),
+          // Its own sessions only (the delivery asks for no other): a no-op once the agent is tracked.
+          armAgent: (sessionId) => {
+            const managed = sessionManager.getSession(sessionId);
+            if (managed && managed.meta.pid > 0) agentProcessTracker.arm(sessionId, managed.meta.pid);
+          },
           transcriptPath: (sessionId) => transcriptProjector?.transcriptPath(sessionId) ?? null,
           transcriptSize: (file) => {
             try {

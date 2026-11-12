@@ -55,6 +55,14 @@ export interface HeadlessDeliveryDeps {
    * `authorized` is asked before the first write and before Enter.
    */
   deliver(sessionId: string, agent: HeadlessStartRecordV1['agent'], prompt: string, authorized: () => boolean): Promise<SessionPromptScheduleResult>;
+  /**
+   * Have the daemon look for the agent process of this session now (its
+   * process tracker). On a host with no hooks, only the screen banner would
+   * otherwise start that, and until it does the pane counts as having no
+   * agent (`unavailable`) and is never bound to its conversation. Asked only
+   * for a session this delivery owns.
+   */
+  armAgent?(sessionId: string): void;
   /** The agent's transcript file, once the daemon has bound the session to its conversation; null before. */
   transcriptPath(sessionId: string): string | null;
   /** Its size now (0 when it does not exist yet). */
@@ -278,6 +286,7 @@ export class HeadlessDelivery {
       this.deps.log('warn', `[headless] task ${task.id}: the attempt was not recorded, not typed in: ${started.error ?? 'unknown'}`);
       return;
     }
+    this.deps.armAgent?.(rec.sessionId);
     const path = this.deps.transcriptPath(rec.sessionId);
     const offset = path ? this.deps.transcriptSize(path) : 0;
     const agentMessages = task.history.filter((m) => m.role === 'agent').length;
