@@ -205,6 +205,11 @@ export class BrowserReplSession {
         clearTimeout(timer);
         reject(err);
       });
+      // A runner that dies before it is ready says so now, with its code.
+      worker.once('exit', (code: number) => {
+        clearTimeout(timer);
+        reject(new Error(`browser_repl runtime exited during startup (code ${code})`));
+      });
       worker.postMessage({ type: 'init', tools: this.tools });
     });
     // A `browser.*` call that arrives with no run active — a setTimeout or an

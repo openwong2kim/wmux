@@ -142,6 +142,36 @@ describe('browser_repl runner process', () => {
     expect(await goneWithin(grandchild, 5000)).toBe(true);
   });
 
+  it('a runtime that ends on its own takes what it started with it', async () => {
+    const session = newSession();
+    const first = await session.run(START_GRANDCHILD, 10_000, bridge);
+    const grandchild = Number(first.result?.text);
+    const out = await session.run('process.exit(4)', 10_000, bridge);
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain('code 4');
+    expect(await goneWithin(grandchild, 5000)).toBe(true);
+  });
+
+  it('a runner that cannot start frees its slot', async () => {
+    setBrowserReplRunnerCapForTest(1);
+    const back = process.cwd();
+    const gone = fs.mkdtempSync(path.join(os.tmpdir(), 'brr-gone-'));
+    process.chdir(gone);
+    // Read once, so the deleted directory is still what process.cwd() answers.
+    expect(process.cwd()).toBe(fs.realpathSync(gone));
+    fs.rmSync(gone, { recursive: true, force: true });
+    try {
+      const failed = await newSession().run('1', 10_000, bridge);
+      expect(failed.ok).toBe(false);
+      expect(failed.error).not.toContain('already running');
+    } finally {
+      process.chdir(back);
+    }
+    const again = await newSession().run('1', 10_000, bridge);
+    expect(again.error).toBeUndefined();
+    expect(again.ok).toBe(true);
+  });
+
   it('dispose ends the runner', async () => {
     const session = newSession();
     await session.run('1', 10_000, bridge);

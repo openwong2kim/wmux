@@ -25,6 +25,7 @@
  */
 import { spawn, type ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
+import * as path from 'path';
 import { buildReplChildEnv, resolveNodeBinary } from '../repl/ReplSession';
 import { evalBootstrap } from '../repl/replRunnerSource';
 import { BROWSER_REPL_WORKER_SOURCE } from './workerSource';
@@ -39,29 +40,40 @@ export function setBrowserReplRunnerCapForTest(cap: number | null): void {
   runnerCap = cap ?? MAX_BROWSER_REPL_RUNNERS;
 }
 
+/** taskkill by its absolute path: a bare name resolves through the cwd and PATH first. */
+function taskkillPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.win32.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'taskkill.exe');
+}
+
 /**
  * The relay, in the child's main thread. Worker messages go up wrapped as
- * `{ w }` and the relay's own reports as `{ c }`, so nothing a snippet posts
- * can pass for one of the relay's.
+ * `{ w }` and the relay's own reports as `{ c }`. The parent treats both as
+ * the session's own: a snippet can write to the channel directly, and what it
+ * forges reaches only its own session (each browser call is still checked
+ * against the run in flight).
  */
-function relaySource(): string {
-  return String.raw`
+let relayBootstrap: string | null = null;
+function relayArg(): string {
+  relayBootstrap ??= evalBootstrap(String.raw`
 'use strict';
 const { Worker } = require('worker_threads');
 const { spawnSync } = require('child_process');
 const WORKER_SOURCE = ` + JSON.stringify(BROWSER_REPL_WORKER_SOURCE) + String.raw`;
+const TASKKILL = ` + JSON.stringify(taskkillPath()) + String.raw`;
 
-// The parent is gone: end this runner and every process it started.
+// End this runner and every process it started (its process group on macOS
+// and Linux, its tree on Windows).
 function endTree() {
   try {
     if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/PID', String(process.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      spawnSync(TASKKILL, ['/PID', String(process.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
     } else {
       process.kill(-process.pid, 'SIGKILL');
     }
   } catch (_) { /* already going */ }
   process.exit(0);
 }
+// The parent is gone.
 process.on('disconnect', endTree);
 
 const up = (message) => { try { process.send(message); } catch (_) { /* parent gone */ } };
@@ -79,11 +91,15 @@ worker.on('error', (error) => {
     up({ c: 'error', error: text });
   }
 });
-worker.on('exit', (code) => process.exit(code));
+// The worker ended on its own: report its code, then end what it started too.
+worker.on('exit', (code) => {
+  try { process.send({ c: 'exit', code }, () => endTree()); } catch (_) { endTree(); }
+});
 process.on('message', (message) => {
   if (message && typeof message === 'object' && 'w' in message) worker.postMessage(message.w);
 });
-`;
+`);
+  return relayBootstrap;
 }
 
 /** Kill `child` and every process it started. */
@@ -92,9 +108,19 @@ function killTree(child: ChildProcess): void {
   if (pid === undefined) return;
   try {
     if (process.platform === 'win32') {
-      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on('error', () => {
-        child.kill('SIGKILL');
-      });
+      // A taskkill that cannot start or does not succeed falls back to the runner alone.
+      const fallback = () => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      };
+      spawn(taskkillPath(), ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+        .on('error', fallback)
+        .on('exit', (code) => {
+          if (code !== 0) fallback();
+        });
     } else {
       // The runner leads its own process group (detached at spawn).
       process.kill(-pid, 'SIGKILL');
@@ -134,7 +160,7 @@ export class RunnerProcess extends EventEmitter {
     const { command, electronRunAsNode } = resolveNodeBinary();
     const env = buildRunnerEnv();
     if (electronRunAsNode) env.ELECTRON_RUN_AS_NODE = '1';
-    const child = spawn(command, ['-e', evalBootstrap(relaySource())], {
+    const child = spawn(command, ['-e', relayArg()], {
       // The worker ran in this process's working directory; the runner keeps it.
       cwd: process.cwd(),
       env,
@@ -146,24 +172,44 @@ export class RunnerProcess extends EventEmitter {
     });
     this.child = child;
     liveRunners++;
+    let reported: number | null = null;
+    // 'close', not 'exit': it also comes after a failed spawn (which has no
+    // 'exit'), and only once every message the runner sent has been read.
     this.exited = new Promise<number>((resolve) => {
-      child.once('exit', (code, signal) => {
-        if (this.alive) {
-          this.alive = false;
-          liveRunners--;
+      child.once('close', (code, signal) => {
+        this.free();
+        // Whatever it started and left in its group goes too.
+        if (process.platform !== 'win32' && child.pid !== undefined) {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            /* nothing left */
+          }
         }
-        const exitCode = code ?? (signal ? 1 : 0);
+        const exitCode = reported ?? (code !== null && code >= 0 ? code : signal || code !== null ? 1 : 0);
         resolve(exitCode);
         this.emit('exit', exitCode);
       });
     });
     child.on('message', (raw: unknown) => {
-      const message = raw as { w?: unknown; c?: unknown; error?: unknown } | null;
+      const message = raw as { w?: unknown; c?: unknown; error?: unknown; code?: unknown } | null;
       if (!message || typeof message !== 'object') return;
       if ('w' in message) this.emit('message', message.w);
       else if (message.c === 'error') this.raise(message.error);
+      else if (message.c === 'exit' && typeof message.code === 'number') reported = message.code;
     });
-    child.on('error', (error) => this.raise(error));
+    child.on('error', (error) => {
+      // A spawn that failed has no process to wait for: its slot is free now.
+      if (child.pid === undefined) this.free();
+      this.raise(error);
+    });
+  }
+
+  /** Give the runner's slot back, once. */
+  private free(): void {
+    if (!this.alive) return;
+    this.alive = false;
+    liveRunners--;
   }
 
   get pid(): number | undefined {
