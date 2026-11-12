@@ -51,16 +51,11 @@ describe('checkClaim', () => {
     expect(checkClaim('callerPid', wire(100, '10'), 100, quiet)).toEqual({ ok: false, reason: 'start-unread' });
   });
 
-  it('names a claim from another process unowned-broker while a broker main did not start serves the agents', () => {
+  it('counts a claim from another process as other-pid while a broker main did not start serves the agents', () => {
     setUnownedBrokerSource(() => true);
-    expect(checkClaim('callerPid', wire(888, '1'), 100, quiet)).toEqual({ ok: false, reason: 'unowned-broker' });
-    // The process itself is still taken, and a broker main spawned is still its own.
+    expect(checkClaim('callerPid', wire(888, '1'), 100, quiet)).toEqual({ ok: false, reason: 'other-pid' });
+    // The process itself is still taken.
     expect(checkClaim('callerPid', wire(100, '10'), 100, quiet)).toEqual({ ok: true, via: 'same' });
-    setBrokerIdentitySource(() => ({ pid: 500, startedAt: '50' }));
-    expect(checkClaim('callerPid', wire(888, '1'), 100, quiet)).toEqual({ ok: false, reason: 'other-pid' });
-    setUnownedBrokerSource(() => false);
-    setBrokerIdentitySource(() => null);
-    expect(checkClaim('callerPid', wire(888, '1'), 100, quiet)).toEqual({ ok: false, reason: 'other-pid' });
   });
 
   it('takes every claim as sent on Windows, and counts those that came over TCP', () => {
@@ -110,13 +105,13 @@ describe('claimStillHeld', () => {
 
 describe('identitySummary (wmux doctor)', () => {
   it('counts every refusal by reason, starting from zero', () => {
-    expect(identitySummary('darwin').refusals).toEqual({ 'no-peer': 0, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0, 'unowned-broker': 0 });
+    expect(identitySummary('darwin').refusals).toEqual({ 'no-peer': 0, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0 });
     checkClaim('callerPid', wire(), 100, quiet);
     checkClaim('callerPid', wire(), 100, quiet);
     checkClaim('callerPid', wire(101, '10'), 100, quiet);
     checkClaim('callerPid', wire(100, '9'), 100, quiet);
     checkClaim('callerPid', wire(100, '10'), 100, quiet);
-    expect(identitySummary('darwin').refusals).toEqual({ 'no-peer': 2, 'other-pid': 1, 'start-unread': 0, restarted: 1, 'broker-unverified': 0, 'unowned-broker': 0 });
+    expect(identitySummary('darwin').refusals).toEqual({ 'no-peer': 2, 'other-pid': 1, 'start-unread': 0, restarted: 1, 'broker-unverified': 0 });
   });
 
   it('says whether main reads peers and start times, and why not', () => {
@@ -129,6 +124,13 @@ describe('identitySummary (wmux doctor)', () => {
     setClaimStartTimeSource(() => 1n);
     expect(identitySummary('linux').startTimes).toBe('ok');
     expect(identitySummary('linux')).not.toHaveProperty('tcpClaims');
+  });
+
+  it('says while a broker main did not start serves the agents, on macOS and Linux only', () => {
+    expect(identitySummary('darwin')).not.toHaveProperty('brokerNotOurs');
+    setUnownedBrokerSource(() => true);
+    expect(identitySummary('darwin').brokerNotOurs).toBe(true);
+    expect(identitySummary('win32')).not.toHaveProperty('brokerNotOurs');
   });
 
   it('reads nothing on Windows', () => {

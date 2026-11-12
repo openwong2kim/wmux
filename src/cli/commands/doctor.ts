@@ -54,7 +54,7 @@ import { readAllTargetStatuses, type TargetRegStatus } from '../../shared/mcpReg
 import { NATIVE_SELF_TEST_LINE } from '../../shared/mcpLauncher';
 import { fileSha256, probeKey, recordedProbe } from '../../shared/probedNative';
 import { BROKER_TOOL_NAME_RE, type McpSessionsSummary } from '../../shared/mcpSessions';
-import { CLAIM_REFUSALS, type IdentityClaimsSummary } from '../../shared/identityClaims';
+import { CLAIM_REFUSALS, type ClaimRefusal, type IdentityClaimsSummary } from '../../shared/identityClaims';
 import { homeRelative } from '../../shared/homeRelative';
 import { EDGE_SIGNED_IN_HINT, edgeAccountSignedIn, edgeProfileDirs } from './edgeProfileSignin';
 import { claudeHookRuntimeReport, defaultPaths as defaultHooksPaths, type ClaudeHookRuntimeReport } from './setupHooks';
@@ -653,13 +653,21 @@ export function recordedNativeVerdict(binary: string): 'pass' | 'fail' | undefin
 }
 
 function isIdentitySummary(v: unknown): v is IdentityClaimsSummary {
-  const o = v as { peerRead?: { state?: unknown; reason?: unknown }; startTimes?: unknown; refusals?: Record<string, unknown>; tcpClaims?: unknown } | null;
+  const o = v as {
+    peerRead?: { state?: unknown; reason?: unknown };
+    startTimes?: unknown;
+    refusals?: Record<string, unknown>;
+    tcpClaims?: unknown;
+    brokerNotOurs?: unknown;
+  } | null;
   return !!o && typeof o === 'object'
     && ['ok', 'unavailable', 'unknown', 'not-read'].includes(String(o.peerRead?.state))
     && (o.peerRead?.reason === undefined || typeof o.peerRead.reason === 'string')
     && ['ok', 'unavailable', 'not-read'].includes(String(o.startTimes))
-    && !!o.refusals && CLAIM_REFUSALS.every((r) => typeof o.refusals?.[r] === 'number')
-    && (o.tcpClaims === undefined || typeof o.tcpClaims === 'number');
+    && !!o.refusals && typeof o.refusals === 'object'
+    && Object.values(o.refusals).every((n) => typeof n === 'number')
+    && (o.tcpClaims === undefined || typeof o.tcpClaims === 'number')
+    && (o.brokerNotOurs === undefined || o.brokerNotOurs === true);
 }
 
 /**
@@ -685,15 +693,25 @@ export function buildIdentitySection(id: IdentityClaimsSummary): { verdict: Verd
   } else if (id.startTimes === 'ok') {
     lines.push({ label: 'start times', value: 'ok', verdict: 'OK' });
   }
-  const refused = CLAIM_REFUSALS.filter((r) => id.refusals[r] > 0);
+  if (id.brokerNotOurs) {
+    lines.push({
+      label: 'MCP broker',
+      value: 'one this app did not start serves the agents',
+      verdict: 'WARN',
+      hint: 'Main cannot vouch for the calls it relays, so their claims count as other-pid. Quit the other wmux instance; with none running, end the leftover wmux MCP broker process that holds the pipe. This app then starts its own.',
+    });
+  }
+  // A reason an older app does not report counts as none.
+  const count = (r: ClaimRefusal) => id.refusals[r] ?? 0;
+  const refused = CLAIM_REFUSALS.filter((r) => count(r) > 0);
   lines.push(refused.length === 0
     ? { label: 'refused claims', value: 'none', verdict: 'OK' }
     : {
       // Counts since the app started, so they inform rather than warn.
       label: 'refused claims',
-      value: refused.map((r) => `${r} ${id.refusals[r]}`).join(', '),
+      value: refused.map((r) => `${r} ${count(r)}`).join(', '),
       verdict: 'OK',
-      hint: 'These callers got no pane claim and used their own walk. other-pid: the call came from another process than the one it named, or from one in another pid namespace (a container). unowned-broker: an MCP broker this app did not start (another wmux instance, or one left running) serves the agents, so main cannot vouch for the calls it relays; quit the other instance or restart wmux. no-peer or start-unread with the lines above unavailable: main\'s reading is down, not the caller.',
+      hint: 'These callers got no pane claim and used their own walk. other-pid: the call came from another process than the one it named, or from one in another pid namespace (a container). no-peer or start-unread with the lines above unavailable: main\'s reading is down, not the caller.',
     });
   if (id.tcpClaims !== undefined) lines.push({ label: 'claims over TCP', value: String(id.tcpClaims), verdict: 'OK' });
   return { verdict: worst(lines.map((l) => l.verdict)), lines };

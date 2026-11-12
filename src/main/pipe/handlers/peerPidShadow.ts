@@ -96,7 +96,7 @@ export function checkClaim(
       ? { ok: true, via: 'broker' }
       : refuse(kind, 'broker-unverified', ctx, log);
   }
-  if (peer !== claimedPid) return refuse(kind, !broker && brokerUnowned() ? 'unowned-broker' : 'other-pid', ctx, log);
+  if (peer !== claimedPid) return refuse(kind, 'other-pid', ctx, log);
   const now = startTimeOf(claimedPid);
   if (ctx?.peerStartedAt === undefined || now === null) return refuse(kind, 'start-unread', ctx, log);
   return String(now) === ctx.peerStartedAt ? { ok: true, via: 'same' } : refuse(kind, 'restarted', ctx, log);
@@ -137,6 +137,7 @@ export function identitySummary(platform: NodeJS.Platform = process.platform): I
     startTimes: win ? 'not-read' : startTimeOf(process.pid) === null ? 'unavailable' : 'ok',
     refusals: counts,
     ...(win && { tcpClaims }),
+    ...(!win && brokerUnowned() && { brokerNotOurs: true as const }),
   };
 }
 

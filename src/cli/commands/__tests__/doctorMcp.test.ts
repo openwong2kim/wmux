@@ -181,7 +181,7 @@ describe('doctor mcp section', () => {
 
 describe('doctor identity section', () => {
   const withIdentity = (identity: unknown) => deps({ sessions: () => Promise.resolve({ id: '1', ok: true, result: { ...summary, identity } }) });
-  const zero = { 'no-peer': 0, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0, 'unowned-broker': 0 };
+  const zero = { 'no-peer': 0, 'other-pid': 0, 'start-unread': 0, restarted: 0, 'broker-unverified': 0 };
   const lines = async (identity: unknown) => {
     const section = (await buildMcpSection(withIdentity(identity))).identity;
     return section && Object.fromEntries(section.lines.map((l) => [l.label, l]));
@@ -218,10 +218,18 @@ describe('doctor identity section', () => {
     expect(byLabel?.['refused claims']).toMatchObject({ value: 'no-peer 4', verdict: 'OK' });
   });
 
-  it('names the claims a broker this app did not start relayed, and what to do about it', async () => {
-    const byLabel = await lines({ peerRead: { state: 'ok' }, startTimes: 'ok', refusals: { ...zero, 'unowned-broker': 3 } });
-    expect(byLabel?.['refused claims']).toMatchObject({ value: 'unowned-broker 3', verdict: 'OK' });
-    expect(byLabel?.['refused claims'].hint).toMatch(/unowned-broker: an MCP broker this app did not start/);
+  it('warns while a broker this app did not start serves the agents, and says what to do', async () => {
+    const byLabel = await lines({ peerRead: { state: 'ok' }, startTimes: 'ok', refusals: { ...zero, 'other-pid': 3 }, brokerNotOurs: true });
+    expect(byLabel?.['MCP broker']).toMatchObject({ value: 'one this app did not start serves the agents', verdict: 'WARN' });
+    expect(byLabel?.['MCP broker'].hint).toMatch(/end the leftover wmux MCP broker process/);
+    expect(byLabel?.['refused claims']).toMatchObject({ value: 'other-pid 3' });
+    expect((await lines({ peerRead: { state: 'ok' }, startTimes: 'ok', refusals: zero }))).not.toHaveProperty('MCP broker');
+  });
+
+  it('reads a summary from an app that reports fewer reasons, counting the missing ones as none', async () => {
+    const { 'broker-unverified': _omitted, ...older } = zero;
+    const byLabel = await lines({ peerRead: { state: 'ok' }, startTimes: 'ok', refusals: { ...older, 'no-peer': 1 } });
+    expect(byLabel?.['refused claims']).toMatchObject({ value: 'no-peer 1' });
   });
 
   it('reports no refusals as OK, and an unchecked read as skipped', async () => {
