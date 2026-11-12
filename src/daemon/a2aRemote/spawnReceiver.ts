@@ -16,6 +16,7 @@ import {
   parseSpawnTargets,
   spawnClockOk,
   spawnHostAllowed,
+  spawnPendingPerHost,
   spawnTargetsFor,
   type A2aSpawnCardV1,
   type A2aSpawnClaimResult,
@@ -81,14 +82,10 @@ import { errMsg, isPlainObject } from './storeFile';
  * this PC sent and that has no final answer yet, and only newer targets.
  */
 
-/** Requests one PC may have open here at once (deciding, on a card, or starting). */
-export const SPAWN_PENDING_PER_HOST_MAX = 3;
-/** Starts one PC may get here per hour, and per day. */
-export const SPAWN_STARTS_PER_HOUR_MAX = 3;
-export const SPAWN_STARTS_PER_DAY_MAX = 10;
-/** Agents a remote start made running at once: per PC, and in all. */
-export const SPAWN_LIVE_PER_HOST_MAX = 2;
-export const SPAWN_LIVE_MAX = 4;
+// Requests open per PC, starts per hour and day, and agents running per PC and
+// in all: the owner's `limits` in the policy (A2aSpawnLimitsV1), read at each
+// check. Absent means no limit, except requests open per PC
+// (SPAWN_PENDING_PER_HOST_DEFAULT).
 /** A claimed start main never reported back on ends `failed` after this. */
 export const SPAWN_STARTING_MAX_MS = 10 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -429,11 +426,13 @@ export class A2aSpawnReceiver {
     const r = this.deps.requests;
     const live = this.deps.liveSpawns ?? ((): number => 0);
     const others = (h?: HostId): number => Math.max(0, (r.startingCount?.(h) ?? 0) - 1);
-    if (live(hostId) + others(hostId) >= SPAWN_LIVE_PER_HOST_MAX) return false;
-    if (live() + others() >= SPAWN_LIVE_MAX) return false;
     const now = this.now();
-    if ((r.startsSince?.(now - HOUR_MS, hostId, spawnId) ?? 0) >= SPAWN_STARTS_PER_HOUR_MAX) return false;
-    return (r.startsSince?.(now - DAY_MS, hostId, spawnId) ?? 0) < SPAWN_STARTS_PER_DAY_MAX;
+    return !this.atALimit({
+      livePerPc: () => live(hostId) + others(hostId),
+      liveTotal: () => live() + others(),
+      startsPerHour: () => r.startsSince?.(now - HOUR_MS, hostId, spawnId) ?? 0,
+      startsPerDay: () => r.startsSince?.(now - DAY_MS, hostId, spawnId) ?? 0,
+    });
   }
 
   private async claimNow(hostId: HostId, spawnId: string): Promise<A2aSpawnClaimResult> {
@@ -670,7 +669,7 @@ export class A2aSpawnReceiver {
     // grow this PC's files. Its resend is refused the same way again.
     let refused: A2aSpawnCode | undefined;
     if (!spawnClockOk(sentAt, req.expiresAt, this.now())) refused = 'expired';
-    else if (this.deps.requests.pendingCount(hostId) >= SPAWN_PENDING_PER_HOST_MAX) refused = 'rate-limited';
+    else if (this.deps.requests.pendingCount(hostId) >= spawnPendingPerHost(this.deps.policy.get())) refused = 'rate-limited';
     if (refused) return this.refuse(hostId, req.spawnId, refused);
 
     let got: ReturnType<SpawnReceiverDeps['requests']['receive']>;
@@ -815,15 +814,26 @@ export class A2aSpawnReceiver {
     return ruled ? 'approved' : 'awaiting';
   }
 
-  /** Starts per PC per hour and per day, and running agents per PC and in all (counting those about to start). */
+  /** Starts per PC per hour and per day, and running agents per PC and in all (counting those about to start), against the limits set. */
   private overCaps(hostId: HostId): boolean {
     const r = this.deps.requests;
     const now = this.now();
-    if ((r.approvedSince?.(now - HOUR_MS, hostId) ?? 0) >= SPAWN_STARTS_PER_HOUR_MAX) return true;
-    if ((r.approvedSince?.(now - DAY_MS, hostId) ?? 0) >= SPAWN_STARTS_PER_DAY_MAX) return true;
     const live = this.deps.liveSpawns ?? ((): number => 0);
-    if (live(hostId) + (r.startingCount?.(hostId) ?? 0) >= SPAWN_LIVE_PER_HOST_MAX) return true;
-    return live() + (r.startingCount?.() ?? 0) >= SPAWN_LIVE_MAX;
+    return this.atALimit({
+      startsPerHour: () => r.approvedSince?.(now - HOUR_MS, hostId) ?? 0,
+      startsPerDay: () => r.approvedSince?.(now - DAY_MS, hostId) ?? 0,
+      livePerPc: () => live(hostId) + (r.startingCount?.(hostId) ?? 0),
+      liveTotal: () => live() + (r.startingCount?.() ?? 0),
+    });
+  }
+
+  /** Whether any limit the policy sets is reached; each count is read only for a limit that is set. */
+  private atALimit(counts: Record<'livePerPc' | 'liveTotal' | 'startsPerHour' | 'startsPerDay', () => number>): boolean {
+    const limits = this.deps.policy.get().limits ?? {};
+    return (Object.keys(counts) as (keyof typeof counts)[]).some((key) => {
+      const limit = limits[key];
+      return limit !== undefined && counts[key]() >= limit;
+    });
   }
 
   /**

@@ -117,7 +117,7 @@ export interface WakeItem {
 
 export const WAKE_LIMITS = {
   GLOBAL_CONCURRENT_BOTS: 3,
-  /** factory-wide, below FANOUT_LIVE_TASK_CAP (8) */
+  /** factory-wide; the wmux-wide live fan-out cap (fanoutGuards liveTaskCap) applies on top when the owner set one */
   GLOBAL_CONCURRENT_WORKERS: 3,
   PER_BOT_QUEUE_CAP: 50,
   BATCH_WINDOW_MS: 20_000,

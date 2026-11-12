@@ -49,6 +49,13 @@ export const SPAWN_LABEL_MAX = 64;
 export const SPAWN_REQUEST_KEEP_MS = 24 * 60 * 60 * 1000;
 /** Requests B keeps (all PCs). */
 export const SPAWN_REQUESTS_MAX = 1000;
+/**
+ * Requests one PC may have open here at once (deciding, on a card, or
+ * starting) when the policy sets no `limits.pendingPerPc`. It keeps one PC
+ * from filling the store (SPAWN_REQUESTS_MAX) for every other; a set limit
+ * may go up to the store's size.
+ */
+export const SPAWN_PENDING_PER_HOST_DEFAULT = 100;
 /** Fixed id of the `spawn-targets` envelope: never stored as a link. */
 export const SPAWN_TARGETS_LINK_ID = 'spawn-targets';
 
@@ -203,6 +210,47 @@ export interface A2aSpawnPolicyV1 {
   rules: A2aSpawnRuleV1[];
   /** Bumped on every save: the `spawn-targets` version. */
   version: number;
+  /** Optional limits on remote starts here; absent means none (A2aSpawnLimitsV1). */
+  limits?: A2aSpawnLimitsV1;
+}
+
+/**
+ * Limits the owner may set on what paired PCs start here. Each is optional:
+ * absent means no limit, except `pendingPerPc`, which falls back to
+ * SPAWN_PENDING_PER_HOST_DEFAULT. Each is a positive integer.
+ */
+export interface A2aSpawnLimitsV1 {
+  /** Agents a remote start made running at once, per PC. */
+  livePerPc?: number;
+  /** Agents a remote start made running at once, all PCs together. */
+  liveTotal?: number;
+  /** Starts one PC may get here per rolling hour. */
+  startsPerHour?: number;
+  /** Starts one PC may get here per rolling day. */
+  startsPerDay?: number;
+  /** Requests one PC may have open here at once; at most SPAWN_REQUESTS_MAX. */
+  pendingPerPc?: number;
+}
+
+export const SPAWN_LIMIT_KEYS = ['livePerPc', 'liveTotal', 'startsPerHour', 'startsPerDay', 'pendingPerPc'] as const;
+export type A2aSpawnLimitKey = typeof SPAWN_LIMIT_KEYS[number];
+/** The largest value each limit takes. */
+export const SPAWN_LIMIT_MAX: Readonly<Record<A2aSpawnLimitKey, number>> = Object.freeze({
+  livePerPc: 1_000_000,
+  liveTotal: 1_000_000,
+  startsPerHour: 1_000_000,
+  startsPerDay: 1_000_000,
+  pendingPerPc: SPAWN_REQUESTS_MAX,
+});
+
+/** A limit as stored: a positive integer up to its maximum, or undefined (no limit). */
+export function isSpawnLimit(key: A2aSpawnLimitKey, v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= SPAWN_LIMIT_MAX[key];
+}
+
+/** The pending limit in force for one PC. */
+export function spawnPendingPerHost(policy: Pick<A2aSpawnPolicyV1, 'limits'>): number {
+  return policy.limits?.pendingPerPc ?? SPAWN_PENDING_PER_HOST_DEFAULT;
 }
 
 export const DEFAULT_SPAWN_POLICY: Readonly<A2aSpawnPolicyV1> = Object.freeze({
@@ -686,6 +734,21 @@ export function coerceSpawnPolicy(raw: unknown): A2aSpawnPolicyV1 | null {
   }
   if (!Array.isArray(agents) || agents.length > SPAWN_ROOTS_MAX || !agents.every(isAgentSlug)) return null;
   if (!Array.isArray(rules) || rules.length > SPAWN_RULES_MAX) return null;
+  // Limits: each optional; a malformed one makes the policy invalid. A key
+  // this version does not know (a later version's limit) is left out, as an
+  // unknown top-level field is, so a newer file still loads.
+  const limits = raw['limits'];
+  let cleanLimits: A2aSpawnLimitsV1 | undefined;
+  if (limits !== undefined) {
+    if (!isPlain(limits)) return null;
+    cleanLimits = {};
+    for (const key of SPAWN_LIMIT_KEYS) {
+      const v = limits[key];
+      if (v === undefined) continue;
+      if (!isSpawnLimit(key, v)) return null;
+      cleanLimits[key] = v;
+    }
+  }
   const cleanRules: A2aSpawnRuleV1[] = [];
   for (const r of rules) {
     if (!isPlain(r) || !isHostId(r['hostId']) || !isSpawnRootId(r['rootId']) || !isAgentSlug(r['agent'])) return null;
@@ -707,6 +770,7 @@ export function coerceSpawnPolicy(raw: unknown): A2aSpawnPolicyV1 | null {
     agents: [...new Set((agents as AgentSlug[]).filter(isSpawnableAgent))],
     rules: cleanRules,
     version,
+    ...(cleanLimits && Object.keys(cleanLimits).length > 0 ? { limits: cleanLimits } : {}),
   };
 }
 

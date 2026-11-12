@@ -171,7 +171,7 @@ export function checkWorkers(budget: BotBudget, usage: BotUsage, running: number
  *  Not a budget limit: a slot frees when a worker ends. */
 export interface WorkerSlotsFull {
   /** bot: the bot's own slots; factory: every bot's; wmux: every live
-   *  fan-out task across wmux, the owner's included (FANOUT_LIVE_TASK_CAP). */
+   *  fan-out task across wmux, the owner's included (fanoutGuards liveTaskCap, when set). */
   scope: 'bot' | 'factory' | 'wmux';
   running: number;
   limit: number;

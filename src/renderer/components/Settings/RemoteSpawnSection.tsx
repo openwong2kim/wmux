@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   defaultSpawnPolicy,
   isSpawnableAgent,
+  SPAWN_LIMIT_KEYS,
+  SPAWN_LIMIT_MAX,
   SPAWN_ROOTS_MAX,
+  type A2aSpawnLimitKey,
   type A2aSpawnApproval,
   type A2aSpawnFollowUps,
   type A2aSpawnPermissionMode,
@@ -19,6 +22,7 @@ import Switch from '../ui/Switch';
 import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
 import { readSpawnPolicy, rootFromPath, saveSpawnPolicy } from '../Remote/remoteSpawnPolicy';
 import { SettingsSection, SettingRow, SettingNote } from './SettingsLayout';
+import { SettingLimitInput } from './SettingLimitInput';
 
 // ─── Starting new agents from another PC ────────────────────────────────────
 //
@@ -88,6 +92,17 @@ function SpawnPolicyEditor({ pickFolder }: { pickFolder: () => Promise<string | 
       if (d.roots.length >= SPAWN_ROOTS_MAX || d.roots.some((r) => r.path === path)) return d;
       return { ...d, roots: [...d.roots, rootFromPath(path, d.roots)] };
     });
+    setJustSaved(false);
+  };
+
+  /** One limit set or cleared (null: none); an empty set is dropped. */
+  const setLimit = (key: A2aSpawnLimitKey, v: number | null) => {
+    const next = { ...(draft.limits ?? {}) };
+    if (v === null) delete next[key];
+    else next[key] = v;
+    const { limits: _old, ...rest } = draft;
+    void _old;
+    setDraft(Object.keys(next).length > 0 ? { ...rest, limits: next } : rest);
     setJustSaved(false);
   };
 
@@ -237,6 +252,18 @@ function SpawnPolicyEditor({ pickFolder }: { pickFolder: () => Promise<string | 
               ))}
             </div>
           </SettingRow>
+          {SPAWN_LIMIT_KEYS.map((key) => (
+            <SettingRow key={key} label={t(`remoteSpawn.limit.${key}`)} description={t(`remoteSpawn.limit.${key}Desc`)}>
+              <SettingLimitInput
+                value={draft.limits?.[key]}
+                max={SPAWN_LIMIT_MAX[key]}
+                label={t(`remoteSpawn.limit.${key}`)}
+                noLimitLabel={key === 'pendingPerPc' ? t('remoteSpawn.limit.pendingDefault') : t('settings.noLimit')}
+                onCommit={(v) => setLimit(key, v)}
+                testId={`remote-spawn-limit-${key}`}
+              />
+            </SettingRow>
+          ))}
           <SettingNote>{t('remoteSpawn.risk')}</SettingNote>
         </>
       )}
