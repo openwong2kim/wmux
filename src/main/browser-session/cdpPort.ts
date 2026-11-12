@@ -94,19 +94,27 @@ export interface ClaimCdpPortDeps {
   isAlive?: (pid: number) => boolean;
   /** Offset into the range to start from. Defaults to a CSPRNG draw. */
   firstOffset?: number;
-  /** When this boot began (epoch ms). Defaults to now minus the OS uptime. */
-  bootTimeMs?: number;
+  /** The OS uptime in whole seconds, written into the claim and compared. */
+  uptime?: () => number;
+}
+
+function defaultUptime(): number {
+  return Math.floor(os.uptime());
 }
 
 /**
- * How far before the boot a claim must be written to count as from an earlier
- * boot. Absorbs the uptime's rounding and small clock corrections, so a claim
- * written just after boot is never mistaken for an old one.
+ * A claim's content: `<pid> uptime=<seconds>`. The pid comes first and the
+ * field after a space, so an older wmux (and scripts/lib/control-wmux-lib.mjs),
+ * which read the file with parseInt, still get the pid; a claim from an older
+ * wmux, a bare pid, parses with no uptime.
  */
-export const PRE_BOOT_SLACK_MS = 5 * 60_000;
+function formatClaim(pid: number, uptime: number): string {
+  return `${pid} uptime=${uptime}`;
+}
 
-function defaultBootTimeMs(): number {
-  return Date.now() - os.uptime() * 1000;
+function parseClaim(text: string): { pid: number; uptime: number | null } {
+  const uptime = /(?:^|\s)uptime=(\d+)(?:\s|$)/.exec(text)?.[1];
+  return { pid: Number.parseInt(text.trim(), 10), uptime: uptime === undefined ? null : Number(uptime) };
 }
 
 export interface CdpPortClaim {
@@ -133,8 +141,8 @@ export interface CdpPortClaim {
  * A claim left behind by a crashed instance is reclaimed: the file records the
  * pid, and a pid that is gone releases the port. Nothing has to run at exit for
  * this to be correct, which matters because a crash is precisely when no exit
- * handler runs. A clean quit still gives the claim back (releaseCdpPortOnQuit),
- * so stale files are left only by crashes.
+ * handler runs. A clean quit still gives the claim back (releaseCdpPortOnExit),
+ * so stale files are left only by crashes and hard kills.
  */
 export function claimCdpPort(deps: ClaimCdpPortDeps = {}): CdpPortClaim {
   let dir: string;
@@ -144,11 +152,11 @@ export function claimCdpPort(deps: ClaimCdpPortDeps = {}): CdpPortClaim {
   const pid = deps.pid ?? process.pid;
   const isAlive = deps.isAlive ?? defaultIsAlive;
   const start = deps.firstOffset ?? crypto.randomInt(CDP_PORT_COUNT);
-  const bootTimeMs = deps.bootTimeMs ?? defaultBootTimeMs();
+  const uptime = (deps.uptime ?? defaultUptime)();
 
   for (let i = 0; i < CDP_PORT_COUNT; i++) {
     const port = CDP_PORT_MIN + ((start + i) % CDP_PORT_COUNT);
-    if (tryClaim(dir, port, pid, isAlive, bootTimeMs)) return { port, claimed: true };
+    if (tryClaim(dir, port, pid, isAlive, uptime)) return { port, claimed: true };
   }
 
   // Everything is spoken for, or the directory is unwritable. Draw and carry
@@ -156,29 +164,31 @@ export function claimCdpPort(deps: ClaimCdpPortDeps = {}): CdpPortClaim {
   return { port: CDP_PORT_MIN + (start % CDP_PORT_COUNT), claimed: false };
 }
 
-function tryClaim(dir: string, port: number, pid: number, isAlive: (pid: number) => boolean, bootTimeMs: number): boolean {
+function tryClaim(dir: string, port: number, pid: number, isAlive: (pid: number) => boolean, uptime: number): boolean {
   const file = claimPath(dir, port);
-  if (writeClaim(file, pid)) return true;
-
-  // A claim written before this boot is stale whatever it says: every process
-  // that could have written it is gone. Its pid may well be alive again,
-  // handed by the OS to an unrelated process (a conhost, a browser), which the
-  // liveness test below cannot tell apart from the wmux that wrote it. The
-  // same goes for an empty or unreadable claim from an earlier boot.
-  // Not covered: Windows Fast Startup does not reset the uptime, so a
-  // shutdown followed by a power-on is no boot boundary here, and a pid reused
-  // within one boot after a crash still holds its port (#3286).
-  if (writtenBefore(file, bootTimeMs - PRE_BOOT_SLACK_MS)) return replaceStaleClaim(file, pid);
+  if (writeClaim(file, pid, uptime)) return true;
 
   // Occupied. Whose is it, and are they still here?
-  let holder: number;
+  let claim: { pid: number; uptime: number | null };
   try {
-    holder = Number.parseInt(fs.readFileSync(file, 'utf8').trim(), 10);
+    claim = parseClaim(fs.readFileSync(file, 'utf8'));
   } catch {
     // Unreadable claim: treat it as held rather than stealing a port on a
     // guess. The range has ninety-nine other numbers in it.
     return false;
   }
+  // A claim written at a higher uptime than ours is from an earlier boot, since
+  // within one boot the uptime only grows. Every process that could have written
+  // it is gone, though its pid may be alive again, handed by the OS to an
+  // unrelated process (a conhost, a browser) that the liveness test below cannot
+  // tell from the wmux that wrote it. No wall clock is involved, so a clock step
+  // cannot make a live claim look old (#2497).
+  // Not covered (#3286): Windows Fast Startup keeps the uptime across a
+  // shutdown; an earlier boot that ended before reaching our current uptime; a
+  // pid reused within one boot after a crash; and claims from an older wmux,
+  // which carry no uptime and keep the pid rule alone.
+  if (claim.uptime !== null && claim.uptime > uptime) return replaceStaleClaim(file, pid, uptime);
+  const holder = claim.pid;
   // Same answer for a claim we cannot make sense of — including the EMPTY one
   // another instance leaves for the instant between creating the file and
   // writing its pid into it. That instance is very much alive, and reading its
@@ -188,16 +198,7 @@ function tryClaim(dir: string, port: number, pid: number, isAlive: (pid: number)
   if (isAlive(holder)) return false;
 
   // A stale claim — its owner is gone.
-  return replaceStaleClaim(file, pid);
-}
-
-/** Was the claim last written before `ms`? False when it cannot be read. */
-function writtenBefore(file: string, ms: number): boolean {
-  try {
-    return fs.statSync(file).mtimeMs < ms;
-  } catch {
-    return false;
-  }
+  return replaceStaleClaim(file, pid, uptime);
 }
 
 /**
@@ -205,13 +206,13 @@ function writtenBefore(file: string, ms: number): boolean {
  * a race with another instance doing the same thing, that instance wins and we
  * move on to the next port.
  */
-function replaceStaleClaim(file: string, pid: number): boolean {
+function replaceStaleClaim(file: string, pid: number, uptime: number): boolean {
   try {
     fs.unlinkSync(file);
   } catch {
     return false;
   }
-  return writeClaim(file, pid);
+  return writeClaim(file, pid, uptime);
 }
 
 /**
@@ -229,7 +230,7 @@ export function releaseCdpPort(claim: CdpPortClaim, deps: { dir?: string; pid?: 
   const file = claimPath(deps.dir ?? claimDirPath(), claim.port);
   const pid = deps.pid ?? process.pid;
   try {
-    if (Number.parseInt(fs.readFileSync(file, 'utf8').trim(), 10) !== pid) return;
+    if (parseClaim(fs.readFileSync(file, 'utf8')).pid !== pid) return;
     fs.unlinkSync(file);
   } catch {
     /* already gone, or unreadable: nothing of ours to remove */
@@ -237,33 +238,29 @@ export function releaseCdpPort(claim: CdpPortClaim, deps: { dir?: string; pid?: 
 }
 
 /**
- * Release `claim` on the first of `will-quit` and process `exit`. `will-quit`
- * is the normal quit; `exit` also covers `app.exit()`, which skips will-quit
- * (the quit deadlines in index.ts use it). Returns the release itself, for a
- * caller that ends the process another way before either fires.
+ * Release `claim` when the process exits. Electron emits process `exit` for
+ * `app.quit()` (before or after ready) and for `app.exit()`, which skips
+ * `will-quit`. Not `will-quit` itself: Chromium still listens on the port
+ * then, and a launch that took the port in that gap would fail to bind it.
+ * Returns the release, for an exit that runs no handlers (a Windows session
+ * end).
  */
-export function releaseCdpPortOnQuit(
+export function releaseCdpPortOnExit(
   claim: CdpPortClaim,
-  hooks: { onWillQuit(listener: () => void): void; onExit(listener: () => void): void },
+  proc: { on(event: 'exit', listener: () => void): unknown },
   deps: { dir?: string; pid?: number } = {},
 ): () => void {
-  let released = false;
-  const release = (): void => {
-    if (released) return;
-    released = true;
-    releaseCdpPort(claim, deps);
-  };
-  hooks.onWillQuit(release);
-  hooks.onExit(release);
+  const release = (): void => releaseCdpPort(claim, deps);
+  proc.on('exit', release);
   return release;
 }
 
 /** Create the claim file exclusively. False = somebody else holds it, or we cannot write. */
-function writeClaim(file: string, pid: number): boolean {
+function writeClaim(file: string, pid: number, uptime: number): boolean {
   let fd: number | null = null;
   try {
     fd = fs.openSync(file, 'wx');
-    fs.writeFileSync(fd, String(pid), 'utf8');
+    fs.writeFileSync(fd, formatClaim(pid, uptime), 'utf8');
     return true;
   } catch {
     return false;
