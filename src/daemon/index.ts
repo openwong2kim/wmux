@@ -11036,7 +11036,7 @@ async function main(): Promise<void> {
               const sha = out.stdout.trim();
               return out.code === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
             },
-            pristine: (worktreePath, base) => worktreeUnchanged(gitRunner(worktreePath, {}), base),
+            pristine: (worktreePath, base, branch) => worktreeUnchanged(gitRunner(worktreePath, {}), base, branch),
           },
           releases: headlessReleases(a2aDir),
           paneGone: async (workspaceId, paneId) => {

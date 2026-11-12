@@ -66,6 +66,8 @@ export interface HeadlessStartRecordV1 {
   cwd?: string;
   /** The commit the worktree started from: an ended start that left nothing beyond it, on a clean tree, is removed. */
   baseCommit?: string;
+  /** The branch made with the worktree (removed with it, so its tip must still be `baseCommit`). */
+  branch?: string;
   /** The agent session's process (its pid and start time), to find it again after a daemon restart. */
   rootPid?: number;
   rootStart?: string;
@@ -156,7 +158,7 @@ export class HeadlessStartStore {
   update(
     hostId: string,
     spawnId: string,
-    patch: Partial<Pick<HeadlessStartRecordV1, 'phase' | 'worktreeIntended' | 'worktreePath' | 'cwd' | 'baseCommit' | 'rootPid' | 'rootStart' | 'linkId' | 'endedAt' | 'survivors'>>,
+    patch: Partial<Pick<HeadlessStartRecordV1, 'phase' | 'worktreeIntended' | 'worktreePath' | 'cwd' | 'baseCommit' | 'branch' | 'rootPid' | 'rootStart' | 'linkId' | 'endedAt' | 'survivors'>>,
   ): HeadlessStartRecordV1 {
     const k = key(hostId, spawnId);
     const rec = this.records.get(k);
@@ -210,7 +212,7 @@ function coerceSurvivors(v: unknown): HeadlessSurvivor[] | null | undefined {
 /** A record as stored, or null when it is not one (also read by `wmux daemon headless status`). */
 export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null {
   if (!isPlainObject(raw) || raw['v'] !== 1) return null;
-  const { hostId, spawnId, agent, repoPath, sessionId, workspaceId, agentSessionId, lineage, runId, phase, worktreeIntended, worktreePath, cwd, baseCommit, rootPid, rootStart, linkId, startedAt, endedAt } = raw;
+  const { hostId, spawnId, agent, repoPath, sessionId, workspaceId, agentSessionId, lineage, runId, phase, worktreeIntended, worktreePath, cwd, baseCommit, branch, rootPid, rootStart, linkId, startedAt, endedAt } = raw;
   const survivors = coerceSurvivors(raw['survivors']);
   if (survivors === null) return null;
   if (!isHostId(hostId) || !isSpawnId(spawnId) || !isAgentSlug(agent)) return null;
@@ -221,6 +223,7 @@ export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null 
   if (typeof phase !== 'string' || !PHASES.has(phase)) return null;
   if (!optionalPath(worktreeIntended) || !optionalPath(worktreePath) || !optionalPath(cwd)) return null;
   if (baseCommit !== undefined && (typeof baseCommit !== 'string' || !/^[0-9a-f]{40,64}$/.test(baseCommit))) return null;
+  if (branch !== undefined && (typeof branch !== 'string' || !/^wmux\/remote\/[A-Za-z0-9-]{1,128}$/.test(branch))) return null;
   if (rootPid !== undefined && (!Number.isInteger(rootPid) || (rootPid as number) <= 1)) return null;
   if (rootStart !== undefined && (typeof rootStart !== 'string' || rootStart.length > 128)) return null;
   if (linkId !== undefined && (typeof linkId !== 'string' || !UUID_RE.test(linkId))) return null;
@@ -232,6 +235,7 @@ export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null 
     ...(worktreePath !== undefined ? { worktreePath } : {}),
     ...(cwd !== undefined ? { cwd } : {}),
     ...(baseCommit !== undefined ? { baseCommit } : {}),
+    ...(branch !== undefined ? { branch } : {}),
     ...(rootPid !== undefined ? { rootPid: rootPid as number } : {}),
     ...(rootStart !== undefined ? { rootStart } : {}),
     ...(linkId !== undefined ? { linkId } : {}),

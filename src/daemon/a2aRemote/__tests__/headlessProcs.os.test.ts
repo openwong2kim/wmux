@@ -47,6 +47,12 @@ describe.skipIf(process.platform === 'win32')('processes working in a worktree',
   it('no /proc to read: cannot be told', async () => {
     expect(await processesWorkingIn(worktree, path.join(dir, 'no-proc'))).toBeNull();
   });
+
+  it('a /proc that is there but cannot be listed is an error, not "cannot be told"', async () => {
+    const notADir = path.join(dir, 'proc-file');
+    fs.writeFileSync(notADir, '');
+    await expect(processesWorkingIn(worktree, notADir)).rejects.toThrow();
+  });
 });
 
 describe.skipIf(process.platform === 'win32')('the hold on a start whose agent tree was not confirmed gone', () => {
@@ -96,5 +102,11 @@ describe.skipIf(process.platform === 'win32')('the hold on a start whose agent t
     const noProc = { ...deps([]), procRoot: path.join(dir, 'no-proc') };
     expect(await stillHeld([tracked(11)], worktree, noProc)).toEqual([]);
     expect(await stillHeld([tracked(11)], worktree, { ...noProc, listProcesses: async () => [row(11, 1)] })).toHaveLength(1);
+  });
+
+  it('a /proc that cannot be listed keeps the hold', async () => {
+    const notADir = path.join(dir, 'proc-file');
+    fs.writeFileSync(notADir, '');
+    expect(await stillHeld([tracked(11)], worktree, { ...deps([]), procRoot: notADir })).toHaveLength(1);
   });
 });

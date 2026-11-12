@@ -522,7 +522,7 @@ describe('headless starts across a crash, a restart, and an unchanged worktree',
     });
     await starter.start(HOST, SPAWN);
     expect(seen).toEqual([INTENDED]);
-    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', rootPid: 777, rootStart: 'Thu Nov 12 10:00:00 2026', baseCommit: 'b'.repeat(40) });
+    expect(starts.get(HOST, SPAWN)).toMatchObject({ phase: 'started', rootPid: 777, rootStart: 'Thu Nov 12 10:00:00 2026', baseCommit: 'b'.repeat(40), branch: `wmux/remote/${SPAWN}` });
   });
 
   it('a daemon that died between `worktree add` and recording it: the next run takes the path back', async () => {
@@ -573,10 +573,32 @@ describe('headless starts across a crash, a restart, and an unchanged worktree',
     await makeStarter().reconcile();
     expect(starts.get(HOST, SPAWN)?.phase).toBe('ended');
     expect(removedTrees).toEqual([]);
+    // Unchanged, but a record that does not name its branch (written before it was recorded): kept.
     starts.remove(HOST, SPAWN);
     record({ baseCommit: 'a'.repeat(40) });
     live.add('hl-s1');
     pristine = true;
+    await makeStarter().reconcile();
+    expect(removedTrees).toEqual([]);
+    starts.remove(HOST, SPAWN);
+    record({ baseCommit: 'a'.repeat(40), branch: `wmux/remote/${SPAWN}` });
+    live.add('hl-s1');
+    await makeStarter().reconcile();
+    expect(removedTrees).toEqual([SPAWN]);
+    expect(starts.list()).toEqual([]);
+  });
+
+  it('a start cut after its session was made (then a restart) ends the earlier run\'s agent before its worktree goes', async () => {
+    record({ phase: 'created', linkId: undefined, runId: 'run-0', rootPid: 4242, rootStart: 'Thu Nov 12 10:00:00 2026' });
+    request = { state: 'decided', code: 'failed' };
+    earlierSurvivors = [{ pid: 4242, reason: 'still running', startTime: 'Thu Nov 12 10:00:00 2026' }];
+    await makeStarter().reconcile();
+    expect(calls).toContain('killEarlier:4242');
+    // It did not exit: the worktree and the record stay, held by it.
+    expect(removedTrees).toEqual([]);
+    expect(starts.get(HOST, SPAWN)?.survivors).toEqual(earlierSurvivors);
+    earlierSurvivors = [];
+    stillRunning = [];
     await makeStarter().reconcile();
     expect(removedTrees).toEqual([SPAWN]);
     expect(starts.list()).toEqual([]);

@@ -157,7 +157,7 @@ function headlessParts(opts: {
         const out = await gitRunner(wt, wtOpts)(['rev-parse', 'HEAD']);
         return out.code === 0 ? out.stdout.trim() : null;
       },
-      pristine: (wt, base) => worktreeUnchanged(gitRunner(wt, wtOpts), base),
+      pristine: (wt, base, branch) => worktreeUnchanged(gitRunner(wt, wtOpts), base, branch),
     },
     releases: headlessReleases(opts.a2aDir),
     paneGone: opts.paneGone ?? (async () => undefined),
@@ -419,6 +419,31 @@ describe('headless remote spawn, two PCs and no app', () => {
     await b.headless!.reconcile();
     expect(b.starts!.get(a.hostId, spawnId)?.phase).toBe('ended');
     expect(fs.readFileSync(path.join(wt, 'out', 'report.md'), 'utf8')).toBe('the agent\'s work\n');
+  });
+
+  it('a commit left on its branch is kept, even with the worktree back on the base commit', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    await pair(a, b);
+    await allow(b, a.hostId, [{ hostId: a.hostId, rootId: 'web', agent: 'claude' }]);
+    const spawnId = await ask(a, b);
+    await until(() => a.asks!.list(spawnId).requests[0]?.state === 'started');
+    const wt = path.join(b.dir, 'worktrees', `remote-${spawnId}`);
+    const git = (...args: string[]): string => execFileSync('git', ['-C', wt, ...args], {
+      env: { ...process.env, GIT_CONFIG_GLOBAL: path.join(b.dir, 'global.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }, encoding: 'utf8',
+    }).trim();
+    const base = git('rev-parse', 'HEAD');
+    // The agent commits, then checks the base out again (detached): HEAD and status look untouched.
+    fs.writeFileSync(path.join(wt, 'work.txt'), 'work\n');
+    git('add', '.');
+    git('commit', '-qm', 'work');
+    const work = git('rev-parse', 'HEAD');
+    git('checkout', '-q', '--detach', base);
+    b.links.forgetHost(a.hostId as HostId);
+    await b.headless!.reconcile();
+    expect(b.starts!.get(a.hostId, spawnId)?.phase).toBe('ended');
+    expect(git('rev-parse', `refs/heads/wmux/remote/${spawnId}`)).toBe(work);
+    expect(fs.existsSync(wt)).toBe(true);
   });
 
   /**
