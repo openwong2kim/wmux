@@ -258,7 +258,7 @@ function SpawnPolicyEditor({ pickFolder }: { pickFolder: () => Promise<string | 
                 value={draft.limits?.[key]}
                 max={SPAWN_LIMIT_MAX[key]}
                 label={t(`remoteSpawn.limit.${key}`)}
-                noLimitLabel={key === 'pendingPerPc' ? t('remoteSpawn.limit.pendingDefault') : t('settings.noLimit')}
+                noLimitLabel={key === 'pendingPerPc' ? t('remoteSpawn.limit.pendingDefault') : key === 'maxPromptKiB' || key === 'maxWaitHours' ? String(SPAWN_LIMIT_MAX[key]) : t('settings.noLimit')}
                 onCommit={(v) => setLimit(key, v)}
                 testId={`remote-spawn-limit-${key}`}
               />

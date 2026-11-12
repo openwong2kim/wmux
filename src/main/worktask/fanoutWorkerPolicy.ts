@@ -16,6 +16,9 @@
 //                      own trustedWorkspaces (main/agents/agyTrust). Off by
 //                      default (owner decision): a persistent write into
 //                      another CLI's global settings is opt-in.
+//   tasksPerCall     — tasks one fan-out call may start (default 8), and how
+//   fanoutDepth        deep fan-out may go (default 1). Main-side, like the
+//                      caps below, so an agent cannot raise them.
 //   liveTaskCap      — the app-wide fan-out caps (worktask/fanoutGuards.ts):
 //   hourlyTaskCap      tasks live at once, and starts per rolling hour. Each
 //                      is optional; null (the default) is no limit. An agent
@@ -42,8 +45,12 @@ import {
 import {
   LEGACY_FANOUT_HOURLY_TASK_CAP,
   LEGACY_FANOUT_LIVE_TASK_CAP,
+  DEFAULT_FANOUT_DEPTH,
+  DEFAULT_FANOUT_TASKS_PER_CALL,
+  clampFanoutDepth,
   clampFanoutHourlyTaskCap,
   clampFanoutLiveTaskCap,
+  clampFanoutTasksPerCall,
 } from '../../shared/fanoutTaskCaps';
 
 export const DEFAULT_FANOUT_REQUIRE_APPROVAL = false;
@@ -56,6 +63,10 @@ interface FanoutPolicy {
   /** null: no limit (the default). */
   liveTaskCap: number | null;
   hourlyTaskCap: number | null;
+  /** Tasks one fan-out call may start (default 8, up to the wire maximum). */
+  tasksPerCall: number;
+  /** How deep fan-out may go (default 1: a task cannot fan out again). */
+  fanoutDepth: number;
   /**
    * TASK_CAPS_VERSION once the caps were read as optional. A file without it
    * was written when they were always stored: there, a cap equal to the old
@@ -88,6 +99,8 @@ function loadPolicy(dir?: string): FanoutPolicy {
       trustAgyFolders: DEFAULT_FANOUT_TRUST_AGY_FOLDERS,
       liveTaskCap: null,
       hourlyTaskCap: null,
+      tasksPerCall: DEFAULT_FANOUT_TASKS_PER_CALL,
+      fanoutDepth: DEFAULT_FANOUT_DEPTH,
       taskCapsVersion: TASK_CAPS_VERSION,
     };
   }
@@ -104,6 +117,8 @@ function loadPolicy(dir?: string): FanoutPolicy {
       trustAgyFolders: raw.trustAgyFolders === true,
       liveTaskCap: storedCap(raw, 'liveTaskCap', LEGACY_FANOUT_LIVE_TASK_CAP, clampFanoutLiveTaskCap),
       hourlyTaskCap: storedCap(raw, 'hourlyTaskCap', LEGACY_FANOUT_HOURLY_TASK_CAP, clampFanoutHourlyTaskCap),
+      tasksPerCall: clampFanoutTasksPerCall(raw.tasksPerCall),
+      fanoutDepth: clampFanoutDepth(raw.fanoutDepth),
       taskCapsVersion: TASK_CAPS_VERSION,
     };
   } catch {
@@ -114,6 +129,8 @@ function loadPolicy(dir?: string): FanoutPolicy {
       // The safe side: the brakes the old defaults were, until the file is readable again.
       liveTaskCap: LEGACY_FANOUT_LIVE_TASK_CAP,
       hourlyTaskCap: LEGACY_FANOUT_HOURLY_TASK_CAP,
+      tasksPerCall: DEFAULT_FANOUT_TASKS_PER_CALL,
+      fanoutDepth: DEFAULT_FANOUT_DEPTH,
       taskCapsVersion: TASK_CAPS_VERSION,
     };
   }
@@ -185,4 +202,32 @@ export async function setFanoutHourlyTaskCap(value: unknown, dir?: string): Prom
   const cap = clampFanoutHourlyTaskCap(value);
   await atomicWriteJSON(getFanoutWorkerPolicyPath(dir), { ...loadPolicy(dir), hourlyTaskCap: cap });
   return cap;
+}
+
+/** Tasks one fan-out call may start, the owner's setting (default 8). */
+export function loadFanoutTasksPerCall(dir?: string): number {
+  return loadPolicy(dir).tasksPerCall;
+}
+
+/** Persist tasks per call, clamped to its bounds. Only a finite number writes;
+ *  returns the value now in force. */
+export async function setFanoutTasksPerCall(value: unknown, dir?: string): Promise<number> {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return loadFanoutTasksPerCall(dir);
+  const n = clampFanoutTasksPerCall(value);
+  await atomicWriteJSON(getFanoutWorkerPolicyPath(dir), { ...loadPolicy(dir), tasksPerCall: n });
+  return n;
+}
+
+/** How deep fan-out may go, the owner's setting (default 1). */
+export function loadFanoutDepth(dir?: string): number {
+  return loadPolicy(dir).fanoutDepth;
+}
+
+/** Persist the depth, clamped to its bounds. Only a finite number writes;
+ *  returns the value now in force. */
+export async function setFanoutDepth(value: unknown, dir?: string): Promise<number> {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return loadFanoutDepth(dir);
+  const n = clampFanoutDepth(value);
+  await atomicWriteJSON(getFanoutWorkerPolicyPath(dir), { ...loadPolicy(dir), fanoutDepth: n });
+  return n;
 }

@@ -15,6 +15,7 @@ export function SettingLimitInput({
   label,
   noLimitLabel,
   testId,
+  required = false,
 }: {
   /** null or undefined: no limit. */
   value: number | null | undefined;
@@ -23,6 +24,8 @@ export function SettingLimitInput({
   label: string;
   noLimitLabel: string;
   testId?: string;
+  /** A value that cannot be unset: an empty field goes back to the value in force. */
+  required?: boolean;
 }) {
   const shown = value === null || value === undefined ? '' : String(value);
   const [draft, setDraft] = useState(shown);
@@ -30,7 +33,8 @@ export function SettingLimitInput({
   const commit = () => {
     const text = draft.trim();
     if (text === '') {
-      if (shown !== '') onCommit(null);
+      if (required) setDraft(shown);
+      else if (shown !== '') onCommit(null);
       return;
     }
     const n = /^\d+$/.test(text) ? Number(text) : NaN;

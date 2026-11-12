@@ -104,8 +104,8 @@ import { git as runGit } from '../../git/git';
 import type { DaemonClient } from '../../DaemonClient';
 import { hostCwdForPane, type DaemonRpc } from '../../pty/wslCallerCwd';
 import type { FanOutRequest, FanOutService, FanOutTaskResult } from '../../worktask/FanOutService';
-import { getFanOutGuards, launchedAuditTask, promptDigest, refreshDormantTaskWorkspaces, type FanOutGuards } from '../../worktask/fanoutGuards';
-import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
+import { getFanOutGuards, launchedAuditTask, lineageDepth, promptDigest, refreshDormantTaskWorkspaces, type FanOutGuards } from '../../worktask/fanoutGuards';
+import { loadFanoutDepth, loadFanoutRequireApproval, loadFanoutTasksPerCall, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
 import { callerPaneRunsBypass, inheritWorkerMode, type FanoutWorkerModeSource } from '../../worktask/fanoutInheritedMode';
 import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
 import { loadFanoutPresets } from '../../worktask/fanoutPresets';
@@ -597,6 +597,11 @@ function parseTasks(
   // rejected on length, not after N trims.
   if (rawTitles.length > FANOUT_MAX_TASKS) {
     return { error: `task count ${rawTitles.length} exceeds the cap of ${FANOUT_MAX_TASKS}` };
+  }
+  // The limit in force is the owner's setting, at most the wire's maximum above.
+  const perCall = loadFanoutTasksPerCall();
+  if (rawTitles.length > perCall) {
+    return { error: `task count ${rawTitles.length} exceeds the tasks-per-call limit of ${perCall} (Settings › Roles & fan-out)` };
   }
   if (params['taskPrompts'] !== undefined && !Array.isArray(params['taskPrompts'])) {
     return { error: 'taskPrompts must be an array of strings when provided' };
@@ -1177,26 +1182,36 @@ export function registerFanOutRpc(
         `'${HUMAN_WORKSPACE_ID}' is the reserved human workspace and cannot fan out from the pipe`,
       );
     }
-    // ── Depth-1: a fan-out task cannot fan out ───────────────────────────
+    // ── Depth: a fan-out task fans out only as deep as the owner allows ──
     // The caller's workspace carries the lineage stamp FanOutService wrote
     // before its agent launched (or the one a workspace it created inherited),
     // or the ledger knows it as a task workspace. Both reads ignore the ledger
     // STATUS: a worker that marks itself `failed` is still a worker. A store
-    // that cannot be read refuses — "maybe a task" is not "not a task".
-    let fanoutOwner: string | null;
+    // that cannot be read refuses — "maybe a task" is not "not a task". Only
+    // the comparison reads the depth setting (default 1: a task cannot fan out).
+    // The refusal is returned only for a NEW fan-out, after the poll and
+    // cancelPending branches below: a task that started one while a deeper
+    // setting allowed it still reads its results and stops its waiting tasks
+    // after the setting is lowered.
+    let depthRefusal: ReturnType<typeof deny> | null = null;
     try {
-      fanoutOwner = guardsOf().fanoutOwnerOf(callerWorkspaceId);
+      const guards = guardsOf();
+      const fanoutOwner = guards.fanoutOwnerOf(callerWorkspaceId);
+      const depth = fanoutOwner === null ? 0 : lineageDepth((ws) => guards.fanoutOwnerOf(ws), callerWorkspaceId);
+      const allowedDepth = loadFanoutDepth();
+      if (fanoutOwner !== null && depth >= allowedDepth) {
+        depthRefusal = deny(
+          'NOT_AUTHORIZED',
+          (allowedDepth === 1
+            ? `task.fanout.start refused: workspace ${callerWorkspaceId} is a fan-out task of ${fanoutOwner}, and fan-out is one level deep — `
+            : `task.fanout.start refused: workspace ${callerWorkspaceId} is a fan-out task ${depth} levels deep (owner ${fanoutOwner}), and fan-out may go ${allowedDepth} levels deep (Settings › Roles & fan-out) — `) +
+            'record your result with ledger_update and let the owner fan out instead',
+        );
+      }
     } catch (err) {
-      return deny(
+      depthRefusal = deny(
         'FAILED_PRECONDITION',
         `task.fanout.start could not read the fan-out lineage store, so it cannot rule out that the caller is itself a fan-out task (${(err as Error).message})`,
-      );
-    }
-    if (fanoutOwner !== null) {
-      return deny(
-        'NOT_AUTHORIZED',
-        `task.fanout.start refused: workspace ${callerWorkspaceId} is a fan-out task of ${fanoutOwner}, and fan-out is one level deep — ` +
-          'record your result with ledger_update and let the owner fan out instead',
       );
     }
     /** Per-workspace key space (see above). The GUI mints uuid keys of its own,
@@ -1237,7 +1252,7 @@ export function registerFanOutRpc(
       const repoPath = bot ? (deps.bot ?? defaultBotPort)()?.profile(bot.botId)?.repo?.repoPath : undefined;
       if (repoPath) verifyGate = await (deps.botBaseGate ?? repoBaseGate)(repoPath);
     };
-    if (!keyKnown) {
+    if (!keyKnown && !depthRefusal) {
       try {
         await Promise.all([
           bot ? withinMs((deps.bot ?? defaultBotPort)()?.refreshLiveness?.(), LIVENESS_WAIT_MS) : undefined,
@@ -1322,6 +1337,9 @@ export function registerFanOutRpc(
         },
       };
     }
+    // Past every answer for a key already known: from here on this call books
+    // a new fan-out, which the depth setting may refuse (see above).
+    if (depthRefusal) return depthRefusal;
 
     // ── A bot starts a fan-out only inside a running wake ────────────────
     // and only under the key that wake owns (R8): a retried or replayed turn

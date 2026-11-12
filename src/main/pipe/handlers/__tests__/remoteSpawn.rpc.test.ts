@@ -5,6 +5,7 @@ import path from 'node:path';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { registerRemoteSpawnRpc } from '../remoteSpawn.rpc';
 import { FanOutGuards, stampRemoteSpawnPane } from '../../../worktask/fanoutGuards';
+import { setFanoutDepth } from '../../../worktask/fanoutWorkerPolicy';
 import type { RpcContext } from '../../../../shared/rpc';
 
 type Handler = (params: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>;
@@ -35,7 +36,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+afterEach(async () => {
+  fs.rmSync(dir, { recursive: true, force: true });
+  await setFanoutDepth(1);
+});
 
 const call = (m: string, p: Record<string, unknown>, ctx: RpcContext = local) => handlers.get(m)!(p, ctx) as Promise<{ ok?: boolean; error?: { code: string } }>;
 
@@ -62,6 +66,15 @@ describe('a2a.remote.spawn', () => {
     expect(res.error.code).toBe('NOT_AUTHORIZED');
     expect(res.error.message).toContain('another PC');
     expect(daemon.a2aSpawnAsk).not.toHaveBeenCalled();
+  });
+
+  it('with the depth setting at 2, an agent another PC started asks; one two levels down does not', async () => {
+    await setFanoutDepth(2);
+    stampRemoteSpawnPane({ workspaceId: 'ws-a', remoteSpawnOf: HOST }, guards);
+    expect(await call('a2a.remote.spawn', ask)).toEqual({ ok: true });
+    guards.markTask('ws-mid', 'ws-root');
+    guards.markTask('ws-a', 'ws-mid');
+    expect((await call('a2a.remote.spawn', ask)).error?.code).toBe('NOT_AUTHORIZED');
   });
 
   it('refuses a missing field before the daemon is asked', async () => {

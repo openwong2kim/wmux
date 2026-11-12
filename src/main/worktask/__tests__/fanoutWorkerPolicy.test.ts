@@ -7,6 +7,10 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   getFanoutWorkerPolicyPath,
+  loadFanoutDepth,
+  loadFanoutTasksPerCall,
+  setFanoutDepth,
+  setFanoutTasksPerCall,
   loadFanoutHourlyTaskCap,
   loadFanoutLiveTaskCap,
   loadFanoutRequireApproval,
@@ -88,6 +92,19 @@ describe('fan-out policy store', () => {
     expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([null, null]);
     fs.writeFileSync(getFanoutWorkerPolicyPath(dir), '{ torn', 'utf8');
     expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([8, 24]);
+  });
+
+  it('tasks per call and depth: 8 and 1 by default, clamped to 1–64 and 1–3, kept across other writes', async () => {
+    const dir = tmp();
+    expect([loadFanoutTasksPerCall(dir), loadFanoutDepth(dir)]).toEqual([8, 1]);
+    expect(await setFanoutTasksPerCall(0, dir)).toBe(1);
+    expect(await setFanoutTasksPerCall(500, dir)).toBe(64);
+    expect(await setFanoutDepth(9, dir)).toBe(3);
+    expect(await setFanoutDepth('2', dir)).toBe(3);
+    await setFanoutRequireApproval(true, dir);
+    expect([loadFanoutTasksPerCall(dir), loadFanoutDepth(dir)]).toEqual([64, 3]);
+    fs.writeFileSync(getFanoutWorkerPolicyPath(dir), '{ torn', 'utf8');
+    expect([loadFanoutTasksPerCall(dir), loadFanoutDepth(dir)]).toEqual([8, 1]);
   });
 
   it('a file from before the caps were optional: the old defaults become unset, other values stay, once', async () => {
