@@ -107,9 +107,9 @@ export interface HeldFanoutPorts {
    *  read from it). Absent: a slot is counted only within one pass. */
   liveWakes?: () => readonly Pick<WakeItem, 'id' | 'botId' | 'reason' | 'enqueuedAt' | 'state'>[];
   factoryLimit?: () => number;
-  /** The wmux-wide live fan-out cap (FANOUT_LIVE_TASK_CAP). Absent: not
+  /** The wmux-wide live fan-out cap (fanoutGuards liveTaskCap; null: none set). Absent: not
    *  checked here (the bot's retry is refused and held again). */
-  liveLimit?: () => number;
+  liveLimit?: () => number | null;
   /** Whether the usage reserve holds what a bot's workers would spend in
    *  this workspace: a held request waits for it to lift (the recheck timer
    *  sees it). */
@@ -349,7 +349,7 @@ export class HeldFanouts {
       }
       const now = (this.ports.now ?? Date.now)();
       const limit = (this.ports.factoryLimit ?? (() => WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS))();
-      const liveLimit = this.ports.liveLimit?.();
+      const liveLimit = this.ports.liveLimit?.() ?? undefined;
       let changed = false;
       // Slots handed out to a held wake, in this pass or an earlier one,
       // whose turn has not booked its workers yet.

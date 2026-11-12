@@ -93,6 +93,36 @@ describe('RemoteSpawnSection', () => {
     expect($<HTMLButtonElement>('[data-testid="remote-spawn-save"]')!.disabled).toBe(true);
   });
 
+  it('shows each limit empty (no limit; open requests 100) and saves only the ones set', async () => {
+    stub(undefined, { ...defaultSpawnPolicy(), enabled: true });
+    await render(<RemoteSpawnSection enabled />);
+    const field = (key: string) => $<HTMLInputElement>(`[data-testid="remote-spawn-limit-${key}"]`)!;
+    for (const key of ['livePerPc', 'liveTotal', 'startsPerHour', 'startsPerDay']) {
+      expect(field(key).value).toBe('');
+      expect(field(key).placeholder).toBe('No limit');
+    }
+    expect(field('pendingPerPc').placeholder).toBe('100 (default)');
+    const type = async (key: string, text: string) => {
+      const el = field(key);
+      await act(async () => {
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+        set.call(el, text);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => { el.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
+      await settle();
+    };
+    await type('startsPerHour', '3');
+    await type('pendingPerPc', '2000'); // past the store size: back to empty
+    expect(field('pendingPerPc').value).toBe('');
+    await click($('[data-testid="remote-spawn-save"]'));
+    expect(spawnPolicySet.mock.calls.at(-1)![0].limits).toEqual({ startsPerHour: 3 });
+    // Cleared again: the policy carries no limits at all.
+    await type('startsPerHour', '');
+    await click($('[data-testid="remote-spawn-save"]'));
+    expect(spawnPolicySet.mock.calls.at(-1)![0]).not.toHaveProperty('limits');
+  });
+
   it('offers only the agents another PC may start', async () => {
     stub();
     await render(<RemoteSpawnSection enabled />);

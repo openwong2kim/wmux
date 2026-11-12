@@ -852,10 +852,11 @@ const electronAPI = {
     getRequireApproval: () => ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_GET) as Promise<boolean>,
     setRequireApproval: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_SET, value) as Promise<boolean>,
-    getLiveTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_GET) as Promise<number>,
-    setLiveTaskCap: (value: number) => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_SET, value) as Promise<number>,
-    getHourlyTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_GET) as Promise<number>,
-    setHourlyTaskCap: (value: number) => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_SET, value) as Promise<number>,
+    // null: no limit.
+    getLiveTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_GET) as Promise<number | null>,
+    setLiveTaskCap: (value: number | null) => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_SET, value) as Promise<number | null>,
+    getHourlyTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_GET) as Promise<number | null>,
+    setHourlyTaskCap: (value: number | null) => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_SET, value) as Promise<number | null>,
     getTrustAgyFolders: () => ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_GET) as Promise<boolean>,
     setTrustAgyFolders: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, value) as Promise<boolean>,

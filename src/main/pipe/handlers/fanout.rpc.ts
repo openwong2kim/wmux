@@ -1716,7 +1716,8 @@ export function registerFanOutRpc(
       // wait for a slot: checked here, with the count the reserve below
       // reads in this same tick, so its refusal is held like the others
       // instead of reaching the reserve and being lost.
-      const wmux = open.live !== undefined ? { live: open.live, limit: guardsOf().liveTaskCap() } : undefined;
+      const wmuxLimit = guardsOf().liveTaskCap();
+      const wmux = open.live !== undefined && wmuxLimit !== null ? { live: open.live, limit: wmuxLimit } : undefined;
       const full = workerSlotsFull(botProfile.budget, open.bot, open.factory, n, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS, wmux);
       const most = Math.min(botProfile.budget.maxConcurrentWorkers, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS);
       if (botProfile.budget.maxConcurrentWorkers === 0) {
