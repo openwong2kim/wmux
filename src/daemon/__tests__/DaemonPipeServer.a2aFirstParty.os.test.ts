@@ -17,7 +17,15 @@ import { readSourceText } from '../../test-utils/sourceText';
 import { APP_ATTACHED_FILE, applyAppHostAtBoot, registerClientIdentify, takeAppSpawnedMarker } from '../appHostMarker';
 import { A2A_SPAWN_RPC } from '../../shared/a2aSpawn';
 import { getDaemonAuthTokenPath, getWmuxHomeDir } from '../../shared/constants';
-import { handleRemote } from '../../cli/commands/remote';
+import { handleRemote, REFUSED_APP_ONLY } from '../../cli/commands/remote';
+
+// The CLI stamps the caller's pane (PID walk, then WMUX_PTY_ID). Pinned to
+// "outside a pane" here, so the result does not depend on where vitest runs:
+// workers run it from inside wmux panes.
+vi.mock('../../cli/commands/channel', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../cli/commands/channel')>()),
+  resolveSenderPtyId: async (): Promise<string> => '',
+}));
 
 function testPipeName(suffix: string): string {
   const id = crypto.randomUUID().slice(0, 8);
@@ -508,8 +516,8 @@ describe('`wmux remote peers` over a real daemon pipe', () => {
     await waitFor(() => app.replies.has('id'));
     const desktop = await runPeers(pipe, token, 2);
     expect(desktop.exit).toBe(1);
-    expect(desktop.err.sort()).toEqual(['a2a.remote.hosts.list', 'a2a.remote.peers.list']
-      .map((m) => `Error: ${NOT_FIRST_PARTY}: ${m} is accepted only from the app's own connection`));
+    // Both calls are refused as not_first_party, which the CLI explains instead of echoing.
+    expect(desktop.err).toEqual([`Error: ${REFUSED_APP_ONLY}`, `Error: ${REFUSED_APP_ONLY}`]);
   });
 });
 

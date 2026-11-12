@@ -128,6 +128,10 @@ const SLOW_DAEMON_CALL_MS = 30_000;
  * readable line on a transport or pipe-level failure; a timeout is passed to
  * `onTimeout` when given, because the daemon may still finish the call.
  */
+/** What a `not_first_party` refusal means, by whether the call came from a pane. */
+export const REFUSED_FROM_PANE = 'these commands are not accepted from inside a wmux pane. Run them in a terminal outside wmux.';
+export const REFUSED_APP_ONLY = 'this wmux daemon takes pairing and remote spawn settings only from the desktop app. On a PC that runs the desktop app, pairing and the allow rules are managed from the app\'s Remote page.';
+
 /** This command's pane identity (PID walk, then the env hint), resolved once per command. */
 let senderPty: Promise<string> | null = null;
 
@@ -150,9 +154,7 @@ async function daemonCall(method: RpcMethod, rawParams: Record<string, unknown>,
       ? 'Error: pairing between PCs is not available in this wmux daemon (it is older, or that part failed to start; see its log).'
       : response.code === NOT_FIRST_PARTY || (response.error ?? '').startsWith(`${NOT_FIRST_PARTY}:`)
         // The daemon's text is the same for both refusals; what this call sent tells them apart.
-        ? pty
-          ? 'Error: these commands are not accepted from inside a wmux pane. Run them in a terminal outside wmux.'
-          : 'Error: this wmux daemon takes pairing and remote spawn settings only from the desktop app. On a PC that runs the desktop app, pairing and the allow rules are managed from the app\'s Remote page.'
+        ? `Error: ${pty ? REFUSED_FROM_PANE : REFUSED_APP_ONLY}`
         : `Error: ${response.error}`);
     process.exit(1);
   }
