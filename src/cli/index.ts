@@ -90,6 +90,7 @@ DAEMON (headless lifecycle, no Electron/GUI required)
   daemon uninstall-service          Remove that unit (the running daemon stays)
   daemon headless on|off|status     Host without the desktop app: let the daemon
                                     start agents that paired PCs' allow rules match
+  daemon headless release <id>      Drop the hold on a start whose processes were checked
 
 WEB ACCESS (browser / PWA)
   web                               Serve wmux panes to a browser (read-only,

@@ -14,7 +14,7 @@ import type { DaemonStatusJson } from '../../shared/sshPcContract';
 import { ENV_KEYS } from '../../shared/constants';
 import { DAEMON_SUPERVISED_ENV, getWmuxDir } from '../../daemon/config';
 import { APP_ATTACHED_FILE } from '../../daemon/appHostMarker';
-import { headlessFlagPath } from '../../daemon/a2aRemote/headlessMode';
+import { headlessFlagPath, headlessReleasePath } from '../../daemon/a2aRemote/headlessMode';
 import { HEADLESS_STARTS_FILE, coerceHeadlessStart, type HeadlessStartRecordV1 } from '../../daemon/a2aRemote/headlessStartStore';
 import { isNestingMarker } from '../../shared/envFilter';
 import { policyIo } from './remote';
@@ -343,8 +343,10 @@ export interface HeadlessStatus {
   running: number;
   /** Worktrees of starts that ended, kept with their branches (the agent's work). */
   leftovers: string[];
-  /** Worktrees of starts whose agent processes did not all exit yet (cleanup waits for them). */
+  /** Starts whose agent processes did not all exit yet (cleanup waits for them): `<spawnId>: <worktree> (pid …)`. */
   heldUp: string[];
+  /** Per asking PC (host id): agents running, and worktrees of ended starts kept. */
+  perPc: Record<string, { running: number; kept: number }>;
   /** Where the app check came from: the running daemon, or the data dir alone (no daemon answered). */
   from: 'daemon' | 'files';
 }
@@ -403,9 +405,20 @@ export function headlessStatus(wmuxDir: string = getWmuxDir(), daemon: DaemonHea
     running: starts.filter((r) => r.phase === 'started' && !r.survivors).length,
     // Only those still on disk: the owner may have removed some already.
     leftovers: starts.flatMap((r) => (r.phase === 'ended' && !r.survivors && r.worktreePath && existsSync(r.worktreePath) ? [r.worktreePath] : [])),
-    heldUp: starts.flatMap((r) => (r.survivors ? [`${r.worktreePath ?? r.sessionId} (pid ${r.survivors.map((p) => p.pid).join(', ')})`] : [])),
+    heldUp: starts.flatMap((r) => (r.survivors ? [`${r.spawnId}: ${r.worktreePath ?? r.sessionId} (pid ${r.survivors.map((p) => p.pid).join(', ')})`] : [])),
+    perPc: perPc(starts),
     from: daemon ? 'daemon' : 'files',
   };
+}
+
+function perPc(starts: HeadlessStartRecordV1[]): HeadlessStatus['perPc'] {
+  const out: HeadlessStatus['perPc'] = {};
+  for (const r of starts) {
+    const row = (out[r.hostId] ??= { running: 0, kept: 0 });
+    if (r.phase === 'started' && !r.survivors) row.running += 1;
+    else if (r.phase === 'ended' && r.worktreePath && existsSync(r.worktreePath)) row.kept += 1;
+  }
+  return out;
 }
 
 /** The app is known on this install: the daemon says so, or the data dir recorded an attach. */
@@ -419,7 +432,7 @@ function headlessFail(message: string): never {
 }
 
 /** `wmux daemon headless on | off | status`; `wmuxDir` is the daemon's data dir (a test seam). */
-export async function runHeadless(verb: string | undefined, jsonMode: boolean, wmuxDir: string = getWmuxDir()): Promise<void> {
+export async function runHeadless(verb: string | undefined, jsonMode: boolean, wmuxDir: string = getWmuxDir(), spawnIdArg?: string): Promise<void> {
   const flag = headlessFlagPath(join(wmuxDir, 'a2a'));
   const say = jsonMode ? console.error : console.log;
   if (verb === 'status') {
@@ -432,9 +445,11 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
     console.log(`Agents started remotely, running: ${st.running}`);
     console.log(`Worktrees of ended starts, kept: ${st.leftovers.length}`);
     for (const p of st.leftovers) console.log(`  ${p}`);
+    for (const [hostId, n] of Object.entries(st.perPc)) console.log(`  from ${hostId}: ${n.running} running, ${n.kept} kept`);
     if (st.heldUp.length > 0) {
       console.log(`Starts waiting for their agent's processes to exit (worktree kept until then): ${st.heldUp.length}`);
       for (const p of st.heldUp) console.log(`  ${p}`);
+      console.log('Once you checked those processes are gone (or stopped them), drop a hold with `wmux daemon headless release <spawn id>`.');
     }
     if (st.from === 'files') console.log('(No daemon answered: read from the data dir only.)');
     return;
@@ -445,11 +460,12 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
     else console.log('Headless mode: off. No new remote start here. Agents it started that still run end within a minute; their worktrees and branches are kept.');
     return;
   }
-  if (verb !== 'on') headlessFail('Usage: wmux daemon headless on | off | status');
-  // A person decides this, in a terminal outside wmux: an agent may not turn it on for itself.
+  if (verb !== 'on' && verb !== 'release') headlessFail('Usage: wmux daemon headless on | off | status | release <spawn id>');
+  // A person decides this, in a terminal outside wmux: an agent may not do it for itself.
   const env = process.env;
   const marker = env.WMUX_PTY_ID ? 'WMUX_PTY_ID' : Object.keys(env).find((k) => env[k] !== undefined && isNestingMarker(k));
-  if (marker) headlessFail(`\`wmux daemon headless on\` is not run from an agent session or a wmux pane (${marker} is set). A person must run it, in a terminal outside wmux.`);
+  if (marker) headlessFail(`\`wmux daemon headless ${verb}\` is not run from an agent session or a wmux pane (${marker} is set). A person must run it, in a terminal outside wmux.`);
+  if (verb === 'release') return releaseHold(spawnIdArg, wmuxDir, jsonMode);
   const APP_USED = 'the desktop app has used this install; it starts remote agents here. Headless mode is only for a host without the app.';
   if (await appKnown(wmuxDir)) headlessFail(APP_USED);
   if (!policyIo.stdinIsTty()) headlessFail('`wmux daemon headless on` asks for a typed confirmation. Run it in a terminal.');
@@ -474,10 +490,32 @@ export async function runHeadless(verb: string | undefined, jsonMode: boolean, w
   else console.log('Headless mode: on.');
 }
 
+/**
+ * `release <spawnId>`: drop the hold on a start whose agent's processes the
+ * daemon could not see exit, after the person checked them. Left as a word
+ * for the daemon (a file), read at its next reconcile (within a minute).
+ */
+async function releaseHold(spawnId: string | undefined, wmuxDir: string, jsonMode: boolean): Promise<void> {
+  if (!spawnId || !/^sp-[0-9a-f-]{36}$/.test(spawnId)) headlessFail('Usage: wmux daemon headless release <spawn id> (as `wmux daemon headless status` lists it)');
+  const held = headlessStatus(wmuxDir).heldUp.find((h) => h.startsWith(`${spawnId}:`));
+  if (!held) headlessFail(`no start ${spawnId} is waiting for its processes.`);
+  if (!policyIo.stdinIsTty()) headlessFail('`wmux daemon headless release` asks for a typed confirmation. Run it in a terminal.');
+  const say = jsonMode ? console.error : console.log;
+  say(`Held: ${held}`);
+  say('Releasing lets the daemon end this start: if it never finished, its worktree is removed; otherwise it is kept and listed.');
+  const answer = (await policyIo.ask('Type yes once those processes are gone: ', jsonMode)).trim().toLowerCase();
+  if (answer !== 'yes') headlessFail('not confirmed; nothing was changed.');
+  const file = headlessReleasePath(join(wmuxDir, 'a2a'), spawnId);
+  mkdirSync(join(file, '..'), { recursive: true, mode: 0o700 });
+  writeFileSync(file, `${new Date().toISOString()}\n`, { mode: 0o600 });
+  if (jsonMode) console.log(JSON.stringify({ ok: true, released: spawnId }, null, 2));
+  else console.log('Released. The daemon ends it within a minute.');
+}
+
 export async function handleDaemon(sub: string | undefined, rest: string[], jsonMode: boolean): Promise<void> {
   switch (sub) {
     case 'headless':
-      return runHeadless(rest[0], jsonMode);
+      return runHeadless(rest[0], jsonMode, undefined, rest[1]);
     case 'start':
       return runStart(jsonMode);
     case 'status':
@@ -494,7 +532,7 @@ export async function handleDaemon(sub: string | undefined, rest: string[], json
       if (jsonMode) {
         console.log(JSON.stringify({ ok: false, error: `unknown subcommand: ${sub ?? '(none)'}` }, null, 2));
       } else {
-        console.error(`Usage: wmux daemon start | stop | status | run | install-service | uninstall-service | headless on|off|status`);
+        console.error(`Usage: wmux daemon start | stop | status | run | install-service | uninstall-service | headless on|off|status|release`);
       }
       process.exitCode = 1;
   }
