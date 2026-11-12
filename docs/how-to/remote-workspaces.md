@@ -29,7 +29,7 @@ code required. If you are writing an external client instead, see
 ## Steps
 
 There are two ways to register the remote host locally: pairing with a code
-(recommended), or pasting the URL `wmux web` prints. Both end up at the same
+(recommended), or pasting the URL `wmux web --status --show-token` prints. Both end up at the same
 place — a registered host you can pick workspaces from.
 
 ### Pairing with a code (recommended)
@@ -55,8 +55,10 @@ attached device sharing (and losing access with) one long-lived token.
 ### Pasting the URL (fallback)
 
 1. On the remote machine, run `wmux web --tailscale --allow-input` (or
-   without `--allow-input` for read-only). It prints a URL with a bearer
-   token embedded — this is what you'll paste locally.
+   without `--allow-input` for read-only), then `wmux web --status
+   --show-token`. It prints a URL with a bearer token embedded — this is
+   what you'll paste locally. Without `--show-token`, `wmux web` leaves the
+   token out.
 
 2. Locally, open the titlebar `+` menu, choose **"Attach remote
    workspace…"**, and switch to the **"Paste URL"** tab.
@@ -117,11 +119,12 @@ need to re-add it with a freshly printed URL.
     remote-attach probe, or a response this app can't parse).
   - *"could not reach that host"* — the connection itself failed (host
     down, wrong Tailscale name, network blip).
-  - *"token rejected — re-run wmux web on the remote and paste the new
-    URL"* — the host was reached, but the embedded bearer token was
-    refused (401/403). Re-running `wmux web` on the remote mints a fresh
-    token; paste that new URL to re-add the host, or use the remove button
-    on the old entry first if it's still listed.
+  - *"token rejected — run wmux web --status --show-token on the remote
+    and paste its URL"* — the host was reached, but the embedded bearer
+    token was refused (401/403). `wmux web --status --show-token` on the
+    remote prints the current token URL (`wmux web --new-token` mints a new
+    token); paste it to re-add the host, or use the remove button on the
+    old entry first if it's still listed.
 - **A pairing code has a 10-minute window and 5 guesses.** After that, or on
   a duplicate/unreachable/too-old host, pairing fails with its own distinct
   message — an expired or exhausted code is fixed by opening the remote's

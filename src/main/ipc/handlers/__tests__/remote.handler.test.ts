@@ -298,7 +298,7 @@ describe('remote.handler — hostsAdd', () => {
 
     const res = await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'https://box:9600?token=t') as { ok: boolean; error?: string };
 
-    expect(res).toEqual({ ok: false, error: 'token rejected — re-run wmux web on the remote and paste the new URL' });
+    expect(res).toEqual({ ok: false, error: 'token rejected — run wmux web --status --show-token on the remote and paste its URL' });
     expect(store.add).not.toHaveBeenCalled();
   });
 

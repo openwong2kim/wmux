@@ -217,7 +217,7 @@ const NEEDS_HTTPS_MESSAGE = 'that host needs HTTPS — a token is never sent to 
 function probeFailureMessage(probe: Exclude<ProbeResult, { kind: 'ok' }>): string {
   switch (probe.kind) {
     case 'unauthorized':
-      return 'token rejected — re-run wmux web on the remote and paste the new URL';
+      return 'token rejected — run wmux web --status --show-token on the remote and paste its URL';
     case 'unreachable':
       return HOST_UNREACHABLE_ERROR;
     case 'needs-https':
