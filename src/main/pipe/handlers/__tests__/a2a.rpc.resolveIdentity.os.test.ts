@@ -771,7 +771,7 @@ describe('a2a.resolve.identity — scheduled runs with a browser identity', () =
     expect(lookupWorkspaceClaim(res.workspaceToken)).toEqual({ kind: 'bound', workspaceId: 'ws-1', ptyId: 'auto-r1', browserOnly: true });
   });
 
-  it('a caller whose connection is another process gets no run claim', async () => {
+  it.skipIf(process.platform === 'win32')('a caller whose connection is another process gets no run claim', async () => {
     const r = setupRouterWithSnapshot(new Map<number, number>([[39876, 25020], [25020, 49076], [49076, 1]]));
     const res = await r.dispatch({ id: 'rp', method: 'a2a.resolve.identity', params: { callerPid: 39876 } }, { externalWire: true, peerPid: 11111, peerStartedAt: '1' });
     const result = (res as { result: ResolveResult & { workspaceToken?: string } }).result;
@@ -779,7 +779,7 @@ describe('a2a.resolve.identity — scheduled runs with a browser identity', () =
     expect(result.workspaceToken).toBeUndefined();
   });
 
-  it('a run claim is neither minted nor refreshed when the caller changed before the mint', async () => {
+  it.skipIf(process.platform === 'win32')('a run claim is neither minted nor refreshed when the caller changed before the mint', async () => {
     // A claim already held for the run's PTY, which a mint for another
     // workspace would delete.
     const { claimTokenForRun } = await import('../../../workspace/workspaceClaimTrust');
@@ -1094,7 +1094,9 @@ describe('a2a.resolve.identity — a pid-map hit must be the session\'s current 
   });
 });
 
-describe('a2a.resolve.identity — a claim is taken only from the process it names', () => {
+// Windows reads no peer pid, so a claim there is taken as sent (the last test
+// below checks that decision with the platform passed in).
+describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim is taken only from the process it names', () => {
   // Two panes: daemon-shell (shell 49076) and daemon-other (shell 50000).
   // 39876 and 60002 run in daemon-shell, 60001 in daemon-other.
   const tree = new Map<number, number>([
