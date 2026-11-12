@@ -125,21 +125,24 @@ describe('wmux daemon headless', () => {
     fs.mkdirSync(path.join(dir, 'worktrees', 'task-other'), { recursive: true });
     expect(headlessStatus(dir).setAside).toBeUndefined();
     fs.writeFileSync(path.join(a2a, `${HEADLESS_STARTS_FILE}.corrupt-1794516000000`), '{broken');
-    expect(headlessStatus(dir).setAside).toEqual({ files: [`${HEADLESS_STARTS_FILE}.corrupt-1794516000000`], unrecordedWorktrees: [lost] });
+    // Listed by their resolved path (Windows temp dirs come as 8.3 short names).
+    const lostReal = fs.realpathSync.native(lost);
+    expect(headlessStatus(dir).setAside).toEqual({ files: [`${HEADLESS_STARTS_FILE}.corrupt-1794516000000`], unrecordedWorktrees: [lostReal] });
     await runHeadless('status', false, dir);
     const text = out.join('\n');
     expect(text).toContain('set aside');
-    expect(text).toContain(`  ${lost}`);
+    expect(text).toContain(`  ${lostReal}`);
     expect(text).not.toContain('task-other');
     expect(text).toContain('git worktree list');
     // A worktree a record names, reached through a symlinked data dir, is not listed as unrecorded.
     const linked = `${dir}-link`;
-    fs.symlinkSync(dir, linked);
+    // A junction on Windows (no privilege needed); the type is ignored elsewhere.
+    fs.symlinkSync(dir, linked, 'junction');
     try {
       fs.writeFileSync(path.join(a2a, HEADLESS_STARTS_FILE), JSON.stringify({ v: 1, starts: [{
         v: 1, hostId: '11111111-1111-4111-8111-111111111111', spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', agent: 'claude', repoPath: '/repo',
         sessionId: 'hl-00000001-0000-4000-8000-000000000000', workspaceId: 'hl-w', agentSessionId: '33333333-3333-4333-8333-333333333333',
-        lineage: 'remote-spawn:x', runId: 'r', phase: 'ended', worktreePath: fs.realpathSync.native(lost), startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+        lineage: 'remote-spawn:x', runId: 'r', phase: 'ended', worktreePath: lostReal, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
       }] }));
       expect(headlessStatus(linked).setAside?.unrecordedWorktrees).toEqual([]);
     } finally {
