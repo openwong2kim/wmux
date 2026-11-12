@@ -1108,7 +1108,9 @@ export function registerA2aRpc(
     // anchors (no renderer surface carries them), so the daemon lists the live
     // ones with their shell pid and the same walk is tried against those. A
     // hit gets a browser-only claim on the identity's workspace.
-    let runClaim: string | null = null;
+    // The run is only found here; its claim is minted below, after the
+    // checks that the claimed process is still the one that connected.
+    let runTarget: OwningAnchor | null = null;
     // The same holds when the walk hit a pane whose PTY IS such a run: the
     // operator opened the run's terminal, which anchors it in whatever
     // workspace it opened in. The run still acts under its granted identity,
@@ -1117,8 +1119,7 @@ export function registerA2aRpc(
       const runs = await liveIdentityRunAnchors();
       const own = resolved ? runs.find((r) => r.ptyId === resolved?.ptyId) : undefined;
       if (own) {
-        runClaim = claimTokenForRun(own.workspaceId, own.ptyId);
-        if (runClaim) resolved = { workspaceId: own.workspaceId, ptyId: own.ptyId };
+        runTarget = { workspaceId: own.workspaceId, ptyId: own.ptyId };
       } else if (!resolved && runs.length > 0) {
         const snapshot = await withDeadline(
           snapshotPromise,
@@ -1135,29 +1136,28 @@ export function registerA2aRpc(
             runs.map((r) => [r.pid, { ptyId: r.ptyId, workspaceId: r.workspaceId }]),
           );
           const hit = walkToOwningAnchor(parentPid, ppidByPid, runAnchors, { createdAt, child: callerPid });
-          if (hit) {
-            runClaim = claimTokenForRun(hit.anchor.workspaceId, hit.anchor.ptyId);
-            if (runClaim) resolved = { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId };
-          }
+          if (hit) runTarget = { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId };
         }
       }
     }
 
     // A pane claim from the walk rests on `entries`: confirm they were judged
-    // over the connection installed now. The synchronous re-check and the mint
-    // run with no await between them. A walk hit whose entries a reconnect
-    // invalidated gets no claim and no `resolved`; the caller still has the
-    // re-judged entries for its own walk, and its next resolve walks those.
-    if (resolved && !runClaim) {
-      const confirmed = await confirmEntriesConnection();
-      if (!stillConfirmed(confirmed)) resolved = null;
-    }
+    // over the connection installed now (re-checked below, with no await
+    // between that re-check and the mint). A walk hit whose entries a
+    // reconnect invalidated gets no claim and no `resolved`; the caller still
+    // has the re-judged entries for its own walk, and its next resolve walks
+    // those. A run's own claim does not rest on them.
+    const confirmed = resolved ? await confirmEntriesConnection() : null;
     // The walk and the checks above awaited: the claimed process must still be
-    // the one the connection came from when its claim is minted.
-    if (resolved && callerPid != null && callerVerdict && !claimStillHeld('callerPid', ctx, callerPid, callerVerdict)) {
+    // the one the connection came from when its claim is minted. Nothing is
+    // minted or refreshed before this holds.
+    if ((resolved || runTarget) && callerPid != null && callerVerdict && !claimStillHeld('callerPid', ctx, callerPid, callerVerdict)) {
       resolved = null;
-      runClaim = null;
+      runTarget = null;
     }
+    const runClaim = runTarget ? claimTokenForRun(runTarget.workspaceId, runTarget.ptyId) : null;
+    if (runClaim && runTarget) resolved = runTarget;
+    else if (resolved && !stillConfirmed(confirmed)) resolved = null;
     const workspaceToken = resolved ? (runClaim ?? claimTokenForPane(resolved.workspaceId, resolved.ptyId)) : null;
     // A call from a shared Codex app-server names its thread instead: the pane
     // comes from the thread's owner record (written by wmux's Codex hooks from

@@ -779,6 +779,20 @@ describe('a2a.resolve.identity — scheduled runs with a browser identity', () =
     expect(result.workspaceToken).toBeUndefined();
   });
 
+  it('a run claim is neither minted nor refreshed when the caller changed before the mint', async () => {
+    // A claim already held for the run's PTY, which a mint for another
+    // workspace would delete.
+    const { claimTokenForRun } = await import('../../../workspace/workspaceClaimTrust');
+    const held = claimTokenForRun('ws-other', 'auto-r1');
+    let reads = 0;
+    setClaimStartTimeSource(() => (reads++ === 0 ? 1n : 2n));
+    const res = await router(new Map<number, number>([[39876, 25020], [25020, 49076], [49076, 1]]));
+    expect(reads).toBeGreaterThan(1);
+    expect(res.resolved).toBeNull();
+    expect(res.workspaceToken).toBeUndefined();
+    expect(lookupWorkspaceClaim(held)).toEqual({ kind: 'bound', workspaceId: 'ws-other', ptyId: 'auto-r1', browserOnly: true });
+  });
+
   it('a caller under no identity run gets no claim', async () => {
     const res = await router(new Map<number, number>([[11111, 22222], [22222, 1], [49076, 1]]), 11111);
     expect(res.resolved).toBeNull();
