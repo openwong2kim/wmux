@@ -94,6 +94,19 @@ export interface ClaimCdpPortDeps {
   isAlive?: (pid: number) => boolean;
   /** Offset into the range to start from. Defaults to a CSPRNG draw. */
   firstOffset?: number;
+  /** When this boot began (epoch ms). Defaults to now minus the OS uptime. */
+  bootTimeMs?: number;
+}
+
+/**
+ * How far before the boot a claim must be written to count as from an earlier
+ * boot. Absorbs the uptime's rounding and small clock corrections, so a claim
+ * written just after boot is never mistaken for an old one.
+ */
+export const PRE_BOOT_SLACK_MS = 5 * 60_000;
+
+function defaultBootTimeMs(): number {
+  return Date.now() - os.uptime() * 1000;
 }
 
 export interface CdpPortClaim {
@@ -131,10 +144,11 @@ export function claimCdpPort(deps: ClaimCdpPortDeps = {}): CdpPortClaim {
   const pid = deps.pid ?? process.pid;
   const isAlive = deps.isAlive ?? defaultIsAlive;
   const start = deps.firstOffset ?? crypto.randomInt(CDP_PORT_COUNT);
+  const bootTimeMs = deps.bootTimeMs ?? defaultBootTimeMs();
 
   for (let i = 0; i < CDP_PORT_COUNT; i++) {
     const port = CDP_PORT_MIN + ((start + i) % CDP_PORT_COUNT);
-    if (tryClaim(dir, port, pid, isAlive)) return { port, claimed: true };
+    if (tryClaim(dir, port, pid, isAlive, bootTimeMs)) return { port, claimed: true };
   }
 
   // Everything is spoken for, or the directory is unwritable. Draw and carry
@@ -142,9 +156,19 @@ export function claimCdpPort(deps: ClaimCdpPortDeps = {}): CdpPortClaim {
   return { port: CDP_PORT_MIN + (start % CDP_PORT_COUNT), claimed: false };
 }
 
-function tryClaim(dir: string, port: number, pid: number, isAlive: (pid: number) => boolean): boolean {
+function tryClaim(dir: string, port: number, pid: number, isAlive: (pid: number) => boolean, bootTimeMs: number): boolean {
   const file = claimPath(dir, port);
   if (writeClaim(file, pid)) return true;
+
+  // A claim written before this boot is stale whatever it says: every process
+  // that could have written it is gone. Its pid may well be alive again,
+  // handed by the OS to an unrelated process (a conhost, a browser), which the
+  // liveness test below cannot tell apart from the wmux that wrote it. The
+  // same goes for an empty or unreadable claim from an earlier boot.
+  // Not covered: Windows Fast Startup does not reset the uptime, so a
+  // shutdown followed by a power-on is no boot boundary here, and a pid reused
+  // within one boot after a crash still holds its port (#3286).
+  if (writtenBefore(file, bootTimeMs - PRE_BOOT_SLACK_MS)) return replaceStaleClaim(file, pid);
 
   // Occupied. Whose is it, and are they still here?
   let holder: number;
@@ -163,9 +187,25 @@ function tryClaim(dir: string, port: number, pid: number, isAlive: (pid: number)
   if (!Number.isInteger(holder) || holder <= 0) return false;
   if (isAlive(holder)) return false;
 
-  // A stale claim — its owner is gone. Remove it and take the port. If the
-  // unlink or the re-create loses a race with another instance doing the same
-  // thing, that instance wins and we move on to the next port.
+  // A stale claim — its owner is gone.
+  return replaceStaleClaim(file, pid);
+}
+
+/** Was the claim last written before `ms`? False when it cannot be read. */
+function writtenBefore(file: string, ms: number): boolean {
+  try {
+    return fs.statSync(file).mtimeMs < ms;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove a stale claim and take the port. If the unlink or the re-create loses
+ * a race with another instance doing the same thing, that instance wins and we
+ * move on to the next port.
+ */
+function replaceStaleClaim(file: string, pid: number): boolean {
   try {
     fs.unlinkSync(file);
   } catch {

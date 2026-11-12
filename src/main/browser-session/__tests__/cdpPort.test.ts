@@ -10,6 +10,7 @@ import {
   probeCdpEndpointWithRetry,
   claimDir,
   dropDebuggingSwitches,
+  PRE_BOOT_SLACK_MS,
   releaseCdpPort,
   releaseCdpPortOnQuit,
 } from '../cdpPort';
@@ -104,6 +105,53 @@ describe('claimCdpPort', () => {
     fs.writeFileSync(held, 'not-a-pid');
     const claim = claimCdpPort({ dir, pid: 7, isAlive: alive, firstOffset: 5 });
     expect(claim.port).not.toBe(CDP_PORT_MIN + 5);
+  });
+});
+
+describe('claimCdpPort — claims from an earlier boot (#3286)', () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cdp-test-')); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+  const lock = (port: number) => path.join(dir, `wmux-cdp-${port}.lock`);
+  const bootTimeMs = Date.now() - 3_600_000;
+  const writtenAt = (port: number, content: string, ms: number) => {
+    fs.writeFileSync(lock(port), content);
+    fs.utimesSync(lock(port), ms / 1000, ms / 1000);
+  };
+
+  it('reclaims a pre-boot claim whose pid the OS has handed to another process', () => {
+    // The pid reads as alive, but nothing that ran before the boot still runs.
+    writtenAt(CDP_PORT_MIN + 4, '7752', bootTimeMs - PRE_BOOT_SLACK_MS - 60_000);
+    const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 4, bootTimeMs });
+    expect(claim).toEqual({ port: CDP_PORT_MIN + 4, claimed: true });
+    expect(fs.readFileSync(lock(CDP_PORT_MIN + 4), 'utf8')).toBe('1234');
+  });
+
+  it('reclaims an empty or unreadable claim from an earlier boot', () => {
+    writtenAt(CDP_PORT_MIN + 5, '', bootTimeMs - PRE_BOOT_SLACK_MS - 60_000);
+    const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 5, bootTimeMs });
+    expect(claim).toEqual({ port: CDP_PORT_MIN + 5, claimed: true });
+  });
+
+  it('respects a claim written this boot by a live pid', () => {
+    writtenAt(CDP_PORT_MIN + 6, '4242', bootTimeMs + 60_000);
+    const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 6, bootTimeMs });
+    expect(claim.port).not.toBe(CDP_PORT_MIN + 6);
+    expect(fs.readFileSync(lock(CDP_PORT_MIN + 6), 'utf8')).toBe('4242');
+  });
+
+  it('leaves a claim inside the slack before the boot to the pid check', () => {
+    // Uptime rounding and clock corrections: a claim just before the computed
+    // boot may be from this boot, so only a live pid decides.
+    writtenAt(CDP_PORT_MIN + 8, '4242', bootTimeMs - PRE_BOOT_SLACK_MS + 60_000);
+    const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 8, bootTimeMs });
+    expect(claim.port).not.toBe(CDP_PORT_MIN + 8);
+  });
+
+  it('defaults the boot time to the OS uptime, so a fresh claim by a live pid is held', () => {
+    fs.writeFileSync(lock(CDP_PORT_MIN + 9), '4242');
+    const claim = claimCdpPort({ dir, pid: 1234, isAlive: () => true, firstOffset: 9 });
+    expect(claim.port).not.toBe(CDP_PORT_MIN + 9);
   });
 });
 
