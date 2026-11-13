@@ -3,7 +3,8 @@
 // only from that process, as the OS reports it for the connection
 // (shared/peerPid.ts), when its start time still matches the one read at
 // accept (shared/processStartTime.ts); or from the MCP broker main spawned,
-// which checks the pid of each session it hosts (src/mcp/brokerPeer.ts).
+// which checks the pid of each session it hosts (src/mcp/brokerPeer.ts), on a
+// call that carries the stamp main sent that broker (brokerStampHolds).
 // Windows reads no peer pid, so claims there are taken as sent.
 //
 // Every claim not taken is counted by reason for `wmux doctor`
@@ -23,11 +24,30 @@ type BrokerIdentity = { pid: number; startedAt: string | null } | null;
 
 let brokerIdentity: () => BrokerIdentity = () => null;
 let brokerUnowned: () => boolean = () => false;
+let brokerStampMatches: (stamp: string) => boolean = () => false;
 let startTimeOf: (pid: number) => bigint | null = processStartTime;
 
 /** Where the running MCP broker's identity comes from (main's BrokerSupervisor). */
 export function setBrokerIdentitySource(source: () => BrokerIdentity): void {
   brokerIdentity = source;
+}
+
+/** Whether a stamp is the one main sent the broker it spawned (main's BrokerSupervisor). */
+export function setBrokerStampSource(source: (stamp: string) => boolean): void {
+  brokerStampMatches = source;
+}
+
+/**
+ * Whether a request's stamp counts (PipeServer): the connection's peer is the
+ * broker main spawned, by pid and the start time recorded at the spawn, and
+ * the stamp is the one main sent it. A matching stamp from any other peer
+ * does not count.
+ */
+export function brokerStampHolds(peerPid: number | undefined, peerStartedAt: string | undefined, stamp: unknown): boolean {
+  if (typeof stamp !== 'string' || peerPid === undefined || peerStartedAt === undefined) return false;
+  const broker = brokerIdentity();
+  if (!broker || broker.pid !== peerPid || broker.startedAt === null || broker.startedAt !== peerStartedAt) return false;
+  return brokerStampMatches(stamp);
 }
 
 /** Whether main stands down for an MCP broker it did not start (main's BrokerSupervisor). */
@@ -73,7 +93,8 @@ function refuse(
  * Whether main takes `claimedPid` as the caller's own process.
  * - macOS, Linux: the connection's peer is that pid and its start time is the
  *   one read at accept, or the peer is the broker main spawned (pid and start
- *   time as recorded at the spawn); anything else is refused.
+ *   time as recorded at the spawn) and the call carries its stamp; anything
+ *   else is refused.
  * - Windows: no peer pid is read, so the claim stands as sent (a call that
  *   came over the TCP fallback is counted).
  */
@@ -92,7 +113,7 @@ export function checkClaim(
   if (peer === undefined) return refuse(kind, 'no-peer', ctx, log);
   const broker = brokerIdentity();
   if (broker && peer === broker.pid) {
-    return broker.startedAt !== null && ctx?.peerStartedAt === broker.startedAt
+    return broker.startedAt !== null && ctx?.peerStartedAt === broker.startedAt && ctx.brokerStamped === true
       ? { ok: true, via: 'broker' }
       : refuse(kind, 'broker-unverified', ctx, log);
   }
@@ -105,7 +126,9 @@ export function checkClaim(
 /**
  * Whether a claim checkClaim took is still good when it is minted, after the
  * handler's awaits: a claim taken from the process itself needs that pid's
- * start time unchanged since accept (otherwise it is refused and counted).
+ * start time unchanged since accept, and one taken through the broker needs
+ * that broker still to be the one main runs (otherwise it is refused and
+ * counted).
  */
 export function claimStillHeld(
   kind: string,
@@ -114,6 +137,12 @@ export function claimStillHeld(
   verdict: ClaimVerdict,
   log: (line: string) => void = (line) => console.log(line),
 ): boolean {
+  if (verdict.ok && verdict.via === 'broker') {
+    const broker = brokerIdentity();
+    if (broker && broker.pid === ctx?.peerPid && broker.startedAt !== null && broker.startedAt === ctx.peerStartedAt) return true;
+    refuse(kind, 'broker-unverified', ctx, log);
+    return false;
+  }
   if (!verdict.ok || verdict.via !== 'same') return verdict.ok;
   const now = startTimeOf(claimedPid);
   if (now !== null && String(now) === ctx?.peerStartedAt) return true;
@@ -149,5 +178,6 @@ export function resetClaimChecks(): void {
   peerRead = null;
   brokerIdentity = () => null;
   brokerUnowned = () => false;
+  brokerStampMatches = () => false;
   startTimeOf = processStartTime;
 }

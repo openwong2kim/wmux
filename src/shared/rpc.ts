@@ -71,6 +71,12 @@ export interface RpcRequest {
    * handler reads it for routing or permission.
    */
   mcpSession?: string;
+  /**
+   * The MCP broker's per-spawn stamp, sent by the broker main started on an
+   * `a2a.resolve.identity` call for a session it verified. PipeServer reads and
+   * removes it before dispatch: it never reaches a handler, a response or a log.
+   */
+  brokerStamp?: string;
 }
 
 /**
@@ -275,6 +281,12 @@ export interface RpcContext {
   peerStartedAt?: string;
   /** Set only by PipeServer for a request that came over the loopback TCP fallback (Windows). */
   viaTcp?: true;
+  /**
+   * Set only by PipeServer, when the request carried the stamp main sent to the
+   * broker it spawned and the connection's peer is that broker (pid and start
+   * time). checkClaim takes a claim through the broker only with it.
+   */
+  brokerStamped?: true;
   clientName?: string;
   clientVersion?: string;
   /**
