@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { parsePsIdentityRows, type PosixProcRow } from '../automation/verifiedTreeKill';
+import { confirmedKernelStarts, parsePsIdentityRows, type PosixProcRow } from '../automation/verifiedTreeKill';
+import { kernelStartOf, sameKernelStart } from '../../shared/processStartTime';
 import type { HeadlessSurvivor } from './headlessStartStore';
 
 /**
@@ -26,6 +27,8 @@ export interface HeadlessProcDeps {
   listProcesses(): Promise<PosixProcRow[]>;
   /** Where the per-process folders are (`/proc`). */
   procRoot: string;
+  /** A pid's boot-bound kernel start (shared/processStartTime kernelStartOf), null when unread. */
+  kernelStart?(pid: number): string | null;
 }
 
 export const defaultHeadlessProcDeps: HeadlessProcDeps = {
@@ -37,6 +40,7 @@ export const defaultHeadlessProcDeps: HeadlessProcDeps = {
       });
     }),
   procRoot: '/proc',
+  kernelStart: kernelStartOf,
 };
 
 const TREE_MAX = 256;
@@ -67,7 +71,9 @@ export async function snapshotTree(rootPid: number, deps: HeadlessProcDeps = def
     out.push({ pid, startTime: row.start, reason: 'in the agent process tree when it was ended' });
     for (const child of live) if (child.ppid === pid) queue.push(child.pid);
   }
-  return out;
+  // Each with its kernel start when that is proven to be the same process's (read between two listings).
+  const kernels = await confirmedKernelStarts(deps, new Map(live.map((r) => [r.pid, r])), out.map((s) => s.pid));
+  return out.map((s) => (kernels.has(s.pid) ? { ...s, startKernel: kernels.get(s.pid) } : s));
 }
 
 /**
@@ -96,6 +102,9 @@ export async function stillHeld(
   const anyAlive = tracked.some((s) => {
     const row = byPid.get(s.pid);
     if (!row || row.stat.startsWith('Z')) return false;
+    // By the kernel start when both have one (a clock step moves the text, not it).
+    const byKernel = sameKernelStart(s.startKernel, deps.kernelStart?.(row.pid));
+    if (byKernel !== null) return byKernel;
     // Unreadable start time: it may be the same process.
     return !row.start || row.start === s.startTime;
   });
