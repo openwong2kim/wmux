@@ -17,7 +17,8 @@ export type DeliveryPresenceReason =
   | 'not-foreground'
   | 'other-agent'
   | 'shell-at-prompt'
-  | 'no-screen-proof';
+  | 'no-screen-proof'
+  | 'attribution-pending';
 
 export type DeliveryPresence =
   /** A tracked agent process runs in the terminal's foreground. */
@@ -27,7 +28,7 @@ export type DeliveryPresence =
   | { tier: 'none'; reason: DeliveryPresenceReason };
 
 const REASONS: ReadonlySet<string> = new Set<DeliveryPresenceReason>([
-  'no-session', 'no-agent', 'agent-ended', 'not-running', 'not-foreground', 'other-agent', 'shell-at-prompt', 'no-screen-proof',
+  'no-session', 'no-agent', 'agent-ended', 'not-running', 'not-foreground', 'other-agent', 'shell-at-prompt', 'no-screen-proof', 'attribution-pending',
 ]);
 
 /** The daemon's answer, checked; anything else is undefined (and so no write). */
@@ -53,6 +54,7 @@ export function presenceRefusalDetail(p: DeliveryPresence | undefined): string {
     case 'not-foreground': return 'the agent in the target pane is not in the foreground (the shell has the terminal)';
     case 'other-agent': return 'another agent than the one addressed is in the target pane';
     case 'shell-at-prompt': return 'the target pane is at its shell prompt';
+    case 'attribution-pending': return 'wmux is still checking which program runs in the target pane';
     case 'no-screen-proof': return 'no agent process could be confirmed in the target pane, and its screen does not show an agent ready for input';
   }
 }

@@ -14,7 +14,7 @@ function deps(over: Partial<DeliveryPresenceDeps> & { s?: Partial<PresenceSessio
     probes: 0,
     session: () => ({ shellPid: 10, exec: false, commandRunning: undefined, namedSlug: 'claude' as const, ...over.s }),
     tracked: () => ({ alive: true, slug: 'claude' as const }),
-    probe: async () => { d.probes++; },
+    probe: async () => { d.probes++; return true; },
     agentRunning: async () => true,
     agentPid: () => 42,
     holdsForeground: async () => true,
@@ -59,6 +59,11 @@ describe('deliveryPresence', () => {
     expect(await deliveryPresence(deps({ ...untracked, screenRows: async () => SHELL }), 'p', undefined)).toEqual({ tier: 'none', reason: 'no-screen-proof' });
     expect(await deliveryPresence(deps({ ...untracked, s: { commandRunning: false } }), 'p', undefined)).toEqual({ tier: 'none', reason: 'shell-at-prompt' });
     expect(await deliveryPresence(deps({ ...untracked, screenRows: async () => null }), 'p', undefined)).toEqual({ tier: 'none', reason: 'no-screen-proof' });
+  });
+
+  it('a probe still running is not decided by the screen', async () => {
+    const d = deps({ tracked: () => undefined, probe: async () => false });
+    expect(await deliveryPresence(d, 'p', undefined)).toEqual({ tier: 'none', reason: 'attribution-pending' });
   });
 
   it('nothing attributed and no agent the screen can be read for: none', async () => {

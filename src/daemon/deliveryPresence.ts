@@ -38,8 +38,8 @@ export interface DeliveryPresenceDeps {
   session(id: string): PresenceSession | undefined;
   /** The tracker's attributed process: undefined when none was. */
   tracked(id: string): { alive: boolean; slug?: AgentSlug } | undefined;
-  /** Run the tracker's named-agent probe and wait for it, bounded. */
-  probe(id: string, shellPid: number, timeoutMs: number): Promise<void>;
+  /** Run the tracker's named-agent probe and wait for it, bounded: false while it still runs. */
+  probe(id: string, shellPid: number, timeoutMs: number): Promise<boolean>;
   /** The tracked agent is still this pane's `slug` agent and running. */
   agentRunning(id: string, slug: AgentSlug): Promise<boolean>;
   /** The tracked agent's pid (not for a WSL agent). */
@@ -62,9 +62,11 @@ export async function deliveryPresence(deps: DeliveryPresenceDeps, id: string, e
   }
   // Not known alive: probe once (it also records the death of a tracked agent
   // the process monitor has not polled yet, and names a new one).
-  if (deps.tracked(id)?.alive !== true) await deps.probe(id, session.shellPid, DELIVERY_PRESENCE_PROBE_MS);
+  const settled = deps.tracked(id)?.alive === true || await deps.probe(id, session.shellPid, DELIVERY_PRESENCE_PROBE_MS);
   const tracked = deps.tracked(id);
   if (tracked && !tracked.alive) return none('agent-ended');
+  // A probe still running is not "nothing to attribute": the screen does not decide yet.
+  if (!tracked && !settled) return none('attribution-pending');
   if (tracked?.slug) {
     if (expectAgent && tracked.slug !== expectAgent) return none('other-agent');
     if (!(await deps.agentRunning(id, tracked.slug).catch(() => false))) return none('not-running');
