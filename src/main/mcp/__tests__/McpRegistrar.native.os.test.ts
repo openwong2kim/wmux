@@ -243,7 +243,9 @@ describe('McpRegistrar — upgrade and rollback across several agent CLIs', () =
     // As an earlier wmux left them: every agent on the full bundle, beside the
     // user's own servers and settings.
     seed(f.claude, JSON.stringify({ theme: 'dark', mcpServers: { mine: { command: 'uvx', args: ['mine'] }, wmux: { command: 'node', args: [bundle] } } }, null, 2));
-    seed(f.codex, `model = "o3"\n\n[mcp_servers.wmux]\ncommand = "node"\nargs = ["${bundle}"]\n\n[mcp_servers.mine]\ncommand = "mine"\n`);
+    // JSON's escaping is valid in a TOML basic string, so a Windows path's
+    // backslashes survive.
+    seed(f.codex, `model = "o3"\n\n[mcp_servers.wmux]\ncommand = "node"\nargs = [${JSON.stringify(bundle)}]\n\n[mcp_servers.mine]\ncommand = "mine"\n`);
     seed(f.gemini, JSON.stringify({ mcpServers: { wmux: { command: 'node', args: [bundle] } } }, null, 2));
     // Written by hand: not node + a script, so not wmux's to rewrite.
     const handEdited = '{\n  "mcpServers": {\n    "wmux": { "command": "/opt/custom/wmux-mcp", "args": ["--profile", "core"] }\n  }\n}\n';
