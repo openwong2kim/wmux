@@ -5,6 +5,7 @@ import https from 'node:https';
 import type http from 'node:http';
 import type net from 'node:net';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import tls from 'node:tls';
 import { PROBE_MAX_BYTES, PinnedClientError, PinnedTlsClient, probeUnpinned, type PinnedClientOptions, type PinnedSseEvent } from '../pinnedClient';
 
@@ -552,6 +553,65 @@ describe('PinnedTlsClient — streamed download', () => {
     });
     expect(got).toBe('timeout');
     expect(Date.now() - t0).toBeLessThan(3_000);
+  });
+});
+
+describe('PinnedTlsClient — streamed upload', () => {
+  /** A TLS server on certificate A whose handler reads each body itself. */
+  const rawHttps = async (handler: (req: http.IncomingMessage, res: http.ServerResponse) => void): Promise<{ port: number }> => {
+    const server = https.createServer({ cert: CERT_A, key: KEY_A }, handler);
+    track(server, new Set());
+    return { port: await listen(server) };
+  };
+  /** Reads each body whole, then answers with what came. */
+  const reader = (): Promise<{ port: number }> => rawHttps((req, res) => {
+    let got = 0;
+    req.on('data', (c: Buffer) => { got += c.length; });
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ got, declared: req.headers['content-length'], type: req.headers['content-type'] }));
+    });
+  });
+
+  it('sends a body as it is read, with exactly its length declared', async () => {
+    const { port } = await reader();
+    const body = Readable.from([Buffer.alloc(300_000, 1), Buffer.alloc(200_000, 2)]);
+    const got = await client({ port }).putStream('/up', body, { bytes: 500_000, timeoutMs: 5_000 });
+    expect(got).toEqual({ status: 200, json: { got: 500_000, declared: '500000', type: 'application/octet-stream' } });
+  });
+
+  it('a body that gives fewer or more bytes than declared ends the request unfinished, never short or long', async () => {
+    const ended: string[] = [];
+    const { port } = await rawHttps((req, res) => {
+      req.on('aborted', () => ended.push('aborted'));
+      req.on('end', () => {
+        ended.push('ended');
+        res.writeHead(200);
+        res.end('{}');
+      });
+      req.resume();
+    });
+    const short = await client({ port }).putStream('/up', Readable.from([Buffer.alloc(1000)]), { bytes: 2000, timeoutMs: 5_000 }).catch((e: unknown) => e);
+    expect(short).toMatchObject({ code: 'network', message: 'the body gave 1000 of 2000 bytes' });
+    const long = await client({ port }).putStream('/up', Readable.from([Buffer.alloc(3000)]), { bytes: 2000, timeoutMs: 5_000 }).catch((e: unknown) => e);
+    expect(long).toMatchObject({ code: 'network' });
+    expect(ended).not.toContain('ended');
+  });
+
+  it('an answer before the body is read (a refusal) ends the upload with that answer', async () => {
+    const { port } = await rawHttps((req, res) => {
+      res.setHeader('Connection', 'close');
+      res.once('finish', () => req.socket.destroy());
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end('{"ok":false}');
+    });
+    // Far more than the socket buffers hold, so the refusal comes while it is still being sent.
+    const body = Readable.from((function* () { for (let i = 0; i < 256; i++) yield Buffer.alloc(64 * 1024); })());
+    const got = await client({ port }).putStream('/up', body, { bytes: 256 * 64 * 1024, timeoutMs: 5_000 }).catch((e: unknown) => e);
+    // The refusal, or the reset that carries it: never a hang, never a 200.
+    if (got instanceof PinnedClientError) expect(got.code).toBe('network');
+    else expect(got).toEqual({ status: 404, json: { ok: false } });
+    expect(body.destroyed).toBe(true);
   });
 });
 

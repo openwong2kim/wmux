@@ -1,6 +1,8 @@
 import http from 'node:http';
 import net from 'node:net';
 import tls from 'node:tls';
+import { Transform, type Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
 import { A2A_FEATURES_HEADER, normalizeFingerprint256, parseA2aFeatures } from '../../shared/a2aRemote';
 
@@ -151,6 +153,9 @@ function watchSocket(socket: tls.TLSSocket, onFail: (err: Error) => void): () =>
   };
 }
 
+/** A request body: bytes in hand, or a stream of exactly `bytes`. */
+type Payload = Buffer | { stream: Readable; bytes: number };
+
 export class PinnedTlsClient {
   private readonly opts: PinnedClientOptions;
   /**
@@ -187,6 +192,25 @@ export class PinnedTlsClient {
       accept: 'application/json',
       timeoutMs,
       ...(signal ? { signal } : {}),
+    });
+    return { status, json: parseJsonOrNull(answer.toString('utf8')) };
+  }
+
+  /**
+   * Upload a body too large to hold (`PUT`), read from `body` as it is
+   * sent, answered in JSON like `requestJson`. It is sent with a
+   * Content-Length of `bytes`, and the request ends only once `body` gave
+   * exactly that many: a body that gives fewer, more or fails ends the
+   * request unfinished (`network`). An answer that comes before the body is
+   * sent (a refusal) ends the upload. The whole exchange gets `timeoutMs`,
+   * and is abandoned when `signal` aborts.
+   */
+  async putStream(path: string, body: Readable, opts: { bytes: number; timeoutMs: number; signal?: AbortSignal }): Promise<{ status: number; json: unknown }> {
+    const { status, body: answer } = await this.request('PUT', path, { stream: body, bytes: opts.bytes }, {
+      contentType: 'application/octet-stream',
+      accept: 'application/json',
+      timeoutMs: opts.timeoutMs,
+      ...(opts.signal ? { signal: opts.signal } : {}),
     });
     return { status, json: parseJsonOrNull(answer.toString('utf8')) };
   }
@@ -282,7 +306,7 @@ export class PinnedTlsClient {
   private async request(
     method: string,
     path: string,
-    payload: Buffer | undefined,
+    payload: Payload | undefined,
     opts: { contentType?: string; accept: string; timeoutMs?: number; maxBytes?: number; signal?: AbortSignal },
   ): Promise<{ status: number; body: Buffer }> {
     if (opts.signal?.aborted) throw new PinnedClientError('aborted', 'aborted', { sent: false });
@@ -300,9 +324,10 @@ export class PinnedTlsClient {
     address: string,
     method: string,
     path: string,
-    payload: Buffer | undefined,
+    payload: Payload | undefined,
     opts: { contentType?: string; accept: string; timeoutMs?: number; maxBytes?: number; signal?: AbortSignal },
   ): Promise<{ status: number; body: Buffer }> {
+    const length = payload === undefined ? undefined : Buffer.isBuffer(payload) ? payload.length : payload.bytes;
     const budget = opts.timeoutMs ?? this.opts.requestTimeoutMs;
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -313,7 +338,7 @@ export class PinnedTlsClient {
         port: this.opts.port,
         headers: this.headers({
           Accept: opts.accept,
-          ...(payload ? { 'Content-Type': opts.contentType ?? 'application/json', 'Content-Length': String(payload.length) } : {}),
+          ...(length !== undefined ? { 'Content-Type': opts.contentType ?? 'application/json', 'Content-Length': String(length) } : {}),
         }),
         createConnection: () => socket,
       });
@@ -346,7 +371,25 @@ export class PinnedTlsClient {
           (err: unknown) => finish(asSentError(err)),
         );
       });
-      req.end(payload);
+      if (payload === undefined || Buffer.isBuffer(payload)) {
+        req.end(payload);
+        return;
+      }
+      // Counted on its way, and ended only when whole: a short body never ends a request shorter than its Content-Length.
+      let sent = 0;
+      const count = new Transform({
+        transform(chunk: Buffer, _enc, done) {
+          sent += chunk.length;
+          if (sent > payload.bytes) done(new Error(`the body gave more than ${payload.bytes} bytes`));
+          else done(null, chunk);
+        },
+      });
+      pipeline(payload.stream, count, req, { end: false }).then(
+        () => (sent === payload.bytes
+          ? req.end()
+          : finish(new PinnedClientError('network', `the body gave ${sent} of ${payload.bytes} bytes`, { sent: true }))),
+        (err: unknown) => finish(new PinnedClientError('network', errMsg(err), { sent: true })),
+      );
     });
   }
 
