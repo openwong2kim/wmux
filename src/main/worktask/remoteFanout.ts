@@ -196,7 +196,7 @@ export function remoteCodeText(code: string | undefined, pc: string, promptBytes
     case 'agent-not-installed': return `Claude is not installed on ${pc} (agent-not-installed)`;
     case 'folder-not-allowed': return `${pc} does not let this PC use that folder (folder-not-allowed)`;
     case 'expired': return `${pc} did not start it within ${REMOTE_FANOUT_EXPIRES_HOURS} hour (expired)`;
-    case 'rate-limited': return `${pc} is at a limit it sets (agents running, or starts per hour or day), or holds too many requests from this PC (rate-limited)`;
+    case 'rate-limited': return `${pc} is at a limit it sets (agents running, or starts per hour or day), holds too many requests from this PC, or its request store is full (rate-limited)`;
     case 'declined': return `${pc}'s owner declined it (declined)`;
     case 'app-not-ready': return `${pc} could not take it: its wmux was not ready (app-not-ready)`;
     default: return `${pc} could not start the agent (${code ?? 'failed'})`;
@@ -549,6 +549,26 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
     const res = await deps.ledger.update({ id: entry!.id, status, actor: SYSTEM_ACTOR, expectedRev: entry!.rev, summary });
     if (res.ok) entry = res.entry;
   };
+  const replyText = `the agent on ${r.pc} waits for your reply on ${on}`;
+  const stoppedText = `the agent on ${r.pc} stopped without a reply; send it a follow-up on ${on}`;
+  const questionText = (question?: string): string => `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`;
+  const reportedText = `reported on ${r.pc}; the report is on ${on}`;
+  const workingText = `working on ${r.pc}`;
+  /** Every text this pass writes on an open row; a brain's move keeps the one it found when it gives none. */
+  const ownTexts = new Set([replyText, stoppedText, reportedText, workingText, questionText(), ...LEDGER_REMOTE_QUESTIONS.map(questionText)]);
+  /**
+   * The row waits, as `summary` says, after `p` on its remote record. Into input_required: the record, then the move.
+   * Already there: a text this pass wrote (a question answered, then a reply asked for; or one left by a brain that
+   * sent the row back with no text) is replaced, with the record in one write. A text a brain wrote is kept.
+   */
+  const waitFor = async (summary: string, p: Partial<LedgerRemote>): Promise<void> => {
+    const ownText = entry!.status === 'input_required' && entry!.summary !== summary && ownTexts.has(entry!.summary ?? '');
+    if (!ownText) {
+      await patch(p);
+      return move('input_required', summary);
+    }
+    entry = (await deps.ledger.updateRemote(entry!.id, p, { summary, expectedRev: entry!.rev })) ?? entry;
+  };
   /** Fails the row once the grace from the first sighting is over. */
   const failAfterGrace = async (summary: string): Promise<void> => {
     if (r.goneSeenAt === undefined) return patch({ goneSeenAt: now });
@@ -562,26 +582,21 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   const newReport = view.reportId !== undefined && view.reportId !== r.reportId;
   if (newReport || (view.state === 'completed' && entry.status !== 'review_requested')) {
     await patch({ ...(settled ?? {}), ...(view.reportId ? { reportId: view.reportId } : {}) });
-    return move('review_requested', `reported on ${r.pc}; the report is on ${on}`);
+    return move('review_requested', reportedText);
   }
   // A report stands until a follow-up sets the agent working again.
   if (entry.status === 'review_requested' && view.state !== 'working' && view.state !== 'submitted') return;
   if (view.state === 'failed') return move('failed', `failed on ${r.pc}; why is on ${on}`);
-  if (view.state === 'input-required') {
-    if (settled) await patch(settled);
-    return move('input_required', `the agent on ${r.pc} waits for your reply on ${on}`);
-  }
+  if (view.state === 'input-required') return waitFor(replyText, settled ?? {});
   const st = view.status;
   if (st?.kind === 'question') {
     const question = (LEDGER_REMOTE_QUESTIONS as readonly string[]).includes(st.question ?? '') ? st.question as LedgerRemoteWaiting['question'] : undefined;
-    await patch({ waiting: { on: 'question', since: st.since, ...(question ? { question } : {}) }, goneSeenAt: undefined });
-    return move('input_required', `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`);
+    return waitFor(questionText(question), { waiting: { on: 'question', since: st.since, ...(question ? { question } : {}) }, goneSeenAt: undefined });
   }
   if (st?.kind === 'gone') return failAfterGrace(`the agent on ${r.pc} is gone`);
   if (st?.kind === 'waiting-input') {
     // Its turn ended with no reply and no report: nothing moves until someone writes to it.
-    if (settled) await patch(settled);
-    return move('input_required', `the agent on ${r.pc} stopped without a reply; send it a follow-up on ${on}`);
+    return waitFor(stoppedText, settled ?? {});
   }
   if (st?.kind === 'usage-limit') {
     // That PC resumes it by itself: nothing is asked of the caller.
@@ -589,7 +604,7 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   } else if (settled) {
     await patch(settled);
   }
-  await move('working', `working on ${r.pc}`);
+  await move('working', workingText);
 }
 
 /** Withdraw every remote row that ends here. Returns the unsubscribe. */

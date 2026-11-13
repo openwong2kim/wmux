@@ -134,6 +134,8 @@ describe('remote fan-out keys and names', () => {
     expect(remoteCodeText('not-supported', 'box')).toMatch(/starts only Claude without an app/);
     expect(remoteCodeText('not-allowed', 'box', 5000)).toContain("the prompt (4.9 KiB, wmux's footer included) is longer than it accepts (not-allowed)");
     expect(remoteCodeText('expired', 'box')).toMatch(/expired/);
+    // Also when other PCs' requests filled that PC's store.
+    expect(remoteCodeText('rate-limited', 'box')).toBe('box is at a limit it sets (agents running, or starts per hour or day), holds too many requests from this PC, or its request store is full (rate-limited)');
   });
 });
 
@@ -532,6 +534,52 @@ describe('a started task follows its A2A task', () => {
     await reconcileRemoteTasks(s.deps);
     expect(s.row(0).status).toBe('working');
     expect(s.row(0).remote?.waiting).toBeUndefined();
+  });
+
+  it('while the row stays input_required, its text follows why it waits; the same reason writes nothing', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).summary).toContain('waits on a permission question');
+    // Answered in that PC's pane; the agent then asks the caller. The waiting record and the text change in one write.
+    const before = s.row(0).rev;
+    s.view(0, { state: 'input-required' });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: `the agent on box waits for your reply on A2A task ${s.a2a[0]}` });
+    expect(s.row(0).remote?.waiting).toBeUndefined();
+    expect(s.row(0).rev).toBe(before + 1);
+    const rev = s.row(0).rev;
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).rev).toBe(rev);
+  });
+
+  it('a text a brain wrote when it sent the row back for input stays: the follow pass replaces only its own', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'input-required', reportId: REPORTED });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('review_requested');
+    const bounced = await s.deps.ledger.update({ id: s.row(0).id, status: 'input_required', actor: { kind: 'brain', workspaceId: 'ws-owner' }, expectedRev: s.row(0).rev, summary: 'fix the failing test first' });
+    expect(bounced.ok).toBe(true);
+    // The follow-up sets the agent working, and it asks the caller again, then shows a question.
+    s.view(0, { state: 'input-required', reportId: REPORTED });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: 'fix the failing test first' });
+    s.view(0, { state: 'working', reportId: REPORTED, status: { kind: 'question', since: at, question: 'permission' } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: 'fix the failing test first', remote: { waiting: { on: 'question', question: 'permission' } } });
+  });
+
+  it('a brain sending a reported row back with no text of its own leaves the pass\'s text, which then follows why it waits', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'input-required', reportId: REPORTED });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).summary).toBe(`reported on box; the report is on A2A task ${s.a2a[0]}`);
+    const bounced = await s.deps.ledger.update({ id: s.row(0).id, status: 'input_required', actor: { kind: 'brain', workspaceId: 'ws-owner' }, expectedRev: s.row(0).rev });
+    expect(bounced).toMatchObject({ ok: true, entry: { status: 'input_required', summary: `reported on box; the report is on A2A task ${s.a2a[0]}` } });
+    s.view(0, { state: 'working', reportId: REPORTED, status: { kind: 'question', since: at, question: 'permission' } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { waiting: { on: 'question', question: 'permission' } } });
+    expect(s.row(0).summary).toContain('waits on a permission question');
   });
 
   it('a dialog question with no menu id (a picker as the real service reports it) is a question like any other', async () => {
