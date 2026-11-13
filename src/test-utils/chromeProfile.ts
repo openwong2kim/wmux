@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { ChromeLauncher } from '../main/browser-session/ChromeLauncher';
 import { pinDownloadDir } from './chromeDownloads';
 import { REMOVE_TEMP_DIR_HOOK_TIMEOUT_MS, removeTempDirs } from './removeTempDir';
+import { makeSweepableTempDir } from './staleTempDirs';
 
 /**
  * A real-Chrome suite's temp profile: the user-data-dir, its pinned download
@@ -35,7 +36,9 @@ export const CHROME_TEARDOWN_TIMEOUT_MS = REMOVE_TEMP_DIR_HOOK_TIMEOUT_MS + 20_0
 const EXIT_WAIT_MS = 5_000;
 
 export function tempChromeProfile(prefix: string, opts: { preferences?: Record<string, unknown> } = {}): TempChromeProfile {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  // Marked, so a later run's sweep can remove it if this run is killed before
+  // its afterAll; this prefix's stale ones are swept first (staleTempDirs.ts).
+  const dir = makeSweepableTempDir(prefix);
   let downloads: string;
   try {
     downloads = pinDownloadDir(dir, opts.preferences);
