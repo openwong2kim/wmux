@@ -766,7 +766,8 @@ export class A2aRemoteDelivery {
       remoteStatus: {
         admit: (hostId) => this.admitRemoteStatus(hostId),
         note: (taskId, status, hostId) => this.takeRemoteStatus(taskId, status, hostId),
-        forget: (taskId) => { this.remoteStatuses.delete(taskId); this.statusGates.delete(taskId); },
+        firstGone: (taskId) => this.firstGone(taskId),
+        forget: (taskId) => { this.remoteStatuses.delete(taskId); this.statusGates.delete(taskId); this.goneSeen.delete(taskId); },
       },
       taskBudget: this.taskBudget,
       log: this.deps.log,
@@ -804,6 +805,16 @@ export class A2aRemoteDelivery {
    * so it is bounded by the open tasks this PC sent (and by REMOTE_STATUSES_MAX).
    */
   private readonly statusGates = new Map<string, { at: number; waiting?: A2aRemoteStatusV1 }>();
+
+  /** Open tasks whose `gone` was already logged (once per task; bounded like the statuses). */
+  private readonly goneSeen = new Set<string>();
+
+  private firstGone(taskId: string): boolean {
+    if (this.goneSeen.has(taskId)) return false;
+    this.goneSeen.add(taskId);
+    while (this.goneSeen.size > REMOTE_STATUSES_MAX) this.goneSeen.delete(this.goneSeen.values().next().value as string);
+    return true;
+  }
 
   /** A status that passed the checks: applied now, or kept as the task's newest until its gap is over. */
   private takeRemoteStatus(taskId: string, status: A2aRemoteStatusV1, hostId: HostId): void {
@@ -861,6 +872,7 @@ export class A2aRemoteDelivery {
     if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
       this.remoteStatuses.delete(task.id);
       this.statusGates.delete(task.id);
+      this.goneSeen.delete(task.id);
       return task;
     }
     this.settleRemoteStatus(task.id);
