@@ -402,6 +402,9 @@ async function deliverA2aText(
   text: string,
   operator: boolean,
   newTask?: NewTaskDelivery,
+  // A reply's task, so main can let its orchestrator past an unreadable
+  // folder-trust check (a new task names its own id).
+  replyTaskId?: string,
 ): Promise<A2aPtyWrite> {
   // The operator's own deliveries are excluded from fresh context in v1.
   if (operator) {
@@ -416,8 +419,10 @@ async function deliverA2aText(
   // Main also asks the daemon's task store (this list is not reloaded after a
   // restart), keyed by where the pane sits; a pane it cannot place is kept.
   const pane = newTask ? paneAddressOfPty(s.workspaces, ptyId) : undefined;
+  const senderTask = newTask?.taskId ?? replyTaskId;
   const result = await gatedSubmitToPty(ptyId, text, {
     agent: ptyAgent(ptyId).name,
+    ...(senderTask ? { senderTaskIds: [senderTask] } : {}),
     ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
     ...(newTask?.waitQuiet ? { waitQuiet: true } : {}),
     ...(newTask?.waitQuiet && newTask.expectAgent ? { expectAgent: newTask.expectAgent } : {}),
@@ -713,6 +718,7 @@ export async function deliverPtyNotification(
   explicitPtyId?: string,
   operator = false,
   newTask?: NewTaskDelivery,
+  replyTaskId?: string,
 ): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
@@ -725,6 +731,7 @@ export async function deliverPtyNotification(
       formatA2aMessage(senderName, a2aPartyName(targetWs, useStore.getState().paneLabel, useStore.getState().surfaceAgent, ptyId, useStore.getState().a2aTerminalNames), typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId)),
       operator,
       newTask,
+      replyTaskId,
     );
   }
   return { ptyId: null };
@@ -747,13 +754,14 @@ async function deliverPtyNudge(
   explicitPtyId?: string,
   operator = false,
   newTask?: NewTaskDelivery,
+  replyTaskId?: string,
 ): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
   // pane only catches the message when nothing visible can take it, which beats
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
-  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator, newTask);
+  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator, newTask, replyTaskId);
   return { ptyId: null };
 }
 
@@ -3721,13 +3729,13 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
               mode = 'no-agent-pane';
             } else if (decision.sameWs) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
-              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator);
+              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator, undefined, taskId);
             } else {
               const liveMeta = deliveryLiveMeta(store.surfaceAgent, replyPty, targetWs.metadata);
               if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-                write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator);
+                write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply') + imagesNudgeSuffix(images), replyPty, operator, undefined, taskId);
               } else {
-                write = await deliverPtyNotification(targetWs, senderName, bodyWithImages(message, images), replyPty, operator);
+                write = await deliverPtyNotification(targetWs, senderName, bodyWithImages(message, images), replyPty, operator, undefined, taskId);
                 mode = 'notification';
               }
             }
@@ -4330,7 +4338,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             // #1573 — the same #1489 gate as below: a sibling pane back at its
             // shell would run the nudge line as a command. Write nothing then.
             if (a2aTargetHasAgent(targetWs, explicitPty)) {
-              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), explicitPty, operator);
+              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), explicitPty, operator, undefined, taskId);
             }
           } else {
             // #1336 — the same unaddressed rule as send/reply. Without it the
@@ -4355,9 +4363,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             if (!a2aTargetHasAgent(targetWs, updatePty)) {
               // Write nothing; the receiver follows the EventBus pointer.
             } else if (isLiveTuiAgent(liveMeta)) {
-              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), updatePty, operator);
+              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), updatePty, operator, undefined, taskId);
             } else {
-              updateWrite = await deliverPtyNotification(targetWs, callerName, message, updatePty, operator);
+              updateWrite = await deliverPtyNotification(targetWs, callerName, message, updatePty, operator, undefined, taskId);
             }
           }
         }

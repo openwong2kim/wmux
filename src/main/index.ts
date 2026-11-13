@@ -94,7 +94,7 @@ import { registerWorkspaceRpc } from './pipe/handlers/workspace.rpc';
 import { registerSurfaceRpc } from './pipe/handlers/surface.rpc';
 import { registerPaneRpc } from './pipe/handlers/pane.rpc';
 import { registerInputRpc, makeRoleBindingResolver } from './pipe/handlers/input.rpc';
-import { gatedSubmitTaskContext } from './pipe/handlers/a2aOpenTasks';
+import { gatedSubmitSenderTasks, gatedSubmitTaskContext } from './pipe/handlers/a2aOpenTasks';
 import { registerGitHandoffHandlers } from './ipc/handlers/gitHandoff.handler';
 import { registerHandOutHandlers } from './ipc/handlers/handOut.handler';
 import { registerApprovalsRpc } from './pipe/handlers/approvals.rpc';
@@ -1337,6 +1337,7 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
             }
           : {}),
         ...gatedSubmitTaskContext(opts),
+        ...gatedSubmitSenderTasks(opts),
       })
     : { ok: false, reason: 'write_failed', detail: 'delivery: missing target pty or text' },
 );

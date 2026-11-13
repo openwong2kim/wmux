@@ -358,9 +358,10 @@ export function useChannelsEventSubscription(): void {
         // through main's approval gate: an Enter into a pane showing an
         // approval would answer it. A refusal throws, leaving the mention
         // unmarked for the next Stop.
-        deliverNudge: async (ptyId, text) => {
+        deliverNudge: async (ptyId, text, taskIds) => {
           const result = await gatedSubmitToPty(ptyId, text, {
             agent: useStore.getState().surfaceAgent[ptyId]?.slug,
+            senderTaskIds: taskIds,
           });
           if (!result.ok) throw new Error(`mention nudge not submitted (${result.reason}): ${result.detail}`);
         },

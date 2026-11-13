@@ -257,6 +257,15 @@ export function folderTrustGateMessage(op: string, ptyId: string): string {
   return `${op}: pane "${ptyId}" is on a folder-trust prompt; answer it in the pane.`;
 }
 
+/** The refusal a delivery gets while a folder-trust dialog is on screen: the
+ *  dialog would take the pasted text and its Enter as its answer. */
+export function folderTrustDeliveryMessage(ptyId: string): string {
+  return (
+    `delivery: pane "${ptyId}" is on a folder-trust prompt, which would take the text and its Enter as its answer, ` +
+    "so it was not typed. Answer the prompt in the pane; the task's orchestrator can also send keys there on the owner lane."
+  );
+}
+
 /** The refusal when neither the renderer nor the daemon could say whether a folder-trust prompt is up,
  *  or the screen shows a trust question over choices too narrow to read. `read`: where the verdict
  *  came from, the screen text main had, or the daemon's read of the session's output for a pane with

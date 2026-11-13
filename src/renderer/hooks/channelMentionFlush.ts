@@ -221,8 +221,9 @@ export interface FlushMentionDeps {
    *  the Enter). Resolves once the nudge is submitted; REJECTS when it was not
    *  (an approval is in front of the pane, the gate could not check, the write
    *  failed) — the tasks then stay UNMARKED and the next Stop retries. This
-   *  reject-on-not-submitted contract is what keeps mark-after-deliver correct. */
-  deliverNudge: (ptyId: string, text: string) => Promise<void>;
+   *  reject-on-not-submitted contract is what keeps mark-after-deliver correct.
+   *  `taskIds` names the group's mention tasks for main's owner-lane check. */
+  deliverNudge: (ptyId: string, text: string, taskIds: string[]) => Promise<void>;
   /** Mark a task delivered so it is never pasted twice (idempotency). Called
    *  ONLY after a successful deliverNudge. */
   markDelivered: (taskId: string) => void;
@@ -310,7 +311,7 @@ export async function flushMentions(
     const nudge = buildChannelMentionNudge(group);
     for (const t of group) mentionsInFlight.add(t.id);
     try {
-      await deps.deliverNudge(ptyId, nudge);
+      await deps.deliverNudge(ptyId, nudge, group.map((t) => t.id));
       deps.recordNudge?.(ptyId); // count this nudge toward the per-pane cap (A5)
       // Mark ONLY after a successful paste — a throw above retries next Stop.
       for (const t of group) {

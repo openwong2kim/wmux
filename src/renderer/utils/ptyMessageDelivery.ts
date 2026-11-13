@@ -74,6 +74,11 @@ export async function gatedSubmitToPty(
         ...(options.guardKey ? { guardKey: options.guardKey } : {}),
       }
     : {};
+  // The tasks this delivery carries, for main's owner-lane check (main reads
+  // their senders from the daemon; the ids alone grant nothing).
+  const senders: GatedSubmitOptions = options.senderTaskIds && options.senderTaskIds.length > 0
+    ? { senderTaskIds: options.senderTaskIds }
+    : {};
   try {
     // `newTask` only when set, so every other delivery calls exactly as before.
     const result = options.newTask
@@ -83,9 +88,10 @@ export async function gatedSubmitToPty(
           ...(options.taskId ? { taskId: options.taskId } : {}),
           ...(options.pane ? { pane: options.pane } : {}),
           ...quiet,
+          ...senders,
         })
-      : options.waitQuiet
-        ? await submit(ptyId, text, options.agent ?? null, quiet)
+      : options.waitQuiet || senders.senderTaskIds
+        ? await submit(ptyId, text, options.agent ?? null, { ...quiet, ...senders })
         : await submit(ptyId, text, options.agent ?? null);
     return result && typeof result === 'object' && 'ok' in result
       ? result

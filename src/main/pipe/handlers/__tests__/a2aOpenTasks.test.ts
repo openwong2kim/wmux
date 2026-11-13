@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { daemonOpenTaskOnPane, gatedSubmitTaskContext, makeDaemonTaskQuery } from '../a2aOpenTasks';
+import { MAX_SENDER_TASK_IDS, daemonOpenTaskOnPane, gatedSubmitSenderTasks, gatedSubmitTaskContext, makeDaemonTaskQuery } from '../a2aOpenTasks';
 import type { DaemonClient } from '../../../DaemonClient';
 
 const PANE = { workspaceId: 'ws-1', paneId: 'pane-1', surfaceId: 'surf-1' };
@@ -72,5 +72,25 @@ describe('gatedSubmitTaskContext', () => {
     expect(gatedSubmitTaskContext({ taskId: 7, pane: { ...PANE, surfaceId: '' } })).toEqual({});
     expect(gatedSubmitTaskContext({ taskId: 'x'.repeat(201) })).toEqual({});
     expect(gatedSubmitTaskContext(null)).toEqual({});
+  });
+});
+
+describe('gatedSubmitSenderTasks', () => {
+  it('keeps a list of ids, deduplicated', () => {
+    expect(gatedSubmitSenderTasks({ senderTaskIds: ['t1', 't2', 't1'] })).toEqual({ senderTaskIds: ['t1', 't2'] });
+  });
+
+  it('drops the whole field on anything malformed, empty or too long', () => {
+    for (const opts of [
+      undefined,
+      { senderTaskIds: 't1' },
+      { senderTaskIds: [] },
+      { senderTaskIds: ['t1', 7] },
+      { senderTaskIds: ['t1', ''] },
+      { senderTaskIds: ['x'.repeat(201)] },
+      { senderTaskIds: Array.from({ length: MAX_SENDER_TASK_IDS + 1 }, (_, i) => `t${i}`) },
+    ]) {
+      expect(gatedSubmitSenderTasks(opts), JSON.stringify(opts)).toEqual({});
+    }
   });
 });

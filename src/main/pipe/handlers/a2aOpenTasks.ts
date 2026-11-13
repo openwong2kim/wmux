@@ -43,6 +43,25 @@ export function gatedSubmitTaskContext(opts: unknown): { taskId?: string; pane?:
   };
 }
 
+/** The most task ids one delivery may name (a mention nudge batches a pane's queue). */
+export const MAX_SENDER_TASK_IDS = 32;
+
+/** A delivery's `senderTaskIds` (GatedSubmitOptions), checked: ids only, at
+ *  most MAX_SENDER_TASK_IDS, deduplicated; anything else is dropped whole,
+ *  which leaves the delivery on the default gate. */
+export function gatedSubmitSenderTasks(opts: unknown): { senderTaskIds?: string[] } {
+  if (!isRecord(opts) || !Array.isArray(opts.senderTaskIds)) return {};
+  const raw = opts.senderTaskIds;
+  if (raw.length === 0 || raw.length > MAX_SENDER_TASK_IDS) return {};
+  const ids: string[] = [];
+  for (const v of raw) {
+    const id = idOf(v);
+    if (!id) return {};
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return { senderTaskIds: ids };
+}
+
 /** Budget for the daemon task read: well inside the delivery's own budget. */
 const DAEMON_TASK_QUERY_TIMEOUT_MS = 2_000;
 

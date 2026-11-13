@@ -275,4 +275,12 @@ export interface GatedSubmitOptions {
    *  in main). Main runs that delivery's own check before the paste and before
    *  the Enter; an unknown key refuses. Only adds checks, never removes one. */
   guardKey?: string;
+  /**
+   * The A2A tasks (channel mentions included) whose text this delivery
+   * carries. Main reads each one's sender from the daemon's task store; when
+   * every one comes from the orchestrator of the task the target pane works
+   * on, that owner's fan-out setting applies to the delivery's gate (see
+   * input.rpc deliveryLaneOf). Names tasks only: it grants nothing by itself.
+   */
+  senderTaskIds?: string[];
 }
