@@ -70,6 +70,16 @@ describe('shimHandover (the rules of core/wmux-native/src/mcp_shim/handover.rs)'
     expect(c.handOver()).toEqual({ ids: [], replay: [] });
   });
 
+  it('an initialized sent in a batch is replayed alone, never the call beside it', () => {
+    const c = new Calls();
+    c.sent(b(INIT));
+    c.answered(b('{"jsonrpc":"2.0","id":0,"result":{}}\n'));
+    c.sent(b('[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":5,"method":"tools/call"}]\n'));
+    const { ids, replay } = c.handOver();
+    expect(ids.map(String)).toEqual(['5']);
+    expect(replay.map(String)).toEqual([expect.stringContaining('"id":"wmux-shim-replay"'), INITIALIZED]);
+  });
+
   it('a repeated id is owed once per request', () => {
     const c = new Calls();
     c.sent(b('{"id":1,"method":"a"}\n'));

@@ -23,6 +23,11 @@ pub const MAY_HAVE_RUN: &str = "The wmux MCP broker stopped while this call was 
 It was not retried. Do not assume it did not run: check its effect before you repeat it. \
 Later calls go to a new wmux MCP server.";
 
+/// The `initialized` notification a new server gets after the replayed
+/// `initialize`. A fixed line, not the host's: the host may have sent it inside
+/// a batch with other calls, which must never reach the new server.
+pub const INITIALIZED_LINE: &[u8] = b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
+
 /// The JSON-RPC error code for MAY_HAVE_RUN (implementation-defined server error).
 pub const MAY_HAVE_RUN_CODE: i32 = -32000;
 
@@ -296,7 +301,8 @@ pub struct Calls {
     /// The host's `initialize` request (the whole line), with its id.
     init: Option<(Vec<u8>, String)>,
     init_answered: bool,
-    initialized: Option<Vec<u8>>,
+    /// The host has sent `notifications/initialized`.
+    initialized: bool,
     handed_over: bool,
 }
 
@@ -324,7 +330,7 @@ impl Calls {
                     let raw = p.id_span.map(|(s, e)| line[s..e].to_vec()).unwrap_or_default();
                     self.in_flight.push((id.clone(), raw));
                 }
-                (None, Some("notifications/initialized")) => self.initialized = Some(line.to_vec()),
+                (None, Some("notifications/initialized")) => self.initialized = true,
                 // A cancelled request gets no answer (MCP), so it is owed none.
                 (None, Some("notifications/cancelled")) => {
                     if let Some(id) = cancelled_id(line, p.params_span) {
@@ -371,7 +377,9 @@ impl Calls {
         if self.init_answered {
             if let Some((line, _)) = self.init.take() {
                 replay.push(line);
-                replay.extend(self.initialized.take());
+                if self.initialized {
+                    replay.push(INITIALIZED_LINE.to_vec());
+                }
             }
         }
         (ids, replay)
@@ -490,6 +498,19 @@ mod tests {
         c.answered(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"error\":{\"code\":-1,\"message\":\"no\"}}\n");
         c.sent(INITIALIZED);
         assert_eq!(c.hand_over(), (vec![], vec![]));
+    }
+
+    #[test]
+    fn an_initialized_sent_in_a_batch_is_replayed_alone_never_the_call_beside_it() {
+        let mut c = Calls::default();
+        c.sent(INIT);
+        c.answered(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n");
+        c.sent(b"[{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"},{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\"}]\n");
+        let (ids, replay) = c.hand_over();
+        assert_eq!(ids, [b"5".to_vec()]);
+        assert_eq!(replay.len(), 2);
+        assert_eq!(replay[1], INITIALIZED_LINE);
+        assert!(!replay.iter().any(|l| l.windows(9).any(|w| w == b"tools/cal")));
     }
 
     #[test]

@@ -25,6 +25,11 @@ export const MAY_HAVE_RUN =
   + 'It was not retried. Do not assume it did not run: check its effect before you repeat it. '
   + 'Later calls go to a new wmux MCP server.';
 
+/** The `initialized` notification a new server gets after the replayed
+ *  `initialize`. A fixed line, not the host's: the host may have sent it inside
+ *  a batch with other calls, which must never reach the new server. */
+export const INITIALIZED_LINE = '{"jsonrpc":"2.0","method":"notifications/initialized"}\n';
+
 /** The JSON-RPC error code for MAY_HAVE_RUN (implementation-defined server error). */
 export const MAY_HAVE_RUN_CODE = -32000;
 
@@ -257,7 +262,8 @@ export class Calls {
   /** The host's `initialize` request, re-keyed to REPLAY_ID, with its own id. */
   private init: { replay: Buffer; id: string } | undefined;
   private initAnswered = false;
-  private initialized: Buffer | undefined;
+  /** The host has sent `notifications/initialized`. */
+  private initialized = false;
   private handedOver = false;
 
   private settle(id: string): void {
@@ -280,7 +286,7 @@ export class Calls {
         }
         this.inFlight.push({ id: p.id, raw: Buffer.from(line.subarray(s, e)) });
       } else if (p.id === undefined && p.method === 'notifications/initialized') {
-        this.initialized = Buffer.from(line);
+        this.initialized = true;
       } else if (p.id === undefined && p.method === 'notifications/cancelled' && p.paramsSpan) {
         // A cancelled request gets no answer (MCP), so it is owed none.
         const params = token(line.subarray(p.paramsSpan[0], p.paramsSpan[1]));
@@ -315,10 +321,10 @@ export class Calls {
     const replay: Buffer[] = [];
     if (this.initAnswered && this.init) {
       replay.push(this.init.replay);
-      if (this.initialized) replay.push(this.initialized);
+      if (this.initialized) replay.push(Buffer.from(INITIALIZED_LINE));
     }
     this.init = undefined;
-    this.initialized = undefined;
+    this.initialized = false;
     return { ids, replay };
   }
 }
