@@ -2,8 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type http from 'node:http';
 import path from 'node:path';
-import { Writable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import { finished } from 'node:stream/promises';
 import { A2A_ROUTES, A2A_SHA256_RE, isHostId, type HostId } from '../../shared/a2aRemote';
 import { BUNDLE_TTL_DEFAULT_MS, bundleBytesMax, isBundleId, type A2aBundleManifestV1 } from '../../shared/a2aBundle';
 import { ContinueStagingRefusal, continueParentsInside } from './continueStaging';
@@ -225,12 +224,14 @@ export class BundleIntake {
   private async put({ req, res, params, peer }: A2aRouteContext): Promise<void> {
     const k = waitKey(peer.hostId, { bundleId: params['bundleId'] ?? '', sha256: params['sha256'] ?? '' });
     let w = this.awaited.get(k);
-    if (w) {
-      // Its own budget, not the listener's 30 s, from now: the waits below count against it too.
-      extendBodyDeadline(req, this.budget(w.m.bytes));
+    // Its own budget, not the listener's 30 s, from now: the waits below count against it too.
+    if (w) extendBodyDeadline(req, this.budget(w.m.bytes));
+    // The wait's staged check first. One that ended it (found staged) may be followed by a newer wait for it.
+    while (w) {
       await w.checked;
-      // Found staged by that check: taken already.
-      if (this.awaited.get(k) !== w) w = undefined;
+      const now = this.awaited.get(k);
+      if (now === w) break;
+      w = now;
     }
     if (!w) return this.takenAlready(req, res, params, peer.hostId);
     if (wireEncoding(req.headers['content-encoding']) !== 'identity') {
@@ -252,7 +253,11 @@ export class BundleIntake {
       if (w.receiving) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
     }
     const release = this.slots.take(peer.hostId);
-    if (!release) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
+    if (!release) {
+      // Past its time, taken over from the PUT this one cut: that one left the end of the wait to this one.
+      if (w.late) this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
+      return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
+    }
     // Before any wait: a client gone mid-request still gives the slot back.
     res.once('close', release);
     w.receiving = true;
@@ -321,7 +326,8 @@ export class BundleIntake {
     res.once('close', release);
     try {
       extendBodyDeadline(req, this.budget(m.bytes));
-      await pipeline(req, new Writable({ write(_chunk, _enc, done) { done(); } }));
+      req.resume();
+      await finished(req);
     } catch {
       return answerAndClose(req, res, 503, { ok: false, error: 'unavailable' });
     } finally {
