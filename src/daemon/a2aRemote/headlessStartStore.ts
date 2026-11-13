@@ -31,6 +31,8 @@ export interface HeadlessSurvivor {
   pid: number;
   reason: string;
   startTime?: string;
+  /** Its boot-bound kernel start (shared/processStartTime kernelStartOf), compared before `startTime`. */
+  startKernel?: string;
   unverified?: true;
 }
 
@@ -75,6 +77,8 @@ export interface HeadlessStartRecordV1 {
   /** The agent session's process (its pid and start time), to find it again after a daemon restart. */
   rootPid?: number;
   rootStart?: string;
+  /** The process's boot-bound kernel start, compared before `rootStart` (a clock step moves that text). */
+  rootStartKernel?: string;
   linkId?: string;
   startedAt: string;
   endedAt?: string;
@@ -162,7 +166,7 @@ export class HeadlessStartStore {
   update(
     hostId: string,
     spawnId: string,
-    patch: Partial<Pick<HeadlessStartRecordV1, 'phase' | 'worktreeIntended' | 'worktreePath' | 'cwd' | 'baseCommit' | 'branch' | 'rootPid' | 'rootStart' | 'linkId' | 'endedAt' | 'survivors'>>,
+    patch: Partial<Pick<HeadlessStartRecordV1, 'phase' | 'worktreeIntended' | 'worktreePath' | 'cwd' | 'baseCommit' | 'branch' | 'rootPid' | 'rootStart' | 'rootStartKernel' | 'linkId' | 'endedAt' | 'survivors'>>,
   ): HeadlessStartRecordV1 {
     const k = key(hostId, spawnId);
     const rec = this.records.get(k);
@@ -197,6 +201,9 @@ export class HeadlessStartStore {
 const optionalPath = (v: unknown): v is string | undefined => v === undefined || (typeof v === 'string' && v.length > 0 && v.length <= 4096);
 const SURVIVORS_MAX = 64;
 
+/** A kernelStartOf value: `<boot id>:<start>`. */
+const isKernelStart = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f-]{36}:\d{1,24}$/.test(v);
+
 function coerceSurvivors(v: unknown): HeadlessSurvivor[] | null | undefined {
   if (v === undefined) return undefined;
   if (!Array.isArray(v) || v.length > SURVIVORS_MAX) return null;
@@ -204,9 +211,11 @@ function coerceSurvivors(v: unknown): HeadlessSurvivor[] | null | undefined {
   for (const s of v) {
     if (!isPlainObject(s) || !Number.isInteger(s['pid']) || typeof s['reason'] !== 'string') return null;
     if (s['startTime'] !== undefined && typeof s['startTime'] !== 'string') return null;
+    if (s['startKernel'] !== undefined && !isKernelStart(s['startKernel'])) return null;
     out.push({
       pid: s['pid'] as number, reason: (s['reason'] as string).slice(0, 200),
       ...(typeof s['startTime'] === 'string' ? { startTime: s['startTime'] } : {}),
+      ...(typeof s['startKernel'] === 'string' ? { startKernel: s['startKernel'] } : {}),
       ...(s['unverified'] === true ? { unverified: true as const } : {}),
     });
   }
@@ -216,7 +225,7 @@ function coerceSurvivors(v: unknown): HeadlessSurvivor[] | null | undefined {
 /** A record as stored, or null when it is not one (also read by `wmux daemon headless status`). */
 export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null {
   if (!isPlainObject(raw) || raw['v'] !== 1) return null;
-  const { hostId, spawnId, agent, repoPath, treeId, sessionId, workspaceId, agentSessionId, lineage, runId, phase, worktreeIntended, worktreePath, cwd, baseCommit, branch, rootPid, rootStart, linkId, startedAt, endedAt } = raw;
+  const { hostId, spawnId, agent, repoPath, treeId, sessionId, workspaceId, agentSessionId, lineage, runId, phase, worktreeIntended, worktreePath, cwd, baseCommit, branch, rootPid, rootStart, rootStartKernel, linkId, startedAt, endedAt } = raw;
   const survivors = coerceSurvivors(raw['survivors']);
   if (survivors === null) return null;
   if (!isHostId(hostId) || !isSpawnId(spawnId) || !isAgentSlug(agent)) return null;
@@ -231,6 +240,7 @@ export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null 
   if (branch !== undefined && (typeof branch !== 'string' || !/^wmux\/remote\/[A-Za-z0-9-]{1,128}$/.test(branch))) return null;
   if (rootPid !== undefined && (!Number.isInteger(rootPid) || (rootPid as number) <= 1)) return null;
   if (rootStart !== undefined && (typeof rootStart !== 'string' || rootStart.length > 128)) return null;
+  if (rootStartKernel !== undefined && !isKernelStart(rootStartKernel)) return null;
   if (linkId !== undefined && (typeof linkId !== 'string' || !UUID_RE.test(linkId))) return null;
   if (!isIsoString(startedAt) || (endedAt !== undefined && !isIsoString(endedAt))) return null;
   return {
@@ -243,6 +253,7 @@ export function coerceHeadlessStart(raw: unknown): HeadlessStartRecordV1 | null 
     ...(branch !== undefined ? { branch } : {}),
     ...(rootPid !== undefined ? { rootPid: rootPid as number } : {}),
     ...(rootStart !== undefined ? { rootStart } : {}),
+    ...(rootStartKernel !== undefined ? { rootStartKernel } : {}),
     ...(linkId !== undefined ? { linkId } : {}),
     startedAt,
     ...(endedAt !== undefined ? { endedAt } : {}),

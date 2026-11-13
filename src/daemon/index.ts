@@ -2191,6 +2191,7 @@ async function recoverSessions(
           cmd: s.cmd,
           storedCreatedAtFt: s.pidCreatedAtFt,
           storedStartTime: s.pidStartTime,
+          storedStartKernel: s.pidStartKernel,
           reason: `recovery of ${s.id}`,
         }),
       },
@@ -2212,6 +2213,7 @@ async function recoverSessions(
           cmd: session.cmd,
           storedCreatedAtFt: session.pidCreatedAtFt,
           storedStartTime: session.pidStartTime,
+          storedStartKernel: session.pidStartKernel,
           reason: `tombstone reconciliation of session ${session.id}`,
         });
         if (reaped) {
@@ -2233,6 +2235,7 @@ async function recoverSessions(
           cmd: session.cmd,
           storedCreatedAtFt: session.pidCreatedAtFt,
           storedStartTime: session.pidStartTime,
+          storedStartKernel: session.pidStartKernel,
           reason: `scheduled-run session ${session.id} left by a previous daemon`,
         });
       }
@@ -2252,7 +2255,7 @@ async function recoverSessions(
       if (!rebooted && session.state !== 'suspended' && recoverableIds.has(session.id)
         && leftoverReapEligible(session, sameBootProven)) {
         await reapIfIdentityConfirmed({ pid: session.pid, cmd: session.cmd,
-          storedCreatedAtFt: session.pidCreatedAtFt, storedStartTime: session.pidStartTime,
+          storedCreatedAtFt: session.pidCreatedAtFt, storedStartTime: session.pidStartTime, storedStartKernel: session.pidStartKernel,
           reason: `WSL recovery of ${session.id}` });
       }
       session.state = 'suspended';
@@ -2922,7 +2925,7 @@ function registerRpcHandlers(
     const live = p.killTree === true ? sessionManager.getSession(p.id)?.meta : undefined;
     if (live && (live.state === 'attached' || live.state === 'detached') && live.pid > 0) {
       const recorded = recordedStartOf(live);
-      captured = await captureProcessTree(live.pid, { rootIsOurs: recordedRootMatcher(live.pid, recorded, (msg) => log('warn', `[tree-kill] ${msg}`)) });
+      captured = await captureProcessTree(live.pid, { rootIsOurs: recordedRootMatcher(live.pid, recorded, (msg) => log('warn', `[tree-kill] ${msg}`), live.pidStartKernel) });
     }
     try {
       sessionManager.destroySession(p.id);
@@ -8234,7 +8237,7 @@ function wireEvents(
   // and would leave the still-live shell behind — exactly the orphan this fix
   // exists to prevent. Reattaching to the live ConPTY instead of killing it is
   // a separate piece of work (likely an upstream node-pty fix).
-  sessionManager.on('session:phantomExit', (payload: { id: string; pid?: number; pidCreatedAtFt?: string; pidStartTime?: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; raw?: string }) => {
+  sessionManager.on('session:phantomExit', (payload: { id: string; pid?: number; pidCreatedAtFt?: string; pidStartTime?: string; pidStartKernel?: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; raw?: string }) => {
     // `raw` is the verbatim node-pty payload — printed as-is because the
     // native-layer investigation needs the exact shape node-pty produced, not
     // our reading of it.
@@ -8269,6 +8272,7 @@ function wireEvents(
       cmd: payload.cmd ?? '',
       storedCreatedAtFt: payload.pidCreatedAtFt,
       storedStartTime: payload.pidStartTime,
+      storedStartKernel: payload.pidStartKernel,
       reason: `phantom exit of session ${payload.id}`,
     });
   });

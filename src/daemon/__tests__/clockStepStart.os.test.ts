@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { classifyReapIdentity } from '../phantomExit';
 import { captureTreePosix, matchesRecordedStart, recordedRootMatcher, type PosixProcRow, type PosixTreeDeps } from '../automation/verifiedTreeKill';
 import { currentBootId, kernelStartOf, sameKernelStart } from '../../shared/processStartTime';
+import { snapshotTree, stillHeld, type HeadlessProcDeps } from '../a2aRemote/headlessProcs';
+import { coerceHeadlessStart } from '../a2aRemote/headlessStartStore';
 
 const AT = 'Fri Nov 13 07:05:07 2026';
 const STEPPED = 'Fri Nov 13 07:05:09 2026'; // the same process after the boot time moved 2 s
@@ -70,5 +72,34 @@ describe.skipIf(process.platform === 'win32')('a recorded start across a clock s
     expect(matchesRecordedStart(AT, AT, { current: K })).toBe(true);
     expect(matchesRecordedStart('Fri Nov  3 07:05:07 2026', 'Fri Nov 3 07:05:07 2026', { current: K })).toBe(true);
     expect(matchesRecordedStart(AT, STEPPED, { current: K })).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('a headless record across a clock step', () => {
+  it('keeps the same process held after a step, lets a reused pid or another boot go', async () => {
+    const deps = (start: string, kernel: string | null): HeadlessProcDeps => ({
+      listProcesses: async () => [{ pid: 200, ppid: 1, stat: 'S', start }],
+      procRoot: '/nonexistent-proc-for-test',
+      kernelStart: () => kernel,
+    });
+    const snap = (await snapshotTree(200, deps(AT, K))) ?? [];
+    expect(snap).toEqual([expect.objectContaining({ pid: 200, startTime: AT, startKernel: K })]);
+    expect(await stillHeld(snap, '/tmp/worktree', deps(STEPPED, K))).toHaveLength(1);
+    expect(await stillHeld(snap, '/tmp/worktree', deps(AT, `${BOOT}:2154999`))).toEqual([]);
+    expect(await stillHeld(snap, '/tmp/worktree', deps(AT, `${OTHER_BOOT}:2154321`))).toEqual([]);
+  });
+
+  it('stores the kernel start beside the text, and loads a record without it', () => {
+    const base = {
+      v: 1, hostId: '0f1e2d3c-4b5a-4968-8776-655443322110', spawnId: 'sp-0f6c1d2e-3a4b-4c5d-8e9f-0123456789ab', agent: 'claude', repoPath: '/repo',
+      sessionId: 'hl-0f6c1d2e-3a4b-4c5d-8e9f-0123456789ab', workspaceId: 'hl-ws', agentSessionId: '0f6c1d2e-3a4b-4c5d-8e9f-0123456789ab',
+      lineage: 'remote-spawn:x', runId: 'run-1', phase: 'created', rootPid: 4242, rootStart: AT, startedAt: '2026-11-13T00:00:00.000Z',
+    };
+    const withKernel = coerceHeadlessStart({ ...base, rootStartKernel: K, survivors: [{ pid: 7, reason: 'did not exit', startTime: AT, startKernel: K }] });
+    expect(withKernel).toMatchObject({ rootStart: AT, rootStartKernel: K, survivors: [{ startTime: AT, startKernel: K }] });
+    const old = coerceHeadlessStart(base);
+    expect(old).toMatchObject({ rootStart: AT });
+    expect(old).not.toHaveProperty('rootStartKernel');
+    expect(coerceHeadlessStart({ ...base, rootStartKernel: 'not a kernel start' })).toBeNull();
   });
 });

@@ -42,6 +42,7 @@ import { ENV_KEYS } from '../shared/constants';
 import { containsControlChars } from '../shared/cwdShape';
 import { createDefaultConfig } from './config';
 import { getProcessCreatedAtFt, getProcessStartTime, isPhantomExit, isPidAlive } from './phantomExit';
+import { kernelStartOf } from '../shared/processStartTime';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -267,7 +268,7 @@ export const SESSION_MANAGER_MAX_LISTENERS = 24;
  *      A PTY exit classified as involuntary (OS shutdown killing children —
  *      see shutdownKill.ts). The session is SUSPENDED, not dead: daemon/index
  *      dumps the buffer + persists so post-reboot recovery replays the same id.
- *  - 'session:phantomExit'  → { id, pid, pidCreatedAtFt, pidStartTime, exitCode,
+ *  - 'session:phantomExit'  → { id, pid, pidCreatedAtFt, pidStartTime, pidStartKernel, exitCode,
  *                               signal, cmd, lastActivityMsAgo, raw }
  *      A PTY exit that reported no exit code and no signal while the shell pid
  *      is STILL ALIVE (node-pty's ConPTY socket-close path — see
@@ -1288,6 +1289,7 @@ export class DaemonSessionManager extends EventEmitter {
           // Identity of the pid we are about to ask the policy layer to kill.
           pidCreatedAtFt: meta.pidCreatedAtFt,
           pidStartTime: meta.pidStartTime,
+          pidStartKernel: meta.pidStartKernel,
           // Carried, not logged here: this class has no access to the daemon's
           // file logger, and a console.log would never reach the daemon log
           // the native-layer investigation actually reads. index.ts prints it
@@ -1389,11 +1391,16 @@ export class DaemonSessionManager extends EventEmitter {
           await new Promise<void>((r) => setTimeout(r, this.spawnStartRetryDelaysMs[attempt - 1]).unref?.());
         }
         if (!live()) return;
+        const kernelBefore = process.platform === 'win32' ? null : kernelStartOf(pid);
         const start = await getProcessStartTime(pid);
         if (!live()) return;
         if (start) {
           if (process.platform === 'win32') meta.pidCreatedAtFt = start;
-          else meta.pidStartTime = start;
+          else {
+            meta.pidStartTime = start;
+            // Kept only when it reads the same around the text read: both name one process.
+            if (kernelBefore !== null && kernelBefore === kernelStartOf(pid)) meta.pidStartKernel = kernelBefore;
+          }
           return;
         }
       }
