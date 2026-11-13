@@ -47,6 +47,8 @@
 // Vertex `model@version`) that claude's own default is not, so either flag
 // cancels the neutralisation the same way.
 
+import { AGENT_ROWS, type AgentIdentityRow } from './agentIdentity';
+import { permissionChoiceIndexes } from './agentLaunchOptions';
 import { commandChoosesModel } from './orchestratorRole';
 
 /** The variable the launch neutralises. */
@@ -148,9 +150,12 @@ export function reattachModelEnvMarker(
 // permission mode, bypass included, so the deny list is what holds even when
 // the operator picks bypassPermissions.
 
-/** The operator's choice for fan-out workers. `manual` is wmux's word for
- *  "add no permission flag" — deliberately NOT a PermissionMode value, which
- *  describes what a transcript recorded rather than what wmux launches. */
+/** The operator's choice for fan-out workers, and for the agents this PC
+ *  starts for another PC. `manual` means the agent asks before it acts
+ *  (Claude's `--permission-mode default`, an agent row's `askMode` for others); an agent
+ *  with no flag wmux knows for that is not started in it (workerModeRefusal).
+ *  Not a PermissionMode value, which describes what a transcript recorded
+ *  rather than what wmux launches. */
 export type FanoutWorkerPermissionMode = 'auto' | 'acceptEdits' | 'bypassPermissions' | 'manual';
 
 export const FANOUT_WORKER_PERMISSION_MODES: readonly FanoutWorkerPermissionMode[] = [
@@ -164,6 +169,15 @@ export const DEFAULT_FANOUT_WORKER_PERMISSION_MODE: FanoutWorkerPermissionMode =
 
 export function isFanoutWorkerPermissionMode(v: unknown): v is FanoutWorkerPermissionMode {
   return typeof v === 'string' && (FANOUT_WORKER_PERMISSION_MODES as readonly string[]).includes(v);
+}
+
+/**
+ * The worker mode a bot worker respawns in, from the mode its pane recorded: a worker mode as it is, anything else
+ * (`plan`, `default`, nothing) `manual`, which asks and keeps an asking mode already on the resume line (a plan
+ * worker resumes in plan).
+ */
+export function respawnWorkerMode(recorded: unknown): FanoutWorkerPermissionMode {
+  return isFanoutWorkerPermissionMode(recorded) ? recorded : 'manual';
 }
 
 /** What a task's orchestrator may answer on its workers' panes by key or
@@ -218,18 +232,28 @@ const PERMISSION_FLAG_FOR_WORKER: Readonly<Record<FanoutWorkerPermissionMode, st
   auto: '--permission-mode auto',
   acceptEdits: '--permission-mode acceptEdits',
   bypassPermissions: '--dangerously-skip-permissions',
-  manual: '',
+  // `default` asks before it acts. Claude 2.1.322 lists it as `manual` and still takes `default`; older
+  // releases know only `default`.
+  manual: '--permission-mode default',
 };
+
+/** Claude modes that already ask before acting: `manual` keeps one of these on the line (a `plan` resume stays in plan). */
+const ASKING_CLAUDE_MODES = new Set(['plan', 'default', 'manual']);
 
 /** The flags wmux appends for `mode`, as they appear on the line. */
 export function workerLaunchFlags(mode: FanoutWorkerPermissionMode, extraDisallowed: readonly string[] = []): string {
+  return launchFlags(PERMISSION_FLAG_FOR_WORKER[mode], extraDisallowed);
+}
+
+/** `permission` (empty for none) and the tool lists, as they appear on the line. */
+function launchFlags(permission: string, extraDisallowed: readonly string[]): string {
   // Extra rules join the SAME quoted list: claude splits it on commas and
   // spaces outside parentheses, so `Bash(git push*)` stays one rule.
   const denied = [...FANOUT_WORKER_DISALLOWED_TOOLS, ...extraDisallowed];
   // A tool denied is not also allowed: the two lists never contradict.
   const allowed = FANOUT_WORKER_ALLOWED_TOOLS.filter((tool) => !denied.some((rule) => toolRuleCovers(rule, tool)));
   return [
-    PERMISSION_FLAG_FOR_WORKER[mode],
+    permission,
     `--allowedTools "${allowed.join(',')}"`,
     `--disallowedTools "${denied.join(',')}"`,
   ]
@@ -294,10 +318,65 @@ const LIST_FLAGS = new Set(['--allowedTools', '--allowed-tools', '--disallowedTo
  *  `mcp__x__y`, `Edit,Read`). The prompt argument never looks like one. */
 const TOOL_RULE = /^[A-Za-z_][\w*-]*(\(.*\))?(,[A-Za-z_][\w*-]*(\(.*\))?)*$/;
 
+/** The launcher of a line: its first word's file name, lower case, without a Windows extension. */
+function launcherStemOf(words: readonly Span[]): string {
+  return (words[0]?.value.split(/[\\/]/).pop() ?? '').replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+}
+
+/** The registry row a launcher stem names (its `launcher`, else its slug). */
+function rowOfStem(stem: string): AgentIdentityRow | undefined {
+  return AGENT_ROWS.find((r) => (r.launcher ?? r.slug) === stem);
+}
+
+/**
+ * Why a launch line may not start in `mode`, or null when it may. `manual`
+ * must make the agent ask, and wmux knows how only for an agent whose row
+ * declares it (`permissions` for Claude's permission mode, or `askMode`): any
+ * other agent (or a wrapper wmux cannot see through) would run on its own
+ * settings, so it is refused instead.
+ */
+export function workerModeRefusal(command: string, mode: FanoutWorkerPermissionMode): string | null {
+  if (mode !== 'manual') return null;
+  const stem = launcherStemOf(spans(command));
+  const row = rowOfStem(stem);
+  if (row?.permissions === 'permission-mode' || row?.askMode) return null;
+  return `the manual worker mode makes the agent ask before it acts, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or an agent it can make ask`;
+}
+
+/** `line` without the words in `cut`, each with the whitespace in front of it; nothing else is re-spaced. */
+function withoutWords(line: string, cut: readonly Span[]): string {
+  // Cut from the end so earlier offsets stay valid.
+  for (const w of [...cut].sort((a, b) => b.start - a.start)) {
+    let from = w.start;
+    while (from > 0 && /\s/.test(line[from - 1])) from--;
+    line = line.slice(0, from) + line.slice(w.end);
+  }
+  return line;
+}
+
+/**
+ * A line in `manual` for an agent whose row declares `askMode`: every
+ * permission choice its `replaces` names (the unattended flags an agent
+ * choice added among them) is taken off, and its ask flags go right after
+ * the launcher, ahead of the prompt (anything after it is read as part of
+ * the prompt).
+ */
+function manualOnLine(command: string, words: readonly Span[], ask: NonNullable<AgentIdentityRow['askMode']>): string {
+  const values = words.slice(1).map((w) => w.value);
+  const cut = permissionChoiceIndexes(
+    { permissionFlags: ask.replaces.flags, permissionSwitches: ask.replaces.switches ?? [], ...(ask.replaces.config ? { permissionConfig: ask.replaces.config } : {}) },
+    values,
+  );
+  const line = withoutWords(command, cut.map((i) => words[i + 1]));
+  const launcher = words[0];
+  return `${line.slice(0, launcher.end)} ${ask.flags}${line.slice(launcher.end)}`;
+}
+
 /**
  * Append the worker's permission flag and tool lists to a launch line.
  *
- * Only a `claude` launch is touched — a role binding may have swapped the agent
+ * Only a `claude` launch is touched, and in `manual` one whose agent row declares `askMode` (manualOnLine)
+ * — a role binding may have swapped the agent
  * to one that rejects these flags, and a wrapper (`env …`, `sh -c …`) is left
  * alone because wmux cannot see which word is the launcher. Everything goes
  * AFTER what is already on the line, i.e. after the prompt argument: the list
@@ -310,8 +389,7 @@ const TOOL_RULE = /^[A-Za-z_][\w*-]*(\(.*\))?(,[A-Za-z_][\w*-]*(\(.*\))?)*$/;
  * a typed agentCmd) is removed first so the setting is the one that applies.
  * Removal is word-based: a flag spelled inside a quoted argument (a prompt, an
  * --append-system-prompt value) is part of that word and is never matched.
- * `manual` keeps the line's own permission flag and adds none of its own; the
- * tool lists are applied in every mode. `extraDisallowed` adds deny rules to
+ * The tool lists are applied in every mode. `extraDisallowed` adds deny rules to
  * the same list (the goal worker profile); a non-claude line gets none of
  * this, which is why a goal refuses non-claude workers outright.
  */
@@ -321,20 +399,26 @@ export function applyWorkerPermissionFlags(
   extraDisallowed: readonly string[] = [],
 ): string {
   const words = spans(command);
-  const stem = (words[0]?.value.split(/[\\/]/).pop() ?? '').replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+  const stem = launcherStemOf(words);
+  const ask = mode === 'manual' ? rowOfStem(stem)?.askMode : undefined;
+  if (ask) return manualOnLine(command, words, ask);
   if (stem !== 'claude') return command;
 
-  const replacePermission = mode !== 'manual';
   const cut: Span[] = [];
+  /** The line's own `--permission-mode` words and values. */
+  const modes: { words: Span[]; value: string }[] = [];
+  let bypass = false;
   for (let k = 1; k < words.length; k++) {
     const v = words[k].value;
     const flag = v.includes('=') ? v.slice(0, v.indexOf('=')) : v;
     const hasValue = v.includes('=');
-    if (replacePermission && BARE_PERMISSION_FLAGS.has(v)) {
+    if (BARE_PERMISSION_FLAGS.has(v)) {
       cut.push(words[k]);
-    } else if (replacePermission && VALUE_FLAGS.has(flag)) {
-      cut.push(words[k]);
-      if (!hasValue && k + 1 < words.length) cut.push(words[++k]);
+      bypass = true;
+    } else if (VALUE_FLAGS.has(flag)) {
+      const own = [words[k]];
+      if (!hasValue && k + 1 < words.length) own.push(words[++k]);
+      modes.push({ words: own, value: hasValue ? v.slice(v.indexOf('=') + 1) : own[1]?.value ?? '' });
     } else if (LIST_FLAGS.has(flag)) {
       cut.push(words[k]);
       if (!hasValue) {
@@ -342,13 +426,9 @@ export function applyWorkerPermissionFlags(
       }
     }
   }
-  let line = command;
-  // Cut from the end so earlier offsets stay valid; each word goes with the
-  // whitespace in front of it and nothing else on the line is re-spaced.
-  for (const w of [...cut].sort((a, b) => b.start - a.start)) {
-    let from = w.start;
-    while (from > 0 && /\s/.test(line[from - 1])) from--;
-    line = line.slice(0, from) + line.slice(w.end);
-  }
-  return `${line} ${workerLaunchFlags(mode, extraDisallowed)}`;
+  // Manual keeps a mode of the line's own that already asks (a resumed `plan` worker stays in plan); any other mode,
+  // or one beside a bypass, gives way to the worker's.
+  const keep = mode === 'manual' && !bypass && modes.length > 0 && modes.every((m) => ASKING_CLAUDE_MODES.has(m.value));
+  if (!keep) for (const m of modes) cut.push(...m.words);
+  return `${withoutWords(command, cut)} ${launchFlags(keep ? '' : PERMISSION_FLAG_FOR_WORKER[mode], extraDisallowed)}`;
 }

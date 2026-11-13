@@ -793,7 +793,7 @@ export class DaemonPipeServer {
       return;
     }
 
-    if (DaemonPipeServer.INTERACTIVE_METHODS.has(method)) {
+    if (DaemonPipeServer.INTERACTIVE_METHODS.has(method) || this.isFanoutStateRead(method, request.params, socket)) {
       let interactive = this.interactiveRateLimits.get(socket);
       if (!interactive || now > interactive.resetAt) {
         interactive = { count: 0, resetAt: now + 1000 };
@@ -881,6 +881,18 @@ export class DaemonPipeServer {
     );
     note.refused = 0;
     note.loggedAt = now;
+  }
+
+  /**
+   * The app's batched read of the tasks a fan-out sent to another PC
+   * (`a2a.task.query` with `view: 'state'` and `taskIds`), once per reconcile
+   * pass: in the interactive class beside the fan-out's own calls. Every other
+   * `a2a.task.query` (an agent's polls) stays in the background class.
+   */
+  private isFanoutStateRead(method: string, params: unknown, socket: net.Socket): boolean {
+    if (method !== 'a2a.task.query' || !params || typeof params !== 'object') return false;
+    const p = params as Record<string, unknown>;
+    return p['view'] === 'state' && Array.isArray(p['taskIds']) && this.isFirstParty(this.clientIds.get(socket) ?? '');
   }
 
   private dispatchAndReply(socket: net.Socket, request: RpcRequest): void {

@@ -1176,7 +1176,8 @@ export class A2aTaskService {
    * Keyed by the peer's `messageId`: the same id asking for the same state is a
    * duplicate, a different state a conflict.
    *
-   * On a company task this host sent, the peer's `completed` is committed as
+   * On a company task this host sent, or the first task of an agent its
+   * fan-out started (marked so when this host made it), the peer's `completed` is committed as
    * `input-required` (`remoteAsked: 'completed'`), with its message and
    * evidence: a report this host marks done (transition). The dedupe, the
    * graph check and the evidence verdict read the asked state.
@@ -1228,9 +1229,10 @@ export class A2aTaskService {
       }
       const current = task.status.state;
       // A company task's `completed` is held here as a report (input-required)
-      // until this host marks it done. Every check below reads the state the
-      // peer asked for, not the one committed.
-      const report = input.to === 'completed' && isCompanyTask(task.history);
+      // until this host marks it done, and so is a fan-out task's (its marker
+      // was set here when the task was made). Every check below reads the
+      // state the peer asked for, not the one committed.
+      const report = input.to === 'completed' && (isCompanyTask(task.history) || remoteMarkerOf(task)?.fanout === true);
       // A receiver's `failed` is taken from any open state: the peer ends the
       // task on its side (e.g. a person rejected it while it was still
       // `submitted`, which has no graph edge to `failed`), and our copy must

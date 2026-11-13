@@ -36,6 +36,31 @@ function run(
 
 const STAMPED = { 'ws-task': { owner: 'ws-parent', origin: PANE } };
 
+describe('notifyFanoutCaller for a task another PC runs', () => {
+  const REMOTE_WS = 'remote:sp-0f6c1d2e-3a4b-4c5d-8e9f-000000000001';
+  const call = (origin: { owner: string; paneId: string } | undefined, stamps: Record<string, { owner: string; origin?: FanoutOrigin }> = {}) => {
+    const sent: FanoutCallerEvent[] = [];
+    const ok = notifyFanoutCaller('ws-parent', REMOTE_WS, 'wtask-r1', 'ledger.failed', 3, {
+      lineageOf: (ws) => stamps[ws],
+      remoteOriginOf: () => origin,
+      send: (ev) => { sent.push(ev); return true; },
+    });
+    return { ok, sent };
+  };
+
+  it('is addressed to the pane on its row, with no lineage stamp', () => {
+    const { ok, sent } = call({ owner: 'ws-parent', paneId: 'pane-a' });
+    expect(ok).toBe(true);
+    expect(sent).toEqual([{ ownerWorkspaceId: 'ws-parent', taskWorkspaceId: REMOTE_WS, taskId: 'wtask-r1', kind: 'ledger.failed', seq: 3, origin: { paneId: 'pane-a' } }]);
+  });
+
+  it('sends nothing for another owner, a row without its pane, or a nested owner', () => {
+    expect(call({ owner: 'ws-other', paneId: 'pane-a' }).sent).toEqual([]);
+    expect(call(undefined).sent).toEqual([]);
+    expect(call({ owner: 'ws-parent', paneId: 'pane-a' }, { 'ws-parent': { owner: 'ws-grand' } }).sent).toEqual([]);
+  });
+});
+
 describe('notifyFanoutCaller', () => {
   it('sends the pane origin ids and the task pointer only', () => {
     const { sent, ok } = run(STAMPED);
@@ -135,6 +160,41 @@ describe('installFanoutCallerLedgerNotify', () => {
     // A system move to anything else is not a caller event.
     await ledger.update({ id: 'wtask-1', status: 'working', actor: { kind: 'system', workspaceId: 'ws-parent' }, expectedRev: 2 });
     expect(calls).toEqual([['ws-parent', 'ws-task', 'wtask-1', 'ledger.input_required', 2]]);
+  });
+});
+
+describe('installFanoutCallerLedgerNotify for a task another PC runs', () => {
+  const SPAWN = 'sp-0f6c1d2e-3a4b-4c5d-8e9f-000000000001';
+  let dir: string;
+  let ledger: TaskLedger;
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-caller-ledger-remote-'));
+    ledger = new TaskLedger({ dir });
+    const remote = { hostId: '0f1e2d3c-4b5a-4968-8776-655443322110', pc: 'box', spawnId: SPAWN, root: 'repo', state: 'started' as const, from: { paneId: 'pane-a' } };
+    await ledger.register({ id: 'wtask-r1', taskWorkspaceId: `remote:${SPAWN}`, ownerWorkspaceId: 'ws-parent', title: 'remote', remote });
+    await ledger.register({ id: 'wtask-r2', taskWorkspaceId: `remote:${SPAWN.replace(/1$/, '2')}`, ownerWorkspaceId: 'ws-parent', title: 'remote', remote: { ...remote, spawnId: SPAWN.replace(/1$/, '2') } });
+    await ledger.register({ id: 'wtask-1', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-parent', title: 'lane' });
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('tells its failure as wmux records it; not its report, and not a local system failure', async () => {
+    const calls: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { calls.push(a); }, ledger);
+    const sys = { kind: 'system' as const, workspaceId: 'main' };
+    await ledger.update({ id: 'wtask-r1', status: 'failed', actor: sys, expectedRev: 1, summary: 'the agent on box is gone' });
+    await ledger.update({ id: 'wtask-r2', status: 'review_requested', actor: sys, expectedRev: 1 });
+    await ledger.update({ id: 'wtask-1', status: 'failed', actor: sys, expectedRev: 1 });
+    expect(calls).toEqual([['ws-parent', `remote:${SPAWN}`, 'wtask-r1', 'ledger.failed', 2]]);
+  });
+
+  it('does not tell a request refused while fanout_start ran (its row is still `sent`): that call\'s reply said so', async () => {
+    const spawnId = SPAWN.replace(/1$/, '3');
+    const remote = { hostId: '0f1e2d3c-4b5a-4968-8776-655443322110', pc: 'box', spawnId, root: 'repo', state: 'sent' as const, from: { paneId: 'pane-a' } };
+    await ledger.register({ id: 'wtask-r3', taskWorkspaceId: `remote:${spawnId}`, ownerWorkspaceId: 'ws-parent', title: 'remote', remote });
+    const calls: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { calls.push(a); }, ledger);
+    await ledger.update({ id: 'wtask-r3', status: 'failed', actor: { kind: 'system', workspaceId: 'main' }, expectedRev: 1, summary: 'refused' });
+    expect(calls).toEqual([]);
   });
 });
 

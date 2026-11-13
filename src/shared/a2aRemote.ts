@@ -93,6 +93,12 @@ export const A2A_ROUTES = Object.freeze({
    */
   continue: '/api/a2a/continue',
   /**
+   * A git bundle a PC made of the work an agent did there for this one
+   * (bring-back), by its id: `GET` — the asking PC, the joiner, fetches it
+   * from the PC that made it. Path: /api/a2a/bundle/:bundleId
+   */
+  bundle: '/api/a2a/bundle',
+  /**
    * Tailnet discovery, answered only while this PC is discoverable and only
    * to a same-user tailnet node; otherwise every route answers exactly as an
    * unauthenticated request does. `GET` — the probe (A2aDiscoverProbe).
@@ -134,6 +140,11 @@ export const A2A_FEATURE_SPAWN = 'spawn.1';
  * advertises it.
  */
 export const A2A_FEATURE_CONTINUE = 'continue.1';
+/**
+ * The PC hands back, as a git bundle, the work an agent it started for
+ * another PC did (`shared/a2aBundle.ts`). Not advertised yet.
+ */
+export const A2A_FEATURE_BUNDLE = 'bundle.1';
 /**
  * Stream liveness both ways. A joiner with it acks its stream cursor every
  * `A2A_STREAM_PING_MS` while the stream is up (to a server whose hello lists
@@ -1233,11 +1244,17 @@ export interface A2aRemoteTaskMarkerV1 {
    */
   kind?: A2aEndpointKind;
   /**
-   * Outbound company task: the peer's state messageId of the `completed` held
-   * here as a report (the task is input-required) until this host marks it
-   * done. Cleared by the peer's next state that is not a report.
+   * Outbound company or fan-out task: the peer's state messageId of the
+   * `completed` held here as a report (the task is input-required) until this
+   * host marks it done. Cleared by the peer's next state that is not a report.
    */
   reported?: string;
+  /**
+   * Outbound: the first task of an agent `fanout_start` asked another PC to
+   * start, set here when the task was made (never from anything the peer
+   * sends). The peer's `completed` is held as a report, as on a company task.
+   */
+  fanout?: true;
 }
 
 /**
