@@ -36,6 +36,7 @@ vi.mock('../stabilizeBundle', async (importOriginal) => {
 import { McpRegistrar } from '../McpRegistrar';
 import { stabilizeMcpBundle } from '../stabilizeBundle';
 import { nativeLauncherPath, type SelfTestVerdict } from '../../../shared/mcpLauncher';
+import { getMcpServerEntry, parseConfig } from '../../../shared/configIO';
 
 const stableDir = () => path.join(tmpHome, '.wmux', 'mcp');
 const nativeCopy = () => nativeLauncherPath(stableDir());
@@ -215,5 +216,56 @@ describe('McpRegistrar — the native launcher (broker flag on, packaged)', () =
     fs.writeFileSync(path.join(tmpHome, '.claude.json'), JSON.stringify({ mcpServers: { wmux: { command: 'node', args: ['/old/index.js', '--core'] } } }));
     await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: false });
     expect(claudeEntry()).toEqual({ command: nativeCopy(), args: ['mcp-shim', '--core'] });
+  });
+});
+
+// The upgrade a user with several agent CLIs gets when the broker is turned
+// on, and the way back, at the registrar: owned entries (node + a script, or
+// the native launcher) move; a hand-authored entry is never touched.
+describe('McpRegistrar — upgrade and rollback across several agent CLIs', () => {
+  const files = () => ({
+    claude: path.join(tmpHome, '.claude.json'),
+    codex: path.join(tmpHome, '.codex', 'config.toml'),
+    gemini: path.join(tmpHome, '.gemini', 'settings.json'),
+    qwen: path.join(tmpHome, '.qwen', 'settings.json'),
+  });
+  const entry = (file: string, format: 'json' | 'toml') =>
+    getMcpServerEntry(parseConfig(fs.readFileSync(file, 'utf8'), format), format, 'wmux');
+  const seed = (file: string, text: string) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  };
+
+  it('flag on moves the owned entries to the native launcher, leaves the hand-edited one byte for byte, and flag unset writes the bundle back', async () => {
+    ship('good');
+    const f = files();
+    const bundle = path.join(stableDir(), 'index.js');
+    // As an earlier wmux left them: every agent on the full bundle, beside the
+    // user's own servers and settings.
+    seed(f.claude, JSON.stringify({ theme: 'dark', mcpServers: { mine: { command: 'uvx', args: ['mine'] }, wmux: { command: 'node', args: [bundle] } } }, null, 2));
+    seed(f.codex, `model = "o3"\n\n[mcp_servers.wmux]\ncommand = "node"\nargs = ["${bundle}"]\n\n[mcp_servers.mine]\ncommand = "mine"\n`);
+    seed(f.gemini, JSON.stringify({ mcpServers: { wmux: { command: 'node', args: [bundle] } } }, null, 2));
+    // Written by hand: not node + a script, so not wmux's to rewrite.
+    const handEdited = '{\n  "mcpServers": {\n    "wmux": { "command": "/opt/custom/wmux-mcp", "args": ["--profile", "core"] }\n  }\n}\n';
+    seed(f.qwen, handEdited);
+
+    await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: false });
+    for (const [file, format] of [[f.claude, 'json'], [f.codex, 'toml'], [f.gemini, 'json']] as const) {
+      expect(entry(file, format)?.command, file).toBe(nativeCopy());
+    }
+    expect(fs.readFileSync(f.qwen, 'utf8')).toBe(handEdited);
+    // The user's own servers and settings stay.
+    expect(JSON.parse(fs.readFileSync(f.claude, 'utf8'))).toMatchObject({ theme: 'dark', mcpServers: { mine: { command: 'uvx', args: ['mine'] } } });
+    expect(fs.readFileSync(f.codex, 'utf8')).toContain('model = "o3"');
+    expect(fs.readFileSync(f.codex, 'utf8')).toContain('[mcp_servers.mine]');
+
+    // The way back: the flag unset, the next start writes the bundle again.
+    delete process.env.WMUX_MCP_BROKER;
+    await new McpRegistrar({ nativeSelfTest: runsIfGood }).register('tok', { useShim: false });
+    for (const [file, format] of [[f.claude, 'json'], [f.codex, 'toml'], [f.gemini, 'json']] as const) {
+      expect(entry(file, format), file).toMatchObject({ command: 'node', args: [bundle] });
+    }
+    expect(fs.readFileSync(f.qwen, 'utf8')).toBe(handEdited);
+    expect(JSON.parse(fs.readFileSync(f.claude, 'utf8')).mcpServers.mine).toEqual({ command: 'uvx', args: ['mine'] });
   });
 });
