@@ -148,12 +148,21 @@ const REMOTE_STATUSES_MAX = 1000;
 /** How far ahead of this PC's clock a peer's status may be dated. */
 const REMOTE_STATUS_SKEW_MS = 60_000;
 /**
- * Statuses one paired PC may bring in a window: past it they are taken and
- * dropped (one log line per window). A peer sends at most one per change of
- * each task with a 5 s floor; the transport itself does not limit a kind.
+ * A flood guard per paired PC: past this many statuses in a window they are
+ * taken and dropped before any check (one log line per window). An honest
+ * peer sends at most one per change of each task with a 5 s floor, so 64
+ * tasks come to about 770 a minute plus the kinds it sends at once; this
+ * leaves about twice that. The transport itself does not limit a kind.
  */
 export const REMOTE_STATUS_WINDOW_MS = 60_000;
-export const REMOTE_STATUS_PER_WINDOW = 60;
+export const REMOTE_STATUS_PER_WINDOW = 1500;
+/**
+ * At most one status per task is applied in this span, below the sender's own
+ * 5 s floor. One that comes sooner is kept (the newest) and applied once the
+ * span is over, never dropped; `question`, `usage-limit` and `gone` apply at once.
+ */
+export const REMOTE_STATUS_TASK_GAP_MS = 2_000;
+const REMOTE_STATUS_AT_ONCE: ReadonlySet<A2aRemoteStatusV1['kind']> = new Set(['question', 'usage-limit', 'gone']);
 
 export class A2aRemoteDelivery {
   readonly outbox: OutboxStore;
@@ -756,8 +765,8 @@ export class A2aRemoteDelivery {
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
       remoteStatus: {
         admit: (hostId) => this.admitRemoteStatus(hostId),
-        note: (taskId, status) => this.noteRemoteStatus(taskId, status),
-        forget: (taskId) => { this.remoteStatuses.delete(taskId); },
+        note: (taskId, status, hostId) => this.takeRemoteStatus(taskId, status, hostId),
+        forget: (taskId) => { this.remoteStatuses.delete(taskId); this.statusGates.delete(taskId); },
       },
       taskBudget: this.taskBudget,
       log: this.deps.log,
@@ -766,8 +775,8 @@ export class A2aRemoteDelivery {
 
   // --- worker status (`status.1`) -------------------------------------------
 
-  /** Statuses taken per peer in the current window (REMOTE_STATUS_PER_WINDOW). */
-  private readonly statusWindows = new Map<string, { start: number; count: number; logged: boolean }>();
+  /** Statuses taken per peer in the current window (REMOTE_STATUS_PER_WINDOW), and which log lines it has had. */
+  private readonly statusWindows = new Map<string, { start: number; count: number; logged: boolean; gapLogged?: boolean }>();
 
   /** Whether one more status from this PC is taken now; past the window's share it is dropped. */
   private admitRemoteStatus(hostId: HostId): boolean {
@@ -783,16 +792,58 @@ export class A2aRemoteDelivery {
     if (w.count <= REMOTE_STATUS_PER_WINDOW) return true;
     if (!w.logged) {
       w.logged = true;
-      this.deps.log('warn', `[a2a-remote] ${hostId}: more than ${REMOTE_STATUS_PER_WINDOW} worker statuses in a minute; the rest are dropped`);
+      this.deps.log('warn', `[a2a-remote] ${hostId}: more than ${REMOTE_STATUS_PER_WINDOW} worker statuses in a minute; the rest are dropped unread`);
     }
     return false;
+  }
+
+  /**
+   * Per task this PC sent: when a status was last applied, and the newest one
+   * that came within REMOTE_STATUS_TASK_GAP_MS of it, waiting for the gap to
+   * end. Only tasks that passed the link and direction checks get an entry,
+   * so it is bounded by the open tasks this PC sent (and by REMOTE_STATUSES_MAX).
+   */
+  private readonly statusGates = new Map<string, { at: number; waiting?: A2aRemoteStatusV1 }>();
+
+  /** A status that passed the checks: applied now, or kept as the task's newest until its gap is over. */
+  private takeRemoteStatus(taskId: string, status: A2aRemoteStatusV1, hostId: HostId): void {
+    const now = Date.now();
+    const gate = this.statusGates.get(taskId);
+    if (gate && now - gate.at < REMOTE_STATUS_TASK_GAP_MS && !REMOTE_STATUS_AT_ONCE.has(status.kind)) {
+      if (!gate.waiting || this.statusTime(status) >= this.statusTime(gate.waiting)) gate.waiting = status;
+      const w = this.statusWindows.get(hostId);
+      if (w && !w.gapLogged) {
+        w.gapLogged = true;
+        this.deps.log('info', `[a2a-remote] ${hostId}: statuses for one task came less than ${REMOTE_STATUS_TASK_GAP_MS / 1000} s apart; the newest is applied after the gap`);
+      }
+      return;
+    }
+    if (gate?.waiting) this.noteRemoteStatus(taskId, gate.waiting);
+    this.noteRemoteStatus(taskId, status);
+    this.statusGates.delete(taskId);
+    this.statusGates.set(taskId, { at: now });
+    while (this.statusGates.size > REMOTE_STATUSES_MAX) this.statusGates.delete(this.statusGates.keys().next().value as string);
+  }
+
+  /** A waiting status whose gap is over is applied (read time stands in for a timer). */
+  private settleRemoteStatus(taskId: string): void {
+    const gate = this.statusGates.get(taskId);
+    if (!gate?.waiting || Date.now() - gate.at < REMOTE_STATUS_TASK_GAP_MS) return;
+    this.noteRemoteStatus(taskId, gate.waiting);
+    gate.at = Date.now();
+    delete gate.waiting;
+  }
+
+  /** A peer's `since` as this PC takes it: no later than now plus a little skew. */
+  private statusTime(status: A2aRemoteStatusV1): number {
+    return Math.min(Date.parse(status.since), Date.now() + REMOTE_STATUS_SKEW_MS);
   }
 
   /** A worker's status on a task this PC sent, the newest per task (by its `since`, as a time). */
   private noteRemoteStatus(taskId: string, status: A2aRemoteStatusV1): void {
     // A peer's clock: a `since` past this PC's own time (plus a little skew) counts as now, so a status
     // dated far ahead cannot pin itself against the newer ones.
-    const since = Math.min(Date.parse(status.since), Date.now() + REMOTE_STATUS_SKEW_MS);
+    const since = this.statusTime(status);
     const prev = this.remoteStatuses.get(taskId);
     if (prev && Date.parse(prev.since) > since) return;
     this.remoteStatuses.delete(taskId);
@@ -807,12 +858,14 @@ export class A2aRemoteDelivery {
    * that ended has none, and its kept status is forgotten.
    */
   withRemoteStatus<T extends Task>(task: T): T {
-    const status = this.remoteStatuses.get(task.id);
-    if (!status) return task;
     if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
       this.remoteStatuses.delete(task.id);
+      this.statusGates.delete(task.id);
       return task;
     }
+    this.settleRemoteStatus(task.id);
+    const status = this.remoteStatuses.get(task.id);
+    if (!status) return task;
     const remote = task.metadata.remote as A2aRemoteTaskState | undefined;
     if (!remote) return task;
     return { ...task, metadata: { ...task.metadata, remote: { ...remote, status: shownRemoteStatus(status) } } };

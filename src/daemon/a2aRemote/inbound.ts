@@ -69,9 +69,10 @@ export interface InboundDeps {
    * Absent, a status is refused as unknown.
    */
   remoteStatus?: {
-    /** One more status from this PC may be taken now (a per-peer receive limit); false: dropped quietly. */
+    /** One more status from this PC may be taken now (a per-peer flood guard); false: dropped quietly. */
     admit?(hostId: HostId): boolean;
-    note(taskId: string, status: A2aRemoteStatusV1): void;
+    /** A status that passed the checks, from `hostId` (a per-task gap is applied there). */
+    note(taskId: string, status: A2aRemoteStatusV1, hostId: HostId): void;
     forget(taskId: string): void;
   };
   /** New tasks each PC may send this one (`PeerTaskBudget`); absent, no limit. */
@@ -179,7 +180,7 @@ async function applyInbound(
     return deps.offers.applyInbound(env, peer);
   }
   if (env.kind === 'link') return applyLinkNotice(env, peer.hostId, deps);
-  // A status past this PC's share for the peer: taken and dropped before any check, so neither a refusal
+  // A status past the peer's flood guard: taken and dropped before any check, so neither a refusal
   // for the peer to retry nor a log line per message comes of it.
   if (env.kind === 'status' && deps.remoteStatus?.admit && !deps.remoteStatus.admit(peer.hostId)) {
     return { ok: true, taskId: env.taskId as string, duplicate: true };
@@ -254,7 +255,7 @@ async function applyInbound(
     // Only this PC's own ids and the fixed kind; nothing the peer wrote.
     if ((env.status as A2aRemoteStatusV1).kind === 'gone') deps.log?.('info', `[a2a-remote] task ${taskId} on link ${link.linkId}: the agent on that PC is gone`);
     // A task that ended has no worker status any more: taken, and dropped.
-    if (!(TERMINAL_STATES as readonly string[]).includes(task!.status.state)) deps.remoteStatus.note(taskId, env.status as A2aRemoteStatusV1);
+    if (!(TERMINAL_STATES as readonly string[]).includes(task!.status.state)) deps.remoteStatus.note(taskId, env.status as A2aRemoteStatusV1, peer.hostId);
     return { ok: true, taskId, duplicate: false };
   }
   if (env.kind === 'receipt') {
