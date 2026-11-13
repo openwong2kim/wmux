@@ -213,12 +213,14 @@ With headless mode on:
   background, an agent it started without waiting, a Monitor) is waited for.
   A turn that ends while such work runs sends its text as a reply, and the
   task keeps `working`; the answer is the first turn end after the agent
-  heard the work ended. If the agent stays quiet for 30 minutes while the
-  work runs, its answer goes, saying the work still runs on the host.
+  heard the work ended. If the work still runs 30 minutes after the turn
+  that left it running, the answer goes at the agent's next pause, saying
+  the work still runs on the host.
   Afterwards, what the agent says in a turn nobody on the host started (that
   work ending, a wake-up it set itself) is sent as a further reply on the
-  same task, until the asking PC sends something or the task ends. A task
-  gets at most 5 such replies (progress included).
+  same task, until the asking PC sends something, someone types into the
+  agent on the host, or the task ends. A task gets at most 5 such replies
+  (progress included).
 - What the asking PC sends to the same agent afterwards (follow-ups: a new
   task, or a reply on a task that waits for more) depends on `--follow-ups`.
   With `direct`, each is typed in once the agent finished the one before, in
