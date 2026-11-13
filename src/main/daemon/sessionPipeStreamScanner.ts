@@ -5,7 +5,10 @@ import type { SessionPipeMarkers } from '../../daemon/sessionPipeMarkers';
  *
  * `data`          — raw PTY bytes to forward to the renderer, in order;
  *                   `replay` identifies bytes recovered from the daemon's
- *                   ring buffer rather than produced by the live PTY.
+ *                   ring buffer rather than produced by the live PTY;
+ *                   `reflush` marks a replay that a live re-flush sent (after
+ *                   RESYNC_BEGIN), as opposed to the attach-time flush: the
+ *                   pane's history again, not output a listener has not seen.
  * `flushComplete` — the ring-buffer flush (or a live re-flush) finished;
  *                   `recoveredBytes` is the PRE-STRIP length of the replayed
  *                   scrollback that preceded the FLUSH_DONE_MARKER (0 means the
@@ -13,7 +16,7 @@ import type { SessionPipeMarkers } from '../../daemon/sessionPipeMarkers';
  *                   the flush-detection block below).
  */
 export type ScanEvent =
-  | { type: 'data'; data: Buffer; replay: boolean }
+  | { type: 'data'; data: Buffer; replay: boolean; reflush?: true }
   | { type: 'flushComplete'; recoveredBytes: number };
 
 interface MarkerHit {
@@ -45,6 +48,8 @@ const EMPTY = Buffer.alloc(0);
 export class SessionPipeStreamScanner {
   private _mode: 'accumulating' | 'live' = 'accumulating';
   private armed = false;
+  // accumulating after a RESYNC_BEGIN: the replay it ends with is a re-flush.
+  private reflushing = false;
   private pendingChunks: Buffer[] = [];
   private pendingBytes = 0;
   // The replay exceeded maxPendingBytes and was dropped. Keep scanning a
@@ -138,6 +143,7 @@ export class SessionPipeStreamScanner {
     if (this.pendingBytes > this.maxPendingBytes) {
       this._mode = 'live';
       this.armed = false;
+      this.reflushing = false;
       this.pendingChunks = [];
       this.pendingBytes = 0;
       const hit = this.findMarker(combined, this.flushMarkers);
@@ -159,6 +165,8 @@ export class SessionPipeStreamScanner {
     this._mode = 'live';
     this.pendingChunks = [];
     this.pendingBytes = 0;
+    const reflush = this.reflushing;
+    this.reflushing = false;
 
     const events: ScanEvent[] = [];
 
@@ -180,7 +188,7 @@ export class SessionPipeStreamScanner {
     if (markerIndex > 0) {
       const replay = this.stripReplay(combined.subarray(0, markerIndex));
       if (replay.length > 0) {
-        events.push({ type: 'data', data: replay, replay: true });
+        events.push(reflush ? { type: 'data', data: replay, replay: true, reflush: true } : { type: 'data', data: replay, replay: true });
       }
     }
 
@@ -256,6 +264,7 @@ export class SessionPipeStreamScanner {
       // disarm: the resync episode is now owned by the FLUSH_DONE cycle.
       this.armed = false;
       this._mode = 'accumulating';
+      this.reflushing = true;
       const residual = combined.subarray(markerIndex + hit.length);
       if (residual.length > 0) {
         events.push(...this.accumulate(residual));

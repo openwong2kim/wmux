@@ -6,6 +6,7 @@
 // import time (the adapter pulls resolveMcpBundlePath from ClaudeSdkAdapter).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -1721,6 +1722,25 @@ describe('createBrainPtyHost.write', () => {
     };
     const host = createBrainPtyHost(client as unknown as DaemonClientLike);
     expect(() => host.write('brain-1', 'hi')).not.toThrow();
+  });
+});
+
+describe('createBrainPtyHost.onData', () => {
+  it('passes the attach replay and live output, and skips a re-flush replay', () => {
+    const client = Object.assign(new EventEmitter(), {
+      rpc: async () => undefined,
+      connectSessionPipe: async () => undefined,
+      writeToSession: () => true,
+    });
+    const host = createBrainPtyHost(client as unknown as DaemonClientLike);
+    const seen: string[] = [];
+    const off = host.onData('brain-1', (chunk) => seen.push(chunk));
+    client.emit('session:data', { sessionId: 'brain-1', data: Buffer.from('banner'), replay: true });
+    client.emit('session:data', { sessionId: 'brain-1', data: Buffer.from('banner again'), replay: true, reflush: true });
+    client.emit('session:data', { sessionId: 'brain-1', data: Buffer.from('live') });
+    client.emit('session:data', { sessionId: 'brain-2', data: Buffer.from('other') });
+    off();
+    expect(seen).toEqual(['banner', 'live']);
   });
 });
 

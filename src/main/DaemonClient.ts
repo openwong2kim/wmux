@@ -109,7 +109,8 @@ function isNotFirstParty(err: unknown): boolean {
  * Communicates over Named Pipe (Windows) / Unix domain socket using JSON-RPC.
  *
  * Events:
- *   'session:data'   — { sessionId: string, data: Buffer, replay: boolean }
+ *   'session:data'   — { sessionId: string, data: Buffer, replay: boolean, reflush?: true }
+ *                      (`reflush`: the replay of a live re-flush, see ScanEvent)
  *   'session:died'   — { sessionId: string, exitCode: number | null }
  *   'disconnected'   — daemon control pipe disconnected
  *   'event'          — DaemonEvent from daemon broadcast
@@ -1518,6 +1519,10 @@ export class DaemonClient extends EventEmitter {
           });
           break;
         }
+        case 'session.resyncNeeded':
+          // The session pipe fell behind (SessionPipe) and drained: re-flush it.
+          this.emit('session:resyncNeeded', { sessionId: event.sessionId });
+          break;
         case 'session.destroyed':
           // pty:dispose path — distinct from session.died (natural exit).
           // Notification router treats both the same: clear agentStatus.
@@ -1778,7 +1783,7 @@ export class DaemonClient extends EventEmitter {
     const drain = (events: ReturnType<SessionPipeStreamScanner['feed']>) => {
       for (const ev of events) {
         if (ev.type === 'data') {
-          this.emit('session:data', { sessionId, data: ev.data, replay: ev.replay });
+          this.emit('session:data', { sessionId, data: ev.data, replay: ev.replay, ...(ev.reflush ? { reflush: true } : {}) });
         } else {
           this.emit('session:flushComplete', { sessionId, recoveredBytes: ev.recoveredBytes });
         }

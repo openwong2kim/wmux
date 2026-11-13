@@ -538,6 +538,18 @@ const electronAPI = {
       ipcRenderer.on(IPC.PTY_FLUSH_COMPLETE, listener);
       return () => { ipcRenderer.removeListener(IPC.PTY_FLUSH_COMPLETE, listener); };
     },
+    // Main is re-flushing this pty on its own (its session pipe fell behind):
+    // the replay and its flush-complete follow, or onResyncFailed.
+    onResyncStarting: (callback: (id: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, id: string) => callback(id);
+      ipcRenderer.on(IPC.PTY_RESYNC_STARTING, listener);
+      return () => { ipcRenderer.removeListener(IPC.PTY_RESYNC_STARTING, listener); };
+    },
+    onResyncFailed: (callback: (id: string, code: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, id: string, code: string) => callback(id, code);
+      ipcRenderer.on(IPC.PTY_RESYNC_FAILED, listener);
+      return () => { ipcRenderer.removeListener(IPC.PTY_RESYNC_FAILED, listener); };
+    },
     // Main dropped a write for this pty: the bytes never reached its shell.
     onWriteDropped: (callback: (id: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, id: string) => callback(id);

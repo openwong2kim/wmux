@@ -1247,6 +1247,12 @@ export interface DaemonEvent {
     //                           restartCount, consecutiveFailures }
     | 'session.restarted'
     | 'supervision.changed'
+    // The pane's session pipe fell behind (main stopped reading it) and has
+    // drained: main re-flushes it (daemon.resyncSession). Repeated while the
+    // pipe stays behind. Additive: a main that predates it ignores the type,
+    // and the pipe stays behind until that main's next re-flush or reattach.
+    //   session.resyncNeeded → null
+    | 'session.resyncNeeded'
     // A pane's usage-limit hold changed (shared/usageLimit).
     //   usage.limit.changed → { limit: PaneUsageLimit | null }  (null = cleared)
     | 'usage.limit.changed'

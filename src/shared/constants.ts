@@ -54,6 +54,11 @@ export const IPC = {
   // existing reconnect machinery, NOT run the died-path cleanup. Payload:
   // { ptyId, restartCount, exitCode }.
   PTY_RESTARTED: 'pty:restarted',
+  // Main is re-flushing a pane the renderer did not ask about (its session
+  // pipe fell behind, SessionPipe): arm for the replay as for its own resync.
+  // Payload: ptyId. PTY_RESYNC_FAILED: that re-flush failed; payload: ptyId, code.
+  PTY_RESYNC_STARTING: 'pty:resync-starting',
+  PTY_RESYNC_FAILED: 'pty:resync-failed',
   // X8 — sticky supervision status flip (runaway-guard trip → 'stopped',
   // manual rearm/stop). Always forwarded for badge sync; main also raises an
   // OS toast on guard trips only. Payload: { ptyId, status, reason, restartCount }.

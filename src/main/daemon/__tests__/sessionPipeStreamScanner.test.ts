@@ -230,6 +230,20 @@ describe('armed resync scan', () => {
     return s;
   }
 
+  it('marks the replay of a re-flush, and only that replay, as reflush', () => {
+    const s = newScanner();
+    const attach = s.feed(Buffer.concat([b('history'), FLUSH_DONE_MARKER]));
+    expect(attach.find((e) => e.type === 'data')).toEqual({ type: 'data', data: b('history'), replay: true });
+    s.armResync();
+    const events = s.feed(Buffer.concat([b('live'), RESYNC_BEGIN_MARKER, b('again'), FLUSH_DONE_MARKER, b('after')]));
+    const data = events.filter((e) => e.type === 'data');
+    expect(data).toEqual([
+      { type: 'data', data: b('live'), replay: false },
+      { type: 'data', data: b('again'), replay: true, reflush: true },
+      { type: 'data', data: b('after'), replay: false },
+    ]);
+  });
+
   it('BEGIN in a single chunk — pre-marker data emitted, then accumulates residual', () => {
     const s = armedLive();
     const pre = b('tail-of-live');
