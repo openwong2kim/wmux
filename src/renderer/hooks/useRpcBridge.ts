@@ -484,7 +484,7 @@ const STORED_FOR_LATER_HINT =
   "pane can take it: it tries again when the pane's agent ends a turn and once a minute (a pane held by a usage " +
   'limit waits for the limit to reset). The receiver can read it now with a2a_task_query. The kept copy is ' +
   "dropped, with no word back, after 24 hours, when the task ends, when the pane closes or its agent changes, " +
-  'or when more messages wait for the pane than it keeps (4 per task, 8 in all); nor does it survive an app ' +
+  'or when more messages wait than it keeps (4 per task and 8 per pane, 64 in all); nor does it survive an app ' +
   'restart. Do not just send it ' +
   'again: check the task with a2a_task_query first.';
 

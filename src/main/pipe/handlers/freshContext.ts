@@ -519,7 +519,7 @@ export async function withFreshContextLock<T>(
     // for `previous`, which is the send actually holding the pane.
     release();
     throw new FreshContextBusy(
-      `another send is still running on this pane (waited ${waitMs} ms); nothing was written`,
+      `another new-task send is still running on this pane (waited ${waitMs} ms); nothing was written`,
     );
   }
   try {

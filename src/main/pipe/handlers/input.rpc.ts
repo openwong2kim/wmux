@@ -17,7 +17,7 @@ import type { PTYManager } from '../../pty/PTYManager';
 import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import { TERMINAL_WRITE_DELIVERY_BUDGET_MS, terminalStartWindowMs } from '../../../shared/terminalWriteBudget';
-import { TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../../../shared/freshContext';
+import { FRESH_CONTEXT_LOCK_WAIT_MS, TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../../../shared/freshContext';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWording';
 import { sanitizePtyText, TERMINAL_STATES } from '../../../shared/types';
 import { agentRow } from '../../../shared/agentIdentity';
@@ -1327,7 +1327,7 @@ export async function gatedPasteSubmit(
     }
   }
   const atPaste = guard ? await guard.beforePaste() : null;
-  if (atPaste) return atPaste;
+  if (atPaste) return fresh?.freshContext === 'applied' ? { ...atPaste, freshContextApplied: true } : atPaste;
   try {
     write(ptyId, formatBracketedPastePayload(text));
   } catch (err) {
@@ -2669,14 +2669,18 @@ export function registerInputRpc(
       ...(deps.now ? { now: deps.now } : {}),
       armRetry: () => armEnterRetry(ptyId),
     };
+    if (!opts?.newTask) return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
     // #1680 — a new task: the fresh-context step runs inside the gated
-    // delivery. The pane's conversation is kept when the renderer knows of
-    // other open tasks on it, or the daemon's task store does (or cannot be
-    // read) — asked only when the role does ask for fresh context.
+    // delivery, and the pane is held through the text's Enter. The pane's
+    // conversation is kept when the renderer knows of other open tasks on it,
+    // or the daemon's task store does (or cannot be read) — asked only when
+    // the role does ask for fresh context.
     const keepContext = async (): Promise<KeepContextCode | undefined> =>
-      opts?.keepContext ?? daemonOpenTaskOnPane(queryDaemonTasks, ptyId, opts?.pane, opts?.taskId);
-    const freshContext = opts?.newTask
-      ? async (): Promise<FreshContextReply> => {
+      opts.keepContext ?? daemonOpenTaskOnPane(queryDaemonTasks, ptyId, opts.pane, opts.taskId);
+    return withFreshContextLock(
+      ptyId,
+      () =>
+        gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
           const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
           return runFreshContextOn(
             ptyId,
@@ -2691,15 +2695,7 @@ export function registerInputRpc(
             },
             keepContext,
           );
-        }
-      : undefined;
-    // Every delivery holds its pane from its first check through its Enter,
-    // so two deliveries (a stored one's retry and a live send) never put
-    // their pastes into one composer. One that cannot get the pane in time
-    // writes nothing.
-    return withFreshContextLock(
-      ptyId,
-      () => gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, freshContext, guard, receipt),
+        }, guard, receipt),
       deps.freshContextLockWaitMs,
     ).catch((err: unknown): GatedSubmitResult => {
       if (!(err instanceof FreshContextBusy)) throw err;
@@ -2727,38 +2723,86 @@ export function registerInputRpc(
     if (workspaceId === null) return 'pane gone';
     return readTaskState(workspaceId, entry.taskId);
   };
-  /** The pane's agent's last session-start hook: a new agent, or a new
-   *  conversation of the same one, moves it. */
+  /** The pane's agent's last session-start hook. */
   const sessionStartOf = (ptyId: string): number | null => deps.readSessionStart?.(ptyId)?.at ?? null;
+  /** The agent was started again since the entry was stored: a later
+   *  session-start hook from a process start (`startup`, `resume`). A clear
+   *  (a fresh-context step's own among them) or a compaction is the same
+   *  agent; a process exit is seen apart (agentEnded). */
+  const agentRestarted = (entry: PendingDelivery): boolean => {
+    const now = deps.readSessionStart?.(entry.ptyId);
+    return !!now && now.at !== entry.sessionStartAt && (now.source === 'startup' || now.source === 'resume');
+  };
+
+  // A stored delivery's retry and a live delivery never share a pane: a
+  // retry runs only on a pane no delivery is on, and a live one waits for a
+  // retry in its pane (up to the new-task lock's wait). Live deliveries among
+  // themselves are as before.
+  const retrying = new Map<string, Promise<void>>();
+  const liveOn = new Map<string, number>();
+  const paneBusy = (detail: string): GatedSubmitRefusal => ({ ok: false, reason: 'fresh_context_busy', detail: `delivery: ${detail}; nothing was written` });
+  const deliverLive: typeof deliverGated = async (ptyId, text, agent, opts) => {
+    const waitUntil = Date.now() + (deps.freshContextLockWaitMs ?? FRESH_CONTEXT_LOCK_WAIT_MS);
+    for (let held = retrying.get(ptyId); held; held = retrying.get(ptyId)) {
+      const left = waitUntil - Date.now();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const freed = await Promise.race([
+        held.then(() => true),
+        new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), Math.max(0, left)); }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (!freed) return paneBusy('a stored message was still being typed into this pane');
+    }
+    liveOn.set(ptyId, (liveOn.get(ptyId) ?? 0) + 1);
+    try {
+      return await deliverGated(ptyId, text, agent, opts);
+    } finally {
+      const n = (liveOn.get(ptyId) ?? 1) - 1;
+      if (n > 0) liveOn.set(ptyId, n);
+      else liveOn.delete(ptyId);
+    }
+  };
+  const deliverRetry: typeof deliverGated = async (ptyId, text, agent, opts) => {
+    if (retrying.has(ptyId) || liveOn.has(ptyId)) return paneBusy('another delivery is running on this pane');
+    let done: () => void = () => undefined;
+    retrying.set(ptyId, new Promise<void>((resolve) => { done = resolve; }));
+    try {
+      return await deliverGated(ptyId, text, agent, opts);
+    } finally {
+      retrying.delete(ptyId);
+      done();
+    }
+  };
 
   let pendingCheckSeq = 0;
   const pending = new PendingDeliveries({
     // At retry: the sender check names the task only when the send had a
     // sender record; the hand-off guard waits at most a moment for a quiet
-    // pane (the pane is held meanwhile) and refuses another agent session;
-    // a check of the task and of the agent's session-start runs right before
-    // the paste and the Enter.
+    // pane (no live delivery starts on it meanwhile) and refuses another pane
+    // session; right before the paste and the Enter, a check that the entry
+    // is still kept, its agent was not started again and (before the paste)
+    // its task is still open.
     submit: async (entry) => {
       const agentChanged: GatedSubmitResult = {
         ok: false,
         reason: 'agent_changed',
         detail: 'delivery: the agent the stored text was meant for is no longer the one in the pane',
       };
-      if (sessionStartOf(entry.ptyId) !== entry.sessionStartAt) return agentChanged;
+      if (agentRestarted(entry)) return agentChanged;
       const guardKey = `pending-delivery:${++pendingCheckSeq}`;
-      const sameAgent = (): string | null =>
-        sessionStartOf(entry.ptyId) === entry.sessionStartAt ? null : 'the pane\'s agent started a new session';
+      const stillOurs = (): string | null =>
+        !pending.isKept(entry) ? 'the stored text was withdrawn' : agentRestarted(entry) ? 'the pane\'s agent was started again' : null;
       const unregister = registerDeliveryCheck(guardKey, {
         beforePaste: async () => {
-          const changed = sameAgent();
+          const changed = stillOurs();
           if (changed) return changed;
           const state = await taskStateOf(entry).catch(() => null);
           return state === 'ended' || state === 'missing' || state === 'pane gone' ? 'the task is no longer open' : null;
         },
-        beforeEnter: sameAgent,
+        beforeEnter: stillOurs,
       });
       try {
-        return await deliverGated(entry.ptyId, entry.text, entry.agent, {
+        return await deliverRetry(entry.ptyId, entry.text, entry.agent, {
           ...entry.opts,
           waitQuiet: true,
           expectAgent: entry.agentName,
@@ -2796,6 +2840,7 @@ export function registerInputRpc(
     agent: string | null | undefined,
     opts: GatedSubmitOptions | undefined,
     reason: GatedSubmitRefusal['reason'],
+    freshApplied = false,
   ): Promise<boolean> => {
     const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
     const state = dc?.isConnected ? await dc.getAgentState(ptyId, { timeoutMs: 1_000 }).catch(() => null) : null;
@@ -2808,9 +2853,11 @@ export function registerInputRpc(
       ptyId,
       text,
       agent: agent ?? null,
+      // A conversation already cleared by this send's fresh-context step is
+      // not cleared again: the retry types the text alone.
       opts: {
-        ...(opts?.newTask ? { newTask: true, taskId } : {}),
-        ...(opts?.keepContext ? { keepContext: opts.keepContext } : {}),
+        ...(opts?.newTask && !freshApplied ? { newTask: true, taskId } : {}),
+        ...(opts?.keepContext && !freshApplied ? { keepContext: opts.keepContext } : {}),
         ...(opts?.pane ? { pane: opts.pane } : {}),
         ...(hadSender ? { senderTaskIds: [taskId] } : {}),
       },
@@ -2839,13 +2886,15 @@ export function registerInputRpc(
           stored: true,
         };
       }
-      const result = await deliverGated(ptyId, text, agent, opts);
+      const result = await deliverLive(ptyId, text, agent, opts);
       if (result.ok) return result;
       // Kept: a local task's text the gate could not check, that met a
       // usage-limit hold, or that another delivery kept off the pane, with
       // nothing pasted. Anything a person or a dialog is part of is not.
       const keep = taskId && STORE_ON_REFUSAL.has(result.reason) && !result.pasted;
-      return keep && (await storeForLater(ptyId, taskId, text, agent, opts, result.reason)) ? { ...result, stored: true } : result;
+      return keep && (await storeForLater(ptyId, taskId, text, agent, opts, result.reason, result.freshContextApplied === true))
+        ? { ...result, stored: true }
+        : result;
     },
     retryPendingDeliveries: (ptyId) => pending.retry(ptyId),
     agentEnded: (ptyId) => pending.dropPane(ptyId, 'agent changed'),

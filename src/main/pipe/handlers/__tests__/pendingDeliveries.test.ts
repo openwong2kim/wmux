@@ -145,6 +145,44 @@ describe('PendingDeliveries', () => {
     expect(gone.logs.at(-1)).toContain(': pane gone;');
   });
 
+  it('the same text stored again takes the pane agent as it is now, keeping its place', () => {
+    const h = harness();
+    h.queue.store(h.entry('t1', 'pty-1', 'first'));
+    h.queue.store(h.entry('t2', 'pty-1', 'second'));
+    h.queue.store({ ...h.entry('t1', 'pty-1', 'first'), incarnationId: 'inc-2', sessionStartAt: 5 });
+    const kept = h.queue.heldFor('pty-1', 't1');
+    expect(kept).toMatchObject({ incarnationId: 'inc-2', sessionStartAt: 5 });
+    expect(h.queue.size).toBe(2);
+  });
+
+  it('a pane gone past the grace drops all of its entries at once', async () => {
+    const h = harness({ state: 'pane gone' });
+    for (const id of ['t1', 't2', 't3']) h.queue.store(h.entry(id));
+    await h.queue.retry('pty-1');
+    h.advance(PENDING_TASK_ROW_GRACE_MS);
+    await h.queue.retry('pty-1');
+    expect(h.queue.size).toBe(0);
+  });
+
+  it('a withdrawn entry is no longer kept while its retry runs', async () => {
+    let release: (r: GatedSubmitResult) => void = () => undefined;
+    let keptDuring: boolean | undefined;
+    const h = harness({
+      submit: (entry) => new Promise((resolve) => {
+        release = (r) => { keptDuring = h.queue.isKept(entry); resolve(r); };
+      }),
+    });
+    h.queue.store(h.entry('t1'));
+    const running = h.queue.retry('pty-1');
+    await Promise.resolve();
+    await Promise.resolve();
+    withdrawStoredDeliveries('t1');
+    release({ ok: false, reason: 'guard_refused', detail: 'withdrawn' });
+    await running;
+    expect(keptDuring).toBe(false);
+    expect(h.queue.size).toBe(0);
+  });
+
   it('the same text stored while it is being typed stays one entry, typed once', async () => {
     let release: (r: GatedSubmitResult) => void = () => undefined;
     const h = harness({ submit: () => new Promise((resolve) => { release = resolve; }) });

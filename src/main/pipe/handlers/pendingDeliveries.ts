@@ -126,9 +126,16 @@ export class PendingDeliveries {
   }
 
   /** Keep `entry`. The same text already kept for the same task and pane
-   *  stays as it is, where it is (it may be being typed right now). */
+   *  keeps its place and age (it may be being typed right now) and takes
+   *  the pane's agent as it is now. */
   store(entry: PendingDelivery): void {
-    if (this.entries.some((e) => e.taskId === entry.taskId && e.ptyId === entry.ptyId && e.text === entry.text)) return;
+    const prior = this.entries.find((e) => e.taskId === entry.taskId && e.ptyId === entry.ptyId && e.text === entry.text);
+    if (prior) {
+      prior.agentName = entry.agentName;
+      prior.incarnationId = entry.incarnationId;
+      prior.sessionStartAt = entry.sessionStartAt;
+      return;
+    }
     this.entries.push(entry);
     const sameTask = (e: PendingDelivery): boolean => e.taskId === entry.taskId;
     this.evict(this.entries.filter((e) => e.ptyId === entry.ptyId && sameTask(e)), PENDING_PER_TASK_CAP, sameTask);
@@ -136,6 +143,11 @@ export class PendingDeliveries {
     this.evict(this.entries, PENDING_TOTAL_CAP, sameTask);
     this.deps.log(`[delivery] stored task ${JSON.stringify(entry.taskId)} for pane ${JSON.stringify(entry.ptyId)}; it is typed when the pane can take it`);
     this.timer ??= (this.deps.setTimer ?? defaultTimer)(() => void this.sweep(), PENDING_SWEEP_MS);
+  }
+
+  /** Is `entry` still kept (not typed, dropped or withdrawn)? */
+  isKept(entry: PendingDelivery): boolean {
+    return this.entries.includes(entry);
   }
 
   /** The oldest delivery stored for `taskId` on the pane, if any. */
@@ -167,7 +179,7 @@ export class PendingDeliveries {
       const state = await this.deps.taskState(entry).catch(() => null);
       if (state === 'pane gone') {
         entry.goneSince ??= this.now();
-        if (this.now() - entry.goneSince >= PENDING_TASK_ROW_GRACE_MS) this.drop(entry, 'pane gone');
+        if (this.now() - entry.goneSince >= PENDING_TASK_ROW_GRACE_MS) this.dropPane(ptyId, 'pane gone');
         return;
       }
       delete entry.goneSince;

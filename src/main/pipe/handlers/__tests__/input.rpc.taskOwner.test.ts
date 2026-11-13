@@ -93,8 +93,9 @@ interface WireOpts {
   agentSession?: string;
   /** The daemon reads no agent in the task pane: it is back at a shell. */
   atShell?: boolean;
-  /** The time of the pane agent's last session-start hook (none by default). */
+  /** The time and `source` of the pane agent's last session-start hook (none by default). */
   sessionStartAt?: number;
+  sessionStartSource?: string;
   /** A stored delivery's task state on each read in turn, before `tasks` decides. */
   taskStates?: PendingTaskState[];
   /** Awaited inside every delivery sleep (the paste-to-Enter gap among them). */
@@ -164,7 +165,9 @@ function wire(initial: WireOpts = {}): Wiring {
       queryDaemonTasks: async () => opts.tasks ?? [],
       readTaskState: async (_ws: string, taskId: string) =>
         opts.taskStates?.length ? (opts.taskStates.shift() as PendingTaskState) : taskStateOfRows(opts.tasks ?? [], [], taskId),
-      readSessionStart: () => (opts.sessionStartAt === undefined ? undefined : { at: opts.sessionStartAt, agent: 'claude' }),
+      readSessionStart: () => (opts.sessionStartAt === undefined
+        ? undefined
+        : { at: opts.sessionStartAt, agent: 'claude', ...(opts.sessionStartSource ? { source: opts.sessionStartSource } : {}) }),
       trustProvenClear: async () => opts.trustProvenClear ?? false,
       // The gap between a delivery's paste and its Enter.
       sleep: async (ms: number) => {
@@ -1142,10 +1145,26 @@ describe('a refused local delivery, stored and typed later', () => {
     w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
     // claude exited and was started again: a new session-start hook, same name and incarnation.
     w.live.sessionStartAt = 200;
+    w.live.sessionStartSource = 'startup';
     const before = w.writes.length;
     await w.retryPendingDeliveries('pty-task');
     expect(w.writes.length).toBe(before);
     expect(w.logs.at(-1)).toContain(': agent changed;');
+  });
+
+  it('a clear or a compaction in the same agent is no restart: the text is still typed', async () => {
+    for (const source of ['clear', 'compact']) {
+      const w = wire({ ...UNPASSABLE, tasks: [], sessionStartAt: 100, sessionStartSource: 'startup' });
+      const send = beginDeliverySend('ws-owner');
+      await w.gatedSubmit('pty-task', 'hello', 'claude', { newTask: true, taskId: 't-new', senderSendKey: send.key });
+      send.end();
+      w.live.daemonTrust = PASSABLE;
+      w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+      w.live.sessionStartAt = 200;
+      w.live.sessionStartSource = source;
+      await w.retryPendingDeliveries('pty-task');
+      expect(pasted(w)).toHaveLength(1);
+    }
   });
 
   it("is dropped when the pane's agent process ends", async () => {
