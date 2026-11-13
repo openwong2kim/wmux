@@ -7,6 +7,7 @@ describe('processHoldsForeground', () => {
     // Stopped with Ctrl+Z: the shell's group took the terminal back.
     expect(foregroundFromProcStat('4242 (claude) T 4100 4242 4100 34817 4100 4194560 0 0')).toBe(false);
     expect(foregroundFromProcStat('4242 (node (my agent)) S 4100 4242 4100 34817 4242 0')).toBe(true);
+    expect(foregroundFromProcStat('4242 claude S 4100 4242 4100 34817 4242 0')).toBeUndefined();
     expect(foregroundFromProcStat('4242 (claude) S 4100 4242 4100 0 -1 0')).toBe(false);
     expect(foregroundFromProcStat('garbage')).toBeUndefined();
   });

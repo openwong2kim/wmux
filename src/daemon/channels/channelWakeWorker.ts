@@ -315,6 +315,8 @@ export class ChannelWakeWorker {
   private readonly screenChecks = new Set<string>();
   /** The folder-trust verdict holding each pane's nudges, logged once while it holds. */
   private readonly trustHeld = new Map<string, 'trust' | 'unknown'>();
+  /** Panes whose nudges are held for want of a verified agent, logged once while each holds. */
+  private readonly agentHeld = new Set<string>();
 
   constructor(deps: ChannelWakeWorkerDeps) {
     this.deps = deps;
@@ -342,6 +344,7 @@ export class ChannelWakeWorker {
   /** Drop what the worker keeps for a pane whose session died or was destroyed. */
   forgetSession(sessionId: string): void {
     this.trustHeld.delete(sessionId);
+    this.agentHeld.delete(sessionId);
   }
 
   /**
@@ -546,11 +549,16 @@ export class ChannelWakeWorker {
     return false;
   }
 
-  /** No verified agent in the pane: the nudge is held (logged). */
+  /** No verified agent in the pane: the nudge is held (logged once while it holds). */
   private async agentIsPresent(sessionId: string, key: string): Promise<boolean> {
     if (!this.deps.agentPresent) return true;
     const present = await this.deps.agentPresent(sessionId).catch(() => false);
-    if (!present) this.deps.log('info', `[wake] holding nudge for ${key}: no verified agent in ${sessionId}`);
+    if (present) {
+      this.agentHeld.delete(sessionId);
+    } else if (!this.agentHeld.has(sessionId)) {
+      this.agentHeld.add(sessionId);
+      this.deps.log('info', `[wake] holding nudge for ${key}: no verified agent in ${sessionId}`);
+    }
     return present;
   }
 
@@ -566,8 +574,9 @@ export class ChannelWakeWorker {
       this.deps.log('debug', `[wake] holding nudge for ${key}: ${target.id} is held at a usage limit`);
       return;
     }
-    if (!(await this.screenIsFree(target.id, key))) return;
+    // The slow check first, so the screen and approval checks are the fresh ones.
     if (!(await this.agentIsPresent(target.id, key))) return;
+    if (!(await this.screenIsFree(target.id, key))) return;
     // The render took time: the pane may have raised an approval since.
     if (this.approvalHold(target.id, key)) return;
     if (!this.inject(target.id, ws, entry, target)) return;
@@ -643,8 +652,19 @@ export class ChannelWakeWorker {
         return;
       }
       void (async () => {
+        if (!(await this.agentIsPresent(sessionId, key))) {
+          // The agent is gone: the hint may now sit at a shell's prompt, where
+          // a person's next Enter would run it. Take it back (Ctrl+U).
+          try {
+            this.deps.write(sessionId, '\x15');
+          } catch {
+            /* the session went away */
+          }
+          report(false);
+          return;
+        }
         const free = (!this.deps.screenShowsApproval && !this.deps.folderTrustVerdict) || await this.screenIsFree(sessionId, key);
-        if (free && await this.agentIsPresent(sessionId, key) && !this.approvalHold(sessionId, key)) commit();
+        if (free && !this.approvalHold(sessionId, key)) commit();
         else report(false);
       })();
     }, this.deps.enterDelayMs ?? ENTER_DELAY_MS);

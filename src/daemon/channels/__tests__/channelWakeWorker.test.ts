@@ -993,8 +993,10 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     h.setSessions([session({})]);
     h.worker.tickOnce();
     await vi.advanceTimersByTimeAsync(5);
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(5);
     expect(h.writes).toEqual([]);
-    expect(h.logs.some((l) => l.includes('no verified agent'))).toBe(true);
+    expect(h.logs.filter((l) => l.includes('no verified agent'))).toHaveLength(1);
     present = true;
     h.worker.tickOnce();
     await vi.advanceTimersByTimeAsync(5);
@@ -1002,7 +1004,7 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     expect(h.writes.at(-1)?.data).toBe('\r');
   });
 
-  it('withholds the Enter when the agent ends between the text and the Enter', async () => {
+  it('withholds the Enter when the agent ends between the text and the Enter, and takes the text back', async () => {
     let present = true;
     const h = makeHarness(undefined, { agentPresent: async () => present });
     h.setEntries([mention()]);
@@ -1013,6 +1015,7 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     present = false;
     await vi.advanceTimersByTimeAsync(5);
     expect(h.writes.map((w) => w.data)).not.toContain('\r');
+    expect(h.writes.at(-1)?.data).toBe('\x15');
     expect(h.outcomes.at(-1)?.ok).toBe(false);
   });
 

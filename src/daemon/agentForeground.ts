@@ -13,6 +13,7 @@
 
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import { foregroundGroupFromStat } from './shellPrompt/foregroundTtyWait';
 
 /** Budget for one ps run. */
 const PS_TIMEOUT_MS = 1_500;
@@ -20,11 +21,11 @@ const PS_TIMEOUT_MS = 1_500;
 /** pgrp and tpgid from a /proc/<pid>/stat line (fields 5 and 8). */
 export function foregroundFromProcStat(stat: string): boolean | undefined {
   // The command name (field 2) may hold spaces and parentheses: read after its last ')'.
-  const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-  const pgrp = Number(rest[2]);
-  const tpgid = Number(rest[5]);
-  if (!Number.isInteger(pgrp) || !Number.isInteger(tpgid) || pgrp <= 0) return undefined;
-  return tpgid > 0 && pgrp === tpgid;
+  const close = stat.lastIndexOf(')');
+  if (close < 0) return undefined;
+  const pgrp = Number(stat.slice(close + 1).trim().split(/\s+/)[2]);
+  if (!Number.isSafeInteger(pgrp) || pgrp <= 0) return undefined;
+  return foregroundGroupFromStat(stat) === pgrp;
 }
 
 /** `ps -o pgid=,tpgid=` output for one process. */

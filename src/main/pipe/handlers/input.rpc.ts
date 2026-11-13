@@ -1234,22 +1234,18 @@ export interface DeliveryGuard {
   /** Passing also records the key count the paste will bring the pane to. */
   beforePaste: () => Promise<GatedSubmitRefusal | null>;
   beforeEnter: () => Promise<GatedSubmitRefusal | null>;
+  /**
+   * Deliveries wait for a verified agent process: the daemon's answer, asked
+   * before anything is written, again after a fresh-context step, and before
+   * the Enter. It is the slow check (a daemon round-trip), so it runs first at
+   * each point and the fast ones (the approval gate, the guard) after it.
+   */
+  verifyAgent?: () => Promise<GatedSubmitRefusal | null>;
 }
 
 /** Budget for the daemon's presence answer: an attribution probe, the
  *  process checks and, for an unattributed pane, one screen read. */
 const DELIVERY_PRESENCE_RPC_TIMEOUT_MS = 5_000;
-
-/** Add the verified-agent check after the guard's own, at both points. */
-export function withPresenceCheck(
-  guard: DeliveryGuard | undefined,
-  presence: () => Promise<GatedSubmitRefusal | null>,
-): DeliveryGuard {
-  return {
-    beforePaste: async () => (guard ? await guard.beforePaste() : null) ?? presence(),
-    beforeEnter: async () => (guard ? await guard.beforeEnter() : null) ?? presence(),
-  };
-}
 
 /**
  * Add the check main registered for this delivery (deliveryGuards.ts) after
@@ -1319,6 +1315,9 @@ export async function gatedPasteSubmit(
     armRetry: () => Promise<() => Promise<string | null>>;
   },
 ): Promise<GatedSubmitResult> {
+  const verifyAgent = guard?.verifyAgent;
+  const atStart = verifyAgent ? await verifyAgent() : null;
+  if (atStart) return atStart;
   const before = await deliveryGateCheck(gate, ptyId);
   if (before) return before;
   let fresh: FreshContextReply | undefined;
@@ -1333,7 +1332,7 @@ export async function gatedPasteSubmit(
       // The step's own writes failed (the pane went away): nothing was pasted.
       return { ok: false, reason: 'write_failed', detail };
     }
-    const afterStep = await deliveryGateCheck(gate, ptyId, TEXT_NOT_SENT);
+    const afterStep = (verifyAgent ? await verifyAgent() : null) ?? await deliveryGateCheck(gate, ptyId, TEXT_NOT_SENT);
     if (afterStep) {
       return fresh.freshContext === 'applied'
         ? { ...afterStep, detail: `${afterStep.detail} The pane's conversation was already cleared (fresh context).` }
@@ -1362,6 +1361,8 @@ export async function gatedPasteSubmit(
     return { ...refusal, pasted: true, cleared };
   };
   const notSubmitted = ' The text was pasted but not submitted.';
+  const agentAtEnter = verifyAgent ? await verifyAgent() : null;
+  if (agentAtEnter) return takeBack(agentAtEnter);
   let atEnter = await deliveryGateCheck(gate, ptyId, notSubmitted);
   if (atEnter?.reason === 'gate_unavailable') {
     // Our own paste redrew the pane; ask once more once that has settled.
@@ -2659,7 +2660,9 @@ export function registerInputRpc(
       logLine(`[delivery] pane ${JSON.stringify(ptyId)}: no agent process attributed; ${presence.slug} verified from its screen`);
       return null;
     }
-    return { ok: false, reason: 'agent_unverified', detail: `delivery: ${presenceRefusalDetail(presence)}; nothing was written` };
+    // Another agent in the pane is a replaced occupant, not a missing one.
+    const reason = presence?.tier === 'none' && presence.reason === 'other-agent' ? 'agent_changed' : 'agent_unverified';
+    return { ok: false, reason, detail: `delivery: ${presenceRefusalDetail(presence)}` };
   };
 
   return {
@@ -2691,14 +2694,14 @@ export function registerInputRpc(
         guard = withRegisteredCheck(prepared.guard, opts.guardKey);
         noteOwnWrite = prepared.noteOwnWrite;
       }
-      // Deliveries wait for a verified agent process: before anything is
-      // written (a new task's fresh-context step writes first), and again
-      // right before the paste and the Enter.
+      // Deliveries wait for a verified agent process (gatedPasteSubmit asks
+      // before anything is written, after a fresh-context step, and before
+      // the Enter).
       const expectAgent = opts?.expectAgent ?? agent;
-      const presence = (): Promise<GatedSubmitRefusal | null> => verifyAgentPresence(ptyId, expectAgent);
-      const atStart = await presence();
-      if (atStart) return atStart;
-      guard = withPresenceCheck(guard, presence);
+      guard = {
+        ...(guard ?? { beforePaste: async () => null, beforeEnter: async () => null }),
+        verifyAgent: () => verifyAgentPresence(ptyId, expectAgent),
+      };
       // The submit receipt's workspace, from main's mirror only: a renderer
       // round-trip here would add a wait before the paste. With none, the
       // receipt watches the composer alone. Its screen reads never resync a
