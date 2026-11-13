@@ -390,10 +390,10 @@ struct SavedCursor {
     dec_slots: [bool; 4],
     no_wraparound: bool,
     origin: bool,
-    /// The main screen's history (rows above the screen) at the save. xterm
-    /// saves an absolute row, Alacritty a screen row (place_like_xterm). A
-    /// resize carries the rows each moves its saved row by (RowStep), which
-    /// on the alternate screen, with no history, is its only use.
+    /// The screen's history (rows above it) at the save: xterm saves an
+    /// absolute row, Alacritty a screen row (place_like_xterm). The
+    /// alternate screen keeps none, so there it starts at 0. A resize then
+    /// carries the rows the two move their saved rows apart by (RowStep).
     history: i64,
 }
 
