@@ -45,7 +45,8 @@ export type BundleSend =
   | { kind: 'sent' }
   | { kind: 'again'; why: string }
   | { kind: 'fatal'; why: string }
-  | { kind: 'busy' };
+  | { kind: 'busy' }
+  | { kind: 'not-joined' };
 
 export interface BundleOffer {
   /** The PC it was made for: the only one that may fetch it. */
@@ -67,6 +68,8 @@ interface Offered extends BundleOffer {
 export interface BundleOutboxDeps {
   /** The route exists only while this holds. */
   enabled: () => boolean;
+  /** A streamed PUT to `hostId` through this PC's session with it (it joined that PC); null when it did not. */
+  putTo: (hostId: HostId) => StreamedPut | null;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /** Test seams. */
   now?: () => number;
@@ -176,12 +179,16 @@ export class BundleOutbox {
 
   /**
    * Send an offered bundle to the PC it was made for, which asked for it, when this PC joined that one: a PUT of
-   * its bytes through this PC's session (`put`), within its size's budget.
+   * its bytes through this PC's own session with that PC (`putTo`), within its size's budget. `not-joined`: this PC
+   * did not join that one, so there is no session to send by.
    */
-  async send(hostId: HostId, bundleId: string, put: StreamedPut): Promise<BundleSend> {
+  async send(hostId: HostId, bundleId: string): Promise<BundleSend> {
     if (!this.deps.enabled()) return { kind: 'fatal', why: 'bundles are off on this PC' };
     const offered = this.standing(hostId, bundleId);
     if (!offered) return { kind: 'fatal', why: 'not offered to that PC' };
+    // Through this PC's own session with the PC it was made for, found by that PC's id.
+    const put = this.deps.putTo(offered.hostId);
+    if (!put) return { kind: 'not-joined' };
     const release = this.slots.take(hostId);
     if (!release) return { kind: 'busy' };
     const what = `bundle ${offered.bundleId} for ${offered.hostId}`;

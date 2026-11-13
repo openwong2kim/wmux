@@ -72,6 +72,10 @@ export interface BundleIntakeDeps {
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /** Test seam. */
   transferBudgetMs?: (bytes: number) => number;
+  /** Tests: the clock, a transfer slot, and the check whether a bundle is staged already. */
+  now?: () => number;
+  takeSlot?: (hostId: HostId) => (() => void) | null;
+  checkStaged?: (a2aDir: string, target: string, sha: string, bytes: number) => Promise<boolean>;
 }
 
 /** The folder a PC's fetched bundles are staged in. */
@@ -102,10 +106,12 @@ interface Wait {
   checked: Promise<void>;
   /** Cuts the PUT under way, for a newer PUT of it from the same PC (that one is the sender's retry). */
   cut: (() => void) | undefined;
-  /** A newer PUT is taking over: the one it cut does not end a late wait. */
+  /** A newer PUT is taking over: the one it cut does not end a wait past its time. */
   handover: boolean;
-  /** Its time ran out while a transfer of it ran: it ends once that transfer does. */
-  late: boolean;
+  /** When its time is up (ms): a transfer under way then still lands, and the wait ends after it. */
+  due: number;
+  /** Its absolute end (its time, plus one transfer's budget): nothing keeps it past this, retries included. */
+  hardEnd: number;
   /** Settles once a PUT of it under way has finished with its files. */
   landed: Promise<void>;
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -127,7 +133,14 @@ export class BundleIntake {
   constructor(deps: BundleIntakeDeps) {
     this.deps = deps;
     this.budget = deps.transferBudgetMs ?? continueTransferBudgetMs;
+    this.now = deps.now ?? Date.now;
+    this.takeSlot = deps.takeSlot ?? ((hostId) => this.slots.take(hostId));
+    this.checkStaged = deps.checkStaged ?? holds;
   }
+
+  private readonly now: () => number;
+  private readonly takeSlot: (hostId: HostId) => (() => void) | null;
+  private readonly checkStaged: (a2aDir: string, target: string, sha: string, bytes: number) => Promise<boolean>;
 
   /**
    * Fetch the bundle `manifest` names from `hostId` into staging, once: a
@@ -171,21 +184,18 @@ export class BundleIntake {
     if (waiting) {
       if (waiting.m.bytes !== m.bytes) return Promise.resolve({ kind: 'fatal', why: 'another size is awaited for that bundle' });
       // Its time ran out while a transfer of it ran: asked for again, it waits anew from now.
-      if (waiting.late) {
-        waiting.late = false;
-        this.arm(k, waiting, ttlMs);
-      }
+      if (this.now() >= waiting.due) this.arm(k, waiting, ttlMs);
       return waiting.done;
     }
     let settle: (r: BundlePull) => void = () => undefined;
     const done = new Promise<BundlePull>((r) => { settle = r; });
-    const w: Wait = { hostId, m, done, settle, abort: new AbortController(), receiving: false, checked: Promise.resolve(), cut: undefined, handover: false, late: false, landed: Promise.resolve(), timer: undefined };
+    const w: Wait = { hostId, m, done, settle, abort: new AbortController(), receiving: false, checked: Promise.resolve(), cut: undefined, handover: false, due: 0, hardEnd: 0, landed: Promise.resolve(), timer: undefined };
     this.arm(k, w, ttlMs);
     this.awaited.set(k, w);
     // Taken before (a repeat after a restart, say): the wait is over at once when it still checks out. Something
     // other than a plain file where it goes is final at once, as for a pull.
     const target = bundleStagedFile(this.deps.a2aDir, hostId, m);
-    w.checked = holds(this.deps.a2aDir, target, m.sha256, m.bytes).then(
+    w.checked = this.checkStaged(this.deps.a2aDir, target, m.sha256, m.bytes).then(
       (held) => { if (held) this.endWait(k, { kind: 'staged', file: target }, w); },
       (err: unknown) => {
         if (err instanceof ContinueStagingRefusal) this.endWait(k, { kind: 'fatal', why: err.message }, w);
@@ -195,12 +205,19 @@ export class BundleIntake {
     return done;
   }
 
-  /** The wait's time: up after `ttlMs`, but a transfer under way then still lands, within its own budget, and the wait ends after it. */
+  /**
+   * The wait's time: up after `ttlMs`. A transfer under way then still lands, and the wait ends after it; but nothing
+   * keeps the wait past its time plus one transfer's budget (`hardEnd`), however many PUTs take over from each other.
+   */
   private arm(k: string, w: Wait, ttlMs: number): void {
     clearTimeout(w.timer);
+    w.due = this.now() + ttlMs;
+    w.hardEnd = w.due + this.budget(w.m.bytes);
+    const notSent: BundlePull = { kind: 'again', why: 'not sent in time' };
     w.timer = setTimeout(() => {
-      if (w.receiving) w.late = true;
-      else this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
+      if (!w.receiving) return this.endWait(k, notSent, w);
+      w.timer = setTimeout(() => this.endWait(k, notSent, w), Math.max(0, w.hardEnd - this.now()));
+      w.timer.unref?.();
     }, ttlMs);
     w.timer.unref?.();
   }
@@ -232,14 +249,18 @@ export class BundleIntake {
       const now = this.awaited.get(k);
       if (now === w) break;
       w = now;
+      if (w) extendBodyDeadline(req, this.budget(w.m.bytes));
     }
     if (!w) return this.takenAlready(req, res, params, peer.hostId);
     if (wireEncoding(req.headers['content-encoding']) !== 'identity') {
       return answerAndClose(req, res, 415, { ok: false, error: 'bad-request', message: 'raw bytes only' });
     }
-    // Exactly the manifest's size, declared up front: never chunked, never more or less.
-    if (req.headers['content-length'] !== String(w.m.bytes)) {
+    // Exactly the manifest's size, declared up front: never chunked (411), never more or less (400).
+    if (req.headers['content-length'] === undefined) {
       return answerAndClose(req, res, 411, { ok: false, error: 'bad-request', message: 'the manifest\'s length only' });
+    }
+    if (req.headers['content-length'] !== String(w.m.bytes)) {
+      return answerAndClose(req, res, 400, { ok: false, error: 'bad-request', message: 'the manifest\'s length only' });
     }
     if (w.receiving) {
       // The same PC sends it again: the PUT under way is one it gave up on (a connection this side has not seen
@@ -252,10 +273,10 @@ export class BundleIntake {
       if (this.awaited.get(k) !== w) return this.takenAlready(req, res, params, peer.hostId);
       if (w.receiving) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
     }
-    const release = this.slots.take(peer.hostId);
+    const release = this.takeSlot(peer.hostId);
     if (!release) {
       // Past its time, taken over from the PUT this one cut: that one left the end of the wait to this one.
-      if (w.late) this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
+      if (this.now() >= w.due) this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
       return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
     }
     // Before any wait: a client gone mid-request still gives the slot back.
@@ -269,7 +290,8 @@ export class BundleIntake {
     const part = path.join(bundleStagingHostDir(this.deps.a2aDir, w.hostId), PARTS, stem(m));
     const cut = new AbortController();
     w.cut = () => cut.abort();
-    const timer = setTimeout(() => cut.abort(), this.budget(m.bytes));
+    // Its budget, but never past the wait's absolute end: a PUT that takes over gets only what is left.
+    const timer = setTimeout(() => cut.abort(), Math.max(0, Math.min(this.budget(m.bytes), w.hardEnd - this.now())));
     timer.unref?.();
     const both = AbortSignal.any([w.abort.signal, cut.signal]);
     // A wait that ends meanwhile (the PC removed) cuts the connection.
@@ -305,7 +327,7 @@ export class BundleIntake {
     }
     w.receiving = false;
     // Its time ran out while this transfer ran: the wait ends now, unless a newer PUT of it takes over.
-    if (w.late && !w.handover) this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
+    if (this.now() >= w.due && !w.handover) this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
     // The body may be read only in part: never drained.
     return answerAndClose(req, res, 503, { ok: false, error: 'unavailable' });
   }
@@ -321,7 +343,7 @@ export class BundleIntake {
     if (!m || !st?.isFile() || st.size !== m.bytes || wireEncoding(req.headers['content-encoding']) !== 'identity') {
       return answerAndClose(req, res, 404, NOT_FOUND);
     }
-    const release = this.slots.take(hostId);
+    const release = this.takeSlot(hostId);
     if (!release) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
     res.once('close', release);
     try {

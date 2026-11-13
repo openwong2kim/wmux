@@ -143,6 +143,8 @@ export interface A2aServerDeps {
   bindAddress?: string;
   /** A `bindHost` setting that cannot be used: the listener stays down with this as its error. */
   bindError?: string;
+  /** The bundle route exists (bundleIntake.ts): only then does a bundle upload's body go past the usual limit. */
+  bundlesEnabled?: () => boolean;
   /** Clock for the invite's lifetime and the pairing backoff. Default `Date.now`. */
   now?: () => number;
   /** Test seam; default `loadOrCreateHostIdentity`. */
@@ -616,7 +618,7 @@ export class A2aServer {
     if (!isA2aRoute(p)) return refuse(404, 'bad-request', { message: 'not found' });
 
     const length = Number(req.headers['content-length'] ?? 0);
-    if (Number.isFinite(length) && length > requestBodyMax(req.method, p)) return refuseTooLarge(req, res);
+    if (Number.isFinite(length) && length > requestBodyMax(req.method, p, this.deps.bundlesEnabled?.() === true)) return refuseTooLarge(req, res);
 
     // Tailnet discovery answers only inside an open window and only to a
     // same-user tailnet node; everything else falls through to the answer
@@ -854,10 +856,11 @@ function closeServer(server: https.Server): Promise<void> {
  * (`PUT /api/a2a/bundle/:bundleId/:sha256`, which holds it to its manifest's
  * exact size), `A2A_REQUEST_BODY_MAX` for everything else.
  */
-export function requestBodyMax(method: string | undefined, pathname: string): number {
+export function requestBodyMax(method: string | undefined, pathname: string, bundles = false): number {
   if (method === 'PUT' && pathname.startsWith(`${A2A_ROUTES.blobs}/`)) return A2A_REMOTE_IMAGE_LIMITS.IMAGE_MAX_BYTES;
   if (method === 'PUT' && pathname.startsWith(`${A2A_ROUTES.continue}/`)) return continueWireMax(CONTINUE_BYTES_MAX, 'gzip');
-  if (method === 'PUT' && pathname.startsWith(`${A2A_ROUTES.bundle}/`)) return BUNDLE_BYTES_CEILING;
+  // Only while the bundle route exists: until then, as any other path.
+  if (bundles && method === 'PUT' && pathname.startsWith(`${A2A_ROUTES.bundle}/`)) return BUNDLE_BYTES_CEILING;
   return A2A_REQUEST_BODY_MAX;
 }
 
