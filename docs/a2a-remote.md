@@ -300,7 +300,10 @@ PCs and the folder ids (`root`) each one allows.
   the agent's reply.
 - **Following up.** `send_message task_id=<the row's A2A task>` reaches the
   agent, and its replies come back to your pane; the poll shows this as
-  `followUp`. A post in the task's mission channel is kept, but nobody on the
+  `followUp`. A question on the agent's screen is the exception: a reply on
+  the task is never typed into it, so it is answered only in that PC's pane
+  (a headless box ends the task if the question is still there after 10
+  minutes). A post in the task's mission channel is kept, but nobody on the
   other PC reads it: the reply says so.
 - **Ending it.** Closing the mission (or cancelling or finishing its row)
   ends the agent on the other PC: its link is revoked now, or as soon as a

@@ -259,11 +259,16 @@ function resultOf(index: number, title: string, entry: LedgerEntry, channelId: s
   };
 }
 
-/** How the caller reaches a started agent: its A2A task, and for a question, where it is answered. */
+/**
+ * How the caller reaches a started agent: its A2A task. Not for a question on
+ * its screen: a reply on the task is never typed into it (a headless box types
+ * only into a task waiting for a reply; an app-attached PC gives a live agent
+ * a one-line pointer, never the text), so only that PC's pane answers it.
+ */
 function followUpText(r: LedgerRemote): string {
   const reply = `send_message task_id=${r.a2aTaskId}`;
   return r.waiting?.on === 'question'
-    ? `it waits on a ${r.waiting.question ?? 'screen'} question: answer it in that PC's pane or on its A2A task (${reply})`
+    ? `it waits on a ${r.waiting.question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`
     : `${reply} reaches the agent; its replies come back to your pane`;
 }
 
@@ -570,7 +575,7 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   if (st?.kind === 'question') {
     const question = (LEDGER_REMOTE_QUESTIONS as readonly string[]).includes(st.question ?? '') ? st.question as LedgerRemoteWaiting['question'] : undefined;
     await patch({ waiting: { on: 'question', since: st.since, ...(question ? { question } : {}) }, goneSeenAt: undefined });
-    return move('input_required', `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane or on ${on}`);
+    return move('input_required', `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`);
   }
   if (st?.kind === 'gone') return failAfterGrace(`the agent on ${r.pc} is gone`);
   if (st?.kind === 'waiting-input') {
