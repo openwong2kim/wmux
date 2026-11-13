@@ -16,6 +16,7 @@ import {
   reattachModelEnvMarker,
   splitModelEnvMarker,
   workerLaunchFlags,
+  workerModeRefusal,
 } from '../../../shared/workerLaunch';
 import { workerLaunchCommand } from '../../../main/worktask/FanOutService';
 
@@ -105,6 +106,50 @@ describe('fan-out launch with an agent choice', () => {
   it('a hostile model never reaches the line', () => {
     expect(() => launch({ agent: 'codex', model: '--dangerously-bypass-approvals-and-sandbox' })).toThrow();
     expect(() => launch({ agent: 'codex', model: 'a;b' })).toThrow();
+  });
+});
+
+describe('manual mode on the lines wmux composes, exactly as fanout.spawnWorkspace has them at its check', () => {
+  /** The steps spawnWorkspace takes before workerModeRefusal: main's line, the marker split off, the role swap and binding, the agent flags. */
+  function atCheck(choice: FanOutChoiceInput | undefined, platform: 'darwin' | 'win32', agentCmd = 'claude'): string {
+    const main = workerLaunchCommand(agentCmd, PROMPT, { platform }).command;
+    const { command: bare } = splitModelEnvMarker(main);
+    if (!choice) return bare;
+    const checked = validateFanoutAgentChoice(choice, { allowUnattended: true, allowEffort: true });
+    if (!checked.ok) throw new Error(checked.error);
+    const binding = fanoutChoiceBinding(checked.choice);
+    const swap = applyRoleAgent(bare, binding, { extraAgents: FANOUT_EXTRA_AGENT_STEMS });
+    const bound = withRoleBinding({ initialCommand: swap.command }, binding, undefined, FANOUT_EXTRA_AGENT_STEMS);
+    return applyFanoutAgentFlags(bound.initialCommand as string, checked.choice, CWD, platform);
+  }
+  const cases: Array<[string, FanOutChoiceInput | undefined, 'darwin' | 'win32', string]> = [
+    ['a default local Claude worker (main adds the model-env marker)', undefined, 'darwin', '--permission-mode manual'],
+    ['a Claude worker with a model override', { agent: 'claude', model: 'opus' }, 'darwin', '--permission-mode manual'],
+    ['a Codex unattended choice', { agent: 'codex', unattended: true }, 'darwin', '-a on-request -s read-only'],
+    ['a Grok unattended choice', { agent: 'grok', unattended: true }, 'darwin', '--permission-mode default'],
+    ['a default Claude worker on Windows', undefined, 'win32', '--permission-mode manual'],
+    ['a Codex unattended choice on Windows', { agent: 'codex', unattended: true }, 'win32', '-a on-request -s read-only'],
+  ];
+  it.each(cases)('%s: the agent is the first word, manual is taken, and its flags land', (_name, choice, platform, flags) => {
+    const line = atCheck(choice, platform);
+    expect(line.startsWith(MODEL_ENV_MARKER)).toBe(false);
+    expect(workerModeRefusal(line, 'manual')).toBeNull();
+    expect(applyWorkerPermissionFlags(line, 'manual')).toContain(flags);
+  });
+
+  it('main\'s default line carries the marker, and the check sees the line without it', () => {
+    expect(workerLaunchCommand('claude', PROMPT, { platform: 'darwin' }).command.startsWith(MODEL_ENV_MARKER)).toBe(true);
+    const src = fs.readFileSync(path.join(__dirname, '..', 'useRpcBridge.ts'), 'utf-8').replace(/\r\n/g, '\n');
+    const split = src.indexOf('splitModelEnvMarker(initialCommand)');
+    const check = src.indexOf('workerModeRefusal(roleBound.initialCommand, workerMode)');
+    const reattach = src.indexOf('reattachModelEnvMarker(marker, bound.initialCommand');
+    expect(split).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(split);
+    expect(reattach).toBeGreaterThan(check);
+  });
+
+  it('a wrapper the user typed stays refused', () => {
+    for (const agentCmd of ['env FOO=1 claude', 'sh -c claude']) expect(workerModeRefusal(atCheck(undefined, 'darwin', agentCmd), 'manual')).not.toBeNull();
   });
 });
 
