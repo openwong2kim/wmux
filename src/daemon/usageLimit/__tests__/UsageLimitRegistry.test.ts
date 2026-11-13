@@ -46,6 +46,18 @@ describe('UsageLimitRegistry', () => {
     expect(registry.holds('p1')).toBe(false);
   });
 
+  it('holds a session from the usage-limit error its own transcript shows (no hook), with the same reset', () => {
+    const { registry, advance } = setup();
+    registry.noteTranscriptLimit('p1', LIMIT_TEXT);
+    expect(registry.get('p1')).toMatchObject({ provider: 'claude', source: 'hook', resetsAt: RESET });
+    expect(registry.holds('p1')).toBe(true);
+    // The same error read again is the same hold.
+    registry.noteTranscriptLimit('p1', LIMIT_TEXT);
+    expect(registry.get('p1')?.detectedAt).toBe(NOW);
+    advance(PAST_RESET);
+    expect(registry.holds('p1')).toBe(false);
+  });
+
   it('never sends a continue unless armed, and sends exactly one to the agent seen at the limit', async () => {
     const { registry, deliverContinue, advance, swapAgent } = setup('sent');
     registry.noteHookSignal('p1', limitHit);

@@ -1,0 +1,37 @@
+{
+ "source": "s5-esc-cancelled.ans",
+ "state": "Esc pressed on the auto-continue banner",
+ "cols": 80,
+ "rows": 24,
+ "cursor": {
+  "x": 2,
+  "y": 21
+ },
+ "screen": [
+  "",
+  "✻ Brewed for 0s · done 1:31 PM",
+  "",
+  "⏺ Usage limit reset · Continuing automatically",
+  "",
+  "⏺ Hello after the reset.",
+  "",
+  "✻ Cogitated for 0s · done 1:36 PM",
+  "",
+  "❯ Say hello again.                                                              ",
+  "  ⎿  You've hit your weekly limit · resets 1:39pm (Asia/Seoul)",
+  "     /upgrade to increase your usage limit.",
+  "",
+  "⏺ Usage limit reached · continuing automatically at 1:39pm · esc to ",
+  "  cancel",
+  "",
+  "✻ Cogitated for 0s · done 1:36 PM",
+  "",
+  "⏺ Automatic continue cancelled · /rate-limit-options to re-arm",
+  "                  Automatic continue cancelled · /rate-limit-options to re-arm",
+  "────────────────────────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle)"
+ ],
+ "optionStyles": []
+}
