@@ -311,6 +311,9 @@ function readTcpPort(): number | undefined {
   } catch { return undefined; }
 }
 
+/** An error main answered with, as opposed to a connection that failed or timed out. */
+class RpcAnswerError extends Error {}
+
 function attemptRpc(
   target: string | { host: string; port: number },
   token: string,
@@ -372,7 +375,7 @@ function attemptRpc(
             if (response.ok) {
               resolve(response.result);
             } else {
-              reject(new Error(response.error));
+              reject(new RpcAnswerError(response.error));
             }
           }
         } catch {
@@ -438,7 +441,6 @@ export async function sendRpc(
         return result;
       } catch (err) {
         lastError = err as Error;
-        noteScopedOutcome(method, lastError.message, true);
         const msg = lastError.message;
         const isRetryable = msg.includes('not running') || msg.includes('unauthorized');
         const isPerm = msg.includes('EPERM');
@@ -450,7 +452,7 @@ export async function sendRpc(
         if (isRetryable && pipePaths.length > 1 && pipePath === envPath) {
           break;
         }
-        if (!isRetryable && !isPerm) throw err;
+        if (!isRetryable && !isPerm) throw answered(method, err);
       }
     }
   }
@@ -461,8 +463,21 @@ export async function sendRpc(
       const result = await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params, timeoutMs);
       noteScopedOutcome(method, result, false);
       return result;
-    } catch { /* fall through */ }
+    } catch (err) {
+      // Main's answer over TCP is the call's answer; a TCP connection failure leaves the pipe's error.
+      if (err instanceof RpcAnswerError) lastError = err;
+    }
   }
 
-  throw lastError ?? new Error('wmux is not running. Start the app first.');
+  throw answered(method, lastError ?? new Error('wmux is not running. Start the app first.'));
+}
+
+/**
+ * The error sendRpc throws, told to the stale-identity handler first when main
+ * answered with it. Only the call's final outcome is told: a connection that
+ * failed, or an attempt sendRpc retried, is no answer and never decides a retry.
+ */
+function answered(method: RpcMethod, err: unknown): unknown {
+  if (err instanceof RpcAnswerError) noteScopedOutcome(method, err.message, true);
+  return err;
 }
