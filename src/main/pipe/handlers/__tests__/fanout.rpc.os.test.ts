@@ -2262,6 +2262,7 @@ describe('task.fanout.start with pc (tasks on another PC)', () => {
         missionStart: async () => ({ taskId: 'wtask-r1', channelId: 'ch-r1' }),
         missionClose: async () => undefined,
         closedMissions: async () => new Set<string>(),
+        linkRemoteWorkspace: async () => null,
       },
       ledger: { get: () => null, list: () => [], register: vi.fn(), update: vi.fn(), updateRemote: vi.fn(), closeTask: vi.fn(), onTransition: () => () => undefined },
       rememberChannel: () => undefined,

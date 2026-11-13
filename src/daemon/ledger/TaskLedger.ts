@@ -302,6 +302,7 @@ function copyDispatch(d: LedgerDispatch): LedgerDispatch {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SPAWN_ID_RE = /^sp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const BRANCH_ON_PC_RE = /^wmux\/remote\/sp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const boundedText = (v: unknown, max: number): v is string =>
   typeof v === 'string' && v.length > 0 && v.length <= max && !/\p{Cc}/u.test(v);
 
@@ -316,6 +317,7 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(boundedText(o.code, 64) ? { code: o.code } : {}),
     ...(typeof o.linkId === 'string' && UUID_RE.test(o.linkId) ? { linkId: o.linkId } : {}),
     ...(boundedText(o.a2aTaskId, 128) ? { a2aTaskId: o.a2aTaskId } : {}),
+    ...(typeof o.branchOnPc === 'string' && BRANCH_ON_PC_RE.test(o.branchOnPc) ? { branchOnPc: o.branchOnPc } : {}),
     ...(o.withdrawn === true ? { withdrawn: true as const } : {}),
     ...(o.revoked === true ? { revoked: true as const } : {}),
   };

@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import { headlessTreeId } from '../../../daemon/a2aRemote/headlessStarter';
+import { branchFor } from '../../a2aRemote/spawnWorktree';
 import { SPAWN_REQUEST_KEY_RE, type A2aSpawnAskInput, type A2aSpawnOutgoingSummary } from '../../../shared/a2aSpawn';
 import { isRemoteTask } from '../../../shared/ledger';
 import { TaskCloseService } from '../TaskCloseService';
@@ -13,12 +15,13 @@ import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
 import {
-  installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal,
+  branchOnPc, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal,
   startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
 
 const BOX = '0f1e2d3c-4b5a-4968-8776-655443322110';
 const LINK = '1a2b3c4d-5e6f-4a1b-8c2d-3e4f5a6b7c8d';
+const SELF = '7d1e2f30-4b5c-4d6e-9f80-123456789abc';
 
 let dir: string;
 beforeEach(() => {
@@ -38,6 +41,7 @@ function fakeDaemon(opts: { supported?: boolean; askError?: 'unavailable'; askTh
   const revoked: string[] = [];
   const closed: string[] = [];
   const closedMissions = new Set<string>();
+  const linkEnds = new Map<string, string>(); // linkId → remote workspace id
   let n = 0;
   const daemon: RemoteFanoutDaemon = {
     ask: vi.fn(async (input: A2aSpawnAskInput) => {
@@ -77,9 +81,11 @@ function fakeDaemon(opts: { supported?: boolean; askError?: 'unavailable'; askTh
       closed.push(taskId);
     },
     closedMissions: async () => closedMissions,
+    selfHostId: async () => SELF,
+    linkRemoteWorkspace: async (linkId) => linkEnds.get(linkId) ?? null,
   };
   const set = (spawnId: string, patch: Partial<A2aSpawnOutgoingSummary>) => requests.set(spawnId, { ...requests.get(spawnId)!, ...patch });
-  return { daemon, asks, revoked, closed, closedMissions, requests, set };
+  return { daemon, asks, revoked, closed, closedMissions, linkEnds, requests, set };
 }
 
 const depsOf = (daemon: RemoteFanoutDaemon, ledger = new TaskLedger({ dir })): RemoteFanoutDeps => ({ daemon, ledger, rememberChannel: () => undefined });
@@ -99,6 +105,13 @@ describe('remote fan-out keys and names', () => {
     expect(a.requestKey(0)).not.toBe(a.requestKey(1));
     expect(remoteFanoutKeys('ws::k').requestKey(3)).toBe(a.requestKey(3));
     expect(remoteFanoutKeys('other::k').callerKey).not.toBe(a.callerKey);
+  });
+
+  it('names the branch on the other PC as its worktree code does, for both modes', () => {
+    const spawnId = 'sp-0f6c1d2e-3a4b-4c5d-8e9f-0123456789ab';
+    expect(branchOnPc(spawnId, 'hl-0f6c1d2e-3a4b-4c5d-8e9f-0123456789ab', SELF)).toBe(branchFor(headlessTreeId(SELF, spawnId)));
+    expect(branchOnPc(spawnId, 'ws-desktop-1', SELF)).toBe(branchFor(spawnId));
+    expect(branchOnPc(spawnId, 'hl-x', null)).toBeNull();
   });
 
   it('refuses what a task on another PC cannot take', () => {
@@ -219,6 +232,11 @@ describe('reconcileRemoteTasks', () => {
     f.set(res.tasks[0].spawnId!, { state: 'refused', code: 'not-allowed' });
     f.set(res.tasks[1].spawnId!, { state: 'started', code: 'started', linkId: LINK });
     await reconcileRemoteTasks(deps);
+    // The link is not listed yet: no branch until a later pass sees it.
+    expect(deps.ledger.get(res.tasks[1].taskId!)?.remote?.branchOnPc).toBeUndefined();
+    f.linkEnds.set(LINK, 'hl-0f6c1d2e-3a4b-4c5d-8e9f-0123456789ab');
+    await reconcileRemoteTasks(deps);
+    expect(deps.ledger.get(res.tasks[1].taskId!)?.remote?.branchOnPc).toBe(branchFor(headlessTreeId(SELF, res.tasks[1].spawnId!)));
     const refused = deps.ledger.get(res.tasks[0].taskId!)!;
     expect(refused).toMatchObject({ status: 'failed', remote: { state: 'refused', code: 'not-allowed' } });
     expect(refused.summary).toMatch(/not-allowed/);

@@ -148,6 +148,9 @@ export interface LedgerRemote {
   /** Set once it started: the link to it and the task its replies arrive on. */
   linkId?: string;
   a2aTaskId?: string;
+  /** The branch the agent works on, on that PC (set once it started; the
+   *  branch name follows from the other PC's mode, which the link shows). */
+  branchOnPc?: string;
   /** The task was closed (or expired) here: a start that arrives later is
    *  ended at once instead of left running. */
   withdrawn?: true;

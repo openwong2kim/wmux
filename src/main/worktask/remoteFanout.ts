@@ -42,6 +42,10 @@ export interface RemoteFanoutDaemon {
   revokeLink(linkId: string): Promise<void>;
   missionStart(p: { title: string; verifiedWorkspaceId: string; idempotencyKey: string }): Promise<{ taskId: string; channelId: string } | { error: string }>;
   missionClose(taskId: string, verifiedWorkspaceId: string): Promise<void>;
+  /** This PC's host id, as the other PC knows it; null when not known. */
+  selfHostId(): Promise<string | null>;
+  /** The workspace id at the other end of a link, or null when the link is not known. */
+  linkRemoteWorkspace(linkId: string): Promise<string | null>;
   /** The ids of `ownerWorkspaceId`'s closed missions (the WorkTask log). */
   closedMissions(ownerWorkspaceId: string): Promise<ReadonlySet<string>>;
 }
@@ -80,6 +84,8 @@ export interface RemoteTaskResult {
   code?: string;
   linkId?: string;
   a2aTaskId?: string;
+  /** The branch the agent works on, on that PC (once it started). */
+  branchOnPc?: string;
   /** Why it failed or will not run, in words. */
   reason?: string;
 }
@@ -93,6 +99,20 @@ export function remoteFanoutKeys(scopedKey: string): { callerKey: string; reques
     requestKey: (k) => sha256(`${scopedKey}\0${k}`),
     missionKey: (k) => `remote-${sha256(`${scopedKey}\0${k}`).slice(0, 48)}`,
   };
+}
+
+/**
+ * The branch the agent works on, on the other PC. A box that runs headless
+ * (its workspace ids start `hl-`) names the worktree for the asking PC's host
+ * id and the spawn id (headlessStarter.ts headlessTreeId); a desktop app names
+ * it for the spawn id. Either way the branch is `wmux/remote/<that id>`
+ * (spawnWorktree.ts branchFor). Tests hold both equal to those functions.
+ */
+export function branchOnPc(spawnId: string, remoteWorkspaceId: string, askingHostId: string | null): string | null {
+  if (!remoteWorkspaceId.startsWith('hl-')) return `wmux/remote/${spawnId}`;
+  if (!askingHostId) return null;
+  const h = sha256(`${askingHostId}:${spawnId}`);
+  return `wmux/remote/sp-${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
 /** Why a request could not be sent, in words. */
@@ -174,6 +194,7 @@ function resultOf(index: number, title: string, entry: LedgerEntry, channelId: s
       ...(r.code ? { code: r.code } : {}),
       ...(r.linkId ? { linkId: r.linkId } : {}),
       ...(r.a2aTaskId ? { a2aTaskId: r.a2aTaskId } : {}),
+      ...(r.branchOnPc ? { branchOnPc: r.branchOnPc } : {}),
       ...(r.state === 'refused' || r.state === 'expired' ? { reason: remoteCodeText(r.code, r.pc, promptBytes) } : {}),
     } : {}),
     ...(failed && !r?.code ? { reason: entry.summary ?? entry.status } : {}),
@@ -347,6 +368,14 @@ async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
   if (rows.length === 0) return;
   const list = await deps.daemon.outgoing();
   const bySpawn = new Map<string, A2aSpawnOutgoingSummary>(list.requests.map((r) => [r.spawnId, r]));
+  // Read once per pass, and only when a started row still lacks its branch.
+  let self: Promise<string | null> | undefined;
+  const branchOf = async (linkId: string, spawnId: string): Promise<string | null> => {
+    const ws = await deps.daemon.linkRemoteWorkspace(linkId).catch(() => null);
+    if (!ws) return null; // Not listed yet: the next pass fills it.
+    self ??= deps.daemon.selfHostId().catch(() => null);
+    return branchOnPc(spawnId, ws, await self);
+  };
   for (const row of rows) {
     const r = row.remote!;
     const rec = bySpawn.get(r.spawnId);
@@ -356,7 +385,8 @@ async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
       if (r.state === 'sent' || r.state === 'waiting') next = await deps.ledger.updateRemote(row.id, { state: 'expired', code: 'expired' });
     } else if (rec.state === 'started' && asSpawnLinkId(rec.linkId)) {
       const linkId = asSpawnLinkId(rec.linkId)!;
-      next = await deps.ledger.updateRemote(row.id, { state: 'started', linkId, a2aTaskId: remoteTaskId(linkId, spawnFirstMessageId(linkId)) });
+      const branch = r.branchOnPc ?? await branchOf(linkId, r.spawnId);
+      next = await deps.ledger.updateRemote(row.id, { state: 'started', linkId, a2aTaskId: remoteTaskId(linkId, spawnFirstMessageId(linkId)), ...(branch ? { branchOnPc: branch } : {}) });
     } else if (rec.state !== r.state || rec.code !== r.code) {
       next = await deps.ledger.updateRemote(row.id, { state: rec.state, ...(rec.code ? { code: rec.code } : {}) });
     }
@@ -411,6 +441,8 @@ export function remoteFanoutDepsOf(getDaemonClient: () => DaemonClient | null): 
         const started = (await dc.rpc('task.mission.start', { ...p, memberId: p.verifiedWorkspaceId })) as { ok?: boolean; taskId?: string; channelId?: string; error?: unknown };
         return started?.ok && started.taskId && started.channelId ? { taskId: started.taskId, channelId: started.channelId } : { error: errText(started?.error) };
       },
+      selfHostId: async () => (await dc.a2aRemoteStatus()).hostId,
+      linkRemoteWorkspace: async (linkId) => (await dc.a2aRemoteLinksList()).links.find((l) => l.linkId === linkId)?.remote.workspaceId ?? null,
       closedMissions: async (verifiedWorkspaceId) => {
         const res = (await dc.rpc('task.mission.list', { verifiedWorkspaceId })) as { ok?: boolean; tasks?: Array<{ id?: unknown; status?: unknown }>; error?: unknown };
         if (!res?.ok || !Array.isArray(res.tasks)) throw new Error(errText(res?.error));
