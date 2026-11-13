@@ -138,6 +138,37 @@ describe('BrokerSupervisor status', () => {
     sup.stop();
   });
 
+  it('spawns the broker without a WMUX_SOCKET_PATH main inherited, keeping the data suffix', () => {
+    const saved = { path: process.env.WMUX_SOCKET_PATH, suffix: process.env.WMUX_DATA_SUFFIX };
+    process.env.WMUX_SOCKET_PATH = '/tmp/another-instance.sock';
+    process.env.WMUX_DATA_SUFFIX = '-x';
+    try {
+      vi.mocked(spawn).mockReturnValue(makeChild() as never);
+      const sup = new BrokerSupervisor();
+      sup.start();
+      const opts = vi.mocked(spawn).mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+      expect('WMUX_SOCKET_PATH' in opts.env).toBe(false);
+      expect(opts.env.WMUX_DATA_SUFFIX).toBe('-x');
+      expect(opts.env.ELECTRON_RUN_AS_NODE).toBe('1');
+      sup.stop();
+    } finally {
+      for (const [key, value] of [['WMUX_SOCKET_PATH', saved.path], ['WMUX_DATA_SUFFIX', saved.suffix]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it('spawns the broker with the signal-opened inspector off, before its script', () => {
+    vi.mocked(spawn).mockReturnValue(makeChild() as never);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    const args = vi.mocked(spawn).mock.calls[0][1] as string[];
+    expect(args[0]).toBe('--disable-sigusr1');
+    expect(args).toHaveLength(2);
+    sup.stop();
+  });
+
   it('takes the connection count only from the exact report shape', () => {
     const child = makeChild();
     vi.mocked(spawn).mockReturnValue(child as never);
@@ -464,6 +495,32 @@ describe('BrokerSupervisor stamp', () => {
     expect(sup.stampMatches(two)).toBe(true);
     expect(sup.stampMatches(one)).toBe(false);
     sup.stop();
+  });
+
+  it('matches nothing once the broker stands down for another (exit 75), nor after stop() before the old one exits', () => {
+    vi.useFakeTimers();
+    try {
+      const first = stampedChild();
+      const second = stampedChild();
+      vi.mocked(spawn).mockReturnValueOnce(first as never).mockReturnValueOnce(second as never);
+      const sup = new BrokerSupervisor({ startTimeOf: () => 1n });
+      sup.start();
+      const one = sentStamp(first);
+      first.emit('exit', 75, null);
+      expect(sup.standingDown).toBe(true);
+      expect(sup.stampMatches(one)).toBe(false);
+      sup.stop();
+      sup.resume();
+      const two = sentStamp(second);
+      expect(sup.stampMatches(two)).toBe(true);
+      // stop() drops the stamp at once, before the child's exit arrives.
+      sup.stop();
+      expect(sup.stampMatches(two)).toBe(false);
+      second.emit('exit', 0, null);
+      expect(sup.stampMatches(two)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('matches nothing once the broker has crashed', () => {

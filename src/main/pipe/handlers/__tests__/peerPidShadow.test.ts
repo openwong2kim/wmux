@@ -6,6 +6,7 @@ import type { RpcContext } from '../../../../shared/rpc';
 import {
   brokerStampHolds,
   checkClaim,
+  claimHeldRefusal,
   claimStillHeld,
   identitySummary,
   notePeerReadCheck,
@@ -118,6 +119,14 @@ describe('claimStillHeld', () => {
     expect(claimStillHeld('callerPid', wire(500, '50'), 4242, broker, () => undefined)).toBe(false);
     expect(identitySummary('darwin').refusals['broker-unverified']).toBe(2);
     expect(claimStillHeld('callerPid', wire(), 100, { ok: false, reason: 'no-peer' }, () => undefined)).toBe(false);
+  });
+
+  it('names broker-unverified as the reason a broker claim is no longer held', () => {
+    const broker = { ok: true, via: 'broker' } as const;
+    setBrokerIdentitySource(() => ({ pid: 500, startedAt: '50' }));
+    expect(claimHeldRefusal('callerPid', wire(500, '50'), 4242, broker, () => undefined)).toBeNull();
+    setBrokerIdentitySource(() => ({ pid: 501, startedAt: '51' }));
+    expect(claimHeldRefusal('callerPid', wire(500, '50'), 4242, broker, () => undefined)).toBe('broker-unverified');
   });
 });
 

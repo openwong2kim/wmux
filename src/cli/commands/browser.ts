@@ -2,6 +2,7 @@ import { sendRequest, setWorkspaceToken } from '../client';
 import { printResult, ensureOk, parseFlag } from '../utils';
 import { resolveSelfContext, getParentPidDefault, type SelfContext } from '../identity';
 import type { RpcResponse } from '../../shared/rpc';
+import type { ClaimRefusal } from '../../shared/identityClaims';
 
 /**
  * Resolve this CLI's pane through main's own process-tree walk and carry the
@@ -22,15 +23,39 @@ async function attestBrowserCaller(): Promise<SelfContext> {
   }
   // Nothing to send that wmux would accept: say how to run it instead of
   // making a call that is refused. A pane found without a claim means the
-  // running wmux app predates pane claims (it answers the walk, mints none).
-  console.error(
-    ctx.workspaceId
-      ? 'Error: this wmux app is older than the wmux CLI and cannot verify the pane for browser ' +
-          'commands. Update the wmux app (and restart it), then run the command again.'
-      : 'Error: wmux browser commands act on the wmux pane they run in, and this terminal is not ' +
-          'one (or wmux could not verify it). Run the command from a wmux pane terminal.',
-  );
+  // running wmux app predates pane claims (it answers the walk, mints none),
+  // unless main says it did not take this process's claim.
+  console.error(browserCallerError(ctx));
   process.exit(1);
+}
+
+/** What `wmux browser` / `wmux open` say when wmux gave no pane claim. */
+export function browserCallerError(ctx: SelfContext): string {
+  if (ctx.claimRefused) {
+    return `Error: wmux could not verify this process for browser commands: ${claimRefusalText(ctx.claimRefused)} ` +
+      'Run `wmux doctor` (identity section) for details.';
+  }
+  return ctx.workspaceId
+    ? 'Error: wmux found this pane but did not verify it for browser commands. If the wmux app is ' +
+        'older than the wmux CLI, update the wmux app (and restart it); otherwise run `wmux doctor` ' +
+        'to see why, then run the command again.'
+    : 'Error: wmux browser commands act on the wmux pane they run in, and this terminal is not ' +
+        'one (or wmux could not verify it). Run the command from a wmux pane terminal, or run ' +
+        '`wmux doctor` to see why it was not verified.';
+}
+
+/** One sentence on why main did not take the claim. */
+export function claimRefusalText(reason: ClaimRefusal, platform: NodeJS.Platform = process.platform): string {
+  switch (reason) {
+    case 'no-peer': return 'wmux cannot read which process is on the other end of this connection.';
+    case 'other-pid': return 'the connection came from another process than this one.';
+    case 'start-unread':
+      return platform === 'darwin'
+        ? 'wmux cannot read this process\'s start time (a process running as another user is always refused).'
+        : 'wmux cannot read this process\'s start time (from /proc).';
+    case 'restarted': return 'this process id now belongs to a process that started later.';
+    case 'broker-unverified': return 'the connection came from an MCP broker wmux did not verify.';
+  }
 }
 
 /**

@@ -28,6 +28,7 @@
  */
 
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
+import { CLAIM_REFUSALS, type ClaimRefusal } from '../shared/identityClaims';
 
 export interface SelfContext {
   /** Verified ptyId of the pane whose shell spawned this CLI process. */
@@ -40,6 +41,8 @@ export interface SelfContext {
    * browser calls to this pane's workspace.
    */
   workspaceToken?: string;
+  /** Why main did not take this process's pid claim, when it says. */
+  claimRefused?: ClaimRefusal;
 }
 
 export interface IdentityEntry {
@@ -105,6 +108,7 @@ export async function resolveSelfContext(deps: IdentityDeps): Promise<SelfContex
   const insideWmuxHint = Boolean(deps.env['WMUX_WORKSPACE_ID']);
 
   let entries: IdentityEntry[];
+  let claimRefused: ClaimRefusal | undefined;
   try {
     const response = await deps.sendRequest(
       'a2a.resolve.identity' as RpcMethod,
@@ -113,10 +117,17 @@ export async function resolveSelfContext(deps: IdentityDeps): Promise<SelfContex
     if (!response.ok) return {};
     const claimed = parseServerWalk(response.result);
     if (claimed) return claimed;
+    claimRefused = parseClaimRefused(response.result);
     entries = parseIdentityEntries(response.result);
   } catch {
     return {};
   }
+  const found = await walkEntries(entries, deps, insideWmuxHint);
+  return claimRefused ? { ...found, claimRefused } : found;
+}
+
+/** The client-side walk over main's entries: the nearest ancestor that is a pane. */
+async function walkEntries(entries: IdentityEntry[], deps: IdentityDeps, insideWmuxHint: boolean): Promise<SelfContext> {
   if (entries.length === 0) return {};
 
   const byPid = new Map<number, IdentityEntry>();
@@ -144,6 +155,13 @@ export async function resolveSelfContext(deps: IdentityDeps): Promise<SelfContex
     if (hit) return toContext(hit);
   }
   return {};
+}
+
+/** The reason main gave for not taking the pid claim, when it is one it names. */
+function parseClaimRefused(result: unknown): ClaimRefusal | undefined {
+  if (result === null || typeof result !== 'object') return undefined;
+  const reason = (result as { claimRefused?: unknown }).claimRefused;
+  return CLAIM_REFUSALS.find((r) => r === reason);
 }
 
 /** Main's own walk hit plus the pane claim it minted, when both are present. */
