@@ -186,6 +186,16 @@ describe('installFanoutCallerLedgerNotify for a task another PC runs', () => {
     await ledger.update({ id: 'wtask-1', status: 'failed', actor: sys, expectedRev: 1 });
     expect(calls).toEqual([['ws-parent', `remote:${SPAWN}`, 'wtask-r1', 'ledger.failed', 2]]);
   });
+
+  it('does not tell a request refused while fanout_start ran (its row is still `sent`): that call\'s reply said so', async () => {
+    const spawnId = SPAWN.replace(/1$/, '3');
+    const remote = { hostId: '0f1e2d3c-4b5a-4968-8776-655443322110', pc: 'box', spawnId, root: 'repo', state: 'sent' as const, from: { paneId: 'pane-a' } };
+    await ledger.register({ id: 'wtask-r3', taskWorkspaceId: `remote:${spawnId}`, ownerWorkspaceId: 'ws-parent', title: 'remote', remote });
+    const calls: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { calls.push(a); }, ledger);
+    await ledger.update({ id: 'wtask-r3', status: 'failed', actor: { kind: 'system', workspaceId: 'main' }, expectedRev: 1, summary: 'refused' });
+    expect(calls).toEqual([]);
+  });
 });
 
 describe('the input_required kind (#1919)', () => {

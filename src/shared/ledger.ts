@@ -165,9 +165,13 @@ export interface LedgerRemote {
    *  on its screen (the row is input_required) or its usage limit (the row
    *  stays working; that PC resumes it by itself). Kinds only, never its text. */
   waiting?: LedgerRemoteWaiting;
-  /** That PC said its agent is gone while the task was still open here: the
-   *  next pass fails the row if nothing ended the task meanwhile. */
-  goneSeen?: true;
+  /** When this PC first saw the agent gone (or its task no longer listed)
+   *  while the task was still open here (epoch ms): the row fails once
+   *  REMOTE_GONE_GRACE_MS passed with nothing ending the task meanwhile. */
+  goneSeenAt?: number;
+  /** The other PC's latest report this row moved to review_requested on
+   *  (ISO): a later one is a new report, after a follow-up. */
+  reportedAt?: string;
 }
 
 export const LEDGER_REMOTE_QUESTIONS = ['permission', 'plan', 'menu', 'dialog', 'trust'] as const;

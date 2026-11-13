@@ -65,7 +65,8 @@ export interface RemoteFanoutDaemon {
 export interface RemoteTaskView {
   id: string;
   state: string;
-  reported: boolean;
+  /** When the other PC last reported it (ISO); absent before any report. */
+  reportedAt?: string;
   status?: { kind: string; since: string; question?: string; resetsAt?: string };
 }
 
@@ -82,7 +83,7 @@ export function remoteTaskViewOf(raw: unknown): RemoteTaskView[] {
       ...(typeof st.detail?.resetsAt === 'string' ? { resetsAt: st.detail.resetsAt } : {}),
     }
     : undefined;
-  return [{ id: t.id, state: t.status.state, reported: typeof remote?.reported === 'string', ...(status ? { status } : {}) }];
+  return [{ id: t.id, state: t.status.state, ...(typeof remote?.reported === 'string' ? { reportedAt: remote.reported } : {}), ...(status ? { status } : {}) }];
 }
 
 export type RemoteLedger = Pick<TaskLedger, 'get' | 'list' | 'register' | 'update' | 'updateRemote' | 'closeTask' | 'onTransition'>;
@@ -480,6 +481,9 @@ async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
 
 const SYSTEM_ACTOR = { kind: 'system', workspaceId: 'main' } as const;
 
+/** How long a gone agent, or a task the daemon no longer lists, waits before its row fails: the end normally follows within seconds. */
+export const REMOTE_GONE_GRACE_MS = 60_000;
+
 /**
  * Started rows follow their A2A task: one state-view call per owner workspace
  * and pass (STATE_VIEW_IDS_MAX ids at most each), whatever the number of rows.
@@ -487,7 +491,11 @@ const SYSTEM_ACTOR = { kind: 'system', workspaceId: 'main' } as const;
 async function followTasks(deps: RemoteFanoutDeps): Promise<void> {
   const rows = deps.ledger.list().filter((e) => e.remote?.state === 'started' && e.remote.a2aTaskId && isOpenLedgerStatus(e.status));
   const byOwner = new Map<string, LedgerEntry[]>();
-  for (const row of rows) byOwner.set(row.ownerWorkspaceId, [...(byOwner.get(row.ownerWorkspaceId) ?? []), row]);
+  for (const row of rows) {
+    const owned = byOwner.get(row.ownerWorkspaceId);
+    if (owned) owned.push(row);
+    else byOwner.set(row.ownerWorkspaceId, [row]);
+  }
   for (const [owner, owned] of byOwner) {
     for (let i = 0; i < owned.length; i += STATE_VIEW_IDS_MAX) {
       const chunk = owned.slice(i, i + STATE_VIEW_IDS_MAX);
@@ -500,10 +508,7 @@ async function followTasks(deps: RemoteFanoutDeps): Promise<void> {
       }
       const byId = new Map(views.map((v) => [v.id, v]));
       for (const row of chunk) {
-        const view = byId.get(row.remote!.a2aTaskId!);
-        // A task the daemon no longer lists ended long ago: its row was moved then.
-        if (!view) continue;
-        await followTask(row, view, deps).catch((err: unknown) => deps.log?.(`[remote-fanout] ${row.id}: ${String(err)}`));
+        await followTask(row.id, byId.get(row.remote!.a2aTaskId!) ?? null, deps).catch((err: unknown) => deps.log?.(`[remote-fanout] ${row.id}: ${String(err)}`));
         // Ended here: withdrawn now (as the transition listener does), not a pass later.
         const after = deps.ledger.get(row.id);
         if (after && !isOpenLedgerStatus(after.status)) await withdrawRemote(after, deps);
@@ -513,36 +518,47 @@ async function followTasks(deps: RemoteFanoutDeps): Promise<void> {
 }
 
 /**
- * One row from its A2A task. Precedence: a report stands (only the caller's
- * own end moves it on), an ended task beats the worker's status, and the
- * status is read only while the task runs. Text from the other PC never goes
- * into the row: kinds, the PC's name and the task id only. A stale rev is
- * left for the next pass.
+ * One row from its A2A task (null: the daemon no longer lists it). The row is
+ * read again here, after the daemon call: one closed meanwhile is left alone.
+ *
+ * Precedence: a new report moves the row to review_requested, and a report
+ * stands there until a follow-up sets the agent working again (then the
+ * statuses below apply as before). An ended task beats the worker's status.
+ * A gone agent, or a task the daemon dropped, fails the row only after
+ * REMOTE_GONE_GRACE_MS, so the end that normally follows is taken instead.
+ * Text from the other PC never goes into the row: kinds, the PC's name and
+ * the task id only. A stale rev is left for the next pass.
  */
-async function followTask(row: LedgerEntry, view: RemoteTaskView, deps: RemoteFanoutDeps): Promise<void> {
-  const r = row.remote!;
+async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteFanoutDeps): Promise<void> {
+  let entry = deps.ledger.get(id);
+  if (!entry?.remote || !isOpenLedgerStatus(entry.status)) return;
+  const r = entry.remote;
   const on = `A2A task ${r.a2aTaskId}`;
-  let entry = row;
+  const now = (deps.now ?? Date.now)();
   const patch = async (p: Partial<LedgerRemote>): Promise<void> => {
-    entry = (await deps.ledger.updateRemote(entry.id, p)) ?? entry;
+    entry = (await deps.ledger.updateRemote(entry!.id, p)) ?? entry;
   };
   const move = async (status: LedgerStatus, summary: string): Promise<void> => {
-    if (entry.status === status) return;
-    const res = await deps.ledger.update({ id: entry.id, status, actor: SYSTEM_ACTOR, expectedRev: entry.rev, summary });
+    if (entry!.status === status) return;
+    const res = await deps.ledger.update({ id: entry!.id, status, actor: SYSTEM_ACTOR, expectedRev: entry!.rev, summary });
     if (res.ok) entry = res.entry;
   };
-  const settled = r.waiting || r.goneSeen ? { waiting: undefined, goneSeen: undefined } : null;
-  if (entry.status === 'review_requested') {
-    if (view.state === 'canceled') await move('cancelled', `cancelled on ${on}`);
-    return;
-  }
-  if (view.reported || view.state === 'completed') {
-    if (settled) await patch(settled);
-    await move('review_requested', `reported on ${r.pc}; the report is on ${on}`);
-    return;
-  }
-  if (view.state === 'failed') return move('failed', `failed on ${r.pc}; why is on ${on}`);
+  /** Fails the row once the grace from the first sighting is over. */
+  const failAfterGrace = async (summary: string): Promise<void> => {
+    if (r.goneSeenAt === undefined) return patch({ goneSeenAt: now });
+    if (now - r.goneSeenAt >= REMOTE_GONE_GRACE_MS) await move('failed', summary);
+  };
+  if (!view) return failAfterGrace(`the task on ${r.pc} is no longer known here`);
+  const settled = r.waiting || r.goneSeenAt !== undefined ? { waiting: undefined, goneSeenAt: undefined } : null;
   if (view.state === 'canceled') return move('cancelled', `cancelled on ${r.pc}`);
+  const newReport = view.reportedAt !== undefined && view.reportedAt !== r.reportedAt;
+  if (newReport || (view.state === 'completed' && entry.status !== 'review_requested')) {
+    await patch({ ...(settled ?? {}), ...(view.reportedAt ? { reportedAt: view.reportedAt } : {}) });
+    return move('review_requested', `reported on ${r.pc}; the report is on ${on}`);
+  }
+  // A report stands until a follow-up sets the agent working again.
+  if (entry.status === 'review_requested' && view.state !== 'working' && view.state !== 'submitted') return;
+  if (view.state === 'failed') return move('failed', `failed on ${r.pc}; why is on ${on}`);
   if (view.state === 'input-required') {
     if (settled) await patch(settled);
     return move('input_required', `the agent on ${r.pc} waits for your reply on ${on}`);
@@ -550,18 +566,18 @@ async function followTask(row: LedgerEntry, view: RemoteTaskView, deps: RemoteFa
   const st = view.status;
   if (st?.kind === 'question') {
     const question = (LEDGER_REMOTE_QUESTIONS as readonly string[]).includes(st.question ?? '') ? st.question as LedgerRemoteWaiting['question'] : undefined;
-    await patch({ waiting: { on: 'question', since: st.since, ...(question ? { question } : {}) }, goneSeen: undefined });
+    await patch({ waiting: { on: 'question', since: st.since, ...(question ? { question } : {}) }, goneSeenAt: undefined });
     return move('input_required', `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane or on ${on}`);
   }
-  if (st?.kind === 'gone') {
-    // Said just before that PC ends the task: the end normally follows. One
-    // pass later with the task still open, the row fails (and is withdrawn).
-    if (!r.goneSeen) return patch({ goneSeen: true });
-    return move('failed', `the agent on ${r.pc} is gone`);
+  if (st?.kind === 'gone') return failAfterGrace(`the agent on ${r.pc} is gone`);
+  if (st?.kind === 'waiting-input') {
+    // Its turn ended with no reply and no report: nothing moves until someone writes to it.
+    if (settled) await patch(settled);
+    return move('input_required', `the agent on ${r.pc} stopped without a reply; send it a follow-up on ${on}`);
   }
   if (st?.kind === 'usage-limit') {
     // That PC resumes it by itself: nothing is asked of the caller.
-    await patch({ waiting: { on: 'usage-limit', since: st.since, ...(st.resetsAt ? { resetsAt: st.resetsAt } : {}) }, goneSeen: undefined });
+    await patch({ waiting: { on: 'usage-limit', since: st.since, ...(st.resetsAt ? { resetsAt: st.resetsAt } : {}) }, goneSeenAt: undefined });
   } else if (settled) {
     await patch(settled);
   }

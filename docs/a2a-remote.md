@@ -283,13 +283,17 @@ PCs and the folder ids (`root`) each one allows.
     task completed);
   - a question on the agent's screen → `input_required`, naming only the kind
     (permission, plan, menu, dialog, trust) and the PC;
+  - an agent that stopped with no reply and no report → `input_required`;
   - a usage limit → still `working`, with `pending.waitingOn: 'usage-limit'`
     and the reset time in the poll (that PC resumes it by itself);
   - the task failing or being cancelled there → the same here.
 
-  An agent that PC reports gone fails the row one pass later if nothing ended
-  the task meanwhile, and stays failed. Tasks on that PC end when its daemon
-  stops; they are not resumed. Nothing the other PC writes goes into the row.
+  After a report, a follow-up that sets the agent working again moves the row
+  on as above, and a later report moves it back to `review_requested`. An
+  agent that PC reports gone, or a task this PC no longer lists, fails the row
+  after a minute if nothing ended the task meanwhile, and it stays failed.
+  Tasks on that PC end when its daemon stops; they are not resumed. Nothing
+  the other PC writes goes into the row.
 - **Being told.** The pane that started the fan-out gets the one-line fan-out
   nudge when a row needs input or fails. The report itself arrives there as
   the agent's reply.

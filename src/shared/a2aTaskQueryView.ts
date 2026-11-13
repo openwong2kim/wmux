@@ -331,16 +331,23 @@ export function taskAnchorRows<T extends object>(tasks: readonly T[]): Rec[] {
 export const STATE_VIEW_IDS_MAX = 64;
 
 /**
- * A sent task's remote marker as the state view shows it: whether the other
- * PC reported it, and its worker's newest status without a menu's labels
- * (text from that PC; main reads only the kinds).
+ * A sent task's remote marker as the state view shows it: when the other PC
+ * last reported it, and its worker's newest status as kinds only. Each field
+ * is copied by name, so nothing else from that PC (a menu's labels among it)
+ * goes into this read.
  */
 function remoteStateView(remote: unknown): Rec | null {
   if (!isRec(remote)) return null;
   const reported = str(remote.reported);
   let status: Rec | undefined;
   if (isRec(remote.status)) {
-    const { options: _labels, ...detail } = isRec(remote.status.detail) ? remote.status.detail : {};
+    const d = isRec(remote.status.detail) ? remote.status.detail : {};
+    const detail = {
+      ...(str(d.question) ? { question: d.question } : {}),
+      ...(str(d.menuId) ? { menuId: d.menuId } : {}),
+      ...(str(d.resetsAt) ? { resetsAt: d.resetsAt } : {}),
+      ...(typeof d.background === 'number' ? { background: d.background } : {}),
+    };
     status = { kind: remote.status.kind, since: remote.status.since, ...(Object.keys(detail).length > 0 ? { detail } : {}) };
   }
   return reported || status ? { ...(reported ? { reported } : {}), ...(status ? { status } : {}) } : null;

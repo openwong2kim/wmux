@@ -326,7 +326,8 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(o.from && typeof o.from === 'object' && typeof (o.from as { paneId?: unknown }).paneId === 'string' && PANE_ID_RE.test((o.from as { paneId: string }).paneId)
       ? { from: { paneId: (o.from as { paneId: string }).paneId } } : {}),
     ...(copyWaiting(o.waiting) ? { waiting: copyWaiting(o.waiting)! } : {}),
-    ...(o.goneSeen === true ? { goneSeen: true as const } : {}),
+    ...(typeof o.goneSeenAt === 'number' && Number.isFinite(o.goneSeenAt) && o.goneSeenAt > 0 ? { goneSeenAt: o.goneSeenAt } : {}),
+    ...(isIso(o.reportedAt) ? { reportedAt: o.reportedAt } : {}),
   };
 }
 

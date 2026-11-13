@@ -245,7 +245,7 @@ describe("view: 'state'", () => {
     const rows = applyTaskQueryView(tasks, { view: 'state', taskIds: ['rt-a', 'rt-b', 'rt-c'] }) as View[];
     expect(rows.map((r) => r.id)).toEqual(['rt-a', 'rt-b', 'rt-c']);
     expect(rows[0].metadata.remote).toEqual({ reported: '2026-11-13T08:01:00.000Z' });
-    expect(rows[1].metadata.remote).toEqual({ status: { kind: 'question', since: '2026-11-13T08:02:00.000Z', detail: { question: 'menu', menuId: 'toolu_1', optionCount: 2 } } });
+    expect(rows[1].metadata.remote).toEqual({ status: { kind: 'question', since: '2026-11-13T08:02:00.000Z', detail: { question: 'menu', menuId: 'toolu_1' } } });
     expect(rows[2].metadata.remote).toBeUndefined();
     expect(JSON.stringify(rows)).not.toMatch(/secret prompt|rm -rf/);
   });

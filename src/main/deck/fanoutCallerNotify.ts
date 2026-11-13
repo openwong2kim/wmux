@@ -137,8 +137,9 @@ export function installFanoutCallerLedgerNotify(
     const bySystem = t.by.kind === 'system' && t.to === 'input_required';
     // A task another PC runs has no worker here: wmux moves its row as that
     // PC reports. Its failure is told; its report is not (it already reached
-    // the caller's pane as the A2A reply).
-    const remoteFailed = t.by.kind === 'system' && t.to === 'failed' && isRemoteTask(t.entry);
+    // the caller's pane as the A2A reply), and neither is a request refused
+    // while fanout_start ran (still `sent`: that call's reply said so).
+    const remoteFailed = t.by.kind === 'system' && t.to === 'failed' && isRemoteTask(t.entry) && t.entry.remote?.state !== 'sent';
     if (!byWorker && !bySystem && !remoteFailed) return;
     try {
       if (hasBrain(t.entry.ownerWorkspaceId)) return;
