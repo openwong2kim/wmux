@@ -125,6 +125,50 @@ export interface LedgerEntry {
    *  items. 0 = Not verified. Written only by main / the ledger, never
    *  trusted from the worker's word alone. */
   verifiedItemCount?: number;
+  /** A task another PC runs (fanout_start with `pc`): it has no workspace,
+   *  pane or worktree here, and its `taskWorkspaceId` is
+   *  {@link remoteTaskWorkspaceId}. Written by main only. Absent on every
+   *  local row and on rows from before it existed. */
+  remote?: LedgerRemote;
+}
+
+/** What this PC knows of a task another PC runs for it (LedgerEntry.remote). */
+export interface LedgerRemote {
+  /** The other PC: its host id, and the name the caller gave. */
+  hostId: string;
+  pc: string;
+  /** The start request this PC sent (`sp-<uuid>`). */
+  spawnId: string;
+  /** The folder on that PC, by the id it offers. */
+  root: string;
+  /** The request's state as last seen. */
+  state: LedgerRemoteState;
+  /** Why it was refused (an A2A spawn code). */
+  code?: string;
+  /** Set once it started: the link to it and the task its replies arrive on. */
+  linkId?: string;
+  a2aTaskId?: string;
+  /** The branch it works on, on that PC. */
+  branch?: string;
+  /** The task was closed (or expired) here: a start that arrives later is
+   *  ended at once instead of left running. */
+  withdrawn?: true;
+}
+
+export const LEDGER_REMOTE_STATES = ['sent', 'waiting', 'started', 'refused', 'expired'] as const;
+export type LedgerRemoteState = typeof LEDGER_REMOTE_STATES[number];
+
+/** The `taskWorkspaceId` of a remote task: never a workspace id (none holds a ':'). */
+export const REMOTE_TASK_WORKSPACE_PREFIX = 'remote:';
+
+export function remoteTaskWorkspaceId(spawnId: string): string {
+  return `${REMOTE_TASK_WORKSPACE_PREFIX}${spawnId}`;
+}
+
+/** Whether a row (or the task workspace id of one) is a task another PC runs. */
+export function isRemoteTask(row: { taskWorkspaceId: string; remote?: unknown } | string): boolean {
+  if (typeof row === 'string') return row.startsWith(REMOTE_TASK_WORKSPACE_PREFIX);
+  return row.remote !== undefined || row.taskWorkspaceId.startsWith(REMOTE_TASK_WORKSPACE_PREFIX);
 }
 
 /** See LedgerEntry.completion. */

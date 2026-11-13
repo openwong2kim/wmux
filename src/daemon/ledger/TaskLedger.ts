@@ -49,7 +49,9 @@ import { isOriginPin } from '../../shared/originPin';
 import * as path from 'node:path';
 import {
   LEDGER_GATE_TAIL_MAX_BYTES,
+  LEDGER_REMOTE_STATES,
   LEDGER_SCHEMA_VERSION,
+  REMOTE_TASK_WORKSPACE_PREFIX,
   LEDGER_TERMINAL_RETENTION_MS,
   LEDGER_TRANSITIONS,
   canActorSee,
@@ -62,6 +64,7 @@ import {
   type LedgerDispatch,
   type LedgerEntry,
   type LedgerGateResult,
+  type LedgerRemote,
   type LedgerStatus,
 } from '../../shared/ledger';
 import { sanitizeTaskCriteria, gradeNonCodeEvidence } from '../../shared/nonCodeTaskEvidence';
@@ -111,6 +114,9 @@ export interface LedgerRegisterInput {
   title: string;
   actor?: LedgerActor;
   dispatch?: LedgerDispatch;
+  /** A task another PC runs (LedgerEntry.remote); its taskWorkspaceId must
+   *  then be `remote:<spawnId>`. */
+  remote?: LedgerRemote;
 }
 
 export interface LedgerUpdateInput {
@@ -294,6 +300,37 @@ function copyDispatch(d: LedgerDispatch): LedgerDispatch {
   };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const SPAWN_ID_RE = /^sp-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const boundedText = (v: unknown, max: number): v is string =>
+  typeof v === 'string' && v.length > 0 && v.length <= max && !/\p{Cc}/u.test(v);
+
+/** A LedgerRemote as it may be stored, or null when it is not one. */
+export function copyRemote(r: unknown): LedgerRemote | null {
+  if (!r || typeof r !== 'object') return null;
+  const o = r as Record<string, unknown>;
+  if (typeof o.hostId !== 'string' || !UUID_RE.test(o.hostId) || !boundedText(o.pc, 256) || typeof o.spawnId !== 'string' || !SPAWN_ID_RE.test(o.spawnId)) return null;
+  if (!boundedText(o.root, 64) || !(LEDGER_REMOTE_STATES as readonly unknown[]).includes(o.state)) return null;
+  return {
+    hostId: o.hostId, pc: o.pc, spawnId: o.spawnId, root: o.root, state: o.state as LedgerRemote['state'],
+    ...(boundedText(o.code, 64) ? { code: o.code } : {}),
+    ...(typeof o.linkId === 'string' && UUID_RE.test(o.linkId) ? { linkId: o.linkId } : {}),
+    ...(boundedText(o.a2aTaskId, 128) ? { a2aTaskId: o.a2aTaskId } : {}),
+    ...(typeof o.branch === 'string' && /^wmux\/remote\/[A-Za-z0-9-]{1,128}$/.test(o.branch) ? { branch: o.branch } : {}),
+    ...(o.withdrawn === true ? { withdrawn: true as const } : {}),
+  };
+}
+
+/** A loaded row with its `remote` checked: an unreadable one is dropped, the
+ *  row kept (its `remote:` workspace id still marks it remote). */
+function withCheckedRemote(e: LedgerEntry): LedgerEntry {
+  if (e.remote === undefined) return e;
+  const remote = copyRemote(e.remote);
+  if (remote) return { ...e, remote };
+  const { remote: _dropped, ...rest } = e;
+  return rest;
+}
+
 function isOrphanShape(v: unknown): v is OrphanedEvent {
   if (!v || typeof v !== 'object') return false;
   const o = v as Record<string, unknown>;
@@ -413,6 +450,10 @@ export class TaskLedger {
         return existing;
       }
       const by = input.actor ?? SYSTEM_ACTOR();
+      const remote = input.remote === undefined ? undefined : copyRemote(input.remote);
+      if (input.remote !== undefined && (!remote || input.taskWorkspaceId !== `${REMOTE_TASK_WORKSPACE_PREFIX}${remote.spawnId}`)) {
+        throw new Error(`ledger: the remote record of task ${input.id} is not valid`);
+      }
       const entry: LedgerEntry = this.redact({
         schemaVersion: LEDGER_SCHEMA_VERSION,
         id: input.id,
@@ -425,6 +466,7 @@ export class TaskLedger {
         updatedAt: this.now(),
         updatedBy: by,
         ...(input.dispatch ? { dispatch: copyDispatch(input.dispatch) } : {}),
+        ...(remote ? { remote } : {}),
       });
       await this.append({ op: 'entry', entry });
       this.entries.set(entry.id, entry);
@@ -689,6 +731,10 @@ export class TaskLedger {
       if (input.actor.kind !== 'system') {
         return { ok: false, error: 'not_authorized', message: 'only the system may move a task to another workspace', ...(canActorSee(input.actor, entry) ? { entry } : {}) };
       }
+      // A task another PC runs has no workspace here to move to.
+      if (entry.remote || entry.taskWorkspaceId.startsWith(REMOTE_TASK_WORKSPACE_PREFIX)) {
+        return { ok: false, error: 'not_authorized', message: `task ${input.id} runs on another PC; it has no workspace here`, entry };
+      }
       if (input.expectedRev !== entry.rev) {
         return {
           ok: false,
@@ -712,6 +758,24 @@ export class TaskLedger {
       }
       this.entries.set(input.id, updated);
       return { ok: true, entry: updated };
+    });
+  }
+
+  /** What this PC learned of a task another PC runs: its request's state,
+   *  link, branch, or that it was withdrawn here. SYSTEM write; bumps the
+   *  rev; no status change, no transition event. Resolves with the row as it
+   *  is afterwards, or null for a row that is not remote. */
+  updateRemote(id: string, patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>): Promise<LedgerEntry | null> {
+    return this.serialize(async () => {
+      const entry = this.entries.get(id);
+      if (!entry?.remote) return null;
+      const remote = copyRemote({ ...entry.remote, ...patch });
+      if (!remote) throw new Error(`ledger: the remote record of task ${id} would not be valid`);
+      if (JSON.stringify(remote) === JSON.stringify(entry.remote)) return entry;
+      const updated: LedgerEntry = this.redact({ ...entry, remote, rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR() });
+      await this.append({ op: 'entry', entry: updated });
+      this.entries.set(id, updated);
+      return updated;
     });
   }
 
@@ -940,14 +1004,14 @@ export class TaskLedger {
     switch (line.op) {
       case 'entry': {
         const e = (line as { entry?: unknown }).entry;
-        if (isEntryShape(e)) this.entries.set(e.id, e);
+        if (isEntryShape(e)) this.entries.set(e.id, withCheckedRemote(e));
         return;
       }
       case 'snapshot': {
         const s = line as { entries?: unknown; orphans?: unknown };
         this.entries.clear();
         if (Array.isArray(s.entries)) {
-          for (const e of s.entries) if (isEntryShape(e)) this.entries.set(e.id, e);
+          for (const e of s.entries) if (isEntryShape(e)) this.entries.set(e.id, withCheckedRemote(e));
         }
         this.orphans = Array.isArray(s.orphans) ? s.orphans.filter(isOrphanShape) : [];
         return;

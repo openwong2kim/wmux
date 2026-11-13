@@ -99,10 +99,10 @@ export class A2aSpawnRequester {
       from: input.from,
     });
     if (!request) return { ok: false, error: 'bad-request', message: 'the agent, folder, prompt or reply pane is not valid' };
-    if (this.deps.store.sentSince(input.callerKey, now - HOUR_MS) >= SPAWN_ASKS_PER_PANE_PER_HOUR) {
+    if (input.budget !== 'fanout' && this.deps.store.sentSince(input.callerKey, now - HOUR_MS) >= SPAWN_ASKS_PER_PANE_PER_HOUR) {
       return { ok: false, error: 'rate-limited', message: `at most ${SPAWN_ASKS_PER_PANE_PER_HOUR} requests per pane per hour` };
     }
-    if (this.deps.store.openCount(host.hostId) >= SPAWN_ASKS_OPEN_PER_HOST_MAX) {
+    if (input.budget !== 'fanout' && this.deps.store.openCount(host.hostId) >= SPAWN_ASKS_OPEN_PER_HOST_MAX) {
       return { ok: false, error: 'rate-limited', message: `${SPAWN_ASKS_OPEN_PER_HOST_MAX} requests to ${host.name} are waiting for an answer already` };
     }
     const at = new Date(now).toISOString();
@@ -346,6 +346,7 @@ export function registerSpawnAskRpc(onRpc: (method: string, handler: RpcHandler)
       callerKey: p['callerKey'],
       ...(typeof p['requestKey'] === 'string' ? { requestKey: p['requestKey'] } : {}),
       ...(typeof p['label'] === 'string' ? { label: p['label'] } : {}),
+      ...(p['budget'] === 'fanout' ? { budget: 'fanout' as const } : {}),
     });
   });
   onRpc(A2A_SPAWN_RPC.outgoing, async (p) => requester.list(typeof p['spawnId'] === 'string' ? p['spawnId'] : undefined));
