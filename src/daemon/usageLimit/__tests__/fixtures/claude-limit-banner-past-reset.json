@@ -1,0 +1,37 @@
+{
+ "source": "s2-past-reset-waiting.ans",
+ "state": "past the reset time, before Claude's retry",
+ "cols": 80,
+ "rows": 24,
+ "cursor": {
+  "x": 2,
+  "y": 19
+ },
+ "screen": [
+  "",
+  " ▐▛███▛█   Claude Code v2.1.322",
+  "▝▜██████▀  Sonnet 5.5 · Claude API",
+  " ▝▝   ▝▝   ~/proj/worktrees/000000000000/task-one",
+  "",
+  "",
+  "❯ Say hello.                                                                    ",
+  "  ⎿  You've hit your 5-hour limit · resets 1:35pm (Asia/Seoul)",
+  "",
+  "⏺ Usage limit reached · continuing automatically at 1:35pm · esc to ",
+  "  cancel",
+  "",
+  "✻ Brewed for 0s · done 1:31 PM",
+  "",
+  "",
+  "",
+  "",
+  "",
+  "────────────────────────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────────────────────────",
+  "  ⚠ Usage limit reached · limit resets 1:35pm",
+  "    Continuing shortly · Esc to cancel",
+  "  ⏵⏵ auto mode on (shift+tab to cycle)"
+ ],
+ "optionStyles": []
+}

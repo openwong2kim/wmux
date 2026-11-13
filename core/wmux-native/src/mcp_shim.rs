@@ -10,13 +10,14 @@
 //! identity walk from `callerPid` sees the same ancestry as with the Node shim.
 //!
 //! Exit codes: 0 when the host ends the session (stdin EOF or a read error,
-//! SIGTERM/SIGINT, Ctrl+C on Windows); 1 when there is no token, the broker
-//! refuses the session, or the connection drops mid-session. A broker that is
-//! unreachable, or that does not acknowledge the session, hands the session to
-//! the full bundle instead; that path exits 1 only when there is no bundle to
-//! run or node cannot be started (on Windows, also when no job object can
-//! contain it). A dropped session is never resumed: MCP servers keep
-//! per-session state, so the host must see the server die and restart it. The
+//! SIGTERM/SIGINT, Ctrl+C on Windows); 1 when there is no token or the broker
+//! refuses the session. A broker that is unreachable, or that does not
+//! acknowledge the session, hands the session to the full bundle instead; that
+//! path exits 1 only when there is no bundle to run or node cannot be started
+//! (on Windows, also when no job object can contain it). A broker that goes
+//! away mid-session hands the rest of the session to a bundle child (below);
+//! the shim then exits with the child's code, or 1 when it cannot start one.
+//! The shim never reconnects to a broker that comes back. The
 //! signal handlers are installed once the broker connection is up, right before
 //! the handshake is written, so no signal falls between the two (shim.ts
 //! installs them in the same tick as its write). A signal while the ack is
@@ -58,17 +59,33 @@
 //! session, and always for `--bot*` arguments (the broker hosts no bot
 //! surface), the shim hands the session to the full bundle with its own
 //! arguments. No stdin has been read by then, so the bundle gets the host's
-//! bytes from the first one. Once the session is acknowledged there is no
-//! fallback: a dropped session still exits 1.
+//! bytes from the first one.
+//!
+//! Handover (handover.rs): once the session is acknowledged, the shim reads
+//! the newline-delimited JSON-RPC it pumps, one line at a time in each
+//! direction, and keeps the ids of the host's requests the broker has not
+//! answered, the host's `initialize` request and its
+//! `notifications/initialized`. When the broker connection closes or fails,
+//! the shim writes the usual stderr line, answers each request in flight with
+//! a JSON-RPC error saying the call may have run (it is never sent again),
+//! and starts the full bundle as a child with piped stdio. The child first
+//! gets the `initialize`, under an id of the shim's own. Once it answers, the
+//! shim drops that reply (the host already has one) and sends the
+//! `initialized` notification, then the host's lines for the rest of the
+//! session; host lines that arrive before the answer wait for it, as a host
+//! waits for its own `initialize` reply. A broker line that arrives after the
+//! handover is dropped.
 
 use crate::js::{decode_utf8_trimmed, stringify, JsStr, Json};
 use crate::paths::{env, env_js, os_to_js};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 mod fallback;
+mod handover;
 
 /// The `wmuxShim` handshake version the broker checks for.
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -135,11 +152,14 @@ pub enum Outcome {
     NoBundle(String),
     /// The full bundle could not be started.
     BundleFailed(String),
+    /// The bundle child that took the session over exited with this code.
+    BundleExited(i32),
 }
 
 impl Outcome {
     pub const fn code(&self) -> i32 {
         match self {
+            Outcome::BundleExited(code) => *code,
             Outcome::StdinEnd | Outcome::StdinError | Outcome::Signal | Outcome::StdoutClosed => 0,
             Outcome::NoToken
             | Outcome::BrokerClosed
@@ -628,47 +648,268 @@ fn no_session(why: &str, raw: &[OsString]) -> ! {
     fallback::run_full_bundle(raw)
 }
 
-/// Broker to stdout until either side ends, starting with `first` (what came
-/// after the ack line).
-fn pump_to_stdout(first: Vec<u8>, mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) -> ! {
-    let mut buf = vec![0u8; 64 * 1024];
-    let stdout = std::io::stdout();
-    // A write failure means the host stopped reading: its session is over
-    // (exit 0, the divergence the module doc states).
-    let emit = |bytes: &[u8]| {
-        if !bytes.is_empty() && write_patiently(&mut stdout.lock(), bytes).is_err() {
-            finish(Outcome::StdoutClosed);
+/// Where the host's lines go: the broker, the bundle child after a handover,
+/// or nowhere once the host has closed stdin after one.
+enum Route {
+    Broker,
+    /// The child has the replayed `initialize` and has not answered it yet:
+    /// the `initialized` notification and the host's lines wait in `held`,
+    /// and `end` records that the host closed stdin meanwhile.
+    Replaying {
+        stdin: std::process::ChildStdin,
+        held: Vec<Vec<u8>>,
+        end: bool,
+    },
+    Bundle(std::process::ChildStdin),
+    Closed,
+}
+
+/// The session's shared state. Lock order: `route`, then `calls`.
+struct Relay {
+    route: Mutex<Route>,
+    calls: Mutex<handover::Calls>,
+    /// The shim's arguments, for the bundle child.
+    raw: Vec<OsString>,
+}
+
+static RELAY: OnceLock<Relay> = OnceLock::new();
+
+/// Set once in `run`, before any pump starts.
+fn relay() -> &'static Relay {
+    RELAY.get().expect("the relay is set before any pump starts")
+}
+
+impl Relay {
+    fn new(raw: Vec<OsString>) -> Self {
+        Relay {
+            route: Mutex::new(Route::Broker),
+            calls: Mutex::default(),
+            raw,
         }
+    }
+}
+
+fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One write of whole lines to the host. A write failure means the host
+/// stopped reading: its session is over (exit 0, the divergence the module
+/// doc states).
+fn emit(bytes: &[u8]) {
+    if !bytes.is_empty() && write_patiently(&mut std::io::stdout().lock(), bytes).is_err() {
+        finish(Outcome::StdoutClosed);
+    }
+}
+
+/// Broker to stdout, starting with `first` (what came after the ack line):
+/// the whole lines of each read, noted, in one write. When the connection
+/// ends the session is handed over; a partial line is dropped, so its call is
+/// answered as in flight.
+fn pump_to_stdout(first: Vec<u8>, mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) {
+    let mut lines = handover::Lines::default();
+    let mut batch = Vec::new();
+    let mut forward = |chunk: &[u8], batch: &mut Vec<u8>| {
+        lines.push(chunk, |line| {
+            if locked(&relay().calls).answered(line) {
+                batch.extend_from_slice(line);
+            }
+        });
+        emit(batch);
+        batch.clear();
     };
-    emit(&first);
+    forward(&first, &mut batch);
+    let mut buf = vec![0u8; 64 * 1024];
     loop {
         let n = match read_step(read(&mut buf)) {
             ReadStep::Data(n) => n,
             ReadStep::Retry => continue,
-            ReadStep::End(outcome) => finish(outcome),
+            ReadStep::End(outcome) => return lose_broker(outcome),
         };
-        emit(&buf[..n]);
+        forward(&buf[..n], &mut batch);
     }
 }
 
-/// stdin to the broker; returns on stdin EOF, ends the process otherwise.
-fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) {
+/// stdin to the broker, or to the bundle child after a handover, a line at a
+/// time. Returns on stdin EOF: true when the session is still on the broker.
+/// After a handover the child's stdin is closed, so the bundle ends.
+fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) -> bool {
     let mut buf = vec![0u8; 64 * 1024];
     let mut stdin = std::io::stdin().lock();
+    let mut lines = handover::Lines::default();
     loop {
         let n = match stdin.read(&mut buf) {
-            Ok(0) => return,
+            Ok(0) => break,
             Ok(n) => n,
             Err(e) => match after_error(&e, HostStream::Stdin) {
                 Next::Retry => continue,
-                Next::Ended => return,
+                Next::Ended => break,
                 Next::Fail => finish(Outcome::StdinError),
             },
         };
-        if let Err(e) = write(&buf[..n]) {
-            finish(Outcome::BrokerError(socket_error("write", &e)));
+        let mut batch = Batch::default();
+        lines.push(&buf[..n], |line| batch.add(line));
+        forward_from_host(&batch, &mut write);
+    }
+    // An unterminated last line goes as it is.
+    let rest = lines.take_rest();
+    if !rest.is_empty() {
+        let mut batch = Batch::default();
+        batch.add(&rest);
+        forward_from_host(&batch, &mut write);
+    }
+    let mut route = locked(&relay().route);
+    match &mut *route {
+        Route::Broker => true,
+        Route::Replaying { end, .. } => {
+            *end = true;
+            false
+        }
+        Route::Bundle(_) | Route::Closed => {
+            *route = Route::Closed;
+            false
         }
     }
+}
+
+/// The whole lines of one read from the host, back to back.
+#[derive(Default)]
+struct Batch {
+    bytes: Vec<u8>,
+    ends: Vec<usize>,
+}
+
+impl Batch {
+    fn add(&mut self, line: &[u8]) {
+        self.bytes.extend_from_slice(line);
+        self.ends.push(self.bytes.len());
+    }
+
+    fn lines(&self) -> impl Iterator<Item = &[u8]> {
+        let starts = std::iter::once(0).chain(self.ends.iter().copied());
+        starts.zip(self.ends.iter().copied()).map(|(s, e)| &self.bytes[s..e])
+    }
+}
+
+/// The host's lines of one read, noted (under the route lock, so a handover
+/// sees each either in flight or not yet sent) and sent in one write where the
+/// session now runs.
+fn forward_from_host(batch: &Batch, write: &mut impl FnMut(&[u8]) -> std::io::Result<()>) {
+    if batch.bytes.is_empty() {
+        return;
+    }
+    let mut route = locked(&relay().route);
+    {
+        let mut calls = locked(&relay().calls);
+        for line in batch.lines() {
+            calls.sent(line);
+        }
+    }
+    match &mut *route {
+        Route::Broker => {
+            if let Err(e) = write(&batch.bytes) {
+                drop(route);
+                lose_broker(Outcome::BrokerError(socket_error("write", &e)));
+            }
+        }
+        Route::Replaying { held, .. } => held.extend(batch.lines().map(<[u8]>::to_vec)),
+        // A child that stopped reading has exited; its reader ends the shim.
+        Route::Bundle(child) => {
+            let _ = child.write_all(&batch.bytes);
+        }
+        Route::Closed => {}
+    }
+}
+
+/// The broker connection ended mid-session (`why`): answer what was in
+/// flight, then run the rest of the session on a bundle child. Only the first
+/// caller hands over; a later one (the other pump) returns at once.
+fn lose_broker(why: Outcome) {
+    let relay = relay();
+    let mut route = locked(&relay.route);
+    if !matches!(*route, Route::Broker) {
+        return;
+    }
+    if let Some(msg) = why.message() {
+        say(&msg);
+    }
+    let (in_flight, replay) = locked(&relay.calls).hand_over();
+    for id in &in_flight {
+        emit(&handover::may_have_run(id));
+    }
+    let mut child = match fallback::spawn_bundle(&relay.raw) {
+        Ok(child) => child,
+        Err(outcome) => finish(outcome),
+    };
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        finish(Outcome::BundleFailed("no pipes to the child".into()))
+    };
+    say(&format!("{PREFIX} running the full server for the rest of the session"));
+    let mut replay = replay.into_iter();
+    let swallow = match replay.next() {
+        Some(initialize) => {
+            // A child that cannot take it has exited; its reader ends the shim.
+            let _ = stdin.write_all(&initialize);
+            *route = Route::Replaying {
+                stdin,
+                held: replay.collect(),
+                end: false,
+            };
+            true
+        }
+        None => {
+            *route = Route::Bundle(stdin);
+            false
+        }
+    };
+    std::thread::spawn(move || pump_from_bundle(child, stdout, swallow));
+}
+
+/// The child answered the replayed `initialize`: what waited for that answer
+/// goes to it, and the host's lines go straight to it from now on. Run on a
+/// thread of its own, so the child's stdout keeps being read while it writes.
+fn release_held() {
+    let mut route = locked(&relay().route);
+    if let Route::Replaying { mut stdin, held, end } = std::mem::replace(&mut *route, Route::Closed) {
+        for line in &held {
+            if stdin.write_all(line).is_err() {
+                break;
+            }
+        }
+        if !end {
+            *route = Route::Bundle(stdin);
+        }
+    }
+}
+
+/// The bundle child's stdout to the host, minus the reply to the replayed
+/// `initialize`; then the shim exits with the child's code.
+fn pump_from_bundle(mut child: std::process::Child, mut out: std::process::ChildStdout, mut swallow: bool) -> ! {
+    let mut lines = handover::Lines::default();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = match out.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        lines.push(&buf[..n], |line| {
+            match swallow.then(|| handover::replay_answer(line)).flatten() {
+                Some(false) => {
+                    swallow = false;
+                    std::thread::spawn(release_held);
+                }
+                // The session cannot go on without it: end it, as a broker loss
+                // did before (the host restarts the server).
+                Some(true) => finish(Outcome::BundleFailed("it refused the session's initialize".into())),
+                None => emit(line),
+            }
+        });
+    }
+    emit(&lines.take_rest());
+    let code = child.wait().ok().and_then(|status| status.code()).unwrap_or(1);
+    finish(Outcome::BundleExited(code))
 }
 
 pub fn run(raw: &[OsString]) -> ! {
@@ -686,6 +927,7 @@ pub fn run(raw: &[OsString]) -> ! {
     let Some(token) = read_auth_token() else {
         exit_with(Outcome::NoToken);
     };
+    let _ = RELAY.set(Relay::new(raw.to_vec()));
     let pipe = broker_pipe_name();
     let conn = match connect_with_retry(&pipe) {
         Ok(conn) => conn,
@@ -889,10 +1131,10 @@ mod sys {
             Err(e) => finish(Outcome::BrokerError(e.to_string())),
         };
         std::thread::spawn(move || pump_to_stdout(first, |buf| reader.read(buf)));
-        pump_from_stdin(|bytes| (&conn).write_all(bytes));
         // Host closed stdin: end of session. Half-close first, as
-        // socket.end() does, so the broker sees an orderly end.
-        if super::claim_exit() {
+        // socket.end() does, so the broker sees an orderly end. After a
+        // handover the bundle child ends the shim instead.
+        if pump_from_stdin(|bytes| (&conn).write_all(bytes)) && super::claim_exit() {
             let _ = conn.shutdown(Shutdown::Write);
             std::process::exit(Outcome::StdinEnd.code());
         }
@@ -1263,12 +1505,12 @@ mod sys {
             };
             pump_to_stdout(first, |buf| reader.read(&event, buf))
         });
-        pump_from_stdin(|bytes| conn.write_all(&writer_event, bytes));
         // Host closed stdin: end the session. The handle is not closed here:
         // the reader thread may have an overlapped read pending on it, and
         // closing under it races that read. The process exit right after
-        // cancels the read and closes the handle.
-        if super::claim_exit() {
+        // cancels the read and closes the handle. After a handover the bundle
+        // child ends the shim instead.
+        if pump_from_stdin(|bytes| conn.write_all(&writer_event, bytes)) && super::claim_exit() {
             std::process::exit(Outcome::StdinEnd.code());
         }
         loop {

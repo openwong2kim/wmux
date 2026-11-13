@@ -96,6 +96,7 @@ import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
+import { usageLimitMenuOnScreen, usageLimitWaitOnScreen } from './usageLimit/limitMenu';
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, readFolderTrust, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import { HOST_WINDOW_RPC, createHostWindowRpc } from './hostWindowRpc';
@@ -11037,6 +11038,31 @@ async function main(): Promise<void> {
             return seen.state === 'clear' ? 'clear' : 'unknown';
           },
           limitHeld: (sessionId) => usageLimits?.holds(sessionId) === true,
+          // The hold from the transcript's own limit line: a headless session has no hook, and its
+          // bridge may not count the turn as open, which the API-error stand-in needs.
+          noteLimit: (sessionId, message, at) => usageLimits?.noteTranscriptLimit(sessionId, message, at),
+          limitScreen: async (sessionId) => {
+            const outcome = await queuedScreenText(sessionManager, sessionId);
+            if (!outcome?.ok) return 'other';
+            const rows = outcome.rows.map((r) => r.text);
+            if (usageLimitMenuOnScreen(rows)) return 'menu';
+            // Claude Code waits and goes on by itself: no key (Escape there cancels its wait).
+            if (usageLimitWaitOnScreen(rows)) return 'other';
+            const seen = await readFolderTrust({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, sessionId);
+            return seen.state === 'clear' && !seen.dialog ? 'clear' : 'other';
+          },
+          // Escape on the limit menu only: the screen is read again right before the key.
+          pressEscape: async (sessionId) => {
+            const outcome = await queuedScreenText(sessionManager, sessionId);
+            if (!outcome?.ok || !usageLimitMenuOnScreen(outcome.rows.map((r) => r.text))) return false;
+            const refused = await trustRefusal(sessionManager, sessionId, 'usage-limit menu key', false, { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS });
+            const managed = sessionManager.getSession(sessionId);
+            if (refused || !managed || (managed.meta.state !== 'attached' && managed.meta.state !== 'detached')) return false;
+            managed.ptyProcess.write('\x1b');
+            // The daemon's own key: no submit, so no turn is opened for it.
+            managed.bridge.noteInput('\x1b', { selfWrite: true });
+            return true;
+          },
           deliver: (sessionId, agent, prompt, authorized, onWrite) => (headlessDeliverRef ? headlessDeliverRef(sessionId, agent, prompt, authorized, onWrite) : Promise.resolve('unavailable')),
           // Its own sessions only (the delivery asks for no other): a no-op once the agent is tracked.
           armAgent: (sessionId) => {
