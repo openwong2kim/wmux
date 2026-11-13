@@ -6388,6 +6388,15 @@ function registerRpcHandlers(
   ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       ...opts,
+      // Deliveries wait for a verified agent in plain input mode
+      // (deliveryPresence.ts): before the first write, and as the last await
+      // before the submit. Only an agent whose plain prompt is on screen gets
+      // a prompt typed; any other answer stops it (`error`, tried again later).
+      authorized: async (stage) => {
+        if (opts.authorized && !(await opts.authorized(stage))) return false;
+        const presence = await deliveryPresence(presenceDeps, id, agentSlug, { phase: stage === 'first-write' ? 'paste' : 'enter' });
+        return presence.tier !== 'none' && presence.input === 'full';
+      },
       // Each of these is tried again later: one log line per pane while the
       // refusal holds. No person waits on them, so the read may take longer.
       // Each presses Enter on its own, so any dialog on screen stops it too.

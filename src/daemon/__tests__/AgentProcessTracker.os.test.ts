@@ -431,6 +431,38 @@ describe('AgentProcessTracker', () => {
     expect(watcher.watches.has('agent:s1')).toBe(false);
   });
 
+  it('after a tracked agent ended: a delivery probe names a new agent; a wrapper (an SSH session) needs a banner or hook re-arm', async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    tracker.arm('s1', SHELL);
+    await flush();
+    table = [];
+    expect(await tracker.agentProcessTree('s1', 'claude')).toBeNull();
+    expect(tracker.statusFor('s1')).toBe(false);
+    // A wrapper the probe cannot name: the pane stays ended for deliveries.
+    table = [entry(300, SHELL, 'somewrapper.exe')];
+    expect(await tracker.probeNamedAgentNow('s1', SHELL, 1_000)).toBe(true);
+    expect(tracker.identityFor('s1')).toEqual({ slug: 'claude', alive: false });
+    // The detector's gate event (a banner) or a hook re-arms it: liveness, no name.
+    tracker.rearm('s1', SHELL);
+    await flush();
+    expect(tracker.identityFor('s1')).toEqual({ alive: true });
+  });
+
+  it('after a tracked agent ended, the delivery probe names an agent started later in the pane', async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    tracker.arm('s1', SHELL);
+    await flush();
+    table = [];
+    expect(await tracker.agentProcessTree('s1', 'claude')).toBeNull();
+    table = [entry(400, SHELL, 'codex.exe')];
+    expect(await tracker.probeNamedAgentNow('s1', SHELL, 1_000)).toBe(true);
+    expect(tracker.identityFor('s1')).toEqual({ slug: 'codex', alive: true });
+  });
+
   it('a slugless pick answers liveness but claims no identity', async () => {
     const watcher = makeWatcher();
     const tracker = new AgentProcessTracker(watcher, async () => [entry(200, SHELL, 'somewrapper.exe')]);
