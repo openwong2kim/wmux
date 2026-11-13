@@ -13,6 +13,7 @@ import { parseTranscriptLine } from '../transcript/parseEntry';
 import { readTranscriptDelta } from '../transcript/readTail';
 import { SUBAGENT_COUNTERS, type SubagentCounter } from '../transcript/subagentCount';
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
+import { LINK_ENDED_REASON } from './headlessStarter';
 import { errMsg } from './storeFile';
 
 /**
@@ -603,12 +604,14 @@ export class HeadlessDelivery {
     this.episodes.delete(rec.sessionId);
     this.afterwards.delete(rec.sessionId);
     this.questions.delete(rec.sessionId);
+    // An ended link carries no reply: the reason is not sent ahead of the cancel (the link's own end fails its tasks too).
+    const say = why !== LINK_ENDED_REASON;
     for (const task of this.deps.tasks.remote()) {
       const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
       if (marker?.direction !== 'inbound' || task.metadata[localSideOf(task)].workspaceId !== rec.workspaceId) continue;
       const state = task.status.state;
-      if (state === 'submitted' || state === 'working') await this.fail(task.id, rec.workspaceId, why);
-      else if (state === 'input-required') await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`);
+      if (state === 'submitted' || state === 'working') await this.fail(task.id, rec.workspaceId, why, { say });
+      else if (state === 'input-required') await this.end(task.id, rec.workspaceId, 'canceled', `the agent ended: ${why}`, { say });
     }
   }
 
@@ -1214,15 +1217,15 @@ export class HeadlessDelivery {
     if (this.episodes.get(ep.sessionId) === ep) this.episodes.delete(ep.sessionId);
   }
 
-  private fail(taskId: string, workspaceId: string, reason: string): Promise<boolean> {
-    return this.end(taskId, workspaceId, 'failed', reason);
+  private fail(taskId: string, workspaceId: string, reason: string, opts: { say?: boolean } = {}): Promise<boolean> {
+    return this.end(taskId, workspaceId, 'failed', reason, opts);
   }
 
   /**
    * A task that was never taken (still `submitted`) can only be canceled, with the same reason.
    * True when the task is ended (by this or before it).
    */
-  private async end(taskId: string, workspaceId: string, wanted: 'failed' | 'canceled', reason: string): Promise<boolean> {
+  private async end(taskId: string, workspaceId: string, wanted: 'failed' | 'canceled', reason: string, opts: { say?: boolean } = {}): Promise<boolean> {
     const state = this.deps.tasks.get(taskId)?.status.state;
     if (!state || (TERMINAL_STATES as readonly string[]).includes(state)) {
       this.further.delete(taskId);
@@ -1231,11 +1234,18 @@ export class HeadlessDelivery {
     // `failed` is not a move from `submitted` or `input-required` in the ledger: those are canceled, with the reason.
     const to = wanted === 'failed' && (state === 'submitted' || state === 'input-required') ? 'canceled' : wanted;
     // A cancel reaches the asking PC without its summary (a failure carries one): the reason goes first, as a reply, once.
-    if (to === 'canceled') await this.sayOnce(taskId, workspaceId, `Canceled: ${reason}`);
-    const res = await this.deps.transition({ taskId, workspaceId, to, summary: reason }).catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
-    if (!res.ok) this.deps.log('warn', `[headless] task ${taskId}: not marked ${to} (${reason}): ${res.error ?? 'unknown'}`);
-    else this.further.delete(taskId);
-    return res.ok;
+    if (to === 'canceled' && opts.say !== false) await this.sayOnce(taskId, workspaceId, `Canceled: ${reason}`);
+    // The state read above may be stale by now: another path can end the task meanwhile (an ended link fails
+    // every task on it, failTasksForLink). Ended is ended: nothing more to move.
+    const res: { ok: boolean; error?: string } = this.ended(taskId)
+      ? { ok: true }
+      : await this.deps.transition({ taskId, workspaceId, to, summary: reason }).catch((err: unknown) => ({ ok: false, error: errMsg(err) }));
+    if (res.ok || this.ended(taskId)) {
+      this.further.delete(taskId);
+      return true;
+    }
+    this.deps.log('warn', `[headless] task ${taskId}: not marked ${to} (${reason}): ${res.error ?? 'unknown'}`);
+    return false;
   }
 
   /** A reply on the task, unless the task already holds that text (a retry). Best effort: the move goes on regardless. */

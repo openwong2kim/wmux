@@ -17,6 +17,7 @@ import {
   QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS, assistantTextOf, cutReply, endHeadlessOnStop, type HeadlessDeliveryDeps,
 } from '../headlessDelivery';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
+import { LINK_ENDED_REASON } from '../headlessStarter';
 
 const LINK = '11111111-1111-4111-8111-111111111111';
 const HOST = '22222222-2222-4222-8222-222222222222';
@@ -729,6 +730,55 @@ describe('the reply, from the transcript', () => {
     fs.writeFileSync(transcript, '');
     await d.tick();
     expect(moves.at(-1)).toEqual({ to: 'failed', summary: "the agent's conversation was replaced on this PC" });
+  });
+
+  it('its link ends while the reason is being sent: the link\'s own end failed the task meanwhile; no warning, nothing moved twice', async () => {
+    const warns: string[] = [];
+    const base = deps();
+    const d = new HeadlessDelivery(deps({
+      log: (level, msg) => { if (level === 'warn') warns.push(msg); },
+      // The link's own end (failTasksForLink) fails the task while the reply is on its way, and the reply cannot go.
+      reply: async () => {
+        task.status = { state: 'failed', timestamp: new Date().toISOString() };
+        return { ok: false, error: 'link-not-active' };
+      },
+      transition: base.transition,
+    }));
+    await d.tick();
+    write(userLine(PROMPT));
+    task.status = { state: 'input-required', timestamp: new Date().toISOString() };
+    moves = [];
+    await d.startEnding(rec, "the agent's session ended");
+    expect(moves).toEqual([]);
+    expect(warns.filter((w) => w.includes('not marked'))).toEqual([]);
+  });
+
+  it('a start ended by its link: no reason is sent ahead of the cancel (an ended link carries no reply)', async () => {
+    const d = await delivering();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    const sent = replies.length;
+    await d.startEnding(rec, LINK_ENDED_REASON);
+    expect(replies).toHaveLength(sent);
+    expect(moves.at(-1)).toEqual({ to: 'canceled', summary: `the agent ended: ${LINK_ENDED_REASON}` });
+  });
+
+  it('the task ends by another path between the read and the move: done, no warning', async () => {
+    const warns: string[] = [];
+    const base = deps();
+    const d = new HeadlessDelivery(deps({
+      log: (level, msg) => { if (level === 'warn') warns.push(msg); },
+      transition: async (input) => {
+        // Failed meanwhile by the link's own end: the ledger refuses this move.
+        if (input.to === 'failed' || input.to === 'canceled') task.status = { state: 'failed', timestamp: new Date().toISOString() };
+        return base.transition(input);
+      },
+    }));
+    await d.tick();
+    expect(task.status.state).toBe('working');
+    await d.startEnding(rec, "the agent's session ended");
+    expect(task.status.state).toBe('failed');
+    expect(warns.filter((w) => w.includes('not marked'))).toEqual([]);
   });
 
   it('a start that ends fails its open task with why (a restart: "the daemon restarted"), and cancels an answered one', async () => {
