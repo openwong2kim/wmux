@@ -107,9 +107,13 @@ export function createSessionResync(client: SessionResyncClient): SessionResync 
  * renderer first, so it holds the replay as for its own resync, then run the
  * re-flush. A re-flush already in flight (the renderer's own, or an earlier
  * request) repaints everything the pipe did not write, so it is left alone.
+ * The daemon sends the request to every control client; only the main that
+ * holds the session's pipe answers it.
  */
 export function createResyncNeededHandler(deps: {
   resync: () => SessionResync;
+  /** Whether this main holds the session's pipe (the one that fell behind). */
+  ownsPipe: (sessionId: string) => boolean;
   /** Send this session's batched output to the renderer ahead of the notice. */
   flushBatch: (sessionId: string) => void;
   notify: (notice: 'starting' | 'failed', sessionId: string, code?: string) => void;
@@ -117,7 +121,7 @@ export function createResyncNeededHandler(deps: {
 }): (sessionId: string) => void {
   return (sessionId) => {
     const resync = deps.resync();
-    if (resync.inFlight(sessionId)) return;
+    if (resync.inFlight(sessionId) || !deps.ownsPipe(sessionId)) return;
     deps.flushBatch(sessionId);
     deps.notify('starting', sessionId);
     void resync(sessionId).then((res) => {

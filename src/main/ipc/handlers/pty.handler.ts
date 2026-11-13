@@ -670,6 +670,7 @@ export function registerPTYHandlers(
     // goes after the output already batched, and before the RPC.
     const resyncNeeded = createResyncNeededHandler({
       resync: () => resyncOf(daemonClient),
+      ownsPipe: (id) => daemonClient.isSessionPipeWritable(id),
       flushBatch: (id) => dataBatcher.flushSession(id),
       notify: (notice, id, code) => {
         const win = getWindow?.();

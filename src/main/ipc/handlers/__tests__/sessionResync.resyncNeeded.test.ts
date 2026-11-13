@@ -5,10 +5,10 @@
 import { describe, it, expect } from 'vitest';
 import { createResyncNeededHandler, createSessionResync, type SessionResyncClient } from '../sessionResync';
 
-function harness(rpc: (method: string) => Promise<unknown>) {
+function harness(rpc: (method: string) => Promise<unknown>, ownsPipe = true) {
   const steps: string[] = [];
   const client: SessionResyncClient = {
-    isSessionPipeWritable: () => true,
+    isSessionPipeWritable: () => ownsPipe,
     armSessionResync: () => { steps.push('arm'); return true; },
     disarmSessionResync: () => { steps.push('disarm'); },
     rpc: (async (method: string) => { steps.push(`rpc:${method}`); return rpc(method); }) as SessionResyncClient['rpc'],
@@ -16,6 +16,7 @@ function harness(rpc: (method: string) => Promise<unknown>) {
   const resync = createSessionResync(client);
   const handle = createResyncNeededHandler({
     resync: () => resync,
+    ownsPipe: () => ownsPipe,
     flushBatch: (id) => steps.push(`flush:${id}`),
     notify: (notice, id, code) => steps.push(`${notice}:${id}${code ? `:${code}` : ''}`),
   });
@@ -30,6 +31,13 @@ describe('createResyncNeededHandler', () => {
     handle('s1');
     await settle();
     expect(steps).toEqual(['flush:s1', 'starting:s1', 'arm', 'rpc:daemon.resyncSession']);
+  });
+
+  it('a main that does not hold the session\'s pipe sends nothing and starts nothing', async () => {
+    const { steps, handle } = harness(async () => ({ mode: 'snapshot' }), false);
+    handle('s1');
+    await settle();
+    expect(steps).toEqual([]);
   });
 
   it('leaves a re-flush in flight alone, and asks again once it is over', async () => {
