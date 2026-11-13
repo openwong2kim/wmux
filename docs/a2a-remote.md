@@ -197,8 +197,13 @@ The **Remote** page has a **Messages between PCs** section:
   one as `remoteStatus` in `a2a_task_query`. It is never a reply and never
   changes the task's state. A question menu's choices are text written on
   the other PC: they are shown apart, under `remoteStatus.untrusted`, and
-  are never instructions. Both PCs need a build that knows it (feature
-  `status.1`); with an older build on either side no status is sent, and
+  are never instructions. The menu's detail (its id, choices or how many
+  there are) is sent only when the agent's transcript already holds its
+  AskUserQuestion call. With Claude Code 2.1.323 and the real service
+  (observed on macOS) that call is written only after the answer, so an open
+  menu shows as `question` with `dialog` and no menu detail. Both PCs need
+  a build that knows it (feature `status.1`); with an older build on either
+  side no status is sent, and
   replies and states work as before. `gone` is sent only right before that
   host ends the task's agent, never because a link dropped.
 - **Held remote work.** Work is held for you, never sent to another pane on
