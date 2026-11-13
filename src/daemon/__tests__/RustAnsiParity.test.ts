@@ -166,6 +166,17 @@ const accepted: Case[] = [
   // - Shorter with the alternate screen shown: the main screen's save is the
   //   `?1049h`'s, on the cursor's row, which both move alike.
   resizedBetween('main-shorter-under-alt', 'a\x1b[5;1H\x1b[?1049hzz', [20, 4], '\x1b[?1049l\n\n\x1b8X'),
+  // - A save on the alternate screen: xterm's alternate buffer keeps no
+  //   history, so the rows the cursor pushes are trimmed and its saved row
+  //   moves up with them; Alacritty clamps it.
+  resizedBetween('alt-decrc-shorter', 'a\x1b[?1049h\x1b[3;1H\x1b7\x1b[6;1Hb', [20, 4], '\x1b8X'),
+  resizedThrough('alt-decrc-shorter-then-taller', [20, 6], [['a\x1b[?1049h\x1b[6;1H\x1b7\x1b[2;1Hb', [20, 4]], ['x', [20, 6]]], '\x1b8X'),
+  // - Left first: xterm clears the alternate buffer and its resize skips it,
+  //   so the save keeps its row there; Alacritty clamps the inactive grid's.
+  resizedThrough('alt-decrc-left-shorter-taller-back', [20, 6], [['a\x1b[?1049h\x1b[6;1H\x1b7\x1b[2;1Hb\x1b[?1049l', [20, 4]], ['x', [20, 6]]], '\x1b[?1049h\x1b8X'),
+  // - xterm's trim does not move its saved row above 0, before a narrower
+  //   reflow adds rows to it.
+  resizedThrough('decrc-shorter-trim-clamp-narrower', [20, 6], [[`\x1b7${'x\r\n'.repeat(4)}${'y'.repeat(30)}\r\nz`, [12, 4]]], '\x1b8X', 2),
   // A line feed inside the save runs first and scrolls before it.
   synthetic('decsc-line-feed-inside', 'a\x1b[6;1H\x1b\n7\x1b[2;1Hb\x1b8X'),
   synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),
@@ -533,6 +544,16 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
 
   it.each([...accepted, ...refused, ...leftAlt, ...seams, ...lineFeeds, ...erases, ...others, ...resizes, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, c) => {
     await expectParity(c);
+  });
+
+  it('refuses a history a height shrink pushes to the native cap, though ED 3 clears it after', async () => {
+    // 4M cells / 1000 columns leave 3994 history rows next to 6 screen rows;
+    // xterm keeps 100000. The shrink pushes two rows: the native grid trims
+    // at its cap, xterm does not, and their saved rows part.
+    const before = Array.from({ length: 3998 }, (_, i) => `l${i}`).join('\r\n') + '\x1b[1;1H\x1b7\x1b[6;1H';
+    const req: SnapshotRequest = { cols: 1000, rows: 4, scrollback: 100000, initial: Buffer.from(`${before}\x1b[3J\x1b8X`),
+      geometry: { start: { cols: 1000, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: 1000, rows: 4 }] } };
+    expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: false, detail: expect.stringMatching(/^unsupported-history-limit/) });
   });
 
   it('takes an attach-sized request and refuses a history past the native cap', async () => {
