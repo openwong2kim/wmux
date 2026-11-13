@@ -52,6 +52,41 @@ const accepted: Case[] = [
   synthetic('alt-1049-designation', '\x1b(0\x1b[?1049hq\x1b(Bq\x1b[?1049lq'),
   synthetic('alt-1049-so', '\x1b)0\x1b[?1049h\x0eq\x1b[?1049lq'),
   synthetic('alt-1049-si-inside', '\x1b)0\x0e\x1b[?1049hq\x0fq\x1b[?1049lq'),
+  // G2/G3 and the locking shifts (LS2, LS3, LS3R, LS2R, LS1R), `ESC -` and
+  // `ESC .` (G1, G2), and selectDefaultCharset (`ESC % @`/`G`).
+  synthetic('designate-g2', '\x1b*0\x1bnlq\x1b(Bz'),
+  synthetic('designate-g3-ls3', '\x1b+0\x1bolq\x0fz'),
+  synthetic('ls3r-ls2r', '\x1b+0\x1b|q\x1b*0\x1b}q'),
+  synthetic('ls2-undesignated', '\x1b(0\x1bnq'),
+  synthetic('ls1r', '\x1b)0\x1b~q'),
+  synthetic('designate-dash-g1', '\x1b-0\x0eq\x0fq'),
+  synthetic('designate-dot-g2', '\x1b.0\x1bnq\x0fq'),
+  synthetic('percent-g', '\x1b(0\x1b%Gq'),
+  synthetic('percent-at-keeps-g1', '\x1b)0\x0e\x1b%@q\x0eq'),
+  synthetic('designate-slash', '\x1b(0\x1b/Aq'),
+  // DECRC restores the charset slots designated at the save (xterm's
+  // savedCharsets); with nothing saved both keep every slot.
+  synthetic('decrc-saved-g2', '\x1b*0\x1b7\x1b(B\x1b*B\x1b8\x1bnq'),
+  synthetic('decrc-unsaved-g2', '\x1b*0\x1b8\x1bnq'),
+  synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),
+  synthetic('alt-1049-ls2', '\x1b*0\x1bn\x1b[?1049h\x0fq\x1b[?1049lq'),
+  synthetic('ls2-in-update', '\x1b*0\x1b[?2026h\x1bnq\x1b[?2026l'),
+  // DECSTR, xterm's softReset: the cursor stays, the rest resets.
+  synthetic('decstr', 'ab\x1b[4h\x1b[!pcd'),
+  synthetic('decstr-margins-mid', 'ab\x1b[2;3r\x1b[3;2H\x1b[!pX'),
+  synthetic('decstr-full-region', '1\r\n2\r\n3\x1b[1;2r\x1b[!p\x1b[6;1H\nX'),
+  synthetic('decstr-pending-wrap', `${'x'.repeat(20)}\x1b[!pY`),
+  synthetic('decstr-after-nowrap', `\x1b[?7l${'x'.repeat(22)}\x1b[!pY`),
+  synthetic('decstr-origin', '\x1b[2;3r\x1b[?6h\x1b[2;2H\x1b[!pX\x1b[HY'),
+  synthetic('decstr-sgr-link', '\x1b[1;31m\x1b]8;;http://x\x07a\x1b[!pb'),
+  synthetic('decstr-modes', '\x1b[?1h\x1b=\x1b[?2004h\x1b[?1004h\x1b[?25l\x1b[4hx\x1b[!py'),
+  synthetic('decstr-saved-cursor', 'ab\x1b[2;3H\x1b[1m\x1b7\x1b[!p\x1b[3;3H\x1b8X'),
+  synthetic('decstr-saved-charsets', '\x1b(0\x1b7\x1b[!p\x1b8q'),
+  synthetic('decstr-charsets', '\x1b(0\x1b)0\x0e\x1b*0\x1bn\x1b[!pq'),
+  synthetic('decstr-alt', 'n\x1b[?1049hab\x1b[!pc'),
+  synthetic('decstr-alt-left', 'n\x1b[?1049h\x1b[2;3r\x1b[!p\x1b[?1049lX'),
+  synthetic('decstr-in-update', 'a\x1b[?2026hb\x1b[!pc'),
+  synthetic('decstr-mouse', '\x1b[?1000;1006h\x1b[!px'),
   // SO/SI and ASCII designation: with only ASCII designated, shifts are no-ops.
   synthetic('so-si', '\x0eabc\x0fdef'),
   synthetic('designate-ascii', '\x1b(B\x1b)Babc\x0e\x1b[mx\x0f'),
@@ -130,7 +165,18 @@ const refused: Case[] = [
   synthetic('sd-caret', '1\r\n2\r\n3\x1b[1^x', 'xterm'),
   synthetic('ed2-embedded-c0', '1\r\n2\r\n3\x1b[2\x00Jx', 'xterm'),
   synthetic('designate-uk', '\x1b(A#x\x1b(B#', 'xterm'),
-  synthetic('designate-g2', '\x1b*0\x1bnlq\x1b(Bz', 'xterm'),
+  synthetic('designate-uk-g2', '\x1b*A\x1bn#', 'xterm'),
+  synthetic('ls2-with-c0-inside', '\x1b*0\x1b\x07nq', 'xterm'),
+  synthetic('designate-unknown-final', '\x1b(0\x1b(Xq', 'xterm'),
+  // xterm's DECSET 2 puts ASCII in G0-G3; vte ignores it.
+  synthetic('decanm-resets-g2', '\x1b*0\x1b[?2h\x1bnq', 'xterm'),
+  synthetic('decanm-resets-g0', '\x1b(0\x1b[?2hq', 'xterm'),
+  // xterm restores only the slots it saved, and DECAWM/DECOM from the save.
+  synthetic('decrc-later-g2', '\x1b7\x1b*0\x1b8\x1bnq', 'xterm'),
+  synthetic('alt-1049-later-g2', '\x1b(0\x1b[?1049h\x1b*0\x1b[?1049l\x1bnq', 'xterm'),
+  synthetic('decstr-decrc-nowrap', `\x1b[?7l\x1b7\x1b[!p\x1b8${'x'.repeat(25)}`, 'xterm'),
+  synthetic('decrc-unsaved-nowrap', `\x1b[?7l\x1b8${'x'.repeat(25)}`, 'xterm'),
+  synthetic('decstr-cut-by-del', 'ab\x1b[4h\x1b[!\x7fpcd', 'xterm'),
   synthetic('overline', '\x1b[53mover\x1b[55mno', 'xterm'),
   synthetic('sgr-21', '\x1b[21mx\x1b[24my', 'xterm'),
   synthetic('c1', 'a\u009b31mred', 'xterm'),
@@ -138,7 +184,7 @@ const refused: Case[] = [
   synthetic('decsel', 'abcdef\x1b[1;3H\x1b[?K', 'xterm'),
   synthetic('sl', 'abcdef\x1b[2 @', 'xterm'),
   synthetic('decic', 'abcdef\x1b[1;2H\x1b[2\'}', 'xterm'),
-  synthetic('decstr', 'ab\x1b[4h\x1b[!pcd', 'xterm'),
+  synthetic('decstr-with-params', 'ab\x1b[4h\x1b[1!pcd', 'xterm'),
   synthetic('ed2-spelled-02', '1\r\n2\r\n3\x1b[02Jx', 'xterm'),
   synthetic('lnm', '\x1b[20ha\nb', 'xterm'),
   synthetic('mode-x10', '\x1b[?9hx', 'xterm'),
@@ -377,6 +423,18 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     if (!reference.ok || !selected.ok) throw new Error('snapshot failed');
     expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'xterm', reason: 'state' });
     expect(selected.payload.equals(reference.payload)).toBe(true);
+  });
+
+  // The fallback is counted under the refused control's family (`wmux doctor
+  // --performance`), so a national set shows apart from the other refusals.
+  it.each([
+    ['\x1b(A#', 'unsupported-state-charset'],
+    ['\x1b[1!p', 'unsupported-state-decstr'],
+    ['\x1b[?47hx', 'unsupported-state-mode'],
+  ])('names the refused control in the refusal: %j', async (stream, family) => {
+    const native = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, initial: Buffer.from(stream) }, 'ansi');
+    expect(native.ok).toBe(false);
+    if (!native.ok) expect(native.detail?.split(':')[0]).toBe(family);
   });
 
   // xterm's public modes do not expose the mouse encoding, so capture() cannot

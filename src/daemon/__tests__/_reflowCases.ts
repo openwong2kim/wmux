@@ -120,7 +120,9 @@ export const reflowCases: Case[] = [
   script('alt-wrapped-left-entered-again-resized', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], `\x1b[?1049l\x1b[?1049h${'v'.repeat(100)}`, [80, 24]], 'xterm'),
   // Another refusal set in the same resize or after it outlives the leave.
   script('alt-wrapped-left-reflow-below-cursor', [80, 24], [`${rows(4, 70)}\x1b[2H\x1b[?1049h${'w'.repeat(100)}`, [40, 24], '\x1b[?1049l'], 'xterm'),
-  script('alt-wrapped-left-after-decstr', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], '\x1b[!p\x1b[?1049l$ '], 'xterm'),
+  script('alt-wrapped-left-after-refused-decstr', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], '\x1b[1!p\x1b[?1049l$ '], 'xterm'),
+  // DECSTR in its plain spelling is no refusal: the leave lifts the reflow.
+  script('alt-wrapped-left-after-decstr', [80, 24], [`\x1b[?1049h${'w'.repeat(100)}`, [60, 24], '\x1b[!p\x1b[?1049l$ '], 'rust'),
   // A fullwidth glyph cut at the narrow edge of an alternate screen: refused
   // while that screen is shown, native once it is left.
   script('alt-wide-edge', [80, 24], [`n\x1b[?1049h\x1b[H${'x'.repeat(38)}한`, [39, 24]], 'xterm'),

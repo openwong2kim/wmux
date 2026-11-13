@@ -161,6 +161,10 @@ describe('ANSI snapshot backend selection', () => {
     const reference = vi.fn(async () => success);
     native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-state: a control Alacritty parses differently' });
     await selectAnsiSnapshot(request, reference);
+    // The native refusal names the control that sent the pane to xterm.
+    native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-state-charset: a national character set' });
+    await selectAnsiSnapshot(request, reference);
+    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'xterm', reason: 'state' });
     native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-history-limit: history reached the native grid cap' });
     await selectAnsiSnapshot(request, reference);
     native.mockResolvedValueOnce({ ok: false, reason: 'error', detail: 'unsupported-history-limit: history reached the native grid cap' });
@@ -170,7 +174,7 @@ describe('ANSI snapshot backend selection', () => {
     native.mockResolvedValueOnce({ ok: false, reason: 'budget' });
     await selectAnsiSnapshot(request, reference);
     await selectAnsiSnapshot({ ...request, scrollback: 100001 }, reference);
-    expect(delta()).toEqual({ 'unsupported-state': 1, 'unsupported-history-limit': 2, margins: 1, budget: 1, limits: 1 });
+    expect(delta()).toEqual({ 'unsupported-state': 1, 'unsupported-state-charset': 1, 'unsupported-history-limit': 2, margins: 1, budget: 1, limits: 1 });
     expect(getAnsiSnapshotBackendDiagnostics().circuitOpen).toBe(false);
   });
 
