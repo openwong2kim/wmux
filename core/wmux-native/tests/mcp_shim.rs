@@ -430,8 +430,9 @@ fn a_set_commander_token_is_sent_even_empty_and_the_env_token_backs_a_blank_file
     let sb = Sandbox::new();
     sb.write_token(" \n\t");
     let listener = stub::bind(&sb.pipe());
+    let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
     let mut child = spawn(
-        sb.shim(&["--commander", "--role="])
+        lone.shim(&sb, &["--commander", "--role="])
             .env("WMUX_AUTH_TOKEN", " env\"tok\u{1} ")
             .env("WMUX_COMMANDER_TOKEN", "")
             .env("WMUX_PTY_ID", "pty-9"),
@@ -447,12 +448,15 @@ fn a_set_commander_token_is_sent_even_empty_and_the_env_token_backs_a_blank_file
              \"commanderToken\":\"\",\"commanderMode\":true,\"coreMode\":false,\"roleSurface\":\"\""
         )
     );
-    // The broker drops the session after hosting it: the shim exits 1,
-    // stdout untouched.
+    // The broker drops the session after hosting it, with nothing in flight
+    // and no bundle to hand it to: the shim exits 1, stdout untouched.
     ack(&mut conn);
     drop(conn);
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(1));
-    assert_eq!(err.join().unwrap(), "[wmux-mcp-shim] broker connection closed\n");
+    assert_eq!(
+        err.join().unwrap(),
+        format!("[wmux-mcp-shim] broker connection closed\n{}", lone.no_bundle_line())
+    );
     let mut stdout = Vec::new();
     child.stdout.take().unwrap().read_to_end(&mut stdout).unwrap();
     assert!(stdout.is_empty());
@@ -644,9 +648,9 @@ fn sigterm_and_sigint_exit_0() {
         let mut conn = listener.accept(WAIT);
         read_line(&mut conn);
         ack(&mut conn);
-        // A byte through the pump proves the session (and its handlers) is up.
-        conn.write_all(b"x").unwrap();
-        assert_eq!(read_exact(child.stdout.as_mut().unwrap(), 1), b"x");
+        // A line through the pump proves the session (and its handlers) is up.
+        conn.write_all(b"x\n").unwrap();
+        assert_eq!(read_exact(child.stdout.as_mut().unwrap(), 2), b"x\n");
         // SAFETY: signals a child this test spawned and still owns.
         assert_eq!(unsafe { kill(child.id() as i32, sig) }, 0);
         assert_eq!(wait_within(&mut child, WAIT).code(), Some(0), "signal {sig}");
@@ -679,7 +683,9 @@ fn a_broken_stderr_still_ends_a_dropped_session_with_1() {
     let sb = Sandbox::new();
     sb.write_token("tok");
     let listener = stub::bind(&sb.pipe());
-    let mut child = spawn(&mut sb.shim(&[])).expect("spawn shim");
+    // No bundle to hand the session to, so the drop ends it.
+    let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
+    let mut child = spawn(&mut lone.shim(&sb, &[])).expect("spawn shim");
     // The diagnostic write fails with EPIPE; the exit must not depend on it.
     drop(child.stderr.take());
     let mut conn = listener.accept(WAIT);
@@ -741,7 +747,9 @@ fn a_non_blocking_stdin_and_stdout_are_waited_on() {
 
     // Far more than the socket buffers hold while the host is not reading:
     // the shim's stdout write sees EAGAIN.
-    let big: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
+    // It ends with a newline: the shim passes whole lines.
+    let mut big: Vec<u8> = (0..1u32 << 20).map(|i| (i % 251) as u8).collect();
+    big.push(b'\n');
     let mut writer = conn.try_clone().unwrap();
     let sent = big.clone();
     let feeder = std::thread::spawn(move || writer.write_all(&sent));
@@ -847,7 +855,9 @@ fn a_waiting_non_blocking_stdio_does_not_spin() {
     // One second with nothing on stdin.
     std::thread::sleep(Duration::from_millis(1000));
     // One second with stdout full and the host not reading.
-    let big = vec![b'x'; 512 * 1024];
+    // A whole line: the shim passes whole lines.
+    let mut big = vec![b'x'; 512 * 1024];
+    big.push(b'\n');
     let mut writer = conn.try_clone().unwrap();
     let sent = big.clone();
     let feeder = std::thread::spawn(move || writer.write_all(&sent));
@@ -1012,7 +1022,10 @@ fn against_the_real_broker_initialize_list_call_then_a_broker_kill_hands_over_to
     assert_eq!(wait_within(&mut shim, WAIT).code(), Some(0));
     let err = err.join().unwrap();
     assert!(err.starts_with("[wmux-mcp-shim] broker connection "), "{err}");
-    assert!(err.contains("[wmux-mcp-shim] running the full server for the rest of the session\n"), "{err}");
+    assert!(
+        err.contains("[wmux-mcp-shim] running the full server for the rest of the session\n"),
+        "{err}"
+    );
 }
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"native-shim-e2e","version":"0"}}}"#;
