@@ -1354,6 +1354,22 @@ const RESIZE_TRACKING_CAP = 256;
 const RESIZE_META_DEBOUNCE_MS = 400;
 
 /**
+ * Queued bytes past which a pane stream stops sending live output and, once
+ * the viewer's link drains, repaints the viewer from the ring instead
+ * (openStream). About three of the largest frames a stream sends (up to
+ * ~700 KiB of base64, see the admission cap in handleRequest): past that a
+ * fresh snapshot is smaller than the backlog, so a viewer on a slow link
+ * catches up sooner and the daemon holds at most this much per viewer. The
+ * repaint is the attach's: the screen with its recent scrollback (or the raw
+ * window), cut from the ring that kept the bytes not sent. History older than
+ * that is not sent again.
+ */
+export const PANE_STREAM_RESYNC_BYTES = 2 * 1024 * 1024;
+
+/** Minimum spacing between two rendered repaints of one stream; see openStream. */
+export const PANE_STREAM_RENDER_INTERVAL_MS = 10_000;
+
+/**
  * Did the caller mention this field at all — as opposed to sending a value the
  * route will go on to reject?
  *
@@ -7789,15 +7805,7 @@ export class WebTerminalServer {
     const pending: SseClient = { res, sessionId, detach: () => bridge.removeListener('exit', noteExit), principal };
     this.pendingStreams.add(pending);
     const gone = (): boolean => res.destroyed || res.writableEnded;
-    void renderStreamScreen(
-      {
-        ringBuffer: managed.ringBuffer,
-        outputModes: bridge.outputModes ?? null,
-        cols: managed.meta.cols,
-        rows: managed.meta.rows,
-      },
-      gone,
-    ).then((screen) => {
+    void this.renderPaneScreen(managed, gone).then((screen) => {
       pending.detach();
       // Revoked or closed while the parse ran.
       if (!this.pendingStreams.delete(pending) || gone()) return;
@@ -7850,14 +7858,71 @@ export class WebTerminalServer {
     // web viewer adds one and we always remove on disconnect.
     const bridge = managed.bridge;
     bridge.setMaxListeners(0);
+    // A viewer that cannot keep up is not fed a backlog it may never drain.
+    // Past PANE_STREAM_RESYNC_BYTES queued, live frames stop (the bytes stay in
+    // the ring), and the next drain repaints the viewer with a fresh meta +
+    // snapshot pair, which every stream client takes as a start-over. An exit
+    // seen meanwhile goes out after that frame.
+    let behind = false;
+    let exitPending = false;
+    let detached = false;
+    // The repaint frame itself counts against the bound only until it drains:
+    // a frame larger than the bound must not put the stream straight back behind.
+    let repaintQueued = 0;
+    let lastRender = -Infinity;
+    const gone = (): boolean => detached || res.destroyed || res.writableEnded;
+    const repaintScreen = async (): Promise<Extract<StreamScreen, { ok: true }> | null> => {
+      if (managed.ringBuffer.totalBytesWritten <= DEFAULT_SNAPSHOT_WINDOW_BYTES) return null;
+      // A render holds the daemon's one snapshot slot, which the desktop's
+      // attaches wait on too. A stream that keeps falling behind repaints from
+      // the raw window in between.
+      if (this.now() - lastRender < PANE_STREAM_RENDER_INTERVAL_MS) return null;
+      lastRender = this.now();
+      const screen = await this.renderPaneScreen(managed, gone);
+      if (!screen.ok && screen.reason !== 'gone') {
+        this.deps.log('info', `[web] stream ${sessionId} repaints from the raw window: screen render failed (${screen.reason})`);
+      }
+      return screen.ok ? screen : null;
+    };
+    const resync = (): void => {
+      void repaintScreen().then((screen) => {
+        if (gone()) return;
+        try {
+          this.writeSnapshotFrame(res, managed, screen);
+          if (exitPending) writeSse(res, 'exit', '1');
+        } catch (err) {
+          this.deps.log('warn', `[web] stream ${sessionId} resync failed: ${errMsg(err)}`);
+          res.destroy();
+          return;
+        }
+        behind = false;
+        repaintQueued = res.writableLength;
+        if (repaintQueued > 0) {
+          res.once('drain', () => {
+            repaintQueued = 0;
+          });
+        }
+        this.deps.log('info', `[web] stream ${sessionId} caught up: repainted from the ring`);
+      });
+    };
     const onData = (data: Buffer): void => {
+      if (behind) return;
       try {
         writeSse(res, 'data', data.toString('base64'));
       } catch {
         /* client stream broken — the 'close' handler cleans up */
       }
+      if (res.writableLength > PANE_STREAM_RESYNC_BYTES + repaintQueued && !gone()) {
+        behind = true;
+        this.deps.log('info', `[web] stream ${sessionId} fell behind (${res.writableLength} bytes queued): live output paused until it drains`);
+        res.once('drain', resync);
+      }
     };
     const onExit = (): void => {
+      if (behind) {
+        exitPending = true;
+        return;
+      }
       try {
         writeSse(res, 'exit', '1');
       } catch {
@@ -7904,6 +7969,8 @@ export class WebTerminalServer {
     const stopHeartbeat = startSseHeartbeat(res);
 
     const detach = (): void => {
+      detached = true;
+      res.removeListener('drain', resync);
       stopHeartbeat();
       if (resizeTimer) {
         clearTimeout(resizeTimer);
@@ -7923,6 +7990,19 @@ export class WebTerminalServer {
       if (principal.kind === 'device') this.presence.update();
     });
     return true;
+  }
+
+  /** The pane's screen rendered from its whole ring (#2125): a stream's first frame, and its repaints. */
+  private renderPaneScreen(managed: ManagedSession, gone: () => boolean): Promise<StreamScreen> {
+    return renderStreamScreen(
+      {
+        ringBuffer: managed.ringBuffer,
+        outputModes: managed.bridge.outputModes ?? null,
+        cols: managed.meta.cols,
+        rows: managed.meta.rows,
+      },
+      gone,
+    );
   }
 
   /**
