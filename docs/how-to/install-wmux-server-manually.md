@@ -206,7 +206,7 @@ With headless mode on:
   interrupted or ends on an error, or when the agent ends before answering
   (its session ends, its link ends, headless mode is turned off, or the
   daemon stops or restarts; a daemon that is stopped tells the asking PC
-  before it closes its links). A usage-limit pause is waited out. An answer larger
+  before it closes its links). A usage limit is handled as below. An answer larger
   than 32 KiB is cut: its start goes back, ending with a line that says how
   many bytes were left out.
 - Work the agent leaves running in the background (a command it ran in the
@@ -221,6 +221,18 @@ With headless mode on:
   same task, until the asking PC sends something, someone types into the
   agent on the host, or the task ends. A task gets at most 5 such replies
   (progress included).
+- An agent that stops at its usage limit: the asking PC is told once, with
+  the time the limit resets. After that time the daemon presses Escape on
+  Claude Code's limit menu (only that menu, matched exactly; nothing else on
+  screen is ever pressed), and once the prompt is back and the agent has
+  not gone on by itself, it types one "continue" message. If the agent has
+  not gone on 15 minutes after the reset (6 hours after the stop when the
+  reset time is not known), the task fails with that reason and the agent
+  is left as it is.
+- A task the asking PC cancels while its agent is still at work frees the
+  agent for the next task at once; an agent at its usage limit, once the
+  limit menu is gone after the reset (no "continue" is typed for a canceled
+  task).
 - What the asking PC sends to the same agent afterwards (follow-ups: a new
   task, or a reply on a task that waits for more) depends on `--follow-ups`.
   With `direct`, each is typed in once the agent finished the one before, in
@@ -233,8 +245,8 @@ With headless mode on:
   the question is still there after 10 minutes, the task ends with that
   reason: canceled if it was never typed in, failed if the agent was working
   on it. A task waiting behind the same question ends at once. The agent
-  itself is left running. A usage-limit pause is not such a question: it is
-  waited out. Use a permission mode that lets the agent work on its own,
+  itself is left running. A usage-limit menu is not such a question (see
+  above). Use a permission mode that lets the agent work on its own,
   such as `auto`.
 - Images sent with a task are not passed to the agent.
 - A request no rule matches is refused at once; nothing waits for an

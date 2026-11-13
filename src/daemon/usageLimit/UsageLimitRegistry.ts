@@ -129,6 +129,18 @@ export class UsageLimitRegistry {
     if (signal.kind === 'agent.user_prompt_submit') this.noteSubmitted(sessionId);
   }
 
+  /**
+   * A usage-limit error the session's own Claude transcript shows, for a
+   * session whose turn the daemon follows itself (a headless start: no hooks,
+   * and its bridge may not count the turn as open, so the API-error stand-in
+   * for the StopFailure hook may not fire). The same hold the hook would set.
+   */
+  noteTranscriptLimit(sessionId: string, message: string, at?: number | null): void {
+    // A relative reset ("resets 3pm") is read against the entry's own time, as the delivery reads it.
+    const hit = claudeUsageLimitFromStopFailure({ error: 'rate_limit', last_assistant_message: message }, at ?? this.now());
+    this.set(sessionId, 'claude', 'hook', hit ?? {});
+  }
+
   /** A limit row the screen detector read. */
   noteScreenLimit(sessionId: string, provider: UsageLimitProvider, hit: { resetsAt?: number; message?: string }): void {
     this.set(sessionId, provider, 'screen', hit);

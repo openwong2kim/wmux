@@ -18,7 +18,11 @@ import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import type { Task } from '../../../shared/types';
 import { deliberateSleep, waitFor } from '../../../test-utils/waitFor';
-import { HeadlessDelivery, QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS } from '../headlessDelivery';
+import { queuedScreenText } from '../../queuedSessionText';
+import { usageLimitMenuOnScreen } from '../../usageLimit/limitMenu';
+import { UsageLimitRegistry } from '../../usageLimit/UsageLimitRegistry';
+import { USAGE_LIMIT_CONTINUE_PROMPT } from '../../../shared/usageLimit';
+import { HeadlessDelivery, LIMIT_PROBE_MS, QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS } from '../headlessDelivery';
 import { createHeadlessSessions } from '../headlessSessions';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
 
@@ -52,11 +56,16 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
       // =enter: one opens the moment a paste ends.
       "const dialog = () => process.stdout.write('\\x1b[2J\\x1b[HBash command\\n\\n  uname -s\\n\\nDo you want to proceed?\\n\\u276f 1. Yes\\n  2. No\\n');",
       "const idle = () => process.stdout.write('\\x1b[2J\\x1b[Hready> ');",
+      // STUB_DIALOG=limit: the first prompt ends at the usage limit (Claude Code's API-error entry) and the
+      // real limit menu (a recorded capture) is drawn; a lone Escape brings the prompt back.
+      `const menu = ${JSON.stringify((JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'usageLimit', '__tests__', 'fixtures', 'claude-limit-menu-a.json'), 'utf8')) as { screen: string[] }).screen.join('\r\n'))};`,
+      "let menuUp = false;",
       "if (process.env.STUB_DIALOG === 'start') { dialog(); setTimeout(() => { idle(); fs.writeFileSync(file + '.cleared', ''); }, 2500); }",
       "else if (process.env.STUB_DIALOG === 'stay') dialog(); else idle();",
       "fs.writeFileSync(file + '.ready', '');",
       "let buf = '';",
       "process.stdin.on('data', (d) => {",
+      "  if (menuUp && d.toString('utf8') === '\\x1b') { menuUp = false; idle(); fs.writeFileSync(file + '.escaped', ''); return; }",
       "  buf += d.toString('utf8');",
       "  if (process.env.STUB_DIALOG === 'enter' && buf.includes('\\x1b[201~') && !buf.includes('\\r')) dialog();",
       "  const m = /\\x1b\\[200~([\\s\\S]*?)\\x1b\\[201~\\r/.exec(buf);",
@@ -64,6 +73,13 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
       "  buf = buf.slice(m.index + m[0].length);",
       "  const at = () => new Date().toISOString();",
       "  fs.appendFileSync(file, JSON.stringify({ type: 'user', uuid: 'u' + Date.now(), timestamp: at(), message: { role: 'user', content: m[1] } }) + '\\n');",
+      "  if (process.env.STUB_DIALOG === 'limit' && !fs.existsSync(file + '.limited')) {",
+      "    fs.writeFileSync(file + '.limited', '');",
+      "    fs.appendFileSync(file, JSON.stringify({ type: 'assistant', uuid: 'e' + Date.now(), timestamp: at(), isApiErrorMessage: true, error: 'rate_limit', message: { role: 'assistant', content: [{ type: 'text', text: \"You've hit your limit · resets 11:59pm (UTC)\" }] } }) + '\\n');",
+      "    menuUp = true;",
+      "    process.stdout.write('\\x1b[2J\\x1b[H' + menu);",
+      "    return;",
+      "  }",
       "  fs.appendFileSync(file, JSON.stringify({ type: 'assistant', uuid: 'a' + Date.now(), timestamp: at(), message: { role: 'assistant', content: [{ type: 'text', text: 'PONG\\n```\\n' + require('os').type() + '\\n```' }], stop_reason: 'end_turn' } }) + '\\n');",
       "});",
       '',
@@ -87,7 +103,7 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
   });
 
   /** A stub agent in a real session, and the delivery wired to it as index.ts wires the real one. */
-  async function harness(stubDialog?: 'start' | 'stay' | 'enter') {
+  async function harness(stubDialog?: 'start' | 'stay' | 'enter' | 'limit') {
     const mgr = new DaemonSessionManager();
     managers.push(mgr);
     const sessions = createHeadlessSessions({
@@ -134,6 +150,14 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
     const verdicts: Array<string | null> = [];
     /** Moved forward by a test to stand for minutes passing (the delivery's clock only). */
     const clock = { skew: 0 };
+    // As index.ts: the hold from the transcript's limit line, the limit menu read on the screen, and
+    // Escape written only while that menu is still the screen.
+    const limits = new UsageLimitRegistry({ broadcast: () => undefined, identify: () => null, deliverContinue: async () => 'unavailable' });
+    const escapes: boolean[] = [];
+    const menuShown = async (id: string): Promise<boolean> => {
+      const outcome = await queuedScreenText(mgr, id);
+      return !!outcome?.ok && usageLimitMenuOnScreen(outcome.rows.map((r) => r.text));
+    };
 
     const delivery = new HeadlessDelivery({
       mode: { active: () => true },
@@ -154,6 +178,21 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
         return seen.state === 'clear' ? 'clear' : 'unknown';
       },
       now: () => Date.now() + clock.skew,
+      noteLimit: (id, message, at) => limits.noteTranscriptLimit(id, message, at),
+      limitScreen: async (id) => {
+        if (await menuShown(id)) return 'menu';
+        const seen = await readFolderTrust({ getSession: (sid) => mgr.getSession(sid), timeoutMs: 1000 }, id);
+        return seen.state === 'clear' && !seen.dialog ? 'clear' : 'other';
+      },
+      pressEscape: async (id) => {
+        const shown = await menuShown(id);
+        escapes.push(shown);
+        if (!shown) return false;
+        const managed = mgr.getSession(id)!;
+        managed.ptyProcess.write('\x1b');
+        managed.bridge.noteInput('\x1b', { selfWrite: true });
+        return true;
+      },
       mark: async (input) => {
         marks.push(input);
         if (input.delivered) m().delivered = true;
@@ -215,7 +254,7 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
       const s = mgr.getSession(sessionId);
       return !!s && s.meta.state !== 'dead';
     };
-    return { delivery, file, replies, moves, results, marks, verdicts, run, prompts, clock, alive };
+    return { delivery, file, replies, moves, results, marks, verdicts, run, prompts, clock, alive, limits, escapes, sessionId };
   }
 
   it('a task typed into a real session reaches the agent once, and its answer comes back as the reply', async () => {
@@ -281,4 +320,26 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
     expect(h.prompts()).toEqual([]);
     expect(h.results).toEqual(['error']);
   }, 60_000);
+
+  it('a usage limit (stubbed: Claude Code\'s limit entry and the recorded menu): held from the transcript, the asker told once; after the reset, Escape on the menu, then the one continue, and the answer', async () => {
+    const h = await harness('limit');
+    await h.run(() => h.replies.length > 0);
+    // The hold, from the transcript's own line (no hook here).
+    expect(h.limits.holds(h.sessionId)).toBe(true);
+    expect(h.replies).toHaveLength(1);
+    const until = /until (\S+);/.exec(h.replies[0]!)?.[1];
+    expect(until).toBeDefined();
+    expect(h.moves).toEqual([{ to: 'working' }]);
+    // Past the reset: the menu is Escaped, the prompt comes back, and the continue goes in once.
+    h.clock.skew = Date.parse(until!) + 31_000 - Date.now();
+    await h.run(() => fs.existsSync(`${h.file}.escaped`));
+    expect(h.escapes).toEqual([true]);
+    for (let i = 0; i < 3 && h.replies.length < 2; i++) {
+      h.clock.skew += LIMIT_PROBE_MS;
+      await h.run(() => h.replies.length > 1);
+    }
+    expect(h.prompts()).toEqual([PROMPT, USAGE_LIMIT_CONTINUE_PROMPT]);
+    expect(h.replies.at(-1)).toContain('PONG');
+    expect(h.moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
+  }, 90_000);
 });

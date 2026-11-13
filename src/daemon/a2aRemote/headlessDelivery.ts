@@ -7,7 +7,7 @@ import { localSideOf, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '.
 import { spawnFirstMessageId, type SpawnLinkId } from '../../shared/a2aSpawn';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { TurnEvent } from '../../shared/transcript/turnEvents';
-import { isClaudeUsageLimitText, USAGE_LIMIT_CONTINUE_PROMPT } from '../../shared/usageLimit';
+import { claudeUsageLimitFromStopFailure, isClaudeUsageLimitText, USAGE_LIMIT_CONTINUE_PROMPT, USAGE_LIMIT_RESUME_GRACE_MS } from '../../shared/usageLimit';
 import { apiErrorFromTranscriptLine } from '../transcript/apiErrorTurnEnd';
 import { parseTranscriptLine } from '../transcript/parseEntry';
 import { readTranscriptDelta } from '../transcript/readTail';
@@ -64,6 +64,29 @@ export const BACKGROUND_NOTE = 'Background work the agent started is still runni
   + 'What the agent says when it ends may follow as another reply on this task.';
 /** Replies sent on a task besides its answers (progress, and turns nothing on this PC started): at most this many. */
 export const FURTHER_REPLIES_MAX = 5;
+/** A usage-limit stop not gone on this long after its reset ends the task. */
+export const LIMIT_RESUME_MARGIN_MS = 15 * 60 * 1000;
+/** A usage-limit stop with no known reset ends the task after this long (the registry holds 5 h at most). */
+export const LIMIT_UNKNOWN_MAX_MS = 6 * 60 * 60 * 1000;
+/** After the reset, the screen is read at most this often. */
+export const LIMIT_PROBE_MS = 10 * 1000;
+/** Escape is pressed on the limit menu at most this many times. */
+const LIMIT_ESCAPES_MAX = 3;
+
+/** What the asking PC is told, once, when the agent stops at its usage limit. */
+export function limitNotice(resetsAt: number | null): string {
+  return resetsAt != null
+    ? `The agent on that PC is at its usage limit until ${new Date(resetsAt).toISOString()}; it goes on after that.`
+    : "The agent on that PC is at its usage limit; when it resets is not known.";
+}
+
+/** Why the task ends when the agent did not go on after its usage limit. */
+export function limitReason(resetsAt: number | null): string {
+  return resetsAt != null
+    ? `that PC's agent did not go on after its usage limit reset at ${new Date(resetsAt).toISOString()}`
+    : "that PC's agent is at its usage limit, and when it resets is not known";
+}
+
 /** How long a stopping daemon waits for the asking PCs to take what it queued for them. */
 export const HEADLESS_STOP_FLUSH_MS = 2000;
 export const DAEMON_STOPPED_REASON = 'the daemon on that PC stopped';
@@ -111,6 +134,19 @@ export interface HeadlessDeliveryDeps {
    * for a session this delivery owns.
    */
   armAgent?(sessionId: string): void;
+  /**
+   * The agent's transcript shows it stopped at its usage limit: the daemon's
+   * usage-limit hold for the session, set from that line (no hook on this PC).
+   */
+  noteLimit?(sessionId: string, message: string, at: number | null): void;
+  /**
+   * What the screen shows after a usage-limit reset: Claude Code's limit menu
+   * as the last thing drawn (daemon/usageLimit/limitMenu.ts), no dialog at all,
+   * or anything else.
+   */
+  limitScreen?(sessionId: string): Promise<'menu' | 'clear' | 'other'>;
+  /** Escape on the limit menu, only while it is still the screen. True when written. */
+  pressEscape?(sessionId: string): Promise<boolean>;
   /** The agent's transcript file, once the daemon has bound the session to its conversation; null before. */
   transcriptPath(sessionId: string): string | null;
   /** Its size now (0 when it does not exist yet). */
@@ -156,6 +192,22 @@ export interface Episode {
   opened: boolean;
   /** A usage-limit stop was seen; the daemon's own continue keeps the episode open. */
   limitStopped: boolean;
+  /**
+   * That stop: its message and the entry's time (from the transcript), then
+   * when it was seen and its reset, the notice, and the way back (Escape on
+   * the limit menu, the one continue).
+   */
+  limit?: {
+    message: string;
+    at: number | null;
+    seenAt?: number;
+    resetsAt?: number | null;
+    noticed?: boolean;
+    probedAt?: number;
+    escapes?: number;
+    clearSince?: number | null;
+    continued?: boolean;
+  };
   /** Text of the assistant entries since the last tool call: the answer so far. */
   answer: string[];
   /** The task was moved to `working` (a failed move is tried again). */
@@ -305,10 +357,17 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
   const apiError = apiErrorFromTranscriptLine(line);
   if (apiError && ep.opened) {
     if (apiError.error === 'rate_limit' && isClaudeUsageLimitText(apiError.message)) {
+      // A new stop (not the same one read again): its own notice, its own one continue.
+      if (!ep.limitStopped) ep.limit = { message: apiError.message, at: apiError.at };
       ep.limitStopped = true;
       return null;
     }
     return { kind: 'failed', reason: `the agent's turn ended on an error: ${apiError.message || apiError.error}` };
+  }
+  // The agent writes on after its limit stop (Claude Code went on by itself): no continue is owed.
+  if (ep.limitStopped && raw?.type === 'assistant') {
+    ep.limitStopped = false;
+    ep.limit = undefined;
   }
   let answered = false;
   for (const event of events) {
@@ -316,6 +375,7 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
       if (!ep.opened) return { kind: 'failed', reason: 'the agent was given other input on this PC before the task' };
       if (ep.limitStopped && event.text.trim() === USAGE_LIMIT_CONTINUE_PROMPT) {
         ep.limitStopped = false;
+        ep.limit = undefined;
         continue;
       }
       return { kind: 'failed', reason: "the agent's turn was taken over by input on this PC" };
@@ -604,14 +664,7 @@ export class HeadlessDelivery {
     }
     if (waited >= QUESTION_NOTICE_MS && q.noticedTask !== taskId) {
       q.noticedTask = taskId;
-      const before = this.said(taskId, QUESTION_NOTICE);
-      try {
-        const sent = await this.deps.reply({ taskId, workspaceId, text: QUESTION_NOTICE, ptyId: sessionId });
-        if (!sent.ok) this.deps.log('warn', `[headless] task ${taskId}: the asking PC could not be told of the question: ${sent.error ?? 'unknown'}`);
-      } catch (err) {
-        this.deps.log('warn', `[headless] task ${taskId}: the asking PC could not be told of the question: ${errMsg(err)}`);
-      }
-      if (inTurn) this.countAsSaid(inTurn, QUESTION_NOTICE, before);
+      await this.notify({ taskId, workspaceId, sessionId }, QUESTION_NOTICE, 'of the question', inTurn);
     }
   }
 
@@ -717,9 +770,11 @@ export class HeadlessDelivery {
   private async follow(ep: Episode): Promise<void> {
     // The turn ended already, and its reply or the task's move did not go through: only that is tried again.
     if (ep.outcome) return this.finish(ep, ep.outcome);
-    // Ended on the asking PC while its agent waits on background work: the session is free for the next one.
-    if (ep.waitingSince != null && this.ended(ep.taskId)) {
+    // Ended on the asking PC (canceled, say): the session is free for the next one. At a usage limit, once the
+    // limit menu is gone after the reset (it would refuse the next task), with no continue: the turn is nobody's now.
+    if (this.ended(ep.taskId)) {
       this.further.delete(ep.taskId);
+      if (ep.limitStopped && !(await this.limitCleared(ep))) return;
       return this.drop(ep);
     }
     if (!ep.working) await this.toWorking(ep);
@@ -743,6 +798,7 @@ export class HeadlessDelivery {
         return this.finish(ep, step.kind === 'progress' ? this.stillRunning(ep, step.text, false) : step);
       }
     }
+    if (ep.limitStopped) return this.atLimit(ep);
     // A thinking-only end with nothing after it: the message had no text to come.
     const end = this.settled(ep);
     if (end?.kind === 'answered') return this.finish(ep, end);
@@ -750,6 +806,124 @@ export class HeadlessDelivery {
     if (end) await this.progress(ep, end.text);
     // Past the wait, between the agent's turns: the answer goes, saying the work still runs.
     if (!ep.busy && this.pastWait(ep)) return this.finish(ep, this.stillRunning(ep, ep.lastProgress?.text ?? '', ep.lastProgress?.sent ?? true));
+  }
+
+  /** The episode's usage-limit stop, first seen now: its reset read from the entry, the daemon's hold set from it. */
+  private limitOf(ep: Episode): NonNullable<Episode['limit']> | null {
+    const limit = ep.limit;
+    if (!limit) return null;
+    if (limit.seenAt === undefined) {
+      limit.seenAt = this.now();
+      limit.resetsAt = claudeUsageLimitFromStopFailure({ error: 'rate_limit', last_assistant_message: limit.message }, limit.at ?? limit.seenAt)?.resetsAt ?? null;
+      this.deps.noteLimit?.(ep.sessionId, limit.message, limit.at);
+      this.deps.log('info', `[headless] task ${ep.taskId}: the agent is at its usage limit (${limit.resetsAt != null ? `resets ${new Date(limit.resetsAt).toISOString()}` : 'reset unknown'})`);
+    }
+    return limit;
+  }
+
+  private limitCapAt(limit: NonNullable<Episode['limit']>): number {
+    return limit.resetsAt != null ? limit.resetsAt + LIMIT_RESUME_MARGIN_MS : (limit.seenAt ?? this.now()) + LIMIT_UNKNOWN_MAX_MS;
+  }
+
+  /**
+   * After the reset, what the screen allows (read at most every LIMIT_PROBE_MS):
+   * `settled` once no dialog was seen on two reads in a row. The limit menu,
+   * matched exactly, gets Escape (LIMIT_ESCAPES_MAX presses at most, counted
+   * when written, and only while this delivery may still write there).
+   * `wait` for anything else, and before the reset.
+   */
+  private async limitScreenAfterReset(ep: Episode, limit: NonNullable<Episode['limit']>): Promise<'settled' | 'wait'> {
+    const now = this.now();
+    if (limit.resetsAt == null || now < limit.resetsAt + USAGE_LIMIT_RESUME_GRACE_MS) return 'wait';
+    if (now - (limit.probedAt ?? Number.NEGATIVE_INFINITY) < LIMIT_PROBE_MS) return 'wait';
+    limit.probedAt = now;
+    const screen = this.deps.limitScreen ? await this.deps.limitScreen(ep.sessionId).catch(() => 'other' as const) : 'other';
+    if (screen === 'menu') {
+      limit.clearSince = null;
+      const mayWrite = !this.stopped && this.deps.mode.active() && !this.ending.has(ep.sessionId);
+      if (!mayWrite || (limit.escapes ?? 0) >= LIMIT_ESCAPES_MAX || !this.deps.pressEscape) return 'wait';
+      const pressed = await this.deps.pressEscape(ep.sessionId).catch(() => false);
+      if (pressed) limit.escapes = (limit.escapes ?? 0) + 1;
+      this.deps.log('info', `[headless] task ${ep.taskId}: the usage-limit menu ${pressed ? 'was dismissed (Escape)' : 'could not be dismissed'}`);
+      return 'wait';
+    }
+    if (screen !== 'clear') {
+      limit.clearSince = null;
+      return 'wait';
+    }
+    if (limit.clearSince == null) {
+      limit.clearSince = now;
+      return 'wait';
+    }
+    return 'settled';
+  }
+
+  /**
+   * A task that ended on the asking PC while its agent is at its usage limit:
+   * true once the session may take the next task (the limit menu dismissed
+   * after the reset, or the stop's cap passed). Nothing is typed.
+   */
+  private async limitCleared(ep: Episode): Promise<boolean> {
+    const limit = this.limitOf(ep);
+    if (!limit || this.now() >= this.limitCapAt(limit)) return true;
+    return (await this.limitScreenAfterReset(ep, limit)) === 'settled';
+  }
+
+  /**
+   * A notice this delivery sends on a task itself. Inside a turn (`ep`) it is
+   * not taken for the agent answering through its own tools.
+   */
+  private async notify(to: { taskId: string; workspaceId: string; sessionId: string }, text: string, what: string, ep?: Episode): Promise<void> {
+    const before = this.said(to.taskId, text);
+    try {
+      const sent = await this.deps.reply({ taskId: to.taskId, workspaceId: to.workspaceId, text, ptyId: to.sessionId });
+      if (!sent.ok) this.deps.log('warn', `[headless] task ${to.taskId}: the asking PC could not be told ${what}: ${sent.error ?? 'unknown'}`);
+    } catch (err) {
+      this.deps.log('warn', `[headless] task ${to.taskId}: the asking PC could not be told ${what}: ${errMsg(err)}`);
+    }
+    if (ep) this.countAsSaid(ep, text, before);
+  }
+
+  /**
+   * The agent stopped at its usage limit, and nobody on this PC answers its
+   * limit menu. The daemon holds the session from the transcript's own line,
+   * and the asking PC is told once until when. After the reset: Escape on the
+   * limit menu, only while it is exactly that menu; once no dialog is up for
+   * a second read and the agent did not go on by itself (the transcript would
+   * have cleared the stop), the one continue. Nothing else is ever typed. Not
+   * gone on by the reset plus LIMIT_RESUME_MARGIN_MS (LIMIT_UNKNOWN_MAX_MS
+   * when the reset is not known): the task ends with the reason, the agent is
+   * left as it is.
+   */
+  private async atLimit(ep: Episode): Promise<void> {
+    const limit = this.limitOf(ep);
+    if (!limit) return;
+    if (!limit.noticed) {
+      limit.noticed = true;
+      await this.notify(ep, limitNotice(limit.resetsAt ?? null), 'of the usage limit', ep);
+    }
+    const now = this.now();
+    const resetsAt = limit.resetsAt ?? null;
+    if (now >= this.limitCapAt(limit)) return this.finish(ep, { kind: 'failed', reason: limitReason(resetsAt) });
+    if (limit.continued) return;
+    // No dialog on two reads in a row after the reset, and the agent did not go on by itself meanwhile.
+    if ((await this.limitScreenAfterReset(ep, limit)) !== 'settled') return;
+    const rec = this.deps.starts.list().find((r) => r.sessionId === ep.sessionId);
+    if (!rec) return;
+    let wrote = false;
+    let result: SessionPromptScheduleResult;
+    try {
+      result = await this.deps.deliver(ep.sessionId, rec.agent, USAGE_LIMIT_CONTINUE_PROMPT,
+        () => ep.limitStopped && !limit.continued && this.stillOwner(ep.taskId, ep.sessionId), () => { wrote = true; });
+    } catch (err) {
+      result = 'error';
+      wrote = true;
+      this.deps.log('warn', `[headless] task ${ep.taskId}: the continue after the usage limit failed: ${errMsg(err)}`);
+    }
+    // Once something may have been written, never again: one continue at most.
+    if (result === 'sent' || wrote) limit.continued = true;
+    else limit.clearSince = null;
+    this.deps.log('info', `[headless] task ${ep.taskId}: continue after the usage limit: ${result}`);
   }
 
   /** The wait on background work is over (BACKGROUND_WAIT_MS after the first turn that left it running). */
