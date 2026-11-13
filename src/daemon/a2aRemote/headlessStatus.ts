@@ -88,14 +88,19 @@ export class HeadlessStatusReporter {
   private observe(t: Tracked, s: HeadlessTaskStatus): void {
     if (s.kind === null) return;
     const detail: NonNullable<A2aRemoteStatusV1['detail']> = { ...s.detail };
-    if (detail.options && this.deps.labels() === 'keep') {
-      detail.optionCount = detail.options.length;
-      delete detail.options;
-    }
     const body = { kind: s.kind, ...(Object.keys(detail).length > 0 ? { detail } : {}) };
     const key = JSON.stringify(body);
     if (t.current?.key === key) return;
     t.current = { key, status: { ...body, since: new Date(this.now()).toISOString() } };
+  }
+
+  /** As this PC's setting says now, at the moment it leaves: a menu's labels, or only how many. */
+  private labelled(status: A2aRemoteStatusV1): A2aRemoteStatusV1 {
+    const options = status.detail?.options;
+    if (!options || this.deps.labels() !== 'keep') return status;
+    const detail: NonNullable<A2aRemoteStatusV1['detail']> = { ...status.detail, optionCount: options.length };
+    delete detail.options;
+    return { ...status, detail };
   }
 
   private flush(taskId: string, t: Tracked): void {
@@ -120,7 +125,7 @@ export class HeadlessStatusReporter {
         return;
       }
     }
-    const res = this.deps.send(taskId, current.status);
+    const res = this.deps.send(taskId, this.labelled(current.status));
     if (!res.ok) {
       if (res.error !== 'ended') this.deps.log('warn', `[headless] task ${taskId}: its status could not be sent: ${res.error}`);
       return;

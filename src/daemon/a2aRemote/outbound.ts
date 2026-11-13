@@ -271,7 +271,9 @@ export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; statu
   const { task, link } = found;
   if ((task.metadata.remote as A2aRemoteTaskMarkerV1).direction !== 'inbound') return { ok: false, error: 'bad-request: a status is for a task this PC received' };
   if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: false, error: 'ended' };
-  const status = parseA2aRemoteStatus(input.status);
+  // On a spawn link the labels are redacted whole, before the cap: a secret cut in two would no longer match.
+  const raw = onSpawnLink(deps, link) ? spawnLinkStatus(input.status) : input.status;
+  const status = parseA2aRemoteStatus(raw);
   if (!status) return { ok: false, error: 'bad-request: not a status' };
   const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'status', undefined, { onThisLink: true });
   if (!check.ok) return { ok: false, error: check.error };
@@ -454,6 +456,11 @@ function remoteTaskAndLink(
   return { ok: true, task, link };
 }
 
+/** A link a remote start made: what leaves on it is redacted (spawnLinkBody). */
+function onSpawnLink(deps: Pick<OutboundDeps, 'spawnLink'>, link: A2aLinkRecordV1): boolean {
+  return (link.spawned === true && link.proposer === 'remote') || deps.spawnLink?.(link.linkId) === true;
+}
+
 function envelope(
   deps: Pick<OutboundDeps, 'now' | 'spawnLink'>,
   link: A2aLinkRecordV1,
@@ -466,7 +473,7 @@ function envelope(
     linkVersion: link.version,
     messageId,
     // Marked on the link itself, so no path that sends on it can skip this.
-    ...((link.spawned === true && link.proposer === 'remote') || deps.spawnLink?.(link.linkId) ? spawnLinkBody(body) : body),
+    ...(onSpawnLink(deps, link) ? spawnLinkBody(body) : body),
     sentAt: new Date((deps.now ?? Date.now)()).toISOString(),
   };
 }

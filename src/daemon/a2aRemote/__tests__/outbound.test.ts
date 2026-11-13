@@ -409,6 +409,16 @@ describe('sendRemoteStatus (a worker\'s status for the PC that sent the task)', 
     expect(envelopes().filter((e) => e.kind === 'status')).toEqual([]);
   });
 
+  it('a secret that straddles the 80-character cut is redacted before the cut', async () => {
+    const { id } = await inboundTask();
+    const token = `ghp_${'a1B2'.repeat(9)}`;
+    const label = `${'x'.repeat(59)} ${token} and more`;
+    sendRemoteStatus({ ...deps, spawnLink: () => true }, { taskId: id, status: { kind: 'question', since: SINCE, detail: { question: 'menu', options: [label] } } });
+    const sent = envelopes()[0]!.status!.detail!.options![0]!;
+    expect(sent.length).toBeLessThanOrEqual(80);
+    expect(sent).not.toContain(token.slice(0, 20));
+  });
+
   it('on a link a remote start made, a menu\'s labels are redacted; its ids and kinds go as they are', async () => {
     const { id } = await inboundTask();
     const token = `ghp_${'a1B2'.repeat(9)}`;

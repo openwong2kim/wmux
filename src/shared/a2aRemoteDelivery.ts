@@ -8,7 +8,7 @@
 //
 // Pure module: no node:* imports (the renderer imports it).
 
-import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteReceipt, type A2aRemoteStatusV1, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
+import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteReceipt, type A2aRemoteStatusShown, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
 import type { CompanyBriefV1 } from './company';
 import type { GatedSubmitRefusal } from './ptyMessageDelivery';
 import { isTaskState, type Part, type Task, type TaskState } from './types';
@@ -341,7 +341,7 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
    * task a query returns (the receiver sends its current one again when the
    * link comes back).
    */
-  status?: A2aRemoteStatusV1;
+  status?: A2aRemoteStatusShown;
 };
 
 /** A hold older than this is rejected automatically (`held-expired`). */

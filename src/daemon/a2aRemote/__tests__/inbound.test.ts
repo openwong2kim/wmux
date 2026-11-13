@@ -495,6 +495,33 @@ describe('a worker\'s status on a task this PC sent', () => {
     expect(got.detail?.menuId).toBe('toolu_1');
   });
 
+  it('a label is one line: tabs, newlines, bidi controls and zero-width characters do not survive', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    const options = ['A\tB\nC', '\u202Egnp.exe', 'x\u2066y\u2069z', 'zero\u200Bwidth', '\u200B\u200B'];
+    await acceptInbound(env(linkId, { ...status({ kind: 'question', detail: { question: 'menu', options } }), taskId: out }), peer, withStatus);
+    expect(noted[0]![1].detail?.options).toEqual(['A B C', 'gnp.exe', 'xyz', 'zerowidth']);
+  });
+
+  it('prototype keys, a garbage `since`, and a task on another link: nothing kept', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    const raw = (status: unknown): A2aRemoteEnvelope => ({ ...env(linkId, { kind: 'status', text: undefined, taskId: out }), status } as unknown as A2aRemoteEnvelope);
+    // `__proto__` and `constructor` are plain data here: they give no kind, and nothing reaches a prototype.
+    expect(await acceptInbound(raw(JSON.parse('{"__proto__":{"kind":"working","since":"2026-11-13T06:00:00.000Z"}}')), peer, withStatus))
+      .toMatchObject({ ok: false, error: 'bad-request' });
+    await acceptInbound(raw(JSON.parse('{"kind":"working","since":"2026-11-13T06:00:00.000Z","detail":{"__proto__":{"options":["x"]},"constructor":{"x":1}}}')), peer, withStatus);
+    expect(noted.at(-1)?.[1]).toEqual({ kind: 'working', since: '2026-11-13T06:00:00.000Z' });
+    expect(({} as { options?: unknown }).options).toBeUndefined();
+    for (const since of ['yesterday', '', 123, null]) {
+      expect(await acceptInbound(raw({ kind: 'working', since }), peer, withStatus)).toMatchObject({ ok: false, error: 'bad-request' });
+    }
+    // A task this PC sent, but on another link than the one the status came on.
+    const other = activeLink();
+    expect(await acceptInbound(env(other, { ...status({}), taskId: out }), peer, withStatus)).toMatchObject({ ok: false, error: 'unknown-task' });
+    expect(noted).toHaveLength(1);
+  });
+
   it('refused for a task this PC did not send, malformed, or on a PC that takes none', async () => {
     const linkId = activeLink();
     const out = await sentTask(linkId);

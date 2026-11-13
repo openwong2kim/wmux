@@ -15,6 +15,7 @@ import {
   type A2aRemoteStatusV1,
   type HostId,
   type PeerCredential,
+  shownRemoteStatus,
 } from '../../shared/a2aRemote';
 import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteTaskState, type A2aRemoteWaitingCause } from '../../shared/a2aRemoteDelivery';
 import type { A2aRemoteHostStatus, A2aRemoteHostsStatusResult } from '../../shared/rpc';
@@ -144,6 +145,15 @@ export function shareOfferFeatures(delivery: () => A2aRemoteDelivery | null): (h
 
 /** Worker statuses kept in memory at most (one per open task this PC sent). */
 const REMOTE_STATUSES_MAX = 1000;
+/** How far ahead of this PC's clock a peer's status may be dated. */
+const REMOTE_STATUS_SKEW_MS = 60_000;
+/**
+ * Statuses one paired PC may bring in a window: past it they are taken and
+ * dropped (one log line per window). A peer sends at most one per change of
+ * each task with a 5 s floor; the transport itself does not limit a kind.
+ */
+export const REMOTE_STATUS_WINDOW_MS = 60_000;
+export const REMOTE_STATUS_PER_WINDOW = 60;
 
 export class A2aRemoteDelivery {
   readonly outbox: OutboxStore;
@@ -745,6 +755,7 @@ export class A2aRemoteDelivery {
       ...(this.deps.spawnLinks ? { spawnLinks: this.deps.spawnLinks } : {}),
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
       remoteStatus: {
+        admit: (hostId) => this.admitRemoteStatus(hostId),
         note: (taskId, status) => this.noteRemoteStatus(taskId, status),
         forget: (taskId) => { this.remoteStatuses.delete(taskId); },
       },
@@ -755,12 +766,37 @@ export class A2aRemoteDelivery {
 
   // --- worker status (`status.1`) -------------------------------------------
 
-  /** A worker's status on a task this PC sent, the newest per task (by its `since`). */
+  /** Statuses taken per peer in the current window (REMOTE_STATUS_PER_WINDOW). */
+  private readonly statusWindows = new Map<string, { start: number; count: number; logged: boolean }>();
+
+  /** Whether one more status from this PC is taken now; past the window's share it is dropped. */
+  private admitRemoteStatus(hostId: HostId): boolean {
+    const now = Date.now();
+    let w = this.statusWindows.get(hostId);
+    if (!w || now - w.start >= REMOTE_STATUS_WINDOW_MS) {
+      w = { start: now, count: 0, logged: false };
+      this.statusWindows.delete(hostId);
+      this.statusWindows.set(hostId, w);
+      while (this.statusWindows.size > REMOTE_STATUSES_MAX) this.statusWindows.delete(this.statusWindows.keys().next().value as string);
+    }
+    w.count += 1;
+    if (w.count <= REMOTE_STATUS_PER_WINDOW) return true;
+    if (!w.logged) {
+      w.logged = true;
+      this.deps.log('warn', `[a2a-remote] ${hostId}: more than ${REMOTE_STATUS_PER_WINDOW} worker statuses in a minute; the rest are dropped`);
+    }
+    return false;
+  }
+
+  /** A worker's status on a task this PC sent, the newest per task (by its `since`, as a time). */
   private noteRemoteStatus(taskId: string, status: A2aRemoteStatusV1): void {
+    // A peer's clock: a `since` past this PC's own time (plus a little skew) counts as now, so a status
+    // dated far ahead cannot pin itself against the newer ones.
+    const since = Math.min(Date.parse(status.since), Date.now() + REMOTE_STATUS_SKEW_MS);
     const prev = this.remoteStatuses.get(taskId);
-    if (prev && prev.since > status.since) return;
+    if (prev && Date.parse(prev.since) > since) return;
     this.remoteStatuses.delete(taskId);
-    this.remoteStatuses.set(taskId, status);
+    this.remoteStatuses.set(taskId, { ...status, since: new Date(since).toISOString() });
     // Bounded: the least recently updated go first (a task that ended without a word from its peer).
     while (this.remoteStatuses.size > REMOTE_STATUSES_MAX) this.remoteStatuses.delete(this.remoteStatuses.keys().next().value as string);
   }
@@ -779,7 +815,7 @@ export class A2aRemoteDelivery {
     }
     const remote = task.metadata.remote as A2aRemoteTaskState | undefined;
     if (!remote) return task;
-    return { ...task, metadata: { ...task.metadata, remote: { ...remote, status } } };
+    return { ...task, metadata: { ...task.metadata, remote: { ...remote, status: shownRemoteStatus(status) } } };
   }
 
   /**

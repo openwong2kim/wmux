@@ -254,7 +254,10 @@ With headless mode on:
   menu the choices are sent along. To keep them on this host and send only
   how many there are, run `wmux remote status-labels keep` (`send` turns
   it back; with no argument it prints the setting). The setting has its own
-  file, `a2a-remote-status.json`, next to the other remote settings.
+  file, `a2a-remote-status.json`, next to the other remote settings; if that
+  file is there but cannot be read, the choices are kept. It is a setting for
+  this host's owner, not a limit on the host's own agents, which can change it
+  like the other remote settings.
 - An agent that stops on a question (a permission prompt, say) cannot be
   answered here. After about a minute the asking PC is told so, once. If
   the question is still there after 10 minutes, the task ends with that

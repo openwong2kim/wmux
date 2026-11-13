@@ -783,6 +783,37 @@ export interface A2aRemoteStatusV1 {
   };
 }
 
+/**
+ * A menu label as one line of text from another PC: invisible format
+ * characters (zero-width, bidi overrides and isolates) gone, controls and any
+ * run of whitespace folded to one space.
+ */
+function statusLabelLine(label: string): string {
+  return label.replace(/\p{Cf}/gu, '').replace(/[\p{Cc}\s]+/gu, ' ').trim();
+}
+
+/**
+ * A worker status as this PC shows it, in a task anything reads: a menu's
+ * labels were written on the other PC, so they sit only under `untrusted`,
+ * never next to this side's own fields.
+ */
+export interface A2aRemoteStatusShown {
+  kind: A2aRemoteStatusKind;
+  since: string;
+  detail?: Omit<NonNullable<A2aRemoteStatusV1['detail']>, 'options'>;
+  untrusted?: { options: string[] };
+}
+
+export function shownRemoteStatus(status: A2aRemoteStatusV1): A2aRemoteStatusShown {
+  const { options, ...detail } = status.detail ?? {};
+  return {
+    kind: status.kind,
+    since: status.since,
+    ...(Object.keys(detail).length > 0 ? { detail } : {}),
+    ...(options && options.length > 0 ? { untrusted: { options } } : {}),
+  };
+}
+
 /** A status from the wire, checked and capped; null when it is not one. */
 export function parseA2aRemoteStatus(raw: unknown): A2aRemoteStatusV1 | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -796,7 +827,9 @@ export function parseA2aRemoteStatus(raw: unknown): A2aRemoteStatusV1 | null {
   if (typeof d.question === 'string' && QUESTION_KINDS.includes(d.question)) detail.question = d.question as A2aRemoteQuestionKind;
   if (typeof d.menuId === 'string' && STATUS_MENU_ID_RE.test(d.menuId)) detail.menuId = d.menuId;
   if (Array.isArray(d.options)) {
-    const options = d.options.filter((o): o is string => typeof o === 'string' && o.trim().length > 0)
+    const options = d.options.filter((o): o is string => typeof o === 'string')
+      .map(statusLabelLine)
+      .filter((o) => o.length > 0)
       .slice(0, A2A_REMOTE_STATUS_LIMITS.OPTIONS_MAX)
       .map((o) => o.slice(0, A2A_REMOTE_STATUS_LIMITS.OPTION_CHARS_MAX));
     if (options.length > 0) detail.options = options;

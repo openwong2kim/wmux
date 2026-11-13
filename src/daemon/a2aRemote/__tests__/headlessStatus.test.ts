@@ -140,6 +140,19 @@ describe('a headless worker\'s status to the asking PC', () => {
     expect(sent[0]!.status.detail).toEqual({ question: 'menu', menuId: 'toolu_01', optionCount: 2 });
   });
 
+  it('the setting at the moment a status leaves: a menu seen under send, then keep, then sent on reconnect, goes without its labels', () => {
+    const r = reporter();
+    r.tick(at('working'));
+    peer = { connected: false, takesStatus: true, epoch: null };
+    clock += STATUS_FLOOR_MS;
+    r.tick(at('question', { question: 'menu', menuId: 'toolu_01', options: ['Red', 'Blue'] }));
+    labels = 'keep';
+    peer = { connected: true, takesStatus: true, epoch: 'e2' };
+    r.tick(at(null));
+    expect(sent.at(-1)!.status.detail).toEqual({ question: 'menu', menuId: 'toolu_01', optionCount: 2 });
+    expect(JSON.stringify(sent)).not.toContain('Red');
+  });
+
   it('nothing new (null) keeps the last status; a task no longer worked on is forgotten', () => {
     const r = reporter();
     r.tick(at('working'));

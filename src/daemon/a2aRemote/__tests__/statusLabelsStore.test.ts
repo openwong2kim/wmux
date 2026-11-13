@@ -38,10 +38,30 @@ describe('the status labels setting', () => {
     expect(store().get()).toBe('keep');
   });
 
-  it('a garbled file reads as the default, with one log line, and the original kept aside', () => {
+  it('a garbled file fails closed: keep, one log line, the original kept aside and keep written in its place', () => {
     fs.writeFileSync(path.join(dir, STATUS_LABELS_FILE), '{"v":1,"labels":"maybe"}');
-    expect(store().get()).toBe('send');
+    expect(store().get()).toBe('keep');
     expect(logs.filter(([level]) => level === 'warn')).toHaveLength(1);
     expect(fs.readdirSync(dir).some((f) => f.startsWith(STATUS_LABELS_FILE) && f !== STATUS_LABELS_FILE)).toBe(true);
+    // The next start reads the same.
+    expect(store().get()).toBe('keep');
+    for (const text of ['not json', '[]', '{"v":2,"labels":"send"}']) {
+      fs.writeFileSync(path.join(dir, STATUS_LABELS_FILE), text);
+      expect(store().get()).toBe('keep');
+    }
+  });
+
+  it('a file that is there but cannot be read: keep, and nothing written over it', () => {
+    if (process.platform === 'win32' || process.getuid?.() === 0) return;
+    const file = path.join(dir, STATUS_LABELS_FILE);
+    fs.writeFileSync(file, '{"v":1,"labels":"send"}');
+    fs.chmodSync(file, 0o000);
+    try {
+      const s = store();
+      expect(s.get()).toBe('keep');
+      expect(s.set('send')).toMatchObject({ ok: false });
+    } finally {
+      fs.chmodSync(file, 0o600);
+    }
   });
 });

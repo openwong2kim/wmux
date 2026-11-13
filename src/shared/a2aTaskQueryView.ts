@@ -124,7 +124,9 @@ export function companyHoldFields(task: Rec): Rec {
  * this side's own words.
  */
 function remoteStatusView(status: Rec): Rec {
-  const { options, ...detail } = isRec(status.detail) ? status.detail : {};
+  // Stored already apart (A2aRemoteDelivery.withRemoteStatus); a detail's own `options` is moved too.
+  const { options: inline, ...detail } = isRec(status.detail) ? status.detail : {};
+  const options = isRec(status.untrusted) && Array.isArray(status.untrusted.options) ? status.untrusted.options : inline;
   return {
     kind: status.kind,
     since: status.since,

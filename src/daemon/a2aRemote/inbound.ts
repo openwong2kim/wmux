@@ -68,7 +68,12 @@ export interface InboundDeps {
    * Where a worker's status on a task this PC sent goes (`kind: 'status'`): the newest per task, in memory.
    * Absent, a status is refused as unknown.
    */
-  remoteStatus?: { note(taskId: string, status: A2aRemoteStatusV1): void; forget(taskId: string): void };
+  remoteStatus?: {
+    /** One more status from this PC may be taken now (a per-peer receive limit); false: dropped quietly. */
+    admit?(hostId: HostId): boolean;
+    note(taskId: string, status: A2aRemoteStatusV1): void;
+    forget(taskId: string): void;
+  };
   /** New tasks each PC may send this one (`PeerTaskBudget`); absent, no limit. */
   taskBudget?: PeerTaskBudget;
   /** Where a refusal's detail goes: this PC's log. The peer gets the code alone. */
@@ -174,6 +179,11 @@ async function applyInbound(
     return deps.offers.applyInbound(env, peer);
   }
   if (env.kind === 'link') return applyLinkNotice(env, peer.hostId, deps);
+  // A status past this PC's share for the peer: taken and dropped before any check, so neither a refusal
+  // for the peer to retry nor a log line per message comes of it.
+  if (env.kind === 'status' && deps.remoteStatus?.admit && !deps.remoteStatus.admit(peer.hostId)) {
+    return { ok: true, taskId: env.taskId as string, duplicate: true };
+  }
 
   let onThisLink = false;
   if (env.kind === 'reply' || env.kind === 'state' || env.kind === 'receipt' || env.kind === 'status') {
