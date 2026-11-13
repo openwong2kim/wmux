@@ -16,7 +16,7 @@ import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
 import {
-  REMOTE_ASK_GRACE_MS, REMOTE_GONE_GRACE_MS, type RemoteTaskView, branchOnPc, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
+  REMOTE_ASK_GRACE_MS, REMOTE_FOLLOW_INTERVAL_MS, REMOTE_GONE_GRACE_MS, type RemoteTaskView, branchOnPc, remoteTaskReconciler, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
   startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
 
@@ -699,6 +699,53 @@ describe('a started task follows its A2A task', () => {
     await reconcileRemoteTasks(s.deps);
     expect(s.row(0)).toMatchObject({ status: 'review_requested', remote: { reportId: 'msg-report-2' } });
     expect(s.row(0).remote?.waiting).toBeUndefined();
+  });
+
+  describe('the follow pass while a started task is open', () => {
+    /** Timers held here: `fire` runs the one scheduled pass and waits for it. */
+    function heldTimers(deps: RemoteFanoutDeps) {
+      const scheduled: Array<{ fn: () => void; ms: number }> = [];
+      const timers = { set: (fn: () => void, ms: number) => { scheduled.push({ fn, ms }); return scheduled.length; }, clear: () => { scheduled.length = 0; } };
+      const fire = async () => {
+        const next = scheduled.shift();
+        if (!next) throw new Error('no pass is scheduled');
+        next.fn();
+        await reconcileRemoteTasks(deps);
+        await new Promise((r) => setImmediate(r));
+      };
+      return { scheduled, timers, fire };
+    }
+
+    it('a question that arrives with no other activity moves the row on the next follow pass', async () => {
+      const s = await started(1);
+      const t = heldTimers(s.deps);
+      const reconcile = remoteTaskReconciler(() => s.deps, t.timers);
+      await reconcile();
+      expect(t.scheduled.map((x) => x.ms)).toEqual([REMOTE_FOLLOW_INTERVAL_MS]);
+      s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
+      await t.fire();
+      expect(s.row(0).status).toBe('input_required');
+      reconcile.stop();
+    });
+
+    it('the gone grace runs out with no unrelated pass, and the passes stop once no started task is open', async () => {
+      const s = await started(1);
+      let clock = Date.parse(at);
+      s.deps.now = () => clock;
+      const t = heldTimers(s.deps);
+      const reconcile = remoteTaskReconciler(() => s.deps, t.timers);
+      s.view(0, { state: 'working', status: { kind: 'gone', since: at } });
+      await reconcile();
+      expect(s.row(0).remote?.goneSeenAt).toBe(clock);
+      while (s.row(0).status === 'working') {
+        clock += REMOTE_FOLLOW_INTERVAL_MS;
+        await t.fire();
+      }
+      expect(s.row(0)).toMatchObject({ status: 'failed', summary: 'the agent on box is gone' });
+      expect(clock - Date.parse(at)).toBeLessThanOrEqual(REMOTE_GONE_GRACE_MS + REMOTE_FOLLOW_INTERVAL_MS);
+      // Nothing open is followed any more: no pass is scheduled.
+      expect(t.scheduled).toEqual([]);
+    });
   });
 
   it('reads every started task of an owner in one call per pass', async () => {

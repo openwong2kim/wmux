@@ -598,12 +598,56 @@ export function installRemoteTaskWithdraw(ledger: Pick<RemoteLedger, 'onTransiti
 }
 
 /** The reconcile pass over whatever daemon is connected now (none: nothing to do). */
-export function remoteTaskReconciler(getDeps: () => RemoteFanoutDeps | null): () => Promise<void> {
-  return () => {
+/** Between passes while a started task on another PC is open: the daemon tells main nothing when such a task moves. */
+export const REMOTE_FOLLOW_INTERVAL_MS = 10_000;
+
+/** The timer calls a follow pass uses (injected in tests). */
+export interface FollowTimers {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+
+const NODE_TIMERS: FollowTimers = {
+  set: (fn, ms) => {
+    const t = setTimeout(fn, ms);
+    t.unref?.();
+    return t;
+  },
+  clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+};
+
+/**
+ * The reconcile pass over whatever daemon is connected now (none: nothing to
+ * do). While a started task on another PC is open, one more pass follows
+ * REMOTE_FOLLOW_INTERVAL_MS after each: its question, report, failure or gone
+ * agent (and the gone grace) move the row without waiting for an unrelated
+ * event. With none open, no pass is scheduled. Passes never overlap
+ * (reconcileRemoteTasks is single-flight per ledger).
+ */
+export function remoteTaskReconciler(getDeps: () => RemoteFanoutDeps | null, timers: FollowTimers = NODE_TIMERS): (() => Promise<void>) & { stop(): void } {
+  let timer: unknown = null;
+  const schedule = (deps: RemoteFanoutDeps): void => {
+    if (timer !== null) return;
+    const following = deps.ledger.list().some((e) => e.remote?.state === 'started' && isOpenLedgerStatus(e.status));
+    if (!following) return;
+    timer = timers.set(() => {
+      timer = null;
+      void run();
+    }, REMOTE_FOLLOW_INTERVAL_MS);
+  };
+  const run = (): Promise<void> => {
     const deps = getDeps();
     if (!deps) return Promise.resolve();
-    return reconcileRemoteTasks(deps).catch((err: unknown) => deps.log?.(`[remote-fanout] reconcile failed: ${String(err)}`));
+    return reconcileRemoteTasks(deps)
+      .catch((err: unknown) => deps.log?.(`[remote-fanout] reconcile failed: ${String(err)}`))
+      .finally(() => schedule(deps));
   };
+  return Object.assign(run, {
+    stop: (): void => {
+      if (timer !== null) timers.clear(timer);
+      timer = null;
+    },
+  });
 }
 
 const errText = (e: unknown): string =>

@@ -278,7 +278,8 @@ PCs and the folder ids (`root`) each one allows.
   expire (each request waits 1 hour), or started it. Once started, the row
   holds the task its replies arrive on. The agent is asked to commit and to
   end its last reply with its branch and commit; the branch stays on that PC.
-- **Following it.** Once started, the row follows that task:
+- **Following it.** Once started, the row follows that task (read every
+  10 seconds while such a task is open):
   - its report → `review_requested` (it stops there; only the owner marks a
     task completed);
   - a question on the agent's screen → `input_required`, naming only the kind
