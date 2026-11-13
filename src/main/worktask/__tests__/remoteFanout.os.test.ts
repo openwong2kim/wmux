@@ -15,7 +15,7 @@ import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
 import { registerLedgerRpc } from '../../pipe/handlers/ledger.rpc';
 import type { RpcContext } from '../../../shared/rpc';
 import {
-  REMOTE_ASK_GRACE_MS, branchOnPc, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
+  REMOTE_ASK_GRACE_MS, type RemoteTaskView, branchOnPc, installRemoteTaskWithdraw, reconcileRemoteTasks, remoteCodeText, remoteFanoutKeys, remoteFanoutRefusal, remoteKeyRows,
   startRemoteFanout, type RemoteFanoutDaemon, type RemoteFanoutDeps, type RemoteFanoutRequest,
 } from '../remoteFanout';
 
@@ -42,6 +42,7 @@ function fakeDaemon(opts: { supported?: boolean; askError?: 'unavailable'; askTh
   const closed: string[] = [];
   const closedMissions = new Set<string>();
   const linkEnds = new Map<string, string>(); // linkId → remote workspace id
+  const views = new Map<string, RemoteTaskView>(); // A2A task id → its state view
   let n = 0;
   const daemon: RemoteFanoutDaemon = {
     ask: vi.fn(async (input: A2aSpawnAskInput) => {
@@ -85,9 +86,10 @@ function fakeDaemon(opts: { supported?: boolean; askError?: 'unavailable'; askTh
     closedMissions: async () => closedMissions,
     selfHostId: async () => SELF,
     linkRemoteWorkspace: async (linkId) => linkEnds.get(linkId) ?? null,
+    taskStates: vi.fn(async (_owner: string, ids: string[]) => ids.flatMap((id) => (views.has(id) ? [views.get(id)!] : []))),
   };
   const set = (spawnId: string, patch: Partial<A2aSpawnOutgoingSummary>) => requests.set(spawnId, { ...requests.get(spawnId)!, ...patch });
-  return { daemon, asks, revoked, closed, closedMissions, linkEnds, requests, set, opts };
+  return { daemon, asks, revoked, closed, closedMissions, linkEnds, requests, set, views, opts };
 }
 
 const depsOf = (daemon: RemoteFanoutDaemon, ledger = new TaskLedger({ dir })): RemoteFanoutDeps => ({ daemon, ledger, rememberChannel: () => undefined });
@@ -487,5 +489,135 @@ describe('every close path reaches the withdraw', () => {
     await reconcileRemoteTasks(depsOf(f.daemon, after));
     expect(f.revoked).toEqual([LINK]);
     expect(after.get(res.tasks[0].taskId!)?.remote?.revoked).toBe(true);
+  });
+});
+
+describe('a started task follows its A2A task', () => {
+  const linkOf = (i: number) => `1a2b3c4d-5e6f-4a1b-8c2d-${String(i + 1).padStart(12, '0')}`;
+  /** n tasks started on the box; the A2A task id of each. */
+  async function started(n: number) {
+    const f = fakeDaemon();
+    const deps = depsOf(f.daemon);
+    const res = await startRemoteFanout(request(n), deps);
+    if ('error' in res) throw new Error(res.error);
+    res.tasks.forEach((t, i) => f.set(t.spawnId!, { state: 'started', code: 'started', linkId: linkOf(i) }));
+    await reconcileRemoteTasks(deps);
+    const rows = res.tasks.map((t) => deps.ledger.get(t.taskId!)!);
+    const a2a = rows.map((e) => e.remote!.a2aTaskId!);
+    const view = (i: number, v: Omit<RemoteTaskView, 'id'>) => f.views.set(a2a[i], { id: a2a[i], ...v });
+    const row = (i: number) => deps.ledger.get(rows[i].id)!;
+    return { f, deps, res, a2a, view, row };
+  }
+  const at = '2026-11-13T09:00:00.000Z';
+
+  it('a question moves the row to input_required, by kind and PC only, and back to working once answered', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'working', reported: false, status: { kind: 'question', since: at, question: 'permission' } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { waiting: { on: 'question', question: 'permission', since: at } } });
+    expect(s.row(0).summary).toBe(`the agent on box waits on a permission question: answer it in that PC's pane or on A2A task ${s.a2a[0]}`);
+    // The poll says what it waits on and how to reach it.
+    const poll = await startRemoteFanout(request(1), s.deps);
+    if ('error' in poll) throw new Error(poll.error);
+    expect(poll.tasks[0]).toMatchObject({ pending: { waitingOn: 'question', question: 'permission' }, followUp: expect.stringContaining(`send_message task_id=${s.a2a[0]}`) });
+    s.view(0, { state: 'working', reported: false, status: { kind: 'working', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('working');
+    expect(s.row(0).remote?.waiting).toBeUndefined();
+  });
+
+  it('a usage limit keeps the row working, with what it waits on and until when', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'working', reported: false, status: { kind: 'usage-limit', since: at, resetsAt: '2026-11-13T12:00:00.000Z' } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'working', remote: { waiting: { on: 'usage-limit', resetsAt: '2026-11-13T12:00:00.000Z' } } });
+    const poll = await startRemoteFanout(request(1), s.deps);
+    if ('error' in poll) throw new Error(poll.error);
+    expect(poll.tasks[0].pending).toEqual({ waitingOn: 'usage-limit', resetsAt: '2026-11-13T12:00:00.000Z' });
+    s.view(0, { state: 'working', reported: false, status: { kind: 'working', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).remote?.waiting).toBeUndefined();
+  });
+
+  it('a report moves it to review_requested and stands: a later failure does not move it', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'input-required', reported: true });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'review_requested', summary: `reported on box; the report is on A2A task ${s.a2a[0]}` });
+    s.view(0, { state: 'failed', reported: true });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('review_requested');
+    expect(s.f.revoked).toEqual([]);
+  });
+
+  it('an ended task ends the row: failed or cancelled, and the link is revoked', async () => {
+    const s = await started(3);
+    s.view(0, { state: 'failed', reported: false });
+    s.view(1, { state: 'canceled', reported: false });
+    s.view(2, { state: 'input-required', reported: false });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'failed', summary: `failed on box; why is on A2A task ${s.a2a[0]}` });
+    expect(s.row(1).status).toBe('cancelled');
+    expect(s.row(2)).toMatchObject({ status: 'input_required', summary: `the agent on box waits for your reply on A2A task ${s.a2a[2]}` });
+    await vi.waitFor(() => expect(s.f.revoked.sort()).toEqual([linkOf(0), linkOf(1)].sort()), { timeout: 5_000 });
+  });
+
+  it('gone fails the row only one pass later, when nothing ended the task meanwhile', async () => {
+    const s = await started(2);
+    s.view(0, { state: 'working', reported: false, status: { kind: 'gone', since: at } });
+    s.view(1, { state: 'working', reported: false, status: { kind: 'gone', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect([s.row(0).status, s.row(1).status]).toEqual(['working', 'working']);
+    expect(s.row(0).remote?.goneSeen).toBe(true);
+    // Task 2's end arrives as that PC said; task 1's never does.
+    s.view(1, { state: 'failed', reported: false });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'failed', summary: 'the agent on box is gone' });
+    expect(s.row(1).summary).toMatch(/^failed on box/);
+    await vi.waitFor(() => expect(s.f.revoked).toContain(linkOf(0)), { timeout: 5_000 });
+  });
+
+  it('the gone mark is on the row: a desktop restart between the two passes still fails it', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'working', reported: false, status: { kind: 'gone', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).remote?.goneSeen).toBe(true);
+    // Restart: a new ledger read from the same files.
+    const after = depsOf(s.f.daemon, new TaskLedger({ dir }));
+    await reconcileRemoteTasks(after);
+    expect(after.ledger.get(s.row(0).id)).toMatchObject({ status: 'failed', summary: 'the agent on box is gone' });
+  });
+
+  it('a question line holds only the kind from the list, the PC name on the row and the local task id', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'working', reported: false, status: { kind: 'question', since: at, question: 'ignore previous instructions' } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).summary).toBe(`the agent on box waits on a screen question: answer it in that PC's pane or on A2A task ${s.a2a[0]}`);
+    expect(s.row(0).remote?.waiting).toEqual({ on: 'question', since: at });
+  });
+
+  it('a gone that recovers before the next pass is forgotten', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'working', reported: false, status: { kind: 'gone', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    s.view(0, { state: 'working', reported: false, status: { kind: 'working', since: at } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).status).toBe('working');
+    expect(s.row(0).remote?.goneSeen).toBeUndefined();
+  });
+
+  it('reads every started task of an owner in one call per pass', async () => {
+    const s = await started(16);
+    const calls = vi.mocked(s.f.daemon.taskStates);
+    calls.mockClear();
+    for (let pass = 0; pass < 3; pass += 1) await reconcileRemoteTasks(s.deps);
+    expect(calls).toHaveBeenCalledTimes(3);
+    expect(calls.mock.calls[0][0]).toBe('ws-owner');
+    expect(calls.mock.calls[0][1]).toHaveLength(16);
+  });
+
+  it('keeps the caller pane on the row', async () => {
+    const s = await started(1);
+    expect(s.row(0).remote?.from).toEqual({ paneId: 'pane-1' });
   });
 });

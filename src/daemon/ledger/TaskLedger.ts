@@ -49,6 +49,7 @@ import { isOriginPin } from '../../shared/originPin';
 import * as path from 'node:path';
 import {
   LEDGER_GATE_TAIL_MAX_BYTES,
+  LEDGER_REMOTE_QUESTIONS,
   LEDGER_REMOTE_STATES,
   LEDGER_SCHEMA_VERSION,
   REMOTE_TASK_WORKSPACE_PREFIX,
@@ -65,6 +66,7 @@ import {
   type LedgerEntry,
   type LedgerGateResult,
   type LedgerRemote,
+  type LedgerRemoteWaiting,
   type LedgerStatus,
 } from '../../shared/ledger';
 import { sanitizeTaskCriteria, gradeNonCodeEvidence } from '../../shared/nonCodeTaskEvidence';
@@ -321,6 +323,24 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(o.withdrawn === true ? { withdrawn: true as const } : {}),
     ...(o.revoked === true ? { revoked: true as const } : {}),
     ...(typeof o.requestDigest === 'string' && /^[0-9a-f]{64}$/.test(o.requestDigest) ? { requestDigest: o.requestDigest } : {}),
+    ...(o.from && typeof o.from === 'object' && typeof (o.from as { paneId?: unknown }).paneId === 'string' && PANE_ID_RE.test((o.from as { paneId: string }).paneId)
+      ? { from: { paneId: (o.from as { paneId: string }).paneId } } : {}),
+    ...(copyWaiting(o.waiting) ? { waiting: copyWaiting(o.waiting)! } : {}),
+    ...(o.goneSeen === true ? { goneSeen: true as const } : {}),
+  };
+}
+
+const PANE_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+const isIso = (v: unknown): v is string => typeof v === 'string' && v.length <= 40 && Number.isFinite(Date.parse(v));
+
+function copyWaiting(w: unknown): LedgerRemoteWaiting | null {
+  if (!w || typeof w !== 'object') return null;
+  const o = w as Record<string, unknown>;
+  if ((o.on !== 'question' && o.on !== 'usage-limit') || !isIso(o.since)) return null;
+  return {
+    on: o.on, since: o.since,
+    ...(o.on === 'question' && (LEDGER_REMOTE_QUESTIONS as readonly unknown[]).includes(o.question) ? { question: o.question as LedgerRemoteWaiting['question'] } : {}),
+    ...(o.on === 'usage-limit' && isIso(o.resetsAt) ? { resetsAt: o.resetsAt } : {}),
   };
 }
 

@@ -75,6 +75,7 @@ describe('DaemonPipeServer interactive RPC budget (#2349)', () => {
     server.onRpc('daemon.client.identify', async () => ({ ok: true }));
     server.onRpc(A2A_SPAWN_RPC.ask, async () => ({ ok: true }));
     server.onRpc(A2A_SPAWN_RPC.outgoing, async () => ({ requests: [], places: [] }));
+    server.onRpc('a2a.task.query', async () => ({ ok: true, tasks: [] }));
     // The task-mission calls here are main's, which the daemon answers only
     // on the app's identified connection. An identify call would count
     // against the budgets these tests measure, so the socket is taken as the
@@ -141,6 +142,20 @@ describe('DaemonPipeServer interactive RPC budget (#2349)', () => {
     const methods = [...Array.from({ length: 250 }, () => 'task.mission.list'), ...oneFanout, ...oneFanout];
     const replies = await sendBatch(pipeName, methods);
     for (let i = 250; i < methods.length; i++) expect(replies.get(String(i))).toMatchObject({ ok: true });
+  });
+
+  it('three reconcile passes over 16 tasks on another PC go through after a background flood; an agent\'s query stays background', async () => {
+    const taskIds = Array.from({ length: 16 }, (_, i) => `rt-${String(i).padStart(32, '0')}`);
+    // Each pass: one listing of the sent requests, one batched state read of every started task.
+    const pass: Call[] = [A2A_SPAWN_RPC.outgoing, { method: 'a2a.task.query', params: { workspaceId: 'ws-1', view: 'state', taskIds } }];
+    const methods: Call[] = [
+      ...Array.from({ length: 250 }, () => 'task.mission.list'),
+      ...pass, ...pass, ...pass,
+      { method: 'a2a.task.query', params: { workspaceId: 'ws-1', view: 'page' } },
+    ];
+    const replies = await sendBatch(pipeName, methods);
+    for (let i = 250; i < 256; i++) expect(replies.get(String(i))).toMatchObject({ ok: true });
+    expect(replies.get('256')).toMatchObject({ ok: false, error: 'rate limited (global)' });
   });
 
   it('dispatches the app\'s identify after a background flood used up the global budget', async () => {

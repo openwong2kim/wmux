@@ -159,6 +159,26 @@ export interface LedgerRemote {
   /** The sha256 (hex) of the whole fan-out call that asked for it: a later
    *  call with the same key is a poll only when it sends the same request. */
   requestDigest?: string;
+  /** The pane that asked for it: told when the task needs it or fails. */
+  from?: { paneId: string };
+  /** What the agent on that PC waits on while the row stays open: a question
+   *  on its screen (the row is input_required) or its usage limit (the row
+   *  stays working; that PC resumes it by itself). Kinds only, never its text. */
+  waiting?: LedgerRemoteWaiting;
+  /** That PC said its agent is gone while the task was still open here: the
+   *  next pass fails the row if nothing ended the task meanwhile. */
+  goneSeen?: true;
+}
+
+export const LEDGER_REMOTE_QUESTIONS = ['permission', 'plan', 'menu', 'dialog', 'trust'] as const;
+
+export interface LedgerRemoteWaiting {
+  on: 'question' | 'usage-limit';
+  /** When it began on that PC (ISO). */
+  since: string;
+  question?: typeof LEDGER_REMOTE_QUESTIONS[number];
+  /** usage-limit: when the provider's window resets (ISO), once known. */
+  resetsAt?: string;
 }
 
 export const LEDGER_REMOTE_STATES = ['sent', 'waiting', 'started', 'refused', 'expired'] as const;

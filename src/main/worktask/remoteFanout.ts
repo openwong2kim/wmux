@@ -20,7 +20,8 @@ import type { A2aSpawnAskError, A2aSpawnAskInput, A2aSpawnAskResult, A2aSpawnOut
 import { asSpawnLinkId, spawnFirstMessageId } from '../../shared/a2aSpawn';
 import { isHostId } from '../../shared/a2aRemote';
 import type { AgentSlug } from '../../shared/agentIdentity';
-import { type LedgerEntry, type LedgerRemote, remoteTaskWorkspaceId } from '../../shared/ledger';
+import { LEDGER_REMOTE_QUESTIONS, type LedgerEntry, type LedgerRemote, type LedgerRemoteWaiting, type LedgerStatus, remoteTaskWorkspaceId } from '../../shared/ledger';
+import { STATE_VIEW_IDS_MAX } from '../../shared/a2aTaskQueryView';
 import { FANOUT_MAX_TASKS } from '../../shared/workTask';
 import { isOpenLedgerStatus, type LedgerTransition, type TaskLedger } from '../../daemon/ledger/TaskLedger';
 import { remoteTaskId } from '../../daemon/a2aRemote/ids';
@@ -56,6 +57,32 @@ export interface RemoteFanoutDaemon {
   linkRemoteWorkspace(linkId: string): Promise<string | null>;
   /** The ids of `ownerWorkspaceId`'s closed missions (the WorkTask log). */
   closedMissions(ownerWorkspaceId: string): Promise<ReadonlySet<string>>;
+  /** Tasks `ownerWorkspaceId` sent, as the state view shows them: one call for all of them. */
+  taskStates(ownerWorkspaceId: string, taskIds: string[]): Promise<RemoteTaskView[]>;
+}
+
+/** A sent A2A task as main follows it: its state, whether the other PC reported it, and its worker's status (kinds only). */
+export interface RemoteTaskView {
+  id: string;
+  state: string;
+  reported: boolean;
+  status?: { kind: string; since: string; question?: string; resetsAt?: string };
+}
+
+/** One row of the state view, or nothing when it is not one. */
+export function remoteTaskViewOf(raw: unknown): RemoteTaskView[] {
+  const t = raw && typeof raw === 'object' ? raw as { id?: unknown; status?: { state?: unknown }; metadata?: { remote?: { reported?: unknown; status?: unknown } } } : null;
+  if (!t || typeof t.id !== 'string' || typeof t.status?.state !== 'string') return [];
+  const remote = t.metadata?.remote;
+  const st = remote?.status && typeof remote.status === 'object' ? remote.status as { kind?: unknown; since?: unknown; detail?: { question?: unknown; resetsAt?: unknown } } : null;
+  const status = st && typeof st.kind === 'string' && typeof st.since === 'string'
+    ? {
+      kind: st.kind, since: st.since,
+      ...(typeof st.detail?.question === 'string' ? { question: st.detail.question } : {}),
+      ...(typeof st.detail?.resetsAt === 'string' ? { resetsAt: st.detail.resetsAt } : {}),
+    }
+    : undefined;
+  return [{ id: t.id, state: t.status.state, reported: typeof remote?.reported === 'string', ...(status ? { status } : {}) }];
 }
 
 export type RemoteLedger = Pick<TaskLedger, 'get' | 'list' | 'register' | 'update' | 'updateRemote' | 'closeTask' | 'onTransition'>;
@@ -100,6 +127,10 @@ export interface RemoteTaskResult {
   branchOnPc?: string;
   /** Why it failed or will not run, in words. */
   reason?: string;
+  /** What the agent waits on while the task stays open (kinds only). */
+  pending?: { waitingOn: 'question' | 'usage-limit'; question?: string; resetsAt?: string };
+  /** How to reach the agent once it started. */
+  followUp?: string;
 }
 
 const sha256 = (s: string): string => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
@@ -220,9 +251,19 @@ function resultOf(index: number, title: string, entry: LedgerEntry, channelId: s
       ...(r.a2aTaskId ? { a2aTaskId: r.a2aTaskId } : {}),
       ...(r.branchOnPc ? { branchOnPc: r.branchOnPc } : {}),
       ...(r.state === 'refused' || r.state === 'expired' ? { reason: remoteCodeText(r.code, r.pc, promptBytes) } : {}),
+      ...(r.waiting && !failed ? { pending: { waitingOn: r.waiting.on, ...(r.waiting.question ? { question: r.waiting.question } : {}), ...(r.waiting.resetsAt ? { resetsAt: r.waiting.resetsAt } : {}) } } : {}),
+      ...(r.a2aTaskId && !failed ? { followUp: followUpText(r) } : {}),
     } : {}),
     ...(failed && !r?.code ? { reason: entry.summary ?? entry.status } : {}),
   };
+}
+
+/** How the caller reaches a started agent: its A2A task, and for a question, where it is answered. */
+function followUpText(r: LedgerRemote): string {
+  const reply = `send_message task_id=${r.a2aTaskId}`;
+  return r.waiting?.on === 'question'
+    ? `it waits on a ${r.waiting.question ?? 'screen'} question: answer it in that PC's pane or on its A2A task (${reply})`
+    : `${reply} reaches the agent; its replies come back to your pane`;
 }
 
 /** A folder id as the other PC offers it (a2aSpawn.ts ROOT_ID_RE). */
@@ -300,7 +341,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
         taskWorkspaceId: remoteTaskWorkspaceId(keys.spawnId(k)),
         ownerWorkspaceId: req.ownerWorkspaceId,
         title,
-        remote: { hostId: place.hostId, pc: pcName, spawnId: keys.spawnId(k), root: req.root, state: 'sent', requestDigest: req.digest },
+        remote: { hostId: place.hostId, pc: pcName, spawnId: keys.spawnId(k), root: req.root, state: 'sent', requestDigest: req.digest, from: { paneId: req.paneId } },
       });
     } catch (err) {
       tasks.push({ index: k, title, ok: false, taskId, channelId, reason: `the task row could not be written (${(err as Error).message}); nothing was sent, so send the same idempotency_key again` });
@@ -434,6 +475,97 @@ async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
     // the daemon was away, or it ended before this PC learned of the start.
     if (!isOpenLedgerStatus(next.status)) await withdrawRemote(next, deps);
   }
+  await followTasks(deps);
+}
+
+const SYSTEM_ACTOR = { kind: 'system', workspaceId: 'main' } as const;
+
+/**
+ * Started rows follow their A2A task: one state-view call per owner workspace
+ * and pass (STATE_VIEW_IDS_MAX ids at most each), whatever the number of rows.
+ */
+async function followTasks(deps: RemoteFanoutDeps): Promise<void> {
+  const rows = deps.ledger.list().filter((e) => e.remote?.state === 'started' && e.remote.a2aTaskId && isOpenLedgerStatus(e.status));
+  const byOwner = new Map<string, LedgerEntry[]>();
+  for (const row of rows) byOwner.set(row.ownerWorkspaceId, [...(byOwner.get(row.ownerWorkspaceId) ?? []), row]);
+  for (const [owner, owned] of byOwner) {
+    for (let i = 0; i < owned.length; i += STATE_VIEW_IDS_MAX) {
+      const chunk = owned.slice(i, i + STATE_VIEW_IDS_MAX);
+      let views: RemoteTaskView[];
+      try {
+        views = await deps.daemon.taskStates(owner, chunk.map((e) => e.remote!.a2aTaskId!));
+      } catch (err) {
+        deps.log?.(`[remote-fanout] the tasks sent from ${owner} could not be read: ${String(err)}`);
+        continue;
+      }
+      const byId = new Map(views.map((v) => [v.id, v]));
+      for (const row of chunk) {
+        const view = byId.get(row.remote!.a2aTaskId!);
+        // A task the daemon no longer lists ended long ago: its row was moved then.
+        if (!view) continue;
+        await followTask(row, view, deps).catch((err: unknown) => deps.log?.(`[remote-fanout] ${row.id}: ${String(err)}`));
+        // Ended here: withdrawn now (as the transition listener does), not a pass later.
+        const after = deps.ledger.get(row.id);
+        if (after && !isOpenLedgerStatus(after.status)) await withdrawRemote(after, deps);
+      }
+    }
+  }
+}
+
+/**
+ * One row from its A2A task. Precedence: a report stands (only the caller's
+ * own end moves it on), an ended task beats the worker's status, and the
+ * status is read only while the task runs. Text from the other PC never goes
+ * into the row: kinds, the PC's name and the task id only. A stale rev is
+ * left for the next pass.
+ */
+async function followTask(row: LedgerEntry, view: RemoteTaskView, deps: RemoteFanoutDeps): Promise<void> {
+  const r = row.remote!;
+  const on = `A2A task ${r.a2aTaskId}`;
+  let entry = row;
+  const patch = async (p: Partial<LedgerRemote>): Promise<void> => {
+    entry = (await deps.ledger.updateRemote(entry.id, p)) ?? entry;
+  };
+  const move = async (status: LedgerStatus, summary: string): Promise<void> => {
+    if (entry.status === status) return;
+    const res = await deps.ledger.update({ id: entry.id, status, actor: SYSTEM_ACTOR, expectedRev: entry.rev, summary });
+    if (res.ok) entry = res.entry;
+  };
+  const settled = r.waiting || r.goneSeen ? { waiting: undefined, goneSeen: undefined } : null;
+  if (entry.status === 'review_requested') {
+    if (view.state === 'canceled') await move('cancelled', `cancelled on ${on}`);
+    return;
+  }
+  if (view.reported || view.state === 'completed') {
+    if (settled) await patch(settled);
+    await move('review_requested', `reported on ${r.pc}; the report is on ${on}`);
+    return;
+  }
+  if (view.state === 'failed') return move('failed', `failed on ${r.pc}; why is on ${on}`);
+  if (view.state === 'canceled') return move('cancelled', `cancelled on ${r.pc}`);
+  if (view.state === 'input-required') {
+    if (settled) await patch(settled);
+    return move('input_required', `the agent on ${r.pc} waits for your reply on ${on}`);
+  }
+  const st = view.status;
+  if (st?.kind === 'question') {
+    const question = (LEDGER_REMOTE_QUESTIONS as readonly string[]).includes(st.question ?? '') ? st.question as LedgerRemoteWaiting['question'] : undefined;
+    await patch({ waiting: { on: 'question', since: st.since, ...(question ? { question } : {}) }, goneSeen: undefined });
+    return move('input_required', `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane or on ${on}`);
+  }
+  if (st?.kind === 'gone') {
+    // Said just before that PC ends the task: the end normally follows. One
+    // pass later with the task still open, the row fails (and is withdrawn).
+    if (!r.goneSeen) return patch({ goneSeen: true });
+    return move('failed', `the agent on ${r.pc} is gone`);
+  }
+  if (st?.kind === 'usage-limit') {
+    // That PC resumes it by itself: nothing is asked of the caller.
+    await patch({ waiting: { on: 'usage-limit', since: st.since, ...(st.resetsAt ? { resetsAt: st.resetsAt } : {}) }, goneSeen: undefined });
+  } else if (settled) {
+    await patch(settled);
+  }
+  await move('working', `working on ${r.pc}`);
 }
 
 /** Withdraw every remote row that ends here. Returns the unsubscribe. */
@@ -490,6 +622,11 @@ export function remoteFanoutDepsOf(getDaemonClient: () => DaemonClient | null): 
       },
       missionClose: async (taskId, verifiedWorkspaceId) => {
         await dc.rpc('task.mission.close', { taskId, verifiedWorkspaceId });
+      },
+      taskStates: async (workspaceId, taskIds) => {
+        const res = (await dc.rpc('a2a.task.query', { workspaceId, view: 'state', taskIds })) as { ok?: boolean; tasks?: unknown[]; error?: unknown };
+        if (!res?.ok || !Array.isArray(res.tasks)) throw new Error(errText(res?.error));
+        return res.tasks.flatMap(remoteTaskViewOf);
       },
     },
     ledger: getTaskLedger(),

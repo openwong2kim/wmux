@@ -27,7 +27,7 @@
 import type { FanoutOrigin } from '../../shared/fanoutOrigin';
 import { isFanoutCallerKind, type FanoutCallerKind } from '../../shared/fanoutCallerNudge';
 import type { TaskLedger } from '../../daemon/ledger/TaskLedger';
-import type { LedgerEntry } from '../../shared/ledger';
+import { REMOTE_TASK_WORKSPACE_PREFIX, isRemoteTask, type LedgerEntry } from '../../shared/ledger';
 import { taskThreadOf, type ThreadId } from '../../shared/room';
 import { getFanOutGuards } from '../worktask/fanoutGuards';
 import { isTaskGateReport } from '../factory/taskGate';
@@ -51,6 +51,15 @@ export interface FanoutCallerPorts {
   lineageOf?: (workspaceId: string) => { owner: string; origin?: FanoutOrigin } | undefined;
   /** Hand the event to the renderer; false when there is none (headless). */
   send: (ev: FanoutCallerEvent) => boolean;
+  /** A task another PC runs: its owner and the pane that asked for it (its
+   *  ledger row; it has no lineage stamp). Must not throw. */
+  remoteOriginOf?: (taskId: string) => { owner: string; paneId: string } | undefined;
+}
+
+function defaultRemoteOriginOf(taskId: string): { owner: string; paneId: string } | undefined {
+  const row = getTaskLedger().get(taskId);
+  const paneId = row?.remote?.from?.paneId;
+  return row && paneId ? { owner: row.ownerWorkspaceId, paneId } : undefined;
 }
 
 function defaultLineageOf(workspaceId: string): { owner: string; origin?: FanoutOrigin } | undefined {
@@ -82,6 +91,12 @@ export function notifyFanoutCaller(
     // A nested owner (itself a fan-out task) has its own caller chain; its
     // workers are not announced into its panes.
     if (lineageOf(ownerWorkspaceId)) return false;
+    // A task another PC runs: addressed to the pane that asked for it, by its row.
+    if (taskWorkspaceId.startsWith(REMOTE_TASK_WORKSPACE_PREFIX)) {
+      const asked = (ports.remoteOriginOf ?? defaultRemoteOriginOf)(taskId);
+      if (!asked || asked.owner !== ownerWorkspaceId) return false;
+      return ports.send({ ownerWorkspaceId, taskWorkspaceId, taskId, kind, seq, origin: { paneId: asked.paneId } });
+    }
     const stamp = lineageOf(taskWorkspaceId);
     if (!stamp || stamp.owner !== ownerWorkspaceId) return false;
     const origin = stamp.origin;
@@ -120,7 +135,11 @@ export function installFanoutCallerLedgerNotify(
     // looks, and a worker that never started will never send a Stop.
     const byWorker = t.by.kind === 'worker' && (t.to === 'failed' || t.to === 'review_requested');
     const bySystem = t.by.kind === 'system' && t.to === 'input_required';
-    if (!byWorker && !bySystem) return;
+    // A task another PC runs has no worker here: wmux moves its row as that
+    // PC reports. Its failure is told; its report is not (it already reached
+    // the caller's pane as the A2A reply).
+    const remoteFailed = t.by.kind === 'system' && t.to === 'failed' && isRemoteTask(t.entry);
+    if (!byWorker && !bySystem && !remoteFailed) return;
     try {
       if (hasBrain(t.entry.ownerWorkspaceId)) return;
       notify(t.entry.ownerWorkspaceId, t.entry.taskWorkspaceId, t.entry.id, `ledger.${t.to}`, t.entry.rev);

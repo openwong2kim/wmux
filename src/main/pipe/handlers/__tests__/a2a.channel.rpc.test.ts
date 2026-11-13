@@ -30,7 +30,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { setTaskLedgerForTests } from '../../../deck/taskLedgerHost';
+import { rememberMissionChannel, setTaskLedgerForTests } from '../../../deck/taskLedgerHost';
 import { RpcRouter } from '../../RpcRouter';
 import { mintCommanderToken, revokeCommanderToken } from '../../../deck/commanderTrust';
 import { registerA2aChannelRpc } from '../a2a.channel.rpc';
@@ -1296,6 +1296,29 @@ describe('task.mission.close of a task another PC runs', () => {
       const res = await router.dispatch({ id: 'close-remote', method: 'task.mission.close', params: { taskId: 'wtask-r1', senderPtyId: 'pty-S' } });
       expect(res.ok).toBe(true);
       expect(closeTask).toHaveBeenCalledWith('wtask-r1');
+    } finally {
+      setTaskLedgerForTests(null);
+    }
+  });
+});
+
+describe('a2a.channel.post into the mission channel of a task another PC runs', () => {
+  it('posts, and says the agent there is reached on its A2A task; another channel gets no warning', async () => {
+    const spawnId = 'sp-0f6c1d2e-3a4b-4c5d-8e9f-0123456789ab';
+    const row = {
+      id: 'wtask-r9', taskWorkspaceId: `remote:${spawnId}`, ownerWorkspaceId: 'ws-of-pty-S', status: 'working',
+      remote: { hostId: '0f1e2d3c-4b5a-4968-8776-655443322110', pc: 'box', spawnId, root: 'repo', state: 'started', a2aTaskId: 'rt-0123' },
+    };
+    setTaskLedgerForTests({ get: (id: string) => (id === row.id ? row : null) } as never);
+    rememberMissionChannel('wtask-r9', 'ch-r9');
+    try {
+      const router = setupHandlerRouter(makeFakeDaemon(() => ({ ok: true, messageId: 'm1' })));
+      const res = await router.dispatch({ id: 'post-remote', method: 'a2a.channel.post', params: { channelId: 'ch-r9', text: 'hi', senderPtyId: 'pty-S' } });
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.result).toMatchObject({ ok: true, warning: 'nobody on box reads this channel; reach the agent with send_message task_id=rt-0123' });
+      const other = await router.dispatch({ id: 'post-local', method: 'a2a.channel.post', params: { channelId: 'ch-local', text: 'hi', senderPtyId: 'pty-S' } });
+      expect(other.ok).toBe(true);
+      if (other.ok) expect((other.result as { warning?: string }).warning).toBeUndefined();
     } finally {
       setTaskLedgerForTests(null);
     }
