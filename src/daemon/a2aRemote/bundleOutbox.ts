@@ -114,13 +114,10 @@ export class BundleOutbox {
     this.endSending(k);
   }
 
-  /** A paired PC was removed: its offers end, and their transfers. */
+  /** A paired PC was removed: its offers end, and every transfer to it (also of an offer already past its time). */
   forgetHost(hostId: HostId): void {
-    for (const [k, o] of this.offers) {
-      if (o.hostId !== hostId) continue;
-      this.offers.delete(k);
-      this.endSending(k);
-    }
+    for (const [k, o] of this.offers) if (o.hostId === hostId) this.offers.delete(k);
+    for (const k of [...this.sending.keys()]) if (k.startsWith(`${hostId}:`)) this.endSending(k);
   }
 
   private endSending(k: string): void {
@@ -176,7 +173,10 @@ export class BundleOutbox {
       timer = setTimeout(() => res.destroy(), this.budget(offered.bytes));
       timer.unref?.();
       const stream = handle.createReadStream({ start: 0, end: offered.bytes - 1, autoClose: false });
-      await pipeline(stream, res);
+      // Ended here, not by the pipeline: a file cut short after its check must not end a body shorter than its Content-Length.
+      await pipeline(stream, res, { end: false });
+      if (stream.bytesRead !== offered.bytes) throw new Error(`the file gave ${stream.bytesRead} of ${offered.bytes} bytes`);
+      await new Promise<void>((resolve) => res.end(resolve));
       this.deps.log('info', `[a2a-remote] ${what}: sent`);
     } catch (err) {
       this.deps.log('info', `[a2a-remote] ${what}: not sent whole: ${errMsg(err)}`);

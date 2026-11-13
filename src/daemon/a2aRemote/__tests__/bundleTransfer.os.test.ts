@@ -129,8 +129,8 @@ describe('a returned bundle, fetched by the asking PC', () => {
     const body = bytes(300_000, 7);
     const m = made(body);
     const got = await intake().pull(ASKER, m);
-    expect(got).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, ASKER, m.bundleId) });
-    expect(fs.readFileSync(bundleStagedFile(askerA2a, ASKER, m.bundleId)).equals(body)).toBe(true);
+    expect(got).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, ASKER, m) });
+    expect(fs.readFileSync(bundleStagedFile(askerA2a, ASKER, m)).equals(body)).toBe(true);
     expect(gets).toEqual([`${A2A_ROUTES.bundle}/${m.bundleId}`]);
     expect(partsOf()).toEqual([]);
     expect(await intake().pull(ASKER, m)).toMatchObject({ kind: 'staged' });
@@ -159,16 +159,17 @@ describe('a returned bundle, fetched by the asking PC', () => {
     fs.writeFileSync(`${swappedFile}.new`, bytes(body.length, 99));
     fs.renameSync(`${swappedFile}.new`, swappedFile);
     expect(await intake().pull(ASKER, swapped)).toEqual({ kind: 'fatal', why: 'the other PC answered HTTP 404' });
-    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
-    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, swapped.bundleId))).toBe(false);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m))).toBe(false);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, swapped))).toBe(false);
   });
 
   it('refuses bytes whose hash is not the manifest\'s, and leaves nothing behind', async () => {
     const body = bytes(50_000, 9);
     const m = made(body);
-    const got = await intake().pull(ASKER, { ...m, sha256: sha(Buffer.from('another')) });
+    const claimed = { ...m, sha256: sha(Buffer.from('another')) };
+    const got = await intake().pull(ASKER, claimed);
     expect(got).toEqual({ kind: 'fatal', why: 'a hash other than its entry names' });
-    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, claimed))).toBe(false);
     expect(partsOf()).toEqual([]);
   });
 
@@ -197,9 +198,9 @@ describe('a returned bundle, fetched by the asking PC', () => {
     const first = await intake({ get: cut }).pull(ASKER, m);
     expect(first).toMatchObject({ kind: 'again' });
     expect(partsOf()).toEqual([]);
-    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m))).toBe(false);
     expect(await intake().pull(ASKER, m)).toMatchObject({ kind: 'staged' });
-    expect(fs.readFileSync(bundleStagedFile(askerA2a, ASKER, m.bundleId)).equals(body)).toBe(true);
+    expect(fs.readFileSync(bundleStagedFile(askerA2a, ASKER, m)).equals(body)).toBe(true);
   });
 
   it('one transfer per PC: a second bundle from the same PC is busy while the first runs; the same bundle twice is one pull', async () => {
@@ -251,7 +252,7 @@ describe('a returned bundle, fetched by the asking PC', () => {
       });
       // eslint-disable-next-line no-await-in-loop -- one at a time
       expect(await intake({ get: ending }).pull(ASKER, m)).toMatchObject({ kind: 'again' });
-      expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
+      expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m))).toBe(false);
       expect(partsOf()).toEqual([]);
       // eslint-disable-next-line no-await-in-loop -- one at a time
       expect(await intake().pull(ASKER, m)).toEqual({ kind: 'fatal', why: 'the other PC answered HTTP 404' });
@@ -336,7 +337,7 @@ describe('a returned bundle, fetched by the asking PC', () => {
     });
     expect(await intake({ get: slow }).pull(ASKER, m)).toMatchObject({ kind: 'again' });
     expect(partsOf()).toEqual([]);
-    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m))).toBe(false);
   });
 
   it('refuses a body in an encoding it does not take, or declared longer than its manifest allows, before writing it', async () => {
@@ -349,7 +350,7 @@ describe('a returned bundle, fetched by the asking PC', () => {
     expect(await intake({ get: answering({ 'content-length': String(BUNDLE_BYTES_CEILING) }) }).pull(ASKER, m))
       .toEqual({ kind: 'fatal', why: 'its declared length is past its manifest' });
     expect(partsOf()).toEqual([]);
-    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m))).toBe(false);
   });
 
   it('after a restart, part files left by unfinished transfers go', async () => {
@@ -360,12 +361,64 @@ describe('a returned bundle, fetched by the asking PC', () => {
     expect(partsOf()).toEqual([]);
   });
 
+  it('an id reused with another hash or size neither takes nor removes what the first manifest staged, at once or after', async () => {
+    const body = bytes(30_000, 25);
+    const m = made(body);
+    const other = { ...m, sha256: sha(bytes(30_000, 26)) };
+    const one = intake();
+    // At once: two pulls, not one answer for both (which of them takes the PC's one slot is not fixed).
+    const first = one.pull(ASKER, m);
+    const second = one.pull(ASKER, other);
+    expect(second).not.toBe(first);
+    expect(one.pull(ASKER, m)).toBe(first);
+    const [a, b] = await Promise.all([first, second]);
+    expect(['staged', 'busy']).toContain(a.kind);
+    expect(b.kind).not.toBe('staged');
+    expect(await one.pull(ASKER, m)).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, ASKER, m) });
+    // After: the staged file stays as it was, also for the same id and hash with another size.
+    expect(await one.pull(ASKER, other)).toMatchObject({ kind: 'fatal' });
+    const resized = { ...m, bytes: m.bytes + 1 };
+    expect(await one.pull(ASKER, resized)).toMatchObject({ kind: 'fatal' });
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, resized))).toBe(false);
+    expect(fs.readFileSync(bundleStagedFile(askerA2a, ASKER, m)).equals(body)).toBe(true);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, other))).toBe(false);
+  });
+
+  it('removing a PC ends a transfer to it of an offer already past its time', async () => {
+    const m = made(bytes(24 * 1024 * 1024, 27));
+    const real = getAs(ASKER);
+    const late: StreamedGet = (p, o, consume) => real(p, o, (r) => {
+      clock += 61 * 60_000;
+      // A later offer drops the expired one from the list while its transfer runs.
+      made(bytes(10, 28), OTHER);
+      outbox.forgetHost(ASKER);
+      return consume(r);
+    });
+    expect(await intake({ get: late }).pull(ASKER, m)).toMatchObject({ kind: 'again' });
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m))).toBe(false);
+  });
+
+  it('a file cut short while it is sent ends the body unfinished, never short of its length', async () => {
+    const body = bytes(24 * 1024 * 1024, 29);
+    const m = made(body);
+    const file = path.join(boxDir, `${m.bundleId}.bundle`);
+    const real = getAs(ASKER);
+    const cutShort: StreamedGet = (p, o, consume) => real(p, o, (r) => {
+      fs.truncateSync(file, 1024);
+      return consume(r);
+    });
+    const sent = servedLine(`bundle ${m.bundleId} for ${ASKER}: not sent whole`);
+    expect(await intake({ get: cutShort }).pull(ASKER, m)).toMatchObject({ kind: 'again' });
+    await sent;
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m))).toBe(false);
+  });
+
   it('a staged bundle goes when discarded, and all of a removed PC\'s staging goes with it', async () => {
     const m = made(bytes(2000, 15));
     const one = intake();
     expect(await one.pull(ASKER, m)).toMatchObject({ kind: 'staged' });
-    await one.discard(ASKER, m.bundleId);
-    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
+    await one.discard(ASKER, m);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m))).toBe(false);
     expect(await one.pull(ASKER, m)).toMatchObject({ kind: 'staged' });
     await one.forgetHost(ASKER);
     expect(fs.existsSync(bundleStagingHostDir(askerA2a, ASKER))).toBe(false);

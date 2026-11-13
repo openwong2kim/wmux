@@ -16,7 +16,7 @@ import { placePart, transferSlots, wireEncoding, writePart, type TransferOutcome
  * session; bundleOutbox.ts serves it there). What the bundle holds is not
  * read here: it is bytes of a size and hash the manifest names, staged as
  *
- *   <a2a dir>/bundle-in/<hostId>/<bundleId>.bundle
+ *   <a2a dir>/bundle-in/<hostId>/<bundleId>.<sha256>.<bytes>.bundle
  *
  * for the import to read (and remove). The body streams through a count on
  * the wire and a count and hash of its bytes into a part file made with
@@ -59,12 +59,15 @@ export function bundleStagingHostDir(a2aDir: string, hostId: HostId): string {
   return path.join(a2aDir, BUNDLE_IN, hostId);
 }
 
+/** A manifest's name in staging: its id, hash and size, so a manifest that reuses an id with another hash or size never takes or removes what another staged. */
+const stem = (m: A2aBundleManifestV1): string => `${m.bundleId}.${m.sha256}.${m.bytes}`;
+
 /** Where a fetched bundle is staged. */
-export function bundleStagedFile(a2aDir: string, hostId: HostId, bundleId: string): string {
-  return path.join(bundleStagingHostDir(a2aDir, hostId), `${bundleId}.bundle`);
+export function bundleStagedFile(a2aDir: string, hostId: HostId, m: A2aBundleManifestV1): string {
+  return path.join(bundleStagingHostDir(a2aDir, hostId), `${stem(m)}.bundle`);
 }
 
-const key = (hostId: HostId, bundleId: string): string => `${hostId}:${bundleId}`;
+const key = (hostId: HostId, m: A2aBundleManifestV1): string => `${hostId}:${stem(m)}`;
 
 export class BundleIntake {
   private readonly deps: BundleIntakeDeps;
@@ -86,7 +89,7 @@ export class BundleIntake {
   pull(hostId: HostId, manifest: unknown): Promise<BundlePull> {
     const m = wellFormed(manifest);
     if (!isHostId(hostId) || !m) return Promise.resolve({ kind: 'fatal', why: 'not a bundle this PC can fetch' });
-    const k = key(hostId, m.bundleId);
+    const k = key(hostId, m);
     const running = this.running.get(k);
     if (running) return running.done;
     const abort = new AbortController();
@@ -101,9 +104,10 @@ export class BundleIntake {
   }
 
   /** A staged bundle is done with (imported, or refused there): it goes. */
-  async discard(hostId: HostId, bundleId: string): Promise<void> {
-    if (!isHostId(hostId) || !isBundleId(bundleId)) return;
-    await fs.promises.rm(bundleStagedFile(this.deps.a2aDir, hostId, bundleId), { force: true });
+  async discard(hostId: HostId, manifest: unknown): Promise<void> {
+    const m = wellFormed(manifest);
+    if (!isHostId(hostId) || !m) return;
+    await fs.promises.rm(bundleStagedFile(this.deps.a2aDir, hostId, m), { force: true });
   }
 
   /** A paired PC was removed: its pulls end, then everything staged from it goes. */
@@ -126,7 +130,7 @@ export class BundleIntake {
     const max = bundleBytesMax(this.deps.maxBytes?.());
     if (m.bytes > max) return { kind: 'fatal', why: `${m.bytes} bytes, past the ${max} this PC takes` };
     const what = `bundle ${m.bundleId} from ${hostId}`;
-    const target = bundleStagedFile(this.deps.a2aDir, hostId, m.bundleId);
+    const target = bundleStagedFile(this.deps.a2aDir, hostId, m);
     try {
       // Fetched before (a repeat after a restart, say): taken as it is when it still checks out.
       if (await holds(this.deps.a2aDir, target, m.sha256, m.bytes)) return { kind: 'staged', file: target };
@@ -142,7 +146,7 @@ export class BundleIntake {
     const timer = setTimeout(() => cut.abort(), this.budget(m.bytes));
     timer.unref?.();
     const both = AbortSignal.any([signal, cut.signal]);
-    const part = path.join(bundleStagingHostDir(this.deps.a2aDir, hostId), PARTS, m.bundleId);
+    const part = path.join(bundleStagingHostDir(this.deps.a2aDir, hostId), PARTS, stem(m));
     try {
       // Made at once, so two PCs fetching for the first time never race to make it; it is checked to be a plain folder next.
       await fs.promises.mkdir(path.join(this.deps.a2aDir, BUNDLE_IN), { recursive: true, mode: 0o700 });
