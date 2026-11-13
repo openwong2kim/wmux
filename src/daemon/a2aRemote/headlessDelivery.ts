@@ -77,11 +77,22 @@ export const LIMIT_CONTINUE_GRACE_MS = 3 * 60 * 1000;
 export const LIMIT_PROBE_MS = 10 * 1000;
 /** Escape is pressed on the limit menu at most this many times. */
 const LIMIT_ESCAPES_MAX = 3;
+/** A later usage-limit notice on a task goes only when the reset moved at least this much from the last one told. */
+export const LIMIT_NOTICE_MOVE_MS = 15 * 60 * 1000;
+/**
+ * Resumes in a row (Claude Code's own after a reset, or the daemon's one
+ * continue) that hit the limit again before the agent wrote anything: past
+ * this many the task fails. Waiting for a real later reset, even days, is
+ * intended; a limit that moves away on every request (seen against a stub)
+ * would otherwise keep the task waiting forever, with nothing done.
+ */
+export const LIMIT_LOOPS_MAX = 5;
 
 /**
- * What the asking PC is told when the agent stops at its usage limit: once per
- * reset time on a task. `again`: the task was told of another reset before
- * (Claude Code went on by itself and hit the limit again, now with this reset).
+ * What the asking PC is told when the agent stops at its usage limit: the
+ * first stop on a task, then only a reset that moved LIMIT_NOTICE_MOVE_MS or
+ * more. `again`: the task was told of another reset before (Claude Code went
+ * on by itself and hit the limit again, now with this reset).
  */
 export function limitNotice(resetsAt: number | null, again = false): string {
   if (again) {
@@ -92,6 +103,13 @@ export function limitNotice(resetsAt: number | null, again = false): string {
   return resetsAt != null
     ? `The agent on that PC is at its usage limit until ${new Date(resetsAt).toISOString()}; it goes on after that.`
     : "The agent on that PC is at its usage limit; when it resets is not known.";
+}
+
+/** Why the task ends when every resume hit the limit again (LIMIT_LOOPS_MAX). */
+export function limitLoopReason(resetsAt: number | null): string {
+  return resetsAt != null
+    ? `that PC's agent hits its usage limit again after every reset; last reset ${new Date(resetsAt).toISOString()}`
+    : "that PC's agent hits its usage limit again after every reset; when it resets is not known";
 }
 
 /** Why the task ends when the agent did not go on after its usage limit. */
@@ -229,6 +247,10 @@ export interface Episode {
    * hit the limit again do not start it over.
    */
   limitUnknownSince?: number | null;
+  /** The stop was left (Claude Code's own resume, or the daemon's continue), and the agent wrote nothing since. */
+  limitResumed?: boolean;
+  /** Resumes in a row that hit the limit again before the agent wrote anything (LIMIT_LOOPS_MAX). */
+  limitLoops?: number;
   /** Text of the assistant entries since the last tool call: the answer so far. */
   answer: string[];
   /** The task was moved to `working` (a failed move is tried again). */
@@ -385,19 +407,29 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
   const apiError = apiErrorFromTranscriptLine(line);
   if (apiError && ep.opened) {
     if (apiError.error === 'rate_limit' && isClaudeUsageLimitText(apiError.message)) {
-      // A new stop (not the same one read again): its own notice, its own one continue.
-      if (!ep.limitStopped) ep.limit = { message: apiError.message, at: apiError.at };
+      // A new stop (not the same one read again): its own Escapes, its own one continue.
+      if (!ep.limitStopped) {
+        ep.limit = { message: apiError.message, at: apiError.at };
+        // A resume that came straight back to the limit.
+        if (ep.limitResumed) ep.limitLoops = (ep.limitLoops ?? 0) + 1;
+        ep.limitResumed = false;
+      }
       ep.limitStopped = true;
       return null;
     }
     return { kind: 'failed', reason: `the agent's turn ended on an error: ${apiError.message || apiError.error}` };
   }
-  // The agent wrote something of its own (API errors returned above): a later unknown-reset stop is a new wait.
-  if (raw?.type === 'assistant') ep.limitUnknownSince = null;
+  // The agent wrote something of its own (API errors returned above): a later stop is a new wait.
+  if (raw?.type === 'assistant') {
+    ep.limitUnknownSince = null;
+    ep.limitResumed = false;
+    ep.limitLoops = 0;
+  }
   // Claude Code went on by itself after its limit stop (its notice, its own prompt, or the agent writing on): no continue is owed.
   if (ep.limitStopped && (raw?.type === 'assistant' || raw?.autoContinued)) {
     ep.limitStopped = false;
     ep.limit = undefined;
+    if (raw?.autoContinued) ep.limitResumed = true;
   }
   let answered = false;
   for (const event of events) {
@@ -406,6 +438,7 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
       if (ep.limitStopped && event.text.trim() === USAGE_LIMIT_CONTINUE_PROMPT) {
         ep.limitStopped = false;
         ep.limit = undefined;
+        ep.limitResumed = true;
         continue;
       }
       return { kind: 'failed', reason: "the agent's turn was taken over by input on this PC" };
@@ -461,8 +494,8 @@ export class HeadlessDelivery {
   private readonly questions = new Map<string, { since: number | null; probedAt: number; noticedTask: string | null }>();
   /** After an answer, by session: the transcript read on for turns nothing on this PC started. */
   private readonly afterwards = new Map<string, Episode>();
-  /** The usage-limit resets each task's asking PC was told of (`limitNotice`), by reset time (`unknown`). */
-  private readonly limitNoticed = new Map<string, Set<string>>();
+  /** The last usage-limit reset each task's asking PC was told of (`limitNotice`); null: told it is not known. */
+  private readonly limitNoticed = new Map<string, number | null>();
   /** Replies sent on each task besides its answers (progress, later turns): bounded by FURTHER_REPLIES_MAX. */
   private readonly further = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -936,20 +969,18 @@ export class HeadlessDelivery {
   private async atLimit(ep: Episode): Promise<void> {
     const limit = this.limitOf(ep);
     if (!limit) return;
-    // Once per reset time on the task: Claude Code's own retries hit the limit again with the same reset, or a later one.
-    let told = this.limitNoticed.get(ep.taskId);
-    const key = limit.resetsAt != null ? String(limit.resetsAt) : 'unknown';
-    if (!told?.has(key)) {
-      const again = (told?.size ?? 0) > 0;
-      if (!told) {
-        told = new Set();
-        this.limitNoticed.set(ep.taskId, told);
-      }
-      told.add(key);
-      await this.notify(ep, limitNotice(limit.resetsAt ?? null, again), 'of the usage limit', ep);
+    const resetsAt = limit.resetsAt ?? null;
+    // Every resume came straight back to the limit: the task ends, the agent is left running.
+    if ((ep.limitLoops ?? 0) >= LIMIT_LOOPS_MAX) return this.finish(ep, { kind: 'failed', reason: limitLoopReason(resetsAt) });
+    // The first stop on the task is told; after that only a reset that moved far enough (a 5-hour limit rolling
+    // into a weekly one), not each of Claude Code's own retries that hit the limit again a few minutes on.
+    const told = this.limitNoticed.get(ep.taskId);
+    const tell = told === undefined || (resetsAt != null && (told === null || Math.abs(resetsAt - told) >= LIMIT_NOTICE_MOVE_MS));
+    if (tell) {
+      this.limitNoticed.set(ep.taskId, resetsAt);
+      await this.notify(ep, limitNotice(resetsAt, told !== undefined), 'of the usage limit', ep);
     }
     const now = this.now();
-    const resetsAt = limit.resetsAt ?? null;
     if (now >= this.limitCapAt(limit)) return this.finish(ep, { kind: 'failed', reason: limitReason(resetsAt) });
     if (limit.continued) return;
     // No dialog on two reads in a row after the reset, and the agent did not go on by itself meanwhile.

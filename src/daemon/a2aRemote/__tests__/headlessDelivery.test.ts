@@ -12,7 +12,7 @@ import { VALID_TRANSITIONS, type Task } from '../../../shared/types';
 import { USAGE_LIMIT_CONTINUE_PROMPT } from '../../../shared/usageLimit';
 import { A2A_REMOTE_BODY_MAX } from '../../../shared/a2aRemote';
 import {
-  LIMIT_CONTINUE_GRACE_MS, LIMIT_PROBE_MS, LIMIT_RESUME_MARGIN_MS, LIMIT_UNKNOWN_MAX_MS, limitNotice, limitReason,
+  LIMIT_CONTINUE_GRACE_MS, LIMIT_LOOPS_MAX, LIMIT_PROBE_MS, LIMIT_RESUME_MARGIN_MS, LIMIT_UNKNOWN_MAX_MS, limitLoopReason, limitNotice, limitReason,
   ASK_REASON, BACKGROUND_NOTE, BACKGROUND_WAIT_MS, DAEMON_STOPPED_REASON, FURTHER_REPLIES_MAX, HeadlessDelivery, TURN_END_SETTLE_MS,
   QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS, assistantTextOf, cutReply, endHeadlessOnStop, type HeadlessDeliveryDeps,
 } from '../headlessDelivery';
@@ -1535,6 +1535,65 @@ describe('a usage limit on a headless session (no hooks, nobody at the pane)', (
     await d.tick();
     expect(moves.at(-1)).toEqual({ to: 'failed', summary: limitReason(LATER) });
     expect(typed).toEqual([PROMPT]);
+  });
+
+  /** "resets <h>:<mm>pm (Asia/Seoul)" on 2026-11-13: (h + 12 - 9):mm UTC that day. */
+  const pmText = (hhmm: string): string => `You've hit your limit · resets ${hhmm}pm (Asia/Seoul)`;
+  const pmAt = (hhmm: string): number => {
+    const [h, m] = hhmm.split(':').map(Number);
+    return Date.UTC(2026, 10, 13, h! + 12 - 9, m!);
+  };
+
+  it('live run 1: the same reset hit again by each retry, three times: one notice, still waiting', async () => {
+    const d = new HeadlessDelivery(limitDeps());
+    await atLimit(d);
+    for (let i = 0; i < 2; i++) {
+      write(AUTO_PROMPT(), apiErrorLine('rate_limit', LIMIT_TEXT));
+      await d.tick();
+    }
+    expect(replies.map((r) => r.text)).toEqual([limitNotice(RESET)]);
+    expect(task.status.state).toBe('working');
+  });
+
+  it(`live run 2: a reset that moves 3 minutes on with every retry: one notice, and the task fails at the ${LIMIT_LOOPS_MAX}th resume that came straight back`, async () => {
+    const d = new HeadlessDelivery(limitDeps());
+    await atLimit(d);
+    const later = ['11:33', '11:36', '11:39', '11:42', '11:45', '11:48'];
+    for (const [i, hhmm] of later.entries()) {
+      write(AUTO_PROMPT(), apiErrorLine('rate_limit', pmText(hhmm)));
+      await d.tick();
+      if (i < LIMIT_LOOPS_MAX - 1) expect(task.status.state).toBe('working');
+    }
+    expect(replies.map((r) => r.text)).toEqual([limitNotice(RESET)]);
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: limitLoopReason(pmAt('11:45')) });
+    expect(typed).toEqual([PROMPT]);
+  });
+
+  it('a 5-hour limit, then the weekly one after its reset: told twice, no failure', async () => {
+    const d = new HeadlessDelivery(limitDeps());
+    await atLimit(d, "You've hit your 5-hour limit · resets 11:30pm (Asia/Seoul)");
+    write(AUTO_PROMPT(), apiErrorLine('rate_limit', "You've hit your weekly limit · resets Nov 18 at 9am (Asia/Seoul)"));
+    await d.tick();
+    const weekly = Date.UTC(2026, 10, 18, 0, 0);
+    expect(replies.map((r) => r.text)).toEqual([limitNotice(RESET), limitNotice(weekly, true)]);
+    expect(task.status.state).toBe('working');
+  });
+
+  it('anything the agent writes between resumes starts the count over', async () => {
+    const d = new HeadlessDelivery(limitDeps());
+    await atLimit(d);
+    const cycle = async (hhmm: string): Promise<void> => {
+      write(AUTO_PROMPT(), apiErrorLine('rate_limit', pmText(hhmm)));
+      await d.tick();
+    };
+    for (const hhmm of ['11:31', '11:32', '11:33', '11:34']) await cycle(hhmm);
+    // It got some work done this time before the next limit.
+    write(AUTO_PROMPT(), toolUseLine(), toolResultLine(), apiErrorLine('rate_limit', pmText('11:35')));
+    await d.tick();
+    for (const hhmm of ['11:36', '11:37', '11:38', '11:39']) await cycle(hhmm);
+    expect(task.status.state).toBe('working');
+    await cycle('11:40');
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: limitLoopReason(pmAt('11:40')) });
   });
 
   it('a second limit after the daemon\'s continue: its own Escape count, its own one continue', async () => {
