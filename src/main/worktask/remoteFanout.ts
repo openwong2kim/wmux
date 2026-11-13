@@ -133,7 +133,8 @@ export function remoteCodeText(code: string | undefined, pc: string, promptBytes
   switch (code) {
     case 'not-supported': return `${pc} starts only Claude without an app, and not in the permission mode it is set to (not-supported)`;
     case 'not-allowed': {
-      const size = promptBytes !== undefined ? ` (${Math.ceil(promptBytes / 1024)} KiB)` : '';
+      // The size the other PC compares: the prompt with wmux's footer.
+      const size = promptBytes !== undefined ? ` (${(promptBytes / 1024).toFixed(1)} KiB, wmux's footer included)` : '';
       return `${pc} does not let this PC start this agent in that folder, or the prompt${size} is longer than it accepts (not-allowed)`;
     }
     case 'agent-not-allowed': return `${pc} does not let this PC start Claude (agent-not-allowed)`;
@@ -218,7 +219,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
   try {
     list = await deps.daemon.outgoing();
   } catch (err) {
-    return { error: `the background service could not list the paired PCs (${(err as Error).message})` };
+    return { error: `the background service could not list the paired PCs (${(err as Error).message}); nothing was sent, so send the same idempotency_key again` };
   }
   const place = resolvePlace(list.places, req.pc);
   if (place === 'unknown-pc' || place === 'ambiguous-pc') return { error: askErrorText(place, req.pc) };
@@ -231,7 +232,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
   try {
     closed = await deps.daemon.closedMissions(req.ownerWorkspaceId);
   } catch (err) {
-    return { error: `the background service could not list your missions (${(err as Error).message})` };
+    return { error: `the background service could not list your missions (${(err as Error).message}); nothing was sent, so send the same idempotency_key again` };
   }
 
   const keys = remoteFanoutKeys(req.scopedKey);
@@ -246,7 +247,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
       mission = { error: (err as Error).message };
     }
     if ('error' in mission) {
-      tasks.push({ index: k, title, ok: false, reason: `the mission could not be started (${mission.error})` });
+      tasks.push({ index: k, title, ok: false, reason: `the mission could not be started (${mission.error}); send the same idempotency_key again` });
       continue;
     }
     const { taskId, channelId } = mission;

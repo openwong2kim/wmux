@@ -126,7 +126,7 @@ describe('remote fan-out keys and names', () => {
 
   it('says why the other PC did not start it', () => {
     expect(remoteCodeText('not-supported', 'box')).toMatch(/starts only Claude without an app/);
-    expect(remoteCodeText('not-allowed', 'box', 5000)).toMatch(/longer than it accepts.*not-allowed/);
+    expect(remoteCodeText('not-allowed', 'box', 5000)).toContain("the prompt (4.9 KiB, wmux's footer included) is longer than it accepts (not-allowed)");
     expect(remoteCodeText('expired', 'box')).toMatch(/expired/);
   });
 });
@@ -163,6 +163,18 @@ describe('startRemoteFanout', () => {
     // Lost between the request and the row: the same key registers the same request.
     const row2 = second.ledger.get(res.tasks[1].taskId!)!;
     expect(row2.remote?.spawnId).toBe(res.tasks[1].spawnId);
+  });
+
+  it('a listing refused by the daemon (rate) sends nothing and says to send the same key again', async () => {
+    const f = fakeDaemon();
+    const deps = depsOf({ ...f.daemon, outgoing: async () => { throw new Error('rate limited (global)'); } });
+    expect(await startRemoteFanout(request(8), deps)).toEqual({ error: expect.stringMatching(/rate limited \(global\).*send the same idempotency_key again/) });
+    expect(f.asks).toHaveLength(0);
+    // The same key once the daemon answers: all 8 asked, once each.
+    const res = await startRemoteFanout(request(8), depsOf(f.daemon, deps.ledger as TaskLedger));
+    if ('error' in res) throw new Error(res.error);
+    expect(res.tasks.every((t) => t.ok)).toBe(true);
+    expect(f.asks).toHaveLength(8);
   });
 
   it('refuses an unknown or unsupported PC before any mission', async () => {
