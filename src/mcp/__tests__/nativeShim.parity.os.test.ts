@@ -341,8 +341,21 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
     });
   }
 
-  it('no token: the same refusal, nothing dialled', async () => {
-    const { js, native } = await both({ name: 'no token', broker: 'none' });
+  // No token file at all (wmux never ran under this home): both hand the
+  // session to their full server, as the bundle entry would serve it. Neither
+  // has one beside it here, so both then end; each words that its own way.
+  it('no token file: both fall back to the full server, nothing dialled', async () => {
+    const { js, native } = await both({ name: 'no token file', broker: 'none' });
+    expect(native.code).toBe(js.code);
+    expect(native.code).toBe(1);
+    expect(native.stdout).toBe(js.stdout);
+    expect(native.stderr).toMatch(/^\[wmux-mcp-shim\] no auth token file\n\[wmux-mcp-shim\] no full bundle to fall back to \(looked at .*index\.js\)\n$/);
+    expect(js.stderr).toBe('[wmux-mcp-shim] no auth token file; running the full server\n[wmux-mcp-shim] no full server beside the shim\n');
+  });
+
+  // A token file that is there but gives no token keeps the refusal on both.
+  it('a token file with no token: the same refusal, nothing dialled', async () => {
+    const { js, native } = await both({ name: 'blank token file', tokenFile: ' \n\t', broker: 'none' });
     expect(native.code).toBe(js.code);
     expect(native.code).toBe(1);
     expect(native.stdout).toBe(js.stdout);

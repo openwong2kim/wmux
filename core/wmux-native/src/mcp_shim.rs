@@ -236,6 +236,14 @@ fn read_auth_token() -> Option<JsStr> {
     resolve_token(file.as_deref(), env_js("WMUX_AUTH_TOKEN"))
 }
 
+/// No token file at all: wmux never ran under this home, or its files were
+/// removed. Only this falls back to the bundle; a file that is there but gives
+/// no token keeps the refusal.
+fn token_file_absent() -> bool {
+    let path = token_path_from(env("USERPROFILE"), env("HOME"), &data_suffix());
+    matches!(std::fs::metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+}
+
 /// getMcpBrokerPipeName on Unix: `os.homedir() || '/tmp'`, where homedir is
 /// HOME whenever it is set (even empty) and the account database otherwise.
 #[cfg(any(unix, test))]
@@ -560,6 +568,7 @@ const ACK_DEADLINE: Duration = Duration::from_secs(5);
 /// The fallback reasons, one stderr line each.
 const NO_BROKER: &str = "no broker";
 const BROKER_OFF: &str = "broker off";
+const NO_TOKEN_FILE: &str = "no auth token file";
 const NO_ACK: &str = "no ack in 5 s";
 const CLOSED_BEFORE_ACK: &str = "closed before ack";
 const NOT_AN_ACK: &str = "not an ack";
@@ -925,6 +934,11 @@ pub fn run(raw: &[OsString]) -> ! {
         no_session(BROKER_OFF, raw);
     }
     let Some(token) = read_auth_token() else {
+        // With no token file there is no broker to reach either: the session
+        // runs on the bundle, as the bundle entry would run it.
+        if token_file_absent() {
+            no_session(NO_TOKEN_FILE, raw);
+        }
         exit_with(Outcome::NoToken);
     };
     let _ = RELAY.set(Relay::new(raw.to_vec()));

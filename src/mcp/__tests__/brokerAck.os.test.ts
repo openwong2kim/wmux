@@ -335,6 +335,30 @@ describe('broker handshake ack', () => {
   });
 });
 
+describe('the node shim with no token file', () => {
+  it('runs the full server beside it, in the same process, without dialling', async () => {
+    const dir = fs.mkdtempSync(path.join(isWin ? os.tmpdir() : '/tmp', 'nst-'));
+    try {
+      const shim = buildShim(dir);
+      // A home where wmux never ran: no token file, no WMUX_AUTH_TOKEN.
+      const env: NodeJS.ProcessEnv = { HOME: dir, USERPROFILE: dir, WMUX_DATA_SUFFIX: `-notok-${process.pid}` };
+      for (const keep of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR']) {
+        if (process.env[keep] !== undefined) env[keep] = process.env[keep];
+      }
+      const child = spawn(process.execPath, [shim], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (d) => { stdout += d; });
+      child.stderr?.on('data', (d) => { stderr += d; });
+      await new Promise((r) => child.once('exit', r));
+      expect(stderr).toBe('[wmux-mcp-shim] no auth token file; running the full server\n');
+      expect(stdout).toBe(`FULL SERVER pid=${child.pid}\n`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe.runIf(hostable)('a broker that cannot read peer pids', () => {
   const suffix = `-brokernokoffi-${process.pid}`;
   let dir = '';
