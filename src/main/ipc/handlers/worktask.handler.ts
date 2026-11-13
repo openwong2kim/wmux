@@ -29,6 +29,7 @@ import { taskPushRecordOf } from '../../worktask/taskPushRecord';
 import { TaskCloseService } from '../../worktask/TaskCloseService';
 import { PendingWorktreeRemovals, setActivePendingRemovals, sweepPendingRemovals } from '../../worktask/pendingWorktreeRemovals';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
+import { isRemoteTask } from '../../../shared/ledger';
 import { noteTaskPanesStopped } from '../../factory/agentGoneFacts';
 import { holdTaskFolderToKeep } from '../../factory/taskFolderCleanup';
 import { beginPaneRelaunch, startsAgent } from '../../factory/workerSlots';
@@ -341,7 +342,10 @@ export function registerWorktaskHandlers(
       const keep = keepSetOf(raw);
       const seats = keep ? await listCompanySeatLeftovers({ root: seatRoot(), sessions: recoveredSessions, keep }) : [];
       // A task another PC runs has no folder here: never "unmaterialized".
-      const local = [...byId.values()].filter((t) => !getTaskLedger().get(t.taskId)?.remote);
+      const local = [...byId.values()].filter((t) => {
+        const row = getTaskLedger().get(t.taskId);
+        return !row || !isRemoteTask(row);
+      });
       const result = await scanService.scan(local, seats);
       return { ok: true, ...result };
     }),

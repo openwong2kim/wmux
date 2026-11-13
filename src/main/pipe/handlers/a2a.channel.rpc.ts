@@ -56,6 +56,7 @@ import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { MISSION_LIST_BATCH_NOT_ALLOWED } from '../../../shared/missionListBatch';
 import { getTaskLedger, noteWorkTaskClosed } from '../../deck/taskLedgerHost';
+import { isRemoteTask } from '../../../shared/ledger';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -378,7 +379,8 @@ export function registerA2aChannelRpc(
     // A task another PC runs is withdrawn now (its ledger row closes, and the
     // close ends its agent there), not on the next ledger pass.
     const taskId = typeof p?.['taskId'] === 'string' ? p['taskId'] : '';
-    if ((res as { ok?: unknown } | null)?.ok === true && taskId && getTaskLedger().get(taskId)?.remote) await noteWorkTaskClosed(taskId);
+    const row = taskId ? getTaskLedger().get(taskId) : null;
+    if ((res as { ok?: unknown } | null)?.ok === true && row && isRemoteTask(row)) await noteWorkTaskClosed(taskId);
     return res;
   });
   // `list` is a read, but an OWNER-scoped one: it was registered as an ordinary

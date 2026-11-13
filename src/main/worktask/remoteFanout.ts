@@ -39,14 +39,14 @@ export const REMOTE_TASK_FOOTER =
 export interface RemoteFanoutDaemon {
   ask(input: A2aSpawnAskInput): Promise<A2aSpawnAskResult>;
   outgoing(): Promise<A2aSpawnOutgoingList>;
-  /** This PC's host id, as the other PC knows it; null when not known. */
-  selfHostId(): Promise<string | null>;
   revokeLink(linkId: string): Promise<void>;
   missionStart(p: { title: string; verifiedWorkspaceId: string; idempotencyKey: string }): Promise<{ taskId: string; channelId: string } | { error: string }>;
   missionClose(taskId: string, verifiedWorkspaceId: string): Promise<void>;
+  /** The ids of `ownerWorkspaceId`'s closed missions (the WorkTask log). */
+  closedMissions(ownerWorkspaceId: string): Promise<ReadonlySet<string>>;
 }
 
-export type RemoteLedger = Pick<TaskLedger, 'get' | 'list' | 'register' | 'update' | 'updateRemote' | 'onTransition'>;
+export type RemoteLedger = Pick<TaskLedger, 'get' | 'list' | 'register' | 'update' | 'updateRemote' | 'closeTask' | 'onTransition'>;
 
 export interface RemoteFanoutDeps {
   daemon: RemoteFanoutDaemon;
@@ -80,7 +80,6 @@ export interface RemoteTaskResult {
   code?: string;
   linkId?: string;
   a2aTaskId?: string;
-  branch?: string;
   /** Why it failed or will not run, in words. */
   reason?: string;
 }
@@ -94,16 +93,6 @@ export function remoteFanoutKeys(scopedKey: string): { callerKey: string; reques
     requestKey: (k) => sha256(`${scopedKey}\0${k}`),
     missionKey: (k) => `remote-${sha256(`${scopedKey}\0${k}`).slice(0, 48)}`,
   };
-}
-
-/**
- * The branch the other PC makes for a request: `wmux/remote/<tree id>`, where
- * the tree id is named for the asking PC's host id and the spawn id
- * (headlessStarter.ts headlessTreeId; a test holds the two equal).
- */
-export function remoteTaskBranch(askingHostId: string, spawnId: string): string {
-  const h = sha256(`${askingHostId}:${spawnId}`);
-  return `wmux/remote/sp-${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
 /** Why a request could not be sent, in words. */
@@ -141,9 +130,12 @@ export function remoteCodeText(code: string | undefined, pc: string, promptBytes
 /** Refusals that need nothing but the parameters (decision H). Null: none. */
 export function remoteFanoutRefusal(params: Record<string, unknown>): string | null {
   const present = (k: string): boolean => params[k] !== undefined && params[k] !== null;
+  for (const [k, what] of [['preset', 'preset'], ['roles', 'roles']] as const) {
+    if (present(k)) return `${what} is not available for tasks on another PC: a paired PC starts Claude only, with its own settings`;
+  }
   for (const [k, what] of [
     ['dependsOn', 'depends_on'], ['files', 'files'], ['checkout', 'checkout'], ['secretNames', 'secret_names'],
-    ['connectors', 'connectors'], ['preset', 'preset'], ['roles', 'roles'], ['threadId', 'thread_id'],
+    ['connectors', 'connectors'], ['threadId', 'thread_id'],
   ] as const) {
     if (present(k)) return `${what} is not available for tasks on another PC`;
   }
@@ -182,12 +174,16 @@ function resultOf(index: number, title: string, entry: LedgerEntry, channelId: s
       ...(r.code ? { code: r.code } : {}),
       ...(r.linkId ? { linkId: r.linkId } : {}),
       ...(r.a2aTaskId ? { a2aTaskId: r.a2aTaskId } : {}),
-      ...(r.branch ? { branch: r.branch } : {}),
       ...(r.state === 'refused' || r.state === 'expired' ? { reason: remoteCodeText(r.code, r.pc, promptBytes) } : {}),
     } : {}),
     ...(failed && !r?.code ? { reason: entry.summary ?? entry.status } : {}),
   };
 }
+
+/** A folder id as the other PC offers it (a2aSpawn.ts ROOT_ID_RE). */
+const ROOT_ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+/** What a ledger row keeps as the PC's name (TaskLedger copyRemote). */
+const storableName = (name: string): boolean => name.length > 0 && name.length <= 256 && !/\p{Cc}/u.test(name);
 
 /**
  * Start (or, for a key already used, answer) a remote fan-out. Refusals of the
@@ -195,6 +191,8 @@ function resultOf(index: number, title: string, entry: LedgerEntry, channelId: s
  * with `ok: false`.
  */
 export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFanoutDeps): Promise<{ hostId: string; pc: string; tasks: RemoteTaskResult[] } | { error: string }> {
+  // Everything the row will hold is checked before anything is sent.
+  if (!ROOT_ID_RE.test(req.root)) return { error: 'root is a folder id the other PC offers (lowercase letters, digits and dashes, at most 32)' };
   let list: A2aSpawnOutgoingList;
   try {
     list = await deps.daemon.outgoing();
@@ -203,8 +201,17 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
   }
   const place = resolvePlace(list.places, req.pc);
   if (place === 'unknown-pc' || place === 'ambiguous-pc') return { error: askErrorText(place, req.pc) };
-  const pcName = place.name?.trim() || req.pc;
+  const named = place.name?.trim() ?? '';
+  const pcName = storableName(named) ? named : place.hostId;
   if (!place.supported) return { error: askErrorText('not-supported', pcName) };
+  // A task whose mission was closed is over: the same key never asks for it
+  // again, whatever its row says (the WorkTask log is the durable fact).
+  let closed: ReadonlySet<string>;
+  try {
+    closed = await deps.daemon.closedMissions(req.ownerWorkspaceId);
+  } catch (err) {
+    return { error: `the background service could not list your missions (${(err as Error).message})` };
+  }
 
   const keys = remoteFanoutKeys(req.scopedKey);
   const tasks: RemoteTaskResult[] = [];
@@ -224,8 +231,13 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
     const { taskId, channelId } = mission;
     deps.rememberChannel(taskId, channelId);
     const existing = deps.ledger.get(taskId);
+    if (!existing && closed.has(taskId)) {
+      tasks.push({ index: k, title, ok: false, taskId, channelId, reason: 'this task\'s mission was closed, so it is not asked for again; send a new key' });
+      continue;
+    }
     if (existing) {
-      // A retry: answered from the row, never asked again.
+      // A retry: answered from the row, never asked again (a task whose
+      // request was refused here has a closed row too).
       tasks.push(resultOf(k, title, existing, channelId, promptBytes));
       continue;
     }
@@ -243,12 +255,23 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
         budget: 'fanout',
       });
     } catch (err) {
-      asked = { ok: false, error: 'unavailable', message: (err as Error).message };
+      // No answer: the request may be stored and on its way. The mission
+      // stays open; the same key again finds the request by its key.
+      tasks.push({ index: k, title, ok: false, taskId, channelId, reason: `the request got no answer (${(err as Error).message}); send the same key again` });
+      continue;
     }
     if (!asked.ok) {
-      // Nothing was sent: the mission is closed so it does not count as open.
+      // Refused here, so nothing was sent. The task ends with a closed row,
+      // which answers the same key from now on, and its mission is closed.
+      const reason = askErrorText(asked.error, pcName, asked.message);
+      try {
+        await deps.ledger.register({ id: taskId, taskWorkspaceId: `unlaunched:${taskId}`, ownerWorkspaceId: req.ownerWorkspaceId, title });
+        await deps.ledger.closeTask(taskId, undefined, reason);
+      } catch (err) {
+        deps.log?.(`[remote-fanout] ${taskId}: the refused task's row could not be written: ${String(err)}`);
+      }
       await deps.daemon.missionClose(taskId, req.ownerWorkspaceId).catch(() => undefined);
-      tasks.push({ index: k, title, ok: false, taskId, channelId, reason: askErrorText(asked.error, pcName, asked.message) });
+      tasks.push({ index: k, title, ok: false, taskId, channelId, reason });
       continue;
     }
     const spawn = asked.spawn;
@@ -269,7 +292,7 @@ export async function startRemoteFanout(req: RemoteFanoutRequest, deps: RemoteFa
   // States that arrived meanwhile (a refusal, a start) are on the rows before the answer.
   await reconcileRemoteTasks(deps).catch((err: unknown) => deps.log?.(`[remote-fanout] reconcile failed: ${String(err)}`));
   for (const t of tasks) {
-    if (!t.taskId || t.ok === false && !t.spawnId) continue;
+    if (!t.taskId || !t.spawnId) continue;
     const entry = deps.ledger.get(t.taskId);
     if (entry) Object.assign(t, resultOf(t.index, t.title, entry, t.channelId, Buffer.byteLength(req.prompts[t.index], 'utf8')));
   }
@@ -286,7 +309,8 @@ async function revokeOnce(entry: LedgerEntry, linkId: string, deps: RemoteFanout
   }
 }
 
-/** The task was closed, cancelled or failed here: a start that arrives later is ended at once. */
+/** The task ended here (closed, cancelled, failed or completed): its link is
+ *  revoked now if it started, or when its start arrives. */
 export async function withdrawRemote(entry: LedgerEntry, deps: RemoteFanoutDeps): Promise<void> {
   const r = entry.remote;
   if (!r) return;
@@ -295,13 +319,34 @@ export async function withdrawRemote(entry: LedgerEntry, deps: RemoteFanoutDeps)
   if (marked.remote.linkId && !marked.remote.revoked) await revokeOnce(marked, marked.remote.linkId, deps);
 }
 
-/** Move every remote row to what this PC's sent requests say now. */
-export async function reconcileRemoteTasks(deps: RemoteFanoutDeps): Promise<void> {
-  const rows = deps.ledger.list().filter((e) => e.remote && !(e.remote.withdrawn && (e.remote.revoked || e.remote.state === 'refused' || e.remote.state === 'expired')));
+/** Passes in flight, one per ledger: a call while one runs runs once more after it. */
+const passes = new WeakMap<object, { running: Promise<void>; again: boolean }>();
+
+/** Move every remote row to what this PC's sent requests say now. One pass at a time per ledger. */
+export function reconcileRemoteTasks(deps: RemoteFanoutDeps): Promise<void> {
+  const cur = passes.get(deps.ledger);
+  if (cur) {
+    cur.again = true;
+    return cur.running;
+  }
+  const state = { running: Promise.resolve(), again: false };
+  state.running = (async () => {
+    do {
+      state.again = false;
+      await reconcileOnce(deps);
+    } while (state.again);
+  })().finally(() => passes.delete(deps.ledger));
+  passes.set(deps.ledger, state);
+  return state.running;
+}
+
+async function reconcileOnce(deps: RemoteFanoutDeps): Promise<void> {
+  // A revoked row is done. A refused one never starts. Every other row is
+  // read: an expired request still takes a late start.
+  const rows = deps.ledger.list().filter((e) => e.remote && !e.remote.revoked && e.remote.state !== 'refused');
   if (rows.length === 0) return;
   const list = await deps.daemon.outgoing();
   const bySpawn = new Map<string, A2aSpawnOutgoingSummary>(list.requests.map((r) => [r.spawnId, r]));
-  let self: string | null | undefined;
   for (const row of rows) {
     const r = row.remote!;
     const rec = bySpawn.get(r.spawnId);
@@ -311,56 +356,39 @@ export async function reconcileRemoteTasks(deps: RemoteFanoutDeps): Promise<void
       if (r.state === 'sent' || r.state === 'waiting') next = await deps.ledger.updateRemote(row.id, { state: 'expired', code: 'expired' });
     } else if (rec.state === 'started' && asSpawnLinkId(rec.linkId)) {
       const linkId = asSpawnLinkId(rec.linkId)!;
-      if (self === undefined) self = await deps.daemon.selfHostId().catch(() => null);
-      next = await deps.ledger.updateRemote(row.id, {
-        state: 'started',
-        linkId,
-        a2aTaskId: remoteTaskId(linkId, spawnFirstMessageId(linkId)),
-        ...(self ? { branch: remoteTaskBranch(self, r.spawnId) } : {}),
-      });
-      if (next?.remote?.withdrawn && !next.remote.revoked) await revokeOnce(next, linkId, deps);
+      next = await deps.ledger.updateRemote(row.id, { state: 'started', linkId, a2aTaskId: remoteTaskId(linkId, spawnFirstMessageId(linkId)) });
     } else if (rec.state !== r.state || rec.code !== r.code) {
       next = await deps.ledger.updateRemote(row.id, { state: rec.state, ...(rec.code ? { code: rec.code } : {}) });
     }
-    const nr = next?.remote;
-    if (next && nr && (nr.state === 'refused' || nr.state === 'expired') && isOpenLedgerStatus(next.status)) {
-      await deps.ledger.update({ id: next.id, status: 'failed', actor: { kind: 'system', workspaceId: 'main' }, expectedRev: next.rev, summary: remoteCodeText(nr.code, nr.pc) });
+    if (!next?.remote) continue;
+    const nr = next.remote;
+    if ((nr.state === 'refused' || nr.state === 'expired') && isOpenLedgerStatus(next.status)) {
+      const failed = await deps.ledger.update({ id: next.id, status: 'failed', actor: { kind: 'system', workspaceId: 'main' }, expectedRev: next.rev, summary: remoteCodeText(nr.code, nr.pc) });
+      if (failed.ok) next = failed.entry;
     }
+    // An ended row is withdrawn here too: its transition may have come while
+    // the daemon was away, or it ended before this PC learned of the start.
+    if (!isOpenLedgerStatus(next.status)) await withdrawRemote(next, deps);
   }
 }
 
-/** Withdraw every remote row that closes, is cancelled or fails here. Returns the unsubscribe. */
+/** Withdraw every remote row that ends here. Returns the unsubscribe. */
 export function installRemoteTaskWithdraw(ledger: Pick<RemoteLedger, 'onTransition'>, getDeps: () => RemoteFanoutDeps | null): () => void {
   return ledger.onTransition((t: LedgerTransition) => {
-    if (!t.entry.remote || (t.to !== 'cancelled' && t.to !== 'failed')) return;
+    if (!t.entry.remote || isOpenLedgerStatus(t.to)) return;
     const deps = getDeps();
-    if (!deps) return; // The next reconcile pass withdraws it: a closed row with a start ends then.
+    if (!deps) return; // The next reconcile pass withdraws it.
     void withdrawRemote(t.entry, deps).catch((err: unknown) => deps.log?.(`[remote-fanout] ${t.entry.id}: withdraw failed: ${String(err)}`));
   });
 }
 
-/** One reconcile at a time; a call while one runs runs once more after it. */
+/** The reconcile pass over whatever daemon is connected now (none: nothing to do). */
 export function remoteTaskReconciler(getDeps: () => RemoteFanoutDeps | null): () => Promise<void> {
-  let running: Promise<void> | null = null;
-  let again = false;
-  const run = (): Promise<void> => {
-    if (running) {
-      again = true;
-      return running;
-    }
-    running = (async () => {
-      do {
-        again = false;
-        const deps = getDeps();
-        if (!deps) return;
-        await reconcileRemoteTasks(deps).catch((err: unknown) => deps.log?.(`[remote-fanout] reconcile failed: ${String(err)}`));
-      } while (again);
-    })().finally(() => {
-      running = null;
-    });
-    return running;
+  return () => {
+    const deps = getDeps();
+    if (!deps) return Promise.resolve();
+    return reconcileRemoteTasks(deps).catch((err: unknown) => deps.log?.(`[remote-fanout] reconcile failed: ${String(err)}`));
   };
-  return run;
 }
 
 const errText = (e: unknown): string =>
@@ -374,7 +402,6 @@ export function remoteFanoutDepsOf(getDaemonClient: () => DaemonClient | null): 
     daemon: {
       ask: (input) => dc.a2aSpawnAsk(input),
       outgoing: () => dc.a2aSpawnOutgoing(),
-      selfHostId: async () => (await dc.a2aRemoteStatus()).hostId,
       revokeLink: async (linkId) => {
         const res = await dc.a2aRemoteLinkAction('revoke', linkId);
         // Gone, or ended already: nothing left to end.
@@ -383,6 +410,11 @@ export function remoteFanoutDepsOf(getDaemonClient: () => DaemonClient | null): 
       missionStart: async (p) => {
         const started = (await dc.rpc('task.mission.start', { ...p, memberId: p.verifiedWorkspaceId })) as { ok?: boolean; taskId?: string; channelId?: string; error?: unknown };
         return started?.ok && started.taskId && started.channelId ? { taskId: started.taskId, channelId: started.channelId } : { error: errText(started?.error) };
+      },
+      closedMissions: async (verifiedWorkspaceId) => {
+        const res = (await dc.rpc('task.mission.list', { verifiedWorkspaceId })) as { ok?: boolean; tasks?: Array<{ id?: unknown; status?: unknown }>; error?: unknown };
+        if (!res?.ok || !Array.isArray(res.tasks)) throw new Error(errText(res?.error));
+        return new Set(res.tasks.filter((t) => t.status === 'closed' && typeof t.id === 'string').map((t) => t.id as string));
       },
       missionClose: async (taskId, verifiedWorkspaceId) => {
         await dc.rpc('task.mission.close', { taskId, verifiedWorkspaceId });

@@ -677,6 +677,34 @@ export class FanOutGuards {
     return { ok: true };
   }
 
+  /** A fan-out to another PC already stamped this rolling hour under `key`
+   *  (a repeat of it is a poll, not a new start). */
+  remoteStamped(key: string): boolean {
+    const windowStart = this.now() - FANOUT_CAP_WINDOW_MS;
+    return this.loadHourly().some((s) => s.id === key && s.at > windowStart);
+  }
+
+  /**
+   * A fan-out to another PC: its tasks run there, so the live cap here does
+   * not apply (the other PC's limits bound them), but they count against the
+   * hourly cap like any start. Checked and stamped in one call.
+   */
+  stampRemote(key: string, count: number): CapReservation {
+    const now = this.now();
+    const recorded = this.loadHourly()
+      .filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS)
+      .reduce((sum, s) => sum + s.count, 0);
+    const hourlyCap = this.hourlyTaskCap();
+    if (hourlyCap !== null && recorded + this.booked('pending') + count > hourlyCap) {
+      return {
+        ok: false,
+        message: `fan-out refused: at most ${hourlyCap} fan-out tasks may start per rolling hour across wmux (${recorded} started in the last hour, ${count} requested)`,
+      };
+    }
+    this.appendStamp(key, count);
+    return { ok: true };
+  }
+
   private appendStamp(key: string, count: number): void {
     const now = this.now();
     const hourly = this.loadHourly().filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS);

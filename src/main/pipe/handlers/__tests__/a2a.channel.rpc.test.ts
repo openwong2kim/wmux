@@ -30,6 +30,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { setTaskLedgerForTests } from '../../../deck/taskLedgerHost';
 import { RpcRouter } from '../../RpcRouter';
 import { mintCommanderToken, revokeCommanderToken } from '../../../deck/commanderTrust';
 import { registerA2aChannelRpc } from '../a2a.channel.rpc';
@@ -1263,5 +1264,25 @@ describe('a2a.channel.rpc — #922 hosted caller read binding', () => {
       expect(r.error?.code).toBe('NOT_AUTHORIZED');
     }
     expect(rpcSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('task.mission.close of a task another PC runs', () => {
+  it('closes its ledger row at once (the close withdraws it)', async () => {
+    const spawnId = 'sp-0f6c1d2e-3a4b-4c5d-8e9f-0123456789ab';
+    const row = {
+      id: 'wtask-r1', taskWorkspaceId: `remote:${spawnId}`, ownerWorkspaceId: 'ws-of-pty-S', status: 'working',
+      remote: { hostId: '0f1e2d3c-4b5a-4968-8776-655443322110', pc: 'box', spawnId, root: 'repo', state: 'started' },
+    };
+    const closeTask = vi.fn(async () => ({ ...row, status: 'cancelled' }));
+    setTaskLedgerForTests({ get: (id: string) => (id === row.id ? row : null), closeTask } as never);
+    try {
+      const router = setupHandlerRouter(makeFakeDaemon(() => ({ ok: true, taskId: 'wtask-r1' })));
+      const res = await router.dispatch({ id: 'close-remote', method: 'task.mission.close', params: { taskId: 'wtask-r1', senderPtyId: 'pty-S' } });
+      expect(res.ok).toBe(true);
+      expect(closeTask).toHaveBeenCalledWith('wtask-r1');
+    } finally {
+      setTaskLedgerForTests(null);
+    }
   });
 });

@@ -96,8 +96,8 @@ describe('a remote task row', () => {
     const a = open();
     const entry = await registerRemote(a);
     const linkId = '7d1e2f30-4b5c-4d6e-9f80-123456789abc';
-    const started = await a.updateRemote(entry.id, { state: 'started', linkId, branch: 'wmux/remote/sp-1234' });
-    expect(started).toMatchObject({ rev: entry.rev + 1, remote: { ...REMOTE, state: 'started', linkId, branch: 'wmux/remote/sp-1234' } });
+    const started = await a.updateRemote(entry.id, { state: 'started', linkId });
+    expect(started).toMatchObject({ rev: entry.rev + 1, remote: { ...REMOTE, state: 'started', linkId } });
     expect(started?.status).toBe('working');
     // The same patch again writes nothing.
     expect((await a.updateRemote(entry.id, { state: 'started' }))?.rev).toBe(entry.rev + 1);
@@ -107,7 +107,7 @@ describe('a remote task row', () => {
   });
 
   it('copyRemote keeps only the fields it knows, each checked', () => {
-    expect(copyRemote({ ...REMOTE, extra: 1, branch: 'not/a/remote/branch', withdrawn: 'yes' })).toEqual(REMOTE);
+    expect(copyRemote({ ...REMOTE, extra: 1, withdrawn: 'yes', revoked: 1 })).toEqual(REMOTE);
     expect(copyRemote({ ...REMOTE, spawnId: 'sp-x' })).toBeNull();
   });
 });

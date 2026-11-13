@@ -316,7 +316,6 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(boundedText(o.code, 64) ? { code: o.code } : {}),
     ...(typeof o.linkId === 'string' && UUID_RE.test(o.linkId) ? { linkId: o.linkId } : {}),
     ...(boundedText(o.a2aTaskId, 128) ? { a2aTaskId: o.a2aTaskId } : {}),
-    ...(typeof o.branch === 'string' && /^wmux\/remote\/[A-Za-z0-9-]{1,128}$/.test(o.branch) ? { branch: o.branch } : {}),
     ...(o.withdrawn === true ? { withdrawn: true as const } : {}),
     ...(o.revoked === true ? { revoked: true as const } : {}),
   };
@@ -763,7 +762,7 @@ export class TaskLedger {
   }
 
   /** What this PC learned of a task another PC runs: its request's state,
-   *  link, branch, or that it was withdrawn here. SYSTEM write; bumps the
+   *  link, or that it was withdrawn here. SYSTEM write; bumps the
    *  rev; no status change, no transition event. Resolves with the row as it
    *  is afterwards, or null for a row that is not remote. */
   updateRemote(id: string, patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>): Promise<LedgerEntry | null> {

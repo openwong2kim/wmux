@@ -2261,8 +2261,9 @@ describe('task.fanout.start with pc (tasks on another PC)', () => {
         revokeLink: async () => undefined,
         missionStart: async () => ({ taskId: 'wtask-r1', channelId: 'ch-r1' }),
         missionClose: async () => undefined,
+        closedMissions: async () => new Set<string>(),
       },
-      ledger: { get: () => null, list: () => [], register: vi.fn(), update: vi.fn(), updateRemote: vi.fn(), onTransition: () => () => undefined },
+      ledger: { get: () => null, list: () => [], register: vi.fn(), update: vi.fn(), updateRemote: vi.fn(), closeTask: vi.fn(), onTransition: () => () => undefined },
       rememberChannel: () => undefined,
     } as unknown as RemoteFanoutDeps;
     return { deps, ask };
@@ -2271,14 +2272,14 @@ describe('task.fanout.start with pc (tasks on another PC)', () => {
 
   it('refuses a commander or a bot caller: the replies go to a pane', async () => {
     const r = remote();
-    const h = setup({ remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    const h = setup({ requireApproval: false, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
     expect(errorOf(await h.call(pcParams({ senderPtyId: undefined }), { origin: 'local', commanderWorkspace: CALLER_WS })).code).toBe('NOT_AUTHORIZED');
     expect(r.ask).not.toHaveBeenCalled();
   });
 
   it('refuses an empty prompt, depends_on and a non-claude agent before asking', async () => {
     const r = remote();
-    const h = setup({ remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    const h = setup({ requireApproval: false, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
     expect(errorOf(await h.call(pcParams({ prompt: undefined }))).message).toMatch(/no prompt/);
     expect(errorOf(await h.call(pcParams({ dependsOn: [[], [0]] }))).message).toMatch(/depends_on/);
     expect(errorOf(await h.call(pcParams({ agents: [{ agent: 'codex' }, { agent: 'codex' }] }))).message).toMatch(/only Claude/);
@@ -2289,11 +2290,31 @@ describe('task.fanout.start with pc (tasks on another PC)', () => {
 
   it('asks the other PC for each task from the calling pane, and starts nothing here', async () => {
     const r = remote();
-    const h = setup({ remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    const h = setup({ requireApproval: false, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
     const res = await h.call(pcParams());
     expect(res).toMatchObject({ ok: true, status: 'completed', result: { remote: { pc: 'box' } } });
     expect(r.ask).toHaveBeenCalledTimes(2);
     expect(r.ask.mock.calls[0][0]).toMatchObject({ agent: 'claude', budget: 'fanout', from: { kind: 'pane', paneId: 'pane-1' } });
     expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('does not start a new one while fan-out approval is on, nor past the hourly cap', async () => {
+    const r = remote();
+    const h = setup({ requireApproval: true, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    expect(errorOf(await h.call(pcParams())).message).toMatch(/approval is on/);
+    expect(r.ask).not.toHaveBeenCalled();
+  });
+
+  it('a repeat of the key is a poll: not stamped or refused again', async () => {
+    const r = remote();
+    const dir = tmp();
+    const guards = guardsIn(capped(dir));
+    const h = setup({ requireApproval: false, guards, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    expect((await h.call(pcParams())).ok).toBe(true);
+    expect(guards.remoteStamped(`${CALLER_WS}::fanout-key-1`)).toBe(true);
+    const stamps = () => JSON.stringify(fs.readdirSync(dir).map((f) => fs.statSync(nodePath.join(dir, f)).size));
+    const before = stamps();
+    expect((await h.call(pcParams())).ok).toBe(true);
+    expect(stamps()).toBe(before);
   });
 });

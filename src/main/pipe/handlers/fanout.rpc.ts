@@ -100,7 +100,7 @@ import {
 import { ORCH_ROLES } from '../../../shared/orchestratorRole';
 import { sendToRenderer } from './_bridge';
 import { resolvePaneForPty, resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
-import { REMOTE_TASK_FOOTER, remoteFanoutDepsOf, remoteFanoutRefusal, startRemoteFanout, type RemoteFanoutDeps } from '../../worktask/remoteFanout';
+import { REMOTE_FANOUT_AGENT, REMOTE_TASK_FOOTER, remoteFanoutDepsOf, remoteFanoutRefusal, startRemoteFanout, type RemoteFanoutDeps } from '../../worktask/remoteFanout';
 import { git as runGit } from '../../git/git';
 import type { DaemonClient } from '../../DaemonClient';
 import { hostCwdForPane, type DaemonRpc } from '../../pty/wslCallerCwd';
@@ -1261,6 +1261,38 @@ export function registerFanOutRpc(
       if (!paneId) return deny('NOT_AUTHORIZED', 'the calling pane could not be resolved; tasks on another PC reply to it');
       const remote = (deps.remoteFanout ?? (() => remoteFanoutDepsOf(() => deps.getDaemonClient?.() ?? null)))();
       if (!remote) return deny('UNAVAILABLE', 'the background service is not connected');
+      // A new key (not a poll of one already started): the owner's approval
+      // switch, the hourly cap and the audit record apply as to any fan-out.
+      const guards = guardsOf();
+      if (!guards.remoteStamped(key)) {
+        if ((deps.requireApproval ?? loadFanoutRequireApproval)()) {
+          return deny('FAILED_PRECONDITION', 'tasks on another PC do not start while fan-out approval is on (Settings › Roles & fan-out): they have no approval prompt yet');
+        }
+        const room = guards.stampRemote(key, parsed.titles.length);
+        if (!room.ok) return deny('RESOURCE_EXHAUSTED', room.message);
+        try {
+          guards.appendAudit({
+            at: Date.now(),
+            idempotencyKey: callerKey,
+            ownerWorkspaceId: callerWorkspaceId,
+            callerIdentity: 'pty',
+            ...(senderPtyId ? { callerPtyId: senderPtyId } : {}),
+            // Not a path here: the other PC and its folder id.
+            repoPath: `${pc}:${root}${sub ? `/${sub}` : ''}`,
+            titles: parsed.titles,
+            roles: parsed.roles,
+            roleCommands: [],
+            promptSha256: prompts.map((p) => promptDigest(p)),
+            approvedBy: 'auto',
+            workerPermissionMode: 'set by the other PC',
+            agents: parsed.titles.map(() => REMOTE_FANOUT_AGENT),
+          });
+        } catch (err) {
+          guards.refundStart(key, parsed.titles.length);
+          console.warn(`[fanout.rpc] remote fan-out ${key} denied (audit-unavailable): ${String(err)}`);
+          return deny('NOT_AUTHORIZED', `fan-out was not approved: ${DENY_MESSAGE['audit-unavailable']}`);
+        }
+      }
       const started = await startRemoteFanout({
         idempotencyKey: callerKey, scopedKey: key, ownerWorkspaceId: callerWorkspaceId, paneId, pc, root,
         ...(sub ? { sub } : {}),

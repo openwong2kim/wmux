@@ -235,6 +235,37 @@ it is linked to, the way it briefs a staff pane on this PC:
   someone revokes it), open tasks on it fail, but a report stays as it is
   until it is marked done here.
 
+## Fan-out to a paired PC
+
+`fanout_start` with `pc` and `root` runs every task of one fan-out on a
+paired PC instead of in worktrees here. `remote_spawn` with no `pc` lists the
+PCs and the folder ids (`root`) each one allows.
+
+- **What runs where.** Each task is a mission (with its channel) and a task
+  row on this PC, plus one start request to the other PC. The other PC
+  starts Claude (only Claude, with its own settings) in a worktree of that
+  folder, under its own rules and limits. Nothing runs here.
+- **Who may ask.** Only an agent in a pane: the replies come to that pane.
+  A commander or a bot is refused, and so is a fan-out task (the depth
+  setting applies as usual). The fan-out approval switch and the hourly cap
+  apply; the live cap does not, since nothing runs here.
+- **Polling.** The same `idempotency_key` again answers from the task rows
+  and asks for nothing twice. A task whose mission was closed is not asked
+  for again.
+- **What the row shows.** Whether the other PC refused the request, let it
+  expire (each request waits 1 hour), or started it. Once started, the row
+  holds the task its replies arrive on. The agent is asked to commit and to
+  end its last reply with its branch and commit; the branch stays on that PC.
+- **Ending it.** Closing the mission (or cancelling or finishing its row)
+  ends the agent on the other PC: its link is revoked now, or as soon as a
+  late start arrives.
+- **After a rollback.** A wmux from before this feature keeps the task row
+  but does not revoke links. Closing the mission closes the row; an agent
+  that already started on the other PC keeps running until you revoke its
+  link by hand on the Remote page.
+- **Not yet.** No review gate, no work brought back beyond the branch name
+  and commit in the agent's reply, and no follow-up message to the task.
+
 ## Network and firewall
 
 - **Port.** The listener uses TCP **45660** by default (clear of the phone

@@ -590,3 +590,18 @@ describe('ended tasks hold no live slot (F25)', () => {
     );
   });
 });
+
+describe('a fan-out to another PC', () => {
+  it('counts against the hourly cap but not the live cap, and knows its key for the hour', () => {
+    const g = guards(capped(tmpDir()), { live: () => FANOUT_LIVE_TASK_CAP });
+    expect(g.remoteStamped('k')).toBe(false);
+    expect(g.stampRemote('k', 8)).toEqual({ ok: true });
+    expect(g.remoteStamped('k')).toBe(true);
+    expect(g.stampRemote('k2', FANOUT_HOURLY_TASK_CAP - 8)).toEqual({ ok: true });
+    const full = g.stampRemote('k3', 1);
+    expect(full.ok).toBe(false);
+    expect(full.ok === false && full.message).toMatch(/per rolling hour/);
+    // A local fan-out sees the hour the remote ones took.
+    expect(g.reserve('local', 1).ok).toBe(false);
+  });
+});

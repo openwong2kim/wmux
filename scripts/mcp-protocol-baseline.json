@@ -2,8 +2,8 @@
   "schemaVersion": 2,
   "profiles": {
     "full": {
-      "maxListBytes": 80500,
-      "wireResultSha256": "f5c9c93ad941bee377960722d72728b359d0e5b1a908d8c29dd1de7fb57be36b",
+      "maxListBytes": 80000,
+      "wireResultSha256": "da6c648055666e18c6873d2a51b5a1c8b3b91021ab6c8337fcd7a3b96aa7d26d",
       "instructionSha256": "6e09a08a7038bb08f49484e3a98020ef6a35efebbebc39d33f9a514b71e7c7c1",
       "toolNames": [
         "browser_open",
@@ -92,7 +92,7 @@
     },
     "core": {
       "maxListBytes": 49000,
-      "wireResultSha256": "46a56fc9d4d09eb31c4445bcc70db47b2aca2dc27cbfc18afc6d9616079d4093",
+      "wireResultSha256": "a0ed29e2ebfd8293bc2c9bd6225100b07d7ef848eb2ccc805716034df4389901",
       "instructionSha256": "4a87aa8208502b84c23fd41c6c2594b91c7e368ad187f14d4905164448548f4a",
       "toolNames": [
         "terminal_read",
@@ -149,7 +149,7 @@
     },
     "commander": {
       "maxListBytes": 60000,
-      "wireResultSha256": "4c1ebe1f22f7063633cd92cbdf462bab3cba4fb7a63ee21497faf41c186a2549",
+      "wireResultSha256": "46976b8e75f51ce6ff675fb5c2c3f7d0ce3c50f7ba612e1214111aa8e5dfe612",
       "instructionSha256": "a6ca1e79b13dc33fb5d4ce6478ed5019a111254511cb3fe38c43ad7c4f9715f2",
       "toolNames": [
         "terminal_read",
@@ -205,7 +205,7 @@
   "botProfiles": {
     "lead": {
       "maxListBytes": 40000,
-      "wireResultSha256": "c203a53924f888dba7d5cce9b777cdb769829e29261e152b5b5bab9fba875591",
+      "wireResultSha256": "1754ed5b32aa1f92d28f4e7dae61c4a1ddd54c81563f06aa6fcb79505ef1d43b",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -249,7 +249,7 @@
     },
     "triage": {
       "maxListBytes": 40000,
-      "wireResultSha256": "c203a53924f888dba7d5cce9b777cdb769829e29261e152b5b5bab9fba875591",
+      "wireResultSha256": "1754ed5b32aa1f92d28f4e7dae61c4a1ddd54c81563f06aa6fcb79505ef1d43b",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -293,7 +293,7 @@
     },
     "verifier": {
       "maxListBytes": 40000,
-      "wireResultSha256": "c203a53924f888dba7d5cce9b777cdb769829e29261e152b5b5bab9fba875591",
+      "wireResultSha256": "1754ed5b32aa1f92d28f4e7dae61c4a1ddd54c81563f06aa6fcb79505ef1d43b",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -337,7 +337,7 @@
     },
     "maintainer": {
       "maxListBytes": 40000,
-      "wireResultSha256": "c203a53924f888dba7d5cce9b777cdb769829e29261e152b5b5bab9fba875591",
+      "wireResultSha256": "1754ed5b32aa1f92d28f4e7dae61c4a1ddd54c81563f06aa6fcb79505ef1d43b",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -381,7 +381,7 @@
     },
     "moa": {
       "maxListBytes": 40000,
-      "wireResultSha256": "c203a53924f888dba7d5cce9b777cdb769829e29261e152b5b5bab9fba875591",
+      "wireResultSha256": "1754ed5b32aa1f92d28f4e7dae61c4a1ddd54c81563f06aa6fcb79505ef1d43b",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",

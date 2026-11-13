@@ -155,8 +155,8 @@ const FANOUT_START_SHAPE = {
 
 /** fanout_start's tasks on another PC (pane callers only). */
 const FANOUT_REMOTE_SHAPE = {
-  pc: z.string().max(256).optional().describe('Paired PC to run every task on (Claude only; needs root).'),
-  root: z.string().max(64).optional().describe('With pc: its folder id.'),
+  pc: z.string().max(256).optional().describe('Run every task on this paired PC (Claude only; needs root). remote_spawn with no pc lists PCs.'),
+  root: z.string().max(64).optional().describe('With pc: a folder id it allows (same list).'),
 };
 
 /** Register the fan-out tool on the given MCP server. */
@@ -175,15 +175,15 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
 
   server.tool(
     'fanout_start',
-    `Fan out one job into N isolated parallel tasks (max ${FANOUT_MAX_TASKS}). Each task gets its own git worktree on a fresh wtask/ branch, its own wmux workspace with an agent pane already launched on the prompt, and its own mission channel — so N attempts at one problem, or N independent jobs, never collide in one checkout. ` +
+    `Fan out one job into N parallel tasks (max ${FANOUT_MAX_TASKS}), each with its own git worktree on a fresh wtask/ branch, its own workspace with an agent pane launched on the prompt, and its own mission channel. ` +
       // Deliberately NOT naming channel_mission_list here: that tool is outside
       // the commander surface, so pointing a brain at it names a tool its
       // tools/list does not contain. Every profile can see the mission channels
       // themselves, which is the same answer.
-      'Returns { status: "accepted", ownerWorkspaceId } immediately. ownerWorkspaceId (and its deprecated alias workspaceId) is YOUR workspace, never a task\'s — never close it; each task\'s own workspaceId is in the completed poll\'s result.tasks[]. Spawning outlasts one RPC, so poll with the SAME idempotency_key, or watch each mission channel appear in your channel list. ' +
+      'Returns { status: "accepted", ownerWorkspaceId } immediately. ownerWorkspaceId (and its deprecated alias workspaceId) is YOUR workspace, never a task\'s — never close it; each task\'s own workspaceId is in the completed poll\'s result.tasks[]. Poll with the SAME idempotency_key, or watch each mission channel appear in your channel list. ' +
       'No approval prompt unless the user turned it on (unanswered, a poll says denied/timeout). A task cannot fan out again; over a live or hourly cap the user set it is refused. ' +
-      'Repository and owning workspace come from your verified identity — fan-out runs in YOUR repository, the tasks are owned by you, and it is refused without that identity. A preset may skip the worktree: each task then writes into its own folder. ' +
-      'An accept or the completed poll may carry `warnings` (also printed as WARNING lines): the fan-out ran, but something will stop its reports reaching you or the tasks did not start from a fresh origin commit — act on it.',
+      'Repository and owner come from your verified identity: fan-out runs in YOUR repository, owned by you, and is refused without that identity. A preset may skip the worktree: each task then writes into its own folder. ' +
+      'An accept or completed poll may carry `warnings` (also as WARNING lines): it ran, but something will stop its reports reaching you or the tasks did not start from a fresh origin commit — act on it.',
     deps.remotePc ? { ...FANOUT_START_SHAPE, ...FANOUT_REMOTE_SHAPE } : FANOUT_START_SHAPE,
     async ({ idempotency_key, titles, prompt, task_prompts, roles, preset, agents, files, depends_on, cancel_pending, checkout, secret_names, connectors, thread_id, ...rest }) => {
       const params: Record<string, unknown> = {
