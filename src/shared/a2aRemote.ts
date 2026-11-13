@@ -1205,11 +1205,17 @@ export interface A2aRemoteTaskMarkerV1 {
    */
   kind?: A2aEndpointKind;
   /**
-   * Outbound company task: the peer's state messageId of the `completed` held
-   * here as a report (the task is input-required) until this host marks it
-   * done. Cleared by the peer's next state that is not a report.
+   * Outbound company or fan-out task: the peer's state messageId of the
+   * `completed` held here as a report (the task is input-required) until this
+   * host marks it done. Cleared by the peer's next state that is not a report.
    */
   reported?: string;
+  /**
+   * Outbound: the first task of an agent `fanout_start` asked another PC to
+   * start, set here when the task was made (never from anything the peer
+   * sends). The peer's `completed` is held as a report, as on a company task.
+   */
+  fanout?: true;
 }
 
 /**

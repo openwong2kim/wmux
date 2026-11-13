@@ -327,6 +327,32 @@ export function taskAnchorRows<T extends object>(tasks: readonly T[]): Rec[] {
   return rows;
 }
 
+/** Task ids one `view: 'state'` call reads at most. */
+export const STATE_VIEW_IDS_MAX = 64;
+
+/**
+ * A sent task's remote marker as the state view shows it: when the other PC
+ * last reported it, and its worker's newest status as kinds only. Each field
+ * is copied by name, so nothing else from that PC (a menu's labels among it)
+ * goes into this read.
+ */
+function remoteStateView(remote: unknown): Rec | null {
+  if (!isRec(remote)) return null;
+  const reported = str(remote.reported);
+  let status: Rec | undefined;
+  if (isRec(remote.status)) {
+    const d = isRec(remote.status.detail) ? remote.status.detail : {};
+    const detail = {
+      ...(str(d.question) ? { question: d.question } : {}),
+      ...(str(d.menuId) ? { menuId: d.menuId } : {}),
+      ...(str(d.resetsAt) ? { resetsAt: d.resetsAt } : {}),
+      ...(typeof d.background === 'number' ? { background: d.background } : {}),
+    };
+    status = { kind: remote.status.kind, since: remote.status.since, ...(Object.keys(detail).length > 0 ? { detail } : {}) };
+  }
+  return reported || status ? { ...(reported ? { reported } : {}), ...(status ? { status } : {}) } : null;
+}
+
 /**
  * What one task source returns for a query: every task in full without
  * `view` (the legacy contract), and for `view: 'page'` either the named task in
@@ -335,11 +361,17 @@ export function taskAnchorRows<T extends object>(tasks: readonly T[]): Rec[] {
 export function applyTaskQueryView<T extends object>(tasks: readonly T[], params: Rec): unknown[] {
   // 내부 상태 조회는 이력·산출물을 어느 IPC 구간에도 싣지 않는다.
   if (params.view === 'state') {
-    return tasks.filter((task) => (task as Rec).id === params.taskId).map((task) => {
+    // One task (`taskId`), or several in one call (`taskIds`: main's pass over
+    // the tasks it sent to another PC).
+    const ids = Array.isArray(params.taskIds)
+      ? new Set(params.taskIds.filter((v): v is string => typeof v === 'string').slice(0, STATE_VIEW_IDS_MAX))
+      : null;
+    return tasks.filter((task) => (ids ? ids.has((task as Rec).id as string) : (task as Rec).id === params.taskId)).map((task) => {
       const row = task as Rec;
       const status = isRec(row.status) ? row.status : {};
       const metadata = isRec(row.metadata) ? row.metadata : {};
-      return { id: row.id, status: { state: status.state }, metadata: { updatedAt: metadata.updatedAt } };
+      const remote = remoteStateView(metadata.remote);
+      return { id: row.id, status: { state: status.state }, metadata: { updatedAt: metadata.updatedAt, ...(remote ? { remote } : {}) } };
     });
   }
   if (isAnchorTaskQuery(params)) return taskAnchorRows(tasks);

@@ -228,3 +228,30 @@ describe('companyHoldFields — why a company task has not reached its seat', ()
     expect(companyHoldFields({ id: 't', metadata: {} })).toEqual({});
   });
 });
+
+describe("view: 'state'", () => {
+  const sent = (id: string, remote?: Record<string, unknown>) => ({
+    id, status: { state: 'working' }, history: [{ kind: 'message', messageId: `m-${id}`, role: 'user', parts: [{ kind: 'text', text: 'secret prompt' }] }],
+    metadata: { updatedAt: '2026-11-13T08:00:00.000Z', ...(remote ? { remote } : {}) },
+  });
+
+  it('reads several tasks in one call, with the remote marker and no history or labels', () => {
+    const tasks = [
+      sent('rt-a', { reported: '2026-11-13T08:01:00.000Z' }),
+      sent('rt-b', { status: { kind: 'question', since: '2026-11-13T08:02:00.000Z', detail: { question: 'menu', menuId: 'toolu_1', options: ['rm -rf /', 'ok'], optionCount: 2 } } }),
+      sent('rt-c'),
+      sent('rt-other'),
+    ];
+    const rows = applyTaskQueryView(tasks, { view: 'state', taskIds: ['rt-a', 'rt-b', 'rt-c'] }) as View[];
+    expect(rows.map((r) => r.id)).toEqual(['rt-a', 'rt-b', 'rt-c']);
+    expect(rows[0].metadata.remote).toEqual({ reported: '2026-11-13T08:01:00.000Z' });
+    expect(rows[1].metadata.remote).toEqual({ status: { kind: 'question', since: '2026-11-13T08:02:00.000Z', detail: { question: 'menu', menuId: 'toolu_1' } } });
+    expect(rows[2].metadata.remote).toBeUndefined();
+    expect(JSON.stringify(rows)).not.toMatch(/secret prompt|rm -rf/);
+  });
+
+  it('still reads one task by taskId', () => {
+    const rows = applyTaskQueryView([sent('rt-a'), sent('rt-b')], { view: 'state', taskId: 'rt-b' }) as View[];
+    expect(rows.map((r) => r.id)).toEqual(['rt-b']);
+  });
+});

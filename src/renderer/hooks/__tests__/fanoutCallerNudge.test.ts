@@ -296,6 +296,33 @@ describe('fan-out caller nudge', () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  describe('a task another PC runs (addressed by the pane id on its row)', () => {
+    const remote = (seq: number) => ({ ...pointer('wtask-r1', seq, 'ledger.failed', { paneId: 'pane-c' }), taskWorkspaceId: 'remote:sp-0f6c1d2e-3a4b-4c5d-8e9f-000000000001' });
+
+    it('is told to the pane that asked', async () => {
+      receiveFanoutCallerEvent(remote(1));
+      await windowElapses();
+      expect(submit).toHaveBeenCalledTimes(1);
+    });
+
+    it('is dropped quietly once that pane is gone', async () => {
+      receiveFanoutCallerEvent(remote(1));
+      useStore.setState({ workspaces: [ws(OWNER, leaf('pane-x', [surface('surf-x', 'pty-x')]))] });
+      await windowElapses();
+      expect(submit).not.toHaveBeenCalled();
+    });
+
+    it('is dropped quietly when another agent session took the pane', async () => {
+      agent('running');
+      receiveFanoutCallerEvent(remote(1));
+      await vi.advanceTimersByTimeAsync(0);
+      session.mockResolvedValue({ incarnationId: 'inc-2' });
+      agent('waiting');
+      await turnEnd();
+      expect(submit).not.toHaveBeenCalled();
+    });
+  });
+
   it('drops a pointer older than the time limit', async () => {
     agent('running');
     receiveFanoutCallerEvent(pointer('t1', 1));
