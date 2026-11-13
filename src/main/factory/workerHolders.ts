@@ -28,7 +28,7 @@
 //
 // In memory only: the set is rebuilt on every look from the records below.
 
-import type { LedgerEntry, LedgerStatus } from '../../shared/ledger';
+import { isRemoteTask, type LedgerEntry, type LedgerStatus } from '../../shared/ledger';
 import { SLOT_ROW_GRACE_MS } from './agentSlots';
 
 export type HolderState = 'held' | 'free' | 'unknown';
@@ -67,7 +67,9 @@ export interface WorkerHolder {
 export type HolderReason =
   | 'verdicted' | 'resumed' | 'starting' | 'stopped' | 'workspace-closed' | 'no-agent'
   | 'running' | 'no-read' | 'stale-read' | 'gone' | 'not-reclaimed' | 'not-known-gone' | 'no-task-record'
-  | 'resuming';
+  | 'resuming'
+  /** A task another PC runs: held while open, never counted against this PC's live cap. */
+  | 'remote';
 
 /** One task a fan-out booked against the caps, until its spawn settles
  *  (FanOutGuards). Process memory only. */
@@ -375,6 +377,8 @@ function decide(
   // A read that started before the launch saw the pane before its agent.
   const readBeforeLaunch = launch !== undefined && (s.readAt === undefined || launch >= s.readAt);
   const open = s.workspaces ? [...ws].filter((w) => s.workspaces?.has(w)) : [...ws];
+  // Nothing of it runs here.
+  if (row && isRemoteTask(row)) return { state: 'held', why: 'remote' };
   // A verify task's verdict was the reason it ran: once recorded, it holds
   // nothing, whatever its panes show.
   if (!ignoreVerdict && row?.dispatch?.preset === 'verify' && row.status === 'review_requested' && s.verdicted.has(taskId)) return { state: 'free', why: 'verdicted' };
@@ -454,7 +458,7 @@ export interface HolderCounts {
 export function holderCounts(holders: readonly WorkerHolder[], botId?: string): HolderCounts {
   const out: HolderCounts = { live: 0, workers: 0, agents: 0, bot: 0, botStarting: 0 };
   for (const h of holders) {
-    if (h.state === 'free') continue;
+    if (h.state === 'free' || h.why === 'remote') continue;
     out.live++;
     if (h.origin !== 'bot') continue;
     out.workers++;

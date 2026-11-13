@@ -340,7 +340,9 @@ export function registerWorktaskHandlers(
       // the renderer keeps; a request without them lists none.
       const keep = keepSetOf(raw);
       const seats = keep ? await listCompanySeatLeftovers({ root: seatRoot(), sessions: recoveredSessions, keep }) : [];
-      const result = await scanService.scan([...byId.values()], seats);
+      // A task another PC runs has no folder here: never "unmaterialized".
+      const local = [...byId.values()].filter((t) => !getTaskLedger().get(t.taskId)?.remote);
+      const result = await scanService.scan(local, seats);
       return { ok: true, ...result };
     }),
   );

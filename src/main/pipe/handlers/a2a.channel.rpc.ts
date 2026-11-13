@@ -55,6 +55,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { MISSION_LIST_BATCH_NOT_ALLOWED } from '../../../shared/missionListBatch';
+import { getTaskLedger, noteWorkTaskClosed } from '../../deck/taskLedgerHost';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -372,7 +373,14 @@ export function registerA2aChannelRpc(
   // (J0 3-model review — Codex, conf 10: capability map + FIRST_PARTY had the
   // methods but the router forward was the missing link).
   router.register('task.mission.start', (p, ctx) => forward('task.mission.start', p, true, ctx));
-  router.register('task.mission.close', (p, ctx) => forward('task.mission.close', p, true, ctx));
+  router.register('task.mission.close', async (p, ctx) => {
+    const res = await forward('task.mission.close', p, true, ctx);
+    // A task another PC runs is withdrawn now (its ledger row closes, and the
+    // close ends its agent there), not on the next ledger pass.
+    const taskId = typeof p?.['taskId'] === 'string' ? p['taskId'] : '';
+    if ((res as { ok?: unknown } | null)?.ok === true && taskId && getTaskLedger().get(taskId)?.remote) await noteWorkTaskClosed(taskId);
+    return res;
+  });
   // `list` is a read, but an OWNER-scoped one: it was registered as an ordinary
   // read, which left a caller-supplied verifiedWorkspaceId in place whenever no
   // senderPtyId resolved — so a wire caller could read another workspace's

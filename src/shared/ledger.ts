@@ -153,6 +153,8 @@ export interface LedgerRemote {
   /** The task was closed (or expired) here: a start that arrives later is
    *  ended at once instead of left running. */
   withdrawn?: true;
+  /** A withdrawn task's link was revoked here (a failed revoke is retried). */
+  revoked?: true;
 }
 
 export const LEDGER_REMOTE_STATES = ['sent', 'waiting', 'started', 'refused', 'expired'] as const;

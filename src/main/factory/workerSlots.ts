@@ -33,7 +33,7 @@ import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
 import { readVersionedFile } from './versionedFile';
 import { getWmuxDir } from '../../daemon/config';
-import type { LedgerEntry } from '../../shared/ledger';
+import { isRemoteTask, type LedgerEntry } from '../../shared/ledger';
 import { getTaskLedger } from '../deck/taskLedgerHost';
 import { botWorkerSessionRecord } from '../agents/botWorkerMergeGuard';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
@@ -223,7 +223,8 @@ export class WorkerSlots {
     const kept: LedgerEntry[] = [];
     let room = WORKER_SLOTS_MAX - this.tasks.size;
     for (const r of order) {
-      if (this.tasks.has(r.id)) continue;
+      // A task another PC runs has no worker here.
+      if (this.tasks.has(r.id) || isRemoteTask(r)) continue;
       if (!isOpen(r) && room <= 0) break;
       kept.push(r);
       room--;

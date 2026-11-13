@@ -36,6 +36,7 @@
 
 import type { TaskLedger } from '../../daemon/ledger/TaskLedger';
 import { getTaskLedger } from '../deck/taskLedgerHost';
+import { isRemoteTask } from '../../shared/ledger';
 import { loadDeckAutonomy, DEFAULT_MODE, type WorkspaceAutonomy } from '../deck/deckAutonomyStore';
 
 /** One row of the pushed table — exactly what `decideApprovalPress` consumes. */
@@ -84,6 +85,8 @@ export function buildWorkspaceFacts(ports: WorkspaceFactsFeedPorts): WorkspaceFa
   try {
     const ledger = (ports.ledger ?? getTaskLedger)();
     for (const e of ledger.list({ openOnly: true })) {
+      // A task another PC runs has no workspace here.
+      if (isRemoteTask(e)) continue;
       const set = owners.get(e.taskWorkspaceId) ?? new Set<string>();
       if (e.ownerWorkspaceId) set.add(e.ownerWorkspaceId);
       owners.set(e.taskWorkspaceId, set);

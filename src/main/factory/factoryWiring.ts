@@ -90,7 +90,7 @@ import { VERDICTED_TASKS_FILENAME, VerdictedTasks, installVerifyTaskClose, setVe
 import { getTaskLedger } from '../deck/taskLedgerHost';
 import { onPrVerdictRecorded } from '../github/prVerdictStore';
 import { BOT_EVENT } from '../../shared/bot';
-import type { LedgerEntry } from '../../shared/ledger';
+import { isRemoteTask, type LedgerEntry } from '../../shared/ledger';
 import { git } from '../git/git';
 import { getSharedTaskGateRunner } from '../worktask/TaskGateRunner';
 import { TREE_DESTROY_TIMEOUT_MS, destroyedTreeOf, isPidAlive, sessionsStartedIn, stopSessionsInDir } from '../worktask/stopSessionsInDir';
@@ -694,6 +694,8 @@ export async function stopTaskWorker(
   workspacePtys?: (workspaceId: string) => readonly string[] | null,
   opts: StopTaskWorkerOpts = {},
 ): Promise<number> {
+  // Bot tasks only; a task another PC runs has no pane here to stop.
+  if (isRemoteTask(entry)) return 0;
   const rpc = daemonRpc(client);
   if (!rpc) throw new Error('the daemon is not connected');
   const worktree = await taskFolderFromMissions(rpc, entry);

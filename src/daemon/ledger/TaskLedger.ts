@@ -318,6 +318,7 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(boundedText(o.a2aTaskId, 128) ? { a2aTaskId: o.a2aTaskId } : {}),
     ...(typeof o.branch === 'string' && /^wmux\/remote\/[A-Za-z0-9-]{1,128}$/.test(o.branch) ? { branch: o.branch } : {}),
     ...(o.withdrawn === true ? { withdrawn: true as const } : {}),
+    ...(o.revoked === true ? { revoked: true as const } : {}),
   };
 }
 
