@@ -3,60 +3,19 @@
 // log line every lane write gets, and the coalesced notice in the task
 // workspace.
 
-import { approvalOnScreen } from '../../../daemon/approvals/approvalOnScreen';
-import { parsePlanPrompt, parseTerminalPrompt } from '../../../daemon/approvals/terminalPromptParse';
+import type { ScreenQuestion } from '../../../daemon/approvals/screenQuestion';
 import { resolveAgentSlug } from '../../../shared/ptyMessageDelivery';
 import { agentRow } from '../../../shared/agentIdentity';
 import type { FanoutOwnerAnswers } from '../../../shared/workerLaunch';
-import type { FolderTrustState } from '../../../daemon/folderTrustState';
 
-/**
- * What a task pane shows, as the owner lane reads it. `menu` is a selection
- * menu wmux identified (an AskUserQuestion select its hook reported, or the
- * menu of a pane held at its usage limit); `dialog` is any other selection
- * dialog on screen.
- */
-export type OwnerLaneScreen = 'none' | 'menu' | 'dialog' | 'permission' | 'plan' | 'trust' | 'unknown';
+/** What a task pane shows, as the owner lane reads it (daemon/approvals/screenQuestion.ts). */
+export type OwnerLaneScreen = ScreenQuestion;
 
-/** The pending approval record's kind for an AskUserQuestion select. */
-const QUESTION_RECORD_KIND = 'awaiting_input';
-
-/** A pending approval record on the pane, by its kind. */
-export function screenOfRecord(kind: string | undefined): OwnerLaneScreen {
-  return kind === QUESTION_RECORD_KIND ? 'menu' : 'permission';
-}
-
-/** What the screen text alone shows. */
-export function classifyOwnerLaneScreen(screen: string): 'none' | 'dialog' | 'permission' | 'plan' {
-  const rows = screen.split('\n').slice(-60);
-  if (parsePlanPrompt(rows)) return 'plan';
-  if (!approvalOnScreen(screen)) return 'none';
-  return parseTerminalPrompt(rows) ? 'permission' : 'dialog';
-}
-
-/**
- * What a task pane shows, from what main can read of it: a folder-trust
- * prompt first; a screen that cannot be read whole is `unknown`; a permission
- * or plan prompt the screen shows; then a pending approval record (it may be
- * older than the screen); then any other dialog, a `menu` only on a pane held
- * at its usage limit.
- */
-export function ownerLaneScreenOf(facts: {
-  trust: FolderTrustState | null;
-  /** The pending record's kind, '' for one without; null for no record. */
-  recordKind: string | null;
-  /** null: no screen could be read. */
-  screen: string | null;
-  usageLimited: boolean;
-}): OwnerLaneScreen {
-  if (facts.trust === 'trust') return 'trust';
-  if (facts.screen === null || facts.trust === 'unknown') return 'unknown';
-  const shown = classifyOwnerLaneScreen(facts.screen);
-  if (shown === 'plan' || shown === 'permission') return shown;
-  if (facts.recordKind !== null) return screenOfRecord(facts.recordKind);
-  if (shown === 'dialog') return facts.usageLimited ? 'menu' : 'dialog';
-  return 'none';
-}
+export {
+  screenOfRecord,
+  classifyScreenQuestion as classifyOwnerLaneScreen,
+  screenQuestionOf as ownerLaneScreenOf,
+} from '../../../daemon/approvals/screenQuestion';
 
 /**
  * What the owner setting does with one write:

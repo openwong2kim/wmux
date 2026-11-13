@@ -14,7 +14,7 @@ import { A2A_REMOTE_BODY_MAX } from '../../../shared/a2aRemote';
 import {
   LIMIT_CONTINUE_GRACE_MS, LIMIT_LOOPS_MAX, LIMIT_PROBE_MS, LIMIT_RESUME_MARGIN_MS, LIMIT_UNKNOWN_MAX_MS, limitLoopReason, limitNotice, limitReason,
   ASK_REASON, BACKGROUND_NOTE, BACKGROUND_WAIT_MS, DAEMON_STOPPED_REASON, FURTHER_REPLIES_MAX, HeadlessDelivery, TURN_END_SETTLE_MS,
-  QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS, assistantTextOf, cutReply, endHeadlessOnStop, type HeadlessDeliveryDeps,
+  QUESTION_NOTICE_MS, QUESTION_PROBE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS, assistantTextOf, cutReply, endHeadlessOnStop, type HeadlessDeliveryDeps, type HeadlessTaskStatus,
 } from '../headlessDelivery';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
 import { LINK_ENDED_REASON } from '../headlessStarter';
@@ -1770,3 +1770,125 @@ describe('a usage limit on a headless session (no hooks, nobody at the pane)', (
   });
 });
 
+describe('the status this delivery reports for each task (headlessStatus.ts sends it)', () => {
+  let ticks: HeadlessTaskStatus[][];
+  let order: string[];
+  const statusDeps = (over: Partial<HeadlessDeliveryDeps> = {}): HeadlessDeliveryDeps => {
+    const base = deps();
+    return deps({
+      status: { tick: (s) => { ticks.push(s); }, gone: (ids) => { order.push(`gone ${ids.join(',')}`); } },
+      transition: async (input) => {
+        order.push(`move ${input.to}`);
+        return base.transition(input);
+      },
+      ...over,
+    });
+  };
+  const last = (): HeadlessTaskStatus | undefined => ticks.at(-1)?.find((s) => s.taskId === TASK);
+  const askLine = (id: string, labels: string[]): string => JSON.stringify({ type: 'assistant', uuid: `q${seq}`, timestamp: stamp(),
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'AskUserQuestion', input: { questions: [{ question: 'Which colour?', header: 'Colour', multiSelect: false, options: labels.map((label) => ({ label, description: '' })) }] } }] } });
+  const askResultLine = (id: string): string => JSON.stringify({ type: 'user', uuid: `qr${seq}`, timestamp: stamp(),
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'User has answered your questions: "Which colour?"="Red".' }] } });
+  beforeEach(() => {
+    ticks = [];
+    order = [];
+  });
+
+  it('in a turn: working; at its AskUserQuestion: a menu question with its tool call id and choices; answered: waiting for more', async () => {
+    const d = new HeadlessDelivery(statusDeps());
+    await d.tick();
+    write(userLine(PROMPT));
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+    write(askLine('toolu_01Ask', ['Red', 'Blue']));
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'question', detail: { question: 'menu', menuId: 'toolu_01Ask', options: ['Red', 'Blue'] } });
+    write(askResultLine('toolu_01Ask'));
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+    write(assistantLine('Red it is'));
+    await d.tick();
+    expect(task.status.state).toBe('input-required');
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
+  });
+
+  it('a question on the screen: its kind, read with the question clock\'s own probe; the open AskUserQuestion is said', async () => {
+    const asked: boolean[] = [];
+    const d = new HeadlessDelivery(statusDeps({ questionKind: async (_s, asking) => { asked.push(asking); return 'permission'; } }));
+    await d.tick();
+    write(userLine(PROMPT));
+    screen = 'dialog';
+    await advance(d, QUESTION_PROBE_MS);
+    expect(last()).toEqual({ taskId: TASK, kind: 'question', detail: { question: 'permission' } });
+    expect(asked).toEqual([false]);
+    screen = 'clear';
+    await advance(d, QUESTION_PROBE_MS);
+    expect(last()).toEqual({ taskId: TASK, kind: 'working' });
+  });
+
+  it('at its usage limit: usage-limit, with whose limit and when it resets', async () => {
+    clock = Date.UTC(2026, 10, 13, 0, 5);
+    const d = new HeadlessDelivery(statusDeps());
+    await d.tick();
+    write(userLine(PROMPT), apiErrorLine('rate_limit', "You've hit your limit · resets 11:30pm (Asia/Seoul)"));
+    await d.tick();
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'usage-limit', detail: { provider: 'claude', resetsAt: '2026-11-13T14:30:00.000Z' } });
+  });
+
+  it('a start that ends: gone first, then the task\'s end', async () => {
+    const d = new HeadlessDelivery(statusDeps());
+    await d.tick();
+    write(userLine(PROMPT));
+    await d.tick();
+    order = [];
+    await d.startEnding(rec, "the agent's session ended");
+    expect(order).toEqual([`gone ${TASK}`, 'move failed']);
+  });
+
+  it('no gone on an ended link (it carries nothing), nor for a start an earlier daemon run left', async () => {
+    let d = new HeadlessDelivery(statusDeps());
+    await d.tick();
+    write(userLine(PROMPT));
+    await d.tick();
+    order = [];
+    await d.startEnding(rec, LINK_ENDED_REASON);
+    expect(order).toEqual(['move failed']);
+
+    task = inboundTask();
+    d = new HeadlessDelivery(statusDeps());
+    await d.tick();
+    order = [];
+    await d.startEnding({ ...rec, runId: 'run-0' }, 'the daemon restarted');
+    expect(order.filter((o) => o.startsWith('gone'))).toEqual([]);
+  });
+
+  it('after the answer, a turn the agent takes on its own: its question menu and its usage limit are reported, not just working', async () => {
+    clock = Date.UTC(2026, 10, 13, 0, 5);
+    const d = new HeadlessDelivery(statusDeps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(task.status.state).toBe('input-required');
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
+    // Background work it left wakes it, and it asks a question.
+    write(askLine('toolu_02Ask', ['Yes', 'No']));
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'question', detail: { question: 'menu', menuId: 'toolu_02Ask', options: ['Yes', 'No'] } });
+    write(askResultLine('toolu_02Ask'), apiErrorLine('rate_limit', "You've hit your limit · resets 11:30pm (Asia/Seoul)"));
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'usage-limit', detail: { provider: 'claude', resetsAt: '2026-11-13T14:30:00.000Z' } });
+  });
+
+  it('a task that ended is not reported', async () => {
+    const d = new HeadlessDelivery(statusDeps());
+    await d.tick();
+    write(userLine(PROMPT), interruptLine());
+    await d.tick();
+    expect(task.status.state).toBe('failed');
+    await d.tick();
+    expect(last()).toBeUndefined();
+  });
+});

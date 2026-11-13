@@ -25,7 +25,7 @@ import {
   type A2aSpawnPolicySetResult,
   type A2aSpawnPolicyV1,
 } from '../../shared/a2aSpawn';
-import { INVITE_CODE_RE, isHostId, parseInvite, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId } from '../../shared/a2aRemote';
+import { A2A_STATUS_LABELS_RPC, INVITE_CODE_RE, isA2aStatusLabels, isHostId, parseInvite, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId } from '../../shared/a2aRemote';
 import { AGENT_ROWS, type AgentSlug } from '../../shared/agentIdentity';
 import { NOT_FIRST_PARTY } from '../../shared/daemonFirstParty';
 import { isNestingMarker } from '../../shared/envFilter';
@@ -70,6 +70,10 @@ wmux remote — pair with other PCs and ask them to start agents
   wmux remote revoke --from <host-id> [--root <dir>] [--sub <path>]
       Remove that PC's rules for <dir> (only <dir>/<path> with --sub). With
       --from alone, that PC may no longer ask this PC to start agents.
+  wmux remote status-labels [send|keep]
+      Whether the choices of a question an agent started from another PC asks
+      here go to that PC with its status (send, the default), or only how
+      many there are (keep). With no argument, prints the current setting.
 
   These verbs talk to the wmux daemon directly, so they work on a host that
   runs only the daemon (no desktop app). Exit code 1 on any failure. --json
@@ -645,6 +649,23 @@ async function remoteAllow(args: string[], jsonMode: boolean): Promise<void> {
   fail('the remote spawn settings kept changing while saving. Run the command again.');
 }
 
+/** `wmux remote status-labels [send|keep]`: this PC's setting, printed or saved. */
+async function remoteStatusLabels(args: string[], jsonMode: boolean): Promise<void> {
+  const value = args.find((a) => !a.startsWith('-'));
+  if (value !== undefined && !isA2aStatusLabels(value)) fail(`status-labels takes send or keep, not ${value}`);
+  const res = (value === undefined
+    ? await daemonCall(A2A_STATUS_LABELS_RPC.get as RpcMethod, {})
+    : await daemonCall(A2A_STATUS_LABELS_RPC.set as RpcMethod, { labels: value })) as { ok?: unknown; labels?: unknown; error?: unknown };
+  if (res.ok === false) fail(`the daemon did not save it: ${String(res.error)}`);
+  if (jsonMode) {
+    console.log(JSON.stringify({ labels: res.labels }, null, 2));
+    return;
+  }
+  console.log(res.labels === 'keep'
+    ? 'Status labels: keep (a question\'s choices stay on this PC; only how many there are is sent)'
+    : 'Status labels: send (a question\'s choices go to the PC that asked, with its status)');
+}
+
 async function remoteAllowed(jsonMode: boolean): Promise<void> {
   if (jsonMode) {
     console.log(JSON.stringify({ policy: await readPolicy() }, null, 2));
@@ -812,5 +833,6 @@ export async function handleRemote(sub: string | undefined, args: string[], json
   if (sub === 'allow') return remoteAllow(args, jsonMode);
   if (sub === 'allowed') return remoteAllowed(jsonMode);
   if (sub === 'revoke') return remoteRevoke(args, jsonMode);
+  if (sub === 'status-labels') return remoteStatusLabels(args, jsonMode);
   console.log(REMOTE_HELP);
 }

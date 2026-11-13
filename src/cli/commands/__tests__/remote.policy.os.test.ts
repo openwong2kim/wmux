@@ -67,6 +67,8 @@ let peers: unknown[];
 let beforeSet: ((p: A2aSpawnPolicyV1) => void) | null;
 let sets: A2aSpawnPolicyV1[];
 let setRefusal: string | null;
+/** This PC's status labels setting, as the fake daemon holds it. */
+let statusLabels = 'send';
 /** What the daemon answers when asked whether it finds an agent; undefined: it does not say (an older daemon). */
 let agentFound: boolean | undefined;
 /** What `daemon.headless.status` answers: in effect or not; undefined: the daemon does not know the method. */
@@ -96,6 +98,10 @@ function fakeDaemon(): void {
         store = { ...structuredClone(next), version: store.version + 1 };
         return ok({ ok: true, policy: structuredClone(store) });
       }
+      case 'a2a.remote.statusLabels.get': return ok({ labels: statusLabels });
+      case 'a2a.remote.statusLabels.set':
+        statusLabels = params['labels'] as string;
+        return ok({ ok: true, labels: statusLabels });
       default: throw new Error(`unexpected method ${method}`);
     }
   });
@@ -159,6 +165,21 @@ afterEach(() => {
   }
   delete process.env['CLAUDECODE'];
   delete process.env['WMUX_PTY_ID'];
+});
+
+describe('wmux remote status-labels', () => {
+  it('prints the setting with no argument, saves send or keep, and refuses anything else before any RPC', async () => {
+    statusLabels = 'send';
+    expect(await run('status-labels', [])).toBe(0);
+    expect(printed()).toContain('Status labels: send');
+    expect(await run('status-labels', ['keep'])).toBe(0);
+    expect(statusLabels).toBe('keep');
+    expect(printed()).toContain('Status labels: keep');
+    daemonRpc.mockClear();
+    expect(await run('status-labels', ['maybe'])).toBe(1);
+    expect(daemonRpc).not.toHaveBeenCalled();
+    expect(statusLabels).toBe('keep');
+  });
 });
 
 describe('wmux remote allow', () => {

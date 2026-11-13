@@ -10,7 +10,9 @@ import {
   A2A_REMOTE_STATE_EVIDENCE_MAX,
   A2A_REMOTE_STATE_MESSAGE_MAX,
   isA2aRemoteImageMediaType,
+  parseA2aRemoteStatus,
   type A2aRemoteImageRef,
+  type A2aRemoteStatusV1,
   type A2aLinkRecordV1,
   type A2aRemoteReceipt,
   type A2aRemoteEnvelope,
@@ -28,7 +30,7 @@ import {
   type A2aRemoteTarget,
   type A2aRemoteTaskState,
 } from '../../shared/a2aRemoteDelivery';
-import type { CompletionEvidence, EvidenceItem, Message, Part, Task } from '../../shared/types';
+import { TERMINAL_STATES, type CompletionEvidence, type EvidenceItem, type Message, type Part, type Task } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import type { LinkStore } from './linkStore';
 import type { OutboxStore } from './outboxStore';
@@ -255,6 +257,42 @@ export async function sendRemoteState(deps: StateDeps, input: A2aRemoteStateInpu
   return synced.ok ? { ok: true, taskId: task.id } : synced;
 }
 
+/**
+ * The worker's status on an inbound task, for the PC that sent it: never a
+ * reply, never a state. Refused for a task that ended (a status of one means
+ * nothing) and for a task this PC sent. The message id is derived from the
+ * task and the status itself, so sending the same status again is one
+ * message to the peer. Whether the peer takes a status at all
+ * (`A2A_FEATURE_STATUS`) is the caller's to check.
+ */
+export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; status: A2aRemoteStatusV1 }): OutboundResult {
+  const found = remoteTaskAndLink(deps, input.taskId);
+  if (!found.ok) return found;
+  const { task, link } = found;
+  if ((task.metadata.remote as A2aRemoteTaskMarkerV1).direction !== 'inbound') return { ok: false, error: 'bad-request: a status is for a task this PC received' };
+  if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: false, error: 'ended' };
+  // On a spawn link the labels are redacted whole, before the cap: a secret cut in two would no longer match.
+  const raw = onSpawnLink(deps, link) ? spawnLinkStatus(input.status) : input.status;
+  const status = parseA2aRemoteStatus(raw);
+  if (!status) return { ok: false, error: 'bad-request: not a status' };
+  const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'status', undefined, { onThisLink: true });
+  if (!check.ok) return { ok: false, error: check.error };
+  const key = `${task.id}\0${status.kind}\0${status.since}\0${JSON.stringify(status.detail ?? {})}`;
+  const messageId = `ss-${crypto.createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
+  try {
+    deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, messageId, { kind: 'status', taskId: task.id, status }));
+  } catch (err) {
+    return { ok: false, error: `unavailable: could not queue for the peer (${errText(err)})` };
+  }
+  return { ok: true, taskId: task.id };
+}
+
+/** A status on a link a remote start made: its option labels redacted. */
+function spawnLinkStatus(status: A2aRemoteStatusV1): A2aRemoteStatusV1 {
+  const options = status.detail?.options;
+  return options ? { ...status, detail: { ...status.detail, options: options.map((o) => redactSecrets(o)) } } : status;
+}
+
 const SYNCED_STATES: ReadonlySet<string> = new Set(['working', 'input-required', 'completed', 'failed', 'canceled']);
 
 /**
@@ -418,11 +456,16 @@ function remoteTaskAndLink(
   return { ok: true, task, link };
 }
 
+/** A link a remote start made: what leaves on it is redacted (spawnLinkBody). */
+function onSpawnLink(deps: Pick<OutboundDeps, 'spawnLink'>, link: A2aLinkRecordV1): boolean {
+  return (link.spawned === true && link.proposer === 'remote') || deps.spawnLink?.(link.linkId) === true;
+}
+
 function envelope(
   deps: Pick<OutboundDeps, 'now' | 'spawnLink'>,
   link: A2aLinkRecordV1,
   messageId: string,
-  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images'>,
+  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status'>,
 ): A2aRemoteEnvelope {
   return {
     protocol: A2A_REMOTE_PROTOCOL,
@@ -430,7 +473,7 @@ function envelope(
     linkVersion: link.version,
     messageId,
     // Marked on the link itself, so no path that sends on it can skip this.
-    ...((link.spawned === true && link.proposer === 'remote') || deps.spawnLink?.(link.linkId) ? spawnLinkBody(body) : body),
+    ...(onSpawnLink(deps, link) ? spawnLinkBody(body) : body),
     sentAt: new Date((deps.now ?? Date.now)()).toISOString(),
   };
 }
@@ -441,7 +484,7 @@ function envelope(
  * field added later cannot pass unredacted).
  */
 function spawnLinkBody(
-  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images'>,
+  body: Pick<A2aRemoteEnvelope, 'kind' | 'taskId' | 'text' | 'state' | 'message' | 'evidence' | 'receipt' | 'images' | 'status'>,
 ): typeof body {
   const r = (v: string): string => redactSecrets(v);
   const evidence: CompletionEvidence | undefined = body.evidence
@@ -467,6 +510,8 @@ function spawnLinkBody(
     ...(evidence ? { evidence } : {}),
     // A receipt is one of two words; anything else is not sent.
     ...(body.receipt === 'delivered' || body.receipt === 'read' ? { receipt: body.receipt } : {}),
+    // A status is rebuilt from its checked shape; the only free text, its options, redacted.
+    ...(body.status ? { status: spawnLinkStatus(body.status) } : {}),
   };
 }
 

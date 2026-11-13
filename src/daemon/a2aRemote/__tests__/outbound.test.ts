@@ -11,7 +11,7 @@ import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { remoteTaskId } from '../ids';
 import { LinkStore } from '../linkStore';
 import { OutboxStore } from '../outboxStore';
-import { aliasTable, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteTask, stateMessageId, syncRemoteTask, type OutboundDeps, type StateDeps } from '../outbound';
+import { aliasTable, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, stateMessageId, syncRemoteTask, type OutboundDeps, type StateDeps } from '../outbound';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
 
@@ -362,5 +362,75 @@ describe('sendRemoteReply / sendRemoteState', () => {
     links.revoke(linkId, 'local');
     expect(await sendRemoteReply(deps, { taskId: id, workspaceId: 'ws-a', text: 'x' })).toEqual({ ok: false, error: 'link-not-active' });
     expect(outbox.pending(HOST)).toHaveLength(1);
+  });
+});
+
+describe('sendRemoteStatus (a worker\'s status for the PC that sent the task)', () => {
+  /** A task the peer sent this PC. */
+  async function inboundTask(): Promise<{ linkId: string; id: string }> {
+    const linkId = activeLink();
+    const id = remoteTaskId(linkId, 'theirs-1');
+    await tasks.createTask({
+      id,
+      title: 'theirs',
+      from: { workspaceId: `remote:${linkId}`, name: 'pc-b/ws-b/codex' },
+      to: { workspaceId: 'ws-a', name: 'Frontend', paneId: 'pane-a' },
+      history: [{ kind: 'message', messageId: 'theirs-1', role: 'user', parts: [{ kind: 'text', text: 'do it' }] }],
+      remote: { v: 1, linkId, hostId: HOST, messageId: 'theirs-1', direction: 'inbound', kind: 'pane' },
+    });
+    return { linkId, id };
+  }
+  const envelopes = () => outbox.pending(HOST).map((r) => r.envelope);
+  const SINCE = '2026-11-13T06:00:00.000Z';
+
+  it('queues it for the PC that sent the task: never a reply, never a state, the task left as it was', async () => {
+    const { id } = await inboundTask();
+    const before = structuredClone(tasks.getTask(id));
+    expect(sendRemoteStatus(deps, { taskId: id, status: { kind: 'working', since: SINCE, detail: { background: 2 } } })).toEqual({ ok: true, taskId: id });
+    expect(envelopes().map((e) => e.kind)).toEqual(['status']);
+    expect(envelopes()[0]).toMatchObject({ taskId: id, status: { kind: 'working', since: SINCE, detail: { background: 2 } } });
+    expect(tasks.getTask(id)).toEqual(before);
+    // The same status again is the same message (a reconnect resend dedupes nowhere it matters).
+    sendRemoteStatus(deps, { taskId: id, status: { kind: 'working', since: SINCE, detail: { background: 2 } } });
+    const [a, b] = envelopes();
+    expect(a!.messageId).toBe(b!.messageId);
+  });
+
+  it('refused for a task that ended, a task this PC sent, and anything that is not a status', async () => {
+    const { id } = await inboundTask();
+    expect(sendRemoteStatus(deps, { taskId: id, status: { kind: 'bogus', since: SINCE } as never })).toMatchObject({ ok: false });
+    expect((await tasks.transition({ taskId: id, to: 'working', callerWorkspaceId: 'ws-a' })).ok).toBe(true);
+    expect((await tasks.transition({ taskId: id, to: 'failed', callerWorkspaceId: 'ws-a', evidence: { summary: 'x' } })).ok).toBe(true);
+    expect(sendRemoteStatus(deps, { taskId: id, status: { kind: 'gone', since: SINCE } })).toEqual({ ok: false, error: 'ended' });
+    const linkId = activeLink({ outbound: true, inbound: true }, 'codex', 'pane-c');
+    const sent = await sendRemoteTask(deps, { linkId, from: FROM, title: '', text: 'mine' });
+    if (!sent.ok) throw new Error(sent.error);
+    expect(sendRemoteStatus(deps, { taskId: sent.taskId, status: { kind: 'working', since: SINCE } })).toMatchObject({ ok: false, error: expect.stringContaining('bad-request') });
+    expect(envelopes().filter((e) => e.kind === 'status')).toEqual([]);
+  });
+
+  it('a secret that straddles the 80-character cut is redacted before the cut', async () => {
+    const { id } = await inboundTask();
+    const token = `ghp_${'a1B2'.repeat(9)}`;
+    const label = `${'x'.repeat(59)} ${token} and more`;
+    sendRemoteStatus({ ...deps, spawnLink: () => true }, { taskId: id, status: { kind: 'question', since: SINCE, detail: { question: 'menu', options: [label] } } });
+    const sent = envelopes()[0]!.status!.detail!.options![0]!;
+    expect(sent.length).toBeLessThanOrEqual(80);
+    expect(sent).not.toContain(token.slice(0, 20));
+  });
+
+  it('on a link a remote start made, a menu\'s labels are redacted; its ids and kinds go as they are', async () => {
+    const { id } = await inboundTask();
+    const token = `ghp_${'a1B2'.repeat(9)}`;
+    const status = { kind: 'question' as const, since: SINCE, detail: { question: 'menu' as const, menuId: 'toolu_01AbC', options: [`use ${token}`, 'Blue'] } };
+    sendRemoteStatus({ ...deps, spawnLink: () => true }, { taskId: id, status });
+    const sentStatus = envelopes()[0]!.status!;
+    expect(sentStatus.detail?.menuId).toBe('toolu_01AbC');
+    expect(sentStatus.detail?.question).toBe('menu');
+    expect(sentStatus.detail?.options?.[1]).toBe('Blue');
+    expect(sentStatus.detail?.options?.[0]).not.toContain(token);
+    // Not a spawn link: as written (the receiver still cleans what it shows).
+    sendRemoteStatus(deps, { taskId: id, status: { ...status, since: '2026-11-13T06:01:00.000Z' } });
+    expect(envelopes()[1]!.status!.detail?.options?.[0]).toContain(token);
   });
 });

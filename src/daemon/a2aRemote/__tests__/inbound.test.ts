@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
+import { A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope, type A2aRemoteStatusV1 } from '../../../shared/a2aRemote';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { remoteTaskId } from '../ids';
@@ -380,6 +380,7 @@ describe('acceptInbound — peer text is made safe before it is stored', () => {
     expect(await acceptInbound(e, peer, deps)).toMatchObject({ ok: true });
     const text = (tasks.getTask(remoteTaskId(linkId, e.messageId))!.history[0].parts[0] as { text: string }).text;
     expect(text).toBe('ok linerm -rf ~\nforged\ttab\nnext');
+    // eslint-disable-next-line no-control-regex -- checking control characters are gone
     expect(text).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
   });
 
@@ -445,6 +446,117 @@ describe('receipts', () => {
   });
 });
 
+
+describe('a worker\'s status on a task this PC sent', () => {
+  let noted: Array<[string, A2aRemoteStatusV1]>;
+  let forgotten: string[];
+  let withStatus: InboundDeps;
+  beforeEach(() => {
+    noted = [];
+    forgotten = [];
+    withStatus = { ...deps, remoteStatus: { note: (taskId, status) => { noted.push([taskId, status]); }, forget: (taskId) => { forgotten.push(taskId); } } };
+  });
+  /** A task this PC (B) sent over the link. */
+  async function sentTask(linkId: string): Promise<string> {
+    const out = remoteTaskId(linkId, 'mine-1');
+    await tasks.createTask({
+      id: out,
+      title: 'mine',
+      from: { workspaceId: 'ws-b', name: 'Backend', paneId: 'pane-b' },
+      to: { workspaceId: `remote:${linkId}`, name: 'pc-a/ws-a/claude' },
+      history: [{ kind: 'message', messageId: 'mine-1', role: 'user', parts: [{ kind: 'text', text: 'hi' }] }],
+      remote: { v: 1, linkId, hostId: HOST, messageId: 'mine-1', direction: 'outbound', kind: 'pane' },
+    });
+    return out;
+  }
+  const status = (s: Partial<A2aRemoteStatusV1>): Partial<A2aRemoteEnvelope> => ({ kind: 'status', text: undefined, status: { kind: 'working', since: '2026-11-13T06:00:00.000Z', ...s } as A2aRemoteStatusV1 });
+
+  it('kept as the newest, never a reply and never a state: the task is left as it was', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    const before = structuredClone(tasks.getTask(out));
+    expect(await acceptInbound(env(linkId, { ...status({}), taskId: out }), peer, withStatus)).toMatchObject({ ok: true, taskId: out });
+    expect(noted).toEqual([[out, { kind: 'working', since: '2026-11-13T06:00:00.000Z' }]]);
+    expect(tasks.getTask(out)).toEqual(before);
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it('its menu labels are cleaned like any text from the other PC, and capped; unknown fields go', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    const options = ['Red\x1b]0;title\x07', 'B'.repeat(200), ...Array.from({ length: 12 }, (_, i) => `o${i}`)];
+    await acceptInbound(env(linkId, { ...status({ kind: 'question', detail: { question: 'menu', menuId: 'toolu_1', options, provider: 'NOT A SLUG', extra: 1 } as never }), taskId: out }), peer, withStatus);
+    const got = noted[0]![1];
+    expect(got.detail?.options).toHaveLength(9);
+    expect(got.detail?.options?.[0]).not.toContain('\x1b');
+    expect(got.detail?.options?.[0]).not.toContain('\x07');
+    expect(got.detail?.options?.[1]!.length).toBeLessThanOrEqual(80);
+    expect(got.detail).not.toHaveProperty('provider');
+    expect(got.detail).not.toHaveProperty('extra');
+    expect(got.detail?.menuId).toBe('toolu_1');
+  });
+
+  it('a label is one line: tabs, newlines, bidi controls and zero-width characters do not survive', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    const options = ['A\tB\nC', '\u202Egnp.exe', 'x\u2066y\u2069z', 'zero\u200Bwidth', '\u200B\u200B'];
+    await acceptInbound(env(linkId, { ...status({ kind: 'question', detail: { question: 'menu', options } }), taskId: out }), peer, withStatus);
+    expect(noted[0]![1].detail?.options).toEqual(['A B C', 'gnp.exe', 'xyz', 'zerowidth']);
+  });
+
+  it('prototype keys, a garbage `since`, and a task on another link: nothing kept', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    const raw = (status: unknown): A2aRemoteEnvelope => ({ ...env(linkId, { kind: 'status', text: undefined, taskId: out }), status } as unknown as A2aRemoteEnvelope);
+    // `__proto__` and `constructor` are plain data here: they give no kind, and nothing reaches a prototype.
+    expect(await acceptInbound(raw(JSON.parse('{"__proto__":{"kind":"working","since":"2026-11-13T06:00:00.000Z"}}')), peer, withStatus))
+      .toMatchObject({ ok: false, error: 'bad-request' });
+    await acceptInbound(raw(JSON.parse('{"kind":"working","since":"2026-11-13T06:00:00.000Z","detail":{"__proto__":{"options":["x"]},"constructor":{"x":1}}}')), peer, withStatus);
+    expect(noted.at(-1)?.[1]).toEqual({ kind: 'working', since: '2026-11-13T06:00:00.000Z' });
+    expect(({} as { options?: unknown }).options).toBeUndefined();
+    for (const since of ['yesterday', '', 123, null]) {
+      expect(await acceptInbound(raw({ kind: 'working', since }), peer, withStatus)).toMatchObject({ ok: false, error: 'bad-request' });
+    }
+    // A task this PC sent, but on another link than the one the status came on.
+    const other = activeLink();
+    expect(await acceptInbound(env(other, { ...status({}), taskId: out }), peer, withStatus)).toMatchObject({ ok: false, error: 'unknown-task' });
+    expect(noted).toHaveLength(1);
+  });
+
+  it('`gone` is said in this PC\'s log with its own ids only, whatever the peer put in its detail', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    const lines: string[] = [];
+    const logged = { ...withStatus, log: (_level: 'info' | 'warn' | 'error', msg: string) => { lines.push(msg); } };
+    await acceptInbound(env(linkId, { ...status({ kind: 'working' }), taskId: out }), peer, logged);
+    expect(lines).toEqual([]);
+    await acceptInbound(env(linkId, { ...status({ kind: 'gone', detail: { provider: 'evil', options: ['PEER TEXT'], menuId: 'toolu_PEER' } as never }), taskId: out }), peer, logged);
+    expect(lines).toEqual([`[a2a-remote] task ${out} on link ${linkId}: the agent on that PC is gone`]);
+  });
+
+  it('refused for a task this PC did not send, malformed, or on a PC that takes none', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    const e = env(linkId, {});
+    await acceptInbound(e, peer, withStatus);
+    expect(await acceptInbound(env(linkId, { ...status({}), taskId: remoteTaskId(linkId, e.messageId) }), peer, withStatus)).toMatchObject({ ok: false, error: 'forbidden' });
+    expect(await acceptInbound(env(linkId, { ...status({ kind: 'busy' as never }), taskId: out }), peer, withStatus)).toMatchObject({ ok: false, error: 'bad-request' });
+    expect(await acceptInbound(env(linkId, { ...status({}), taskId: out }), peer, deps)).toMatchObject({ ok: false, error: 'bad-request' });
+    expect(noted).toEqual([]);
+  });
+
+  it('a task that ended keeps none: one sent after is taken and dropped; its ending state forgets the one kept', async () => {
+    const linkId = activeLink();
+    const out = await sentTask(linkId);
+    await acceptInbound(env(linkId, { ...status({}), taskId: out }), peer, withStatus);
+    expect(await acceptInbound(env(linkId, { kind: 'state', taskId: out, state: 'working', text: undefined }), peer, withStatus)).toMatchObject({ ok: true });
+    expect(forgotten).toEqual([]);
+    expect(await acceptInbound(env(linkId, { kind: 'state', taskId: out, state: 'failed', text: 'gone' }), peer, withStatus)).toMatchObject({ ok: true });
+    expect(forgotten).toEqual([out]);
+    expect(await acceptInbound(env(linkId, { ...status({ kind: 'gone', since: '2026-11-13T06:05:00.000Z' }), taskId: out }), peer, withStatus)).toMatchObject({ ok: true });
+    expect(noted).toHaveLength(1);
+  });
+});
 
 describe('acceptInbound — share offers ride a link envelope', () => {
   const offerEnv = (state: 'offer' | 'offer-withdrawn'): A2aRemoteEnvelope => env(crypto.randomUUID(), {

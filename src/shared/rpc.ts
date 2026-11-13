@@ -697,6 +697,8 @@ export type RpcMethod =
   | 'a2a.remote.offers.decline'
   | 'a2a.remote.spawnPolicy.get'
   | 'a2a.remote.spawnPolicy.set'
+  | 'a2a.remote.statusLabels.get'
+  | 'a2a.remote.statusLabels.set'
   | 'a2a.remote.spawnRequests.list'
   | 'a2a.remote.spawn.work'
   | 'a2a.remote.spawn.decide'
@@ -1073,6 +1075,8 @@ export const ALL_RPC_METHODS = [
   'a2a.remote.offers.decline',
   'a2a.remote.spawnPolicy.get',
   'a2a.remote.spawnPolicy.set',
+  'a2a.remote.statusLabels.get',
+  'a2a.remote.statusLabels.set',
   'a2a.remote.spawnRequests.list',
   'a2a.remote.spawn.work',
   'a2a.remote.spawn.decide',

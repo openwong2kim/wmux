@@ -3,6 +3,7 @@ import {
   A2A_BRAIN_ALIAS,
   A2A_REMOTE_BODY_MAX,
   parseA2aRemoteImageRefs,
+  parseA2aRemoteStatus,
   type A2aRemoteImageRef,
   A2A_REMOTE_MESSAGE_ID_RE,
   A2A_REMOTE_PROTOCOL,
@@ -11,13 +12,14 @@ import {
   type A2aRemoteDeliverResponse,
   type A2aRemoteEnvelope,
   type A2aRemoteReceipt,
+  type A2aRemoteStatusV1,
   type A2aRemoteErrorCode,
   type A2aRemoteTaskMarkerV1,
   type HostId,
 } from '../../shared/a2aRemote';
 import { A2A_REMOTE_INBOUND_EVENT, remoteWorkspaceId, sanitizeRemoteMessage, type A2aRemoteInboundEvent } from '../../shared/a2aRemoteDelivery';
 import { normalizeCompletionEvidenceWire } from '../../shared/completionEvidence';
-import { isTaskState, type CompletionEvidence, type EvidenceItem, type Message, type Part } from '../../shared/types';
+import { isTaskState, TERMINAL_STATES, type CompletionEvidence, type EvidenceItem, type Message, type Part } from '../../shared/types';
 import type { A2aImageStore, ImageNotReceived } from './imageStore';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import { remoteTaskId } from './ids';
@@ -62,6 +64,17 @@ export interface InboundDeps {
   spawn?: { applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse | Promise<A2aRemoteDeliverResponse> };
   /** Continuing a conversation from another PC (the `link` states `continue*`); absent, they are an unknown link. */
   continue?: { applyInbound(env: A2aRemoteEnvelope, peer: { hostId: HostId }): A2aRemoteDeliverResponse | Promise<A2aRemoteDeliverResponse> };
+  /**
+   * Where a worker's status on a task this PC sent goes (`kind: 'status'`): the newest per task, in memory.
+   * Absent, a status is refused as unknown.
+   */
+  remoteStatus?: {
+    /** One more status from this PC may be taken now (a per-peer flood guard); false: dropped quietly. */
+    admit?(hostId: HostId): boolean;
+    /** A status that passed the checks, from `hostId` (a per-task gap is applied there). */
+    note(taskId: string, status: A2aRemoteStatusV1, hostId: HostId): void;
+    forget(taskId: string): void;
+  };
   /** New tasks each PC may send this one (`PeerTaskBudget`); absent, no limit. */
   taskBudget?: PeerTaskBudget;
   /** Where a refusal's detail goes: this PC's log. The peer gets the code alone. */
@@ -167,9 +180,14 @@ async function applyInbound(
     return deps.offers.applyInbound(env, peer);
   }
   if (env.kind === 'link') return applyLinkNotice(env, peer.hostId, deps);
+  // A status past the peer's flood guard: taken and dropped before any check, so neither a refusal
+  // for the peer to retry nor a log line per message comes of it.
+  if (env.kind === 'status' && deps.remoteStatus?.admit && !deps.remoteStatus.admit(peer.hostId)) {
+    return { ok: true, taskId: env.taskId as string, duplicate: true };
+  }
 
   let onThisLink = false;
-  if (env.kind === 'reply' || env.kind === 'state' || env.kind === 'receipt') {
+  if (env.kind === 'reply' || env.kind === 'state' || env.kind === 'receipt' || env.kind === 'status') {
     const marker = deps.taskService.getTask(env.taskId as string)?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
     onThisLink = marker?.v === 1 && marker.linkId === env.linkId;
   }
@@ -227,6 +245,19 @@ async function applyInbound(
   }
 
   const taskId = env.taskId as string;
+  if (env.kind === 'status') {
+    // What the worker on the peer is doing on a task WE sent: kept in memory, never a reply or a state.
+    const task = deps.taskService.getTask(taskId);
+    const marker = task?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
+    if (!deps.remoteStatus) return fail('bad-request', 'this PC takes no status');
+    if (marker?.direction !== 'outbound') return fail('forbidden', 'a status is only for a task this host sent');
+    // The agent there is gone: said in this PC's log, since the task ends right after and its status with it.
+    // Only this PC's own ids and the fixed kind; nothing the peer wrote.
+    if ((env.status as A2aRemoteStatusV1).kind === 'gone') deps.log?.('info', `[a2a-remote] task ${taskId} on link ${link.linkId}: the agent on that PC is gone`);
+    // A task that ended has no worker status any more: taken, and dropped.
+    if (!(TERMINAL_STATES as readonly string[]).includes(task!.status.state)) deps.remoteStatus.note(taskId, env.status as A2aRemoteStatusV1, peer.hostId);
+    return { ok: true, taskId, duplicate: false };
+  }
   if (env.kind === 'receipt') {
     // The peer got (or read) a task WE sent it: bookkeeping only, never a state.
     const marker = deps.taskService.getTask(taskId)?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
@@ -261,6 +292,8 @@ async function applyInbound(
     ...(env.evidence ? { evidence: env.evidence } : {}),
   });
   if (!res.ok) return fail(stateErrorCode(res), res.error);
+  // A task that ended has no worker status any more.
+  if ((TERMINAL_STATES as readonly string[]).includes(env.state as string)) deps.remoteStatus?.forget(taskId);
   return { ok: true, taskId, duplicate: res.duplicate };
 }
 
@@ -331,6 +364,9 @@ function parseEnvelope(raw: unknown): Parsed {
     case 'receipt':
       if (!isSafeId(taskId) || (raw['receipt'] !== 'delivered' && raw['receipt'] !== 'read')) return { error: 'bad-request' };
       break;
+    case 'status':
+      if (!isSafeId(taskId) || !parseA2aRemoteStatus(raw['status'])) return { error: 'bad-request' };
+      break;
   }
   const envelope = { ...raw } as unknown as A2aRemoteEnvelope;
   if (images) envelope.images = images;
@@ -344,6 +380,12 @@ function parseEnvelope(raw: unknown): Parsed {
   const evidence = kind === 'state' ? normalizeCompletionEvidenceWire(raw['evidence']) : null;
   if (evidence) envelope.evidence = evidence;
   else delete envelope.evidence;
+  // A status, checked and capped; its labels are shown to agents and people, so cleaned like any peer text.
+  const status = kind === 'status' ? parseA2aRemoteStatus(raw['status']) : null;
+  if (status) {
+    const options = status.detail?.options?.map((o) => sanitizeRemoteMessage(o));
+    envelope.status = options ? { ...status, detail: { ...status.detail, options } } : status;
+  } else delete envelope.status;
   return { envelope };
 }
 

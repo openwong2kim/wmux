@@ -165,11 +165,14 @@ import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
 import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
+import { HeadlessStatusReporter } from './a2aRemote/headlessStatus';
+import { StatusLabelsStore } from './a2aRemote/statusLabelsStore';
+import { QUESTION_RECORD_KIND, screenQuestionOf } from './approvals/screenQuestion';
 import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
-import { A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STREAM_PING, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
+import { A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS, A2A_FEATURE_STREAM_PING, A2A_STATUS_LABELS_RPC, isA2aStatusLabels, isHostId, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
@@ -7586,7 +7589,10 @@ function registerRpcHandlers(
     const withheld = a2aTaskService.withheldTaskIds(workspaceId, caller);
     // view: 'page' → summaries, or the one named task in full: a list reply
     // must stay far below the 1 MiB control-line cap of DaemonClient.
-    return { ok: true, workspaceId, tasks: applyTaskQueryView(tasks, p), ...(withheld.length > 0 ? { withheld } : {}) };
+    // A task this PC sent: with the newest status its worker there sent (never a reply, never a state).
+    const remote = a2aDeliveryRef;
+    const shown = remote ? tasks.map((t) => (isRemoteTaskId(t.id) ? remote.withRemoteStatus(t) : t)) : tasks;
+    return { ok: true, workspaceId, tasks: applyTaskQueryView(shown, p), ...(withheld.length > 0 ? { withheld } : {}) };
   });
 
   // Company mode: tasks held on their blockers (main's delivery RPCs).
@@ -10672,6 +10678,8 @@ async function main(): Promise<void> {
     a2aOffers = a2aOffersRef;
     // Remote spawn (receiver side): off until this PC's human opts a PC in.
     const a2aSpawnPolicy = new SpawnPolicyStore({ dir: a2aDir, log: a2aLog });
+    // Whether a menu's labels leave this PC in a worker's status (`wmux remote status-labels`).
+    const a2aStatusLabels = new StatusLabelsStore({ dir: a2aDir, log: a2aLog });
     const a2aSpawnRequests = new SpawnRequestStore({ dir: a2aDir, log: a2aLog });
     // Continuing a conversation from another PC: off until this PC's human opts in.
     const a2aContinuePolicy = new ContinuePolicyStore({ dir: a2aDir, log: a2aLog });
@@ -10891,6 +10899,14 @@ async function main(): Promise<void> {
     // An outgoing discovery request ends with the app connection that made it, or with the daemon.
     a2aDiscoverRef = a2aRemoteRpc.discover;
     pipeServer.onClientClose((clientId) => a2aRemoteRpc.discover.clientGone(clientId));
+    onA2aRpc(A2A_STATUS_LABELS_RPC.get, async () => ({ labels: a2aStatusLabels.get() }));
+    onA2aRpc(A2A_STATUS_LABELS_RPC.set, async (params) => {
+      const labels = params['labels'];
+      if (!isA2aStatusLabels(labels)) return { ok: false, error: "labels must be 'send' or 'keep'" };
+      const res = a2aStatusLabels.set(labels);
+      if (res.ok) log('info', `[a2a-remote] status labels: ${labels}`);
+      return res;
+    });
     registerSpawnRpc(onA2aRpc, {
       policy: a2aSpawnPolicy,
       requests: a2aSpawnRequests,
@@ -10953,7 +10969,7 @@ async function main(): Promise<void> {
         // This build shows and accepts share offers, takes images on
         // messages and pings its streams: tell the servers it joins, and the
         // joiners in its hello.
-        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN],
+        features: [A2A_FEATURE_LINK_OFFER, A2A_FEATURE_IMAGES, A2A_FEATURE_STREAM_PING, A2A_FEATURE_SPAWN, A2A_FEATURE_STATUS],
         uploadsRoot: path.join(wmuxDir, 'uploads'),
         // A live terminal of the sender's workspace (stamped at spawn by main), else none.
         spawnCwdOf: (ptyId, workspaceId) => {
@@ -11008,6 +11024,13 @@ async function main(): Promise<void> {
           const res = (await handler(params)) as { ok?: unknown; error?: unknown };
           return { ok: res?.ok === true, ...(typeof res?.error === 'string' ? { error: res.error } : {}) };
         };
+        // What each of those agents is doing, for the PC that asked (a2aRemote/headlessStatus.ts).
+        const headlessStatus = new HeadlessStatusReporter({
+          peer: (taskId) => a2aDeliveryRef?.statusPeer(taskId) ?? null,
+          send: (taskId, status) => a2aDeliveryRef?.sendStatus(taskId, status) ?? { ok: false, error: 'unavailable' },
+          labels: () => a2aStatusLabels.get(),
+          log: a2aLog,
+        });
         // The tasks paired PCs send with their requests, typed into the agents started for them (a2aRemote/headlessDelivery.ts).
         const headlessDelivery = new HeadlessDelivery({
           mode: headlessMode,
@@ -11030,6 +11053,20 @@ async function main(): Promise<void> {
             return seen.state === 'clear' ? 'clear' : 'unknown';
           },
           limitHeld: (sessionId) => usageLimits?.holds(sessionId) === true,
+          // Which question, for the asking PC's status only: the transcript's open AskUserQuestion stands in for
+          // the hook record a headless session never gets.
+          questionKind: async (sessionId, asking) => {
+            const seen = await readFolderTrust({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, sessionId);
+            const outcome = await queuedScreenText(sessionManager, sessionId);
+            const kind = screenQuestionOf({
+              trust: seen.state,
+              recordKind: asking ? QUESTION_RECORD_KIND : null,
+              screen: outcome?.ok ? outcome.rows.map((r) => r.text).join('\n') : null,
+              usageLimited: false,
+            });
+            return kind === 'none' || kind === 'unknown' ? 'dialog' : kind;
+          },
+          status: headlessStatus,
           // The hold from the transcript's own limit line: a headless session has no hook, and its
           // bridge may not count the turn as open, which the API-error stand-in needs.
           noteLimit: (sessionId, message, at) => usageLimits?.noteTranscriptLimit(sessionId, message, at),

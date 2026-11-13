@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import {
   A2A_FEATURE_IMAGES,
+  A2A_FEATURE_STATUS,
   A2A_REMOTE_IMAGE_LIMITS,
   A2A_REMOTE_PROTOCOL,
   parseA2aRemoteImageRefs,
@@ -11,14 +12,16 @@ import {
   type A2aRemoteEnvelope,
   type A2aRemoteErrorCode,
   type A2aRemoteHostRecordV1,
+  type A2aRemoteStatusV1,
   type HostId,
   type PeerCredential,
+  shownRemoteStatus,
 } from '../../shared/a2aRemote';
-import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteWaitingCause } from '../../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteTaskState, type A2aRemoteWaitingCause } from '../../shared/a2aRemoteDelivery';
 import type { A2aRemoteHostStatus, A2aRemoteHostsStatusResult } from '../../shared/rpc';
 import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../shared/a2aImages';
 import { companyBriefOf } from '../../shared/company';
-import { TERMINAL_STATES } from '../../shared/types';
+import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import { failTasksForLink, expireHeld, rejectHeld, type HeldDeps } from './held';
 import { remoteTaskId } from './ids';
@@ -29,7 +32,7 @@ import { PeerTaskBudget, acceptInbound, type ImagePull, type InboundDeps } from 
 import type { NotifyLinkChange } from './linkRpc';
 import type { LinkStore } from './linkStore';
 import type { A2aOffers } from './offers';
-import { aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
+import { aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
 import { OutboxStore } from './outboxStore';
 import { PeerFeatureStore } from './peerFeatureStore';
 import type { A2aRouteTable } from './routes';
@@ -140,6 +143,27 @@ export function shareOfferFeatures(delivery: () => A2aRemoteDelivery | null): (h
   };
 }
 
+/** Worker statuses kept in memory at most (one per open task this PC sent). */
+const REMOTE_STATUSES_MAX = 1000;
+/** How far ahead of this PC's clock a peer's status may be dated. */
+const REMOTE_STATUS_SKEW_MS = 60_000;
+/**
+ * A flood guard per paired PC: past this many statuses in a window they are
+ * taken and dropped before any check (one log line per window). An honest
+ * peer sends at most one per change of each task with a 5 s floor, so 64
+ * tasks come to about 770 a minute plus the kinds it sends at once; this
+ * leaves about twice that. The transport itself does not limit a kind.
+ */
+export const REMOTE_STATUS_WINDOW_MS = 60_000;
+export const REMOTE_STATUS_PER_WINDOW = 1500;
+/**
+ * At most one status per task is applied in this span, below the sender's own
+ * 5 s floor. One that comes sooner is kept (the newest) and applied once the
+ * span is over, never dropped; `question`, `usage-limit` and `gone` apply at once.
+ */
+export const REMOTE_STATUS_TASK_GAP_MS = 2_000;
+const REMOTE_STATUS_AT_ONCE: ReadonlySet<A2aRemoteStatusV1['kind']> = new Set(['question', 'usage-limit', 'gone']);
+
 export class A2aRemoteDelivery {
   readonly outbox: OutboxStore;
   readonly hub: A2aStreamHub;
@@ -151,6 +175,8 @@ export class A2aRemoteDelivery {
   private readonly features: readonly string[] | undefined;
   /** Failed image fetches from the servers this PC joined (`InboundImages.pullAttempts`). */
   private readonly pullAttempts = new Map<string, number>();
+  /** The newest worker status on each task this PC sent (in memory only: the worker sends its current one again on reconnect). */
+  private readonly remoteStatuses = new Map<string, A2aRemoteStatusV1>();
   /** New tasks each PC sent this one in the last hour (the inbound limit). */
   private readonly taskBudget = new PeerTaskBudget();
   private readonly deps: A2aRemoteDeliveryDeps;
@@ -737,9 +763,138 @@ export class A2aRemoteDelivery {
       ...(this.deps.continue ? { continue: this.deps.continue } : {}),
       ...(this.deps.spawnLinks ? { spawnLinks: this.deps.spawnLinks } : {}),
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
+      remoteStatus: {
+        admit: (hostId) => this.admitRemoteStatus(hostId),
+        note: (taskId, status, hostId) => this.takeRemoteStatus(taskId, status, hostId),
+        forget: (taskId) => { this.remoteStatuses.delete(taskId); this.statusGates.delete(taskId); },
+      },
       taskBudget: this.taskBudget,
       log: this.deps.log,
     };
+  }
+
+  // --- worker status (`status.1`) -------------------------------------------
+
+  /** Statuses taken per peer in the current window (REMOTE_STATUS_PER_WINDOW), and which log lines it has had. */
+  private readonly statusWindows = new Map<string, { start: number; count: number; logged: boolean; gapLogged?: boolean }>();
+
+  /** Whether one more status from this PC is taken now; past the window's share it is dropped. */
+  private admitRemoteStatus(hostId: HostId): boolean {
+    const now = Date.now();
+    let w = this.statusWindows.get(hostId);
+    if (!w || now - w.start >= REMOTE_STATUS_WINDOW_MS) {
+      w = { start: now, count: 0, logged: false };
+      this.statusWindows.delete(hostId);
+      this.statusWindows.set(hostId, w);
+      while (this.statusWindows.size > REMOTE_STATUSES_MAX) this.statusWindows.delete(this.statusWindows.keys().next().value as string);
+    }
+    w.count += 1;
+    if (w.count <= REMOTE_STATUS_PER_WINDOW) return true;
+    if (!w.logged) {
+      w.logged = true;
+      this.deps.log('warn', `[a2a-remote] ${hostId}: more than ${REMOTE_STATUS_PER_WINDOW} worker statuses in a minute; the rest are dropped unread`);
+    }
+    return false;
+  }
+
+  /**
+   * Per task this PC sent: when a status was last applied, and the newest one
+   * that came within REMOTE_STATUS_TASK_GAP_MS of it, waiting for the gap to
+   * end. Only tasks that passed the link and direction checks get an entry,
+   * so it is bounded by the open tasks this PC sent (and by REMOTE_STATUSES_MAX).
+   */
+  private readonly statusGates = new Map<string, { at: number; waiting?: A2aRemoteStatusV1 }>();
+
+  /** A status that passed the checks: applied now, or kept as the task's newest until its gap is over. */
+  private takeRemoteStatus(taskId: string, status: A2aRemoteStatusV1, hostId: HostId): void {
+    const now = Date.now();
+    const gate = this.statusGates.get(taskId);
+    if (gate && now - gate.at < REMOTE_STATUS_TASK_GAP_MS && !REMOTE_STATUS_AT_ONCE.has(status.kind)) {
+      if (!gate.waiting || this.statusTime(status) >= this.statusTime(gate.waiting)) gate.waiting = status;
+      const w = this.statusWindows.get(hostId);
+      if (w && !w.gapLogged) {
+        w.gapLogged = true;
+        this.deps.log('info', `[a2a-remote] ${hostId}: statuses for one task came less than ${REMOTE_STATUS_TASK_GAP_MS / 1000} s apart; the newest is applied after the gap`);
+      }
+      return;
+    }
+    if (gate?.waiting) this.noteRemoteStatus(taskId, gate.waiting);
+    this.noteRemoteStatus(taskId, status);
+    this.statusGates.delete(taskId);
+    this.statusGates.set(taskId, { at: now });
+    while (this.statusGates.size > REMOTE_STATUSES_MAX) this.statusGates.delete(this.statusGates.keys().next().value as string);
+  }
+
+  /** A waiting status whose gap is over is applied (read time stands in for a timer). */
+  private settleRemoteStatus(taskId: string): void {
+    const gate = this.statusGates.get(taskId);
+    if (!gate?.waiting || Date.now() - gate.at < REMOTE_STATUS_TASK_GAP_MS) return;
+    this.noteRemoteStatus(taskId, gate.waiting);
+    gate.at = Date.now();
+    delete gate.waiting;
+  }
+
+  /** A peer's `since` as this PC takes it: no later than now plus a little skew. */
+  private statusTime(status: A2aRemoteStatusV1): number {
+    return Math.min(Date.parse(status.since), Date.now() + REMOTE_STATUS_SKEW_MS);
+  }
+
+  /** A worker's status on a task this PC sent, the newest per task (by its `since`, as a time). */
+  private noteRemoteStatus(taskId: string, status: A2aRemoteStatusV1): void {
+    // A peer's clock: a `since` past this PC's own time (plus a little skew) counts as now, so a status
+    // dated far ahead cannot pin itself against the newer ones.
+    const since = this.statusTime(status);
+    const prev = this.remoteStatuses.get(taskId);
+    if (prev && Date.parse(prev.since) > since) return;
+    this.remoteStatuses.delete(taskId);
+    this.remoteStatuses.set(taskId, { ...status, since: new Date(since).toISOString() });
+    // Bounded: the least recently updated go first (a task that ended without a word from its peer).
+    while (this.remoteStatuses.size > REMOTE_STATUSES_MAX) this.remoteStatuses.delete(this.remoteStatuses.keys().next().value as string);
+  }
+
+  /**
+   * The task with the newest status its worker sent (`metadata.remote.status`),
+   * as a query returns it; a copy, the ledger's own task is left alone. A task
+   * that ended has none, and its kept status is forgotten.
+   */
+  withRemoteStatus<T extends Task>(task: T): T {
+    if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
+      this.remoteStatuses.delete(task.id);
+      this.statusGates.delete(task.id);
+      return task;
+    }
+    this.settleRemoteStatus(task.id);
+    const status = this.remoteStatuses.get(task.id);
+    if (!status) return task;
+    const remote = task.metadata.remote as A2aRemoteTaskState | undefined;
+    if (!remote) return task;
+    return { ...task, metadata: { ...task.metadata, remote: { ...remote, status: shownRemoteStatus(status) } } };
+  }
+
+  /**
+   * Whether the PC that sent `taskId` is connected now, takes a status, and
+   * since when its link has been up (a new value after each reconnect).
+   * Null: no such remote task.
+   */
+  statusPeer(taskId: string): { connected: boolean; takesStatus: boolean; epoch: string | null } | null {
+    const marker = this.deps.taskService.getTask(taskId)?.metadata.remote as { hostId?: HostId } | undefined;
+    if (!marker?.hostId) return null;
+    const hostId = marker.hostId;
+    const served = this.hub.isConnected(hostId) ? this.hub.connectedSince(hostId) : undefined;
+    const joined = this.sessions.get(hostId)?.session.current();
+    const joinedAt = joined?.state === 'connected' ? joined.connectedAt : undefined;
+    const connected = served !== undefined || joinedAt !== undefined;
+    return {
+      connected,
+      takesStatus: this.liveFeatures(hostId)?.has(A2A_FEATURE_STATUS) === true,
+      epoch: connected ? `${served ?? ''}|${joinedAt ?? ''}` : null,
+    };
+  }
+
+  /** Queue the worker's status on an inbound task for its sender (`sendRemoteStatus`). */
+  sendStatus(taskId: string, status: A2aRemoteStatusV1): { ok: true } | { ok: false; error: string } {
+    const res = sendRemoteStatus(this.outboundDeps(), { taskId, status });
+    return res.ok ? { ok: true } : { ok: false, error: res.error };
   }
 
   private outboundDeps(): OutboundDeps {

@@ -8,7 +8,7 @@
 //
 // Pure module: no node:* imports (the renderer imports it).
 
-import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteReceipt, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
+import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteReceipt, type A2aRemoteStatusShown, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
 import type { CompanyBriefV1 } from './company';
 import type { GatedSubmitRefusal } from './ptyMessageDelivery';
 import { isTaskState, type Part, type Task, type TaskState } from './types';
@@ -335,6 +335,13 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
   /** Inbound task: when it was first held. */
   heldAt?: string;
   inbox?: A2aRemoteInboxItem[];
+  /**
+   * Outbound task: the newest status the receiving PC's worker sent on it.
+   * Never in the ledger: the daemon holds it in memory and puts it on the
+   * task a query returns (the receiver sends its current one again when the
+   * link comes back).
+   */
+  status?: A2aRemoteStatusShown;
 };
 
 /** A hold older than this is rejected automatically (`held-expired`). */
