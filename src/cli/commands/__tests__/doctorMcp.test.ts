@@ -218,6 +218,9 @@ describe('doctor broker rule', () => {
   it('an app that does not say what it read: the lines as before', async () => {
     expect(await line({ enabled: false })).toEqual({ label: 'broker', value: 'off', verdict: 'OK' });
     expect((await line({ enabled: true }))?.hint).toBeUndefined();
+  });
+});
+
 describe('doctor broker limits', () => {
   const limitsLine = async (broker: Partial<McpSessionsSummary['broker']>) => {
     const result = { ...summary, broker: { ...summary.broker, ...broker } };
