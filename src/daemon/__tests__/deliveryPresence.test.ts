@@ -1,3 +1,5 @@
+// @wmux-lane unit
+// The platform is an injected value here; no OS call is made, so Windows cannot change the result.
 // The daemon's tiers for a delivery: a tracked agent process in the
 // foreground, else (nothing attributed) the agent's composer on the current
 // screen, else none. A tracked process that ended always wins over the screen.
