@@ -55,10 +55,12 @@ import type { DaemonClient } from '../../DaemonClient';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { MISSION_LIST_BATCH_NOT_ALLOWED } from '../../../shared/missionListBatch';
-import { getTaskLedger, noteWorkTaskClosed } from '../../deck/taskLedgerHost';
-import { isRemoteTask } from '../../../shared/ledger';
+import { noteWorkTaskClosed } from '../../deck/taskLedgerHost';
 
 type GetWindow = () => BrowserWindow | null;
+
+/** A mission's task id as the daemon mints it (`wtask-…`). */
+const MISSION_TASK_ID_RE = /^wtask-[A-Za-z0-9_-]{1,80}$/;
 
 /**
  * Resolve the caller's VERIFIED workspace from a verified `senderPtyId`.
@@ -374,13 +376,19 @@ export function registerA2aChannelRpc(
   // (J0 3-model review — Codex, conf 10: capability map + FIRST_PARTY had the
   // methods but the router forward was the missing link).
   router.register('task.mission.start', (p, ctx) => forward('task.mission.start', p, true, ctx));
+  // A close that lands also cancels the task's ledger row in the same call, as
+  // FanOutService and TaskCloseService do. Readers of open rows (the owner
+  // lane, the Stop gate) otherwise kept treating the task as open until the
+  // throttled WorkTask→ledger mirror caught up.
   router.register('task.mission.close', async (p, ctx) => {
+    const taskId = p && typeof p === 'object' ? (p as Record<string, unknown>).taskId : undefined;
+    if (typeof taskId !== 'string' || !MISSION_TASK_ID_RE.test(taskId)) {
+      return { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'task.mission.close: task_id must be a mission task id (wtask-…)' } };
+    }
     const res = await forward('task.mission.close', p, true, ctx);
-    // A task another PC runs is withdrawn now (its ledger row closes, and the
-    // close ends its agent there), not on the next ledger pass.
-    const taskId = typeof p?.['taskId'] === 'string' ? p['taskId'] : '';
-    const row = taskId ? getTaskLedger().get(taskId) : null;
-    if ((res as { ok?: unknown } | null)?.ok === true && row && isRemoteTask(row)) await noteWorkTaskClosed(taskId);
+    if ((res as { ok?: unknown } | null)?.ok === true) {
+      await noteWorkTaskClosed(taskId);
+    }
     return res;
   });
   // `list` is a read, but an OWNER-scoped one: it was registered as an ordinary

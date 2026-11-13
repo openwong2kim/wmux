@@ -144,7 +144,8 @@ describe('workspace-bound commander channel identity', () => {
         const response = await router.dispatch({
           id: method, method, commanderToken: token,
           params: { verifiedWorkspaceId: THIRD_WS,
-            ...(method === 'a2a.channel.create' ? { senderPtyId: 'other-pane' } : {}) },
+            ...(method === 'a2a.channel.create' ? { senderPtyId: 'other-pane' } : {}),
+            ...(method === 'task.mission.close' ? { taskId: 'wtask-x' } : {}) },
         });
         expect(response.ok && (response.result as { ok: boolean }).ok).toBe(true);
         expect(calls.at(-1)).toMatchObject({ verifiedWorkspaceId: SENDER_WS });
@@ -1262,6 +1263,20 @@ describe('a2a.channel.rpc — #922 hosted caller read binding', () => {
       const r = res.result as { ok: boolean; error?: { code: string } };
       expect(r.ok).toBe(false);
       expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('task.mission.close with a malformed task id', () => {
+  it('refuses it as INVALID_ARGUMENT without asking the daemon', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true }));
+    const router = setupHandlerRouter(daemon);
+    const rpcSpy = (daemon as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+    for (const taskId of ['nope', '', 'wtask-', 42]) {
+      const res = await router.dispatch({ id: `bad-${String(taskId)}`, method: 'task.mission.close', params: { taskId, senderPtyId: 'pty-S' } });
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.result).toEqual({ ok: false, error: { code: 'INVALID_ARGUMENT', message: expect.stringMatching(/task_id must be a mission task id/) } });
     }
     expect(rpcSpy).not.toHaveBeenCalled();
   });

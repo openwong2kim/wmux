@@ -51,6 +51,7 @@ import {
   processListQuery,
   processStartQuery,
   purgeSuffixedData,
+  releaseRecordedClaim,
   resolveUserDataRecord,
   scrubEnv,
   signalProcess,
@@ -751,6 +752,19 @@ function daemonOwned(pid, app, suffix) {
   return verdict;
 }
 
+/**
+ * Remove the claim the recorded app left (releaseRecordedClaim). The port is
+ * the recorded one, or the one the app logged after a launch that gave up
+ * before it was recorded; never one found by pid.
+ */
+function releaseClaim(state) {
+  let port = state.cdpPort;
+  if (!port && state.logPath) {
+    try { port = parseCdpLog(fs.readFileSync(state.logPath, 'utf8')).requested; } catch { /* no log: no port */ }
+  }
+  return releaseRecordedClaim(CLAIM_DIR, { port, pid: state.pid }, { pidAlive, startedAt: processStartedAt });
+}
+
 async function waitDead(pid, ms) {
   const end = Date.now() + ms;
   while (pidAlive(pid) && Date.now() < end) await sleep(200);
@@ -771,9 +785,10 @@ async function cmdRestart(opts) {
     if (result !== 'killed') fail(`app pid ${state.pid} not terminated (${result || 'no result'})`);
   } else if (signal(state.pid, 'SIGTERM') === 'denied') fail(`not permitted to signal pid ${state.pid}`);
   if (!(await waitDead(state.pid, 10_000))) fail('app did not exit; run doctor then stop');
-  timeline(state, { cmd: 'restart', previousPid: state.pid, retainedDaemonPid: daemonPid, daemonIdentity: daemon.how });
+  const claim = releaseClaim(state);
+  timeline(state, { cmd: 'restart', previousPid: state.pid, retainedDaemonPid: daemonPid, daemonIdentity: daemon.how, claim });
   const result = await cmdLaunch({ app: state.app, suffix: state.suffix, timeout: opts.timeout }, state);
-  return { ...result, previousPid: state.pid, retainedDaemonPid: daemonPid };
+  return { ...result, previousPid: state.pid, retainedDaemonPid: daemonPid, claim };
 }
 
 async function cmdStop(opts) {
@@ -854,6 +869,9 @@ async function cmdStop(opts) {
       ? `app process tree: ${treeLeft.length} of ${appTree.length} still running after 15 s (${treeLeft.map((r) => `${r.Name}#${r.ProcessId}`).join(', ')}), not killed`
       : `app process tree: all ${appTree.length} process(es) exited`);
   }
+
+  // 3c. The CDP claim the app left: a hard kill skips its own release.
+  steps.push(releaseClaim(state));
 
   // 4. Optional: remove the suffixed data this run created (never evidence,
   // never a path that existed before launch).
