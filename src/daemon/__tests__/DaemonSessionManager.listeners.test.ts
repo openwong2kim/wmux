@@ -3,19 +3,27 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DaemonSessionManager, SESSION_MANAGER_MAX_LISTENERS } from '../DaemonSessionManager';
 
-// The daemon subscribes to its session manager once at boot, from
-// src/daemon/index.ts and codexThreadOwner.ts. These counts pin that set:
-// a new subscriber changes a count here and the list on
-// SESSION_MANAGER_MAX_LISTENERS, so the limit is raised on purpose, not
-// silenced for a per-session listener that would be a leak.
+// The daemon's subsystems subscribe to its session manager once at boot.
+// This counts every subscription to an event in the daemon's non-test
+// sources (any receiver, on/once/addListener/prependListener, either quote),
+// so a new subscriber changes the count here and is weighed against the
+// stated limit on purpose; a per-session listener would be a leak, not a
+// reason to raise it.
 const daemonDir = path.join(__dirname, '..');
-const read = (file: string): string => fs.readFileSync(path.join(daemonDir, file), 'utf8');
-const count = (source: string, pattern: RegExp): number => source.match(pattern)?.length ?? 0;
+
+function sources(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) return entry.name === '__tests__' || entry.name === 'node_modules' ? [] : sources(full);
+    return /\.ts$/.test(entry.name) && !/\.test\.ts$/.test(entry.name) ? [full] : [];
+  });
+}
+
+const all = sources(daemonDir).map((file) => fs.readFileSync(file, 'utf8')).join('\n');
 
 function subscribers(event: string): number {
-  const index = count(read('index.ts'), new RegExp(`sessionManager\\.on\\('${event}'`, 'g'));
-  const codex = count(read(path.join('web', 'codexThreadOwner.ts')), new RegExp(`events\\.on\\('${event}'`, 'g'));
-  return index + codex;
+  const pattern = new RegExp(`\\.(?:on|once|addListener|prependListener)\\(\\s*['"\`]${event}['"\`]`, 'g');
+  return all.match(pattern)?.length ?? 0;
 }
 
 describe('DaemonSessionManager listener limit', () => {
@@ -29,14 +37,15 @@ describe('DaemonSessionManager listener limit', () => {
     expect(Math.max(subscribers('session:died'), subscribers('session:destroyed'))).toBeLessThan(SESSION_MANAGER_MAX_LISTENERS);
   });
 
-  it('does not warn with the daemon\'s subscriber count on one event', async () => {
+  it('does not warn with the daemon\'s subscriber count on its busiest event', async () => {
     const manager = new DaemonSessionManager();
+    const busiest = Math.max(subscribers('session:died'), subscribers('session:destroyed'));
     const warnings: Error[] = [];
     const onWarning = (w: Error): void => { if (w.name === 'MaxListenersExceededWarning') warnings.push(w); };
     process.on('warning', onWarning);
     try {
-      for (let i = 0; i < 14; i++) manager.on('session:destroyed', () => undefined);
-      expect(manager.listenerCount('session:destroyed')).toBe(14);
+      for (let i = 0; i < busiest; i++) manager.on('session:destroyed', () => undefined);
+      expect(manager.listenerCount('session:destroyed')).toBe(busiest);
       // Node raises the warning on a later tick.
       await new Promise((resolve) => setImmediate(resolve));
     } finally {

@@ -236,6 +236,26 @@ const clampCols = (cols: number): number => Math.max(MIN_SAFE_COLS, cols);
 const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
 
 /**
+ * The listener limit for one event on the daemon's session manager. Node has
+ * no per-event limit, so this applies to every event. Every subscriber is a
+ * daemon subsystem that subscribes once at boot and stays for the daemon's
+ * life; none subscribes per session or per reconnect. The busiest events:
+ *  - 'session:died': promote bookkeeping, Codex thread-owner cleanup,
+ *    usage-limit holds, the folder-trust refusal log, watched prompts, the
+ *    awaiting verifier, the lifecycle broadcast/save, git and port context
+ *    watchers, the detection agreement log, headless remote starts, the pane
+ *    supervisor and the channel wake worker (src/daemon/index.ts and
+ *    src/daemon/web/codexThreadOwner.ts);
+ *  - 'session:destroyed': the same subsystems' cleanups, plus the
+ *    tool-refusal tracker and the destroy broadcast.
+ * With Node's default of 10 every daemon start warned
+ * (MaxListenersExceededWarning) without any leak. The counts are pinned in
+ * DaemonSessionManager.listeners.test.ts; the headroom is for new boot-time
+ * subscribers, not for per-session listeners, which would be a leak.
+ */
+export const SESSION_MANAGER_MAX_LISTENERS = 24;
+
+/**
  * Manages ConPTY session lifecycles within the daemon process.
  * No Electron dependencies — uses EventEmitter for all notifications.
  *
@@ -259,25 +279,6 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
  *      the native layer produced (this class cannot reach that logger).
  *  - 'session:stateChanged' → { id: string, state: DaemonSessionState }
  */
-/**
- * The listener limit for one event on the daemon's session manager. Every
- * subscriber is a long-lived part of the daemon that subscribes once at boot
- * and stays for the daemon's life; none subscribes per session or per
- * reconnect. The busiest events now:
- *  - 'session:died' (12): promote bookkeeping, Codex thread-owner cleanup,
- *    usage-limit holds, folder-trust refusal log, watched prompts, the
- *    awaiting verifier, the lifecycle broadcast/save, git and port context
- *    watchers, the detection agreement log, headless remote starts, the pane
- *    supervisor, the channel wake worker (src/daemon/index.ts, codexThreadOwner.ts);
- *  - 'session:destroyed' (14): the same subsystems' cleanups, plus the
- *    tool-refusal tracker and the destroy broadcast.
- * Node's default of 10 warned (MaxListenersExceededWarning) on every daemon
- * start without any leak. A new subscriber updates this list and the count in
- * DaemonSessionManager.listeners.test.ts; the headroom is for that, not for
- * per-session listeners, which would be a leak.
- */
-export const SESSION_MANAGER_MAX_LISTENERS = 24;
-
 export class DaemonSessionManager extends EventEmitter {
   constructor() {
     super();
