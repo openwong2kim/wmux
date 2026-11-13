@@ -202,6 +202,9 @@ pub struct NativeTerminal {
     /// Why the ANSI snapshot of this stream cannot match xterm's, for good
     /// (an alternate screen's width change is XtermFeed::alt_reflow).
     refusal: Option<&'static str>,
+    /// Bytes scanned past the refusal for other refusal families (at most
+    /// REFUSAL_SCAN_BYTES).
+    scanned: usize,
     /// The text feed's trailing ESC (advance_indexing).
     text_held: Vec<u8>,
 }
@@ -227,6 +230,13 @@ fn reflows_below_cursor<T: GridCell>(grid: &Grid<T>, cols: usize) -> bool {
     })
 }
 
+const C1: &str = "unsupported-state-c1: a C1 control, which Alacritty prints";
+const LONG_SEQUENCE: &str =
+    "unsupported-state-long-sequence: an unfinished sequence past the held bytes";
+/// How many bytes past a refusal `feed_xterm` still scans for other refusal
+/// families (XtermFeed::scan): a fixed bound, so the same stream always
+/// names the same families, and the xterm fallback waits little for it.
+const REFUSAL_SCAN_BYTES: usize = 1024 * 1024;
 /// The longest unfinished sequence `feed_xterm` holds for its next bytes.
 const MAX_HELD: usize = 256;
 /// The longest unfinished string re-shipped after a snapshot, in UTF-16
@@ -385,6 +395,77 @@ impl XtermFeed {
         self.tail.clear();
         self.tail_units = 0;
         self.tail_overflow = false;
+    }
+
+    /// The refusals a control shows by itself, given the byte after it and
+    /// whether a printed character came right before it.
+    fn refuse_control(&mut self, sequence: &[u8], next_byte: Option<u8>, printed: bool) {
+        // xterm forgets the preceding character at any control;
+        // Alacritty repeats whatever was printed last.
+        if crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed) {
+            self.refuse(true, crate::native_serialize::refusal(sequence));
+        }
+        // A sequence cut short by DEL (or an escape by a byte past ASCII):
+        // both parsers ignore DEL there, so `ESC DEL D` is still IND and
+        // `CSI ! DEL p` DECSTR, which this scan would not see as such.
+        let last = sequence[sequence.len() - 1];
+        let cut = if sequence.get(1) == Some(&b'[') {
+            !(0x40..=0x7e).contains(&last) && next_byte == Some(0x7f)
+        } else {
+            !(0x30..=0x7e).contains(&last) && next_byte.is_some_and(|b| b == 0x7f || b >= 0x80)
+        };
+        self.refuse(
+            cut,
+            "unsupported-state-cut: a sequence cut short by DEL or a byte past ASCII",
+        );
+    }
+
+    /// After a refusal: only name the families the rest of the stream holds,
+    /// without laying it into the grid. It sees what a control shows by
+    /// itself (`refuse_control`, C1, an overlong sequence); a refusal that
+    /// needs the screen's state (a restore, margins) counts only when first.
+    fn scan(&mut self, bytes: &[u8]) {
+        let mut data = std::mem::take(&mut self.held);
+        data.extend_from_slice(bytes);
+        let c1 = crate::native_serialize::c1_at(&data);
+        let mut next = if self.in_string {
+            self.string_payload(&mut data, 0)
+        } else {
+            Some(0)
+        };
+        let mut printed = self.printed;
+        while let Some(at) = next {
+            let Some(found) = data[at..].iter().position(|&b| b == 0x1b) else {
+                if at < data.len() {
+                    printed = printable(data[data.len() - 1]);
+                }
+                break;
+            };
+            let at = at + found;
+            if found > 0 {
+                printed = printable(data[at - 1]);
+            }
+            let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
+                if data.len() - at <= MAX_HELD {
+                    self.held = data.split_off(at);
+                } else {
+                    self.refuse(true, LONG_SEQUENCE);
+                }
+                break;
+            };
+            let sequence = &data[at..at + len];
+            if len == 2 && matches!(sequence[1], b']' | b'P' | b'X' | b'^' | b'_') {
+                self.start_string();
+                next = self.string_payload(&mut data, at + len);
+            } else {
+                let next_byte = data.get(at + len).copied();
+                self.refuse_control(&data[at..at + len], next_byte, printed);
+                next = Some(at + len);
+            }
+            printed = false;
+        }
+        self.refuse(c1.is_some(), C1);
+        self.printed = printed && self.held.is_empty() && !self.in_string;
     }
 
     /// Consume a string's payload from `data[at..]`; returns where scanning
@@ -589,7 +670,6 @@ impl XtermFeed {
         data.extend_from_slice(bytes);
         // Refused wherever it is; reported first only if it comes first.
         let c1 = crate::native_serialize::c1_at(&data);
-        const C1: &str = "unsupported-state-c1: a C1 control, which Alacritty prints";
         let mut from = 0;
         let mut next = if self.in_string {
             self.string_payload(&mut data, 0)
@@ -615,7 +695,7 @@ impl XtermFeed {
                 if data.len() - at <= MAX_HELD {
                     self.held = data.split_off(at);
                 } else {
-                    self.refuse(true, "unsupported-state-long-sequence: an unfinished sequence past the held bytes");
+                    self.refuse(true, LONG_SEQUENCE);
                 }
                 break;
             };
@@ -658,26 +738,7 @@ impl XtermFeed {
                 self.push_tail(sequence);
                 next = self.string_payload(&mut data, at + len);
             } else {
-                // xterm forgets the preceding character at any control;
-                // Alacritty repeats whatever was printed last.
-                if crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed) {
-                    self.refuse(true, crate::native_serialize::refusal(sequence));
-                }
-                // A sequence cut short by DEL (or an escape by a byte past
-                // ASCII): both parsers ignore DEL there, so `ESC DEL D` is
-                // still IND and `CSI ! DEL p` DECSTR, which this scan would
-                // not see as such.
-                let next_byte = data.get(at + len).copied();
-                let cut = if sequence.get(1) == Some(&b'[') {
-                    !(0x40..=0x7e).contains(&sequence[len - 1]) && next_byte == Some(0x7f)
-                } else {
-                    !(0x30..=0x7e).contains(&sequence[len - 1])
-                        && next_byte.is_some_and(|b| b == 0x7f || b >= 0x80)
-                };
-                self.refuse(
-                    cut,
-                    "unsupported-state-cut: a sequence cut short by DEL or a byte past ASCII",
-                );
+                self.refuse_control(sequence, data.get(at + len).copied(), printed);
                 self.track(sequence, term.screen_lines());
                 next = Some(at + len);
                 if self.alt_reflow && self.may_leave_alt {
@@ -961,6 +1022,7 @@ impl NativeTerminal {
             scrollback,
             feed: XtermFeed::default(),
             refusal: None,
+            scanned: 0,
             text_held: Vec::new(),
         })
     }
@@ -978,43 +1040,48 @@ impl NativeTerminal {
     }
 
     /// `feed` for an ANSI snapshot replayed by xterm: ED 1 and ED 2 erase as
-    /// xterm does (see erase_like_xterm). Returns whether the snapshot is
-    /// refused for good, so the caller can stop parsing: a control Alacritty
-    /// parses differently, or a history past this terminal's cap when the
-    /// request asked for more. An alternate screen's width change is not
-    /// reported: leaving that screen later in the stream lifts it.
+    /// xterm does (see erase_like_xterm). The snapshot is refused for good by
+    /// a control Alacritty parses differently, or by a history past this
+    /// terminal's cap when the request asked for more; an alternate screen's
+    /// width change is not reported (leaving that screen later in the stream
+    /// lifts it). Past the refusal, the next REFUSAL_SCAN_BYTES are only
+    /// scanned for other refusal families (refusal_families), not laid into
+    /// the grid. Returns true once refused and that scan is done: the caller
+    /// stops parsing then.
     #[napi(catch_unwind)]
     pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool> {
         let term = self
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // Fed on past a refusal too: the snapshot is lost by then, but the
-        // rest of the stream still names the other families it holds.
-        self.feed.feed(&mut self.parser, term, &bytes);
-        if self.refusal.is_none() {
-            if self.feed.divergent {
-                self.refusal = Some(
-                    self.feed
-                        .refused
-                        .unwrap_or("unsupported-state: a control Alacritty parses differently"),
-                );
-            } else if requested_scrollback > self.scrollback
-                && [term.grid(), term.inactive_grid()]
-                    .iter()
-                    .any(|grid| grid.history_size() >= self.scrollback as usize)
-            {
-                self.refusal =
-                    Some("unsupported-history-limit: history reached the native grid cap");
-            }
+        if self.refusal.is_some() {
+            let take = bytes.len().min(REFUSAL_SCAN_BYTES - self.scanned);
+            self.feed.scan(&bytes[..take]);
+            self.scanned += take;
+            return Ok(self.scanned >= REFUSAL_SCAN_BYTES);
         }
-        Ok(self.refusal.is_some())
+        self.feed.feed(&mut self.parser, term, &bytes);
+        if self.feed.divergent {
+            self.refusal = Some(
+                self.feed
+                    .refused
+                    .unwrap_or("unsupported-state: a control Alacritty parses differently"),
+            );
+        } else if requested_scrollback > self.scrollback
+            && [term.grid(), term.inactive_grid()]
+                .iter()
+                .any(|grid| grid.history_size() >= self.scrollback as usize)
+        {
+            self.refusal = Some("unsupported-history-limit: history reached the native grid cap");
+        }
+        // Refused in these bytes: the scan of the next ones comes first.
+        Ok(false)
     }
 
     /// Every refusal family the ANSI feed met, the reported one first, each
     /// once. Empty while the snapshot is not refused.
-    #[napi]
-    pub fn refusal_families(&self) -> Vec<String> {
+    #[napi(catch_unwind)]
+    pub fn refusal_families(&self) -> Result<Vec<String>> {
         let mut families: Vec<&'static str> =
             self.refusal.map(refusal_family).into_iter().collect();
         for family in &self.feed.seen {
@@ -1022,7 +1089,7 @@ impl NativeTerminal {
                 families.push(family);
             }
         }
-        families.into_iter().map(str::to_owned).collect()
+        Ok(families.into_iter().map(str::to_owned).collect())
     }
 
     /// Replay an immutable native ring copy without a full JS Buffer round trip.
@@ -1965,6 +2032,29 @@ mod tests {
             "unsupported-state-alt-margins"
         );
         assert!(feed_with(&["\x1b*0\x1bn\x1b[!pok"]).2.refused.is_none());
+    }
+
+    #[test]
+    fn the_scan_past_a_refusal_names_what_controls_show_by_themselves() {
+        let mut feed = feed_with(&["\x1b(A"]).2;
+        // Split across scans, inside a string, cut by DEL, and a C1.
+        feed.scan(b"\x1b]0;\x1b[53m title\x07\x1b[5");
+        feed.scan(b"3m\x1b[!\x7fp\xc2\x9b31m");
+        // A restore needs the screen's state: not seen by the scan.
+        feed.scan(b"\x1b7\x1b*0\x1b8");
+        assert_eq!(
+            feed.seen,
+            [
+                "unsupported-state-charset",
+                "unsupported-state-sgr",
+                "unsupported-state-cut",
+                "unsupported-state-c1"
+            ]
+        );
+        assert_eq!(
+            feed.refused.map(crate::native_core::refusal_family),
+            Some("unsupported-state-charset")
+        );
     }
 
     #[test]

@@ -44,10 +44,6 @@ function load(): NativeModule {
   return cached.module;
 }
 
-/** How long the ANSI feed goes on after a refusal, naming the other refusal
- *  families in the stream (NativeTerminal.refusalFamilies). */
-const REFUSAL_SCAN_MS = 50;
-
 /** NativeTerminal refuses a grid above four million cells, history included. */
 const NATIVE_CELL_LIMIT = 4_000_000;
 /** The most history rows the native grid can hold at every size the request replays. */
@@ -77,14 +73,16 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
     term = nativeTerminal;
     let carry = Buffer.alloc(0);
     let bytesIn = 0;
-    // Set once the native terminal refuses the ANSI snapshot. Parsing goes on
-    // for REFUSAL_SCAN_MS only, so the counters learn which other refusal
-    // families the stream holds without holding up the xterm fallback.
-    let refusedAt: number | undefined;
-    const refused = (): boolean => refusedAt !== undefined && performance.now() - refusedAt >= REFUSAL_SCAN_MS;
+    // Set once the native terminal refuses the ANSI snapshot for good and has
+    // scanned its bounded stretch past the refusal for other refusal families
+    // (NativeTerminal.feedXterm): parsing on would only delay the fallback.
+    let refused = false;
+    // A refusal already met: running out of budget during the scan past it
+    // still reports that refusal, not the budget.
+    const refusedAlready = (): boolean => kind === 'ansi' && (nativeTerminal.refusalFamilies?.().length ?? 0) > 0;
     const feed = async (raw: Buffer): Promise<boolean> => {
       bytesIn += raw.length;
-      if (refused()) return true;
+      if (refused) return true;
       const data = carry.length ? Buffer.concat([carry, raw]) : raw;
       carry = Buffer.alloc(0);
       for (let offset = 0; offset < data.length;) {
@@ -97,13 +95,14 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
           // The ANSI feed also tracks margins, cursor visibility and the
           // pending tail natively, as ansiStreamScan does for xterm.
           if (kind !== 'ansi') nativeTerminal.feed(bytes);
-          else if (nativeTerminal.feedXterm(bytes, requested)) {
-            refusedAt ??= performance.now();
-            if (refused()) return true;
-          }
+          else if (nativeTerminal.feedXterm(bytes, requested)) { refused = true; return true; }
           await new Promise<void>(resolve => setImmediate(resolve));
         }
-        if (performance.now() - started > (req.budgetMs ?? 4000)) return false;
+        if (performance.now() - started > (req.budgetMs ?? 4000)) {
+          if (!refusedAlready()) return false;
+          refused = true;
+          return true;
+        }
       }
       return true;
     };

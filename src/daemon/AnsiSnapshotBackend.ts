@@ -113,10 +113,10 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   diagnostics.fallbacks++;
   const counted = failure === 'state' || failure === 'unsupported' ? refusalFamily(refusal, failure) : failure;
   countReason(diagnostics.reasons, counted);
+  // The native list is already families, the reported one first; a module
+  // built before it gives none, and the counted family stands alone.
   if (counted.startsWith('unsupported-')) {
-    for (const family of new Set([counted, ...(families ?? []).map((f) => refusalFamily(f, ''))])) {
-      if (family) countReason(diagnostics.reasonsSeen, family);
-    }
+    for (const family of new Set([counted, ...(families ?? [])])) countReason(diagnostics.reasonsSeen, family);
   }
   diagnostics.last = { backend: 'xterm', reason: failure };
   const remaining = budget - (performance.now() - started);

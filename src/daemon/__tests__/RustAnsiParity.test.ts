@@ -448,6 +448,13 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     }
     const served = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, initial: Buffer.from('plain') }, 'ansi');
     expect(served.ok).toBe(true);
+    // Out of budget while scanning past the refusal: still that refusal.
+    const late = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, budgetMs: 0, initial: Buffer.from(stream) }, 'ansi');
+    expect(late.ok).toBe(false);
+    if (!late.ok) {
+      expect(late.reason).toBe('error');
+      expect(late.detail?.split(':')[0]).toBe('unsupported-state-mode');
+    }
   });
 
   // xterm's public modes do not expose the mouse encoding, so capture() cannot
