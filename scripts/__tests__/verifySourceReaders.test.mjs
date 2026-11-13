@@ -42,23 +42,29 @@ describe('sourceReaders', () => {
     })).toEqual([]);
   });
 
+  it('picks a test that pins a value in package.json', () => {
+    expect(pick(['package.json'], {
+      'scripts/__tests__/pin.test.mjs': "const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));\nconst root = path.join(__dirname, '..', '..');",
+    })).toEqual(['scripts/__tests__/pin.test.mjs']);
+  });
+
   it('picks nothing when no source changed', () => {
-    expect(pick(['docs/a.md', 'package.json'], {
+    expect(pick(['docs/a.md', 'assets/icon.png'], {
       'src/a/__tests__/a.test.ts': "readFileSync(path.join(__dirname, '..', 'a.md'))",
     })).toEqual([]);
   });
 
-  it('on this tree, a change to useTerminal.ts picks the two suites that read it as text', () => {
-    // Both went red in CI on #3330 after verify.sh had passed.
-    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-    const suites = [
+  // Suites that went red in CI after verify.sh had passed.
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  it.each([
+    ['src/renderer/hooks/useTerminal.ts', [
+      // #3330: both slice useTerminal.ts by a character count.
       'src/renderer/hooks/__tests__/useTerminal.hiddenRetention.test.ts',
       'src/renderer/hooks/__tests__/useTerminal.webViewer.os.test.ts',
-    ];
-    expect(sourceReaders({
-      changed: ['src/renderer/hooks/useTerminal.ts'],
-      tests: suites,
-      read: readOrNull(root),
-    })).toEqual(suites);
+    ]],
+    // #3336: the koffi packaging pins read broker.ts through a repository root kept in a variable.
+    ['src/mcp/broker.ts', ['src/mcp/__tests__/brokerKoffiPackaging.test.ts']],
+  ])('on this tree, a change to %s picks the suites that read it as text', (changed, suites) => {
+    expect(sourceReaders({ changed: [changed], tests: suites, read: readOrNull(root) })).toEqual(suites);
   });
 });

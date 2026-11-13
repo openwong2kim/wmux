@@ -1,8 +1,9 @@
 // The tests scripts/verify.sh adds to `vitest --changed`: those that read a
 // changed source file as text. Such a test checks a source by its words (a
 // regex over useTerminal.ts, a slice of daemon/index.ts) and imports nothing it
-// checks, so `--changed`, which follows imports, never picks it. Twice a
-// change passed verify.sh and failed one of them in CI (#3330).
+// checks, so `--changed`, which follows imports, never picks it. Changes
+// passed verify.sh and then failed one of them in CI: twice on #3330 (a slice
+// of useTerminal.ts), once on #3336 (the koffi packaging pins).
 //
 // A test counts when a path built from its string literals names the changed
 // file, extension included. A TypeScript import specifier has none; an ESM
@@ -20,8 +21,9 @@ import path from 'node:path';
 
 const posix = path.posix;
 
-/** A source file a test may read as text. */
-const SOURCE_FILE = /\.(ts|tsx|mts|cts|mjs|cjs|js)$/;
+/** A source file a test may read as text; `.json` too, for the tests that
+ *  pin a dependency or a script in package.json. */
+const SOURCE_FILE = /\.(ts|tsx|mts|cts|mjs|cjs|js|json)$/;
 const TEST_FILE = /\.test\.(ts|tsx|mts|cts|mjs|cjs|js)$/;
 // Single, double and template literals on one line; no escapes needed for paths.
 // A template's `${...}` parts (`${__dirname}/../x.ts`) are dropped: what is
