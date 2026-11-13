@@ -173,25 +173,9 @@ export interface LedgerRemote {
    *  id, A2A_REMOTE_MESSAGE_ID_RE), the one this row moved to review_requested
    *  on: another id is a new report, after a follow-up. Not a time. */
   reportId?: string;
-  /** While the row is input_required: what its text says it waits for, when
-   *  the follow pass wrote that text (`reply`, `stopped`, `question`,
-   *  `question:<kind>`), or `other` when someone else moved it there with a
-   *  text of their own. The pass writes a new text only when this changes,
-   *  and over `other` only once the agent waits for something new. The
-   *  ledger clears it on any other status change. */
-  waitsFor?: LedgerRemoteWaitsFor;
 }
-
-export type LedgerRemoteWaitsFor = 'reply' | 'stopped' | 'question' | `question:${LedgerRemoteQuestion}` | 'other';
 
 export const LEDGER_REMOTE_QUESTIONS = ['permission', 'plan', 'menu', 'dialog', 'trust'] as const;
-export type LedgerRemoteQuestion = typeof LEDGER_REMOTE_QUESTIONS[number];
-
-/** Whether `v` is a `waitsFor` value. */
-export function isLedgerRemoteWaitsFor(v: unknown): v is LedgerRemoteWaitsFor {
-  if (v === 'reply' || v === 'stopped' || v === 'question' || v === 'other') return true;
-  return typeof v === 'string' && v.startsWith('question:') && (LEDGER_REMOTE_QUESTIONS as readonly string[]).includes(v.slice('question:'.length));
-}
 
 export interface LedgerRemoteWaiting {
   on: 'question' | 'usage-limit';

@@ -50,7 +50,6 @@ import * as path from 'node:path';
 import {
   LEDGER_GATE_TAIL_MAX_BYTES,
   LEDGER_REMOTE_QUESTIONS,
-  isLedgerRemoteWaitsFor,
   LEDGER_REMOTE_STATES,
   LEDGER_SCHEMA_VERSION,
   REMOTE_TASK_WORKSPACE_PREFIX,
@@ -311,12 +310,6 @@ const boundedText = (v: unknown, max: number): v is string =>
   typeof v === 'string' && v.length > 0 && v.length <= max && !/\p{Cc}/u.test(v);
 
 /** A LedgerRemote as it may be stored, or null when it is not one. */
-/** A remote record without what its text says it waits for. */
-function withoutWaitsFor(remote: LedgerRemote): LedgerRemote {
-  const { waitsFor: _wait, ...rest } = remote;
-  return rest;
-}
-
 export function copyRemote(r: unknown): LedgerRemote | null {
   if (!r || typeof r !== 'object') return null;
   const o = r as Record<string, unknown>;
@@ -336,7 +329,6 @@ export function copyRemote(r: unknown): LedgerRemote | null {
     ...(copyWaiting(o.waiting) ? { waiting: copyWaiting(o.waiting)! } : {}),
     ...(typeof o.goneSeenAt === 'number' && Number.isFinite(o.goneSeenAt) && o.goneSeenAt > 0 ? { goneSeenAt: o.goneSeenAt } : {}),
     ...(typeof o.reportId === 'string' && A2A_REMOTE_MESSAGE_ID_RE.test(o.reportId) ? { reportId: o.reportId } : {}),
-    ...(isLedgerRemoteWaitsFor(o.waitsFor) ? { waitsFor: o.waitsFor } : {}),
   };
 }
 
@@ -643,17 +635,8 @@ export class TaskLedger {
       };
     }
 
-    // What a remote row's text says it waits for holds only while it stays input_required: into input_required by
-    // someone else, the text is theirs (`other`); any other move clears it. The follow pass sets its own before it
-    // moves the row there.
-    const waitsFor = entry.remote?.waitsFor;
-    const remoteWait = !entry.remote ? {}
-      : next === 'input_required' && input.actor.kind !== 'system' ? { remote: { ...entry.remote, waitsFor: 'other' as const } }
-        : next !== 'input_required' && waitsFor !== undefined ? { remote: withoutWaitsFor(entry.remote) }
-          : {};
     const updated: LedgerEntry = this.redact({
       ...entry,
-      ...remoteWait,
       status: next,
       rev: entry.rev + 1,
       updatedAt: this.now(),
@@ -809,8 +792,8 @@ export class TaskLedger {
    *  afterwards, or null for a row that is not remote.
    *
    *  `text`: why the row waits, when only that changed, written with the
-   *  patch in one write. Only onto the row as it was read (`expectedRev`)
-   *  and still open: otherwise only the patch is written, and the next pass
+   *  patch in one write. Only onto an input_required row as it was read
+   *  (`expectedRev`): otherwise only the patch is written, and the next pass
    *  reads the row again. */
   updateRemote(
     id: string,
@@ -820,11 +803,9 @@ export class TaskLedger {
     return this.serialize(async () => {
       const entry = this.entries.get(id);
       if (!entry?.remote) return null;
-      const current = text !== undefined && entry.rev === text.expectedRev && isOpenLedgerStatus(entry.status);
-      // Not onto the row as read: neither the text nor what it says it waits for (the next pass decides again).
-      const { waitsFor: _wait, ...rest } = patch;
-      const remote = copyRemote({ ...entry.remote, ...(text !== undefined && !current ? rest : patch) });
+      const remote = copyRemote({ ...entry.remote, ...patch });
       if (!remote) throw new Error(`ledger: the remote record of task ${id} would not be valid`);
+      const current = text !== undefined && entry.rev === text.expectedRev && entry.status === 'input_required';
       const summary = current && text.summary.trim().length > 0
         ? truncateHead(this.redact(text.summary.trim()), LEDGER_SUMMARY_MAX_BYTES)
         : entry.summary;

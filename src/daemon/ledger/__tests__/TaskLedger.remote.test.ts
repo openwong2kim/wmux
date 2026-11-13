@@ -107,55 +107,31 @@ describe('a remote task row', () => {
     expect(await a.updateRemote(local.id, { withdrawn: true })).toBeNull();
   });
 
-  it('takes a new text for the row alone, with no status change and no transition; the same text writes nothing', async () => {
-    const a = open();
-    const entry = await registerRemote(a);
-    const moves: unknown[] = [];
-    a.onTransition((t) => moves.push(t));
-    const reply = 'the agent on box waits for your reply';
-    const told = await a.updateRemote(entry.id, {}, { summary: reply, expectedRev: entry.rev });
-    expect(told).toMatchObject({ rev: entry.rev + 1, status: entry.status, summary: reply, remote: REMOTE });
-    expect((await a.updateRemote(entry.id, {}, { summary: reply, expectedRev: told!.rev }))?.rev).toBe(entry.rev + 1);
-    expect(moves).toEqual([]);
-  });
-
-  it('a text, and what it says the row waits for, go only onto the row as it was read and still open; the rest of the patch goes either way', async () => {
+  it('takes a new text for an input_required row as it was read, with no status change and no transition; the same text writes nothing', async () => {
     const a = open();
     const entry = await registerRemote(a);
     const first = 'the agent on box waits on a permission question';
     const reply = 'the agent on box waits for your reply';
-    const read = await a.updateRemote(entry.id, { waitsFor: 'question:permission' }, { summary: first, expectedRev: entry.rev });
-    expect(read).toMatchObject({ summary: first, remote: { waitsFor: 'question:permission' } });
-    // A stale rev: the rest of the patch goes; the text and its wait do not, so the next pass decides again.
-    const stale = await a.updateRemote(entry.id, { goneSeenAt: 5, waitsFor: 'reply' }, { summary: reply, expectedRev: entry.rev });
-    expect(stale).toMatchObject({ rev: read!.rev + 1, summary: first, remote: { goneSeenAt: 5, waitsFor: 'question:permission' } });
+    expect(entry.status).toBe('working');
+    // Not input_required: only the patch goes.
+    const working = await a.updateRemote(entry.id, { goneSeenAt: 4 }, { summary: reply, expectedRev: entry.rev });
+    expect(working).toMatchObject({ rev: entry.rev + 1, status: 'working', remote: { goneSeenAt: 4 } });
+    expect(working!.summary).toBe(entry.summary);
+    const waiting = await a.update({ id: entry.id, status: 'input_required', actor: { kind: 'system', workspaceId: 'main' }, expectedRev: working!.rev, summary: first });
+    expect(waiting.ok).toBe(true);
+    const read = a.get(entry.id)!;
+    const moves: unknown[] = [];
+    a.onTransition((t) => moves.push(t));
+    // A stale rev: the patch goes, the text does not.
+    const stale = await a.updateRemote(entry.id, { goneSeenAt: 5 }, { summary: reply, expectedRev: read.rev - 1 });
+    expect(stale).toMatchObject({ rev: read.rev + 1, summary: first, remote: { goneSeenAt: 5 } });
+    const told = await a.updateRemote(entry.id, {}, { summary: reply, expectedRev: stale!.rev });
+    expect(told).toMatchObject({ rev: stale!.rev + 1, status: 'input_required', summary: reply });
+    expect((await a.updateRemote(entry.id, {}, { summary: reply, expectedRev: told!.rev }))?.rev).toBe(told!.rev);
+    expect(moves).toEqual([]);
     // A closed row takes no text.
     const closed = await a.closeTask(entry.id);
-    expect(await a.updateRemote(entry.id, {}, { summary: reply, expectedRev: closed!.rev })).toMatchObject({ rev: closed!.rev, summary: closed!.summary });
-    // Only a known wait is kept on the record.
-    expect(copyRemote({ ...REMOTE, waitsFor: 'reply' })?.waitsFor).toBe('reply');
-    expect(copyRemote({ ...REMOTE, waitsFor: 'question:dialog' })?.waitsFor).toBe('question:dialog');
-    expect(copyRemote({ ...REMOTE, waitsFor: 'other' })?.waitsFor).toBe('other');
-    expect(copyRemote({ ...REMOTE, waitsFor: 'anything' })).not.toHaveProperty('waitsFor');
-    expect(copyRemote({ ...REMOTE, waitsFor: 'question:elicitation' })).not.toHaveProperty('waitsFor');
-  });
-
-  it('what a row waits for holds only while it stays input_required: someone else moving it there makes the text theirs', async () => {
-    const a = open();
-    const entry = await registerRemote(a);
-    const brain = { kind: 'brain' as const, workspaceId: 'ws-owner' };
-    expect(entry.status).toBe('working');
-    // The follow pass records its wait, then moves the row: kept.
-    await a.updateRemote(entry.id, { waitsFor: 'reply' });
-    const waiting = await a.update({ id: entry.id, status: 'input_required', actor: { kind: 'system', workspaceId: 'main' }, expectedRev: a.get(entry.id)!.rev, summary: 'waits for your reply' });
-    expect(waiting).toMatchObject({ ok: true, entry: { remote: { waitsFor: 'reply' } } });
-    // Out of input_required: cleared.
-    const back = await a.update({ id: entry.id, status: 'working', actor: brain, expectedRev: a.get(entry.id)!.rev });
-    expect(back).toMatchObject({ ok: true });
-    expect(a.get(entry.id)?.remote).not.toHaveProperty('waitsFor');
-    // Into it by someone else, with their text: theirs.
-    const bounced = await a.update({ id: entry.id, status: 'input_required', actor: brain, expectedRev: a.get(entry.id)!.rev, summary: 'decide X first' });
-    expect(bounced).toMatchObject({ ok: true, entry: { summary: 'decide X first', remote: { waitsFor: 'other' } } });
+    expect(await a.updateRemote(entry.id, {}, { summary: first, expectedRev: closed!.rev })).toMatchObject({ rev: closed!.rev, summary: closed!.summary });
   });
 
   it('copyRemote keeps only the fields it knows, each checked', () => {

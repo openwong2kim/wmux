@@ -560,27 +560,13 @@ describe('a started task follows its A2A task', () => {
     expect(s.row(0).status).toBe('review_requested');
     const bounced = await s.deps.ledger.update({ id: s.row(0).id, status: 'input_required', actor: { kind: 'brain', workspaceId: 'ws-owner' }, expectedRev: s.row(0).rev, summary: 'fix the failing test first' });
     expect(bounced.ok).toBe(true);
-    // The follow-up sets the agent working, and it asks the caller again.
+    // The follow-up sets the agent working, and it asks the caller again, then shows a question.
     s.view(0, { state: 'input-required', reportId: REPORTED });
     await reconcileRemoteTasks(s.deps);
-    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: 'fix the failing test first', remote: { waitsFor: 'reply' } });
-    // Until the agent waits for something new: a question on its screen is said, since only that PC's pane answers it.
+    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: 'fix the failing test first' });
     s.view(0, { state: 'working', reportId: REPORTED, status: { kind: 'question', since: at, question: 'permission' } });
     await reconcileRemoteTasks(s.deps);
-    expect(s.row(0)).toMatchObject({ status: 'input_required', remote: { waitsFor: 'question:permission' } });
-    expect(s.row(0).summary).toContain('waits on a permission question');
-  });
-
-  it('a row written before the wait was recorded takes the text of what it waits for now', async () => {
-    const s = await started(1);
-    s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
-    await reconcileRemoteTasks(s.deps);
-    // As an older build left it: waiting, with its first reason's text and no wait recorded.
-    await s.deps.ledger.updateRemote(s.row(0).id, { waitsFor: undefined });
-    expect(s.row(0).remote).not.toHaveProperty('waitsFor');
-    s.view(0, { state: 'input-required' });
-    await reconcileRemoteTasks(s.deps);
-    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: `the agent on box waits for your reply on A2A task ${s.a2a[0]}`, remote: { waitsFor: 'reply' } });
+    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: 'fix the failing test first', remote: { waiting: { on: 'question', question: 'permission' } } });
   });
 
   it('a dialog question with no menu id (a picker as the real service reports it) is a question like any other', async () => {
