@@ -6,7 +6,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { ChromeLauncher } from '../../main/browser-session/ChromeLauncher';
+import { DOWNLOAD_DIR_PREFIX } from '../chromeDownloads';
 import { stopChrome, tempChromeProfile } from '../chromeProfile';
+import { sweepStaleTempDirs } from '../staleTempDirs';
 
 describe('tempChromeProfile', () => {
   it('removes the profile, its pinned download folder and every scratch dir, keeping extra preferences next to the pin', async () => {
@@ -20,22 +22,33 @@ describe('tempChromeProfile', () => {
     expect([profile.dir, profile.downloads, scratch].filter((d) => fs.existsSync(d))).toEqual([]);
   });
 
-  it('leaves the count of its prefix in the temp dir unchanged, and sweeps a stale one a killed run left', async () => {
-    const prefix = 'wmux-profile-count-';
-    const ofPrefix = () => fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(prefix)).sort();
-    const before = ofPrefix();
-    // As a run killed before its afterAll leaves it: a day and more old, no Chrome on it.
-    const stale = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-    fs.writeFileSync(path.join(stale, 'Local State'), '{}');
-    const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
-    fs.utimesSync(path.join(stale, 'Local State'), old, old);
-    fs.utimesSync(stale, old, old);
+  it('leaves nothing in the temp dir, and sweeps the stale dirs a killed run left', async () => {
+    // A temp dir of this test's own, so the count is exact while other runs share the machine's.
+    const keys = ['TMPDIR', 'TEMP', 'TMP'] as const;
+    const saved = keys.map((k) => process.env[k]);
+    sweepStaleTempDirs('wmux-profile-count-root-');
+    const ownTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-profile-count-root-'));
+    for (const k of keys) process.env[k] = ownTmp;
+    try {
+      // As a run killed before its afterAll leaves them: a day and more old, no Chrome on them.
+      const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+      const stale = ['wmux-profile-count-', DOWNLOAD_DIR_PREFIX, 'wmux-profile-scratch-'].map((p) => {
+        const dir = fs.mkdtempSync(path.join(ownTmp, p));
+        fs.writeFileSync(path.join(dir, 'Local State'), '{}');
+        fs.utimesSync(path.join(dir, 'Local State'), old, old);
+        fs.utimesSync(dir, old, old);
+        return dir;
+      });
 
-    const profile = tempChromeProfile(prefix);
-    expect(fs.existsSync(stale)).toBe(false);
-    await profile.remove();
-    // Nothing of this run's is left; a concurrent run may have swept one of before.
-    expect(ofPrefix().filter((n) => !before.includes(n))).toEqual([]);
+      const profile = tempChromeProfile('wmux-profile-count-');
+      profile.scratch('wmux-profile-scratch-');
+      expect(stale.filter((d) => fs.existsSync(d))).toEqual([]);
+      await profile.remove();
+      expect(fs.readdirSync(ownTmp)).toEqual([]);
+    } finally {
+      keys.forEach((k, i) => { if (saved[i] === undefined) delete process.env[k]; else process.env[k] = saved[i]; });
+      fs.rmSync(ownTmp, { recursive: true, force: true });
+    }
   });
 
   it('leaves no dir behind when setting up the profile fails', () => {

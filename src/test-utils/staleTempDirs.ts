@@ -18,8 +18,8 @@ import path from 'node:path';
  * - lstat says it is a real directory, not a link, its realpath is that same
  *   path, and, outside Windows, it is owned by this user and closed to others
  *   (mode 0700, as mkdtemp makes it);
- * - it and everything in it (links not followed) are older than `maxAgeMs`;
  * - nothing uses it (`inUse`; by default no live Chrome holds its lock);
+ * - it and everything in it (links not followed) are older than `maxAgeMs`;
  * - a second lstat right before the removal sees the same dir (dev, ino).
  *
  * The removal does not follow links inside the dir (fs.rmSync unlinks a link
@@ -29,11 +29,7 @@ import path from 'node:path';
 /** Leftovers older than this are swept: far longer than any test run. */
 export const STALE_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000;
 
-/** A dir with more entries than this is kept rather than walked in full. */
-const MAX_WALKED_ENTRIES = 50_000;
-
 const MKDTEMP_SUFFIX = '[A-Za-z0-9]{6}';
-const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const ownUid = (): number | null => (typeof process.getuid === 'function' ? process.getuid() : null);
 
 /** Not world-writable, or sticky: no other user can swap an entry in it. */
@@ -46,22 +42,22 @@ function ownedAndClosed(st: fs.Stats, uid: number | null): boolean {
   return uid === null || (st.uid === uid && (st.mode & 0o077) === 0);
 }
 
-/** The newest mtime in the tree at `dir`, links not followed; null when it cannot tell. */
-function newestMtimeMs(dir: string): number | null {
+/**
+ * Whether everything in the tree at `dir`, links not followed, changed before
+ * `cutoffMs`. Stops at the first newer entry; false when it cannot tell.
+ */
+function allOlderThan(dir: string, cutoffMs: number): boolean {
   try {
-    let newest = 0;
-    let walked = 0;
     const stack = [dir];
     while (stack.length > 0) {
       const p = stack.pop() as string;
-      if (++walked > MAX_WALKED_ENTRIES) return null;
       const st = fs.lstatSync(p);
-      newest = Math.max(newest, st.mtimeMs);
+      if (st.mtimeMs >= cutoffMs) return false;
       if (st.isDirectory()) for (const name of fs.readdirSync(p)) stack.push(path.join(p, name));
     }
-    return newest;
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -124,7 +120,8 @@ export function sweepStaleTempDirs(prefix: string, opts: SweepOptions = {}): str
   const now = opts.now ?? Date.now();
   const maxAgeMs = opts.maxAgeMs ?? STALE_TEMP_DIR_AGE_MS;
   const inUse = opts.inUse ?? ((dir: string) => chromeHoldsProfile(dir));
-  const pattern = new RegExp(`^${escape(prefix)}${MKDTEMP_SUFFIX}$`);
+  // The prefix check above leaves '.' as its only regex metacharacter.
+  const pattern = new RegExp(`^${prefix.replace(/\./g, '\\.')}${MKDTEMP_SUFFIX}$`);
   let names: string[];
   try {
     names = fs.readdirSync(root);
@@ -138,9 +135,7 @@ export function sweepStaleTempDirs(prefix: string, opts: SweepOptions = {}): str
       const first = fs.lstatSync(dir);
       if (!first.isDirectory() || !ownedAndClosed(first, uid)) continue;
       if (fs.realpathSync(dir) !== dir) continue;
-      const newest = newestMtimeMs(dir);
-      if (newest === null || now - newest < maxAgeMs) continue;
-      if (inUse(dir)) continue;
+      if (inUse(dir) || !allOlderThan(dir, now - maxAgeMs)) continue;
       const again = fs.lstatSync(dir);
       if (!again.isDirectory() || again.dev !== first.dev || again.ino !== first.ino) continue;
       fs.rmSync(dir, { recursive: true, force: true });

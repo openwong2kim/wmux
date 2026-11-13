@@ -1,24 +1,31 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { sweepStaleTempDirs } from '../../../test-utils/staleTempDirs';
+import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 import { clearDesktopSnapshots, endDesktopRunner, prepareDesktopHome } from '../desktopHome';
 
-/** Every temp dir a test made, removed after it. */
-const made: string[] = [];
-const tmp = () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'adhome-'));
-  made.push(dir);
-  return dir;
-};
-const adhomes = () => fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('adhome-')).sort();
-let before: string[] = [];
+// Each test's dirs are removed after it (trackedTempDir). They are made in a
+// temp dir of this file's own, so the count left behind is exact even while
+// another run of this file shares the machine's temp dir.
+const TMP_ENV = ['TMPDIR', 'TEMP', 'TMP'] as const;
+const savedEnv = TMP_ENV.map((k) => process.env[k]);
+let ownTmp = '';
+const tmp = () => trackedTempDir('adhome-');
 
-beforeAll(() => { before = adhomes(); });
-// Links inside are removed as links: rmSync never follows them.
-afterEach(() => { for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
-// None left that was not there before (another run may remove one of those).
-afterAll(() => { expect(adhomes().filter((n) => !before.includes(n))).toEqual([]); });
+beforeAll(() => {
+  // One a killed run of this file left.
+  sweepStaleTempDirs('wmux-adhome-count-');
+  ownTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-adhome-count-'));
+  for (const k of TMP_ENV) process.env[k] = ownTmp;
+});
+afterAll(() => {
+  TMP_ENV.forEach((k, i) => { if (savedEnv[i] === undefined) delete process.env[k]; else process.env[k] = savedEnv[i]; });
+  const left = fs.readdirSync(ownTmp);
+  fs.rmSync(ownTmp, { recursive: true, force: true });
+  expect(left).toEqual([]);
+});
 
 function seed(home: string): void {
   fs.mkdirSync(path.join(home, 'snapshots', 's1'), { recursive: true });

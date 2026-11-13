@@ -13,8 +13,11 @@ import path from 'node:path';
  * path. Either way a pinned folder keeps a download with no path set in one
  * known place.
  */
+/** The mkdtemp prefix of a pinned download folder. */
+export const DOWNLOAD_DIR_PREFIX = 'wmux-test-downloads-';
+
 export function pinDownloadDir(profileDir: string, preferences: Record<string, unknown> = {}): string {
-  const downloads = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-test-downloads-'));
+  const downloads = fs.mkdtempSync(path.join(os.tmpdir(), DOWNLOAD_DIR_PREFIX));
   try {
     fs.mkdirSync(path.join(profileDir, 'Default'), { recursive: true });
     fs.writeFileSync(

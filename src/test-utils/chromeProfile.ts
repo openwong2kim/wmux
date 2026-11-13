@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { ChromeLauncher } from '../main/browser-session/ChromeLauncher';
-import { pinDownloadDir } from './chromeDownloads';
+import { DOWNLOAD_DIR_PREFIX, pinDownloadDir } from './chromeDownloads';
 import { REMOVE_TEMP_DIR_HOOK_TIMEOUT_MS, removeTempDirs } from './removeTempDir';
 import { sweepStaleTempDirs } from './staleTempDirs';
 
@@ -36,9 +36,10 @@ export const CHROME_TEARDOWN_TIMEOUT_MS = REMOVE_TEMP_DIR_HOOK_TIMEOUT_MS + 20_0
 const EXIT_WAIT_MS = 5_000;
 
 export function tempChromeProfile(prefix: string, opts: { preferences?: Record<string, unknown> } = {}): TempChromeProfile {
-  // A run killed before its afterAll left its profile behind: sweep this
-  // prefix's stale ones (staleTempDirs.ts) before making the next.
+  // A run killed before its afterAll left its profile and download folder
+  // behind: sweep the stale ones (staleTempDirs.ts) before making the next.
   sweepStaleTempDirs(prefix);
+  sweepStaleTempDirs(DOWNLOAD_DIR_PREFIX);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   let downloads: string;
   try {
@@ -53,6 +54,7 @@ export function tempChromeProfile(prefix: string, opts: { preferences?: Record<s
     dir,
     downloads,
     scratch: (scratchPrefix) => {
+      sweepStaleTempDirs(scratchPrefix);
       const made = fs.mkdtempSync(path.join(os.tmpdir(), scratchPrefix));
       owned.push(made);
       return made;
