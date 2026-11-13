@@ -44,6 +44,12 @@ export const CLIENT_RELEASE_MS = 500;
  * it the queue holds more than a re-flush sends, and every byte not written is
  * still in the ring the re-flush is cut from. A reader that stopped reading
  * (main's event loop stalled) used to grow this queue without bound.
+ *
+ * Fixed, not the configured ring size: it bounds the queue, which is memory
+ * whatever the ring holds. With a larger ring (bufferSizeMb up to 64) the
+ * re-flush is the screen snapshot as usual; a raw re-flush (alternate screen)
+ * can then exceed what main holds of a replay (sessionPipeStreamScanner), and
+ * main drops it, so the pane keeps its screen and stays stale instead.
  */
 export const SESSION_PIPE_RESYNC_BYTES = 8 * 1024 * 1024;
 

@@ -229,6 +229,27 @@ describe('useTerminal: a re-flush main started', { timeout: 60_000 }, () => {
     expect(lines().slice(0, 5)).toEqual(['PS> echo a', 'a', 'PS> echo b', 'b', 'PS>']);
   });
 
+  it('a re-flush that recovered nothing keeps the screen and leaves the pane stale', async () => {
+    await mount('m-z');
+    act(() => {
+      replay('m-z', 'PS> ');
+      marker('m-z', 4);
+      live('m-z', 'echo a\r\na\r\nPS> ');
+    });
+    await settle();
+    act(() => {
+      emitStarting!('m-z');
+      live('m-z', 'echo held\r\nheld\r\nPS> ');
+    });
+    await settle();
+    // Main dropped a replay too large to hold: a bare marker, 0 bytes.
+    act(() => marker('m-z', 0));
+    await settle();
+    expect(lines().slice(0, 5)).toEqual(['PS> echo a', 'a', 'PS> echo held', 'held', 'PS>']);
+    const { getPaneSyncUi } = await import('../useTerminal');
+    expect(getPaneSyncUi('m-z')).toBe('stale');
+  });
+
   it('a failed re-flush re-attaches the pane, and the attach flush settles it', async () => {
     await mount('m-e');
     act(() => {

@@ -3625,6 +3625,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const completeResyncFromFlush = (recoveredBytes: number): boolean => {
       const st = resyncRef.current;
       if (!st.pending) return false;
+      // The flush recovered nothing: the ring was empty, or main dropped a
+      // replay too large to hold (sessionPipeStreamScanner). Wiping the
+      // screen for nothing would leave a blank pane marked clean: keep it,
+      // write what was held, and leave it stale like any failed resync.
+      if (recoveredBytes <= 0 && !st.buffer.some((chunk) => chunk.replay)) {
+        abortResync('flush-recovered-nothing');
+        return true;
+      }
       st.pending = false;
       if (st.timer) { clearTimeout(st.timer); st.timer = null; }
       st.degradedUntil = 0;
