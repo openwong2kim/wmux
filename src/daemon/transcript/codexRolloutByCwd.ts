@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ResumeBinding } from '../../shared/agentResume';
 import { checkNativeTranscriptPath, codexSessionRoot } from './providers';
+import { procStartMs } from '../procfs';
 
 /** A rollout may start a moment before the launch marker (whole-second names, clock skew). */
 const START_SLACK_MS = 2_000;
@@ -193,6 +194,9 @@ export function parseEtime(etime: string): number | undefined {
 /** Start time of a POSIX process, from its elapsed time; undefined on Windows or failure. */
 export function readProcessStartMs(pid: number): Promise<number | undefined> {
   if (process.platform === 'win32' || !(pid > 0)) return Promise.resolve(undefined);
+  // Linux: from /proc, to the clock tick (its boot time is whole seconds, rounded down).
+  const proc = procStartMs(pid);
+  if (proc) return Promise.resolve(proc.value ?? undefined);
   return new Promise((resolve) => {
     execFile('ps', ['-o', 'etime=', '-p', String(pid)], { timeout: 5_000 }, (err, stdout) => {
       const elapsed = err ? undefined : parseEtime(String(stdout));

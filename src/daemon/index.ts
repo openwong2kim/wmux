@@ -6,6 +6,7 @@ import { terminalCoreRuntime, terminalCoreSelection } from '../shared/terminalCo
 import { labsSettingsAtStartup } from '../shared/labsSettings';
 import { collectDaemonMemoryDiagnostics } from './memoryDiagnostics';
 import { createStartupRecovery } from './startupRecovery';
+import { procComm } from './procfs';
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
 import { HermesChatService, routeTerminalChat } from './transcript/HermesChatService';
@@ -1908,16 +1909,21 @@ async function reapIfIdentityConfirmed(opts: {
  *  Prevents killing unrelated processes after PID recycling (e.g. reboot). */
 async function isOurShellProcess(pid: number, expectedCmd: string): Promise<boolean> {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires -- keep this optional dependency lazy
-    const { execFile } = require('child_process');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires -- keep this optional dependency lazy
-    const { promisify } = require('util');
-    const execFileAsync = promisify(execFile);
-    // Unix: check /proc/<pid>/exe or use ps
-    const { stdout } = await execFileAsync('ps', ['-o', 'comm=', '-p', String(pid)], {
-      encoding: 'utf-8', timeout: 3000,
-    });
-    const actualCmd = (stdout as string).trim();
+    // Linux: /proc/<pid>/comm, the name `ps -o comm=` prints; `ps` when it cannot be read.
+    const proc = procComm(pid);
+    if (proc && proc.value === null) return false;
+    let actualCmd = proc?.value?.trim();
+    if (actualCmd === undefined) {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires -- keep this optional dependency lazy
+      const { execFile } = require('child_process');
+      // eslint-disable-next-line @typescript-eslint/no-var-requires -- keep this optional dependency lazy
+      const { promisify } = require('util');
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync('ps', ['-o', 'comm=', '-p', String(pid)], {
+        encoding: 'utf-8', timeout: 3000,
+      });
+      actualCmd = (stdout as string).trim();
+    }
     const expectedBase = path.basename(expectedCmd);
     return actualCmd === expectedBase || actualCmd.includes(expectedBase);
   } catch {
