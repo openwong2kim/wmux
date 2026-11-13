@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { A2A_FEATURE_SPAWN, type HostId } from '../../../shared/a2aRemote';
 import { asSpawnLinkId, spawnFirstMessageId } from '../../../shared/a2aSpawn';
 import type { DaemonConfig } from '../../types';
+import type { HeadlessStartRecordV1 } from '../headlessStartStore';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../../../main/a2aRemote/spawnWorktree';
@@ -22,6 +23,8 @@ import { ExposureStore } from '../exposureStore';
 import { HeadlessMode, headlessFlagPath, headlessReleases } from '../headlessMode';
 import { HeadlessStartStore } from '../headlessStartStore';
 import { A2aHeadlessStarter, headlessTreeId, worktreeUnchanged, type HeadlessSessionInput, type HeadlessSessionPort } from '../headlessStarter';
+import { A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
+import { ASK_REASON, HeadlessDelivery } from '../headlessDelivery';
 import { remoteTaskId } from '../ids';
 import { joinRemoteHost } from '../joiner';
 import { registerA2aLinkRpc } from '../linkRpc';
@@ -61,13 +64,21 @@ interface Pc {
   asks: A2aSpawnRequester | null;
   headless: A2aHeadlessStarter | null;
   starts: HeadlessStartStore | null;
+  /** Types the tasks into the (fake) agent and reads its transcript. */
+  taskDelivery: HeadlessDelivery | null;
   sessions: FakeSessions;
+  /** This PC's daemon RPCs, as a pane would call them. */
+  rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   stop: () => Promise<void>;
 }
 
 interface FakeSessions extends HeadlessSessionPort {
   made: HeadlessSessionInput[];
   live: Set<string>;
+  /** What the fake agent was given, by session. */
+  typed: Array<{ sessionId: string; prompt: string }>;
+  /** False: the fake agent takes the task and never ends its turn. */
+  answers: boolean;
   /** Hold `create` until released (a start cut between the worktree and the session). */
   hold?: Promise<void>;
 }
@@ -85,6 +96,8 @@ function fakeSessions(): FakeSessions {
   const s: FakeSessions = {
     made: [],
     live: new Set(),
+    typed: [],
+    answers: true,
     resolveAgent: async () => '/opt/fake/bin/claude',
     create: async (input) => {
       if (s.hold) await s.hold;
@@ -131,6 +144,7 @@ function headlessParts(opts: {
   a2aDir: string; dir: string; gitEnv: Record<string, string>; mode: HeadlessMode; sessions: FakeSessions; runId: string;
   receiver: () => A2aSpawnReceiver; requests: SpawnRequestStore; links: LinkStore; spawnStarter: A2aSpawnStarter; spawnLinks: SpawnLinkStore;
   paneGone?: (workspaceId: string, paneId: string) => Promise<void>;
+  startEnding?: (rec: HeadlessStartRecordV1, why: string) => Promise<void>;
 }): HeadlessParts {
   const store = { dir: opts.a2aDir, scheduleHarden: quiet };
   const starts = new HeadlessStartStore(store);
@@ -162,6 +176,7 @@ function headlessParts(opts: {
     releases: headlessReleases(opts.a2aDir),
     paneGone: opts.paneGone ?? (async () => undefined),
     abandon: (h, s) => opts.spawnStarter.abandon(h, s),
+    ...(opts.startEnding ? { startEnding: opts.startEnding } : {}),
     runId: opts.runId,
     log: quiet,
   });
@@ -276,17 +291,57 @@ async function makePc(name: string, opts: { headless?: boolean; asking?: boolean
   delivery.registerRpc(onRpc);
   delivery.start();
   let starts: HeadlessStartStore | null = null;
+  let taskDelivery: HeadlessDelivery | null = null;
   if (opts.headless && spawnStarter) {
     const { gitEnv } = makeRepo(dir);
     const parts = headlessParts({
       a2aDir, dir, gitEnv, mode, sessions, runId: 'run-1', receiver: () => spawn, requests, links, spawnStarter, spawnLinks,
       paneGone: async (workspaceId, paneId) => void (await handlers.get('a2a.remote.local.paneGone')!({ workspaceId, paneId, reason: 'pane-closed' })),
+      startEnding: (rec, why) => taskDelivery?.startEnding(rec, why) ?? Promise.resolve(),
     });
     headless = parts.starter;
     starts = parts.starts;
+    // As index.ts wires it: the delivery RPCs in-process, the ledger's transition and the sync.
+    const call = async (method: string, params: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> => {
+      const res = (await handlers.get(method)!(params)) as { ok?: unknown; error?: unknown };
+      return { ok: res?.ok === true, ...(typeof res?.error === 'string' ? { error: res.error } : {}) };
+    };
+    const transcripts = path.join(dir, 'transcripts');
+    fs.mkdirSync(transcripts, { recursive: true });
+    taskDelivery = new HeadlessDelivery({
+      mode,
+      starts: parts.starts,
+      runId: 'run-1',
+      tasks: { pending: () => tasks.listRemotePending(), remote: () => tasks.listRemote(), held: () => tasks.listRemoteHeld(), get: (id) => tasks.getTask(id) },
+      mark: (input) => call('a2a.remote.mark', input),
+      rejectHeld: (input) => call('a2a.remote.rejectHeld', input),
+      followUpsDirect: () => policy.get().followUps === 'direct',
+      // The fake agent: records the prompt and writes its turn as Claude Code would.
+      deliver: async (sessionId, _agent, prompt, authorized, onWrite) => {
+        if (!authorized()) return 'busy';
+        onWrite();
+        sessions.typed.push({ sessionId, prompt });
+        const at = (n: number): string => new Date(Date.now() + n).toISOString();
+        fs.appendFileSync(path.join(transcripts, `${sessionId}.jsonl`), [
+          { type: 'user', uuid: 'u1', timestamp: at(0), message: { role: 'user', content: prompt } },
+          ...(sessions.answers ? [{ type: 'assistant', uuid: 'a1', timestamp: at(1), message: { role: 'assistant', content: [{ type: 'text', text: 'PONG\nLinux' }], stop_reason: 'end_turn' } }] : []),
+        ].map((e) => `${JSON.stringify(e)}\n`).join(''));
+        return 'sent';
+      },
+      transcriptPath: (sessionId) => path.join(transcripts, `${sessionId}.jsonl`),
+      transcriptSize: (file) => (fs.existsSync(file) ? fs.statSync(file).size : 0),
+      reply: (input) => call('a2a.remote.reply', input),
+      transition: async ({ taskId, workspaceId, to, summary }) => {
+        const moved = await tasks.transition({ taskId, to, callerWorkspaceId: workspaceId, ...(summary ? { evidence: { summary, items: [] } } : {}) });
+        if (moved.ok) await delivery!.syncTask(taskId);
+        return moved.ok ? { ok: true } : { ok: false, error: moved.error };
+      },
+      log: quiet,
+    });
   }
   const pc: Pc = {
-    name, dir, hostId: server.ensureIdentity().hostId, remoteHosts, delivery, server, policy, spawn, links, tasks, asks, headless, starts, sessions,
+    name, dir, hostId: server.ensureIdentity().hostId, remoteHosts, delivery, server, policy, spawn, links, tasks, asks, headless, starts, sessions, taskDelivery,
+    rpc: (method, params) => handlers.get(method)!(params),
     stop: async () => {
       await delivery!.stop();
       server.dispose();
@@ -318,9 +373,9 @@ async function until(cond: () => boolean, ms = 30_000): Promise<void> {
 }
 
 /** B (the box) allows A, claude and its repository as root `web`, approval by allow list only. */
-async function allow(b: Pc, aHostId: string, rules: Array<{ hostId: string; rootId: string; agent: 'claude' }>): Promise<void> {
+async function allow(b: Pc, aHostId: string, rules: Array<{ hostId: string; rootId: string; agent: 'claude' }>, followUps: 'direct' | 'ask' = 'direct'): Promise<void> {
   const set = await b.policy.set({
-    v: 1, enabled: true, approval: 'allow-list', followUps: 'direct', permissionMode: 'auto',
+    v: 1, enabled: true, approval: 'allow-list', followUps, permissionMode: 'auto',
     hosts: { [aHostId]: { allowed: true } }, roots: [{ id: 'web', label: 'Web', path: path.join(b.dir, 'repo') }], agents: ['claude'], rules, version: 0,
   });
   expect(set.ok).toBe(true);
@@ -349,6 +404,116 @@ describe('headless remote spawn, two PCs and no app', () => {
     expect(b.sessions.made).toEqual([]);
     expect(b.starts!.list()).toEqual([]);
     expect(fs.existsSync(path.join(b.dir, 'worktrees'))).toBe(false);
+  });
+
+  /** A started request on B for A, and the id of its first task. */
+  async function startedTask(a: Pc, b: Pc, followUps: 'direct' | 'ask' = 'direct'): Promise<{ spawnId: string; taskId: string; rec: HeadlessStartRecordV1; linkId: string }> {
+    await pair(a, b);
+    await allow(b, a.hostId, [{ hostId: a.hostId, rootId: 'web', agent: 'claude' }], followUps);
+    const spawnId = await ask(a, b);
+    await until(() => a.asks!.list(spawnId).requests[0]?.state === 'started');
+    const linkId = asSpawnLinkId(a.asks!.list(spawnId).requests[0].linkId)!;
+    const taskId = remoteTaskId(linkId, spawnFirstMessageId(linkId));
+    await until(() => b.tasks.getTask(taskId) !== undefined);
+    return { spawnId, taskId, rec: b.starts!.get(a.hostId, spawnId)!, linkId };
+  }
+
+  /** The asking pane sends a later task to the agent it started (a follow-up). */
+  async function followUp(a: Pc, b: Pc, linkId: string, text: string): Promise<string> {
+    const res = (await a.rpc(A2A_REMOTE_RPC.sendTask, { linkId, from: { workspaceId: 'ws-a', name: 'Web', paneId: 'pane-a' }, title: text, text })) as { ok: boolean; taskId: string; error?: string };
+    expect(res).toMatchObject({ ok: true });
+    await until(() => b.tasks.getTask(res.taskId) !== undefined);
+    return res.taskId;
+  }
+
+  it('follow-ups with `direct`: each is typed in after the previous answer and answered in turn', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId, rec, linkId } = await startedTask(a, b);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    const second = await followUp(a, b, linkId, 'and now the kernel version');
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(second)?.status.state === 'input-required');
+    expect(b.sessions.typed).toEqual([{ sessionId: rec.sessionId, prompt: PROMPT }, { sessionId: rec.sessionId, prompt: 'and now the kernel version' }]);
+    expect(a.tasks.getTask(second)?.history.at(-1)).toMatchObject({ role: 'agent', parts: [{ kind: 'text', text: 'PONG\nLinux' }] });
+    // The first task's own answer stands.
+    expect(a.tasks.getTask(taskId)?.status.state).toBe('input-required');
+  });
+
+  it('a reply the asking pane sends on its task (`direct`): typed in as that task\'s next turn, and answered on it', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId, rec } = await startedTask(a, b);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    expect(await a.rpc(A2A_REMOTE_RPC.reply, { taskId, workspaceId: 'ws-a', text: 'and now the kernel version' })).toMatchObject({ ok: true });
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { inbox?: unknown[] })?.inbox?.length === 1);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    expect(b.sessions.typed).toEqual([{ sessionId: rec.sessionId, prompt: PROMPT }, { sessionId: rec.sessionId, prompt: 'and now the kernel version' }]);
+    await until(() => (a.tasks.getTask(taskId)?.history.filter((m) => m.role === 'agent').length ?? 0) === 2);
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+  });
+
+  it('a follow-up with `ask`: refused at once, the asking PC sees why; nothing typed for it', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId, linkId } = await startedTask(a, b, 'ask');
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    const second = await followUp(a, b, linkId, 'and now the kernel version');
+    expect(b.tasks.getTask(second)?.metadata.remote).toMatchObject({ held: 'awaiting-approval' });
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(second)?.status.state === 'failed');
+    expect(JSON.stringify(a.tasks.getTask(second)?.status)).toContain(ASK_REASON);
+    expect(b.sessions.typed).toHaveLength(1);
+  });
+
+  it('the task is typed into the agent the daemon started, and its answer comes back as the reply, input-required on both PCs', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId, rec } = await startedTask(a, b);
+    await b.taskDelivery!.tick();
+    expect(b.sessions.typed).toEqual([{ sessionId: rec.sessionId, prompt: PROMPT }]);
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    expect(a.tasks.getTask(taskId)?.history.at(-1)).toMatchObject({ role: 'agent', parts: [{ kind: 'text', text: 'PONG\nLinux' }] });
+    expect(b.tasks.getTask(taskId)?.status.state).toBe('input-required');
+    expect(b.tasks.getTask(taskId)?.metadata.remote).toMatchObject({ delivered: true });
+    // Typed once.
+    await b.taskDelivery!.tick();
+    expect(b.sessions.typed).toHaveLength(1);
+  });
+
+  it('nothing is typed in while headless mode is off', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId } = await startedTask(a, b);
+    fs.rmSync(headlessFlagPath(path.join(b.dir, 'a2a')));
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    expect(b.sessions.typed).toEqual([]);
+    expect(b.tasks.getTask(taskId)?.metadata.remote).not.toMatchObject({ delivered: true });
+  });
+
+  it('an agent whose session ends mid-turn: the asking PC sees the task failed, with why', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    b.sessions.answers = false;
+    const { taskId, rec } = await startedTask(a, b);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    expect(b.tasks.getTask(taskId)?.status.state).toBe('working');
+    b.sessions.live.delete(rec.sessionId);
+    b.headless!.onSessionGone(rec.sessionId);
+    await b.headless!.reconcile();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'failed');
+    expect(JSON.stringify(a.tasks.getTask(taskId)?.status)).toContain("the agent's session ended");
   });
 
   it('a request a rule matches is started by the daemon: worktree, session, `started` with that session, and the prompt only as the first task', async () => {

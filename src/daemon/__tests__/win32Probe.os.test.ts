@@ -15,6 +15,8 @@ vi.mock('node:child_process', () => ({
   execFileSync: execFileSyncMock,
 }));
 vi.mock('../../main/pty/winSnapshotNative', () => ({ tryProcessIdentity: tryProcessIdentityMock }));
+// The posix cases pin the `ps` path; Linux reads /proc first (procfs.linux.os.test.ts).
+vi.mock('../procfs', () => ({ procLstart: () => null }));
 
 import {
   classifyReapIdentity,

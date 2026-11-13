@@ -6,6 +6,7 @@ import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../../shared/se
 import type { RpcRequest } from '../../shared/rpc';
 import { RpcRouter } from './RpcRouter';
 import { peerPidOf } from '../../shared/peerPid';
+import { brokerStampHolds } from './handlers/peerPidShadow';
 import { processStartTime } from '../../shared/processStartTime';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
@@ -296,11 +297,14 @@ export class PipeServer {
     if (peer.pid === null) {
       if (!this.peerPidMisses.has(peer.reason)) {
         this.peerPidMisses.add(peer.reason);
-        console.warn(`[PipeServer] peer pid unavailable: ${peer.reason}`);
+        console.warn(`[PipeServer] peer pid unavailable: ${peer.reason}; pid claims on this connection are refused (see wmux doctor)`);
       }
       return;
     }
     this.peerPids.set(socket, peer.pid);
+    // Read right after the pid, not with it: should the peer exit and its pid
+    // pass to a new process between the two reads, both then describe that new
+    // process. That window is not closed here.
     const startedAt = processStartTime(peer.pid);
     if (startedAt !== null) this.peerStartedAts.set(socket, String(startedAt));
     // Linux only: SO_PEERCRED carries the uid, macOS's LOCAL_PEERPID does not.
@@ -385,6 +389,19 @@ export class PipeServer {
       return;
     }
 
+    // The broker's stamp is read here and removed, so nothing past this point
+    // (handlers, responses, logs) sees it. It counts only on an
+    // a2a.resolve.identity call over the spawned broker's own connection
+    // (brokerStampHolds).
+    // A line that parses to anything but an object (null, a number, a string)
+    // is no request; answering it here keeps the chunk's other lines going.
+    if (request === null || typeof request !== 'object') {
+      socket.write(JSON.stringify({ id: null, ok: false, error: 'Invalid request' }) + '\n');
+      return;
+    }
+    const stamp: unknown = (request as { brokerStamp?: unknown }).brokerStamp;
+    delete (request as { brokerStamp?: unknown }).brokerStamp;
+
     // Authenticate first: reject unauthenticated requests before consuming rate limit budget.
     // This prevents unauthenticated attackers from exhausting rate limits to DoS legitimate clients.
     const tokenBuf = Buffer.from(request.token || '');
@@ -446,6 +463,10 @@ export class PipeServer {
         ...(this.peerPids.has(socket) ? { peerPid: this.peerPids.get(socket) } : {}),
         ...(this.peerStartedAts.has(socket) ? { peerStartedAt: this.peerStartedAts.get(socket) } : {}),
         ...(this.tcpSockets.has(socket) ? { viaTcp: true as const } : {}),
+        ...(stamp !== undefined && request.method === 'a2a.resolve.identity'
+          && brokerStampHolds(this.peerPids.get(socket), this.peerStartedAts.get(socket), stamp)
+          ? { brokerStamped: true as const }
+          : {}),
       })
       .then((response) => {
         if (!socket.destroyed) {

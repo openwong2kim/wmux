@@ -1,6 +1,6 @@
 import { agentLauncherStem, agentRow } from '../../shared/agentIdentity';
 import { agentExecEnv } from '../../shared/execEnv';
-import { captureProcessTree, matchesRecordedStart, type VerifiedTreeKillResult } from '../automation/verifiedTreeKill';
+import { captureProcessTree, recordedRootMatcher, type VerifiedTreeKillResult } from '../automation/verifiedTreeKill';
 import { whichOnPath } from '../web/agentLaunch';
 import { defaultHeadlessProcDeps, snapshotTree, stillHeld, type HeadlessProcDeps } from './headlessProcs';
 import type { HeadlessSurvivor } from './headlessStartStore';
@@ -27,6 +27,7 @@ export interface HeadlessPaneMeta {
   state: string;
   pid: number;
   pidStartTime?: string;
+  pidStartKernel?: string;
   pidCreatedAtFt?: string;
 }
 
@@ -45,6 +46,8 @@ export interface HeadlessSessionsDeps {
   procs?: HeadlessProcDeps;
   /** How long to wait for a new session's start time (3 s). */
   startWaitMs?: number;
+  /** Where a recorded start that does not match is reported. */
+  warn?: (msg: string) => void;
 }
 
 const shellQuotable = (s: string): boolean => !/['\n\r\0]/.test(s);
@@ -85,7 +88,9 @@ export function createHeadlessSessions(deps: HeadlessSessionsDeps): HeadlessSess
       // later tree kill is not refused and a later run can find it again).
       const rootStart = await startTimeOf(sessionId);
       const rootPid = deps.meta(sessionId)?.pid;
-      return { ...(rootPid && rootPid > 1 ? { rootPid } : {}), ...(rootStart ? { rootStart } : {}) };
+      // Recorded with the start time (DaemonSessionManager), never on Windows.
+      const rootStartKernel = rootStart ? deps.meta(sessionId)?.pidStartKernel : undefined;
+      return { ...(rootPid && rootPid > 1 ? { rootPid } : {}), ...(rootStart ? { rootStart } : {}), ...(rootStartKernel ? { rootStartKernel } : {}) };
     },
     alive: (id) => running(deps.meta(id)),
     destroy: async (id) => {
@@ -112,9 +117,9 @@ export function createHeadlessSessions(deps: HeadlessSessionsDeps): HeadlessSess
       const tree = (res as { tree?: VerifiedTreeKillResult } | undefined)?.tree;
       return tree && !tree.ok ? held(tree.survivors, 'did not exit') : { ok: true };
     },
-    killEarlier: async (rootPid, rootStart) => {
+    killEarlier: async (rootPid, rootStart, rootStartKernel) => {
       // Only the process recorded at its start: a pid that names another process now is left alone.
-      const captured = await captureProcessTree(rootPid, { rootIsOurs: (start) => matchesRecordedStart(rootStart, start) });
+      const captured = await captureProcessTree(rootPid, { rootIsOurs: recordedRootMatcher(rootPid, rootStart, (msg) => deps.warn?.(`[headless] ${msg}`), rootStartKernel) });
       if (!captured) return { ok: true };
       const tree = await captured.kill();
       return tree.ok ? { ok: true } : { ok: false, survivors: tree.survivors };

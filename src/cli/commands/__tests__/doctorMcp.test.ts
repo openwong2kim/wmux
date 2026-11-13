@@ -226,6 +226,14 @@ describe('doctor identity section', () => {
     expect((await lines({ peerRead: { state: 'ok' }, startTimes: 'ok', refusals: zero }))).not.toHaveProperty('MCP broker');
   });
 
+  it('names a stale development broker build when relayed claims are refused as broker-unverified', async () => {
+    const byLabel = await lines({ peerRead: { state: 'ok' }, startTimes: 'ok', refusals: { ...zero, 'broker-unverified': 2 } });
+    expect(byLabel?.['refused claims']).toMatchObject({ value: 'broker-unverified 2' });
+    expect(byLabel?.['refused claims'].hint).toMatch(/rebuild it \(npm run build:mcp\)/);
+    const other = await lines({ peerRead: { state: 'ok' }, startTimes: 'ok', refusals: { ...zero, 'other-pid': 1 } });
+    expect(other?.['refused claims'].hint).not.toMatch(/build:mcp/);
+  });
+
   it('reads a summary from an app that reports fewer reasons, counting the missing ones as none', async () => {
     const { 'broker-unverified': _omitted, ...older } = zero;
     const byLabel = await lines({ peerRead: { state: 'ok' }, startTimes: 'ok', refusals: { ...older, 'no-peer': 1 } });

@@ -41,7 +41,9 @@ async function main() {
     bundle: true,
     platform: 'node',
     outfile,
-    external: ['electron', 'chromium-bidi', 'playwright-core'],
+    // koffi: browser_repl's Windows job (src/daemon/paneJob.ts) loads it at
+    // run time, from mcp-bundle/node_modules where packaging copies it.
+    external: ['electron', 'chromium-bidi', 'playwright-core', 'koffi'],
     define: serverDefines,
     logLevel: 'error',
   });

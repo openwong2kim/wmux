@@ -1108,6 +1108,7 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
   type PeerResult = ResolveResult & {
     workspaceToken?: string;
     threadClaim?: { ptyId: string };
+    claimRefused?: string;
   };
 
   beforeEach(() => {
@@ -1143,12 +1144,17 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
   /** Dispatch over a connection whose OS peer is `peer` (pid, and the start time read at accept). */
   async function resolveAs(
     params: Record<string, unknown>,
-    peer?: { pid: number; startedAt?: string },
+    peer?: { pid: number; startedAt?: string; stamped?: true },
     router: RpcRouter = peerRouter(),
   ): Promise<PeerResult> {
     const res = await router.dispatch(
       { id: 'pp', method: 'a2a.resolve.identity', params },
-      { externalWire: true, ...(peer && { peerPid: peer.pid }), ...(peer?.startedAt !== undefined && { peerStartedAt: peer.startedAt }) },
+      {
+        externalWire: true,
+        ...(peer && { peerPid: peer.pid }),
+        ...(peer?.startedAt !== undefined && { peerStartedAt: peer.startedAt }),
+        ...(peer?.stamped && { brokerStamped: true as const }),
+      },
     );
     expect(res.ok).toBe(true);
     return (res as { result: PeerResult }).result;
@@ -1160,13 +1166,21 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
     const result = await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' });
     expect(result.resolved).toEqual(live);
     expect(typeof result.workspaceToken).toBe('string');
+    expect(result.claimRefused).toBeUndefined();
   });
 
-  it('takes the broker\'s claim for the pid it names, when the broker is the one main spawned', async () => {
+  it('takes the broker\'s claim for the pid it names, when the broker is the one main spawned and the call is stamped', async () => {
     setBrokerIdentitySource(() => ({ pid: 777, startedAt: '900' }));
-    const result = await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '900' });
+    const result = await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '900', stamped: true });
     expect(result.resolved).toEqual(live);
     expect(typeof result.workspaceToken).toBe('string');
+  });
+
+  it('refuses the broker\'s claim on a call that is not stamped', async () => {
+    setBrokerIdentitySource(() => ({ pid: 777, startedAt: '900' }));
+    const result = await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '900' });
+    expect(result.resolved).toBeNull();
+    expect(result.workspaceToken).toBeUndefined();
   });
 
   it('refuses a claim from another process in the same pane, and in another pane', async () => {
@@ -1174,6 +1188,8 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
       const result = await resolveAs({ callerPid: 39876 }, { pid: peer, startedAt: String(started.get(peer)) });
       expect(result.resolved, String(peer)).toBeNull();
       expect(result.workspaceToken, String(peer)).toBeUndefined();
+      // The caller is told why, with no pid.
+      expect(result.claimRefused, String(peer)).toBe('other-pid');
       // The caller's own walk still gets the live entries.
       expect(result.entries.map((e) => e.ptyId).sort()).toEqual(['daemon-other', 'daemon-shell']);
     }
@@ -1183,18 +1199,20 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
     const result = await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '99' });
     expect(result.resolved).toBeNull();
     expect(result.workspaceToken).toBeUndefined();
+    expect(result.claimRefused).toBe('restarted');
   });
 
   it('refuses a claim when the start time was not read at accept, or cannot be read now', async () => {
-    expect((await resolveAs({ callerPid: 39876 }, { pid: 39876 })).resolved).toBeNull();
+    expect(await resolveAs({ callerPid: 39876 }, { pid: 39876 })).toMatchObject({ resolved: null, claimRefused: 'start-unread' });
     setClaimStartTimeSource(() => null);
-    expect((await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' })).resolved).toBeNull();
+    expect(await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' })).toMatchObject({ resolved: null, claimRefused: 'start-unread' });
   });
 
   it('refuses a claim over a connection with no peer pid, and still says whether the hinted pane is live', async () => {
     const result = await resolveAs({ callerPid: 39876, hintedPtyId: 'daemon-shell' });
     expect(result.resolved).toBeNull();
     expect(result.workspaceToken).toBeUndefined();
+    expect(result.claimRefused).toBe('no-peer');
     expect(result).toHaveProperty('hintedPane');
   });
 
@@ -1204,6 +1222,7 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
     const result = await resolveAs({ callerPid: 39876 }, { pid: 39876, startedAt: '100' });
     expect(result.resolved).toBeNull();
     expect(result.workspaceToken).toBeUndefined();
+    expect(result.claimRefused).toBe('restarted');
   });
 
   it('counts one refusal for a call that names the same pid as caller and Codex caller', async () => {
@@ -1227,9 +1246,9 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
 
   it('refuses a claim from the broker\'s pid with another start time, or with none recorded', async () => {
     setBrokerIdentitySource(() => ({ pid: 777, startedAt: '900' }));
-    expect((await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '901' })).resolved).toBeNull();
+    expect((await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '901', stamped: true })).resolved).toBeNull();
     setBrokerIdentitySource(() => ({ pid: 777, startedAt: null }));
-    expect((await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '900' })).resolved).toBeNull();
+    expect((await resolveAs({ callerPid: 39876 }, { pid: 777, startedAt: '900', stamped: true })).resolved).toBeNull();
   });
 
   it('refuses a Codex thread claim unless it comes from the process it names', async () => {
@@ -1251,7 +1270,7 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
       const params = { codexThreadId: threadId, codexCallerPid: 60002 };
       expect((await resolveAs(params, { pid: 60002, startedAt: '200' })).threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
       setBrokerIdentitySource(() => ({ pid: 777, startedAt: '900' }));
-      expect((await resolveAs(params, { pid: 777, startedAt: '900' })).threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
+      expect((await resolveAs(params, { pid: 777, startedAt: '900', stamped: true })).threadClaim).toMatchObject({ ptyId: 'daemon-shell' });
       // Another process, even in the same pane, and no peer at all.
       expect((await resolveAs(params, { pid: 39876, startedAt: '100' })).threadClaim).toBeUndefined();
       expect((await resolveAs(params)).threadClaim).toBeUndefined();
@@ -1299,30 +1318,52 @@ describe.skipIf(process.platform === 'win32')('a2a.resolve.identity — a claim 
       setBrokerIdentitySource(() => ({ pid: 777, startedAt: '900' }));
       const relayed = { codexThreadId: threadId, codexCallerPid: 60001 };
       cls = 'shared-server';
-      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeDefined();
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900', stamped: true }, router)).threadClaim).toBeDefined();
       cls = 'other';
       now.set(60001, 301n);
-      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeUndefined();
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900', stamped: true }, router)).threadClaim).toBeUndefined();
       // The pid passes to another process while it is classified: that
       // answer is neither used nor kept.
       cls = 'shared-server';
       now.set(60001, 302n);
       duringClassification = () => now.set(60001, 303n);
-      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeUndefined();
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900', stamped: true }, router)).threadClaim).toBeUndefined();
       duringClassification = null;
       cls = 'other';
-      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeUndefined();
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900', stamped: true }, router)).threadClaim).toBeUndefined();
       // No start time: nothing is kept, so every call classifies.
       now.delete(60001);
       cls = 'shared-server';
-      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeDefined();
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900', stamped: true }, router)).threadClaim).toBeDefined();
       cls = 'other';
-      expect((await resolveAs(relayed, { pid: 777, startedAt: '900' }, router)).threadClaim).toBeUndefined();
+      expect((await resolveAs(relayed, { pid: 777, startedAt: '900', stamped: true }, router)).threadClaim).toBeUndefined();
     } finally {
       if (previous === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previous;
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it('forgets every Codex caller class once more than 256 are kept', async () => {
+    const classified: number[] = [];
+    const router = new RpcRouter();
+    registerA2aRpc(router, () => fakeWindow, makeWorker(), {
+      snapshot: async () => ({ ppidByPid: tree, listeners: [] }),
+      createdAt: () => null,
+      classifyCodexCaller: async (pid: number) => { classified.push(pid); return 'other'; },
+    });
+    setClaimStartTimeSource((pid) => (pid >= 70000 ? 1n : null));
+    const call = (pid: number) =>
+      resolveAs({ codexThreadId: '019a0000-0000-7000-8000-0000000000f1', codexCallerPid: pid }, { pid, startedAt: '1' }, router);
+    await call(70000);
+    await call(70000);
+    // Kept: the second call is answered from the cache.
+    expect(classified).toEqual([70000]);
+    for (let pid = 70001; pid <= 70257; pid++) await call(pid);
+    expect(classified).toHaveLength(258);
+    // The 258th class cleared the cache, so the first pid is classified again.
+    await call(70000);
+    expect(classified).toHaveLength(259);
   });
 
   it('takes a claim as sent on Windows, where no peer pid is read', async () => {

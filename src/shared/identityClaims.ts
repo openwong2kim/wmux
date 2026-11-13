@@ -9,7 +9,8 @@
  * - `start-unread`: the claimed process's start time could not be read;
  * - `restarted`: the claimed pid now belongs to a process that started later;
  * - `broker-unverified`: the peer has the MCP broker's pid but not the start
- *   time recorded when main spawned it.
+ *   time recorded when main spawned it, or the call lacks the stamp main sent
+ *   that broker.
  */
 export type ClaimRefusal = 'no-peer' | 'other-pid' | 'start-unread' | 'restarted' | 'broker-unverified';
 

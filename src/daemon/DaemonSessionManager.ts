@@ -42,6 +42,7 @@ import { ENV_KEYS } from '../shared/constants';
 import { containsControlChars } from '../shared/cwdShape';
 import { createDefaultConfig } from './config';
 import { getProcessCreatedAtFt, getProcessStartTime, isPhantomExit, isPidAlive } from './phantomExit';
+import { kernelStartOf } from '../shared/processStartTime';
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
@@ -236,6 +237,26 @@ const clampCols = (cols: number): number => Math.max(MIN_SAFE_COLS, cols);
 const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
 
 /**
+ * The listener limit for one event on the daemon's session manager. Node has
+ * no per-event limit, so this applies to every event. Every subscriber is a
+ * daemon subsystem that subscribes once at boot and stays for the daemon's
+ * life; none subscribes per session or per reconnect. The busiest events:
+ *  - 'session:died': promote bookkeeping, Codex thread-owner cleanup,
+ *    usage-limit holds, the folder-trust refusal log, watched prompts, the
+ *    awaiting verifier, the lifecycle broadcast/save, git and port context
+ *    watchers, the detection agreement log, headless remote starts, the pane
+ *    supervisor and the channel wake worker (src/daemon/index.ts and
+ *    src/daemon/web/codexThreadOwner.ts);
+ *  - 'session:destroyed': the same subsystems' cleanups, plus the
+ *    tool-refusal tracker and the destroy broadcast.
+ * With Node's default of 10 every daemon start warned
+ * (MaxListenersExceededWarning) without any leak. The counts are pinned in
+ * DaemonSessionManager.listeners.test.ts; the headroom is for new boot-time
+ * subscribers, not for per-session listeners, which would be a leak.
+ */
+export const SESSION_MANAGER_MAX_LISTENERS = 24;
+
+/**
  * Manages ConPTY session lifecycles within the daemon process.
  * No Electron dependencies — uses EventEmitter for all notifications.
  *
@@ -247,7 +268,7 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
  *      A PTY exit classified as involuntary (OS shutdown killing children —
  *      see shutdownKill.ts). The session is SUSPENDED, not dead: daemon/index
  *      dumps the buffer + persists so post-reboot recovery replays the same id.
- *  - 'session:phantomExit'  → { id, pid, pidCreatedAtFt, pidStartTime, exitCode,
+ *  - 'session:phantomExit'  → { id, pid, pidCreatedAtFt, pidStartTime, pidStartKernel, exitCode,
  *                               signal, cmd, lastActivityMsAgo, raw }
  *      A PTY exit that reported no exit code and no signal while the shell pid
  *      is STILL ALIVE (node-pty's ConPTY socket-close path — see
@@ -260,6 +281,11 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
  *  - 'session:stateChanged' → { id: string, state: DaemonSessionState }
  */
 export class DaemonSessionManager extends EventEmitter {
+  constructor() {
+    super();
+    this.setMaxListeners(SESSION_MANAGER_MAX_LISTENERS);
+  }
+
   private sessions = new Map<string, ManagedSession>();
   private config: DaemonConfig | null = null;
 
@@ -1263,6 +1289,7 @@ export class DaemonSessionManager extends EventEmitter {
           // Identity of the pid we are about to ask the policy layer to kill.
           pidCreatedAtFt: meta.pidCreatedAtFt,
           pidStartTime: meta.pidStartTime,
+          pidStartKernel: meta.pidStartKernel,
           // Carried, not logged here: this class has no access to the daemon's
           // file logger, and a console.log would never reach the daemon log
           // the native-layer investigation actually reads. index.ts prints it
@@ -1364,11 +1391,16 @@ export class DaemonSessionManager extends EventEmitter {
           await new Promise<void>((r) => setTimeout(r, this.spawnStartRetryDelaysMs[attempt - 1]).unref?.());
         }
         if (!live()) return;
+        const kernelBefore = process.platform === 'win32' ? null : kernelStartOf(pid);
         const start = await getProcessStartTime(pid);
         if (!live()) return;
         if (start) {
           if (process.platform === 'win32') meta.pidCreatedAtFt = start;
-          else meta.pidStartTime = start;
+          else {
+            meta.pidStartTime = start;
+            // Kept only when it reads the same around the text read: both name one process.
+            if (kernelBefore !== null && kernelBefore === kernelStartOf(pid)) meta.pidStartKernel = kernelBefore;
+          }
           return;
         }
       }

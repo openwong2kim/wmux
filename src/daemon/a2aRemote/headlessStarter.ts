@@ -10,7 +10,10 @@ import { workerLaunchFlags } from '../../shared/workerLaunch';
  * to other agents, the browser), the wmux tools an agent started for another
  * PC has no use for on this host: asking a PC for more agents, handing work
  * out, messaging every agent, closing or stashing panes, proposing
- * automations, driving the desktop, running code in a wmux REPL.
+ * automations, driving the desktop, running code in a wmux REPL. Joining,
+ * making or inviting to a channel too: a channel member that sits idle is
+ * woken by text typed into its pane, and only the task delivery may type
+ * into this one (headlessDelivery.ts).
  */
 export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = [
   'mcp__wmux__remote_spawn',
@@ -23,6 +26,9 @@ export const HEADLESS_EXTRA_DISALLOWED_TOOLS: readonly string[] = [
   'mcp__wmux__automation_propose',
   'mcp__wmux__computer',
   'mcp__wmux__repl_run',
+  'mcp__wmux__channel_join',
+  'mcp__wmux__channel_create',
+  'mcp__wmux__channel_invite',
 ];
 import type { Git, SpawnWorktreeInput, SpawnWorktreeResult } from '../../main/a2aRemote/spawnWorktree';
 import { headlessStartable } from './headlessMode';
@@ -77,7 +83,7 @@ export interface HeadlessSessionPort {
   /** The agent's launcher on the PATH the daemon runs agents with; null when it is not there. */
   resolveAgent(agent: AgentSlug): Promise<string | null>;
   /** Start the session; its process (pid and start time, waited for briefly) so it can be found again after a restart. */
-  create(input: HeadlessSessionInput): Promise<{ rootPid?: number; rootStart?: string }>;
+  create(input: HeadlessSessionInput): Promise<{ rootPid?: number; rootStart?: string; rootStartKernel?: string }>;
   /** The session exists and its process runs. */
   alive(sessionId: string): boolean;
   /**
@@ -91,7 +97,7 @@ export interface HeadlessSessionPort {
    * when it started: ended with its tree when it still runs (a pid that now
    * names another process is left alone); what did not exit is reported.
    */
-  killEarlier(rootPid: number, rootStart: string | undefined): Promise<HeadlessDestroyResult>;
+  killEarlier(rootPid: number, rootStart: string | undefined, rootStartKernel?: string): Promise<HeadlessDestroyResult>;
   /**
    * Of processes an earlier destroy left, the ones that may still run. An
    * unverified entry (a tree that could not be checked whole) stays until a
@@ -135,6 +141,11 @@ export interface HeadlessStarterDeps {
   paneGone(workspaceId: string, paneId: string): Promise<void>;
   /** End whatever link a start of `spawnId` made or still owes (spawnStarter.abandon). */
   abandon(hostId: HostId, spawnId: string): void;
+  /**
+   * A started start is about to end, `why` in words for the asking PC: its
+   * open tasks are told (headlessDelivery) while its link can still carry it.
+   */
+  startEnding?(rec: HeadlessStartRecordV1, why: string): Promise<void>;
   /** This daemon run (a restart ends every agent the run before had). */
   runId: string;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
@@ -277,7 +288,11 @@ export class A2aHeadlessStarter {
     if (this.deps.mode.active() && sessionLive && !linkEnded) return;
     // Nothing can be ended before the session service is up: the next reconcile does it.
     if (!sessions) return;
-    await this.end(rec, link, sessions);
+    const why = rec.runId !== this.deps.runId ? 'the daemon restarted'
+      : !this.deps.mode.active() ? 'headless mode was turned off on that PC'
+        : linkEnded ? "the agent's link ended"
+          : "the agent's session ended";
+    await this.end(rec, link, sessions, why);
   }
 
   /**
@@ -328,7 +343,7 @@ export class A2aHeadlessStarter {
       for (const s of survivors) {
         try {
           // eslint-disable-next-line no-await-in-loop -- one at a time
-          const res = await sessions.killEarlier(s.pid, s.startTime);
+          const res = await sessions.killEarlier(s.pid, s.startTime, s.startKernel);
           if (!res.ok) left.push(...res.survivors);
         } catch {
           left.push(s);
@@ -348,7 +363,9 @@ export class A2aHeadlessStarter {
   }
 
   /** A started start whose agent may no longer count: session ended, link broken, record kept as `ended`. */
-  private async end(rec: HeadlessStartRecordV1, link: A2aLinkRecordV1 | undefined, sessions: HeadlessSessionPort): Promise<void> {
+  private async end(rec: HeadlessStartRecordV1, link: A2aLinkRecordV1 | undefined, sessions: HeadlessSessionPort, why: string): Promise<void> {
+    // Its open tasks first, while a link that has not ended yet can still carry the news (a failing one never blocks the end).
+    await this.deps.startEnding?.(rec, why).catch((err) => this.deps.log('warn', `[headless] spawn ${rec.spawnId}: its tasks were not told: ${errMsg(err)}`));
     // Whether or not it looks alive: a session recovery brought back (even on disk only) goes too.
     const destroyed = await sessions.destroy(rec.sessionId);
     const earlier = await this.endEarlierRun(rec, sessions);
@@ -388,7 +405,7 @@ export class A2aHeadlessStarter {
 
   /** An agent of an earlier daemon run is not in its session any more: found by its own pid and start time. */
   private async endEarlierRun(rec: HeadlessStartRecordV1, sessions: HeadlessSessionPort): Promise<HeadlessDestroyResult> {
-    return rec.runId !== this.deps.runId && rec.rootPid !== undefined ? sessions.killEarlier(rec.rootPid, rec.rootStart) : { ok: true };
+    return rec.runId !== this.deps.runId && rec.rootPid !== undefined ? sessions.killEarlier(rec.rootPid, rec.rootStart, rec.rootStartKernel) : { ok: true };
   }
 
   /** End the session; when processes of its tree did not exit, they are recorded and this throws (reconcile tries again). */
@@ -514,6 +531,7 @@ export class A2aHeadlessStarter {
         phase: 'created',
         ...(root.rootPid !== undefined ? { rootPid: root.rootPid } : {}),
         ...(root.rootStart ? { rootStart: root.rootStart } : {}),
+        ...(root.rootStartKernel ? { rootStartKernel: root.rootStartKernel } : {}),
       });
     } catch (err) {
       return undo('failed', `the session did not start: ${errMsg(err)}`);
