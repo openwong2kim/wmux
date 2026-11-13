@@ -510,6 +510,50 @@ fn no_token_file_hands_the_session_to_the_bundle_without_dialling() {
     let _ = &listener;
 }
 
+/// Anything at the token path that gives no token refuses, as a blank file
+/// does: an unreadable file, or a link to nothing.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_token_file_or_a_dangling_link_exits_1_without_dialling() {
+    use std::os::unix::fs::PermissionsExt;
+    let unreadable = Sandbox::new();
+    unreadable.write_token("tok");
+    std::fs::set_permissions(unreadable.token_path(), std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+    let dangling = Sandbox::new();
+    std::os::unix::fs::symlink(dangling.home.join("nowhere"), dangling.token_path()).expect("dangling link");
+    // Root reads a 000 file anyway: only the link case holds there.
+    let cases: Vec<&Sandbox> = if std::fs::read(unreadable.token_path()).is_ok() {
+        vec![&dangling]
+    } else {
+        vec![&unreadable, &dangling]
+    };
+    for sb in cases {
+        let listener = stub::bind(&sb.pipe());
+        let out = output(sb.shim(&[]).stdin(Stdio::null())).expect("run shim");
+        assert_eq!(out.status.code(), Some(1));
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            "[wmux-mcp-shim] auth token not found. Is wmux running?\n"
+        );
+        assert!(!listener.has_pending(), "the shim dialled with no token");
+    }
+    std::fs::set_permissions(unreadable.token_path(), std::fs::Permissions::from_mode(0o600)).expect("chmod back");
+}
+
+/// No token file but a WMUX_AUTH_TOKEN: the launcher dials the broker with it,
+/// as before; the missing file alone does not send it to the bundle.
+#[test]
+fn no_token_file_with_an_env_token_still_dials_the_broker() {
+    let sb = Sandbox::new();
+    let listener = stub::bind(&sb.pipe());
+    let lone = Install::new(&sb, Layout::Lone).expect("a lone binary");
+    let mut child = spawn(lone.shim(&sb, &[]).env("WMUX_AUTH_TOKEN", "env-tok")).expect("spawn shim");
+    let mut conn = listener.accept(WAIT);
+    assert!(read_line(&mut conn).contains("\"authToken\":\"env-tok\""));
+    drop(conn);
+    let _ = wait_within(&mut child, WAIT);
+}
+
 #[test]
 fn with_no_token_file_the_full_bundle_serves_the_session() {
     let sb = Sandbox::new();

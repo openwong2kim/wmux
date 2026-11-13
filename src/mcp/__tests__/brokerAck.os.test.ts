@@ -357,6 +357,28 @@ describe('the node shim with no token file', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Something at the path that gives no token is not a missing file.
+  it.skipIf(isWin)('a dangling link at the token path keeps the refusal', async () => {
+    const dir = fs.mkdtempSync(path.join('/tmp', 'nst-'));
+    try {
+      const shim = buildShim(dir);
+      const suffix = `-danglink-${process.pid}`;
+      fs.symlinkSync(path.join(dir, 'nowhere'), path.join(dir, `.wmux${suffix}-auth-token`));
+      const env: NodeJS.ProcessEnv = { HOME: dir, USERPROFILE: dir, WMUX_DATA_SUFFIX: suffix, PATH: process.env.PATH };
+      const child = spawn(process.execPath, [shim], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (d) => { stdout += d; });
+      child.stderr?.on('data', (d) => { stderr += d; });
+      const code = await new Promise((r) => child.once('exit', r));
+      expect(code).toBe(1);
+      expect(stderr).toBe('[wmux-mcp-shim] auth token not found. Is wmux running?\n');
+      expect(stdout).toBe('');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe.runIf(hostable)('a broker that cannot read peer pids', () => {

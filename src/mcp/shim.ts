@@ -116,11 +116,11 @@ function runFullServer(why: string): void {
 }
 
 /** No token file at all: wmux never ran under this home, or its files were
- *  removed. Only this falls back; a file that is there but gives no token
- *  keeps the refusal. */
+ *  removed. Only this falls back; anything at the path that gives no token
+ *  (a blank or unreadable file, a dangling link) keeps the refusal. */
 function tokenFileAbsent(): boolean {
   try {
-    fs.statSync(getAuthTokenPath());
+    fs.lstatSync(getAuthTokenPath());
     return false;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'ENOENT';

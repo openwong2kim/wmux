@@ -237,11 +237,11 @@ fn read_auth_token() -> Option<JsStr> {
 }
 
 /// No token file at all: wmux never ran under this home, or its files were
-/// removed. Only this falls back to the bundle; a file that is there but gives
-/// no token keeps the refusal.
+/// removed. Only this falls back to the bundle; anything at the path that gives
+/// no token (a blank or unreadable file, a dangling link) keeps the refusal.
 fn token_file_absent() -> bool {
     let path = token_path_from(env("USERPROFILE"), env("HOME"), &data_suffix());
-    matches!(std::fs::metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+    matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// getMcpBrokerPipeName on Unix: `os.homedir() || '/tmp'`, where homedir is
