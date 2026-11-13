@@ -110,9 +110,25 @@ fn a_synchronized_update_ends() {
     assert_eq!(screen(&fed.term)[0], "abX");
 }
 
+// xterm's DECRC restores DECAWM and DECOM from the save (their defaults when
+// nothing was saved); Alacritty's keeps the current ones.
+#[test]
+fn a_restore_that_changes_decawm_or_decom_is_divergent() {
+    for text in [
+        "\x1b[?7l\x1b7\x1b[!p\x1b8x",
+        "\x1b[?6h\x1b7\x1b[!p\x1b8x",
+        "\x1b[?7l\x1b8x",
+        "\x1b[?7l\x1b[?1049h\x1b[?7h\x1b[?1049lx",
+    ] {
+        assert!(fed(20, 3, 100, &[text]).divergent, "{text:?}");
+    }
+    assert_eq!(screen(&reset(&["\x1b7\x1b[!p\x1b8X"]).term)[0], "X");
+    assert_eq!(screen(&reset(&["\x1b[?7l\x1b7\x1b8X"]).term)[0], "X");
+}
+
 #[test]
 fn other_spellings_stay_divergent() {
-    for text in ["\x1b[0!p", "\x1b[!\x07p"] {
+    for text in ["\x1b[0!p", "\x1b[!\x07p", "ab\x1b[!\x7fpcd"] {
         assert!(fed(20, 3, 100, &[text]).divergent, "{text:?}");
     }
 }

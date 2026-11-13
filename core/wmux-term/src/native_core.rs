@@ -279,6 +279,31 @@ struct XtermFeed {
     /// The sequence just tracked resets 47, 1047 or 1049, or is RIS: it may
     /// leave the alternate screen, whatever this tracker thinks is shown.
     may_leave_alt: bool,
+    /// xterm's DECAWM off and DECOM on, which its DECRC restores from the
+    /// save (Alacritty's leaves both as they are).
+    no_wraparound: bool,
+    origin: bool,
+    /// How many charset slots (G0 up) xterm designated since its charsets
+    /// were last reset: its DECSC saves only those.
+    charset_slots: u8,
+    /// xterm's saved cursor on the main and the alternate screen.
+    saved: [SavedCursor; 2],
+}
+
+/// What xterm's DECRC restores and Alacritty's does not (Buffer.saved*),
+/// kept per screen as xterm keeps it per buffer.
+#[derive(Clone, Copy, Default)]
+struct SavedCursor {
+    /// A save ran on this screen (Alacritty's `cursor_saved`). Without one
+    /// both keep every charset slot on a restore.
+    saved: bool,
+    /// The charset slots xterm saved; it restores only those, Alacritty all.
+    charset_slots: u8,
+    /// A slot past them was designated since the save: xterm keeps it on a
+    /// restore, Alacritty puts back what that slot held at the save.
+    later_slot: bool,
+    no_wraparound: bool,
+    origin: bool,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -366,6 +391,79 @@ impl XtermFeed {
         }
     }
 
+    /// The charset slots, DECAWM and DECOM as xterm saves and restores them
+    /// with the cursor (DECSC/DECRC, SCOSC/SCORC), to refuse a restore that
+    /// Alacritty runs differently. `sequence` has no C0 controls inside.
+    fn track_saved_cursor(&mut self, sequence: &[u8]) {
+        let screen = usize::from(self.alt_screen);
+        let plain_csi = |final_byte: u8| {
+            sequence
+                .strip_prefix(b"\x1b[")
+                .and_then(<[u8]>::split_last)
+                .is_some_and(|(&last, params)| {
+                    last == final_byte && params.iter().all(|&b| b.is_ascii_digit() || b == b';')
+                })
+        };
+        match sequence {
+            b"\x1b7" => self.save_cursor(screen),
+            b"\x1b8" => self.restore_cursor(screen),
+            b"\x1bc" => {
+                self.no_wraparound = false;
+                self.origin = false;
+                self.charset_slots = 0;
+                self.saved = Default::default();
+            }
+            // xterm's softReset resets the charsets and the modes, not the
+            // saved ones.
+            b"\x1b[!p" => {
+                self.no_wraparound = false;
+                self.origin = false;
+                self.charset_slots = 0;
+            }
+            b"\x1b%@" | b"\x1b%G" => self.designate(0),
+            [0x1b, slot @ (b'(' | b')' | b'*' | b'+' | b'-' | b'.'), b'B' | b'0'] => self
+                .designate(match slot {
+                    b'(' => 0,
+                    b')' | b'-' => 1,
+                    b'*' | b'.' => 2,
+                    _ => 3,
+                }),
+            _ if plain_csi(b's') => self.save_cursor(screen),
+            _ if plain_csi(b'u') => self.restore_cursor(screen),
+            _ => {}
+        }
+    }
+
+    fn designate(&mut self, slot: u8) {
+        self.charset_slots = self.charset_slots.max(slot + 1);
+        for saved in &mut self.saved {
+            saved.later_slot |= saved.saved && slot >= saved.charset_slots;
+        }
+    }
+
+    fn save_cursor(&mut self, screen: usize) {
+        self.saved[screen] = SavedCursor {
+            saved: true,
+            charset_slots: self.charset_slots,
+            later_slot: false,
+            no_wraparound: self.no_wraparound,
+            origin: self.origin,
+        };
+    }
+
+    /// xterm restores DECAWM and DECOM (their defaults when nothing was
+    /// saved) and only the charset slots it saved; Alacritty restores no mode
+    /// and every slot.
+    fn restore_cursor(&mut self, screen: usize) {
+        let saved = self.saved[screen];
+        self.refuse(
+            saved.later_slot
+                || saved.no_wraparound != self.no_wraparound
+                || saved.origin != self.origin,
+            "unsupported-state-decrc: a cursor restore xterm runs differently (DECAWM, DECOM, or a charset slot designated since the save)",
+        );
+    }
+
     /// `rows`: the screen height the sequence is parsed at.
     fn track(&mut self, sequence: &[u8], rows: usize) {
         // C0 controls inside a sequence execute and are not part of it.
@@ -381,6 +479,7 @@ impl XtermFeed {
             sequence
         };
         let numeric = |params: &[u8]| params.iter().all(|&b| b.is_ascii_digit() || b == b';');
+        self.track_saved_cursor(sequence);
         if sequence == b"\x1b[!p" {
             self.set_margins(false);
         }
@@ -419,6 +518,8 @@ impl XtermFeed {
                 for mode in modes {
                     match mode {
                         Some(25) => self.cursor_hidden = !set,
+                        Some(6) => self.origin = set,
+                        Some(7) => self.no_wraparound = !set,
                         Some(1016) => self.sgr_pixels = set,
                         Some(1006) => self.sgr_mouse = set,
                         Some(protocol @ (9 | 1000 | 1002 | 1003)) => {
@@ -426,6 +527,16 @@ impl XtermFeed {
                         }
                         Some(47 | 1047 | 1049) => {
                             self.may_leave_alt |= !set;
+                            // xterm's 1049 saves the cursor on the screen
+                            // shown, and restores the main screen's after
+                            // showing it.
+                            if mode == Some(1049) {
+                                if set {
+                                    self.save_cursor(usize::from(self.alt_screen));
+                                } else {
+                                    self.restore_cursor(0);
+                                }
+                            }
                             if set && !self.alt_screen {
                                 // xterm's alternate screen starts with its own
                                 // full region; Alacritty keeps one region, so
@@ -459,10 +570,9 @@ impl XtermFeed {
     fn feed(&mut self, parser: &mut Processor, term: &mut Term<VoidListener>, bytes: &[u8]) {
         let mut data = std::mem::take(&mut self.held);
         data.extend_from_slice(bytes);
-        self.refuse(
-            crate::native_serialize::has_c1(&data),
-            "unsupported-state-c1: a C1 control, which Alacritty prints",
-        );
+        // Refused wherever it is; reported first only if it comes first.
+        let c1 = crate::native_serialize::c1_at(&data);
+        const C1: &str = "unsupported-state-c1: a C1 control, which Alacritty prints";
         let mut from = 0;
         let mut next = if self.in_string {
             self.string_payload(&mut data, 0)
@@ -483,6 +593,7 @@ impl XtermFeed {
             if found > 0 {
                 printed = printable(data[at - 1]);
             }
+            self.refuse(c1.is_some_and(|c1| c1 < at), C1);
             let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
                 if data.len() - at <= MAX_HELD {
                     self.held = data.split_off(at);
@@ -532,18 +643,23 @@ impl XtermFeed {
             } else {
                 // xterm forgets the preceding character at any control;
                 // Alacritty repeats whatever was printed last.
+                if crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed) {
+                    self.refuse(true, crate::native_serialize::refusal(sequence));
+                }
+                // A sequence cut short by DEL (or an escape by a byte past
+                // ASCII): both parsers ignore DEL there, so `ESC DEL D` is
+                // still IND and `CSI ! DEL p` DECSTR, which this scan would
+                // not see as such.
+                let next_byte = data.get(at + len).copied();
+                let cut = if sequence.get(1) == Some(&b'[') {
+                    !(0x40..=0x7e).contains(&sequence[len - 1]) && next_byte == Some(0x7f)
+                } else {
+                    !(0x30..=0x7e).contains(&sequence[len - 1])
+                        && next_byte.is_some_and(|b| b == 0x7f || b >= 0x80)
+                };
                 self.refuse(
-                    crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed),
-                    crate::native_serialize::refusal(sequence),
-                );
-                // An escape cut short by DEL or a byte past ASCII: both
-                // parsers ignore DEL there, so `ESC DEL D` is still IND,
-                // which this scan would not see as one.
-                self.refuse(
-                    sequence.get(1) != Some(&b'[')
-                        && !(0x30..=0x7e).contains(&sequence[len - 1])
-                        && data.get(at + len).is_some_and(|&b| b == 0x7f || b >= 0x80),
-                    "unsupported-state-esc: an escape cut short by DEL or a byte past ASCII",
+                    cut,
+                    "unsupported-state-cut: a sequence cut short by DEL or a byte past ASCII",
                 );
                 self.track(sequence, term.screen_lines());
                 next = Some(at + len);
@@ -568,6 +684,7 @@ impl XtermFeed {
             }
             printed = false;
         }
+        self.refuse(c1.is_some(), C1);
         // A held sequence or an unfinished string ends the stream so far.
         self.printed = printed && self.held.is_empty() && !self.in_string;
         parser.advance(term, &data[from..]);
@@ -1802,8 +1919,14 @@ mod tests {
         assert_eq!(family(&["\x1b[53m"]), "unsupported-state-sgr");
         assert_eq!(family(&["a\x1b[31m\x1b[2b"]), "unsupported-state-rep");
         assert_eq!(family(&["\x1b#8"]), "unsupported-state-decaln");
-        assert_eq!(family(&["\x1b\x07n"]), "unsupported-state-esc");
+        assert_eq!(family(&["\x1b\x07n"]), "unsupported-state-c0-inside");
+        assert_eq!(family(&["\x1b(\x07A"]), "unsupported-state-charset");
+        assert_eq!(family(&["\x1b[!\x7fp"]), "unsupported-state-cut");
+        assert_eq!(family(&["\x1b7\x1b*0\x1b8"]), "unsupported-state-decrc");
         assert_eq!(family(&["a\u{9b}31m"]), "unsupported-state-c1");
+        // The first refused control is named, a C1 included, in one chunk.
+        assert_eq!(family(&["\x1b(Ax\u{9b}31m"]), "unsupported-state-charset");
+        assert_eq!(family(&["\u{9b}31m\x1b(A"]), "unsupported-state-c1");
         assert_eq!(
             family(&["\x1b[1;2r\x1b[?1049h"]),
             "unsupported-state-alt-margins"

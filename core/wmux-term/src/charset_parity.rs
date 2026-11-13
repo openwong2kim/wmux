@@ -104,13 +104,45 @@ fn percent_returns_g0_to_ascii() {
     assert_eq!(first_row(&["\x1b)0\x1b%@\x0eq"]), "─");
 }
 
-// xterm skips `ESC /`, and neither terminal parses a final outside xterm's
-// table.
+// xterm skips `ESC /`.
 #[test]
-fn ignored_designations_change_nothing() {
+fn slash_designates_nothing() {
     assert_eq!(first_row(&["\x1b(0\x1b/Aq"]), "─");
-    assert_eq!(first_row(&["\x1b(0\x1b(Xq"]), "─");
-    assert_eq!(first_row(&["\x1b(0\x1b(%5q"]), "─");
+}
+
+// A final other than B or 0 stays refused, whether or not xterm's table has
+// it today.
+#[test]
+fn other_finals_stay_divergent() {
+    for text in ["\x1b(Xq", "\x1b(%5q", "\x1b)1q"] {
+        assert!(fed(20, 3, 100, &[text]).divergent, "{text:?}");
+    }
+}
+
+// xterm's DECSC saves the charset slots designated so far and its DECRC
+// restores only those (Buffer.savedCharsets); Alacritty restores all four.
+#[test]
+fn decrc_restores_the_saved_slots() {
+    assert_eq!(first_row(&["\x1b*0\x1b7\x1b(B\x1b*B\x1b8\x1bnq"]), "─");
+}
+
+#[test]
+fn decrc_with_nothing_saved_keeps_a_later_slot() {
+    assert_eq!(first_row(&["\x1b*0\x1b8\x1bnq"]), "─");
+}
+
+#[test]
+fn a_slot_designated_after_the_save_is_divergent_at_the_restore() {
+    for text in [
+        "\x1b7\x1b*0\x1b8\x1bnq",
+        "\x1b[s\x1b+0\x1b[u\x1boq",
+        "\x1b(0\x1b[?1049h\x1b*0\x1b[?1049l\x1bnq",
+        "\x1b[!p\x1b7\x1b)0\x1b8\x0eq",
+    ] {
+        assert!(fed(20, 3, 100, &[text]).divergent, "{text:?}");
+    }
+    // Without a restore after it, the designation is served.
+    assert_eq!(first_row(&["\x1b7\x1b*0\x1bnq"]), "─");
 }
 
 #[test]

@@ -63,7 +63,11 @@ const accepted: Case[] = [
   synthetic('designate-dot-g2', '\x1b.0\x1bnq\x0fq'),
   synthetic('percent-g', '\x1b(0\x1b%Gq'),
   synthetic('percent-at-keeps-g1', '\x1b)0\x0e\x1b%@q\x0eq'),
-  synthetic('designate-ignored', '\x1b(0\x1b/Aq\x1b(Xq\x1b(%5q'),
+  synthetic('designate-slash', '\x1b(0\x1b/Aq'),
+  // DECRC restores the charset slots designated at the save (xterm's
+  // savedCharsets); with nothing saved both keep every slot.
+  synthetic('decrc-saved-g2', '\x1b*0\x1b7\x1b(B\x1b*B\x1b8\x1bnq'),
+  synthetic('decrc-unsaved-g2', '\x1b*0\x1b8\x1bnq'),
   synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),
   synthetic('alt-1049-ls2', '\x1b*0\x1bn\x1b[?1049h\x0fq\x1b[?1049lq'),
   synthetic('ls2-in-update', '\x1b*0\x1b[?2026h\x1bnq\x1b[?2026l'),
@@ -163,6 +167,13 @@ const refused: Case[] = [
   synthetic('designate-uk', '\x1b(A#x\x1b(B#', 'xterm'),
   synthetic('designate-uk-g2', '\x1b*A\x1bn#', 'xterm'),
   synthetic('ls2-with-c0-inside', '\x1b*0\x1b\x07nq', 'xterm'),
+  synthetic('designate-unknown-final', '\x1b(0\x1b(Xq', 'xterm'),
+  // xterm restores only the slots it saved, and DECAWM/DECOM from the save.
+  synthetic('decrc-later-g2', '\x1b7\x1b*0\x1b8\x1bnq', 'xterm'),
+  synthetic('alt-1049-later-g2', '\x1b(0\x1b[?1049h\x1b*0\x1b[?1049l\x1bnq', 'xterm'),
+  synthetic('decstr-decrc-nowrap', `\x1b[?7l\x1b7\x1b[!p\x1b8${'x'.repeat(25)}`, 'xterm'),
+  synthetic('decrc-unsaved-nowrap', `\x1b[?7l\x1b8${'x'.repeat(25)}`, 'xterm'),
+  synthetic('decstr-cut-by-del', 'ab\x1b[4h\x1b[!\x7fpcd', 'xterm'),
   synthetic('overline', '\x1b[53mover\x1b[55mno', 'xterm'),
   synthetic('sgr-21', '\x1b[21mx\x1b[24my', 'xterm'),
   synthetic('c1', 'a\u009b31mred', 'xterm'),
