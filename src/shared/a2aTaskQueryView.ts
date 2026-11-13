@@ -165,6 +165,10 @@ export function summarizeTask(task: Rec): Rec {
     ...(isRec(meta.remote) && isRec(meta.remote.status) ? { remoteStatus: remoteStatusView(meta.remote.status) } : {}),
     // A remote task: the other PC received every reply and state change this side sent on it.
     ...(isRec(meta.remote) && str(meta.remote.replyDeliveredAt) ? { replyDeliveredAt: meta.remote.replyDeliveredAt } : {}),
+    // A remote task the other PC disagrees about: the state of ours it refused, and its code (kinds only).
+    ...(isRec(meta.remote) && isRec(meta.remote.stateRefused) && str(meta.remote.stateRefused.state) && str(meta.remote.stateRefused.code)
+      ? { remoteStateRefused: { state: meta.remote.stateRefused.state, code: meta.remote.stateRefused.code } }
+      : {}),
     // A company task held on its blockers: what it waits on, or why it waits for a person.
     ...companyHoldFields(task),
     ...(last !== undefined && {

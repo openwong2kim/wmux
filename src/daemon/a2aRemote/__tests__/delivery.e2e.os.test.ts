@@ -945,3 +945,133 @@ describe('a company task on another PC, end to end', () => {
     expect(b.tasks.getTask(taskId)!.status.state).toBe('completed');
   });
 });
+
+describe('a state the other PC refuses, end to end', () => {
+  /** A link whose receiving PC (B) joined the sending one (A): B's states go by POST, so B reads A's refusals. */
+  async function linkedReceiverJoins(a: Pc, b: Pc): Promise<string> {
+    await pair(b, a);
+    await a.rpc('a2a.remote.exposure.publish', { panes: [A_PANE] });
+    await a.rpc('a2a.remote.exposure.set', { hostId: b.hostId, workspaceIds: ['ws-a'], paneIds: { 'ws-a': ['pane-a'] } });
+    const proposed = (await b.rpc('a2a.remote.links.propose', {
+      hostId: a.hostId,
+      local: B_PANE,
+      remote: { kind: 'pane', workspaceId: 'ws-a', paneId: 'pane-a', label: 'claude', workspaceName: 'Web' },
+      allow: { outbound: true, inbound: true },
+    })) as { ok: boolean; link: A2aLinkRecordV1 };
+    expect(proposed).toMatchObject({ ok: true });
+    const linkId = proposed.link.linkId;
+    expect(await a.rpc('a2a.remote.links.accept', { linkId })).toMatchObject({ ok: true });
+    await until(() => a.links.get(linkId)?.state === 'active' && b.links.get(linkId)?.state === 'active');
+    return linkId;
+  }
+
+  type Refused = { state: string; code: string; at: string } | undefined;
+  const refusedOn = (pc: Pc, taskId: string): Refused => (pc.tasks.getTask(taskId)?.metadata.remote as { stateRefused?: Refused } | undefined)?.stateRefused;
+
+  /** B tells A a state its own task is not in (as a peer that disagrees would): its last state envelope, re-stated. */
+  function strayState(b: Pc, a: Pc, taskId: string, state: string): void {
+    const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId);
+    expect(last).toBeDefined();
+    b.delivery.outbox.enqueue(a.hostId, { ...last!.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: state as never });
+  }
+
+  async function moveB(b: Pc, taskId: string, to: 'working' | 'input-required' | 'completed'): Promise<void> {
+    expect((await b.tasks.transition({ taskId, to, callerWorkspaceId: 'ws-b', ...(to === 'completed' ? { evidence: { summary: 'done', items: [{ kind: 'inspection' as const, status: 'verified' as const, summary: 'read' }] } } : {}) })).ok).toBe(true);
+    expect(await b.rpc(A2A_REMOTE_RPC.state, { taskId, state: to })).toMatchObject({ ok: true });
+  }
+
+  it('a completed task the other PC is told to set working again stays completed, not failed, and records the refusal', async () => {
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B');
+    const linkId = await linkedReceiverJoins(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    await moveB(b, taskId, 'working');
+    await moveB(b, taskId, 'completed');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'completed');
+
+    strayState(b, a, taskId, 'working');
+    await until(() => refusedOn(b, taskId) !== undefined);
+    expect(refusedOn(b, taskId)).toMatchObject({ state: 'working', code: 'bad-request' });
+    expect(b.tasks.getTask(taskId)!.status.state).toBe('completed');
+    expect(a.tasks.getTask(taskId)!.status.state).toBe('completed');
+  });
+
+  it('after a refused state, the next state the other PC takes still goes, and the refusal is cleared', async () => {
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B');
+    const linkId = await linkedReceiverJoins(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    await moveB(b, taskId, 'working');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+
+    // A is working already: working again is no move there.
+    strayState(b, a, taskId, 'working');
+    await until(() => refusedOn(b, taskId) !== undefined);
+    expect(b.tasks.getTask(taskId)!.status.state).toBe('working');
+
+    await moveB(b, taskId, 'input-required');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    await until(() => refusedOn(b, taskId) === undefined);
+  });
+
+  it('the sender cancelled while the receiver\'s state was on its way: the receiver ends cancelled, not failed', async () => {
+    // B holds A's cancel until its own state was refused, so the two cross.
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    const holdCancel: ClientHook = (opts) => {
+      const real = new PinnedTlsClient(opts);
+      return {
+        requestJson: (method, p, body) => real.requestJson(method, p, body),
+        async *openStream(p, o) {
+          for await (const ev of real.openStream(p, o)) {
+            if (JSON.stringify(ev.data).includes('"state":"canceled"')) await gate;
+            yield ev;
+          }
+        },
+      };
+    };
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B', { client: holdCancel });
+    const linkId = await linkedReceiverJoins(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    await moveB(b, taskId, 'working');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+
+    expect((await a.tasks.cancelTask({ taskId, callerWorkspaceId: 'ws-a' })).ok).toBe(true);
+    expect(await a.rpc(A2A_REMOTE_RPC.state, { taskId, state: 'canceled' })).toMatchObject({ ok: true });
+    await moveB(b, taskId, 'input-required');
+    await until(() => refusedOn(b, taskId) !== undefined);
+    expect(b.tasks.getTask(taskId)!.status.state).toBe('input-required');
+
+    release();
+    await until(() => b.tasks.getTask(taskId)?.status.state === 'canceled');
+  });
+
+  it('a reply of the sender\'s refused there: the sender\'s copy fails, and the receiver is told it is cancelled', async () => {
+    // B refuses A's reply: A's client sends it without its text.
+    const emptied: ClientHook = (opts) => {
+      const real = new PinnedTlsClient(opts);
+      return {
+        openStream: (p, o) => real.openStream(p, o),
+        requestJson: (method, p, body) => real.requestJson(method, p,
+          p === A2A_ROUTES.messages && (body as { kind?: string }).kind === 'reply' ? { ...(body as object), text: undefined } : body),
+      };
+    };
+    const b = await makePc('PC-B');
+    const a = await makePc('PC-A', { client: emptied });
+    const linkId = await linked(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    expect((await b.tasks.transition({ taskId, to: 'working', callerWorkspaceId: 'ws-b' })).ok).toBe(true);
+
+    expect(await a.rpc(A2A_REMOTE_RPC.reply, { taskId, workspaceId: 'ws-a', text: 'one more thing' })).toMatchObject({ ok: true });
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'failed');
+    await until(() => b.tasks.getTask(taskId)?.status.state === 'canceled');
+    // B's pane is told the way any cancel from the sender is: a state item on its inbox.
+    const inbox = (b.tasks.getTask(taskId)!.metadata.remote as { inbox?: Array<{ kind: string; state?: string }> }).inbox ?? [];
+    expect(inbox.filter((i) => i.kind === 'state').map((i) => i.state)).toContain('canceled');
+  });
+});

@@ -293,6 +293,22 @@ function spawnLinkStatus(status: A2aRemoteStatusV1): A2aRemoteStatusV1 {
   return options ? { ...status, detail: { ...status.detail, options: options.map((o) => redactSecrets(o)) } } : status;
 }
 
+/**
+ * A task this PC sent failed here because the other PC refused a message of ours on it: that PC is told `canceled`,
+ * the one state a sender tells, so its copy ends too (through the same envelope a sender's cancel takes).
+ */
+export function sendRemoteCancel(deps: StateDeps, taskId: string): OutboundResult {
+  const found = remoteTaskAndLink(deps, taskId);
+  if (!found.ok) return found;
+  const { task, link } = found;
+  if ((task.metadata.remote as A2aRemoteTaskState).direction !== 'outbound') return { ok: false, error: 'only a task this PC sent is cancelled on the other PC' };
+  const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'reply', undefined, { onThisLink: true });
+  if (!check.ok) return { ok: false, error: check.error };
+  const canceled: Task = { ...task, status: { state: 'canceled', timestamp: task.status.timestamp } };
+  deps.outbox.enqueue(link.remote.hostId, stateEnvelope(deps, link, canceled, statusSummary(task)));
+  return { ok: true, taskId };
+}
+
 const SYNCED_STATES: ReadonlySet<string> = new Set(['working', 'input-required', 'completed', 'failed', 'canceled']);
 
 /**

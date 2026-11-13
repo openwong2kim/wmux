@@ -32,7 +32,7 @@ import { PeerTaskBudget, acceptInbound, type ImagePull, type InboundDeps } from 
 import type { NotifyLinkChange } from './linkRpc';
 import type { LinkStore } from './linkStore';
 import type { A2aOffers } from './offers';
-import { aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
+import { aliasTable, imageRefsOf, linkAlias, listRemoteTargets, sendRemoteCancel, sendRemoteReply, sendRemoteState, sendRemoteStatus, sendRemoteTask, syncRemoteTask, type ImageCaller, type OutboundDeps, type PreparedImage } from './outbound';
 import { OutboxStore } from './outboxStore';
 import { PeerFeatureStore } from './peerFeatureStore';
 import type { A2aRouteTable } from './routes';
@@ -126,6 +126,12 @@ export const WAITING_SUMMARY: Readonly<Record<A2aRemoteWaitingCause, string>> = 
 };
 const STATES: ReadonlySet<string> = new Set(['working', 'input-required', 'completed', 'failed', 'canceled']);
 const TERMINAL_LINK: ReadonlySet<string> = new Set(['revoked', 'broken']);
+/** A state refused as a disagreement: the other PC has the task and the link, and differs about where the task is. */
+const STATE_DISAGREEMENTS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>(['bad-request', 'conflict']);
+/** Refusals that say the link, or the task, is gone on the other PC: nothing more is sent to it there. */
+const GONE_THERE: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>([
+  'unknown-link', 'link-not-active', 'stale-link-version', 'direction-not-allowed', 'forbidden', 'unknown-task',
+]);
 
 /**
  * The `features` a share offer (`A2aOffers`) gates on: what `hostId`
@@ -667,15 +673,30 @@ export class A2aRemoteDelivery {
     }
   }
 
-  /** The other PC refused a message for good (or its images could not be sent): the task it carried fails here. */
+  /**
+   * The other PC refused a message for good (or its images could not be sent): the task it carried fails here. A
+   * state it refused as a disagreement (STATE_DISAGREEMENTS) does not: the refusal is recorded on the task, which
+   * keeps its own state, and that state is not sent again. A refused reply on a task this PC sent also tells the
+   * other PC the task is cancelled, unless the link or the task is gone there.
+   */
   private async onRefused(rec: A2aOutboxRecordV1, code: A2aRemoteErrorCode, detail?: string): Promise<void> {
     this.deps.log('warn', `[a2a-remote] ${rec.hostId} refused ${rec.envelope.kind} on link ${rec.envelope.linkId}: ${code}`);
     this.deps.offers?.onRefused(rec.hostId, rec.envelope, code);
     this.deps.spawnAsks?.onRefused(rec.hostId, rec.envelope, code);
     const taskId = taskOfEnvelope(rec.envelope, remoteTaskId);
     if (!taskId || !this.deps.taskService.getTask(taskId)) return;
+    const { state } = rec.envelope;
+    if (rec.envelope.kind === 'state' && state && STATE_DISAGREEMENTS.has(code)) {
+      const res = await this.deps.taskService.markRemote({ taskId, stateRefused: { state, code } });
+      if (!res.ok) this.deps.log('warn', `[a2a-remote] ${taskId}: refused state not recorded: ${res.error}`);
+      return;
+    }
     const reason = code === 'attachment-failed' ? `not sent to the other PC: ${detail ?? 'its images could not be uploaded'}` : `refused by the other PC: ${code}`;
     await this.deps.taskService.forceFailRemote({ taskId, reason, forced: 'remote_refused' });
+    if (rec.envelope.kind === 'reply' && !GONE_THERE.has(code)) {
+      const told = sendRemoteCancel(this.outboundDeps(), taskId);
+      if (!told.ok) this.deps.log('info', `[a2a-remote] ${taskId}: the other PC not told of its end: ${told.error}`);
+    }
   }
 
   private onEnqueue(rec: A2aOutboxRecordV1): void {
@@ -690,11 +711,19 @@ export class A2aRemoteDelivery {
    */
   private onAck(recs: A2aOutboxRecordV1[]): void {
     const tasks = new Set<string>();
+    const statesTaken = new Set<string>();
     for (const rec of recs) {
       const taskId = replyOrStateTask(rec);
       if (taskId) tasks.add(taskId);
+      if (taskId && rec.envelope.kind === 'state') statesTaken.add(taskId);
     }
     for (const taskId of tasks) void this.markReplyAcked(taskId, recs[0].hostId);
+    // The peer took a later state: a refusal recorded before is over.
+    for (const taskId of statesTaken) {
+      if ((this.deps.taskService.getTask(taskId)?.metadata.remote as A2aRemoteTaskState | undefined)?.stateRefused) {
+        void this.deps.taskService.markRemote({ taskId, stateAccepted: true }).catch(() => undefined);
+      }
+    }
   }
 
   /** Mark every task whose acked replies / states have no mark yet (see `maintain`). */

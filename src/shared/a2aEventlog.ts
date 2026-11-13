@@ -14,7 +14,7 @@
  */
 
 import type { Task, TaskState, Message, CompletionEvidence } from './types';
-import type { A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from './a2aRemote';
+import type { A2aRemoteErrorCode, A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from './a2aRemote';
 import type { CompanyBlockerEnd, CompanyHoldReason } from './companyHold';
 
 /**
@@ -141,6 +141,10 @@ export interface A2aRemoteMarkPayload {
   remoteReceipt?: A2aRemoteReceipt;
   /** Task-level: the peer acked every reply / state of ours queued on this task. */
   replyAcked?: true;
+  /** Task-level: the peer refused this state of ours (it disagrees); the task keeps its own. */
+  stateRefused?: { state: TaskState; code: A2aRemoteErrorCode };
+  /** Task-level: the peer took a state of ours again; a refusal recorded before is over. */
+  stateAccepted?: true;
   timestamp: string;
 }
 
