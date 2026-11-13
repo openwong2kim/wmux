@@ -101,7 +101,7 @@ import {
 import { ORCH_ROLES } from '../../../shared/orchestratorRole';
 import { sendToRenderer } from './_bridge';
 import { resolvePaneForPty, resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
-import { REMOTE_FANOUT_AGENT, REMOTE_TASK_FOOTER, remoteFanoutDepsOf, remoteFanoutRefusal, startRemoteFanout, type RemoteFanoutDeps } from '../../worktask/remoteFanout';
+import { REMOTE_FANOUT_AGENT, REMOTE_TASK_FOOTER, remoteFanoutDepsOf, remoteFanoutRefusal, remoteKeyRows, startRemoteFanout, type RemoteFanoutDeps } from '../../worktask/remoteFanout';
 import { git as runGit } from '../../git/git';
 import type { DaemonClient } from '../../DaemonClient';
 import { hostCwdForPane, type DaemonRpc } from '../../pty/wslCallerCwd';
@@ -1264,16 +1264,20 @@ export function registerFanOutRpc(
       if (!remote) return deny('UNAVAILABLE', 'the background service is not connected');
       // A new key (not a poll of one already started): the owner's approval
       // switch, the hourly cap and the audit record apply as to any fan-out.
+      // A key is known from its rows (they keep the request's digest and
+      // outlast the hour) or, when no row was written, from its hourly stamp.
       const guards = guardsOf();
       const stamped = guards.remoteStamped(key);
+      const digests = remoteKeyRows(remote.ledger, key).flatMap((e) => (e.remote?.requestDigest ? [e.remote.requestDigest] : []));
       // A repeat is a poll of the same request: one that differs (another
       // count, title, prompt, PC or folder) would start tasks that were never
       // approved, stamped or audited.
       const digest = crypto.createHash('sha256').update(JSON.stringify([pc, root, sub, parsed.titles, prompts])).digest('hex');
-      if (stamped !== null && stamped.digest !== digest) {
-        return deny('INVALID_ARGUMENT', `this key started a different request on another PC (${stamped.count} task(s)); send the same request to poll it, or use a new key`);
+      if ((stamped !== null && stamped.digest !== digest) || digests.some((d) => d !== digest)) {
+        return deny('INVALID_ARGUMENT', `this key started a different request on another PC (${stamped?.count ?? digests.length} task(s)); send the same request to poll it, or use a new key`);
       }
-      if (stamped === null) {
+      const poll = stamped !== null || digests.length > 0;
+      if (!poll) {
         if ((deps.requireApproval ?? loadFanoutRequireApproval)()) {
           return deny('FAILED_PRECONDITION', 'tasks on another PC do not start while fan-out approval is on (Settings › Roles & fan-out): they have no approval prompt yet');
         }
@@ -1307,12 +1311,13 @@ export function registerFanOutRpc(
         ...(sub ? { sub } : {}),
         titles: parsed.titles,
         prompts: prompts.map((p) => `${p}\n\n${REMOTE_TASK_FOOTER}`),
+        digest,
       }, remote);
       if ('error' in started) {
         // Refused before anything was sent. A mistake in the call (an unknown
         // PC, a bad folder id) gives back the hour it stamped; a passing
         // failure keeps it, so the same key again is a poll, not a second charge.
-        if (stamped === null && !started.retry) guards.refundStart(key, parsed.titles.length);
+        if (!poll && !started.retry) guards.refundStart(key, parsed.titles.length);
         return deny('FAILED_PRECONDITION', started.error);
       }
       return {

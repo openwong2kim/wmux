@@ -156,6 +156,9 @@ export interface LedgerRemote {
   withdrawn?: true;
   /** A withdrawn task's link was revoked here (a failed revoke is retried). */
   revoked?: true;
+  /** The sha256 (hex) of the whole fan-out call that asked for it: a later
+   *  call with the same key is a poll only when it sends the same request. */
+  requestDigest?: string;
 }
 
 export const LEDGER_REMOTE_STATES = ['sent', 'waiting', 'started', 'refused', 'expired'] as const;
