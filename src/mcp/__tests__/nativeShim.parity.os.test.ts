@@ -4,7 +4,10 @@
 // broker bound at the endpoint they both derive. The stub takes the handshake
 // line, then drops the connection. The test compares the line byte for byte
 // (callerPid masked: each shim reports its own pid), the parsed values and
-// their key order, and the exit code, stdout and stderr that follow. Cases with
+// their key order, and the exit code, stdout and stderr that follow. After a
+// drop past the ack each shim answers the calls in flight and looks for a full
+// server to take the session over; neither has one here, so both exit 1 after
+// saying so, each in its own words (expectLossWithoutServer). Cases with
 // no token or no broker compare the refusal instead: shim.ts prints node's
 // err.message for the connect, the native shim its fallback reason (`no
 // broker`) and the places it looked for a full bundle (the binary under test
@@ -31,6 +34,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import { mayHaveRun } from '../shimHandover';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const isWin = process.platform === 'win32';
@@ -62,8 +66,15 @@ interface Run {
 
 /** What the stub broker does: take the handshake and hang up, take it and
  *  keep writing until the shim goes, take it and close with bytes from the
- *  shim still unread (a reset on Linux), or not be there at all. */
-type Broker = 'hangup' | 'flood' | 'reset' | 'none';
+ *  shim still unread (a reset on Linux), answer the host's initialize and hang
+ *  up on its next call, or not be there at all. */
+type Broker = 'hangup' | 'flood' | 'reset' | 'inflight' | 'none';
+
+const INIT_LINE = '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}\n';
+const INIT_REPLY = '{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18","capabilities":{}}}\n';
+const INITIALIZED_AND_CALL =
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}\n'
+  + '{"jsonrpc":"2.0","id":"c","method":"tools/call","params":{"name":"workspace_list","arguments":{}}}\n';
 
 interface Case {
   name: string;
@@ -130,13 +141,23 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
       let buf = Buffer.alloc(0);
       sock.on('data', (chunk) => {
         buf = Buffer.concat([buf, chunk]);
+        if (line !== null) {
+          if (broker === 'inflight') hostLines();
+          return;
+        }
         const nl = buf.indexOf(0x0a);
-        if (nl === -1 || line !== null) return;
+        if (nl === -1) return;
         line = buf.subarray(0, nl + 1).toString('utf8');
+        buf = buf.subarray(nl + 1);
         // Answer a shim that asks for the ack, as the broker does once it has
         // hosted the session (the native shim waits for it; shim.ts never asks).
         if (JSON.parse(line).ack === 1) sock.write('{"wmuxBroker":1,"ok":true}\n');
         if (broker === 'hangup') { sock.destroy(); return; }
+        if (broker === 'inflight') {
+          child?.stdin?.write(INIT_LINE);
+          hostLines();
+          return;
+        }
         if (broker === 'reset') {
           // Stop reading, then have the host send two lines the shim forwards
           // as two writes. The first fills the one-byte buffer (node then stops
@@ -156,6 +177,23 @@ async function run(runtime: 'js' | 'native', suffix: string, c: Case): Promise<R
         flooding.add(timer);
         sock.on('close', () => { clearInterval(timer); flooding.delete(timer); });
       });
+      /** The host's lines past the handshake: answer the initialize, then
+       *  hang up once the call after it arrives, leaving it unanswered. */
+      const hostLines = (): void => {
+        let at = buf.indexOf(0x0a);
+        while (at !== -1) {
+          const msg = JSON.parse(buf.subarray(0, at).toString('utf8')) as { method?: string };
+          buf = buf.subarray(at + 1);
+          if (msg.method === 'initialize') {
+            sock.write(INIT_REPLY);
+            child?.stdin?.write(INITIALIZED_AND_CALL);
+          } else if (msg.method === 'tools/call') {
+            sock.destroy();
+            return;
+          }
+          at = buf.indexOf(0x0a);
+        }
+      };
       sock.on('error', () => { /* shim gone */ });
     });
     await new Promise<void>((resolve, reject) => {
@@ -238,6 +276,17 @@ function withoutAck(line: string): string {
   return line.replace(/,"ack":1\}\n$/, '}\n');
 }
 
+/** A drop past the ack with no full server to hand the session to: both shims
+ *  report the drop with the same line, then that there is no full server, each
+ *  in its own words (the native shim lists where it looked). */
+function expectLossWithoutServer(js: Run, native: Run, drop: string): void {
+  expect(js.stderr).toBe(`${drop}\n[wmux-mcp-shim] no full server beside the shim\n`);
+  const [nativeDrop, nativeNoServer, ...more] = native.stderr.split('\n');
+  expect(nativeDrop).toBe(drop);
+  expect(nativeNoServer).toMatch(/^\[wmux-mcp-shim\] no full bundle to fall back to \(looked at .*index\.js\)$/);
+  expect(more).toEqual(['']);
+}
+
 /** Native stderr with no broker: its one fallback-reason line in place of
  *  shim.ts's connect error, then the missing-bundle line. A recorded
  *  difference: the native shim falls back where shim.ts gives up. */
@@ -288,7 +337,7 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
       expect(native.code).toBe(js.code);
       expect(native.code).toBe(1);
       expect(native.stdout).toBe(js.stdout);
-      expect(native.stderr).toBe(js.stderr);
+      expectLossWithoutServer(js, native, '[wmux-mcp-shim] broker connection closed');
     });
   }
 
@@ -322,8 +371,19 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
   // macOS reports a plain end of stream, and a Windows pipe has no such state.
   it.skipIf(process.platform !== 'linux')('a reset mid-session: the same `read ECONNRESET` error', async () => {
     const { js, native } = await both({ name: 'reset', tokenFile: 'tok', broker: 'reset' });
-    expect(js.stderr).toBe('[wmux-mcp-shim] broker connection error: read ECONNRESET\n');
-    expect(native.stderr).toBe(js.stderr);
+    expectLossWithoutServer(js, native, '[wmux-mcp-shim] broker connection error: read ECONNRESET');
+    // Both pings were in flight: each gets the error, in the order sent.
+    expect(js.stdout).toBe(String(mayHaveRun('1')) + String(mayHaveRun('2')));
+    expect(native.stdout).toBe(js.stdout);
+    expect(native.code).toBe(1);
+    expect(native.code).toBe(js.code);
+  }, 20_000);
+
+  it('a drop with a call in flight: the same error for that call, nothing sent again', async () => {
+    const { js, native } = await both({ name: 'in flight', tokenFile: 'tok', broker: 'inflight' });
+    expect(js.stdout).toBe(INIT_REPLY + String(mayHaveRun('"c"')));
+    expect(native.stdout).toBe(js.stdout);
+    expectLossWithoutServer(js, native, '[wmux-mcp-shim] broker connection closed');
     expect(native.code).toBe(1);
     expect(native.code).toBe(js.code);
   }, 20_000);

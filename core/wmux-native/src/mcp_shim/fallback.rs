@@ -14,11 +14,15 @@
 //!   3. a development build (`core/wmux-native/target/{debug,release}`): the
 //!      repository's `dist/mcp/mcp/entry.js` (there, index.js is the server
 //!      factory and entry.js the stdio entry).
+//!
+//! Before the shim has read any stdin, `run_full_bundle` hands the session to
+//! the bundle as it is. After a broker loss, `spawn_bundle` starts it as a
+//! child with piped stdin and stdout, which the shim feeds (mcp_shim.rs).
 
 use super::{exit_with, Outcome};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 
 /// The stable bundle's version marker (MCP_VERSION_MARKER in stabilizeBundle.ts).
 const VERSION_MARKER: &str = ".wmux-mcp-version";
@@ -62,21 +66,40 @@ fn exe_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "cannot locate this binary's directory".into())
 }
 
-/// Run the session on the full bundle; never returns. The caller has written
-/// the fallback's reason, if any, to stderr.
-pub fn run_full_bundle(args: &[OsString]) -> ! {
+/// node and the bundle's entry script, or why there are none.
+fn locate() -> Result<(PathBuf, PathBuf), Outcome> {
     let entry = match exe_dir().map(|dir| find_bundle(&dir)) {
         Ok(Ok(entry)) => entry,
         Ok(Err(looked)) => {
             let looked: Vec<String> = looked.iter().map(|p| p.display().to_string()).collect();
-            exit_with(Outcome::NoBundle(looked.join(", ")))
+            return Err(Outcome::NoBundle(looked.join(", ")));
         }
-        Err(why) => exit_with(Outcome::NoBundle(why)),
+        Err(why) => return Err(Outcome::NoBundle(why)),
     };
-    let Some(node) = node_on_path(std::env::var_os("PATH")) else {
-        exit_with(Outcome::BundleFailed("no node on PATH".into()))
-    };
-    sys::hand_over(&node, &entry, args)
+    let node = node_on_path(std::env::var_os("PATH")).ok_or_else(|| Outcome::BundleFailed("no node on PATH".into()))?;
+    Ok((node, entry))
+}
+
+/// Run the session on the full bundle; never returns. The caller has written
+/// the fallback's reason, if any, to stderr.
+pub fn run_full_bundle(args: &[OsString]) -> ! {
+    match locate() {
+        Ok((node, entry)) => sys::hand_over(&node, &entry, args),
+        Err(outcome) => exit_with(outcome),
+    }
+}
+
+/// Start the full bundle as a child, with the shim's arguments: stdin and
+/// stdout piped to the shim, stderr the shim's own.
+pub fn spawn_bundle(args: &[OsString]) -> Result<Child, Outcome> {
+    let (node, entry) = locate()?;
+    let mut command = Command::new(&node);
+    command
+        .arg(&entry)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    sys::spawn(&node, command)
 }
 
 /// node's file name on this OS.
@@ -119,6 +142,15 @@ mod sys {
     pub fn hand_over(node: &Path, entry: &Path, args: &[OsString]) -> ! {
         let e = super::Command::new(node).arg0("node").arg(entry).args(args).exec();
         exit_with(Outcome::BundleFailed(format!("{}: {e}", node.display())))
+    }
+
+    /// The child, with argv[0] `node` as in `hand_over`. It ends when the shim
+    /// does: its stdin closes and the bundle exits on that end of input.
+    pub fn spawn(node: &Path, mut command: super::Command) -> Result<super::Child, Outcome> {
+        command
+            .arg0("node")
+            .spawn()
+            .map_err(|e| Outcome::BundleFailed(format!("{}: {e}", node.display())))
     }
 }
 
@@ -216,6 +248,15 @@ mod sys {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(e) => exit_with(Outcome::BundleFailed(format!("{}: {e}", node.display()))),
         }
+    }
+
+    /// The child, in the shim's job (as in `hand_over`), so it dies with the
+    /// shim however the shim ends.
+    pub fn spawn(node: &Path, mut command: super::Command) -> Result<super::Child, Outcome> {
+        contain_in_job().map_err(|e| Outcome::BundleFailed(format!("cannot create its job object: {e}")))?;
+        command
+            .spawn()
+            .map_err(|e| Outcome::BundleFailed(format!("{}: {e}", node.display())))
     }
 }
 
