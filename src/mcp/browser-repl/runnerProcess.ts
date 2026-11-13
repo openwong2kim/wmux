@@ -49,21 +49,27 @@ import { buildReplChildEnv, resolveNodeBinary } from '../repl/ReplSession';
 import { evalBootstrap } from '../repl/replRunnerSource';
 import { BROWSER_REPL_WORKER_SOURCE } from './workerSource';
 
-/** Live runner processes in this MCP server, across every connection. */
+/** Live runner processes per owner: the agent's connection under the broker,
+ *  the whole server otherwise (it belongs to one agent). */
 export const MAX_BROWSER_REPL_RUNNERS = 16;
 /** The longest line the runner may send; a longer one ends it. */
 export const MAX_RUNNER_LINE_BYTES = 16 * 1024 * 1024;
 let runnerCap = MAX_BROWSER_REPL_RUNNERS;
-let liveRunners = 0;
+/** The owner of every runner in a server that hosts one agent. */
+export const PROCESS_RUNNER_OWNER: object = Object.freeze({});
+/** Slots of the cap held now, per owner; an owner holding none has no entry. */
+const liveRunners = new Map<object, number>();
 
 /** Test seam: the cap on live runners. */
 export function setBrowserReplRunnerCapForTest(cap: number | null): void {
   runnerCap = cap ?? MAX_BROWSER_REPL_RUNNERS;
 }
 
-/** Test seam: the slots of the cap held now. */
+/** Test seam: the slots of the cap held now, across every owner. */
 export function liveBrowserReplRunnersForTest(): number {
-  return liveRunners;
+  let total = 0;
+  for (const n of liveRunners.values()) total += n;
+  return total;
 }
 
 /**
@@ -238,10 +244,10 @@ export class RunnerProcess extends EventEmitter {
   /** The OS has reported the runner's exit: its pid may name another process now. */
   private reaped = false;
 
-  /** Throws when this server already runs its cap of runners. */
-  constructor() {
+  /** Throws when `owner` already runs its cap of runners. */
+  constructor(private readonly owner: object = PROCESS_RUNNER_OWNER) {
     super();
-    if (liveRunners >= runnerCap) {
+    if ((liveRunners.get(owner) ?? 0) >= runnerCap) {
       throw new Error(
         `this wmux MCP server is already running ${runnerCap} browser_repl runtimes across its connected agents, ` +
           'which is its limit. A runtime ends when its agent disconnects or after 15 minutes idle; try again later.',
@@ -261,7 +267,7 @@ export class RunnerProcess extends EventEmitter {
       detached: process.platform !== 'win32',
     });
     this.child = child;
-    liveRunners++;
+    liveRunners.set(owner, (liveRunners.get(owner) ?? 0) + 1);
     if (child.pid !== undefined) job()?.contain(child.pid, spawnMark);
     this.toRunner = child.stdio[3] as Writable;
     const fromRunner = child.stdio[4] as Readable;
@@ -315,7 +321,9 @@ export class RunnerProcess extends EventEmitter {
   private free(): void {
     if (!this.holding) return;
     this.holding = false;
-    liveRunners--;
+    const held = (liveRunners.get(this.owner) ?? 1) - 1;
+    if (held > 0) liveRunners.set(this.owner, held);
+    else liveRunners.delete(this.owner);
   }
 
   /** An `error` event, when anyone still listens (an unheard one would throw). */

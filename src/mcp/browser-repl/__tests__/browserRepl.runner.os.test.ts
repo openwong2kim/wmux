@@ -20,8 +20,8 @@ import { checkClaim, resetClaimChecks } from '../../../main/pipe/handlers/peerPi
 const bridge: BridgeCall = async () => ({ ok: false, error: 'no browser in this test', ledger: 'refused' });
 const sessions: BrowserReplSession[] = [];
 
-function newSession(): BrowserReplSession {
-  const s = new BrowserReplSession(BROWSER_REPL_TOOLS);
+function newSession(owner?: object): BrowserReplSession {
+  const s = new BrowserReplSession(BROWSER_REPL_TOOLS, owner);
   sessions.push(s);
   return s;
 }
@@ -264,6 +264,43 @@ describe('browser_repl runner process', () => {
     expect(await goneWithin(runner, 5000)).toBe(true);
     // The exit is counted once the parent sees it.
     await vi.waitFor(async () => expect((await b.run('1', 10_000, bridge)).ok).toBe(true), { timeout: 10_000 });
+  });
+
+  // Under the broker each agent's connection owns its runners (tool.ts), so
+  // the cap is per agent, as it is when each agent has a server of its own.
+  it('20 agents under the broker each start a runner, past the cap of 16 per agent', async () => {
+    const outcomes = await Promise.all(
+      Array.from({ length: 20 }, () => newSession({}).run('1', 30_000, bridge)),
+    );
+    expect(outcomes.filter((o) => o.ok)).toHaveLength(20);
+    expect(liveBrowserReplRunnersForTest()).toBe(20);
+  }, 120_000);
+
+  it('one owner still stops at 16, with the same message as before', async () => {
+    const agent = {};
+    const started = await Promise.all(
+      Array.from({ length: 16 }, () => newSession(agent).run('1', 30_000, bridge)),
+    );
+    expect(started.filter((o) => o.ok)).toHaveLength(16);
+    const refused = await newSession(agent).run('1', 10_000, bridge);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain(
+      'this wmux MCP server is already running 16 browser_repl runtimes across its connected agents, which is its limit.',
+    );
+    // Another agent is not held back by this one's runners.
+    expect((await newSession({}).run('1', 10_000, bridge)).ok).toBe(true);
+  }, 120_000);
+
+  it("a session that ends frees its owner's count", async () => {
+    setBrowserReplRunnerCapForTest(1);
+    const agent = {};
+    const first = newSession(agent);
+    expect((await first.run('1', 10_000, bridge)).ok).toBe(true);
+    const second = newSession(agent);
+    expect((await second.run('1', 10_000, bridge)).ok).toBe(false);
+    first.dispose();
+    await vi.waitFor(() => expect(liveBrowserReplRunnersForTest()).toBe(0), { timeout: 15_000 });
+    expect((await second.run('1', 10_000, bridge)).ok).toBe(true);
   });
 
   it('leaves nothing behind when its parent is killed', async () => {
