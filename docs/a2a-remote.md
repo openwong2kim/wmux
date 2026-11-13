@@ -278,6 +278,25 @@ PCs and the folder ids (`root`) each one allows.
   expire (each request waits 1 hour), or started it. Once started, the row
   holds the task its replies arrive on. The agent is asked to commit and to
   end its last reply with its branch and commit; the branch stays on that PC.
+- **Following it.** Once started, the row follows that task:
+  - its report → `review_requested` (it stops there; only the owner marks a
+    task completed);
+  - a question on the agent's screen → `input_required`, naming only the kind
+    (permission, plan, menu, dialog, trust) and the PC;
+  - a usage limit → still `working`, with `pending.waitingOn: 'usage-limit'`
+    and the reset time in the poll (that PC resumes it by itself);
+  - the task failing or being cancelled there → the same here.
+
+  An agent that PC reports gone fails the row one pass later if nothing ended
+  the task meanwhile, and stays failed. Tasks on that PC end when its daemon
+  stops; they are not resumed. Nothing the other PC writes goes into the row.
+- **Being told.** The pane that started the fan-out gets the one-line fan-out
+  nudge when a row needs input or fails. The report itself arrives there as
+  the agent's reply.
+- **Following up.** `send_message task_id=<the row's A2A task>` reaches the
+  agent, and its replies come back to your pane; the poll shows this as
+  `followUp`. A post in the task's mission channel is kept, but nobody on the
+  other PC reads it: the reply says so.
 - **Ending it.** Closing the mission (or cancelling or finishing its row)
   ends the agent on the other PC: its link is revoked now, or as soon as a
   late start arrives.
@@ -285,8 +304,8 @@ PCs and the folder ids (`root`) each one allows.
   but does not revoke links. Closing the mission closes the row; an agent
   that already started on the other PC keeps running until you revoke its
   link by hand on the Remote page.
-- **Not yet.** No review gate, no work brought back beyond the branch name
-  and commit in the agent's reply, and no follow-up message to the task.
+- **Not yet.** No review gate, and no work brought back beyond the branch
+  name and commit in the agent's reply.
 
 ## Network and firewall
 
