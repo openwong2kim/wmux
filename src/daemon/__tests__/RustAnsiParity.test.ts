@@ -9,7 +9,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
 import { generateSnapshotUnqueued, type SnapshotRequest } from '../HeadlessSnapshot';
-import { generateRustSnapshot } from '../RustSnapshot';
+import { ansiScrollbackCap, generateRustSnapshot } from '../RustSnapshot';
 import { CLAUDE_WRAPPED_REPLY_80x30 } from '../../renderer/terminal/__tests__/fixtures/claudeWrappedReply';
 import { restoreSeam } from '../../shared/restoreSeam';
 import { available, expectParity, expectRustAloneDiverges, modulePath, parity, resized, synthetic, type Case } from './_rustParity';
@@ -567,6 +567,14 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     const req: SnapshotRequest = { cols: 1000, rows: 4, scrollback: 100000, initial: Buffer.from(`${before}\x1b8X`),
       geometry: { start: { cols: 500, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: 1000, rows: 4 }] } };
     expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: false, detail: expect.stringMatching(/^unsupported-history-limit/) });
+  });
+
+  it('caps the history for the row step at the old width, so narrower and taller still resizes', async () => {
+    // 200x50 to 150x60 runs its row step at 200x60: 4M / 200 - 60 = 19940.
+    const req: SnapshotRequest = { cols: 150, rows: 60, scrollback: 100000, initial: Buffer.from('a\r\nb'),
+      geometry: { start: { cols: 200, rows: 50 }, changes: [{ offset: 1, cols: 150, rows: 60 }] } };
+    expect(ansiScrollbackCap(req)).toBe(19940);
+    expect(await generateRustSnapshot(req, 'ansi')).toMatchObject({ ok: true });
   });
 
   it('takes an attach-sized request and refuses a history past the native cap', async () => {
