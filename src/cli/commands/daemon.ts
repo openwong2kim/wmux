@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, realpathSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs';
+import { readFileSync, readdirSync, realpathSync, existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { spawn } from 'child_process';
 import { childStdio } from '../consoleStdio';
@@ -404,7 +404,7 @@ export function headlessStatus(wmuxDir: string = getWmuxDir(), daemon: DaemonHea
   // The running daemon's own answer when it gives one: it also knows whether
   // it could build what starts the agents this run.
   const reason = appAttached
-    ? 'the desktop app has used this install; it starts remote agents here'
+    ? appAttachedReason(wmuxDir)
     : !optedIn ? 'not turned on (wmux daemon headless on)'
       : daemon && !daemon.inEffect ? 'the daemon could not set up remote starts this run (its task ledger or remote-PC service is unavailable; see its log)'
         : undefined;
@@ -424,6 +424,22 @@ export function headlessStatus(wmuxDir: string = getWmuxDir(), daemon: DaemonHea
     from: daemon ? 'daemon' : 'files',
     ...setAside(wmuxDir, starts),
   };
+}
+
+/**
+ * Why the app counts as present. The data dir's marker outlives the app, so
+ * it is named with when it was written; without it, the running daemon knows
+ * of the app in this run.
+ */
+function appAttachedReason(wmuxDir: string): string {
+  const marker = join(wmuxDir, APP_ATTACHED_FILE);
+  let written: string | undefined;
+  try {
+    written = statSync(marker).mtime.toISOString();
+  } catch { /* no marker: the daemon's own answer */ }
+  return written
+    ? `the desktop app has used this install (recorded in ${marker} at ${written}); it starts remote agents here. If the app no longer runs on this machine, delete that file and restart the daemon (wmux daemon stop, then wmux daemon start)`
+    : 'the desktop app started or attached to the running daemon; it starts remote agents here. Restart the daemon without the app to change that';
 }
 
 /** A set-aside start file, and the remote-start worktrees no record names then. */
