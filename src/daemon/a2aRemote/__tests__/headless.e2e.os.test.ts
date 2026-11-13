@@ -23,7 +23,8 @@ import { ExposureStore } from '../exposureStore';
 import { HeadlessMode, headlessFlagPath, headlessReleases } from '../headlessMode';
 import { HeadlessStartStore } from '../headlessStartStore';
 import { A2aHeadlessStarter, headlessTreeId, worktreeUnchanged, type HeadlessSessionInput, type HeadlessSessionPort } from '../headlessStarter';
-import { HeadlessDelivery } from '../headlessDelivery';
+import { A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
+import { ASK_REASON, HeadlessDelivery } from '../headlessDelivery';
 import { remoteTaskId } from '../ids';
 import { joinRemoteHost } from '../joiner';
 import { registerA2aLinkRpc } from '../linkRpc';
@@ -63,9 +64,11 @@ interface Pc {
   asks: A2aSpawnRequester | null;
   headless: A2aHeadlessStarter | null;
   starts: HeadlessStartStore | null;
-  /** Types the first task into the (fake) agent and reads its transcript. */
+  /** Types the tasks into the (fake) agent and reads its transcript. */
   taskDelivery: HeadlessDelivery | null;
   sessions: FakeSessions;
+  /** This PC's daemon RPCs, as a pane would call them. */
+  rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   stop: () => Promise<void>;
 }
 
@@ -309,8 +312,10 @@ async function makePc(name: string, opts: { headless?: boolean; asking?: boolean
       mode,
       starts: parts.starts,
       runId: 'run-1',
-      tasks: { pending: () => tasks.listRemotePending(), remote: () => tasks.listRemote(), get: (id) => tasks.getTask(id) },
+      tasks: { pending: () => tasks.listRemotePending(), remote: () => tasks.listRemote(), held: () => tasks.listRemoteHeld(), get: (id) => tasks.getTask(id) },
       mark: (input) => call('a2a.remote.mark', input),
+      rejectHeld: (input) => call('a2a.remote.rejectHeld', input),
+      followUpsDirect: () => policy.get().followUps === 'direct',
       // The fake agent: records the prompt and writes its turn as Claude Code would.
       deliver: async (sessionId, _agent, prompt, authorized, onWrite) => {
         if (!authorized()) return 'busy';
@@ -336,6 +341,7 @@ async function makePc(name: string, opts: { headless?: boolean; asking?: boolean
   }
   const pc: Pc = {
     name, dir, hostId: server.ensureIdentity().hostId, remoteHosts, delivery, server, policy, spawn, links, tasks, asks, headless, starts, sessions, taskDelivery,
+    rpc: (method, params) => handlers.get(method)!(params),
     stop: async () => {
       await delivery!.stop();
       server.dispose();
@@ -367,9 +373,9 @@ async function until(cond: () => boolean, ms = 30_000): Promise<void> {
 }
 
 /** B (the box) allows A, claude and its repository as root `web`, approval by allow list only. */
-async function allow(b: Pc, aHostId: string, rules: Array<{ hostId: string; rootId: string; agent: 'claude' }>): Promise<void> {
+async function allow(b: Pc, aHostId: string, rules: Array<{ hostId: string; rootId: string; agent: 'claude' }>, followUps: 'direct' | 'ask' = 'direct'): Promise<void> {
   const set = await b.policy.set({
-    v: 1, enabled: true, approval: 'allow-list', followUps: 'direct', permissionMode: 'auto',
+    v: 1, enabled: true, approval: 'allow-list', followUps, permissionMode: 'auto',
     hosts: { [aHostId]: { allowed: true } }, roots: [{ id: 'web', label: 'Web', path: path.join(b.dir, 'repo') }], agents: ['claude'], rules, version: 0,
   });
   expect(set.ok).toBe(true);
@@ -401,16 +407,72 @@ describe('headless remote spawn, two PCs and no app', () => {
   });
 
   /** A started request on B for A, and the id of its first task. */
-  async function startedTask(a: Pc, b: Pc): Promise<{ spawnId: string; taskId: string; rec: HeadlessStartRecordV1 }> {
+  async function startedTask(a: Pc, b: Pc, followUps: 'direct' | 'ask' = 'direct'): Promise<{ spawnId: string; taskId: string; rec: HeadlessStartRecordV1; linkId: string }> {
     await pair(a, b);
-    await allow(b, a.hostId, [{ hostId: a.hostId, rootId: 'web', agent: 'claude' }]);
+    await allow(b, a.hostId, [{ hostId: a.hostId, rootId: 'web', agent: 'claude' }], followUps);
     const spawnId = await ask(a, b);
     await until(() => a.asks!.list(spawnId).requests[0]?.state === 'started');
     const linkId = asSpawnLinkId(a.asks!.list(spawnId).requests[0].linkId)!;
     const taskId = remoteTaskId(linkId, spawnFirstMessageId(linkId));
     await until(() => b.tasks.getTask(taskId) !== undefined);
-    return { spawnId, taskId, rec: b.starts!.get(a.hostId, spawnId)! };
+    return { spawnId, taskId, rec: b.starts!.get(a.hostId, spawnId)!, linkId };
   }
+
+  /** The asking pane sends a later task to the agent it started (a follow-up). */
+  async function followUp(a: Pc, b: Pc, linkId: string, text: string): Promise<string> {
+    const res = (await a.rpc(A2A_REMOTE_RPC.sendTask, { linkId, from: { workspaceId: 'ws-a', name: 'Web', paneId: 'pane-a' }, title: text, text })) as { ok: boolean; taskId: string; error?: string };
+    expect(res).toMatchObject({ ok: true });
+    await until(() => b.tasks.getTask(res.taskId) !== undefined);
+    return res.taskId;
+  }
+
+  it('follow-ups with `direct`: each is typed in after the previous answer and answered in turn', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId, rec, linkId } = await startedTask(a, b);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    const second = await followUp(a, b, linkId, 'and now the kernel version');
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(second)?.status.state === 'input-required');
+    expect(b.sessions.typed).toEqual([{ sessionId: rec.sessionId, prompt: PROMPT }, { sessionId: rec.sessionId, prompt: 'and now the kernel version' }]);
+    expect(a.tasks.getTask(second)?.history.at(-1)).toMatchObject({ role: 'agent', parts: [{ kind: 'text', text: 'PONG\nLinux' }] });
+    // The first task's own answer stands.
+    expect(a.tasks.getTask(taskId)?.status.state).toBe('input-required');
+  });
+
+  it('a reply the asking pane sends on its task (`direct`): typed in as that task\'s next turn, and answered on it', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId, rec } = await startedTask(a, b);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    expect(await a.rpc(A2A_REMOTE_RPC.reply, { taskId, workspaceId: 'ws-a', text: 'and now the kernel version' })).toMatchObject({ ok: true });
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { inbox?: unknown[] })?.inbox?.length === 1);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    expect(b.sessions.typed).toEqual([{ sessionId: rec.sessionId, prompt: PROMPT }, { sessionId: rec.sessionId, prompt: 'and now the kernel version' }]);
+    await until(() => (a.tasks.getTask(taskId)?.history.filter((m) => m.role === 'agent').length ?? 0) === 2);
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+  });
+
+  it('a follow-up with `ask`: refused at once, the asking PC sees why; nothing typed for it', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId, linkId } = await startedTask(a, b, 'ask');
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    const second = await followUp(a, b, linkId, 'and now the kernel version');
+    expect(b.tasks.getTask(second)?.metadata.remote).toMatchObject({ held: 'awaiting-approval' });
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(second)?.status.state === 'failed');
+    expect(JSON.stringify(a.tasks.getTask(second)?.status)).toContain(ASK_REASON);
+    expect(b.sessions.typed).toHaveLength(1);
+  });
 
   it('the task is typed into the agent the daemon started, and its answer comes back as the reply, input-required on both PCs', async () => {
     const a = await makePc('PC-A', { asking: true });

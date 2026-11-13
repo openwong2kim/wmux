@@ -61,6 +61,19 @@ export function setBrowserReplRunnerCapForTest(cap: number | null): void {
   runnerCap = cap ?? MAX_BROWSER_REPL_RUNNERS;
 }
 
+/** Test seam: the slots of the cap held now. */
+export function liveBrowserReplRunnersForTest(): number {
+  return liveRunners;
+}
+
+/**
+ * --disable-sigusr1 when this runtime takes it, so a signal from another
+ * process of this user does not open the runner's inspector. The runner runs
+ * on this process's own binary, which may be a node from PATH; one older than
+ * 22.14 / 23.7 refuses the flag and would not start.
+ */
+const INSPECTOR_FLAGS = process.allowedNodeEnvironmentFlags.has('--disable-sigusr1') ? ['--disable-sigusr1'] : [];
+
 /** Windows: the job runners join, so they end with this process. */
 let runnerJob: PaneJob | null | undefined;
 function job(): PaneJob | null {
@@ -238,7 +251,7 @@ export class RunnerProcess extends EventEmitter {
     const env = buildRunnerEnv();
     if (electronRunAsNode) env.ELECTRON_RUN_AS_NODE = '1';
     const spawnMark = job()?.spawnMark() ?? null;
-    const child = spawn(command, ['-e', relayArg()], {
+    const child = spawn(command, [...INSPECTOR_FLAGS, '-e', relayArg()], {
       // The worker ran in this process's working directory; the runner keeps it.
       cwd: process.cwd(),
       env,

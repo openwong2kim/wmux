@@ -42,6 +42,7 @@ import { peerPidOf, selfCheckPeerPid } from '../shared/peerPid';
 import { decidePeer, retryingSelfCheck } from './brokerPeer';
 import { createConnectionReporter, trackConnection, trackToolCalls, type ReportChannel } from './brokerConnectionReporter';
 import { setBrokerEnvelopeMode } from './wmux-client';
+import { acceptBrokerStamp } from './brokerStamp';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -100,6 +101,8 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Promise<void> {
   const connId = ++connSeq;
   const scope: ConnectionScope = createConnectionScope();
+  // Reached only after decidePeer took the OS peer as this pid.
+  if (typeof handshake.callerPid === 'number') scope.verifiedCallerPid = handshake.callerPid;
 
   const log = (msg: string) => console.error(`[wmux-mcp-broker] #${connId} ${msg}`);
   // Before the await below: a socket that closes during it is counted closed.
@@ -216,6 +219,8 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
 }
 
 function main(): void {
+  // Main sends its stamp right after the spawn: listen before any I/O runs.
+  if (process.send) process.on('message', acceptBrokerStamp);
   // This process hosts many agents at once, so a REPL call that arrives without
   // a connection scope must fail rather than fall back to a shared registry.
   setReplBrokerMode();

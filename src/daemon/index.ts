@@ -38,7 +38,8 @@ import { AutomationEngine } from './automation/AutomationEngine';
 import { assertExternalSessionId, registerAutomationRpc } from './automation/rpc';
 import { isTransientTurnFailure, shouldPushTurnFailure } from './automation/transientFailure';
 import { killProcessTree } from './automation/treeKill';
-import { captureProcessTree, matchesRecordedStart, recordedStartOf, treeKillRefusal, type CapturedTree } from './automation/verifiedTreeKill';
+import { captureProcessTree, recordedRootMatcher, recordedStartOf, treeKillRefusal, type CapturedTree } from './automation/verifiedTreeKill';
+import { kernelStartOf } from '../shared/processStartTime';
 import { pendingRemovalRefusalAt } from '../main/worktask/pendingWorktreeRemovals';
 import { recordedRunPtyIds } from './automation/store';
 import { AUTOMATION_EVENT } from '../shared/automation';
@@ -95,7 +96,7 @@ import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
-import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
+import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, readFolderTrust, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import { HOST_WINDOW_RPC, createHostWindowRpc } from './hostWindowRpc';
 import type { TerminalPty } from '../shared/terminalPty';
@@ -1856,27 +1857,32 @@ async function reapIfIdentityConfirmed(opts: {
   cmd: string;
   storedCreatedAtFt?: string;
   storedStartTime?: string;
+  storedStartKernel?: string;
   reason: string;
 }): Promise<boolean> {
   // Windows reads the FILETIME and the executable natively, in one read
   // (#2398); posix keeps `ps -o lstart=` and `ps -o comm=`.
   const win32 = process.platform === 'win32';
-  let now: { currentCreatedAtFt: bigint | null; currentStartTime: string | null; currentGone: boolean; looksLikeOurShell: boolean };
+  let now: { currentCreatedAtFt: bigint | null; currentStartTime: string | null; currentStartKernel?: string | null; currentGone: boolean; looksLikeOurShell: boolean };
   if (win32) {
     now = { ...readWin32ReapIdentity(opts.pid, opts.cmd), currentStartTime: null };
   } else {
+    // Read before and after the start-time read, and kept only when both agree: one process.
+    const kernelBefore = kernelStartOf(opts.pid);
     const [startRead, looksLikeOurShell] = await Promise.all([
       readPosixStartTime(opts.pid),
       // Only consulted when no creation time was recorded, but probing both in
       // parallel keeps the slow path off the critical path of the common case.
       isOurShellProcess(opts.pid, opts.cmd),
     ]);
-    now = { currentCreatedAtFt: null, currentStartTime: startRead.value, currentGone: startRead.gone, looksLikeOurShell };
+    const currentStartKernel = kernelBefore !== null && kernelBefore === kernelStartOf(opts.pid) ? kernelBefore : null;
+    now = { currentCreatedAtFt: null, currentStartTime: startRead.value, currentStartKernel, currentGone: startRead.gone, looksLikeOurShell };
   }
   const { currentCreatedAtFt, currentStartTime, looksLikeOurShell } = now;
   const identity = classifyReapIdentity({
     storedCreatedAtFt: opts.storedCreatedAtFt,
     storedStartTime: opts.storedStartTime,
+    storedStartKernel: opts.storedStartKernel,
     ...now,
   });
   if (identity === 'gone') {
@@ -1892,6 +1898,7 @@ async function reapIfIdentityConfirmed(opts: {
       `[reap] refusing to kill pid ${opts.pid} (${opts.reason}): identity unconfirmed ` +
         `(storedCreatedAtFt=${opts.storedCreatedAtFt ?? 'none'} storedStartTime=${opts.storedStartTime ?? 'none'} ` +
         `currentStartTime=${current ?? 'unknown'} ` +
+        (win32 ? '' : `storedStartKernel=${opts.storedStartKernel ?? 'none'} currentStartKernel=${now.currentStartKernel ?? 'unknown'} `) +
         `looksLikeOurShell=${looksLikeOurShell} cmd=${opts.cmd}) — the pid may belong to another process now`,
     );
     return false;
@@ -2192,6 +2199,7 @@ async function recoverSessions(
           cmd: s.cmd,
           storedCreatedAtFt: s.pidCreatedAtFt,
           storedStartTime: s.pidStartTime,
+          storedStartKernel: s.pidStartKernel,
           reason: `recovery of ${s.id}`,
         }),
       },
@@ -2213,6 +2221,7 @@ async function recoverSessions(
           cmd: session.cmd,
           storedCreatedAtFt: session.pidCreatedAtFt,
           storedStartTime: session.pidStartTime,
+          storedStartKernel: session.pidStartKernel,
           reason: `tombstone reconciliation of session ${session.id}`,
         });
         if (reaped) {
@@ -2234,6 +2243,7 @@ async function recoverSessions(
           cmd: session.cmd,
           storedCreatedAtFt: session.pidCreatedAtFt,
           storedStartTime: session.pidStartTime,
+          storedStartKernel: session.pidStartKernel,
           reason: `scheduled-run session ${session.id} left by a previous daemon`,
         });
       }
@@ -2253,7 +2263,7 @@ async function recoverSessions(
       if (!rebooted && session.state !== 'suspended' && recoverableIds.has(session.id)
         && leftoverReapEligible(session, sameBootProven)) {
         await reapIfIdentityConfirmed({ pid: session.pid, cmd: session.cmd,
-          storedCreatedAtFt: session.pidCreatedAtFt, storedStartTime: session.pidStartTime,
+          storedCreatedAtFt: session.pidCreatedAtFt, storedStartTime: session.pidStartTime, storedStartKernel: session.pidStartKernel,
           reason: `WSL recovery of ${session.id}` });
       }
       session.state = 'suspended';
@@ -2923,7 +2933,7 @@ function registerRpcHandlers(
     const live = p.killTree === true ? sessionManager.getSession(p.id)?.meta : undefined;
     if (live && (live.state === 'attached' || live.state === 'detached') && live.pid > 0) {
       const recorded = recordedStartOf(live);
-      captured = await captureProcessTree(live.pid, { rootIsOurs: (start) => matchesRecordedStart(recorded, start) });
+      captured = await captureProcessTree(live.pid, { rootIsOurs: recordedRootMatcher(live.pid, recorded, (msg) => log('warn', `[tree-kill] ${msg}`), live.pidStartKernel) });
     }
     try {
       sessionManager.destroySession(p.id);
@@ -3129,6 +3139,7 @@ function registerRpcHandlers(
     createSession: createSessionRpc,
     destroySession: destroySessionRpc,
     meta: (id) => sessionManager.getSession(id)?.meta,
+    warn: (msg) => log('warn', msg),
   });
   // Starts the a2a init could not settle before the session RPCs existed.
   void headlessStarterRef?.reconcile();
@@ -8234,7 +8245,7 @@ function wireEvents(
   // and would leave the still-live shell behind — exactly the orphan this fix
   // exists to prevent. Reattaching to the live ConPTY instead of killing it is
   // a separate piece of work (likely an upstream node-pty fix).
-  sessionManager.on('session:phantomExit', (payload: { id: string; pid?: number; pidCreatedAtFt?: string; pidStartTime?: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; raw?: string }) => {
+  sessionManager.on('session:phantomExit', (payload: { id: string; pid?: number; pidCreatedAtFt?: string; pidStartTime?: string; pidStartKernel?: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; raw?: string }) => {
     // `raw` is the verbatim node-pty payload — printed as-is because the
     // native-layer investigation needs the exact shape node-pty produced, not
     // our reading of it.
@@ -8269,6 +8280,7 @@ function wireEvents(
       cmd: payload.cmd ?? '',
       storedCreatedAtFt: payload.pidCreatedAtFt,
       storedStartTime: payload.pidStartTime,
+      storedStartKernel: payload.pidStartKernel,
       reason: `phantom exit of session ${payload.id}`,
     });
   });
@@ -11001,9 +11013,20 @@ async function main(): Promise<void> {
           tasks: {
             pending: () => taskSvc.listRemotePending(),
             remote: () => taskSvc.listRemote(),
+            held: () => taskSvc.listRemoteHeld(),
             get: (taskId) => taskSvc.getTask(taskId),
           },
           mark: (input) => deliveryCall(A2A_REMOTE_RPC.mark, input),
+          rejectHeld: (input) => deliveryCall(A2A_REMOTE_RPC.rejectHeld, input),
+          followUpsDirect: () => a2aSpawnPolicy.get().followUps === 'direct',
+          // Read as the delivery guard reads it (folderTrustState): the folder-trust prompt (also one whose
+          // choices are cut off on a small screen) or another dialog is a question.
+          questionOnScreen: async (sessionId) => {
+            const seen = await readFolderTrust({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, sessionId);
+            if (seen.state === 'trust' || seen.dialog || seen.reason === 'cut-choices') return 'dialog';
+            return seen.state === 'clear' ? 'clear' : 'unknown';
+          },
+          limitHeld: (sessionId) => usageLimits?.holds(sessionId) === true,
           deliver: (sessionId, agent, prompt, authorized, onWrite) => (headlessDeliverRef ? headlessDeliverRef(sessionId, agent, prompt, authorized, onWrite) : Promise.resolve('unavailable')),
           // Its own sessions only (the delivery asks for no other): a no-op once the agent is tracked.
           armAgent: (sessionId) => {

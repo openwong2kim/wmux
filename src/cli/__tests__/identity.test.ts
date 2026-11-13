@@ -154,3 +154,23 @@ describe('resolveSelfContext — pane claim from main\'s walk', () => {
     expect(sendRequest).toHaveBeenCalledWith('a2a.resolve.identity', {});
   });
 });
+
+describe('resolveSelfContext claim refusal', () => {
+  it('carries the reason main gave for not taking the claim, with the client-side walk\'s result', async () => {
+    const deps = makeDeps({
+      sendRequest: vi.fn(async () =>
+        okResponse({ resolved: null, claimRefused: 'other-pid', entries: [{ pid: '1000', ptyId: 'pty-self', workspaceId: 'ws-self' }] }),
+      ),
+      ppid: 1000,
+      callerPid: 2000,
+    });
+    expect(await resolveSelfContext(deps)).toEqual({ ptyId: 'pty-self', workspaceId: 'ws-self', claimRefused: 'other-pid' });
+  });
+
+  it('carries the reason when the walk finds nothing, and ignores a reason it does not know', async () => {
+    const refused = makeDeps({ sendRequest: vi.fn(async () => okResponse({ entries: [], claimRefused: 'no-peer' })) });
+    expect(await resolveSelfContext(refused)).toEqual({ claimRefused: 'no-peer' });
+    const unknown = makeDeps({ sendRequest: vi.fn(async () => okResponse({ entries: [], claimRefused: 'made-up' })) });
+    expect(await resolveSelfContext(unknown)).toEqual({});
+  });
+});

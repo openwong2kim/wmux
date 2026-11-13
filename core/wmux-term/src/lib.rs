@@ -66,6 +66,14 @@ mod edit_parity;
 mod charset_parity;
 
 #[cfg(all(
+    test,
+    feature = "native-core",
+    feature = "bindings",
+    not(target_arch = "wasm32")
+))]
+mod soft_reset_parity;
+
+#[cfg(all(
     feature = "native-core",
     feature = "bindings",
     not(target_arch = "wasm32")

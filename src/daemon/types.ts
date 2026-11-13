@@ -69,6 +69,14 @@ export interface DaemonSession {
    * written before this field existed. Consumers must degrade, not guess.
    */
   pidStartTime?: string;
+  /**
+   * POSIX: the shell's start as the kernel keeps it, bound to the boot
+   * (shared/processStartTime kernelStartOf: `<boot id>:<start>`), recorded
+   * with `pidStartTime`. A clock step moves `pidStartTime`'s text, not this,
+   * so matches compare it first when both sides have one. Optional and
+   * additive: absent from older records, ignored by older readers.
+   */
+  pidStartKernel?: string;
   cmd: string;              // executed command
   wslTarget?: WslTarget;
   /** Recoverable WSL launch failure; preserve identity and scrollback until retry. */

@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../shared/constants';
 import { getConnectionScope } from './connectionScope';
+import { brokerStampFor } from './brokerStamp';
 
 /**
  * Default per-call RPC deadline. Every tool gets this unless it asks for
@@ -35,6 +36,21 @@ let CLIENT_VERSION: string | undefined;
 // instead of these module globals, so N hosted server instances cannot
 // stamp each other's plugin identity onto outbound RPC envelopes. The
 // single-child entry never establishes a scope and keeps the globals.
+
+/**
+ * The broker's stamp for a call sent to `target`, or undefined. Only on this
+ * instance's own socket (getPipeName): main reads it on the broker's own
+ * connection there, never over TCP, and Windows reads no peer for it to count
+ * against. A WMUX_SOCKET_PATH inherited from another instance never gets it.
+ */
+export function brokerStampForTarget(
+  target: string | { host: string; port: number },
+  method: string,
+  params: Record<string, unknown>,
+): string | undefined {
+  if (typeof target !== 'string' || process.platform === 'win32' || target !== getPipeName()) return undefined;
+  return brokerStampFor(method, params);
+}
 
 export function setClientIdentity(name?: string, version?: string): void {
   const trimmedName = typeof name === 'string' ? name.trim() : '';
@@ -292,6 +308,8 @@ function attemptRpc(
     if (callerPtyId !== undefined) envelope.callerPtyId = callerPtyId;
     const mcpSession = getMcpSessionId();
     if (mcpSession !== undefined) envelope.mcpSession = mcpSession;
+    const brokerStamp = brokerStampForTarget(target, method, params);
+    if (brokerStamp !== undefined) envelope.brokerStamp = brokerStamp;
     const request = JSON.stringify(envelope) + '\n';
 
     const socket = typeof target === 'string' ? net.connect(target) : net.connect(target);
@@ -373,6 +391,7 @@ export async function sendRpc(
   }
 
   // Try WMUX_SOCKET_PATH first (if set), then fall back to getPipeName().
+  // (brokerStampForTarget puts the broker's stamp only on the latter.)
   // Claude Code may cache a stale WMUX_SOCKET_PATH from a previous session,
   // so we must fall back to the derived name if the env path fails.
   const envPath = process.env.WMUX_SOCKET_PATH;

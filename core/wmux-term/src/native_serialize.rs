@@ -5,7 +5,7 @@ use alacritty_terminal::grid::{Dimensions, Grid, Row};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::term::{Term, TermMode};
-use alacritty_terminal::vte::ansi::{Color, NamedColor};
+use alacritty_terminal::vte::ansi::{CharsetIndex, Color, NamedColor, StandardCharset};
 use std::fmt::Write;
 
 /// The rendition `style` gives a default cell.
@@ -352,8 +352,13 @@ pub(crate) fn sequence_len(data: &[u8]) -> Option<usize> {
 
 /// A C1 control as a UTF-8 code point: xterm executes it, Alacritty prints it.
 pub(crate) fn has_c1(data: &[u8]) -> bool {
+    c1_at(data).is_some()
+}
+
+/// Where the first C1 control (as a UTF-8 code point) starts in `data`.
+pub(crate) fn c1_at(data: &[u8]) -> Option<usize> {
     data.windows(2)
-        .any(|pair| pair[0] == 0xc2 && (0x80..=0x9f).contains(&pair[1]))
+        .position(|pair| pair[0] == 0xc2 && (0x80..=0x9f).contains(&pair[1]))
 }
 
 /// A parameter as xterm reads it: empty is 0, anything else not a number.
@@ -410,40 +415,115 @@ fn sgr_divergent(params: &str) -> bool {
     false
 }
 
+/// An escape vte does not run as xterm.js does, which the feed applies itself
+/// (native_core.rs `run_like_xterm`), in its plain spelling only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum XtermControl {
+    /// LS2 `ESC n`, LS3 `ESC o`, LS3R `ESC |`, LS2R `ESC }`, LS1R `ESC ~`:
+    /// xterm's setgLevel (vte has none of them).
+    Shift(CharsetIndex),
+    /// `ESC % @` and `ESC % G`: xterm's selectDefaultCharset, ASCII in G0 and
+    /// G0 shifted in.
+    DefaultCharset,
+    /// `ESC -` and `ESC .` with `B` or `0`: xterm designates G1 and G2 (vte
+    /// only designates through `(` to `+`).
+    Designate(CharsetIndex, StandardCharset),
+    /// DECSTR `CSI ! p`: xterm's softReset (vte has none).
+    SoftReset,
+}
+
+/// The control `sequence` spells exactly, if it is one the feed runs itself.
+pub(crate) fn xterm_control(sequence: &[u8]) -> Option<XtermControl> {
+    let charset = |final_byte: u8| match final_byte {
+        b'B' => Some(StandardCharset::Ascii),
+        b'0' => Some(StandardCharset::SpecialCharacterAndLineDrawing),
+        _ => None,
+    };
+    Some(match sequence.strip_prefix(b"\x1b")? {
+        b"n" | b"}" => XtermControl::Shift(CharsetIndex::G2),
+        b"o" | b"|" => XtermControl::Shift(CharsetIndex::G3),
+        b"~" => XtermControl::Shift(CharsetIndex::G1),
+        b"%@" | b"%G" => XtermControl::DefaultCharset,
+        [b'-', last] => XtermControl::Designate(CharsetIndex::G1, charset(*last)?),
+        [b'.', last] => XtermControl::Designate(CharsetIndex::G2, charset(*last)?),
+        b"[!p" => XtermControl::SoftReset,
+        _ => return None,
+    })
+}
+
+/// `sequence` without the C0 controls inside it, which execute and are not
+/// part of it (rare); None when it has none.
+fn without_c0(sequence: &[u8]) -> Option<Vec<u8>> {
+    sequence[1..].iter().any(|&b| b < 0x20).then(|| {
+        sequence[..1]
+            .iter()
+            .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
+            .copied()
+            .collect()
+    })
+}
+
+/// IND, NEL, ED 1/2 or a control in `xterm_control`, spelled without C0:
+/// the feed gives these xterm's semantics only in their plain spelling.
+fn run_by_the_feed(plain: &[u8]) -> bool {
+    let body = &plain[1..];
+    body == b"D"
+        || body == b"E"
+        || (body.first() == Some(&b'[') && body.last() == Some(&b'J'))
+        || xterm_control(plain).is_some()
+}
+
 /// Controls whose parse differs between Alacritty and xterm, so a replay of
 /// Alacritty's grid cannot match xterm's (RustAnsiParity.test.ts measures
-/// each): charset designators other than ASCII and DEC line drawing (`0`)
-/// into G0/G1, selective erase, SL/SR,
-/// DECIC/DECDC, DECSTR, SD spelled `CSI ^` (vte ignores it), ED 1/2
-/// spelled other than `CSI 1 J` / `CSI 2 J`, the modes 9, 20, 45, 47, 66,
-/// 1047 and 1048, SGR 21/53 or malformed colors, and IND/NEL with a C0
-/// control inside (the feed gives xterm's `index` only to their plain
-/// spelling). `sequence` is complete.
+/// each): a designation into G0-G3 other than ASCII or DEC line drawing,
+/// selective erase, SL/SR, DECIC/DECDC, DECSTR with parameters, SD spelled
+/// `CSI ^` (vte ignores it), ED 1/2 spelled other than `CSI 1 J` /
+/// `CSI 2 J`, the modes 2, 9, 20, 45, 47, 66, 1047 and 1048, SGR 21/53 or
+/// malformed colors, and a control the feed runs as xterm does
+/// (`run_by_the_feed`) with a C0 control inside. `sequence` is complete.
 pub(crate) fn divergent(sequence: &[u8]) -> bool {
-    // C0 controls inside a sequence execute and are not part of it (rare).
-    let filtered: Vec<u8>;
-    let mut body = &sequence[1..];
-    if body.iter().any(|&b| b < 0x20) {
-        filtered = body.iter().copied().filter(|&b| b >= 0x20).collect();
-        body = &filtered;
-        // The feed gives ED xterm's semantics only in its plain spelling.
-        if body.first() == Some(&b'[') && body.last() == Some(&b'J') {
-            return true;
-        }
-        // Nor IND and NEL xterm's `index` semantics (native_core.rs).
-        if body == b"D" || body == b"E" {
-            return true;
-        }
+    let filtered = without_c0(sequence);
+    if filtered.as_deref().is_some_and(run_by_the_feed) {
+        return true;
     }
-    match body.split_first() {
+    let body = filtered.as_deref().unwrap_or(sequence);
+    match body[1..].split_first() {
         Some((b'[', rest)) => csi_divergent(rest),
-        // G0/G1 as ASCII or DEC line drawing replay alike; other national
-        // sets are not parsed by vte, and G2/G3 have no shift in it.
-        Some((b'(' | b')', rest)) => rest != b"B" && rest != b"0",
-        Some((b'*' | b'+' | b'-' | b'.' | b'/', _)) => true,
+        // ASCII and DEC line drawing replay alike in G0-G3 (vte designates
+        // through `(` to `+`, the feed `-` and `.`). Any other final is
+        // refused: the national sets in xterm's table are not in vte's.
+        // xterm skips `/`.
+        Some((b'(' | b')' | b'*' | b'+' | b'-' | b'.', rest)) => rest != b"B" && rest != b"0",
         // DECALN: Alacritty fills the screen but leaves the cursor in place.
         Some((b'#', rest)) => rest == b"8",
         _ => false,
+    }
+}
+
+/// The refusal a divergent `sequence` is reported as. Its family (the
+/// `unsupported-state-*` token before the colon) is the key the daemon counts
+/// fallbacks under (`wmux doctor --performance`), so the controls that send
+/// panes to the xterm path can be told apart.
+pub(crate) fn refusal(sequence: &[u8]) -> &'static str {
+    let filtered = without_c0(sequence);
+    if filtered.as_deref().is_some_and(run_by_the_feed) {
+        return "unsupported-state-c0-inside: a C0 control inside a control the snapshot runs as xterm does";
+    }
+    let body = filtered.as_deref().unwrap_or(sequence);
+    match body[1..].split_first() {
+        Some((b'(' | b')' | b'*' | b'+' | b'-' | b'.', _)) => {
+            "unsupported-state-charset: a character set other than ASCII or DEC line drawing"
+        }
+        Some((b'#', _)) => "unsupported-state-decaln: DECALN",
+        Some((b'[', rest)) => match rest.last() {
+            Some(b'h' | b'l') => "unsupported-state-mode: a mode Alacritty sets differently",
+            Some(b'm') => "unsupported-state-sgr: an SGR attribute or color Alacritty reads differently",
+            Some(b'J' | b'K') => "unsupported-state-erase: selective erase, or ED spelled other than CSI 1 J / CSI 2 J",
+            Some(b'b') => "unsupported-state-rep: REP after a control",
+            Some(b'p') => "unsupported-state-decstr: DECSTR with parameters",
+            _ => "unsupported-state-csi: SL, SR, DECIC, DECDC or SD spelled CSI ^",
+        },
+        _ => "unsupported-state-esc: an escape Alacritty parses differently",
     }
 }
 
@@ -463,14 +543,17 @@ fn csi_divergent(rest: &[u8]) -> bool {
     let params = std::str::from_utf8(params).unwrap_or("");
     match (private, intermediates, last) {
         (Some(b'?'), b"", b'J' | b'K') => true,
-        (None, b" ", b'@' | b'A') | (None, b"'", b'}' | b'~') | (None, b"!", b'p') => true,
+        (None, b" ", b'@' | b'A') | (None, b"'", b'}' | b'~') => true,
+        // The feed runs DECSTR itself, spelled without parameters.
+        (None, b"!", b'p') => !params.is_empty(),
         // vte does not dispatch SD spelled `CSI ^`, which xterm runs.
         (None, b"", b'^') => true,
         (Some(b'?'), b"", b'h' | b'l') => {
             let mut modes = params.split(';').map(number);
             // vte leaves a synchronized update only on exactly `CSI ? 2026 l`.
+            // xterm's DECSET 2 (DECANM) puts ASCII in G0-G3; vte ignores it.
             params != "2026" && modes.clone().any(|mode| mode == Some(2026))
-                || modes.any(|mode| matches!(mode, Some(3 | 9 | 45 | 66 | 47 | 1047 | 1048)))
+                || modes.any(|mode| matches!(mode, Some(2 | 3 | 9 | 45 | 66 | 47 | 1047 | 1048)))
         }
         (None, b"", b'h' | b'l') => params.split(';').any(|mode| number(mode) == Some(20)),
         (None, b"", b'J') => {
@@ -609,6 +692,10 @@ mod tests {
             "\x1b[5 q\x1b[>0q\x1b[1q\x1b[1\"q",
             "\x1b(B\x1b)B",
             "\x1b(0\x1b)0",
+            // G2/G3 as ASCII or DEC line drawing, and `ESC /`, which xterm
+            // skips (the feed runs `-`, `.`, the locking shifts, `ESC %` and
+            // DECSTR itself: xterm_control).
+            "\x1b*0\x1b+B\x1b/A",
             "\x1b[55m\x1b[5m",
             "\x1b[38;5;53m\x1b[48;2;53;55;6m\x1b[38:2::53:55:5m",
             "\x1b[?1049h\x1b[?2004h\x1b[?1006h\x1b[4h\x1b[0J\x1b[J\x1b[3J",
@@ -624,17 +711,24 @@ mod tests {
     fn divergent_controls_stay_on_xterm() {
         for text in [
             "\x1b(A",
+            "\x1b)=",
+            "\x1b(X",
             "\x1b(%5",
-            "\x1b*0",
-            "\x1b+B",
+            "\x1b*K",
+            "\x1b+7",
             "\x1b-A",
+            "\x1b.R",
+            "\x1b\x07n",
+            "\x1b%\x00G",
+            "\x1b.\x070",
+            "\x1b[!\x07p",
             "\x1b[?2J",
             "\x1b[?K",
             "\x1b[2 @",
             "\x1b[ A",
             "\x1b[2'}",
             "\x1b['~",
-            "\x1b[!p",
+            "\x1b[1!p",
             "\x1b[20h",
             "\x1b[?9h",
             "\x1b[?1;45h",
@@ -653,6 +747,8 @@ mod tests {
             "\x1b[38;7;1m",
             "\x1b[?3h",
             "\x1b[?3l",
+            "\x1b[?2h",
+            "\x1b[?1;2l",
             "\x1b[?2026;1l",
             "\x1b[?1;2026h",
             "\x1b[1^",

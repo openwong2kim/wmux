@@ -83,6 +83,14 @@ or flags, and main checks each against what it can observe itself (the live
 process table, live panes, the thread owner index, the daemon's agent
 tracking) before it mints a claim.
 
+On macOS and Linux, main takes a process id as the caller's own only from the
+process at the other end of the pipe connection (as the OS reports it, with
+its start time unchanged), or from the MCP broker main started, on a call the
+broker vouches for. A claim it does not take mints nothing, and `wmux doctor`
+counts it by reason. On macOS a process running as another OS user is always
+refused: main cannot read its start time. `wmux browser` and `wmux open` say
+why when main gives the reason.
+
 **Out of scope.** Code running as the same OS user that speaks the pipe
 protocol directly. Such code can already read the pipe token, other
 processes, and browser profiles (§3), so it is not confined by this boundary.

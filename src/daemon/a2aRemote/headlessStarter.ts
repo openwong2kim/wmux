@@ -83,7 +83,7 @@ export interface HeadlessSessionPort {
   /** The agent's launcher on the PATH the daemon runs agents with; null when it is not there. */
   resolveAgent(agent: AgentSlug): Promise<string | null>;
   /** Start the session; its process (pid and start time, waited for briefly) so it can be found again after a restart. */
-  create(input: HeadlessSessionInput): Promise<{ rootPid?: number; rootStart?: string }>;
+  create(input: HeadlessSessionInput): Promise<{ rootPid?: number; rootStart?: string; rootStartKernel?: string }>;
   /** The session exists and its process runs. */
   alive(sessionId: string): boolean;
   /**
@@ -97,7 +97,7 @@ export interface HeadlessSessionPort {
    * when it started: ended with its tree when it still runs (a pid that now
    * names another process is left alone); what did not exit is reported.
    */
-  killEarlier(rootPid: number, rootStart: string | undefined): Promise<HeadlessDestroyResult>;
+  killEarlier(rootPid: number, rootStart: string | undefined, rootStartKernel?: string): Promise<HeadlessDestroyResult>;
   /**
    * Of processes an earlier destroy left, the ones that may still run. An
    * unverified entry (a tree that could not be checked whole) stays until a
@@ -343,7 +343,7 @@ export class A2aHeadlessStarter {
       for (const s of survivors) {
         try {
           // eslint-disable-next-line no-await-in-loop -- one at a time
-          const res = await sessions.killEarlier(s.pid, s.startTime);
+          const res = await sessions.killEarlier(s.pid, s.startTime, s.startKernel);
           if (!res.ok) left.push(...res.survivors);
         } catch {
           left.push(s);
@@ -405,7 +405,7 @@ export class A2aHeadlessStarter {
 
   /** An agent of an earlier daemon run is not in its session any more: found by its own pid and start time. */
   private async endEarlierRun(rec: HeadlessStartRecordV1, sessions: HeadlessSessionPort): Promise<HeadlessDestroyResult> {
-    return rec.runId !== this.deps.runId && rec.rootPid !== undefined ? sessions.killEarlier(rec.rootPid, rec.rootStart) : { ok: true };
+    return rec.runId !== this.deps.runId && rec.rootPid !== undefined ? sessions.killEarlier(rec.rootPid, rec.rootStart, rec.rootStartKernel) : { ok: true };
   }
 
   /** End the session; when processes of its tree did not exit, they are recorded and this throws (reconcile tries again). */
@@ -531,6 +531,7 @@ export class A2aHeadlessStarter {
         phase: 'created',
         ...(root.rootPid !== undefined ? { rootPid: root.rootPid } : {}),
         ...(root.rootStart ? { rootStart: root.rootStart } : {}),
+        ...(root.rootStartKernel ? { rootStartKernel: root.rootStartKernel } : {}),
       });
     } catch (err) {
       return undo('failed', `the session did not start: ${errMsg(err)}`);

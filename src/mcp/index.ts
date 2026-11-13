@@ -1124,7 +1124,8 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   // Provenance: main correlates from the LIVE process table, starting at the
   // pid we send (ctx.callerPid). Where main reads the connection's peer
   // (macOS, Linux), it takes that pid only from the process itself or from the
-  // broker main spawned (main/pipe/handlers/peerPidShadow.ts). The channel
+  // broker main spawned, on a call the broker stamped (brokerStamp.ts,
+  // main/pipe/handlers/peerPidShadow.ts). The channel
   // sender gate treats MY_PTY_ID as a reliability mechanism.
   if (
     resolved &&
