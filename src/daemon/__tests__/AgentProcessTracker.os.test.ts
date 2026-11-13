@@ -1213,7 +1213,7 @@ describe.skipIf(process.platform === 'win32')('the real executable backs the age
     // A script that only looks like the agent, a missing one, a relative one.
     expect(isAgentImage(entry(200, 100, 'node', `node ${lookalike}`), 'claude', NODE, HOME)).toBe(false);
     expect(isAgentImage(entry(200, 100, 'node', 'node /tmp/claude.js'), 'claude', NODE, HOME)).toBe(false);
-    expect(isAgentImage(entry(200, 100, 'node', 'node ./cli.js'), 'claude', NODE, HOME)).toBe(false);
+    expect(isAgentImage(entry(200, 100, 'node', 'node node_modules/.bin/claude'), 'claude', NODE, HOME)).toBe(false);
     // The image is no runtime.
     expect(isAgentImage(entry(200, 100, 'node', `node ${claudeBin}`), 'claude', '/bin/sleep', HOME)).toBe(false);
   });
@@ -1321,6 +1321,51 @@ describe.skipIf(process.platform === 'win32')('the real executable backs the age
     installed.arm('s1', 100);
     await flush();
     expect(await installed.verifyLive('s1', 'claude')).toBe(true);
+  });
+
+  // A delivery asks about the agent the tracker attributes; where its binary
+  // lives is no reason to refuse it. The pid, its slug and its place under
+  // the pane are still read from a fresh table.
+  it('the delivery liveness check accepts an attributed agent wherever it is installed', async () => {
+    const live = async (table: ProcessTreeEntry[], image: string | undefined, home = HOME) => {
+      const t = new AgentProcessTracker(makeWatcher(), async () => table, async () => image, home, {}, 'darwin');
+      t.arm('s1', 100);
+      await flush();
+      return {
+        byImage: await t.isAgentRunning('s1', 'claude', async () => true),
+        delivery: await t.isAgentRunning('s1', 'claude', async () => true, { byImage: false }),
+      };
+    };
+    // npm -g, started through its bin link: passes both ways.
+    expect(await live([entry(100, 1, 'zsh'), entry(200, 100, 'node', `node ${claudeBin}`)], NODE))
+      .toEqual({ byImage: true, delivery: true });
+    // A project-local install started by a relative path:
+    // the image rule cannot resolve it.
+    expect(await live([entry(100, 1, 'zsh'), entry(200, 100, 'node', 'node node_modules/.bin/claude')], NODE))
+      .toEqual({ byImage: false, delivery: true });
+    // Homebrew cask: /opt/homebrew/bin/claude → Caskroom/claude-code/<version>/claude.
+    expect(await live([entry(100, 1, 'zsh'), entry(200, 100, 'claude', 'claude')], '/opt/homebrew/Caskroom/claude-code/2.1.322/claude'))
+      .toEqual({ byImage: true, delivery: true });
+    // The native installer's version binary under a HOME other than the daemon's.
+    const other = '/Users/second/.local/share/claude/versions/2.1.322';
+    expect(await live([entry(100, 1, 'zsh'), entry(200, 100, 'claude', 'claude')], other))
+      .toEqual({ byImage: false, delivery: true });
+    // An image that cannot be read (lsof timed out, or the version was deleted by an update).
+    expect(await live([entry(100, 1, 'zsh'), entry(200, 100, 'claude', 'claude')], undefined))
+      .toEqual({ byImage: false, delivery: true });
+    // Still refused: the pid now runs another agent, or is gone from the table.
+    expect(await live([entry(100, 1, 'zsh'), entry(200, 100, 'codex', 'codex')], NODE))
+      .toEqual({ byImage: false, delivery: false });
+  });
+
+  it('the delivery check still refuses a pid that left the pane or a stopped agent', async () => {
+    const table = [entry(100, 1, 'zsh'), entry(200, 100, 'claude', 'claude')];
+    const t = new AgentProcessTracker(makeWatcher(), async () => table, async () => undefined, HOME, {}, 'darwin');
+    t.arm('s1', 100);
+    await flush();
+    expect(await t.isAgentRunning('s1', 'claude', async () => false, { byImage: false })).toBe(false);
+    table[1] = entry(200, 1, 'claude', 'claude');
+    expect(await t.isAgentRunning('s1', 'claude', async () => true, { byImage: false })).toBe(false);
   });
 
   it('an exec pane\'s own root is checked the same way', async () => {

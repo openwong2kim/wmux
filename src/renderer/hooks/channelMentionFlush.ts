@@ -265,6 +265,45 @@ export interface FlushMentionDeps {
    *  counts the renderer's paste instead of double-pasting). Best-effort:
    *  a throw here must not affect delivery bookkeeping. */
   onNudgeDelivered?: (ptyId: string, tasks: Task[]) => void;
+  /** The clock for the refusal back-off (tests). */
+  now?: () => number;
+}
+
+/** deliverNudge's rejection when main refused the nudge before submitting it. */
+export class MentionNudgeRefused extends Error {
+  constructor(readonly reason: string, detail: string) {
+    super(`mention nudge not submitted (${reason}): ${detail}`);
+  }
+}
+
+/** The first retry of a refused nudge, and the longest wait between retries. */
+export const MENTION_RETRY_MIN_MS = 1_000;
+export const MENTION_RETRY_MAX_MS = 30_000;
+
+/**
+ * Panes whose last nudge was refused. Each delivery is a daemon check (a
+ * process-table read, a screen parse), and a refusal can stand for hours (a
+ * draft left in the composer), so a pane is retried after a delay that doubles
+ * up to MENTION_RETRY_MAX_MS, and its refusal is logged once per reason. The
+ * pane's Stop, or a refusal for another reason, starts over.
+ */
+const refusedPanes = new Map<string, { reason: string; delayMs: number; retryAt: number }>();
+
+/** Drop a pane's back-off (its agent stopped: the next flush tries at once). */
+export function resetMentionBackoff(ptyId?: string): void {
+  if (ptyId === undefined) refusedPanes.clear();
+  else refusedPanes.delete(ptyId);
+}
+
+function noteRefusal(ptyId: string, err: unknown, now: number): void {
+  const reason = err instanceof MentionNudgeRefused ? err.reason : 'error';
+  const prev = refusedPanes.get(ptyId);
+  const same = prev?.reason === reason;
+  const delayMs = same ? Math.min(prev.delayMs * 2, MENTION_RETRY_MAX_MS) : MENTION_RETRY_MIN_MS;
+  refusedPanes.set(ptyId, { reason, delayMs, retryAt: now + delayMs });
+  // A silent failure here reads as "the agent never answered" (Claude+GLM
+  // review): logged, once per pane and reason.
+  if (!same) console.warn(`[channelMentionFlush] nudge delivery failed for pty ${ptyId}:`, err);
 }
 
 export interface FlushOpts {
@@ -314,7 +353,12 @@ export async function flushMentions(
     else byPty.set(ptyId, [task]);
   }
   const delivered: string[] = [];
+  const now = deps.now ?? Date.now;
+  // The pane's own Stop is a new state: try it now.
+  if (opts.onlyPtyId) refusedPanes.delete(opts.onlyPtyId);
   for (const [ptyId, group] of byPty) {
+    const refused = refusedPanes.get(ptyId);
+    if (refused && now() < refused.retryAt) continue;
     // A5: rate-BOUND the auto-nudge if this pane has been nudged too often
     // lately. This caps the RATE (not a hard stop) — once the burst subsides the
     // window clears and auto-nudges resume; a true per-message chain depth isn't
@@ -333,6 +377,7 @@ export async function flushMentions(
     for (const t of group) mentionsInFlight.add(t.id);
     try {
       await deps.deliverNudge(ptyId, nudge, mentionRefsOf(group));
+      refusedPanes.delete(ptyId);
       deps.recordNudge?.(ptyId); // count this nudge toward the per-pane cap (A5)
       // Mark ONLY after a successful paste — a throw above retries next Stop.
       for (const t of group) {
@@ -347,11 +392,10 @@ export async function flushMentions(
         console.warn(`[channelMentionFlush] onNudgeDelivered hook failed for pty ${ptyId}:`, hookErr);
       }
     } catch (err) {
-      // Best-effort: a bad pty must not abort other panes' delivery. Log for
-      // observability — a silent failure here reads as "the agent never
-      // answered" with no breadcrumb (Claude+GLM review). The task stays
-      // unmarked, so the next Stop retries it.
-      console.warn(`[channelMentionFlush] nudge delivery failed for pty ${ptyId}:`, err);
+      // Best-effort: a bad pty must not abort other panes' delivery. The task
+      // stays unmarked, so a later flush (after the back-off) or the next Stop
+      // retries it.
+      noteRefusal(ptyId, err, now());
     } finally {
       for (const t of group) mentionsInFlight.delete(t.id);
     }

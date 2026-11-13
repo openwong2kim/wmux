@@ -70,17 +70,24 @@ export async function deliveryPresence(
   const readFrame = async (): Promise<DeliveryFrame | null> => (frame === undefined ? (frame = await deps.frame(id).catch(() => null)) : frame);
   // At the Enter, a refusal says whether the frame still shows this
   // delivery's paste: only then may main take it back.
-  const refuse = async (reason: DeliveryPresenceReason): Promise<DeliveryPresence> =>
-    check.phase === 'enter' && check.shownProbe ? none(reason, frameShowsPaste(await readFrame(), check.shownProbe)) : none(reason);
-
   const session = id ? deps.session(id) : undefined;
   if (!session) return none('no-session');
+
+  const shown = async (): Promise<boolean | undefined> =>
+    check.phase === 'enter' && check.shownProbe ? frameShowsPaste(await readFrame(), check.shownProbe) : undefined;
+  const refuse = async (reason: DeliveryPresenceReason): Promise<DeliveryPresence> => none(reason, await shown());
+  // A yes at the Enter says it too: a guard that refuses the Enter after this
+  // answer takes the paste back only on it.
+  const pass = async (tier: 'process' | 'screen', slug: AgentSlug, input: 'full' | 'pointer'): Promise<DeliveryPresence> => {
+    const pasteShown = await shown();
+    return { tier, slug, input, bracketedPaste: session.bracketedPaste, ...(pasteShown !== undefined ? { pasteShown } : {}) };
+  };
 
   /** A verified agent process: the composer decides what may be typed. */
   const verified = async (tier: 'process' | 'screen', slug: AgentSlug): Promise<DeliveryPresence> => {
     if (!hasPlainPrompt(slug)) {
       // No known plain prompt: wmux's own pointer line, on the process tier only.
-      return tier === 'process' ? { tier, slug, input: 'pointer', bracketedPaste: session.bracketedPaste } : refuse('no-screen-proof');
+      return tier === 'process' ? pass(tier, slug, 'pointer') : refuse('no-screen-proof');
     }
     const current = await readFrame();
     const read = readComposer(current, slug, check.phase);
@@ -88,7 +95,7 @@ export async function deliveryPresence(
     if (read.verdict === 'busy') return refuse('composer-busy');
     if (read.verdict !== 'plain') return refuse('composer-unknown');
     if (tier === 'screen' && !(current && cursorInComposer(current, read))) return refuse('no-screen-proof');
-    return { tier, slug, input: 'full', bracketedPaste: session.bracketedPaste };
+    return pass(tier, slug, 'full');
   };
 
   // An exec unit whose root is verified to be the named agent.
@@ -122,4 +129,30 @@ export async function deliveryPresence(
   if (!slug) return refuse('no-screen-proof');
   if (expectAgent && slug !== expectAgent) return refuse('other-agent');
   return verified('screen', slug);
+}
+
+/** Who wrote a prompt the daemon types: the owner (a schedule, an automation
+ *  run), wmux itself (a fixed line of words and ids), or a peer (another PC). */
+export type PromptAuthor = 'owner' | 'wmux' | 'peer';
+
+/**
+ * A daemon-typed prompt's answer from the presence check. A peer's text needs
+ * the agent's plain prompt on screen (`full`); the owner's own prompt, or
+ * wmux's own line, also goes to an agent wmux has no plain-prompt reader for,
+ * on the process tier, as before. A refusal is `unavailable` when there is no
+ * agent to deliver to, else `busy`: one that may take it later.
+ */
+export function promptGrant(presence: DeliveryPresence, author: PromptAuthor): true | 'busy' | 'unavailable' {
+  if (presence.tier !== 'none') return presence.input === 'full' || author !== 'peer' ? true : 'busy';
+  switch (presence.reason) {
+    case 'not-foreground':
+    case 'foreground-unknown':
+    case 'attribution-pending':
+    case 'composer-mode':
+    case 'composer-busy':
+    case 'composer-unknown':
+      return 'busy';
+    default:
+      return 'unavailable';
+  }
 }

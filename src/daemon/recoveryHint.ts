@@ -203,7 +203,3 @@ const COMPOSER_AT_BOTTOM = {
 
 /** An agent whose live chrome the recovered-pane screen read knows. */
 export type ScreenReadAgent = keyof typeof COMPOSER_AT_BOTTOM;
-
-export function isScreenReadAgent(slug: string): slug is ScreenReadAgent {
-  return Object.hasOwn(COMPOSER_AT_BOTTOM, slug);
-}

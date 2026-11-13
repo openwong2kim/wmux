@@ -6,7 +6,7 @@
 // the cursor on it) in plain input mode, else none. The frames are Claude Code
 // 2.1.322 and Codex rows as read from a live pane.
 import { describe, expect, it } from 'vitest';
-import { deliveryPresence, type DeliveryPresenceDeps, type PresenceSession } from '../deliveryPresence';
+import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PresenceSession } from '../deliveryPresence';
 import type { DeliveryFrame } from '../deliveryComposer';
 
 const RULE = '─'.repeat(57);
@@ -68,7 +68,9 @@ describe('deliveryPresence: the process tier', () => {
   it('a draft holds at the paste; at the Enter the prompt holds our paste and passes', async () => {
     const d = deps({ frame: async () => frame(CLAUDE_DRAFT) });
     expect(await deliveryPresence(d, 'p', 'claude')).toEqual({ tier: 'none', reason: 'composer-busy' });
-    expect(await deliveryPresence(d, 'p', 'claude', { phase: 'enter', shownProbe: 'half a thought' })).toEqual(FULL);
+    // At the Enter a yes also says whether our paste is in the composer.
+    expect(await deliveryPresence(d, 'p', 'claude', { phase: 'enter', shownProbe: 'half a thought' })).toEqual({ ...FULL, pasteShown: true });
+    expect(await deliveryPresence(d, 'p', 'claude', { phase: 'enter', shownProbe: 'not there' })).toEqual({ ...FULL, pasteShown: false });
   });
 
   it('a frame that cannot be read is composer-unknown', async () => {
@@ -145,5 +147,21 @@ describe('deliveryPresence at the Enter', () => {
       .toEqual({ tier: 'none', reason: 'agent-ended', pasteShown: true });
     expect(await deliveryPresence(deps({ ...ended, frame: async () => frame(['user@host ~ % '], 0) }), 'p', 'claude', { phase: 'enter', shownProbe: '[wmux] A2A task t-1' }))
       .toEqual({ tier: 'none', reason: 'agent-ended', pasteShown: false });
+  });
+});
+
+describe('promptGrant: a daemon-typed prompt, by its author', () => {
+  const POINTER = { tier: 'process', slug: 'gemini', input: 'pointer', bracketedPaste: true } as const;
+  it("the owner's prompt and wmux's own line go to an agent with no plain-prompt reader; a peer's text waits", () => {
+    expect(promptGrant(POINTER, 'owner')).toBe(true);
+    expect(promptGrant(POINTER, 'wmux')).toBe(true);
+    expect(promptGrant(POINTER, 'peer')).toBe('busy');
+    expect(promptGrant({ ...FULL, tier: 'process', slug: 'claude', input: 'full' } as const, 'peer')).toBe(true);
+  });
+
+  it('a refusal is unavailable without an agent, busy while one may take it later', () => {
+    expect(promptGrant({ tier: 'none', reason: 'agent-ended' }, 'owner')).toBe('unavailable');
+    expect(promptGrant({ tier: 'none', reason: 'composer-busy' }, 'owner')).toBe('busy');
+    expect(promptGrant({ tier: 'none', reason: 'foreground-unknown' }, 'wmux')).toBe('busy');
   });
 });

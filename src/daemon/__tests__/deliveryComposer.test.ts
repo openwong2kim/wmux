@@ -32,6 +32,15 @@ describe('Claude Code', () => {
     expect(readComposer(null, 'claude', 'paste').verdict).toBe('unknown');
   });
 
+  it('only the composer and the rows under it decide: a transcript quoting a dialog or a mode is not the state', () => {
+    const quoted = ['  Esc to cancel', '  ! for shell mode', 'Do you want to proceed?', '❯ 1. Yes', '  2. No'];
+    expect(readComposer(f([...quoted, RULE, '❯\u00a0', RULE, '  ? for shortcuts']), 'claude', 'paste').verdict).toBe('plain');
+    // At the Enter the composer holds our paste, which may quote such words itself.
+    expect(readComposer(f([RULE, '❯\u00a0press Esc to cancel', '  # to memorize', RULE]), 'claude', 'enter').verdict).toBe('plain');
+    // A real dialog under the composer still refuses.
+    expect(readComposer(f([RULE, '❯\u00a0', RULE, 'Esc to cancel']), 'claude', 'paste').verdict).toBe('mode');
+  });
+
   it('the cursor test covers the prompt row only', () => {
     const frame = f([RULE, '❯\u00a0', RULE, '  ? for shortcuts'], undefined, 1);
     const read = readComposer(frame, 'claude', 'paste');
@@ -55,6 +64,11 @@ describe('Codex', () => {
     expect(readComposer(f(['› ', footer, '  esc to close']), 'codex', 'paste').verdict).toBe('mode');
     expect(readComposer(f(['›', footer, '[0] 0:codex*   "host" 12:01'], ['›', footer, '[0] 0:codex*   "host" 12:01']), 'codex', 'paste').verdict).toBe('plain');
   });
+
+  it('a transcript, or our own paste, that says "esc to cancel" is not an overlay', () => {
+    expect(readComposer(f(['• press esc to cancel the run', '›', footer]), 'codex', 'paste').verdict).toBe('plain');
+    expect(readComposer(f(['› press esc to cancel', footer]), 'codex', 'enter').verdict).toBe('plain');
+  });
 });
 
 describe('every other agent', () => {
@@ -67,10 +81,24 @@ describe('every other agent', () => {
 });
 
 describe('frameShowsPaste', () => {
-  it("finds the paste's start, or Claude's collapsed paste", () => {
-    expect(frameShowsPaste(f(['❯ [wmux] A2A task t-1 is']), '[wmux] A2A task t-1')).toBe(true);
-    expect(frameShowsPaste(f(['❯ [Pasted text #1 +12 lines]']), '━━━ WMUX A2A ━━━')).toBe(true);
-    expect(frameShowsPaste(f(['user@host ~ % ']), '[wmux] A2A task t-1')).toBe(false);
+  const footer = '  gpt-5 medium · ~/project';
+  it("finds the paste's start, or the agent's collapsed paste, on the composer's own rows", () => {
+    expect(frameShowsPaste(f([RULE, '❯\u00a0wmux: A2A task t-1 is', RULE]), 'wmux: A2A task t-1')).toBe(true);
+    expect(frameShowsPaste(f([RULE, '❯\u00a0[Pasted text #1 +12 lines]', RULE]), '━━━ WMUX A2A ━━━')).toBe(true);
+    expect(frameShowsPaste(f(['› [Pasted Content 4096 chars]', footer]), '━━━ WMUX A2A ━━━')).toBe(true);
+  });
+
+  it('the same words in the transcript above prove nothing', () => {
+    const earlier = ['❯ wmux: A2A task t-1 is waiting', '⏺ [Pasted text #1 +12 lines]'];
+    expect(frameShowsPaste(f([...earlier, RULE, '❯\u00a0my own draft', RULE]), 'wmux: A2A task t-1')).toBe(false);
+    expect(frameShowsPaste(f([...earlier, RULE, '❯\u00a0my own draft', RULE]), '━━━ WMUX A2A ━━━')).toBe(false);
+  });
+
+  it('with no composer (a shell took over), only the cursor row counts', () => {
+    const rows = ['user@host ~ % wmux: A2A task t-1 is', 'zsh: command not found: wmux:', 'user@host ~ % '];
+    expect(frameShowsPaste(f(rows, rows, 2), 'wmux: A2A task t-1')).toBe(false);
+    expect(frameShowsPaste(f(rows, rows, 0), 'wmux: A2A task t-1')).toBe(true);
+    expect(frameShowsPaste(f(['user@host ~ % '], undefined, -1), 'x')).toBe(false);
     expect(frameShowsPaste(null, 'x')).toBe(false);
   });
 });

@@ -116,15 +116,38 @@ describe('deliveries wait for a verified agent in plain input mode', () => {
   it('a verified agent in plain input mode gets the paste and the Enter, asked before the paste and before the Enter', async () => {
     expect(await deliver({ senderTaskIds: ['t-1'] })).toEqual({ ok: true });
     expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']);
-    expect(asked.map((a) => a.check.phase)).toEqual(['paste', 'enter']);
+    expect(asked.map((a) => a.check.phase)).toEqual(['paste', 'paste', 'enter']);
     expect(asked[0].expectAgent).toBe('claude');
-    expect(asked[1].check.shownProbe).toBe('hello');
+    expect(asked[2].check.shownProbe).toBe('hello');
   });
 
-  it('the ask is the first step, and the last one before the Enter', async () => {
-    await deliver({ senderTaskIds: ['t-1'] });
+  it('the ask is the first step, the last one before the paste, and the last one before the Enter', async () => {
+    const unregister = registerDeliveryCheck('moa-1', { beforePaste: () => null, beforeEnter: () => null });
+    await deliver({ waitQuiet: true, deadlineAt: clock + 120_000, guardKey: 'moa-1' });
+    unregister();
     expect(order[0]).toBe('presence:paste');
+    const paste = order.findIndex((step) => step.startsWith('write:"\\u001b[200~'));
+    expect(order[paste - 1]).toBe('presence:paste');
     expect(order.slice(-2)).toEqual(['presence:enter', 'write:"\\r"']);
+  });
+
+  it('what is typed, and how, comes from the answer right before the paste', async () => {
+    // Bracketed paste on at the first ask; the pane turned it off by the paste.
+    answers = [PROCESS, { ...PROCESS, bracketedPaste: false }];
+    expect(await deliver({ senderTaskIds: ['t-1'] }, 'Claude Code', 'line one\nline two')).toMatchObject({ ok: false, reason: 'input_mode' });
+    expect(writes).toEqual([]);
+    // The agent died during the slower checks before the paste.
+    answers = [PROCESS, ENDED];
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, reason: 'agent_unverified' });
+    expect(writes).toEqual([]);
+  });
+
+  it('a check that has no answer yet (a probe running, an unread foreground) is held for a retry, not "no agent"', async () => {
+    answers = [{ tier: 'none', reason: 'attribution-pending' }];
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, reason: 'gate_unavailable' });
+    answers = [{ tier: 'none', reason: 'foreground-unknown' }];
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, reason: 'gate_unavailable' });
+    expect(writes).toEqual([]);
   });
 
   it('waiting for quiet while the agent dies: the screen is a prompt, nothing is written', async () => {
@@ -136,12 +159,12 @@ describe('deliveries wait for a verified agent in plain input mode', () => {
   });
 
   it('an agent that dies between the paste and the Enter: no Enter, and the paste is taken back only while the pane shows it', async () => {
-    answers = [PROCESS, { tier: 'none', reason: 'agent-ended', pasteShown: true }];
+    answers = [PROCESS, PROCESS, { tier: 'none', reason: 'agent-ended', pasteShown: true }];
     expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, reason: 'agent_unverified', pasted: true, cleared: true });
     expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\x15']);
 
     writes = [];
-    answers = [PROCESS, { tier: 'none', reason: 'agent-ended' }];
+    answers = [PROCESS, PROCESS, { tier: 'none', reason: 'agent-ended' }];
     expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, pasted: true, cleared: false });
     expect(writes).toEqual(['\x1b[200~hello\x1b[201~']);
   });
@@ -197,13 +220,25 @@ describe('an agent whose plain prompt wmux does not know: its pointer line only'
   it('a task: the pointer, never the body or the envelope', async () => {
     answers = [POINTER_ONLY];
     expect(await deliver({ senderTaskIds: ['task-1'] }, 'Gemini CLI', BODY)).toEqual({ ok: true });
-    expect(writes).toEqual(['\x1b[200~[wmux] A2A task task-1 is waiting for you. Read it with a2a_task_query task_id task-1\x1b[201~', '\r']);
+    expect(writes).toEqual(['\x1b[200~wmux: A2A task task-1 is waiting for you. Read it with a2a_task_query task_id task-1\x1b[201~', '\r']);
   });
 
   it('a mention: the channel pointer', async () => {
     answers = [POINTER_ONLY];
     await deliver({ senderMentions: [{ channelId: 'ch-1', seq: 7 }] }, null, BODY);
-    expect(writes[0]).toContain('[wmux] channel ch-1 has a mention for you. Read it with wmux channel read ch-1 --since 7');
+    expect(writes[0]).toContain('wmux: channel ch-1 has a mention for you. Read it with wmux channel read ch-1 --since 7');
+  });
+
+  it('a batch: the earliest mention of one channel, or the command that lists every channel', async () => {
+    answers = [POINTER_ONLY];
+    await deliver({ senderMentions: [{ channelId: 'ch-1', seq: 9 }, { channelId: 'ch-1', seq: 5 }] }, null, BODY);
+    expect(writes[0]).toContain('wmux channel read ch-1 --since 5');
+    writes = [];
+    await deliver({ senderMentions: [{ channelId: 'ch-1', seq: 5 }, { channelId: 'ch-2', seq: 3 }] }, null, BODY);
+    expect(writes[0]).toContain('wmux: channels have mentions for you. List them with wmux channel unread');
+    writes = [];
+    await deliver({ senderTaskIds: ['t-1', 't-2'] }, null, BODY);
+    expect(writes[0]).toContain('wmux: A2A tasks are waiting for you. Read them with a2a_task_query');
   });
 
   it('nothing to point at: held, zero bytes', async () => {
@@ -215,7 +250,7 @@ describe('an agent whose plain prompt wmux does not know: its pointer line only'
   it('a pane without bracketed paste gets the line as plain keys (no markers); a text of several lines is held', async () => {
     answers = [{ ...POINTER_ONLY, bracketedPaste: false }];
     await deliver({ senderTaskIds: ['task-1'] }, null, BODY);
-    expect(writes[0]).toBe('[wmux] A2A task task-1 is waiting for you. Read it with a2a_task_query task_id task-1');
+    expect(writes[0]).toBe('wmux: A2A task task-1 is waiting for you. Read it with a2a_task_query task_id task-1');
 
     writes = [];
     answers = [{ ...PROCESS, bracketedPaste: false }];

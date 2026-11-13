@@ -194,8 +194,8 @@ import { isTaskState, type AgentStatus, type Message, type Task } from '../share
 import { ProcessMonitor } from './ProcessMonitor';
 import { processHoldsForeground } from './agentForeground';
 import type { DeliveryCheck, DeliveryPresence } from '../shared/deliveryPresence';
-import { deliveryPresence, type DeliveryPresenceDeps } from './deliveryPresence';
-import { AgentProcessTracker, agentProcessExitEvent } from './AgentProcessTracker';
+import { deliveryPresence, promptGrant, type DeliveryPresenceDeps, type PromptAuthor } from './deliveryPresence';
+import { AgentProcessTracker, agentProcessExitEvent, type LiveCheck } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
 import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, WslPidWatcher } from './wslAgentProcess';
@@ -347,6 +347,11 @@ import { chatProviders } from './chat/providers';
 import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
 import { selfCheckPeerPid } from '../shared/peerPid';
+
+// A delivery asks whether the agent the tracker attributes still runs there,
+// not where its binary lives: the image rule (isAgentImage) would refuse a live
+// agent installed under another HOME or in a layout it does not know.
+const BY_ATTRIBUTION: LiveCheck = { byImage: false };
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
@@ -5359,7 +5364,7 @@ function registerRpcHandlers(
     atFolderTrust: async (id, writer) => (await trustRefusal(sessionManager, id, writer, false)) !== null,
     agentProcessAlive: async (id, slug) => {
       if (!isAgentSlug(slug)) return false;
-      return agentProcessTracker.isAgentRunning(id, slug, (pid) => ProcessMonitor.isRunning(pid));
+      return agentProcessTracker.isAgentRunning(id, slug, (pid) => ProcessMonitor.isRunning(pid), BY_ATTRIBUTION);
     },
     write: (id, data) => {
       const managed = sessionManager.getSession(id);
@@ -6278,8 +6283,8 @@ function registerRpcHandlers(
     },
     tracked: (sid) => agentProcessTracker.identityFor(sid),
     probe: (sid, shellPid, timeoutMs) => agentProcessTracker.probeNamedAgentNow(sid, shellPid, timeoutMs),
-    agentRunning: (sid, slug) => agentProcessTracker.isAgentRunning(sid, slug, (pid) => ProcessMonitor.isRunning(pid)),
-    ownedRoot: (sid, pid, slug) => agentProcessTracker.verifyOwnedRoot(sid, pid, slug),
+    agentRunning: (sid, slug) => agentProcessTracker.isAgentRunning(sid, slug, (pid) => ProcessMonitor.isRunning(pid), BY_ATTRIBUTION),
+    ownedRoot: (sid, pid, slug) => agentProcessTracker.verifyOwnedRoot(sid, pid, slug, BY_ATTRIBUTION),
     agentPid: (sid) => agentProcessTracker.pidFor(sid),
     holdsForeground: (pid) => processHoldsForeground(pid),
     frame: async (sid) => {
@@ -6375,7 +6380,7 @@ function registerRpcHandlers(
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string, bypassUsageHold = false,
   ): Promise<SessionPromptScheduleResult> => {
     if (!bypassUsageHold && usageLimits?.holds(id)) return 'busy';
-    return deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, {}, 'scheduled prompt');
+    return deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, {}, 'scheduled prompt', 'owner');
   };
   // Every caller is automated input (a schedule, a run, a nudge, a usage-limit
   // continue), so a screen that cannot rule out a folder-trust prompt stops it
@@ -6384,18 +6389,25 @@ function registerRpcHandlers(
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string,
     opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized' | 'onWrite'>,
     writer: string,
+    author: PromptAuthor,
     trust: { refuseUnknown?: boolean; onRefused?: (verdict: ScreenBlock) => void } = {},
   ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       ...opts,
       // Deliveries wait for a verified agent in plain input mode
       // (deliveryPresence.ts): before the first write, and as the last await
-      // before the submit. Only an agent whose plain prompt is on screen gets
-      // a prompt typed; any other answer stops it (`error`, tried again later).
+      // before the submit. A peer's text needs the agent's plain prompt on
+      // screen; the owner's own prompt, or wmux's own fixed line, also goes to
+      // an agent wmux has no plain-prompt reader for, on the process tier. A
+      // refusal before anything is written is not final: the caller comes
+      // back as it would at a busy pane.
       authorized: async (stage) => {
-        if (opts.authorized && !(await opts.authorized(stage))) return false;
+        if (opts.authorized) {
+          const granted = await opts.authorized(stage);
+          if (granted !== true) return granted;
+        }
         const presence = await deliveryPresence(presenceDeps, id, agentSlug, { phase: stage === 'first-write' ? 'paste' : 'enter' });
-        return presence.tier !== 'none' && presence.input === 'full';
+        return promptGrant(presence, author);
       },
       // Each of these is tried again later: one log line per pane while the
       // refusal holds. No person waits on them, so the read may take longer.
@@ -6424,7 +6436,7 @@ function registerRpcHandlers(
           // #1307 — a reused pid is no longer the pane's agent descendant, and
           // a stopped (Ctrl+Z) or zombie agent is not running. #1727 — a WSL
           // pane's agent is checked inside its distro the same way.
-          return await agentProcessTracker.isAgentRunning(id, agentSlug, (pid) => ProcessMonitor.isRunning(pid));
+          return await agentProcessTracker.isAgentRunning(id, agentSlug, (pid) => ProcessMonitor.isRunning(pid), BY_ATTRIBUTION);
         } catch {
           return false;
         }
@@ -6442,7 +6454,7 @@ function registerRpcHandlers(
   headlessDeliverRef = async (id, agent, prompt, authorized, onWrite) => {
     const incarnationId = readDaemonAgentState(id).incarnationId;
     if (!incarnationId) return 'unavailable';
-    return deliverPromptToSessionNow(id, agent, incarnationId, prompt, { authorized: async () => authorized(), onWrite: () => onWrite(), acceptError: false }, 'headless-delivery', { refuseUnknown: true });
+    return deliverPromptToSessionNow(id, agent, incarnationId, prompt, { authorized: async () => authorized(), onWrite: () => onWrite(), acceptError: false }, 'headless-delivery', 'peer', { refuseUnknown: true });
   };
   pipeServer.onRpc('daemon.deliverScheduledPromptV2', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
@@ -6473,7 +6485,7 @@ function registerRpcHandlers(
     return deliverCallerNudge(prompt, {
       usageHeld: () => usageLimits?.holds(id) === true,
       input: () => sessionManager.getSession(id)?.bridge,
-      deliver: (opts) => deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, opts, 'caller nudge'),
+      deliver: (opts) => deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, opts, 'caller nudge', 'wmux'),
     });
   });
 
@@ -6495,7 +6507,7 @@ function registerRpcHandlers(
       // composer (the input-revision proof covers the gap after the paste).
       authorized: async (stage) => stillWanted()
         && (stage === 'submit' || sessionManager.getSession(id)?.bridge.hasDraft() !== true),
-    }, writer, trust);
+    }, writer, 'wmux', trust);
   };
   usageLimits = new UsageLimitRegistry({
     broadcast: (event) => pipeServer.broadcast(event),
@@ -6671,7 +6683,7 @@ function registerRpcHandlers(
     // engine needs to tell "nothing written" from "pasted, not submitted".
     deliverPrompt: async (id, slug, incarnationId, prompt, onWrite) => (usageLimits?.holds(id)
       ? 'busy'
-      : deliverPromptToSessionNow(id, slug, incarnationId, prompt, onWrite ? { onWrite } : {}, 'automation run')),
+      : deliverPromptToSessionNow(id, slug, incarnationId, prompt, onWrite ? { onWrite } : {}, 'automation run', 'owner')),
     // A pane held at a usage limit is that registry's to resume. The trust
     // checks run before the paste and before Enter: 'unknown' or another
     // dialog before any write answers 'busy' (the engine asks again within

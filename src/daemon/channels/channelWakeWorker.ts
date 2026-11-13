@@ -576,11 +576,11 @@ export class ChannelWakeWorker {
       this.deps.log('debug', `[wake] holding nudge for ${key}: ${target.id} is held at a usage limit`);
       return;
     }
-    // The slow check first, so the screen and approval checks are the fresh ones.
+    if (!(await this.screenIsFree(target.id, key))) return;
+    // The last await before the write: the agent is still there, in plain input mode.
     const presence = await this.agentPresence(target.id, key, { phase: 'paste' });
     if (!presence.present) return;
-    if (!(await this.screenIsFree(target.id, key))) return;
-    // The render took time: the pane may have raised an approval since.
+    // The checks took time: the pane may have raised an approval since.
     if (this.approvalHold(target.id, key)) return;
     if (!this.inject(target.id, ws, entry, target, this.deps.agentPresent ? presence.full === true : undefined)) return;
     this.spend(key, this.tracker.get(key) ?? state, entry, wantMention);
@@ -789,12 +789,13 @@ const WAKE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 /**
  * The wake hint: a pointer of fixed words, the channel's name through the
- * one neutraliser, and ids. Nothing in it reads as shell syntax; null for an
- * id of another shape (the nudge is skipped, the pull path stays).
+ * one neutraliser, and ids, tagged `wmux:` like deliveryPointer.ts (no glob
+ * or operator character); null for an id of another shape (the nudge is
+ * skipped, the pull path stays).
  */
 export function wakeHint(entry: Pick<WakeUnreadEntry, 'name' | 'channelId' | 'unread' | 'mentionUnread' | 'lastReadSeq'>): string | null {
   if (!WAKE_ID.test(entry.channelId)) return null;
   const count = (n: number): number => (Number.isSafeInteger(n) && n >= 0 ? n : 0);
   const mention = count(entry.mentionUnread) > 0 ? ` and ${count(entry.mentionUnread)} mentioning you` : '';
-  return `[wmux] channel ${neutralName(entry.name)} has ${count(entry.unread)} unread${mention}. Read it with wmux channel read ${entry.channelId} --since ${count(entry.lastReadSeq) + 1}`;
+  return `wmux: channel ${neutralName(entry.name)} has ${count(entry.unread)} unread${mention}. Read it with wmux channel read ${entry.channelId} --since ${count(entry.lastReadSeq) + 1}`;
 }

@@ -42,8 +42,11 @@ export interface ScheduledPromptDeliveryDeps {
   /** Caller re-authorization, run immediately before the first write
    *  (`first-write`: the first leading paste, else the prompt paste) and
    *  again as the last await before the submit write (`submit`).
-   *  `false` stops with `error` and writes nothing further. */
-  authorized?: (stage: 'first-write' | 'submit') => Promise<boolean>;
+   *  `false` stops with `error` and writes nothing further. `busy` or
+   *  `unavailable` at `first-write` (nothing written yet) is returned as the
+   *  result, so the caller comes back as it would at a busy pane; at `submit`
+   *  either is `error`. */
+  authorized?: (stage: 'first-write' | 'submit') => Promise<boolean | 'busy' | 'unavailable'>;
   /** `paste`: called once each paste write succeeded (or threw: it may have
    *  reached the PTY), never for a write that returned false, so a caller can
    *  tell "nothing reached the PTY" from "the paste may be visible".
@@ -149,7 +152,8 @@ export async function deliverScheduledPrompt(
   const beforePaste = await trustBlock();
   if (beforePaste) return refusedBeforeWrite(beforePaste);
   try {
-    if (deps.authorized && !(await deps.authorized('first-write'))) return 'error';
+    const granted = deps.authorized ? await deps.authorized('first-write') : true;
+    if (granted !== true) return granted === false ? 'error' : granted;
   } catch {
     return 'error';
   }
@@ -200,7 +204,7 @@ export async function deliverScheduledPrompt(
   // A grant withdrawn inside the submit delay must not be pressed through.
   // The last await before Enter: only synchronous state checks follow it.
   try {
-    if (deps.authorized && !(await deps.authorized('submit'))) return 'error';
+    if (deps.authorized && (await deps.authorized('submit')) !== true) return 'error';
   } catch {
     return 'error';
   }

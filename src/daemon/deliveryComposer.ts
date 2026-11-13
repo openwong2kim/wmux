@@ -46,8 +46,10 @@ export interface ComposerRead {
 }
 
 const CLAUDE_RULE = /^─{8,}$/;
-/** Claude's prompt row in a mode: the mode glyph where `❯` stands, then a no-break space. */
-const CLAUDE_MODE_PROMPT = /^[!#](?:\u00a0|$)/;
+/** A labelled top rule (`──── ide ─────`), as deliverChatPrompt's reader accepts. */
+const CLAUDE_LABELLED_RULE = /^─{8,} \S(?:.*\S)? ─+$/;
+/** Claude's prompt row: `❯` (plain), or the mode glyph where `❯` stands, then a no-break space. */
+const CLAUDE_PROMPT = /^([❯!#])(?:[ \u00a0]|$)/;
 /** The hint Claude draws under the composer in a mode (`  ! for shell mode`). */
 const CLAUDE_MODE_HINT = /^\s*(?:! for (?:shell|bash) mode|# to memorize)\b/;
 
@@ -56,39 +58,65 @@ function lastIndex(rows: readonly string[], test: (row: string) => boolean): num
   return -1;
 }
 
+/** Dialog evidence in some rows only (screenBlocksChatSend reads an all-blank grid as blocked). */
+const blocks = (rows: readonly string[]): boolean => rows.some((row) => row.trim()) && screenBlocksChatSend(rows);
+
+/** Rows `from`..`to` (exclusive) of a frame, with their undimmed copies. */
+function slice(rows: ChatScreenRows, from: number, to: number): ChatScreenRows {
+  return Object.assign(rows.slice(from, to), rows.undimmed ? { undimmed: rows.undimmed.slice(from, to) } : {});
+}
+
+/**
+ * Claude's composer: the last prompt row (any glyph) under a rule, its
+ * indented continuation rows, and the closing rule. Only the composer and the
+ * rows under it decide: a transcript above that quotes a dialog's footer or a
+ * mode's hint is not the pane's state, and neither is the text this delivery
+ * pasted into the composer.
+ */
 function readClaude(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
-  // A mode prompt directly under a rule, or a mode's hint row: named refusals.
-  const modeAt = lastIndex(rows, (row) => CLAUDE_MODE_PROMPT.test(row.replace(/^ +/, '')));
-  if (modeAt > 0 && CLAUDE_RULE.test(rows[modeAt - 1].trim())) return { verdict: 'mode' };
-  if (rows.some((row) => CLAUDE_MODE_HINT.test(row))) return { verdict: 'mode' };
   if (rows.every((row) => !row.trim())) return { verdict: 'unknown' };
-  if (screenBlocksChatSend(rows)) return { verdict: 'mode' };
-  const shown = claudeComposerRows(rows);
-  if (!shown) return { verdict: 'unknown' };
-  const from = lastIndex(rows, (row) => /^❯(?:\s|$)/.test(row.trim()));
-  const to = rows.findIndex((row, i) => i > from && CLAUDE_RULE.test(row.trim()));
+  const isTopRule = (row: string | undefined): boolean => row !== undefined && (CLAUDE_RULE.test(row.trim()) || CLAUDE_LABELLED_RULE.test(row.trimEnd()));
+  /** The closing rule of a prompt row at `at`, past its indented continuation rows; -1 if none. */
+  const closing = (at: number): number => {
+    const end = rows.findIndex((row, i) => i > at && CLAUDE_RULE.test(row.trim()));
+    return end > at && rows.slice(at + 1, end).every((row) => !row.trim() || /^\s{2}/.test(row)) ? end : -1;
+  };
+  let from = -1;
+  let to = -1;
+  for (let i = rows.length - 1; i > 0 && from < 0; i--) {
+    if (!CLAUDE_PROMPT.test(rows[i].replace(/^ +/, '')) || !isTopRule(rows[i - 1])) continue;
+    const end = closing(i);
+    if (end > 0) [from, to] = [i, end];
+  }
+  // No composer on screen: a dialog owns it, or nothing that is Claude's.
+  if (from < 0) return { verdict: blocks(rows) ? 'mode' : 'unknown' };
   const span = { from, to };
+  const glyph = CLAUDE_PROMPT.exec(rows[from].replace(/^ +/, ''))?.[1];
+  const below = rows.slice(to + 1);
+  if (glyph !== '❯' || below.some((row) => CLAUDE_MODE_HINT.test(row)) || blocks(below)) return { verdict: 'mode', span };
   if (phase === 'enter') return { verdict: 'plain', span };
-  return { verdict: claudeComposerEmpty(rows) ? 'plain' : 'busy', span };
+  // The composer alone, from its top rule to its closing rule.
+  const own = slice(rows, from - 1, to + 1);
+  if (!claudeComposerRows(own)) return { verdict: 'unknown' };
+  return { verdict: claudeComposerEmpty(own) ? 'plain' : 'busy', span };
 }
 
 const isCodexChrome = (row: string): boolean => CODEX_FOOTER.test(row) || CODEX_SHORTCUT_HINT.test(row) || CODEX_SCROLLED_HINT.test(row);
 
+/** Codex's composer: the last `›` row down to its own footer or hint; rows
+ *  under that (a tmux status line) are not the composer's. */
 function readCodex(rows: ChatScreenRows, phase: DeliveryPhase): ComposerRead {
   if (rows.every((row) => !row.trim())) return { verdict: 'unknown' };
-  if (codexScreenBlocked(rows)) return { verdict: 'mode' };
   const tail = rows.map((row) => row.trimEnd());
   const from = lastIndex(tail, (row) => /^\s*›(?: |$)/.test(row));
-  if (from < 0) return { verdict: 'unknown' };
-  // The composer ends at its own footer or hint; rows under that (a tmux
-  // status line) are not the composer's.
-  const after = tail.slice(from + 1);
-  const firstChrome = after.findIndex(isCodexChrome);
-  if (firstChrome < 0) return { verdict: 'unknown' };
+  const firstChrome = from < 0 ? -1 : tail.slice(from + 1).findIndex(isCodexChrome);
+  if (firstChrome < 0) return { verdict: codexScreenBlocked(rows) ? 'mode' : 'unknown' };
   const span = { from, to: from + 1 + firstChrome };
+  // An overlay that waits for esc draws under the composer, never in the transcript.
+  if (codexScreenBlocked(slice(rows, span.to, rows.length))) return { verdict: 'mode', span };
   if (phase === 'enter') return { verdict: 'plain', span };
   // Anything between the prompt row and the chrome is a draft's rows or a popup.
-  const between = after.slice(0, firstChrome).filter((row) => row.trim());
+  const between = tail.slice(from + 1, span.to).filter((row) => row.trim());
   const prompt = rows.undimmed?.[from]?.trimEnd() ?? tail[from];
   const empty = rows.undimmed ? /^\s*›$/.test(prompt) : /^\s*›(?: Ask Codex to do anything)?\s*$/.test(prompt);
   return { verdict: empty && between.length === 0 ? 'plain' : 'busy', span };
@@ -113,11 +141,22 @@ export function cursorInComposer(frame: DeliveryFrame, read: ComposerRead): bool
   return !!read.span && frame.cursorRow >= read.span.from && frame.cursorRow < read.span.to;
 }
 
+/** How each agent shows a long paste in its composer: Claude
+ *  `[Pasted text #1 +40 lines]`, Codex `[Pasted Content 4096 chars]`. */
+const PASTE_PLACEHOLDER = /\[Pasted (?:text #\d+|Content \d+ chars)/;
+
 /**
- * Does the frame still show what this delivery pasted? `probe` is the start of
- * its first non-blank line; Claude shows a long paste as `[Pasted text #N …]`.
+ * Does the pane still show what this delivery pasted, where it would sit? In a
+ * recognised composer, on the composer's own rows; with none (a shell took
+ * over), on the cursor's row. `probe` is the start of its first non-blank
+ * line. Anywhere else (the transcript above) proves nothing, and "no" leaves
+ * the text where it is rather than clearing someone's line.
  */
 export function frameShowsPaste(frame: DeliveryFrame | null, probe: string): boolean {
   if (!frame || !probe) return false;
-  return frame.rows.some((row) => row.includes(probe) || /\[Pasted text #\d+/.test(row));
+  const span = (Object.keys(PLAIN_PROMPT) as PlainPromptAgent[])
+    .map((slug) => PLAIN_PROMPT[slug](frame.rows, 'enter').span)
+    .find((found) => found !== undefined);
+  const rows = span ? frame.rows.slice(span.from, span.to) : frame.rows.slice(Math.max(frame.cursorRow, 0), frame.cursorRow + 1);
+  return rows.some((row) => row.includes(probe) || (span !== undefined && PASTE_PLACEHOLDER.test(row)));
 }

@@ -8,8 +8,9 @@
  * `/`, `\`, `*`, `?`) becomes `_`; runs collapse and the length is capped.
  */
 
-/** Longest name on a typed line, in characters. */
-export const TYPED_NAME_MAX = 64;
+/** Longest name on a typed line, in characters: an A2A party name's own cap
+ *  (a2aPartyName.ts), so a terminal part and its `.N` tab number survive. */
+export const TYPED_NAME_MAX = 100;
 /** Longest title on a typed line, in characters. */
 export const TYPED_TITLE_MAX = 80;
 

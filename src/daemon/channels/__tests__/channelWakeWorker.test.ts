@@ -168,7 +168,7 @@ describe('ChannelWakeWorker — injection mechanics', () => {
     h.worker.tickOnce();
     expect(h.writes).toHaveLength(1);
     expect(h.writes[0].sessionId).toBe('pty-1');
-    expect(h.writes[0].data).toContain('[wmux] channel general has 2 unread and 1 mentioning you.');
+    expect(h.writes[0].data).toContain('wmux: channel general has 2 unread and 1 mentioning you.');
     expect(h.writes[0].data).toContain('wmux channel read ch-1 --since 3');
     expect(h.writes[0].data).not.toContain('\r');
     flushEnter();
@@ -1007,6 +1007,20 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     expect(h.writes.at(-1)?.data).toBe('\r');
   });
 
+  it('asks for the agent after the screen read, as the last step before the text', async () => {
+    const order: string[] = [];
+    const h = makeHarness(undefined, {
+      screenShowsApproval: async () => { order.push('screen'); return false; },
+      agentPresent: async (_id, check) => { order.push(`presence:${check.phase}`); return { present: true, full: true }; },
+    });
+    h.setEntries([mention()]);
+    h.setSessions([session({})]);
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.writes).toHaveLength(1);
+    expect(order.slice(0, 2)).toEqual(['screen', 'presence:paste']);
+  });
+
   it('withholds the Enter when the agent ends between the text and the Enter, and takes the text back while it is shown', async () => {
     let present = true;
     const checks: DeliveryCheck[] = [];
@@ -1048,8 +1062,8 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
 describe('wakeHint', () => {
   it('is fixed words, the channel name through the neutraliser, and ids', () => {
     const hint = wakeHint({ name: 'ops$(rm -rf ~);(x)', channelId: 'ch-1', unread: 3, mentionUnread: 1, lastReadSeq: 4 });
-    expect(hint).toBe('[wmux] channel ops_rm -rf _x_ has 3 unread and 1 mentioning you. Read it with wmux channel read ch-1 --since 5');
-    expect(hint!.slice('[wmux] '.length)).toMatch(/^[\p{L}\p{N} ._-]+$/u);
+    expect(hint).toBe('wmux: channel ops_rm -rf _x_ has 3 unread and 1 mentioning you. Read it with wmux channel read ch-1 --since 5');
+    expect(hint!.slice('wmux: '.length)).toMatch(/^[\p{L}\p{N} ._-]+$/u);
   });
 
   it('skips a channel id of another shape', () => {

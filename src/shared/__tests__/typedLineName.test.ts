@@ -24,6 +24,9 @@ describe('neutralName', () => {
 
   it('caps the length and never returns an empty name', () => {
     expect([...neutralName('a'.repeat(500))]).toHaveLength(TYPED_NAME_MAX);
+    // A party name at its own 100-character cap keeps its terminal part.
+    const party = `${'w'.repeat(60)}.reviewer.2`;
+    expect(neutralName(party)).toBe(party);
     expect(neutralName('名'.repeat(100), 10)).toBe('名'.repeat(10));
     expect(neutralName('')).toBe('_');
     expect(neutralName(undefined)).toBe('_');

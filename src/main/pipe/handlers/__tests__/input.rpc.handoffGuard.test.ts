@@ -26,6 +26,8 @@ let pane: { agentName: string | null; agentStatus: string; incarnationId: string
 /** Runs on every state read, before it answers (tests change the pane in it). */
 let onRead: ((n: number) => void) | null;
 let readFails: boolean;
+/** Whether the daemon's Enter-time answer finds our paste in the composer. */
+let pasteShown: boolean;
 let local: boolean;
 let reads: number;
 
@@ -68,7 +70,8 @@ function harness() {
     {
       answerPolicy: async () => ({ allowed: true }),
       // A tracked agent process in the pane (deliveries wait for one).
-      deliveryPresence: async () => ({ tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true }),
+      deliveryPresence: async (_ptyId, _agent, check) =>
+        ({ tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true, ...(check.phase === 'enter' ? { pasteShown } : {}) }),
       readScreenText: async () => FREE,
       sleep: async (ms: number) => { clock += ms; },
       now: () => clock,
@@ -87,6 +90,7 @@ const send = (opts: Partial<GatedSubmitOptions> = {}): Promise<GatedSubmitResult
 beforeEach(() => {
   clock = 1_000_000;
   writes = [];
+  pasteShown = true;
   pane = { agentName: 'Claude Code', agentStatus: 'waiting', incarnationId: 'inc-1', agentVerified: false, hasDraft: false, lastKeyAt: clock - 60_000, keys: 7 };
   onRead = null;
   readFails = false;
@@ -165,6 +169,13 @@ describe('hand-off delivery guard', () => {
     onRead = () => { if (writes.length === 1 && pane.lastKeyAt === clock - enterDelay) { pane.lastKeyAt = clock - 50; pane.keys += 1; } };
     expect(await send()).toMatchObject({ ok: false, reason: 'user_typing', pasted: true, cleared: true });
     expect(writes).toEqual([PASTE, '\x15']);
+  });
+
+  it('a refusal at the Enter leaves the text alone when the composer does not show our paste', async () => {
+    pasteShown = false;
+    onRead = () => { if (writes.length === 1) pane.incarnationId = 'inc-2'; };
+    expect(await send()).toMatchObject({ ok: false, reason: 'agent_changed', pasted: true, cleared: false });
+    expect(writes).toEqual([PASTE]);
   });
 
   it('a process-backed agent whose process went away is refused before the Enter', async () => {

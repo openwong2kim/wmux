@@ -813,6 +813,10 @@ export function isAgentImage(
   return AGENT_PACKAGES.get(slug)?.has(pkg) === true;
 }
 
+/** `byImage: false` skips isAgentImage: the tracked process, its slug and its
+ *  place under the pane are still checked from a fresh table. */
+export interface LiveCheck { byImage?: boolean }
+
 /** One full process-table snapshot (pid/ppid/name[/cmdline]). Windows reads
  *  the native core's table when it is packaged (nativeProcessTable.ts); else,
  *  as tasklist has no PPID, it shells out to Windows PowerShell 5.1 (always
@@ -1482,8 +1486,11 @@ export class AgentProcessTracker {
    *  tracked pid is still the pane shell's agent descendant with the
    *  expected slug, so a reused pid fails. On macOS and Linux its real
    *  executable must also be that agent (isAgentImage), so a renamed process
-   *  fails. Enumerates, unlike identityFor. */
-  async verifyLive(sessionId: string, expectedSlug: AgentSlug): Promise<boolean> {
+   *  fails, unless `byImage` is false: a delivery asks about the agent the
+   *  tracker attributes, wherever its binary lives (another HOME, a package
+   *  manager's layout, a version an update deleted), and reads the agent's
+   *  own prompt on screen instead. Enumerates, unlike identityFor. */
+  async verifyLive(sessionId: string, expectedSlug: AgentSlug, { byImage = true }: LiveCheck = {}): Promise<boolean> {
     const s = this.states.get(sessionId);
     if (s?.wsl) {
       if (!s.alive || s.slug !== expectedSlug || !this.wsl.isRunning) return false;
@@ -1499,6 +1506,7 @@ export class AgentProcessTracker {
       const current = () => this.states.get(sessionId) === s && s.alive && this.shellPids.get(sessionId) === shellPid;
       const picked = table.find((e) => e.pid === s.pid);
       if (!current() || !picked || pick?.pid !== s.pid || pick.slug !== expectedSlug) return false;
+      if (!byImage) return true;
       // argv names the agent; the kernel's executable must back it.
       return await this.imageMatches(picked, expectedSlug, s) && current();
     } catch {
@@ -1517,17 +1525,18 @@ export class AgentProcessTracker {
     sessionId: string,
     expectedSlug: AgentSlug,
     isRunning: (pid: number) => Promise<boolean>,
+    check: LiveCheck = {},
   ): Promise<boolean> {
     const s = this.states.get(sessionId);
     if (!s) return false;
-    if (s.wsl) return this.verifyLive(sessionId, expectedSlug);
-    return await this.verifyLive(sessionId, expectedSlug) && await isRunning(s.pid);
+    if (s.wsl) return this.verifyLive(sessionId, expectedSlug, check);
+    return await this.verifyLive(sessionId, expectedSlug, check) && await isRunning(s.pid);
   }
 
   /** Exec panes may own the agent as their PTY root, without a shell child.
    * Verify that exact armed root from fresh process metadata; never accept an
    * arbitrary PID or infer its executable from pane text. */
-  async verifyOwnedRoot(sessionId: string, pid: number, expectedSlug: AgentSlug): Promise<boolean> {
+  async verifyOwnedRoot(sessionId: string, pid: number, expectedSlug: AgentSlug, { byImage = true }: LiveCheck = {}): Promise<boolean> {
     if (this.shellPids.get(sessionId) !== pid) return false;
     // A disarm (even one re-armed with the same pid), or the tracked agent
     // dying or being replaced, while the table or the image is read. A probe
@@ -1540,7 +1549,7 @@ export class AgentProcessTracker {
       const root = (await this.snapshot()).find(entry => entry.pid === pid);
       return unchanged() && !!root &&
         selectAgentProcess([{ ...root, ppid: -1 }], -1, this.userHome)?.slug === expectedSlug &&
-        await this.imageMatches(root, expectedSlug, state) && unchanged();
+        (!byImage || await this.imageMatches(root, expectedSlug, state)) && unchanged();
     } catch { return false; }
   }
 

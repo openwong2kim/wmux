@@ -39,8 +39,9 @@ export type DeliveryPresence =
    * `full`: its plain prompt is on screen now; `pointer`: an agent whose plain
    * prompt wmux does not know, which gets only wmux's own pointer line.
    */
-  | { tier: 'process' | 'screen'; slug: AgentSlug; input: 'full' | 'pointer'; bracketedPaste: boolean }
-  /** `pasteShown` (at the Enter only): the pane still shows this delivery's paste. */
+  | { tier: 'process' | 'screen'; slug: AgentSlug; input: 'full' | 'pointer'; bracketedPaste: boolean; pasteShown?: boolean }
+  /** `pasteShown` (at the Enter only, either answer): the agent's input box, or
+   *  the cursor's row where there is none, still shows this delivery's paste. */
   | { tier: 'none'; reason: DeliveryPresenceReason; pasteShown?: boolean };
 
 const REASONS: ReadonlySet<string> = new Set<DeliveryPresenceReason>([
@@ -53,7 +54,7 @@ export function parseDeliveryPresence(raw: unknown, isSlug: (v: unknown) => v is
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as { tier?: unknown; slug?: unknown; reason?: unknown; input?: unknown; bracketedPaste?: unknown; pasteShown?: unknown };
   if ((r.tier === 'process' || r.tier === 'screen') && isSlug(r.slug) && (r.input === 'full' || r.input === 'pointer')) {
-    return { tier: r.tier, slug: r.slug, input: r.input, bracketedPaste: r.bracketedPaste === true };
+    return { tier: r.tier, slug: r.slug, input: r.input, bracketedPaste: r.bracketedPaste === true, ...(r.pasteShown === true ? { pasteShown: true } : {}) };
   }
   if (r.tier === 'none' && typeof r.reason === 'string' && REASONS.has(r.reason)) {
     return { tier: 'none', reason: r.reason as DeliveryPresenceReason, ...(r.pasteShown === true ? { pasteShown: true } : {}) };

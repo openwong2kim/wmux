@@ -23,7 +23,7 @@ import { sanitizePtyText } from '../../../shared/types';
 import { agentDisplayToSlug, agentRow, isAgentSlug } from '../../../shared/agentIdentity';
 import type { AgentSlug } from '../../../shared/events';
 import { parseDeliveryPresence, presenceRefusalDetail, type DeliveryCheck } from '../../../shared/deliveryPresence';
-import { deliveryPointer } from '../../../shared/deliveryPointer';
+import { pointerForBatch } from '../../../shared/deliveryPointer';
 import {
   formatBracketedPastePayload,
   isMultilinePtyPayload,
@@ -1248,8 +1248,8 @@ export interface DeliveryGuard {
 /** The verified-agent answer for one point of a delivery. */
 export type AgentCheck =
   /** What to type now (the delivery's text, or the pointer line), and how. */
-  | { ok: true; text: string; bracketed: boolean }
-  /** `pasteShown` (at the Enter): the pane still shows this delivery's paste. */
+  | { ok: true; text: string; bracketed: boolean; pasteShown?: boolean }
+  /** `pasteShown` (at the Enter): the agent's input box still shows this delivery's paste. */
   | { ok: false; refusal: GatedSubmitRefusal; pasteShown?: boolean };
 
 /** A refusal raised inside a delivery's fresh-context step. */
@@ -1270,10 +1270,8 @@ const DELIVERY_PRESENCE_RPC_TIMEOUT_MS = 5_000;
 
 /** The pointer line for a delivery's task or mention, or null when it has neither. */
 export function pointerLineFor(opts: GatedSubmitOptions | undefined): string | null {
-  const taskId = opts?.pointerTaskId ?? opts?.taskId ?? opts?.senderTaskIds?.[0];
-  if (taskId) return deliveryPointer({ kind: 'task', taskId });
-  const mention = opts?.senderMentions?.at(-1);
-  return mention ? deliveryPointer({ kind: 'mention', channelId: mention.channelId, seq: mention.seq }) : null;
+  const own = opts?.pointerTaskId ?? opts?.taskId;
+  return pointerForBatch(own ? [own] : opts?.senderTaskIds ?? [], opts?.senderMentions ?? []);
 }
 
 /**
@@ -1351,10 +1349,12 @@ export async function gatedPasteSubmit(
   let bracketed = true;
   const atStart = verifyAgent ? await verifyAgent({ phase: 'paste' }) : null;
   if (atStart && !atStart.ok) return atStart.refusal;
-  if (atStart?.ok) ({ text: typed, bracketed } = atStart);
   const before = await deliveryGateCheck(gate, ptyId);
   if (before) return before;
   let fresh: FreshContextReply | undefined;
+  const withFresh = (refusal: GatedSubmitRefusal): GatedSubmitRefusal => fresh?.freshContext === 'applied'
+    ? { ...refusal, detail: `${refusal.detail} The pane's conversation was already cleared (fresh context).` }
+    : refusal;
   if (freshContext) {
     try {
       fresh = await freshContext();
@@ -1367,17 +1367,16 @@ export async function gatedPasteSubmit(
       // The step's own writes failed (the pane went away): nothing was pasted.
       return { ok: false, reason: 'write_failed', detail };
     }
-    const agentAfterStep = verifyAgent ? await verifyAgent({ phase: 'paste' }) : null;
-    if (agentAfterStep?.ok) ({ text: typed, bracketed } = agentAfterStep);
-    const afterStep = (agentAfterStep && !agentAfterStep.ok ? agentAfterStep.refusal : null) ?? await deliveryGateCheck(gate, ptyId, TEXT_NOT_SENT);
-    if (afterStep) {
-      return fresh.freshContext === 'applied'
-        ? { ...afterStep, detail: `${afterStep.detail} The pane's conversation was already cleared (fresh context).` }
-        : afterStep;
-    }
+    const afterStep = await deliveryGateCheck(gate, ptyId, TEXT_NOT_SENT);
+    if (afterStep) return withFresh(afterStep);
   }
   const atPaste = guard ? await guard.beforePaste() : null;
-  if (atPaste) return atPaste;
+  if (atPaste) return withFresh(atPaste);
+  // The last await before the paste: what is typed, and whether bracketed,
+  // come from this answer, not from one read before the slower checks above.
+  const agentAtPaste = verifyAgent ? await verifyAgent({ phase: 'paste' }) : null;
+  if (agentAtPaste && !agentAtPaste.ok) return withFresh(agentAtPaste.refusal);
+  if (agentAtPaste?.ok) ({ text: typed, bracketed } = agentAtPaste);
   try {
     // Bracketed only where the pane turned the mode on: elsewhere the markers
     // would arrive as keys.
@@ -1409,8 +1408,13 @@ export async function gatedPasteSubmit(
   // Still refused: the text stays where it is. An undecided gate is no proof
   // the composer holds only our paste, so it is never cleared on that.
   if (atEnter) return { ...atEnter, pasted: true };
+  const probeText = pasteProbe(typed);
   const guardAtEnter = guard ? await guard.beforeEnter() : null;
-  if (guardAtEnter) return takeBack(guardAtEnter);
+  if (guardAtEnter) {
+    // Taken back only while the composer shows this paste, never on a guess.
+    const shown = verifyAgent ? await verifyAgent({ phase: 'enter', shownProbe: probeText }) : null;
+    return shown?.pasteShown ? takeBack(guardAtEnter) : { ...guardAtEnter, pasted: true, cleared: false };
+  }
   // The pane while the text sits uncommitted: what the receipt diffs against.
   const probe = receipt?.probe;
   const atEnterReading = probe ? await probe.readAgentStatus() : null;
@@ -1422,7 +1426,6 @@ export async function gatedPasteSubmit(
   const retryRefusal = receipt ? await receipt.armRetry() : null;
   // The last check before the Enter: the agent is still there, in plain input
   // mode. Refused, the paste is taken back only while the pane still shows it.
-  const probeText = pasteProbe(typed);
   const agentAtEnter = verifyAgent ? await verifyAgent({ phase: 'enter', shownProbe: probeText }) : null;
   if (agentAtEnter && !agentAtEnter.ok) {
     return agentAtEnter.pasteShown ? takeBack(agentAtEnter.refusal) : { ...agentAtEnter.refusal, pasted: true, cleared: false };
@@ -2705,7 +2708,7 @@ export function registerInputRpc(
     ptyId: string,
     agent: string | null | undefined,
     check: DeliveryCheck,
-  ): Promise<{ ok: true; input: 'full' | 'pointer'; bracketedPaste: boolean } | { ok: false; refusal: GatedSubmitRefusal; pasteShown?: boolean }> => {
+  ): Promise<{ ok: true; input: 'full' | 'pointer'; bracketedPaste: boolean; pasteShown?: boolean } | { ok: false; refusal: GatedSubmitRefusal; pasteShown?: boolean }> => {
     const expectAgent = agent ? (isAgentSlug(agent) ? agent : agentDisplayToSlug(agent)) : undefined;
     const raw = await (deps.deliveryPresence ?? readDeliveryPresence)(ptyId, expectAgent, check).catch(() => undefined);
     const presence = parseDeliveryPresence(raw, isAgentSlug);
@@ -2716,10 +2719,13 @@ export function registerInputRpc(
       if (presence.tier === 'screen' && check.phase === 'paste') {
         logLine(`[delivery] pane ${JSON.stringify(ptyId)}: no agent process attributed; ${presence.slug} verified from its screen`);
       }
-      return { ok: true, input: presence.input, bracketedPaste: presence.bracketedPaste };
+      return { ok: true, input: presence.input, bracketedPaste: presence.bracketedPaste, ...(presence.pasteShown ? { pasteShown: true } : {}) };
     }
     const reason: GatedSubmitRefusal['reason'] =
       presence.reason === 'other-agent' ? 'agent_changed'
+        // Not an answer yet (a probe still running, a foreground read that
+        // failed): held for a retry, never counted as "no agent".
+        : presence.reason === 'attribution-pending' || presence.reason === 'foreground-unknown' ? 'gate_unavailable'
         // The agent is there; its input box is not a plain prompt (yet).
         : presence.reason === 'composer-mode' || presence.reason === 'composer-busy' || presence.reason === 'composer-unknown' ? 'input_mode'
           : 'agent_unverified';
@@ -2771,7 +2777,7 @@ export function registerInputRpc(
         if (!presence.bracketedPaste && isMultilinePtyPayload(toType)) {
           return { ok: false, refusal: { ok: false, reason: 'input_mode', detail: 'delivery: the target pane has not turned on bracketed paste, so a text of several lines cannot go in as one message' } };
         }
-        return { ok: true, text: toType, bracketed: presence.bracketedPaste };
+        return { ok: true, text: toType, bracketed: presence.bracketedPaste, ...(presence.pasteShown ? { pasteShown: true } : {}) };
       };
       guard = {
         ...(guard ?? { beforePaste: async () => null, beforeEnter: async () => null }),
