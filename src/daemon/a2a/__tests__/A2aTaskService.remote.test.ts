@@ -748,3 +748,60 @@ describe('statusMessageFromWire (a2a.task.update)', () => {
     expect(handler).toMatch(/\.\.\.\(message \? \{ message \} : \{\}\)/);
   });
 });
+
+describe('a refused state and an owed cancel on the record', () => {
+  it('replay restores a refusal, its clearing, and a cancel owed with the failure', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await outbound(svc);
+    await inbound(svc, 'rt-in2');
+    expect((await svc.markRemote({ taskId: 'rt-in2', stateRefused: { state: 'working', code: 'bad-request' } })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in2', stateAccepted: true })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-in2', stateRefused: { state: 'completed', code: 'conflict' } })).ok).toBe(true);
+    expect(await svc.forceFailRemote({ taskId: 'rt-out', reason: 'refused by the other PC: bad-request', forced: 'remote_refused', peerCanceled: true }))
+      .toMatchObject({ ok: true, failed: true });
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(remoteOf(restored, 'rt-in2').stateRefused).toEqual(remoteOf(svc, 'rt-in2').stateRefused);
+    expect(remoteOf(restored, 'rt-in2').stateRefused).toMatchObject({ state: 'completed', code: 'conflict' });
+    expect(remoteOf(restored, 'rt-out')).toMatchObject({ cancelOwed: true });
+    expect(restored.getTask('rt-out')!.status.state).toBe('failed');
+  });
+
+  it('no cancel is owed for a task this PC received, nor for a report held here', async () => {
+    const svc = newService(newLog());
+    await inbound(svc, 'rt-in3');
+    expect(await svc.forceFailRemote({ taskId: 'rt-in3', reason: 'x', forced: 'remote_refused', peerCanceled: true })).toMatchObject({ ok: true, failed: true });
+    expect(remoteOf(svc, 'rt-in3')).not.toHaveProperty('cancelOwed');
+    await companyOutbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged', evidence: PEER_EVIDENCE });
+    expect(await svc.forceFailRemote({ taskId: 'rt-co', reason: 'x', forced: 'remote_refused', peerCanceled: true })).toMatchObject({ ok: true, failed: false });
+    expect(remoteOf(svc, 'rt-co')).not.toHaveProperty('cancelOwed');
+  });
+
+  it('the GC keeps an ended task until its cancel is told, and only while its link can carry it', async () => {
+    let now = Date.now();
+    const svc = new A2aTaskService({ log: newLog(), origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => now });
+    await outbound(svc);
+    await svc.forceFailRemote({ taskId: 'rt-out', reason: 'x', forced: 'remote_refused', peerCanceled: true });
+    now += 2 * 60 * 60 * 1000;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('rt-out')).toBeDefined();
+    // The link is gone: nothing can carry it any more.
+    svc.keepEndedWhile(() => false);
+    svc.gcTerminalTasks();
+    expect(svc.getTask('rt-out')).toBeUndefined();
+  });
+
+  it('once the cancel is told, the ended task goes as any other', async () => {
+    let now = Date.now();
+    const svc = new A2aTaskService({ log: newLog(), origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => now });
+    await outbound(svc);
+    await svc.forceFailRemote({ taskId: 'rt-out', reason: 'x', forced: 'remote_refused', peerCanceled: true });
+    expect((await svc.markRemote({ taskId: 'rt-out', stateSync: 'canceled' })).ok).toBe(true);
+    now += 2 * 60 * 60 * 1000;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('rt-out')).toBeUndefined();
+  });
+});

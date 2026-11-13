@@ -293,9 +293,6 @@ function spawnLinkStatus(status: A2aRemoteStatusV1): A2aRemoteStatusV1 {
   return options ? { ...status, detail: { ...status.detail, options: options.map((o) => redactSecrets(o)) } } : status;
 }
 
-/** What the other PC's copy says when this PC's copy ended because that PC refused a reply of ours. */
-const PEER_CANCELED_TEXT = 'the sender ended the task: a reply it sent was refused on this PC';
-
 const SYNCED_STATES: ReadonlySet<string> = new Set(['working', 'input-required', 'completed', 'failed', 'canceled']);
 
 /**
@@ -352,13 +349,14 @@ export async function syncRemoteTask(
       await deps.taskService.markRemote({ taskId: task.id, receiptSync: receipt });
       queued += 1;
     }
-    // A task this PC sent that failed here because the other PC refused a reply of ours: that PC is told `canceled`.
+    // A task this PC sent that failed here because a reply of ours did not reach the other PC: that PC is told
+    // `canceled`, with no text (a cancel carries none).
     const owed = task.status.state === 'failed' && marker.cancelOwed === true;
     const state = owed ? 'canceled' : task.status.state;
     // Only the receiver moves a task on the peer: one this PC sent tells it nothing but a cancel.
     const mayTell = marker.direction !== 'outbound' || state === 'canceled';
     if (mayTell && SYNCED_STATES.has(state) && marker.stateSync !== state) {
-      const summary = owed ? PEER_CANCELED_TEXT : (opts.summary ?? statusSummary(task))?.slice(0, 2000);
+      const summary = owed ? undefined : (opts.summary ?? statusSummary(task))?.slice(0, 2000);
       const told: Task = owed ? { ...task, status: { state: 'canceled', timestamp: task.status.timestamp } } : task;
       deps.outbox.enqueue(link.remote.hostId, stateEnvelope(deps, link, told, summary));
       await deps.taskService.markRemote({ taskId: task.id, stateSync: state });

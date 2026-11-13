@@ -128,9 +128,13 @@ const STATES: ReadonlySet<string> = new Set(['working', 'input-required', 'compl
 const TERMINAL_LINK: ReadonlySet<string> = new Set(['revoked', 'broken']);
 /** A state refused as a disagreement: the other PC has the task and the link, and differs about where the task is. */
 const STATE_DISAGREEMENTS: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>(['bad-request', 'conflict']);
-/** A state the other PC refused as a disagreement: it does not keep the task from counting as received there. */
+/**
+ * A state the other PC refused as a disagreement, short of a final one: it does not keep the task from counting as
+ * received there. A refused `completed` or `failed` does (its evidence never landed).
+ */
 const disagreement = (r: A2aOutboxRecordV1): boolean =>
-  r.envelope.kind === 'state' && r.lastError !== undefined && STATE_DISAGREEMENTS.has(r.lastError);
+  r.envelope.kind === 'state' && r.lastError !== undefined && STATE_DISAGREEMENTS.has(r.lastError)
+  && r.envelope.state !== 'completed' && r.envelope.state !== 'failed';
 /** Refusals that say the link, or the task, is gone on the other PC: nothing more is sent to it there. */
 const GONE_THERE: ReadonlySet<A2aRemoteErrorCode> = new Set<A2aRemoteErrorCode>([
   'unknown-link', 'link-not-active', 'stale-link-version', 'direction-not-allowed', 'forbidden', 'unknown-task',
@@ -320,6 +324,11 @@ export class A2aRemoteDelivery {
 
   start(): void {
     if (this.syncTimer) return;
+    // An ended task that still owes the other PC its cancel stays while its link can still carry it.
+    this.deps.taskService.keepEndedWhile((task) => {
+      const linkId = (task.metadata.remote as A2aRemoteTaskState | undefined)?.linkId;
+      return linkId !== undefined && this.deps.links.get(linkId)?.state === 'active';
+    });
     this.syncSessions();
     this.syncTimer = setInterval(() => this.syncSessions(), this.deps.syncMs ?? SYNC_MS);
     this.syncTimer.unref?.();
@@ -695,7 +704,8 @@ export class A2aRemoteDelivery {
       return;
     }
     const reason = code === 'attachment-failed' ? `not sent to the other PC: ${detail ?? 'its images could not be uploaded'}` : `refused by the other PC: ${code}`;
-    // A refused reply on a task this PC sent: the other PC still has its copy, and is owed a cancel (sent by the sync).
+    // A reply on a task this PC sent that did not reach the other PC (refused there, or its images not sent): the task
+    // fails here, and the other PC, which still has its copy, is owed a cancel (sent by the sync).
     const peerCanceled = rec.envelope.kind === 'reply' && !GONE_THERE.has(code);
     const failed = await this.deps.taskService.forceFailRemote({ taskId, reason, forced: 'remote_refused', ...(peerCanceled ? { peerCanceled: true as const } : {}) });
     if (peerCanceled && failed.ok && failed.failed) await this.syncTask(taskId);

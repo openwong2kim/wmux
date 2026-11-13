@@ -357,7 +357,7 @@ describe('sendRemoteReply / sendRemoteState', () => {
     expect(marks).toEqual([{ taskId: task.id, stateSync: 'canceled' }]);
   });
 
-  it('a task this PC sent that failed because the other PC refused a reply of ours tells it canceled, from the ledger, once', async () => {
+  it('a task this PC sent that failed because the other PC refused a reply of ours tells it canceled, from the ledger, once, with no text', async () => {
     const linkId = activeLink({ outbound: true, inbound: true }, 'codex', 'pane-c');
     const task: Task = {
       kind: 'task',
@@ -389,8 +389,11 @@ describe('sendRemoteReply / sendRemoteState', () => {
     // As after a restart: the cancel is read from the task, not from the refusal that set it.
     expect(await syncRemoteTask(fake, task.id)).toEqual({ ok: true, queued: 1 });
     const [told] = states(task.id);
-    expect(told.envelope).toMatchObject({ state: 'canceled', text: 'the sender ended the task: a reply it sent was refused on this PC' });
+    expect(told.envelope).toMatchObject({ state: 'canceled' });
+    // A cancel carries no text, and no evidence of the failure here.
+    expect(told.envelope).not.toHaveProperty('text');
     expect(told.envelope).not.toHaveProperty('evidence');
+    expect(told.envelope).not.toHaveProperty('message');
     expect(await syncRemoteTask(fake, task.id)).toEqual({ ok: true, queued: 0 });
     // Without that record, a failed task this PC sent tells the other PC nothing.
     delete (task.metadata.remote as { cancelOwed?: true }).cancelOwed;

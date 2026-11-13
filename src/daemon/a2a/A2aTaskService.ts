@@ -1498,6 +1498,7 @@ export class A2aTaskService {
     for (const [id, task] of this.tasks) {
       if (
         (TERMINAL_STATES as readonly string[]).includes(task.status.state) &&
+        !this.keepsEnded(task) &&
         now - new Date(task.metadata.updatedAt).getTime() > GC_MAX_AGE_MS
       ) {
         this.tasks.delete(id);
@@ -1509,7 +1510,7 @@ export class A2aTaskService {
     let toRemove = this.tasks.size - GC_MAX_TASKS;
     // 종단 태스크만 축출 후보 — 활성은 절대 지우지 않는다(정본 무결성).
     const terminalOldest = [...this.tasks.values()]
-      .filter((t) => (TERMINAL_STATES as readonly string[]).includes(t.status.state))
+      .filter((t) => (TERMINAL_STATES as readonly string[]).includes(t.status.state) && !this.keepsEnded(t))
       .sort((a, b) => new Date(a.metadata.updatedAt).getTime() - new Date(b.metadata.updatedAt).getTime());
     for (const task of terminalOldest) {
       if (toRemove <= 0) break;
@@ -1518,6 +1519,21 @@ export class A2aTaskService {
       this.remoteStates.delete(task.id);
       toRemove--;
     }
+  }
+
+  /**
+   * Ended tasks the GC keeps: one this PC sent that still owes the other PC its cancel (`cancelOwed`, not yet told),
+   * while `whileAlso` holds (the delivery: while its link is active, so the cancel can still go).
+   */
+  keepEndedWhile(whileAlso: (task: Task) => boolean): void {
+    this.endedKeep = whileAlso;
+  }
+
+  private endedKeep: (task: Task) => boolean = () => true;
+
+  private keepsEnded(task: Task): boolean {
+    const m = remoteMarkerOf(task);
+    return m?.cancelOwed === true && m.stateSync !== 'canceled' && this.endedKeep(task);
   }
 
   // ── 내부 ────────────────────────────────────────────────────────────

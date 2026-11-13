@@ -1074,8 +1074,71 @@ describe('a state the other PC refuses, end to end', () => {
     await until(() => b.tasks.getTask(taskId)?.status.state === 'canceled');
     // Owed on A's own record, so a restart sends it too; told once.
     expect(a.tasks.getTask(taskId)!.metadata.remote).toMatchObject({ cancelOwed: true, stateSync: 'canceled' });
+    // What B's agent reads: its task cancelled, with no text from A and no evidence (a cancel carries none).
+    const bTask = b.tasks.getTask(taskId)!;
+    expect(bTask.status).not.toHaveProperty('message');
+    expect(bTask.status).not.toHaveProperty('evidence');
     // B's pane is told the way any cancel from the sender is: a state item on its inbox.
     const inbox = (b.tasks.getTask(taskId)!.metadata.remote as { inbox?: Array<{ kind: string; state?: string }> }).inbox ?? [];
     expect(inbox.filter((i) => i.kind === 'state').map((i) => i.state)).toContain('canceled');
+  });
+
+  /** A's client answers B's refusal itself for A's replies (as B would), with `code`. */
+  const refusingReplies = (code: string, status: number): ClientHook => (opts) => {
+    const real = new PinnedTlsClient(opts);
+    return {
+      openStream: (p, o) => real.openStream(p, o),
+      requestJson: (method, p, body) => (p === A2A_ROUTES.messages && (body as { kind?: string }).kind === 'reply'
+        ? Promise.resolve({ status, json: { ok: false, error: code } })
+        : real.requestJson(method, p, body)),
+    };
+  };
+
+  for (const code of ['unknown-task', 'link-not-active'] as const) {
+    it(`a reply refused with ${code}: the sender's copy fails, and no cancel is owed (nothing there to cancel)`, async () => {
+      const b = await makePc('PC-B');
+      const a = await makePc('PC-A', { client: refusingReplies(code, 409) });
+      const linkId = await linked(a, b);
+      const taskId = await sendTask(a, linkId, 'one job');
+      await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+      expect((await b.tasks.transition({ taskId, to: 'working', callerWorkspaceId: 'ws-b' })).ok).toBe(true);
+      expect(await a.rpc(A2A_REMOTE_RPC.reply, { taskId, workspaceId: 'ws-a', text: 'more' })).toMatchObject({ ok: true });
+      await until(() => a.tasks.getTask(taskId)?.status.state === 'failed');
+      expect(a.tasks.getTask(taskId)!.metadata.remote).not.toHaveProperty('cancelOwed');
+      await deliberateSleep(300, 'negative: no cancel goes');
+      expect(b.tasks.getTask(taskId)!.status.state).toBe('working');
+    });
+  }
+
+  it('a reply refused as too large: the sender\'s copy fails and the receiver\'s is cancelled', async () => {
+    const b = await makePc('PC-B');
+    const a = await makePc('PC-A', { client: refusingReplies('too-large', 413) });
+    const linkId = await linked(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    expect((await b.tasks.transition({ taskId, to: 'working', callerWorkspaceId: 'ws-b' })).ok).toBe(true);
+    expect(await a.rpc(A2A_REMOTE_RPC.reply, { taskId, workspaceId: 'ws-a', text: 'more' })).toMatchObject({ ok: true });
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'failed');
+    await until(() => b.tasks.getTask(taskId)?.status.state === 'canceled');
+  });
+
+  it('a state refused because the task or the link is gone there still fails the task', async () => {
+    const refusingStates: ClientHook = (opts) => {
+      const real = new PinnedTlsClient(opts);
+      return {
+        openStream: (p, o) => real.openStream(p, o),
+        requestJson: (method, p, body) => (p === A2A_ROUTES.messages && (body as { kind?: string }).kind === 'state'
+          ? Promise.resolve({ status: 404, json: { ok: false, error: 'unknown-task' } })
+          : real.requestJson(method, p, body)),
+      };
+    };
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B', { client: refusingStates });
+    const linkId = await linkedReceiverJoins(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    await moveB(b, taskId, 'working');
+    await until(() => b.tasks.getTask(taskId)?.status.state === 'failed');
+    expect(refusedOn(b, taskId)).toBeUndefined();
   });
 });
