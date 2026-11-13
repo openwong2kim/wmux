@@ -17,7 +17,8 @@ let before: string[] = [];
 beforeAll(() => { before = adhomes(); });
 // Links inside are removed as links: rmSync never follows them.
 afterEach(() => { for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
-afterAll(() => { expect(adhomes()).toEqual(before); });
+// None left that was not there before (another run may remove one of those).
+afterAll(() => { expect(adhomes().filter((n) => !before.includes(n))).toEqual([]); });
 
 function seed(home: string): void {
   fs.mkdirSync(path.join(home, 'snapshots', 's1'), { recursive: true });

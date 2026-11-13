@@ -34,7 +34,8 @@ describe('tempChromeProfile', () => {
     const profile = tempChromeProfile(prefix);
     expect(fs.existsSync(stale)).toBe(false);
     await profile.remove();
-    expect(ofPrefix()).toEqual(before);
+    // Nothing of this run's is left; a concurrent run may have swept one of before.
+    expect(ofPrefix().filter((n) => !before.includes(n))).toEqual([]);
   });
 
   it('leaves no dir behind when setting up the profile fails', () => {
