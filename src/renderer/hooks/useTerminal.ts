@@ -3670,10 +3670,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Kitty flags go right after the replayed snapshot, so live output that
       // came after it still changes them as it did. The RIS pops them, and a
       // replay cut from the ring rarely holds the program's push: the flags
-      // in force before it come back, unless the replay negotiates its own.
+      // in force before it come back, unless the replay negotiates its own,
+      // or the folded state says the program has popped them since in output
+      // xterm never parsed (a hidden pane's discarded backlog). Negotiations
+      // in output a behind pipe dropped arrive live after the marker.
       const replayNegotiates = held.complete.some((chunk) => chunk.replay && KITTY_NEGOTIATION.test(chunk.data));
       const kittyFlags = swapFinish ? swapFinish.kittyFlags
-        : replayNegotiates ? 0 : xtermKittyFlags(terminal) ?? 0;
+        : replayNegotiates || !keyboardRef.current.kitty ? 0 : xtermKittyFlags(terminal) ?? 0;
       let kittyAfter = -1;
       if (kittyFlags > 0) held.complete.forEach((chunk, i) => { if (chunk.replay) kittyAfter = i; });
       held.complete.forEach((chunk, i) => {

@@ -382,6 +382,31 @@ describe('useTerminal: keyboard negotiation across a re-flush main started', { t
     }
   });
 
+  it('a hidden pane whose program popped kitty in its discarded backlog gets no flags back', async () => {
+    let release: (v: { success: true; mode: string }) => void = () => undefined;
+    resync.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    await negotiated('k-h', KITTY);
+    await setShown!(false);
+    act(() => {
+      // Retained while hidden, never parsed: only the fold sees the pop.
+      live('k-h', 'bye\x1b[<u\r\nPS> ');
+      // A second ring flush leaves the hidden pane dirty: its reveal resyncs.
+      replay('k-h', 'PS> tui\r\nbye\r\nPS> ');
+      marker('k-h', 20);
+    });
+    await settle();
+    await setShown!(true);
+    expect(resync).toHaveBeenCalledTimes(1);
+    act(() => {
+      replay('k-h', '\x1bcPS> tui\r\nbye\r\nPS> ');
+      marker('k-h', 20);
+    });
+    await act(async () => { release({ success: true, mode: 'snapshot' }); });
+    await settle();
+    expect(xtermKittyFlags(termRef!.current!)).toBe(0);
+    expect(await shiftEnter('k-h')).toBe('\n');
+  });
+
   it('a pane that negotiated modifyOtherKeys keeps it', async () => {
     await negotiated('k-b', MODIFY_OTHER_KEYS);
     act(() => {
