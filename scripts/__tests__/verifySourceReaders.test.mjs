@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readOrNull, sourceReaders } from '../lib/verify-source-readers.mjs';
+import { inAVitestLane, readOrNull, sourceReaders } from '../lib/verify-source-readers.mjs';
 
 const pick = (changed, files) => sourceReaders({
   changed,
@@ -66,5 +66,25 @@ describe('sourceReaders', () => {
     ['src/mcp/broker.ts', ['src/mcp/__tests__/brokerKoffiPackaging.test.ts']],
   ])('on this tree, a change to %s picks the suites that read it as text', (changed, suites) => {
     expect(sourceReaders({ changed: [changed], tests: suites, read: readOrNull(root) })).toEqual(suites);
+  });
+});
+
+describe('inAVitestLane', () => {
+  it('keeps the trees verify.sh runs and drops the ones with their own runner', () => {
+    const files = [
+      'src/renderer/hooks/__tests__/useTerminal.hiddenRetention.test.ts',
+      'src/__tests__/a.os.test.tsx',
+      'src/main/__tests__/x.runtime.test.ts',
+      'scripts/__tests__/verifySourceReaders.test.mjs',
+      'integrations/claude/__tests__/hooks.test.ts',
+      'relay/__tests__/push.test.ts',
+      // Their own runners: vitest.config.ts would match no file.
+      'e2e/fanout.e2e.test.mjs',
+      'rig/lanes/x.rig.test.ts',
+      'core/harness/y.harness.test.ts',
+      'relay/__tests__/z.runtime.test.ts',
+      'src/renderer/hooks/useTerminal.test.ts',
+    ];
+    expect(files.filter(inAVitestLane)).toEqual(files.slice(0, 6));
   });
 });

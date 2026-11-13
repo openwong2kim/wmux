@@ -35,6 +35,27 @@ const MAX_JOINED = 6;
 const MAX_ANCESTORS = 4;
 
 export const isTestFile = (file) => TEST_FILE.test(file);
+
+/**
+ * The trees vitest.config.ts (`include`, both lanes) and
+ * vitest.runtime.config.ts (`include`) run. A test outside them (e2e/, rig/,
+ * core/harness/) has its own runner: named to `vitest run`, it matches no
+ * file and fails the gate. Keep in step with those two `include` lists.
+ */
+const LANE_TEST_FILE = [
+  /^src\/(?:.+\/)?__tests__\/(?:.+\/)?[^/]+\.test\.tsx?$/,
+  /^scripts\/__tests__\/(?:.+\/)?[^/]+\.test\.mjs$/,
+  /^integrations\/(?:.+\/)?__tests__\/(?:.+\/)?[^/]+\.test\.tsx?$/,
+  /^relay\/__tests__\/(?:.+\/)?[^/]+\.test\.ts$/,
+];
+const RUNTIME_TEST = /\.runtime\.test\./;
+
+/** A test file one of verify.sh's two vitest configs runs. */
+export function inAVitestLane(file) {
+  if (!LANE_TEST_FILE.some((re) => re.test(file))) return false;
+  // relay/ has no runtime lane: its runtime suite would run nowhere.
+  return !(RUNTIME_TEST.test(file) && file.startsWith('relay/'));
+}
 export const isSourceFile = (file) => SOURCE_FILE.test(file) && !TEST_FILE.test(file);
 
 function literalsOf(text) {
@@ -107,9 +128,9 @@ export function changedFiles(root, base) {
   ])].sort();
 }
 
-/** Every test file in the tree, tracked or not. */
+/** Every test file in the tree, tracked or not, that verify.sh's vitest configs run. */
 export function testFiles(root) {
-  return lines0(git(root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])).filter(isTestFile);
+  return lines0(git(root, ['ls-files', '-z', '--cached', '--others', '--exclude-standard'])).filter(inAVitestLane);
 }
 
 export function readOrNull(root) {
