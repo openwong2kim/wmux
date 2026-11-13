@@ -103,6 +103,8 @@ interface Wait {
   checked: Promise<void>;
   /** Cuts the PUT under way, for a newer PUT of it from the same PC (that one is the sender's retry). */
   cut: (() => void) | undefined;
+  /** A newer PUT is taking over: the one it cut does not end a late wait. */
+  handover: boolean;
   /** Its time ran out while a transfer of it ran: it ends once that transfer does. */
   late: boolean;
   /** Settles once a PUT of it under way has finished with its files. */
@@ -167,25 +169,41 @@ export class BundleIntake {
     const k = waitKey(hostId, m);
     const waiting = this.awaited.get(k);
     // The same manifest waited for twice is one wait; the same id and hash with another size is not that bundle.
-    if (waiting) return waiting.m.bytes === m.bytes ? waiting.done : Promise.resolve({ kind: 'fatal', why: 'another size is awaited for that bundle' });
+    if (waiting) {
+      if (waiting.m.bytes !== m.bytes) return Promise.resolve({ kind: 'fatal', why: 'another size is awaited for that bundle' });
+      // Its time ran out while a transfer of it ran: asked for again, it waits anew from now.
+      if (waiting.late) {
+        waiting.late = false;
+        this.arm(k, waiting, ttlMs);
+      }
+      return waiting.done;
+    }
     let settle: (r: BundlePull) => void = () => undefined;
     const done = new Promise<BundlePull>((r) => { settle = r; });
-    const w: Wait = { hostId, m, done, settle, abort: new AbortController(), receiving: false, checked: Promise.resolve(), cut: undefined, late: false, landed: Promise.resolve(), timer: undefined };
-    // A transfer under way when the time is up still lands, within its own budget; the wait ends after it.
-    w.timer = setTimeout(() => {
-      if (w.receiving) w.late = true;
-      else this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
-    }, ttlMs);
-    w.timer.unref?.();
+    const w: Wait = { hostId, m, done, settle, abort: new AbortController(), receiving: false, checked: Promise.resolve(), cut: undefined, handover: false, late: false, landed: Promise.resolve(), timer: undefined };
+    this.arm(k, w, ttlMs);
     this.awaited.set(k, w);
     // Taken before (a repeat after a restart, say): the wait is over at once when it still checks out. Something
     // other than a plain file where it goes is final at once, as for a pull.
     const target = bundleStagedFile(this.deps.a2aDir, hostId, m);
     w.checked = holds(this.deps.a2aDir, target, m.sha256, m.bytes).then(
       (held) => { if (held) this.endWait(k, { kind: 'staged', file: target }, w); },
-      (err: unknown) => { if (err instanceof ContinueStagingRefusal) this.endWait(k, { kind: 'fatal', why: err.message }, w); },
+      (err: unknown) => {
+        if (err instanceof ContinueStagingRefusal) this.endWait(k, { kind: 'fatal', why: err.message }, w);
+        else this.deps.log('warn', `[a2a-remote] bundle ${m.bundleId} from ${hostId}: its staged check failed: ${errMsg(err)}`);
+      },
     );
     return done;
+  }
+
+  /** The wait's time: up after `ttlMs`, but a transfer under way then still lands, within its own budget, and the wait ends after it. */
+  private arm(k: string, w: Wait, ttlMs: number): void {
+    clearTimeout(w.timer);
+    w.timer = setTimeout(() => {
+      if (w.receiving) w.late = true;
+      else this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
+    }, ttlMs);
+    w.timer.unref?.();
   }
 
   /** Every pull and wait ends (the daemon stops). */
@@ -208,6 +226,8 @@ export class BundleIntake {
     const k = waitKey(peer.hostId, { bundleId: params['bundleId'] ?? '', sha256: params['sha256'] ?? '' });
     let w = this.awaited.get(k);
     if (w) {
+      // Its own budget, not the listener's 30 s, from now: the waits below count against it too.
+      extendBodyDeadline(req, this.budget(w.m.bytes));
       await w.checked;
       // Found staged by that check: taken already.
       if (this.awaited.get(k) !== w) w = undefined;
@@ -223,9 +243,13 @@ export class BundleIntake {
     if (w.receiving) {
       // The same PC sends it again: the PUT under way is one it gave up on (a connection this side has not seen
       // drop yet). That one is cut, and this one taken.
+      w.handover = true;
       w.cut?.();
       await w.landed;
-      if (this.awaited.get(k) !== w || w.receiving) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
+      w.handover = false;
+      // The one cut had staged it already (it was past its last read): taken.
+      if (this.awaited.get(k) !== w) return this.takenAlready(req, res, params, peer.hostId);
+      if (w.receiving) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
     }
     const release = this.slots.take(peer.hostId);
     if (!release) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
@@ -248,8 +272,6 @@ export class BundleIntake {
     w.abort.signal.addEventListener('abort', onEnd, { once: true });
     let outcome: TransferOutcome;
     try {
-      // Its own budget, not the listener's 30 s: a file of megabytes takes longer.
-      extendBodyDeadline(req, this.budget(m.bytes));
       await fs.promises.mkdir(path.join(this.deps.a2aDir, BUNDLE_IN), { recursive: true, mode: 0o700 });
       await continueParentsInside(this.deps.a2aDir, part, true);
       await fs.promises.rm(part, { force: true });
@@ -277,8 +299,8 @@ export class BundleIntake {
       return answerAndClose(req, res, 400, { ok: false, error: 'bad-request' });
     }
     w.receiving = false;
-    // Its time ran out while this transfer ran: the wait ends now.
-    if (w.late) this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
+    // Its time ran out while this transfer ran: the wait ends now, unless a newer PUT of it takes over.
+    if (w.late && !w.handover) this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
     // The body may be read only in part: never drained.
     return answerAndClose(req, res, 503, { ok: false, error: 'unavailable' });
   }
@@ -297,15 +319,9 @@ export class BundleIntake {
     const release = this.slots.take(hostId);
     if (!release) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
     res.once('close', release);
-    let n = 0;
     try {
       extendBodyDeadline(req, this.budget(m.bytes));
-      await pipeline(req, new Writable({
-        write(chunk: Buffer, _enc, done) {
-          n += chunk.length;
-          done(n > m!.bytes ? new Error('longer than declared') : null);
-        },
-      }), { signal: AbortSignal.timeout(this.budget(m.bytes)) });
+      await pipeline(req, new Writable({ write(_chunk, _enc, done) { done(); } }));
     } catch {
       return answerAndClose(req, res, 503, { ok: false, error: 'unavailable' });
     } finally {

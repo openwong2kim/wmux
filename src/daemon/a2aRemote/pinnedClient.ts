@@ -117,8 +117,6 @@ export interface PinnedSseEvent {
  * data of one SSE event — a misbehaving peer must not grow memory without bound.
  */
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
-/** How long a streamed upload whose body failed waits for an answer the other side may have sent first. */
-const STREAMED_ANSWER_GRACE_MS = 1000;
 
 /** Cap on an SSE event id, which is echoed back as the `Last-Event-ID` header. */
 const MAX_EVENT_ID_LENGTH = 1024;
@@ -333,11 +331,6 @@ export class PinnedTlsClient {
     const budget = opts.timeoutMs ?? this.opts.requestTimeoutMs;
     return new Promise((resolve, reject) => {
       let settled = false;
-      // A streamed body that fails on its way may have been answered first (a refusal, then the connection closed):
-      // that answer is waited for a moment, and once it came, read whole.
-      const streamed = payload !== undefined && !Buffer.isBuffer(payload);
-      let answered = false;
-      let grace: ReturnType<typeof setTimeout> | undefined;
       const req = http.request({
         method,
         path,
@@ -353,7 +346,6 @@ export class PinnedTlsClient {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        clearTimeout(grace);
         detach();
         opts.signal?.removeEventListener('abort', onAbort);
         req.destroy();
@@ -367,18 +359,12 @@ export class PinnedTlsClient {
         () => finish(new PinnedClientError('timeout', `no answer within ${budget}ms`, { sent: true })),
         budget,
       );
-      const lost = (err: unknown): void => {
-        const failed = new PinnedClientError('network', errMsg(err), { sent: true });
-        if (!streamed) return finish(failed);
-        if (answered) return;
-        grace ??= setTimeout(() => finish(failed), STREAMED_ANSWER_GRACE_MS);
-      };
-      const detach = watchSocket(socket, lost);
-      req.on('error', lost);
+      const detach = watchSocket(socket, (err) =>
+        finish(new PinnedClientError('network', errMsg(err), { sent: true })),
+      );
+      req.on('error', (err) => finish(new PinnedClientError('network', errMsg(err), { sent: true })));
       req.on('response', (res) => {
         // From here the response stream owns failure reporting (readCapped).
-        answered = true;
-        clearTimeout(grace);
         detach();
         readCappedBytes(res, undefined, opts.maxBytes ?? MAX_BODY_BYTES).then(
           (body) => finish({ status: res.statusCode ?? 0, body }),
@@ -402,7 +388,7 @@ export class PinnedTlsClient {
         () => (sent === payload.bytes
           ? req.end()
           : finish(new PinnedClientError('network', `the body gave ${sent} of ${payload.bytes} bytes`, { sent: true }))),
-        lost,
+        (err: unknown) => finish(new PinnedClientError('network', errMsg(err), { sent: true })),
       );
     });
   }

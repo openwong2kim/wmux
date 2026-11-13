@@ -115,24 +115,19 @@ function intake(over: { get?: StreamedGet | null; maxBytes?: number } = {}): Bun
   });
 }
 
-/**
- * A PUT to the asking PC as `hostId`, the way a joiner session streams one (exact length declared): a body that
- * fails on its way waits a moment for an answer sent first, as the pinned client does.
- */
+/** A PUT to the asking PC as `hostId`, the way a joiner session streams one (exact length declared). */
 function putAs(hostId: string): StreamedPut {
   return (p, body, o) => new Promise((resolve, reject) => {
-    let answered = false;
     const req = http.request({
       method: 'PUT', host: '127.0.0.1', port, path: p, signal: o.signal,
       headers: { 'x-test-host': hostId, 'content-type': 'application/octet-stream', 'content-length': String(o.bytes) },
     }, (res) => {
-      answered = true;
       let text = '';
       res.setEncoding('utf8');
       res.on('data', (c: string) => { text += c; });
       res.on('end', () => resolve({ status: res.statusCode ?? 0, json: text ? JSON.parse(text) as unknown : null }));
     });
-    req.on('error', (err) => { if (!answered) setTimeout(() => reject(err), 1000); });
+    req.on('error', reject);
     body.on('error', (err) => req.destroy(err));
     body.pipe(req);
   });
@@ -644,6 +639,34 @@ describe('a returned bundle, sent by the PC that made it (it joined the asking P
     expect(await outbox.send(ASKER, m.bundleId, putAs(BOX))).toEqual({ kind: 'sent' });
     expect(await waiting).toMatchObject({ kind: 'staged' });
     expect(await stalled.status).not.toBe(200);
+  });
+
+  it('past its time with a transfer under way, the sender\'s retry takes over and lands; asked for again, the wait starts anew', async () => {
+    const body = bytes(80_000, 48);
+    const m = made(body);
+    const one = intake();
+    one.registerRoutes(table);
+    const pastTtl = (): Promise<void> => new Promise((r) => setTimeout(r, 800));
+    const waiting = one.receive(BOX, m, 500);
+    const stalled = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 30_000);
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    await pastTtl();
+    expect(await outbox.send(ASKER, m.bundleId, putAs(BOX))).toEqual({ kind: 'sent' });
+    expect(await waiting).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, BOX, m) });
+    expect(await stalled.status).not.toBe(200);
+
+    const other = bytes(80_000, 49);
+    const n = made(other);
+    const first = one.receive(BOX, n, 500);
+    const broken = rawPut(route(n), { 'content-length': String(other.length) }, other, BOX, 30_000);
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    await pastTtl();
+    // Asked for again while late: the same wait, with a time of its own from now.
+    expect(one.receive(BOX, n, 60_000)).toBe(first);
+    broken.req.destroy();
+    await vi.waitFor(() => expect(partsOf(BOX)).toEqual([]), { timeout: 10_000 });
+    expect(await outbox.send(ASKER, n.bundleId, putAs(BOX))).toEqual({ kind: 'sent' });
+    expect(await first).toMatchObject({ kind: 'staged' });
   });
 
   it('send() leaves no read stream behind when the request fails before it is read', async () => {
