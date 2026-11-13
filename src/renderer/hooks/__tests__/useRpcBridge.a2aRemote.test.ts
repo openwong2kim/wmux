@@ -274,6 +274,7 @@ describe('remote reply and state delivery', () => {
     const pasted = gate.mock.calls[0][1] as string;
     expect(pasted).toContain('From: pc-b_ws_codex');
     expect(pasted).toMatch(/answer.x/);
+    // eslint-disable-next-line no-control-regex -- the control bytes are what must not reach the pane
     expect(pasted).not.toMatch(/\x1b|\r|\x07/);
   });
 

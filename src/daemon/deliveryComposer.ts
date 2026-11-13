@@ -47,7 +47,7 @@ export interface ComposerRead {
 
 const CLAUDE_RULE = /^─{8,}$/;
 /** Claude's prompt row in a mode: the mode glyph where `❯` stands, then a no-break space. */
-const CLAUDE_MODE_PROMPT = /^[!#](?: |$)/;
+const CLAUDE_MODE_PROMPT = /^[!#](?:\u00a0|$)/;
 /** The hint Claude draws under the composer in a mode (`  ! for shell mode`). */
 const CLAUDE_MODE_HINT = /^\s*(?:! for (?:shell|bash) mode|# to memorize)\b/;
 

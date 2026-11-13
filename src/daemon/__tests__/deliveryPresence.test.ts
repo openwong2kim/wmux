@@ -11,10 +11,10 @@ import type { DeliveryFrame } from '../deliveryComposer';
 
 const RULE = '─'.repeat(57);
 /** Claude's plain prompt, empty; the cursor on the prompt row. */
-const CLAUDE_PLAIN = ['⏺ ok', '', RULE, '❯ ', RULE, '  ⏵⏵ auto mode on (shift+tab to cycle)'];
+const CLAUDE_PLAIN = ['⏺ ok', '', RULE, '❯\u00a0', RULE, '  ⏵⏵ auto mode on (shift+tab to cycle)'];
 /** Claude in `!` shell mode with nothing typed (Ctrl+C twice after a `!` command). */
-const CLAUDE_BANG = ['⏺ ok', '', RULE, '! ', RULE, '  ! for shell mode'];
-const CLAUDE_DRAFT = ['⏺ ok', '', RULE, '❯ half a thought', RULE, '  ⏵⏵ auto mode on (shift+tab to cycle)'];
+const CLAUDE_BANG = ['⏺ ok', '', RULE, '!\u00a0', RULE, '  ! for shell mode'];
+const CLAUDE_DRAFT = ['⏺ ok', '', RULE, '❯\u00a0half a thought', RULE, '  ⏵⏵ auto mode on (shift+tab to cycle)'];
 /** A live Claude under tmux: the status line sits at column 0 under the composer. */
 const CLAUDE_TMUX = [...CLAUDE_PLAIN, '[0] 0:claude*                         "host" 12:01'];
 
