@@ -1543,6 +1543,39 @@ fn initialize_then_drop_with_a_call_in_flight(stdin: &mut impl Write, out: &Rece
     drop(conn);
 }
 
+/// A stub wmux main pipe in the sandbox: every RPC line the bundle sends, each
+/// refused.
+#[cfg(unix)]
+fn main_pipe_stub(sb: &Sandbox) -> Receiver<String> {
+    use std::os::unix::net::UnixListener;
+    let listener = UnixListener::bind(sb.home.join(format!(".wmux{}.sock", sb.suffix))).expect("bind stub main pipe");
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(conn) = conn else { break };
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let Ok(mut reply) = conn.try_clone() else { return };
+                for line in BufReader::new(conn).lines() {
+                    let Ok(line) = line else { break };
+                    // The envelope's id, as it is spelled (a string or a number).
+                    let id = line
+                        .split_once(r#""id":"#)
+                        .map(|(_, rest)| rest.split([',', '}']).next().unwrap_or("null").to_string())
+                        .unwrap_or_else(|| "null".into());
+                    // Recorded before the reply, so it is in by the time the
+                    // tool call that sent it answers the host.
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                    let _ = writeln!(reply, r#"{{"id":{id},"ok":false,"error":"stub"}}"#);
+                }
+            });
+        }
+    });
+    rx
+}
+
 /// After the ack a drop hands the session to a bundle child: the call in
 /// flight gets an error and is not sent again, the bundle gets the cached
 /// initialize (its reply never reaches the host) and serves the next call.
@@ -1553,6 +1586,8 @@ fn a_drop_after_the_ack_hands_the_session_to_a_bundle_child() {
     let Some(install) = Install::new(&sb, Layout::Marked) else {
         return;
     };
+    #[cfg(unix)]
+    let rpc = main_pipe_stub(&sb);
     let listener = stub::bind(&sb.pipe());
     let mut child = spawn(&mut install.shim(&sb, &[])).expect("spawn shim");
     let err = collect(child.stderr.take().unwrap());
@@ -1563,6 +1598,24 @@ fn a_drop_after_the_ack_hands_the_session_to_a_bundle_child() {
     writeln!(stdin, r#"{{"jsonrpc":"2.0","id":3,"method":"tools/list"}}"#).unwrap();
     let next = out.recv_timeout(Duration::from_secs(30)).expect("the bundle's reply");
     assert!(next.contains(r#""id":3"#) && next.contains(r#""tools":["#), "{next}");
+    // The bundle took the host's identity from the replayed initialize before
+    // the host's next call reached it: that call's RPC carries the name.
+    #[cfg(unix)]
+    {
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"workspace_list","arguments":{{}}}}}}"#
+        )
+        .unwrap();
+        let reply = recv_line_with(&out, r#""id":4"#);
+        assert!(reply.contains(r#""result""#), "{reply}");
+        let sent: Vec<String> = rpc.try_iter().collect();
+        let list = sent
+            .iter()
+            .find(|l| l.contains(r#""method":"workspace.list""#))
+            .unwrap_or_else(|| panic!("no workspace.list RPC in {sent:?}"));
+        assert!(list.contains(r#""clientName":"native-shim-e2e""#), "{list}");
+    }
     drop(stdin);
     assert_eq!(wait_within(&mut child, WAIT).code(), Some(0));
     ends(&out);

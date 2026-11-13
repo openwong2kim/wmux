@@ -23,9 +23,10 @@
  * request in flight with a JSON-RPC error saying the call may have run (it
  * is never sent again), and starts the full server beside this file as a
  * child with piped stdio. The child first gets the `initialize`, under an id
- * of the shim's own, whose reply the shim drops (the host already has one),
- * and the `initialized` notification, then the host's bytes for the rest of
- * the session. The shim exits with the child's code, or 1 when there is no
+ * of the shim's own. Once it answers, the shim drops that reply (the host
+ * already has one) and sends the `initialized` notification, then the host's
+ * lines for the rest of the session; host lines that arrive before the answer
+ * wait for it. The shim exits with the child's code, or 1 when there is no
  * full server to start. It never reconnects to a broker that comes back.
  * This is the native launcher's behaviour (core/wmux-native/src/mcp_shim.rs).
  * At STARTUP, connect retries briefly with backoff so a broker that is still
@@ -230,6 +231,10 @@ function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
   const calls = new Calls();
   let bundle: ReturnType<typeof spawn> | null = null;
   let handedOver = false;
+  /** After a handover, until the child answers the replayed `initialize`:
+   *  the `initialized` notification and the host's lines, which wait. */
+  let held: Buffer[] | null = null;
+  let hostEnded = false;
 
   const toHost = (line: Buffer | string, source: { pause(): unknown; resume(): unknown }): void => {
     if (!process.stdout.write(line)) {
@@ -247,7 +252,8 @@ function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
 
   const sendLine = (line: Buffer): void => {
     if (handedOver) {
-      if (bundle?.stdin && !bundle.stdin.write(line)) {
+      if (held) held.push(line);
+      else if (bundle?.stdin && !bundle.stdin.write(line)) {
         process.stdin.pause();
         bundle.stdin.once('drain', () => process.stdin.resume());
       }
@@ -287,13 +293,24 @@ function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
     // A child that stopped reading has exited; its close ends the shim.
     child.stdin?.on('error', () => { /* see above */ });
     console.error('[wmux-mcp-shim] running the full server for the rest of the session');
-    for (const line of replay) child.stdin?.write(line);
-    let swallow = replay.length > 0;
+    const [initialize, ...afterInit] = replay;
+    let swallow = initialize !== undefined;
+    if (initialize) {
+      child.stdin?.write(initialize);
+      held = afterInit;
+    }
     const fromBundle = new Lines();
     child.stdout?.on('data', (chunk: Buffer) => {
       fromBundle.push(chunk, (line) => {
-        if (swallow && isReplayAnswer(line)) swallow = false;
-        else if (child.stdout) toHost(line, child.stdout);
+        if (swallow && isReplayAnswer(line)) {
+          swallow = false;
+          // What waited for the answer goes now; later lines go straight on.
+          for (const waiting of held ?? []) child.stdin?.write(waiting);
+          held = null;
+          if (hostEnded) child.stdin?.end();
+        } else if (child.stdout) {
+          toHost(line, child.stdout);
+        }
       });
     });
     child.on('close', (code) => {
@@ -313,7 +330,8 @@ function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
     const last = fromHost.takeRest();
     if (last.length > 0) sendLine(last);
     if (handedOver) {
-      bundle?.stdin?.end();
+      hostEnded = true;
+      if (!held) bundle?.stdin?.end();
       return;
     }
     socket.end();

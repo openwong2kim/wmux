@@ -69,10 +69,12 @@
 //! the shim writes the usual stderr line, answers each request in flight with
 //! a JSON-RPC error saying the call may have run (it is never sent again),
 //! and starts the full bundle as a child with piped stdio. The child first
-//! gets the `initialize`, under an id of the shim's own, whose reply the shim
-//! drops (the host already has one), and the `initialized` notification, then
-//! the host's bytes for the rest of the session. A broker line that arrives
-//! after the handover is dropped.
+//! gets the `initialize`, under an id of the shim's own. Once it answers, the
+//! shim drops that reply (the host already has one) and sends the
+//! `initialized` notification, then the host's lines for the rest of the
+//! session; host lines that arrive before the answer wait for it, as a host
+//! waits for its own `initialize` reply. A broker line that arrives after the
+//! handover is dropped.
 
 use crate::js::{decode_utf8_trimmed, stringify, JsStr, Json};
 use crate::paths::{env, env_js, os_to_js};
@@ -650,6 +652,14 @@ fn no_session(why: &str, raw: &[OsString]) -> ! {
 /// or nowhere once the host has closed stdin after one.
 enum Route {
     Broker,
+    /// The child has the replayed `initialize` and has not answered it yet:
+    /// the `initialized` notification and the host's lines wait in `held`,
+    /// and `end` records that the host closed stdin meanwhile.
+    Replaying {
+        stdin: std::process::ChildStdin,
+        held: Vec<Vec<u8>>,
+        end: bool,
+    },
     Bundle(std::process::ChildStdin),
     Closed,
 }
@@ -739,8 +749,12 @@ fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) -> bool 
         forward_from_host(&rest, &mut write);
     }
     let mut route = locked(&relay().route);
-    match *route {
+    match &mut *route {
         Route::Broker => true,
+        Route::Replaying { end, .. } => {
+            *end = true;
+            false
+        }
         Route::Bundle(_) | Route::Closed => {
             *route = Route::Closed;
             false
@@ -760,6 +774,7 @@ fn forward_from_host(line: &[u8], write: &mut impl FnMut(&[u8]) -> std::io::Resu
                 lose_broker(Outcome::BrokerError(socket_error("write", &e)));
             }
         }
+        Route::Replaying { held, .. } => held.push(line.to_vec()),
         // A child that stopped reading has exited; its reader ends the shim.
         Route::Bundle(child) => {
             let _ = child.write_all(line);
@@ -792,14 +807,40 @@ fn lose_broker(why: Outcome) {
         finish(Outcome::BundleFailed("no pipes to the child".into()))
     };
     say(&format!("{PREFIX} running the full server for the rest of the session"));
-    for line in &replay {
-        if stdin.write_all(line).is_err() {
-            break;
+    let mut replay = replay.into_iter();
+    let swallow = match replay.next() {
+        Some(initialize) => {
+            // A child that cannot take it has exited; its reader ends the shim.
+            let _ = stdin.write_all(&initialize);
+            *route = Route::Replaying {
+                stdin,
+                held: replay.collect(),
+                end: false,
+            };
+            true
+        }
+        None => {
+            *route = Route::Bundle(stdin);
+            false
+        }
+    };
+    std::thread::spawn(move || pump_from_bundle(child, stdout, swallow));
+}
+
+/// The child answered the replayed `initialize`: what waited for that answer
+/// goes to it, and the host's lines go straight to it from now on.
+fn release_held() {
+    let mut route = locked(&relay().route);
+    if let Route::Replaying { mut stdin, held, end } = std::mem::replace(&mut *route, Route::Closed) {
+        for line in &held {
+            if stdin.write_all(line).is_err() {
+                break;
+            }
+        }
+        if !end {
+            *route = Route::Bundle(stdin);
         }
     }
-    let swallow = !replay.is_empty();
-    std::thread::spawn(move || pump_from_bundle(child, stdout, swallow));
-    *route = Route::Bundle(stdin);
 }
 
 /// The bundle child's stdout to the host, minus the reply to the replayed
@@ -817,6 +858,7 @@ fn pump_from_bundle(mut child: std::process::Child, mut out: std::process::Child
         lines.push(&buf[..n], |line| {
             if swallow && handover::is_replay_answer(line) {
                 swallow = false;
+                release_held();
             } else {
                 emit(line);
             }
