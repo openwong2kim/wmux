@@ -18,10 +18,23 @@ const rowsOf8 = Array.from({ length: 8 }, (_, i) => `L${i}`).join('\r\n');
 const savedThenScrolled = 'a\x1b[3;1H\x1b7\x1b[6;1H\n\n';
 const twoRowHistory = (name: string, text: string): Case =>
   ({ name, backend: 'rust', req: { cols: 20, rows: 6, scrollback: 2, initial: Buffer.from(text) } });
+/** From `start`, each step's text then the pane resized to its size; then `after`. */
+const resizedThrough = (
+  name: string, start: [number, number], steps: [string, [number, number]][], after: string, scrollback = 100,
+): Case => {
+  let text = '';
+  const changes = steps.map(([chunk, [cols, rows]]) => {
+    text += chunk;
+    return { offset: Buffer.byteLength(text), cols, rows };
+  });
+  const [cols, rows] = steps[steps.length - 1][1];
+  return { name, backend: 'rust', req: { cols, rows, scrollback, initial: Buffer.from(text + after),
+    geometry: { start: { cols: start[0], rows: start[1] }, changes } } };
+};
 /** `before` at 20x6, the pane resized to `to`, then `after`. */
 const resizedBetween = (name: string, before: string, to: [number, number], after: string): Case =>
-  ({ name, backend: 'rust', req: { cols: to[0], rows: to[1], scrollback: 100, initial: Buffer.from(before + after),
-    geometry: { start: { cols: 20, rows: 6 }, changes: [{ offset: Buffer.byteLength(before), cols: to[0], rows: to[1] }] } } });
+  resizedThrough(name, [20, 6], [[before, to]], after);
+const savedOnRow3CursorOnBottom = 'a\x1b[3;1H\x1b7\x1b[6;1Hb';
 const longRows = Array.from({ length: 4 }, (_, i) => `${i}`.repeat(18)).join('\r\n');
 
 // One or more cases per control class the selector used to refuse wholesale.
@@ -124,13 +137,35 @@ const accepted: Case[] = [
   twoRowHistory('decrc-full-history', `${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b8X`),
   twoRowHistory('scorc-full-history', `${rowsOf8}\x1b[3;1H\x1b[s\x1b[6;1H\n\n\x1b[uX`),
   // A resize between the scroll and the restore: the rows it moves between
-  // the screen and the history are not the stream's scrolling. (A height
-  // shrink with a main-screen save is left out: Alacritty clamps the saved
-  // row there and xterm keeps it absolute, before this change too.)
+  // the screen and the history are not the stream's scrolling.
   resizedBetween('main-1049l-scrolled-then-widened', savedThenScrolled, [24, 6], '\x1b[?1049lX'),
   resizedBetween('decrc-scrolled-then-taller', savedThenScrolled, [20, 8], '\x1b8X'),
   resizedBetween('decrc-scrolled-then-narrowed', `${longRows}\x1b[3;1H\x1b7\x1b[6;1H\n\n`, [12, 6], '\x1b8X'),
   resizedBetween('decrc-scrolled-then-widened', `${longRows}\r\n${'z'.repeat(30)}\x1b[3;1H\x1b7\x1b[6;1H\n\n`, [30, 6], '\x1b8X'),
+  // Shorter between a main-screen save and its restore. Shrinking pushes the
+  // rows the cursor needs into history on both; xterm keeps its absolute
+  // saved row (less what its history cap trims), Alacritty clamps its saved
+  // screen row (row_step in native_core.rs).
+  // - The rows pushed for the cursor are not the stream's scrolling:
+  resizedBetween('decrc-shorter-cursor-on-bottom', savedOnRow3CursorOnBottom, [20, 4], '\x1b8X'),
+  resizedBetween('scorc-shorter-cursor-on-bottom', 'a\x1b[3;1H\x1b[s\x1b[6;1Hb', [20, 4], '\x1b[uX'),
+  resizedBetween('main-1049l-shorter-cursor-on-bottom', savedOnRow3CursorOnBottom, [20, 4], '\x1b[?1049lX'),
+  resizedBetween('decrc-shorter-cursor-mid', 'a\x1b[2;1H\x1b7\x1b[5;1Hb', [20, 4], '\x1b8X'),
+  // - A saved row below the new bottom: Alacritty clamps it, xterm keeps it,
+  //   which shows once the stream scrolls.
+  resizedBetween('decrc-shorter-saved-below-bottom', 'a\x1b[6;1H\x1b7\x1b[2;1Hb', [20, 4], '\x1b[4;1H\n\n\x1b8X'),
+  // - xterm's cap trims history rows and moves its saved row with them:
+  resizedThrough('decrc-shorter-full-history', [20, 6], [[`${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1Hb`, [20, 4]]], '\x1b8X', 2),
+  resizedThrough('decrc-shorter-filling-history', [20, 6], [['a\r\nb\r\nc\x1b[4;1H\x1b7\x1b[6;1Hb', [20, 3]]], '\x1b8X', 2),
+  resizedThrough('decrc-shorter-twice', [20, 8], [['a\x1b[5;1H\x1b7\x1b[8;1Hb', [20, 6]], ['x', [20, 4]]], '\x1b8X'),
+  resizedThrough('decrc-shorter-then-taller', [20, 6], [[`a\x1b[4;1H\x1b7\x1b[6;1Hb`, [20, 4]], ['x', [20, 6]]], '\x1b8X'),
+  resizedBetween('decrc-shorter-with-region', 'a\x1b[4;1H\x1b7\x1b[1;5r\x1b[6;1Hb', [20, 4], '\x1b8X'),
+  // - Rows before columns, on both: narrower and wider while shorter.
+  resizedBetween('decrc-narrower-and-shorter', `${'w'.repeat(30)}\r\nb\x1b[3;1H\x1b7\x1b[6;1Hc`, [12, 4], '\x1b8X'),
+  resizedBetween('decrc-wider-and-shorter', `${'w'.repeat(30)}\r\nb\x1b[3;1H\x1b7\x1b[6;1Hc`, [30, 4], '\x1b8X'),
+  // - Shorter with the alternate screen shown: the main screen's save is the
+  //   `?1049h`'s, on the cursor's row, which both move alike.
+  resizedBetween('main-shorter-under-alt', 'a\x1b[5;1H\x1b[?1049hzz', [20, 4], '\x1b[?1049l\n\n\x1b8X'),
   // A line feed inside the save runs first and scrolls before it.
   synthetic('decsc-line-feed-inside', 'a\x1b[6;1H\x1b\n7\x1b[2;1Hb\x1b8X'),
   synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),

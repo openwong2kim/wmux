@@ -1141,6 +1141,39 @@ fn place_like_xterm(term: &mut Term<VoidListener>, history: i64) {
     cursor.point.line = Line(row.clamp(top, bottom) as i32);
 }
 
+/// The row step of a resize on the main screen's grid: the history it leaves
+/// and what to add to the save's history (`SavedCursor::history`).
+///
+/// Both terminals change rows before they reflow columns (Alacritty's
+/// `Grid::resize`; xterm's `Buffer.resize` runs `_reflow` last). The save
+/// stays placeable while xterm's absolute saved row equals the save's
+/// history plus Alacritty's saved screen row (place_like_xterm):
+/// - Shorter: both push the `k` rows the cursor needs into history and drop
+///   the rest from the bottom. xterm keeps its absolute row, less the `e`
+///   rows its history cap trims (`trimStart`, `savedY -= e`); Alacritty
+///   clamps its saved row onto the new screen.
+/// - Taller with the cursor on the bottom row: both pull `f` history rows
+///   down. Alacritty moves its saved row down by `f`; xterm's stays.
+/// - Taller otherwise: blank rows below, nothing moves.
+fn row_step(grid: &Grid<Cell>, target: usize, scrollback: usize) -> (i64, i64) {
+    let rows = grid.screen_lines() as i64;
+    let target = target as i64;
+    let history = grid.history_size() as i64;
+    let cursor = i64::from(grid.cursor.point.line.0);
+    let saved = i64::from(grid.saved_cursor.point.line.0);
+    if target < rows {
+        let k = (cursor + 1 - target).max(0);
+        let kept = (history + k).min(scrollback as i64);
+        let trimmed = history + k - kept;
+        (kept, saved - trimmed - saved.min(target - 1))
+    } else if target > rows && cursor + 1 >= rows {
+        let pulled = history.min(target - rows);
+        (history - pulled, -pulled)
+    } else {
+        (history, 0)
+    }
+}
+
 /// A DECRST that resets 1049, read as `track` reads it (C0 controls inside
 /// run and are not part of it): `Some(true)` with 1049 as its only mode in
 /// plain digits, `Some(false)` in a list (`divergent` refuses a sub-parameter
@@ -1492,11 +1525,13 @@ impl NativeTerminal {
         }
         // A resize moves rows between the screen and the history on both
         // terminals, and each adjusts its saved row by its own rules. Carry
-        // the change, so a later restore counts only the rows the stream
-        // scrolled (place_like_xterm).
-        let before = primary.history_size() as i64;
+        // the difference, so a later restore counts only the rows the stream
+        // scrolled (place_like_xterm): the row step's, computed here, then
+        // the column step's, read from the history the reflow moved.
+        let (history_rows, carry) =
+            row_step(primary, size.screen_lines(), self.scrollback as usize);
         term.resize(size);
-        self.feed.saved[0].history += main_grid(term).history_size() as i64 - before;
+        self.feed.saved[0].history += carry + main_grid(term).history_size() as i64 - history_rows;
         if synchronized {
             self.parser.advance(term, b"\x1b[?2026h");
         }
@@ -2466,6 +2501,51 @@ mod tests {
             feed.refused.map(|r| r.split(':').next().unwrap_or(r)),
             term.grid().cursor.point.line.0,
         )
+    }
+
+    #[test]
+    fn row_step_predicts_the_history_alacritty_s_row_step_leaves() {
+        // Every history, cursor row, saved row and height from 6 rows, with
+        // the scrollback cap at 3: the history row_step predicts is the one
+        // the vendored grid leaves, and its saved row moves as the carry
+        // assumes (clamped when shorter, down by the rows pulled when taller).
+        for scrolled in 0..6 {
+            for cursor in 0..6 {
+                for saved in 0..6 {
+                    for target in 1..10 {
+                        let config = Config {
+                            scrolling_history: 3,
+                            ..Config::default()
+                        };
+                        let mut term = Term::new(config, &Size { cols: 10, rows: 6 }, VoidListener);
+                        let mut parser: Processor = Processor::new();
+                        let text = format!(
+                            "{}\x1b[{};1H\x1b7\x1b[{};1H",
+                            "x\r\n".repeat(5 + scrolled),
+                            saved + 1,
+                            cursor + 1
+                        );
+                        parser.advance(&mut term, text.as_bytes());
+                        let (history, carry) = super::row_step(term.grid(), target, 3);
+                        let before = term.grid().history_size() as i64;
+                        term.resize(Size {
+                            cols: 10,
+                            rows: target,
+                        });
+                        let grid = term.grid();
+                        let case = (scrolled, cursor, saved, target, before);
+                        assert_eq!(grid.history_size() as i64, history, "{case:?}");
+                        let moved = i64::from(grid.saved_cursor.point.line.0) - saved as i64;
+                        let expected = if target < 6 {
+                            (saved as i64).min(target as i64 - 1) - saved as i64
+                        } else {
+                            before - history
+                        };
+                        assert_eq!(moved, expected, "{case:?} carry {carry}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
