@@ -218,8 +218,27 @@ The **Remote** page has a **Messages between PCs** section:
 
   Each held item has **Reject**, which ends it and tells the other PC, and
   **Send to the current agent**, which
-  delivers it to the agent in that pane now. Held work that nobody handles
-  is rejected automatically after 24 hours.
+  delivers it to the agent in that pane now.
+  - A reply held because the pane had no agent is offered again on its own
+    once a later reply on the same task is about to be written to that pane.
+    It goes first, in order, under the line `[wmux] delayed: sent <time>,
+    held because no agent was in the pane`. If it still cannot be written it
+    stays held, and the new reply goes anyway.
+  - After 24 hours a held reply is dropped on its own; its task stays open on
+    both PCs. When the other PC's build knows it (feature `held-notice.1`),
+    it is told once, in wmux's own words, which of its messages was dropped
+    and when it was sent; that notice is never an answer and never moves the
+    task. An older build is told nothing.
+  - A task whose own first message was never delivered still ends after 24
+    hours, as before.
+  - `a2a_task_query` lists a remote task's held and dropped messages as
+    `heldUnits` (id, reason, since when; the text stays in the task's
+    history).
+- **Ended tasks.** A remote task that failed or was canceled stays in
+  `a2a_task_query` for 24 hours (any other ended task for 30 minutes), with
+  its reason under `untrusted.reason` on the summary row. Asked for by id
+  after that, within another 24 hours, the answer is that it ended and is no
+  longer kept, rather than "not found".
 
 ## Company tasks across PCs
 
