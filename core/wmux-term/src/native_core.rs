@@ -243,7 +243,7 @@ const OPEN_ROUND_TRIP: &str = "unsupported-state-mode: the stream ends between ?
 /// Not counted past a first refusal: `scan` has no screen to read history
 /// from.
 const RESTORE_ROW: &str =
-    "unsupported-state-restore-row: a main-screen ?1049l after the history shrank (ED 3) puts xterm's cursor below the screen";
+    "unsupported-state-restore-row: a cursor restore on the main screen (DECRC, SCORC, ?1049l) after the history shrank (ED 3) puts xterm's cursor below the screen";
 
 /// Alternate-screen and mouse controls that Alacritty ignores (vte maps no
 /// mode 9, 47 or 1047) and that xterm runs, which leave the same screen as
@@ -372,6 +372,9 @@ struct XtermFeed {
     dec_slots: [bool; 4],
     /// xterm's saved cursor on the main and the alternate screen.
     saved: [SavedCursor; 2],
+    /// The sequence just tracked is a DECRC or SCORC on the main screen, by
+    /// this tracker's screen: `feed` moves Alacritty's restored row.
+    main_restore: bool,
 }
 
 /// What xterm's DECRC restores and Alacritty's does not (Buffer.saved*),
@@ -391,7 +394,7 @@ struct SavedCursor {
     origin: bool,
     /// The main screen's history (rows above the screen) at the save, on the
     /// main screen only: the alternate screen keeps none. xterm saves an
-    /// absolute row, Alacritty a screen row (restore_like_xterm).
+    /// absolute row, Alacritty a screen row (place_like_xterm).
     history: i64,
 }
 
@@ -611,7 +614,10 @@ impl XtermFeed {
         };
         match sequence {
             b"\x1b7" => self.save_cursor(screen, history),
-            b"\x1b8" => self.restore_cursor(screen),
+            b"\x1b8" => {
+                self.restore_cursor(screen);
+                self.main_restore = screen == 0;
+            }
             b"\x1bc" => {
                 self.no_wraparound = false;
                 self.origin = false;
@@ -644,7 +650,10 @@ impl XtermFeed {
                     *set == b'0',
                 ),
             _ if plain_csi(b's') => self.save_cursor(screen, history),
-            _ if plain_csi(b'u') => self.restore_cursor(screen),
+            _ if plain_csi(b'u') => {
+                self.restore_cursor(screen);
+                self.main_restore = screen == 0;
+            }
             _ => {}
         }
     }
@@ -923,6 +932,18 @@ impl XtermFeed {
                     }
                     _ => {}
                 }
+                if std::mem::take(&mut self.main_restore) {
+                    // A DECRC or SCORC Alacritty runs itself, onto its saved
+                    // screen row: move it to xterm's row on the main screen.
+                    parser.advance(term, &data[from..at + len]);
+                    from = at + len;
+                    let history = self.saved[0].history;
+                    let placed = with_sync_flushed(parser, term, |term| {
+                        term.mode().contains(TermMode::ALT_SCREEN)
+                            || place_like_xterm(term, history)
+                    });
+                    self.refuse(!placed, RESTORE_ROW);
+                }
                 if self.alt_reflow && self.may_leave_alt {
                     // Leaving the alternate screen, or a reset there, drops
                     // its rows on both (xterm at once, Alacritty on the next
@@ -1065,7 +1086,21 @@ fn main_history(parser: &mut Processor, term: &mut Term<VoidListener>) -> usize 
 /// xterm's restoreCursor (DECRC) on Alacritty's main screen, once the parser
 /// has taken the control that runs it. xterm puts back the colours, not the
 /// open hyperlink (`extended.urlId` stays), and clamps the cursor into the
-/// last column, which drops a pending wrap.
+/// last column, which drops a pending wrap. The row is xterm's
+/// (place_like_xterm).
+fn restore_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, history: i64) -> bool {
+    with_sync_flushed(parser, term, |term| {
+        let link = term.grid().cursor.template.hyperlink();
+        term.restore_cursor_position();
+        let cursor = &mut term.grid_mut().cursor;
+        cursor.template.set_hyperlink(link);
+        cursor.input_needs_wrap = false;
+        place_like_xterm(term, history)
+    })
+}
+
+/// Moves the cursor a restore on the main screen just put on Alacritty's
+/// saved screen row to xterm's row.
 ///
 /// xterm saves an absolute row (`ybase + y`) and restores `savedY - ybase`,
 /// at least 0; Alacritty saves a screen row. Each row the stream scrolled
@@ -1073,22 +1108,16 @@ fn main_history(parser: &mut Processor, term: &mut Term<VoidListener>) -> usize 
 /// xterm's restored row up by one. A history that shrank (ED 3) moves it
 /// down, past the screen when it shrank by more than the rows below the
 /// saved one: false then, as no row here matches it.
-fn restore_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, history: i64) -> bool {
-    with_sync_flushed(parser, term, |term| {
-        let link = term.grid().cursor.template.hyperlink();
-        let row = i64::from(term.grid().saved_cursor.point.line.0) + history
-            - term.grid().history_size() as i64;
-        term.restore_cursor_position();
-        let rows = term.screen_lines() as i64;
-        let cursor = &mut term.grid_mut().cursor;
-        cursor.template.set_hyperlink(link);
-        cursor.input_needs_wrap = false;
-        if row >= rows {
-            return false;
-        }
-        cursor.point.line = Line(row.max(0) as i32);
-        true
-    })
+fn place_like_xterm(term: &mut Term<VoidListener>, history: i64) -> bool {
+    let rows = term.screen_lines() as i64;
+    let now = term.grid().history_size() as i64;
+    let cursor = &mut term.grid_mut().cursor;
+    let row = i64::from(cursor.point.line.0) + history - now;
+    if row >= rows {
+        return false;
+    }
+    cursor.point.line = Line(row.max(0) as i32);
+    true
 }
 
 /// A DECRST that resets 1049, read as `track` reads it (C0 controls inside
@@ -1446,8 +1475,8 @@ impl NativeTerminal {
         }
         // A resize moves rows between the screen and the history on both
         // terminals, and each adjusts its saved row by its own rules. Carry
-        // the change, so a later ?1049l counts only the rows the stream
-        // scrolled (restore_like_xterm).
+        // the change, so a later restore counts only the rows the stream
+        // scrolled (place_like_xterm).
         let before = primary.history_size() as i64;
         term.resize(size);
         let main = if term.mode().contains(TermMode::ALT_SCREEN) {
@@ -2467,6 +2496,35 @@ mod tests {
         assert_eq!(
             restored(&[filled, "\x1b[2;1H\x1b7\x1b[3J\x1b[!p\x1b[?1049l"]),
             (None, 0)
+        );
+    }
+
+    #[test]
+    fn a_decrc_on_the_main_screen_restores_xterm_s_row_after_a_scroll() {
+        let restored = |chunks: &[&str]| {
+            let (mut term, mut parser, feed) = feed_with(chunks);
+            parser.advance(&mut term, &feed.held);
+            (
+                feed.refused.map(|r| r.split(':').next().unwrap_or(r)),
+                term.grid().cursor.point.line.0,
+            )
+        };
+        assert_eq!(restored(&["a\x1b[2;1H\x1b7\x1b[3;1H\x1b8"]), (None, 1));
+        assert_eq!(restored(&["a\x1b[2;1H\x1b7\x1b[3;1H\n\x1b8"]), (None, 0));
+        // SCOSC and SCORC alike.
+        assert_eq!(restored(&["a\x1b[2;1H\x1b[s\x1b[3;1H\x1b[u"]), (None, 1));
+        assert_eq!(restored(&["a\x1b[2;1H\x1b[s\x1b[3;1H\n\x1b[u"]), (None, 0));
+        // The alternate screen keeps no history: its row stays.
+        assert_eq!(
+            restored(&["\x1b[?1049h\x1b[2;1H\x1b7\x1b[3;1H\n\x1b8"]),
+            (None, 1)
+        );
+        // ED 3 past the rows below the save: refused.
+        let filled = "1\r\n2\r\n3\r\n4\r\n5";
+        assert_eq!(restored(&[filled, "\x1b[1;1H\x1b7\x1b[3J\x1b8"]), (None, 2));
+        assert_eq!(
+            restored(&[filled, "\x1b[2;1H\x1b7\x1b[3J\x1b8"]).0,
+            Some("unsupported-state-restore-row")
         );
     }
 

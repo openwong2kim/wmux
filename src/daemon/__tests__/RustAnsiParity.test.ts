@@ -98,6 +98,18 @@ const accepted: Case[] = [
   // A full history keeps its size as rows scroll: both keep the screen row.
   twoRowHistory('main-1049l-full-history', `${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b[?1049lX`),
   twoRowHistory('main-1049l-filling-history', 'a\r\nb\x1b[3;1H\x1b7\x1b[6;1H\n\n\n\n\x1b[?1049lX'),
+  // DECRC and SCORC on the main screen restore xterm's row the same way;
+  // a region that does not start at the top scrolls nothing into history.
+  synthetic('decrc-no-scroll', 'a\x1b[3;1H\x1b7\x1b[6;1Hb\x1b8X'),
+  synthetic('decrc-scrolled', `${savedThenScrolled}\x1b8X`),
+  synthetic('scorc-scrolled', 'a\x1b[3;1H\x1b[s\x1b[6;1H\n\n\x1b[uX'),
+  // (The region is reset at the end: neither snapshot serializes margins.)
+  synthetic('decrc-scrolled-region', 'a\x1b[1;4r\x1b[3;1H\x1b7\x1b[4;1H\n\n\x1b8X\x1b[r'),
+  synthetic('scorc-scrolled-region', 'a\x1b[1;4r\x1b[3;1H\x1b[s\x1b[4;1H\n\n\x1b[uX\x1b[r'),
+  synthetic('decrc-scrolled-inner-region', 'a\x1b[2;5r\x1b[3;1H\x1b7\x1b[5;1H\n\n\x1b8X\x1b[r'),
+  synthetic('decrc-ed3', `${rowsOf8}\x1b[1;1H\x1b7\x1b[3J\x1b8X`),
+  twoRowHistory('decrc-full-history', `${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b8X`),
+  twoRowHistory('scorc-full-history', `${rowsOf8}\x1b[3;1H\x1b[s\x1b[6;1H\n\n\x1b[uX`),
   // A resize between the scroll and the restore that moves no row.
   ({ name: 'main-1049l-scrolled-then-widened', backend: 'rust', req: { cols: 24, rows: 6, scrollback: 100,
     initial: Buffer.from(`${savedThenScrolled}\x1b[?1049lX`),
@@ -212,6 +224,7 @@ const refused: Case[] = [
   // ED 3 cleared more history than the rows below the save: xterm's
   // restored row is past the bottom of its screen.
   synthetic('main-1049l-ed3-below-screen', `${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b[?1049lX`, 'xterm'),
+  synthetic('decrc-ed3-below-screen', `${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b8X`, 'xterm'),
   synthetic('decstr-decrc-nowrap', `\x1b[?7l\x1b7\x1b[!p\x1b8${'x'.repeat(25)}`, 'xterm'),
   synthetic('decrc-unsaved-nowrap', `\x1b[?7l\x1b8${'x'.repeat(25)}`, 'xterm'),
   synthetic('decstr-cut-by-del', 'ab\x1b[4h\x1b[!\x7fpcd', 'xterm'),
