@@ -205,9 +205,22 @@ With headless mode on:
   agent is given other input on the host during its turn, when its turn is
   interrupted or ends on an error, or when the agent ends before answering
   (its session ends, its link ends, headless mode is turned off, or the
-  daemon restarts). A usage-limit pause is waited out. An answer larger
+  daemon stops or restarts; a daemon that is stopped tells the asking PC
+  before it closes its links). A usage-limit pause is waited out. An answer larger
   than 32 KiB is cut: its start goes back, ending with a line that says how
   many bytes were left out.
+- Work the agent leaves running in the background (a command it ran in the
+  background, an agent it started without waiting, a Monitor) is waited for.
+  A turn that ends while such work runs sends its text as a reply, and the
+  task keeps `working`; the answer is the first turn end after the agent
+  heard the work ended. If the work still runs 30 minutes after the turn
+  that left it running, the answer goes at the agent's next pause, saying
+  the work still runs on the host.
+  Afterwards, what the agent says in a turn nobody on the host started (that
+  work ending, a wake-up it set itself) is sent as a further reply on the
+  same task, until the asking PC sends something, someone types into the
+  agent on the host, or the task ends. A task gets at most 5 such replies
+  (progress included).
 - What the asking PC sends to the same agent afterwards (follow-ups: a new
   task, or a reply on a task that waits for more) depends on `--follow-ups`.
   With `direct`, each is typed in once the agent finished the one before, in
