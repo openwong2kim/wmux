@@ -235,7 +235,8 @@ describe('removeTempDirInside', () => {
     fs.mkdirSync(nested);
     expect(removeTempDirInside(root, nested)).toBe(false);
     expect(removeTempDirInside(root, outside)).toBe(false);
-    expect(removeTempDirInside(root, path.relative(process.cwd(), dir))).toBe(false);
+    // A bare name: path.relative would give an absolute path across Windows drives.
+    expect(removeTempDirInside(root, path.basename(dir))).toBe(false);
     expect(removeTempDirInside(root, `${root}${path.sep}..${path.sep}${path.basename(outside)}`)).toBe(false);
     const st = fs.lstatSync(dir, { bigint: true });
     expect(removeTempDirInside(root, dir, { dev: st.dev, ino: st.ino + 1n })).toBe(false);
