@@ -112,7 +112,6 @@ describe('a worker status on the asking PC', () => {
     const pinned = Date.parse(shown(taskId)!.since as string);
     expect(pinned).toBeLessThanOrEqual(Date.now() + 60_000);
     // A later real status still replaces it (it is not held back by the far-future date).
-    await new Promise((r) => setTimeout(r, 5));
     await delivery.accept(statusEnv(linkId, taskId, { kind: 'waiting-input', since: new Date(Date.now() + 61_000).toISOString() }), { hostId: HOST });
     expect(shown(taskId)!.kind).toBe('waiting-input');
     // An older one does not.

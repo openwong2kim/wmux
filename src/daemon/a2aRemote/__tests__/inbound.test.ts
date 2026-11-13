@@ -380,6 +380,7 @@ describe('acceptInbound — peer text is made safe before it is stored', () => {
     expect(await acceptInbound(e, peer, deps)).toMatchObject({ ok: true });
     const text = (tasks.getTask(remoteTaskId(linkId, e.messageId))!.history[0].parts[0] as { text: string }).text;
     expect(text).toBe('ok linerm -rf ~\nforged\ttab\nnext');
+    // eslint-disable-next-line no-control-regex -- checking control characters are gone
     expect(text).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
   });
 
