@@ -12,8 +12,8 @@ import path from 'node:path';
  * first dir of a prefix in a process is made. It removes a dir only when all of
  * these hold:
  *
- * - the temp dir's realpath is a dir no other user can rename entries in (not
- *   group- or world-writable, or sticky);
+ * - the temp dir's realpath is a dir no other user can rename entries in: owned
+ *   by this user or root, and not group- or world-writable, or sticky;
  * - the dir's name is exactly `prefix` plus mkdtemp's six characters, directly
  *   in that realpath (no other prefix, no nested path);
  * - lstat says it is a real directory, not a link, its realpath is that same
@@ -37,11 +37,18 @@ export const STALE_TEMP_DIR_AGE_MS = 24 * 60 * 60 * 1000;
 export const SWEEP_MARKER = '.wmux-sweepable-test-dir';
 
 const MKDTEMP_SUFFIX = '[A-Za-z0-9]{6}';
+/** A plain mkdtemp prefix ending in a dash: no path separator, no regex metacharacter but '.'. */
+const PREFIX_SHAPE = /^[A-Za-z0-9._-]+-$/;
 const ownUid = (): number | null => (typeof process.getuid === 'function' ? process.getuid() : null);
 
-/** Not group- or world-writable, or sticky: no other user can swap an entry in it. */
+/**
+ * Owned by this user or root, and not group- or world-writable, or sticky: no
+ * other user can swap an entry in it.
+ */
 function rootClosed(st: fs.Stats, uid: number | null): boolean {
-  return st.isDirectory() && (uid === null || (st.mode & 0o022) === 0 || (st.mode & 0o1000) !== 0);
+  if (!st.isDirectory()) return false;
+  if (uid === null) return true;
+  return (st.uid === uid || st.uid === 0) && ((st.mode & 0o022) === 0 || (st.mode & 0o1000) !== 0);
 }
 
 /** Slack for clock adjustments when comparing a lock's time with the boot time. */
@@ -63,19 +70,25 @@ function hasMarker(dir: string, uid: number | null): boolean {
 }
 
 /**
- * The sweep's one removal path. Removes `dir` only when it sits directly in
- * `root`'s realpath, lstat says it is a real directory (not a link), its
- * realpath is itself, and, when `expected` is given, it is still that dir
- * (dev, ino). fs.rmSync unlinks the links inside instead of following them.
- * Returns whether it removed the dir; never throws.
+ * The sweep's one removal path. Removes `dir` only when, checked right before
+ * the removal, it sits directly in `root`'s realpath; lstat says it is a real
+ * directory (not a link), owned by this user and closed to others; when
+ * `expected` is given it is still that dir (dev, ino, compared as bigints);
+ * its realpath is itself; and it holds SWEEP_MARKER. fs.rmSync unlinks the
+ * links inside instead of following them. Returns whether it removed the
+ * dir; never throws.
  */
-export function removeTempDirInside(root: string, dir: string, expected?: { dev: number; ino: number }): boolean {
+export function removeTempDirInside(root: string, dir: string, expected?: { dev: bigint; ino: bigint }): boolean {
+  const uid = ownUid();
   try {
     if (path.dirname(dir) !== fs.realpathSync(root)) return false;
     const st = fs.lstatSync(dir);
-    if (!st.isDirectory()) return false;
-    if (expected && (st.dev !== expected.dev || st.ino !== expected.ino)) return false;
-    if (fs.realpathSync(dir) !== dir) return false;
+    if (!st.isDirectory() || !ownedAndClosed(st, uid)) return false;
+    if (expected) {
+      const id = fs.lstatSync(dir, { bigint: true });
+      if (id.dev !== expected.dev || id.ino !== expected.ino) return false;
+    }
+    if (fs.realpathSync(dir) !== dir || !hasMarker(dir, uid)) return false;
     fs.rmSync(dir, { recursive: true, force: true });
     return true;
   } catch {
@@ -155,7 +168,7 @@ export interface SweepOptions {
 /** Remove the stale dirs of `prefix`; returns the paths removed. Never throws. */
 export function sweepStaleTempDirs(prefix: string, opts: SweepOptions = {}): string[] {
   const removed: string[] = [];
-  if (!/^[A-Za-z0-9._-]+-$/.test(prefix)) return removed;
+  if (!PREFIX_SHAPE.test(prefix)) return removed;
   const uid = ownUid();
   let root: string;
   try {
@@ -179,9 +192,9 @@ export function sweepStaleTempDirs(prefix: string, opts: SweepOptions = {}): str
     if (!pattern.test(name)) continue;
     const dir = path.join(root, name);
     try {
-      const first = fs.lstatSync(dir);
-      if (!first.isDirectory() || !ownedAndClosed(first, uid) || !hasMarker(dir, uid)) continue;
-      if (fs.realpathSync(dir) !== dir) continue;
+      // Cheap checks first; removeTempDirInside checks place, kind and marker again at the end.
+      const first = fs.lstatSync(dir, { bigint: true });
+      if (!first.isDirectory() || !hasMarker(dir, uid)) continue;
       if (inUse(dir) || !allOlderThan(dir, now - maxAgeMs)) continue;
       if (removeTempDirInside(root, dir, first)) removed.push(dir);
     } catch {
@@ -200,6 +213,10 @@ const swept = new Set<string>();
  * sweeps that prefix's stale dirs before making the new one.
  */
 export function makeSweepableTempDir(prefix: string): string {
+  // A prefix the sweep would refuse would leave marked dirs no sweep removes.
+  if (!PREFIX_SHAPE.test(prefix)) {
+    throw new Error(`makeSweepableTempDir: not a plain mkdtemp prefix ending in '-': ${JSON.stringify(prefix)}`);
+  }
   const key = `${os.tmpdir()}\0${prefix}`;
   if (!swept.has(key)) {
     swept.add(key);
@@ -209,7 +226,14 @@ export function makeSweepableTempDir(prefix: string): string {
   try {
     fs.writeFileSync(path.join(dir, SWEEP_MARKER), '', { flag: 'wx', mode: 0o600 });
   } catch (err) {
-    removeTempDirInside(os.tmpdir(), dir);
+    // Undo the mkdtemp: unmarked, so no sweep would ever remove it. Not recursive:
+    // only this empty dir (or one holding a partly written marker) goes.
+    try {
+      fs.rmSync(path.join(dir, SWEEP_MARKER), { force: true });
+      fs.rmdirSync(dir);
+    } catch {
+      // Kept: nothing more can be done without a recursive removal.
+    }
     throw err;
   }
   return dir;

@@ -209,6 +209,19 @@ describe('removeTempDirInside', () => {
     expect(fs.readFileSync(path.join(outside, 'keep-me'), 'utf8')).toBe('x');
   });
 
+  it('refuses a dir without the marker, checked at the removal itself', () => {
+    const dir = leftover(`${PREFIX}NoMrk3`, 0, false);
+    expect(removeTempDirInside(root, dir)).toBe(false);
+    expect(fs.existsSync(dir)).toBe(true);
+  });
+
+  it.skipIf(isWin)('refuses a dir open to other users, checked at the removal itself', () => {
+    const dir = leftover(`${PREFIX}Open02`, 0);
+    fs.chmodSync(dir, 0o755);
+    expect(removeTempDirInside(root, dir)).toBe(false);
+    expect(fs.existsSync(dir)).toBe(true);
+  });
+
   it('refuses a file', () => {
     const file = path.join(root, `${PREFIX}File01`);
     fs.writeFileSync(file, 'x');
@@ -224,8 +237,8 @@ describe('removeTempDirInside', () => {
     expect(removeTempDirInside(root, outside)).toBe(false);
     expect(removeTempDirInside(root, path.relative(process.cwd(), dir))).toBe(false);
     expect(removeTempDirInside(root, `${root}${path.sep}..${path.sep}${path.basename(outside)}`)).toBe(false);
-    const st = fs.lstatSync(dir);
-    expect(removeTempDirInside(root, dir, { dev: st.dev, ino: st.ino + 1 })).toBe(false);
+    const st = fs.lstatSync(dir, { bigint: true });
+    expect(removeTempDirInside(root, dir, { dev: st.dev, ino: st.ino + 1n })).toBe(false);
     expect(fs.existsSync(nested) && fs.existsSync(outside)).toBe(true);
     expect(removeTempDirInside(root, dir, st)).toBe(true);
   });
@@ -243,6 +256,14 @@ describe('makeSweepableTempDir', () => {
     expect(fs.lstatSync(path.join(made, SWEEP_MARKER)).isFile()).toBe(true);
     expect(fs.existsSync(stale)).toBe(false);
     expect(kept()).toEqual([path.basename(made), `${PREFIX}NoMrk2`].sort());
+  });
+
+  it('refuses a prefix the sweep would refuse, making nothing', () => {
+    for (const k of ['TMPDIR', 'TEMP', 'TMP']) vi.stubEnv(k, root);
+    for (const bad of ['wmux-no-dash', '../wmux-up-', 'a/b-', '']) {
+      expect(() => makeSweepableTempDir(bad), JSON.stringify(bad)).toThrow(/not a plain mkdtemp prefix/);
+    }
+    expect(kept()).toEqual([]);
   });
 });
 
