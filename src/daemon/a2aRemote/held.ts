@@ -122,7 +122,12 @@ export async function sendHeldNotices(deps: HeldDeps): Promise<number> {
       const takes = item.kind === 'reply' && !ended ? deps.takesNotice?.(marker!.hostId) : false;
       if (takes === undefined) continue;
       if (takes) {
-        const res = sendHeldNotice(deps, { taskId: task.id, messageId: item.messageId, at: item.rejected.at });
+        const res = sendHeldNotice(deps, {
+          taskId: task.id,
+          messageId: item.messageId,
+          at: item.rejected.at,
+          ...(item.rejected.held === 'delivery-unconfirmed' ? { unconfirmed: true } : {}),
+        });
         if (!res.ok) continue;
         sent += 1;
       }

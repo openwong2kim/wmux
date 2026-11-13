@@ -307,19 +307,19 @@ export function heldNoticeMessageId(messageId: string): string {
  * caller's to check. The peer shows its own fixed text; `text` is the same
  * fixed words, for a reader of the raw envelope.
  */
-export function sendHeldNotice(deps: StateDeps, input: { taskId: string; messageId: string; at: string }): OutboundResult {
+export function sendHeldNotice(deps: StateDeps, input: { taskId: string; messageId: string; at: string; unconfirmed?: boolean }): OutboundResult {
   const found = remoteTaskAndLink(deps, input.taskId);
   if (!found.ok) return found;
   const { task, link } = found;
   if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: false, error: 'ended' };
   const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'reply', undefined, { onThisLink: true });
   if (!check.ok) return { ok: false, error: check.error };
-  const notice: A2aRemoteNoticeV1 = { kind: 'held-expired', messageId: input.messageId, sentAt: input.at };
+  const notice: A2aRemoteNoticeV1 = { kind: 'held-expired', messageId: input.messageId, sentAt: input.at, ...(input.unconfirmed ? { unconfirmed: true as const } : {}) };
   try {
     deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, heldNoticeMessageId(input.messageId), {
       kind: 'reply',
       taskId: task.id,
-      text: heldNoticeText(input.messageId, undefined),
+      text: heldNoticeText(input.messageId, undefined, input.unconfirmed === true),
       notice,
     }));
   } catch (err) {
@@ -554,7 +554,9 @@ function spawnLinkBody(
     // A status is rebuilt from its checked shape; the only free text, its options, redacted.
     ...(body.status ? { status: spawnLinkStatus(body.status) } : {}),
     // A notice is ids and a time only, rebuilt from its checked shape.
-    ...(body.notice ? { notice: { kind: body.notice.kind, messageId: body.notice.messageId, sentAt: body.notice.sentAt } } : {}),
+    ...(body.notice ? {
+      notice: { kind: body.notice.kind, messageId: body.notice.messageId, sentAt: body.notice.sentAt, ...(body.notice.unconfirmed ? { unconfirmed: true as const } : {}) },
+    } : {}),
   };
 }
 

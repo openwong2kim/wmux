@@ -313,7 +313,13 @@ export interface A2aRemoteInboxItem {
    * open. `notice`: whether the PC that sent it was told (`held-notice.1`);
    * `not-sent` when that PC does not take a notice.
    */
-  rejected?: { reason: 'held-expired'; at: string; notice: 'pending' | 'sent' | 'not-sent' };
+  rejected?: {
+    reason: 'held-expired';
+    at: string;
+    notice: 'pending' | 'sent' | 'not-sent';
+    /** The hold it had when it was dropped: `delivery-unconfirmed` means it may have reached the pane. */
+    held?: A2aRemoteHeldReason;
+  };
 }
 
 /**
@@ -358,10 +364,15 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
 /** A hold older than this is rejected automatically (`held-expired`). */
 export const A2A_REMOTE_HOLD_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** What a pane is shown for a notice: fixed words, this PC's own send time and the message id only. */
-export function heldNoticeText(messageId: string, sentAt: string | undefined): string {
+/**
+ * What a pane is shown for a notice: fixed words, this PC's own send time and the message id only.
+ * `unconfirmed`: a paste was started there and never confirmed, so it may have reached the pane.
+ */
+export function heldNoticeText(messageId: string, sentAt: string | undefined, unconfirmed = false): string {
   const when = sentAt && !Number.isNaN(Date.parse(sentAt)) ? new Date(Date.parse(sentAt)).toISOString() : 'an unknown time';
-  return `[wmux] Your message ${messageId} sent ${when} was not delivered: the other PC held it, could not write it to the pane, and dropped it after 24 hours. The task stays open.`;
+  return unconfirmed
+    ? `[wmux] Your message ${messageId} sent ${when} may not have been delivered: the other PC started writing it to the pane but never confirmed it, and stopped trying after 24 hours. The task stays open.`
+    : `[wmux] Your message ${messageId} sent ${when} was not delivered: the other PC held it, could not write it to the pane, and dropped it after 24 hours. The task stays open.`;
 }
 
 /** The line put before a held message that is offered again once its pane has an agent. */

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteDeliveryResult, A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import type { Task } from '../../../shared/types';
-import { REMOTE_BRIDGE_RETRY_MIN_MS, RemoteA2aBridge } from '../RemoteA2aBridge';
+import { REMOTE_BRIDGE_REOFFER_PER_PASS, REMOTE_BRIDGE_RETRY_MIN_MS, RemoteA2aBridge } from '../RemoteA2aBridge';
 
 const LINK = '11111111-1111-4111-8111-111111111111';
 const HOST = '22222222-2222-4222-8222-222222222222';
@@ -620,6 +620,45 @@ describe('RemoteA2aBridge — a reply held for want of an agent is offered again
     bridge.start();
     await settle();
     expect(notified().map((p) => p.messageId)).toEqual(['r0']);
+  });
+
+  it('"Send to the current agent" on one a paste was started on and never confirmed: it reads as unconfirmed first, never pasted as if untouched (#3344)', async () => {
+    taskWithHeldReply({ attempted: true, r2: false });
+    expect(await bridge.retryHeld(id(7))).toEqual({ ok: true, results: [{ messageId: 'r1', outcome: 'delivery-unconfirmed' }] });
+    expect(notified()).toEqual([]);
+    expect(item('r1')).toMatchObject({ held: 'delivery-unconfirmed' });
+    // Asked again, now that it says what it is: sent as the person chose.
+    expect(await bridge.retryHeld(id(7))).toEqual({ ok: true, results: [{ messageId: 'r1', outcome: 'delivered' }] });
+    expect(notified().map((p) => p.messageId)).toEqual(['r1']);
+  });
+
+  it(`at most ${REMOTE_BRIDGE_REOFFER_PER_PASS} offered again per pull, after every other task's delivery has started; the rest and the new reply wait (#3344)`, async () => {
+    const t = taskWithHeldReply();
+    const marker = t.metadata.remote as A2aRemoteTaskState;
+    const extra = ['h2', 'h3', 'h4'];
+    for (const m of extra) t.history.push({ kind: 'message', messageId: m, role: 'user', parts: [{ kind: 'text', text: m }] });
+    marker.inbox!.splice(1, 0, ...extra.map((m) => ({ messageId: m, kind: 'reply' as const, at: '2026-11-12T06:05:00.000Z', delivered: false, held: 'no-agent' as const, heldAt: '2026-11-12T06:15:00.000Z' })));
+    // Another task with a reply to hand over, and nothing held.
+    const other = remoteTask(8);
+    const om = other.metadata.remote as A2aRemoteTaskState;
+    om.delivered = true;
+    other.status.state = 'working';
+    other.history.push({ kind: 'message', messageId: 'b1', role: 'user', parts: [{ kind: 'text', text: 'other task' }] });
+    om.inbox = [{ messageId: 'b1', kind: 'reply', delivered: false }];
+    daemon.tasks.set(other.id, other);
+
+    bridge.start();
+    await settle();
+    const first = notified().map((p) => p.messageId);
+    expect(first.filter((m) => m !== 'b1')).toEqual(['r1', 'h2', 'h3']);
+    expect(first.indexOf('b1')).toBeGreaterThan(-1);
+    expect(first.indexOf('b1')).toBeLessThan(first.indexOf('r1'));
+    expect(item('h4')).toMatchObject({ held: 'no-agent' });
+    expect(item('r2').delivered).toBe(false);
+
+    await bridge.trigger();
+    await settle();
+    expect(notified().map((p) => p.messageId).slice(first.length)).toEqual(['h4', 'r2']);
   });
 
   it('never offered again: without its text here, held for another reason, or with no new reply on the task', async () => {

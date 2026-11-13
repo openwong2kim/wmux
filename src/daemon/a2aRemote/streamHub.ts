@@ -5,6 +5,7 @@ import {
   A2A_ROUTES,
   A2A_STREAM_SILENCE_MS,
   parseA2aFeatures,
+  type A2aOutboxRecordV1,
   type A2aRemoteDeliverResponse,
   type A2aRemoteErrorCode,
   type A2aStreamCursor,
@@ -64,6 +65,11 @@ export interface A2aStreamHubDeps {
   onFeatures?: (hostId: HostId, features: string[]) => void;
   /** What THIS PC takes, told to every joiner in the stream's `hello` (`A2aStreamHello.features`). */
   features?: readonly string[];
+  /**
+   * Checked as each record goes out: true keeps it off the stream (the
+   * caller refuses it, or it stays owed and is checked again next time).
+   */
+  withhold?: (hostId: HostId, rec: A2aOutboxRecordV1) => boolean;
   heartbeatMs?: number;
   /** A `stream-ping.1` joiner silent this long loses its stream (default `A2A_STREAM_SILENCE_MS`). */
   silenceMs?: number;
@@ -276,6 +282,7 @@ export class A2aStreamHub {
     const epoch = this.deps.outbox.epoch;
     for (const rec of this.deps.outbox.pending(hostId)) {
       if (rec.seq <= stream.lastSent) continue;
+      if (this.deps.withhold?.(hostId, rec)) continue;
       const event: A2aStreamEvent = { cursor: { epoch, seq: rec.seq }, envelope: rec.envelope };
       stream.res.write(`id: ${formatCursorId(event.cursor)}\ndata: ${JSON.stringify(event)}\n\n`);
       stream.lastSent = rec.seq;

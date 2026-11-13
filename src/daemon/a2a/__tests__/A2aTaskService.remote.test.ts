@@ -737,7 +737,8 @@ describe('A2aTaskService — how long an ended task is kept (#3326)', () => {
     svc.gcTerminalTasks();
     expect(svc.getTask('task-local')).toBeUndefined();
     expect(svc.getTask('rt-failed')?.status.evidence?.summary).toMatch(/held-expired/);
-    expect(svc.evictedAt('task-local', 'ws-local')).toBe(new Date(clock).toISOString());
+    // Known by when it ended, not when it was collected.
+    expect(svc.evictedAt('task-local', 'ws-local')).toBe(new Date(clock - 31 * 60 * 1000).toISOString());
     expect(svc.evictedAt('task-local', 'ws-stranger')).toBeUndefined();
 
     clock += 24 * 60 * 60 * 1000;
@@ -751,5 +752,62 @@ describe('A2aTaskService — how long an ended task is kept (#3326)', () => {
     // Known as ended for 24 h after it was collected, then not at all.
     clock += 24 * 60 * 60 * 1000 + 1;
     expect(svc.evictedAt('rt-failed', 'ws-local')).toBeUndefined();
+  });
+});
+
+describe('A2aTaskService — collected ids after a restart (#3344)', () => {
+  it('the boot GC notes only tasks still within their window, each with its real end time, never the boot time', async () => {
+    let clock = Date.parse('2026-11-13T00:00:00.000Z');
+    const log = newLog();
+    const svc = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => clock });
+    const local = async (id: string) => {
+      await svc.createTask({ id, title: id, from: { workspaceId: 'ws-local', name: 'Local' }, to: { workspaceId: 'ws-other', name: 'Other' }, history: [msg(`${id}-0`, 'hi')] });
+      await svc.cancelTask({ taskId: id, callerWorkspaceId: 'ws-local' });
+    };
+    await local('task-old');
+    const oldEnded = clock;
+    clock += 3 * 24 * 60 * 60 * 1000;
+    await local('task-recent');
+    const recentEnded = clock;
+
+    // A restart an hour later: the log brings both back, and the boot GC collects both.
+    clock += 60 * 60 * 1000;
+    const restored = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 2 }, now: () => clock });
+    restored.restoreFromLog();
+    expect(restored.getTask('task-old')).toBeUndefined();
+    expect(restored.getTask('task-recent')).toBeUndefined();
+    // Ended three days ago: long past its window, so not known at all.
+    expect(restored.evictedAt('task-old', 'ws-local')).toBeUndefined();
+    expect(oldEnded).toBeLessThan(recentEnded);
+    // Ended an hour ago: known, with that end time.
+    expect(restored.evictedAt('task-recent', 'ws-local')).toBe(new Date(recentEnded).toISOString());
+  });
+});
+
+describe('A2aTaskService — a held message keeps its first hold time, and its hold when dropped (#3344)', () => {
+  it('a change of reason or the unconfirmed mark keeps heldAt; the dropped record keeps the hold it had', async () => {
+    let clock = Date.parse('2026-11-13T00:00:00.000Z');
+    const log = newLog();
+    const svc = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 1 }, now: () => clock });
+    await outbound(svc);
+    await svc.appendRemoteMessage({ taskId: 'rt-out', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('r-1', 'answer', 'agent') });
+    const item = (s: A2aTaskService = svc) => (s.getTask('rt-out')?.metadata.remote as { inbox: Array<Record<string, unknown>> }).inbox.find((i) => i.messageId === 'r-1')!;
+    await svc.markRemote({ taskId: 'rt-out', messageId: 'r-1', held: 'no-agent' });
+    const first = item().heldAt;
+    expect(first).toBe(new Date(clock).toISOString());
+    clock += 60 * 60 * 1000;
+    await svc.markRemote({ taskId: 'rt-out', messageId: 'r-1', held: 'pane-missing' });
+    clock += 60 * 60 * 1000;
+    await svc.markRemote({ taskId: 'rt-out', messageId: 'r-1', held: 'delivery-unconfirmed' });
+    expect(item()).toMatchObject({ held: 'delivery-unconfirmed', heldAt: first });
+
+    await svc.markRemote({ taskId: 'rt-out', messageId: 'r-1', rejected: 'held-expired' });
+    expect(item().rejected).toEqual({ reason: 'held-expired', at: new Date(clock).toISOString(), notice: 'pending', held: 'delivery-unconfirmed' });
+    expect(item().held).toBeUndefined();
+
+    // The same after a restart: the log replays to the same record.
+    const restored = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 2 }, now: () => clock });
+    restored.restoreFromLog();
+    expect(item(restored).rejected).toMatchObject({ held: 'delivery-unconfirmed' });
   });
 });

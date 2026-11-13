@@ -452,7 +452,8 @@ export class A2aTaskService {
       if (r.rejected !== undefined || r.notice !== undefined) {
         const item = target as A2aRemoteInboxItem;
         if (r.rejected) {
-          item.rejected = { reason: r.rejected, at: r.timestamp, notice: 'pending' };
+          // The hold it had stays on the record: a delivery-unconfirmed one may have reached the pane.
+          item.rejected = { reason: r.rejected, at: r.timestamp, notice: 'pending', ...(item.held ? { held: item.held } : {}) };
           delete item.held;
           delete item.attempted;
           item.delivered = false;
@@ -475,7 +476,8 @@ export class A2aTaskService {
         target.delivered = false;
         delete target.attempted;
         const held = readHeldReason(r.held);
-        if (target.held !== held || !target.heldAt) target.heldAt = r.timestamp;
+        // The first hold's time stays through a change of reason, so the 24 h clock never starts again.
+        if (!target.heldAt) target.heldAt = r.timestamp;
         target.held = held;
       }
       return;
@@ -1554,30 +1556,44 @@ export class A2aTaskService {
     }
   }
 
-  /** Task ids collected recently (ended, then dropped from memory): when, and the two workspaces of the task. */
-  private readonly evicted = new Map<string, { at: number; parties: readonly string[] }>();
+  /**
+   * Task ids collected recently (ended, then dropped from memory): when each
+   * ended, until when it is known, and the two workspaces of the task.
+   */
+  private readonly evicted = new Map<string, { endedAt: number; until: number; parties: readonly string[] }>();
 
+  /**
+   * Note a collected task with its real end time (its last update), known for
+   * 24 h after it would have been collected. The boot GC runs over the whole
+   * log: a task that ended longer ago than that is not noted at all, and none
+   * is noted with the boot time.
+   */
   private noteEvicted(task: Task, now: number): void {
     const id = task.id;
+    const endedAt = Date.parse(task.metadata.updatedAt);
+    if (Number.isNaN(endedAt)) return;
+    const until = endedAt + keepEndedMs(task) + GC_EVICTED_KEEP_MS;
+    if (now > until) return;
     this.evicted.delete(id);
-    this.evicted.set(id, { at: now, parties: [task.metadata.from.workspaceId, task.metadata.to.workspaceId] });
+    this.evicted.set(id, { endedAt, until, parties: [task.metadata.from.workspaceId, task.metadata.to.workspaceId] });
     while (this.evicted.size > GC_EVICTED_MAX) this.evicted.delete(this.evicted.keys().next().value as string);
   }
 
   /**
-   * When `taskId` was collected (it ended earlier and is no longer kept), if
-   * that was within the last 24 h and `workspaceId` was one of its two sides;
-   * undefined otherwise (an id never seen here, seen longer ago, or not theirs).
+   * When `taskId` ended, if it was collected since and is still known (up to
+   * 24 h after it would have been collected) and `workspaceId` was one of its
+   * two sides; undefined otherwise (an id never seen here, known no longer, or
+   * not theirs).
    */
   evictedAt(taskId: string, workspaceId: string): string | undefined {
     const e = this.evicted.get(taskId);
     if (!e) return undefined;
-    if (this.now() - e.at > GC_EVICTED_KEEP_MS) {
+    if (this.now() > e.until) {
       this.evicted.delete(taskId);
       return undefined;
     }
     // Only a party to the task learns it existed.
-    return e.parties.includes(workspaceId) ? new Date(e.at).toISOString() : undefined;
+    return e.parties.includes(workspaceId) ? new Date(e.endedAt).toISOString() : undefined;
   }
 
   // ── 내부 ────────────────────────────────────────────────────────────

@@ -186,6 +186,21 @@ describe('expireHeld — one held message, not the task (#3326)', () => {
     expect(await expireHeld(deps)).toEqual([]);
   });
 
+  it('a reply whose paste was never confirmed expires from its first hold, keeps that hold, and its notice says it may have arrived (#3344)', async () => {
+    const id = await twoHeldReplies(0);
+    clock += 60 * 60 * 1000;
+    await tasks.markRemote({ taskId: id, messageId: 'r1', held: 'delivery-unconfirmed' });
+    // 24 h after the FIRST hold: the later mark did not start the clock again.
+    clock += A2A_REMOTE_HOLD_TTL_MS - 60 * 60 * 1000 + 1;
+    expect(await expireHeld(deps)).toEqual([`${id}#r1`, `${id}#r2`]);
+    expect(item(id, 'r1').rejected).toMatchObject({ reason: 'held-expired', held: 'delivery-unconfirmed' });
+    expect(item(id, 'r2').rejected).toMatchObject({ reason: 'held-expired', held: 'no-agent' });
+    await sendHeldNotices({ ...deps, takesNotice: () => true });
+    const sent = outbox.pending(HOST).filter((r) => r.envelope.notice);
+    expect(sent.find((r) => r.envelope.notice!.messageId === 'r1')!.envelope.notice).toMatchObject({ unconfirmed: true });
+    expect(sent.find((r) => r.envelope.notice!.messageId === 'r2')!.envelope.notice).not.toHaveProperty('unconfirmed');
+  });
+
   describe('the notice, at most once per message', () => {
     async function expiredReply(): Promise<string> {
       const id = await twoHeldReplies(0);

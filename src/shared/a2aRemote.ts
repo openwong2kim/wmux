@@ -164,6 +164,8 @@ export interface A2aRemoteNoticeV1 {
   messageId: string;
   /** When the host dropped it. */
   sentAt: string;
+  /** A paste of it was started there and never confirmed: it may have reached the pane. */
+  unconfirmed?: true;
 }
 const NOTICE_KINDS: ReadonlySet<string> = new Set(['held-expired']);
 /** Strict: a known kind, a message id, an ISO time; anything else is dropped. Null: not a notice. */
@@ -176,7 +178,9 @@ export function parseA2aRemoteNotice(raw: unknown): A2aRemoteNoticeV1 | null {
   if (typeof kind !== 'string' || !NOTICE_KINDS.has(kind)) return null;
   if (typeof messageId !== 'string' || !A2A_REMOTE_MESSAGE_ID_RE.test(messageId)) return null;
   if (typeof sentAt !== 'string' || sentAt.length > 40 || !/^\d{4}-\d{2}-\d{2}T/.test(sentAt) || Number.isNaN(Date.parse(sentAt))) return null;
-  return { kind: 'held-expired', messageId, sentAt: new Date(Date.parse(sentAt)).toISOString() };
+  const unconfirmed = r['unconfirmed'];
+  if (unconfirmed !== undefined && unconfirmed !== true) return null;
+  return { kind: 'held-expired', messageId, sentAt: new Date(Date.parse(sentAt)).toISOString(), ...(unconfirmed ? { unconfirmed: true as const } : {}) };
 }
 /** Whether a menu's labels leave this PC in a worker's status, or only how many there are. */
 export type A2aStatusLabels = 'send' | 'keep';

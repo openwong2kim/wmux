@@ -713,6 +713,8 @@ export async function deliverPtyNotification(
   explicitPtyId?: string,
   operator = false,
   newTask?: NewTaskDelivery,
+  // wmux's own line, put before the sender's block and never inside it.
+  leadLine?: string,
 ): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
@@ -720,9 +722,10 @@ export async function deliverPtyNotification(
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
   if (ptyId) {
+    const block = formatA2aMessage(senderName, a2aPartyName(targetWs, useStore.getState().paneLabel, useStore.getState().surfaceAgent, ptyId, useStore.getState().a2aTerminalNames), typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId));
     return deliverA2aText(
       ptyId,
-      formatA2aMessage(senderName, a2aPartyName(targetWs, useStore.getState().paneLabel, useStore.getState().surfaceAgent, ptyId, useStore.getState().a2aTerminalNames), typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId)),
+      leadLine ? `${leadLine}\n${block}` : block,
       operator,
       newTask,
     );
@@ -1235,12 +1238,9 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
   const delayed = typeof params.delayed === 'string' && /^\[wmux\] delayed: [ -~]{1,120}$/.test(params.delayed) ? params.delayed : '';
   return writeRemoteDelivery({ ...anchor, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
     ? deliverPtyNudge(target.ws, (delayed ? `${delayed}. ` : '') + buildA2aNudge(task.id, senderName, 'reply') + imagesNudgeSuffix(images), target.pty, false)
-    : deliverPtyNotification(target.ws, senderName, delayed ? withLeadLine(delayed, bodyWithImages(text, images)) : bodyWithImages(text, images), target.pty, false)));
-}
-
-/** `body` (built for the pty it lands in) with `line` first, on its own. */
-function withLeadLine(line: string, body: (ptyId: string) => string): (ptyId: string) => string {
-  return (ptyId) => `${line}\n\n${body(ptyId)}`;
+    // wmux's line goes before the sender's block, never inside it (the held text's own `[wmux]` lines are
+    // already quoted by sanitizeRemoteMessage).
+    : deliverPtyNotification(target.ws, senderName, bodyWithImages(text, images), target.pty, false, undefined, delayed || undefined)));
 }
 
 /** One line: control characters and line breaks folded to spaces. */

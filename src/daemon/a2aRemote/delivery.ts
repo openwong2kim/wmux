@@ -206,6 +206,7 @@ export class A2aRemoteDelivery {
         deps.offers?.onPeerFeatures(hostId, features);
       },
       ...(this.features ? { features: this.features } : {}),
+      withhold: (hostId, rec) => this.withholdNotice(hostId, rec),
       ...(deps.heartbeatMs !== undefined ? { heartbeatMs: deps.heartbeatMs } : {}),
       log: deps.log,
     });
@@ -659,6 +660,7 @@ export class A2aRemoteDelivery {
       outbox: this.outbox,
       accept: (env, peer) => this.accept(env, peer),
       onRefused: (rec, code, detail) => this.onRefused(rec, code, detail),
+      withhold: (rec) => this.withholdNotice(hostId, rec),
       ...(this.images ? { images: this.images } : {}),
       reconcileLinks: () => this.reconcileLinks(hostId),
       onStatus: (status) => this.deps.broadcast({ type: 'a2a.remote.hosts.status', sessionId: '', data: status }),
@@ -688,6 +690,30 @@ export class A2aRemoteDelivery {
     if (!taskId || !this.deps.taskService.getTask(taskId)) return;
     const reason = code === 'attachment-failed' ? `not sent to the other PC: ${detail ?? 'its images could not be uploaded'}` : `refused by the other PC: ${code}`;
     await this.deps.taskService.forceFailRemote({ taskId, reason, forced: 'remote_refused' });
+  }
+
+  /**
+   * A host notice about to go to a peer that does not take one now (it was
+   * checked when queued; the peer may have changed since): refused here, never
+   * sent, and its dropped message marked `not-sent`. False for anything else,
+   * which goes as usual. True with the record still owed when the refusal
+   * could not be written: it is checked again next time.
+   */
+  private withholdNotice(hostId: HostId, rec: A2aOutboxRecordV1): boolean {
+    const notice = rec.envelope.notice;
+    if (!notice || this.liveFeatures(hostId)?.has(A2A_FEATURE_HELD_NOTICE) === true) return false;
+    try {
+      this.outbox.refuse(hostId, rec.seq, 'protocol');
+    } catch (err) {
+      this.deps.log('warn', `[a2a-remote] ${hostId}: a notice the peer no longer takes was not refused: ${errMsg(err)}`);
+      return true;
+    }
+    const taskId = taskOfEnvelope(rec.envelope, remoteTaskId);
+    if (taskId) {
+      void this.deps.taskService.markRemote({ taskId, messageId: notice.messageId, notice: 'not-sent' })
+        .catch((err: unknown) => this.deps.log('warn', `[a2a-remote] ${taskId}: notice not marked not-sent: ${errMsg(err)}`));
+    }
+    return true;
   }
 
   private onEnqueue(rec: A2aOutboxRecordV1): void {
@@ -1063,5 +1089,7 @@ function imagePaths(v: unknown): string[] | undefined | null {
 
 /** The task a reply / state record is about; null for any other kind. */
 function replyOrStateTask(rec: A2aOutboxRecordV1): string | null {
+  // A host notice is not this side's reply: its ack or refusal says nothing about replyDeliveredAt.
+  if (rec.envelope.notice) return null;
   return rec.envelope.kind === 'reply' || rec.envelope.kind === 'state' ? taskOfEnvelope(rec.envelope, remoteTaskId) : null;
 }

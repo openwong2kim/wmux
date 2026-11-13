@@ -700,6 +700,50 @@ describe('a host notice about one of our messages (held-notice.1, #3326)', () =>
     expect(tasks.getTask(taskId)!.history.some((m) => m.messageId === 'notice-mine-1')).toBe(false);
   });
 
+  it('one per message, ever: an id not derived from the message, or a second notice about it, is dropped (#3344)', async () => {
+    const { linkId, taskId } = await taskWithOurReply();
+    // Not the id derived for `mine-1`: dropped before anything is stored, however many arrive.
+    for (const id of ['notice-x', 'other-1', 'notice-mine-1-again']) {
+      expect(await acceptInbound(env(linkId, { kind: 'reply', taskId, messageId: id, notice: notice() as never }), peer, noticeDeps))
+        .toMatchObject({ ok: true, duplicate: true });
+    }
+    expect(tasks.getTask(taskId)!.history.some((m) => m.metadata?.['wmuxNotice'])).toBe(false);
+    expect(await acceptInbound(env(linkId, { kind: 'reply', taskId, messageId: 'notice-mine-1', notice: notice() as never }), peer, noticeDeps))
+      .toMatchObject({ ok: true, duplicate: false });
+    // The same notice again, even with another time: stored once.
+    expect(await acceptInbound(env(linkId, { kind: 'reply', taskId, messageId: 'notice-mine-1', notice: notice({ sentAt: '2026-11-13T07:00:00.000Z' }) as never }), peer, noticeDeps))
+      .toMatchObject({ ok: true, duplicate: true });
+    expect(tasks.getTask(taskId)!.history.filter((m) => m.metadata?.['wmuxNotice'])).toHaveLength(1);
+  });
+
+  it('naming a task of another link, or a local task: dropped like any other, nothing stored (#3344)', async () => {
+    const { taskId } = await taskWithOurReply();
+    const otherLink = activeLink();
+    const before = tasks.getTask(taskId)!.history.length;
+    expect(await acceptInbound(env(otherLink, { kind: 'reply', taskId, messageId: 'notice-mine-1', notice: notice() as never }), peer, noticeDeps))
+      .toMatchObject({ ok: true, duplicate: true });
+    expect(tasks.getTask(taskId)!.history).toHaveLength(before);
+    expect(logs.some(([level, msg]) => level === 'warn' && msg.includes(`link ${otherLink}:`))).toBe(true);
+
+    await tasks.createTask({ id: 'task-local-n', title: 'L', from: { workspaceId: 'ws-b', name: 'B' }, to: { workspaceId: 'ws-c', name: 'C' }, history: [{ kind: 'message', messageId: 'mine-1', role: 'user', parts: [{ kind: 'text', text: 'x' }] }] });
+    const res = await acceptInbound(env(otherLink, { kind: 'reply', taskId: 'task-local-n', messageId: 'notice-mine-1', notice: notice() as never }), peer, noticeDeps);
+    // Refused or dropped; never stored on the local task.
+    expect(res.ok === false || res.duplicate === true).toBe(true);
+    expect(tasks.getTask('task-local-n')!.history).toHaveLength(1);
+  });
+
+  it('a notice about a paste that was never confirmed says it may have arrived (#3344)', async () => {
+    const { linkId, taskId } = await taskWithOurReply();
+    expect(await acceptInbound(env(linkId, { kind: 'reply', taskId, messageId: 'notice-mine-1', notice: notice({ unconfirmed: true }) as never }), peer, noticeDeps))
+      .toMatchObject({ ok: true, duplicate: false });
+    const stored = tasks.getTask(taskId)!.history.find((m) => m.messageId === 'notice-mine-1')!;
+    expect((stored.parts[0] as { text: string }).text).toMatch(/may not have been delivered/);
+    expect((stored.parts[0] as { text: string }).text).not.toMatch(/was not delivered/);
+    // Anything but `true` there is not a notice.
+    expect(await acceptInbound(env(linkId, { kind: 'reply', taskId, notice: notice({ unconfirmed: 'yes' }) as never }), peer, noticeDeps))
+      .toMatchObject({ ok: false, error: 'bad-request' });
+  });
+
   it('from an older host (a plain reply, no notice field): taken as a reply, as before', async () => {
     const { linkId, taskId } = await taskWithOurReply();
     await acceptInbound(env(linkId, { kind: 'reply', taskId, messageId: 'plain-1', text: 'a reply' }), peer, noticeDeps);

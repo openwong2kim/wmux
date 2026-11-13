@@ -7592,7 +7592,7 @@ function registerRpcHandlers(
     // A task this PC sent: with the newest status its worker there sent (never a reply, never a state).
     const remote = a2aDeliveryRef;
     const shown = remote ? tasks.map((t) => (isRemoteTaskId(t.id) ? remote.withRemoteStatus(t) : t)) : tasks;
-    // A task named by id that ended and was collected since: said so, rather than a bare "not found".
+    // A task named by id that ended and was collected since: said so, with when it ended, rather than a bare "not found".
     const named = typeof p.taskId === 'string' && p.taskId ? p.taskId : '';
     const collectedAt = named && !shown.some((t) => t.id === named) ? a2aTaskService.evictedAt(named, workspaceId) : undefined;
     return {

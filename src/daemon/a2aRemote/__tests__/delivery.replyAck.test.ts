@@ -120,3 +120,74 @@ describe('replyDeliveredAt from the peer\'s acks (#1922)', () => {
     expect(deliveredAt(second.tasks)).toBe(at);
   });
 });
+
+/** A host notice this PC queued about one of the peer's messages (`held-notice.1`). */
+const notice = (about: string): A2aRemoteEnvelope => ({
+  ...reply(`notice-${about}`),
+  notice: { kind: 'held-expired', messageId: about, sentAt: '2026-11-13T06:00:00.000Z' },
+});
+
+describe('a host notice and replyDeliveredAt (#3344)', () => {
+  it('an acked notice is not a reply of ours: it never sets replyDeliveredAt, now or on a later pass', async () => {
+    const { delivery, tasks } = boot();
+    await inboundTask(tasks);
+    delivery.outbox.enqueue(HOST, notice('r-peer'));
+    delivery.outbox.ack(HOST, { epoch: delivery.outbox.epoch, seq: 1 });
+    await settle();
+    expect(deliveredAt(tasks)).toBeUndefined();
+    await delivery.maintain();
+    expect(deliveredAt(tasks)).toBeUndefined();
+  });
+
+  it('a refused notice does not hold replyDeliveredAt back once our reply is acked', async () => {
+    const { delivery, tasks } = boot();
+    await inboundTask(tasks);
+    const { outbox } = delivery;
+    outbox.enqueue(HOST, notice('r-peer'));
+    outbox.enqueue(HOST, reply('r-1'));
+    outbox.refuse(HOST, 1, 'protocol');
+    outbox.ack(HOST, { epoch: outbox.epoch, seq: 2 });
+    await settle();
+    expect(deliveredAt(tasks)).toEqual(expect.any(String));
+  });
+});
+
+describe('a host notice checked again as it goes out (#3344)', () => {
+  /** The peer's reply r-p on TASK, held, dropped, and its notice marked sent: what sendHeldNotices leaves. */
+  async function droppedPeerReply(tasks: A2aTaskService): Promise<void> {
+    await inboundTask(tasks);
+    await tasks.appendRemoteMessage({
+      taskId: TASK, linkId: LINK, actorWorkspaceId: `remote:${LINK}`,
+      message: { kind: 'message', messageId: 'r-p', role: 'user', parts: [{ kind: 'text', text: 'peer reply' }] },
+    });
+    await tasks.markRemote({ taskId: TASK, messageId: 'r-p', held: 'no-agent' });
+    await tasks.markRemote({ taskId: TASK, messageId: 'r-p', rejected: 'held-expired' });
+    await tasks.markRemote({ taskId: TASK, messageId: 'r-p', notice: 'sent' });
+  }
+  const rejected = (tasks: A2aTaskService) =>
+    (tasks.getTask(TASK)?.metadata.remote as { inbox: Array<{ messageId: string; rejected?: { notice: string } }> }).inbox.find((i) => i.messageId === 'r-p')?.rejected;
+  type Withhold = { withholdNotice(hostId: string, rec: unknown): boolean };
+
+  it('to a peer that does not take one now: refused, never sent, and the dropped message marked not-sent', async () => {
+    const { delivery, tasks } = boot();
+    await droppedPeerReply(tasks);
+    const rec = delivery.outbox.enqueue(HOST, notice('r-p'));
+    expect((delivery as unknown as Withhold).withholdNotice(HOST, rec)).toBe(true);
+    expect(delivery.outbox.pending(HOST)).toEqual([]);
+    await settle();
+    expect(rejected(tasks)?.notice).toBe('not-sent');
+    // Anything that is not a notice goes as usual.
+    const plain = delivery.outbox.enqueue(HOST, reply('r-2'));
+    expect((delivery as unknown as Withhold).withholdNotice(HOST, plain)).toBe(false);
+  });
+
+  it('to a peer that takes one: it goes', async () => {
+    const { delivery, tasks } = boot();
+    await droppedPeerReply(tasks);
+    vi.spyOn(delivery, 'liveFeatures').mockReturnValue(new Set(['held-notice.1']));
+    const rec = delivery.outbox.enqueue(HOST, notice('r-p'));
+    expect((delivery as unknown as Withhold).withholdNotice(HOST, rec)).toBe(false);
+    expect(delivery.outbox.pending(HOST)).toHaveLength(1);
+    expect(rejected(tasks)?.notice).toBe('sent');
+  });
+});

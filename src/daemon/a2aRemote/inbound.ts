@@ -27,6 +27,7 @@ import { remoteTaskId } from './ids';
 import type { BrokenReason, LinkStore } from './linkStore';
 import { isPlainObject, isSafeId } from './storeFile';
 import { isSpawnEnvelope } from './spawnReceiver';
+import { heldNoticeMessageId } from './outbound';
 import { isContinueEnvelope } from './continueReceiver';
 
 /**
@@ -289,13 +290,21 @@ async function applyInbound(
     if (deps.remoteNotice && !deps.remoteNotice.admit(link.linkId)) return { ok: true, taskId, duplicate: true };
     if (!task || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: true, taskId, duplicate: true };
     const about = env.notice.messageId;
-    if (!marker?.sent?.includes(about)) {
+    // A notice's id is derived from the message it is about, so there is one per message; the task must be
+    // this link's (a local task has no marker), and the message one this PC sent on it. Any other notice is
+    // answered like every drop, before anything else is looked at.
+    if (env.messageId !== heldNoticeMessageId(about) || marker?.linkId !== link.linkId || !marker.sent?.includes(about)) {
       // Only this PC's ids in the line; nothing the peer wrote.
       if (deps.remoteNotice?.unknownOnce(link.linkId) ?? true) {
         deps.log?.('warn', `[a2a-remote] link ${link.linkId}: a notice about a message this PC did not send on task ${taskId}; dropped`);
       }
       return { ok: true, taskId, duplicate: true };
     }
+    // Once per message, ever: a notice about it already stored is not shown again.
+    const noticeId = heldNoticeMessageId(about);
+    const seen = task.history.some((m) => m.messageId === noticeId || noticeAbout(m.metadata) === about)
+      || (marker.inbox ?? []).some((i) => i.kind === 'notice' && i.messageId === noticeId);
+    if (seen) return { ok: true, taskId, duplicate: true };
     const role: Message['role'] = task.metadata.from.workspaceId === remoteWs ? 'user' : 'agent';
     const res = await deps.taskService.appendRemoteMessage({
       taskId,
@@ -306,8 +315,8 @@ async function applyInbound(
         kind: 'message',
         messageId: env.messageId,
         role,
-        parts: [{ kind: 'text', text: heldNoticeText(about, marker.sentAt?.[about]) }],
-        metadata: { wmuxNotice: { kind: env.notice.kind, messageId: about } },
+        parts: [{ kind: 'text', text: heldNoticeText(about, marker.sentAt?.[about], env.notice.unconfirmed === true) }],
+        metadata: { wmuxNotice: { kind: env.notice.kind, messageId: about, ...(env.notice.unconfirmed ? { unconfirmed: true } : {}) } },
       },
     });
     if (!res.ok) return fail('conflict' in res ? 'conflict' : 'unavailable', res.error);
@@ -383,6 +392,14 @@ function stateErrorCode(res: { error: string; conflict?: true }): A2aRemoteError
 type Parsed = { envelope: A2aRemoteEnvelope } | { error: A2aRemoteErrorCode };
 
 /** Shape and size checks before anything touches the link store or the ledger. */
+/** The message id a stored host notice is about (`metadata.wmuxNotice.messageId`), if it is one. */
+function noticeAbout(metadata: Record<string, unknown> | undefined): string | undefined {
+  const notice = metadata?.['wmuxNotice'];
+  if (!notice || typeof notice !== 'object' || Array.isArray(notice)) return undefined;
+  const about = (notice as Record<string, unknown>)['messageId'];
+  return typeof about === 'string' ? about : undefined;
+}
+
 function parseEnvelope(raw: unknown): Parsed {
   if (!isPlainObject(raw)) return { error: 'bad-request' };
   if (raw['protocol'] !== A2A_REMOTE_PROTOCOL) return { error: 'protocol' };

@@ -205,20 +205,36 @@ describe('a worker status on the asking PC', () => {
     expect(gone()).toHaveLength(1);
   });
 
-  it(`a host notice (#3326): at most ${REMOTE_NOTICES_PER_WINDOW} a minute from one link, the rest dropped with one log line`, async () => {
+  it(`a host notice (#3326, #3344): at most ${REMOTE_NOTICES_PER_WINDOW} a minute from one link, the rest dropped with one log line per minute`, async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-13T07:00:00.000Z'));
     const { linkId, taskId } = await sentTask();
-    await tasks.appendRemoteMessage({
-      taskId, linkId, actorWorkspaceId: 'ws-a',
-      message: { kind: 'message', messageId: 'mine-2', role: 'user', parts: [{ kind: 'text', text: 'more' }] },
-    });
-    await tasks.markRemote({ taskId, sent: 'mine-2' });
-    for (let i = 0; i < REMOTE_NOTICES_PER_WINDOW + 5; i++) {
-      await delivery.accept({
-        protocol: A2A_REMOTE_PROTOCOL, linkId, linkVersion: 2, messageId: `notice-${i}`, kind: 'reply', taskId, text: 'x',
-        notice: { kind: 'held-expired', messageId: 'mine-2', sentAt: SINCE }, sentAt: new Date().toISOString(),
-      }, { hostId: HOST });
+    // One notice per message: as many messages of ours as notices.
+    const ids = Array.from({ length: REMOTE_NOTICES_PER_WINDOW + 7 }, (_, i) => `mine-n${i}`);
+    for (const id of ids) {
+      await tasks.appendRemoteMessage({
+        taskId, linkId, actorWorkspaceId: 'ws-a',
+        message: { kind: 'message', messageId: id, role: 'user', parts: [{ kind: 'text', text: id }] },
+      });
+      await tasks.markRemote({ taskId, sent: id });
     }
-    expect(tasks.getTask(taskId)!.history.filter((m) => m.messageId.startsWith('notice-'))).toHaveLength(REMOTE_NOTICES_PER_WINDOW);
-    expect(logs.filter((l) => l.includes('notices in a minute'))).toHaveLength(1);
+    const send = (about: string) => delivery.accept({
+      protocol: A2A_REMOTE_PROTOCOL, linkId, linkVersion: 2, messageId: `notice-${about}`, kind: 'reply', taskId, text: 'x',
+      notice: { kind: 'held-expired', messageId: about, sentAt: SINCE }, sentAt: new Date().toISOString(),
+    }, { hostId: HOST });
+    const stored = (): number => tasks.getTask(taskId)!.history.filter((m) => m.metadata?.['wmuxNotice']).length;
+    const over = (): number => logs.filter((l) => l.includes('notices in a minute')).length;
+    for (const id of ids.slice(0, REMOTE_NOTICES_PER_WINDOW + 5)) await send(id);
+    expect(stored()).toBe(REMOTE_NOTICES_PER_WINDOW);
+    expect(over()).toBe(1);
+    // Still the same minute: dropped, and no second line.
+    vi.setSystemTime(new Date('2026-11-13T07:00:59.000Z'));
+    await send(ids[REMOTE_NOTICES_PER_WINDOW + 5]);
+    expect(stored()).toBe(REMOTE_NOTICES_PER_WINDOW);
+    expect(over()).toBe(1);
+    // The next minute: taken again.
+    vi.setSystemTime(new Date('2026-11-13T07:01:01.000Z'));
+    await send(ids[REMOTE_NOTICES_PER_WINDOW + 6]);
+    expect(stored()).toBe(REMOTE_NOTICES_PER_WINDOW + 1);
   });
 });

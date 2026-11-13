@@ -54,6 +54,8 @@ export const REMOTE_BRIDGE_RETRY_MAX_MS = 5 * 60_000;
 /** A unit that found no agent this many times in a row, or for this long, is held as `no-agent`. */
 export const REMOTE_BRIDGE_NO_AGENT_TRIES = 5;
 export const REMOTE_BRIDGE_NO_AGENT_MS = 10 * 60_000;
+/** Held replies offered again in one pull, across all tasks (each waits on a paste). */
+export const REMOTE_BRIDGE_REOFFER_PER_PASS = 3;
 
 export interface RemoteA2aBridgeDeps {
   /** Daemon RPC (DaemonClient.rpc in the wiring step). */
@@ -190,6 +192,14 @@ export class RemoteA2aBridge {
     const results: RetryHeldResult['results'] = [];
     for (const unit of units) {
       if (this.inFlight.has(unit.key)) continue;
+      if (unit.item?.attempted && unit.item.held !== 'delivery-unconfirmed') {
+        // A paste of it was started and never confirmed: it may be in the pane already. It now reads as
+        // unconfirmed, and is not pasted as if untouched; a person who still wants it sends it again.
+        // eslint-disable-next-line no-await-in-loop -- the task's units in order
+        await this.mark(unit.key, { taskId: task.id, messageId: unit.item.messageId, mark: { held: 'delivery-unconfirmed' } });
+        results.push({ messageId: unit.item.messageId, outcome: 'delivery-unconfirmed' });
+        continue;
+      }
       this.inFlight.add(unit.key);
       try {
         // eslint-disable-next-line no-await-in-loop -- the task lands before its replies
@@ -223,6 +233,8 @@ export class RemoteA2aBridge {
     const listed = new Set(work.map((w) => w.key));
     for (const key of this.retry.keys()) if (!listed.has(key)) this.retry.delete(key);
     for (const key of this.pendingMarks.keys()) if (!listed.has(key) && !this.reofferMarks.has(key)) this.pendingMarks.delete(key);
+    // Units whose outcome was still owed when this pull read the daemon: the list is older than that mark.
+    const owedBefore = new Set(this.reofferMarks);
     // A re-offer's outcome the daemon did not take yet: only the mark is tried again.
     for (const key of this.reofferMarks) {
       const pending = this.pendingMarks.get(key);
@@ -230,14 +242,47 @@ export class RemoteA2aBridge {
       else this.reofferMarks.delete(key);
     }
     for (const key of this.misses.keys()) if (!listed.has(key)) this.misses.delete(key);
-    // A task with a reply to hand over now, whose earlier replies were held for want of an agent: those
-    // are offered again first, in order (the pane is about to be tried anyway).
-    const reofferable = tasks.filter((t) => work.some((w) => w.task.id === t.id && w.item?.kind === 'reply') && reofferUnits(t).length > 0);
-    for (const task of reofferable) {
-      if (this.stopped) return;
-      await this.reofferHeld(task);
+    // A held reply a paste was started on and never confirmed (main stopped while offering it again): it may
+    // be in the pane, so it reads as unconfirmed now, whatever hold it showed, and is never offered again.
+    for (const task of tasks) {
+      for (const item of unconfirmedHeld(task)) {
+        const key = itemKey(task.id, item.messageId);
+        if (this.inFlight.has(key) || this.pendingMarks.has(key) || owedBefore.has(key)) continue;
+        void this.mark(key, { taskId: task.id, messageId: item.messageId, mark: { held: 'delivery-unconfirmed' } });
+      }
     }
-    for (const unit of work) {
+    // A task with a reply due now, whose earlier replies were held for want of an agent: those are offered
+    // again first, in order (the pane is about to be tried anyway). Every other task's delivery starts
+    // before any of that, and at most REMOTE_BRIDGE_REOFFER_PER_PASS are offered in one pull.
+    const reofferable = new Set(tasks
+      .filter((t) => reofferUnits(t).length > 0 && work.some((w) => w.task.id === t.id && w.item?.kind === 'reply' && this.due(w)))
+      .map((t) => t.id));
+    this.startWork(work.filter((w) => !reofferable.has(w.task.id)));
+    let budget = REMOTE_BRIDGE_REOFFER_PER_PASS;
+    // Tasks with held replies left to offer: their newer reply waits behind them for a later pull.
+    const behind = new Set<string>();
+    for (const task of tasks) {
+      if (!reofferable.has(task.id)) continue;
+      if (this.stopped) return;
+      const res = await this.reofferHeld(task, budget);
+      budget = res.budget;
+      if (!res.done) behind.add(task.id);
+    }
+    this.startWork(work.filter((w) => reofferable.has(w.task.id) && !(behind.has(w.task.id) && w.item?.kind === 'reply')));
+    if (!this.stopped) await this.deps.afterPull?.().catch(() => undefined);
+  }
+
+  /** Whether `unit` would be written now: nothing in flight or owed for it, no attempt pending, no wait. */
+  private due(unit: Work): boolean {
+    if (this.inFlight.has(unit.key) || this.pendingMarks.has(unit.key)) return false;
+    if ((unit.item ?? (unit.task.metadata.remote as A2aRemoteTaskState)).attempted) return false;
+    const wait = this.retry.get(unit.key);
+    return !wait || wait.at <= this.now();
+  }
+
+  /** Start the deliveries of `units` that are due (not awaited), and settle what is owed for the rest. */
+  private startWork(units: Work[]): void {
+    for (const unit of units) {
       if (this.inFlight.has(unit.key)) continue;
       const pendingMark = this.pendingMarks.get(unit.key);
       if (pendingMark) {
@@ -263,7 +308,6 @@ export class RemoteA2aBridge {
       });
       this.working.add(run);
     }
-    if (!this.stopped) await this.deps.afterPull?.().catch(() => undefined);
   }
 
   /**
@@ -271,19 +315,17 @@ export class RemoteA2aBridge {
    * later reply is about to be tried on the same pane). Each keeps its hold
    * and its hold time when it is not written, so the 24 h hold clock goes on;
    * one main may have pasted and not confirmed becomes `delivery-unconfirmed`,
-   * never pasted twice. A reply with no text here is never offered.
+   * never pasted twice. A reply with no text here is never offered. At most
+   * `budget` are offered; `done` is false when some were left for later.
    */
-  private async reofferHeld(task: Task): Promise<void> {
+  private async reofferHeld(task: Task, budget: number): Promise<{ budget: number; done: boolean }> {
     for (const item of reofferUnits(task)) {
-      if (this.stopped) return;
+      if (this.stopped) return { budget, done: false };
       const key = itemKey(task.id, item.messageId);
       if (this.inFlight.has(key) || this.pendingMarks.has(key)) continue;
+      if (budget <= 0) return { budget, done: false };
+      budget -= 1;
       const ref = { taskId: task.id, messageId: item.messageId };
-      if (item.attempted) {
-        // eslint-disable-next-line no-await-in-loop -- in the task's order
-        await this.mark(key, { ...ref, mark: { held: 'delivery-unconfirmed' } });
-        continue;
-      }
       this.inFlight.add(key);
       this.reofferMarks.add(key);
       try {
@@ -294,6 +336,7 @@ export class RemoteA2aBridge {
         if (!this.pendingMarks.has(key)) this.reofferMarks.delete(key);
       }
     }
+    return { budget, done: true };
   }
 
   /** Hand one unit to the renderer and record the outcome. `reoffer`: a held reply offered again. */
@@ -486,8 +529,15 @@ function workOf(task: Task): Work[] {
 function reofferUnits(task: Task): A2aRemoteInboxItem[] {
   const marker = task.metadata?.remote as A2aRemoteTaskState | undefined;
   if (!marker || marker.v !== 1 || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return [];
-  return (marker.inbox ?? []).filter((i) => i.kind === 'reply' && i.held === 'no-agent' && !i.rejected && i.delivered !== true
+  return (marker.inbox ?? []).filter((i) => i.kind === 'reply' && i.held === 'no-agent' && !i.attempted && !i.rejected && i.delivered !== true
     && task.history.some((m) => m.messageId === i.messageId));
+}
+
+/** A task's held items a paste was started on and never confirmed, still shown under another hold. */
+function unconfirmedHeld(task: Task): A2aRemoteInboxItem[] {
+  const marker = task.metadata?.remote as A2aRemoteTaskState | undefined;
+  if (!marker || marker.v !== 1 || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return [];
+  return (marker.inbox ?? []).filter((i) => !!i.held && i.held !== 'delivery-unconfirmed' && i.attempted === true && !i.rejected && i.delivered !== true);
 }
 
 function itemKey(taskId: string, messageId: string): string {
