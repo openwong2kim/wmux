@@ -110,25 +110,57 @@ export function claimOwnedBy(dir, port, pid) {
  * end it with a hard kill on Windows, so its file stayed until some later
  * launch happened to reclaim that port.
  *
- * Only the claim for `port` is touched (or, when launch never learned the
- * port, the claim naming `pid`), and only while it names `pid` and no process
- * holds that pid: a live holder may be a later process the OS gave the pid,
- * and the claim may then be its own. Returns a line for the command's steps.
+ * Only the claim for `port` is touched: the port the app logged, never one
+ * found by pid, since a stale claim from an earlier process with the same pid
+ * names it too (see ownedCdpPort). It is removed only while it names `pid`
+ * and either no process holds that pid, or the process holding it started
+ * after the file was last written: the OS gave the pid to a later process,
+ * which cannot have written it (startedAt rounds down, never past the file).
+ * The file is renamed aside and read there before it is deleted, so a claim
+ * another wmux wrote in the meantime goes back in place instead.
+ * Returns a line for the command's steps.
  */
 export function releaseRecordedClaim(dir, { port, pid }, deps) {
   if (!Number.isInteger(pid) || pid <= 0) return 'cdp claim: no recorded pid, nothing removed';
-  const at = Number.isInteger(port) && port > 0 ? port : findClaimedPort(dir, pid);
-  if (at == null) return `cdp claim: none names pid ${pid}`;
-  const file = path.join(dir, `wmux-cdp-${at}.lock`);
-  if (!fs.existsSync(file)) return `cdp claim ${at}: already gone`;
-  if (!claimOwnedBy(dir, at, pid)) return `cdp claim ${at}: names another pid than ${pid}, left in place`;
-  if (deps.pidAlive(pid)) return `cdp claim ${at}: pid ${pid} is still running, left in place`;
+  if (!Number.isInteger(port) || port <= 0) return 'cdp claim: the app never logged its port, nothing removed';
+  const file = path.join(dir, `wmux-cdp-${port}.lock`);
+  let written;
   try {
-    fs.unlinkSync(file);
-    return `cdp claim ${at}: removed (it named pid ${pid}, which is gone)`;
+    written = fs.statSync(file).mtimeMs;
   } catch (err) {
-    return `cdp claim ${at}: not removed (${err.code ?? err.message})`;
+    return err.code === 'ENOENT' ? `cdp claim ${port}: already gone` : `cdp claim ${port}: unreadable (${err.code}), left in place`;
   }
+  const reused = deps.pidAlive(pid);
+  if (reused) {
+    const holderStarted = deps.startedAt(pid);
+    if (!(holderStarted != null && holderStarted > written)) return `cdp claim ${port}: pid ${pid} is still running, left in place`;
+  }
+  const aside = `${file}.release-${process.pid}`;
+  try {
+    fs.renameSync(file, aside);
+  } catch (err) {
+    return err.code === 'ENOENT' ? `cdp claim ${port}: already gone` : `cdp claim ${port}: not removed (${err.code})`;
+  }
+  let text = null;
+  let unchanged = false;
+  try {
+    text = fs.readFileSync(aside, 'utf8');
+    unchanged = fs.statSync(aside).mtimeMs === written;
+  } catch { /* unreadable: it goes back below */ }
+  const holder = text === null ? null : Number.parseInt(text.trim(), 10);
+  if (holder === pid && unchanged) {
+    fs.rmSync(aside, { force: true });
+    return `cdp claim ${port}: removed (it named pid ${pid}, ${reused ? 'now held by a process that started after it was written' : 'which is gone'})`;
+  }
+  // Not the file we checked: put it back, unless a newer claim took the name
+  // meanwhile (linkSync never replaces a file).
+  try {
+    fs.linkSync(aside, file);
+  } catch { /* the port has a newer claim */ }
+  fs.rmSync(aside, { force: true });
+  if (text === null) return `cdp claim ${port}: unreadable, left in place`;
+  if (!Number.isInteger(holder)) return `cdp claim ${port}: holds no pid, left in place`;
+  return holder === pid ? `cdp claim ${port}: rewritten meanwhile, left in place` : `cdp claim ${port}: names pid ${holder}, not ${pid}, left in place`;
 }
 
 /**
