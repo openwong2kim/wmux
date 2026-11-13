@@ -618,6 +618,8 @@ describe('SpawnRequestStore', () => {
     expect(store.receive(OTHER, req()).kind).toBe('new');
     expect(store.startsSince(now - DAY, HOST)).toBe(SPAWN_REQUESTS_MAX - 1);
 
+    // The store's own writes were kept in memory: its folder is made here for the one file read back.
+    fs.mkdirSync(a2aDir, { recursive: true });
     fs.writeFileSync(path.join(a2aDir, SPAWN_REQUESTS_FILE), JSON.stringify(written), { mode: 0o600 });
     const reloaded = new SpawnRequestStore({ dir: a2aDir, scheduleHarden: quiet, write: () => undefined, now: () => now });
     expect(reloaded.startsSince(now - DAY, HOST)).toBe(SPAWN_REQUESTS_MAX - 1);
