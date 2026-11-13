@@ -147,6 +147,12 @@ export interface A2aRemoteMarkPayload {
   stateRefused?: { state: TaskState; code: A2aRemoteErrorCode };
   /** Task-level: the peer took a state of ours again; a refusal recorded before is over. */
   stateAccepted?: true;
+  /** Item-level: dropped undelivered (its hold expired); the task stays open. Its notice starts `pending`. */
+  rejected?: 'held-expired';
+  /** Item-level, after `rejected`: whether the PC that sent it was told. */
+  notice?: 'sent' | 'not-sent';
+  /** With `attempted: true` on a held item: it is being offered again; the hold and its time stay. */
+  reoffer?: true;
   timestamp: string;
 }
 

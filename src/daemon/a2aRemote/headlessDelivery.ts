@@ -617,7 +617,8 @@ export class HeadlessDelivery {
           try {
             const rec = this.ownerOf(task, starts);
             if (!rec || taken.has(rec.sessionId)) continue;
-            // A state the asking PC sent, or anything on a task that ended: nothing to type, recorded as handled.
+            // A state the asking PC sent, a host's notice (never typed in, never an answer), or anything on a
+            // task that ended: nothing to type, recorded as handled.
             if (unit.item && (unit.item.kind !== 'reply' || this.ended(task.id))) {
               await this.markOrKeep({ taskId: task.id, messageId: unit.item.messageId, delivered: true });
               continue;
@@ -724,7 +725,7 @@ export class HeadlessDelivery {
     if (!marker || marker.direction !== 'inbound') return [];
     const out: Unit[] = [];
     if (marker.delivered !== true && !marker.held) out.push({ task });
-    for (const item of marker.inbox ?? []) if (item.delivered !== true && !item.held) out.push({ task, item });
+    for (const item of marker.inbox ?? []) if (item.delivered !== true && !item.held && !item.rejected) out.push({ task, item });
     return out;
   }
 

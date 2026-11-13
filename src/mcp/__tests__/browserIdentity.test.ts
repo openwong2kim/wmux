@@ -18,7 +18,7 @@ vi.mock('../wmux-client', async (importOriginal) => {
 });
 
 import { createWmuxServer } from '../index';
-import { getWorkspaceToken, noteBrowserOutcome, setWorkspaceToken } from '../wmux-client';
+import { getWorkspaceToken, noteScopedOutcome, runWithStaleIdentityHandler, setWorkspaceToken } from '../wmux-client';
 import { __resetPaneResolverForTesting } from '../paneResolver';
 
 async function connect(
@@ -173,10 +173,10 @@ describe('browser tools — a claim that is gone after a wmux restart', () => {
       if (method === 'browser.close') {
         // What the real sendRpc does with main's refusal of a dead claim.
         if (getWorkspaceToken() === 'claim-before-restart') {
-          noteBrowserOutcome(method, GONE, true);
+          noteScopedOutcome(method, GONE, true);
           throw new Error(GONE);
         }
-        noteBrowserOutcome(method, { ok: true }, false);
+        noteScopedOutcome(method, { ok: true }, false);
         return { ok: true };
       }
       throw new Error(`rpc-down: ${method}`);
@@ -195,7 +195,7 @@ describe('browser tools — a claim that is gone after a wmux restart', () => {
     mockSendRpc.mockImplementation(async (method: string) => {
       if (method === 'a2a.resolve.identity') return walk();
       if (method === 'browser.close') {
-        noteBrowserOutcome(method, GONE, true);
+        noteScopedOutcome(method, GONE, true);
         throw new Error(GONE);
       }
       throw new Error(`rpc-down: ${method}`);
@@ -215,7 +215,7 @@ describe('browser tools — a claim that is gone after a wmux restart', () => {
       if (method === 'a2a.resolve.identity') return walk();
       if (method === 'browser.close') {
         const reply = { ok: true, note: 'the workspace you claimed is gone' };
-        noteBrowserOutcome(method, reply, false);
+        noteScopedOutcome(method, reply, false);
         return reply;
       }
       throw new Error(`rpc-down: ${method}`);
@@ -239,17 +239,17 @@ describe('browser tools — a claim that is gone after a wmux restart', () => {
       if (method === 'browser.navigationPolicy.get') {
         // What the real sendRpc does with every browser.* answer.
         const reply = { allowPrivateNetwork: false };
-        noteBrowserOutcome(method, reply, false);
+        noteScopedOutcome(method, reply, false);
         return reply;
       }
       if (method.startsWith('browser.')) {
         if (getWorkspaceToken() === 'claim-before-restart') {
           const refusal = GONE.replace('browser.close', method);
-          noteBrowserOutcome(method, refusal, true);
+          noteScopedOutcome(method, refusal, true);
           throw new Error(refusal);
         }
         const reply = method === 'browser.lease.acquire' ? { token: 'lease-1' } : { ok: true };
-        noteBrowserOutcome(method, reply, false);
+        noteScopedOutcome(method, reply, false);
         return reply;
       }
       throw new Error(`rpc-down: ${method}`);
@@ -349,5 +349,115 @@ describe('browser tools — the pane the env names', () => {
 
     expect(res.isError).toBeFalsy();
     expect(mockSendRpc.mock.calls.some(([m]) => m === 'mcp.claimWorkspace')).toBe(false);
+  });
+});
+
+describe('a2a and computer tools — a claim that is gone after a wmux restart', () => {
+  // main answers an a2a call with a dead claim as a result, not an error (a2aCaller.ts).
+  const gone = (method: string) => ({ error: `${method}: the workspace you claimed is gone` });
+
+  function walkMinting(tokens: string[]) {
+    let walks = 0;
+    return () => ({
+      mappings: {},
+      entries: [],
+      resolved: { workspaceId: 'ws-walk', ptyId: 'pty-1' },
+      workspaceToken: tokens[Math.min(walks++, tokens.length - 1)],
+    });
+  }
+
+  /** A main whose a2a `method` refuses `deadToken`, answering everything else with `ok`. */
+  function mainRefusing(method: string, deadToken: string, walk: () => unknown, ok: () => unknown): void {
+    mockSendRpc.mockImplementation(async (m: string) => {
+      if (m === 'a2a.resolve.identity') return walk();
+      if (m === method) {
+        // What the real sendRpc does with every claim-gated answer.
+        const reply = getWorkspaceToken() === deadToken ? gone(m) : ok();
+        noteScopedOutcome(m, reply, false);
+        return reply;
+      }
+      throw new Error(`rpc-down: ${m}`);
+    });
+  }
+
+  it('a2a_task_query: walks again and runs once more, so the agent never sees the refusal', async () => {
+    mainRefusing('a2a.task.query', 'claim-before-restart', walkMinting(['claim-before-restart', 'claim-after-restart']), () => ({ tasks: [] }));
+    const client = await connect();
+
+    const res = await callTool(client, 'a2a_task_query');
+
+    expect(res.isError).toBeFalsy();
+    expect(res.text).not.toMatch(/the workspace you claimed is gone/);
+    expect(browserCalls('a2a.task.query')).toHaveLength(2);
+    expect(getWorkspaceToken()).toBe('claim-after-restart');
+  });
+
+  it('a2a_task_query: at most once more, so a second refusal reaches the agent', async () => {
+    mainRefusing('a2a.task.query', 'claim-dead', walkMinting(['claim-dead']), () => ({ tasks: [] }));
+    const client = await connect();
+
+    const res = await callTool(client, 'a2a_task_query');
+
+    expect(res.text).toMatch(/the workspace you claimed is gone/);
+    expect(browserCalls('a2a.task.query')).toHaveLength(2);
+  });
+
+  it('a2a_task_query: an answer that only quotes the words is never run again', async () => {
+    mainRefusing('a2a.task.query', 'none', walkMinting(['claim-live']), () => ({ tasks: [{ id: 't1', title: 'the workspace you claimed is gone' }] }));
+    const client = await connect();
+
+    const res = await callTool(client, 'a2a_task_query');
+
+    expect(res.isError).toBeFalsy();
+    expect(browserCalls('a2a.task.query')).toHaveLength(1);
+  });
+
+  it('send_message after a restart: refused before it acts, then delivered exactly once', async () => {
+    const delivered: Array<Record<string, unknown>> = [];
+    const walk = walkMinting(['claim-before-restart', 'claim-after-restart']);
+    mockSendRpc.mockImplementation(async (m: string, params: Record<string, unknown>) => {
+      if (m === 'a2a.resolve.identity') return walk();
+      if (m === 'a2a.task.send') {
+        // main refuses a dead claim before the handler, so nothing is delivered on that call.
+        if (getWorkspaceToken() === 'claim-before-restart') {
+          noteScopedOutcome(m, gone(m), false);
+          return gone(m);
+        }
+        delivered.push(params);
+        const reply = { taskId: 'task-1', delivery: { status: 'delivered' } };
+        noteScopedOutcome(m, reply, false);
+        return reply;
+      }
+      throw new Error(`rpc-down: ${m}`);
+    });
+    const client = await connect();
+
+    const res = await callTool(client, 'send_message', { to: 'ws-target', message: 'hello' });
+
+    expect(res.text).not.toMatch(/the workspace you claimed is gone/);
+    expect(browserCalls('a2a.task.send')).toHaveLength(2);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ to: 'ws-target', message: 'hello' });
+  });
+
+  it('which outcomes count: claim-gated methods only, and an `error` answer counts as refused', () => {
+    const seen: Array<[string, boolean]> = [];
+    runWithStaleIdentityHandler((outcome, failed) => seen.push([outcome, failed]), () => {
+      noteScopedOutcome('a2a.task.send', { error: 'x' }, false);
+      noteScopedOutcome('a2a.task.query', { tasks: [] }, false);
+      noteScopedOutcome('computer.act', 'boom', true);
+      noteScopedOutcome('browser.close', { ok: true }, false);
+      // Never refused for a claim (no claim read), or answered for any caller: not judged.
+      noteScopedOutcome('channel.post', { error: 'x' }, false);
+      noteScopedOutcome('ledger.update', { error: 'x' }, false);
+      noteScopedOutcome('a2a.resolve.identity', { error: 'x' }, false);
+      noteScopedOutcome('browser.navigationPolicy.get', { error: 'x' }, false);
+    });
+    expect(seen).toEqual([
+      ['{"error":"x"}', true],
+      ['{"tasks":[]}', false],
+      ['boom', true],
+      ['{"ok":true}', false],
+    ]);
   });
 });

@@ -1,6 +1,7 @@
 import { isRemoteTaskId } from '../../shared/a2aRemote';
 import {
   A2A_REMOTE_INBOUND_EVENT,
+  heldDelayPrefix,
   A2A_REMOTE_NOTIFY_METHOD,
   A2A_REMOTE_RPC,
   deliveredImagesOf,
@@ -53,6 +54,8 @@ export const REMOTE_BRIDGE_RETRY_MAX_MS = 5 * 60_000;
 /** A unit that found no agent this many times in a row, or for this long, is held as `no-agent`. */
 export const REMOTE_BRIDGE_NO_AGENT_TRIES = 5;
 export const REMOTE_BRIDGE_NO_AGENT_MS = 10 * 60_000;
+/** Held replies offered again in one pull, across all tasks (each waits on a paste). */
+export const REMOTE_BRIDGE_REOFFER_PER_PASS = 3;
 
 export interface RemoteA2aBridgeDeps {
   /** Daemon RPC (DaemonClient.rpc in the wiring step). */
@@ -71,7 +74,8 @@ export interface RemoteA2aBridgeDeps {
 type Mark =
   | { delivered: true; ptyId?: string }
   | { held: A2aRemoteHeldReason }
-  | { attempted: false; waiting?: A2aRemoteWaitingCause };
+  | { attempted: false; waiting?: A2aRemoteWaitingCause }
+  | { attempted: false; reoffer: true };
 
 /** One unit of work: the task itself, or one inbox item of it. */
 interface Work {
@@ -95,6 +99,12 @@ export class RemoteA2aBridge {
   private readonly pendingMarks = new Map<string, { taskId: string; messageId?: string; mark: Mark }>();
   private readonly retry = new Map<string, { at: number; delayMs: number }>();
   /**
+   * Keys of held replies offered again whose outcome mark has not landed. A
+   * held item is never in the pending work, so its mark is kept and retried
+   * here, not dropped with the work the daemon no longer lists.
+   */
+  private readonly reofferMarks = new Set<string>();
+  /**
    * "Written nowhere" answers per unit since its first one; only a delivery
    * (or the unit leaving the list) starts them again. `waiting` says whether
    * the last one was an agent behind a prompt or a person typing.
@@ -105,6 +115,8 @@ export class RemoteA2aBridge {
   private running: Promise<void> | null = null;
   /** Set by stop(): no new pull or delivery starts. */
   private stopped = false;
+  /** Whether this main has read the held-only tasks once (for offers again the last main left attempted). */
+  private heldSwept = false;
   /** Deliveries started by a pull, still running. */
   private readonly working = new Set<Promise<unknown>>();
   private rerun = false;
@@ -182,6 +194,14 @@ export class RemoteA2aBridge {
     const results: RetryHeldResult['results'] = [];
     for (const unit of units) {
       if (this.inFlight.has(unit.key)) continue;
+      if (unit.item?.attempted && unit.item.held !== 'delivery-unconfirmed') {
+        // A paste of it was started and never confirmed: it may be in the pane already. It now reads as
+        // unconfirmed, and is not pasted as if untouched; a person who still wants it sends it again.
+        // eslint-disable-next-line no-await-in-loop -- the task's units in order
+        await this.mark(unit.key, { taskId: task.id, messageId: unit.item.messageId, mark: { held: 'delivery-unconfirmed' } });
+        results.push({ messageId: unit.item.messageId, outcome: 'delivery-unconfirmed' });
+        continue;
+      }
       this.inFlight.add(unit.key);
       try {
         // eslint-disable-next-line no-await-in-loop -- the task lands before its replies
@@ -214,9 +234,72 @@ export class RemoteA2aBridge {
     // Forget state for work the daemon no longer lists (delivered, held, ended).
     const listed = new Set(work.map((w) => w.key));
     for (const key of this.retry.keys()) if (!listed.has(key)) this.retry.delete(key);
-    for (const key of this.pendingMarks.keys()) if (!listed.has(key)) this.pendingMarks.delete(key);
+    for (const key of this.pendingMarks.keys()) if (!listed.has(key) && !this.reofferMarks.has(key)) this.pendingMarks.delete(key);
+    // Units whose outcome was still owed when this pull read the daemon: the list is older than that mark.
+    const owedBefore = new Set(this.reofferMarks);
+    // A re-offer's outcome the daemon did not take yet: only the mark is tried again.
+    for (const key of this.reofferMarks) {
+      const pending = this.pendingMarks.get(key);
+      if (pending) await this.mark(key, pending);
+      else this.reofferMarks.delete(key);
+    }
     for (const key of this.misses.keys()) if (!listed.has(key)) this.misses.delete(key);
-    for (const unit of work) {
+    // Once per main, the tasks whose units are all held too: they are not in the pending list, and an offer
+    // again the last main started and never finished left its item attempted there.
+    let heldOnly: Task[] = [];
+    if (!this.heldSwept) {
+      try {
+        const held = await this.deps.daemonRpc(A2A_REMOTE_RPC.held, {});
+        const pendingIds = new Set(tasks.map((t) => t.id));
+        heldOnly = (isRecord(held) && Array.isArray(held.tasks) ? (held.tasks as Task[]) : [])
+          .filter((t) => t && typeof t.id === 'string' && isRemoteTaskId(t.id) && !pendingIds.has(t.id));
+        this.heldSwept = true;
+      } catch {
+        // The next pull reads it again.
+      }
+    }
+    // A held reply a paste was started on and never confirmed (main stopped while offering it again): it may
+    // be in the pane, so it reads as unconfirmed now, whatever hold it showed, and is never offered again. It
+    // can then be dropped after its 24 h like any other held reply.
+    for (const task of [...tasks, ...heldOnly]) {
+      for (const item of unconfirmedHeld(task)) {
+        const key = itemKey(task.id, item.messageId);
+        if (this.inFlight.has(key) || this.pendingMarks.has(key) || owedBefore.has(key)) continue;
+        void this.mark(key, { taskId: task.id, messageId: item.messageId, mark: { held: 'delivery-unconfirmed' } });
+      }
+    }
+    // A task with a reply due now, whose earlier replies were held for want of an agent: those are offered
+    // again first, in order (the pane is about to be tried anyway). Every other task's delivery starts
+    // before any of that, and at most REMOTE_BRIDGE_REOFFER_PER_PASS are offered in one pull.
+    const reofferable = new Set(tasks
+      .filter((t) => reofferUnits(t).length > 0 && work.some((w) => w.task.id === t.id && w.item?.kind === 'reply' && this.due(w)))
+      .map((t) => t.id));
+    this.startWork(work.filter((w) => !reofferable.has(w.task.id)));
+    let budget = REMOTE_BRIDGE_REOFFER_PER_PASS;
+    // Tasks with held replies left to offer: their newer reply waits behind them for a later pull.
+    const behind = new Set<string>();
+    for (const task of tasks) {
+      if (!reofferable.has(task.id)) continue;
+      if (this.stopped) return;
+      const res = await this.reofferHeld(task, budget);
+      budget = res.budget;
+      if (!res.done) behind.add(task.id);
+    }
+    this.startWork(work.filter((w) => reofferable.has(w.task.id) && !(behind.has(w.task.id) && w.item?.kind === 'reply')));
+    if (!this.stopped) await this.deps.afterPull?.().catch(() => undefined);
+  }
+
+  /** Whether `unit` would be written now: nothing in flight or owed for it, no attempt pending, no wait. */
+  private due(unit: Work): boolean {
+    if (this.inFlight.has(unit.key) || this.pendingMarks.has(unit.key)) return false;
+    if ((unit.item ?? (unit.task.metadata.remote as A2aRemoteTaskState)).attempted) return false;
+    const wait = this.retry.get(unit.key);
+    return !wait || wait.at <= this.now();
+  }
+
+  /** Start the deliveries of `units` that are due (not awaited), and settle what is owed for the rest. */
+  private startWork(units: Work[]): void {
+    for (const unit of units) {
       if (this.inFlight.has(unit.key)) continue;
       const pendingMark = this.pendingMarks.get(unit.key);
       if (pendingMark) {
@@ -242,11 +325,43 @@ export class RemoteA2aBridge {
       });
       this.working.add(run);
     }
-    if (!this.stopped) await this.deps.afterPull?.().catch(() => undefined);
   }
 
-  /** Hand one unit to the renderer and record the outcome. */
-  private async deliver(unit: Work, resnapshot: boolean): Promise<RetryHeldResult['results'][number]['outcome']> {
+  /**
+   * The task's replies held for want of an agent, offered again in order (a
+   * later reply is about to be tried on the same pane). Each keeps its hold
+   * and its hold time when it is not written, so the 24 h hold clock goes on;
+   * one main may have pasted and not confirmed becomes `delivery-unconfirmed`,
+   * never pasted twice. A reply with no text here is never offered. At most
+   * `budget` are offered; `done` is false when some were left for later.
+   */
+  private async reofferHeld(task: Task, budget: number): Promise<{ budget: number; done: boolean }> {
+    for (const item of reofferUnits(task)) {
+      if (this.stopped) return { budget, done: false };
+      const key = itemKey(task.id, item.messageId);
+      if (this.inFlight.has(key) || this.pendingMarks.has(key)) continue;
+      if (budget <= 0) return { budget, done: false };
+      budget -= 1;
+      const ref = { taskId: task.id, messageId: item.messageId };
+      this.inFlight.add(key);
+      this.reofferMarks.add(key);
+      let outcome: RetryHeldResult['results'][number]['outcome'];
+      try {
+        // eslint-disable-next-line no-await-in-loop -- in the task's order
+        outcome = await this.deliver({ key, task, item }, false, true);
+      } finally {
+        this.inFlight.delete(key);
+        if (!this.pendingMarks.has(key)) this.reofferMarks.delete(key);
+      }
+      // Not written: the pane cannot take the older ones now. The rest wait, and the new reply is tried as
+      // usual, so it backs off (and without an agent is held) instead of being re-offered behind on every pull.
+      if (outcome !== 'delivered') return { budget, done: true };
+    }
+    return { budget, done: true };
+  }
+
+  /** Hand one unit to the renderer and record the outcome. `reoffer`: a held reply offered again. */
+  private async deliver(unit: Work, resnapshot: boolean, reoffer = false): Promise<RetryHeldResult['results'][number]['outcome']> {
     const { task, item } = unit;
     const marker = task.metadata.remote as A2aRemoteTaskState;
     // A pane task always names its local pane; one that does not is held, never guessed.
@@ -261,7 +376,7 @@ export class RemoteA2aBridge {
     // Durable BEFORE the write: if main dies after the paste, the daemon knows
     // a paste may have happened and the unit is not pasted again on its own.
     try {
-      const started = await this.deps.daemonRpc(A2A_REMOTE_RPC.mark, { ...ref, attempted: true });
+      const started = await this.deps.daemonRpc(A2A_REMOTE_RPC.mark, { ...ref, attempted: true, ...(reoffer ? { reoffer: true } : {}) });
       if (!isRecord(started) || started.ok !== true) throw new Error(isRecord(started) && typeof started.error === 'string' ? started.error : 'not recorded');
     } catch (err) {
       this.backoff(unit.key);
@@ -272,7 +387,13 @@ export class RemoteA2aBridge {
     try {
       res = item
         // A gated paste with its submit receipt can outlast the bridge's 5 s default.
-        ? await this.deps.sendToRenderer(A2A_REMOTE_NOTIFY_METHOD, { task, messageId: item.messageId, ...(resnapshot ? { resnapshot: true } : {}) }, { timeoutMs: GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS })
+        ? await this.deps.sendToRenderer(A2A_REMOTE_NOTIFY_METHOD, {
+          task,
+          messageId: item.messageId,
+          ...(resnapshot ? { resnapshot: true } : {}),
+          // Offered late: the pane is told it was held, and since when.
+          ...(reoffer ? { delayed: heldDelayPrefix(item.at ?? item.heldAt) } : {}),
+        }, { timeoutMs: GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS })
         : await this.deps.sendToRenderer('a2a.task.send', this.taskParams(task, marker, resnapshot), { timeoutMs: GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS });
     } catch (err) {
       this.backoff(unit.key);
@@ -280,7 +401,8 @@ export class RemoteA2aBridge {
       this.deps.log?.('warn', `[a2a-remote] delivery of ${unit.key} failed: ${msg}`);
       // No window: nothing was written. Anything else (a timeout) may have
       // pasted, so the attempt stands and the unit goes to a person.
-      if (/BrowserWindow is not available/.test(msg)) await this.mark(unit.key, { ...ref, mark: { attempted: false } });
+      if (/BrowserWindow is not available/.test(msg)) await this.mark(unit.key, { ...ref, mark: reoffer ? { attempted: false, reoffer: true } : { attempted: false } });
+      else if (reoffer) await this.mark(unit.key, { ...ref, mark: { held: 'delivery-unconfirmed' } });
       return 'not-delivered';
     }
     const result = res as A2aRemoteDeliveryResult;
@@ -292,6 +414,15 @@ export class RemoteA2aBridge {
         mark: { delivered: true, ...(result.ptyId ? { ptyId: result.ptyId } : {}) },
       });
       return 'delivered';
+    }
+    if (reoffer) {
+      // Still held, under the same hold (and its time) unless the renderer names another reason.
+      if (isRecord(result) && result.ok === true && result.delivered === false && result.held && result.held !== item?.held) {
+        await this.mark(unit.key, { ...ref, mark: { held: result.held } });
+        return result.held;
+      }
+      await this.mark(unit.key, { ...ref, mark: { attempted: false, reoffer: true } });
+      return 'not-delivered';
     }
     this.backoff(unit.key);
     if (isRecord(result) && result.ok === true && result.delivered === false && result.held) {
@@ -369,7 +500,14 @@ export class RemoteA2aBridge {
       });
       if (isRecord(res) && res.ok === true) {
         this.pendingMarks.delete(key);
+        this.reofferMarks.delete(key);
         if ('delivered' in entry.mark) this.retry.delete(key);
+        return;
+      }
+      // A re-offer's mark the daemon refused outright (the item moved on meanwhile): nothing to retry.
+      if (this.reofferMarks.has(key) && isRecord(res) && res.ok === false) {
+        this.pendingMarks.delete(key);
+        this.reofferMarks.delete(key);
         return;
       }
       // Refused or unreachable: kept, and only the mark is retried on the
@@ -397,12 +535,30 @@ function workOf(task: Task): Work[] {
   const taskOwed = marker.direction === 'inbound' && marker.delivered !== true;
   if (taskOwed && !marker.held && !ended) out.push({ key: task.id, task });
   for (const item of marker.inbox ?? []) {
-    if (item.delivered === true || item.held) continue;
+    if (item.delivered === true || item.held || item.rejected) continue;
     // A reply into an inbound task waits until the task itself is in the pane.
     if (item.kind === 'reply' && taskOwed) continue;
     out.push({ key: itemKey(task.id, item.messageId), task, item });
   }
   return out;
+}
+
+/**
+ * A task's replies held for want of an agent that may be offered again, in
+ * the task's order: not ended, not dropped, and with their text in history.
+ */
+function reofferUnits(task: Task): A2aRemoteInboxItem[] {
+  const marker = task.metadata?.remote as A2aRemoteTaskState | undefined;
+  if (!marker || marker.v !== 1 || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return [];
+  return (marker.inbox ?? []).filter((i) => i.kind === 'reply' && i.held === 'no-agent' && !i.attempted && !i.rejected && i.delivered !== true
+    && task.history.some((m) => m.messageId === i.messageId));
+}
+
+/** A task's held items a paste was started on and never confirmed, still shown under another hold. */
+function unconfirmedHeld(task: Task): A2aRemoteInboxItem[] {
+  const marker = task.metadata?.remote as A2aRemoteTaskState | undefined;
+  if (!marker || marker.v !== 1 || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) return [];
+  return (marker.inbox ?? []).filter((i) => !!i.held && i.held !== 'delivery-unconfirmed' && i.attempted === true && !i.rejected && i.delivered !== true);
 }
 
 function itemKey(taskId: string, messageId: string): string {

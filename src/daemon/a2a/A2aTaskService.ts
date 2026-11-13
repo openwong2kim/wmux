@@ -77,6 +77,15 @@ import { isRemoteWorkspaceId, localSideOf, readHeldReason, type A2aRemoteHeldRea
 /** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
 const GC_MAX_TASKS = 500;
+/**
+ * A remote task that failed or was canceled is kept this long instead: its
+ * reason (`status.evidence.summary`) is often the only word the other PC
+ * sent, and an agent may look for it hours later.
+ */
+const GC_REMOTE_ENDED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+/** Ids collected recently, so a query for one says it ended rather than "not found" (bounded). */
+const GC_EVICTED_KEEP_MS = 24 * 60 * 60 * 1000;
+const GC_EVICTED_MAX = 1000;
 /** §4: 멱등 LRU cap/stream — 채널 상수(CHANNEL_IDEMPOTENCY_CAP=1000)와 동형. */
 const IDEMPOTENCY_CAP = 1000;
 
@@ -413,7 +422,7 @@ export class A2aTaskService {
       if (task.history.some((h) => h.messageId === m.message.messageId)) return;
       task.history.push(m.message);
       task.metadata.updatedAt = m.timestamp;
-      if (m.remoteInbound) addInboxItem(task, m.message.messageId, 'reply');
+      if (m.remoteInbound) addInboxItem(task, m.message.messageId, m.message.metadata?.['wmuxNotice'] ? 'notice' : 'reply', undefined, false, m.timestamp);
       return;
     }
     if (p.kind === 'remote.mark') {
@@ -431,7 +440,10 @@ export class A2aTaskService {
         if (r.stateSync !== undefined || r.sent !== undefined) delete marker.replyDeliveredAt;
         if (r.replyAcked && !marker.replyDeliveredAt) marker.replyDeliveredAt = r.timestamp;
         if (r.stateSync !== undefined) marker.stateSync = r.stateSync;
-        if (r.sent !== undefined && !(marker.sent ?? []).includes(r.sent)) (marker.sent ??= []).push(r.sent);
+        if (r.sent !== undefined && !(marker.sent ?? []).includes(r.sent)) {
+          (marker.sent ??= []).push(r.sent);
+          (marker.sentAt ??= {})[r.sent] = r.timestamp;
+        }
         if (r.read && !marker.readAt) marker.readAt = r.timestamp;
         if (r.receiptSync !== undefined) marker.receiptSync = r.receiptSync;
         // A read implies the hand-over, even when the peer's 'delivered' never came.
@@ -439,6 +451,17 @@ export class A2aTaskService {
         if (r.remoteReceipt === 'read' && !marker.remoteReadAt) marker.remoteReadAt = r.timestamp;
         if (r.stateRefused) marker.stateRefused = { state: r.stateRefused.state, code: r.stateRefused.code, at: r.timestamp };
         if (r.stateAccepted) delete marker.stateRefused;
+        return;
+      }
+      if (r.rejected !== undefined || r.notice !== undefined) {
+        const item = target as A2aRemoteInboxItem;
+        if (r.rejected) {
+          // The hold it had stays on the record: a delivery-unconfirmed one may have reached the pane.
+          item.rejected = { reason: r.rejected, at: r.timestamp, notice: 'pending', ...(item.held ? { held: item.held } : {}) };
+          delete item.held;
+          delete item.attempted;
+          item.delivered = false;
+        } else if (item.rejected && r.notice) item.rejected.notice = r.notice;
         return;
       }
       if (r.attempted !== undefined) {
@@ -457,7 +480,8 @@ export class A2aTaskService {
         target.delivered = false;
         delete target.attempted;
         const held = readHeldReason(r.held);
-        if (target.held !== held || !target.heldAt) target.heldAt = r.timestamp;
+        // The first hold's time stays through a change of reason, so the 24 h clock never starts again.
+        if (!target.heldAt) target.heldAt = r.timestamp;
         target.held = held;
       }
       return;
@@ -920,6 +944,12 @@ export class A2aTaskService {
      * the task undelivered.
      */
     stillOwed?: () => boolean;
+    /** Item-level: dropped undelivered because its hold expired (the task stays open). */
+    rejected?: 'held-expired';
+    /** Item-level, on a rejected item: its notice went to the peer, or cannot go. */
+    notice?: 'sent' | 'not-sent';
+    /** With `attempted` on a held item: main offers it again, or that offer wrote nothing (the hold and its time stay). */
+    reoffer?: true;
   }): Promise<{ ok: true; task: Task } | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
@@ -943,7 +973,9 @@ export class A2aTaskService {
       const bookkeeping = input.stateSync !== undefined || input.sent !== undefined || receipts || input.replyAcked === true
         || input.stateRefused !== undefined || input.stateAccepted === true;
       if (bookkeeping && input.messageId !== undefined) return { ok: false, error: 'a2a.remote.mark: stateSync/sent/receipts are task-level' };
-      if (input.delivered !== true && !input.held && input.attempted === undefined && !bookkeeping) {
+      const itemMark = input.rejected !== undefined || input.notice !== undefined;
+      if (itemMark && input.messageId === undefined) return { ok: false, error: 'a2a.remote.mark: rejected/notice are item-level' };
+      if (input.delivered !== true && !input.held && input.attempted === undefined && !bookkeeping && !itemMark) {
         return { ok: false, error: 'a2a.remote.mark: nothing to mark' };
       }
       if (input.replyAcked && input.stillOwed?.()) return { ok: true, task };
@@ -969,6 +1001,21 @@ export class A2aTaskService {
           ...(input.stateRefused ? { stateRefused: { state: input.stateRefused.state, code: input.stateRefused.code } } : {}),
           ...(input.stateAccepted ? { stateAccepted: true as const } : {}),
         };
+      } else if (itemMark) {
+        const item = target as A2aRemoteInboxItem;
+        if (input.rejected) {
+          // Only a unit still owed and held can be dropped; one delivered meanwhile stays delivered.
+          if (item.delivered === true || item.rejected) return { ok: true, task };
+          // main may be writing it right now (offered again): not dropped under it; the next sweep looks again.
+          if (item.attempted) return { ok: false, error: `a2a.remote.mark: item ${input.messageId} has an attempt in flight` };
+          if (!item.held) return { ok: false, error: `a2a.remote.mark: item ${input.messageId} is not held` };
+          unchanged = false;
+          body = { rejected: input.rejected };
+        } else {
+          if (!item.rejected) return { ok: false, error: `a2a.remote.mark: item ${input.messageId} was not rejected` };
+          unchanged = item.rejected.notice === input.notice;
+          body = { notice: input.notice };
+        }
       } else if (input.delivered === true) {
         unchanged = target.delivered === true && (!input.ptyId || side.ptyId === input.ptyId);
         body = { delivered: true, ...(input.ptyId ? { ptyId: input.ptyId } : {}) };
@@ -976,10 +1023,16 @@ export class A2aTaskService {
         unchanged = target.delivered !== true && target.held === input.held;
         body = { held: input.held };
       } else {
-        // An attempt only matters while the unit is still owed.
-        if (target.delivered === true || target.held) return { ok: true, task };
+        // An attempt only matters while the unit is still owed (a held one only when main offers it again).
+        const reoffer = input.reoffer === true && input.messageId !== undefined;
+        // An offer again of an item that is no longer held (delivered, or dropped and its sender told): refused, so
+        // main does not write it.
+        if (reoffer && input.attempted && (!target.held || target.delivered === true || (target as A2aRemoteInboxItem).rejected)) {
+          return { ok: false, error: `a2a.remote.mark: item ${input.messageId} is no longer held` };
+        }
+        if (target.delivered === true || (target.held && !reoffer) || (target as A2aRemoteInboxItem).rejected) return { ok: true, task };
         unchanged = (target.attempted === true) === input.attempted;
-        body = { attempted: input.attempted };
+        body = { attempted: input.attempted, ...(reoffer ? { reoffer: true as const } : {}) };
       }
       if (unchanged) return { ok: true, task };
       const payload: A2aRemoteMarkPayload = {
@@ -1010,7 +1063,7 @@ export class A2aTaskService {
       if (!marker) continue;
       const ended = (TERMINAL_STATES as readonly string[]).includes(task.status.state);
       const taskWork = marker.direction === 'inbound' && marker.delivered !== true && !marker.held && !ended;
-      const itemWork = (marker.inbox ?? []).some((i) => i.delivered !== true && !i.held);
+      const itemWork = (marker.inbox ?? []).some((i) => i.delivered !== true && !i.held && !i.rejected);
       if (taskWork || itemWork) out.push(task);
     }
     return out;
@@ -1499,11 +1552,12 @@ export class A2aTaskService {
       if (
         (TERMINAL_STATES as readonly string[]).includes(task.status.state) &&
         !this.keepsEnded(task) &&
-        now - new Date(task.metadata.updatedAt).getTime() > GC_MAX_AGE_MS
+        now - new Date(task.metadata.updatedAt).getTime() > keepEndedMs(task)
       ) {
         this.tasks.delete(id);
         this.idempotency.delete(id);
         this.remoteStates.delete(id);
+        this.noteEvicted(task, now);
       }
     }
     if (this.tasks.size <= GC_MAX_TASKS) return;
@@ -1517,6 +1571,7 @@ export class A2aTaskService {
       this.tasks.delete(task.id);
       this.idempotency.delete(task.id);
       this.remoteStates.delete(task.id);
+      this.noteEvicted(task, now);
       toRemove--;
     }
   }
@@ -1534,6 +1589,46 @@ export class A2aTaskService {
   private keepsEnded(task: Task): boolean {
     const m = remoteMarkerOf(task);
     return m?.cancelOwed === true && m.stateSync !== 'canceled' && this.endedKeep(task);
+  }
+
+  /**
+   * Task ids collected recently (ended, then dropped from memory): when each
+   * ended, until when it is known, and the two workspaces of the task.
+   */
+  private readonly evicted = new Map<string, { endedAt: number; until: number; parties: readonly string[] }>();
+
+  /**
+   * Note a collected task with its real end time (its last update), known for
+   * 24 h after it would have been collected. The boot GC runs over the whole
+   * log: a task that ended longer ago than that is not noted at all, and none
+   * is noted with the boot time.
+   */
+  private noteEvicted(task: Task, now: number): void {
+    const id = task.id;
+    const endedAt = Date.parse(task.metadata.updatedAt);
+    if (Number.isNaN(endedAt)) return;
+    const until = endedAt + keepEndedMs(task) + GC_EVICTED_KEEP_MS;
+    if (now > until) return;
+    this.evicted.delete(id);
+    this.evicted.set(id, { endedAt, until, parties: [task.metadata.from.workspaceId, task.metadata.to.workspaceId] });
+    while (this.evicted.size > GC_EVICTED_MAX) this.evicted.delete(this.evicted.keys().next().value as string);
+  }
+
+  /**
+   * When `taskId` ended, if it was collected since and is still known (up to
+   * 24 h after it would have been collected) and `workspaceId` was one of its
+   * two sides; undefined otherwise (an id never seen here, known no longer, or
+   * not theirs).
+   */
+  evictedAt(taskId: string, workspaceId: string): string | undefined {
+    const e = this.evicted.get(taskId);
+    if (!e) return undefined;
+    if (this.now() > e.until) {
+      this.evicted.delete(taskId);
+      return undefined;
+    }
+    // Only a party to the task learns it existed.
+    return e.parties.includes(workspaceId) ? new Date(e.endedAt).toISOString() : undefined;
   }
 
   // ── 내부 ────────────────────────────────────────────────────────────
@@ -1665,12 +1760,18 @@ function remoteMarkerOf(task: Task | undefined): A2aRemoteTaskState | undefined 
 }
 
 /** Owe the local pane one delivery for a reply/state the peer sent (idempotent). */
-function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind'], state?: TaskState, reported = false): void {
+/** How long a task that ended stays in memory: a failed or canceled remote one 24 h, any other 30 min. */
+function keepEndedMs(task: Task): number {
+  const remote = remoteMarkerOf(task);
+  return remote && (task.status.state === 'failed' || task.status.state === 'canceled') ? GC_REMOTE_ENDED_MAX_AGE_MS : GC_MAX_AGE_MS;
+}
+
+function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind'], state?: TaskState, reported = false, at?: string): void {
   const marker = remoteMarkerOf(task);
   if (!marker) return;
   const inbox = marker.inbox ?? (marker.inbox = []);
   if (!inbox.some((i) => i.messageId === messageId)) {
-    inbox.push({ messageId, kind, ...(state ? { state } : {}), ...(reported ? { reported: true as const } : {}), delivered: false });
+    inbox.push({ messageId, kind, ...(at ? { at } : {}), ...(state ? { state } : {}), ...(reported ? { reported: true as const } : {}), delivered: false });
   }
 }
 

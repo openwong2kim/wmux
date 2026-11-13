@@ -937,27 +937,29 @@ if (BOT_SURFACE) {
 // errors so the next identity-gated call re-resolves the live owner.
 function isStaleIdentityResult(value: unknown): boolean {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
-  // The last two are main's browser refusals for a claim whose workspace is
-  // gone and for a call that carried no claim (e.g. the cached id came from the
-  // client-side walk, which yields no token): clearing the route drops both the
-  // token and the cached id, so the next call walks again on main's side.
-  return /no workspace found|not owned by workspace|the workspace you claimed is gone|carries no verified workspace/i.test(text);
+  // The rest are main's refusals for a claim whose workspace is gone (browser,
+  // a2a, and computer use, in its own words) and for a call that carried no
+  // claim (e.g. the cached id came from the client-side walk, which yields no
+  // token): clearing the route drops both the token and the cached id, so the
+  // next call walks again on main's side.
+  return /no workspace found|not owned by workspace|the workspace you claimed is gone|carries no verified workspace|workspace claim is no longer valid/i.test(text);
 }
 
-// main's browser refusals for a claim that is gone (main restarted, so every
-// token it minted is) and for a call that carried none.
+// main's refusals for a claim that is gone (main restarted, so every token it
+// minted is) and for a call that carried none.
 function isClaimRefusal(text: string): boolean {
-  return /the workspace you claimed is gone|carries no verified workspace/i.test(text);
+  return /the workspace you claimed is gone|carries no verified workspace|workspace claim is no longer valid/i.test(text);
 }
 
 /**
- * Run one tool call with the stale-identity handler: every browser RPC it
- * makes — callRpc or a tool module's direct sendRpc — drops a stale identity
- * the same way. When the call's FIRST browser RPC was refused for its claim,
- * run the call once more: main refuses that before it acts on anything, and
- * the identity was just dropped, so the second run walks again and carries a
- * fresh claim. Without it every running agent's first browser call after a
- * wmux restart failed, with a refusal it had to know to retry.
+ * Run one tool call with the stale-identity handler: every claim-gated RPC it
+ * makes (browser, a2a tasks, computer use; wmux-client `isClaimGated`) —
+ * callRpc or a tool module's direct sendRpc — drops a stale identity the same
+ * way. When the call's FIRST claim-gated RPC was refused for its claim, run the
+ * call once more: main refuses that before it acts on anything, and the
+ * identity was just dropped, so the second run walks again and carries a fresh
+ * claim. Without it every running agent's first such call after a wmux restart
+ * failed, with a refusal it had to know to retry.
  */
 async function retryOnceAfterClaimRefusal(run: () => unknown): Promise<unknown> {
   for (let attempt = 0; ; attempt++) {

@@ -125,6 +125,11 @@ export interface JoinerSessionDeps {
   accept: (envelope: unknown, peer: { hostId: HostId; pull?: ImagePull }) => Promise<A2aRemoteDeliverResponse>;
   /** The server refused a record for good (or its images could not be sent): end what it was about. */
   onRefused: (record: A2aOutboxRecordV1, code: A2aRemoteErrorCode, detail?: string) => void | Promise<void>;
+  /**
+   * Checked as each record is about to go: true keeps it from the server (the
+   * caller refuses it, or it stays owed and is checked again next time).
+   */
+  withhold?: (rec: A2aOutboxRecordV1) => boolean;
   /** This PC's copies of the images it queued (`A2aImageStore.readOutgoing`). */
   images?: { readOutgoing(sha256: string): Promise<Buffer | null> };
   /** The stream came up (or 5 minutes passed): fold the server's view of our links in. */
@@ -395,6 +400,8 @@ export class JoinerSession {
     const { hostId } = this.deps;
     // This send's own stop: a start() after a stop() gives the session a new one.
     const halt = this.halt.signal;
+    // Kept from the server: refused by the caller (the next record is due), or still owed (later).
+    if (this.deps.withhold?.(rec)) return this.deps.outbox.head(hostId)?.seq === rec.seq ? 'retry' : 'next';
     try {
       this.deps.outbox.markSent(hostId, rec.seq);
     } catch (err) {

@@ -3,7 +3,7 @@ import type { WorkLink } from '../../../../shared/workLink';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import type { Task, TaskState, Workspace } from '../../../../shared/types';
 import { PHONE_FLEET_TICKET_RECENT_MS } from '../../../../shared/phoneFleetTickets';
-import { buildFleetTickets, handOutTicketLine, openTicketFor, paneLiveIn, ticketAttention, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
+import { buildFleetTickets, handOutTicketLine, openTicketFor, paneLiveIn, ticketAttention, ticketResultOf, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
 
 const NOW = 1_000_000_000_000;
 
@@ -227,5 +227,12 @@ describe('a ticket picked from To hand out', () => {
   it('carries no such line on any other ticket', () => {
     expect(handOutTicketLine({ origin: 'manual', pr: { number: 7, checks: 'passing' } }, echo)).toBeUndefined();
     expect(handOutTicketLine({ origin: 'moa' }, echo)).toBeUndefined();
+  });
+});
+
+describe('ticketResultOf — a failed remote task read back through a2a.task.query (#3344)', () => {
+  it('shows the reason from untrusted.reason, the text as stored', () => {
+    const failed = { ...task('failed', { evidence: { items: [] } as never }), untrusted: { reason: 'the other PC refused it' } } as Task;
+    expect(ticketResultOf(failed)?.summary).toBe('the other PC refused it');
   });
 });

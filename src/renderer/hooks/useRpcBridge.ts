@@ -79,6 +79,7 @@ import {
   A2A_REMOTE_NOTIFY_METHOD,
   deliveredImageParts,
   deliveredImagesOf,
+  heldNoticeText,
   imagesNudgeSuffix,
   isRemoteWorkspaceId,
   localSideOf,
@@ -722,6 +723,8 @@ export async function deliverPtyNotification(
   operator = false,
   newTask?: NewTaskDelivery,
   replyTaskId?: string,
+  // wmux's own line, put before the sender's block and never inside it.
+  leadLine?: string,
 ): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
@@ -729,9 +732,10 @@ export async function deliverPtyNotification(
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
   if (ptyId) {
+    const block = formatA2aMessage(senderName, a2aPartyName(targetWs, useStore.getState().paneLabel, useStore.getState().surfaceAgent, ptyId, useStore.getState().a2aTerminalNames), typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId));
     return deliverA2aText(
       ptyId,
-      formatA2aMessage(senderName, a2aPartyName(targetWs, useStore.getState().paneLabel, useStore.getState().surfaceAgent, ptyId, useStore.getState().a2aTerminalNames), typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId)),
+      leadLine ? `${leadLine}\n${block}` : block,
       operator,
       newTask,
       replyTaskId,
@@ -1228,14 +1232,36 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
   if ('held' in target) return { ok: true, delivered: false, held: target.held };
   const msg = task.history.find((h) => h.messageId === messageId);
   const part = msg?.parts.find((p) => p.kind === 'text');
+  const liveMeta = deliveryLiveMeta(useStore.getState().surfaceAgent, target.pty, target.ws.metadata);
+  if (item.kind === 'notice') {
+    // The other host's notice about one of this side's messages: its words are built here from this PC's
+    // own record (the message id it names and the time this PC sent it), never read from stored text, so it
+    // goes in as one line in wmux's own voice, unquoted, and never as the agent's reply.
+    const notice = msg?.metadata?.['wmuxNotice'] as { messageId?: unknown; unconfirmed?: unknown } | undefined;
+    const about = typeof notice?.messageId === 'string' ? notice.messageId : '';
+    const sentAt = (task.metadata.remote as A2aRemoteTaskState | undefined)?.sentAt?.[about];
+    const line = about ? oneLine(sanitizeRemoteText(heldNoticeText(about, sentAt, notice?.unconfirmed === true))) : '';
+    if (!line) return { error: `${A2A_REMOTE_NOTIFY_METHOD}: the notice has no text` };
+    return writeRemoteDelivery({ ...anchor, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
+      ? deliverPtyNudge(target.ws, line, target.pty, false)
+      : deliverPtyNotification(target.ws, 'wmux', line, target.pty, false)));
+  }
   const text = sanitizeRemoteMessage(part && part.kind === 'text' ? part.text : '');
   const images = deliveredImagesOf(msg?.parts);
   if (!text && images.length === 0) return { error: `${A2A_REMOTE_NOTIFY_METHOD}: the reply has no text` };
   const senderName = sanitizeRemoteText(task.metadata[side === 'from' ? 'to' : 'from'].name);
-  const liveMeta = deliveryLiveMeta(useStore.getState().surfaceAgent, target.pty, target.ws.metadata);
+  // A held reply offered late (main's fixed words and a time): said first, on its own line.
+  const delayed = typeof params.delayed === 'string' && /^\[wmux\] delayed: [ -~]{1,120}$/.test(params.delayed) ? params.delayed : '';
   return writeRemoteDelivery({ ...anchor, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
-    ? deliverPtyNudge(target.ws, buildA2aNudge(task.id, senderName, 'reply') + imagesNudgeSuffix(images), target.pty, false)
-    : deliverPtyNotification(target.ws, senderName, bodyWithImages(text, images), target.pty, false)));
+    ? deliverPtyNudge(target.ws, (delayed ? `${delayed}. ` : '') + buildA2aNudge(task.id, senderName, 'reply') + imagesNudgeSuffix(images), target.pty, false)
+    // wmux's line goes before the sender's block, never inside it (the held text's own `[wmux]` lines are
+    // already quoted by sanitizeRemoteMessage).
+    : deliverPtyNotification(target.ws, senderName, bodyWithImages(text, images), target.pty, false, undefined, undefined, delayed || undefined)));
+}
+
+/** One line: control characters and line breaks folded to spaces. */
+function oneLine(text: string): string {
+  return text.replace(/[\p{Cc}\s]+/gu, ' ').trim();
 }
 
 // ---------------------------------------------------------------------------
