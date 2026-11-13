@@ -88,6 +88,8 @@ interface WireOpts {
   mentionAuthors?: Record<string, string>;
   /** The daemon's agent state for the task pane (default: Claude Code, session inc-1, quiet). */
   agentSession?: string;
+  /** The daemon reads no agent in the task pane: it is back at a shell. */
+  atShell?: boolean;
   /** The pane holds a typed draft. */
   draft?: boolean;
   /** Time and sleeps on a virtual clock. */
@@ -117,7 +119,7 @@ function wire(initial: WireOpts = {}): Wiring {
     },
     readPromptEvents: async () => ({ events: [{ kind: 'command_end' }], lastCompletedRange: null }),
     getAgentState: async () => ({
-      agentName: 'Claude Code',
+      agentName: opts.atShell ? '' : 'Claude Code',
       agentVerified: true,
       agentStatus: 'running',
       inputQuiet: true,
@@ -1081,6 +1083,41 @@ describe('a refused local delivery, stored and typed later', () => {
     w.live.pending = [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }];
     await w.retryPendingDeliveries('pty-task');
     expect(pasted(w)).toEqual([]);
+  });
+
+  it('after an approval clears, the retry still checks the screen before the paste and before the Enter', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    w.live.pending = [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }];
+    await w.retryPendingDeliveries('pty-task');
+    w.live.pending = [];
+    // A follow-up dialog on the screen: nothing is pasted.
+    w.live.screen = SCREENS.trust.screen;
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    // A dialog that comes up after the paste: no Enter.
+    w.live.screen = undefined;
+    // Two reads before the paste (the gate's checks) see it clear; the read before the Enter sees the dialog.
+    w.live.screens = ['WORKER SCREEN', 'WORKER SCREEN', SCREENS.trust.screen as string];
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toHaveLength(1);
+    expect(w.writes.map((x) => x.data)).not.toContain('\r');
+    // The text stays in the composer (#2993): it is not pasted again.
+    expect(w.logs.at(-1)).toContain('was pasted into pane "pty-task" but not submitted');
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toHaveLength(1);
+  });
+
+  it('is never typed into a shell: a pane with no agent gets no write at all', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    w.live.atShell = true;
+    const before = w.writes.length;
+    await w.retryPendingDeliveries('pty-task');
+    expect(w.writes.length).toBe(before);
+    expect(w.logs.at(-1)).toContain(': agent changed;');
   });
 
   it('is not stored for a person or a dialog, nor without a single local task', async () => {
