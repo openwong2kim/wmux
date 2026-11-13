@@ -89,7 +89,9 @@ export function ticketResultOf(task: Task | undefined): FleetTicket['result'] {
   if (!task) return undefined;
   const { state, message, evidence } = task.status;
   if (state !== 'completed' && state !== 'failed') return undefined;
-  const summary = evidence?.summary?.trim() || textOf(message);
+  // A failed remote task read back through a2a.task.query carries its reason under `untrusted`.
+  const untrusted = (task as Task & { untrusted?: { reason?: unknown } }).untrusted?.reason;
+  const summary = evidence?.summary?.trim() || (typeof untrusted === 'string' ? untrusted.trim() : '') || textOf(message);
   if (!summary) return undefined;
   let verification: string | undefined;
   if (evidence && evidence.items.length > 0) {

@@ -297,7 +297,10 @@ export function isLegacyHeldReason(held: string): boolean {
  */
 export interface A2aRemoteInboxItem {
   messageId: string;
-  kind: 'reply' | 'state';
+  /** `notice`: the other host's notice about one of our own messages (`held-notice.1`), shown in wmux's voice. */
+  kind: 'reply' | 'state' | 'notice';
+  /** When it arrived here. */
+  at?: string;
   /** For a 'state' item: the state the peer moved the task to. */
   state?: TaskState;
   /** For a 'state' item: the peer's `completed`, held here as a report (the task is input-required). */
@@ -308,6 +311,18 @@ export interface A2aRemoteInboxItem {
   heldAt?: string;
   /** main started a paste and has not confirmed it yet. */
   attempted?: boolean;
+  /**
+   * Dropped here without being delivered (its hold expired): the task stays
+   * open. `notice`: whether the PC that sent it was told (`held-notice.1`);
+   * `not-sent` when that PC does not take a notice.
+   */
+  rejected?: {
+    reason: 'held-expired';
+    at: string;
+    notice: 'pending' | 'sent' | 'not-sent';
+    /** The hold it had when it was dropped: `delivery-unconfirmed` means it may have reached the pane. */
+    held?: A2aRemoteHeldReason;
+  };
 }
 
 /**
@@ -321,6 +336,8 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
   stateSync?: TaskState;
   /** Our own replies on this task already queued for the peer (messageIds). */
   sent?: string[];
+  /** When each of `sent` was queued (a notice about one of them names this time, never one the peer gives). */
+  sentAt?: Record<string, string>;
   /** Inbound task: when our side first read it (a2a_task_query). */
   readAt?: string;
   /** Inbound task: the furthest receipt already queued for the peer. */
@@ -349,6 +366,23 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
 
 /** A hold older than this is rejected automatically (`held-expired`). */
 export const A2A_REMOTE_HOLD_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * What a pane is shown for a notice: fixed words, this PC's own send time and the message id only.
+ * `unconfirmed`: a paste was started there and never confirmed, so it may have reached the pane.
+ */
+export function heldNoticeText(messageId: string, sentAt: string | undefined, unconfirmed = false): string {
+  const when = sentAt && !Number.isNaN(Date.parse(sentAt)) ? new Date(Date.parse(sentAt)).toISOString() : 'an unknown time';
+  return unconfirmed
+    ? `[wmux] Your message ${messageId} sent ${when} may not have been delivered: the other PC started writing it to the pane but never confirmed it, and stopped trying after 24 hours. The task stays open.`
+    : `[wmux] Your message ${messageId} sent ${when} was not delivered: the other PC held it, could not write it to the pane, and dropped it after 24 hours. The task stays open.`;
+}
+
+/** The line put before a held message that is offered again once its pane has an agent. */
+export function heldDelayPrefix(at: string | undefined): string {
+  const when = at && !Number.isNaN(Date.parse(at)) ? new Date(Date.parse(at)).toISOString() : 'earlier';
+  return `[wmux] delayed: sent ${when}, held because no agent was in the pane`;
+}
 
 /** The local side of a remote task: the party whose workspace is not `remote:`. */
 export function localSideOf(task: Pick<Task, 'metadata'>): 'from' | 'to' {

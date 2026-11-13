@@ -787,17 +787,32 @@ export class TaskLedger {
   }
 
   /** What this PC learned of a task another PC runs: its request's state,
-   *  link, or that it was withdrawn here. SYSTEM write; bumps the
-   *  rev; no status change, no transition event. Resolves with the row as it
-   *  is afterwards, or null for a row that is not remote. */
-  updateRemote(id: string, patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>): Promise<LedgerEntry | null> {
+   *  link, or that it was withdrawn here. SYSTEM write; bumps the rev; no
+   *  status change, no transition event. Resolves with the row as it is
+   *  afterwards, or null for a row that is not remote.
+   *
+   *  `text`: why the row waits, when only that changed, written with the
+   *  patch in one write. Only onto an input_required row as it was read
+   *  (`expectedRev`): otherwise only the patch is written, and the next pass
+   *  reads the row again. */
+  updateRemote(
+    id: string,
+    patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>,
+    text?: { summary: string; expectedRev: number },
+  ): Promise<LedgerEntry | null> {
     return this.serialize(async () => {
       const entry = this.entries.get(id);
       if (!entry?.remote) return null;
       const remote = copyRemote({ ...entry.remote, ...patch });
       if (!remote) throw new Error(`ledger: the remote record of task ${id} would not be valid`);
-      if (JSON.stringify(remote) === JSON.stringify(entry.remote)) return entry;
-      const updated: LedgerEntry = this.redact({ ...entry, remote, rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR() });
+      const current = text !== undefined && entry.rev === text.expectedRev && entry.status === 'input_required';
+      const summary = current && text.summary.trim().length > 0
+        ? truncateHead(this.redact(text.summary.trim()), LEDGER_SUMMARY_MAX_BYTES)
+        : entry.summary;
+      if (JSON.stringify(remote) === JSON.stringify(entry.remote) && summary === entry.summary) return entry;
+      const updated: LedgerEntry = this.redact({
+        ...entry, remote, ...(summary !== undefined ? { summary } : {}), rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR(),
+      });
       await this.append({ op: 'entry', entry: updated });
       this.entries.set(id, updated);
       return updated;

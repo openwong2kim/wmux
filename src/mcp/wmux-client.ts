@@ -175,14 +175,15 @@ export function runWithWorkspaceTokenSource<T>(source: () => string | undefined,
   return workspaceTokenSource.run(source, fn);
 }
 
-// What a browser call does when main answers that the caller's identity is
+// What a claim-gated call does when main answers that the caller's identity is
 // stale (a pane moved, main restarted): set per tool call by index.ts, so the
 // tool modules that call sendRpc directly get the same recovery as callRpc.
-// `failed` is true when main refused the call (the outcome is its error text).
+// `failed` is true when main refused the call: an error, or a result that is
+// an `error` answer (the outcome is its text).
 type StaleIdentityHandler = (outcome: string, failed: boolean) => void;
 const staleIdentitySource = new AsyncLocalStorage<StaleIdentityHandler>();
 
-/** Run `fn` with a stale-identity handler for every browser RPC it makes. */
+/** Run `fn` with a stale-identity handler for every claim-gated RPC it makes. */
 export function runWithStaleIdentityHandler<T>(handler: StaleIdentityHandler, fn: () => T): T {
   return staleIdentitySource.run(handler, fn);
 }
@@ -195,13 +196,39 @@ export function runWithStaleIdentityHandler<T>(handler: StaleIdentityHandler, fn
  */
 const IDENTITY_FREE_BROWSER_METHODS: ReadonlySet<string> = new Set(['browser.navigationPolicy.get']);
 
-/** Hand a browser RPC's outcome to the current stale-identity handler (exported for tests). */
-export function noteBrowserOutcome(method: string, outcome: unknown, failed: boolean): void {
-  if (!method.startsWith('browser.') || IDENTITY_FREE_BROWSER_METHODS.has(method)) return;
+/**
+ * Pipe methods outside `browser.*` that main refuses for a dead claim before
+ * they act on anything, so one re-walk and one retry cannot do anything twice:
+ * - `a2a.task.query`, `a2a.task.update`, `a2a.task.send`, `a2a.task.cancel`,
+ *   `a2a.broadcast`: `a2aCallerWorkspace` (a2a.rpc.ts `registerAsCaller`),
+ *   before the handler runs;
+ * - `computer.*`: `callerAgent` (computer.rpc.ts `wrap`), before the service is
+ *   called (a method that takes no identity never reads the claim).
+ * Methods that never read the claim (`channel.*`, `ledger.*`, …) are never
+ * refused for one, so they are not here.
+ */
+const CLAIM_GATED_METHODS: ReadonlySet<string> = new Set([
+  'a2a.task.query', 'a2a.task.update', 'a2a.task.send', 'a2a.task.cancel', 'a2a.broadcast',
+]);
+
+/** Whether main refuses `method` for a dead claim before it acts (see above). */
+function isClaimGated(method: string): boolean {
+  if (method.startsWith('browser.')) return !IDENTITY_FREE_BROWSER_METHODS.has(method);
+  return method.startsWith('computer.') || CLAIM_GATED_METHODS.has(method);
+}
+
+/** A result that is main's refusal: an object whose `error` is its text (a2a handlers answer this way). */
+function isRefusalResult(outcome: unknown): boolean {
+  return !!outcome && typeof outcome === 'object' && !Array.isArray(outcome) && typeof (outcome as { error?: unknown }).error === 'string';
+}
+
+/** Hand a claim-gated RPC's outcome to the current stale-identity handler (exported for tests). */
+export function noteScopedOutcome(method: string, outcome: unknown, failed: boolean): void {
+  if (!isClaimGated(method)) return;
   const handler = staleIdentitySource.getStore();
   if (!handler) return;
   try {
-    handler(typeof outcome === 'string' ? outcome : JSON.stringify(outcome ?? ''), failed);
+    handler(typeof outcome === 'string' ? outcome : JSON.stringify(outcome ?? ''), failed || isRefusalResult(outcome));
   } catch {
     /* recovery is best-effort: it must never change the call's own result */
   }
@@ -284,6 +311,9 @@ function readTcpPort(): number | undefined {
   } catch { return undefined; }
 }
 
+/** An error main answered with, as opposed to a connection that failed or timed out. */
+class RpcAnswerError extends Error {}
+
 function attemptRpc(
   target: string | { host: string; port: number },
   token: string,
@@ -345,7 +375,7 @@ function attemptRpc(
             if (response.ok) {
               resolve(response.result);
             } else {
-              reject(new Error(response.error));
+              reject(new RpcAnswerError(response.error));
             }
           }
         } catch {
@@ -407,11 +437,10 @@ export async function sendRpc(
     for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
       try {
         const result = await attemptRpc(pipePath, token, method, params, timeoutMs);
-        noteBrowserOutcome(method, result, false);
+        noteScopedOutcome(method, result, false);
         return result;
       } catch (err) {
         lastError = err as Error;
-        noteBrowserOutcome(method, lastError.message, true);
         const msg = lastError.message;
         const isRetryable = msg.includes('not running') || msg.includes('unauthorized');
         const isPerm = msg.includes('EPERM');
@@ -423,7 +452,7 @@ export async function sendRpc(
         if (isRetryable && pipePaths.length > 1 && pipePath === envPath) {
           break;
         }
-        if (!isRetryable && !isPerm) throw err;
+        if (!isRetryable && !isPerm) throw answered(method, err);
       }
     }
   }
@@ -432,10 +461,23 @@ export async function sendRpc(
   if (tcpPort) {
     try {
       const result = await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params, timeoutMs);
-      noteBrowserOutcome(method, result, false);
+      noteScopedOutcome(method, result, false);
       return result;
-    } catch { /* fall through */ }
+    } catch (err) {
+      // Main's answer over TCP is the call's answer; a TCP connection failure leaves the pipe's error.
+      if (err instanceof RpcAnswerError) lastError = err;
+    }
   }
 
-  throw lastError ?? new Error('wmux is not running. Start the app first.');
+  throw answered(method, lastError ?? new Error('wmux is not running. Start the app first.'));
+}
+
+/**
+ * The error sendRpc throws, told to the stale-identity handler first when main
+ * answered with it. Only the call's final outcome is told: a connection that
+ * failed, or an attempt sendRpc retried, is no answer and never decides a retry.
+ */
+function answered(method: RpcMethod, err: unknown): unknown {
+  if (err instanceof RpcAnswerError) noteScopedOutcome(method, err.message, true);
+  return err;
 }

@@ -107,6 +107,33 @@ describe('a remote task row', () => {
     expect(await a.updateRemote(local.id, { withdrawn: true })).toBeNull();
   });
 
+  it('takes a new text for an input_required row as it was read, with no status change and no transition; the same text writes nothing', async () => {
+    const a = open();
+    const entry = await registerRemote(a);
+    const first = 'the agent on box waits on a permission question';
+    const reply = 'the agent on box waits for your reply';
+    expect(entry.status).toBe('working');
+    // Not input_required: only the patch goes.
+    const working = await a.updateRemote(entry.id, { goneSeenAt: 4 }, { summary: reply, expectedRev: entry.rev });
+    expect(working).toMatchObject({ rev: entry.rev + 1, status: 'working', remote: { goneSeenAt: 4 } });
+    expect(working!.summary).toBe(entry.summary);
+    const waiting = await a.update({ id: entry.id, status: 'input_required', actor: { kind: 'system', workspaceId: 'main' }, expectedRev: working!.rev, summary: first });
+    expect(waiting.ok).toBe(true);
+    const read = a.get(entry.id)!;
+    const moves: unknown[] = [];
+    a.onTransition((t) => moves.push(t));
+    // A stale rev: the patch goes, the text does not.
+    const stale = await a.updateRemote(entry.id, { goneSeenAt: 5 }, { summary: reply, expectedRev: read.rev - 1 });
+    expect(stale).toMatchObject({ rev: read.rev + 1, summary: first, remote: { goneSeenAt: 5 } });
+    const told = await a.updateRemote(entry.id, {}, { summary: reply, expectedRev: stale!.rev });
+    expect(told).toMatchObject({ rev: stale!.rev + 1, status: 'input_required', summary: reply });
+    expect((await a.updateRemote(entry.id, {}, { summary: reply, expectedRev: told!.rev }))?.rev).toBe(told!.rev);
+    expect(moves).toEqual([]);
+    // A closed row takes no text.
+    const closed = await a.closeTask(entry.id);
+    expect(await a.updateRemote(entry.id, {}, { summary: first, expectedRev: closed!.rev })).toMatchObject({ rev: closed!.rev, summary: closed!.summary });
+  });
+
   it('copyRemote keeps only the fields it knows, each checked', () => {
     expect(copyRemote({ ...REMOTE, extra: 1, withdrawn: 'yes', revoked: 1, branchOnPc: 'main' })).toEqual(REMOTE);
     expect(copyRemote({ ...REMOTE, spawnId: 'sp-x' })).toBeNull();

@@ -160,6 +160,39 @@ export const A2A_FEATURE_STREAM_PING = 'stream-ping.1';
  * an older one would refuse the kind.
  */
 export const A2A_FEATURE_STATUS = 'status.1';
+/**
+ * The PC takes a host's notice on a `reply` envelope (`A2aRemoteEnvelope.notice`):
+ * one of its own messages was held on the other PC and has now been dropped
+ * there, the task left open. A host sends one only to a PC that advertises it:
+ * an older one would take it as a plain reply (and a headless one with
+ * follow-ups on `ask` would end the task on it).
+ */
+export const A2A_FEATURE_HELD_NOTICE = 'held-notice.1';
+/** A host's notice about one message the receiver sent (`held-notice.1`). Nothing in it is shown as written. */
+export interface A2aRemoteNoticeV1 {
+  kind: 'held-expired';
+  /** The receiver's own message that was dropped. */
+  messageId: string;
+  /** When the host dropped it. */
+  sentAt: string;
+  /** A paste of it was started there and never confirmed: it may have reached the pane. */
+  unconfirmed?: true;
+}
+const NOTICE_KINDS: ReadonlySet<string> = new Set(['held-expired']);
+/** Strict: a known kind, a message id, an ISO time; anything else is dropped. Null: not a notice. */
+export function parseA2aRemoteNotice(raw: unknown): A2aRemoteNoticeV1 | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const kind = r['kind'];
+  const messageId = r['messageId'];
+  const sentAt = r['sentAt'];
+  if (typeof kind !== 'string' || !NOTICE_KINDS.has(kind)) return null;
+  if (typeof messageId !== 'string' || !A2A_REMOTE_MESSAGE_ID_RE.test(messageId)) return null;
+  if (typeof sentAt !== 'string' || sentAt.length > 40 || !/^\d{4}-\d{2}-\d{2}T/.test(sentAt) || Number.isNaN(Date.parse(sentAt))) return null;
+  const unconfirmed = r['unconfirmed'];
+  if (unconfirmed !== undefined && unconfirmed !== true) return null;
+  return { kind: 'held-expired', messageId, sentAt: new Date(Date.parse(sentAt)).toISOString(), ...(unconfirmed ? { unconfirmed: true as const } : {}) };
+}
 /** Whether a menu's labels leave this PC in a worker's status, or only how many there are. */
 export type A2aStatusLabels = 'send' | 'keep';
 export function isA2aStatusLabels(v: unknown): v is A2aStatusLabels {
@@ -940,6 +973,12 @@ export interface A2aRemoteEnvelope {
   receipt?: A2aRemoteReceipt;
   /** For 'status' (with `taskId`), only to a peer that advertises `A2A_FEATURE_STATUS`. */
   status?: A2aRemoteStatusV1;
+  /**
+   * For 'reply', only to a peer that advertises `A2A_FEATURE_HELD_NOTICE`: this
+   * reply is the host's notice, not a message from its agent. The receiver
+   * shows its own fixed text, never `text`.
+   */
+  notice?: A2aRemoteNoticeV1;
   /**
    * For 'task' / 'reply', only to a peer that advertises `A2A_FEATURE_IMAGES`:
    * the images the message carries. The bytes travel on `A2A_ROUTES.blobs`,

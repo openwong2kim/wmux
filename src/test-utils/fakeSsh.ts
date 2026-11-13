@@ -12,11 +12,19 @@ export function writeFakeSsh(dir: string, marker?: string): string {
   const touch = marker ? `touch '${marker}'\n` : '';
   // The command is the last argument; git's own repository variables are
   // the caller's, not the remote side's.
-  fs.writeFileSync(file, `#!/bin/sh\n${touch}for last; do :; done\nfor v in $(env | sed -n 's/^\\(GIT_[A-Z0-9_]*\\)=.*/\\1/p'); do unset "$v"; done\nexec sh -c "$last"\n`, { mode: 0o755 });
+  // A segment fakeSshUrl escaped is restored before the command runs.
+  fs.writeFileSync(file, `#!/bin/sh\n${touch}for last; do :; done\nlast=$(printf '%s' "$last" | sed 's#/${DASH_ESCAPE}-#/-#g')\nfor v in $(env | sed -n 's/^\\(GIT_[A-Z0-9_]*\\)=.*/\\1/p'); do unset "$v"; done\nexec sh -c "$last"\n`, { mode: 0o755 });
   return file;
 }
 
+/**
+ * Put before a path segment that starts with `-` (a TMPDIR such as
+ * `/private/tmp/x/-Users-me/…`): an address with such a segment is not a plain
+ * one, so the URL carries it escaped and the fake ssh restores it.
+ */
+const DASH_ESCAPE = '_wmuxdash_';
+
 /** `ssh://localhost<abs>`: an ssh URL for a local bare repository. */
 export function fakeSshUrl(absPath: string): string {
-  return `ssh://localhost${absPath}`;
+  return `ssh://localhost${absPath.split('/').map((s) => (s.startsWith('-') ? DASH_ESCAPE + s : s)).join('/')}`;
 }
