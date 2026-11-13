@@ -571,6 +571,18 @@ describe('a started task follows its A2A task', () => {
     expect(s.row(0).summary).toContain('waits on a permission question');
   });
 
+  it('a row written before the wait was recorded takes the text of what it waits for now', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
+    await reconcileRemoteTasks(s.deps);
+    // As an older build left it: waiting, with its first reason's text and no wait recorded.
+    await s.deps.ledger.updateRemote(s.row(0).id, { waitsFor: undefined });
+    expect(s.row(0).remote).not.toHaveProperty('waitsFor');
+    s.view(0, { state: 'input-required' });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: `the agent on box waits for your reply on A2A task ${s.a2a[0]}`, remote: { waitsFor: 'reply' } });
+  });
+
   it('a dialog question with no menu id (a picker as the real service reports it) is a question like any other', async () => {
     const s = await started(1);
     s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'dialog' } });

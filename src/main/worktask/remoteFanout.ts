@@ -20,7 +20,7 @@ import type { A2aSpawnAskError, A2aSpawnAskInput, A2aSpawnAskResult, A2aSpawnOut
 import { asSpawnLinkId, spawnFirstMessageId } from '../../shared/a2aSpawn';
 import { isHostId } from '../../shared/a2aRemote';
 import type { AgentSlug } from '../../shared/agentIdentity';
-import { LEDGER_REMOTE_QUESTIONS, type LedgerEntry, type LedgerRemote, type LedgerRemoteWaiting, type LedgerStatus, remoteTaskWorkspaceId } from '../../shared/ledger';
+import { LEDGER_REMOTE_QUESTIONS, type LedgerEntry, type LedgerRemote, type LedgerRemoteWaitsFor, type LedgerRemoteWaiting, type LedgerStatus, remoteTaskWorkspaceId } from '../../shared/ledger';
 import { STATE_VIEW_IDS_MAX } from '../../shared/a2aTaskQueryView';
 import { FANOUT_MAX_TASKS } from '../../shared/workTask';
 import { isOpenLedgerStatus, type LedgerTransition, type TaskLedger } from '../../daemon/ledger/TaskLedger';
@@ -546,8 +546,6 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   };
   const move = async (status: LedgerStatus, summary: string): Promise<void> => {
     if (entry!.status === status) return;
-    // Any other status: what the row waited for no longer holds.
-    if (entry!.remote?.waitsFor !== undefined) await patch({ waitsFor: undefined });
     const res = await deps.ledger.update({ id: entry!.id, status, actor: SYSTEM_ACTOR, expectedRev: entry!.rev, summary });
     if (res.ok) entry = res.entry;
   };
@@ -557,7 +555,7 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
    * reply asked for), with the record in one write; the same wait writes only the patch. A text someone else wrote
    * (a brain sending it back for input) stays until the agent waits for something new.
    */
-  const waitFor = async (waitsFor: string, summary: string, p: Partial<LedgerRemote> = {}): Promise<void> => {
+  const waitFor = async (waitsFor: LedgerRemoteWaitsFor, summary: string, p: Partial<LedgerRemote> = {}): Promise<void> => {
     if (entry!.status !== 'input_required') {
       await patch({ ...p, waitsFor });
       const res = await deps.ledger.update({ id: entry!.id, status: 'input_required', actor: SYSTEM_ACTOR, expectedRev: entry!.rev, summary });
@@ -569,9 +567,9 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
       if (Object.keys(p).length > 0) await patch(p);
       return;
     }
-    // No wait recorded while the row waits: its text is not this pass's (a brain sent it back for input). The wait
-    // is recorded and the text kept; a later change of what it waits for says so.
-    if (was === undefined) return patch({ ...p, waitsFor });
+    // Someone else moved the row here with a text of their own (a brain sent it back for input): the wait is
+    // recorded and the text kept; a later change of what it waits for says so.
+    if (was === 'other') return patch({ ...p, waitsFor });
     entry = (await deps.ledger.updateRemote(entry!.id, { ...p, waitsFor }, { summary, expectedRev: entry!.rev })) ?? entry;
   };
   /** Fails the row once the grace from the first sighting is over. */
@@ -596,7 +594,7 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
   const st = view.status;
   if (st?.kind === 'question') {
     const question = (LEDGER_REMOTE_QUESTIONS as readonly string[]).includes(st.question ?? '') ? st.question as LedgerRemoteWaiting['question'] : undefined;
-    return waitFor(question ? `question:${question}` : 'question', `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`, { waiting: { on: 'question', since: st.since, ...(question ? { question } : {}) }, goneSeenAt: undefined });
+    return waitFor(question ? `question:${question}` as const : 'question', `the agent on ${r.pc} waits on a ${question ?? 'screen'} question: answer it in that PC's pane; it cannot be answered from here yet, and a headless box ends the task after 10 minutes`, { waiting: { on: 'question', since: st.since, ...(question ? { question } : {}) }, goneSeenAt: undefined });
   }
   if (st?.kind === 'gone') return failAfterGrace(`the agent on ${r.pc} is gone`);
   if (st?.kind === 'waiting-input') {
