@@ -580,6 +580,14 @@ describe('RemoteA2aBridge — a reply held for want of an agent is offered again
     expect(item('r1').held).toBe('delivery-unconfirmed');
   });
 
+  it('an earlier main left an offer again attempted on a task with only held units: unconfirmed at the first pull, so its 24 h drop can run (#3344)', async () => {
+    taskWithHeldReply({ attempted: true, r2: false });
+    bridge.start();
+    await settle();
+    expect(notified()).toEqual([]);
+    expect(item('r1').held).toBe('delivery-unconfirmed');
+  });
+
   it('a re-offer whose delivered mark did not land: the mark alone is tried again on a later pull, never the write', async () => {
     taskWithHeldReply({ r2: false });
     const t = daemon.tasks.get(id(7))!;

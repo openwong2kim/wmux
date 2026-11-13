@@ -115,6 +115,8 @@ export class RemoteA2aBridge {
   private running: Promise<void> | null = null;
   /** Set by stop(): no new pull or delivery starts. */
   private stopped = false;
+  /** Whether this main has read the held-only tasks once (for offers again the last main left attempted). */
+  private heldSwept = false;
   /** Deliveries started by a pull, still running. */
   private readonly working = new Set<Promise<unknown>>();
   private rerun = false;
@@ -242,9 +244,24 @@ export class RemoteA2aBridge {
       else this.reofferMarks.delete(key);
     }
     for (const key of this.misses.keys()) if (!listed.has(key)) this.misses.delete(key);
+    // Once per main, the tasks whose units are all held too: they are not in the pending list, and an offer
+    // again the last main started and never finished left its item attempted there.
+    let heldOnly: Task[] = [];
+    if (!this.heldSwept) {
+      try {
+        const held = await this.deps.daemonRpc(A2A_REMOTE_RPC.held, {});
+        const pendingIds = new Set(tasks.map((t) => t.id));
+        heldOnly = (isRecord(held) && Array.isArray(held.tasks) ? (held.tasks as Task[]) : [])
+          .filter((t) => t && typeof t.id === 'string' && isRemoteTaskId(t.id) && !pendingIds.has(t.id));
+        this.heldSwept = true;
+      } catch {
+        // The next pull reads it again.
+      }
+    }
     // A held reply a paste was started on and never confirmed (main stopped while offering it again): it may
-    // be in the pane, so it reads as unconfirmed now, whatever hold it showed, and is never offered again.
-    for (const task of tasks) {
+    // be in the pane, so it reads as unconfirmed now, whatever hold it showed, and is never offered again. It
+    // can then be dropped after its 24 h like any other held reply.
+    for (const task of [...tasks, ...heldOnly]) {
       for (const item of unconfirmedHeld(task)) {
         const key = itemKey(task.id, item.messageId);
         if (this.inFlight.has(key) || this.pendingMarks.has(key) || owedBefore.has(key)) continue;
