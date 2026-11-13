@@ -34,7 +34,8 @@ import { isIsoString, isPlainObject, isSafeId, loadStore, storeUnavailable, type
  * marked `sent` once it is queued, so one that never left is sent again on
  * recovery. At most `SPAWN_REQUESTS_MAX` records are kept in all: when they
  * are, the oldest decided ones whose answer left and whose request expired
- * make room. A start time such a record still counts for the hour and day
+ * make room. One PC may hold at most half of them in decided records that
+ * could still be resent; past that its new requests wait. A start time such a record still counts for the hour and day
  * limits is kept apart (`starts`) for a day, while the receiver asks for it.
  *
  * Load: a record this build cannot read is skipped, never the whole file.
@@ -104,7 +105,7 @@ export type SpawnReceive =
   | { kind: 'new'; rec: SpawnRequestRecordV1 }
   | { kind: 'duplicate'; rec: SpawnRequestRecordV1 }
   | { kind: 'conflict' }
-  /** No room: every record kept is open, owes its answer, or could still be resent. */
+  /** No room: this PC holds half the store in decided records that could still be resent, or every record kept is open, owes its answer, or could still be resent. */
   | { kind: 'full' };
 
 export interface SpawnRequestStoreOptions {
@@ -256,6 +257,9 @@ export class SpawnRequestStore {
     if (known) return known.fingerprint === fingerprint ? { kind: 'duplicate', rec: structuredClone(known) } : { kind: 'conflict' };
     this.prune();
     const now = this.now();
+    // One PC holds at most half the store in decided requests that could still be resent: the others keep room.
+    const replayableHere = [...this.records.values()].filter((r) => r.hostId === hostId && r.state === 'decided' && replayableUntil(r) >= now).length;
+    if (replayableHere >= SPAWN_REQUESTS_MAX / 2) return { kind: 'full' };
     // Room: the oldest decided records that can no longer matter (answer gone, request expired) go first.
     const over = this.records.size - SPAWN_REQUESTS_MAX + 1;
     const making = over <= 0 ? [] : [...this.records.values()]
