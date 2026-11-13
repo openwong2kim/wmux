@@ -189,6 +189,72 @@ describe('ClaudeSubagentCounter', () => {
   });
 });
 
+describe('ClaudeSubagentCounter — background work (what a turn leaves running)', () => {
+  const userNotification = (body: string) => JSON.stringify({ type: 'user', timestamp: ts, origin: { kind: 'task-notification' }, message: { role: 'user', content: body } });
+  const event = (taskId: string, toolUseId: string) =>
+    `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<summary>Monitor event: "x"</summary>\n<event>line</event>\n</task-notification>`;
+
+  it('a background shell and a Monitor run until a notification with a status is handed to the agent; `count` never moves', () => {
+    const c = new ClaudeSubagentCounter();
+    c.noteLine(claudeToolUse('toolu_1', 'Bash', { command: 'sleep 20', run_in_background: true }));
+    c.noteLine(claudeToolResult('toolu_1', 'Command running in background with ID: b123. Output is being written to: /tmp/x'));
+    c.noteLine(claudeToolUse('toolu_2', 'Monitor', {}));
+    c.noteLine(claudeToolResult('toolu_2', 'Monitor started (task m456, expires in 15m unless the source ends first)'));
+    expect(c.background).toBe(2);
+    // Queued only: not the agent's yet.
+    c.noteLine(queueNotification('b123', 'toolu_1'));
+    expect(c.background).toBe(2);
+    c.noteLine(userNotification(notificationBody('b123', 'toolu_1')));
+    expect(c.background).toBe(1);
+    // A Monitor's event (no status) is not its end; its last one is.
+    c.noteLine(userNotification(event('m456', 'toolu_2')));
+    expect(c.background).toBe(1);
+    c.noteLine(attachmentNotification('m456', 'toolu_2'));
+    expect(c.background).toBe(0);
+    expect(c.count).toBe(0);
+  });
+
+  it('a TaskStop / KillShell naming it ends it; a turn end and a new prompt do not', () => {
+    const c = new ClaudeSubagentCounter();
+    c.noteLine(claudeToolUse('toolu_1', 'Bash', { command: 'npm run dev', run_in_background: true }));
+    c.noteLine(claudeToolResult('toolu_1', 'Command running in background with ID: b123'));
+    c.noteLine(JSON.stringify({ type: 'assistant', timestamp: ts, message: { role: 'assistant', content: [{ type: 'text', text: 'started' }], stop_reason: 'end_turn' } }));
+    c.noteLine(userPrompt('and now?'));
+    expect(c.background).toBe(1);
+    c.noteLine(claudeToolUse('toolu_2', 'KillShell', { shell_id: 'b123' }));
+    expect(c.background).toBe(0);
+  });
+
+  it('a foreground command, a result that only quotes a start, and a call cut off by a new prompt start nothing', () => {
+    const c = new ClaudeSubagentCounter();
+    c.noteLine(claudeToolUse('toolu_1', 'Bash', { command: 'ls' }));
+    c.noteLine(claudeToolResult('toolu_1', 'a.txt'));
+    c.noteLine(claudeToolUse('toolu_2', 'Bash', { command: 'cat log' }));
+    c.noteLine(claudeToolResult('toolu_2', 'The log says: Command running in background with ID: b9'));
+    c.noteLine(claudeToolUse('toolu_3', 'Bash', { command: 'sleep 9', run_in_background: true }));
+    c.noteLine(userPrompt('stop'));
+    c.noteLine(claudeToolResult('toolu_3', 'Command running in background with ID: b10'));
+    expect(c.background).toBe(0);
+  });
+
+  it('an async agent is background work too, until its end is handed to the agent; its subagent count is as before', () => {
+    const c = new ClaudeSubagentCounter();
+    c.noteLine(claudeToolUse('toolu_1', 'Agent'));
+    c.noteLine(claudeToolResult('toolu_1', asyncLaunched('a111')));
+    expect([c.count, c.background]).toEqual([1, 1]);
+    // Queued while the lead's turn runs: no subagent runs any more, but the lead has not heard it.
+    c.noteLine(queueNotification('a111', 'toolu_1'));
+    expect([c.count, c.background]).toEqual([0, 1]);
+    c.noteLine(userNotification(notificationBody('a111', 'toolu_1')));
+    expect([c.count, c.background]).toEqual([0, 0]);
+    // A TaskStop of one ends it for both.
+    c.noteLine(claudeToolUse('toolu_2', 'Agent'));
+    c.noteLine(claudeToolResult('toolu_2', asyncLaunched('a222')));
+    c.noteLine(claudeToolUse('toolu_3', 'TaskStop', { task_id: 'a222' }));
+    expect([c.count, c.background]).toEqual([0, 0]);
+  });
+});
+
 describe('TranscriptActivityWatcher — subagent count', () => {
   let dir: string;
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tx-subagents-')); });

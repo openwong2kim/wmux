@@ -73,6 +73,18 @@ import { hasRedactedSecrets, redactStoredSecrets } from '../../factory/secretRed
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { STOP_KEYS, nothingToStopMessage } from '../../../shared/stopKeys';
 import { daemonFolderTrustReading, folderTrustStops } from '../../folderTrustCheck';
+import { dispatchNotification } from '../../notification/dispatchNotification';
+import { loadFanoutOwnerAnswers } from '../../worktask/fanoutWorkerPolicy';
+import type { FanoutOwnerAnswers } from '../../../shared/workerLaunch';
+import {
+  drawsClaudeDialogs,
+  ownerLaneLogLine,
+  ownerLaneNotices,
+  ownerLaneRefusalMessage,
+  ownerLaneVerdict,
+  ownerLaneScreenOf,
+  type OwnerLaneScreen,
+} from './ownerLane';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -542,6 +554,11 @@ const KEY_MAP: Readonly<Record<string, string>> = {
   down: '\x1b[B',
   right: '\x1b[C',
   left: '\x1b[D',
+  space: ' ',
+  backspace: '\x7f',
+  y: 'y',
+  n: 'n',
+  ...Object.fromEntries(Array.from({ length: 10 }, (_, d) => [String(d), String(d)])),
 } as const;
 
 /**
@@ -1071,6 +1088,22 @@ async function assertNotTypingAtAnApproval(
   throw new Error(approvalGateMessage(op, ptyId, policy.reason));
 }
 
+/** What a task pane shows, for the owner lane (ownerLaneScreenOf). */
+async function ownerLaneScreen(
+  gate: ApprovalInputGate,
+  ptyId: string,
+  usageLimited: (ptyId: string) => boolean,
+): Promise<OwnerLaneScreen> {
+  const [record, read] = await Promise.all([pendingApprovalOnPane(gate.getDaemonClient, ptyId), gate.readScreenText(ptyId)]);
+  const trust = await folderTrustVerdict(gate, ptyId, read);
+  return ownerLaneScreenOf({
+    trust: trust.verdict,
+    recordKind: record ? (record.kind ?? '') : null,
+    screen: read === null || typeof read === 'string' ? read : 'parked' in read ? read.parked : '',
+    usageLimited: usageLimited(ptyId),
+  });
+}
+
 /**
  * The gate for a message pasted into a pane and submitted with Enter on a
  * non-operator's behalf: agent-to-agent tasks and channel mention nudges.
@@ -1283,11 +1316,11 @@ const TASK_PANE_UNTRUSTED_NOTE =
 /**
  * Fan-out T5 — why text sent through the owner lane is refused, or null.
  *
- * The lane withholds every key except ctrl+c and escape from sendKey, and text
- * must not be a way around that: a raw write, or any C0 control byte other
- * than tab and newline, can end the worker's session (EOT), suspend it, or
- * drive its UI with escape sequences. Carriage return is included — committing
- * a line is what `submit: true` is for.
+ * Keys go through sendKey, where each is named and logged; text must not be
+ * a way around that: a raw write, or any C0 control byte other than tab and
+ * newline, can end the worker's session (EOT), suspend it, or drive its UI
+ * with escape sequences. Carriage return is included — committing a line is
+ * what `submit: true` is for.
  */
 export function taskPaneTextRefusal(text: string, raw: boolean): string | null {
   if (raw) return 'raw writes are not allowed on a delegated task pane';
@@ -1295,7 +1328,7 @@ export function taskPaneTextRefusal(text: string, raw: boolean): string | null {
   if (/[\x00-\x08\x0b-\x1f\x7f]/.test(text)) {
     return (
       'control characters are not allowed on a delegated task pane (only text, tab and newline); ' +
-      'use submit: true to commit a line, or terminal_send_key with ctrl+c / escape to stop the worker'
+      'use submit: true to commit a line, or terminal_send_key for a key'
     );
   }
   return null;
@@ -1332,6 +1365,16 @@ export interface InputRpcDeps {
   /** Injected in tests; the task of a reclaimed worker whose recorded pane
    *  `ptyId` is, in the workspace it runs in (factory/workerReclaim.ts). */
   reclaimedTaskOfPane?: (workspaceId: string, ptyId: string) => { taskId: string; botId: string } | null;
+  /** Injected in tests; defaults to the fan-out policy file's `ownerAnswers`. */
+  ownerAnswers?: () => FanoutOwnerAnswers;
+  /** Injected in tests; defaults to the daemon's agent name for the pane. */
+  paneAgent?: (ptyId: string) => Promise<string | null>;
+  /** Injected in tests; defaults to a notification in the task workspace. */
+  ownerLaneNotice?: (taskWorkspaceId: string) => void;
+  /** Injected in tests; defaults to the main log. */
+  log?: (line: string) => void;
+  /** Injected in tests; defaults to the pane's usage-limit hold. */
+  usageLimited?: (ptyId: string) => boolean;
 }
 
 /** Budget for one daemon state read while a fresh-context step polls. */
@@ -1477,7 +1520,7 @@ export function registerInputRpc(
     params: Record<string, unknown>,
     ctx: RpcContext | undefined,
   ): TaskOwnerLane | undefined => {
-    if (!ctx || ctx.origin !== 'local' || isHostedCaller(ctx)) return undefined;
+    if (!ctx || ctx.origin !== 'local' || isHostedCaller(ctx) || ctx.fencedWorker) return undefined;
     const callerPtyId = typeof params['callerPtyId'] === 'string' ? params['callerPtyId'] : '';
     if (!ctx.commanderWorkspace && !callerPtyId) return undefined;
     return {
@@ -1489,6 +1532,96 @@ export function registerInputRpc(
           .map((e) => e.taskWorkspaceId)
           .filter((ws) => typeof ws === 'string' && ws.length > 0),
     };
+  };
+
+  const ownerAnswersNow = deps.ownerAnswers ?? ((): FanoutOwnerAnswers => loadFanoutOwnerAnswers());
+  const paneAgentOf =
+    deps.paneAgent ??
+    (async (ptyId: string): Promise<string | null> => {
+      if (ptyManager.get(ptyId)) return null;
+      const dc = getDaemonClient?.();
+      return dc?.isConnected ? ((await dc.getSendTarget(ptyId))?.agent ?? null) : null;
+    });
+  const logLine = deps.log ?? ((line: string): void => console.log(line));
+  const usageLimited = deps.usageLimited ?? ((ptyId: string): boolean => usageLimitHoldDetail(ptyId) !== null);
+  const noteOwnerLaneWrite = ownerLaneNotices(
+    deps.ownerLaneNotice ??
+      ((taskWorkspaceId) =>
+        dispatchNotification(
+          getWindow(),
+          null,
+          {
+            title: 'Orchestrator input',
+            body: "This task's orchestrator is sending keys or text to its pane. Each write is in the main log under [owner-lane].",
+            type: 'info',
+            workspaceId: taskWorkspaceId,
+            category: 'system',
+          },
+          { workspaceId: taskWorkspaceId },
+        )),
+  );
+
+  /** The owner setting's verdict on one write, and what the pane shows. */
+  const ownerLaneCheck = async (
+    setting: FanoutOwnerAnswers,
+    ptyId: string,
+    stopKey: boolean,
+  ): Promise<{ screen: OwnerLaneScreen; verdict: 'allow' | 'refuse' | 'default' }> => {
+    const screen = await ownerLaneScreen(approvalGate, ptyId, usageLimited);
+    const claudePane = setting === 'menus' && screen === 'menu' && drawsClaudeDialogs(await paneAgentOf(ptyId).catch(() => null));
+    return { screen, verdict: ownerLaneVerdict(setting, screen, { claudePane, stopKey }) };
+  };
+
+  /**
+   * The gate for a write on the owner lane (a pane of an open task the caller
+   * owns), in place of the one every other caller gets (`defaultGate`): the
+   * owner setting decides from what the pane shows, and the write is logged
+   * either way. A stop key is not held up by a screen read: every setting
+   * lets ctrl+c stop the worker. Answers the setting in force, for the checks
+   * the write repeats before its later bytes, and how to log a refusal there.
+   */
+  const ownerLaneGate = async (
+    access: Extract<PtyAccess, { lane: 'task-owner' }>,
+    lane: TaskOwnerLane | undefined,
+    ptyId: string,
+    op: string,
+    input: string,
+    defaultGate: () => Promise<void>,
+    stopKey = false,
+  ): Promise<{ setting: FanoutOwnerAnswers; refusedLater: () => void }> => {
+    const setting = ownerAnswersNow();
+    let screen: OwnerLaneScreen | 'not read' = 'not read';
+    const log = (outcome: 'allowed' | 'refused'): void =>
+      logLine(ownerLaneLogLine({
+        ...(lane?.callerPtyId ? { callerPtyId: lane.callerPtyId } : {}),
+        callerWorkspaceId: access.callerWorkspaceId,
+        ptyId,
+        taskWorkspaceId: access.taskWorkspaceId,
+        input,
+        screen,
+        setting,
+        outcome,
+      }));
+    try {
+      if (stopKey) {
+        if (setting !== 'all') await defaultGate();
+      } else {
+        const check = await ownerLaneCheck(setting, ptyId, false);
+        screen = check.screen;
+        if (check.verdict === 'refuse') throw new Error(`${ownerLaneRefusalMessage(op, ptyId, check.screen)}${NOTHING_SENT}`);
+        if (check.verdict === 'default') await defaultGate();
+      }
+    } catch (err) {
+      log('refused');
+      throw err;
+    }
+    log('allowed');
+    try {
+      noteOwnerLaneWrite(access.taskWorkspaceId);
+    } catch {
+      // The notice never stops the write; the log line above has it.
+    }
+    return { setting, refusedLater: () => log('refused') };
   };
 
   /** A bot's owner lane: the open tasks of its workspace that it started
@@ -1638,7 +1771,44 @@ export function registerInputRpc(
       'input.send',
     );
 
-    await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send');
+    // On the owner lane the owner setting decides; `ownerSetting` is null for
+    // every other caller.
+    const owner = access.lane === 'task-owner'
+      ? await ownerLaneGate(
+        access,
+        sendLane,
+        ptyId,
+        'input.send',
+        `text ${Buffer.byteLength(text, 'utf8')} bytes${params['submit'] === true ? ' + enter' : ''}`,
+        () => assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send'),
+      )
+      : null;
+    if (owner === null) await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send');
+    const ownerSetting = owner?.setting ?? null;
+    /** A recheck on the owner lane: a refusal there is logged too. */
+    const logRefusal = async (check: () => Promise<void>): Promise<void> => {
+      try {
+        await check();
+      } catch (err) {
+        owner?.refusedLater();
+        throw err;
+      }
+    };
+    /** The approval check again, before a later part of this write. */
+    const approvalAgain = (opts: { stage?: string } = {}): Promise<void> => logRefusal(async () => {
+      if (ownerSetting === 'all') return;
+      if (ownerSetting === 'menus') {
+        const { screen, verdict } = await ownerLaneCheck(ownerSetting, ptyId, false);
+        if (verdict === 'refuse') throw new Error(`${ownerLaneRefusalMessage('input.send', ptyId, screen)}${opts.stage ?? NOTHING_SENT}`);
+        if (verdict === 'allow') return;
+      }
+      await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send', opts);
+    });
+    /** The folder-trust check again; `all` lets the owner answer that prompt too. */
+    const trustAgain = (opts: { stage?: string }): Promise<void> => logRefusal(async () => {
+      if (ownerSetting === 'all') return;
+      await assertNotAtFolderTrust(approvalGate, ctx, ptyId, 'input.send', opts);
+    });
     await startIfSuspended('input.send', ptyId, clock, true);
 
     let safeText = params['raw'] === true ? text : sanitizePtyText(text);
@@ -1780,7 +1950,7 @@ export function registerInputRpc(
       if (newTask) {
         // The gate above ran before this send may have waited for the pane's
         // lock; check again right before anything is typed.
-        await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send');
+        await approvalAgain();
         try {
           fresh = await runFreshContextOn(ptyId, binding, receiptWs, (data) => writeChunk(data, false));
         } catch (err) {
@@ -1793,7 +1963,7 @@ export function registerInputRpc(
         // And again before the text: the step takes seconds, and a dialog can
         // open meanwhile (an applied clear also redrew the pane).
         try {
-          await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send', { stage: TEXT_NOT_SENT });
+          await approvalAgain({ stage: TEXT_NOT_SENT });
         } catch (err) {
           if (fresh.freshContext !== 'applied' || !(err instanceof Error)) throw err;
           throw new Error(`${err.message} The pane's conversation was already cleared (fresh context).`);
@@ -1825,7 +1995,7 @@ export function registerInputRpc(
       const refuseAtTrustNow = async (): Promise<void> => {
         try {
           // What is already on the line is said below, from what was written.
-          await assertNotAtFolderTrust(approvalGate, ctx, ptyId, 'input.send', { stage: '' });
+          await trustAgain({ stage: '' });
         } catch (err) {
           if (!(err instanceof Error)) throw err;
           const onLine = chunksWritten > 0
@@ -1869,7 +2039,7 @@ export function registerInputRpc(
           before,
           async () => {
             try {
-              await assertNotAtFolderTrust(approvalGate, ctx, ptyId, 'input.send', {
+              await trustAgain({
                 stage: ' The text and its first Enter were sent; this retried Enter was not.',
               });
             } catch (err) {
@@ -1941,7 +2111,8 @@ export function registerInputRpc(
    * input.sendKey — maps a named key to an ANSI sequence and writes it.
    * params: { key: string, ptyId?: string }
    * Supported keys: enter, tab, ctrl+c, ctrl+d, ctrl+z, ctrl+l,
-   *                 escape, up, down, right, left
+   *                 escape, up, down, right, left, space, backspace, y, n,
+   *                 0-9
    */
   router.register('input.sendKey', async (params, ctx?: RpcContext) => {
     if (typeof params['key'] !== 'string') {
@@ -1959,11 +2130,10 @@ export function registerInputRpc(
 
     const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
 
-    // The owner lane covers only the two keys that stop an agent. Every other
-    // key selects or submits something, and a delegated pane is not the
-    // owner's to drive by keystroke.
+    // Every key may go to a pane of an open task the caller owns; the owner
+    // setting decides there what it may answer (ownerLaneGate).
     const stopKey = APPROVAL_BLOCK_EXEMPT_KEYS.has(key);
-    const keyLane = stopKey ? taskOwnerLane(params, ctx) : undefined;
+    const keyLane = taskOwnerLane(params, ctx);
     const clock = startClock(terminalStartWindowMs(params['clientTimeoutMs'], TERMINAL_WRITE_DELIVERY_BUDGET_MS));
     // #2398 — a stop key never starts a pane that has not started: nothing
     // runs there to stop.
@@ -1992,12 +2162,19 @@ export function registerInputRpc(
     // Down/Enter picks an option just as surely as typing "2" does — but ctrl+c
     // and escape do not pick anything, they stop the agent, and the block must
     // not take away the way to stop a runaway worker.
-    if (!APPROVAL_BLOCK_EXEMPT_KEYS.has(key)) {
-      await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.sendKey');
-    } else if (key === 'escape') {
-      // Escape is checked too: on a trust prompt it answers it. A verdict
-      // that cannot be had lets the stop key through.
-      await assertNotAtFolderTrust(approvalGate, ctx, ptyId, 'input.sendKey', { refuseUnknown: false });
+    const defaultGate = async (): Promise<void> => {
+      if (!stopKey) {
+        await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.sendKey');
+      } else if (key === 'escape') {
+        // Escape is checked too: on a trust prompt it answers it. A verdict
+        // that cannot be had lets the stop key through.
+        await assertNotAtFolderTrust(approvalGate, ctx, ptyId, 'input.sendKey', { refuseUnknown: false });
+      }
+    };
+    if (access.lane === 'task-owner') {
+      await ownerLaneGate(access, keyLane, ptyId, 'input.sendKey', `key ${key}`, defaultGate, stopKey);
+    } else {
+      await defaultGate();
     }
     // After every refusal: attach (promoting) a session with no pipe here.
     await startIfSuspended('input.sendKey', ptyId, clock, !stopKey);

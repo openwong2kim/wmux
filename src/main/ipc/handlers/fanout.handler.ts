@@ -30,6 +30,7 @@ import {
   loadFanoutDepth,
   loadFanoutHourlyTaskCap,
   loadFanoutLiveTaskCap,
+  loadFanoutOwnerAnswers,
   loadFanoutTasksPerCall,
   loadFanoutRequireApproval,
   loadFanoutTrustAgyFolders,
@@ -37,6 +38,7 @@ import {
   setFanoutDepth,
   setFanoutHourlyTaskCap,
   setFanoutLiveTaskCap,
+  setFanoutOwnerAnswers,
   setFanoutTasksPerCall,
   setFanoutRequireApproval,
   setFanoutTrustAgyFolders,
@@ -189,6 +191,19 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ),
   );
 
+  ipcMain.removeHandler(IPC.FANOUT_OWNER_ANSWERS_GET);
+  ipcMain.handle(
+    IPC.FANOUT_OWNER_ANSWERS_GET,
+    wrapHandler(IPC.FANOUT_OWNER_ANSWERS_GET, async () => loadFanoutOwnerAnswers()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_OWNER_ANSWERS_SET);
+  ipcMain.handle(
+    IPC.FANOUT_OWNER_ANSWERS_SET,
+    wrapHandler(IPC.FANOUT_OWNER_ANSWERS_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
+      setFanoutOwnerAnswers(value),
+    ),
+  );
+
   // Fan-out presets (Settings → Agents). Main owns them — see fanoutPresets.ts.
   ipcMain.removeHandler(IPC.FANOUT_PRESETS_GET);
   ipcMain.handle(
@@ -246,6 +261,8 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ipcMain.removeHandler(IPC.FANOUT_DEPTH_SET);
     ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_GET);
     ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET);
+    ipcMain.removeHandler(IPC.FANOUT_OWNER_ANSWERS_GET);
+    ipcMain.removeHandler(IPC.FANOUT_OWNER_ANSWERS_SET);
     ipcMain.removeHandler(IPC.WORKER_FENCE_OFF_GET);
     ipcMain.removeHandler(IPC.WORKER_FENCE_OFF_SET);
     ipcMain.removeHandler(IPC.FANOUT_PRESETS_GET);

@@ -163,7 +163,7 @@ import { HeadlessMode, headlessReleases } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
 import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
 import { createHeadlessSessions } from './a2aRemote/headlessSessions';
-import { HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
+import { endHeadlessOnStop, HeadlessDelivery, type HeadlessDeliveryDeps } from './a2aRemote/headlessDelivery';
 import { A2A_REMOTE_RPC } from '../shared/a2aRemoteDelivery';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
@@ -9204,6 +9204,8 @@ async function shutdown(
   // re-arms them on the next boot.
   try { paneSupervisorRef?.dispose(); } catch { /* best effort */ }
 
+  // This run's headless starts end here, while the links can still tell their asking PCs why (bounded).
+  await endHeadlessOnStop(headlessDeliveryRef, a2aDeliveryRef, (level, msg) => log(level, msg));
   // LanLink PR-4: close the listener and drop live AEAD connections.
   // Best-effort — must never block the shutdown path.
   try { lanLinkServerRef?.dispose(); } catch { /* best effort */ }

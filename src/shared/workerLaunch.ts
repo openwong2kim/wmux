@@ -166,6 +166,17 @@ export function isFanoutWorkerPermissionMode(v: unknown): v is FanoutWorkerPermi
   return typeof v === 'string' && (FANOUT_WORKER_PERMISSION_MODES as readonly string[]).includes(v);
 }
 
+/** What a task's orchestrator may answer on its workers' panes by key or
+ *  text: every prompt, Claude Code's selection menus only, or none (the gate
+ *  every other caller gets). */
+export type FanoutOwnerAnswers = 'all' | 'menus' | 'off';
+
+export const DEFAULT_FANOUT_OWNER_ANSWERS: FanoutOwnerAnswers = 'all';
+
+export function isFanoutOwnerAnswers(v: unknown): v is FanoutOwnerAnswers {
+  return v === 'all' || v === 'menus' || v === 'off';
+}
+
 /**
  * The wmux tools a worker may call without a prompt: record its ledger row,
  * publish its own task branch (main pushes it) and fetch origin into it (main

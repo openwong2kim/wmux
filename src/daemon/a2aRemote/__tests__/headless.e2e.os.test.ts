@@ -24,7 +24,7 @@ import { HeadlessMode, headlessFlagPath, headlessReleases } from '../headlessMod
 import { HeadlessStartStore } from '../headlessStartStore';
 import { A2aHeadlessStarter, headlessTreeId, worktreeUnchanged, type HeadlessSessionInput, type HeadlessSessionPort } from '../headlessStarter';
 import { A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
-import { ASK_REASON, HeadlessDelivery } from '../headlessDelivery';
+import { ASK_REASON, DAEMON_STOPPED_REASON, endHeadlessOnStop, HeadlessDelivery } from '../headlessDelivery';
 import { remoteTaskId } from '../ids';
 import { joinRemoteHost } from '../joiner';
 import { registerA2aLinkRpc } from '../linkRpc';
@@ -499,6 +499,25 @@ describe('headless remote spawn, two PCs and no app', () => {
     await b.taskDelivery!.tick();
     expect(b.sessions.typed).toEqual([]);
     expect(b.tasks.getTask(taskId)?.metadata.remote).not.toMatchObject({ delivered: true });
+  });
+
+  it('the daemon stopping: an answered task is canceled on the asking PC with why before the links close, not left to a broken link', async () => {
+    const a = await makePc('PC-A', { asking: true });
+    const b = await makePc('PC-B', { headless: true });
+    const { taskId } = await startedTask(a, b);
+    await b.taskDelivery!.tick();
+    await b.taskDelivery!.tick();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'input-required');
+    // As the daemon's shutdown runs it: the starts end, the peers take it, then the links close and the
+    // process is gone (its server with it: nothing queued later would ever leave).
+    await endHeadlessOnStop(b.taskDelivery, b.delivery, quiet);
+    // Taken: the asking PC acknowledged every reply and state queued for the task.
+    expect(await b.delivery.drain([taskId], 0)).toBe(true);
+    await b.delivery.stop();
+    b.server.dispose();
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'canceled');
+    const said = a.tasks.getTask(taskId)?.history.filter((m) => m.role === 'agent').map((m) => m.parts.map((p) => (p.kind === 'text' ? p.text : '')).join(''));
+    expect(said).toEqual(['PONG\nLinux', `Canceled: the agent ended: ${DAEMON_STOPPED_REASON}`]);
   });
 
   it('an agent whose session ends mid-turn: the asking PC sees the task failed, with why', async () => {

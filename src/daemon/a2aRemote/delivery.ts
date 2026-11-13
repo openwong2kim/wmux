@@ -107,6 +107,8 @@ export interface A2aRemoteDeliveryDeps {
 
 const SYNC_MS = 5_000;
 const MAINTENANCE_MS = 60_000;
+/** How often `drain` looks whether the peers took what it waits for. */
+const DRAIN_POLL_MS = 50;
 const HELD_REASONS: ReadonlySet<string> = new Set<A2aRemoteHeldReason>([
   'occupant-changed', 'pane-missing', 'link-not-active', 'delivery-unconfirmed', 'no-agent', 'awaiting-approval',
 ]);
@@ -346,6 +348,26 @@ export class A2aRemoteDelivery {
     const res = await syncRemoteTask(this.outboundDeps(), taskId, summary !== undefined ? { summary } : {});
     if (!res.ok && !res.error.startsWith('link-not-active') && res.error !== 'unknown-link') {
       this.deps.log('warn', `[a2a-remote] ${taskId}: not queued for the peer yet: ${res.error}`);
+    }
+  }
+
+  /**
+   * Wait until the peers took (acked) the replies and states queued for these
+   * tasks, or `timeoutMs` passed. A peer that is not connected is not waited
+   * for. True when nothing for them is still owed to a connected peer.
+   */
+  async drain(taskIds: readonly string[], timeoutMs: number): Promise<boolean> {
+    const ids = new Set(taskIds);
+    const deadline = Date.now() + timeoutMs;
+    const connected = (hostId: HostId): boolean => this.hub.isConnected(hostId) || this.sessions.get(hostId)?.session.current().state === 'connected';
+    for (;;) {
+      const owed = this.openRecords().some((r) => {
+        const taskId = replyOrStateTask(r);
+        return taskId !== null && ids.has(taskId) && connected(r.hostId);
+      });
+      if (!owed) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise<void>((resolve) => { setTimeout(resolve, DRAIN_POLL_MS); });
     }
   }
 

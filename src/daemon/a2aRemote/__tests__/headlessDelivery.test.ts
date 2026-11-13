@@ -12,7 +12,8 @@ import { VALID_TRANSITIONS, type Task } from '../../../shared/types';
 import { USAGE_LIMIT_CONTINUE_PROMPT } from '../../../shared/usageLimit';
 import { A2A_REMOTE_BODY_MAX } from '../../../shared/a2aRemote';
 import {
-  ASK_REASON, HeadlessDelivery, TURN_END_SETTLE_MS, QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS, assistantTextOf, cutReply, type HeadlessDeliveryDeps,
+  ASK_REASON, BACKGROUND_NOTE, BACKGROUND_WAIT_MS, DAEMON_STOPPED_REASON, FURTHER_REPLIES_MAX, HeadlessDelivery, TURN_END_SETTLE_MS,
+  QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS, assistantTextOf, cutReply, endHeadlessOnStop, type HeadlessDeliveryDeps,
 } from '../headlessDelivery';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
 
@@ -993,3 +994,329 @@ it('assistantTextOf reads the text blocks of a raw entry, code included', () => 
   expect(assistantTextOf(toolUseLine())).toBeNull();
   expect(assistantTextOf('not json')).toBeNull();
 });
+
+/** A real Claude Code 2.1 transcript, cut down (fixtures/README.md): its lines in file order. */
+const fixture = (name: string): string[] => fs.readFileSync(path.join(__dirname, 'fixtures', 'background', `${name}.jsonl`), 'utf8').split('\n').filter(Boolean);
+const BG_PROMPT = 'Run `sleep 20 && echo DONE` in the background with Bash, then tell me its output when it has finished.';
+const notification = (taskId: string, toolUseId: string, status: string | null): string => JSON.stringify({
+  type: 'user', uuid: `n${seq}`, timestamp: stamp(), origin: { kind: 'task-notification' }, promptSource: 'system',
+  message: { role: 'user', content: `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n${status ? `<status>${status}</status>\n` : ''}<summary>x</summary>\n</task-notification>` },
+});
+const callLine = (id: string, name: string, input: object): string => JSON.stringify({ type: 'assistant', uuid: `c${seq}`, timestamp: stamp(),
+  message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }], stop_reason: 'tool_use' } });
+const resultLine = (id: string, text: string): string => JSON.stringify({ type: 'user', uuid: `r${seq}`, timestamp: stamp(),
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text }] } });
+/** A turn Claude Code starts itself (a ScheduleWakeup, a peer): an `isMeta` user entry. */
+const wakeLine = (): string => JSON.stringify({ type: 'user', uuid: `w${seq}`, timestamp: stamp(), isMeta: true, turnOrigin: 'scheduled', promptSource: 'system',
+  message: { role: 'user', content: 'scheduled wake' } });
+
+describe('background work the agent leaves running', () => {
+  for (const name of ['hooks', 'nohooks']) {
+    it(`real transcript (${name}): the turn that leaves the command running is progress, the task stays working; the next turn end is the answer`, async () => {
+      task = inboundTask(BG_PROMPT);
+      const lines = fixture(name);
+      const d = new HeadlessDelivery(deps());
+      await d.tick();
+      // The prompt, the call, its result, the end of turn, its duration.
+      write(...lines.slice(0, 5));
+      await d.tick();
+      expect(replies.map((r) => r.text)).toEqual(["Ran it in the background (ID `b" + name + "01`). It is still running; I'll tell you the output when the completion notice arrives."]);
+      expect(task.status.state).toBe('working');
+      expect(moves).toEqual([{ to: 'working' }]);
+      // The notification arrives (queued, then given to the agent), and its next turn reads the output.
+      write(...lines.slice(5));
+      await d.tick();
+      expect(replies.map((r) => r.text).at(-1)).toBe('Done. The output is `DONE`, exit code 0.');
+      expect(replies).toHaveLength(2);
+      expect(moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
+    });
+  }
+
+  it('both turns read in one pass give the same two replies, in order', async () => {
+    task = inboundTask(BG_PROMPT);
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(...fixture('nohooks'));
+    await d.tick();
+    expect(replies.map((r) => r.text.slice(0, 4))).toEqual(['Ran ', 'Done']);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('a command so fast its notification is queued before the turn ends: still progress (the agent was not given it yet), then the answer', async () => {
+    task = inboundTask(BG_PROMPT);
+    const lines = fixture('nohooks');
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    // The enqueue lands between the call's result and the end of turn.
+    write(lines[0], lines[1], lines[2], lines[5], lines[3], lines[4]);
+    await d.tick();
+    expect(task.status.state).toBe('working');
+    expect(replies).toHaveLength(1);
+    write(...lines.slice(6));
+    await d.tick();
+    expect(replies.map((r) => r.text.slice(0, 4))).toEqual(['Ran ', 'Done']);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('an async agent: progress until its notification, whatever its status; a TaskStop of a shell ends that shell', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), callLine('t1', 'Agent', { prompt: 'look' }), resultLine('t1', 'Async agent launched successfully.\nagentId: ag1'),
+      assistantLine('An agent is looking.'));
+    await d.tick();
+    expect(task.status.state).toBe('working');
+    write(notification('ag1', 't1', null), assistantLine('The agent found it.'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['An agent is looking.', 'The agent found it.']);
+    expect(task.status.state).toBe('input-required');
+
+    task = inboundTask();
+    replies = [];
+    const e = new HeadlessDelivery(deps());
+    await e.tick();
+    write(userLine(PROMPT), callLine('t2', 'Bash', { command: 'serve', run_in_background: true }), resultLine('t2', 'Command running in background with ID: sh1. Output is being written to: /tmp/x'),
+      callLine('t3', 'TaskStop', { task_id: 'sh1' }), resultLine('t3', 'stopped'), assistantLine('Stopped it.'));
+    await e.tick();
+    expect(replies.map((r) => r.text)).toEqual(['Stopped it.']);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('a Monitor that never ends: its events (no status) keep it running; 30 minutes after the first turn that left it running the answer goes, saying so', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), callLine('m1', 'Monitor', { command: 'tail -f log' }),
+      resultLine('m1', 'Monitor started (task mon1, expires in 15m unless the source ends first)'), assistantLine('Watching the log.'));
+    await d.tick();
+    clock += BACKGROUND_WAIT_MS / 2;
+    // An event wakes the agent; its turn ends with the Monitor still running.
+    write(notification('mon1', 'm1', null), assistantLine('A line came in.'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['Watching the log.', 'A line came in.']);
+    // Counted from the first turn end: a Monitor that keeps waking the agent does not hold the task forever.
+    await advance(d, BACKGROUND_WAIT_MS / 2 - 1);
+    expect(task.status.state).toBe('working');
+    await advance(d, 1);
+    // That turn's text went already: the answer says what is still running.
+    expect(replies.at(-1)?.text).toBe(BACKGROUND_NOTE);
+    expect(task.status.state).toBe('input-required');
+    // The Monitor ends later: what the agent says then is a further reply, the state unchanged.
+    write(notification('mon1', 'm1', 'completed'), assistantLine('The log closed.'));
+    await d.tick();
+    expect(replies.at(-1)?.text).toBe('The log closed.');
+    expect(task.status.state).toBe('input-required');
+    expect(moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
+  });
+
+  it('a woken turn under way when the 30 minutes are up is waited out; its end is the answer, saying the work still runs', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), callLine('m1', 'Monitor', { command: 'x' }), resultLine('m1', 'Monitor started (task mon1, expires in 15m)'), assistantLine('Watching.'));
+    await d.tick();
+    clock += BACKGROUND_WAIT_MS - 60_000;
+    // Woken by an event, the agent works (a tool call, no turn end yet).
+    write(notification('mon1', 'm1', null), callLine('t9', 'Read', { file_path: '/tmp/x' }));
+    await d.tick();
+    await advance(d, 120_000);
+    expect(task.status.state).toBe('working');
+    expect(replies.map((r) => r.text)).toEqual(['Watching.']);
+    write(resultLine('t9', 'a line'), assistantLine('Read the new line.'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['Watching.', `Read the new line.\n\n${BACKGROUND_NOTE}`]);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('a task ended on the asking PC while its agent waits on background work frees the session at once', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), callLine('t2', 'Bash', { command: 'make', run_in_background: true }), resultLine('t2', 'Command running in background with ID: sh1.'),
+      assistantLine('Building.'));
+    await d.tick();
+    task.status = { state: 'canceled', timestamp: new Date().toISOString() };
+    await d.tick();
+    // The next task for that agent is typed in, not held behind the build.
+    task = inboundTask('the next one');
+    await d.tick();
+    expect(delivered.map((x) => x.prompt)).toEqual([PROMPT, 'the next one']);
+  });
+
+  it('progress replies are bounded; the answer is not one of them and still goes', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), callLine('m1', 'Monitor', { command: 'x' }), resultLine('m1', 'Monitor started (task mon1, expires in 15m)'), assistantLine('p0'));
+    for (let i = 1; i < 8; i++) write(notification('mon1', 'm1', null), assistantLine(`p${i}`));
+    write(notification('mon1', 'm1', 'completed'), assistantLine('final'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual([...Array.from({ length: FURTHER_REPLIES_MAX }, (_, i) => `p${i}`), 'final']);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('after the answer: a turn nothing on this PC started is a further reply, the state unchanged; bounded, and never after the task ended', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(task.status.state).toBe('input-required');
+    for (let i = 0; i < FURTHER_REPLIES_MAX + 2; i++) write(wakeLine(), assistantLine(`woke ${i}`));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG', ...Array.from({ length: FURTHER_REPLIES_MAX }, (_, i) => `woke ${i}`)]);
+    expect(moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
+
+    // Ended on the asking PC: nothing more.
+    task = inboundTask();
+    replies = [];
+    const e = new HeadlessDelivery(deps());
+    await e.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await e.tick();
+    task.status = { state: 'canceled', timestamp: new Date().toISOString() };
+    write(wakeLine(), assistantLine('late'));
+    await e.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+  });
+
+  it('after the answer: a wake written in the same read as the answer is still relayed', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'), wakeLine(), assistantLine('woke'));
+    await d.tick();
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG', 'woke']);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('after the answer: a slash command typed on this PC stops it too', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    write(JSON.stringify({ type: 'user', uuid: `s${seq}`, timestamp: stamp(), origin: { kind: 'human' }, promptSource: 'typed',
+      message: { role: 'user', content: '<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>' } }),
+    assistantLine('compacted'), wakeLine(), assistantLine('woke'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+  });
+
+  it('after the answer: a further reply that could not be sent is tried again first, and counts in the budget once', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    replyError = 'link down';
+    write(wakeLine(), assistantLine('first'), wakeLine(), assistantLine('second'));
+    await d.tick();
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+    replyError = null;
+    for (let i = 0; i < FURTHER_REPLIES_MAX; i++) write(wakeLine(), assistantLine(`woke ${i}`));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG', 'first', 'second', ...Array.from({ length: FURTHER_REPLIES_MAX - 2 }, (_, i) => `woke ${i}`)]);
+  });
+
+  it('after the answer: a further reply that landed although its call failed is not sent again', async () => {
+    const base = deps();
+    let fail = true;
+    const d = new HeadlessDelivery({
+      ...base,
+      reply: async (input) => {
+        const res = await base.reply(input);
+        if (fail && input.text === 'woke') throw new Error('timed out after it was stored');
+        return res;
+      },
+    });
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    write(wakeLine(), assistantLine('woke'), wakeLine(), assistantLine('again'));
+    await d.tick();
+    fail = false;
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG', 'woke', 'again']);
+  });
+
+  it('an agent that replied through its own tools before a progress reply gets no second answer', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), callLine('t2', 'Bash', { command: 'make', run_in_background: true }), resultLine('t2', 'Command running in background with ID: sh1.'));
+    await d.tick();
+    // The agent answers the asking PC itself (its own send_message on the task).
+    task.history.push({ kind: 'message', messageId: 'own', role: 'agent', parts: [{ kind: 'text', text: 'Answered it myself.' }] });
+    write(assistantLine('Building.'));
+    await d.tick();
+    write(notification('sh1', 't2', 'completed'), assistantLine('Built.'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['Building.']);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('after the answer: input on this PC stops it (that turn and later ones are not the task\'s)', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    write(userLine('someone at the box'), assistantLine('hi there'), wakeLine(), assistantLine('woke'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+  });
+
+  it('a thinking-only turn end, then the notification: the end is progress, and the notification line is still read', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    const entry = (blocks: object[], stop: string | null): string => JSON.stringify({ type: 'assistant', uuid: `m${seq}`, timestamp: stamp(),
+      message: { id: 'msg_9', role: 'assistant', content: blocks, ...(stop ? { stop_reason: stop } : {}) } });
+    write(userLine(PROMPT), callLine('t2', 'Bash', { command: 'make', run_in_background: true }), resultLine('t2', 'Command running in background with ID: sh1.'),
+      entry([{ type: 'text', text: 'Building.' }], null), entry([{ type: 'thinking', thinking: 't', signature: 's' }], 'end_turn'),
+      notification('sh1', 't2', 'completed'), assistantLine('Built.'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['Building.', 'Built.']);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('a progress reply is not taken for the agent answering through its own tools', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), callLine('t2', 'Bash', { command: 'make', run_in_background: true }), resultLine('t2', 'Command running in background with ID: sh1.'),
+      assistantLine('Building.'));
+    await d.tick();
+    write(notification('sh1', 't2', 'completed'), assistantLine('Built.'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['Building.', 'Built.']);
+  });
+});
+
+describe('the daemon stopping', () => {
+  it('ends the open tasks of this run\'s starts with the reason and gives their ids; nothing is typed after', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    expect(task.status.state).toBe('working');
+    expect(await d.endAll(DAEMON_STOPPED_REASON)).toEqual([TASK]);
+    expect(moves.at(-1)).toEqual({ to: 'failed', summary: DAEMON_STOPPED_REASON });
+    // A start of another run is left alone.
+    task = inboundTask();
+    rec = startRecord({ runId: 'run-0' });
+    expect(await new HeadlessDelivery(deps()).endAll(DAEMON_STOPPED_REASON)).toEqual([]);
+  });
+
+  it('waits for the asking PCs to take the ends, bounded', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    const drained: string[][] = [];
+    await endHeadlessOnStop(d, { drain: async (ids) => { drained.push([...ids]); return true; } }, () => undefined, 50);
+    expect(drained).toEqual([[TASK]]);
+    expect(moves.at(-1)).toEqual({ to: 'canceled', summary: `the agent ended: ${DAEMON_STOPPED_REASON}` });
+    expect(replies.at(-1)?.text).toBe(`Canceled: the agent ended: ${DAEMON_STOPPED_REASON}`);
+    // A peer that never takes it does not hold the stop.
+    task = inboundTask();
+    const e = new HeadlessDelivery(deps());
+    await e.tick();
+    const t0 = Date.now();
+    await endHeadlessOnStop(e, { drain: () => new Promise<boolean>(() => undefined) }, () => undefined, 50);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    // Nothing open: nothing waited for.
+    let asked = false;
+    await endHeadlessOnStop(new HeadlessDelivery(deps({ starts: { list: () => [] } })), { drain: async () => { asked = true; return true; } }, () => undefined, 50);
+    expect(asked).toBe(false);
+  });
+});
+

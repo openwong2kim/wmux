@@ -10,3 +10,12 @@ Regenerate with:
 
     openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -sha256 \
       -nodes -keyout key-a.pem -out cert-a.pem -days 36500 -subj "/CN=wmux-a2a-test-a"
+
+# Background-work transcripts
+
+`background/hooks.jsonl` and `background/nohooks.jsonl` are two real Claude
+Code 2.1 turns (with its hooks on, and with `disableAllHooks`): a command run
+in the background, the turn that ends before it does, the task notification,
+and the turn that reads its output. They were cut down to the entry types and
+fields `headlessDelivery.ts` and `subagentCount.ts` read; ids, paths and the
+assistant's words were replaced (it answered in another language).

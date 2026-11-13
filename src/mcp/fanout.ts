@@ -180,10 +180,10 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       // the commander surface, so pointing a brain at it names a tool its
       // tools/list does not contain. Every profile can see the mission channels
       // themselves, which is the same answer.
-      'Returns { status: "accepted", ownerWorkspaceId } immediately. ownerWorkspaceId (and its deprecated alias workspaceId) is YOUR workspace, never a task\'s — never close it; each task\'s own workspaceId is in the completed poll\'s result.tasks[]. Poll with the SAME idempotency_key, or watch each mission channel appear in your channel list. ' +
-      'No approval prompt unless the user turned it on (unanswered, a poll says denied/timeout). A task cannot fan out again; over a live or hourly cap the user set it is refused. ' +
-      'Repository and owner come from your verified identity: fan-out runs in YOUR repository, owned by you, and is refused without that identity. A preset may skip the worktree: each task then writes into its own folder. ' +
-      'An accept or completed poll may carry `warnings` (also as WARNING lines): it ran, but something will stop its reports reaching you or the tasks did not start from a fresh origin commit — act on it.',
+      'Returns { status: "accepted", ownerWorkspaceId } immediately. ownerWorkspaceId (and its deprecated alias workspaceId) is YOUR workspace, never a task\'s — never close it; each task\'s own workspaceId is in the completed poll\'s result.tasks[]. Poll with the SAME idempotency_key, or watch your channel list for the mission channels. ' +
+      'No approval prompt unless the user turned it on (unanswered: denied/timeout). A task cannot fan out again; a live or hourly cap the user set refuses it. ' +
+      'Repository and owner come from your verified identity: fan-out runs in YOUR repository and is refused without it. A preset may skip the worktree (each task gets its own folder). ' +
+      'An accept or completed poll may carry `warnings` (also as WARNING lines): it ran, but its reports may not reach you or the tasks did not start from a fresh origin commit — act on it.',
     deps.remotePc ? { ...FANOUT_START_SHAPE, ...FANOUT_REMOTE_SHAPE } : FANOUT_START_SHAPE,
     async ({ idempotency_key, titles, prompt, task_prompts, roles, preset, agents, files, depends_on, cancel_pending, checkout, secret_names, connectors, thread_id, ...rest }) => {
       const params: Record<string, unknown> = {

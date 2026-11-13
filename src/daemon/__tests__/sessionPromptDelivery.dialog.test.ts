@@ -13,6 +13,7 @@ import { RingBuffer } from '../RingBuffer';
 import { approvalOnScreen } from '../approvals/approvalOnScreen';
 import { USAGE_LIMIT_CONTINUE_PROMPT } from '../../shared/usageLimit';
 import type { AgentStatus } from '../../shared/types';
+import { getFanoutWorkerPolicyPath, setFanoutOwnerAnswers } from '../../main/worktask/fanoutWorkerPolicy';
 
 const fixture = (dir: string, name: string): { screen: string[]; cols: number; rows: number } =>
   JSON.parse(fs.readFileSync(path.join(__dirname, '../approvals/__tests__/fixtures', dir, `${name}.json`), 'utf8'));
@@ -178,6 +179,23 @@ describe('automated prompt delivery and a dialog on screen', () => {
     const { deps, writes } = wired(IDLE, 'idle');
     expect(await deliverScheduledPrompt('claude', 'inc-1', 'Run the nightly report.', deps)).toBe('sent');
     expect(writes.at(-1)).toBe('\r');
+  });
+
+  it.each(['all', 'menus', 'off'] as const)('the fan-out owner setting does not reach these writers: %s', async (ownerAnswers) => {
+    // An orchestrator answering its own workers' prompts is a setting of the
+    // owner lane in main; the daemon's writers wait on a dialog whatever it says.
+    await setFanoutOwnerAnswers(ownerAnswers);
+    try {
+      for (const [, status, deliver] of callers) {
+        for (const screen of [PERMISSION, MENU]) {
+          const { deps, writes } = wired(screen, status);
+          await deliver(deps);
+          expect(writes.filter((w) => w.includes('\r'))).toEqual([]);
+        }
+      }
+    } finally {
+      fs.rmSync(getFanoutWorkerPolicyPath(), { force: true });
+    }
   });
 
   it('a scheduled prompt still refuses a folder-trust prompt', async () => {
