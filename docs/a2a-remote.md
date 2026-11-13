@@ -250,10 +250,13 @@ PCs and the folder ids (`root`) each one allows.
   setting applies as usual). The fan-out approval switch and the hourly cap
   apply; the live cap does not, since nothing runs here.
 - **Polling.** The same `idempotency_key` with the same request answers
-  from the task rows and asks for nothing twice, however much later it comes.
-  A poll is not approved, counted on the hourly cap or audited again. The
-  same key with a different request (another task, title, prompt, PC or
-  folder) is refused. A task whose mission was closed is not asked for again.
+  from the task rows and asks for nothing twice, for as long as the rows are
+  kept (a completed or cancelled row is kept for 7 days). A poll is not
+  approved, counted on the hourly cap or audited again. The same key with a
+  different request (another task, title, prompt, PC or folder) is refused.
+  A task whose mission was closed is not asked for again. Once a key's rows
+  are gone, the key counts as new: the approval switch, the hourly cap and
+  the audit record apply again.
 - **What the row shows.** Whether the other PC refused the request, let it
   expire (each request waits 1 hour), or started it. Once started, the row
   holds the task its replies arrive on. The agent is asked to commit and to
