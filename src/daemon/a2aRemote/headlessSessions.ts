@@ -1,6 +1,6 @@
 import { agentLauncherStem, agentRow } from '../../shared/agentIdentity';
 import { agentExecEnv } from '../../shared/execEnv';
-import { captureProcessTree, matchesRecordedStart, type VerifiedTreeKillResult } from '../automation/verifiedTreeKill';
+import { captureProcessTree, recordedRootMatcher, type VerifiedTreeKillResult } from '../automation/verifiedTreeKill';
 import { whichOnPath } from '../web/agentLaunch';
 import { defaultHeadlessProcDeps, snapshotTree, stillHeld, type HeadlessProcDeps } from './headlessProcs';
 import type { HeadlessSurvivor } from './headlessStartStore';
@@ -45,6 +45,8 @@ export interface HeadlessSessionsDeps {
   procs?: HeadlessProcDeps;
   /** How long to wait for a new session's start time (3 s). */
   startWaitMs?: number;
+  /** Where a recorded start that does not match is reported. */
+  warn?: (msg: string) => void;
 }
 
 const shellQuotable = (s: string): boolean => !/['\n\r\0]/.test(s);
@@ -114,7 +116,7 @@ export function createHeadlessSessions(deps: HeadlessSessionsDeps): HeadlessSess
     },
     killEarlier: async (rootPid, rootStart) => {
       // Only the process recorded at its start: a pid that names another process now is left alone.
-      const captured = await captureProcessTree(rootPid, { rootIsOurs: (start) => matchesRecordedStart(rootStart, start) });
+      const captured = await captureProcessTree(rootPid, { rootIsOurs: recordedRootMatcher(rootPid, rootStart, (msg) => deps.warn?.(`[headless] ${msg}`)) });
       if (!captured) return { ok: true };
       const tree = await captured.kill();
       return tree.ok ? { ok: true } : { ok: false, survivors: tree.survivors };

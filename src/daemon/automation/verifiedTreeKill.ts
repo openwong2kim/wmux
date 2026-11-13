@@ -43,6 +43,7 @@ import { UNKNOWN_ROOT_REFUSAL } from '../../shared/rpc';
 import { collectDescendants } from './treeKill';
 import { dmtfToUtcMicros, sameProcessStartTime } from '../phantomExit';
 import { tryProcessHandleApi, type ProcessHandle, type ProcessHandleApi } from '../../main/pty/winSnapshotNative';
+import { kernelStartOf, sameKernelStart } from '../../shared/processStartTime';
 
 /** A process of the tree that did not exit, and why. */
 export interface TreeKillSurvivor {
@@ -51,6 +52,10 @@ export interface TreeKillSurvivor {
   /** Its creation time (Windows: FILETIME; POSIX: `lstart`), when it was
    *  identified: what survivorsStillRunning checks it by later. */
   startTime?: string;
+  /** POSIX: its boot-bound kernel start (shared/processStartTime
+   *  kernelStartOf), which a clock step does not move; compared before
+   *  `startTime` when both sides have one. */
+  startKernel?: string;
   /** Not a process seen running: the tree under `pid` could not be checked
    *  whole (the table unreadable, still growing). Whatever was missed cannot
    *  be checked later either, so survivorsStillRunning always keeps it. */
@@ -89,7 +94,7 @@ export interface CaptureOptions {
    *  is not walked, since nothing confirms the pid leads to the caller's
    *  process; the kill reports it unverified and leaves the root to its
    *  owner (the PTY destroy ends a pane's shell). */
-  rootIsOurs?: (startTime: string) => boolean | null;
+  rootIsOurs?: (startTime: string, startKernel: string | null) => boolean | null;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -99,14 +104,45 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => set
  * A {@link CaptureOptions.rootIsOurs} from a start time recorded at spawn
  * (a session's `pidStartTime`): equal readings name the same process.
  * Windows records a FILETIME, or (before #2398) CIM's DMTF string, which is
- * compared in UTC microseconds (sameProcessStartTime). POSIX `lstart` pads a
- * one-digit day with a second space, so runs of spaces compare as one. Null
+ * compared in UTC microseconds (sameProcessStartTime). POSIX compares the
+ * boot-bound kernel starts when both sides have one (a clock step moves
+ * `lstart`, not them), and otherwise the `lstart` text, where a one-digit day
+ * is padded with a second space, so runs of spaces compare as one. Null
  * (unknown) when nothing was recorded or the record is in neither format.
  */
-export function matchesRecordedStart(recorded: string | undefined, current: string): boolean | null {
+export function matchesRecordedStart(
+  recorded: string | undefined,
+  current: string,
+  kernels: { recorded?: string | null; current?: string | null } = {},
+): boolean | null {
   if (!recordedStartUsable(recorded)) return null;
   if (process.platform === 'win32') return sameProcessStartTime(recorded, current);
+  const byKernel = sameKernelStart(kernels.recorded, kernels.current);
+  if (byKernel !== null) return byKernel;
   return recorded.trim().replace(/\s+/g, ' ') === current.trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * A rootIsOurs for a pid's recorded start that logs a mismatch once: the pid
+ * names another process now, or the record and the reading disagree, and the
+ * tree is left alone either way.
+ */
+export function recordedRootMatcher(
+  pid: number,
+  recorded: string | undefined,
+  warn: (msg: string) => void,
+  recordedKernel?: string | null,
+): (startTime: string, startKernel: string | null) => boolean | null {
+  return (current, currentKernel) => {
+    const ours = matchesRecordedStart(recorded, current, { recorded: recordedKernel, current: currentKernel });
+    if (ours === false) {
+      warn(
+        `pid ${pid}: the recorded start (${JSON.stringify(recorded)}, kernel ${recordedKernel ?? 'none'}) does not match ` +
+          `the current one (${JSON.stringify(current)}, kernel ${currentKernel ?? 'none'}), so its process tree is left alone`,
+      );
+    }
+    return ours;
+  };
 }
 
 /** Whether a recorded start time can be compared at all (matchesRecordedStart). */
@@ -175,7 +211,10 @@ async function processesStillRunning(survivors: readonly TreeKillSurvivor[]): Pr
   return survivors.flatMap((s): TreeKillSurvivor[] => {
     const row = byPid.get(s.pid);
     // Gone: POSIX hands what it started to init, where no tree leads.
-    return row && !row.stat.startsWith('Z') && (s.startTime === undefined || row.start === s.startTime) ? [s] : [];
+    if (!row || row.stat.startsWith('Z')) return [];
+    const byKernel = sameKernelStart(s.startKernel, kernelStartOf(row.pid));
+    if (byKernel !== null) return byKernel ? [s] : [];
+    return s.startTime === undefined || row.start === s.startTime ? [s] : [];
   });
 }
 
@@ -318,7 +357,7 @@ export function captureTreeWin32(rootPid: number, api: ProcessHandleApi, opts: C
   const root = api.open(rootPid);
   if ('gone' in root) return null;
   if ('failure' in root) return failedCapture(rootPid, `the root could not be opened: ${root.failure}`);
-  const ours = opts.rootIsOurs?.(root.createdAt.toString());
+  const ours = opts.rootIsOurs?.(root.createdAt.toString(), null);
   if (ours === false || ours === null) api.close(root.handle);
   if (ours === false) return null;
   if (ours === null) return failedCapture(rootPid, UNCONFIRMED_ROOT);
@@ -509,6 +548,8 @@ export interface PosixTreeDeps {
   /** The process table; throws when it cannot be read. */
   listProcesses(): Promise<PosixProcRow[]>;
   signal(pid: number, sig: NodeJS.Signals): void;
+  /** A pid's boot-bound kernel start (shared/processStartTime kernelStartOf), null when unread. */
+  kernelStart?(pid: number): string | null;
 }
 
 export function parsePsIdentityRows(output: string): PosixProcRow[] {
@@ -531,6 +572,7 @@ const defaultPosixDeps: PosixTreeDeps = {
       });
     }),
   signal: (pid, sig) => process.kill(pid, sig),
+  kernelStart: kernelStartOf,
 };
 
 /** Exported for tests, with fake {@link PosixTreeDeps}. */
@@ -553,7 +595,7 @@ export async function captureTreePosix(rootPid: number, deps: PosixTreeDeps, opt
   }
   const rootRow = rows.find((r) => r.pid === rootPid);
   if (!rootRow || rootRow.stat.startsWith('Z')) return null;
-  const ours = opts.rootIsOurs?.(rootRow.start);
+  const ours = opts.rootIsOurs?.(rootRow.start, deps.kernelStart?.(rootPid) ?? null);
   if (ours === false) return null;
   if (ours === null) return failedCapture(rootPid, UNCONFIRMED_ROOT);
   /** pid → start time, in discovery order (parents before children). */
@@ -697,7 +739,9 @@ export async function captureTreePosix(rootPid: number, deps: PosixTreeDeps, opt
           const byPid = new Map((await deps.listProcesses()).map((r) => [r.pid, r]));
           alive = [...targets].flatMap(([pid, start]) => {
             const row = byPid.get(pid);
-            return row && row.start === start && !row.stat.startsWith('Z') ? [{ pid, reason: 'still running', startTime: start }] : [];
+            if (!row || row.start !== start || row.stat.startsWith('Z')) return [];
+            const kernel = deps.kernelStart?.(pid) ?? null;
+            return [{ pid, reason: 'still running', startTime: start, ...(kernel ? { startKernel: kernel } : {}) }];
           });
         } catch (err) {
           alive = [...targets].map(([pid, start]) => ({ pid, reason: `the process table could not be read: ${err instanceof Error ? err.message : String(err)}`, startTime: start }));

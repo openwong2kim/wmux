@@ -36,6 +36,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tryProcessIdentity } from '../main/pty/winSnapshotNative';
+import { sameKernelStart } from '../shared/processStartTime';
 
 /**
  * Is this pid still present? `signal 0` performs the permission/existence
@@ -387,8 +388,12 @@ export function readWin32ReapIdentity(pid: number, expectedCmd: string): {
  *    holds only microseconds and a local-time offset, so both sides are
  *    reduced to UTC microseconds first; a time-zone or DST change since the
  *    record was written does not matter.
+ *  - `storedStartKernel` on posix: the boot-bound kernel start
+ *    (shared/processStartTime kernelStartOf), compared with
+ *    `currentStartKernel` when both are there; a clock step moves `lstart`,
+ *    not it, and a start from another boot never matches.
  *  - `storedStartTime` on posix: `ps -o lstart=`, compared as a string with
- *    `currentStartTime`.
+ *    `currentStartTime` (a record without a kernel start).
  */
 export type ReapIdentity = 'start-time' | 'heuristic' | 'unconfirmed' | 'gone';
 
@@ -399,6 +404,10 @@ export function classifyReapIdentity(opts: {
   currentCreatedAtFt?: bigint | null;
   /** Posix: `ps -o lstart=` read now. */
   currentStartTime?: string | null;
+  /** Posix: the boot-bound kernel start recorded with `storedStartTime`. */
+  storedStartKernel?: string | null;
+  /** Posix: the boot-bound kernel start read now. */
+  currentStartKernel?: string | null;
   /** The current read found no process with this pid. */
   currentGone?: boolean;
   looksLikeOurShell: boolean;
@@ -413,6 +422,8 @@ export function classifyReapIdentity(opts: {
       const stored = dmtfToUtcMicros(opts.storedStartTime);
       return stored !== null && stored === fileTimeToUtcMicros(currentFt) ? 'start-time' : 'unconfirmed';
     }
+    const byKernel = sameKernelStart(opts.storedStartKernel, opts.currentStartKernel);
+    if (byKernel !== null) return byKernel ? 'start-time' : 'unconfirmed';
     const current = opts.currentStartTime ?? null;
     return current !== null && current === opts.storedStartTime ? 'start-time' : 'unconfirmed';
   }

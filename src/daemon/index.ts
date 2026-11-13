@@ -37,7 +37,8 @@ import { AutomationEngine } from './automation/AutomationEngine';
 import { assertExternalSessionId, registerAutomationRpc } from './automation/rpc';
 import { isTransientTurnFailure, shouldPushTurnFailure } from './automation/transientFailure';
 import { killProcessTree } from './automation/treeKill';
-import { captureProcessTree, matchesRecordedStart, recordedStartOf, treeKillRefusal, type CapturedTree } from './automation/verifiedTreeKill';
+import { captureProcessTree, recordedRootMatcher, recordedStartOf, treeKillRefusal, type CapturedTree } from './automation/verifiedTreeKill';
+import { kernelStartOf } from '../shared/processStartTime';
 import { pendingRemovalRefusalAt } from '../main/worktask/pendingWorktreeRemovals';
 import { recordedRunPtyIds } from './automation/store';
 import { AUTOMATION_EVENT } from '../shared/automation';
@@ -1855,27 +1856,30 @@ async function reapIfIdentityConfirmed(opts: {
   cmd: string;
   storedCreatedAtFt?: string;
   storedStartTime?: string;
+  storedStartKernel?: string;
   reason: string;
 }): Promise<boolean> {
   // Windows reads the FILETIME and the executable natively, in one read
   // (#2398); posix keeps `ps -o lstart=` and `ps -o comm=`.
   const win32 = process.platform === 'win32';
-  let now: { currentCreatedAtFt: bigint | null; currentStartTime: string | null; currentGone: boolean; looksLikeOurShell: boolean };
+  let now: { currentCreatedAtFt: bigint | null; currentStartTime: string | null; currentStartKernel?: string | null; currentGone: boolean; looksLikeOurShell: boolean };
   if (win32) {
     now = { ...readWin32ReapIdentity(opts.pid, opts.cmd), currentStartTime: null };
   } else {
+    const currentStartKernel = kernelStartOf(opts.pid);
     const [startRead, looksLikeOurShell] = await Promise.all([
       readPosixStartTime(opts.pid),
       // Only consulted when no creation time was recorded, but probing both in
       // parallel keeps the slow path off the critical path of the common case.
       isOurShellProcess(opts.pid, opts.cmd),
     ]);
-    now = { currentCreatedAtFt: null, currentStartTime: startRead.value, currentGone: startRead.gone, looksLikeOurShell };
+    now = { currentCreatedAtFt: null, currentStartTime: startRead.value, currentStartKernel, currentGone: startRead.gone, looksLikeOurShell };
   }
   const { currentCreatedAtFt, currentStartTime, looksLikeOurShell } = now;
   const identity = classifyReapIdentity({
     storedCreatedAtFt: opts.storedCreatedAtFt,
     storedStartTime: opts.storedStartTime,
+    storedStartKernel: opts.storedStartKernel,
     ...now,
   });
   if (identity === 'gone') {
@@ -1891,6 +1895,7 @@ async function reapIfIdentityConfirmed(opts: {
       `[reap] refusing to kill pid ${opts.pid} (${opts.reason}): identity unconfirmed ` +
         `(storedCreatedAtFt=${opts.storedCreatedAtFt ?? 'none'} storedStartTime=${opts.storedStartTime ?? 'none'} ` +
         `currentStartTime=${current ?? 'unknown'} ` +
+        (win32 ? '' : `storedStartKernel=${opts.storedStartKernel ?? 'none'} currentStartKernel=${now.currentStartKernel ?? 'unknown'} `) +
         `looksLikeOurShell=${looksLikeOurShell} cmd=${opts.cmd}) — the pid may belong to another process now`,
     );
     return false;
@@ -2917,7 +2922,7 @@ function registerRpcHandlers(
     const live = p.killTree === true ? sessionManager.getSession(p.id)?.meta : undefined;
     if (live && (live.state === 'attached' || live.state === 'detached') && live.pid > 0) {
       const recorded = recordedStartOf(live);
-      captured = await captureProcessTree(live.pid, { rootIsOurs: (start) => matchesRecordedStart(recorded, start) });
+      captured = await captureProcessTree(live.pid, { rootIsOurs: recordedRootMatcher(live.pid, recorded, (msg) => log('warn', `[tree-kill] ${msg}`)) });
     }
     try {
       sessionManager.destroySession(p.id);
@@ -3123,6 +3128,7 @@ function registerRpcHandlers(
     createSession: createSessionRpc,
     destroySession: destroySessionRpc,
     meta: (id) => sessionManager.getSession(id)?.meta,
+    warn: (msg) => log('warn', msg),
   });
   // Starts the a2a init could not settle before the session RPCs existed.
   void headlessStarterRef?.reconcile();
