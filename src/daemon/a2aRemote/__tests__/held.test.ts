@@ -221,6 +221,74 @@ describe('expireHeld — one held message, not the task (#3326)', () => {
   });
 });
 
+describe('a held reply dropped, by build on each side (held-notice.1, #3326)', () => {
+  /** PC B (this test's ledger) holds A's reply r1 and drops it; A is a second ledger with the same task, sent by it. */
+  async function bothSides(): Promise<{ id: string; peer: A2aTaskService; peerLinks: LinkStore }> {
+    const id = await inboundTask();
+    await tasks.markRemote({ taskId: id, delivered: true });
+    await tasks.appendRemoteMessage({
+      taskId: id, linkId, actorWorkspaceId: `remote:${linkId}`,
+      message: { kind: 'message', messageId: 'r1', role: 'user', parts: [{ kind: 'text', text: 'from A' }] },
+    });
+    await tasks.markRemote({ taskId: id, messageId: 'r1', held: 'no-agent' });
+    clock += A2A_REMOTE_HOLD_TTL_MS + 1;
+    await expireHeld(deps);
+    // PC A: the same link from its side, and the task it sent with its reply r1 queued to B.
+    const peerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-held-peer-'));
+    const peerLinks = new LinkStore({ dir: peerDir, scheduleHarden: () => undefined });
+    peerLinks.receiveProposal({
+      linkId,
+      local: { kind: 'pane', workspaceId: 'ws-a', paneId: 'pane-a' },
+      remote: { hostId: '33333333-3333-4333-8333-333333333333', kind: 'pane', workspaceId: 'ws-b', paneId: 'pane-b' },
+      allow: { outbound: true, inbound: true },
+    });
+    peerLinks.accept(linkId);
+    const peerLog = new AppendOnlyLog({ dir: path.join(peerDir, 'log'), fsync: () => undefined });
+    peerLog.open();
+    const peer = new A2aTaskService({ log: peerLog, origin: { machineId: 'a', daemonEpoch: 1 }, now: () => clock });
+    const first = tasks.getTask(id)!.history[0];
+    await peer.createTask({
+      id,
+      title: 'mine',
+      from: { workspaceId: 'ws-a', name: 'A', paneId: 'pane-a' },
+      to: { workspaceId: `remote:${linkId}`, name: 'pc-b' },
+      history: [first, { kind: 'message', messageId: 'r1', role: 'user', parts: [{ kind: 'text', text: 'from A' }] }],
+      remote: { v: 1, linkId, hostId: '33333333-3333-4333-8333-333333333333', messageId: first.messageId, direction: 'outbound', kind: 'pane' },
+    });
+    await peer.markRemote({ taskId: id, sent: 'r1' });
+    return { id, peer, peerLinks };
+  }
+
+  it('new host, new asker: B sends the notice; A stores it in its own words, a notice item, no state moved', async () => {
+    const { id, peer, peerLinks } = await bothSides();
+    await sendHeldNotices({ ...deps, takesNotice: () => true });
+    const envelope = outbox.pending(HOST).map((r) => r.envelope).find((e) => e.notice)!;
+    const res = await acceptInbound(envelope, { hostId: '33333333-3333-4333-8333-333333333333' }, {
+      linkStore: peerLinks, taskService: peer, broadcast: () => undefined, aliasFor: (l) => linkAlias(l, 'pc-b'),
+    });
+    expect(res).toMatchObject({ ok: true, duplicate: false });
+    const stored = peer.getTask(id)!;
+    expect(stored.history.at(-1)!.metadata).toEqual({ wmuxNotice: { kind: 'held-expired', messageId: 'r1' } });
+    expect((stored.metadata.remote as A2aRemoteTaskState).inbox!.at(-1)).toMatchObject({ kind: 'notice', delivered: false });
+    expect(stored.status.state).toBe('submitted');
+    expect(tasks.getTask(id)!.status.state).toBe('submitted');
+  });
+
+  it('new host, older asker: nothing goes to A; both copies stay open', async () => {
+    const { id, peer } = await bothSides();
+    await sendHeldNotices({ ...deps, takesNotice: () => false });
+    expect(outbox.pending(HOST).some((r) => r.envelope.notice)).toBe(false);
+    expect(tasks.getTask(id)!.status.state).toBe('submitted');
+    expect(peer.getTask(id)!.status.state).toBe('submitted');
+  });
+
+  it('older host, new asker: an older B still fails the whole task with its reason; A keeps it 24 h with the reason (see A2aTaskService.remote and a2aTaskQueryView tests)', async () => {
+    const { id, peer } = await bothSides();
+    await peer.applyRemoteState({ taskId: id, linkId, messageId: 'st-1', to: 'failed', summary: 'rejected on the receiving host: held-expired' });
+    expect(peer.getTask(id)!.status).toMatchObject({ state: 'failed', evidence: { summary: 'rejected on the receiving host: held-expired' } });
+  });
+});
+
 describe('failTasksForLink', () => {
   it('fails every open task on the link and refuses what the outbox still owes for it', async () => {
     const inId = await inboundTask();

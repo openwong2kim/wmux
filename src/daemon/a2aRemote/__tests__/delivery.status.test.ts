@@ -11,7 +11,7 @@ import { applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
 import type { Task } from '../../../shared/types';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
-import { A2aRemoteDelivery, REMOTE_STATUS_PER_WINDOW, REMOTE_STATUS_TASK_GAP_MS } from '../delivery';
+import { A2aRemoteDelivery, REMOTE_NOTICES_PER_WINDOW, REMOTE_STATUS_PER_WINDOW, REMOTE_STATUS_TASK_GAP_MS } from '../delivery';
 import { remoteTaskId } from '../ids';
 import { LinkStore } from '../linkStore';
 
@@ -203,5 +203,22 @@ describe('a worker status on the asking PC', () => {
     expect(await tasks.cancelTask({ taskId, callerWorkspaceId: 'ws-a' })).toMatchObject({ ok: true });
     await delivery.accept(statusEnv(linkId, taskId, { kind: 'gone', since: new Date().toISOString() }), { hostId: HOST });
     expect(gone()).toHaveLength(1);
+  });
+
+  it(`a host notice (#3326): at most ${REMOTE_NOTICES_PER_WINDOW} a minute from one link, the rest dropped with one log line`, async () => {
+    const { linkId, taskId } = await sentTask();
+    await tasks.appendRemoteMessage({
+      taskId, linkId, actorWorkspaceId: 'ws-a',
+      message: { kind: 'message', messageId: 'mine-2', role: 'user', parts: [{ kind: 'text', text: 'more' }] },
+    });
+    await tasks.markRemote({ taskId, sent: 'mine-2' });
+    for (let i = 0; i < REMOTE_NOTICES_PER_WINDOW + 5; i++) {
+      await delivery.accept({
+        protocol: A2A_REMOTE_PROTOCOL, linkId, linkVersion: 2, messageId: `notice-${i}`, kind: 'reply', taskId, text: 'x',
+        notice: { kind: 'held-expired', messageId: 'mine-2', sentAt: SINCE }, sentAt: new Date().toISOString(),
+      }, { hostId: HOST });
+    }
+    expect(tasks.getTask(taskId)!.history.filter((m) => m.messageId.startsWith('notice-'))).toHaveLength(REMOTE_NOTICES_PER_WINDOW);
+    expect(logs.filter((l) => l.includes('notices in a minute'))).toHaveLength(1);
   });
 });
