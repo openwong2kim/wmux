@@ -67,6 +67,8 @@ function harness() {
     undefined,
     {
       answerPolicy: async () => ({ allowed: true }),
+      // A tracked agent process in the pane (deliveries wait for one).
+      deliveryPresence: async () => ({ tier: 'process', slug: 'claude' }),
       readScreenText: async () => FREE,
       sleep: async (ms: number) => { clock += ms; },
       now: () => clock,

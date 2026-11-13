@@ -472,8 +472,9 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'The agent this was sent to left the target pane or was replaced before the message could be submitted, ' +
     'so nothing was submitted there. The task is stored. Pick the pane again and resend.',
   agent_unverified:
-    "wmux could not read the target pane's agent, so it could not confirm the message would reach that agent " +
-    'and submitted nothing. The task is stored. Retry in a few seconds.',
+    'No agent is running in the target pane, or wmux could not confirm one, so nothing was typed there: it ' +
+    'waits for an agent in the pane. The task is stored; an agent there can read it with a2a_task_query. Send ' +
+    'again once an agent runs in that pane.',
   deadline:
     'The delivery waited too long (someone kept typing, or the pane was busy) and gave up without submitting. ' +
     'The task is stored. Send again once the pane is idle.',

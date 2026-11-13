@@ -257,7 +257,7 @@ export type A2aRemoteWaitingCause = 'agent-prompt' | 'user-typing';
 export type A2aRemoteMissKind = 'no-agent' | A2aRemoteWaitingCause | 'retry';
 
 /** Every gated refusal, decided here: a new one fails the type check until it is. */
-const GATED_MISS: Readonly<Record<GatedSubmitRefusal['reason'], A2aRemoteWaitingCause | 'retry'>> = {
+const GATED_MISS: Readonly<Record<GatedSubmitRefusal['reason'], A2aRemoteMissKind>> = {
   approval_pending: 'agent-prompt',
   user_typing: 'user-typing',
   // The agent may well be there; none of these says it is gone.
@@ -267,7 +267,9 @@ const GATED_MISS: Readonly<Record<GatedSubmitRefusal['reason'], A2aRemoteWaiting
   fresh_context_busy: 'retry',
   usage_limited: 'retry',
   agent_changed: 'retry',
-  agent_unverified: 'retry',
+  // Main confirmed no agent process (nor an agent on screen) in the pane:
+  // held as no-agent until one is there, never typed into the shell.
+  agent_unverified: 'no-agent',
   deadline: 'retry',
   guard_refused: 'retry',
 };

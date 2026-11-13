@@ -192,6 +192,9 @@ import { listMissionsBatch } from './worktask/missionListBatch';
 import { viewerVisibilityUpdates } from '../shared/viewerVisibilityBatch';
 import { isTaskState, type AgentStatus, type Message, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
+import { processHoldsForeground } from './agentForeground';
+import type { DeliveryPresence } from '../shared/deliveryPresence';
+import { deliveryPresence, type DeliveryPresenceDeps } from './deliveryPresence';
 import { AgentProcessTracker, agentProcessExitEvent } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
@@ -540,6 +543,8 @@ let headlessStarterRef: A2aHeadlessStarter | null = null;
 let idleHoldForRemoteStarts: () => boolean = () => false;
 // What types a remote task into a headless agent's session (a2aRemote/headlessDelivery.ts).
 let headlessDeliverRef: HeadlessDeliveryDeps['deliver'] | null = null;
+/** daemon.deliveryPresence, for the channel wake worker built in another scope. */
+let deliveryPresenceRef: ((id: string) => Promise<DeliveryPresence>) | null = null;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
@@ -6255,6 +6260,39 @@ function registerRpcHandlers(
       settledAgoMs: bridge.settledAgoMs(),
     };
   }
+  // Deliveries wait for a verified agent process (deliveryPresence.ts): what
+  // main, and the channel wake worker, ask right before the paste and the
+  // Enter of any text typed on someone's behalf.
+  const presenceDeps: DeliveryPresenceDeps = {
+    session: (sid) => {
+      const managed = sessionManager.getSession(sid);
+      if (!managed || (managed.meta.state !== 'attached' && managed.meta.state !== 'detached')) return undefined;
+      const named = readDaemonAgentState(sid).agentName;
+      return {
+        shellPid: managed.meta.pid,
+        exec: !!managed.meta.exec,
+        commandRunning: managed.promptLog.commandRunningIfKnown(),
+        namedSlug: named ? agentDisplayToSlug(named) : undefined,
+      };
+    },
+    tracked: (sid) => agentProcessTracker.identityFor(sid),
+    probe: (sid, shellPid, timeoutMs) => agentProcessTracker.probeNamedAgentNow(sid, shellPid, timeoutMs),
+    agentRunning: (sid, slug) => agentProcessTracker.isAgentRunning(sid, slug, (pid) => ProcessMonitor.isRunning(pid)),
+    agentPid: (sid) => agentProcessTracker.pidFor(sid),
+    holdsForeground: (pid) => processHoldsForeground(pid),
+    screenRows: async (sid) => {
+      const outcome = await queuedScreenText(sessionManager, sid);
+      return outcome?.ok ? outcome.rows.map((row) => row.text) : null;
+    },
+    platform: process.platform,
+  };
+  pipeServer.onRpc('daemon.deliveryPresence', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const expectAgent = isAgentSlug(params['expectAgent']) ? params['expectAgent'] : undefined;
+    return deliveryPresence(presenceDeps, id, expectAgent);
+  });
+  deliveryPresenceRef = (id) => deliveryPresence(presenceDeps, id, undefined);
+
   // #1594 — what main's terminal_send needs to paste into a session: the agent
   // and DECSET 2004 from the live output stream. A hidden pane's renderer xterm
   // may not have seen the bytes that set or cleared the mode; this stream has.
@@ -10300,6 +10338,9 @@ async function main(): Promise<void> {
       if (!frame || frame.rows.every((row) => !row.trim())) return null;
       return screenShowsAgentDialog(frame.rows);
     },
+    // Deliveries wait for a verified agent process, the same check main runs.
+    // Unanswerable (the RPC scope not set up yet) holds the nudge.
+    agentPresent: async (id) => (deliveryPresenceRef ? (await deliveryPresenceRef(id)).tier !== 'none' : false),
   });
   // app-weight P1-1: cadence from config (default 15 s; clamped 5–120 s), or
   // 3 s (clamped 2–120 s) while the native process table serves the sweep.

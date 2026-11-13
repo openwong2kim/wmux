@@ -1369,6 +1369,20 @@ export class AgentProcessTracker {
     });
   }
 
+  /**
+   * A delivery's attribution for a pane whose agent is not known alive: the
+   * named-agent probe (armIfAgent: it also records the death of a tracked
+   * agent the monitor has not polled yet), waited for at most `timeoutMs`.
+   * Resolves when the probe is done, skipped by its backoff, or out of time.
+   */
+  async probeNamedAgentNow(sessionId: string, shellPid: number, timeoutMs: number): Promise<void> {
+    this.armIfAgent(sessionId, shellPid);
+    const until = Date.now() + timeoutMs;
+    while (this.inFlight.has(sessionId) && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+
   /** true = agent process observed alive; false = it was observed and DIED
    *  (the edge); undefined = never attributed → caller falls back. */
   statusFor(sessionId: string): boolean | undefined {

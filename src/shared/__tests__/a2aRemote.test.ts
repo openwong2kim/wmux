@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { deliveredImagesOf, imageFooter, parseDeliveredImages, sanitizeRemoteMessage, withImageFooter } from '../a2aRemoteDelivery';
-import { moaRemoteTasks } from '../a2aRemoteDelivery';
+import { missKindOf, moaRemoteTasks } from '../a2aRemoteDelivery';
 import { summarizeTask } from '../a2aTaskQueryView';
 import {
   a2aEndpointAlias,
@@ -255,5 +255,13 @@ describe('image footer of a delivered message', () => {
   it('takes only well-formed entries from a param', () => {
     expect(parseDeliveredImages([{ sha256: sha('a'), path: '/x.png' }, { sha256: 'nope', path: '/y.png' }, null, 'x'])).toEqual([{ sha256: sha('a'), path: '/x.png' }]);
     expect(parseDeliveredImages({})).toEqual([]);
+  });
+});
+
+describe('missKindOf', () => {
+  it('holds a delivery main refused for want of a verified agent as no-agent, never a pasted miss', () => {
+    expect(missKindOf('agent_unverified')).toBe('no-agent');
+    expect(missKindOf('no_agent_pane')).toBe('no-agent');
+    expect(missKindOf('agent_changed')).toBe('retry');
   });
 });

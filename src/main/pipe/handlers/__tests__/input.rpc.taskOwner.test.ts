@@ -124,6 +124,8 @@ function wire(opts: WireOpts = {}): Wiring {
       ownerLaneNotice: (ws) => notices.push(ws),
       log: (line) => logs.push(line),
       answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
+      // A tracked agent process in the pane (deliveries wait for one).
+      deliveryPresence: async () => ({ tier: 'process', slug: 'claude' }),
       daemonFolderTrust: async () => opts.daemonTrust ?? null,
       queryDaemonTasks: async () => opts.tasks ?? [],
       trustProvenClear: async () => opts.trustProvenClear ?? false,

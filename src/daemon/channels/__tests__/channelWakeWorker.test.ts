@@ -73,6 +73,7 @@ function makeHarness(
     approvalBlocked?: (sessionId: string) => boolean;
     screenShowsApproval?: (sessionId: string) => Promise<boolean | null>;
     folderTrustVerdict?: (sessionId: string) => Promise<'trust' | 'unknown' | 'clear'>;
+    agentPresent?: (sessionId: string) => Promise<boolean>;
   } = {},
 ): Harness {
   let entries: WakeUnreadEntry[] = [];
@@ -980,6 +981,36 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(h.writes).toHaveLength(1);
     refused = 'trust';
+    await vi.advanceTimersByTimeAsync(5);
+    expect(h.writes.map((w) => w.data)).not.toContain('\r');
+    expect(h.outcomes.at(-1)?.ok).toBe(false);
+  });
+
+  it('holds a nudge for a pane with no verified agent: zero bytes, logged', async () => {
+    let present = false;
+    const h = makeHarness(undefined, { agentPresent: async () => present });
+    h.setEntries([mention()]);
+    h.setSessions([session({})]);
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(h.writes).toEqual([]);
+    expect(h.logs.some((l) => l.includes('no verified agent'))).toBe(true);
+    present = true;
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(5);
+    expect(h.writes.map((w) => w.data)).toHaveLength(2);
+    expect(h.writes.at(-1)?.data).toBe('\r');
+  });
+
+  it('withholds the Enter when the agent ends between the text and the Enter', async () => {
+    let present = true;
+    const h = makeHarness(undefined, { agentPresent: async () => present });
+    h.setEntries([mention()]);
+    h.setSessions([session({})]);
+    h.worker.tickOnce();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.writes).toHaveLength(1);
+    present = false;
     await vi.advanceTimersByTimeAsync(5);
     expect(h.writes.map((w) => w.data)).not.toContain('\r');
     expect(h.outcomes.at(-1)?.ok).toBe(false);

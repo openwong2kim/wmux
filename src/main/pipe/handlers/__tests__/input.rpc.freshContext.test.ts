@@ -126,6 +126,8 @@ function scriptedPane(opts: PaneOptions = {}) {
       readSessionStart: () => receipt,
       sleep: async () => undefined,
       answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
+      // A tracked agent process in the pane (deliveries wait for one).
+      deliveryPresence: async () => ({ tier: 'process', slug: 'claude' }),
       readScreenText: async () => {
         if (++gateReads === opts.humanKeyOnGateRead) {
           revision += 1;

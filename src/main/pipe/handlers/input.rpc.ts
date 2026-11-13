@@ -20,7 +20,9 @@ import { TERMINAL_WRITE_DELIVERY_BUDGET_MS, terminalStartWindowMs } from '../../
 import { TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../../../shared/freshContext';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWording';
 import { sanitizePtyText } from '../../../shared/types';
-import { agentRow } from '../../../shared/agentIdentity';
+import { agentDisplayToSlug, agentRow, isAgentSlug } from '../../../shared/agentIdentity';
+import type { AgentSlug } from '../../../shared/events';
+import { parseDeliveryPresence, presenceRefusalDetail } from '../../../shared/deliveryPresence';
 import {
   formatBracketedPastePayload,
   isMultilinePtyPayload,
@@ -1234,6 +1236,21 @@ export interface DeliveryGuard {
   beforeEnter: () => Promise<GatedSubmitRefusal | null>;
 }
 
+/** Budget for the daemon's presence answer: an attribution probe, the
+ *  process checks and, for an unattributed pane, one screen read. */
+const DELIVERY_PRESENCE_RPC_TIMEOUT_MS = 5_000;
+
+/** Add the verified-agent check after the guard's own, at both points. */
+export function withPresenceCheck(
+  guard: DeliveryGuard | undefined,
+  presence: () => Promise<GatedSubmitRefusal | null>,
+): DeliveryGuard {
+  return {
+    beforePaste: async () => (guard ? await guard.beforePaste() : null) ?? presence(),
+    beforeEnter: async () => (guard ? await guard.beforeEnter() : null) ?? presence(),
+  };
+}
+
 /**
  * Add the check main registered for this delivery (deliveryGuards.ts) after
  * the hand-off guard's own, at both points. A key with no check refuses.
@@ -1455,6 +1472,9 @@ export interface InputRpcDeps {
   /** Injected in tests; the workspaces of a bot's reclaimed workers (ended
    *  tasks it started, factory/workerReclaim.ts), for its own reads. */
   reclaimedWorkerWorkspaces?: (botId: string, ownerWorkspaceId: string) => string[];
+  /** Injected in tests; the daemon's daemon.deliveryPresence answer for a
+   *  pane, unparsed (undefined: none could be had). */
+  deliveryPresence?: (ptyId: string, expectAgent: AgentSlug | undefined) => Promise<unknown>;
   /** Injected in tests; the task of a reclaimed worker whose recorded pane
    *  `ptyId` is, in the workspace it runs in (factory/workerReclaim.ts). */
   reclaimedTaskOfPane?: (workspaceId: string, ptyId: string) => { taskId: string; botId: string } | null;
@@ -2617,6 +2637,31 @@ export function registerInputRpc(
     };
   };
 
+  /**
+   * Deliveries wait for a verified agent process (daemon.deliveryPresence):
+   * null when the pane's foreground is an agent (a tracked agent process, or,
+   * when no process can be attributed, the agent's composer on the current
+   * screen), else the refusal. Never from the title or the detector's last
+   * agent: those outlive a killed agent. A pane main cannot ask the daemon
+   * about (a local pty, no daemon) is refused.
+   */
+  const readDeliveryPresence = async (ptyId: string, expectAgent: AgentSlug | undefined): Promise<unknown> => {
+    const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
+    if (!dc?.isConnected) return undefined;
+    return dc.rpc('daemon.deliveryPresence', { id: ptyId, ...(expectAgent ? { expectAgent } : {}) }, { timeoutMs: DELIVERY_PRESENCE_RPC_TIMEOUT_MS });
+  };
+  const verifyAgentPresence = async (ptyId: string, agent: string | null | undefined): Promise<GatedSubmitRefusal | null> => {
+    const expectAgent = agent ? (isAgentSlug(agent) ? agent : agentDisplayToSlug(agent)) : undefined;
+    const raw = await (deps.deliveryPresence ?? readDeliveryPresence)(ptyId, expectAgent).catch(() => undefined);
+    const presence = parseDeliveryPresence(raw, isAgentSlug);
+    if (presence?.tier === 'process') return null;
+    if (presence?.tier === 'screen') {
+      logLine(`[delivery] pane ${JSON.stringify(ptyId)}: no agent process attributed; ${presence.slug} verified from its screen`);
+      return null;
+    }
+    return { ok: false, reason: 'agent_unverified', detail: `delivery: ${presenceRefusalDetail(presence)}; nothing was written` };
+  };
+
   return {
     deliveryGate: (ptyId) => deliveryGateCheck(approvalGate, ptyId),
     gatedSubmit: async (ptyId, text, agent, opts) => {
@@ -2646,6 +2691,14 @@ export function registerInputRpc(
         guard = withRegisteredCheck(prepared.guard, opts.guardKey);
         noteOwnWrite = prepared.noteOwnWrite;
       }
+      // Deliveries wait for a verified agent process: before anything is
+      // written (a new task's fresh-context step writes first), and again
+      // right before the paste and the Enter.
+      const expectAgent = opts?.expectAgent ?? agent;
+      const presence = (): Promise<GatedSubmitRefusal | null> => verifyAgentPresence(ptyId, expectAgent);
+      const atStart = await presence();
+      if (atStart) return atStart;
+      guard = withPresenceCheck(guard, presence);
       // The submit receipt's workspace, from main's mirror only: a renderer
       // round-trip here would add a wait before the paste. With none, the
       // receipt watches the composer alone. Its screen reads never resync a

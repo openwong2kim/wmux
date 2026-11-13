@@ -168,6 +168,13 @@ export interface ChannelWakeWorkerDeps {
    */
   screenShowsApproval?(sessionId: string): Promise<boolean | null>;
   /**
+   * Is the pane's foreground a verified agent (daemon.deliveryPresence: a
+   * tracked agent process, or the agent's composer on screen when no process
+   * can be attributed)? A nudge ends with an Enter, so a shell would run it.
+   * Checked before the text write and again before the Enter. Optional.
+   */
+  agentPresent?(sessionId: string): Promise<boolean>;
+  /**
    * The daemon's folder-trust verdict for the pane (folderTrustState.ts). A
    * nudge is automated input: 'trust' and 'unknown' (a screen that cannot
    * rule the prompt out) both hold it. Checked with the screen, before the
@@ -469,7 +476,7 @@ export class ChannelWakeWorker {
         // An approval in front of the pane: the nudge's Enter would answer it.
         // Hold without spending budget; the next tick looks again.
         if (this.approvalHold(target.id, key)) continue;
-        if (this.deps.screenShowsApproval || this.deps.folderTrustVerdict) {
+        if (this.deps.screenShowsApproval || this.deps.folderTrustVerdict || this.deps.agentPresent) {
           if (this.screenChecks.has(key)) continue;
           this.screenChecks.add(key);
           void this.injectAfterScreenCheck(key, ws, entry, target, wantMention, state)
@@ -539,6 +546,14 @@ export class ChannelWakeWorker {
     return false;
   }
 
+  /** No verified agent in the pane: the nudge is held (logged). */
+  private async agentIsPresent(sessionId: string, key: string): Promise<boolean> {
+    if (!this.deps.agentPresent) return true;
+    const present = await this.deps.agentPresent(sessionId).catch(() => false);
+    if (!present) this.deps.log('info', `[wake] holding nudge for ${key}: no verified agent in ${sessionId}`);
+    return present;
+  }
+
   private async injectAfterScreenCheck(
     key: string,
     ws: string,
@@ -552,6 +567,7 @@ export class ChannelWakeWorker {
       return;
     }
     if (!(await this.screenIsFree(target.id, key))) return;
+    if (!(await this.agentIsPresent(target.id, key))) return;
     // The render took time: the pane may have raised an approval since.
     if (this.approvalHold(target.id, key)) return;
     if (!this.inject(target.id, ws, entry, target)) return;
@@ -622,14 +638,15 @@ export class ChannelWakeWorker {
         report(false);
         return;
       }
-      if (!this.deps.screenShowsApproval && !this.deps.folderTrustVerdict) {
+      if (!this.deps.screenShowsApproval && !this.deps.folderTrustVerdict && !this.deps.agentPresent) {
         commit();
         return;
       }
-      void this.screenIsFree(sessionId, key).then((free) => {
-        if (free && !this.approvalHold(sessionId, key)) commit();
+      void (async () => {
+        const free = (!this.deps.screenShowsApproval && !this.deps.folderTrustVerdict) || await this.screenIsFree(sessionId, key);
+        if (free && await this.agentIsPresent(sessionId, key) && !this.approvalHold(sessionId, key)) commit();
         else report(false);
-      });
+      })();
     }, this.deps.enterDelayMs ?? ENTER_DELAY_MS);
     t.unref?.();
     this.pendingEnter.add(t);
