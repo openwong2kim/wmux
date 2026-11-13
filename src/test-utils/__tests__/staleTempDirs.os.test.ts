@@ -222,6 +222,20 @@ describe('removeTempDirInside', () => {
     expect(fs.existsSync(dir)).toBe(true);
   });
 
+  it('refuses any path that is not absolute, on every OS', () => {
+    const dir = leftover(`${PREFIX}Relat1`, 0);
+    const name = path.basename(dir);
+    // Built by hand: path.relative gives an absolute path across Windows drives.
+    const relative = [name, `.${path.sep}${name}`, `..${path.sep}${path.basename(root)}${path.sep}${name}`, path.join('.', name)];
+    // Drive-relative ('C:name') is not absolute on Windows either.
+    if (isWin) relative.push(`${root.slice(0, 2)}${name}`);
+    for (const p of relative) {
+      expect(path.isAbsolute(p), p).toBe(false);
+      expect(removeTempDirInside(root, p), p).toBe(false);
+    }
+    expect(fs.existsSync(dir)).toBe(true);
+  });
+
   it('refuses a file', () => {
     const file = path.join(root, `${PREFIX}File01`);
     fs.writeFileSync(file, 'x');
@@ -235,8 +249,6 @@ describe('removeTempDirInside', () => {
     fs.mkdirSync(nested);
     expect(removeTempDirInside(root, nested)).toBe(false);
     expect(removeTempDirInside(root, outside)).toBe(false);
-    // A bare name: path.relative would give an absolute path across Windows drives.
-    expect(removeTempDirInside(root, path.basename(dir))).toBe(false);
     expect(removeTempDirInside(root, `${root}${path.sep}..${path.sep}${path.basename(outside)}`)).toBe(false);
     const st = fs.lstatSync(dir, { bigint: true });
     expect(removeTempDirInside(root, dir, { dev: st.dev, ino: st.ino + 1n })).toBe(false);

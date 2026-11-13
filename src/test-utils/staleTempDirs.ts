@@ -71,8 +71,9 @@ function hasMarker(dir: string, uid: number | null): boolean {
 
 /**
  * The sweep's one removal path. Removes `dir` only when, checked right before
- * the removal, it sits directly in `root`'s realpath; lstat says it is a real
- * directory (not a link), owned by this user and closed to others; when
+ * the removal, it is an absolute path sitting directly in `root`'s realpath;
+ * lstat says it is a real directory (not a link), owned by this user and
+ * closed to others; when
  * `expected` is given it is still that dir (dev, ino, compared as bigints);
  * its realpath is itself; and it holds SWEEP_MARKER. fs.rmSync unlinks the
  * links inside instead of following them. Returns whether it removed the
@@ -81,7 +82,7 @@ function hasMarker(dir: string, uid: number | null): boolean {
 export function removeTempDirInside(root: string, dir: string, expected?: { dev: bigint; ino: bigint }): boolean {
   const uid = ownUid();
   try {
-    if (path.dirname(dir) !== fs.realpathSync(root)) return false;
+    if (!path.isAbsolute(dir) || path.dirname(dir) !== fs.realpathSync(root)) return false;
     const st = fs.lstatSync(dir);
     if (!st.isDirectory() || !ownedAndClosed(st, uid)) return false;
     if (expected) {
