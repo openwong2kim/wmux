@@ -2,12 +2,16 @@
 //! NativeTransport owns the production PTY; NativePty remains a spike harness.
 
 use crate::native_output::NativeOutputChunk;
+use crate::native_serialize::XtermControl;
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::{Dimensions, Grid, GridCell};
-use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
-use alacritty_terminal::vte::ansi::{ClearMode, Handler, Processor, Timeout};
+use alacritty_terminal::vte::ansi::{
+    Attr, CharsetIndex, ClearMode, Handler, NamedMode, NamedPrivateMode, Processor,
+    StandardCharset, Timeout,
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -266,6 +270,8 @@ struct XtermFeed {
     shifted: bool,
     /// A control Alacritty parses differently from xterm.
     divergent: bool,
+    /// The refusal the first one is reported as (native_serialize::refusal).
+    refused: Option<&'static str>,
     /// The alternate screen changed width with a soft-wrapped row on it
     /// (NativeTerminal::resize). Unlike the other refusals this one ends:
     /// leaving that screen discards the rows that differ.
@@ -307,6 +313,14 @@ fn string_end(data: &[u8]) -> Option<usize> {
 }
 
 impl XtermFeed {
+    /// Refuse the stream, reported as `why` when it is the first refusal.
+    fn refuse(&mut self, when: bool, why: &'static str) {
+        if when && !self.divergent {
+            self.divergent = true;
+            self.refused = Some(why);
+        }
+    }
+
     fn push_tail(&mut self, bytes: &[u8]) {
         for &b in bytes {
             if self.tail_overflow {
@@ -416,13 +430,19 @@ impl XtermFeed {
                                 // xterm's alternate screen starts with its own
                                 // full region; Alacritty keeps one region, so
                                 // the alternate screen inherits the main one's.
-                                self.divergent |= self.main_margins;
+                                self.refuse(
+                                    self.main_margins,
+                                    "unsupported-state-alt-margins: the alternate screen entered with margins set",
+                                );
                             }
                             if !set && self.alt_screen {
                                 // xterm clears the alternate screen's region on
                                 // leaving it; Alacritty keeps one region for
                                 // both screens, so the main screen inherits it.
-                                self.divergent |= self.alt_margins;
+                                self.refuse(
+                                    self.alt_margins,
+                                    "unsupported-state-alt-margins: the alternate screen left with margins set",
+                                );
                                 self.alt_margins = false;
                             }
                             self.alt_screen = set;
@@ -439,7 +459,10 @@ impl XtermFeed {
     fn feed(&mut self, parser: &mut Processor, term: &mut Term<VoidListener>, bytes: &[u8]) {
         let mut data = std::mem::take(&mut self.held);
         data.extend_from_slice(bytes);
-        self.divergent |= crate::native_serialize::has_c1(&data);
+        self.refuse(
+            crate::native_serialize::has_c1(&data),
+            "unsupported-state-c1: a C1 control, which Alacritty prints",
+        );
         let mut from = 0;
         let mut next = if self.in_string {
             self.string_payload(&mut data, 0)
@@ -464,7 +487,7 @@ impl XtermFeed {
                 if data.len() - at <= MAX_HELD {
                     self.held = data.split_off(at);
                 } else {
-                    self.divergent = true;
+                    self.refuse(true, "unsupported-state-long-sequence: an unfinished sequence past the held bytes");
                 }
                 break;
             };
@@ -478,6 +501,13 @@ impl XtermFeed {
                 // IND and NEL keep the paragraph, as xterm's `index` does.
                 parser.advance(term, &data[from..at]);
                 index_like_xterm(parser, term, sequence);
+                from = at + len;
+                next = Some(at + len);
+            } else if let Some(control) = crate::native_serialize::xterm_control(sequence) {
+                // vte ignores it: run it as xterm does once vte has parsed it.
+                parser.advance(term, &data[from..at + len]);
+                run_like_xterm(parser, term, control);
+                self.track(sequence, term.screen_lines());
                 from = at + len;
                 next = Some(at + len);
             } else if is_restricting(sequence) {
@@ -502,14 +532,19 @@ impl XtermFeed {
             } else {
                 // xterm forgets the preceding character at any control;
                 // Alacritty repeats whatever was printed last.
-                self.divergent |=
-                    crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
+                self.refuse(
+                    crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed),
+                    crate::native_serialize::refusal(sequence),
+                );
                 // An escape cut short by DEL or a byte past ASCII: both
                 // parsers ignore DEL there, so `ESC DEL D` is still IND,
                 // which this scan would not see as one.
-                self.divergent |= sequence.get(1) != Some(&b'[')
-                    && !(0x30..=0x7e).contains(&sequence[len - 1])
-                    && data.get(at + len).is_some_and(|&b| b == 0x7f || b >= 0x80);
+                self.refuse(
+                    sequence.get(1) != Some(&b'[')
+                        && !(0x30..=0x7e).contains(&sequence[len - 1])
+                        && data.get(at + len).is_some_and(|&b| b == 0x7f || b >= 0x80),
+                    "unsupported-state-esc: an escape cut short by DEL or a byte past ASCII",
+                );
                 self.track(sequence, term.screen_lines());
                 next = Some(at + len);
                 if self.alt_reflow && self.may_leave_alt {
@@ -562,7 +597,10 @@ impl XtermFeed {
             // xterm ignores it; Alacritty keeps a bottom past the screen
             // (saturated to u16) and applies any top above it.
             let cap = usize::from(u16::MAX);
-            self.divergent |= second > rows && top.min(cap) < second.min(cap);
+            self.refuse(
+                second > rows && top.min(cap) < second.min(cap),
+                "unsupported-state-margins: a region only Alacritty applies",
+            );
         }
     }
 
@@ -615,6 +653,75 @@ fn index_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, seque
     if synchronized {
         parser.advance(term, b"\x1b[?2026h");
     }
+}
+
+/// A control vte ignores (native_serialize::XtermControl), run as xterm.js
+/// does after the parser has taken its bytes.
+fn run_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, control: XtermControl) {
+    // Inside a synchronized update the parser holds bytes back: apply them
+    // first. xterm's soft reset ends the update; the others re-enter it.
+    let synchronized = parser.sync_timeout().pending_timeout();
+    if synchronized {
+        parser.stop_sync(term);
+    }
+    match control {
+        XtermControl::Shift(index) => term.set_active_charset(index),
+        XtermControl::DefaultCharset => {
+            term.configure_charset(CharsetIndex::G0, StandardCharset::Ascii);
+            term.set_active_charset(CharsetIndex::G0);
+        }
+        XtermControl::Designate(index, charset) => term.configure_charset(index, charset),
+        XtermControl::SoftReset => soft_reset_like_xterm(term),
+    }
+    if synchronized && control != XtermControl::SoftReset {
+        parser.advance(term, b"\x1b[?2026h");
+    }
+}
+
+/// xterm.js's softReset (DECSTR). The cursor is shown and stays where it is,
+/// pending wrap included. The margins are the full screen. The attributes are
+/// the defaults, with no link. IRM and the DEC modes xterm tracks return to
+/// their defaults (autowrap on, the others off; the cursor style to the
+/// default). G0-G3 are ASCII with G0 shifted in. The saved cursor moves to the
+/// top left with default attributes and keeps its charsets and shift, as
+/// xterm keeps its saved charsets and G-level. Mouse tracking and the screen
+/// shown stay as they are. A synchronized update ends (run_like_xterm).
+fn soft_reset_like_xterm(term: &mut Term<VoidListener>) {
+    let point = term.grid().cursor.point;
+    let wrap = term.grid().cursor.input_needs_wrap;
+    // Alacritty's DECSTBM homes the cursor; it is put back below.
+    term.set_scrolling_region(1, None);
+    term.set_private_mode(NamedPrivateMode::ShowCursor.into());
+    term.set_private_mode(NamedPrivateMode::LineWrap.into());
+    for mode in [
+        NamedPrivateMode::CursorKeys,
+        NamedPrivateMode::Origin,
+        NamedPrivateMode::ReportFocusInOut,
+        NamedPrivateMode::BracketedPaste,
+    ] {
+        term.unset_private_mode(mode.into());
+    }
+    term.unset_mode(NamedMode::Insert.into());
+    term.unset_keypad_application_mode();
+    term.set_cursor_style(None);
+    term.pop_keyboard_modes(u16::MAX);
+    term.terminal_attribute(Attr::Reset);
+    term.set_hyperlink(None);
+    for index in [
+        CharsetIndex::G0,
+        CharsetIndex::G1,
+        CharsetIndex::G2,
+        CharsetIndex::G3,
+    ] {
+        term.configure_charset(index, StandardCharset::Ascii);
+    }
+    term.set_active_charset(CharsetIndex::G0);
+    let grid = term.grid_mut();
+    grid.cursor.point = point;
+    grid.cursor.input_needs_wrap = wrap;
+    grid.saved_cursor.point = Point::new(Line(0), Column(0));
+    grid.saved_cursor.template = Cell::default();
+    grid.saved_cursor.input_needs_wrap = false;
 }
 
 /// `parser.advance` for a stream no XtermFeed scans (the text snapshot), with
@@ -751,7 +858,11 @@ impl NativeTerminal {
         if self.refusal.is_none() {
             self.feed.feed(&mut self.parser, term, &bytes);
             if self.feed.divergent {
-                self.refusal = Some("unsupported-state: a control Alacritty parses differently");
+                self.refusal = Some(
+                    self.feed
+                        .refused
+                        .unwrap_or("unsupported-state: a control Alacritty parses differently"),
+                );
             } else if requested_scrollback > self.scrollback
                 && [term.grid(), term.inactive_grid()]
                     .iter()
@@ -1677,6 +1788,27 @@ mod tests {
         assert!(feed.divergent, "ESC ends the string, then designates");
         let (_, _, feed) = feed_with(&["\x1b]0;(A in a title\x07ok"]);
         assert!(!feed.divergent);
+    }
+
+    #[test]
+    fn the_first_refusal_names_its_control() {
+        let family = |chunks: &[&str]| {
+            let refused = feed_with(chunks).2.refused.expect("refused");
+            refused.split(':').next().unwrap().to_owned()
+        };
+        assert_eq!(family(&["\x1b(A#\x1b[?47h"]), "unsupported-state-charset");
+        assert_eq!(family(&["\x1b[?47h\x1b(A"]), "unsupported-state-mode");
+        assert_eq!(family(&["\x1b[1!p"]), "unsupported-state-decstr");
+        assert_eq!(family(&["\x1b[53m"]), "unsupported-state-sgr");
+        assert_eq!(family(&["a\x1b[31m\x1b[2b"]), "unsupported-state-rep");
+        assert_eq!(family(&["\x1b#8"]), "unsupported-state-decaln");
+        assert_eq!(family(&["\x1b\x07n"]), "unsupported-state-esc");
+        assert_eq!(family(&["a\u{9b}31m"]), "unsupported-state-c1");
+        assert_eq!(
+            family(&["\x1b[1;2r\x1b[?1049h"]),
+            "unsupported-state-alt-margins"
+        );
+        assert!(feed_with(&["\x1b*0\x1bn\x1b[!pok"]).2.refused.is_none());
     }
 
     #[test]
