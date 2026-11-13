@@ -193,15 +193,14 @@ describe('answers', () => {
     expect(task.history[0].parts).toEqual([{ kind: 'text', text: 'fix the build' }]);
     expect(task.metadata.from).toMatchObject({ workspaceId: 'ws-a', paneId: 'pane-a' });
     expect(task.metadata.remote).toMatchObject({ direction: 'outbound', linkId, hostId: B });
+    // A hand ask's first task is not marked fan-out.
+    expect(task.metadata.remote).not.toHaveProperty('fanout');
   });
 
-  it('started from a fan-out ask: its first task is marked fan-out here (a hand ask\'s is not)', async () => {
+  it('started from a fan-out ask: its first task is marked fan-out here', async () => {
     const fan = asSpawnLinkId(crypto.randomUUID())!;
-    const hand = asSpawnLinkId(crypto.randomUUID())!;
     expect(await asks.onResult(B, started(askOk({ budget: 'fanout', callerKey: 'fanout-key' }), fan))).toBe(true);
-    expect(await asks.onResult(B, started(askOk(), hand))).toBe(true);
     expect(tasks.getTask(remoteTaskId(fan, spawnFirstMessageId(fan)))!.metadata.remote).toMatchObject({ direction: 'outbound', fanout: true });
-    expect(tasks.getTask(remoteTaskId(hand, spawnFirstMessageId(hand)))!.metadata.remote).not.toHaveProperty('fanout');
   });
 
   it('a started answer this PC could not write is taken again, without a second link', async () => {
