@@ -15,6 +15,8 @@ export interface SubagentCounter {
   noteLine(line: string): void;
   /** Subagents currently running. */
   readonly count: number;
+  /** Work its turns left running for the agent to hear about later, where the counter knows it (Claude). */
+  readonly background?: number;
   /** Forget everything (lines were skipped, or the file was replaced). */
   reset(): void;
 }
@@ -131,7 +133,8 @@ function resultText(content: unknown): string {
  * (an `api-request-blob`) can carry copies of earlier turns.
  *
  * `background` is the work a turn left running for the agent to hear about
- * later (the headless delivery waits for it): the async agents above, plus
+ * later (the headless delivery waits for it): the async agents above (until
+ * their notification is handed to the agent, whatever its status), plus
  * background shells and Monitors. Those two start when their call's result
  * says so (BACKGROUND_STARTED_RES) and end on a `<task-notification>` that
  * names them and carries a `<status>`, once it is handed to the agent (a
@@ -149,17 +152,20 @@ export class ClaudeSubagentCounter implements SubagentCounter {
   private readonly backgroundCalls = new Set<string>();
   /** Background shells and Monitors: tool_use id → task id. */
   private readonly shells = new Map<string, string>();
+  /** Async agents whose end the agent was not handed yet: tool_use id → agent id (`count` drops them earlier). */
+  private readonly asyncUnheard = new Map<string, string>();
 
   get count(): number { return this.foreground.size + this.async.size; }
 
   /** Async agents, background shells and Monitors still running. */
-  get background(): number { return this.async.size + this.shells.size; }
+  get background(): number { return this.asyncUnheard.size + this.shells.size; }
 
   reset(): void {
     this.foreground.clear();
     this.async.clear();
     this.backgroundCalls.clear();
     this.shells.clear();
+    this.asyncUnheard.clear();
   }
 
   private settleAgentId(agentId: string): void {
@@ -168,6 +174,7 @@ export class ClaudeSubagentCounter implements SubagentCounter {
 
   private settleShell(taskId: string): void {
     for (const [toolUseId, id] of this.shells) if (id === taskId) this.shells.delete(toolUseId);
+    for (const [toolUseId, id] of this.asyncUnheard) if (id === taskId) this.asyncUnheard.delete(toolUseId);
   }
 
   noteLine(line: string): void {
@@ -220,7 +227,10 @@ export class ClaudeSubagentCounter implements SubagentCounter {
         }
         if (!this.foreground.delete(block.tool_use_id)) continue;
         const agentId = ASYNC_AGENT_RE.exec(resultText(block.content))?.[1];
-        if (agentId) this.async.set(block.tool_use_id, agentId);
+        if (agentId) {
+          this.async.set(block.tool_use_id, agentId);
+          this.asyncUnheard.set(block.tool_use_id, agentId);
+        }
       }
     }
     if (!notification) return;
@@ -236,8 +246,12 @@ export class ClaudeSubagentCounter implements SubagentCounter {
     if (toolUseId) this.async.delete(toolUseId);
     const taskId = /<task-id>([^<]+)<\/task-id>/.exec(body)?.[1]?.trim();
     if (taskId) this.settleAgentId(taskId);
-    // A shell or Monitor: only its last notification (with a status), once the agent is given it.
-    if (entry.type === 'queue-operation' || !/<status>[^<]*<\/status>/.test(body)) return;
+    if (entry.type === 'queue-operation') return;
+    // Handed to the agent: an async agent's end, whatever its status.
+    if (toolUseId) this.asyncUnheard.delete(toolUseId);
+    if (taskId) for (const [id, agentId] of this.asyncUnheard) if (agentId === taskId) this.asyncUnheard.delete(id);
+    // A shell or Monitor: only its last notification (with a status).
+    if (!/<status>[^<]*<\/status>/.test(body)) return;
     if (toolUseId) this.shells.delete(toolUseId);
     if (taskId) this.settleShell(taskId);
   }

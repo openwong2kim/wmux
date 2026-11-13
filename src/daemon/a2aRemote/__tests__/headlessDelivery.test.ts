@@ -1196,18 +1196,56 @@ describe('background work the agent leaves running', () => {
     expect(replies.map((r) => r.text)).toEqual(['PONG']);
   });
 
-  it('after the answer: a further reply that could not be sent neither stops the relay nor uses the budget', async () => {
+  it('after the answer: a further reply that could not be sent is tried again first, and counts in the budget once', async () => {
     const d = new HeadlessDelivery(deps());
     await d.tick();
     write(userLine(PROMPT), assistantLine('PONG'));
     await d.tick();
     replyError = 'link down';
-    write(wakeLine(), assistantLine('lost'));
+    write(wakeLine(), assistantLine('first'), wakeLine(), assistantLine('second'));
     await d.tick();
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
     replyError = null;
     for (let i = 0; i < FURTHER_REPLIES_MAX; i++) write(wakeLine(), assistantLine(`woke ${i}`));
     await d.tick();
-    expect(replies.map((r) => r.text)).toEqual(['PONG', ...Array.from({ length: FURTHER_REPLIES_MAX }, (_, i) => `woke ${i}`)]);
+    expect(replies.map((r) => r.text)).toEqual(['PONG', 'first', 'second', ...Array.from({ length: FURTHER_REPLIES_MAX - 2 }, (_, i) => `woke ${i}`)]);
+  });
+
+  it('after the answer: a further reply that landed although its call failed is not sent again', async () => {
+    const base = deps();
+    let fail = true;
+    const d = new HeadlessDelivery({
+      ...base,
+      reply: async (input) => {
+        const res = await base.reply(input);
+        if (fail && input.text === 'woke') throw new Error('timed out after it was stored');
+        return res;
+      },
+    });
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    write(wakeLine(), assistantLine('woke'), wakeLine(), assistantLine('again'));
+    await d.tick();
+    fail = false;
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG', 'woke', 'again']);
+  });
+
+  it('an agent that replied through its own tools before a progress reply gets no second answer', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), callLine('t2', 'Bash', { command: 'make', run_in_background: true }), resultLine('t2', 'Command running in background with ID: sh1.'));
+    await d.tick();
+    // The agent answers the asking PC itself (its own send_message on the task).
+    task.history.push({ kind: 'message', messageId: 'own', role: 'agent', parts: [{ kind: 'text', text: 'Answered it myself.' }] });
+    write(assistantLine('Building.'));
+    await d.tick();
+    write(notification('sh1', 't2', 'completed'), assistantLine('Built.'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['Building.']);
+    expect(task.status.state).toBe('input-required');
   });
 
   it('after the answer: input on this PC stops it (that turn and later ones are not the task\'s)', async () => {

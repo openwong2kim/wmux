@@ -11,7 +11,7 @@ import { isClaudeUsageLimitText, USAGE_LIMIT_CONTINUE_PROMPT } from '../../share
 import { apiErrorFromTranscriptLine } from '../transcript/apiErrorTurnEnd';
 import { parseTranscriptLine } from '../transcript/parseEntry';
 import { readTranscriptDelta } from '../transcript/readTail';
-import { ClaudeSubagentCounter } from '../transcript/subagentCount';
+import { SUBAGENT_COUNTERS, type SubagentCounter } from '../transcript/subagentCount';
 import type { HeadlessStartRecordV1 } from './headlessStartStore';
 import { errMsg } from './storeFile';
 
@@ -169,13 +169,18 @@ export interface Episode {
    */
   endPending?: { messageId: string | null; at: number };
   /** The work the agent's turns left running in the background (Claude Code); none read for another agent. */
-  work?: ClaudeSubagentCounter | null;
+  work?: SubagentCounter | null;
   /** When the first turn end that left background work running was read (the wait is bounded from there). */
   waitingSince?: number | null;
   /** The agent is in a turn (it wrote since its last turn end). */
   busy?: boolean;
   /** The text of that turn end, and whether it went back as a reply. */
   lastProgress?: { text: string; sent: boolean } | null;
+  /**
+   * After the answer: a later turn's text whose reply did not go through, tried again before anything
+   * after it is read; `copies`: how many agent messages on the task were that text before the try.
+   */
+  unsaid?: { text: string; copies: number } | null;
 }
 
 /** A thinking-only turn end with nothing after it closes this long after it was read. */
@@ -599,15 +604,14 @@ export class HeadlessDelivery {
     }
     if (waited >= QUESTION_NOTICE_MS && q.noticedTask !== taskId) {
       q.noticedTask = taskId;
+      const before = this.said(taskId, QUESTION_NOTICE);
       try {
         const sent = await this.deps.reply({ taskId, workspaceId, text: QUESTION_NOTICE, ptyId: sessionId });
         if (!sent.ok) this.deps.log('warn', `[headless] task ${taskId}: the asking PC could not be told of the question: ${sent.error ?? 'unknown'}`);
       } catch (err) {
         this.deps.log('warn', `[headless] task ${taskId}: the asking PC could not be told of the question: ${errMsg(err)}`);
       }
-      // This notice is not the agent answering through its own tools: counted as already there,
-      // from the task itself, so a notice that landed although the call failed is counted too.
-      if (inTurn) this.countAsSaid(inTurn);
+      if (inTurn) this.countAsSaid(inTurn, QUESTION_NOTICE, before);
     }
   }
 
@@ -670,7 +674,7 @@ export class HeadlessDelivery {
         const ep: Episode = {
           taskId: task.id, sessionId: rec.sessionId, workspaceId: rec.workspaceId, promptHash: promptHash(prompt),
           sentAt: this.now(), agentMessagesAtSend: agentMessages, path, offset, opened: false, limitStopped: false, answer: [],
-          working: false, outcome: null, work: rec.agent === 'claude' ? new ClaudeSubagentCounter() : null,
+          working: false, outcome: null, work: SUBAGENT_COUNTERS[rec.agent]?.() ?? null,
         };
         this.episodes.set(rec.sessionId, ep);
         await this.markOrKeep({ ...ids, delivered: true, ...(item ? {} : { ptyId: rec.sessionId }) });
@@ -798,18 +802,25 @@ export class HeadlessDelivery {
     const body = text.trim();
     ep.lastProgress = { text: body, sent: false };
     if (!body || this.ended(ep.taskId) || !this.budgetLeft(ep.taskId)) return;
+    const before = this.said(ep.taskId, cutReply(body));
     ep.lastProgress.sent = await this.sayFurther(ep, body);
-    this.countAsSaid(ep);
+    this.countAsSaid(ep, cutReply(body), before);
+  }
+
+  /** How many agent messages on the task are exactly `text`. */
+  private said(taskId: string, text: string): number {
+    const history = this.deps.tasks.get(taskId)?.history ?? [];
+    return history.filter((m) => m.role === 'agent' && m.parts.map((p) => (p.kind === 'text' ? p.text : '')).join('') === text).length;
   }
 
   /**
-   * Replies this delivery sent on the task itself (a progress reply, the question notice) are not the agent
-   * answering through its own tools: counted as already there, from the task (one that landed although the
-   * call failed counts too), so the answer still goes.
+   * A reply this delivery sent on the task itself (a progress reply, the question notice) is not the agent
+   * answering through its own tools: the copies of `text` it added (one that landed although the call
+   * failed counts too) are counted as already there, so the answer still goes. A reply the agent sent itself
+   * stays counted as its own.
    */
-  private countAsSaid(ep: Episode): void {
-    const agentMessages = this.deps.tasks.get(ep.taskId)?.history.filter((m) => m.role === 'agent').length ?? 0;
-    ep.agentMessagesAtSend = Math.max(ep.agentMessagesAtSend, agentMessages);
+  private countAsSaid(ep: Episode, text: string, before: number): void {
+    ep.agentMessagesAtSend += Math.max(0, this.said(ep.taskId, text) - before);
   }
 
   private budgetLeft(taskId: string): boolean {
@@ -849,26 +860,48 @@ export class HeadlessDelivery {
     if (this.deps.tasks.get(w.taskId)?.status.state !== 'input-required' || !this.budgetLeft(w.taskId)) return stop();
     const path = this.deps.transcriptPath(w.sessionId);
     if (!path || path !== w.path) return stop();
+    // A reply that did not go through goes first (unless it landed after all); nothing after it is read until it did.
+    const say = async (text: string): Promise<'sent' | 'stop' | 'held'> => {
+      const body = text.trim();
+      if (!body) return 'sent';
+      if (!this.budgetLeft(w.taskId)) return 'stop';
+      const copies = this.said(w.taskId, cutReply(body));
+      if (w.unsaid?.text === body && copies > w.unsaid.copies) {
+        // The try before landed although its call failed.
+        this.further.set(w.taskId, (this.further.get(w.taskId) ?? 0) + 1);
+      } else if (!(await this.sayFurther(w, body))) {
+        w.unsaid = { text: body, copies };
+        return 'held';
+      }
+      w.unsaid = null;
+      return 'sent';
+    };
+    if (w.unsaid) {
+      const r = await say(w.unsaid.text);
+      if (r === 'stop') return stop();
+      if (r === 'held') return;
+    }
     const lines = this.readNew(w, path);
     if (lines === null) return stop();
-    const say = async (text: string): Promise<boolean> => {
-      if (!text.trim()) return true;
-      if (!this.budgetLeft(w.taskId)) return false;
-      await this.sayFurther(w, text.trim());
-      return true;
-    };
-    for (const { line, events } of lines) {
+    for (const { line, events, start, end } of lines) {
       // Typed on this PC (a slash command or a `!` command too, which do not parse as a prompt): its turns are not the task's.
       const raw = rawEntry(line);
       if (raw?.typed && !raw.sidechain) return stop();
       for (let step = stepEpisode(w, line, events); step;) {
         // An interrupt on this PC, an error: nothing more is said on the task.
-        if (step.kind === 'failed' || !(await say(step.text))) return stop();
+        if (step.kind === 'failed') return stop();
+        const r = await say(step.text);
+        if (r === 'stop') return stop();
+        if (r === 'held') {
+          // Read on from after this turn end once its reply went (this line again, when it was not read).
+          w.offset = step.again ? start : end;
+          return;
+        }
         step = step.again ? stepEpisode(w, line, events) : null;
       }
     }
     const end = this.settled(w);
-    if (end && !(await say(end.text))) stop();
+    if (end && (await say(end.text)) === 'stop') stop();
   }
 
   /**

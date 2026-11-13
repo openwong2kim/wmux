@@ -237,12 +237,20 @@ describe('ClaudeSubagentCounter — background work (what a turn leaves running)
     expect(c.background).toBe(0);
   });
 
-  it('an async agent is background work too, and counted as a subagent as before', () => {
+  it('an async agent is background work too, until its end is handed to the agent; its subagent count is as before', () => {
     const c = new ClaudeSubagentCounter();
     c.noteLine(claudeToolUse('toolu_1', 'Agent'));
     c.noteLine(claudeToolResult('toolu_1', asyncLaunched('a111')));
     expect([c.count, c.background]).toEqual([1, 1]);
+    // Queued while the lead's turn runs: no subagent runs any more, but the lead has not heard it.
     c.noteLine(queueNotification('a111', 'toolu_1'));
+    expect([c.count, c.background]).toEqual([0, 1]);
+    c.noteLine(userNotification(notificationBody('a111', 'toolu_1')));
+    expect([c.count, c.background]).toEqual([0, 0]);
+    // A TaskStop of one ends it for both.
+    c.noteLine(claudeToolUse('toolu_2', 'Agent'));
+    c.noteLine(claudeToolResult('toolu_2', asyncLaunched('a222')));
+    c.noteLine(claudeToolUse('toolu_3', 'TaskStop', { task_id: 'a222' }));
     expect([c.count, c.background]).toEqual([0, 0]);
   });
 });
