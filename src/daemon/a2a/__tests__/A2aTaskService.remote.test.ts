@@ -5,6 +5,7 @@ import os from 'node:os';
 
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { A2aTaskService, REMOTE_STATE_IDS_MAX, statusMessageFromWire } from '../A2aTaskService';
+import { stateMessageId } from '../../a2aRemote/outbound';
 import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import { COMPANY_BRIEF_KIND } from '../../../shared/company';
@@ -391,6 +392,79 @@ describe('A2aTaskService — remote messages and states', () => {
     await svc.transition({ taskId: 'rt-in', to: 'working', callerWorkspaceId: 'ws-local' });
     const r = await svc.transition({ taskId: 'rt-in', to: 'completed', callerWorkspaceId: 'ws-local', evidence: { summary: 's', items: [] } });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('A2aTaskService — the sender writing again on a completed inbound task reopens it', () => {
+  const transitions = (log: AppendOnlyLog) => log.readAllRecords()
+    .filter((r) => r.domain === 'a2a')
+    .map((r) => (r as unknown as { payload: { kind: string; to?: string; reopened?: string } }).payload)
+    .filter((p) => p.kind === 'task.transition');
+  async function ended(svc: A2aTaskService, to: 'completed' | 'failed') {
+    await inbound(svc);
+    await svc.transition({ taskId: 'rt-in', to: 'working', callerWorkspaceId: 'ws-local' });
+    const r = await svc.transition({ taskId: 'rt-in', to, callerWorkspaceId: 'ws-local', evidence: to === 'completed' ? PEER_EVIDENCE : { summary: 'gave up' } });
+    expect(r.ok).toBe(true);
+  }
+
+  it('a new message from the sender takes a completed task back to working, once; the agent can then complete it again', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await ended(svc, 'completed');
+    const firstCompleted = stateMessageId(svc.getTask('rt-in')!);
+    const follow = msg('f-1', 'one more thing');
+    expect(await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: follow, reopenCompleted: true }))
+      .toMatchObject({ ok: true, duplicate: false, reopened: true });
+    expect(svc.getTask('rt-in')?.status.state).toBe('working');
+    expect(transitions(log).filter((t) => t.reopened === 'sender_message')).toEqual([expect.objectContaining({ to: 'working' })]);
+    // The agent's answer is a valid move now, and goes to the sender under a new state id (not a duplicate of the first).
+    expect((await svc.transition({ taskId: 'rt-in', to: 'completed', callerWorkspaceId: 'ws-local', evidence: PEER_EVIDENCE })).ok).toBe(true);
+    expect(stateMessageId(svc.getTask('rt-in')!)).not.toBe(firstCompleted);
+    // The same message delivered again reopens nothing.
+    const again = await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: follow, reopenCompleted: true });
+    expect(again).toMatchObject({ ok: true, duplicate: true });
+    expect(again).not.toHaveProperty('reopened');
+    expect(svc.getTask('rt-in')?.status.state).toBe('completed');
+    expect(transitions(log).filter((t) => t.reopened === 'sender_message')).toHaveLength(1);
+    // A replayed log lands where the live one did.
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(restored.getTask('rt-in')?.status.state).toBe('completed');
+    expect(restored.getTask('rt-in')?.history.map((h) => h.messageId)).toEqual(['m-0', 'f-1']);
+  });
+
+  it('a replayed log keeps the reopen', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await ended(svc, 'completed');
+    await svc.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-1', 'more'), reopenCompleted: true });
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(restored.getTask('rt-in')?.status.state).toBe('working');
+  });
+
+  it('never from failed; never for a message that is not the sender\'s, an outbound task, or without the flag', async () => {
+    const failed = newService(newLog());
+    await ended(failed, 'failed');
+    expect(await failed.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-1', 'more'), reopenCompleted: true }))
+      .toMatchObject({ ok: true, duplicate: false });
+    expect(failed.getTask('rt-in')?.status.state).toBe('failed');
+    expect(failed.getTask('rt-in')?.history.map((h) => h.messageId)).toEqual(['m-0', 'f-1']);
+
+    const plain = newService(newLog());
+    await ended(plain, 'completed');
+    // Without the flag (this PC's own replies go this way), and from this PC's side: left as it is.
+    await plain.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('f-1', 'more') });
+    await plain.appendRemoteMessage({ taskId: 'rt-in', linkId: LINK, actorWorkspaceId: 'ws-local', message: msg('f-2', 'ours', 'agent'), reopenCompleted: true });
+    expect(plain.getTask('rt-in')?.status.state).toBe('completed');
+
+    // A task this PC sent: the peer writing on it is its receiver, never its sender.
+    const sent = newService(newLog());
+    await outbound(sent);
+    await sent.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's1', to: 'working' });
+    await sent.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's2', to: 'completed', evidence: PEER_EVIDENCE });
+    await sent.appendRemoteMessage({ taskId: 'rt-out', linkId: LINK, actorWorkspaceId: REMOTE_WS, message: msg('r-1', 'done', 'agent'), reopenCompleted: true });
+    expect(sent.getTask('rt-out')?.status.state).toBe('completed');
   });
 });
 

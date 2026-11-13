@@ -201,6 +201,29 @@ describe('acceptInbound — reply and state', () => {
     expect(await acceptInbound({ ...r, text: 'changed' }, peer, deps)).toMatchObject({ ok: false, error: 'conflict' });
   });
 
+  it('a reply from the sender on a task that ended completed here reopens it and asks for the sender to be told, once', async () => {
+    const syncTask = vi.fn(async (_taskId: string) => undefined);
+    const withSync: InboundDeps = { ...deps, syncTask };
+    const linkId = activeLink();
+    const id = await landed(linkId);
+    const to = tasks.getTask(id)!.metadata.to;
+    const caller = { callerWorkspaceId: to.workspaceId, ...(to.paneId ? { callerAddr: { paneId: to.paneId } } : {}) };
+    const evidence = { summary: 'done', items: [{ kind: 'command' as const, status: 'passed' as const, command: 'npm test', summary: 'ok' }] };
+    expect((await tasks.transition({ taskId: id, to: 'working', ...caller })).ok).toBe(true);
+    expect((await tasks.transition({ taskId: id, to: 'completed', ...caller, evidence })).ok).toBe(true);
+    const r = env(linkId, { kind: 'reply', taskId: id, text: 'one more thing' });
+    expect(await acceptInbound(r, peer, withSync)).toEqual({ ok: true, taskId: id, duplicate: false });
+    expect(tasks.getTask(id)!.status.state).toBe('working');
+    expect(syncTask).toHaveBeenCalledTimes(1);
+    expect(syncTask).toHaveBeenCalledWith(id);
+    // Redelivered: nothing more.
+    expect(await acceptInbound(r, peer, withSync)).toMatchObject({ ok: true, duplicate: true });
+    expect(syncTask).toHaveBeenCalledTimes(1);
+    // A reply on a task still working moves nothing and tells nobody.
+    expect(await acceptInbound(env(linkId, { kind: 'reply', taskId: id, text: 'and another' }), peer, withSync)).toMatchObject({ ok: true, duplicate: false });
+    expect(syncTask).toHaveBeenCalledTimes(1);
+  });
+
   it('a reply into a task that is not on this link is unknown-task', async () => {
     const linkId = activeLink();
     await tasks.createTask({ id: 'task-local', title: 't', from: { workspaceId: 'ws-x', name: 'x' }, to: { workspaceId: 'ws-b', name: 'b' } });

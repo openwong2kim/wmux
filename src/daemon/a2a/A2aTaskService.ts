@@ -240,7 +240,7 @@ export type CreateOk = { ok: true; taskId: string; task: Task; existed?: true };
 /** Same id, different payload (only with `conflictOnBodyMismatch` / remote ops). */
 export type ConflictErr = { ok: false; error: string; conflict: true };
 /** Remote op result: `duplicate` = the same message was already applied, nothing appended. */
-export type RemoteOpOk = { ok: true; task: Task; duplicate: boolean };
+export type RemoteOpOk = { ok: true; task: Task; duplicate: boolean; reopened?: true };
 export type ReopenOk = { ok: true; reopened: boolean; task: Task };
 
 export interface QueryFilters {
@@ -1073,12 +1073,19 @@ export class A2aTaskService {
    * peer sent, the local workspace for one of ours. Keyed by
    * `message.messageId`: the same id with the same text is a duplicate, with a
    * different text a conflict.
+   *
+   * `reopenCompleted`: a new message from the sender of an inbound task that
+   * ended `completed` is new work for this PC's agent, as `reopenTask` has it
+   * for a local task: the task goes back to `working` (a synced state, so the
+   * sender sees it move, and the agent's answer is then a valid `completed`).
+   * Never from `failed` or `canceled`, and a duplicate reopens nothing.
    */
   appendRemoteMessage(input: {
     taskId: string;
     linkId: string;
     actorWorkspaceId: string;
     message: Message;
+    reopenCompleted?: boolean;
   }): Promise<RemoteOpOk | ConflictErr | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
@@ -1103,7 +1110,25 @@ export class A2aTaskService {
       );
       if (!committed) return { ok: false, error: 'a2a.remote.message: daemon log append failed (uncommitted)' };
       this.applyPayload(payload);
-      return { ok: true, task, duplicate: false };
+      const fromSender = input.actorWorkspaceId === `remote:${input.linkId}` && task.metadata.from.workspaceId === input.actorWorkspaceId;
+      if (input.reopenCompleted !== true || !fromSender || remoteMarkerOf(task)?.direction !== 'inbound' || task.status.state !== 'completed') {
+        return { ok: true, task, duplicate: false };
+      }
+      // A plain transition with the marker, as reopenTask commits it: a replayed log lands on `working` too.
+      const reopen: A2aTaskTransitionPayload = {
+        kind: 'task.transition',
+        taskId: input.taskId,
+        to: 'working',
+        timestamp: this.isoNow(),
+        reopened: 'sender_message',
+      };
+      const reopened = await this.log.append(
+        this.envelope(reopen, input.actorWorkspaceId, this.derivePrincipalId(task, 'from', input.actorWorkspaceId)),
+      );
+      // The message is in either way; a reopen that was not written leaves the task as it was.
+      if (!reopened) return { ok: true, task, duplicate: false };
+      this.applyPayload(reopen);
+      return { ok: true, task, duplicate: false, reopened: true };
     });
   }
 

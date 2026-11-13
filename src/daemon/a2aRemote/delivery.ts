@@ -756,6 +756,7 @@ export class A2aRemoteDelivery {
       linkStore: this.deps.links,
       taskService: this.deps.taskService,
       broadcast: (event) => this.deps.broadcast({ type: event.type, sessionId: '', data: event }),
+      syncTask: (taskId) => this.syncTask(taskId),
       aliasFor: (l) => this.aliasFor(l),
       ...(this.deps.localWorkspaceName ? { localWorkspaceName: this.deps.localWorkspaceName } : {}),
       ...(this.deps.offers ? { offers: this.deps.offers } : {}),
