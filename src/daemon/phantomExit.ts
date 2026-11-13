@@ -37,6 +37,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { tryProcessIdentity } from '../main/pty/winSnapshotNative';
 import { sameKernelStart } from '../shared/processStartTime';
+import { procLstart } from './procfs';
 
 /**
  * Is this pid still present? `signal 0` performs the permission/existence
@@ -131,10 +132,13 @@ export interface ProcessStartRead<T> {
 /**
  * `ps -o lstart= -p <pid>` (posix). `ps` exits 1 with no output when no
  * process matched the pid, which is the one failure that means gone; a
- * timeout, a missing `ps` or anything it printed is a failed read.
+ * timeout, a missing `ps` or anything it printed is a failed read. Linux
+ * computes the same text from /proc first.
  */
 export async function readPosixStartTime(pid: number): Promise<ProcessStartRead<string>> {
   if (!Number.isInteger(pid) || pid <= 0) return { value: null, gone: false };
+  const proc = procLstart(pid);
+  if (proc) return proc.value === null ? { value: null, gone: true } : { value: proc.value, gone: false };
   try {
     const { stdout } = await promisify(execFile)('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf-8',
