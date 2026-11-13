@@ -1864,6 +1864,24 @@ describe('the status this delivery reports for each task (headlessStatus.ts send
     expect(order.filter((o) => o.startsWith('gone'))).toEqual([]);
   });
 
+  it('after the answer, a turn the agent takes on its own: its question menu and its usage limit are reported, not just working', async () => {
+    clock = Date.UTC(2026, 10, 13, 0, 5);
+    const d = new HeadlessDelivery(statusDeps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    expect(task.status.state).toBe('input-required');
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'waiting-input' });
+    // Background work it left wakes it, and it asks a question.
+    write(askLine('toolu_02Ask', ['Yes', 'No']));
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'question', detail: { question: 'menu', menuId: 'toolu_02Ask', options: ['Yes', 'No'] } });
+    write(askResultLine('toolu_02Ask'), apiErrorLine('rate_limit', "You've hit your limit · resets 11:30pm (Asia/Seoul)"));
+    await d.tick();
+    expect(last()).toEqual({ taskId: TASK, kind: 'usage-limit', detail: { provider: 'claude', resetsAt: '2026-11-13T14:30:00.000Z' } });
+  });
+
   it('a task that ended is not reported', async () => {
     const d = new HeadlessDelivery(statusDeps());
     await d.tick();

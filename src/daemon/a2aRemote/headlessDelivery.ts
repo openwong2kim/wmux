@@ -506,6 +506,13 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
  * left out. Read from the raw line because the parser replaces fenced code
  * with markers (turnEvents.ts), and a reply needs the code itself.
  */
+/** A usage-limit stop's reset: as read when it was handled, else from its own message (null: not known). */
+function limitResetOf(limit: Episode['limit']): number | null {
+  if (!limit) return null;
+  if (limit.resetsAt !== undefined) return limit.resetsAt;
+  return claudeUsageLimitFromStopFailure({ error: 'rate_limit', last_assistant_message: limit.message }, limit.at ?? Date.now())?.resetsAt ?? null;
+}
+
 /** The AskUserQuestion tool waits for a person's pick; its result is the answer. */
 const ASK_TOOL = 'AskUserQuestion';
 
@@ -818,18 +825,20 @@ export class HeadlessDelivery {
   private statusOf(task: Task, rec: HeadlessStartRecordV1): Omit<HeadlessTaskStatus, 'taskId'> {
     const ep = this.episodes.get(rec.sessionId);
     const inTurn = ep?.taskId === task.id ? ep : undefined;
-    if (inTurn?.limitStopped) {
-      const resetsAt = inTurn.limit?.resetsAt;
+    // The task's turn: the one typed in, or after its answer one the agent took on its own (background work it left).
+    const after = this.afterwards.get(rec.sessionId);
+    const active = inTurn ?? (after?.taskId === task.id ? after : undefined);
+    if (active?.limitStopped) {
+      const resetsAt = limitResetOf(active.limit);
       return { kind: 'usage-limit', detail: { provider: rec.agent, ...(resetsAt != null ? { resetsAt: new Date(resetsAt).toISOString() } : {}) } };
     }
-    if (inTurn?.ask) {
-      return { kind: 'question', detail: { question: 'menu', menuId: inTurn.ask.id, ...(inTurn.ask.options.length > 0 ? { options: inTurn.ask.options } : {}) } };
+    if (active?.ask) {
+      return { kind: 'question', detail: { question: 'menu', menuId: active.ask.id, ...(active.ask.options.length > 0 ? { options: active.ask.options } : {}) } };
     }
     const q = this.questions.get(rec.sessionId);
     if (q?.since != null && q.taskId === task.id) return { kind: 'question', detail: { question: q.kind ?? 'dialog' } };
-    const after = this.afterwards.get(rec.sessionId);
-    if ((inTurn && !inTurn.outcome) || (after?.taskId === task.id && after.busy)) {
-      const background = (inTurn ?? after)?.work?.background ?? 0;
+    if ((inTurn && !inTurn.outcome) || (!inTurn && active?.busy)) {
+      const background = active?.work?.background ?? 0;
       return { kind: 'working', ...(background > 0 ? { detail: { background } } : {}) };
     }
     if (task.status.state === 'input-required' && !inTurn) return { kind: 'waiting-input' };
