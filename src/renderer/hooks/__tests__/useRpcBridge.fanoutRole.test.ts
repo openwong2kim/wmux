@@ -185,6 +185,15 @@ describe('useRpcBridge — fan-out task roles', () => {
     expect(marker).toBeGreaterThan(flags);
   });
 
+  it('refuses a mode the final launcher cannot be held to before the PTY exists, rolling the workspace back', () => {
+    const block = fanoutSpawnBlock();
+    const check = block.indexOf('workerModeRefusal(roleBound.initialCommand, workerMode)');
+    expect(check).toBeGreaterThan(block.indexOf('withRoleBinding(seeded, roleBinding, role'));
+    expect(check).toBeLessThan(block.indexOf('await window.electronAPI.pty.create('));
+    const refusal = block.slice(check, block.indexOf('await window.electronAPI.pty.create('));
+    expect(refusal).toMatch(/if \(modeRefusal\) \{[\s\S]*removeWorkspace\(newWsId\)[\s\S]*setActiveWorkspace\(previousActiveId\)[\s\S]*return \{ error: `fanout\.spawnWorkspace: \$\{modeRefusal\}` \}/);
+  });
+
   it('toasts once for an unattended fan-out', () => {
     const m = src.match(/if \(method === 'fanout\.requestApproval'\)[\s\S]*?\n {2}\}\n/);
     expect(m?.[0]).toMatch(/verdict\.outcome === 'auto'[\s\S]*pushToast/);

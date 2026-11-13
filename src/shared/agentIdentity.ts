@@ -219,6 +219,22 @@ export interface AgentIdentityRow {
   /** Claude Code's permission-mode launch flags can be re-applied on resume
    *  (agentResume `agentSupportsPermissionFlag`). */
   readonly permissions?: 'permission-mode';
+  /** The flags that make this agent ask before it acts, for the `manual`
+   *  worker mode (workerLaunch): put right after the launcher, ahead of the
+   *  prompt, once every permission choice `replaces` names is taken off the
+   *  line. Claude's comes from its permission mode (`permissions`) instead. An
+   *  agent with neither is not started in manual mode. */
+  readonly askMode?: {
+    readonly flags: string;
+    readonly replaces: {
+      /** Flags that take a value (`--flag v`, `--flag=v`, `-fv`). */
+      readonly flags: readonly string[];
+      /** Flags that take none. */
+      readonly switches?: readonly string[];
+      /** Config overrides whose key is a permission choice (`-c key=v`). */
+      readonly config?: { readonly flags: readonly string[]; readonly keys: readonly string[] };
+    };
+  };
   /** Names a process tracker sees for this agent besides the slug: npm package
    *  names it runs under, and native executable names (AgentProcessTracker). */
   readonly process?: { readonly packages?: readonly string[]; readonly executables?: readonly string[] };
@@ -371,6 +387,22 @@ export const AGENT_IDENTITIES = [
     display: 'Codex CLI',
     connectorLaunch: 'mcp-toml',
     modelFlag: '--model',
+    // Verified against codex-cli 0.162.1 --help: `-a` takes on-request or
+    // never; `-s` takes read-only, workspace-write or danger-full-access. Its
+    // read-only sandbox with approval on request asks before an edit, a
+    // command outside it, or network access. A `-c sandbox_permissions=…`
+    // grant goes too: how it combines with read-only is not verified. Its
+    // approvals go to the person (`approvals_reviewer=user`, one of user,
+    // auto_review and guardian_subagent in 0.162.1's config), not an
+    // automatic reviewer a config file or the line may name.
+    askMode: {
+      flags: '-a on-request -s read-only -c approvals_reviewer=user',
+      replaces: {
+        flags: ['-a', '--ask-for-approval', '-s', '--sandbox'],
+        switches: ['--approve-for-me', '--dangerously-bypass-approvals-and-sandbox', '--yolo'],
+        config: { flags: ['-c', '--config'], keys: ['approval_policy', 'sandbox_mode', 'sandbox_permissions', 'approvals_reviewer'] },
+      },
+    },
     resume: { picker: 'resume', exact: 'resume {id}', idFormat: 'uuid' },
     detect: 'screen',
     hooks: 'codex',
@@ -501,6 +533,10 @@ export const AGENT_IDENTITIES = [
     display: 'Grok',
     roleBinding: false,
     modelFlag: '--model',
+    // Verified against grok 1.0.70 --help: `--permission-mode` takes default,
+    // acceptEdits, auto, dontAsk, bypassPermissions or plan; `--always-approve`
+    // approves all. `default` asks.
+    askMode: { flags: '--permission-mode default', replaces: { flags: ['--permission-mode'], switches: ['--always-approve'] } },
     detect: 'screen',
     setup: {
       binary: 'grok',

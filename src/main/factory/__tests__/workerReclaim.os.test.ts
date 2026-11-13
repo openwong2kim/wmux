@@ -43,6 +43,7 @@ import { STOPPED_BY_OWNER } from '../factoryStop';
 import { WORKER_SLOTS_FILENAME, WorkerSlots } from '../workerSlots';
 import { taskFolderFromMissions } from '../verifyPreset';
 import { RESEARCH_PRESET } from '../../../shared/ledger';
+import { applyWorkerPermissionFlags, respawnWorkerMode } from '../../../shared/workerLaunch';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { holdsUnsettledRunningClaim } from '../../notification/turnSettle';
 import { deliberateSleep } from '../../../test-utils/waitFor';
@@ -1017,6 +1018,19 @@ describe('resumeWorker', () => {
     expect(resumeLineFor({ sessionId: 'd', cwd: wt })).toBeNull();
     expect(resumeLineFor({ sessionId: 'd', cwd: wt, resumeSessionId: 'not-a-uuid' })).toBeNull();
     expect(resumeLineFor({ sessionId: 'd', cwd: wt, resumeSessionId: UUID })).toBe(`claude --resume ${UUID}`);
+  });
+
+  it('a bot worker respawns asking: a recorded plan resumes in plan, an unknown mode resumes in the ask mode, a worker mode as it was', () => {
+    // As workerLifecycleHost's respawn passes them to the worker spawn, which applies the mode to the resume line.
+    const respawned = (permissionMode?: 'plan' | 'default' | 'acceptEdits' | 'bypassPermissions'): string => {
+      const line = resumeLineFor({ sessionId: 'd', cwd: wt, resumeSessionId: UUID, ...(permissionMode ? { permissionMode } : {}) });
+      return applyWorkerPermissionFlags(line ?? '', respawnWorkerMode(permissionMode));
+    };
+    expect(respawned('plan')).toMatch(new RegExp(`^claude --resume ${UUID} --permission-mode plan --allowedTools `));
+    expect(respawned('plan')).not.toContain('--permission-mode default');
+    expect(respawned()).toMatch(new RegExp(`^claude --resume ${UUID} --permission-mode default --allowedTools `));
+    expect(respawned('acceptEdits')).toMatch(new RegExp(`^claude --resume ${UUID} --permission-mode acceptEdits --allowedTools `));
+    expect(respawned('bypassPermissions')).toMatch(new RegExp(`^claude --resume ${UUID} --dangerously-skip-permissions --allowedTools `));
   });
 });
 
