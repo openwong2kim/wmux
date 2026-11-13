@@ -62,7 +62,7 @@ function wire() {
     log: (line) => logs.push(line),
     answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
     // A tracked agent process in the pane (deliveries wait for one).
-    deliveryPresence: async () => ({ tier: 'process', slug: 'claude' }),
+    deliveryPresence: async () => ({ tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true }),
     // A hidden worker: its ring text, and cells the daemon never saw where a dialog would sit.
     readScreenText: async () => ({ parked: 'WORKER SCREEN' }),
     daemonFolderTrust: async () => ({ state: 'unknown', reason: 'unseen-cells' }),

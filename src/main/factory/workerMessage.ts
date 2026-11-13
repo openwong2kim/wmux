@@ -23,6 +23,7 @@
 // The text goes in after one fixed line naming the bot and the task, so the
 // worker can tell it from the owner's typing.
 
+import { neutralName } from '../../shared/typedLineName';
 import { BOT_WORKER_MESSAGE_LIMITS, type BotWorkerMessageResult } from '../../shared/bot';
 import { isRemoteTask, type LedgerEntry } from '../../shared/ledger';
 import { GUEST_TURN_STARTS_NO_WORKERS, guestOfWake, runningWakeTainted, type GuestProvenance } from './wakeTaint';
@@ -62,7 +63,7 @@ export interface WorkerMessagePorts {
 
 /** The one line a bot's message starts with. Pure. */
 export function workerMessageText(botName: string, taskId: string, text: string): string {
-  const name = botName.replace(/[\r\n]+/g, ' ').trim().slice(0, 64) || 'the bot';
+  const name = botName.trim() ? neutralName(botName) : 'the bot';
   return `[wmux] ${name}, the bot that started your task ${taskId}, writes:\n${text.trim()}`;
 }
 

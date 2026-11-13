@@ -434,8 +434,10 @@ export const HUMAN_MEMBER_ID = 'local-ui';
  * for renderer correctness.
  *
  * Epoch 1 = P5 unified human identity (ws-human row merge).
+ * Epoch 2 = deliveries wait for daemon.deliveryPresence: a daemon without it
+ * cannot verify an agent, so every delivery is held until it is replaced.
  */
-export const CHANNELS_EPOCH = 1;
+export const CHANNELS_EPOCH = 2;
 
 /** Channel name length bounds. `CHANNEL_NAME_MIN` is the empty-length
  *  floor; the regex below requires at least 1 character. */

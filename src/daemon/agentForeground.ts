@@ -46,7 +46,7 @@ export async function processHoldsForeground(pid: number, platform: NodeJS.Platf
   }
   if (platform !== 'darwin') return undefined;
   return new Promise((resolve) => {
-    execFile('ps', ['-o', 'pgid=,tpgid=', '-p', String(pid)], { timeout: PS_TIMEOUT_MS, windowsHide: true }, (err, stdout) => {
+    execFile('/bin/ps', ['-o', 'pgid=,tpgid=', '-p', String(pid)], { timeout: PS_TIMEOUT_MS, windowsHide: true }, (err, stdout) => {
       resolve(err ? undefined : foregroundFromPs(String(stdout)));
     });
   });

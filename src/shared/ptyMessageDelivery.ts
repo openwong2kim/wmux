@@ -228,6 +228,10 @@ export interface GatedSubmitRefusal {
     /** A `waitQuiet` delivery: the pane's agent could not be read, so it could
      *  not be verified (a local pty, no daemon, or a failed read). */
     | 'agent_unverified'
+    /** The agent is there, but its input box is not a plain prompt (a mode
+     *  that would run or reinterpret the text, a dialog, a draft left in it,
+     *  or no way to confirm it), or the pane cannot take this text as typed. */
+    | 'input_mode'
     /** A `waitQuiet` delivery ran past its deadline; the sender has given up. */
     | 'deadline'
     /** A `waitQuiet` delivery carrying main's `guardKey`: main's own check for
@@ -290,4 +294,7 @@ export interface GatedSubmitOptions {
   /** A mention nudge's channel messages: each author is read from the
    *  daemon's channel store, which stamped it at post time. */
   senderMentions?: Array<{ channelId: string; seq: number }>;
+  /** The A2A task this text is about: what an agent whose plain prompt wmux
+   *  cannot recognise is pointed at, in place of the text. Grants nothing. */
+  pointerTaskId?: string;
 }

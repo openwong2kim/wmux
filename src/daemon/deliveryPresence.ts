@@ -1,36 +1,40 @@
 /**
- * Deliveries wait for a verified agent process: the daemon's answer to
- * "is this pane's foreground an agent?", asked right before any text typed on
- * someone's behalf (an A2A message, a mention nudge, a hand-off, a channel
- * nudge) and again before its Enter.
+ * Deliveries wait for a verified agent in plain input mode: the daemon's answer
+ * to "may text typed on someone's behalf go into this pane now?", asked before
+ * anything is written and again as the last step before the Enter (and before
+ * a fresh-context command or a retried Enter).
  *
- * - `process`: a tracked agent process that is running (not stopped, not a
- *   reused pid: the same check as the scheduled-prompt delivery) and holds
- *   the terminal's foreground (macOS and Linux; Windows and WSL have no such
- *   read). An exec unit's agent is the session itself.
- * - `screen`: no process could be attributed (a remote/SSH pane, an agent
- *   behind an unknown wrapper, an attribution that failed), the shell is not
- *   known to be at its prompt, and the current frame shows the agent's
- *   composer (or its dialog) at the bottom of the grid with no shell row under
- *   it. Never the title or the detector's last agent alone: both outlive a
- *   killed agent.
- * - `none`: everything else. A tracked process that ended always wins over
- *   the screen.
+ * - `process`: a tracked agent process that is running now (a fresh process
+ *   read, not the cached state: not stopped, not a reused pid) and holds the
+ *   terminal's foreground (macOS and Linux; Windows consoles and WSL have no
+ *   such read). An exec unit counts only when its root is verified to be that
+ *   agent.
+ * - `screen`: no process could be attributed, the shell is not known to be at
+ *   its prompt, and the current frame shows the agent's plain prompt with the
+ *   cursor on it. Never the title or the detector's last agent alone.
+ * - `none`: everything else. A tracked process that ended always wins.
+ *
+ * On either tier, an agent whose plain prompt is known (deliveryComposer.ts)
+ * gets the full text only while its current frame shows that prompt (empty at
+ * the paste); every other agent gets wmux's own one-line pointer, and only on
+ * the process tier.
  */
 
 import type { AgentSlug } from '../shared/events';
-import type { DeliveryPresence, DeliveryPresenceReason } from '../shared/deliveryPresence';
+import type { DeliveryCheck, DeliveryPresence, DeliveryPresenceReason } from '../shared/deliveryPresence';
 import { DELIVERY_PRESENCE_PROBE_MS } from '../shared/deliveryPresence';
-import { isScreenReadAgent, screenShowsLiveAgent } from './recoveryHint';
+import { cursorInComposer, frameShowsPaste, hasPlainPrompt, readComposer, type DeliveryFrame } from './deliveryComposer';
 
 export interface PresenceSession {
   shellPid: number;
-  /** An exec unit: the session's own process is the agent. */
+  /** An exec unit: the session's own process may be the agent. */
   exec: boolean;
   /** The shell's command state from OSC 133: false = at its prompt, undefined = unknown. */
   commandRunning: boolean | undefined;
   /** The agent the daemon names for the pane (any tier), as a slug. */
   namedSlug: AgentSlug | undefined;
+  /** The pane has enabled bracketed paste (DECSET 2004). */
+  bracketedPaste: boolean;
 }
 
 export interface DeliveryPresenceDeps {
@@ -40,48 +44,82 @@ export interface DeliveryPresenceDeps {
   tracked(id: string): { alive: boolean; slug?: AgentSlug } | undefined;
   /** Run the tracker's named-agent probe and wait for it, bounded: false while it still runs. */
   probe(id: string, shellPid: number, timeoutMs: number): Promise<boolean>;
-  /** The tracked agent is still this pane's `slug` agent and running. */
+  /** Fresh: the tracked agent is still this pane's `slug` agent and running. */
   agentRunning(id: string, slug: AgentSlug): Promise<boolean>;
+  /** Fresh: an exec unit's root process is the `slug` agent. */
+  ownedRoot(id: string, pid: number, slug: AgentSlug): Promise<boolean>;
   /** The tracked agent's pid (not for a WSL agent). */
   agentPid(id: string): number | undefined;
   /** Whether a process holds its terminal's foreground; undefined = no answer. */
   holdsForeground(pid: number): Promise<boolean | undefined>;
-  /** The pane's current visible grid, or null. */
-  screenRows(id: string): Promise<readonly string[] | null>;
+  /** The pane's current visible grid and cursor row, or null. */
+  frame(id: string): Promise<DeliveryFrame | null>;
   platform: NodeJS.Platform;
 }
 
-export async function deliveryPresence(deps: DeliveryPresenceDeps, id: string, expectAgent: AgentSlug | undefined): Promise<DeliveryPresence> {
-  const none = (reason: DeliveryPresenceReason): DeliveryPresence => ({ tier: 'none', reason });
+const none = (reason: DeliveryPresenceReason, pasteShown?: boolean): DeliveryPresence =>
+  ({ tier: 'none', reason, ...(pasteShown !== undefined ? { pasteShown } : {}) });
+
+export async function deliveryPresence(
+  deps: DeliveryPresenceDeps,
+  id: string,
+  expectAgent: AgentSlug | undefined,
+  check: DeliveryCheck = { phase: 'paste' },
+): Promise<DeliveryPresence> {
+  let frame: DeliveryFrame | null | undefined;
+  const readFrame = async (): Promise<DeliveryFrame | null> => (frame === undefined ? (frame = await deps.frame(id).catch(() => null)) : frame);
+  // At the Enter, a refusal says whether the frame still shows this
+  // delivery's paste: only then may main take it back.
+  const refuse = async (reason: DeliveryPresenceReason): Promise<DeliveryPresence> =>
+    check.phase === 'enter' && check.shownProbe ? none(reason, frameShowsPaste(await readFrame(), check.shownProbe)) : none(reason);
+
   const session = id ? deps.session(id) : undefined;
   if (!session) return none('no-session');
-  if (session.exec) {
-    if (!session.namedSlug) return none('no-agent');
-    if (expectAgent && session.namedSlug !== expectAgent) return none('other-agent');
-    return { tier: 'process', slug: session.namedSlug };
+
+  /** A verified agent process: the composer decides what may be typed. */
+  const verified = async (tier: 'process' | 'screen', slug: AgentSlug): Promise<DeliveryPresence> => {
+    if (!hasPlainPrompt(slug)) {
+      // No known plain prompt: wmux's own pointer line, on the process tier only.
+      return tier === 'process' ? { tier, slug, input: 'pointer', bracketedPaste: session.bracketedPaste } : refuse('no-screen-proof');
+    }
+    const current = await readFrame();
+    const read = readComposer(current, slug, check.phase);
+    if (read.verdict === 'mode') return refuse('composer-mode');
+    if (read.verdict === 'busy') return refuse('composer-busy');
+    if (read.verdict !== 'plain') return refuse('composer-unknown');
+    if (tier === 'screen' && !(current && cursorInComposer(current, read))) return refuse('no-screen-proof');
+    return { tier, slug, input: 'full', bracketedPaste: session.bracketedPaste };
+  };
+
+  // An exec unit whose root is verified to be the named agent.
+  if (session.exec && session.namedSlug && (!expectAgent || session.namedSlug === expectAgent)
+    && await deps.ownedRoot(id, session.shellPid, session.namedSlug).catch(() => false)) {
+    return verified('process', session.namedSlug);
   }
+
   // Not known alive: probe once (it also records the death of a tracked agent
   // the process monitor has not polled yet, and names a new one).
   const settled = deps.tracked(id)?.alive === true || await deps.probe(id, session.shellPid, DELIVERY_PRESENCE_PROBE_MS);
   const tracked = deps.tracked(id);
-  if (tracked && !tracked.alive) return none('agent-ended');
+  if (tracked && !tracked.alive) return refuse('agent-ended');
   // A probe still running is not "nothing to attribute": the screen does not decide yet.
-  if (!tracked && !settled) return none('attribution-pending');
+  if (!tracked && !settled) return refuse('attribution-pending');
   if (tracked?.slug) {
-    if (expectAgent && tracked.slug !== expectAgent) return none('other-agent');
-    if (!(await deps.agentRunning(id, tracked.slug).catch(() => false))) return none('not-running');
+    if (expectAgent && tracked.slug !== expectAgent) return refuse('other-agent');
+    if (!(await deps.agentRunning(id, tracked.slug).catch(() => false))) return refuse('not-running');
     const pid = deps.agentPid(id);
-    if (deps.platform !== 'win32' && pid !== undefined && (await deps.holdsForeground(pid).catch(() => undefined)) !== true) {
-      return none('not-foreground');
+    if (deps.platform !== 'win32' && pid !== undefined) {
+      const foreground = await deps.holdsForeground(pid).catch(() => undefined);
+      if (foreground === undefined) return refuse('foreground-unknown');
+      if (!foreground) return refuse('not-foreground');
     }
-    return { tier: 'process', slug: tracked.slug };
+    return verified('process', tracked.slug);
   }
+
   // Never attributed, or an unnamed (wrapper) process: only the screen can tell.
-  if (session.commandRunning === false) return none('shell-at-prompt');
+  if (session.commandRunning === false) return refuse('shell-at-prompt');
   const slug = session.namedSlug ?? expectAgent;
-  if (!slug || !isScreenReadAgent(slug)) return none('no-screen-proof');
-  if (expectAgent && slug !== expectAgent) return none('other-agent');
-  const rows = await deps.screenRows(id).catch(() => null);
-  if (!rows || !screenShowsLiveAgent(rows, slug)) return none('no-screen-proof');
-  return { tier: 'screen', slug };
+  if (!slug) return refuse('no-screen-proof');
+  if (expectAgent && slug !== expectAgent) return refuse('other-agent');
+  return verified('screen', slug);
 }

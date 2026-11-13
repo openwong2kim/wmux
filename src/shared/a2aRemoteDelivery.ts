@@ -267,9 +267,10 @@ const GATED_MISS: Readonly<Record<GatedSubmitRefusal['reason'], A2aRemoteMissKin
   fresh_context_busy: 'retry',
   usage_limited: 'retry',
   agent_changed: 'retry',
-  // Main confirmed no agent process (nor an agent on screen) in the pane:
-  // held as no-agent until one is there, never typed into the shell.
+  // Main confirmed no agent in the pane: held as no-agent until one is there.
   agent_unverified: 'no-agent',
+  // The agent is there; its input box is not a plain prompt yet.
+  input_mode: 'retry',
   deadline: 'retry',
   guard_refused: 'retry',
 };

@@ -261,7 +261,7 @@ describe('remote reply and state delivery', () => {
     // Not a live agent: the body itself, named as from the remote pane.
     expect(gate.mock.calls[0][0]).toBe(PINNED_PTY);
     expect(gate.mock.calls[0][1]).toContain('here is the answer');
-    expect(gate.mock.calls[0][1]).toContain('From: pc-b/ws-b/codex');
+    expect(gate.mock.calls[0][1]).toContain('From: pc-b_ws-b_codex');
   });
 
   it('filters peer text again right before the pane write (escapes, OSC 52, paste end, CR)', async () => {
@@ -272,7 +272,7 @@ describe('remote reply and state delivery', () => {
     task.metadata.to = { ...task.metadata.to, name: 'pc-b\x1b[31m/ws/codex' };
     expect(await notify(task, 'r1')).toMatchObject({ ok: true, delivered: true });
     const pasted = gate.mock.calls[0][1] as string;
-    expect(pasted).toContain('From: pc-b/ws/codex');
+    expect(pasted).toContain('From: pc-b_ws_codex');
     expect(pasted).toMatch(/answer.x/);
     expect(pasted).not.toMatch(/\x1b|\r|\x07/);
   });
@@ -315,7 +315,7 @@ describe('remote reply and state delivery', () => {
     expect(await notify(done, 's2')).toEqual({ ok: true, delivered: true, ptyId: PINNED_PTY });
     expect(gate).toHaveBeenCalledTimes(1);
     expect(gate.mock.calls[0][0]).toBe(PINNED_PTY);
-    expect(gate.mock.calls[0][1]).toMatch(/A2A task completed: .* from pc-b\/ws-b\/codex — a2a_task_query task_id:rt-/);
+    expect(gate.mock.calls[0][1]).toMatch(/A2A task completed: .* from pc-b_ws-b_codex — a2a_task_query task_id:rt-/);
     expect(gate.mock.calls[0][1]).not.toMatch(/\n/);
     gate.mockClear();
     const failed = outboundTask({ state: 'failed', inbox: [{ messageId: 's3', kind: 'state', state: 'failed', delivered: false }] });
@@ -332,15 +332,15 @@ describe('remote reply and state delivery', () => {
     expect(gate).toHaveBeenCalledTimes(1);
     expect(gate.mock.calls[0][0]).toBe(PINNED_PTY);
     const pointer = gate.mock.calls[0][1] as string;
-    expect(pointer).toBe(`[wmux] pc-b/ws-b/codex reported A2A task ${RT.slice(0, 8)} done on its PC: check the report, then mark it done `
+    expect(pointer).toBe(`[wmux] pc-b_ws-b_codex reported A2A task ${RT.slice(0, 8)} done on its PC: check the report, then mark it done `
       + `(a2a_task_update completed) — a2a_task_query task_id:${RT}`);
     expect(pointer).not.toMatch(/A2A task completed:/);
     expect(useStore.getState().getTask(RT)!.status.state).toBe('input-required');
   });
 
   it('the completed and failed pointers read as before', () => {
-    expect(buildA2aNudge(RT, 'pc-b/ws-b/codex', 'completed')).toBe(`[wmux] A2A task completed: ${RT.slice(0, 8)} from pc-b/ws-b/codex — a2a_task_query task_id:${RT}`);
-    expect(buildA2aNudge(RT, 'pc-b/ws-b/codex', 'failed')).toBe(`[wmux] A2A task failed: ${RT.slice(0, 8)} from pc-b/ws-b/codex — a2a_task_query task_id:${RT}`);
+    expect(buildA2aNudge(RT, 'pc-b/ws-b/codex', 'completed')).toBe(`[wmux] A2A task completed: ${RT.slice(0, 8)} from pc-b_ws-b_codex — a2a_task_query task_id:${RT}`);
+    expect(buildA2aNudge(RT, 'pc-b/ws-b/codex', 'failed')).toBe(`[wmux] A2A task failed: ${RT.slice(0, 8)} from pc-b_ws-b_codex — a2a_task_query task_id:${RT}`);
   });
 
   it('only the ending item announces it: an earlier working item handed over late writes nothing', async () => {

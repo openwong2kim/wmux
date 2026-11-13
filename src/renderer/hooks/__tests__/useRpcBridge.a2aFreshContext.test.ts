@@ -38,6 +38,7 @@ const send = async (params: Record<string, unknown>): Promise<Result> =>
 const NEW_TASK = {
   newTask: true,
   taskId: expect.stringMatching(/^task-/),
+  pointerTaskId: expect.stringMatching(/^task-/),
   pane: { workspaceId: TARGET.id, paneId: `pane-${TARGET.id}`, surfaceId: `surf-pane-${TARGET.id}` },
 };
 

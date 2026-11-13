@@ -37,7 +37,7 @@ describe('worker_message', () => {
     expect(await r.send('wtask-a1', 'push with git push -u origin wtask/readme')).toEqual({ ok: true, status: 'delivered', taskId: 'wtask-a1' });
     expect(r.livePane).toHaveBeenCalledWith('ws-task');
     expect(r.submit).toHaveBeenCalledWith('pty-1', workerMessageText('Wmux Dev', 'wtask-a1', 'push with git push -u origin wtask/readme'), expect.any(Function));
-    expect(workerMessageText('Wmux\nDev', 'wtask-a1', ' hi ')).toBe('[wmux] Wmux Dev, the bot that started your task wtask-a1, writes:\nhi');
+    expect(workerMessageText('Wmux\nDev', 'wtask-a1', ' hi ')).toBe('[wmux] Wmux_Dev, the bot that started your task wtask-a1, writes:\nhi');
   });
 
   it('refuses another bot\'s task, an unknown or malformed one, and an ended task', async () => {

@@ -20,7 +20,10 @@ import {
   type WakeUnreadEntry,
   type WakeSessionView,
   type WakeNudgeOutcome,
+  type WakePresence,
+  wakeHint,
 } from '../channelWakeWorker';
+import type { DeliveryCheck } from '../../../shared/deliveryPresence';
 import {
   PrincipalService,
   type PrincipalWriterLike,
@@ -73,7 +76,7 @@ function makeHarness(
     approvalBlocked?: (sessionId: string) => boolean;
     screenShowsApproval?: (sessionId: string) => Promise<boolean | null>;
     folderTrustVerdict?: (sessionId: string) => Promise<'trust' | 'unknown' | 'clear'>;
-    agentPresent?: (sessionId: string) => Promise<boolean>;
+    agentPresent?: (sessionId: string, check: DeliveryCheck) => Promise<WakePresence>;
   } = {},
 ): Harness {
   let entries: WakeUnreadEntry[] = [];
@@ -165,7 +168,7 @@ describe('ChannelWakeWorker — injection mechanics', () => {
     h.worker.tickOnce();
     expect(h.writes).toHaveLength(1);
     expect(h.writes[0].sessionId).toBe('pty-1');
-    expect(h.writes[0].data).toContain('#general: 2 unread (1 mention you)');
+    expect(h.writes[0].data).toContain('[wmux] channel general has 2 unread and 1 mentioning you.');
     expect(h.writes[0].data).toContain('wmux channel read ch-1 --since 3');
     expect(h.writes[0].data).not.toContain('\r');
     flushEnter();
@@ -732,7 +735,7 @@ describe('ChannelWakeWorker — body preview + inject outcome', () => {
 
     const text = h.writes[0]!.data;
     // The hint is unchanged and still comes first.
-    expect(text).toContain('run: wmux channel read ch-1 --since 3');
+    expect(text).toContain('Read it with wmux channel read ch-1 --since 3');
     expect(text).toContain('deploy is red on main');
     // Only the FIRST line — a multi-line body must never turn into several
     // submits in the target's composer.
@@ -749,7 +752,7 @@ describe('ChannelWakeWorker — body preview + inject outcome', () => {
     h.worker.tickOnce();
 
     expect(h.writes[0]!.data).toContain('@codex can you take this?');
-    expect(h.writes[0]!.data).toContain('(1 mention you)');
+    expect(h.writes[0]!.data).toContain('and 1 mentioning you');
   });
 
   it('falls back to the hint alone when no body is supplied', () => {
@@ -796,7 +799,7 @@ describe('ChannelWakeWorker — body preview + inject outcome', () => {
 
       expect(h.writes).toHaveLength(1);
       expect(h.writes[0]!.data).not.toContain('deploy is red on main');
-      expect(h.writes[0]!.data).toContain('run: wmux channel read');
+      expect(h.writes[0]!.data).toContain('Read it with wmux channel read');
     });
 
     it('caps the FINAL assembled line, not the pieces', () => {
@@ -988,7 +991,7 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
 
   it('holds a nudge for a pane with no verified agent: zero bytes, logged', async () => {
     let present = false;
-    const h = makeHarness(undefined, { agentPresent: async () => present });
+    const h = makeHarness(undefined, { agentPresent: async () => ({ present, full: true }) });
     h.setEntries([mention()]);
     h.setSessions([session({})]);
     h.worker.tickOnce();
@@ -1004,9 +1007,15 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     expect(h.writes.at(-1)?.data).toBe('\r');
   });
 
-  it('withholds the Enter when the agent ends between the text and the Enter, and takes the text back', async () => {
+  it('withholds the Enter when the agent ends between the text and the Enter, and takes the text back while it is shown', async () => {
     let present = true;
-    const h = makeHarness(undefined, { agentPresent: async () => present });
+    const checks: DeliveryCheck[] = [];
+    const h = makeHarness(undefined, {
+      agentPresent: async (_id, check) => {
+        checks.push(check);
+        return present ? { present, full: true } : { present, pasteShown: true };
+      },
+    });
     h.setEntries([mention()]);
     h.setSessions([session({})]);
     h.worker.tickOnce();
@@ -1016,6 +1025,8 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     await vi.advanceTimersByTimeAsync(5);
     expect(h.writes.map((w) => w.data)).not.toContain('\r');
     expect(h.writes.at(-1)?.data).toBe('\x15');
+    expect(checks.map((c) => c.phase)).toEqual(['paste', 'enter']);
+    expect(checks[1].shownProbe).toBe(h.writes[0].data.slice(0, 24));
     expect(h.outcomes.at(-1)?.ok).toBe(false);
   });
 
@@ -1031,5 +1042,17 @@ describe('ChannelWakeWorker — approval in front of the pane', () => {
     await vi.advanceTimersByTimeAsync(5);
     expect(h.writes.map((w) => w.data)).not.toContain('\r');
     expect(h.outcomes.at(-1)?.ok).toBe(false);
+  });
+});
+
+describe('wakeHint', () => {
+  it('is fixed words, the channel name through the neutraliser, and ids', () => {
+    const hint = wakeHint({ name: 'ops$(rm -rf ~);(x)', channelId: 'ch-1', unread: 3, mentionUnread: 1, lastReadSeq: 4 });
+    expect(hint).toBe('[wmux] channel ops_rm -rf _x_ has 3 unread and 1 mentioning you. Read it with wmux channel read ch-1 --since 5');
+    expect(hint!.slice('[wmux] '.length)).toMatch(/^[\p{L}\p{N} ._-]+$/u);
+  });
+
+  it('skips a channel id of another shape', () => {
+    expect(wakeHint({ name: 'x', channelId: 'ch 1;rm', unread: 1, mentionUnread: 0, lastReadSeq: 0 })).toBeNull();
   });
 });

@@ -43,6 +43,8 @@
 // back as a schema field).
 
 import { agentRow } from '../../shared/agentIdentity';
+import type { DeliveryCheck } from '../../shared/deliveryPresence';
+import { neutralName } from '../../shared/typedLineName';
 
 export interface WakeUnreadEntry {
   channelId: string;
@@ -168,12 +170,12 @@ export interface ChannelWakeWorkerDeps {
    */
   screenShowsApproval?(sessionId: string): Promise<boolean | null>;
   /**
-   * Is the pane's foreground a verified agent (daemon.deliveryPresence: a
-   * tracked agent process, or the agent's composer on screen when no process
-   * can be attributed)? A nudge ends with an Enter, so a shell would run it.
-   * Checked before the text write and again before the Enter. Optional.
+   * Is the pane's foreground a verified agent in plain input mode
+   * (daemon.deliveryPresence)? Asked before the text write and as the last
+   * check before the Enter. `full`: its plain prompt is on screen, so the
+   * hint may carry a body preview. Optional.
    */
-  agentPresent?(sessionId: string): Promise<boolean>;
+  agentPresent?(sessionId: string, check: DeliveryCheck): Promise<WakePresence>;
   /**
    * The daemon's folder-trust verdict for the pane (folderTrustState.ts). A
    * nudge is automated input: 'trust' and 'unknown' (a screen that cannot
@@ -549,17 +551,17 @@ export class ChannelWakeWorker {
     return false;
   }
 
-  /** No verified agent in the pane: the nudge is held (logged once while it holds). */
-  private async agentIsPresent(sessionId: string, key: string): Promise<boolean> {
-    if (!this.deps.agentPresent) return true;
-    const present = await this.deps.agentPresent(sessionId).catch(() => false);
-    if (present) {
+  /** No verified agent in plain input mode: the nudge is held (logged once while it holds). */
+  private async agentPresence(sessionId: string, key: string, check: DeliveryCheck): Promise<WakePresence> {
+    if (!this.deps.agentPresent) return { present: true };
+    const presence = await this.deps.agentPresent(sessionId, check).catch((): WakePresence => ({ present: false }));
+    if (presence.present) {
       this.agentHeld.delete(sessionId);
     } else if (!this.agentHeld.has(sessionId)) {
       this.agentHeld.add(sessionId);
-      this.deps.log('info', `[wake] holding nudge for ${key}: no verified agent in ${sessionId}`);
+      this.deps.log('info', `[wake] holding nudge for ${key}: no verified agent in plain input mode in ${sessionId}`);
     }
-    return present;
+    return presence;
   }
 
   private async injectAfterScreenCheck(
@@ -575,11 +577,12 @@ export class ChannelWakeWorker {
       return;
     }
     // The slow check first, so the screen and approval checks are the fresh ones.
-    if (!(await this.agentIsPresent(target.id, key))) return;
+    const presence = await this.agentPresence(target.id, key, { phase: 'paste' });
+    if (!presence.present) return;
     if (!(await this.screenIsFree(target.id, key))) return;
     // The render took time: the pane may have raised an approval since.
     if (this.approvalHold(target.id, key)) return;
-    if (!this.inject(target.id, ws, entry, target)) return;
+    if (!this.inject(target.id, ws, entry, target, this.deps.agentPresent ? presence.full === true : undefined)) return;
     this.spend(key, this.tracker.get(key) ?? state, entry, wantMention);
   }
 
@@ -589,9 +592,9 @@ export class ChannelWakeWorker {
    * target selection and the write — a PTY write to a destroyed stream
    * throws synchronously); the caller then keeps the nudge budget intact.
    */
-  private inject(sessionId: string, workspaceId: string, entry: WakeUnreadEntry, target: WakeSessionView): boolean {
-    const mention = entry.mentionUnread > 0 ? ` (${entry.mentionUnread} mention you)` : '';
-    const hint = `[wmux] #${entry.name}: ${entry.unread} unread${mention} — run: wmux channel read ${entry.channelId} --since ${entry.lastReadSeq + 1}`;
+  private inject(sessionId: string, workspaceId: string, entry: WakeUnreadEntry, target: WakeSessionView, plainPrompt?: boolean): boolean {
+    const hint = wakeHint(entry);
+    if (!hint) return false;
     // The body's first line rides AFTER the hint. Every nudge used to read the
     // same, so an agent mid-task had to spend a turn on the read just to learn
     // whether it mattered.
@@ -600,7 +603,8 @@ export class ChannelWakeWorker {
     // be stale — the agent exits and the shell stays — and this text comes from
     // another workspace and is committed with an Enter, so a bare shell would
     // run it. The hint is ours and always safe; the body is not.
-    const preview = mayCarryBody(target.lastDetectedAgent) ? bodyPreview(entry.oldestUnreadBody) : '';
+    // With the daemon's check, only an agent whose plain prompt is on screen.
+    const preview = (plainPrompt ?? mayCarryBody(target.lastDetectedAgent)) ? bodyPreview(entry.oldestUnreadBody) : '';
     // sanitize + cap the FINAL line, not its pieces: the cap has to bound what
     // actually reaches the PTY, and concatenation is exactly where a bounded
     // hint and a bounded preview stop being bounded.
@@ -652,20 +656,27 @@ export class ChannelWakeWorker {
         return;
       }
       void (async () => {
-        if (!(await this.agentIsPresent(sessionId, key))) {
-          // The agent is gone: the hint may now sit at a shell's prompt, where
-          // a person's next Enter would run it. Take it back (Ctrl+U).
+        const free = (!this.deps.screenShowsApproval && !this.deps.folderTrustVerdict) || await this.screenIsFree(sessionId, key);
+        if (!free || this.approvalHold(sessionId, key)) {
+          report(false);
+          return;
+        }
+        // The last check before the Enter.
+        const presence = await this.agentPresence(sessionId, key, { phase: 'enter', shownProbe: line.slice(0, 24) });
+        if (presence.present) {
+          commit();
+          return;
+        }
+        // Not submitted. Take the hint back (Ctrl+U), but only while the pane
+        // still shows it: never anything else.
+        if (presence.pasteShown) {
           try {
             this.deps.write(sessionId, '\x15');
           } catch {
             /* the session went away */
           }
-          report(false);
-          return;
         }
-        const free = (!this.deps.screenShowsApproval && !this.deps.folderTrustVerdict) || await this.screenIsFree(sessionId, key);
-        if (free && !this.approvalHold(sessionId, key)) commit();
-        else report(false);
+        report(false);
       })();
     }, this.deps.enterDelayMs ?? ENTER_DELAY_MS);
     t.unref?.();
@@ -763,4 +774,27 @@ export function pickTarget(
   // philosophy as the budget-exhausted human handoff, never a guess.
   if (eligible.length === 1 && Boolean(eligible[0].lastDetectedAgent)) return eligible[0];
   return null;
+}
+
+/** The daemon's answer for a wake nudge. */
+export interface WakePresence {
+  present: boolean;
+  /** The agent's plain prompt is on screen: the hint may carry a body preview. */
+  full?: boolean;
+  /** Refused at the Enter: the pane still shows the hint. */
+  pasteShown?: boolean;
+}
+
+const WAKE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * The wake hint: a pointer of fixed words, the channel's name through the
+ * one neutraliser, and ids. Nothing in it reads as shell syntax; null for an
+ * id of another shape (the nudge is skipped, the pull path stays).
+ */
+export function wakeHint(entry: Pick<WakeUnreadEntry, 'name' | 'channelId' | 'unread' | 'mentionUnread' | 'lastReadSeq'>): string | null {
+  if (!WAKE_ID.test(entry.channelId)) return null;
+  const count = (n: number): number => (Number.isSafeInteger(n) && n >= 0 ? n : 0);
+  const mention = count(entry.mentionUnread) > 0 ? ` and ${count(entry.mentionUnread)} mentioning you` : '';
+  return `[wmux] channel ${neutralName(entry.name)} has ${count(entry.unread)} unread${mention}. Read it with wmux channel read ${entry.channelId} --since ${count(entry.lastReadSeq) + 1}`;
 }

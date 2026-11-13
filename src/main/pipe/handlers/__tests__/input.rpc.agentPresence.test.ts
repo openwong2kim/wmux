@@ -1,14 +1,14 @@
-// Deliveries wait for a verified agent process. Every caller that types on
-// someone's behalf goes through main's gated submit, which asks the daemon
-// (daemon.deliveryPresence) before anything is written, after a fresh-context
-// step, and right before the Enter, ahead of the faster checks at each point. A pane whose agent is gone, whatever its
-// title still says, gets zero bytes on every path.
+// Deliveries wait for a verified agent in plain input mode. Every caller that
+// types on someone's behalf goes through main's gated submit, which asks the
+// daemon (daemon.deliveryPresence) before anything is written and as the last
+// step before the Enter. A pane whose agent is gone, or whose input box is not
+// a plain prompt, gets zero bytes on every path.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc } from '../input.rpc';
 import type { GatedSubmitOptions, GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
-import type { DeliveryPresence } from '../../../../shared/deliveryPresence';
+import type { DeliveryCheck, DeliveryPresence } from '../../../../shared/deliveryPresence';
 import type { BrowserWindow } from 'electron';
 import type { PTYManager } from '../../../pty/PTYManager';
 import { registerDeliveryCheck } from '../../deliveryGuards';
@@ -16,16 +16,18 @@ import { registerDeliveryCheck } from '../../deliveryGuards';
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 
 const FREE = '⏺ Done.\n\n──────────\n❯ ';
-const PROCESS: DeliveryPresence = { tier: 'process', slug: 'claude' };
+const PROCESS: DeliveryPresence = { tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true };
 const ENDED: DeliveryPresence = { tier: 'none', reason: 'agent-ended' };
+const BANG: DeliveryPresence = { tier: 'none', reason: 'composer-mode' };
+const POINTER_ONLY: DeliveryPresence = { tier: 'process', slug: 'gemini', input: 'pointer', bracketedPaste: true };
 
 let clock: number;
 let writes: string[];
 let logs: string[];
 /** The daemon's answers, one per ask, the last repeated. */
 let answers: Array<DeliveryPresence | undefined>;
-let asked: Array<{ ptyId: string; expectAgent: string | undefined }>;
-/** The order of the presence asks and the approval-gate reads. */
+let asked: Array<{ ptyId: string; expectAgent: string | undefined; check: DeliveryCheck }>;
+/** The order of the presence asks, the approval-gate reads and the writes. */
 let order: string[];
 
 function harness() {
@@ -37,6 +39,7 @@ function harness() {
     },
     writeToSession: (_id: string, data: string) => {
       writes.push(data);
+      order.push(`write:${JSON.stringify(data)}`);
       return true;
     },
     getAgentState: async () => ({
@@ -53,9 +56,9 @@ function harness() {
     undefined,
     {
       answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
-      deliveryPresence: async (ptyId, expectAgent) => {
-        asked.push({ ptyId, expectAgent });
-        order.push('presence');
+      deliveryPresence: async (ptyId, expectAgent, check) => {
+        asked.push({ ptyId, expectAgent, check });
+        order.push(`presence:${check.phase}`);
         return answers.length > 1 ? answers.shift() : answers[0];
       },
       readScreenText: async () => FREE,
@@ -66,8 +69,8 @@ function harness() {
   );
 }
 
-const deliver = (opts?: GatedSubmitOptions, agent: string | null = 'Claude Code'): Promise<GatedSubmitResult> =>
-  harness().gatedSubmit('pty-a', 'hello', agent, opts);
+const deliver = (opts?: GatedSubmitOptions, agent: string | null = 'Claude Code', text = 'hello'): Promise<GatedSubmitResult> =>
+  harness().gatedSubmit('pty-a', text, agent, opts);
 
 beforeEach(() => {
   clock = 1_000_000;
@@ -82,14 +85,14 @@ beforeEach(() => {
 const PATHS: Array<[string, () => GatedSubmitOptions | undefined]> = [
   ['a local new task', () => ({ newTask: true, taskId: 't-1', senderSendKey: 'k' })],
   ['a local reply', () => ({ senderTaskIds: ['t-1'] })],
-  ['a remote reply (no sender record, no wait)', () => undefined],
+  ['a remote reply', () => ({ pointerTaskId: 'rt-1' })],
   ['a remote new task', () => ({ newTask: true, taskId: 't-r', waitQuiet: true, deadlineAt: clock + 42_000 })],
   ['a mention nudge, pane-pinned', () => ({ senderMentions: [{ channelId: 'c', seq: 3 }] })],
   ['a Git page hand-off', () => ({ newTask: true, taskId: 't-h', waitQuiet: true, expectAgent: 'Claude Code', deadlineAt: clock + 42_000 })],
   ['a worker report nudge (Moa)', () => ({ waitQuiet: true, deadlineAt: clock + 120_000, guardKey: 'moa-1' })],
 ];
 
-describe('deliveries wait for a verified agent process', () => {
+describe('deliveries wait for a verified agent in plain input mode', () => {
   for (const [name, opts] of PATHS) {
     it(`${name}: a pane whose agent ended gets zero bytes`, async () => {
       const unregister = registerDeliveryCheck('moa-1', { beforePaste: () => null, beforeEnter: () => null });
@@ -99,60 +102,79 @@ describe('deliveries wait for a verified agent process', () => {
       expect(res).toMatchObject({ ok: false, reason: 'agent_unverified' });
       expect(writes).toEqual([]);
     });
+
+    it(`${name}: an agent whose input box is in shell mode gets zero bytes`, async () => {
+      const unregister = registerDeliveryCheck('moa-1', { beforePaste: () => null, beforeEnter: () => null });
+      answers = [BANG];
+      const res = await deliver(opts());
+      unregister();
+      expect(res).toMatchObject({ ok: false, reason: 'input_mode' });
+      expect(writes).toEqual([]);
+    });
   }
 
-  it('a tracked agent process gets the paste and the Enter, asked before the paste and before the Enter', async () => {
+  it('a verified agent in plain input mode gets the paste and the Enter, asked before the paste and before the Enter', async () => {
     expect(await deliver({ senderTaskIds: ['t-1'] })).toEqual({ ok: true });
     expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\r']);
-    expect(asked).toHaveLength(2);
-    expect(asked[0]).toEqual({ ptyId: 'pty-a', expectAgent: 'claude' });
+    expect(asked.map((a) => a.check.phase)).toEqual(['paste', 'enter']);
+    expect(asked[0].expectAgent).toBe('claude');
+    expect(asked[1].check.shownProbe).toBe('hello');
   });
 
-  it('asks before the approval gate at each point, so the fast checks are the fresh ones', async () => {
+  it('the ask is the first step, and the last one before the Enter', async () => {
     await deliver({ senderTaskIds: ['t-1'] });
-    const lastPresence = order.lastIndexOf('presence');
-    expect(lastPresence).toBeGreaterThan(0);
-    expect(order.slice(lastPresence + 1)).toContain('gate');
-    expect(order[0]).toBe('presence');
+    expect(order[0]).toBe('presence:paste');
+    expect(order.slice(-2)).toEqual(['presence:enter', 'write:"\\r"']);
   });
 
-  it('an agent that dies between the paste and the Enter gets no Enter, and the paste is taken back', async () => {
-    answers = [PROCESS, ENDED];
-    const res = await deliver({ senderTaskIds: ['t-1'] });
-    expect(res).toMatchObject({ ok: false, reason: 'agent_unverified', pasted: true, cleared: true });
+  it('waiting for quiet while the agent dies: the screen is a prompt, nothing is written', async () => {
+    // The daemon's cached name still says claude; its fresh answer does not.
+    answers = [ENDED];
+    const res = await deliver({ newTask: true, taskId: 't-h', waitQuiet: true, expectAgent: 'Claude Code', deadlineAt: clock + 42_000 });
+    expect(res).toMatchObject({ ok: false });
+    expect(writes).toEqual([]);
+  });
+
+  it('an agent that dies between the paste and the Enter: no Enter, and the paste is taken back only while the pane shows it', async () => {
+    answers = [PROCESS, { tier: 'none', reason: 'agent-ended', pasteShown: true }];
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, reason: 'agent_unverified', pasted: true, cleared: true });
     expect(writes).toEqual(['\x1b[200~hello\x1b[201~', '\x15']);
+
+    writes = [];
+    answers = [PROCESS, { tier: 'none', reason: 'agent-ended' }];
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, pasted: true, cleared: false });
+    expect(writes).toEqual(['\x1b[200~hello\x1b[201~']);
   });
 
-  it('a new task to a pane at a shell: no fresh-context command either', async () => {
+  it('a leftover draft holds; nothing of it is touched', async () => {
+    answers = [{ tier: 'none', reason: 'composer-busy' }];
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, reason: 'input_mode' });
+    expect(writes).toEqual([]);
+  });
+
+  it('a new task to a pane with no agent: no fresh-context command either', async () => {
     answers = [{ tier: 'none', reason: 'shell-at-prompt' }];
     await deliver({ newTask: true, taskId: 't-1' });
     expect(writes).toEqual([]);
   });
 
-  it('an unanswerable daemon, or a malformed answer, writes nothing', async () => {
+  it('a daemon that cannot answer (none, an older one, a timeout) or a malformed answer: held for a retry, nothing written', async () => {
     answers = [undefined];
-    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ reason: 'agent_unverified' });
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ reason: 'gate_unavailable' });
     answers = [{ tier: 'screen' } as unknown as DeliveryPresence];
-    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ reason: 'agent_unverified' });
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ reason: 'gate_unavailable' });
     expect(writes).toEqual([]);
   });
 
   it('a pane verified from its screen (no process attributed) is typed into, and logged as such', async () => {
-    answers = [{ tier: 'screen', slug: 'claude' }];
+    answers = [{ ...PROCESS, tier: 'screen' }];
     expect(await deliver({ senderTaskIds: ['t-1'] })).toEqual({ ok: true });
     expect(logs.some((l) => l.includes('verified from its screen'))).toBe(true);
   });
 
   it('the refusal says why in plain words', async () => {
     answers = [{ tier: 'none', reason: 'not-foreground' }];
-    const res = await deliver({ senderTaskIds: ['t-1'] });
-    expect(res).toMatchObject({ detail: expect.stringContaining('not in the foreground') });
-  });
-
-  it('another agent than the one addressed is a replaced occupant (agent_changed), not a missing one', async () => {
-    answers = [{ tier: 'none', reason: 'other-agent' }];
-    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, reason: 'agent_changed' });
-    expect(writes).toEqual([]);
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ detail: expect.stringContaining('not in the foreground') });
   });
 
   it('asks for the agent the delivery was addressed to', async () => {
@@ -160,5 +182,44 @@ describe('deliveries wait for a verified agent process', () => {
     expect(asked[0].expectAgent).toBe('codex');
     await deliver(undefined, null);
     expect(asked.at(-1)?.expectAgent).toBeUndefined();
+  });
+
+  it('another agent than the one addressed is a replaced occupant (agent_changed), not a missing one', async () => {
+    answers = [{ tier: 'none', reason: 'other-agent' }];
+    expect(await deliver({ senderTaskIds: ['t-1'] })).toMatchObject({ ok: false, reason: 'agent_changed' });
+    expect(writes).toEqual([]);
+  });
+});
+
+describe('an agent whose plain prompt wmux does not know: its pointer line only', () => {
+  const BODY = '━━━ WMUX A2A ━━━\nFrom: x(claude)\n│ $(rm -rf ~)\n━━━ END ━━━';
+
+  it('a task: the pointer, never the body or the envelope', async () => {
+    answers = [POINTER_ONLY];
+    expect(await deliver({ senderTaskIds: ['task-1'] }, 'Gemini CLI', BODY)).toEqual({ ok: true });
+    expect(writes).toEqual(['\x1b[200~[wmux] A2A task task-1 is waiting for you. Read it with a2a_task_query task_id task-1\x1b[201~', '\r']);
+  });
+
+  it('a mention: the channel pointer', async () => {
+    answers = [POINTER_ONLY];
+    await deliver({ senderMentions: [{ channelId: 'ch-1', seq: 7 }] }, null, BODY);
+    expect(writes[0]).toContain('[wmux] channel ch-1 has a mention for you. Read it with wmux channel read ch-1 --since 7');
+  });
+
+  it('nothing to point at: held, zero bytes', async () => {
+    answers = [POINTER_ONLY];
+    expect(await deliver(undefined, null, BODY)).toMatchObject({ ok: false, reason: 'input_mode' });
+    expect(writes).toEqual([]);
+  });
+
+  it('a pane without bracketed paste gets the line as plain keys (no markers); a text of several lines is held', async () => {
+    answers = [{ ...POINTER_ONLY, bracketedPaste: false }];
+    await deliver({ senderTaskIds: ['task-1'] }, null, BODY);
+    expect(writes[0]).toBe('[wmux] A2A task task-1 is waiting for you. Read it with a2a_task_query task_id task-1');
+
+    writes = [];
+    answers = [{ ...PROCESS, bracketedPaste: false }];
+    expect(await deliver({ senderTaskIds: ['task-1'] }, 'Claude Code', BODY)).toMatchObject({ ok: false, reason: 'input_mode' });
+    expect(writes).toEqual([]);
   });
 });

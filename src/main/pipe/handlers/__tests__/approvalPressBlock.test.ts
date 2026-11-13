@@ -128,7 +128,7 @@ function wire(options: {
     {
       answerPolicy: async () => live.policy,
       // A tracked agent process in the pane (deliveries wait for one).
-      deliveryPresence: async () => ({ tier: 'process', slug: 'claude' }),
+      deliveryPresence: async () => ({ tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true }),
       ...(options.defaultScreenRead ? {} : { readScreenText: async () => {
         if (live.readDelayMs !== undefined) {
           await deliberateSleep(live.readDelayMs, 'latency of a slow screen read, inside the stub');
@@ -1071,7 +1071,7 @@ describe('the default screen read and daemon verdict', () => {
     registerInputRpc(router, pty, () => fakeWindow, () => dc as never, undefined, undefined, {
       answerPolicy: async () => ({ allowed: true }),
       // A tracked agent process in the pane (deliveries wait for one).
-      deliveryPresence: async () => ({ tier: 'process', slug: 'claude' }),
+      deliveryPresence: async () => ({ tier: 'process', slug: 'claude', input: 'full', bracketedPaste: true }),
     });
     const send = (method: string, params: Record<string, unknown>): Promise<Answer> =>
       router.dispatch({ id: '1', method, params } as never, { externalWire: true }) as Promise<Answer>;

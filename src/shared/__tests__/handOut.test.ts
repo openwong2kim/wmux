@@ -134,14 +134,14 @@ describe('buildHandOutMessage', () => {
 
   it('names the item, its folder, who added it and its note; nothing in the title expands', () => {
     expect(buildHandOutMessage(item)).toBe(
-      "[wmux] To hand out: \"Fix (id) 'now'\"\nFolder: /repo/app\nAdded by #backend; asks for codex.\n\nSee the log\nfirst.",
+      "[wmux] To hand out: \"Fix _id_ _now_\"\nFolder: /repo/app\nAdded by #backend; asks for codex.\n\nSee the log\nfirst.",
     );
   });
 
   it('asks a CEO to brief a seat, and names the owner', () => {
     const msg = buildHandOutMessage({ ...item, agent: undefined, note: undefined, addedBy: { kind: 'owner' } }, { company: true });
     expect(msg.split('\n')).toEqual([
-      "[wmux] To hand out: \"Fix (id) 'now'\"",
+      "[wmux] To hand out: \"Fix _id_ _now_\"",
       'Folder: /repo/app',
       'Added by the owner.',
       'Brief one of your seats with it, and finish this task once that work is checked.',

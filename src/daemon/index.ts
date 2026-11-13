@@ -193,7 +193,7 @@ import { viewerVisibilityUpdates } from '../shared/viewerVisibilityBatch';
 import { isTaskState, type AgentStatus, type Message, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { processHoldsForeground } from './agentForeground';
-import type { DeliveryPresence } from '../shared/deliveryPresence';
+import type { DeliveryCheck, DeliveryPresence } from '../shared/deliveryPresence';
 import { deliveryPresence, type DeliveryPresenceDeps } from './deliveryPresence';
 import { AgentProcessTracker, agentProcessExitEvent } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
@@ -544,7 +544,7 @@ let idleHoldForRemoteStarts: () => boolean = () => false;
 // What types a remote task into a headless agent's session (a2aRemote/headlessDelivery.ts).
 let headlessDeliverRef: HeadlessDeliveryDeps['deliver'] | null = null;
 /** daemon.deliveryPresence, for the channel wake worker built in another scope. */
-let deliveryPresenceRef: ((id: string) => Promise<DeliveryPresence>) | null = null;
+let deliveryPresenceRef: ((id: string, check: DeliveryCheck) => Promise<DeliveryPresence>) | null = null;
 let headlessDeliveryRef: HeadlessDelivery | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
@@ -6273,25 +6273,31 @@ function registerRpcHandlers(
         exec: !!managed.meta.exec,
         commandRunning: managed.promptLog.commandRunningIfKnown(),
         namedSlug: named ? agentDisplayToSlug(named) : undefined,
+        bracketedPaste: managed.bridge.outputModes?.isSet(2004) === true,
       };
     },
     tracked: (sid) => agentProcessTracker.identityFor(sid),
     probe: (sid, shellPid, timeoutMs) => agentProcessTracker.probeNamedAgentNow(sid, shellPid, timeoutMs),
     agentRunning: (sid, slug) => agentProcessTracker.isAgentRunning(sid, slug, (pid) => ProcessMonitor.isRunning(pid)),
+    ownedRoot: (sid, pid, slug) => agentProcessTracker.verifyOwnedRoot(sid, pid, slug),
     agentPid: (sid) => agentProcessTracker.pidFor(sid),
     holdsForeground: (pid) => processHoldsForeground(pid),
-    screenRows: async (sid) => {
-      const outcome = await queuedScreenText(sessionManager, sid);
-      return outcome?.ok ? outcome.rows.map((row) => row.text) : null;
+    frame: async (sid) => {
+      const outcome = await queuedScreenText(sessionManager, sid, true);
+      if (!outcome?.ok) return null;
+      const rows = Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) });
+      return { rows, cursorRow: rows.length - 1 - outcome.rowsBelowCursor };
     },
     platform: process.platform,
   };
   pipeServer.onRpc('daemon.deliveryPresence', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const expectAgent = isAgentSlug(params['expectAgent']) ? params['expectAgent'] : undefined;
-    return deliveryPresence(presenceDeps, id, expectAgent);
+    const shownProbe = typeof params['shownProbe'] === 'string' ? params['shownProbe'].slice(0, 64) : undefined;
+    const check: DeliveryCheck = params['phase'] === 'enter' ? { phase: 'enter', ...(shownProbe ? { shownProbe } : {}) } : { phase: 'paste' };
+    return deliveryPresence(presenceDeps, id, expectAgent, check);
   });
-  deliveryPresenceRef = (id) => deliveryPresence(presenceDeps, id, undefined);
+  deliveryPresenceRef = (id, check) => deliveryPresence(presenceDeps, id, undefined, check);
 
   // #1594 — what main's terminal_send needs to paste into a session: the agent
   // and DECSET 2004 from the live output stream. A hidden pane's renderer xterm
@@ -10340,7 +10346,11 @@ async function main(): Promise<void> {
     },
     // Deliveries wait for a verified agent process, the same check main runs.
     // Unanswerable (the RPC scope not set up yet) holds the nudge.
-    agentPresent: async (id) => (deliveryPresenceRef ? (await deliveryPresenceRef(id)).tier !== 'none' : false),
+    agentPresent: async (id, check) => {
+      const p = deliveryPresenceRef ? await deliveryPresenceRef(id, check) : null;
+      if (!p) return { present: false };
+      return p.tier === 'none' ? { present: false, ...(p.pasteShown ? { pasteShown: true } : {}) } : { present: true, full: p.input === 'full' };
+    },
   });
   // app-weight P1-1: cadence from config (default 15 s; clamped 5–120 s), or
   // 3 s (clamped 2–120 s) while the native process table serves the sweep.
