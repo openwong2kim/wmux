@@ -8,9 +8,15 @@ import { parsePlanPrompt, parseTerminalPrompt } from '../../../daemon/approvals/
 import { resolveAgentSlug } from '../../../shared/ptyMessageDelivery';
 import { agentRow } from '../../../shared/agentIdentity';
 import type { FanoutOwnerAnswers } from '../../../shared/workerLaunch';
+import type { FolderTrustState } from '../../../daemon/folderTrustState';
 
-/** What a task pane shows, as the owner lane reads it. */
-export type OwnerLaneScreen = 'none' | 'menu' | 'permission' | 'plan' | 'trust' | 'unknown';
+/**
+ * What a task pane shows, as the owner lane reads it. `menu` is a selection
+ * menu wmux identified (an AskUserQuestion select its hook reported, or the
+ * menu of a pane held at its usage limit); `dialog` is any other selection
+ * dialog on screen.
+ */
+export type OwnerLaneScreen = 'none' | 'menu' | 'dialog' | 'permission' | 'plan' | 'trust' | 'unknown';
 
 /** The pending approval record's kind for an AskUserQuestion select. */
 const QUESTION_RECORD_KIND = 'awaiting_input';
@@ -20,12 +26,36 @@ export function screenOfRecord(kind: string | undefined): OwnerLaneScreen {
   return kind === QUESTION_RECORD_KIND ? 'menu' : 'permission';
 }
 
-/** A screen with no folder-trust prompt and no pending record on it. */
-export function classifyOwnerLaneScreen(screen: string): OwnerLaneScreen {
+/** What the screen text alone shows. */
+export function classifyOwnerLaneScreen(screen: string): 'none' | 'dialog' | 'permission' | 'plan' {
   const rows = screen.split('\n').slice(-60);
   if (parsePlanPrompt(rows)) return 'plan';
   if (!approvalOnScreen(screen)) return 'none';
-  return parseTerminalPrompt(rows) ? 'permission' : 'menu';
+  return parseTerminalPrompt(rows) ? 'permission' : 'dialog';
+}
+
+/**
+ * What a task pane shows, from what main can read of it: a folder-trust
+ * prompt first; a screen that cannot be read whole is `unknown`; a permission
+ * or plan prompt the screen shows; then a pending approval record (it may be
+ * older than the screen); then any other dialog, a `menu` only on a pane held
+ * at its usage limit.
+ */
+export function ownerLaneScreenOf(facts: {
+  trust: FolderTrustState | null;
+  /** The pending record's kind, '' for one without; null for no record. */
+  recordKind: string | null;
+  /** null: no screen could be read. */
+  screen: string | null;
+  usageLimited: boolean;
+}): OwnerLaneScreen {
+  if (facts.trust === 'trust') return 'trust';
+  if (facts.screen === null || facts.trust === 'unknown') return 'unknown';
+  const shown = classifyOwnerLaneScreen(facts.screen);
+  if (shown === 'plan' || shown === 'permission') return shown;
+  if (facts.recordKind !== null) return screenOfRecord(facts.recordKind);
+  if (shown === 'dialog') return facts.usageLimited ? 'menu' : 'dialog';
+  return 'none';
 }
 
 /**
@@ -34,9 +64,10 @@ export function classifyOwnerLaneScreen(screen: string): OwnerLaneScreen {
  * - `refuse`: not written;
  * - `default`: the gate every other caller gets decides.
  *
- * `menus` lets through a selection menu on a Claude pane only; another
- * agent's dialogs are not told apart from its menus. Ctrl+C and Escape keep
- * the default gate there, which lets them stop the worker.
+ * `menus` lets through an identified menu (`menu`) on a pane that draws
+ * Claude Code's dialogs only; another agent's dialogs are not told apart
+ * from its menus. Ctrl+C and Escape keep the default gate under `menus` and
+ * `off`, which lets them stop the worker; the screen is not read for them.
  */
 export function ownerLaneVerdict(
   setting: FanoutOwnerAnswers,
@@ -44,9 +75,9 @@ export function ownerLaneVerdict(
   opts: { claudePane: boolean; stopKey: boolean },
 ): 'allow' | 'refuse' | 'default' {
   if (setting === 'all') return 'allow';
-  if (setting === 'off') return 'default';
+  if (setting === 'off' || opts.stopKey) return 'default';
   if (screen === 'none' || (screen === 'menu' && opts.claudePane)) return 'allow';
-  return opts.stopKey ? 'default' : 'refuse';
+  return 'refuse';
 }
 
 /** Whether the daemon's agent for a pane draws Claude Code's dialogs, the
@@ -57,17 +88,18 @@ export function drawsClaudeDialogs(agent: string | null | undefined): boolean {
 
 /** The refusal a write gets under `menus`. */
 export function ownerLaneRefusalMessage(op: string, ptyId: string, screen: OwnerLaneScreen): string {
-  const shown = screen === 'menu' ? "a selection menu on a pane that is not Claude Code's" : SCREEN_WORDS[screen];
+  const shown = screen === 'menu' ? "a selection menu on a pane wmux cannot confirm is Claude Code's" : SCREEN_WORDS[screen];
   return (
     `${op}: pane "${ptyId}" is showing ${shown}. The fan-out setting "ownerAnswers" is "menus", ` +
-    "which lets a task's orchestrator answer only Claude Code's selection menus. Nothing was sent; " +
-    'a human answers it in the pane. ctrl+c still stops the worker.'
+    "which lets a task's orchestrator answer only Claude Code's question and usage-limit menus. " +
+    'A human answers it in the pane; ctrl+c still stops the worker.'
   );
 }
 
 const SCREEN_WORDS: Record<OwnerLaneScreen, string> = {
   none: 'no prompt',
   menu: 'a selection menu',
+  dialog: 'a dialog that is not a question or usage-limit menu wmux recognizes',
   permission: 'a permission prompt',
   plan: 'a plan approval prompt',
   trust: 'a folder-trust prompt',
@@ -82,7 +114,8 @@ export interface OwnerLaneWrite {
   taskWorkspaceId: string;
   /** `key enter`, `text 42 bytes`. */
   input: string;
-  screen: OwnerLaneScreen;
+  /** 'not read' for a stop key, which every setting lets stop the worker. */
+  screen: OwnerLaneScreen | 'not read';
   setting: FanoutOwnerAnswers;
   outcome: 'allowed' | 'refused';
 }

@@ -80,8 +80,15 @@ tool or RPC changes it.
 | Value | You may answer |
 |---|---|
 | `all` (default) | Any prompt: selection menus, permission prompts, plan approval and the folder-trust prompt. |
-| `menus` | Claude Code's selection menus only: its questions and the usage-limit menu. Permission, plan and folder-trust prompts are refused. So is every dialog of an agent other than Claude Code, because wmux does not tell its menus apart from its permission prompts. |
+| `menus` | Claude Code's question menus and its usage-limit menu only. Permission, plan and folder-trust prompts are refused. So is every other dialog, including any dialog of an agent other than Claude Code: wmux does not tell that agent's menus apart from its permission prompts. |
 | `off` | Nothing: the same gate as any other caller. Keys and text still reach a pane with no prompt on screen. |
+
+Under `menus`, wmux has to recognize the menu before you can answer it:
+- a question menu, from the report wmux's Claude Code hooks send when the
+  agent asks a question;
+- the usage-limit menu, on a pane wmux holds at its usage limit.
+
+A question menu on a pane without those hooks is refused.
 
 Under every value, ctrl+c stops a worker. A policy file that cannot be read
 counts as `off`, and the main log says so once.
@@ -93,9 +100,16 @@ one line:
 [owner-lane] pane "<your pane>" (ws "<your workspace>") → pane "<worker pane>" (task ws "<task workspace>"): key enter; screen menu; setting all; allowed
 ```
 
-`screen` is what the pane showed: `none`, `menu`, `permission`, `plan`,
-`trust`, or `unknown` (unreadable). The task's workspace also gets one
-notification per minute while you write to it.
+`screen` is what the pane showed:
+- `none`;
+- `menu`: a recognized question or usage-limit menu;
+- `dialog`: any other dialog;
+- `permission`, `plan` or `trust`;
+- `unknown`: unreadable;
+- `not read`: for ctrl+c and escape, which are not held up by a screen read.
+
+The task's workspace also gets one notification per minute while you write to
+it.
 
 ## If you are the worker
 

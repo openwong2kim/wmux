@@ -77,13 +77,12 @@ import { dispatchNotification } from '../../notification/dispatchNotification';
 import { loadFanoutOwnerAnswers } from '../../worktask/fanoutWorkerPolicy';
 import type { FanoutOwnerAnswers } from '../../../shared/workerLaunch';
 import {
-  classifyOwnerLaneScreen,
   drawsClaudeDialogs,
   ownerLaneLogLine,
   ownerLaneNotices,
   ownerLaneRefusalMessage,
   ownerLaneVerdict,
-  screenOfRecord,
+  ownerLaneScreenOf,
   type OwnerLaneScreen,
 } from './ownerLane';
 
@@ -1089,20 +1088,20 @@ async function assertNotTypingAtAnApproval(
   throw new Error(approvalGateMessage(op, ptyId, policy.reason));
 }
 
-/**
- * What a task pane shows, for the owner lane: a folder-trust prompt first,
- * then a pending approval record (an AskUserQuestion select is a menu, any
- * other a permission prompt), then the screen itself. A screen that cannot be
- * read, or a trust question too cut to read, is 'unknown'.
- */
-async function ownerLaneScreen(gate: ApprovalInputGate, ptyId: string): Promise<OwnerLaneScreen> {
+/** What a task pane shows, for the owner lane (ownerLaneScreenOf). */
+async function ownerLaneScreen(
+  gate: ApprovalInputGate,
+  ptyId: string,
+  usageLimited: (ptyId: string) => boolean,
+): Promise<OwnerLaneScreen> {
   const [record, read] = await Promise.all([pendingApprovalOnPane(gate.getDaemonClient, ptyId), gate.readScreenText(ptyId)]);
   const trust = await folderTrustVerdict(gate, ptyId, read);
-  if (trust.verdict === 'trust') return 'trust';
-  if (record) return screenOfRecord(record.kind);
-  const screen = read === null || typeof read === 'string' ? read : 'parked' in read ? read.parked : '';
-  if (screen === null || trust.verdict === 'unknown') return 'unknown';
-  return classifyOwnerLaneScreen(screen);
+  return ownerLaneScreenOf({
+    trust: trust.verdict,
+    recordKind: record ? (record.kind ?? '') : null,
+    screen: read === null || typeof read === 'string' ? read : 'parked' in read ? read.parked : '',
+    usageLimited: usageLimited(ptyId),
+  });
 }
 
 /**
@@ -1374,6 +1373,8 @@ export interface InputRpcDeps {
   ownerLaneNotice?: (taskWorkspaceId: string) => void;
   /** Injected in tests; defaults to the main log. */
   log?: (line: string) => void;
+  /** Injected in tests; defaults to the pane's usage-limit hold. */
+  usageLimited?: (ptyId: string) => boolean;
 }
 
 /** Budget for one daemon state read while a fresh-context step polls. */
@@ -1542,6 +1543,7 @@ export function registerInputRpc(
       return dc?.isConnected ? ((await dc.getSendTarget(ptyId))?.agent ?? null) : null;
     });
   const logLine = deps.log ?? ((line: string): void => console.log(line));
+  const usageLimited = deps.usageLimited ?? ((ptyId: string): boolean => usageLimitHoldDetail(ptyId) !== null);
   const noteOwnerLaneWrite = ownerLaneNotices(
     deps.ownerLaneNotice ??
       ((taskWorkspaceId) =>
@@ -1565,7 +1567,7 @@ export function registerInputRpc(
     ptyId: string,
     stopKey: boolean,
   ): Promise<{ screen: OwnerLaneScreen; verdict: 'allow' | 'refuse' | 'default' }> => {
-    const screen = await ownerLaneScreen(approvalGate, ptyId);
+    const screen = await ownerLaneScreen(approvalGate, ptyId, usageLimited);
     const claudePane = setting === 'menus' && screen === 'menu' && drawsClaudeDialogs(await paneAgentOf(ptyId).catch(() => null));
     return { screen, verdict: ownerLaneVerdict(setting, screen, { claudePane, stopKey }) };
   };
@@ -1574,8 +1576,9 @@ export function registerInputRpc(
    * The gate for a write on the owner lane (a pane of an open task the caller
    * owns), in place of the one every other caller gets (`defaultGate`): the
    * owner setting decides from what the pane shows, and the write is logged
-   * either way. Answers the setting in force, for the checks the write
-   * repeats before its later bytes.
+   * either way. A stop key is not held up by a screen read: every setting
+   * lets ctrl+c stop the worker. Answers the setting in force, for the checks
+   * the write repeats before its later bytes, and how to log a refusal there.
    */
   const ownerLaneGate = async (
     access: Extract<PtyAccess, { lane: 'task-owner' }>,
@@ -1585,9 +1588,9 @@ export function registerInputRpc(
     input: string,
     defaultGate: () => Promise<void>,
     stopKey = false,
-  ): Promise<FanoutOwnerAnswers> => {
+  ): Promise<{ setting: FanoutOwnerAnswers; refusedLater: () => void }> => {
     const setting = ownerAnswersNow();
-    let screen: OwnerLaneScreen = 'unknown';
+    let screen: OwnerLaneScreen | 'not read' = 'not read';
     const log = (outcome: 'allowed' | 'refused'): void =>
       logLine(ownerLaneLogLine({
         ...(lane?.callerPtyId ? { callerPtyId: lane.callerPtyId } : {}),
@@ -1600,10 +1603,14 @@ export function registerInputRpc(
         outcome,
       }));
     try {
-      const check = await ownerLaneCheck(setting, ptyId, stopKey);
-      screen = check.screen;
-      if (check.verdict === 'refuse') throw new Error(`${ownerLaneRefusalMessage(op, ptyId, screen)}${NOTHING_SENT}`);
-      if (check.verdict === 'default') await defaultGate();
+      if (stopKey) {
+        if (setting !== 'all') await defaultGate();
+      } else {
+        const check = await ownerLaneCheck(setting, ptyId, false);
+        screen = check.screen;
+        if (check.verdict === 'refuse') throw new Error(`${ownerLaneRefusalMessage(op, ptyId, check.screen)}${NOTHING_SENT}`);
+        if (check.verdict === 'default') await defaultGate();
+      }
     } catch (err) {
       log('refused');
       throw err;
@@ -1614,7 +1621,7 @@ export function registerInputRpc(
     } catch {
       // The notice never stops the write; the log line above has it.
     }
-    return setting;
+    return { setting, refusedLater: () => log('refused') };
   };
 
   /** A bot's owner lane: the open tasks of its workspace that it started
@@ -1766,7 +1773,7 @@ export function registerInputRpc(
 
     // On the owner lane the owner setting decides; `ownerSetting` is null for
     // every other caller.
-    const ownerSetting = access.lane === 'task-owner'
+    const owner = access.lane === 'task-owner'
       ? await ownerLaneGate(
         access,
         sendLane,
@@ -1776,9 +1783,19 @@ export function registerInputRpc(
         () => assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send'),
       )
       : null;
-    if (ownerSetting === null) await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send');
+    if (owner === null) await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send');
+    const ownerSetting = owner?.setting ?? null;
+    /** A recheck on the owner lane: a refusal there is logged too. */
+    const logRefusal = async (check: () => Promise<void>): Promise<void> => {
+      try {
+        await check();
+      } catch (err) {
+        owner?.refusedLater();
+        throw err;
+      }
+    };
     /** The approval check again, before a later part of this write. */
-    const approvalAgain = async (opts: { stage?: string } = {}): Promise<void> => {
+    const approvalAgain = (opts: { stage?: string } = {}): Promise<void> => logRefusal(async () => {
       if (ownerSetting === 'all') return;
       if (ownerSetting === 'menus') {
         const { screen, verdict } = await ownerLaneCheck(ownerSetting, ptyId, false);
@@ -1786,12 +1803,12 @@ export function registerInputRpc(
         if (verdict === 'allow') return;
       }
       await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send', opts);
-    };
+    });
     /** The folder-trust check again; `all` lets the owner answer that prompt too. */
-    const trustAgain = async (opts: { stage?: string }): Promise<void> => {
+    const trustAgain = (opts: { stage?: string }): Promise<void> => logRefusal(async () => {
       if (ownerSetting === 'all') return;
       await assertNotAtFolderTrust(approvalGate, ctx, ptyId, 'input.send', opts);
-    };
+    });
     await startIfSuspended('input.send', ptyId, clock, true);
 
     let safeText = params['raw'] === true ? text : sanitizePtyText(text);

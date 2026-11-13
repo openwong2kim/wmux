@@ -64,6 +64,10 @@ interface WireOpts {
   ownerAnswers?: FanoutOwnerAnswers;
   /** What the task pane shows (default: plain worker output). */
   screen?: string | null;
+  /** What the task pane shows on each read in turn, the last one after. */
+  screens?: Array<string | null>;
+  /** Whether the task pane is held at its usage limit. */
+  usageLimited?: boolean;
   /** The daemon's folder-trust verdict, asked when no screen was read. */
   daemonTrust?: FolderTrustState | null;
   /** The daemon's agent name for the task pane (default Claude Code). */
@@ -106,8 +110,15 @@ function wire(opts: WireOpts = {}): Wiring {
       log: (line) => logs.push(line),
       answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
       daemonFolderTrust: async () => opts.daemonTrust ?? null,
-      ...(opts.screen !== undefined
-        ? { readScreenText: async (ptyId: string) => (ptyId === 'pty-task' ? (opts.screen as string | null) : 'OWNER SCREEN') }
+      usageLimited: () => opts.usageLimited ?? false,
+      ...(opts.screen !== undefined || opts.screens
+        ? {
+          readScreenText: async (ptyId: string) => {
+            if (ptyId !== 'pty-task') return 'OWNER SCREEN';
+            if (!opts.screens) return opts.screen as string | null;
+            return opts.screens.length > 1 ? (opts.screens.shift() as string | null) : opts.screens[0];
+          },
+        }
         : {}),
     },
   );
@@ -494,11 +505,17 @@ const LIMIT_MENU = [
 ].join('\n');
 
 /** Each screen kind, as the pane shows it (or the daemon reads it). */
-const SCREENS: Record<string, Pick<WireOpts, 'screen' | 'daemonTrust' | 'pending'>> = {
+const QUESTION_RECORD = [{ id: 'ap-q', sessionId: 'pty-task', workspaceId: 'ws-task', kind: 'awaiting_input', question: 'Which?' }];
+const ASK_MENU = fixture('terminal-prompts', 'claude-ask-single-01-initial');
+
+const SCREENS: Record<string, Pick<WireOpts, 'screen' | 'daemonTrust' | 'pending' | 'usageLimited'>> = {
   none: { screen: 'WORKER SCREEN' },
-  'limit menu': { screen: LIMIT_MENU },
-  'question menu': { screen: fixture('terminal-prompts', 'claude-ask-single-01-initial') },
-  'question record': { screen: 'WORKER SCREEN', pending: [{ id: 'ap-q', sessionId: 'pty-task', workspaceId: 'ws-task', kind: 'awaiting_input', question: 'Which?' }] },
+  'limit menu': { screen: LIMIT_MENU, usageLimited: true },
+  'question menu': { screen: ASK_MENU, pending: QUESTION_RECORD },
+  'question record': { screen: 'WORKER SCREEN', pending: QUESTION_RECORD },
+  'question menu with no record': { screen: ASK_MENU },
+  'limit menu on a pane not held': { screen: LIMIT_MENU },
+  'permission under a question record': { screen: fixture('terminal-prompts', 'claude-bash-boxed-01'), pending: QUESTION_RECORD },
   permission: { screen: fixture('terminal-prompts', 'claude-bash-boxed-01') },
   'permission record': { screen: 'WORKER SCREEN', pending: [{ id: 'ap-p', sessionId: 'pty-task', workspaceId: 'ws-task', kind: 'terminal_prompt', toolName: 'Bash' }] },
   plan: { screen: fixture('terminal-prompts', 'claude-plan-01-initial') },
@@ -548,15 +565,32 @@ describe('owner lane — what each setting lets the owner answer', () => {
   });
 
   it('menus: another agent\'s menu is refused, since its dialogs read as menus too', async () => {
-    for (const screen of [LIMIT_MENU, fixture('terminal-prompts', 'codex-approval-exec-01')]) {
-      for (const agent of ['codex', null]) {
-        const w = wire({ ownerAnswers: 'menus', screen, agent });
-        const res = await sendKey(w, 'enter');
-        expect(res.ok).toBe(false);
-        expect(res.error).toContain("not Claude Code's");
-        expect(w.writes).toHaveLength(0);
-      }
+    for (const agent of ['codex', null]) {
+      const held = wire({ ownerAnswers: 'menus', screen: LIMIT_MENU, usageLimited: true, agent });
+      const res = await sendKey(held, 'enter');
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("cannot confirm is Claude Code's");
+      expect(held.writes).toHaveLength(0);
     }
+    const codex = wire({ ownerAnswers: 'menus', screen: fixture('terminal-prompts', 'codex-approval-exec-01'), agent: 'codex' });
+    const res = await sendKey(codex, 'enter');
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('not a question or usage-limit menu');
+  });
+
+  it('menus: a pane drawing Claude Code\'s dialogs counts (OpenClaude)', async () => {
+    const w = wire({ ownerAnswers: 'menus', ...SCREENS['limit menu'], agent: 'openclaude' });
+    expect((await sendKey(w, '1')).ok).toBe(true);
+  });
+
+  it('a refusal at a later check of the same write is logged too', async () => {
+    // Clear when the gate reads it; a folder-trust prompt by the time the text is written.
+    const trust = fixture('folder-trust', 'claude-folder-trust-60x30');
+    const w = wire({ ownerAnswers: 'menus', screens: ['WORKER SCREEN', trust] });
+    const res = await asPane(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner', text: 'go' });
+    expect(res.ok).toBe(false);
+    expect(w.writes).toHaveLength(0);
+    expect(w.logs.map((l) => l.slice(l.lastIndexOf(';') + 2))).toEqual(['allowed', 'refused']);
   });
 
   it('menus: ctrl+c still stops a worker at any prompt; escape is refused on a trust prompt', async () => {
@@ -661,6 +695,14 @@ describe('owner lane — log line and notice', () => {
     ]);
     expect(refused.logs).toEqual([
       '[owner-lane] pane "pty-owner" (ws "ws-owner") → pane "pty-task" (task ws "ws-task"): key enter; screen plan; setting menus; refused',
+    ]);
+  });
+
+  it('a stop key is not held up by a screen read', async () => {
+    const w = wire({ ownerAnswers: 'menus', ...SCREENS['permission'] });
+    await sendKey(w, 'ctrl+c');
+    expect(w.logs).toEqual([
+      '[owner-lane] pane "pty-owner" (ws "ws-owner") → pane "pty-task" (task ws "ws-task"): key ctrl+c; screen not read; setting menus; allowed',
     ]);
   });
 
