@@ -238,6 +238,9 @@ export interface GatedSubmitRefusal {
   /** With `pasted`: whether the pasted text was cleared again (best effort:
    *  one Ctrl+U, which empties an agent's composer or a shell's line). */
   cleared?: boolean;
+  /** Main kept the text to type when the pane can take it (input.rpc
+   *  pendingDeliveries): the refusal was not about a person or a dialog. */
+  stored?: true;
 }
 /** A delivered submit. A new-task delivery also says what its fresh-context
  *  step did (shared/freshContext). */

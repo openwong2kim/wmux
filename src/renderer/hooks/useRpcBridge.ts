@@ -478,6 +478,13 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'The task is stored. Send again once the pane is idle.',
 };
 
+/** A refused delivery main kept to type later (input.rpc pendingDeliveries). */
+const STORED_FOR_LATER_HINT =
+  'The target pane could not take the message now, so it was not typed. It is stored and will be typed when ' +
+  'the pane can take it: when its agent finishes its turn, or within a minute once the pane can be checked. ' +
+  'The receiver can read it now with a2a_task_query. Do not send it again; it is dropped after 24 hours if ' +
+  'the pane never takes it.';
+
 /** A refused delivery whose text is still in the target's composer (#2993). */
 const PASTED_NOT_SUBMITTED_HINT =
   'The message was pasted into the target pane but not submitted, and it is still in its prompt. Do not ' +
@@ -491,8 +498,9 @@ function refusedDelivery(mode: string, refused: GatedSubmitRefusal): Record<stri
     notified: false,
     mode,
     reason: refused.reason,
-    hint: DELIVERY_REFUSED_HINTS[refused.reason],
+    hint: refused.stored ? STORED_FOR_LATER_HINT : DELIVERY_REFUSED_HINTS[refused.reason],
     detail: refused.detail,
+    ...(refused.stored ? { storedForLater: true } : {}),
     ...(refused.pasted ? (refused.cleared ? { pastedCleared: true } : { pastedNotSubmitted: true, hint: PASTED_NOT_SUBMITTED_HINT }) : {}),
   };
 }

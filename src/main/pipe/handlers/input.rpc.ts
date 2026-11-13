@@ -73,6 +73,9 @@ import { getTaskLedger } from '../../deck/taskLedgerHost';
 import { reclaimedWorkerOfPane, reclaimedWorkerWorkspaces } from '../../factory/workerReclaim';
 import { paneLaunchedSandboxed } from '../../factory/workerSlots';
 import { deliverySendSender } from './deliverySenders';
+import { PendingDeliveries, type PendingTaskState } from './pendingDeliveries';
+import { eventBus } from '../../events/EventBus';
+import { isRemoteTaskId } from '../../../shared/a2aRemote';
 import { taskSignedIn } from '../../factory/wakeTaint';
 import { hasRedactedSecrets, redactStoredSecrets } from '../../factory/secretRedaction';
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
@@ -1452,6 +1455,8 @@ export interface InputRpcDeps {
    *  daemon stamped it, read as `viewerWorkspaceId` (a member). Defaults to
    *  the daemon's `a2a.channel.getMessages`. */
   channelMessageAuthor?: (channelId: string, seq: number, viewerWorkspaceId: string) => Promise<string | null>;
+  /** Injected in tests; calls `onStop` for each agent turn end in a pane. Defaults to main's event bus. */
+  subscribeAgentStops?: (onStop: (ptyId: string) => void) => () => void;
   /** Injected in tests; the workspaces of a bot's reclaimed workers (ended
    *  tasks it started, factory/workerReclaim.ts), for its own reads. */
   reclaimedWorkerWorkspaces?: (botId: string, ownerWorkspaceId: string) => string[];
@@ -1506,6 +1511,8 @@ export function registerInputRpc(
   /** The approval/usage-limit gate alone, for a delivery that writes elsewhere
    *  (the fan-out caller nudge goes through the daemon). */
   deliveryGate: (ptyId: string) => Promise<GatedSubmitRefusal | null>;
+  /** Try the pane's oldest stored delivery once (pendingDeliveries.ts). */
+  retryPendingDeliveries: (ptyId: string) => Promise<void>;
 } {
   const ledgerOf = deps.getLedger ?? getTaskLedger;
   const reclaimedOf = deps.reclaimedWorkerWorkspaces ?? ((botId: string, owner: string): string[] => reclaimedWorkerWorkspaces(botId, owner));
@@ -2617,78 +2624,152 @@ export function registerInputRpc(
     };
   };
 
+  /** The gated delivery itself: every check, the paste and the Enter. */
+  const deliverGated = async (ptyId: string, text: string, agent: string | null | undefined, opts: GatedSubmitOptions | undefined): Promise<GatedSubmitResult> => {
+    const senders: DeliverySenders = {
+      ...(opts?.senderTaskIds?.length ? { taskIds: opts.senderTaskIds } : {}),
+      ...(opts?.senderSendKey ? { sendKey: opts.senderSendKey } : {}),
+      ...(opts?.senderMentions?.length ? { mentions: opts.senderMentions } : {}),
+    };
+    // One lane line per delivery, though the paste and the Enter each check.
+    let logged = false;
+    const logOnce = (line: string): void => {
+      if (logged) return;
+      logged = true;
+      logLine(line);
+    };
+    const gate: ApprovalInputGate = Object.keys(senders).length > 0
+      ? { ...approvalGate, deliveryLane: () => deliveryLaneOf(ptyId, senders, logOnce) }
+      : approvalGate;
+    // The Git page's hand-off: hold the paste while the person is typing in
+    // that pane, and check right before the paste and the Enter that the
+    // agent they chose is still the one there.
+    let guard: DeliveryGuard | undefined;
+    let noteOwnWrite = (): void => undefined;
+    if (opts?.waitQuiet) {
+      const prepared = await prepareHandoffGuard(ptyId, opts);
+      if (!prepared.ok) return prepared.refusal;
+      guard = withRegisteredCheck(prepared.guard, opts.guardKey);
+      noteOwnWrite = prepared.noteOwnWrite;
+    }
+    // The submit receipt's workspace, from main's mirror only: a renderer
+    // round-trip here would add a wait before the paste. With none, the
+    // receipt watches the composer alone. Its screen reads never resync a
+    // hidden pane: on a large ring each would be a full replay (#2993).
+    const owner = getWorkspaceMirror().peek();
+    const probeWs = (owner && findWorkspaceIdForPty(ptyId, owner.entries)) ?? undefined;
+    const receipt = {
+      probe: makeSubmitProbe(getWindow, ptyId, probeWs, deps.readTurnStartedAt, SUBMIT_RECEIPT_READ_LINES, true),
+      ...(deps.now ? { now: deps.now } : {}),
+      armRetry: () => armEnterRetry(ptyId),
+    };
+    if (!opts?.newTask) return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
+    // #1680 — a new task: the fresh-context step runs inside the gated
+    // delivery, and the pane is held through the text's Enter. The pane's
+    // conversation is kept when the renderer knows of other open tasks on it,
+    // or the daemon's task store does (or cannot be read) — asked only when
+    // the role does ask for fresh context.
+    const keepContext = async (): Promise<KeepContextCode | undefined> =>
+      opts.keepContext ?? daemonOpenTaskOnPane(queryDaemonTasks, ptyId, opts.pane, opts.taskId);
+    return withFreshContextLock(
+      ptyId,
+      () =>
+        gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
+          const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
+          return runFreshContextOn(
+            ptyId,
+            await bindingFor(ptyId),
+            workspaceId,
+            // The step's own keys (its command, Enter or erase) are not the
+            // person typing: the guard counts each, one key apiece, as the
+            // step itself verifies.
+            (data) => {
+              writeToPty(ptyId, data);
+              noteOwnWrite();
+            },
+            keepContext,
+          );
+        }, guard, receipt),
+      deps.freshContextLockWaitMs,
+    ).catch((err: unknown): GatedSubmitResult => {
+      if (!(err instanceof FreshContextBusy)) throw err;
+      return { ok: false, reason: 'fresh_context_busy', detail: `delivery: ${err.message}` };
+    });
+  };
+
+  const pending = new PendingDeliveries({
+    // At retry, the sender check names the task (its row exists by then); the
+    // hand-off guard holds the paste while a person types and refuses a
+    // changed agent.
+    submit: (entry) => deliverGated(entry.ptyId, entry.text, entry.agent, { ...entry.opts, waitQuiet: true, expectAgent: entry.agentName }),
+    taskState: async (entry): Promise<PendingTaskState> => {
+      const workspaceId = await resolvePtyOwnerWorkspace(getWindow, entry.ptyId).catch(() => undefined);
+      if (workspaceId === undefined) return null;
+      if (workspaceId === null) return 'pane gone';
+      const tasks = await queryDaemonTasks(workspaceId);
+      if (!tasks) return null;
+      return tasks.some((t) => typeof t === 'object' && t !== null && (t as { id?: unknown }).id === entry.taskId) ? 'open' : 'ended';
+    },
+    agentSession: async (ptyId) => {
+      const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
+      if (!dc?.isConnected) return null;
+      return (await dc.getAgentState(ptyId, { timeoutMs: 1_000 }))?.incarnationId ?? null;
+    },
+    log: logLine,
+    ...(deps.now ? { now: deps.now } : {}),
+  });
+  (deps.subscribeAgentStops ?? subscribeAgentStops)((ptyId) => void pending.retry(ptyId));
+
+  /**
+   * Keep a refused delivery to type later (pendingDeliveries.ts): a local
+   * task's text the gate could not check (`gate_unavailable`) or that met a
+   * usage-limit hold, on a pane whose agent main can read. Anything a person
+   * or a dialog is part of is not kept.
+   */
+  const keepRefused = async (
+    ptyId: string,
+    text: string,
+    agent: string | null | undefined,
+    opts: GatedSubmitOptions | undefined,
+    result: GatedSubmitRefusal,
+  ): Promise<GatedSubmitResult> => {
+    if ((result.reason !== 'gate_unavailable' && result.reason !== 'usage_limited') || result.pasted) return result;
+    const taskId = opts?.newTask ? opts.taskId : opts?.senderTaskIds?.length === 1 ? opts.senderTaskIds[0] : undefined;
+    if (!taskId || isRemoteTaskId(taskId)) return result;
+    const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
+    const state = dc?.isConnected ? await dc.getAgentState(ptyId, { timeoutMs: 1_000 }).catch(() => null) : null;
+    if (!state?.agentName || !state.incarnationId) return result;
+    pending.store({
+      taskId,
+      ptyId,
+      text,
+      agent: agent ?? null,
+      opts: {
+        ...(opts?.newTask ? { newTask: true, taskId } : {}),
+        ...(opts?.keepContext ? { keepContext: opts.keepContext } : {}),
+        ...(opts?.pane ? { pane: opts.pane } : {}),
+        senderTaskIds: [taskId],
+      },
+      agentName: state.agentName,
+      incarnationId: state.incarnationId,
+      storedAt: (deps.now ?? Date.now)(),
+    });
+    return { ...result, stored: true };
+  };
+
   return {
     deliveryGate: (ptyId) => deliveryGateCheck(approvalGate, ptyId),
     gatedSubmit: async (ptyId, text, agent, opts) => {
-      const senders: DeliverySenders = {
-        ...(opts?.senderTaskIds?.length ? { taskIds: opts.senderTaskIds } : {}),
-        ...(opts?.senderSendKey ? { sendKey: opts.senderSendKey } : {}),
-        ...(opts?.senderMentions?.length ? { mentions: opts.senderMentions } : {}),
-      };
-      // One lane line per delivery, though the paste and the Enter each check.
-      let logged = false;
-      const logOnce = (line: string): void => {
-        if (logged) return;
-        logged = true;
-        logLine(line);
-      };
-      const gate: ApprovalInputGate = Object.keys(senders).length > 0
-        ? { ...approvalGate, deliveryLane: () => deliveryLaneOf(ptyId, senders, logOnce) }
-        : approvalGate;
-      // The Git page's hand-off: hold the paste while the person is typing in
-      // that pane, and check right before the paste and the Enter that the
-      // agent they chose is still the one there.
-      let guard: DeliveryGuard | undefined;
-      let noteOwnWrite = (): void => undefined;
-      if (opts?.waitQuiet) {
-        const prepared = await prepareHandoffGuard(ptyId, opts);
-        if (!prepared.ok) return prepared.refusal;
-        guard = withRegisteredCheck(prepared.guard, opts.guardKey);
-        noteOwnWrite = prepared.noteOwnWrite;
-      }
-      // The submit receipt's workspace, from main's mirror only: a renderer
-      // round-trip here would add a wait before the paste. With none, the
-      // receipt watches the composer alone. Its screen reads never resync a
-      // hidden pane: on a large ring each would be a full replay (#2993).
-      const owner = getWorkspaceMirror().peek();
-      const probeWs = (owner && findWorkspaceIdForPty(ptyId, owner.entries)) ?? undefined;
-      const receipt = {
-        probe: makeSubmitProbe(getWindow, ptyId, probeWs, deps.readTurnStartedAt, SUBMIT_RECEIPT_READ_LINES, true),
-        ...(deps.now ? { now: deps.now } : {}),
-        armRetry: () => armEnterRetry(ptyId),
-      };
-      if (!opts?.newTask) return gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
-      // #1680 — a new task: the fresh-context step runs inside the gated
-      // delivery, and the pane is held through the text's Enter. The pane's
-      // conversation is kept when the renderer knows of other open tasks on it,
-      // or the daemon's task store does (or cannot be read) — asked only when
-      // the role does ask for fresh context.
-      const keepContext = async (): Promise<KeepContextCode | undefined> =>
-        opts.keepContext ?? daemonOpenTaskOnPane(queryDaemonTasks, ptyId, opts.pane, opts.taskId);
-      return withFreshContextLock(
-        ptyId,
-        () =>
-          gatedPasteSubmit(gate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
-            const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
-            return runFreshContextOn(
-              ptyId,
-              await bindingFor(ptyId),
-              workspaceId,
-              // The step's own keys (its command, Enter or erase) are not the
-              // person typing: the guard counts each, one key apiece, as the
-              // step itself verifies.
-              (data) => {
-                writeToPty(ptyId, data);
-                noteOwnWrite();
-              },
-              keepContext,
-            );
-          }, guard, receipt),
-        deps.freshContextLockWaitMs,
-      ).catch((err: unknown): GatedSubmitResult => {
-        if (!(err instanceof FreshContextBusy)) throw err;
-        return { ok: false, reason: 'fresh_context_busy', detail: `delivery: ${err.message}` };
-      });
+      const result = await deliverGated(ptyId, text, agent, opts);
+      return result.ok ? result : keepRefused(ptyId, text, agent, opts, result);
     },
+    retryPendingDeliveries: (ptyId) => pending.retry(ptyId),
   };
+}
+
+/** Every agent's turn end in a pane, from main's event bus (hooks and the detector). */
+function subscribeAgentStops(onStop: (ptyId: string) => void): () => void {
+  return eventBus.subscribe((event) => {
+    if (event.type === 'agent.lifecycle' && event.kind === 'agent.stop' && event.ptyId) onStop(event.ptyId);
+  });
 }
