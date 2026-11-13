@@ -55,6 +55,9 @@ class FakeDaemon {
       const task = this.tasks.get(params.taskId as string)!;
       const m = this.marker(task);
       const target = params.messageId ? m.inbox!.find((i) => i.messageId === params.messageId)! : m;
+      if (params.reoffer === true && params.attempted === true && (!target.held || target.delivered === true || (target as { rejected?: unknown }).rejected)) {
+        return { ok: false, error: 'no longer held' };
+      }
       if (target.delivered === true || (target.held && params.reoffer !== true)) return { ok: true };
       if (params.attempted) target.attempted = true;
       else delete target.attempted;
@@ -575,6 +578,48 @@ describe('RemoteA2aBridge — a reply held for want of an agent is offered again
     await settle();
     expect(notified().map((p) => p.messageId)).toEqual(['r2']);
     expect(item('r1').held).toBe('delivery-unconfirmed');
+  });
+
+  it('a re-offer whose delivered mark did not land: the mark alone is tried again on a later pull, never the write', async () => {
+    taskWithHeldReply({ r2: false });
+    const t = daemon.tasks.get(id(7))!;
+    // A new reply arrives so the held one is offered; its outcome mark fails once.
+    t.history.push({ kind: 'message', messageId: 'r3', role: 'user', parts: [{ kind: 'text', text: 'third' }] });
+    (t.metadata.remote as A2aRemoteTaskState).inbox!.push({ messageId: 'r3', kind: 'reply', delivered: false });
+    daemon.failMarks = 1;
+    bridge.start();
+    await settle();
+    expect(item('r1').held).toBe('no-agent');
+    await bridge.trigger();
+    await settle();
+    expect(item('r1')).toMatchObject({ delivered: true });
+    expect(notified().filter((p) => p.messageId === 'r1')).toHaveLength(1);
+  });
+
+  it('a reply dropped by expiry after the pull read it: its offer again is refused, nothing written', async () => {
+    taskWithHeldReply();
+    const real = daemon.rpc.bind(daemon);
+    daemon.rpc = async (m, p) => {
+      if (m === 'a2a.remote.mark' && p.reoffer === true && p.attempted === true) {
+        const it = item(p.messageId as string);
+        delete it.held;
+        (it as { rejected?: unknown }).rejected = { reason: 'held-expired', at: 'x', notice: 'pending' };
+      }
+      return real(m, p);
+    };
+    bridge.start();
+    await settle();
+    expect(notified().map((p) => p.messageId)).toEqual(['r2']);
+  });
+
+  it('stopped while one held reply is being offered again: the rest are not started', async () => {
+    const t = taskWithHeldReply();
+    t.history.push({ kind: 'message', messageId: 'r0', role: 'user', parts: [{ kind: 'text', text: 'zero' }] });
+    (t.metadata.remote as A2aRemoteTaskState).inbox!.unshift({ messageId: 'r0', kind: 'reply', delivered: false, held: 'no-agent', heldAt: '2026-11-12T06:00:00.000Z' });
+    answer = () => { bridge.stop(); return { ok: true, delivered: true }; };
+    bridge.start();
+    await settle();
+    expect(notified().map((p) => p.messageId)).toEqual(['r0']);
   });
 
   it('never offered again: without its text here, held for another reason, or with no new reply on the task', async () => {

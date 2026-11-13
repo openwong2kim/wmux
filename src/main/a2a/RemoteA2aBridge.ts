@@ -97,6 +97,12 @@ export class RemoteA2aBridge {
   private readonly pendingMarks = new Map<string, { taskId: string; messageId?: string; mark: Mark }>();
   private readonly retry = new Map<string, { at: number; delayMs: number }>();
   /**
+   * Keys of held replies offered again whose outcome mark has not landed. A
+   * held item is never in the pending work, so its mark is kept and retried
+   * here, not dropped with the work the daemon no longer lists.
+   */
+  private readonly reofferMarks = new Set<string>();
+  /**
    * "Written nowhere" answers per unit since its first one; only a delivery
    * (or the unit leaving the list) starts them again. `waiting` says whether
    * the last one was an agent behind a prompt or a person typing.
@@ -216,7 +222,13 @@ export class RemoteA2aBridge {
     // Forget state for work the daemon no longer lists (delivered, held, ended).
     const listed = new Set(work.map((w) => w.key));
     for (const key of this.retry.keys()) if (!listed.has(key)) this.retry.delete(key);
-    for (const key of this.pendingMarks.keys()) if (!listed.has(key)) this.pendingMarks.delete(key);
+    for (const key of this.pendingMarks.keys()) if (!listed.has(key) && !this.reofferMarks.has(key)) this.pendingMarks.delete(key);
+    // A re-offer's outcome the daemon did not take yet: only the mark is tried again.
+    for (const key of this.reofferMarks) {
+      const pending = this.pendingMarks.get(key);
+      if (pending) await this.mark(key, pending);
+      else this.reofferMarks.delete(key);
+    }
     for (const key of this.misses.keys()) if (!listed.has(key)) this.misses.delete(key);
     // A task with a reply to hand over now, whose earlier replies were held for want of an agent: those
     // are offered again first, in order (the pane is about to be tried anyway).
@@ -263,8 +275,9 @@ export class RemoteA2aBridge {
    */
   private async reofferHeld(task: Task): Promise<void> {
     for (const item of reofferUnits(task)) {
+      if (this.stopped) return;
       const key = itemKey(task.id, item.messageId);
-      if (this.inFlight.has(key)) continue;
+      if (this.inFlight.has(key) || this.pendingMarks.has(key)) continue;
       const ref = { taskId: task.id, messageId: item.messageId };
       if (item.attempted) {
         // eslint-disable-next-line no-await-in-loop -- in the task's order
@@ -272,11 +285,13 @@ export class RemoteA2aBridge {
         continue;
       }
       this.inFlight.add(key);
+      this.reofferMarks.add(key);
       try {
         // eslint-disable-next-line no-await-in-loop -- in the task's order
         await this.deliver({ key, task, item }, false, true);
       } finally {
         this.inFlight.delete(key);
+        if (!this.pendingMarks.has(key)) this.reofferMarks.delete(key);
       }
     }
   }
@@ -421,7 +436,14 @@ export class RemoteA2aBridge {
       });
       if (isRecord(res) && res.ok === true) {
         this.pendingMarks.delete(key);
+        this.reofferMarks.delete(key);
         if ('delivered' in entry.mark) this.retry.delete(key);
+        return;
+      }
+      // A re-offer's mark the daemon refused outright (the item moved on meanwhile): nothing to retry.
+      if (this.reofferMarks.has(key) && isRecord(res) && res.ok === false) {
+        this.pendingMarks.delete(key);
+        this.reofferMarks.delete(key);
         return;
       }
       // Refused or unreachable: kept, and only the mark is retried on the

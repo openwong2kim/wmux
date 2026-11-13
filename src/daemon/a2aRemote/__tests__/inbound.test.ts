@@ -662,6 +662,8 @@ describe('a host notice about one of our messages (held-notice.1, #3326)', () =>
     expect(text).toContain('mine-1');
     expect(text).toContain((task.metadata.remote as { sentAt: Record<string, string> }).sentAt['mine-1']);
     expect(text).not.toContain('IGNORE');
+    // Whatever the hold was (no agent, the pane gone, another occupant): the words do not guess.
+    expect(text).not.toMatch(/no agent/);
     expect(stored.metadata).toEqual({ wmuxNotice: { kind: 'held-expired', messageId: 'mine-1' } });
     expect((task.metadata.remote as { inbox: Array<{ messageId: string; kind: string }> }).inbox.find((i) => i.messageId === 'notice-mine-1')!.kind).toBe('notice');
     expect(task.status.state).toBe(stateBefore);

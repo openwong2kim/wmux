@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { A2A_REMOTE_PROTOCOL } from '../../../shared/a2aRemote';
-import { A2A_REMOTE_HOLD_TTL_MS, heldNoticeMessageId, type A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_HOLD_TTL_MS, type A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import { COMPANY_BRIEF_KIND } from '../../../shared/company';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
@@ -12,7 +12,7 @@ import { expireHeld, failTasksForLink, rejectHeld, sendHeldNotices, type HeldDep
 import { remoteTaskId } from '../ids';
 import { acceptInbound } from '../inbound';
 import { LinkStore } from '../linkStore';
-import { linkAlias, sendRemoteReply, sendRemoteTask } from '../outbound';
+import { heldNoticeMessageId, linkAlias, sendRemoteReply, sendRemoteTask } from '../outbound';
 import { OutboxStore } from '../outboxStore';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
@@ -154,6 +154,17 @@ describe('expireHeld — one held message, not the task (#3326)', () => {
     expect(tasks.listRemotePending().map((t) => t.id)).not.toContain(id);
   });
 
+  it('a reply main is writing again right now is not dropped under it; once dropped it cannot be offered again', async () => {
+    const id = await twoHeldReplies(0);
+    await tasks.markRemote({ taskId: id, messageId: 'r1', attempted: true, reoffer: true });
+    clock += A2A_REMOTE_HOLD_TTL_MS + 1;
+    expect(await expireHeld(deps)).toEqual([`${id}#r2`]);
+    expect(item(id, 'r1')).toMatchObject({ held: 'no-agent', attempted: true });
+    expect(item(id, 'r1').rejected).toBeUndefined();
+    // r2 was dropped: an offer again of it is refused, so main never writes it.
+    expect(await tasks.markRemote({ taskId: id, messageId: 'r2', attempted: true, reoffer: true })).toMatchObject({ ok: false });
+  });
+
   it('a person rejecting a held reply still ends the task, as before', async () => {
     const id = await twoHeldReplies(0);
     expect(await rejectHeld(deps, id, 'not for this agent')).toMatchObject({ ok: true, state: 'failed' });
@@ -196,6 +207,14 @@ describe('expireHeld — one held message, not the task (#3326)', () => {
       // Again: nothing more.
       expect(await sendHeldNotices({ ...deps, takesNotice: () => true })).toBe(0);
       expect(notices()).toHaveLength(2);
+    });
+
+    it('its id: the full message id when it fits, else a hash of it, never a cut (two long ids never share one)', () => {
+      expect(heldNoticeMessageId('r1')).toBe('notice-r1');
+      const a = heldNoticeMessageId(`${'a'.repeat(121)}x`);
+      const b = heldNoticeMessageId(`${'a'.repeat(121)}y`);
+      expect(a).not.toBe(b);
+      for (const x of [a, b]) expect(x.length).toBeLessThanOrEqual(128);
     });
 
     it('a PC that does not take it (an older build): nothing sent, marked not-sent', async () => {

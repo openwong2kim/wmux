@@ -21,7 +21,6 @@ import {
 } from '../../shared/a2aRemote';
 import { redactSecrets } from '../../shared/redactSecrets';
 import {
-  heldNoticeMessageId,
   heldNoticeText,
   isRemoteWorkspaceId,
   remoteAlias,
@@ -288,6 +287,16 @@ export function sendRemoteStatus(deps: StateDeps, input: { taskId: string; statu
     return { ok: false, error: `unavailable: could not queue for the peer (${errText(err)})` };
   }
   return { ok: true, taskId: task.id };
+}
+
+/**
+ * The id of the notice about one dropped message: derived, so it is sent at
+ * most once. The full message id when it fits, else a hash of it (never cut:
+ * two long ids sharing a start must not share a notice).
+ */
+export function heldNoticeMessageId(messageId: string): string {
+  const plain = `notice-${messageId}`;
+  return plain.length <= 128 ? plain : `notice-h-${crypto.createHash('sha256').update(messageId).digest('hex').slice(0, 48)}`;
 }
 
 /**

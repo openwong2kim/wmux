@@ -358,15 +358,10 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
 /** A hold older than this is rejected automatically (`held-expired`). */
 export const A2A_REMOTE_HOLD_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** The id of the notice a host sends about one dropped message: derived, so it is sent at most once. */
-export function heldNoticeMessageId(messageId: string): string {
-  return `notice-${messageId}`.slice(0, 128);
-}
-
 /** What a pane is shown for a notice: fixed words, this PC's own send time and the message id only. */
 export function heldNoticeText(messageId: string, sentAt: string | undefined): string {
   const when = sentAt && !Number.isNaN(Date.parse(sentAt)) ? new Date(Date.parse(sentAt)).toISOString() : 'an unknown time';
-  return `[wmux] Your message ${messageId} sent ${when} was not delivered: the other PC held it because no agent was in the pane, and dropped it after 24 hours. The task stays open.`;
+  return `[wmux] Your message ${messageId} sent ${when} was not delivered: the other PC held it, could not write it to the pane, and dropped it after 24 hours. The task stays open.`;
 }
 
 /** The line put before a held message that is offered again once its pane has an agent. */

@@ -990,6 +990,8 @@ export class A2aTaskService {
         if (input.rejected) {
           // Only a unit still owed and held can be dropped; one delivered meanwhile stays delivered.
           if (item.delivered === true || item.rejected) return { ok: true, task };
+          // main may be writing it right now (offered again): not dropped under it; the next sweep looks again.
+          if (item.attempted) return { ok: false, error: `a2a.remote.mark: item ${input.messageId} has an attempt in flight` };
           if (!item.held) return { ok: false, error: `a2a.remote.mark: item ${input.messageId} is not held` };
           unchanged = false;
           body = { rejected: input.rejected };
@@ -1007,6 +1009,11 @@ export class A2aTaskService {
       } else {
         // An attempt only matters while the unit is still owed (a held one only when main offers it again).
         const reoffer = input.reoffer === true && input.messageId !== undefined;
+        // An offer again of an item that is no longer held (delivered, or dropped and its sender told): refused, so
+        // main does not write it.
+        if (reoffer && input.attempted && (!target.held || target.delivered === true || (target as A2aRemoteInboxItem).rejected)) {
+          return { ok: false, error: `a2a.remote.mark: item ${input.messageId} is no longer held` };
+        }
         if (target.delivered === true || (target.held && !reoffer) || (target as A2aRemoteInboxItem).rejected) return { ok: true, task };
         unchanged = (target.attempted === true) === input.attempted;
         body = { attempted: input.attempted, ...(reoffer ? { reoffer: true as const } : {}) };
