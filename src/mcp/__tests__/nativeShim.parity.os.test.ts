@@ -373,7 +373,7 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
     const { js, native } = await both({ name: 'reset', tokenFile: 'tok', broker: 'reset' });
     expectLossWithoutServer(js, native, '[wmux-mcp-shim] broker connection error: read ECONNRESET');
     // Both pings were in flight: each gets the error, in the order sent.
-    expect(js.stdout).toBe(mayHaveRun('1') + mayHaveRun('2'));
+    expect(js.stdout).toBe(String(mayHaveRun('1')) + String(mayHaveRun('2')));
     expect(native.stdout).toBe(js.stdout);
     expect(native.code).toBe(1);
     expect(native.code).toBe(js.code);
@@ -381,7 +381,7 @@ describe.skipIf(!NATIVE && !REQUIRED)('wmux-native mcp-shim ↔ shim.ts handshak
 
   it('a drop with a call in flight: the same error for that call, nothing sent again', async () => {
     const { js, native } = await both({ name: 'in flight', tokenFile: 'tok', broker: 'inflight' });
-    expect(js.stdout).toBe(INIT_REPLY + mayHaveRun('"c"'));
+    expect(js.stdout).toBe(INIT_REPLY + String(mayHaveRun('"c"')));
     expect(native.stdout).toBe(js.stdout);
     expectLossWithoutServer(js, native, '[wmux-mcp-shim] broker connection closed');
     expect(native.code).toBe(1);

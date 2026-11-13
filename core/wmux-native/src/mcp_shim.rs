@@ -676,7 +676,7 @@ static RELAY: OnceLock<Relay> = OnceLock::new();
 
 /// Set once in `run`, before any pump starts.
 fn relay() -> &'static Relay {
-    RELAY.get_or_init(|| Relay::new(Vec::new()))
+    RELAY.get().expect("the relay is set before any pump starts")
 }
 
 impl Relay {
@@ -702,17 +702,23 @@ fn emit(bytes: &[u8]) {
     }
 }
 
-/// Broker to stdout, a line at a time, starting with `first` (what came after
-/// the ack line). When the connection ends the session is handed over; a
-/// partial line is dropped, so its call is answered as in flight.
+/// Broker to stdout, starting with `first` (what came after the ack line):
+/// the whole lines of each read, noted, in one write. When the connection
+/// ends the session is handed over; a partial line is dropped, so its call is
+/// answered as in flight.
 fn pump_to_stdout(first: Vec<u8>, mut read: impl FnMut(&mut [u8]) -> std::io::Result<usize>) {
     let mut lines = handover::Lines::default();
-    let mut forward = |line: &[u8]| {
-        if locked(&relay().calls).answered(line) {
-            emit(line);
-        }
+    let mut batch = Vec::new();
+    let mut forward = |chunk: &[u8], batch: &mut Vec<u8>| {
+        lines.push(chunk, |line| {
+            if locked(&relay().calls).answered(line) {
+                batch.extend_from_slice(line);
+            }
+        });
+        emit(batch);
+        batch.clear();
     };
-    lines.push(&first, &mut forward);
+    forward(&first, &mut batch);
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         let n = match read_step(read(&mut buf)) {
@@ -720,7 +726,7 @@ fn pump_to_stdout(first: Vec<u8>, mut read: impl FnMut(&mut [u8]) -> std::io::Re
             ReadStep::Retry => continue,
             ReadStep::End(outcome) => return lose_broker(outcome),
         };
-        lines.push(&buf[..n], &mut forward);
+        forward(&buf[..n], &mut batch);
     }
 }
 
@@ -741,12 +747,16 @@ fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) -> bool 
                 Next::Fail => finish(Outcome::StdinError),
             },
         };
-        lines.push(&buf[..n], |line| forward_from_host(line, &mut write));
+        let mut batch = Batch::default();
+        lines.push(&buf[..n], |line| batch.add(line));
+        forward_from_host(&batch, &mut write);
     }
     // An unterminated last line goes as it is.
     let rest = lines.take_rest();
     if !rest.is_empty() {
-        forward_from_host(&rest, &mut write);
+        let mut batch = Batch::default();
+        batch.add(&rest);
+        forward_from_host(&batch, &mut write);
     }
     let mut route = locked(&relay().route);
     match &mut *route {
@@ -762,22 +772,50 @@ fn pump_from_stdin(mut write: impl FnMut(&[u8]) -> std::io::Result<()>) -> bool 
     }
 }
 
-/// One line from the host, noted (under the route lock, so a handover sees it
-/// either in flight or not yet sent) and sent where the session now runs.
-fn forward_from_host(line: &[u8], write: &mut impl FnMut(&[u8]) -> std::io::Result<()>) {
+/// The whole lines of one read from the host, back to back.
+#[derive(Default)]
+struct Batch {
+    bytes: Vec<u8>,
+    ends: Vec<usize>,
+}
+
+impl Batch {
+    fn add(&mut self, line: &[u8]) {
+        self.bytes.extend_from_slice(line);
+        self.ends.push(self.bytes.len());
+    }
+
+    fn lines(&self) -> impl Iterator<Item = &[u8]> {
+        let starts = std::iter::once(0).chain(self.ends.iter().copied());
+        starts.zip(self.ends.iter().copied()).map(|(s, e)| &self.bytes[s..e])
+    }
+}
+
+/// The host's lines of one read, noted (under the route lock, so a handover
+/// sees each either in flight or not yet sent) and sent in one write where the
+/// session now runs.
+fn forward_from_host(batch: &Batch, write: &mut impl FnMut(&[u8]) -> std::io::Result<()>) {
+    if batch.bytes.is_empty() {
+        return;
+    }
     let mut route = locked(&relay().route);
-    locked(&relay().calls).sent(line);
+    {
+        let mut calls = locked(&relay().calls);
+        for line in batch.lines() {
+            calls.sent(line);
+        }
+    }
     match &mut *route {
         Route::Broker => {
-            if let Err(e) = write(line) {
+            if let Err(e) = write(&batch.bytes) {
                 drop(route);
                 lose_broker(Outcome::BrokerError(socket_error("write", &e)));
             }
         }
-        Route::Replaying { held, .. } => held.push(line.to_vec()),
+        Route::Replaying { held, .. } => held.extend(batch.lines().map(<[u8]>::to_vec)),
         // A child that stopped reading has exited; its reader ends the shim.
         Route::Bundle(child) => {
-            let _ = child.write_all(line);
+            let _ = child.write_all(&batch.bytes);
         }
         Route::Closed => {}
     }
@@ -797,7 +835,7 @@ fn lose_broker(why: Outcome) {
     }
     let (in_flight, replay) = locked(&relay.calls).hand_over();
     for id in &in_flight {
-        emit(handover::may_have_run(id).as_bytes());
+        emit(&handover::may_have_run(id));
     }
     let mut child = match fallback::spawn_bundle(&relay.raw) {
         Ok(child) => child,
@@ -828,7 +866,8 @@ fn lose_broker(why: Outcome) {
 }
 
 /// The child answered the replayed `initialize`: what waited for that answer
-/// goes to it, and the host's lines go straight to it from now on.
+/// goes to it, and the host's lines go straight to it from now on. Run on a
+/// thread of its own, so the child's stdout keeps being read while it writes.
 fn release_held() {
     let mut route = locked(&relay().route);
     if let Route::Replaying { mut stdin, held, end } = std::mem::replace(&mut *route, Route::Closed) {
@@ -856,11 +895,15 @@ fn pump_from_bundle(mut child: std::process::Child, mut out: std::process::Child
             Err(_) => break,
         };
         lines.push(&buf[..n], |line| {
-            if swallow && handover::is_replay_answer(line) {
-                swallow = false;
-                release_held();
-            } else {
-                emit(line);
+            match swallow.then(|| handover::replay_answer(line)).flatten() {
+                Some(false) => {
+                    swallow = false;
+                    std::thread::spawn(release_held);
+                }
+                // The session cannot go on without it: end it, as a broker loss
+                // did before (the host restarts the server).
+                Some(true) => finish(Outcome::BundleFailed("it refused the session's initialize".into())),
+                None => emit(line),
             }
         });
     }

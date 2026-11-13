@@ -1523,17 +1523,23 @@ const STUB_INITIALIZED: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVer
 fn may_have_run(id: &str) -> String {
     format!(
         "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32000,\"message\":\"The wmux MCP broker stopped \
-         while this call was in flight. It may have run; it was not retried. Later calls go to a new wmux MCP server.\"}}}}"
+         while this call was in flight, so it may have run. It was not retried. Do not assume it did not run: \
+         check its effect before you repeat it. Later calls go to a new wmux MCP server.\"}}}}"
     )
 }
 
 /// A stub broker that hosts the session, answers initialize, takes
 /// `initialized` and a tools/call it never answers, then goes away.
-fn initialize_then_drop_with_a_call_in_flight(stdin: &mut impl Write, out: &Receiver<String>, mut conn: stub::Conn) {
+fn initialize_then_drop_with_a_call_in_flight(stdin: &mut impl Write, out: &Receiver<String>, conn: stub::Conn) {
+    initialize_with_then_drop(INITIALIZE, stdin, out, conn);
+}
+
+/// As above, with the host's `initialize` line given.
+fn initialize_with_then_drop(init: &str, stdin: &mut impl Write, out: &Receiver<String>, mut conn: stub::Conn) {
     read_line(&mut conn);
     ack(&mut conn);
-    writeln!(stdin, "{INITIALIZE}").unwrap();
-    assert_eq!(read_line(&mut conn), format!("{INITIALIZE}\n"));
+    writeln!(stdin, "{init}").unwrap();
+    assert_eq!(read_line(&mut conn), format!("{init}\n"));
     writeln!(conn, "{STUB_INITIALIZED}").unwrap();
     assert_eq!(out.recv_timeout(WAIT).expect("the initialize reply"), STUB_INITIALIZED);
     writeln!(stdin, r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#).unwrap();
@@ -1624,6 +1630,34 @@ fn a_drop_after_the_ack_hands_the_session_to_a_bundle_child() {
         err.starts_with(
             "[wmux-mcp-shim] broker connection closed\n[wmux-mcp-shim] running the full server for the rest of the session\n"
         ),
+        "{err}"
+    );
+}
+
+/// A full server that refuses the replayed initialize (here one the stub broker
+/// took though it lacks the required fields) cannot take the session: the shim
+/// ends it with 1, as a broker loss did before, and nothing reaches the host
+/// after the error for the call in flight.
+#[test]
+fn a_full_server_that_refuses_the_replayed_initialize_ends_the_session_with_1() {
+    let sb = Sandbox::new();
+    sb.write_token("tok");
+    let Some(install) = Install::new(&sb, Layout::Marked) else {
+        return;
+    };
+    let listener = stub::bind(&sb.pipe());
+    let mut child = spawn(&mut install.shim(&sb, &[])).expect("spawn shim");
+    let err = collect(child.stderr.take().unwrap());
+    let out = lines(child.stdout.take().unwrap());
+    let mut stdin = child.stdin.take().unwrap();
+    let bad = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
+    initialize_with_then_drop(bad, &mut stdin, &out, listener.accept(WAIT));
+    assert_eq!(out.recv_timeout(WAIT).expect("the error"), may_have_run(r#""call-2""#));
+    assert_eq!(wait_within(&mut child, Duration::from_secs(30)).code(), Some(1));
+    ends(&out);
+    let err = err.join().unwrap();
+    assert!(
+        err.contains("[wmux-mcp-shim] cannot start the full bundle: it refused the session's initialize\n"),
         "{err}"
     );
 }

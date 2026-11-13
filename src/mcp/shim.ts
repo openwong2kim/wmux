@@ -46,7 +46,7 @@ import { getMcpBrokerPipeName, getAuthTokenPath } from '../shared/constants';
 import { COMMANDER_MODE_ARG } from '../shared/commanderSurface';
 import { CORE_MODE_ARG } from '../shared/coreSurface';
 import { roleArgValue } from '../shared/roleSurfaces';
-import { Calls, Lines, isReplayAnswer, mayHaveRun } from './shimHandover';
+import { Calls, Lines, mayHaveRun, replayAnswer } from './shimHandover';
 
 const CONNECT_RETRIES = 10;
 const CONNECT_RETRY_DELAY_MS = 300;
@@ -222,10 +222,10 @@ function exitAfterStdout(code: number): void {
 }
 
 /**
- * The acknowledged session: host lines to the broker and back, a line at a
- * time, until the host ends it; after a broker loss, to and from a full
- * server child (see the module doc). Writes wait for the other side to
- * drain, as pipe() did.
+ * The acknowledged session: host lines to the broker and back until the host
+ * ends it; after a broker loss, to and from a full server child (see the
+ * module doc). The whole lines of each read go in one write, and a full write
+ * pauses its source until the other side drains, as pipe() did.
  */
 function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
   const calls = new Calls();
@@ -236,34 +236,37 @@ function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
   let held: Buffer[] | null = null;
   let hostEnded = false;
 
-  const toHost = (line: Buffer | string, source: { pause(): unknown; resume(): unknown }): void => {
-    if (!process.stdout.write(line)) {
-      source.pause();
-      process.stdout.once('drain', () => source.resume());
-    }
+  /** Sinks a source is paused on, so one full sink adds one drain listener. */
+  const draining = new Set<NodeJS.WritableStream>();
+  const write = (sink: NodeJS.WritableStream, bytes: Buffer, source: { pause(): unknown; resume(): unknown }): void => {
+    if (bytes.length === 0 || sink.write(bytes) || draining.has(sink)) return;
+    draining.add(sink);
+    source.pause();
+    sink.once('drain', () => {
+      draining.delete(sink);
+      source.resume();
+    });
   };
 
   const fromBroker = new Lines();
   const onBroker = (chunk: Buffer): void => {
+    const out: Buffer[] = [];
     fromBroker.push(chunk, (line) => {
-      if (calls.answered(line)) toHost(line, socket);
+      if (calls.answered(line)) out.push(line);
     });
+    write(process.stdout, Buffer.concat(out), socket);
   };
 
-  const sendLine = (line: Buffer): void => {
+  /** The host's whole lines of one read. */
+  const sendLines = (lines: Buffer[]): void => {
+    if (lines.length === 0) return;
     if (handedOver) {
-      if (held) held.push(line);
-      else if (bundle?.stdin && !bundle.stdin.write(line)) {
-        process.stdin.pause();
-        bundle.stdin.once('drain', () => process.stdin.resume());
-      }
+      if (held) held.push(...lines);
+      else if (bundle?.stdin) write(bundle.stdin, Buffer.concat(lines), process.stdin);
       return;
     }
-    calls.sent(line);
-    if (!socket.write(line)) {
-      process.stdin.pause();
-      socket.once('drain', () => process.stdin.resume());
-    }
+    for (const line of lines) calls.sent(line);
+    write(socket, Buffer.concat(lines), process.stdin);
   };
 
   /** The broker connection ended mid-session (`why`): answer what was in
@@ -272,6 +275,8 @@ function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
     if (handedOver) return;
     handedOver = true;
     socket.destroy();
+    // A destroyed socket never drains: stdin must not stay paused on it.
+    if (draining.delete(socket)) process.stdin.resume();
     console.error(`[wmux-mcp-shim] ${why}`);
     const { ids, replay } = calls.handOver();
     for (const id of ids) process.stdout.write(mayHaveRun(id));
@@ -295,23 +300,36 @@ function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
     console.error('[wmux-mcp-shim] running the full server for the rest of the session');
     const [initialize, ...afterInit] = replay;
     let swallow = initialize !== undefined;
+    let refused = false;
     if (initialize) {
       child.stdin?.write(initialize);
       held = afterInit;
     }
     const fromBundle = new Lines();
     child.stdout?.on('data', (chunk: Buffer) => {
+      const out: Buffer[] = [];
       fromBundle.push(chunk, (line) => {
-        if (swallow && isReplayAnswer(line)) {
+        if (refused) return;
+        const answer = swallow ? replayAnswer(line) : undefined;
+        if (answer === undefined) {
+          out.push(line);
+        } else if (answer) {
+          // The session cannot go on without it: end it, as a broker loss
+          // did before (the host restarts the server).
+          refused = true;
+          console.error('[wmux-mcp-shim] cannot start the full server: it refused the session\'s initialize');
+          child.kill();
+          exitAfterStdout(1);
+        } else {
           swallow = false;
           // What waited for the answer goes now; later lines go straight on.
-          for (const waiting of held ?? []) child.stdin?.write(waiting);
+          const waiting = held ?? [];
           held = null;
+          if (child.stdin) write(child.stdin, Buffer.concat(waiting), process.stdin);
           if (hostEnded) child.stdin?.end();
-        } else if (child.stdout) {
-          toHost(line, child.stdout);
         }
       });
+      if (child.stdout) write(process.stdout, Buffer.concat(out), child.stdout);
     });
     child.on('close', (code) => {
       const tail = fromBundle.takeRest();
@@ -321,14 +339,18 @@ function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
   };
 
   const fromHost = new Lines();
-  process.stdin.on('data', (chunk: Buffer) => fromHost.push(chunk, sendLine));
+  process.stdin.on('data', (chunk: Buffer) => {
+    const lines: Buffer[] = [];
+    fromHost.push(chunk, (line) => lines.push(line));
+    sendLines(lines);
+  });
   // Host closed our stdin: end of session. Mirror the old child and exit
   // cleanly so the host doesn't report a server crash. After a handover the
   // child's stdin is closed instead, and its exit ends the shim.
   process.stdin.on('end', () => {
     // An unterminated last line goes as it is.
     const last = fromHost.takeRest();
-    if (last.length > 0) sendLine(last);
+    if (last.length > 0) sendLines([last]);
     if (handedOver) {
       hostEnded = true;
       if (!held) bundle?.stdin?.end();

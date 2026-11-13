@@ -8,8 +8,8 @@
 //! method names are small tokens read with crate::js.
 //!
 //! `Calls` keeps what a handover needs: the ids of the host's requests the
-//! broker has not answered yet, and the host's `initialize` request and
-//! `notifications/initialized` notification.
+//! broker has not answered yet (less those the host cancelled), and the host's
+//! `initialize` request and `notifications/initialized` notification.
 
 use crate::js::{self, Json};
 
@@ -17,9 +17,11 @@ use crate::js::{self, Json};
 /// from the host's own calls and dropped.
 pub const REPLAY_ID: &str = "wmux-shim-replay";
 
-/// The error message for a call the broker took and never answered.
-pub const MAY_HAVE_RUN: &str = "The wmux MCP broker stopped while this call was in flight. \
-It may have run; it was not retried. Later calls go to a new wmux MCP server.";
+/// The error message for a call the broker took and never answered. It is
+/// what the model reads, so it says plainly not to assume the call did nothing.
+pub const MAY_HAVE_RUN: &str = "The wmux MCP broker stopped while this call was in flight, so it may have run. \
+It was not retried. Do not assume it did not run: check its effect before you repeat it. \
+Later calls go to a new wmux MCP server.";
 
 /// The JSON-RPC error code for MAY_HAVE_RUN (implementation-defined server error).
 pub const MAY_HAVE_RUN_CODE: i32 = -32000;
@@ -66,6 +68,8 @@ pub struct Peek {
     pub method: Option<String>,
     /// The message has an `error` member (a failed response).
     pub error: bool,
+    /// Where the `params` value sits in the line.
+    pub params_span: Option<(usize, usize)>,
 }
 
 /// The messages of one line: one for an object, one per object of a batch,
@@ -204,6 +208,7 @@ impl Scan<'_> {
                     };
                 }
                 b"error" => peek.error = true,
+                b"params" => peek.params_span = Some((vs, ve)),
                 _ => {}
             }
             self.ws();
@@ -243,25 +248,51 @@ impl Scan<'_> {
     }
 }
 
-/// The error the host gets for each call in flight at a handover.
-pub fn may_have_run(id: &str) -> String {
+/// The error the host gets for each call in flight at a handover. `id` is the
+/// id as the host spelled it, so the host matches it whatever its number form.
+pub fn may_have_run(id: &[u8]) -> Vec<u8> {
     let mut message = String::new();
     js::quote_str(MAY_HAVE_RUN, &mut message);
-    format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":{MAY_HAVE_RUN_CODE},\"message\":{message}}}}}\n")
+    let mut out = b"{\"jsonrpc\":\"2.0\",\"id\":".to_vec();
+    out.extend_from_slice(id);
+    out.extend_from_slice(format!(",\"error\":{{\"code\":{MAY_HAVE_RUN_CODE},\"message\":{message}}}}}\n").as_bytes());
+    out
 }
 
-/// True for the reply to the replayed `initialize`.
-pub fn is_replay_answer(line: &[u8]) -> bool {
+/// The reply to the replayed `initialize`: Some(true) when it is an error.
+pub fn replay_answer(line: &[u8]) -> Option<bool> {
     let mut replay = String::new();
     js::quote_str(REPLAY_ID, &mut replay);
-    matches!(peek(line).as_slice(), [p] if p.method.is_none() && p.id.as_deref() == Some(replay.as_str()))
+    match peek(line).as_slice() {
+        [p] if p.method.is_none() && p.id.as_deref() == Some(replay.as_str()) => Some(p.error),
+        _ => None,
+    }
+}
+
+/// The request a `notifications/cancelled` names (its params.requestId), as
+/// canonical JSON text.
+fn cancelled_id(line: &[u8], params: Option<(usize, usize)>) -> Option<String> {
+    let (s, e) = params?;
+    let parsed = token(&line[s..e])?;
+    let Json::Obj(entries) = &parsed else { return None };
+    let (_, v) = entries.iter().rev().find(|(k, _)| *k == js::js("requestId"))?;
+    match v {
+        Json::Num(_) | Json::Str(_) => {
+            let mut out = String::new();
+            js::stringify(v, &mut out);
+            Some(out)
+        }
+        _ => None,
+    }
 }
 
 /// What the host has asked that the broker still owes it, and what a new
 /// server needs to take the session over.
 #[derive(Default)]
 pub struct Calls {
-    in_flight: Vec<String>,
+    /// Each request owed an answer: its canonical id, and the id as the host
+    /// spelled it.
+    in_flight: Vec<(String, Vec<u8>)>,
     /// The host's `initialize` request (the whole line), with its id.
     init: Option<(Vec<u8>, String)>,
     init_answered: bool,
@@ -290,9 +321,18 @@ impl Calls {
                         self.init = Some((replay, id.clone()));
                         self.init_answered = false;
                     }
-                    self.in_flight.push(id.clone());
+                    let raw = p.id_span.map(|(s, e)| line[s..e].to_vec()).unwrap_or_default();
+                    self.in_flight.push((id.clone(), raw));
                 }
                 (None, Some("notifications/initialized")) => self.initialized = Some(line.to_vec()),
+                // A cancelled request gets no answer (MCP), so it is owed none.
+                (None, Some("notifications/cancelled")) => {
+                    if let Some(id) = cancelled_id(line, p.params_span) {
+                        if let Some(at) = self.in_flight.iter().position(|(x, _)| *x == id) {
+                            self.in_flight.remove(at);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -306,7 +346,7 @@ impl Calls {
         }
         for p in peek(line) {
             let (Some(id), None) = (p.id, p.method) else { continue };
-            if let Some(at) = self.in_flight.iter().position(|x| *x == id) {
+            if let Some(at) = self.in_flight.iter().position(|(x, _)| *x == id) {
                 self.in_flight.remove(at);
             }
             if self.init.as_ref().is_some_and(|(_, init)| *init == id) {
@@ -316,13 +356,17 @@ impl Calls {
         true
     }
 
-    /// The handover, once: the ids to answer with MAY_HAVE_RUN, and the lines
+    /// The handover, once: the ids to answer with MAY_HAVE_RUN (as the host
+    /// spelled them), and the lines
     /// a new server gets first (the `initialize` under REPLAY_ID and the
     /// `initialized` notification, only when the broker answered that
     /// `initialize` with a result).
-    pub fn hand_over(&mut self) -> (Vec<String>, Vec<Vec<u8>>) {
+    pub fn hand_over(&mut self) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
         self.handed_over = true;
-        let ids = std::mem::take(&mut self.in_flight);
+        let ids = std::mem::take(&mut self.in_flight)
+            .into_iter()
+            .map(|(_, raw)| raw)
+            .collect();
         let mut replay = Vec::new();
         if self.init_answered {
             if let Some((line, _)) = self.init.take() {
@@ -366,7 +410,8 @@ mod tests {
                 id: Some("4".into()),
                 id_span: Some((line.len() - 2, line.len() - 1)),
                 method: None,
-                error: false
+                error: false,
+                params_span: None,
             }]
         );
         let req = peek(br#" {"id":"a\u0062","method":"tools\/call","params":{}} "#);
@@ -421,7 +466,7 @@ mod tests {
         assert!(c.answered(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n"));
         assert!(c.answered(b"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"roots/list\"}\n"));
         let (ids, replay) = c.hand_over();
-        assert_eq!(ids, ["2"]);
+        assert_eq!(ids, [b"2".to_vec()]);
         assert_eq!(
             replay,
             vec![
@@ -439,7 +484,7 @@ mod tests {
     fn an_unanswered_or_failed_initialize_is_not_replayed() {
         let mut c = Calls::default();
         c.sent(INIT);
-        assert_eq!(c.hand_over(), (vec!["0".to_string()], vec![]));
+        assert_eq!(c.hand_over(), (vec![b"0".to_vec()], vec![]));
         let mut c = Calls::default();
         c.sent(INIT);
         c.answered(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"error\":{\"code\":-1,\"message\":\"no\"}}\n");
@@ -453,21 +498,44 @@ mod tests {
         c.sent(b"{\"id\":1,\"method\":\"a\"}\n");
         c.sent(b"{\"id\":1,\"method\":\"b\"}\n");
         c.answered(b"{\"id\":1,\"result\":0}\n");
-        assert_eq!(c.hand_over().0, ["1"]);
+        assert_eq!(c.hand_over().0, [b"1".to_vec()]);
+    }
+
+    #[test]
+    fn a_cancelled_request_is_owed_nothing_and_ids_keep_the_hosts_spelling() {
+        let mut c = Calls::default();
+        c.sent(b"{\"id\":7,\"method\":\"tools/call\"}\n");
+        c.sent(b"{\"id\":1e2,\"method\":\"tools/call\"}\n");
+        c.sent(b"{\"id\":\"x\",\"method\":\"tools/call\"}\n");
+        c.sent(b"{\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":7.0,\"reason\":\"r\"}}\n");
+        // A cancel for nothing owed, or with no usable id, changes nothing.
+        c.sent(b"{\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":99}}\n");
+        c.sent(b"{\"method\":\"notifications/cancelled\",\"params\":{}}\n");
+        assert_eq!(c.hand_over().0, [b"1e2".to_vec(), b"\"x\"".to_vec()]);
     }
 
     #[test]
     fn the_error_frame_and_the_replay_answer() {
-        let frame = may_have_run("\"a\"");
+        let frame = String::from_utf8(may_have_run(b"\"a\"")).unwrap();
         let p = peek(frame.as_bytes());
         assert_eq!((p[0].id.as_deref(), p[0].error), (Some("\"a\""), true));
-        assert!(frame.ends_with("}}\n") && frame.contains("\"code\":-32000") && frame.contains("It may have run"));
-        assert!(is_replay_answer(
-            b"{\"jsonrpc\":\"2.0\",\"id\":\"wmux-shim-replay\",\"result\":{}}\n"
-        ));
-        assert!(!is_replay_answer(
-            b"{\"jsonrpc\":\"2.0\",\"id\":\"wmux-shim-replay\",\"method\":\"x\"}\n"
-        ));
-        assert!(!is_replay_answer(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n"));
+        assert!(
+            frame.ends_with("}}\n")
+                && frame.contains("\"code\":-32000")
+                && frame.contains("Do not assume it did not run")
+        );
+        assert_eq!(
+            replay_answer(b"{\"jsonrpc\":\"2.0\",\"id\":\"wmux-shim-replay\",\"result\":{}}\n"),
+            Some(false)
+        );
+        assert_eq!(
+            replay_answer(b"{\"jsonrpc\":\"2.0\",\"id\":\"wmux-shim-replay\",\"error\":{\"code\":-1}}\n"),
+            Some(true)
+        );
+        assert_eq!(
+            replay_answer(b"{\"jsonrpc\":\"2.0\",\"id\":\"wmux-shim-replay\",\"method\":\"x\"}\n"),
+            None
+        );
+        assert_eq!(replay_answer(b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\n"), None);
     }
 }
