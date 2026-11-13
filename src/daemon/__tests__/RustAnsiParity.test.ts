@@ -14,6 +14,11 @@ import { CLAUDE_WRAPPED_REPLY_80x30 } from '../../renderer/terminal/__tests__/fi
 import { restoreSeam } from '../../shared/restoreSeam';
 import { available, expectParity, expectRustAloneDiverges, modulePath, parity, resized, synthetic, type Case } from './_rustParity';
 
+const rowsOf8 = Array.from({ length: 8 }, (_, i) => `L${i}`).join('\r\n');
+const savedThenScrolled = 'a\x1b[3;1H\x1b7\x1b[6;1H\n\n';
+const twoRowHistory = (name: string, text: string): Case =>
+  ({ name, backend: 'rust', req: { cols: 20, rows: 6, scrollback: 2, initial: Buffer.from(text) } });
+
 // One or more cases per control class the selector used to refuse wholesale.
 const accepted: Case[] = [
   // OSC: not screen state (xterm's path drops it too) except OSC 8, restored.
@@ -78,6 +83,25 @@ const accepted: Case[] = [
   synthetic('decrc-redesignate-same-g2', '\x1b7\x1b*B\x1b8\x1bnq'),
   synthetic('decrc-redesignate-g2-and-back', '\x1b7\x1b*0\x1b*B\x1b8\x1bnq'),
   synthetic('decrc-redesignate-shifted', '\x1b)0\x1b7\x0e\x1b)0\x1b8q\x0eq'),
+  // A ?1049l on the main screen: xterm restores its saved absolute row, so
+  // each row scrolled into history since the save moves it up (to 0 at
+  // most); ED 3 moves it down. The save is DECSC, a ?1049h, or a soft reset.
+  synthetic('main-1049l-no-scroll', 'a\x1b[3;1H\x1b7\x1b[6;1Hb\x1b[?1049lX'),
+  synthetic('main-1049l-scrolled', `${savedThenScrolled}\x1b[?1049lX`),
+  synthetic('main-1049l-scrolled-past-top', 'a\x1b[3;1H\x1b7\x1b[6;1H\n\n\n\n\x1b[?1049lX'),
+  synthetic('main-1049l-scrolled-ind', 'a\x1b[3;1H\x1b7\x1b[6;1H\x1bD\x1bD\x1b[?1049lX'),
+  synthetic('main-1049l-scrolled-region', 'a\x1b[1;4r\x1b[3;1H\x1b7\x1b[4;1H\n\n\x1b[r\x1b[?1049lX'),
+  synthetic('main-1049l-scrolled-synchronized', '\x1b[?2026ha\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b[?1049lX\x1b[?2026l'),
+  synthetic('main-1049l-after-alt-save', 'a\x1b[3;1H\x1b[?1049hzz\x1b[?1049l\x1b[6;1H\n\n\x1b[?1049lX'),
+  synthetic('main-1049l-ed3', `${rowsOf8}\x1b[1;1H\x1b7\x1b[3J\x1b[?1049lX`),
+  synthetic('main-1049l-decstr', `${rowsOf8}\x1b[3;1H\x1b7\x1b[3J\x1b[!p\x1b[?1049lX`),
+  // A full history keeps its size as rows scroll: both keep the screen row.
+  twoRowHistory('main-1049l-full-history', `${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b[?1049lX`),
+  twoRowHistory('main-1049l-filling-history', 'a\r\nb\x1b[3;1H\x1b7\x1b[6;1H\n\n\n\n\x1b[?1049lX'),
+  // A resize between the scroll and the restore that moves no row.
+  ({ name: 'main-1049l-scrolled-then-widened', backend: 'rust', req: { cols: 24, rows: 6, scrollback: 100,
+    initial: Buffer.from(`${savedThenScrolled}\x1b[?1049lX`),
+    geometry: { start: { cols: 20, rows: 6 }, changes: [{ offset: savedThenScrolled.length, cols: 24, rows: 6 }] } } }),
   synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),
   synthetic('alt-1049-ls2', '\x1b*0\x1bn\x1b[?1049h\x0fq\x1b[?1049lq'),
   synthetic('ls2-in-update', '\x1b*0\x1b[?2026h\x1bnq\x1b[?2026l'),
@@ -185,6 +209,9 @@ const refused: Case[] = [
   synthetic('decrc-later-g2', '\x1b7\x1b*0\x1b8\x1bnq', 'xterm'),
   synthetic('alt-1049-later-g2', '\x1b(0\x1b[?1049h\x1b*0\x1b[?1049l\x1bnq', 'xterm'),
   synthetic('alt-1049-later-g0-dec', '\x1b[?1049h\x1b(0q\x1b[?1049lq', 'xterm'),
+  // ED 3 cleared more history than the rows below the save: xterm's
+  // restored row is past the bottom of its screen.
+  synthetic('main-1049l-ed3-below-screen', `${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b[?1049lX`, 'xterm'),
   synthetic('decstr-decrc-nowrap', `\x1b[?7l\x1b7\x1b[!p\x1b8${'x'.repeat(25)}`, 'xterm'),
   synthetic('decrc-unsaved-nowrap', `\x1b[?7l\x1b8${'x'.repeat(25)}`, 'xterm'),
   synthetic('decstr-cut-by-del', 'ab\x1b[4h\x1b[!\x7fpcd', 'xterm'),
@@ -247,6 +274,9 @@ const seams: Case[] = [
   // A slot designated since the save to another set stays on xterm only.
   recovered('main-later-g0-dec', '\x1b7\x1b(0q', 'PS> ls -la', 20, 6, 'xterm'),
   recovered('cursor-pending-wrap', 'x'.repeat(20)),
+  // A full-screen program that exited, then output that scrolled: the seam's
+  // ?1049l restores the row that program's ?1049h saved.
+  recovered('exited-app-then-scrolled', `a\x1b[3;1H\x1b[?1049hzz\x1b[?1049l${'out\r\n'.repeat(10)}`),
   // An agent that died on its alternate screen with input reporting on.
   recovered('died-on-alt', 'sh\r\n\x1b[>1u\x1b[?1049h\x1b[>3u\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1004h\x1b[?1h\x1b=\x1b[?25l\x1b[3;3Hui'),
   recovered('died-on-main-modes', '\x1b[?1000h\x1b[?1006h\x1b[?2004h\x1b[31mred'),
@@ -480,6 +510,7 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     ['\x1b[1!p', 'unsupported-state-decstr'],
     ['\x1b[?47hx', 'unsupported-state-mode'],
     ['\x1b[?47h\x1b[<99u', 'unsupported-state-mode'],
+    [`${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b[?1049l`, 'unsupported-state-restore-row'],
   ])('names the refused control in the refusal: %j', async (stream, family) => {
     const native = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, initial: Buffer.from(stream) }, 'ansi');
     expect(native.ok).toBe(false);

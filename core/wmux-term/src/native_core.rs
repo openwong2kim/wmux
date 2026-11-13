@@ -240,6 +240,10 @@ const REFUSAL_SCAN_BYTES: usize = 1024 * 1024;
 const ROUND_TRIP: &str =
     "unsupported-state-mode: more than kitty keyboard controls between ?47h and ?47l";
 const OPEN_ROUND_TRIP: &str = "unsupported-state-mode: the stream ends between ?47h and ?47l";
+/// Not counted past a first refusal: `scan` has no screen to read history
+/// from.
+const RESTORE_ROW: &str =
+    "unsupported-state-restore-row: a main-screen ?1049l after the history shrank (ED 3) puts xterm's cursor below the screen";
 
 /// Alternate-screen and mouse controls that Alacritty ignores (vte maps no
 /// mode 9, 47 or 1047) and that xterm runs, which leave the same screen as
@@ -385,6 +389,10 @@ struct SavedCursor {
     dec_slots: [bool; 4],
     no_wraparound: bool,
     origin: bool,
+    /// The main screen's history (rows above the screen) at the save, on the
+    /// main screen only: the alternate screen keeps none. xterm saves an
+    /// absolute row, Alacritty a screen row (restore_like_xterm).
+    history: i64,
 }
 
 /// A byte of a printed character (not a C0 control or DEL).
@@ -590,7 +598,8 @@ impl XtermFeed {
     /// The charset slots, DECAWM and DECOM as xterm saves and restores them
     /// with the cursor (DECSC/DECRC, SCOSC/SCORC), to refuse a restore that
     /// Alacritty runs differently. `sequence` has no C0 controls inside.
-    fn track_saved_cursor(&mut self, sequence: &[u8]) {
+    /// `history` reads the main screen's history at this sequence.
+    fn track_saved_cursor(&mut self, sequence: &[u8], history: &mut dyn FnMut() -> usize) {
         let screen = usize::from(self.alt_screen);
         let plain_csi = |final_byte: u8| {
             sequence
@@ -601,7 +610,7 @@ impl XtermFeed {
                 })
         };
         match sequence {
-            b"\x1b7" => self.save_cursor(screen),
+            b"\x1b7" => self.save_cursor(screen, history),
             b"\x1b8" => self.restore_cursor(screen),
             b"\x1bc" => {
                 self.no_wraparound = false;
@@ -611,12 +620,17 @@ impl XtermFeed {
                 self.saved = Default::default();
             }
             // xterm's softReset resets the charsets and the modes, not the
-            // saved ones.
+            // saved ones. It moves the saved cursor to the top left of the
+            // screen as it is now (savedY = ybase), as soft_reset_like_xterm
+            // does on Alacritty.
             b"\x1b[!p" => {
                 self.no_wraparound = false;
                 self.origin = false;
                 self.charset_slots = 0;
                 self.dec_slots = [false; 4];
+                if screen == 0 {
+                    self.saved[0].history = history() as i64;
+                }
             }
             b"\x1b%@" | b"\x1b%G" => self.designate(0, false),
             [0x1b, slot @ (b'(' | b')' | b'*' | b'+' | b'-' | b'.'), set @ (b'B' | b'0')] => self
@@ -629,7 +643,7 @@ impl XtermFeed {
                     },
                     *set == b'0',
                 ),
-            _ if plain_csi(b's') => self.save_cursor(screen),
+            _ if plain_csi(b's') => self.save_cursor(screen, history),
             _ if plain_csi(b'u') => self.restore_cursor(screen),
             _ => {}
         }
@@ -640,13 +654,14 @@ impl XtermFeed {
         self.dec_slots[usize::from(slot)] = dec;
     }
 
-    fn save_cursor(&mut self, screen: usize) {
+    fn save_cursor(&mut self, screen: usize, history: &mut dyn FnMut() -> usize) {
         self.saved[screen] = SavedCursor {
             saved: true,
             charset_slots: self.charset_slots,
             dec_slots: self.dec_slots,
             no_wraparound: self.no_wraparound,
             origin: self.origin,
+            history: if screen == 0 { history() as i64 } else { 0 },
         };
     }
 
@@ -667,8 +682,9 @@ impl XtermFeed {
         );
     }
 
-    /// `rows`: the screen height the sequence is parsed at.
-    fn track(&mut self, sequence: &[u8], rows: usize) {
+    /// `rows`: the screen height the sequence is parsed at. `history` reads
+    /// the main screen's history before the sequence runs (main_history).
+    fn track(&mut self, sequence: &[u8], rows: usize, history: &mut dyn FnMut() -> usize) {
         // C0 controls inside a sequence execute and are not part of it.
         let filtered: Vec<u8>;
         let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
@@ -682,7 +698,7 @@ impl XtermFeed {
             sequence
         };
         let numeric = |params: &[u8]| params.iter().all(|&b| b.is_ascii_digit() || b == b';');
-        self.track_saved_cursor(sequence);
+        self.track_saved_cursor(sequence, history);
         if sequence == b"\x1b[!p" {
             self.set_margins(false);
         }
@@ -736,7 +752,7 @@ impl XtermFeed {
                             // showing it.
                             if mode == Some(1049) {
                                 if set {
-                                    self.save_cursor(usize::from(self.alt_screen));
+                                    self.save_cursor(usize::from(self.alt_screen), history);
                                 } else {
                                     self.restore_cursor(0);
                                 }
@@ -831,7 +847,8 @@ impl XtermFeed {
                 // vte ignores it: run it as xterm does once vte has parsed it.
                 parser.advance(term, &data[from..at + len]);
                 run_like_xterm(parser, term, control);
-                self.track(sequence, term.screen_lines());
+                let rows = term.screen_lines();
+                self.track(sequence, rows, &mut || main_history(parser, term));
                 from = at + len;
                 next = Some(at + len);
             } else if is_restricting(sequence) {
@@ -881,7 +898,14 @@ impl XtermFeed {
                     Some(ContextRule::AltLeave { mode_47: true }) => self.round_trip = false,
                     _ => {}
                 }
-                self.track(sequence, term.screen_lines());
+                // Read only at a save, so the parser runs up to the sequence
+                // just for those.
+                let rows = term.screen_lines();
+                self.track(sequence, rows, &mut || {
+                    parser.advance(term, &data[from..at]);
+                    from = at;
+                    main_history(parser, term)
+                });
                 next = Some(at + len);
                 // xterm's ?1049l restores the main screen's saved cursor even
                 // on the main screen (the restore seam's first control);
@@ -891,7 +915,8 @@ impl XtermFeed {
                     Some(true) if !alt => {
                         parser.advance(term, &data[from..at + len]);
                         from = at + len;
-                        restore_like_xterm(parser, term);
+                        let restored = restore_like_xterm(parser, term, self.saved[0].history);
+                        self.refuse(!restored, RESTORE_ROW);
                     }
                     Some(false) if !alt => {
                         self.refuse(true, crate::native_serialize::refusal(sequence))
@@ -1025,18 +1050,45 @@ fn alternate_shown(parser: &mut Processor, term: &mut Term<VoidListener>) -> boo
     })
 }
 
-/// xterm's restoreCursor (DECRC) on Alacritty, once the parser has taken
-/// the control that runs it. xterm puts back the colours, not the open
-/// hyperlink (`extended.urlId` stays), and clamps the cursor into the last
-/// column, which drops a pending wrap.
-fn restore_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>) {
+/// The main screen's history (rows above the screen), with the bytes a
+/// synchronized update holds back applied. The alternate screen keeps none.
+fn main_history(parser: &mut Processor, term: &mut Term<VoidListener>) -> usize {
+    with_sync_flushed(parser, term, |term| {
+        if term.mode().contains(TermMode::ALT_SCREEN) {
+            term.inactive_grid().history_size()
+        } else {
+            term.grid().history_size()
+        }
+    })
+}
+
+/// xterm's restoreCursor (DECRC) on Alacritty's main screen, once the parser
+/// has taken the control that runs it. xterm puts back the colours, not the
+/// open hyperlink (`extended.urlId` stays), and clamps the cursor into the
+/// last column, which drops a pending wrap.
+///
+/// xterm saves an absolute row (`ybase + y`) and restores `savedY - ybase`,
+/// at least 0; Alacritty saves a screen row. Each row the stream scrolled
+/// into history since the save (`history`, the main screen's then) moves
+/// xterm's restored row up by one. A history that shrank (ED 3) moves it
+/// down, past the screen when it shrank by more than the rows below the
+/// saved one: false then, as no row here matches it.
+fn restore_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, history: i64) -> bool {
     with_sync_flushed(parser, term, |term| {
         let link = term.grid().cursor.template.hyperlink();
+        let row = i64::from(term.grid().saved_cursor.point.line.0) + history
+            - term.grid().history_size() as i64;
         term.restore_cursor_position();
+        let rows = term.screen_lines() as i64;
         let cursor = &mut term.grid_mut().cursor;
         cursor.template.set_hyperlink(link);
         cursor.input_needs_wrap = false;
-    });
+        if row >= rows {
+            return false;
+        }
+        cursor.point.line = Line(row.max(0) as i32);
+        true
+    })
 }
 
 /// A DECRST that resets 1049, read as `track` reads it (C0 controls inside
@@ -1392,7 +1444,18 @@ impl NativeTerminal {
             self.feed.main_margins = false;
             self.feed.alt_margins = false;
         }
+        // A resize moves rows between the screen and the history on both
+        // terminals, and each adjusts its saved row by its own rules. Carry
+        // the change, so a later ?1049l counts only the rows the stream
+        // scrolled (restore_like_xterm).
+        let before = primary.history_size() as i64;
         term.resize(size);
+        let main = if term.mode().contains(TermMode::ALT_SCREEN) {
+            term.inactive_grid()
+        } else {
+            term.grid()
+        };
+        self.feed.saved[0].history += main.history_size() as i64 - before;
         if synchronized {
             self.parser.advance(term, b"\x1b[?2026h");
         }
@@ -2352,6 +2415,59 @@ mod tests {
         assert!(!term.grid().cursor.input_needs_wrap);
         // Leaving the alternate screen stays as it was.
         assert_eq!(first_cell(&["q\x1b[?1049hx\x1b[?1049l"]), (None, 'q'));
+    }
+
+    #[test]
+    fn a_1049_reset_on_the_main_screen_restores_xterm_s_row_after_a_scroll() {
+        let restored = |chunks: &[&str]| {
+            let (mut term, mut parser, feed) = feed_with(chunks);
+            parser.advance(&mut term, &feed.held);
+            (
+                feed.refused.map(|r| r.split(':').next().unwrap_or(r)),
+                term.grid().cursor.point.line.0,
+            )
+        };
+        // Saved on row 2 of 3 (index 1). No scroll since: that row.
+        assert_eq!(
+            restored(&["a\x1b[2;1H\x1b7\x1b[3;1H\x1b[?1049l"]),
+            (None, 1)
+        );
+        // One row scrolled into history: xterm's row moves up by one.
+        assert_eq!(
+            restored(&["a\x1b[2;1H\x1b7\x1b[3;1H\n\x1b[?1049l"]),
+            (None, 0)
+        );
+        // Two rows: it would be above the screen, and xterm clamps it to 0.
+        assert_eq!(
+            restored(&["a\x1b[2;1H\x1b7\x1b[3;1H\n\n\x1b[?1049l"]),
+            (None, 0)
+        );
+        // Read at the save, past bytes a synchronized update holds back.
+        assert_eq!(
+            restored(&["\x1b[?2026ha\r\nb\r\nc\x1b7\n\x1b[?1049l\x1b[?2026l"]),
+            (None, 1)
+        );
+        // A ?1049h on the main screen saves the row the same way.
+        assert_eq!(
+            restored(&["a\r\nb\r\nc\x1b[?1049h\x1b[?1049l\n\x1b[?1049l"]),
+            (None, 1)
+        );
+        // ED 3 since the save: xterm's row moves down by the rows cleared...
+        let filled = "1\r\n2\r\n3\r\n4\r\n5";
+        assert_eq!(
+            restored(&[filled, "\x1b[1;1H\x1b7\x1b[3J\x1b[?1049l"]),
+            (None, 2)
+        );
+        // ...past the screen here: refused.
+        assert_eq!(
+            restored(&[filled, "\x1b[2;1H\x1b7\x1b[3J\x1b[?1049l"]).0,
+            Some("unsupported-state-restore-row")
+        );
+        // A soft reset saves the top left of the screen as it is then.
+        assert_eq!(
+            restored(&[filled, "\x1b[2;1H\x1b7\x1b[3J\x1b[!p\x1b[?1049l"]),
+            (None, 0)
+        );
     }
 
     #[test]
