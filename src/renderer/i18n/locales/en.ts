@@ -3896,7 +3896,7 @@ export const en = {
   'settings.windowGlassSoft': 'Soft',
   'settings.windowGlassClear': 'Clear',
   'settings.windowGlassUnsupported': 'Needs Windows 11 version 22H2 or later. This Windows keeps a solid window.',
-  'settings.windowGlassThemeOpaque': 'This theme stays opaque on Windows so its text stays readable. Your choice applies again on a theme that can keep glass.',
+  'settings.windowGlassThemeOpaque': 'This theme stays opaque so its text stays readable over the desktop. Your choice applies again on a theme that can keep glass.',
   'settings.sidebarLeft': 'Left',
   'settings.sidebarRight': 'Right',
   'settings.multiviewArrangement': 'Multiview arrangement',

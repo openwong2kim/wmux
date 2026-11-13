@@ -149,7 +149,7 @@ reads as a second, differently tinted panel.
 - **Terminal geometry is untouched** by the frame: margin changes, a sidebar
   collapse, maximize and fullscreen each refit the terminals once, never per
   frame.
-- **Window glass (macOS on every theme, Windows 11 on every theme that stays legible, `--theme-glass: 1`):**
+- **Window glass (macOS and Windows 11, on every theme that stays legible, `--theme-glass: 1`):**
   on macOS the window gets the `sidebar` vibrancy material behind a
   transparent background; on Windows 11 22H2 and later (build 22621+) it gets
   the acrylic backdrop the same way. The
@@ -165,30 +165,34 @@ reads as a second, differently tinted panel.
   than the frame on a dark or tinted backdrop and vanishes on a light one,
   while the ink keeps the same step over any backdrop. The
   user picks Off, Soft (default) or Clear in Settings › Appearance ›
-  Interface. Coverage of the sidebar, frame and sheet stacked: dark themes
-  about 29% Soft / 14% Clear; strongly hued themes (Stars & Stripes, Red
-  Dynasty, Catppuccin) about 64% / 43% so their colour survives the grey
-  material; light themes, whose material is milkier, about 14% / 3%.
-  Windows derives its numbers at runtime from each theme's tokens
-  (`utils/glassCoverage.ts`), because there the text must stay legible over
-  whatever is behind the window. The frame and the sidebar are composited
+  Interface. Both platforms derive the numbers at runtime from each theme's
+  tokens (`utils/glassCoverage.ts`), because the text must stay legible over
+  whatever is behind the window; `globals.css` holds no fixed coverage. The
+  frame and the sidebar are composited
   over the worst backdrop (pure white behind a dark theme, pure black behind
-  a light one), modelling the acrylic as fully see-through: real acrylic
-  blurs and tints, so this is a conservative bound, not a measurement. The
-  frame coverage rises in 1% steps from the level's floor (dark 30% Soft /
-  12% Clear, light 55% / 35%; the sheet stays at 6% / 5% dark, 10% / 8%
-  light) to the smallest value where `--text-main`, `--text-sub2` and
+  a light one), modelling the material as fully see-through: real acrylic
+  and vibrancy blur and tint, so this is a conservative bound, not a
+  measurement. The
+  frame coverage rises in 1% steps from the level's floor, the fixed
+  numbers each platform shipped with before (Windows: dark 30% Soft / 12%
+  Clear, light 55% / 35%, the sheet 6% / 5% dark, 10% / 8% light; macOS:
+  dark 25% / 10%, light 10% / 0%, the sheet 6% / 5% dark, 4% / 3% light,
+  and Stars & Stripes, Red Dynasty and Catppuccin 55% / 35% with a 20% /
+  12% sheet so their colour survives the grey material) to the smallest
+  value where `--text-main`, `--text-sub2` and
   `--text-sub` keep 4.5:1 and `--text-subtle` and `--text-muted` 3:1 against
   both the frame and the sidebar. The
   range stops at 90% (`GLASS_MAX_COVERAGE`), above which the glass no longer
   reads as glass: a theme where any of the five tiers still misses its floor
-  at 90% is opaque on Windows as if glass were Off (material none, a
-  solid caption strip), while the setting keeps the user's level, stays
+  at 90% is opaque as if glass were Off (on Windows also material none and a
+  solid caption strip; macOS keeps its vibrancy under the opaque page, and
+  the app's appearance goes back to the system's), while the setting keeps
+  the user's level, stays
   changeable and says in its description why the theme is opaque. Glass
   draws a theme's own text tiers and row fills on both platforms, exactly as
   macOS does: no platform rule restates a text colour, and Windows has no
-  glass-only lift. Nothing is pinned per theme, so a token change moves a
-  theme in or out of glass on its own. Where the legibility minimum sits above both floors, Soft and Clear
+  glass-only lift. Nothing is pinned per theme beyond the macOS hued floor,
+  so a token change moves a theme in or out of glass on its own. Where the legibility minimum sits above both floors, Soft and Clear
   get the same frame coverage. The level the window last showed is saved
   (`windowGlassEffective`, beside the user's level), so main starts a theme
   that blocks glass opaque instead of showing acrylic until the renderer
@@ -2573,6 +2577,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-03 | The whole file in the company review (insight 170 follow-up): a quiet **Show the whole file** below the review's groups reads wmux.json again and shows it whole, only while it holds the bytes the review opened on; each character a reader would not see is shown as its code point where it sits | Approve trusts every byte of the file, and the groups list only what wmux reads from it: a key it does not know or an entry it dropped was approved unseen. Showing the file itself covers whatever wmux does not parse; marking the invisible characters keeps the view the bytes the grant binds, and a list of dropped entries would need the parser to report each one |
 | 2026-11-03 | Owner-approved (agent marker mockup): agent identity colours, the second exception to "colour carries state only". While agents drive other apps, each one's halo, name pill and pointer on screen wear its own colour from a ten-fill palette (slot 0 the attention orange, red left out, dark ink ≥ 4.5:1 on every fill), and that pane carries the same colour as an 8px filled dot before its tab title and before its workspace's name on the sidebar row (at most three, then "+N"), once it has used computer use. The palette is used for nothing else | With several agents on one desktop, a marker on screen has to say which pane it belongs to at a glance; a name pill alone needs reading. One colour per agent, kept until wmux quits, makes the marker and the pane one thing. Red stays the error colour, and confining the palette to markers and their dots keeps every other colour a state |
 | 2026-11-04 | Owner-approved: Hangul renders in a bundled Pretendard subset after each look's Latin face | Windows' Malgun Gothic fallback was taller and had no 500 weight |
+| 2026-11-12 | Owner decision (#3283): macOS glass keeps text legible over any backdrop, as Windows has since 2026-10-21. The coverage is derived from each theme's tokens on both platforms with the same backdrop model, contrast floors and 90% cap; macOS's old fixed numbers become its floors, the hued themes' included. A theme that cannot is opaque on macOS too (the setting says why), and with it the app's appearance goes back to the system's. Amends Window glass and supersedes "macOS keeps its fixed numbers" in the 2026-10-21 row | The dark Tint sidebar over a white window on macOS composited to a light grey at the fixed 25% / 6%, with the secondary text near 1:1: the same failure the 2026-10-21 decision fixed on Windows |
 
 ### Desktop conversation view
 
