@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import type http from 'node:http';
 import { pipeline } from 'node:stream/promises';
 import { A2A_ROUTES, A2A_SHA256_RE, isHostId, type HostId } from '../../shared/a2aRemote';
 import { BUNDLE_BYTES_CEILING, BUNDLE_TTL_DEFAULT_MS, isBundleId } from '../../shared/a2aBundle';
@@ -16,10 +17,11 @@ import { transferSlots } from './transferPart';
  *
  * Only the PC a bundle was made for gets it (its authenticated id, never a
  * field it sent), only while its offer stands (until it is withdrawn or its
- * time is up), and only when the file is still a plain file of the size
- * offered. Anything else is 404, as for a path never registered. While the
- * feature is off the route does not exist. The file itself is the maker's:
- * nothing here writes or removes it.
+ * time is up), and only while the file is still the plain file offered (the
+ * same file, size and modification time). Anything else is 404, as for a path
+ * never registered. While the feature is off the route does not exist. The
+ * file itself is the maker's: nothing here writes or removes it. Withdrawing
+ * an offer, or removing its PC, ends a transfer of it that is under way.
  *
  * One transfer per PC and TRANSFERS_MAX in all (else 429), each within its
  * size's budget; a fetch past it is cut, and the asking PC fetches again.
@@ -40,6 +42,9 @@ export interface BundleOffer {
 
 interface Offered extends BundleOffer {
   expiresAt: number;
+  /** The file as it was offered: a later file at that path is not served. */
+  ino: number;
+  mtimeMs: number;
 }
 
 export interface BundleOutboxDeps {
@@ -53,11 +58,20 @@ export interface BundleOutboxDeps {
 
 const key = (hostId: HostId, bundleId: string): string => `${hostId}:${bundleId}`;
 
+/** The file is not there, or not one a plain open reaches (a link refused by O_NOFOLLOW): null. Anything else is thrown. */
+function goneOrThrow(err: unknown): null {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'ELOOP' || code === 'ENXIO') return null;
+  throw err;
+}
+
 export class BundleOutbox {
   private readonly deps: BundleOutboxDeps;
   private readonly now: () => number;
   private readonly budget: (bytes: number) => number;
   private readonly offers = new Map<string, Offered>();
+  /** Responses streaming each offer now: ended when the offer ends. */
+  private readonly sending = new Map<string, Set<http.ServerResponse>>();
   private readonly slots = transferSlots(TRANSFERS_MAX);
 
   constructor(deps: BundleOutboxDeps) {
@@ -71,22 +85,47 @@ export class BundleOutbox {
     table.add('GET', `${A2A_ROUTES.bundle}/:bundleId`, (ctx) => this.get(ctx), { when: () => this.deps.enabled() });
   }
 
-  /** Offer a made bundle to the PC it was made for, for `ttlMs`. False when the offer is not one this serves. */
+  /**
+   * Offer a made bundle to the PC it was made for, for `ttlMs`: the plain
+   * file at `file` now, of `bytes`. False when the offer is not one this
+   * serves (or the file is not that).
+   */
   offer(o: BundleOffer, ttlMs = BUNDLE_TTL_DEFAULT_MS): boolean {
     if (!isHostId(o.hostId) || !isBundleId(o.bundleId) || !A2A_SHA256_RE.test(o.sha256)) return false;
     if (!Number.isInteger(o.bytes) || o.bytes < 1 || o.bytes > BUNDLE_BYTES_CEILING || !(ttlMs > 0)) return false;
-    this.offers.set(key(o.hostId, o.bundleId), { ...o, expiresAt: this.now() + ttlMs });
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(o.file);
+    } catch {
+      return false;
+    }
+    if (!st.isFile() || st.size !== o.bytes) return false;
+    // Offers past their time that were never fetched go here, so the list does not grow with them.
+    const now = this.now();
+    for (const [k, old] of this.offers) if (now >= old.expiresAt) this.offers.delete(k);
+    this.offers.set(key(o.hostId, o.bundleId), { ...o, expiresAt: now + ttlMs, ino: st.ino, mtimeMs: st.mtimeMs });
     return true;
   }
 
-  /** The offer ends (the maker removes the file after). */
+  /** The offer ends, and a transfer of it under way with it (the maker removes the file after). */
   withdraw(hostId: HostId, bundleId: string): void {
-    this.offers.delete(key(hostId, bundleId));
+    const k = key(hostId, bundleId);
+    this.offers.delete(k);
+    this.endSending(k);
   }
 
-  /** A paired PC was removed: its offers end. */
+  /** A paired PC was removed: its offers end, and their transfers. */
   forgetHost(hostId: HostId): void {
-    for (const [k, o] of this.offers) if (o.hostId === hostId) this.offers.delete(k);
+    for (const [k, o] of this.offers) {
+      if (o.hostId !== hostId) continue;
+      this.offers.delete(k);
+      this.endSending(k);
+    }
+  }
+
+  private endSending(k: string): void {
+    for (const res of this.sending.get(k) ?? []) res.destroy();
+    this.sending.delete(k);
   }
 
   /** The offer `hostId` may fetch, while it stands. */
@@ -110,17 +149,28 @@ export class BundleOutbox {
     // Before any wait: a client gone mid-transfer still gives the slot back.
     res.once('close', release);
     const what = `bundle ${offered.bundleId} for ${offered.hostId}`;
+    const k = key(offered.hostId, offered.bundleId);
     let handle: fs.promises.FileHandle | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // The file as it is now, never through a link: a plain file of the size offered, else not served.
-      handle = await fs.promises.open(offered.file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0)).catch(() => null);
+      // The file as it is now, never through a link and never waiting on one that is not a plain file (a FIFO):
+      // the one offered, else not served. (Windows has neither flag; its check is the stat below.)
+      // An error that says nothing of the file (too many open files, a lock held for a moment) is a 503 and the
+      // offer stands; only a file that is gone or is another one ends it.
+      const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+      const pre = await fs.promises.lstat(offered.file).catch(goneOrThrow);
+      handle = pre?.isFile() ? await fs.promises.open(offered.file, flags).catch(goneOrThrow) : null;
       const st = handle ? await handle.stat() : null;
-      if (!handle || !st?.isFile() || st.size !== offered.bytes) {
+      if (!handle || !st?.isFile() || st.size !== offered.bytes || st.ino !== offered.ino || st.mtimeMs !== offered.mtimeMs) {
         this.deps.log('warn', `[a2a-remote] ${what}: its file is not the one offered; the offer ends`);
         this.withdraw(offered.hostId, offered.bundleId);
         return sendJson(res, 404, { ok: false, error: 'bad-request', message: 'not found' });
       }
+      // Withdrawn while the file was opened: not served.
+      if (this.offers.get(k) !== offered) return sendJson(res, 404, { ok: false, error: 'bad-request', message: 'not found' });
+      const live = this.sending.get(k) ?? new Set<http.ServerResponse>();
+      live.add(res);
+      this.sending.set(k, live);
       res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': offered.bytes, 'Cache-Control': 'no-store' });
       // Within its size's budget: a fetch that reads too slowly is cut, and its slot freed.
       timer = setTimeout(() => res.destroy(), this.budget(offered.bytes));
@@ -134,6 +184,9 @@ export class BundleOutbox {
       else res.destroy();
     } finally {
       clearTimeout(timer);
+      const live = this.sending.get(k);
+      live?.delete(res);
+      if (live?.size === 0) this.sending.delete(k);
       await handle?.close().catch(() => undefined);
       release();
     }

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { A2A_ROUTES, A2A_SHA256_RE, isHostId, type HostId } from '../../shared/a2aRemote';
-import { BUNDLE_BYTES_CEILING, BUNDLE_BYTES_DEFAULT, isBundleId, type A2aBundleManifestV1 } from '../../shared/a2aBundle';
+import { bundleBytesMax, isBundleId, type A2aBundleManifestV1 } from '../../shared/a2aBundle';
 import { ContinueStagingRefusal, continueParentsInside } from './continueStaging';
 import { PinnedClientError } from './pinnedClient';
 import { continueTransferBudgetMs, continueWireMax } from './server';
@@ -71,21 +71,33 @@ export class BundleIntake {
   private readonly budget: (bytes: number) => number;
   private readonly slots = transferSlots(TRANSFERS_MAX);
   /** One pull per bundle at a time: a second call while one runs gets its answer. */
-  private readonly running = new Map<string, Promise<BundlePull>>();
+  private readonly running = new Map<string, { hostId: HostId; done: Promise<BundlePull>; abort: AbortController }>();
 
   constructor(deps: BundleIntakeDeps) {
     this.deps = deps;
     this.budget = deps.transferBudgetMs ?? continueTransferBudgetMs;
   }
 
-  /** Fetch the bundle `manifest` names from `hostId` into staging, once. */
-  pull(hostId: HostId, manifest: A2aBundleManifestV1, signal?: AbortSignal): Promise<BundlePull> {
-    const k = key(hostId, manifest.bundleId);
+  /**
+   * Fetch the bundle `manifest` names from `hostId` into staging, once: a
+   * second call while one runs gets its answer. A pull ends early only when
+   * its PC is removed (forgetHost) or the intake stops.
+   */
+  pull(hostId: HostId, manifest: unknown): Promise<BundlePull> {
+    const m = wellFormed(manifest);
+    if (!isHostId(hostId) || !m) return Promise.resolve({ kind: 'fatal', why: 'not a bundle this PC can fetch' });
+    const k = key(hostId, m.bundleId);
     const running = this.running.get(k);
-    if (running) return running;
-    const run = this.pullOnce(hostId, manifest, signal ?? new AbortController().signal).finally(() => this.running.delete(k));
-    this.running.set(k, run);
-    return run;
+    if (running) return running.done;
+    const abort = new AbortController();
+    const done = this.pullOnce(hostId, m, abort.signal).finally(() => this.running.delete(k));
+    this.running.set(k, { hostId, done, abort });
+    return done;
+  }
+
+  /** Every pull in flight ends (the daemon stops). */
+  stop(): void {
+    for (const r of this.running.values()) r.abort.abort();
   }
 
   /** A staged bundle is done with (imported, or refused there): it goes. */
@@ -94,9 +106,12 @@ export class BundleIntake {
     await fs.promises.rm(bundleStagedFile(this.deps.a2aDir, hostId, bundleId), { force: true });
   }
 
-  /** A paired PC was removed: everything staged from it goes. */
+  /** A paired PC was removed: its pulls end, then everything staged from it goes. */
   async forgetHost(hostId: HostId): Promise<void> {
     if (!isHostId(hostId)) return;
+    const ending = [...this.running.values()].filter((r) => r.hostId === hostId);
+    for (const r of ending) r.abort.abort();
+    await Promise.allSettled(ending.map((r) => r.done));
     await fs.promises.rm(bundleStagingHostDir(this.deps.a2aDir, hostId), { recursive: true, force: true });
   }
 
@@ -108,9 +123,7 @@ export class BundleIntake {
   }
 
   private async pullOnce(hostId: HostId, m: A2aBundleManifestV1, signal: AbortSignal): Promise<BundlePull> {
-    if (!isHostId(hostId) || !isBundleId(m.bundleId) || !A2A_SHA256_RE.test(m.sha256)) return { kind: 'fatal', why: 'not a bundle this PC can fetch' };
-    const max = Math.min(this.deps.maxBytes?.() ?? BUNDLE_BYTES_DEFAULT, BUNDLE_BYTES_CEILING);
-    if (!Number.isInteger(m.bytes) || m.bytes < 1) return { kind: 'fatal', why: 'not a bundle this PC can fetch' };
+    const max = bundleBytesMax(this.deps.maxBytes?.());
     if (m.bytes > max) return { kind: 'fatal', why: `${m.bytes} bytes, past the ${max} this PC takes` };
     const what = `bundle ${m.bundleId} from ${hostId}`;
     const target = bundleStagedFile(this.deps.a2aDir, hostId, m.bundleId);
@@ -118,7 +131,8 @@ export class BundleIntake {
       // Fetched before (a repeat after a restart, say): taken as it is when it still checks out.
       if (await holds(this.deps.a2aDir, target, m.sha256, m.bytes)) return { kind: 'staged', file: target };
     } catch (err) {
-      return { kind: 'fatal', why: err instanceof ContinueStagingRefusal ? err.message : errMsg(err) };
+      // A link or another kind of file where staging goes is final; a passing read error is tried again.
+      return err instanceof ContinueStagingRefusal ? { kind: 'fatal', why: err.message } : { kind: 'again', why: errMsg(err) };
     }
     const get = this.deps.fetchFrom(hostId);
     if (!get) return { kind: 'not-joined' };
@@ -130,7 +144,8 @@ export class BundleIntake {
     const both = AbortSignal.any([signal, cut.signal]);
     const part = path.join(bundleStagingHostDir(this.deps.a2aDir, hostId), PARTS, m.bundleId);
     try {
-      await fs.promises.mkdir(this.deps.a2aDir, { recursive: true });
+      // Made at once, so two PCs fetching for the first time never race to make it; it is checked to be a plain folder next.
+      await fs.promises.mkdir(path.join(this.deps.a2aDir, BUNDLE_IN), { recursive: true, mode: 0o700 });
       await continueParentsInside(this.deps.a2aDir, part, true);
       await fs.promises.rm(part, { force: true });
       const written = await get(
@@ -168,6 +183,15 @@ export class BundleIntake {
       release();
     }
   }
+}
+
+/** The manifest as taken: an id, a hash and a whole positive size, each of its type; null otherwise. */
+function wellFormed(raw: unknown): A2aBundleManifestV1 | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const { bundleId, sha256, bytes } = raw as Record<string, unknown>;
+  if (!isBundleId(bundleId) || typeof sha256 !== 'string' || !A2A_SHA256_RE.test(sha256)) return null;
+  if (typeof bytes !== 'number' || !Number.isInteger(bytes) || bytes < 1) return null;
+  return { bundleId, sha256, bytes };
 }
 
 /** `target` is a plain file reached through plain folders, of exactly `bytes` with hash `sha`; one that is not goes. */

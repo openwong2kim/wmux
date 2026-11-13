@@ -44,6 +44,11 @@ let outbox: BundleOutbox;
 let server: http.Server;
 let port: number;
 let gets: string[];
+let enabled: boolean;
+let serveBudgetMs: number | null;
+/** What the serving side logged. */
+let served: string[];
+let onServed: (line: string) => void;
 
 beforeEach(async () => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-bundle-')));
@@ -52,7 +57,16 @@ beforeEach(async () => {
   fs.mkdirSync(boxDir, { recursive: true });
   clock = Date.now();
   gets = [];
-  outbox = new BundleOutbox({ enabled: () => true, log: quiet, now: () => clock });
+  enabled = true;
+  serveBudgetMs = null;
+  served = [];
+  onServed = quiet;
+  outbox = new BundleOutbox({
+    enabled: () => enabled,
+    log: (_level, line) => { served.push(line); onServed(line); },
+    now: () => clock,
+    transferBudgetMs: (n) => serveBudgetMs ?? continueTransferBudgetMs(n),
+  });
   const table = new A2aRouteTable();
   outbox.registerRoutes(table);
   server = http.createServer((req, res) => {
@@ -136,10 +150,17 @@ describe('a returned bundle, fetched by the asking PC', () => {
     clock = Date.now();
     const changed = made(body);
     fs.appendFileSync(path.join(boxDir, `${changed.bundleId}.bundle`), 'x');
-    expect(await intake().pull(ASKER, changed)).toMatchObject({ kind: 'fatal' });
+    expect(await intake().pull(ASKER, changed)).toEqual({ kind: 'fatal', why: 'the other PC answered HTTP 404' });
     fs.truncateSync(path.join(boxDir, `${changed.bundleId}.bundle`), body.length);
     expect(await intake().pull(ASKER, changed)).toEqual({ kind: 'fatal', why: 'the other PC answered HTTP 404' });
+    // Another file of the same size put in its place is not served either.
+    const swapped = made(body);
+    const swappedFile = path.join(boxDir, `${swapped.bundleId}.bundle`);
+    fs.writeFileSync(`${swappedFile}.new`, bytes(body.length, 99));
+    fs.renameSync(`${swappedFile}.new`, swappedFile);
+    expect(await intake().pull(ASKER, swapped)).toEqual({ kind: 'fatal', why: 'the other PC answered HTTP 404' });
     expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, swapped.bundleId))).toBe(false);
   });
 
   it('refuses bytes whose hash is not the manifest\'s, and leaves nothing behind', async () => {
@@ -159,6 +180,8 @@ describe('a returned bundle, fetched by the asking PC', () => {
     expect(bundleBytesMax(undefined)).toBe(BUNDLE_BYTES_DEFAULT);
     expect(bundleBytesMax(BUNDLE_BYTES_CEILING * 2)).toBe(BUNDLE_BYTES_CEILING);
     expect(bundleBytesMax(0)).toBe(BUNDLE_BYTES_DEFAULT);
+    expect(bundleBytesMax(Number.NaN)).toBe(BUNDLE_BYTES_DEFAULT);
+    expect(await intake({ maxBytes: Number.NaN }).pull(ASKER, m)).toMatchObject({ kind: 'staged' });
     // The ceiling is the most bytes whose transfer budget still fits under the budget's own cap.
     expect(continueTransferBudgetMs(BUNDLE_BYTES_CEILING)).toBeLessThanOrEqual(CONTINUE_TRANSFER_MAX_MS);
     expect(30_000 + Math.ceil(((BUNDLE_BYTES_CEILING + 1_000) * 8) / 1_000)).toBeGreaterThan(CONTINUE_TRANSFER_MAX_MS);
@@ -206,7 +229,7 @@ describe('a returned bundle, fetched by the asking PC', () => {
   it('a PC this one does not join cannot be fetched from; a manifest that is not well formed is refused before anything', async () => {
     const m = made(bytes(1000, 14));
     expect(await intake({ get: null }).pull(ASKER, m)).toEqual({ kind: 'not-joined' });
-    for (const bad of [{ ...m, bundleId: 'bd-x' }, { ...m, sha256: 'z'.repeat(64) }, { ...m, bytes: 0 }, { ...m, bytes: 1.5 }]) {
+    for (const bad of [null, 'bd-x', {}, { ...m, bundleId: 'bd-x' }, { ...m, sha256: 'z'.repeat(64) }, { ...m, bytes: 0 }, { ...m, bytes: 1.5 }, { ...m, bytes: '1000' }]) {
       // eslint-disable-next-line no-await-in-loop -- one at a time
       expect(await intake().pull(ASKER, bad)).toEqual({ kind: 'fatal', why: 'not a bundle this PC can fetch' });
     }
@@ -214,6 +237,127 @@ describe('a returned bundle, fetched by the asking PC', () => {
     // The box offers nothing it would not serve.
     expect(outbox.offer({ hostId: BOX, bundleId: 'bd-x', file: '/x', sha256: m.sha256, bytes: 1 })).toBe(false);
     expect(outbox.offer({ hostId: BOX, bundleId: bundleId(), file: '/x', sha256: m.sha256, bytes: BUNDLE_BYTES_CEILING + 1 })).toBe(false);
+  });
+
+  it('withdrawing an offer, or removing its PC, ends a transfer of it under way on the box', async () => {
+    for (const end of ['withdraw', 'forgetHost'] as const) {
+      // Large enough that it cannot all sit in the socket buffers by the time the headers arrive.
+      const m = made(bytes(24 * 1024 * 1024, end === 'withdraw' ? 16 : 17));
+      const real = getAs(ASKER);
+      const ending: StreamedGet = (p, o, consume) => real(p, o, (r) => {
+        if (end === 'withdraw') outbox.withdraw(ASKER, m.bundleId);
+        else outbox.forgetHost(ASKER);
+        return consume(r);
+      });
+      // eslint-disable-next-line no-await-in-loop -- one at a time
+      expect(await intake({ get: ending }).pull(ASKER, m)).toMatchObject({ kind: 'again' });
+      expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
+      expect(partsOf()).toEqual([]);
+      // eslint-disable-next-line no-await-in-loop -- one at a time
+      expect(await intake().pull(ASKER, m)).toEqual({ kind: 'fatal', why: 'the other PC answered HTTP 404' });
+    }
+  });
+
+  it('removing a PC ends a pull from it that is under way, then its staging goes', async () => {
+    const m = made(bytes(20_000, 18));
+    let entered: () => void = () => undefined;
+    const inGet = new Promise<void>((r) => { entered = r; });
+    const real = getAs(ASKER);
+    // Waits until the pull is ended, then goes on as a GET would with the signal it was given.
+    const held: StreamedGet = async (p, o, consume) => {
+      entered();
+      await new Promise((r) => o.signal.addEventListener('abort', r, { once: true }));
+      return real(p, o, consume);
+    };
+    const one = intake({ get: held });
+    const pulling = one.pull(ASKER, m);
+    await inGet;
+    await one.forgetHost(ASKER);
+    expect(await pulling).toMatchObject({ kind: 'again' });
+    expect(fs.existsSync(bundleStagingHostDir(askerA2a, ASKER))).toBe(false);
+  });
+
+  it('the route does not exist while the feature is off', async () => {
+    const m = made(bytes(1000, 19));
+    enabled = false;
+    expect(await intake().pull(ASKER, m)).toEqual({ kind: 'fatal', why: 'the other PC answered HTTP 404' });
+    enabled = true;
+    expect(await intake().pull(ASKER, m)).toMatchObject({ kind: 'staged' });
+  });
+
+  // A mode bit does not refuse the owner on Windows, nor root anywhere.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('an open error that says nothing of the file is a 503, and the offer stands', async () => {
+    const m = made(bytes(1000, 20));
+    const file = path.join(boxDir, `${m.bundleId}.bundle`);
+    fs.chmodSync(file, 0o000);
+    expect(await intake().pull(ASKER, m)).toMatchObject({ kind: 'again' });
+    fs.chmodSync(file, 0o600);
+    expect(await intake().pull(ASKER, m)).toMatchObject({ kind: 'staged' });
+  });
+
+  /** Resolves once the serving side logs a line holding `text`. */
+  const servedLine = (text: string): Promise<void> => new Promise((r) => { onServed = (line) => { if (line.includes(text)) r(); }; });
+
+  it('the serving side takes one transfer per PC (429 past it), and has the slot back once that client is gone', async () => {
+    const a = made(bytes(24 * 1024 * 1024, 21));
+    const b = made(bytes(2000, 22));
+    let entered: () => void = () => undefined;
+    const inBody = new Promise<void>((r) => { entered = r; });
+    let leave: () => void = () => undefined;
+    const left = new Promise<void>((r) => { leave = r; });
+    const real = getAs(ASKER);
+    // Takes the headers, then goes away without reading the body.
+    const goesAway: StreamedGet = (p, o, consume) => real(p, o, async (r) => {
+      entered();
+      await left;
+      r.body.destroy(new Error('went away'));
+      return consume(r);
+    });
+    const first = intake({ get: goesAway }).pull(ASKER, a);
+    await inBody;
+    // Another intake (its own slots), the same PC: the box refuses it while the first is served.
+    expect(await intake().pull(ASKER, b)).toEqual({ kind: 'again', why: 'http' });
+    const gone = servedLine(`bundle ${a.bundleId} for ${ASKER}: not sent whole`);
+    leave();
+    expect(await first).toMatchObject({ kind: 'again' });
+    await gone;
+    expect(await intake().pull(ASKER, b)).toMatchObject({ kind: 'staged' });
+  });
+
+  it('the serving side cuts a reader too slow for the budget of its size', async () => {
+    serveBudgetMs = 50;
+    const m = made(bytes(24 * 1024 * 1024, 24));
+    const real = getAs(ASKER);
+    const cut = servedLine(`bundle ${m.bundleId} for ${ASKER}: not sent whole`);
+    // Reads nothing until the box has given up on it.
+    const slow: StreamedGet = (p, o, consume) => real(p, o, async (r) => {
+      await cut;
+      return consume(r);
+    });
+    expect(await intake({ get: slow }).pull(ASKER, m)).toMatchObject({ kind: 'again' });
+    expect(partsOf()).toEqual([]);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
+  });
+
+  it('refuses a body in an encoding it does not take, or declared longer than its manifest allows, before writing it', async () => {
+    const body = bytes(4000, 23);
+    const m = made(body);
+    const answering = (headers: http.IncomingHttpHeaders): StreamedGet => async (_p, _o, consume) =>
+      consume({ headers, body: Readable.from([body]) as unknown as http.IncomingMessage });
+    expect(await intake({ get: answering({ 'content-encoding': 'br' }) }).pull(ASKER, m))
+      .toEqual({ kind: 'fatal', why: 'sent in an encoding other than identity or gzip' });
+    expect(await intake({ get: answering({ 'content-length': String(BUNDLE_BYTES_CEILING) }) }).pull(ASKER, m))
+      .toEqual({ kind: 'fatal', why: 'its declared length is past its manifest' });
+    expect(partsOf()).toEqual([]);
+    expect(fs.existsSync(bundleStagedFile(askerA2a, ASKER, m.bundleId))).toBe(false);
+  });
+
+  it('after a restart, part files left by unfinished transfers go', async () => {
+    const parts = path.join(bundleStagingHostDir(askerA2a, ASKER), 'parts');
+    fs.mkdirSync(parts, { recursive: true });
+    fs.writeFileSync(path.join(parts, bundleId()), 'half');
+    await intake().sweepParts();
+    expect(partsOf()).toEqual([]);
   });
 
   it('a staged bundle goes when discarded, and all of a removed PC\'s staging goes with it', async () => {
