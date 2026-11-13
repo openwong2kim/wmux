@@ -26,7 +26,7 @@ import {
   type A2aSpawnPolicyV1,
 } from '../../shared/a2aSpawn';
 import { INVITE_CODE_RE, isHostId, parseInvite, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId } from '../../shared/a2aRemote';
-import { AGENT_ROWS, agentLauncherStem, agentRow, type AgentSlug } from '../../shared/agentIdentity';
+import { AGENT_ROWS, type AgentSlug } from '../../shared/agentIdentity';
 import { NOT_FIRST_PARTY } from '../../shared/daemonFirstParty';
 import { isNestingMarker } from '../../shared/envFilter';
 import { getExecEnv } from '../../shared/execEnv';
@@ -439,19 +439,14 @@ export function rootLabel(real: string): string {
   return label || 'folder';
 }
 
-/** Whether `agent`'s launcher is on this shell's PATH; undefined when that cannot be told (Windows). */
-function agentOnPath(agent: AgentSlug): boolean | undefined {
-  const row = agentRow(agent);
-  if (!row || process.platform === 'win32') return undefined;
-  const stem = agentLauncherStem(row);
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!path.isAbsolute(dir)) continue;
-    try {
-      fs.accessSync(path.join(dir, stem), fs.constants.X_OK);
-      if (fs.statSync(path.join(dir, stem)).isFile()) return true;
-    } catch { /* not here */ }
-  }
-  return false;
+/**
+ * Whether the daemon finds `agent`'s launcher where a request for it is
+ * checked (the login PATH of the account it runs as, and ~/.local/bin);
+ * undefined when it does not say (an older daemon).
+ */
+async function daemonFindsAgent(agent: AgentSlug): Promise<boolean | undefined> {
+  const r = (await daemonCall(A2A_SPAWN_RPC.policyGet, { agent })) as { agentInstalled?: unknown };
+  return typeof r.agentInstalled === 'boolean' ? r.agentInstalled : undefined;
 }
 
 interface AllowChange {
@@ -582,8 +577,9 @@ async function remoteAllow(args: string[], jsonMode: boolean): Promise<void> {
   }
   if (hasFlag(args, '--bypass-permissions') && modeArg !== 'bypassPermissions') fail('--bypass-permissions goes with --permission-mode bypassPermissions.');
   const rootPath = await resolveRoot(rootArg);
-  const installed = agentOnPath(agent);
-  if (installed === false) console.error(`Warning: ${agent} was not found on this shell's PATH. A request for it is refused until it is installed for the account the daemon runs as.`);
+  if ((await daemonFindsAgent(agent)) === false) {
+    console.error(`Warning: the daemon did not find ${agent} on the login PATH or in ~/.local/bin of the account it runs as. A request for it is refused (agent-not-installed) until it is installed there.`);
+  }
 
   // With --json, stdout carries only the result: what a person reads goes to stderr.
   const say = jsonMode ? console.error : console.log;

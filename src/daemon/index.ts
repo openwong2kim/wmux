@@ -25,7 +25,7 @@ import { paneCodexSettings } from './web/paneCodexSettings';
 import { createPaneJob } from './paneJob';
 import { CodexPaneRelays, paneCodexHome } from './web/codexPaneRelays';
 import { createCodexAccountStatusReader } from './web/codexAccountStatus';
-import { buildAgentLaunch, installedAgentLaunchOptions, webPaneSpawn, whichOnPath } from './web/agentLaunch';
+import { buildAgentLaunch, installedAgentLaunchOptions, webPaneSpawn } from './web/agentLaunch';
 import { agentExecEnv } from '../shared/execEnv';
 import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
 import { applyPaneAccount, assertPaneAccountUsable } from './phone/paneAccount';
@@ -38,7 +38,7 @@ import { AutomationEngine } from './automation/AutomationEngine';
 import { assertExternalSessionId, registerAutomationRpc } from './automation/rpc';
 import { isTransientTurnFailure, shouldPushTurnFailure } from './automation/transientFailure';
 import { killProcessTree } from './automation/treeKill';
-import { captureProcessTree, matchesRecordedStart, recordedStartOf, treeKillRefusal, type CapturedTree, type VerifiedTreeKillResult } from './automation/verifiedTreeKill';
+import { captureProcessTree, matchesRecordedStart, recordedStartOf, treeKillRefusal, type CapturedTree } from './automation/verifiedTreeKill';
 import { pendingRemovalRefusalAt } from '../main/worktask/pendingWorktreeRemovals';
 import { recordedRunPtyIds } from './automation/store';
 import { AUTOMATION_EVENT } from '../shared/automation';
@@ -123,7 +123,7 @@ import { LanLinkServer } from './lanlink/server';
 import { QUERY_TIMEOUT_MS } from './lanlink/netCategory';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { A2aRemoteController } from './a2aRemote/controller';
+import { A2aRemoteController, a2aRemoteBindHost } from './a2aRemote/controller';
 import { A2aServer, rankedExternalIpv4s } from './a2aRemote/server';
 import { registerNetRpc } from './net/rpc';
 import { FirewallRecordStore } from './net/firewallRecord';
@@ -160,9 +160,8 @@ import { rootIsRepoTop, rootOriginKey } from './a2aRemote/continueRootGit';
 import { createSpawnWorktree, gitRunner, removeSpawnWorktree } from '../main/a2aRemote/spawnWorktree';
 import { HeadlessMode, headlessReleases } from './a2aRemote/headlessMode';
 import { HeadlessStartStore } from './a2aRemote/headlessStartStore';
-import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessDestroyResult, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
-import { snapshotTree, stillHeld } from './a2aRemote/headlessProcs';
-import type { HeadlessSurvivor } from './a2aRemote/headlessStartStore';
+import { A2aHeadlessStarter, worktreeUnchanged, type HeadlessSessionPort } from './a2aRemote/headlessStarter';
+import { createHeadlessSessions } from './a2aRemote/headlessSessions';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
@@ -244,7 +243,7 @@ import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, dataSuffix, getWmuxHomeDir, isBr
 import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, hasAuthoritativeTranscript, transcriptRelocated, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { alignResumeCwd } from './alignResumeCwd';
-import { agentDisplayToSlug, agentLauncherStem, agentRow, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
+import { agentDisplayToSlug, agentRow, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
 import { DIALOG_RECHECK_MS, HookIngest, identifiedAgentPid, shellAtPrompt, type HookArbitration } from './hooks/HookIngest';
 import { ExternalSessionRegistry } from './externalSessions/ExternalSessionRegistry';
@@ -311,7 +310,7 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { handleLiveness } from '../shared/processHandleLiveness';
-import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
+import { deliverScheduledPrompt, deliveryInputFence, type ScheduledPromptDeliveryDeps, type ScreenBlock } from './sessionPromptDelivery';
 import { deliverCallerNudge } from './callerNudgeDelivery';
 import { paneTurnClosed, stopAgentTree } from './agentStop';
 import { continueOnAccount } from './continueOnAccount';
@@ -530,6 +529,8 @@ let sessionLifecycle: WebSessionLifecycle | null = null;
 // session RPCs it wraps live), and each side reaches the other through these.
 let headlessSessionsRef: HeadlessSessionPort | null = null;
 let headlessStarterRef: A2aHeadlessStarter | null = null;
+// Headless mode in effect: the idle timeout does not stop a host other PCs are meant to reach.
+let idleHoldForRemoteStarts: () => boolean = () => false;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
 /** Contract v-next item 1: a Codex turn on a daemon-owned relay failed (set at boot). */
@@ -3117,86 +3118,13 @@ function registerRpcHandlers(
     },
   };
 
-  // The panes a headless remote start runs its agent in (a2aRemote/headlessStarter.ts).
-  // The launcher is looked up on the PATH agents run with (the login shell's,
-  // plus ~/.local/bin and the other per-user fallbacks) and the spawn is
-  // pinned to it, as a phone-created pane's is (webPaneSpawn). Kept alive with
-  // no client attached (remoteDurable). The agent's line is the spawn's only:
-  // what is persisted, and what a recovery after a restart would run, is a
-  // line that says the agent ended, so a restart never brings an agent back
-  // without its task (headless reconcile then ends that session).
-  const shellQuotable = (s: string): boolean => !/['\n\r\0]/.test(s);
-  /** A live session's recorded start time, waited for up to 3 s (it is read right after the spawn). */
-  const headlessStartTimeOf = async (id: string): Promise<string | undefined> => {
-    for (let waited = 0; ; waited += 100) {
-      const meta = sessionManager.getSession(id)?.meta;
-      if (!meta || (meta.state !== 'attached' && meta.state !== 'detached')) return undefined;
-      const start = process.platform === 'win32' ? meta.pidCreatedAtFt : meta.pidStartTime;
-      if (start || waited >= 3000) return start;
-      await new Promise((r) => setTimeout(r, 100));
-    }
-  };
-  const HEADLESS_REPLAY_LINE = "echo 'wmux: this agent was started for another PC and ended when the daemon restarted.'";
-  headlessSessionsRef = {
-    resolveAgent: async (agent) => {
-      const row = agentRow(agent);
-      if (!row || process.platform === 'win32') return null;
-      const env = await agentExecEnv(process.env);
-      return (await whichOnPath(agentLauncherStem(row), env.PATH ?? '')) ?? null;
-    },
-    create: async ({ sessionId, workspaceId, cwd, agentBin, command, env: extra }) => {
-      const base = buildWebPaneEnv({ id: sessionId, parentEnv: process.env, workspaceId });
-      const agentPath = (await agentExecEnv(base)).PATH ?? base.PATH ?? '';
-      if (!shellQuotable(agentPath) || !shellQuotable(agentBin)) throw new Error('the agent path cannot be quoted for the launch line');
-      const space = command.indexOf(' ');
-      const launch = `/usr/bin/env PATH='${agentPath}' '${agentBin}'${space < 0 ? '' : command.slice(space)}`;
-      await createSessionRpc(
-        { id: sessionId, exec: { command: HEADLESS_REPLAY_LINE }, cwd, env: { ...base, ...extra, PATH: agentPath } },
-        { execLaunchCommand: launch, remoteDurable: true },
-      );
-      // Its process, with the start time the daemon reads right after the spawn (waited for, so a
-      // later tree kill is not refused and a later run can find it again).
-      const rootStart = await headlessStartTimeOf(sessionId);
-      const rootPid = sessionManager.getSession(sessionId)?.meta.pid;
-      return { ...(rootPid && rootPid > 1 ? { rootPid } : {}), ...(rootStart ? { rootStart } : {}) };
-    },
-    alive: (id) => {
-      const state = sessionManager.getSession(id)?.meta.state;
-      return state === 'attached' || state === 'detached';
-    },
-    destroy: async (id) => {
-      // Any id: one recovery left on disk only is ended too (#2493). The agent's
-      // tree when its root can be proven; what did not exit is reported, never
-      // taken for gone.
-      // A tree kill is refused while the session's start time is not read yet: wait for it (briefly).
-      await headlessStartTimeOf(id);
-      const rootPid = sessionManager.getSession(id)?.meta.pid ?? 0;
-      // The agent's tree as it is before the kill: what holds the start if the kill cannot be confirmed.
-      const before = await snapshotTree(rootPid);
-      const held = (extra: HeadlessSurvivor[], why: string): HeadlessDestroyResult => ({
-        ok: false,
-        survivors: [...(before ?? [{ pid: rootPid, reason: why, unverified: true as const }]), ...extra.filter((s) => !before?.some((b) => b.pid === s.pid))],
-      });
-      let res: unknown;
-      try {
-        res = await destroySessionRpc({ id, killTree: true });
-      } catch (err) {
-        // The tree cannot be proven (its root's start time is unknown): the pane alone is closed.
-        await destroySessionRpc({ id });
-        return held([], `its process tree could not be checked: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      const tree = (res as { tree?: VerifiedTreeKillResult } | undefined)?.tree;
-      return tree && !tree.ok ? held(tree.survivors, 'did not exit') : { ok: true };
-    },
-    killEarlier: async (rootPid, rootStart) => {
-      // Only the process recorded at its start: a pid that names another process now is left alone.
-      const captured = await captureProcessTree(rootPid, { rootIsOurs: (start) => matchesRecordedStart(rootStart, start) });
-      if (!captured) return { ok: true };
-      const tree = await captured.kill();
-      return tree.ok ? { ok: true } : { ok: false, survivors: tree.survivors };
-    },
-    stillRunning: (survivors, worktreePath) => stillHeld(survivors, worktreePath),
-  };
+  // The panes a headless remote start runs its agent in (a2aRemote/headlessSessions.ts).
+  headlessSessionsRef = createHeadlessSessions({
+    paneEnv: (id, workspaceId) => buildWebPaneEnv({ id, parentEnv: process.env, workspaceId }),
+    createSession: createSessionRpc,
+    destroySession: destroySessionRpc,
+    meta: (id) => sessionManager.getSession(id)?.meta,
+  });
   // Starts the a2a init could not settle before the session RPCs existed.
   void headlessStarterRef?.reconcile();
 
@@ -4282,7 +4210,8 @@ function registerRpcHandlers(
       const f = a2aServerRef?.firewallFacts();
       return {
         listener,
-        applicable: f?.listening === true,
+        // Bound to loopback, no other PC reaches it.
+        applicable: f?.listening === true && !(f.address !== null && isLoopbackHost(f.address)),
         port: f?.port ?? null,
         ips: f?.ips ?? [],
         inboundSeenAt: a2aServerRef?.status().inboundSeenAt ?? null,
@@ -4305,7 +4234,9 @@ function registerRpcHandlers(
     failure: (listener) => {
       if (listener === 'a2a') {
         const st = a2aServerRef?.status();
-        return st?.enabled && st.lastErrorCode ? { code: st.lastErrorCode, port: st.lastErrorPort ?? st.port, address: null } : null;
+        return st?.enabled && st.lastErrorCode
+          ? { code: st.lastErrorCode, port: st.lastErrorPort ?? st.port, address: a2aServerRef?.boundAddress() ?? null }
+          : null;
       }
       if (listener === 'web') {
         return webListenError && !webServer.status().running ? { code: webListenError.code, port: webListenError.port, address: webListenError.host } : null;
@@ -6376,14 +6307,15 @@ function registerRpcHandlers(
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string,
     opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized' | 'onWrite'>,
     writer: string,
-    trust: { refuseUnknown?: boolean; onRefused?: (verdict: 'trust' | 'unknown') => void } = {},
+    trust: { refuseUnknown?: boolean; onRefused?: (verdict: ScreenBlock) => void } = {},
   ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       ...opts,
       // Each of these is tried again later: one log line per pane while the
       // refusal holds. No person waits on them, so the read may take longer.
+      // Each presses Enter on its own, so any dialog on screen stops it too.
       folderTrustBlocks: async () => {
-        const refused = await trustRefusal(sessionManager, id, writer, trust.refuseUnknown ?? true, { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS });
+        const refused = await trustRefusal(sessionManager, id, writer, trust.refuseUnknown ?? true, { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS, refuseDialog: true });
         if (refused) trust.onRefused?.(refused);
         return refused;
       },
@@ -6457,7 +6389,7 @@ function registerRpcHandlers(
   // Both pass the same folder-trust checks as any automated writer.
   const deliverContinueMessage = async (
     id: string, slug: AgentSlug, incarnationId: string, stillWanted: () => boolean,
-    writer: string, trust: { refuseUnknown?: boolean; onRefused?: (verdict: 'trust' | 'unknown') => void },
+    writer: string, trust: { refuseUnknown?: boolean; onRefused?: (verdict: ScreenBlock) => void },
   ): Promise<SessionPromptScheduleResult> => {
     // A human draft in the composer is a wait, not a failure: answering
     // 'busy' keeps the pane armed and retries once the draft is sent or cleared.
@@ -6483,12 +6415,15 @@ function registerRpcHandlers(
       return slug && state.agentVerified && state.incarnationId ? { slug, incarnationId: state.incarnationId } : null;
     },
     deliverContinue: async (id, expected, stillWanted, armed) => {
-      // A person's Continue stops only at a prompt seen. Any refusal answers
-      // 'folder_trust', which waits without spending the busy retries.
+      // A person's Continue stops only at a prompt seen (a dialog is one).
+      // Any refusal answers 'folder_trust', which waits without spending the
+      // busy retries.
+      // A refusal after the paste stays 'error', so the continue is never
+      // pasted twice.
       let refused = false;
       const result = await deliverContinueMessage(id, expected.slug, expected.incarnationId, stillWanted,
         'usage-limit continue', { refuseUnknown: armed, onRefused: () => { refused = true; } });
-      return refused ? 'folder_trust' : result;
+      return refused && result !== 'error' ? 'folder_trust' : result;
     },
     log: (message) => log('info', message),
   });
@@ -6645,10 +6580,11 @@ function registerRpcHandlers(
       ? 'busy'
       : deliverPromptToSessionNow(id, slug, incarnationId, prompt, onWrite ? { onWrite } : {}, 'automation run')),
     // A pane held at a usage limit is that registry's to resume. The trust
-    // checks run before the paste and before Enter: 'unknown' before any
-    // write answers 'busy' (the engine asks again within its grace), a
-    // prompt on screen 'folder_trust' (final), and either after the paste
-    // 'error' (final: the continue is never pasted twice).
+    // checks run before the paste and before Enter: 'unknown' or another
+    // dialog before any write answers 'busy' (the engine asks again within
+    // its grace), a folder-trust prompt on screen 'folder_trust' (final), and
+    // any of them after the paste 'error' (final: the continue is never
+    // pasted twice).
     deliverContinue: async (id, slug, incarnationId, stillWanted) => (usageLimits?.holds(id)
       ? 'busy'
       : deliverContinueMessage(id, slug, incarnationId, stillWanted, 'automation retry', { refuseUnknown: true })),
@@ -9023,13 +8959,16 @@ let diskOnlySessions: DaemonSession[] = [];
 
 /** What every save writes: the managed sessions, then the disk-only records they have not taken. */
 /** Why a daemon writer must not type into `id` now (folderTrustState.ts):
- *  'trust' always, 'unknown' when `refuseUnknown` (an automated writer).
+ *  'trust' always, 'unknown' when `refuseUnknown` (an automated writer),
+ *  'dialog' when `refuseDialog` (a writer that presses Enter on its own).
  *  `budgetMs`: the read budget, for a writer no person waits on. */
-function trustRefusal(
-  sessionManager: DaemonSessionManager, id: string, writer: string, refuseUnknown: boolean, opts: { once?: boolean; budgetMs?: number } = {},
-): Promise<'trust' | 'unknown' | null> {
-  return folderTrustRefusal(sessionManager, id, writer, {
+function trustRefusal<D extends boolean = false>(
+  sessionManager: DaemonSessionManager, id: string, writer: string, refuseUnknown: boolean,
+  opts: { once?: boolean; budgetMs?: number; refuseDialog?: D } = {},
+): Promise<'trust' | 'unknown' | (D extends true ? 'dialog' : never) | null> {
+  return folderTrustRefusal<D>(sessionManager, id, writer, {
     refuseUnknown,
+    ...(opts.refuseDialog !== undefined ? { refuseDialog: opts.refuseDialog } : {}),
     ...(opts.budgetMs !== undefined ? { budgetMs: opts.budgetMs } : {}),
     log: (message) => {
       // A writer that tries again (`once`) logs a refusal once per pane while it holds.
@@ -10658,6 +10597,11 @@ async function main(): Promise<void> {
       // file an earlier identify wrote, or a reconciled pane snapshot (only the app publishes one).
       appSeen: () => pipeServer.appAttached() || fs.existsSync(path.join(wmuxDir, APP_ATTACHED_FILE)) || a2aExposedPanes.isReconciled(),
     });
+    // In effect: opted in, the app never seen here, and the starter built this run (below).
+    const headlessInEffect = (): boolean => headlessMode.active() && a2aHeadless !== null;
+    // A host in headless mode waits for other PCs, with no client and no session of its own:
+    // the idle timeout does not stop it. Off for good once the app is seen here (a desktop install).
+    idleHoldForRemoteStarts = headlessInEffect;
     // Read-only, for `wmux daemon headless status|on` (not an a2a.* method, so
     // also answered on a host without the app): what this daemon decides from.
     // Registered before anything else of the a2a stack can fail, so the app
@@ -10665,7 +10609,7 @@ async function main(): Promise<void> {
     pipeServer.onRpc('daemon.headless.status', async () => ({
       appAttached: !headlessMode.appStillAbsent(),
       optedIn: headlessMode.optedIn(),
-      inEffect: headlessMode.active() && a2aHeadless !== null,
+      inEffect: headlessInEffect(),
     }));
     const a2aLinks = new LinkStore({
       dir: a2aDir,
@@ -10889,8 +10833,12 @@ async function main(): Promise<void> {
         },
         log: a2aLog,
       });
+    // `a2aRemote.bindHost` in config.json: unset binds every interface; a value
+    // that cannot be used keeps the listener down.
+    const a2aBind = a2aRemoteBindHost(a2aRemoteController.current(), a2aLog);
     const a2aServer = new A2aServer({
       controller: a2aRemoteController,
+      ...('error' in a2aBind ? { bindError: a2aBind.error } : { bindAddress: a2aBind.host }),
       identityDir: a2aDir,
       peers: a2aPeers,
       onPeerRevoked: a2aCascade,
@@ -11456,6 +11404,7 @@ async function main(): Promise<void> {
       ),
       pendingApprovals: approvalRegistry?.pendingCount() ?? 0,
       automations: automationEngine?.holdsDaemon() ? 1 : 0,
+      remoteStarts: idleHoldForRemoteStarts() ? 1 : 0,
     }),
     // Idle self-terminate. Routes through the same shutdown() path used
     // by SIGTERM / SIGINT / daemon.shutdown RPC — the `shuttingDown`
