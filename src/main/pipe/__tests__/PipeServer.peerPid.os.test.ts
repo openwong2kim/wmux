@@ -56,6 +56,51 @@ async function sendOne(extra: Record<string, unknown> = {}) {
   return dispatch;
 }
 
+/** A server and one open connection to it from this process: `send` writes
+ *  raw text and resolves with the next `count` response lines. */
+async function openSession() {
+  const id = crypto.randomBytes(4).toString('hex');
+  paths.pipe = path.join(os.tmpdir(), `wmux-pipe-peer-${id}.sock`);
+  paths.token = path.join(os.tmpdir(), `wmux-pipe-peer-${id}.token`);
+  paths.port = path.join(os.tmpdir(), `wmux-pipe-peer-${id}.port`);
+  const dispatch = vi.fn(async (request: RpcRequest): Promise<RpcResponse> => ({ id: request.id, ok: true, result: null }));
+  server = new PipeServer({ dispatch } as unknown as RpcRouter);
+  server.start();
+  const token = server.getAuthToken();
+  const client = await vi.waitFor(() => new Promise<net.Socket>((resolve, reject) => {
+    const c = net.connect(paths.pipe, () => resolve(c));
+    c.on('error', reject);
+  }), { timeout: 5_000 });
+  let buf = '';
+  const lines: string[] = [];
+  const waiters: Array<() => void> = [];
+  client.on('data', (d) => {
+    buf += d.toString('utf8');
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) { lines.push(buf.slice(0, nl)); buf = buf.slice(nl + 1); }
+    waiters.splice(0).forEach((w) => w());
+  });
+  const send = async (raw: string, count = 1): Promise<string[]> => {
+    const start = lines.length;
+    client.write(raw);
+    await vi.waitFor(() => { if (lines.length < start + count) throw new Error('waiting'); }, { timeout: 5_000 });
+    return lines.slice(start, start + count);
+  };
+  const request = (fields: Record<string, unknown>) => JSON.stringify({ id: crypto.randomBytes(3).toString('hex'), method: 'a2a.resolve.identity', params: {}, token, ...fields }) + '\n';
+  return { dispatch, send, request, close: () => client.destroy() };
+}
+
+describe.runIf(supported)('PipeServer lines that are not requests', () => {
+  it('answers a line that parses to null (or another non-object) and goes on with the rest of the chunk', async () => {
+    const s = await openSession();
+    const out = await s.send('null\n7\n"x"\n' + s.request({ id: 'after' }), 4);
+    expect(out.slice(0, 3).map((l) => JSON.parse(l))).toEqual(Array(3).fill({ id: null, ok: false, error: 'Invalid request' }));
+    expect(JSON.parse(out[3])).toMatchObject({ id: 'after', ok: true });
+    expect(s.dispatch).toHaveBeenCalledTimes(1);
+    s.close();
+  });
+});
+
 describe.runIf(supported)('PipeServer peer pid', () => {
   it('dispatches with the pid of the process that connected, and its start time', async () => {
     // Values the request names for these are ignored.
@@ -121,6 +166,44 @@ describe.runIf(supported)('PipeServer broker stamp', () => {
     const { request, ctx } = seen(await sendOne({ brokerStamp: STAMP }));
     expect(request.method).toBe('system.identify');
     expect('brokerStamped' in ctx).toBe(false);
+  });
+
+  it('does not mark a stamp that is not a string, and removes it all the same', async () => {
+    asBroker(process.pid);
+    for (const bad of [12345, { stamp: STAMP }, [STAMP], null, true]) {
+      server?.stop();
+      const { request, ctx } = seen(await sendOne({ method: 'a2a.resolve.identity', brokerStamp: bad }));
+      expect('brokerStamped' in ctx, JSON.stringify(bad)).toBe(false);
+      expect('brokerStamp' in request, JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it('keeps the stamp out of the response', async () => {
+    asBroker(process.pid);
+    const s = await openSession();
+    const [line] = await s.send(s.request({ brokerStamp: STAMP }));
+    expect(line).not.toContain(STAMP);
+    expect(line).not.toContain('brokerStamp');
+    const [request, ctx] = s.dispatch.mock.calls[0] as unknown as [Record<string, unknown>, Record<string, unknown>];
+    expect(ctx.brokerStamped).toBe(true);
+    expect('brokerStamp' in request).toBe(false);
+    s.close();
+  });
+
+  it('marks nothing on the old broker connection once the broker has restarted', async () => {
+    asBroker(process.pid);
+    const s = await openSession();
+    await s.send(s.request({ brokerStamp: STAMP }));
+    expect((s.dispatch.mock.calls[0] as unknown as [unknown, Record<string, unknown>])[1].brokerStamped).toBe(true);
+    // The supervisor respawned the broker: another pid, and a new stamp.
+    const NEW = 'f'.repeat(64);
+    setBrokerIdentitySource(() => ({ pid: process.ppid, startedAt: String(processStartTime(process.ppid)) }));
+    setBrokerStampSource((stamp) => stamp === NEW);
+    await s.send(s.request({ brokerStamp: STAMP }));
+    await s.send(s.request({ brokerStamp: NEW }));
+    const later = s.dispatch.mock.calls.slice(1).map((c) => (c as unknown as [unknown, Record<string, unknown>])[1]);
+    expect(later.map((ctx) => 'brokerStamped' in ctx)).toEqual([false, false]);
+    s.close();
   });
 
   it('takes no stamped mark from the request itself', async () => {

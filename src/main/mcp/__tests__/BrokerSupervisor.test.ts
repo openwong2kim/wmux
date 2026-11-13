@@ -497,6 +497,32 @@ describe('BrokerSupervisor stamp', () => {
     sup.stop();
   });
 
+  it('matches nothing once the broker stands down for another (exit 75), nor after stop() before the old one exits', () => {
+    vi.useFakeTimers();
+    try {
+      const first = stampedChild();
+      const second = stampedChild();
+      vi.mocked(spawn).mockReturnValueOnce(first as never).mockReturnValueOnce(second as never);
+      const sup = new BrokerSupervisor({ startTimeOf: () => 1n });
+      sup.start();
+      const one = sentStamp(first);
+      first.emit('exit', 75, null);
+      expect(sup.standingDown).toBe(true);
+      expect(sup.stampMatches(one)).toBe(false);
+      sup.stop();
+      sup.resume();
+      const two = sentStamp(second);
+      expect(sup.stampMatches(two)).toBe(true);
+      // stop() drops the stamp at once, before the child's exit arrives.
+      sup.stop();
+      expect(sup.stampMatches(two)).toBe(false);
+      second.emit('exit', 0, null);
+      expect(sup.stampMatches(two)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('matches nothing once the broker has crashed', () => {
     vi.useFakeTimers();
     try {

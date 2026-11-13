@@ -393,11 +393,14 @@ export class PipeServer {
     // (handlers, responses, logs) sees it. It counts only on an
     // a2a.resolve.identity call over the spawned broker's own connection
     // (brokerStampHolds).
-    let stamp: unknown;
-    if (request !== null && typeof request === 'object') {
-      stamp = (request as { brokerStamp?: unknown }).brokerStamp;
-      delete (request as { brokerStamp?: unknown }).brokerStamp;
+    // A line that parses to anything but an object (null, a number, a string)
+    // is no request; answering it here keeps the chunk's other lines going.
+    if (request === null || typeof request !== 'object') {
+      socket.write(JSON.stringify({ id: null, ok: false, error: 'Invalid request' }) + '\n');
+      return;
     }
+    const stamp: unknown = (request as { brokerStamp?: unknown }).brokerStamp;
+    delete (request as { brokerStamp?: unknown }).brokerStamp;
 
     // Authenticate first: reject unauthenticated requests before consuming rate limit budget.
     // This prevents unauthenticated attackers from exhausting rate limits to DoS legitimate clients.
