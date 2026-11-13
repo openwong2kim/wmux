@@ -31,6 +31,8 @@ interface PaneOptions {
   daemonTasks?: unknown[] | null;
   /** The approval gate's screen read with this 1-based index shows a dialog. */
   dialogOnGateRead?: number;
+  /** The approval gate's screen read with this 1-based index cannot be read. */
+  unreadableOnGateRead?: number;
   lockWaitMs?: number;
   /** The daemon task read waits for this (holds a delivery inside the lock). */
   holdDaemonQuery?: Promise<void>;
@@ -131,8 +133,11 @@ function scriptedPane(opts: PaneOptions = {}) {
           revision += 1;
           lastKeyAt = clock;
         }
+        if (gateReads === opts.unreadableOnGateRead) return null;
         return gateReads === opts.dialogOnGateRead ? DIALOG : screen();
       },
+      // A stored delivery's task is open.
+      readTaskState: async () => 'open',
       queryDaemonTasks: async () => {
         await opts.holdDaemonQuery;
         return opts.daemonTasks === undefined ? [] : opts.daemonTasks;
@@ -146,7 +151,7 @@ function scriptedPane(opts: PaneOptions = {}) {
       },
     },
   );
-  return { router, writes, gatedSubmit: input.gatedSubmit };
+  return { router, writes, gatedSubmit: input.gatedSubmit, retryPendingDeliveries: input.retryPendingDeliveries };
 }
 
 const FRESH: RoleBinding = { agent: 'claude', freshContext: true };
@@ -303,6 +308,19 @@ describe('gated submit, new-task delivery (#1680)', () => {
     const res = ok(await gatedSubmit('pty-a', 'new task', 'Claude Code', NEW));
     expect(writes).toEqual(['/clear', '\r', '\x1b[200~new task\x1b[201~', '\r']);
     expect(res).toMatchObject({ freshContext: 'applied', freshContextSignal: 'session_start' });
+  });
+
+  it('a refusal after the clear is kept without the clear, and says the pane was already cleared', async () => {
+    // Read 1 is the gate before the step; read 2, after it, cannot be read.
+    const { writes, gatedSubmit, retryPendingDeliveries } = scriptedPane({ binding: FRESH, hooks: true, unreadableOnGateRead: 2 });
+    const res = await gatedSubmit('pty-a', 'new task', 'Claude Code', NEW);
+    expect(res).toMatchObject({ ok: false, reason: 'gate_unavailable', stored: true, freshContextApplied: true });
+    expect(res.ok === false && res.detail).toMatch(/already cleared/);
+    expect(writes).toEqual(['/clear', '\r']);
+    // The retry types the text alone: no second clear.
+    await retryPendingDeliveries('pty-a');
+    expect(writes.filter((w) => w === '/clear')).toHaveLength(1);
+    expect(writes.some((w) => w.includes('new task'))).toBe(true);
   });
 
   it('refuses with fresh_context_timeout and pastes nothing when the command never finishes', async () => {
