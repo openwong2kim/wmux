@@ -1081,7 +1081,7 @@ describe('background work the agent leaves running', () => {
     expect(task.status.state).toBe('input-required');
   });
 
-  it('a Monitor that never ends: its events (no status) keep it running; 30 minutes after the last turn end the answer goes, saying so', async () => {
+  it('a Monitor that never ends: its events (no status) keep it running; 30 minutes after the first turn that left it running the answer goes, saying so', async () => {
     const d = new HeadlessDelivery(deps());
     await d.tick();
     write(userLine(PROMPT), callLine('m1', 'Monitor', { command: 'tail -f log' }),
@@ -1092,8 +1092,8 @@ describe('background work the agent leaves running', () => {
     write(notification('mon1', 'm1', null), assistantLine('A line came in.'));
     await d.tick();
     expect(replies.map((r) => r.text)).toEqual(['Watching the log.', 'A line came in.']);
-    // Counted from that turn end, not the first one.
-    await advance(d, BACKGROUND_WAIT_MS - 1);
+    // Counted from the first turn end: a Monitor that keeps waking the agent does not hold the task forever.
+    await advance(d, BACKGROUND_WAIT_MS / 2 - 1);
     expect(task.status.state).toBe('working');
     await advance(d, 1);
     // That turn's text went already: the answer says what is still running.
@@ -1107,7 +1107,7 @@ describe('background work the agent leaves running', () => {
     expect(moves).toEqual([{ to: 'working' }, { to: 'input-required' }]);
   });
 
-  it('the 30 minutes do not run while a woken turn is still under way', async () => {
+  it('a woken turn under way when the 30 minutes are up is waited out; its end is the answer, saying the work still runs', async () => {
     const d = new HeadlessDelivery(deps());
     await d.tick();
     write(userLine(PROMPT), callLine('m1', 'Monitor', { command: 'x' }), resultLine('m1', 'Monitor started (task mon1, expires in 15m)'), assistantLine('Watching.'));
@@ -1119,6 +1119,24 @@ describe('background work the agent leaves running', () => {
     await advance(d, 120_000);
     expect(task.status.state).toBe('working');
     expect(replies.map((r) => r.text)).toEqual(['Watching.']);
+    write(resultLine('t9', 'a line'), assistantLine('Read the new line.'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['Watching.', `Read the new line.\n\n${BACKGROUND_NOTE}`]);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('a task ended on the asking PC while its agent waits on background work frees the session at once', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), callLine('t2', 'Bash', { command: 'make', run_in_background: true }), resultLine('t2', 'Command running in background with ID: sh1.'),
+      assistantLine('Building.'));
+    await d.tick();
+    task.status = { state: 'canceled', timestamp: new Date().toISOString() };
+    await d.tick();
+    // The next task for that agent is typed in, not held behind the build.
+    task = inboundTask('the next one');
+    await d.tick();
+    expect(delivered.map((x) => x.prompt)).toEqual([PROMPT, 'the next one']);
   });
 
   it('progress replies are bounded; the answer is not one of them and still goes', async () => {
@@ -1154,6 +1172,42 @@ describe('background work the agent leaves running', () => {
     write(wakeLine(), assistantLine('late'));
     await e.tick();
     expect(replies.map((r) => r.text)).toEqual(['PONG']);
+  });
+
+  it('after the answer: a wake written in the same read as the answer is still relayed', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'), wakeLine(), assistantLine('woke'));
+    await d.tick();
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG', 'woke']);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it('after the answer: a slash command typed on this PC stops it too', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    write(JSON.stringify({ type: 'user', uuid: `s${seq}`, timestamp: stamp(), origin: { kind: 'human' }, promptSource: 'typed',
+      message: { role: 'user', content: '<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>' } }),
+    assistantLine('compacted'), wakeLine(), assistantLine('woke'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG']);
+  });
+
+  it('after the answer: a further reply that could not be sent neither stops the relay nor uses the budget', async () => {
+    const d = new HeadlessDelivery(deps());
+    await d.tick();
+    write(userLine(PROMPT), assistantLine('PONG'));
+    await d.tick();
+    replyError = 'link down';
+    write(wakeLine(), assistantLine('lost'));
+    await d.tick();
+    replyError = null;
+    for (let i = 0; i < FURTHER_REPLIES_MAX; i++) write(wakeLine(), assistantLine(`woke ${i}`));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual(['PONG', ...Array.from({ length: FURTHER_REPLIES_MAX }, (_, i) => `woke ${i}`)]);
   });
 
   it('after the answer: input on this PC stops it (that turn and later ones are not the task\'s)', async () => {
