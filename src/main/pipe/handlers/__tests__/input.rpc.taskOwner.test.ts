@@ -1029,6 +1029,29 @@ describe('a refused local delivery, stored and typed later', () => {
     expect(w.logs.at(-1)).toContain('dropped stored task "t-new" for pane "pty-task": task ended');
   });
 
+  it('is dropped, not typed, when its task row shows an ended state', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    // A daemon that predates the anchors view lists ended tasks too.
+    w.live.tasks = [{ ...row('t-new', 'ws-owner', 'ws-task'), status: { state: 'completed' } }];
+    w.advance(61_000);
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w)).toEqual([]);
+    expect(w.logs.at(-1)).toContain(': task ended;');
+  });
+
+  it('a later message on the task waits behind the stored one, and is typed after it', async () => {
+    const { w } = await refusedNewTask('ws-owner');
+    w.live.daemonTrust = PASSABLE;
+    w.live.tasks = [row('t-new', 'ws-owner', 'ws-task')];
+    const res = await w.gatedSubmit('pty-task', 'hello again', 'claude', { senderTaskIds: ['t-new'] });
+    expect(res).toMatchObject({ ok: false, reason: 'gate_unavailable', stored: true });
+    expect((res as { detail: string }).detail).toContain('stored behind it');
+    await vi.waitFor(() => expect(pasted(w)).toHaveLength(1), { timeout: 5_000 });
+    await w.retryPendingDeliveries('pty-task');
+    expect(pasted(w).map((d) => (d.includes('hello again') ? 'follow-up' : 'body'))).toEqual(['body', 'follow-up']);
+  });
+
   it("is dropped, not typed, when the pane's agent session changed", async () => {
     const { w } = await refusedNewTask('ws-owner');
     w.live.daemonTrust = PASSABLE;
@@ -1067,6 +1090,9 @@ describe('a refused local delivery, stored and typed later', () => {
     expect(await noTask.gatedSubmit('pty-task', 'hello', 'claude')).not.toHaveProperty('stored');
     const twoTasks = wire(UNPASSABLE);
     expect(await twoTasks.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1', 't2'] })).not.toHaveProperty('stored');
+    // A hand-off's caller settles its task on the outcome itself.
+    const handoff = wire(UNPASSABLE);
+    expect(await handoff.gatedSubmit('pty-task', 'hello', 'claude', { newTask: true, taskId: 't-h', waitQuiet: true })).not.toHaveProperty('stored');
     const reply = wire(UNPASSABLE);
     expect(await reply.gatedSubmit('pty-task', 'hello', 'claude', { senderTaskIds: ['t1'] })).toMatchObject({ stored: true });
   });

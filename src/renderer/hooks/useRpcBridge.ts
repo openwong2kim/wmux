@@ -480,10 +480,12 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
 
 /** A refused delivery main kept to type later (input.rpc pendingDeliveries). */
 const STORED_FOR_LATER_HINT =
-  'The target pane could not take the message now, so it was not typed. It is stored and will be typed when ' +
-  'the pane can take it: when its agent finishes its turn, or within a minute once the pane can be checked. ' +
-  'The receiver can read it now with a2a_task_query. Do not send it again; it is dropped after 24 hours if ' +
-  'the pane never takes it.';
+  'The target pane could not take the message now, so it was not typed. wmux keeps it and types it once the ' +
+  "pane can take it: it tries again when the pane's agent ends a turn and once a minute (a pane held by a usage " +
+  'limit waits for the limit to reset). The receiver can read it now with a2a_task_query. The kept copy is ' +
+  "dropped, with no word back, after 24 hours, when the task ends, when the pane closes or its agent changes, " +
+  'or when more than 8 messages wait for the pane. Do not just send it again: check the task with ' +
+  'a2a_task_query first.';
 
 /** A refused delivery whose text is still in the target's composer (#2993). */
 const PASTED_NOT_SUBMITTED_HINT =

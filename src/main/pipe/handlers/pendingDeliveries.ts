@@ -3,7 +3,8 @@
 // A delivery refused with `gate_unavailable` (main could not rule out a
 // folder-trust prompt) or `usage_limited` (the pane is held until its limit
 // resets) is not about a person or a dialog: the pane may well take it a
-// little later. Main keeps it here, one entry per task, and types it when the
+// little later. Main keeps it here, the same text for the same task and pane
+// once, and types it when the
 // pane's agent stops or on the next sweep, through the full delivery gate
 // each time. Everything a send checks is checked again then: the owner lane,
 // read fresh from the daemon's task rows; a person typing; an approval. The
@@ -14,7 +15,7 @@
 // PER_PANE_CAP entries per pane and TOTAL_CAP in all, the oldest dropped
 // first, and each entry dropped PENDING_DELIVERY_TTL_MS after it was stored.
 
-import type { GatedSubmitOptions, GatedSubmitResult } from '../../../shared/ptyMessageDelivery';
+import type { GatedSubmitOptions, GatedSubmitRefusal, GatedSubmitResult } from '../../../shared/ptyMessageDelivery';
 
 /** How long a stored delivery waits before it is dropped. */
 export const PENDING_DELIVERY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -41,9 +42,28 @@ export interface PendingDelivery {
   agentName: string;
   incarnationId: string;
   storedAt: number;
+  /** The pane's last refusal of it. */
+  reason: GatedSubmitRefusal['reason'];
 }
 
-export type PendingDropReason = 'replaced' | 'cap' | 'expired' | 'task ended' | 'pane gone' | 'agent changed';
+export type PendingDropReason = 'replaced' | 'cap' | 'expired' | 'task ended' | 'pane gone' | 'agent changed' | 'refused';
+
+/**
+ * Refusals that leave the pane as it was and that the pane can outgrow: a
+ * stored delivery refused with one of these is tried again. Any other
+ * refusal, or one after a paste, wrote something into the pane (a
+ * fresh-context command, a paste) or will not change by waiting, so the
+ * entry is dropped rather than repeat it on every pass.
+ */
+const RETRYABLE: ReadonlySet<GatedSubmitRefusal['reason']> = new Set<GatedSubmitRefusal['reason']>([
+  'gate_unavailable',
+  'usage_limited',
+  'user_typing',
+  'approval_pending',
+  'fresh_context_busy',
+  'agent_unverified',
+  'deadline',
+]);
 
 /** A stored delivery's task now: null when that cannot be read. */
 export type PendingTaskState = 'open' | 'ended' | 'pane gone' | null;
@@ -80,9 +100,9 @@ export class PendingDeliveries {
     return this.entries.length;
   }
 
-  /** Keep `entry`; a stored delivery for the same task is replaced. */
+  /** Keep `entry`; the same text stored for the same task and pane is replaced. */
   store(entry: PendingDelivery): void {
-    const prior = this.entries.find((e) => e.taskId === entry.taskId);
+    const prior = this.entries.find((e) => e.taskId === entry.taskId && e.ptyId === entry.ptyId && e.text === entry.text);
     if (prior) this.drop(prior, 'replaced');
     this.entries.push(entry);
     const ofPane = this.entries.filter((e) => e.ptyId === entry.ptyId);
@@ -90,6 +110,11 @@ export class PendingDeliveries {
     if (this.entries.length > PENDING_TOTAL_CAP) this.drop(this.entries[0], 'cap');
     this.deps.log(`[delivery] stored task ${JSON.stringify(entry.taskId)} for pane ${JSON.stringify(entry.ptyId)}; it is typed when the pane can take it`);
     this.timer ??= (this.deps.setTimer ?? defaultTimer)(() => void this.sweep(), PENDING_SWEEP_MS);
+  }
+
+  /** The oldest delivery stored for `taskId` on the pane, if any. */
+  heldFor(ptyId: string, taskId: string): PendingDelivery | undefined {
+    return this.entries.find((e) => e.ptyId === ptyId && e.taskId === taskId);
   }
 
   /**
@@ -129,6 +154,10 @@ export class PendingDeliveries {
         // Its text sits in the pane's composer: typing it again would paste it twice.
         this.remove(entry);
         this.deps.log(`[delivery] stored task ${JSON.stringify(entry.taskId)} was pasted into pane ${JSON.stringify(ptyId)} but not submitted (${result.reason}); not typed again`);
+      } else if (result.pasted || !RETRYABLE.has(result.reason)) {
+        this.drop(entry, 'refused', result.reason);
+      } else {
+        entry.reason = result.reason;
       }
     } finally {
       this.busy.delete(ptyId);
@@ -149,10 +178,11 @@ export class PendingDeliveries {
     }
   }
 
-  private drop(entry: PendingDelivery, reason: PendingDropReason): void {
+  private drop(entry: PendingDelivery, reason: PendingDropReason, refusal?: string): void {
     this.remove(entry);
     if (reason === 'replaced') return;
-    this.deps.log(`[delivery] dropped stored task ${JSON.stringify(entry.taskId)} for pane ${JSON.stringify(entry.ptyId)}: ${reason}; the task stays readable with a2a_task_query`);
+    const why = refusal ? `${reason} (${refusal})` : reason;
+    this.deps.log(`[delivery] dropped stored task ${JSON.stringify(entry.taskId)} for pane ${JSON.stringify(entry.ptyId)}: ${why}; the task stays readable with a2a_task_query`);
   }
 
   private remove(entry: PendingDelivery): void {

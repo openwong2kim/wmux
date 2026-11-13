@@ -1,4 +1,4 @@
-// Stored local deliveries (pendingDeliveries.ts): one per task, bounded, typed
+// Stored local deliveries (pendingDeliveries.ts): each text once, bounded, typed
 // oldest first one per pass, and dropped when their task ends, their pane
 // goes, their agent changes or they expire.
 import { describe, expect, it } from 'vitest';
@@ -37,20 +37,25 @@ function harness(opts: { result?: GatedSubmitResult; state?: PendingTaskState } 
     },
   });
   const entry = (taskId: string, ptyId = 'pty-1', text = `text ${taskId}`): PendingDelivery => ({
-    taskId, ptyId, text, agent: 'claude', opts: { senderTaskIds: [taskId] }, agentName: 'Claude Code', incarnationId: 'inc-1', storedAt: t,
+    taskId, ptyId, text, agent: 'claude', opts: { senderTaskIds: [taskId] }, agentName: 'Claude Code', incarnationId: 'inc-1', storedAt: t, reason: 'gate_unavailable',
   });
   return { queue, typed, logs, live, reads, entry, advance: (ms: number) => { t += ms; }, timers: () => timers };
 }
 
 describe('PendingDeliveries', () => {
-  it('keeps one entry per task: a later one replaces it', async () => {
+  it('keeps the same text for the same task and pane once, and every other message in order', async () => {
     const h = harness();
-    h.queue.store(h.entry('t1', 'pty-1', 'first'));
-    h.queue.store(h.entry('t1', 'pty-1', 'second'));
+    h.queue.store(h.entry('t1', 'pty-1', 'body'));
+    h.queue.store(h.entry('t1', 'pty-1', 'body'));
     expect(h.queue.size).toBe(1);
+    h.queue.store(h.entry('t1', 'pty-1', 'follow-up'));
+    h.queue.store(h.entry('t1', 'pty-2', 'body'));
+    expect(h.queue.size).toBe(3);
+    expect(h.queue.heldFor('pty-1', 't1')?.text).toBe('body');
     await h.queue.retry('pty-1');
-    expect(h.typed).toEqual(['second']);
-    expect(h.queue.size).toBe(0);
+    await h.queue.retry('pty-1');
+    expect(h.typed).toEqual(['body', 'follow-up']);
+    expect(h.queue.size).toBe(1);
   });
 
   it('types a pane\'s entries oldest first, one per pass', async () => {
@@ -133,6 +138,21 @@ describe('PendingDeliveries', () => {
     h.queue.store(h.entry('t4', 'pty-2'));
     await h.queue.sweep();
     expect(h.reads.sort()).toEqual(['pty-1', 'pty-2']);
+  });
+
+  it('drops an entry whose refusal wrote into the pane or will not pass by waiting', async () => {
+    for (const result of [
+      { ok: false, reason: 'fresh_context_timeout', detail: 'x' },
+      { ok: false, reason: 'user_typing', detail: 'x', pasted: true, cleared: true },
+      { ok: false, reason: 'guard_refused', detail: 'x' },
+      { ok: false, reason: 'write_failed', detail: 'x' },
+    ] satisfies GatedSubmitResult[]) {
+      const h = harness({ result });
+      h.queue.store(h.entry('t1'));
+      await h.queue.retry('pty-1');
+      expect(h.queue.size).toBe(0);
+      expect(h.logs.at(-1)).toContain(`: refused (${result.reason});`);
+    }
   });
 
   it('a text left in the composer is not typed again', async () => {

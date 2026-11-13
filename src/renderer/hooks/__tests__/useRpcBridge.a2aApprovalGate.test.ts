@@ -134,15 +134,16 @@ describe('A2A delivery approval gate', () => {
     expect(String(result.delivery?.hint)).toMatch(/Retry/);
   });
 
-  it('a refusal main stored for later says so, and not to send again', async () => {
+  it('a refusal main stored for later says so, and when the kept copy is dropped', async () => {
     gateRefusal = { ok: false, reason: 'gate_unavailable', detail: 'delivery: could not be read whole', stored: true };
     const result = await send({ silent: false });
     expect(writesToTarget()).toEqual([]);
     expect(result.delivery).toMatchObject({ notified: false, reason: 'gate_unavailable', storedForLater: true });
     const hint = String(result.delivery?.hint);
-    expect(hint).toMatch(/stored and will be typed when the pane can take it/);
-    expect(hint).toMatch(/a2a_task_query/);
-    expect(hint).toMatch(/dropped after 24 hours/);
+    expect(hint).toMatch(/keeps it and types it once the pane can take it/);
+    expect(hint).toMatch(/usage limit waits for the limit to reset/);
+    expect(hint).toMatch(/dropped, with no word back, after 24 hours/);
+    expect(hint).toMatch(/check the task with a2a_task_query first/);
   });
 
   it('an Enter withheld after the paste is reported as pasted, not submitted', async () => {

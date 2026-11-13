@@ -19,7 +19,7 @@ import { sendToRenderer } from './_bridge';
 import { TERMINAL_WRITE_DELIVERY_BUDGET_MS, terminalStartWindowMs } from '../../../shared/terminalWriteBudget';
 import { TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../../../shared/freshContext';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWording';
-import { sanitizePtyText } from '../../../shared/types';
+import { sanitizePtyText, TERMINAL_STATES } from '../../../shared/types';
 import { agentRow } from '../../../shared/agentIdentity';
 import {
   formatBracketedPastePayload,
@@ -2714,32 +2714,40 @@ export function registerInputRpc(
       if (workspaceId === null) return 'pane gone';
       const tasks = await queryDaemonTasks(workspaceId);
       if (!tasks) return null;
-      return tasks.some((t) => typeof t === 'object' && t !== null && (t as { id?: unknown }).id === entry.taskId) ? 'open' : 'ended';
+      // A daemon that predates the anchors view lists ended tasks too.
+      const row = tasks.find((t): t is { id: unknown; status?: { state?: unknown } } =>
+        typeof t === 'object' && t !== null && (t as { id?: unknown }).id === entry.taskId);
+      const state = row?.status?.state;
+      return row && !(typeof state === 'string' && (TERMINAL_STATES as readonly string[]).includes(state)) ? 'open' : 'ended';
     },
     log: logLine,
     ...(deps.now ? { now: deps.now } : {}),
   });
   (deps.subscribeAgentStops ?? subscribeAgentStops)((ptyId) => void pending.retry(ptyId));
 
+  /** The local task a delivery may be stored under: none for a hand-off
+   *  (`waitQuiet`: its caller settles the task on the outcome) or a remote task. */
+  const storableTaskOf = (opts: GatedSubmitOptions | undefined): string | undefined => {
+    if (opts?.waitQuiet) return undefined;
+    const taskId = opts?.newTask ? opts.taskId : opts?.senderTaskIds?.length === 1 ? opts.senderTaskIds[0] : undefined;
+    return taskId && !isRemoteTaskId(taskId) ? taskId : undefined;
+  };
+
   /**
-   * Keep a refused delivery to type later (pendingDeliveries.ts): a local
-   * task's text the gate could not check (`gate_unavailable`) or that met a
-   * usage-limit hold, on a pane whose agent main can read. Anything a person
-   * or a dialog is part of is not kept.
+   * Keep a delivery to type later (pendingDeliveries.ts), on a pane whose
+   * agent main can read. False when it cannot be kept.
    */
-  const keepRefused = async (
+  const storeForLater = async (
     ptyId: string,
+    taskId: string,
     text: string,
     agent: string | null | undefined,
     opts: GatedSubmitOptions | undefined,
-    result: GatedSubmitRefusal,
-  ): Promise<GatedSubmitResult> => {
-    if ((result.reason !== 'gate_unavailable' && result.reason !== 'usage_limited') || result.pasted) return result;
-    const taskId = opts?.newTask ? opts.taskId : opts?.senderTaskIds?.length === 1 ? opts.senderTaskIds[0] : undefined;
-    if (!taskId || isRemoteTaskId(taskId)) return result;
+    reason: GatedSubmitRefusal['reason'],
+  ): Promise<boolean> => {
     const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
     const state = dc?.isConnected ? await dc.getAgentState(ptyId, { timeoutMs: 1_000 }).catch(() => null) : null;
-    if (!state?.agentName || !state.incarnationId) return result;
+    if (!state?.agentName || !state.incarnationId) return false;
     pending.store({
       taskId,
       ptyId,
@@ -2754,23 +2762,41 @@ export function registerInputRpc(
       agentName: state.agentName,
       incarnationId: state.incarnationId,
       storedAt: (deps.now ?? Date.now)(),
+      reason,
     });
-    return { ...result, stored: true };
+    return true;
   };
 
   return {
     deliveryGate: (ptyId) => deliveryGateCheck(approvalGate, ptyId),
     gatedSubmit: async (ptyId, text, agent, opts) => {
+      const taskId = storableTaskOf(opts);
+      // An earlier message on this task still waits for this pane: typing
+      // this one now would put it first, so it waits behind.
+      const earlier = taskId ? pending.heldFor(ptyId, taskId) : undefined;
+      if (taskId && earlier && (await storeForLater(ptyId, taskId, text, agent, opts, earlier.reason))) {
+        void pending.retry(ptyId);
+        return {
+          ok: false,
+          reason: earlier.reason,
+          detail: `delivery: an earlier message on task ${JSON.stringify(taskId)} is still stored for this pane, so this one is stored behind it`,
+          stored: true,
+        };
+      }
       const result = await deliverGated(ptyId, text, agent, opts);
-      return result.ok ? result : keepRefused(ptyId, text, agent, opts, result);
+      if (result.ok) return result;
+      // Kept: a local task's text the gate could not check, or that met a
+      // usage-limit hold. Anything a person or a dialog is part of is not.
+      const keep = taskId && (result.reason === 'gate_unavailable' || result.reason === 'usage_limited') && !result.pasted;
+      return keep && (await storeForLater(ptyId, taskId, text, agent, opts, result.reason)) ? { ...result, stored: true } : result;
     },
     retryPendingDeliveries: (ptyId) => pending.retry(ptyId),
   };
 }
 
-/** Every agent's turn end in a pane, from main's event bus (hooks and the detector). */
+/** Every agent's turn end in a pane, a failed one included, from main's event bus (hooks and the detector). */
 function subscribeAgentStops(onStop: (ptyId: string) => void): () => void {
   return eventBus.subscribe((event) => {
-    if (event.type === 'agent.lifecycle' && event.kind === 'agent.stop' && event.ptyId) onStop(event.ptyId);
+    if (event.type === 'agent.lifecycle' && (event.kind === 'agent.stop' || event.kind === 'agent.stop_failure') && event.ptyId) onStop(event.ptyId);
   });
 }
