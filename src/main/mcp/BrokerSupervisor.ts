@@ -169,8 +169,13 @@ export class BrokerSupervisor {
     // --disable-sigusr1: a signal from another process of this user does not
     // open the broker's inspector. The broker always runs on the app's own
     // binary (Electron as Node), which takes the flag.
+    const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+    // A WMUX_SOCKET_PATH in main's environment (an app started from a pane of
+    // another instance) names that instance's socket; the broker talks only
+    // to this one.
+    delete env.WMUX_SOCKET_PATH;
     const child = spawn(process.execPath, ['--disable-sigusr1', script], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      env,
       // The IPC channel carries the broker's connection reports; stdout stays
       // ignored, since a hosted server's stray console.log would land there.
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],

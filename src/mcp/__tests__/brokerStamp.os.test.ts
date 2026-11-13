@@ -8,7 +8,7 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 import type { RpcMethod } from '../../shared/rpc';
-import { sendRpc } from '../wmux-client';
+import { brokerStampForTarget, sendRpc } from '../wmux-client';
 import { createConnectionScope, runInConnectionScope } from '../connectionScope';
 import { acceptBrokerStamp, brokerStampFor, resetBrokerStampForTest } from '../brokerStamp';
 
@@ -109,6 +109,40 @@ describe.skipIf(process.platform === 'win32')('the stamp on the envelope', () =>
     });
     await sendRpc('a2a.resolve.identity' as RpcMethod, { callerPid: 42 });
     expect(envelopes.map((e) => e.brokerStamp)).toEqual([STAMP, undefined, undefined, undefined]);
+  });
+
+  it('goes only to this instance\'s own socket: never to an inherited WMUX_SOCKET_PATH, never over TCP', async () => {
+    acceptBrokerStamp({ wmuxBroker: 'stamp', stamp: STAMP });
+    const own = path.join(tmpHome, '.wmux.sock');
+    const scoped = (target: string | { host: string; port: number }) =>
+      runInConnectionScope(verified(42), () => brokerStampForTarget(target, 'a2a.resolve.identity', { callerPid: 42 }));
+    expect(scoped(own)).toBe(STAMP);
+    expect(scoped(path.join(tmpHome, '.wmux-other.sock'))).toBeUndefined();
+    expect(scoped({ host: '127.0.0.1', port: 1 })).toBeUndefined();
+    // Another instance's socket in WMUX_SOCKET_PATH is tried first; what it
+    // receives carries no stamp.
+    const other: Array<Record<string, unknown>> = [];
+    const otherSock = path.join(tmpHome, '.wmux-other.sock');
+    const otherServer = net.createServer((socket) => {
+      socket.on('data', (chunk) => {
+        for (const line of chunk.toString('utf8').split('\n').filter((l) => l.trim())) {
+          const envelope = JSON.parse(line) as Record<string, unknown>;
+          other.push(envelope);
+          socket.write(JSON.stringify({ id: envelope.id, ok: true, result: {} }) + '\n');
+        }
+      });
+      socket.on('error', () => undefined);
+    });
+    await new Promise<void>((resolve) => otherServer.listen(otherSock, () => resolve()));
+    process.env.WMUX_SOCKET_PATH = otherSock;
+    try {
+      await runInConnectionScope(verified(42), () => sendRpc('a2a.resolve.identity' as RpcMethod, { callerPid: 42 }));
+    } finally {
+      delete process.env.WMUX_SOCKET_PATH;
+      await new Promise<void>((resolve) => otherServer.close(() => resolve()));
+    }
+    expect(other).toHaveLength(1);
+    expect('brokerStamp' in other[0]).toBe(false);
   });
 
   it('is never sent before main has sent one', async () => {

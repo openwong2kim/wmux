@@ -138,6 +138,27 @@ describe('BrokerSupervisor status', () => {
     sup.stop();
   });
 
+  it('spawns the broker without a WMUX_SOCKET_PATH main inherited, keeping the data suffix', () => {
+    const saved = { path: process.env.WMUX_SOCKET_PATH, suffix: process.env.WMUX_DATA_SUFFIX };
+    process.env.WMUX_SOCKET_PATH = '/tmp/another-instance.sock';
+    process.env.WMUX_DATA_SUFFIX = '-x';
+    try {
+      vi.mocked(spawn).mockReturnValue(makeChild() as never);
+      const sup = new BrokerSupervisor();
+      sup.start();
+      const opts = vi.mocked(spawn).mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+      expect('WMUX_SOCKET_PATH' in opts.env).toBe(false);
+      expect(opts.env.WMUX_DATA_SUFFIX).toBe('-x');
+      expect(opts.env.ELECTRON_RUN_AS_NODE).toBe('1');
+      sup.stop();
+    } finally {
+      for (const [key, value] of [['WMUX_SOCKET_PATH', saved.path], ['WMUX_DATA_SUFFIX', saved.suffix]] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it('spawns the broker with the signal-opened inspector off, before its script', () => {
     vi.mocked(spawn).mockReturnValue(makeChild() as never);
     const sup = new BrokerSupervisor();
