@@ -223,6 +223,7 @@ import { readDaemonPid } from './updater/installTeardown';
 import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
+import { startBrokerAndRegister } from './mcp/brokerBoot';
 import { identitySummary, notePeerReadCheck, setBrokerIdentitySource, setBrokerStampSource, setUnownedBrokerSource } from './pipe/handlers/peerPidShadow';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { claimCdpPort, dropDebuggingSwitches, probeCdpEndpointWithRetry, releaseCdpPortOnExit } from './browser-session/cdpPort';
@@ -3477,16 +3478,16 @@ app.on('ready', async () => {
   // Write auth token BEFORE starting pipe server — prevents race where
   // MCP client reads old token while new pipe is already listening
   const authToken = pipeServer.getAuthToken();
-  if (isMcpBrokerEnabled()) {
-    // Gate shim registration on broker readiness: if the broker can't serve
-    // within the timeout, register the full bundle so agents still get tools
-    // (W1). whenReady never rejects and caps boot delay at the timeout.
-    mcpBrokerSupervisor.start();
-    const brokerReady = await mcpBrokerSupervisor.whenReady(4000);
-    await mcpRegistrar.register(authToken, { useShim: brokerReady });
-  } else {
-    await mcpRegistrar.register(authToken);
-  }
+  // A dev build waits for the broker to pick the node shim (W1); a packaged
+  // build does not wait (src/main/mcp/brokerBoot.ts).
+  markBoot('mcp-register-start');
+  await startBrokerAndRegister({
+    brokerEnabled: isMcpBrokerEnabled(),
+    packaged: app.isPackaged,
+    supervisor: mcpBrokerSupervisor,
+    register: (opts) => mcpRegistrar.register(authToken, opts),
+  });
+  markBoot('mcp-register-end');
   pipeServer.start();
   void selfCheckPeerPid().then((verdict) => {
     notePeerReadCheck(verdict);
