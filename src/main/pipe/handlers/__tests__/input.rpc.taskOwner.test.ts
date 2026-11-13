@@ -925,7 +925,8 @@ describe('owner lane — a delivery from the task\'s orchestrator', () => {
     const mentions = [{ channelId: 'ch-1', seq: 4 }, { channelId: 'ch-1', seq: 5 }];
     const owner = wire({ ...UNREAD, mentionAuthors: { 'ch-1:4': 'ws-owner', 'ch-1:5': 'ws-owner' } });
     expect(await owner.gatedSubmit('pty-task', 'nudge', 'claude', { senderMentions: mentions })).toMatchObject({ ok: true });
-    for (const authors of [{ 'ch-1:4': 'ws-owner', 'ch-1:5': 'ws-stranger' }, { 'ch-1:4': 'ws-owner' }, { 'ch-1:4': 'ws-stranger', 'ch-1:5': 'ws-stranger' }]) {
+    const others: Array<Record<string, string>> = [{ 'ch-1:4': 'ws-owner', 'ch-1:5': 'ws-stranger' }, { 'ch-1:4': 'ws-owner' }, { 'ch-1:4': 'ws-stranger', 'ch-1:5': 'ws-stranger' }];
+    for (const authors of others) {
       const w = wire({ ...UNREAD, mentionAuthors: authors });
       expect(await w.gatedSubmit('pty-task', 'nudge', 'claude', { senderMentions: mentions }), JSON.stringify(authors)).toMatchObject({ ok: false });
     }

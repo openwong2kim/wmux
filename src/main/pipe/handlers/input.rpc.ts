@@ -20,6 +20,7 @@ import { TERMINAL_WRITE_DELIVERY_BUDGET_MS, terminalStartWindowMs } from '../../
 import { TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../../../shared/freshContext';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWording';
 import { sanitizePtyText } from '../../../shared/types';
+import { agentRow } from '../../../shared/agentIdentity';
 import {
   formatBracketedPastePayload,
   isMultilinePtyPayload,
@@ -1595,7 +1596,7 @@ export function registerInputRpc(
     // ruled out by it, so the pane's current agent must be claude.
     trustProvenClear:
       deps.trustProvenClear ??
-      (async (ptyId) => paneLaunchedSandboxed(ptyId) && resolveAgentSlug(await paneAgentOf(ptyId)) === 'claude'),
+      (async (ptyId) => paneLaunchedSandboxed(ptyId) && agentRow(resolveAgentSlug(await paneAgentOf(ptyId)))?.sandboxedNoTrustDialog === true),
   };
 
   /** The workspaces of the OPEN ledger tasks a workspace owns. */
