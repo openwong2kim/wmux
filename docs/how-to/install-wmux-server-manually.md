@@ -222,10 +222,13 @@ With headless mode on:
   agent on the host, or the task ends. A task gets at most 5 such replies
   (progress included).
 - An agent that stops at its usage limit: the asking PC is told once, with
-  the time the limit resets. After that time the daemon presses Escape on
-  Claude Code's limit menu (only that menu, matched exactly; nothing else on
-  screen is ever pressed), and once the prompt is back and the agent has
-  not gone on by itself, it types one "continue" message. If the agent has
+  the time the limit resets. Claude Code usually goes on by itself shortly
+  after the reset ("continuing automatically"); while that wait shows,
+  nothing is pressed or typed. From 3 minutes after the reset the daemon
+  presses Escape on Claude Code's limit menu (only that menu, matched
+  exactly; nothing else on screen is ever pressed), and once the prompt is
+  back and the agent has not gone on by itself, it types one "continue"
+  message. If the agent has
   not gone on 15 minutes after the reset (6 hours after the stop when the
   reset time is not known), the task fails with that reason and the agent
   is left as it is.

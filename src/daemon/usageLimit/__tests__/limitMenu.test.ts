@@ -1,12 +1,14 @@
-// The usage-limit menu matcher against real Claude Code captures (80x24,
-// scrubbed) and the look-alikes it must never match: nothing is pressed on those.
+// The usage-limit menu and wait-footer matchers against real Claude Code
+// captures (80x24, scrubbed; menu c and the banners staged against a stub),
+// and the look-alikes they must never match: nothing is pressed on those.
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { usageLimitMenuOnScreen } from '../limitMenu';
+import { usageLimitMenuOnScreen, usageLimitWaitOnScreen } from '../limitMenu';
 
-const capture = (name: string): string[] =>
-  (JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', `claude-limit-menu-${name}.json`), 'utf8')) as { screen: string[] }).screen;
+const fixture = (file: string): string[] =>
+  (JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', `${file}.json`), 'utf8')) as { screen: string[] }).screen;
+const capture = (name: string): string[] => fixture(`claude-limit-menu-${name}`);
 
 describe('the usage-limit menu', () => {
   it('real captures: the menu as the last thing drawn (also under a background-task line)', () => {
@@ -53,5 +55,29 @@ describe('the usage-limit menu', () => {
     extra.splice(extra.length - 3, 0, '   some other text');
     expect(usageLimitMenuOnScreen(extra)).toBe(false);
     expect(usageLimitMenuOnScreen([])).toBe(false);
+  });
+
+  it('a staged menu with another row 3 ("Upgrade your plan"), its row 2 still "at <time>"', () => {
+    expect(usageLimitMenuOnScreen(capture('c'))).toBe(true);
+    expect(usageLimitWaitOnScreen(capture('c'))).toBe(false);
+  });
+
+  it('Claude Code\'s own wait: the live footer under the composer, not the transcript lines above it', () => {
+    // Past the reset, before Claude Code goes on by itself: nothing may be typed or pressed.
+    const waiting = fixture('claude-limit-banner-past-reset');
+    expect(usageLimitWaitOnScreen(waiting)).toBe(true);
+    expect(usageLimitMenuOnScreen(waiting)).toBe(false);
+    // After Escape on the banner, or on the menu: the idle composer. The old "continuing
+    // automatically" lines are still above it, and they do not count.
+    for (const name of ['claude-limit-banner-cancelled', 'claude-limit-menu-escaped']) {
+      const idle = fixture(name);
+      expect(idle.some((r) => /continuing automatically/.test(r))).toBe(true);
+      expect(usageLimitWaitOnScreen(idle)).toBe(false);
+      expect(usageLimitMenuOnScreen(idle)).toBe(false);
+    }
+    expect(usageLimitWaitOnScreen(capture('a'))).toBe(false);
+    // No rule on screen: the last rows are read.
+    expect(usageLimitWaitOnScreen(['x', '  ⚠ Usage limit reached · limit resets 1:35pm', '    Continuing shortly · Esc to cancel'])).toBe(true);
+    expect(usageLimitWaitOnScreen([])).toBe(false);
   });
 });

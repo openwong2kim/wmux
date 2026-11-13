@@ -1,0 +1,53 @@
+{
+ "source": "s6-menu.ans",
+ "state": "/rate-limit-options typed after Esc, inside the limit window",
+ "cols": 80,
+ "rows": 24,
+ "cursor": {
+  "x": 3,
+  "y": 19
+ },
+ "screen": [
+  "",
+  "",
+  "⏺ Hello after the reset.",
+  "",
+  "✻ Cogitated for 0s · done 1:36 PM",
+  "",
+  "❯ Say hello again.                                                              ",
+  "  ⎿  You've hit your weekly limit · resets 1:39pm (Asia/Seoul)",
+  "     /upgrade to increase your usage limit.",
+  "",
+  "⏺ Usage limit reached · continuing automatically at 1:39pm · esc to ",
+  "  cancel",
+  "",
+  "✻ Cogitated for 0s · done 1:36 PM",
+  "  ",
+  "⏺ Automatic continue cancelled · /rate-limit-options to re-arm",
+  "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔",
+  "   What do you want to do?      ",
+  "  ",
+  "   ❯ 1. Stop and wait for limit to reset",
+  "     2. Wait here, then continue automatically at 1:39pm",
+  "     3. Upgrade your plan",
+  "",
+  "   Enter to confirm · Esc to cancel"
+ ],
+ "optionStyles": [
+  {
+   "row": 19,
+   "cursor": true,
+   "labelFg": "#b1b9f9"
+  },
+  {
+   "row": 20,
+   "cursor": false,
+   "labelFg": "default"
+  },
+  {
+   "row": 21,
+   "cursor": false,
+   "labelFg": "default"
+  }
+ ]
+}

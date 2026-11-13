@@ -12,7 +12,7 @@ import { VALID_TRANSITIONS, type Task } from '../../../shared/types';
 import { USAGE_LIMIT_CONTINUE_PROMPT } from '../../../shared/usageLimit';
 import { A2A_REMOTE_BODY_MAX } from '../../../shared/a2aRemote';
 import {
-  LIMIT_PROBE_MS, LIMIT_RESUME_MARGIN_MS, LIMIT_UNKNOWN_MAX_MS, limitNotice, limitReason,
+  LIMIT_CONTINUE_GRACE_MS, LIMIT_PROBE_MS, LIMIT_RESUME_MARGIN_MS, LIMIT_UNKNOWN_MAX_MS, limitNotice, limitReason,
   ASK_REASON, BACKGROUND_NOTE, BACKGROUND_WAIT_MS, DAEMON_STOPPED_REASON, FURTHER_REPLIES_MAX, HeadlessDelivery, TURN_END_SETTLE_MS,
   QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS, assistantTextOf, cutReply, endHeadlessOnStop, type HeadlessDeliveryDeps,
 } from '../headlessDelivery';
@@ -1327,7 +1327,7 @@ describe('a usage limit on a headless session (no hooks, nobody at the pane)', (
   /** "resets 11:30pm (Asia/Seoul)" read on 2026-11-13: 14:30 UTC that day. */
   const LIMIT_TEXT = "You've hit your limit · resets 11:30pm (Asia/Seoul)";
   const RESET = Date.UTC(2026, 10, 13, 14, 30);
-  const AFTER_RESET = RESET + 30_000;
+  const AFTER_RESET = RESET + LIMIT_CONTINUE_GRACE_MS;
   let screens: Array<'menu' | 'clear' | 'other'>;
   let escapes: number;
   let limitNotes: Array<[string, string]>;
@@ -1377,6 +1377,10 @@ describe('a usage limit on a headless session (no hooks, nobody at the pane)', (
     screens = ['menu'];
     await advance(d, LIMIT_PROBE_MS);
     expect(escapes).toBe(0);
+    // Past the reset, inside the grace (Claude Code goes on by itself up to 72 s late): still nothing.
+    clock = RESET + 90_000;
+    await d.tick();
+    expect(escapes).toBe(0);
     clock = AFTER_RESET;
     await d.tick();
     expect(escapes).toBe(1);
@@ -1411,6 +1415,55 @@ describe('a usage limit on a headless session (no hooks, nobody at the pane)', (
     write(toolResultLine(), assistantLine('went on'));
     await d.tick();
     expect(replies.map((r) => r.text)).toEqual([limitNotice(RESET), 'went on']);
+  });
+
+  /** Claude Code 2.1.322 going on by itself after the reset, as staged (scrubbed), in file order. */
+  const AUTO_RESUME = [
+    '{"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-13T04:53:22.180Z", "sessionId": "00000000-0000-0000-0000-000000000000", "content": "Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete."}',
+    '{"type": "queue-operation", "operation": "dequeue", "timestamp": "2026-11-13T04:53:22.209Z", "sessionId": "00000000-0000-0000-0000-000000000000"}',
+    '{"parentUuid": "00000000-0000-0000-0000-000000000000", "isSidechain": false, "type": "system", "subtype": "informational", "content": "Usage limit reset · Continuing automatically", "isMeta": false, "timestamp": "2026-11-13T04:53:22.181Z", "uuid": "00000000-0000-0000-0000-000000000000", "level": "notice", "userType": "external", "entrypoint": "cli", "cwd": "/home/someone/proj", "sessionId": "00000000-0000-0000-0000-000000000000", "version": "2.1.322", "gitBranch": "HEAD"}',
+    '{"parentUuid": "00000000-0000-0000-0000-000000000000", "isSidechain": false, "promptId": "00000000-0000-0000-0000-000000000000", "type": "user", "message": {"role": "user", "content": "Your claude.ai usage limit has reset. Continue the task you were working on when the limit was reached; do not repeat work that is already complete."}, "isMeta": true, "uuid": "00000000-0000-0000-0000-000000000000", "timestamp": "2026-11-13T04:53:22.221Z", "permissionMode": "auto", "origin": {"kind": "auto-continuation"}, "promptSource": "system", "queueSkipSlashCommands": true, "turnOrigin": "auto_continuation", "turnPosition": {"promptIndex": 1, "turnIndex": 2}, "queuePriority": "later", "userType": "external", "entrypoint": "cli", "cwd": "/home/someone/proj", "sessionId": "00000000-0000-0000-0000-000000000000", "version": "2.1.322", "gitBranch": "HEAD"}',
+  ];
+
+  it('Claude Code\'s own resume (its notice and auto-continuation prompt, as staged): no continue even before its reply; the reply is the answer', async () => {
+    const d = new HeadlessDelivery(limitDeps());
+    await atLimit(d);
+    // It went on 77 s after the reset; its reply is slow to come.
+    clock = RESET + 77_000;
+    write(...AUTO_RESUME);
+    await d.tick();
+    expect(task.status.state).toBe('working');
+    // Past the grace, the prompt idle on every read: still nothing typed or pressed.
+    clock = AFTER_RESET;
+    screens = ['clear', 'clear', 'clear', 'clear', 'menu'];
+    for (let i = 0; i < 5; i++) await advance(d, LIMIT_PROBE_MS);
+    expect(typed).toEqual([PROMPT]);
+    expect(escapes).toBe(0);
+    write(assistantLine('Hello after the reset.'));
+    await d.tick();
+    expect(replies.map((r) => r.text)).toEqual([limitNotice(RESET), 'Hello after the reset.']);
+    expect(task.status.state).toBe('input-required');
+  });
+
+  it.each([['the notice', 2], ['the auto-continuation prompt', 3]])('either marker alone is enough: %s', async (_name, index) => {
+    const d = new HeadlessDelivery(limitDeps());
+    await atLimit(d);
+    write(AUTO_RESUME[index]!);
+    clock = AFTER_RESET;
+    screens = ['clear', 'clear', 'clear'];
+    for (let i = 0; i < 3; i++) await advance(d, LIMIT_PROBE_MS);
+    expect(typed).toEqual([PROMPT]);
+    expect(task.status.state).toBe('working');
+  });
+
+  it('a 429 from an API key (no usage-limit wording): the task fails with the error, nothing held', async () => {
+    const d = new HeadlessDelivery(limitDeps());
+    await d.tick();
+    write(userLine(PROMPT), apiErrorLine('rate_limit', 'API Error: Request rejected (429) · rate limited'));
+    await d.tick();
+    expect(limitNotes).toEqual([]);
+    expect(task.status.state).toBe('failed');
+    expect(moves.at(-1)?.summary).toContain('API Error: Request rejected (429)');
   });
 
   it('anything else on screen: no key, no continue; past the reset plus the margin the task fails with the reason, the agent left as it is', async () => {

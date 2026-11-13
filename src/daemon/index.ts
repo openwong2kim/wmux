@@ -96,7 +96,7 @@ import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { queuedScreenTail, queuedScreenText, queuedTextSnapshot, queuedTextTail } from './queuedSessionText';
-import { usageLimitMenuOnScreen } from './usageLimit/limitMenu';
+import { usageLimitMenuOnScreen, usageLimitWaitOnScreen } from './usageLimit/limitMenu';
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, readFolderTrust, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import { HOST_WINDOW_RPC, createHostWindowRpc } from './hostWindowRpc';
@@ -11036,7 +11036,10 @@ async function main(): Promise<void> {
           limitScreen: async (sessionId) => {
             const outcome = await queuedScreenText(sessionManager, sessionId);
             if (!outcome?.ok) return 'other';
-            if (usageLimitMenuOnScreen(outcome.rows.map((r) => r.text))) return 'menu';
+            const rows = outcome.rows.map((r) => r.text);
+            if (usageLimitMenuOnScreen(rows)) return 'menu';
+            // Claude Code waits and goes on by itself: no key (Escape there cancels its wait).
+            if (usageLimitWaitOnScreen(rows)) return 'other';
             const seen = await readFolderTrust({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, sessionId);
             return seen.state === 'clear' && !seen.dialog ? 'clear' : 'other';
           },

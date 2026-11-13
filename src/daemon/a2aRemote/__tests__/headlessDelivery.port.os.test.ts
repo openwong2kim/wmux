@@ -22,7 +22,7 @@ import { queuedScreenText } from '../../queuedSessionText';
 import { usageLimitMenuOnScreen } from '../../usageLimit/limitMenu';
 import { UsageLimitRegistry } from '../../usageLimit/UsageLimitRegistry';
 import { USAGE_LIMIT_CONTINUE_PROMPT } from '../../../shared/usageLimit';
-import { HeadlessDelivery, LIMIT_PROBE_MS, QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS } from '../headlessDelivery';
+import { HeadlessDelivery, LIMIT_CONTINUE_GRACE_MS, LIMIT_PROBE_MS, QUESTION_NOTICE_MS, QUESTION_REASON, QUESTION_TIMEOUT_MS } from '../headlessDelivery';
 import { createHeadlessSessions } from '../headlessSessions';
 import type { HeadlessStartRecordV1 } from '../headlessStartStore';
 
@@ -331,7 +331,7 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
     expect(until).toBeDefined();
     expect(h.moves).toEqual([{ to: 'working' }]);
     // Past the reset: the menu is Escaped, the prompt comes back, and the continue goes in once.
-    h.clock.skew = Date.parse(until!) + 31_000 - Date.now();
+    h.clock.skew = Date.parse(until!) + LIMIT_CONTINUE_GRACE_MS + 1_000 - Date.now();
     await h.run(() => fs.existsSync(`${h.file}.escaped`));
     expect(h.escapes).toEqual([true]);
     for (let i = 0; i < 3 && h.replies.length < 2; i++) {

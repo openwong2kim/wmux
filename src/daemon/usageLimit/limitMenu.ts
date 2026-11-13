@@ -53,3 +53,24 @@ export function usageLimitMenuOnScreen(rows: readonly string[]): boolean {
   }
   return options.length >= 2 && options[0]!.text === ROW_1 && options[1]!.text.startsWith(ROW_2_START);
 }
+
+/**
+ * Claude Code's own wait at a usage limit, in the live footer under the
+ * composer (below its last rule): "⚠ Usage limit reached · limit resets <time>"
+ * over "Continuing shortly · Esc to cancel". It goes on by itself (seen 36 s to
+ * 77 s after the reset), and Escape there cancels the wait, so nothing is typed
+ * or pressed while it shows. The transcript's own "Usage limit reached ·
+ * continuing automatically …" lines above the composer stay on screen after a
+ * cancel, so they are not read.
+ */
+const WAIT_FOOTER = [/\busage limit reached\b/i, /\bcontinuing (?:shortly|automatically)\b.*\besc to cancel\b/i];
+const RULE = /^─{20,}$/;
+/** Rows read as the footer when no rule is on screen. */
+const FOOTER_ROWS_NO_RULE = 4;
+
+export function usageLimitWaitOnScreen(rows: readonly string[]): boolean {
+  let rule = rows.length - 1;
+  while (rule >= 0 && !RULE.test(rows[rule]!.trim())) rule--;
+  const footer = rule >= 0 ? rows.slice(rule + 1) : rows.slice(-FOOTER_ROWS_NO_RULE);
+  return footer.some((row) => WAIT_FOOTER.some((re) => re.test(row)));
+}

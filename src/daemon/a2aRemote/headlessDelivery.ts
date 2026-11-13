@@ -7,7 +7,7 @@ import { localSideOf, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '.
 import { spawnFirstMessageId, type SpawnLinkId } from '../../shared/a2aSpawn';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { TurnEvent } from '../../shared/transcript/turnEvents';
-import { claudeUsageLimitFromStopFailure, isClaudeUsageLimitText, USAGE_LIMIT_CONTINUE_PROMPT, USAGE_LIMIT_RESUME_GRACE_MS } from '../../shared/usageLimit';
+import { claudeUsageLimitFromStopFailure, isClaudeUsageLimitText, USAGE_LIMIT_CONTINUE_PROMPT } from '../../shared/usageLimit';
 import { apiErrorFromTranscriptLine } from '../transcript/apiErrorTurnEnd';
 import { parseTranscriptLine } from '../transcript/parseEntry';
 import { readTranscriptDelta } from '../transcript/readTail';
@@ -68,6 +68,11 @@ export const FURTHER_REPLIES_MAX = 5;
 export const LIMIT_RESUME_MARGIN_MS = 15 * 60 * 1000;
 /** A usage-limit stop with no known reset ends the task after this long (the registry holds 5 h at most). */
 export const LIMIT_UNKNOWN_MAX_MS = 6 * 60 * 60 * 1000;
+/**
+ * Nothing is pressed or typed until this long after the reset: Claude Code goes
+ * on by itself from its own wait, seen 36 s (5-hour) and 72 s (weekly) late.
+ */
+export const LIMIT_CONTINUE_GRACE_MS = 3 * 60 * 1000;
 /** After the reset, the screen is read at most this often. */
 export const LIMIT_PROBE_MS = 10 * 1000;
 /** Escape is pressed on the limit menu at most this many times. */
@@ -285,8 +290,11 @@ function hashOf(text: string): string {
   return crypto.createHash('sha256').update(text.replace(/\r\n?/g, '\n').trim()).digest('hex');
 }
 
+/** Claude Code's system notice when it goes on by itself after a usage limit reset. */
+const AUTO_CONTINUE_NOTICE = 'Usage limit reset · Continuing automatically';
+
 /** The entry's `type`, `stop_reason`, content and sidechain flag, from its raw line (null: not JSON). */
-function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content?: unknown; messageId: string | null; sidechain: boolean; typed: boolean } | null {
+function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content?: unknown; messageId: string | null; sidechain: boolean; typed: boolean; autoContinued: boolean } | null {
   let entry: unknown;
   try {
     entry = JSON.parse(line);
@@ -294,11 +302,14 @@ function rawEntry(line: string): { type?: unknown; stopReason?: unknown; content
     return null;
   }
   if (!entry || typeof entry !== 'object') return null;
-  const e = entry as { type?: unknown; isSidechain?: unknown; origin?: { kind?: unknown }; promptSource?: unknown; message?: { id?: unknown; stop_reason?: unknown; content?: unknown } };
+  const e = entry as { type?: unknown; isSidechain?: unknown; origin?: { kind?: unknown }; promptSource?: unknown; turnOrigin?: unknown; content?: unknown; message?: { id?: unknown; stop_reason?: unknown; content?: unknown } };
   const messageId = typeof e.message?.id === 'string' ? e.message.id : null;
   // Typed at the agent's prompt on this PC (a prompt, a slash command, a `!` command), as Claude Code 2.1 marks it.
   const typed = e.type === 'user' && (e.origin?.kind === 'human' || e.promptSource === 'typed');
-  return { type: e.type, stopReason: e.message?.stop_reason, content: e.message?.content, messageId, sidechain: e.isSidechain === true, typed };
+  // Claude Code going on by itself after its usage limit reset (2.1.322): its notice, then its own prompt.
+  const autoContinued = (e.type === 'user' && (e.origin?.kind === 'auto-continuation' || e.turnOrigin === 'auto_continuation'))
+    || (e.type === 'system' && typeof e.content === 'string' && e.content.startsWith(AUTO_CONTINUE_NOTICE));
+  return { type: e.type, stopReason: e.message?.stop_reason, content: e.message?.content, messageId, sidechain: e.isSidechain === true, typed, autoContinued };
 }
 
 function textOfContent(content: unknown): string | null {
@@ -328,7 +339,8 @@ function textOfContent(content: unknown): string | null {
  *    next turn end is read the same way;
  *  - an interrupt, or an API error other than a usage limit, fails it;
  *  - a usage-limit stop keeps it open, and so does the continue the daemon
- *    types once the limit resets (that exact prompt, after that stop);
+ *    types once the limit resets (that exact prompt, after that stop), or
+ *    Claude Code's own going on (its notice and auto-continuation prompt);
  *  - any other user entry inside it is input from this PC: failed, no reply.
  * Compactions, slash commands and reminders parse as `meta`, not user text.
  */
@@ -364,8 +376,8 @@ export function stepEpisode(ep: Episode, line: string, events: readonly TurnEven
     }
     return { kind: 'failed', reason: `the agent's turn ended on an error: ${apiError.message || apiError.error}` };
   }
-  // The agent writes on after its limit stop (Claude Code went on by itself): no continue is owed.
-  if (ep.limitStopped && raw?.type === 'assistant') {
+  // Claude Code went on by itself after its limit stop (its notice, its own prompt, or the agent writing on): no continue is owed.
+  if (ep.limitStopped && (raw?.type === 'assistant' || raw?.autoContinued)) {
     ep.limitStopped = false;
     ep.limit = undefined;
   }
@@ -826,7 +838,8 @@ export class HeadlessDelivery {
   }
 
   /**
-   * After the reset, what the screen allows (read at most every LIMIT_PROBE_MS):
+   * After the reset and LIMIT_CONTINUE_GRACE_MS, what the screen allows (read
+   * at most every LIMIT_PROBE_MS; Claude Code's own wait banner is `other`):
    * `settled` once no dialog was seen on two reads in a row. The limit menu,
    * matched exactly, gets Escape (LIMIT_ESCAPES_MAX presses at most, counted
    * when written, and only while this delivery may still write there).
@@ -834,7 +847,7 @@ export class HeadlessDelivery {
    */
   private async limitScreenAfterReset(ep: Episode, limit: NonNullable<Episode['limit']>): Promise<'settled' | 'wait'> {
     const now = this.now();
-    if (limit.resetsAt == null || now < limit.resetsAt + USAGE_LIMIT_RESUME_GRACE_MS) return 'wait';
+    if (limit.resetsAt == null || now < limit.resetsAt + LIMIT_CONTINUE_GRACE_MS) return 'wait';
     if (now - (limit.probedAt ?? Number.NEGATIVE_INFINITY) < LIMIT_PROBE_MS) return 'wait';
     limit.probedAt = now;
     const screen = this.deps.limitScreen ? await this.deps.limitScreen(ep.sessionId).catch(() => 'other' as const) : 'other';
