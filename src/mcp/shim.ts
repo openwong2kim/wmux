@@ -15,13 +15,21 @@
  * sat: the broker starts its PID walk from the pid asserted here, and the
  * ancestry chain it walks is this shim's.
  *
- * Failure contract: if the broker connection drops mid-session, the shim
- * EXITS (non-zero). MCP servers are stateful per session (initialize
- * handshake), so a silent reconnect would leave the host talking to a
- * server that has forgotten the handshake. Exiting surfaces the standard
- * "server died" path that hosts already know how to restart. At STARTUP,
- * connect retries briefly with backoff so a broker that is still booting
- * (app launch race) doesn't fail the first agent spawn.
+ * Broker loss: once the session is acknowledged, the shim reads the
+ * newline-delimited JSON-RPC it pumps (shimHandover.ts) and keeps the ids of
+ * the host's requests the broker has not answered, the host's `initialize`
+ * request and its `notifications/initialized`. When the broker connection
+ * closes or fails, the shim writes the usual stderr line, answers each
+ * request in flight with a JSON-RPC error saying the call may have run (it
+ * is never sent again), and starts the full server beside this file as a
+ * child with piped stdio. The child first gets the `initialize`, under an id
+ * of the shim's own, whose reply the shim drops (the host already has one),
+ * and the `initialized` notification, then the host's bytes for the rest of
+ * the session. The shim exits with the child's code, or 1 when there is no
+ * full server to start. It never reconnects to a broker that comes back.
+ * This is the native launcher's behaviour (core/wmux-native/src/mcp_shim.rs).
+ * At STARTUP, connect retries briefly with backoff so a broker that is still
+ * booting (app launch race) doesn't fail the first agent spawn.
  *
  * The shim asks for the broker's ack before it forwards a byte. A broker that
  * cannot tie the connection to this process closes it before the ack; that,
@@ -32,10 +40,12 @@
 import * as net from 'net';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { getMcpBrokerPipeName, getAuthTokenPath } from '../shared/constants';
 import { COMMANDER_MODE_ARG } from '../shared/commanderSurface';
 import { CORE_MODE_ARG } from '../shared/coreSurface';
 import { roleArgValue } from '../shared/roleSurfaces';
+import { Calls, Lines, isReplayAnswer, mayHaveRun } from './shimHandover';
 
 const CONNECT_RETRIES = 10;
 const CONNECT_RETRY_DELAY_MS = 300;
@@ -89,9 +99,13 @@ function refusalFallsBack(why: string): boolean {
  * build's tsc output names it entry.js (index.js there is the server module);
  * mcp-bundle names the bundled entry index.js.
  */
+function fullServerEntry(): string | undefined {
+  return [path.join(__dirname, 'entry.js'), path.join(__dirname, 'index.js')].find((f) => fs.existsSync(f));
+}
+
 function runFullServer(why: string): void {
   console.error(`[wmux-mcp-shim] ${why}; running the full server`);
-  const entry = [path.join(__dirname, 'entry.js'), path.join(__dirname, 'index.js')].find((f) => fs.existsSync(f));
+  const entry = fullServerEntry();
   if (!entry) {
     console.error('[wmux-mcp-shim] no full server beside the shim');
     process.exit(1);
@@ -191,40 +205,132 @@ async function main(): Promise<void> {
     runFullServer(ack.kind === 'refused' ? `broker refused the session: ${ack.why}` : ack.why);
     return;
   }
-  if (ack.rest.length > 0) process.stdout.write(ack.rest);
-
-  // Byte pumps. No parsing: MCP stdio framing is newline-delimited JSON and
-  // the broker consumes it as a stream, so pass-through preserves framing.
-  process.stdin.pipe(socket);
-  socket.pipe(process.stdout);
-
-  // Host closed our stdin → normal end of session. Mirror the old child:
-  // exit cleanly so the host doesn't report a server crash.
-  process.stdin.on('end', () => {
-    socket?.end();
-    process.exit(0);
-  });
-  process.stdin.on('error', () => {
-    socket?.destroy();
-    process.exit(0);
-  });
-
-  // Broker went away mid-session → exit non-zero (see failure contract).
-  socket.on('close', () => {
-    console.error('[wmux-mcp-shim] broker connection closed');
-    process.exit(1);
-  });
-  socket.on('error', (err) => {
-    console.error(`[wmux-mcp-shim] broker connection error: ${err.message}`);
-    process.exit(1);
-  });
+  const pumps = pumpSession(socket, ack.rest);
 
   const shutdown = () => {
-    socket?.destroy();
+    pumps.signal();
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+}
+
+/** Exit once what was written to stdout has gone out. */
+function exitAfterStdout(code: number): void {
+  process.stdout.write('', () => process.exit(code));
+}
+
+/**
+ * The acknowledged session: host lines to the broker and back, a line at a
+ * time, until the host ends it; after a broker loss, to and from a full
+ * server child (see the module doc). Writes wait for the other side to
+ * drain, as pipe() did.
+ */
+function pumpSession(socket: net.Socket, rest: Buffer): { signal: () => void } {
+  const calls = new Calls();
+  let bundle: ReturnType<typeof spawn> | null = null;
+  let handedOver = false;
+
+  const toHost = (line: Buffer | string, source: { pause(): unknown; resume(): unknown }): void => {
+    if (!process.stdout.write(line)) {
+      source.pause();
+      process.stdout.once('drain', () => source.resume());
+    }
+  };
+
+  const fromBroker = new Lines();
+  const onBroker = (chunk: Buffer): void => {
+    fromBroker.push(chunk, (line) => {
+      if (calls.answered(line)) toHost(line, socket);
+    });
+  };
+
+  const sendLine = (line: Buffer): void => {
+    if (handedOver) {
+      if (bundle?.stdin && !bundle.stdin.write(line)) {
+        process.stdin.pause();
+        bundle.stdin.once('drain', () => process.stdin.resume());
+      }
+      return;
+    }
+    calls.sent(line);
+    if (!socket.write(line)) {
+      process.stdin.pause();
+      socket.once('drain', () => process.stdin.resume());
+    }
+  };
+
+  /** The broker connection ended mid-session (`why`): answer what was in
+   *  flight, then run the rest of the session on a full server child. */
+  const loseBroker = (why: string): void => {
+    if (handedOver) return;
+    handedOver = true;
+    socket.destroy();
+    console.error(`[wmux-mcp-shim] ${why}`);
+    const { ids, replay } = calls.handOver();
+    for (const id of ids) process.stdout.write(mayHaveRun(id));
+    const entry = fullServerEntry();
+    if (!entry) {
+      console.error('[wmux-mcp-shim] no full server beside the shim');
+      exitAfterStdout(1);
+      return;
+    }
+    const child = spawn(process.execPath, [entry, ...process.argv.slice(2)], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+      windowsHide: true,
+    });
+    bundle = child;
+    child.on('error', (err) => {
+      console.error(`[wmux-mcp-shim] cannot start the full server: ${err.message}`);
+      exitAfterStdout(1);
+    });
+    // A child that stopped reading has exited; its close ends the shim.
+    child.stdin?.on('error', () => { /* see above */ });
+    console.error('[wmux-mcp-shim] running the full server for the rest of the session');
+    for (const line of replay) child.stdin?.write(line);
+    let swallow = replay.length > 0;
+    const fromBundle = new Lines();
+    child.stdout?.on('data', (chunk: Buffer) => {
+      fromBundle.push(chunk, (line) => {
+        if (swallow && isReplayAnswer(line)) swallow = false;
+        else if (child.stdout) toHost(line, child.stdout);
+      });
+    });
+    child.on('close', (code) => {
+      const tail = fromBundle.takeRest();
+      if (tail.length > 0) process.stdout.write(tail);
+      exitAfterStdout(code ?? 1);
+    });
+  };
+
+  const fromHost = new Lines();
+  process.stdin.on('data', (chunk: Buffer) => fromHost.push(chunk, sendLine));
+  // Host closed our stdin: end of session. Mirror the old child and exit
+  // cleanly so the host doesn't report a server crash. After a handover the
+  // child's stdin is closed instead, and its exit ends the shim.
+  process.stdin.on('end', () => {
+    // An unterminated last line goes as it is.
+    const last = fromHost.takeRest();
+    if (last.length > 0) sendLine(last);
+    if (handedOver) {
+      bundle?.stdin?.end();
+      return;
+    }
+    socket.end();
+    process.exit(0);
+  });
+  process.stdin.on('error', () => {
+    socket.destroy();
+    process.exit(0);
+  });
+
+  socket.on('close', () => loseBroker('broker connection closed'));
+  socket.on('error', (err) => loseBroker(`broker connection error: ${err.message}`));
+  if (rest.length > 0) onBroker(rest);
+  socket.on('data', onBroker);
+  socket.resume();
+
+  return { signal: () => socket.destroy() };
 }
 
 main().catch((err) => {
