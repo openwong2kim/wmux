@@ -965,7 +965,7 @@ fn against_the_real_broker_initialize_list_call_then_a_broker_kill_hands_over_to
     recv_line_with(&broker_log, "listening on");
 
     let mut shim = spawn(&mut sb.shim(&[])).expect("spawn shim");
-    let err = collect(shim.stderr.take().unwrap());
+    let err = lines(shim.stderr.take().unwrap());
     let out = lines(shim.stdout.take().unwrap());
     let mut stdin = shim.stdin.take().unwrap();
     let mut send = |msg: &str| {
@@ -999,8 +999,7 @@ fn against_the_real_broker_initialize_list_call_then_a_broker_kill_hands_over_to
         // The bundle runs in the shim's job object, so killing the shim ends it.
         shim.kill().expect("kill the shim");
         let _ = shim.wait();
-        let err = err.join().unwrap();
-        assert!(err.contains("[wmux-mcp-shim] closed before ack\n"), "{err}");
+        recv_line_with(&err, "[wmux-mcp-shim] closed before ack");
         return;
     }
     // This broker knows the ack: the shim consumed it, so it never reached stdout.
@@ -1012,6 +1011,18 @@ fn against_the_real_broker_initialize_list_call_then_a_broker_kill_hands_over_to
 
     broker.0.kill().expect("kill broker");
     let _ = broker.0.wait();
+    // The broker's exit is not the shim seeing it: wait for the handover, so
+    // the next call goes to the bundle and is not caught in flight.
+    let mut said = Vec::new();
+    loop {
+        let line = err.recv_timeout(WAIT).expect("the handover on stderr");
+        let done = line.contains("[wmux-mcp-shim] running the full server for the rest of the session");
+        said.push(line);
+        if done {
+            break;
+        }
+    }
+    assert!(said[0].starts_with("[wmux-mcp-shim] broker connection "), "{said:?}");
     // Nothing was in flight. The bundle took the session over with the
     // replayed initialize (its reply never reaches the host) and serves the
     // next call.
@@ -1020,12 +1031,6 @@ fn against_the_real_broker_initialize_list_call_then_a_broker_kill_hands_over_to
     assert!(next.contains(r#""id":4"#) && next.contains(r#""result""#), "{next}");
     drop(stdin);
     assert_eq!(wait_within(&mut shim, WAIT).code(), Some(0));
-    let err = err.join().unwrap();
-    assert!(err.starts_with("[wmux-mcp-shim] broker connection "), "{err}");
-    assert!(
-        err.contains("[wmux-mcp-shim] running the full server for the rest of the session\n"),
-        "{err}"
-    );
 }
 
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"native-shim-e2e","version":"0"}}}"#;
