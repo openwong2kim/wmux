@@ -113,6 +113,14 @@ const accepted: Case[] = [
   synthetic('scorc-scrolled-region', 'a\x1b[1;4r\x1b[3;1H\x1b[s\x1b[4;1H\n\n\x1b[uX\x1b[r'),
   synthetic('decrc-scrolled-inner-region', 'a\x1b[2;5r\x1b[3;1H\x1b7\x1b[5;1H\n\n\x1b8X\x1b[r'),
   synthetic('decrc-ed3', `${rowsOf8}\x1b[1;1H\x1b7\x1b[3J\x1b8X`),
+  // xterm's restore ends in _restrictCursor: past the bottom after ED 3, the
+  // last row; with DECOM on, inside the scrolling region.
+  synthetic('main-1049l-ed3-below-screen', `${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b[?1049lX`),
+  synthetic('decrc-ed3-below-screen', `${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b8X`),
+  synthetic('decrc-origin-scrolled-above-region',
+    `\x1b[3;6r\x1b[?6h\x1b7\x1b[r${'\n'.repeat(8)}\x1b[3;6r\x1b8X\x1b[r\x1b[?6l`),
+  synthetic('decrc-origin-ed3-below-region', `${rowsOf8}\x1b[1;2r\x1b[?6h\x1b7\x1b[3J\x1b8X\x1b[r\x1b[?6l`),
+  synthetic('decrc-origin-no-scroll', 'a\x1b[2;5r\x1b[?6h\x1b[3;1H\x1b7\x1b8X\x1b[r\x1b[?6l'),
   twoRowHistory('decrc-full-history', `${rowsOf8}\x1b[3;1H\x1b7\x1b[6;1H\n\n\x1b8X`),
   twoRowHistory('scorc-full-history', `${rowsOf8}\x1b[3;1H\x1b[s\x1b[6;1H\n\n\x1b[uX`),
   // A resize between the scroll and the restore: the rows it moves between
@@ -232,10 +240,6 @@ const refused: Case[] = [
   synthetic('decrc-later-g2', '\x1b7\x1b*0\x1b8\x1bnq', 'xterm'),
   synthetic('alt-1049-later-g2', '\x1b(0\x1b[?1049h\x1b*0\x1b[?1049l\x1bnq', 'xterm'),
   synthetic('alt-1049-later-g0-dec', '\x1b[?1049h\x1b(0q\x1b[?1049lq', 'xterm'),
-  // ED 3 cleared more history than the rows below the save: xterm's
-  // restored row is past the bottom of its screen.
-  synthetic('main-1049l-ed3-below-screen', `${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b[?1049lX`, 'xterm'),
-  synthetic('decrc-ed3-below-screen', `${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b8X`, 'xterm'),
   synthetic('decstr-decrc-nowrap', `\x1b[?7l\x1b7\x1b[!p\x1b8${'x'.repeat(25)}`, 'xterm'),
   synthetic('decrc-unsaved-nowrap', `\x1b[?7l\x1b8${'x'.repeat(25)}`, 'xterm'),
   synthetic('decstr-cut-by-del', 'ab\x1b[4h\x1b[!\x7fpcd', 'xterm'),
@@ -534,7 +538,6 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     ['\x1b[1!p', 'unsupported-state-decstr'],
     ['\x1b[?47hx', 'unsupported-state-mode'],
     ['\x1b[?47h\x1b[<99u', 'unsupported-state-mode'],
-    [`${rowsOf8}\x1b[5;1H\x1b7\x1b[3J\x1b[?1049l`, 'unsupported-state-restore-row'],
   ])('names the refused control in the refusal: %j', async (stream, family) => {
     const native = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, initial: Buffer.from(stream) }, 'ansi');
     expect(native.ok).toBe(false);

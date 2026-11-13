@@ -652,6 +652,11 @@ impl<T> Term<T> {
         &self.inactive_grid
     }
 
+    /// wmux snapshot access: the scrolling region, end exclusive.
+    pub fn scroll_region(&self) -> &Range<Line> {
+        &self.scroll_region
+    }
+
     /// Resize terminal to new dimensions.
     pub fn resize<S: Dimensions>(&mut self, size: S) {
         let old_cols = self.columns();
