@@ -143,7 +143,7 @@ interface RunnerMessage {
 }
 
 /** Node binary plus whether Electron needs telling to behave as one. */
-function resolveNodeBinary(): { command: string; electronRunAsNode: boolean } {
+export function resolveNodeBinary(): { command: string; electronRunAsNode: boolean } {
   const base = path.basename(process.execPath).toLowerCase();
   const isPlainNode = base === 'node' || base === 'node.exe';
   return { command: process.execPath, electronRunAsNode: !isPlainNode };
