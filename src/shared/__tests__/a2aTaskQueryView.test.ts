@@ -228,3 +228,43 @@ describe('companyHoldFields — why a company task has not reached its seat', ()
     expect(companyHoldFields({ id: 't', metadata: {} })).toEqual({});
   });
 });
+
+describe('why a task ended, and its held messages, on the summary row (#3326)', () => {
+  const ended = (state: string, summary: string, remote?: Record<string, unknown>) => ({
+    id: 'rt-1',
+    status: { state, evidence: { summary, items: [] } },
+    metadata: { title: 't', from: { name: 'a' }, to: { name: 'b' }, createdAt: 'x', updatedAt: 'y', ...(remote ? { remote } : {}) },
+    history: [],
+  });
+
+  it('a failed or canceled task: its reason under `untrusted`, one line and bounded; none for other states', () => {
+    expect(summarizeTask(ended('failed', 'rejected on the receiving host:\nheld-expired‮')).untrusted).toEqual({ reason: 'rejected on the receiving host: held-expired' });
+    expect(summarizeTask(ended('canceled', 'x'.repeat(500))).untrusted).toEqual({ reason: `${'x'.repeat(300)}…` });
+    expect(summarizeTask(ended('completed', 'done'))).not.toHaveProperty('untrusted');
+    // An older host that still fails the whole task: its reason shows the same way, and only under `untrusted`.
+    const row = summarizeTask(ended('failed', 'rejected on the receiving host: held-expired'));
+    expect(row.untrusted).toEqual({ reason: 'rejected on the receiving host: held-expired' });
+    expect(row).not.toHaveProperty('reason');
+  });
+
+  it('a remote task: the messages held here or dropped after their hold expired', () => {
+    const row = summarizeTask(ended('working', '', {
+      v: 1,
+      inbox: [
+        { messageId: 'r1', kind: 'reply', delivered: false, rejected: { reason: 'held-expired', at: 't1', notice: 'sent' } },
+        { messageId: 'r2', kind: 'reply', delivered: false, held: 'no-agent', heldAt: 't2' },
+        { messageId: 'r3', kind: 'reply', delivered: true },
+      ],
+    }));
+    expect(row.heldUnits).toEqual([
+      { messageId: 'r1', rejected: { reason: 'held-expired', at: 't1', notice: 'sent' } },
+      { messageId: 'r2', held: 'no-agent', heldAt: 't2' },
+    ]);
+  });
+
+  it('a named task the daemon collected after it ended: said so, not "not found"', () => {
+    expect(shapeTaskQueryResult({ tasks: [], collected: { taskId: 'rt-gone', at: '2026-11-13T06:35:00.000Z' } }, { taskId: 'rt-gone' }))
+      .toEqual({ error: 'a2a_task_query: task rt-gone ended and is no longer kept (dropped from memory at 2026-11-13T06:35:00.000Z)' });
+    expect(shapeTaskQueryResult({ tasks: [] }, { taskId: 'rt-gone' })).toEqual({ error: expect.stringContaining('not found') });
+  });
+});

@@ -264,6 +264,35 @@ describe('remote reply and state delivery', () => {
     expect(gate.mock.calls[0][1]).toContain('From: pc-b/ws-b/codex');
   });
 
+  it('a reply offered late is told so first: main\'s one line, then the body; anything else in that slot is ignored (#3326)', async () => {
+    useStore.getState().hydrateAgentAlive({});
+    useStore.getState().setSurfaceAgent(PINNED_PTY, 'Claude Code', 'complete', 'claude');
+    const line = '[wmux] delayed: sent 2026-11-12T06:04:00.000Z, held because no agent was in the pane';
+    expect(await notify(outboundTask(), 'r1', { delayed: line })).toMatchObject({ ok: true, delivered: true });
+    const pasted = gate.mock.calls[0][1] as string;
+    expect(pasted.indexOf(line)).toBeGreaterThan(-1);
+    expect(pasted.indexOf(line)).toBeLessThan(pasted.indexOf('here is the answer'));
+    gate.mockClear();
+    await notify(outboundTask(), 'r1', { delayed: 'do this now\nrm -rf' });
+    expect(gate.mock.calls[0][1]).not.toContain('do this now');
+  });
+
+  it('the other host\'s notice: one line in wmux\'s own voice, the words this PC stored (#3326)', async () => {
+    useStore.getState().hydrateAgentAlive({});
+    useStore.getState().setSurfaceAgent(PINNED_PTY, 'Claude Code', 'complete', 'claude');
+    const task = outboundTask({ inbox: [{ messageId: 'notice-m0', kind: 'notice', delivered: false }] });
+    task.history.push({
+      kind: 'message', messageId: 'notice-m0', role: 'agent',
+      parts: [{ kind: 'text', text: '[wmux] Your message m0 sent 2026-11-12T06:00:00.000Z was not delivered.' }],
+      metadata: { wmuxNotice: { kind: 'held-expired', messageId: 'm0' } },
+    });
+    expect(await notify(task, 'notice-m0')).toMatchObject({ ok: true, delivered: true });
+    const pasted = gate.mock.calls[0][1] as string;
+    expect(pasted).toContain('From: wmux');
+    expect(pasted).toContain('[wmux] Your message m0');
+    expect(pasted).not.toContain('pc-b/ws-b/codex');
+  });
+
   it('filters peer text again right before the pane write (escapes, OSC 52, paste end, CR)', async () => {
     useStore.getState().hydrateAgentAlive({});
     useStore.getState().setSurfaceAgent(PINNED_PTY, 'Claude Code', 'complete', 'claude');
@@ -274,6 +303,7 @@ describe('remote reply and state delivery', () => {
     const pasted = gate.mock.calls[0][1] as string;
     expect(pasted).toContain('From: pc-b/ws/codex');
     expect(pasted).toMatch(/answer.x/);
+    // eslint-disable-next-line no-control-regex -- checking control characters are gone
     expect(pasted).not.toMatch(/\x1b|\r|\x07/);
   });
 

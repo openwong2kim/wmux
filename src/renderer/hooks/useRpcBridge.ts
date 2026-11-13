@@ -1235,7 +1235,12 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
   const delayed = typeof params.delayed === 'string' && /^\[wmux\] delayed: [ -~]{1,120}$/.test(params.delayed) ? params.delayed : '';
   return writeRemoteDelivery({ ...anchor, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
     ? deliverPtyNudge(target.ws, (delayed ? `${delayed}. ` : '') + buildA2aNudge(task.id, senderName, 'reply') + imagesNudgeSuffix(images), target.pty, false)
-    : deliverPtyNotification(target.ws, senderName, (delayed ? `${delayed}\n\n` : '') + bodyWithImages(text, images), target.pty, false)));
+    : deliverPtyNotification(target.ws, senderName, delayed ? withLeadLine(delayed, bodyWithImages(text, images)) : bodyWithImages(text, images), target.pty, false)));
+}
+
+/** `body` (built for the pty it lands in) with `line` first, on its own. */
+function withLeadLine(line: string, body: (ptyId: string) => string): (ptyId: string) => string {
+  return (ptyId) => `${line}\n\n${body(ptyId)}`;
 }
 
 /** One line: control characters and line breaks folded to spaces. */

@@ -4,11 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { A2A_REMOTE_PROTOCOL } from '../../../shared/a2aRemote';
-import { A2A_REMOTE_HOLD_TTL_MS } from '../../../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_HOLD_TTL_MS, heldNoticeMessageId, type A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import { COMPANY_BRIEF_KIND } from '../../../shared/company';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
-import { expireHeld, failTasksForLink, rejectHeld, type HeldDeps } from '../held';
+import { expireHeld, failTasksForLink, rejectHeld, sendHeldNotices, type HeldDeps } from '../held';
 import { remoteTaskId } from '../ids';
 import { acceptInbound } from '../inbound';
 import { LinkStore } from '../linkStore';
@@ -116,6 +116,108 @@ describe('expireHeld', () => {
     expect(await expireHeld(deps)).toEqual([old]);
     expect(tasks.getTask(old)!.status.evidence?.summary).toMatch(/held-expired/);
     expect(tasks.getTask(fresh)!.status.state).toBe('submitted');
+  });
+});
+
+describe('expireHeld — one held message, not the task (#3326)', () => {
+  /** The inbound task delivered, then two peer replies held for want of an agent, `gapMs` apart. */
+  async function twoHeldReplies(gapMs: number): Promise<string> {
+    const id = await inboundTask();
+    await tasks.markRemote({ taskId: id, delivered: true });
+    for (const [i, m] of ['r1', 'r2'].entries()) {
+      if (i > 0) clock += gapMs;
+      await tasks.appendRemoteMessage({
+        taskId: id, linkId, actorWorkspaceId: `remote:${linkId}`,
+        message: { kind: 'message', messageId: m, role: 'user', parts: [{ kind: 'text', text: `reply ${m}` }] },
+      });
+      await tasks.markRemote({ taskId: id, messageId: m, held: 'no-agent' });
+    }
+    return id;
+  }
+  const item = (id: string, m: string) => (tasks.getTask(id)!.metadata.remote as A2aRemoteTaskState).inbox!.find((i) => i.messageId === m)!;
+
+  it('two held replies expire each at its own time; the task stays open and nothing is sent as a state', async () => {
+    const id = await twoHeldReplies(6 * 60 * 60 * 1000);
+    const before = outbox.pending(HOST).length;
+    clock += A2A_REMOTE_HOLD_TTL_MS - 6 * 60 * 60 * 1000 + 60_000;
+    expect(await expireHeld(deps)).toEqual([`${id}#r1`]);
+    expect(item(id, 'r1')).toMatchObject({ delivered: false, rejected: { reason: 'held-expired', notice: 'pending' } });
+    expect(item(id, 'r1').held).toBeUndefined();
+    expect(item(id, 'r2')).toMatchObject({ held: 'no-agent' });
+    expect(tasks.getTask(id)!.status.state).toBe('submitted');
+    clock += 6 * 60 * 60 * 1000;
+    expect(await expireHeld(deps)).toEqual([`${id}#r2`]);
+    expect(await expireHeld(deps)).toEqual([]);
+    expect(tasks.getTask(id)!.status.state).toBe('submitted');
+    expect(outbox.pending(HOST).slice(before).filter((r) => r.envelope.kind === 'state')).toEqual([]);
+    // A dropped reply is owed to nobody: never pending again.
+    expect(tasks.listRemotePending().map((t) => t.id)).not.toContain(id);
+  });
+
+  it('a person rejecting a held reply still ends the task, as before', async () => {
+    const id = await twoHeldReplies(0);
+    expect(await rejectHeld(deps, id, 'not for this agent')).toMatchObject({ ok: true, state: 'failed' });
+    expect(tasks.getTask(id)!.status.state).toBe('failed');
+  });
+
+  it('a task whose own first message was never delivered still ends when its hold expires', async () => {
+    const id = await inboundTask();
+    await tasks.markRemote({ taskId: id, held: 'no-agent' });
+    clock += A2A_REMOTE_HOLD_TTL_MS + 1;
+    expect(await expireHeld(deps)).toEqual([id]);
+    expect(tasks.getTask(id)!.status.state).toBe('failed');
+  });
+
+  it('a task kept after it ended is never dropped or noticed again', async () => {
+    const id = await twoHeldReplies(0);
+    await rejectHeld(deps, id, 'x');
+    clock += A2A_REMOTE_HOLD_TTL_MS + 1;
+    expect(await expireHeld(deps)).toEqual([]);
+  });
+
+  describe('the notice, at most once per message', () => {
+    async function expiredReply(): Promise<string> {
+      const id = await twoHeldReplies(0);
+      clock += A2A_REMOTE_HOLD_TTL_MS + 1;
+      await expireHeld(deps);
+      return id;
+    }
+    const notices = () => outbox.pending(HOST).filter((r) => r.envelope.notice);
+
+    it('a PC that takes it: one reply carrying the notice, its id derived from the message, then marked sent', async () => {
+      const id = await expiredReply();
+      const sent = await sendHeldNotices({ ...deps, takesNotice: () => true });
+      expect(sent).toBe(2);
+      expect(notices().map((r) => r.envelope)).toEqual([
+        expect.objectContaining({ kind: 'reply', taskId: id, messageId: heldNoticeMessageId('r1'), notice: { kind: 'held-expired', messageId: 'r1', sentAt: expect.any(String) } }),
+        expect.objectContaining({ messageId: heldNoticeMessageId('r2'), notice: expect.objectContaining({ messageId: 'r2' }) }),
+      ]);
+      expect(item(id, 'r1').rejected?.notice).toBe('sent');
+      // Again: nothing more.
+      expect(await sendHeldNotices({ ...deps, takesNotice: () => true })).toBe(0);
+      expect(notices()).toHaveLength(2);
+    });
+
+    it('a PC that does not take it (an older build): nothing sent, marked not-sent', async () => {
+      const id = await expiredReply();
+      expect(await sendHeldNotices({ ...deps, takesNotice: () => false })).toBe(0);
+      expect(notices()).toEqual([]);
+      expect(item(id, 'r1').rejected?.notice).toBe('not-sent');
+    });
+
+    it('a PC not connected now: left pending, and sent once it is', async () => {
+      const id = await expiredReply();
+      expect(await sendHeldNotices({ ...deps, takesNotice: () => undefined })).toBe(0);
+      expect(item(id, 'r1').rejected?.notice).toBe('pending');
+      expect(await sendHeldNotices({ ...deps, takesNotice: () => true })).toBe(2);
+    });
+
+    it('a task that ended meanwhile: no notice', async () => {
+      const id = await expiredReply();
+      await tasks.forceFailRemote({ taskId: id, reason: 'x', forced: 'remote_held_rejected' });
+      expect(await sendHeldNotices({ ...deps, takesNotice: () => true })).toBe(0);
+      expect(item(id, 'r1').rejected?.notice).toBe('not-sent');
+    });
   });
 });
 

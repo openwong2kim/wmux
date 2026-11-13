@@ -42,7 +42,7 @@ class FakeDaemon {
         tasks: [...this.tasks.values()].filter((t) => {
           const m = this.marker(t);
           const taskWork = m.direction === 'inbound' && m.delivered !== true && !m.held;
-          return taskWork || (m.inbox ?? []).some((i) => i.delivered !== true && !i.held);
+          return taskWork || (m.inbox ?? []).some((i) => i.delivered !== true && !i.held && !i.rejected);
         }).map((t) => structuredClone(t)),
       };
     }
@@ -55,7 +55,7 @@ class FakeDaemon {
       const task = this.tasks.get(params.taskId as string)!;
       const m = this.marker(task);
       const target = params.messageId ? m.inbox!.find((i) => i.messageId === params.messageId)! : m;
-      if (target.delivered === true || target.held) return { ok: true };
+      if (target.delivered === true || (target.held && params.reoffer !== true)) return { ok: true };
       if (params.attempted) target.attempted = true;
       else delete target.attempted;
       return { ok: true };
@@ -524,5 +524,75 @@ describe('RemoteA2aBridge — a task stored for a brain link', () => {
     await settle();
     expect(renderer).not.toHaveBeenCalled();
     expect(daemon.marks).toEqual([{ taskId: id(25), held: 'pane-missing' }]);
+  });
+});
+
+describe('RemoteA2aBridge — a reply held for want of an agent is offered again (#3326)', () => {
+  /** A delivered task with replies r1 (held no-agent since `heldAt`) and r2 (new). */
+  function taskWithHeldReply(o: { attempted?: boolean; inHistory?: boolean; held?: 'no-agent' | 'pane-missing' | 'delivery-unconfirmed'; r2?: boolean } = {}): Task {
+    const t = remoteTask(7);
+    const marker = t.metadata.remote as A2aRemoteTaskState;
+    marker.delivered = true;
+    t.status.state = 'working';
+    if (o.inHistory !== false) t.history.push({ kind: 'message', messageId: 'r1', role: 'user', parts: [{ kind: 'text', text: 'first, held' }] });
+    t.history.push({ kind: 'message', messageId: 'r2', role: 'user', parts: [{ kind: 'text', text: 'second' }] });
+    marker.inbox = [
+      { messageId: 'r1', kind: 'reply', at: '2026-11-12T06:04:00.000Z', delivered: false, held: o.held ?? 'no-agent', heldAt: '2026-11-12T06:14:00.000Z', ...(o.attempted ? { attempted: true } : {}) },
+      ...(o.r2 === false ? [] : [{ messageId: 'r2', kind: 'reply' as const, delivered: false }]),
+    ];
+    daemon.tasks.set(t.id, t);
+    return t;
+  }
+  const item = (m: string) => (daemon.tasks.get(id(7))!.metadata.remote as A2aRemoteTaskState).inbox!.find((i) => i.messageId === m)!;
+  const notified = () => renderer.mock.calls.filter(([method]) => method === 'a2a.remote.notify').map(([, p]) => p);
+
+  it('before a new reply on the same task: the held one first, told it was held and since when; then the new one', async () => {
+    taskWithHeldReply();
+    bridge.start();
+    await settle();
+    expect(notified().map((p) => [p.messageId, p.delayed])).toEqual([
+      ['r1', '[wmux] delayed: sent 2026-11-12T06:04:00.000Z, held because no agent was in the pane'],
+      ['r2', undefined],
+    ]);
+    expect(item('r1')).toMatchObject({ delivered: true });
+    expect(item('r2')).toMatchObject({ delivered: true });
+    expect(daemon.attempts.find((a) => a.messageId === 'r1')).toMatchObject({ attempted: true, reoffer: true });
+  });
+
+  it('a re-offer that writes nothing keeps the hold and its time, and the new reply still goes', async () => {
+    taskWithHeldReply();
+    answer = (p) => (p.messageId === 'r1' ? { ok: true, delivered: false, reason: 'no_agent_pane' } : { ok: true, delivered: true });
+    bridge.start();
+    await settle();
+    expect(item('r1')).toMatchObject({ held: 'no-agent', heldAt: '2026-11-12T06:14:00.000Z' });
+    expect(item('r1').attempted).toBeUndefined();
+    expect(item('r2')).toMatchObject({ delivered: true });
+  });
+
+  it('one main started and never confirmed (it may be in the pane): delivery-unconfirmed, never pasted again', async () => {
+    taskWithHeldReply({ attempted: true });
+    bridge.start();
+    await settle();
+    expect(notified().map((p) => p.messageId)).toEqual(['r2']);
+    expect(item('r1').held).toBe('delivery-unconfirmed');
+  });
+
+  it('never offered again: without its text here, held for another reason, or with no new reply on the task', async () => {
+    taskWithHeldReply({ inHistory: false });
+    bridge.start();
+    await settle();
+    expect(notified().map((p) => p.messageId)).toEqual(['r2']);
+    for (const held of ['pane-missing', 'delivery-unconfirmed'] as const) {
+      renderer.mockClear();
+      taskWithHeldReply({ held });
+      await bridge.trigger();
+      await settle();
+      expect(notified().map((p) => p.messageId)).toEqual(['r2']);
+    }
+    renderer.mockClear();
+    taskWithHeldReply({ r2: false });
+    await bridge.trigger();
+    await settle();
+    expect(notified()).toEqual([]);
   });
 });
