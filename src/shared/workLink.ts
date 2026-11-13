@@ -375,8 +375,10 @@ export function workLinkResultFromTask(task: unknown, at: number): WorkLinkResul
   const status = isRecord(task) && isRecord(task.status) ? task.status : undefined;
   if (!status || (status.state !== 'completed' && status.state !== 'failed')) return undefined;
   const evidence = isRecord(status.evidence) ? status.evidence : undefined;
+  // A failed remote task as a query returns it carries the reason under `untrusted`.
+  const untrusted = isRecord(task) && isRecord(task.untrusted) && typeof task.untrusted.reason === 'string' ? task.untrusted.reason.trim() : '';
   const summary = capText(
-    (typeof evidence?.summary === 'string' ? evidence.summary.trim() : '') || messageText(status.message).trim(),
+    (typeof evidence?.summary === 'string' ? evidence.summary.trim() : '') || untrusted || messageText(status.message).trim(),
     WORK_LINK_LIMITS.MAX_RESULT_SUMMARY,
   );
   if (!summary) return undefined;

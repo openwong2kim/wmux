@@ -156,17 +156,18 @@ function reasonOf(status: Rec): string | undefined {
 }
 
 /**
- * A failed or canceled remote task as an agent's full view returns it: its reason
- * (`status.evidence.summary`, often the other PC's words) moved apart under
- * `untrusted.reason`, as a summary row has it, never left where this side's
- * own words are read. Any other task is returned as it is.
+ * A failed or canceled remote task in full: its reason (`status.evidence.summary`,
+ * often the other PC's words) moved apart under `untrusted.reason`, never left
+ * where this side's own words are read. The text is kept as stored (a summary
+ * row has it as one bounded line); a work link and the fleet view read it from
+ * there. Any other task is returned as it is.
  */
 export function separateRemoteReason(task: Rec): Rec {
   const meta = isRec(task.metadata) ? task.metadata : undefined;
   const status = isRec(task.status) ? task.status : undefined;
   if (!meta || !isRec(meta.remote) || !status || !isRec(status.evidence)) return task;
   if (status.state !== 'failed' && status.state !== 'canceled') return task;
-  const reason = reasonOf(status);
+  const reason = str(status.evidence.summary);
   const evidence = Object.fromEntries(Object.entries(status.evidence).filter(([key]) => key !== 'summary'));
   return {
     ...task,
@@ -414,8 +415,7 @@ export function applyTaskQueryView<T extends object>(tasks: readonly T[], params
     });
   }
   if (isAnchorTaskQuery(params)) return taskAnchorRows(tasks);
-  // The legacy view is main's own read (work links take a remote task's reason from it), never an agent's.
-  if (!isPagedTaskQuery(params)) return [...tasks];
+  if (!isPagedTaskQuery(params)) return tasks.map((task) => separateRemoteReason(task as Rec));
   const taskId = pagedTaskId(params);
   if (taskId) {
     return tasks

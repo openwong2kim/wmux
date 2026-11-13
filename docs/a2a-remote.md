@@ -242,7 +242,7 @@ The **Remote** page has a **Messages between PCs** section:
     history).
 - **Ended tasks.** A remote task that failed or was canceled stays in
   `a2a_task_query` for 24 hours (any other ended task for 30 minutes), with
-  its reason under `untrusted.reason` in every view an agent reads. Asked for by id after
+  its reason under `untrusted.reason` in every view. Asked for by id after
   that, within another 24 hours, the answer is that it ended (and when) and
   is no longer kept, rather than "not found".
 
