@@ -6,6 +6,7 @@
  */
 
 import type { IdentityClaimsSummary } from './identityClaims';
+import type { BrokerLimits } from './brokerLimits';
 
 /** A tool name as a report may carry it: never arguments or paths. */
 export const BROKER_TOOL_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -92,6 +93,10 @@ export interface BrokerStatus {
   downReason: BrokerDownReason | null;
   /** Tool calls in flight when the broker last crashed (names only); absent from an older app. */
   lastCrashTools?: string[];
+  /** The config.json mcp.broker limits the broker was started with; absent before its first start and from an older app. */
+  limits?: BrokerLimits;
+  /** mcp.broker settings that were set but ignored (not a positive integer). */
+  ignoredLimits?: string[];
 }
 
 /** `mcp.sessions.summary` result. */

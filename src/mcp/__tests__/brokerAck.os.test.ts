@@ -18,7 +18,7 @@
 // koffi resolves through NODE_PATH, as it does beside the packaged bundle.
 // Windows named pipes give no peer pid, so there every session is refused.
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'child_process';
 import { buildSync } from 'esbuild';
 import * as fs from 'fs';
@@ -111,6 +111,7 @@ async function startBroker(
   withKoffi: boolean,
   onLog: (text: string) => void,
   envToken: string | null = TOKEN,
+  extraEnv: NodeJS.ProcessEnv = {},
 ): Promise<ChildProcess> {
   const outfile = path.join(dir, 'broker.cjs');
   buildSync({
@@ -125,6 +126,7 @@ async function startBroker(
   });
   const env: NodeJS.ProcessEnv = { HOME: dir, USERPROFILE: dir, WMUX_DATA_SUFFIX: suffix };
   if (envToken !== null) env.WMUX_AUTH_TOKEN = envToken;
+  Object.assign(env, extraEnv);
   for (const keep of ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'TEMP', 'TMP', 'TMPDIR']) {
     if (process.env[keep] !== undefined) env[keep] = process.env[keep];
   }
@@ -271,6 +273,15 @@ describe('broker handshake ack', () => {
       expect(JSON.parse(first), String(ack)).toMatchObject({ id: 1 });
       s.socket.destroy();
     }
+  });
+
+  // No limit is set by default, and the connection rate limit is far above
+  // agents starting together (shared/brokerLimits.ts).
+  it.runIf(hostable)('20 agents connecting at once are all hosted', async () => {
+    const sessions = await Promise.all(Array.from({ length: 20 }, () => open(handshake({ ack: 1 }))));
+    const firsts = await Promise.all(sessions.map((s) => s.lines(1).then((l) => l[0])));
+    expect(firsts.filter((l) => l === '{"wmuxBroker":1,"ok":true}')).toHaveLength(20);
+    for (const s of sessions) s.socket.destroy();
   });
 
   it('a wrong token with ack: 1 gets ok:false and the connection closes', async () => {
@@ -438,5 +449,58 @@ describe.runIf(hostable)('a broker that reads its token from the file', () => {
   it('logs no token text', () => {
     expect(log).not.toContain(first);
     expect(log).not.toContain(second);
+  });
+});
+
+// config.json mcp.broker limits, as the app passes them (shared/brokerLimits.ts).
+// A session over a limit is closed before the ack, so the shim runs its own
+// full server, and the broker's log names the setting.
+describe.runIf(hostable)('a broker with limits set', () => {
+  const brokers: { child: ChildProcess; dir: string }[] = [];
+  const start = async (name: string, limits: Record<string, number | null>) => {
+    const dir = fs.mkdtempSync(path.join('/tmp', `bl${name}-`));
+    const suffix = `-brokerlim${name}-${process.pid}`;
+    let log = '';
+    const child = await startBroker(dir, suffix, true, (text) => { log += text; }, TOKEN, { WMUX_MCP_BROKER_LIMITS: JSON.stringify(limits) });
+    brokers.push({ child, dir });
+    await logged('peer-pid: available', () => log);
+    return { pipe: pipeName(suffix, dir), log: () => log };
+  };
+  const ackOf = async (pipe: string) => {
+    const s = await open(handshake({ ack: 1 }), pipe);
+    const first = await Promise.race([s.lines(1).then((l) => l[0]), s.closed]);
+    return { s, first };
+  };
+
+  afterAll(async () => {
+    for (const b of brokers) {
+      await stopBroker(b.child);
+      fs.rmSync(b.dir, { recursive: true, force: true });
+    }
+  });
+
+  it('maxSessions: hosts up to it, refuses the next before the ack naming the setting, and frees a slot on close', async () => {
+    const b = await start('s', { maxSessions: 2, maxRssMb: null, maxBrowserReplRunners: null });
+    await logged('limits: maxSessions 2, maxRssMb none, maxBrowserReplRunners none', b.log);
+    const one = await ackOf(b.pipe);
+    const two = await ackOf(b.pipe);
+    expect([one.first, two.first]).toEqual(['{"wmuxBroker":1,"ok":true}', '{"wmuxBroker":1,"ok":true}']);
+    const three = await ackOf(b.pipe);
+    expect(three.first).toBe('');
+    await logged('session refused: mcp.broker.maxSessions (2) reached', b.log);
+    one.s.socket.destroy();
+    await vi.waitFor(async () => {
+      const again = await ackOf(b.pipe);
+      again.s.socket.destroy();
+      expect(again.first).toBe('{"wmuxBroker":1,"ok":true}');
+    }, { timeout: 5000 });
+    two.s.socket.destroy();
+  });
+
+  it('maxRssMb: a broker over it refuses new sessions before the ack, naming the setting', async () => {
+    const b = await start('r', { maxSessions: null, maxRssMb: 1, maxBrowserReplRunners: null });
+    const refused = await ackOf(b.pipe);
+    expect(refused.first).toBe('');
+    await logged('session refused: mcp.broker.maxRssMb (1) reached', b.log);
   });
 });

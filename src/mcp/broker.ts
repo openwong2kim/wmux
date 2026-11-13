@@ -44,6 +44,14 @@ import { createConnectionReporter, trackConnection, trackToolCalls, type ReportC
 import { setBrokerEnvelopeMode } from './wmux-client';
 import { acceptBrokerStamp } from './brokerStamp';
 import { brokerTokenSource, tokenMatches } from './brokerToken';
+import {
+  admissionRefusal,
+  BROKER_LIMITS_ENV,
+  BROKER_MAX_NEW_CONNECTIONS_PER_SEC,
+  brokerLimitsFromEnv,
+  ConnectionRate,
+} from '../shared/brokerLimits';
+import { setBrowserReplRunnerTotal } from './browser-repl/runnerProcess';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -234,7 +242,26 @@ function main(): void {
     },
   );
 
+  // config.json mcp.broker, as the app read it when it started this broker.
+  const limits = brokerLimitsFromEnv(process.env[BROKER_LIMITS_ENV]);
+  setBrowserReplRunnerTotal(limits.maxBrowserReplRunners);
+  console.error(`[wmux-mcp-broker] limits: maxSessions ${limits.maxSessions ?? 'none'}, maxRssMb ${limits.maxRssMb ?? 'none'}, maxBrowserReplRunners ${limits.maxBrowserReplRunners ?? 'none'}`);
+  const connectionRate = new ConnectionRate();
+  let rateLogged = 0;
+  /** Sessions admitted and not yet closed. */
+  let hostedSessions = 0;
+
   const server = net.createServer((socket) => {
+    // Closed at once, before any read: the launcher runs its own server.
+    if (!connectionRate.admit()) {
+      const now = Date.now();
+      if (now - rateLogged >= 1000) {
+        rateLogged = now;
+        console.error(`[wmux-mcp-broker] over ${BROKER_MAX_NEW_CONNECTIONS_PER_SEC} new connections in a second; closing the rest of this second's`);
+      }
+      socket.destroy();
+      return;
+    }
     // Read here, before anything else can close and reuse the descriptor.
     const peer = peerPidOf(socket);
     // Accumulate until the handshake line; hand the remainder back to the
@@ -306,6 +333,16 @@ function main(): void {
             socket.destroy();
             return;
           }
+          // Refused before the ack, naming the setting: the shim runs its own
+          // full server.
+          const refusal = admissionRefusal(limits, { sessions: hostedSessions, rssBytes: process.memoryUsage.rss() });
+          if (refusal) {
+            console.error(`[wmux-mcp-broker] session refused: ${refusal}`);
+            socket.destroy();
+            return;
+          }
+          hostedSessions++;
+          socket.once('close', () => { hostedSessions--; });
           if (claimed.callerPpid !== decision.callerPpid) {
             console.error(`[wmux-mcp-broker] callerPpid ${String(claimed.callerPpid)} differs from the OS parent ${decision.callerPpid}; using the OS parent`);
           }

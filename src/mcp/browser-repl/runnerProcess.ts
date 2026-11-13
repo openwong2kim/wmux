@@ -59,6 +59,19 @@ let runnerCap = MAX_BROWSER_REPL_RUNNERS;
 export const PROCESS_RUNNER_OWNER: object = Object.freeze({});
 /** Slots of the cap held now, per owner; an owner holding none has no entry. */
 const liveRunners = new Map<object, number>();
+/** Runners across every owner at once (config.json mcp.broker.maxBrowserReplRunners); null = no limit. */
+let runnerTotal: number | null = null;
+
+/** The broker sets the optional total across agents (shared/brokerLimits.ts). */
+export function setBrowserReplRunnerTotal(total: number | null): void {
+  runnerTotal = total;
+}
+
+function liveTotal(): number {
+  let total = 0;
+  for (const n of liveRunners.values()) total += n;
+  return total;
+}
 
 /** Test seam: the cap on live runners. */
 export function setBrowserReplRunnerCapForTest(cap: number | null): void {
@@ -67,9 +80,7 @@ export function setBrowserReplRunnerCapForTest(cap: number | null): void {
 
 /** Test seam: the slots of the cap held now, across every owner. */
 export function liveBrowserReplRunnersForTest(): number {
-  let total = 0;
-  for (const n of liveRunners.values()) total += n;
-  return total;
+  return liveTotal();
 }
 
 /**
@@ -251,6 +262,13 @@ export class RunnerProcess extends EventEmitter {
       throw new Error(
         `this wmux MCP server is already running ${runnerCap} browser_repl runtimes across its connected agents, ` +
           'which is its limit. A runtime ends when its agent disconnects or after 15 minutes idle; try again later.',
+      );
+    }
+    if (runnerTotal !== null && liveTotal() >= runnerTotal) {
+      throw new Error(
+        `the wmux MCP broker is already running ${runnerTotal} browser_repl runtimes across all agents, ` +
+          'the limit set by mcp.broker.maxBrowserReplRunners in config.json. ' +
+          'A runtime ends when its agent disconnects or after 15 minutes idle; try again later.',
       );
     }
     const { command, electronRunAsNode } = resolveNodeBinary();

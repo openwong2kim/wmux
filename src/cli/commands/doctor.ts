@@ -643,6 +643,33 @@ function brokerLine(b: McpSessionsSummary['broker'], kinds: ReadonlySet<string>)
 }
 
 /**
+ * The config.json mcp.broker limits the broker was started with, for an app
+ * that reports them. A change needs a broker restart, so the hint says when
+ * it applies.
+ */
+function brokerLimitsLine(b: McpSessionsSummary['broker']): CheckLine | null {
+  if (!b.enabled || !b.limits) return null;
+  const { maxSessions, maxRssMb, maxBrowserReplRunners } = b.limits;
+  const set = [
+    maxSessions !== null ? `maxSessions ${maxSessions}` : null,
+    maxRssMb !== null ? `maxRssMb ${maxRssMb}` : null,
+    maxBrowserReplRunners !== null ? `maxBrowserReplRunners ${maxBrowserReplRunners}` : null,
+  ].filter(Boolean);
+  const ignored = (b.ignoredLimits ?? []).filter((k) => typeof k === 'string');
+  const hint = [
+    'Set in config.json under mcp.broker; none is set by default. The app reads them when it starts the broker, '
+      + 'so a change applies from the next wmux start. A session over a limit runs its own MCP server.',
+    ignored.length > 0 ? `Ignored, not a positive integer: ${ignored.join(', ')}.` : '',
+  ].filter(Boolean).join(' ');
+  return {
+    label: 'broker limits',
+    value: set.length > 0 ? set.join(', ') : 'none set',
+    verdict: ignored.length > 0 ? 'WARN' : 'OK',
+    hint,
+  };
+}
+
+/**
  * The self-test verdict the app recorded for the launcher at `binary`, read
  * under the key approvedInstalledNative uses: these bytes and the self-test
  * line (shared/probedNative.ts).
@@ -754,6 +781,8 @@ export async function buildMcpSection(
   }
   if (summary) {
     lines.push(brokerLine(summary.broker, kinds));
+    const limitsLine = brokerLimitsLine(summary.broker);
+    if (limitsLine) lines.push(limitsLine);
     const minutes = Math.round(summary.bundle.ttlS / 60);
     lines.push({
       label: `bundle sessions (last ${minutes} min)`,
