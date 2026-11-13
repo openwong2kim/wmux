@@ -73,6 +73,8 @@ export interface InboundDeps {
     admit?(hostId: HostId): boolean;
     /** A status that passed the checks, from `hostId` (a per-task gap is applied there). */
     note(taskId: string, status: A2aRemoteStatusV1, hostId: HostId): void;
+    /** True the first time a task's `gone` is seen (its log line); false after, until the task is forgotten. */
+    firstGone?(taskId: string): boolean;
     forget(taskId: string): void;
   };
   /** New tasks each PC may send this one (`PeerTaskBudget`); absent, no limit. */
@@ -251,11 +253,14 @@ async function applyInbound(
     const marker = task?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
     if (!deps.remoteStatus) return fail('bad-request', 'this PC takes no status');
     if (marker?.direction !== 'outbound') return fail('forbidden', 'a status is only for a task this host sent');
+    const open = !(TERMINAL_STATES as readonly string[]).includes(task!.status.state);
     // The agent there is gone: said in this PC's log, since the task ends right after and its status with it.
-    // Only this PC's own ids and the fixed kind; nothing the peer wrote.
-    if ((env.status as A2aRemoteStatusV1).kind === 'gone') deps.log?.('info', `[a2a-remote] task ${taskId} on link ${link.linkId}: the agent on that PC is gone`);
+    // Only this PC's own ids and the fixed kind; nothing the peer wrote. Once per open task: a peer repeating it is not logged again.
+    if ((env.status as A2aRemoteStatusV1).kind === 'gone' && open && (deps.remoteStatus.firstGone?.(taskId) ?? true)) {
+      deps.log?.('info', `[a2a-remote] task ${taskId} on link ${link.linkId}: the agent on that PC is gone`);
+    }
     // A task that ended has no worker status any more: taken, and dropped.
-    if (!(TERMINAL_STATES as readonly string[]).includes(task!.status.state)) deps.remoteStatus.note(taskId, env.status as A2aRemoteStatusV1, peer.hostId);
+    if (open) deps.remoteStatus.note(taskId, env.status as A2aRemoteStatusV1, peer.hostId);
     return { ok: true, taskId, duplicate: false };
   }
   if (env.kind === 'receipt') {

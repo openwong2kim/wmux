@@ -252,9 +252,9 @@ With headless mode on:
   for more, on a question, at its usage limit, gone) as `remoteStatus` in
   `a2a_task_query`, when its build knows it. For the agent's own question
   menu the choices are sent along, but only once the agent's transcript
-  holds the menu. Claude Code 2.1.323 with the real service writes it after
-  the answer, so there an open menu shows as `question` with `dialog` and
-  no choices. To keep them on this host and send only
+  holds the menu. With Claude Code 2.1.323 and the real service the menu
+  was not in the transcript while it was open (observed on macOS), so there
+  an open menu shows as `question` with `dialog` and no choices. To keep them on this host and send only
   how many there are, run `wmux remote status-labels keep` (`send` turns
   it back; with no argument it prints the setting). The setting has its own
   file, `a2a-remote-status.json`, next to the other remote settings; if that

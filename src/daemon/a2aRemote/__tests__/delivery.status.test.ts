@@ -192,4 +192,16 @@ describe('a worker status on the asking PC', () => {
     expect(shown(taskId)!.since).toBe(kept);
     expect(logs.filter((l) => l.includes('worker statuses in a minute'))).toHaveLength(1);
   });
+
+  it('a peer repeating `gone` 1000 times: one log line for the task, and none once the task has ended', async () => {
+    const { linkId, taskId } = await sentTask();
+    for (let i = 0; i < 1000; i++) {
+      expect(await delivery.accept(statusEnv(linkId, taskId, { kind: 'gone', since: new Date().toISOString() }), { hostId: HOST })).toMatchObject({ ok: true });
+    }
+    const gone = (): string[] => logs.filter((l) => l.includes('the agent on that PC is gone'));
+    expect(gone()).toEqual([`[a2a-remote] task ${taskId} on link ${linkId}: the agent on that PC is gone`]);
+    expect(await tasks.cancelTask({ taskId, callerWorkspaceId: 'ws-a' })).toMatchObject({ ok: true });
+    await delivery.accept(statusEnv(linkId, taskId, { kind: 'gone', since: new Date().toISOString() }), { hostId: HOST });
+    expect(gone()).toHaveLength(1);
+  });
 });
