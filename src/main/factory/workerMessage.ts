@@ -24,7 +24,7 @@
 // worker can tell it from the owner's typing.
 
 import { BOT_WORKER_MESSAGE_LIMITS, type BotWorkerMessageResult } from '../../shared/bot';
-import type { LedgerEntry } from '../../shared/ledger';
+import { isRemoteTask, type LedgerEntry } from '../../shared/ledger';
 import { GUEST_TURN_STARTS_NO_WORKERS, guestOfWake, runningWakeTainted, type GuestProvenance } from './wakeTaint';
 import { currentWakeId } from './wakeQueue';
 import { conversationMarks, conversationSignedIn, signedInRefusal } from './conversationMarks';
@@ -122,7 +122,7 @@ export async function deliverWorkerMessage(
     row = null;
   }
   const origin = row?.dispatch?.origin;
-  if (!row || origin?.kind !== 'bot' || origin.botId !== botId) return refuse('not_found', 'no task you started has this id');
+  if (!row || isRemoteTask(row) || origin?.kind !== 'bot' || origin.botId !== botId) return refuse('not_found', 'no task you started has this id');
   if (row.status !== 'working' && row.status !== 'input_required') {
     return refuse('not_running', `the task is ${row.status}: its worker is not taking messages (worker_resume restarts the stopped worker of an ended or reported task)`);
   }

@@ -611,6 +611,16 @@ describe('channel_mission_close (J0)', () => {
       idempotencyKey: 'k2',
     });
   });
+
+  it('shows a daemon refusal given as a bare string as its text, and a typed one with its code', async () => {
+    mockSendRpc.mockResolvedValue({ ok: false, error: 'task.mission.close: task not found: wtask-9' });
+    const plain = await channelMissionClose({ task_id: 'wtask-9' });
+    expect(plain.isError).toBe(true);
+    expect(plain.content[0].text).toBe('Error: task.mission.close: task not found: wtask-9');
+    mockSendRpc.mockResolvedValue({ ok: false, error: { code: 'INVALID_ARGUMENT', message: 'task_id must be a mission task id (wtask-…)' } });
+    const typed = await channelMissionClose({ task_id: 'nope' });
+    expect(typed.content[0].text).toBe('Error [INVALID_ARGUMENT]: task_id must be a mission task id (wtask-…)');
+  });
 });
 
 describe('channel_list', () => {

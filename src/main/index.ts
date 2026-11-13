@@ -253,6 +253,8 @@ import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
 import { CompanyReleaseBridge, CompanySlotGate, readCompanyWorkingSeats, type CompanyReleaseMark } from './a2a/CompanyReleaseBridge';
 import { RemoteSpawnCoordinator } from './a2aRemote/remoteSpawnCoordinator';
+import { remoteFanoutDepsOf, remoteTaskReconciler } from './worktask/remoteFanout';
+import { A2A_SPAWN_OUTGOING_EVENT } from '../shared/a2aSpawn';
 import { ContinueStarter } from './a2aRemote/continueStarter';
 import { daemonRemoteA2aRpcDeps } from './a2a/remoteA2aRpcDeps';
 import { setA2aRemoteBridge } from './ipc/handlers/a2aRemote.handler';
@@ -1787,8 +1789,14 @@ onAutonomyWritten(() => {
 // nudges, the task ledger's reconcile and mission-channel posts, the legacy
 // HQ id and the pending-decision list). WMX-06: it sweeps orphaned
 // atomic-write temp files in the data dir before the stores are first read.
+// Tasks another PC runs (fanout_start with pc): one reconcile pass, run on
+// the deck's periodic tick and on the daemon's sent-request events.
+const remoteFanoutDeps = () => remoteFanoutDepsOf(() => daemonClient);
+const reconcileRemoteTasks = remoteTaskReconciler(remoteFanoutDeps);
+let remoteTaskEventsOff: (() => void) | null = null;
 const disposeDeckHandler = registerDeckHandler(() => mainWindow, {
   getDaemonClient: () => daemonClient,
+  remoteFanout: { deps: remoteFanoutDeps, reconcile: reconcileRemoteTasks },
 });
 trackRecordFeed.sync();
 // WorkspaceMirror — renderer push (fire-and-forget) keeps a main-process cache
@@ -3030,6 +3038,14 @@ app.on('ready', async () => {
         log: (level, msg) => logLine(level, 'a2a-remote', msg),
       });
       remoteSpawnCoordinator.start();
+      // A request a fan-out sent moved: its task row follows now (a start for a withdrawn row is ended at once).
+      remoteTaskEventsOff?.();
+      const onSentRequest = (event: { type?: string } | null): void => {
+        if (event?.type === A2A_SPAWN_OUTGOING_EVENT) void reconcileRemoteTasks();
+      };
+      client.on('event', onSentRequest);
+      remoteTaskEventsOff = () => { client.off('event', onSentRequest); };
+      void reconcileRemoteTasks();
       // Continue on another PC (this PC starts a conversation another PC handed over): worktree, files, pane.
       continueStarter?.stop();
       continueStarter = new ContinueStarter({

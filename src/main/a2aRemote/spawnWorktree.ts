@@ -174,7 +174,7 @@ export async function removeSpawnWorktree(input: { repoPath: string; spawnId: st
 }
 
 /** The branch a spawn's worktree is on. */
-function branchFor(spawnId: string): string {
+export function branchFor(spawnId: string): string {
   return `wmux/remote/${spawnId}`;
 }
 

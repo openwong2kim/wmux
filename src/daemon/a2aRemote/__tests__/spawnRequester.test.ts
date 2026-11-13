@@ -123,6 +123,22 @@ describe('asking', () => {
     expect(asks.ask(input()).ok).toBe(true);
   });
 
+  it('takes the spawn id main chose, refuses one already used, and a retry by request key keeps its own', () => {
+    const spawnId = 'sp-0f6c1d2e-3a4b-4c5d-8e9f-0123456789ab';
+    const first = asks.ask(input({ spawnId, requestKey: 'key-00000001', callerKey: 'fanout-key', budget: 'fanout' }));
+    expect(first).toMatchObject({ ok: true, spawn: { spawnId } });
+    expect(asks.ask(input({ spawnId, requestKey: 'key-00000002', callerKey: 'fanout-key', budget: 'fanout' }))).toMatchObject({ ok: false, error: 'bad-request' });
+    expect(asks.ask(input({ spawnId: 'not-a-spawn', callerKey: 'fanout-key', budget: 'fanout' }))).toMatchObject({ ok: false, error: 'bad-request' });
+    expect(asks.ask(input({ spawnId, requestKey: 'key-00000001', callerKey: 'fanout-key', budget: 'fanout' }))).toMatchObject({ ok: true, spawn: { spawnId } });
+  });
+
+  it('an ask from a fan-out skips the per-pane and per-PC limits (the fan-out and the other PC bound it)', () => {
+    for (let i = 0; i < 8; i++) expect(asks.ask(input({ budget: 'fanout', callerKey: 'fanout-key' })).ok).toBe(true);
+    expect(sent).toHaveLength(8);
+    // A pane's own asks still meet both limits.
+    expect(asks.ask(input())).toMatchObject({ ok: false, error: 'rate-limited' });
+  });
+
   it('a retry with the same requestKey answers the stored request and sends nothing more, across a restart', () => {
     const first = asks.ask(input({ requestKey: 'k-0123456789' }));
     expect(first.ok).toBe(true);

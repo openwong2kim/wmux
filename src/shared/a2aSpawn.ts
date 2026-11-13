@@ -505,6 +505,19 @@ export interface A2aSpawnAskInput {
    * the alias reads `<PC>/<workspace>/<label>`. Never sent.
    */
   label?: string;
+  /**
+   * `fanout`: an ask from a fan-out on this PC (fanout_start with a PC). It
+   * is bounded by the fan-out's own settings (tasks per call) and by the
+   * other PC's limits, so it skips the per-pane hourly limit and the limit
+   * on requests waiting for one PC. Never sent.
+   */
+  budget?: 'fanout';
+  /**
+   * The spawn id for a new request (`sp-<uuid>`), chosen by main so its task
+   * row exists before the request is sent. Absent: the daemon mints one. A
+   * request already stored under `requestKey` keeps its own.
+   */
+  spawnId?: string;
 }
 
 /**

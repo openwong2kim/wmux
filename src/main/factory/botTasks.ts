@@ -16,7 +16,7 @@
 import type { Fact } from '../../shared/facts';
 import type { LedgerEntry } from '../../shared/ledger';
 import { BOT_TASK_SUMMARY_MAX, botTaskStage, type BotTaskPr, type BotTaskView } from '../../shared/botTask';
-import { isResearchDispatch } from '../../shared/ledger';
+import { isRemoteTask, isResearchDispatch } from '../../shared/ledger';
 import { nonCodeVerificationState } from '../../shared/nonCodeTaskEvidence';
 import { normalizeRepoKey } from '../../shared/repoKey';
 
@@ -63,6 +63,8 @@ export function prOfBranch(index: PrIndex, repoKey: string | null | undefined, b
 
 /** One task as the Bots page shows it. Pure. */
 export function botTaskView(row: LedgerEntry, pr: BotTaskPr | null): BotTaskView | null {
+  // Bot tasks only.
+  if (isRemoteTask(row)) return null;
   const botId = row.dispatch?.origin.kind === 'bot' ? row.dispatch.origin.botId : undefined;
   if (!botId) return null;
   const g = row.gate?.recordedBy === 'system' ? row.gate : undefined;

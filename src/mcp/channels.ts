@@ -109,13 +109,14 @@ async function callChannelRpc(
   try {
     const result = (await sendRpc(method, withPty)) as
       | { ok: true; [k: string]: unknown }
-      | { ok: false; error: { code: string; message: string } }
+      | { ok: false; error: { code: string; message: string } | string }
       | undefined;
     if (result && result.ok === false) {
-      return {
-        content: [{ type: 'text', text: `Error [${result.error.code}]: ${result.error.message}` }],
-        isError: true,
-      };
+      // The daemon answers some refusals with a bare string (`error: "<text>"`).
+      const text = typeof result.error === 'string'
+        ? `Error: ${result.error}`
+        : `Error [${result.error?.code ?? 'ERROR'}]: ${result.error?.message ?? 'refused'}`;
+      return { content: [{ type: 'text', text }], isError: true };
     }
     const text = typeof result === 'string' ? result : JSON.stringify(result ?? {}, null, 2);
     return { content: [{ type: 'text', text }] };

@@ -59,6 +59,9 @@ import { noteWorkTaskClosed } from '../../deck/taskLedgerHost';
 
 type GetWindow = () => BrowserWindow | null;
 
+/** A mission's task id as the daemon mints it (`wtask-…`). */
+const MISSION_TASK_ID_RE = /^wtask-[A-Za-z0-9_-]{1,80}$/;
+
 /**
  * Resolve the caller's VERIFIED workspace from a verified `senderPtyId`.
  * The MCP server supplies its own PID-map-walked ptyId (the same anchor
@@ -378,9 +381,12 @@ export function registerA2aChannelRpc(
   // lane, the Stop gate) otherwise kept treating the task as open until the
   // throttled WorkTask→ledger mirror caught up.
   router.register('task.mission.close', async (p, ctx) => {
-    const res = await forward('task.mission.close', p, true, ctx);
     const taskId = p && typeof p === 'object' ? (p as Record<string, unknown>).taskId : undefined;
-    if ((res as { ok?: unknown } | null)?.ok === true && typeof taskId === 'string') {
+    if (typeof taskId !== 'string' || !MISSION_TASK_ID_RE.test(taskId)) {
+      return { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'task.mission.close: task_id must be a mission task id (wtask-…)' } };
+    }
+    const res = await forward('task.mission.close', p, true, ctx);
+    if ((res as { ok?: unknown } | null)?.ok === true) {
       await noteWorkTaskClosed(taskId);
     }
     return res;

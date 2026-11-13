@@ -2460,6 +2460,8 @@ registerChannelTools(
 registerFanOutTools(server, {
   getSenderPtyId: () => verifiedPtyId(),
   resolveWorkspaceId: requireWorkspaceId,
+  // Tasks on another PC reply to a pane: a bot or a commander cannot start them.
+  remotePc: BOT_ROLE === undefined && SURFACE_PROFILE !== 'commander',
 });
 
 // === Remote spawn (full + core) — ask a paired PC to start an agent ===

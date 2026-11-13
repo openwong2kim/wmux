@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RpcContext } from '../../../../shared/rpc';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../../shared/workTask';
 import { CHANNEL_TOPIC_MAX, HUMAN_WORKSPACE_ID } from '../../../../shared/channels';
+import type { RemoteFanoutDeps } from '../../../worktask/remoteFanout';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 vi.mock('../../../git/git', () => ({ git: vi.fn() }));
@@ -136,6 +137,9 @@ function setup(opts?: {
   requireApproval?: boolean;
   /** Operator presets. Defaults to none. */
   presets?: FanoutPreset[];
+  /** A fan-out to another PC: its daemon side and the caller's pane. */
+  remoteFanout?: () => RemoteFanoutDeps | null;
+  resolveCallerPane?: (senderPtyId: string, workspaceId: string) => Promise<string | null>;
   /** What the renderer answers to fanout.resolveOrigin. Defaults to pane
    *  p1/s1 of the caller's workspace; 'throw' models a renderer miss. */
   resolveOrigin?: unknown | 'throw';
@@ -274,6 +278,8 @@ function setup(opts?: {
       ? () => ({ isConnected: true, rpc: daemonRpc }) as unknown as DaemonClient
       : undefined,
     ...(opts?.reserve ? { usageReserveHold: opts.reserve, noteUsageReserveHeld: () => undefined } : {}),
+    ...(opts?.remoteFanout ? { remoteFanout: opts.remoteFanout } : {}),
+    ...(opts?.resolveCallerPane ? { resolveCallerPane: opts.resolveCallerPane } : {}),
   });
   const handler = handlers.get('task.fanout.start');
   if (!handler) throw new Error('task.fanout.start was not registered');
@@ -2241,5 +2247,107 @@ describe('workers inherit bypass from the pane that fans out', () => {
     await h.call({ ...goodParams(), senderPtyId: undefined }, COMMANDER);
     expect((await launchedWith(h)).workerPermissionMode).toBe('auto');
     expect(h.daemonRpc).not.toHaveBeenCalledWith('daemon.listSessions', expect.anything());
+  });
+});
+
+describe('task.fanout.start with pc (tasks on another PC)', () => {
+  const remote = () => {
+    const ask = vi.fn(async (_input: Record<string, unknown>) => ({ ok: false as const, error: 'unavailable' as const }));
+    const deps = {
+      daemon: {
+        ask,
+        outgoing: async () => ({ requests: [], places: [{ hostId: '0f1e2d3c-4b5a-4968-8776-655443322110', name: 'box', online: true, supported: true }] }),
+        selfHostId: async () => null,
+        revokeLink: async () => undefined,
+        missionStart: async () => ({ taskId: 'wtask-r1', channelId: 'ch-r1' }),
+        missionClose: async () => undefined,
+        closedMissions: async () => new Set<string>(),
+        linkRemoteWorkspace: async () => null,
+      },
+      ledger: {
+        get: () => null, list: () => [],
+        register: vi.fn(async (input: Record<string, unknown>) => ({ ...input, status: 'working', rev: 1, updatedAt: 0 })),
+        update: vi.fn(async () => ({ ok: true })), updateRemote: vi.fn(async () => null), closeTask: vi.fn(), onTransition: () => () => undefined,
+      },
+      rememberChannel: () => undefined,
+    } as unknown as RemoteFanoutDeps;
+    return { deps, ask };
+  };
+  const pcParams = (over: Record<string, unknown> = {}) => goodParams({ pc: 'box', root: 'repo', ...over });
+
+  it('refuses a commander or a bot caller: the replies go to a pane', async () => {
+    const r = remote();
+    const h = setup({ requireApproval: false, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    expect(errorOf(await h.call(pcParams({ senderPtyId: undefined }), { origin: 'local', commanderWorkspace: CALLER_WS })).code).toBe('NOT_AUTHORIZED');
+    expect(r.ask).not.toHaveBeenCalled();
+  });
+
+  it('refuses an empty prompt, depends_on and a non-claude agent before asking', async () => {
+    const r = remote();
+    const h = setup({ requireApproval: false, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    expect(errorOf(await h.call(pcParams({ prompt: undefined }))).message).toMatch(/no prompt/);
+    expect(errorOf(await h.call(pcParams({ dependsOn: [[], [0]] }))).message).toMatch(/depends_on/);
+    expect(errorOf(await h.call(pcParams({ agents: [{ agent: 'codex' }, { agent: 'codex' }] }))).message).toMatch(/only Claude/);
+    expect(errorOf(await h.call(pcParams({ root: undefined }))).message).toMatch(/pc and root/);
+    expect(r.ask).not.toHaveBeenCalled();
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('asks the other PC for each task from the calling pane, and starts nothing here', async () => {
+    const r = remote();
+    const h = setup({ requireApproval: false, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    const res = await h.call(pcParams());
+    expect(res).toMatchObject({ ok: true, status: 'completed', result: { remote: { pc: 'box' } } });
+    expect(r.ask).toHaveBeenCalledTimes(2);
+    expect(r.ask.mock.calls[0][0]).toMatchObject({ agent: 'claude', budget: 'fanout', from: { kind: 'pane', paneId: 'pane-1' } });
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('does not start a new one while fan-out approval is on, nor past the hourly cap', async () => {
+    const r = remote();
+    const h = setup({ requireApproval: true, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    expect(errorOf(await h.call(pcParams())).message).toMatch(/approval is on/);
+    expect(r.ask).not.toHaveBeenCalled();
+  });
+
+  it('a repeat of the key with another number of titles is refused before anything is sent', async () => {
+    const r = remote();
+    const guards = guardsIn(capped(tmp()));
+    const h = setup({ requireApproval: false, guards, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    expect((await h.call(pcParams())).ok).toBe(true);
+    const asked = r.ask.mock.calls.length;
+    const more = await h.call(pcParams({ titles: ['first task', 'second task', 'third task'] }));
+    expect(errorOf(more)).toMatchObject({ code: 'INVALID_ARGUMENT', message: expect.stringMatching(/different request.*\(2 task\(s\)\).*new key/) });
+    // Same count, another prompt: refused too.
+    expect(errorOf(await h.call(pcParams({ prompt: 'do another thing' }))).code).toBe('INVALID_ARGUMENT');
+    expect(r.ask.mock.calls.length).toBe(asked);
+  });
+
+  it('gives back the hour a call stamped when it is refused as a whole for a mistake in it, not for a passing failure', async () => {
+    const guards = guardsIn(capped(tmp()));
+    const r = remote();
+    const h = setup({ requireApproval: false, guards, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    // An unknown PC: nothing ran, so nothing stays on the hourly cap.
+    expect(errorOf(await h.call(pcParams({ pc: 'nowhere' }))).message).toMatch(/no paired PC/);
+    expect(guards.remoteStamped(`${CALLER_WS}::fanout-key-1`)).toBeNull();
+    // A listing the daemon refused for now: the stamp stays, so the same key is a poll.
+    const busy = remote();
+    busy.deps.daemon.outgoing = async () => { throw new Error('rate limited (global)'); };
+    const h2 = setup({ requireApproval: false, guards, remoteFanout: () => busy.deps, resolveCallerPane: async () => 'pane-1' });
+    expect(errorOf(await h2.call(pcParams({ idempotencyKey: 'k-busy' }))).message).toMatch(/send the same idempotency_key again/);
+    expect(guards.remoteStamped(`${CALLER_WS}::k-busy`)).toMatchObject({ count: 2 });
+  });
+
+  it('a repeat of the key is a poll: not stamped or refused again', async () => {
+    const r = remote();
+    const dir = tmp();
+    const guards = guardsIn(capped(dir));
+    const h = setup({ requireApproval: false, guards, remoteFanout: () => r.deps, resolveCallerPane: async () => 'pane-1' });
+    expect((await h.call(pcParams())).ok).toBe(true);
+    expect(guards.remoteStamped(`${CALLER_WS}::fanout-key-1`)).toMatchObject({ count: 2 });
+    const stamps = () => JSON.stringify(fs.readdirSync(dir).map((f) => fs.statSync(nodePath.join(dir, f)).size));
+    const before = stamps();
+    expect((await h.call(pcParams())).ok).toBe(true);
+    expect(stamps()).toBe(before);
   });
 });

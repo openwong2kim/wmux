@@ -1,4 +1,5 @@
 import { setWorkflowFanout } from '../../factory/workflowFanout';
+import crypto from 'node:crypto';
 import type { WorkflowDispatchBinding } from '../../factory/workflowFanout';
 // ─── task.fanout.start — fan-out on the pipe / MCP surface ─────────────────
 //
@@ -99,7 +100,8 @@ import {
 } from '../../../shared/workTask';
 import { ORCH_ROLES } from '../../../shared/orchestratorRole';
 import { sendToRenderer } from './_bridge';
-import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
+import { resolvePaneForPty, resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
+import { REMOTE_FANOUT_AGENT, REMOTE_TASK_FOOTER, remoteFanoutDepsOf, remoteFanoutRefusal, startRemoteFanout, type RemoteFanoutDeps } from '../../worktask/remoteFanout';
 import { git as runGit } from '../../git/git';
 import type { DaemonClient } from '../../DaemonClient';
 import { hostCwdForPane, type DaemonRpc } from '../../pty/wslCallerCwd';
@@ -721,7 +723,13 @@ export interface FanOutRpcDeps {
   /** The wmux data folder a bot's research scratch folders go under
    *  (default: getWmuxDir()). Injected in tests. */
   wmuxDir?: () => string;
+  /** A fan-out to another PC (`pc`): the daemon and ledger it uses (default:
+   *  remoteFanoutDepsOf(getDaemonClient)). Injected in tests. */
+  remoteFanout?: () => RemoteFanoutDeps | null;
+  /** The caller pane of a senderPtyId (default: ptyOwnership). Injected in tests. */
+  resolveCallerPane?: (senderPtyId: string, workspaceId: string) => Promise<string | null>;
 }
+
 
 /**
  * What fan-out needs from the factory for a bot caller: its profile (the repo
@@ -1228,6 +1236,93 @@ export function registerFanOutRpc(
       : commanderWorkspaceId
         ? `${callerWorkspaceId}::commander::${callerKey}`
         : `${callerWorkspaceId}::${callerKey}`;
+
+    // ── Another PC (`pc`): missions here, agents there ──────────────────
+    // Its own path: no worktree, workspace or pane here, so none of the
+    // checks below apply. Every call re-sends the same keys, so a repeat is
+    // the poll (answered from the ledger rows, nothing asked twice).
+    if (params['pc'] !== undefined) {
+      if (bot || commanderWorkspaceId) {
+        return deny('NOT_AUTHORIZED', 'tasks on another PC reply to a pane, so only an agent in a pane can start them');
+      }
+      if (depthRefusal) return depthRefusal;
+      const pc = typeof params['pc'] === 'string' ? params['pc'].trim() : '';
+      const root = typeof params['root'] === 'string' ? params['root'].trim() : '';
+      const sub = typeof params['sub'] === 'string' ? params['sub'].trim() : '';
+      if (!pc || !root) return deny('INVALID_ARGUMENT', 'a fan-out to another PC needs pc and root (the folder id that PC offers)');
+      const refusal = remoteFanoutRefusal(params);
+      if (refusal) return deny('INVALID_ARGUMENT', refusal);
+      const sharedPrompt = typeof params['prompt'] === 'string' ? params['prompt'].trim() : '';
+      const parsed = parseTasks(params, sharedPrompt);
+      if ('error' in parsed) return deny('INVALID_ARGUMENT', parsed.error);
+      const prompts = parsed.taskPrompts.map((own) => [sharedPrompt, own].filter((p) => p.length > 0).join('\n\n'));
+      const empty = prompts.findIndex((p) => p.length === 0);
+      if (empty >= 0) return deny('INVALID_ARGUMENT', `task ${empty + 1} has no prompt; a task on another PC starts on its prompt`);
+      const paneId = await (deps.resolveCallerPane ?? ((pty, ws) => resolvePaneForPty(getWindow, pty, ws).catch(() => null)))(senderPtyId, callerWorkspaceId);
+      if (!paneId) return deny('NOT_AUTHORIZED', 'the calling pane could not be resolved; tasks on another PC reply to it');
+      const remote = (deps.remoteFanout ?? (() => remoteFanoutDepsOf(() => deps.getDaemonClient?.() ?? null)))();
+      if (!remote) return deny('UNAVAILABLE', 'the background service is not connected');
+      // A new key (not a poll of one already started): the owner's approval
+      // switch, the hourly cap and the audit record apply as to any fan-out.
+      const guards = guardsOf();
+      const stamped = guards.remoteStamped(key);
+      // A repeat is a poll of the same request: one that differs (another
+      // count, title, prompt, PC or folder) would start tasks that were never
+      // approved, stamped or audited.
+      const digest = crypto.createHash('sha256').update(JSON.stringify([pc, root, sub, parsed.titles, prompts])).digest('hex');
+      if (stamped !== null && stamped.digest !== digest) {
+        return deny('INVALID_ARGUMENT', `this key started a different request on another PC (${stamped.count} task(s)); send the same request to poll it, or use a new key`);
+      }
+      if (stamped === null) {
+        if ((deps.requireApproval ?? loadFanoutRequireApproval)()) {
+          return deny('FAILED_PRECONDITION', 'tasks on another PC do not start while fan-out approval is on (Settings › Roles & fan-out): they have no approval prompt yet');
+        }
+        const room = guards.stampRemote(key, parsed.titles.length, digest);
+        if (!room.ok) return deny('RESOURCE_EXHAUSTED', room.message);
+        try {
+          guards.appendAudit({
+            at: Date.now(),
+            idempotencyKey: callerKey,
+            ownerWorkspaceId: callerWorkspaceId,
+            callerIdentity: 'pty',
+            ...(senderPtyId ? { callerPtyId: senderPtyId } : {}),
+            // Not a path here: the other PC and its folder id.
+            repoPath: `${pc}:${root}${sub ? `/${sub}` : ''}`,
+            titles: parsed.titles,
+            roles: parsed.roles,
+            roleCommands: [],
+            promptSha256: prompts.map((p) => promptDigest(p)),
+            approvedBy: 'auto',
+            workerPermissionMode: 'set by the other PC',
+            agents: parsed.titles.map(() => REMOTE_FANOUT_AGENT),
+          });
+        } catch (err) {
+          guards.refundStart(key, parsed.titles.length);
+          console.warn(`[fanout.rpc] remote fan-out ${key} denied (audit-unavailable): ${String(err)}`);
+          return deny('NOT_AUTHORIZED', `fan-out was not approved: ${DENY_MESSAGE['audit-unavailable']}`);
+        }
+      }
+      const started = await startRemoteFanout({
+        idempotencyKey: callerKey, scopedKey: key, ownerWorkspaceId: callerWorkspaceId, paneId, pc, root,
+        ...(sub ? { sub } : {}),
+        titles: parsed.titles,
+        prompts: prompts.map((p) => `${p}\n\n${REMOTE_TASK_FOOTER}`),
+      }, remote);
+      if ('error' in started) {
+        // Refused before anything was sent. A mistake in the call (an unknown
+        // PC, a bad folder id) gives back the hour it stamped; a passing
+        // failure keeps it, so the same key again is a poll, not a second charge.
+        if (stamped === null && !started.retry) guards.refundStart(key, parsed.titles.length);
+        return deny('FAILED_PRECONDITION', started.error);
+      }
+      return {
+        ok: true as const,
+        status: 'completed' as const,
+        idempotencyKey: callerKey,
+        ownerWorkspaceId: callerWorkspaceId,
+        result: { remote: { pc: started.pc, hostId: started.hostId }, tasks: started.tasks },
+      };
+    }
 
     // A bot's caps below count its live workers: read their panes as they are
     // now, not as the previous check saw them (#2255). The live cap counts

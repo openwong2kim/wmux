@@ -200,6 +200,11 @@ export class DaemonPipeServer {
   // identify is here too: app-only calls (task.mission.* among them) are
   // refused until it lands, so a flood that used up the global budget must not
   // hold it back while those calls go through.
+  // A fan-out to another PC sends, per task, its start request
+  // (A2A_SPAWN_RPC.ask, never polled) beside its task.mission.start, and
+  // reads this PC's sent requests (A2A_SPAWN_RPC.outgoing) once per call and
+  // once per reconcile pass: a second fan-out sent right after a first one was
+  // refused by the global budget the first had just used.
   private static readonly INTERACTIVE_METHODS: ReadonlySet<string> = new Set([
     'daemon.client.identify',
     'daemon.createSession',
@@ -207,6 +212,8 @@ export class DaemonPipeServer {
     'task.mission.start',
     'task.mission.update',
     'task.mission.close',
+    A2A_SPAWN_RPC.ask,
+    A2A_SPAWN_RPC.outgoing,
   ]);
   private static readonly INTERACTIVE_PER_SOCKET_RATE_LIMIT = 100;
   private static readonly INTERACTIVE_GLOBAL_RATE_LIMIT = 200;

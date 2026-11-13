@@ -62,7 +62,7 @@
 import { holderInputsChanged } from './holderInputs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isResearchDispatch, type LedgerEntry } from '../../shared/ledger';
+import { isRemoteTask, isResearchDispatch, type LedgerEntry } from '../../shared/ledger';
 import { taskLifecycleLinkOf, taskLifecycleThreadOf, taskThreadOf, type CardNotice, type ThreadId } from '../../shared/room';
 import { isPlausibleResumeSessionId, normalizeResumeCwd, permissionFlagFor, type PermissionMode } from '../../shared/agentResume';
 import { sessionHostDir, sessionsStartedIn } from '../worktask/stopSessionsInDir';
@@ -246,6 +246,8 @@ export function fillLaunchedModes(panes: ReclaimedSession[], launchedConversatio
 
 /** Whether a ledger move ends a bot task this module reclaims. Pure. */
 export function isReclaimableEnd(entry: LedgerEntry, to: string): to is 'completed' | 'cancelled' | 'failed' {
+  // Bot tasks only; a task another PC runs has no worker here.
+  if (isRemoteTask(entry)) return false;
   const origin = entry.dispatch?.origin;
   if (origin?.kind !== 'bot' || typeof origin.botId !== 'string' || !origin.botId) return false;
   if (to !== 'completed' && to !== 'cancelled' && to !== 'failed') return false;
@@ -982,6 +984,8 @@ export async function reclaimWorker(
    *  not a failed attempt. */
   out?: { deferred?: boolean },
 ): Promise<ReclaimedWorker | null> {
+  // Bot tasks only; a task another PC runs has no worker here.
+  if (isRemoteTask(entry)) return null;
   const log = ports.log ?? ((m: string) => console.warn(m));
   const now = ports.now ?? Date.now;
   try {

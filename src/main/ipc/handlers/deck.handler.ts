@@ -29,6 +29,7 @@ import { setWorkspaceMode } from '../../deck/deckAutonomyStore';
 import { expireUnanswerableDecisions, loadDeckDecisions, onDecisionsChanged, type ExpiredDecision } from '../../deck/deckDecisionStore';
 import { operatorDecisionContext, setDeckWorkBootId } from '../../deck/deckWorkStore';
 import { createWorkTaskReconciler, getTaskLedger, installLedgerChannelEmitter } from '../../deck/taskLedgerHost';
+import { installRemoteTaskWithdraw, type RemoteFanoutDeps } from '../../worktask/remoteFanout';
 import { installFanoutCallerLedgerNotify, notifyFanoutCaller } from '../../deck/fanoutCallerNotify';
 import { createFanoutCallerStopNotify } from '../../deck/fanoutCallerStopNotify';
 import { startFanoutWorkerWatch } from '../../deck/fanoutWorkerWatchHost';
@@ -47,6 +48,9 @@ export interface DeckDaemonClient {
 export interface RegisterDeckHandlerOptions {
   /** Live daemon client getter (the ledger reconcile and the mission channel). */
   getDaemonClient?: () => DeckDaemonClient | null;
+  /** Tasks another PC runs: their daemon side, and the one reconcile pass
+   *  (main's, also run on the daemon's sent-request events). */
+  remoteFanout?: { deps: () => RemoteFanoutDeps | null; reconcile: () => Promise<void> };
   /** Data directory override for tests. */
   dir?: string;
 }
@@ -110,6 +114,11 @@ export function registerDeckHandler(getWindow: GetWindow, opts: RegisterDeckHand
     }
   });
 
+  // Tasks another PC runs (fanout_start with pc): a row that ends here is
+  // withdrawn (its link revoked once it started), and the rows follow the
+  // requests on the periodic pass below.
+  const disposeRemoteWithdraw = opts.remoteFanout ? installRemoteTaskWithdraw(getTaskLedger(), opts.remoteFanout.deps) : () => undefined;
+
   // The pane that started a fan-out, told when its workers move
   // (fanoutCallerNotify.ts). One pointer to the renderer, no ack.
   const notifyCaller = (owner: string, taskWs: string, taskId: string, kind: string, seq: number): void => {
@@ -135,6 +144,7 @@ export function registerDeckHandler(getWindow: GetWindow, opts: RegisterDeckHand
   const ledgerReconcileTimer = setInterval(() => {
     void reconcileTaskLedger().catch(() => undefined);
     void workerWatch.tick().catch(() => undefined);
+    void opts.remoteFanout?.reconcile();
   }, 60_000);
   ledgerReconcileTimer.unref?.();
   // The pane that owns a PR, told about CI / review / conflict
@@ -228,6 +238,7 @@ export function registerDeckHandler(getWindow: GetWindow, opts: RegisterDeckHand
     stopOrphanReconcile();
     disposeLedgerEmitter();
     disposeFinishedTaskMode();
+    disposeRemoteWithdraw();
     disposeCallerLedgerNotify();
     workerWatch.dispose();
     setPrOwnerSink(null);

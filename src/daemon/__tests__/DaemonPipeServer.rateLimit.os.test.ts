@@ -3,6 +3,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { A2A_SPAWN_RPC } from '../../shared/a2aSpawn';
 import { DaemonPipeServer } from '../DaemonPipeServer';
 
 // #2349 — pane create/attach have their own per-socket budget, so background
@@ -72,6 +73,8 @@ describe('DaemonPipeServer interactive RPC budget (#2349)', () => {
     server.onRpc('daemon.destroySession', async () => ({ destroyed: true }));
     server.onRpc('task.mission.start', async () => ({ ok: true, taskId: 't1' }));
     server.onRpc('daemon.client.identify', async () => ({ ok: true }));
+    server.onRpc(A2A_SPAWN_RPC.ask, async () => ({ ok: true }));
+    server.onRpc(A2A_SPAWN_RPC.outgoing, async () => ({ requests: [], places: [] }));
     // The task-mission calls here are main's, which the daemon answers only
     // on the app's identified connection. An identify call would count
     // against the budgets these tests measure, so the socket is taken as the
@@ -130,6 +133,14 @@ describe('DaemonPipeServer interactive RPC budget (#2349)', () => {
     const replies = await sendBatch(pipeName, methods);
     expect(replies.get('249')).toMatchObject({ ok: false, error: 'rate limited (global)' });
     expect(replies.get('250')).toMatchObject({ ok: true, result: { ok: true, taskId: 't1' } });
+  });
+
+  it('two 8-task fan-outs to another PC, back to back, go through after a background flood used up the global budget', async () => {
+    // Each: one listing of the sent requests, then per task its mission and its start request.
+    const oneFanout = [A2A_SPAWN_RPC.outgoing, ...Array.from({ length: 8 }, () => ['task.mission.start', A2A_SPAWN_RPC.ask]).flat()];
+    const methods = [...Array.from({ length: 250 }, () => 'task.mission.list'), ...oneFanout, ...oneFanout];
+    const replies = await sendBatch(pipeName, methods);
+    for (let i = 250; i < methods.length; i++) expect(replies.get(String(i))).toMatchObject({ ok: true });
   });
 
   it('dispatches the app\'s identify after a background flood used up the global budget', async () => {
