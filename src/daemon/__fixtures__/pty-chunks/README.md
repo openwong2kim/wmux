@@ -9,7 +9,7 @@ Raw PTY output from a Claude Code pane on Windows, kept with its original chunk 
 | `nodepty-claude-burst.jsonl.gz` | node-pty | The same burst; the reply repeats the output | 404 | 30,283 | 35.3 s | working 3.0, done 35.3 |
 | `nodepty-claude-permission.jsonl.gz` | node-pty | The same permission take; answered with `1` at 15.1 s | 252 | 24,689 | 25.8 s | working 3.1, blocked 8.3, working 15.6 |
 
-**The permission takes end mid-turn.** They stop about 10 s after the answer, while Claude is still working: they hold the working → blocked → working edges, but no `done`.
+**The permission takes end mid-turn, by design.** They stop about 10 s after the answer, while Claude is still working: they hold the working → blocked → working edges, but no `done`.
 
 **No Codex recordings:** the Codex account was close to its usage limit when these were made.
 
@@ -51,6 +51,7 @@ Scrubbing ran on each take's whole byte stream before it was split back at the o
 - the account's user name and the machine's host name;
 - the account's e-mail address;
 - the organisation name shown in Claude Code's status line;
+- the status line's usage percentages and reset clocks (`5h 15% ↺ 14:30 · 7d 12% ↺ 6d5h`), digits replaced by `0`;
 - the recording folder's path, by `X:\scratch\fixtures\repo0`;
 - every UUID (session and request ids), by `00000000-0000-0000-0000-000000000000`.
 
@@ -61,8 +62,6 @@ The decoded text of every take was then read through by hand for:
 
 None remain. One earlier take was dropped and recorded again: Claude had repainted an earlier turn that listed a local install folder.
 
-What stays:
-- the agent's replies, in the language the account is set to;
-- the status line's usage percentages and its reset clock.
+What stays: the agent's replies, in the language the account is set to, and the context-window percentage (`ctx 7%`).
 
 `src/daemon/__tests__/ptyChunkFixtures.test.ts` pins each file's chunk count and byte total, and checks that its base64 is canonical and its lines are in order.
