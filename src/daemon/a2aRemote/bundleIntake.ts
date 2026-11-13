@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import type http from 'node:http';
 import path from 'node:path';
+import { Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { A2A_ROUTES, A2A_SHA256_RE, isHostId, type HostId } from '../../shared/a2aRemote';
 import { BUNDLE_TTL_DEFAULT_MS, bundleBytesMax, isBundleId, type A2aBundleManifestV1 } from '../../shared/a2aBundle';
 import { ContinueStagingRefusal, continueParentsInside } from './continueStaging';
@@ -9,7 +12,7 @@ import type { A2aRouteContext, A2aRouteTable } from './routes';
 import { continueTransferBudgetMs, continueWireMax, extendBodyDeadline, sendJson } from './server';
 import type { StreamedGet } from './session';
 import { errMsg } from './storeFile';
-import { answerAndClose, placePart, transferSlots, wireEncoding, writePart, type TransferOutcome } from './transferPart';
+import { answerAndClose, isRefusalStatus, placePart, transferSlots, wireEncoding, writePart, type TransferOutcome } from './transferPart';
 
 /**
  * A git bundle another PC made of the work its agent did for this one,
@@ -42,13 +45,15 @@ import { answerAndClose, placePart, transferSlots, wireEncoding, writePart, type
  * answer of 404 or another refusal. Tried again by the caller (`again`): a
  * transfer that broke or ran past its budget. `busy`: a transfer from that
  * PC, or two in all, already runs. `not-joined`: this PC is that PC's server,
- * so it cannot fetch from it (the other direction is not built yet).
+ * so it cannot fetch from it; it waits for that PC to send it (`receive`).
  */
 
 /** Transfers at once: at most one per PC. */
 const TRANSFERS_MAX = 2;
 const BUNDLE_IN = 'bundle-in';
 const PARTS = 'parts';
+/** The longest a timer waits: past it, Node fires at once. */
+const TIMER_MAX_MS = 2 ** 31 - 1;
 
 export type BundlePull =
   | { kind: 'staged'; file: string }
@@ -94,6 +99,10 @@ interface Wait {
   /** Ends a transfer of it under way when the wait ends. */
   abort: AbortController;
   receiving: boolean;
+  /** Its staged check (receive): a PUT waits for it, so the check cannot remove what a PUT placed. */
+  checked: Promise<void>;
+  /** Cuts the PUT under way, for a newer PUT of it from the same PC (that one is the sender's retry). */
+  cut: (() => void) | undefined;
   /** Its time ran out while a transfer of it ran: it ends once that transfer does. */
   late: boolean;
   /** Settles once a PUT of it under way has finished with its files. */
@@ -150,7 +159,7 @@ export class BundleIntake {
    */
   receive(hostId: HostId, manifest: unknown, ttlMs = BUNDLE_TTL_DEFAULT_MS): Promise<BundlePull> {
     const m = wellFormed(manifest);
-    if (!isHostId(hostId) || !m || !(ttlMs > 0)) return Promise.resolve({ kind: 'fatal', why: 'not a bundle this PC can take' });
+    if (!isHostId(hostId) || !m || !(ttlMs > 0 && ttlMs <= TIMER_MAX_MS)) return Promise.resolve({ kind: 'fatal', why: 'not a bundle this PC can take' });
     // Off, the route it would come by does not exist: nothing is waited for.
     if (!this.deps.enabled()) return Promise.resolve({ kind: 'fatal', why: 'bundles are off on this PC' });
     const max = bundleBytesMax(this.deps.maxBytes?.());
@@ -161,7 +170,7 @@ export class BundleIntake {
     if (waiting) return waiting.m.bytes === m.bytes ? waiting.done : Promise.resolve({ kind: 'fatal', why: 'another size is awaited for that bundle' });
     let settle: (r: BundlePull) => void = () => undefined;
     const done = new Promise<BundlePull>((r) => { settle = r; });
-    const w: Wait = { hostId, m, done, settle, abort: new AbortController(), receiving: false, late: false, landed: Promise.resolve(), timer: undefined };
+    const w: Wait = { hostId, m, done, settle, abort: new AbortController(), receiving: false, checked: Promise.resolve(), cut: undefined, late: false, landed: Promise.resolve(), timer: undefined };
     // A transfer under way when the time is up still lands, within its own budget; the wait ends after it.
     w.timer = setTimeout(() => {
       if (w.receiving) w.late = true;
@@ -172,8 +181,8 @@ export class BundleIntake {
     // Taken before (a repeat after a restart, say): the wait is over at once when it still checks out. Something
     // other than a plain file where it goes is final at once, as for a pull.
     const target = bundleStagedFile(this.deps.a2aDir, hostId, m);
-    void holds(this.deps.a2aDir, target, m.sha256, m.bytes).then(
-      (held) => { if (held && !w.receiving) this.endWait(k, { kind: 'staged', file: target }, w); },
+    w.checked = holds(this.deps.a2aDir, target, m.sha256, m.bytes).then(
+      (held) => { if (held) this.endWait(k, { kind: 'staged', file: target }, w); },
       (err: unknown) => { if (err instanceof ContinueStagingRefusal) this.endWait(k, { kind: 'fatal', why: err.message }, w); },
     );
     return done;
@@ -197,8 +206,13 @@ export class BundleIntake {
 
   private async put({ req, res, params, peer }: A2aRouteContext): Promise<void> {
     const k = waitKey(peer.hostId, { bundleId: params['bundleId'] ?? '', sha256: params['sha256'] ?? '' });
-    const w = this.awaited.get(k);
-    if (!w) return answerAndClose(req, res, 404, NOT_FOUND);
+    let w = this.awaited.get(k);
+    if (w) {
+      await w.checked;
+      // Found staged by that check: taken already.
+      if (this.awaited.get(k) !== w) w = undefined;
+    }
+    if (!w) return this.takenAlready(req, res, params, peer.hostId);
     if (wireEncoding(req.headers['content-encoding']) !== 'identity') {
       return answerAndClose(req, res, 415, { ok: false, error: 'bad-request', message: 'raw bytes only' });
     }
@@ -206,7 +220,13 @@ export class BundleIntake {
     if (req.headers['content-length'] !== String(w.m.bytes)) {
       return answerAndClose(req, res, 411, { ok: false, error: 'bad-request', message: 'the manifest\'s length only' });
     }
-    if (w.receiving) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
+    if (w.receiving) {
+      // The same PC sends it again: the PUT under way is one it gave up on (a connection this side has not seen
+      // drop yet). That one is cut, and this one taken.
+      w.cut?.();
+      await w.landed;
+      if (this.awaited.get(k) !== w || w.receiving) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
+    }
     const release = this.slots.take(peer.hostId);
     if (!release) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
     // Before any wait: a client gone mid-request still gives the slot back.
@@ -219,6 +239,7 @@ export class BundleIntake {
     const target = bundleStagedFile(this.deps.a2aDir, w.hostId, m);
     const part = path.join(bundleStagingHostDir(this.deps.a2aDir, w.hostId), PARTS, stem(m));
     const cut = new AbortController();
+    w.cut = () => cut.abort();
     const timer = setTimeout(() => cut.abort(), this.budget(m.bytes));
     timer.unref?.();
     const both = AbortSignal.any([w.abort.signal, cut.signal]);
@@ -238,6 +259,7 @@ export class BundleIntake {
       outcome = err instanceof ContinueStagingRefusal ? { kind: 'fatal', why: err.message } : { kind: 'again', why: errMsg(err) };
     } finally {
       clearTimeout(timer);
+      w.cut = undefined;
       w.abort.signal.removeEventListener('abort', onEnd);
       release();
     }
@@ -259,6 +281,37 @@ export class BundleIntake {
     if (w.late) this.endWait(k, { kind: 'again', why: 'not sent in time' }, w);
     // The body may be read only in part: never drained.
     return answerAndClose(req, res, 503, { ok: false, error: 'unavailable' });
+  }
+
+  /**
+   * A PUT of a bundle no wait stands for. Staged already (its answer was lost on the way, or the wait found it staged
+   * when it began): its bytes are read and dropped, then 200, since an answer before them can reach the sender as a
+   * broken connection. Anything else: 404.
+   */
+  private async takenAlready(req: http.IncomingMessage, res: http.ServerResponse, params: Record<string, string>, hostId: HostId): Promise<void> {
+    const m = wellFormed({ bundleId: params['bundleId'], sha256: params['sha256'], bytes: Number(req.headers['content-length']) });
+    const st = m ? await fs.promises.lstat(bundleStagedFile(this.deps.a2aDir, hostId, m)).catch(() => null) : null;
+    if (!m || !st?.isFile() || st.size !== m.bytes || wireEncoding(req.headers['content-encoding']) !== 'identity') {
+      return answerAndClose(req, res, 404, NOT_FOUND);
+    }
+    const release = this.slots.take(hostId);
+    if (!release) return answerAndClose(req, res, 429, { ok: false, error: 'unavailable' });
+    res.once('close', release);
+    let n = 0;
+    try {
+      extendBodyDeadline(req, this.budget(m.bytes));
+      await pipeline(req, new Writable({
+        write(chunk: Buffer, _enc, done) {
+          n += chunk.length;
+          done(n > m!.bytes ? new Error('longer than declared') : null);
+        },
+      }), { signal: AbortSignal.timeout(this.budget(m.bytes)) });
+    } catch {
+      return answerAndClose(req, res, 503, { ok: false, error: 'unavailable' });
+    } finally {
+      release();
+    }
+    return sendJson(res, 200, { ok: true });
   }
 
   /** A staged bundle is done with (imported, or refused there): it goes. */
@@ -337,7 +390,7 @@ export class BundleIntake {
       if (err instanceof ContinueStagingRefusal) return { kind: 'fatal', why: err.message };
       // Refused before any byte: for good when that PC no longer offers it (404) or will not give it.
       const status = err instanceof PinnedClientError && err.code === 'http' ? err.status : undefined;
-      const outcome: Exclude<TransferOutcome, { kind: 'staged' }> = status !== undefined && status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429
+      const outcome: Exclude<TransferOutcome, { kind: 'staged' }> = status !== undefined && isRefusalStatus(status)
         ? { kind: 'fatal', why: `the other PC answered HTTP ${status}` }
         : { kind: 'again', why: err instanceof PinnedClientError ? err.code : errMsg(err) };
       this.deps.log('info', `[a2a-remote] ${what}: not fetched: ${outcome.why}`);

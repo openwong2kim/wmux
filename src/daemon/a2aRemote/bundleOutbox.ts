@@ -7,7 +7,7 @@ import { continueTransferBudgetMs, sendJson } from './server';
 import { PinnedClientError } from './pinnedClient';
 import type { StreamedPut } from './session';
 import { errMsg } from './storeFile';
-import { transferSlots } from './transferPart';
+import { isRefusalStatus, transferSlots } from './transferPart';
 
 /**
  * The bundles this PC made for other PCs, handed to them whichever PC
@@ -18,9 +18,11 @@ import { transferSlots } from './transferPart';
  *          exact Content-Length.
  *   This PC joined the asking one: `send` puts it there with a PUT through
  *     this PC's session (bundleIntake.ts takes it; the asking PC asked for
- *     it, and waits for that id and hash only). Its answer: `sent`; `again`
- *     when the transfer broke or the other PC was busy; `fatal` when it was
- *     refused (nothing awaited there, or not that bundle). A refusal that
+ *     it, and waits for that id and hash only). Its answer: `sent` (also
+ *     when it was taken already); `again` when the transfer broke or the
+ *     other PC was busy; `fatal` when it was refused (nothing awaited there,
+ *     or not that bundle); `busy` when a transfer to that PC, or two in all,
+ *     already runs here. A refusal that
  *     closes the connection before its answer is read reads as `again`: the
  *     caller tries a bounded number of times.
  *
@@ -187,12 +189,13 @@ export class BundleOutbox {
     const abort = new AbortController();
     const forget = this.track(k, () => abort.abort());
     let handle: fs.promises.FileHandle | null = null;
+    let stream: fs.ReadStream | null = null;
     try {
       handle = await this.openOffered(offered, what);
       if (!handle) return { kind: 'fatal', why: 'its file is not the one offered' };
       // Withdrawn while the file was opened: not sent.
       if (this.offers.get(k) !== offered || abort.signal.aborted) return { kind: 'fatal', why: 'not offered to that PC' };
-      const stream = handle.createReadStream({ start: 0, end: offered.bytes - 1, autoClose: false });
+      stream = handle.createReadStream({ start: 0, end: offered.bytes - 1, autoClose: false });
       const { status } = await put(`${A2A_ROUTES.bundle}/${offered.bundleId}/${offered.sha256}`, stream, {
         bytes: offered.bytes,
         timeoutMs: this.budget(offered.bytes),
@@ -203,7 +206,7 @@ export class BundleOutbox {
         return { kind: 'sent' };
       }
       // As for a fetch: a refusal of this bundle (a 4xx but 401, 408 and 429) is final; anything else is tried again.
-      const refused = status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
+      const refused = isRefusalStatus(status);
       const why = `the other PC answered HTTP ${status}`;
       this.deps.log(refused ? 'warn' : 'info', `[a2a-remote] ${what}: not sent: ${why}`);
       return { kind: refused ? 'fatal' : 'again', why };
@@ -213,6 +216,8 @@ export class BundleOutbox {
       return { kind: 'again', why };
     } finally {
       forget();
+      // Not read to its end when the request failed first: never left on a closed handle.
+      stream?.destroy();
       await handle?.close().catch(() => undefined);
       release();
     }

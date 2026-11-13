@@ -115,19 +115,24 @@ function intake(over: { get?: StreamedGet | null; maxBytes?: number } = {}): Bun
   });
 }
 
-/** A PUT to the asking PC as `hostId`, the way a joiner session streams one (exact length declared). */
+/**
+ * A PUT to the asking PC as `hostId`, the way a joiner session streams one (exact length declared): a body that
+ * fails on its way waits a moment for an answer sent first, as the pinned client does.
+ */
 function putAs(hostId: string): StreamedPut {
   return (p, body, o) => new Promise((resolve, reject) => {
+    let answered = false;
     const req = http.request({
       method: 'PUT', host: '127.0.0.1', port, path: p, signal: o.signal,
       headers: { 'x-test-host': hostId, 'content-type': 'application/octet-stream', 'content-length': String(o.bytes) },
     }, (res) => {
+      answered = true;
       let text = '';
       res.setEncoding('utf8');
       res.on('data', (c: string) => { text += c; });
       res.on('end', () => resolve({ status: res.statusCode ?? 0, json: text ? JSON.parse(text) as unknown : null }));
     });
-    req.on('error', reject);
+    req.on('error', (err) => { if (!answered) setTimeout(() => reject(err), 1000); });
     body.on('error', (err) => req.destroy(err));
     body.pipe(req);
   });
@@ -477,7 +482,8 @@ describe('a returned bundle, sent by the PC that made it (it joined the asking P
     expect(await waiting).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, BOX, m) });
     expect(fs.readFileSync(bundleStagedFile(askerA2a, BOX, m)).equals(body)).toBe(true);
     expect(partsOf(BOX)).toEqual([]);
-    // Taken: the route takes it no more (asked with no body, so the refusal is read before the connection goes).
+    // Taken: sent again (its answer lost on the way), it is taken already; anything else is not awaited.
+    expect(await outbox.send(ASKER, m.bundleId, putAs(BOX))).toEqual({ kind: 'sent' });
     expect(await rawPut(route(m), { 'content-length': '0' }, Buffer.alloc(0)).status).toBe(404);
     expect(await intake().receive(BOX, m)).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, BOX, m) });
   });
@@ -491,6 +497,8 @@ describe('a returned bundle, sent by the PC that made it (it joined the asking P
     const waiting = one.receive(BOX, m);
     // The same id and hash awaited with another size is not that bundle, and does not share its wait.
     expect(await one.receive(BOX, { ...m, bytes: m.bytes + 1 })).toEqual({ kind: 'fatal', why: 'another size is awaited for that bundle' });
+    // A wait longer than a timer can hold is refused, not ended at once.
+    expect(await one.receive(BOX, made(bytes(10, 43)), 2 ** 31)).toEqual({ kind: 'fatal', why: 'not a bundle this PC can take' });
     const ok = { 'content-length': String(body.length) };
     expect(await rawPut(route(m), ok, body, OTHER).status).toBe(404);
     expect(await rawPut(route({ ...m, sha256: sha(Buffer.from('x')) }), ok, body).status).toBe(404);
@@ -609,6 +617,44 @@ describe('a returned bundle, sent by the PC that made it (it joined the asking P
     for (const status of [400, 404, 413]) {
       expect(await outbox.send(ASKER, m.bundleId, answer(status))).toEqual({ kind: 'fatal', why: `the other PC answered HTTP ${status}` });
     }
+  });
+
+  it('a PUT that comes while the wait checks an old file where the bundle goes waits for that check, and lands', async () => {
+    const body = bytes(8 * 1024 * 1024, 44);
+    const m = made(body);
+    // Same size, other bytes: the check hashes it all, then removes it.
+    fs.mkdirSync(path.dirname(bundleStagedFile(askerA2a, BOX, m)), { recursive: true });
+    fs.writeFileSync(bundleStagedFile(askerA2a, BOX, m), bytes(body.length, 45));
+    const one = intake();
+    one.registerRoutes(table);
+    const waiting = one.receive(BOX, m);
+    expect(await outbox.send(ASKER, m.bundleId, putAs(BOX))).toEqual({ kind: 'sent' });
+    expect(await waiting).toEqual({ kind: 'staged', file: bundleStagedFile(askerA2a, BOX, m) });
+    expect(fs.readFileSync(bundleStagedFile(askerA2a, BOX, m)).equals(body)).toBe(true);
+  });
+
+  it('a PUT the sender gave up on (its connection held open) is cut when the same PC sends it again', async () => {
+    const body = bytes(80_000, 46);
+    const m = made(body);
+    const one = intake();
+    one.registerRoutes(table);
+    const waiting = one.receive(BOX, m);
+    const stalled = rawPut(route(m), { 'content-length': String(body.length) }, body, BOX, 30_000);
+    await vi.waitFor(() => expect(partsOf(BOX)).toHaveLength(1), { timeout: 10_000 });
+    expect(await outbox.send(ASKER, m.bundleId, putAs(BOX))).toEqual({ kind: 'sent' });
+    expect(await waiting).toMatchObject({ kind: 'staged' });
+    expect(await stalled.status).not.toBe(200);
+  });
+
+  it('send() leaves no read stream behind when the request fails before it is read', async () => {
+    const m = made(bytes(1000, 47));
+    let given: Readable | undefined;
+    const failing: StreamedPut = (_p, body) => {
+      given = body;
+      return Promise.reject(new PinnedClientError('connect-failed', 'unreachable', { sent: false }));
+    };
+    expect(await outbox.send(ASKER, m.bundleId, failing)).toMatchObject({ kind: 'again' });
+    expect(given?.destroyed).toBe(true);
   });
 
   it('withdrawing the offer ends a send under way; an offer that does not stand is not sent', async () => {

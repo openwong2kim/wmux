@@ -133,9 +133,15 @@ async function syncFile(file: string): Promise<void> {
   }
 }
 
+/** An answer that refuses the bundle for good (a 4xx but 401, 408 and 429): not tried again. */
+export function isRefusalStatus(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 401 && status !== 408 && status !== 429;
+}
+
 /** Answer without reading the rest of the body, then cut the connection. */
 export function answerAndClose(req: http.IncomingMessage, res: http.ServerResponse, status: number, body: unknown): void {
   res.setHeader('Connection', 'close');
-  res.once('finish', () => req.socket.destroy());
+  // The request, not its socket: a request whose connection already went has none.
+  res.once('finish', () => req.destroy());
   sendJson(res, status, body);
 }
