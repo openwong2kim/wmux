@@ -119,11 +119,12 @@ function git(root, args) {
 const lines0 = (out) => out.split('\0').filter((s) => s !== '');
 
 /** The change since `base`, as verify.sh counts it: committed, staged,
- *  unstaged and untracked files. */
+ *  unstaged and untracked files. A rename counts as its old path deleted and
+ *  its new one added, so a test still reading the old path is picked too. */
 export function changedFiles(root, base) {
   return [...new Set([
-    ...lines0(git(root, ['diff', '-z', '--name-only', base, 'HEAD'])),
-    ...lines0(git(root, ['diff', '-z', '--name-only', 'HEAD'])),
+    ...lines0(git(root, ['diff', '-z', '--name-only', '--no-renames', base, 'HEAD'])),
+    ...lines0(git(root, ['diff', '-z', '--name-only', '--no-renames', 'HEAD'])),
     ...lines0(git(root, ['ls-files', '-z', '--others', '--exclude-standard'])),
   ])].sort();
 }
