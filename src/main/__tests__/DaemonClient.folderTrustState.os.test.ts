@@ -80,6 +80,17 @@ describe('DaemonClient.folderTrustState', () => {
     expect(await client.folderTrustState('daemon-1', 400)).toEqual({ state: 'unknown' });
   });
 
+  it('carries the mark of another dialog in the cells read, never on a trust verdict', async () => {
+    answer = async () => ({ state: 'unknown', reason: 'unseen-cells', dialog: true });
+    expect(await client.folderTrustState('daemon-1', 400)).toEqual({ state: 'unknown', reason: 'unseen-cells', dialog: true });
+    answer = async () => ({ state: 'clear', dialog: true });
+    expect(await client.folderTrustState('daemon-1', 400)).toEqual({ state: 'clear', dialog: true });
+    answer = async () => ({ state: 'trust', dialog: true });
+    expect(await client.folderTrustState('daemon-1', 400)).toEqual({ state: 'trust' });
+    answer = async () => ({ state: 'clear', dialog: 'yes' });
+    expect(await client.folderTrustState('daemon-1', 400)).toEqual({ state: 'clear' });
+  });
+
   it('says why there is no verdict: a malformed answer, an error, an older daemon', async () => {
     answer = async () => ({ state: 'yes' });
     expect(await client.folderTrustState('daemon-1', 400)).toEqual({ unavailable: 'malformed answer' });
@@ -124,16 +135,22 @@ describe('daemon.folderTrustState end to end', () => {
     const server = new DaemonPipeServer(name);
     server.setAuthToken(TOKEN);
     server.onRpc('daemon.client.identify', async () => ({ ok: true }));
-    const rows = (JSON.parse(fs.readFileSync(path.join(__dirname, '../../daemon/approvals/__tests__/fixtures/folder-trust/codex-folder-trust-60x30.json'), 'utf8')) as { screen: string[] }).screen;
-    const sessionAt = (bytes: string) => {
+    const fixture = (dir: string, name: string) =>
+      JSON.parse(fs.readFileSync(path.join(__dirname, '../../daemon/approvals/__tests__/fixtures', dir, `${name}.json`), 'utf8')) as { screen: string[]; cols: number; rows: number };
+    const rows = fixture('folder-trust', 'codex-folder-trust-60x30').screen;
+    const sessionAt = (bytes: string, cols = 60, height = 30) => {
       const ring = new RingBuffer(64 * 1024);
-      ring.noteGeometry(60, 30);
+      ring.noteGeometry(cols, height);
       ring.write(Buffer.from(bytes));
-      return { meta: { state: 'attached' as const, cols: 60, rows: 30 }, ptyProcess: { cols: 60, rows: 30 }, ringBuffer: ring, bridge: { isMuted: false, outputModes: null, heldOutput: () => null } };
+      return { meta: { state: 'attached' as const, cols, rows: height }, ptyProcess: { cols, rows: height }, ringBuffer: ring, bridge: { isMuted: false, outputModes: null, heldOutput: () => null } };
     };
+    const frame = (screen: string[]) => `\x1b[2J${screen.map((row, i) => `\x1b[${i + 1};1H${row}`).join('')}`;
+    // A permission prompt: no trust question, another dialog in the cells read.
+    const permission = fixture('terminal-prompts', 'claude-bash-boxed-01');
     const sessions = new Map([
-      ['pane-trust', sessionAt(`\x1b[2J${rows.map((row, i) => `\x1b[${i + 1};1H${row}`).join('')}`)],
+      ['pane-trust', sessionAt(frame(rows))],
       ['pane-shell', sessionAt('$ ls\r\nREADME.md\r\n$ ')],
+      ['pane-permission', sessionAt(frame(permission.screen), Number(permission.cols), Number(permission.rows))],
     ]);
     registerFolderTrustRpc(server, { getSession: (id) => sessions.get(id) });
     await server.start();
@@ -143,6 +160,7 @@ describe('daemon.folderTrustState end to end', () => {
       expect(await c.folderTrustState('pane-trust', 400)).toEqual({ state: 'trust' });
       expect(await c.folderTrustState('pane-shell', 400)).toEqual({ state: 'clear' });
       expect(await c.folderTrustState('pane-gone', 400)).toEqual({ state: 'clear' });
+      expect(await c.folderTrustState('pane-permission', 400)).toEqual({ state: 'clear', dialog: true });
       // A delivery's budget, and one past the ceiling, read the same ring.
       expect(await c.folderTrustState('pane-trust', 1150, 1000)).toEqual({ state: 'trust' });
       expect(await c.folderTrustState('pane-shell', 2150, 60_000)).toEqual({ state: 'clear' });

@@ -1002,13 +1002,14 @@ export interface DeliveryLane {
  * and found nothing but cells it never saw where a dialog would sit
  * ('unseen-cells'), saw no other dialog in the cells it did read, and the
  * pane's ring text, which the rest of the check reads too, shows no trust
- * question. Any other reason, or no ring text, is not passed.
+ * question. Any other reason, or no ring text (none, or blank), is not passed.
  */
 function passableUnknown(trust: FolderTrustRead): boolean {
   return trust.verdict === 'unknown'
     && trust.reason === 'unseen-cells'
     && trust.dialog !== true
     && trust.ringText !== undefined
+    && trust.ringText.trim() !== ''
     && folderTrustOnScreen(trust.ringText) === 'clear';
 }
 

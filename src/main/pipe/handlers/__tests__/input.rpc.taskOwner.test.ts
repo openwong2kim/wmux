@@ -892,6 +892,8 @@ describe('owner lane — a delivery from the task\'s orchestrator', () => {
       ['no reason', { screen: { parked: 'WORKER SCREEN' }, daemonTrust: 'unknown' }],
       ['another dialog', { screen: { parked: 'WORKER SCREEN' }, daemonTrust: { state: 'unknown', reason: 'unseen-cells', dialog: true } }],
       ['no ring text', { screen: '', daemonTrust: { state: 'unknown', reason: 'unseen-cells' } }],
+      ['a blank ring text', { screen: { parked: '' }, daemonTrust: { state: 'unknown', reason: 'unseen-cells' } }],
+      ['a whitespace ring text', { screen: { parked: '  \n ' }, daemonTrust: { state: 'unknown', reason: 'unseen-cells' } }],
       ['a trust question in the ring text', { screen: { parked: SCREENS['trust'].screen as string }, daemonTrust: { state: 'unknown', reason: 'unseen-cells' } }],
     ];
     for (const [name, opts] of refused) {
