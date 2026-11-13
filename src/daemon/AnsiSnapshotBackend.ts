@@ -1,7 +1,7 @@
 import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import type { SnapshotOutcome, SnapshotRequest } from './HeadlessSnapshot';
 import { generateRustSnapshot } from './RustSnapshot';
-import { withSnapshotShadow } from './SnapshotShadow';
+import { snapshotModeOverride } from './snapshotMode';
 import { countReason, refusalFamily, type SnapshotReasons } from './snapshotBackendReasons';
 
 type Reference = (req: SnapshotRequest) => Promise<SnapshotOutcome>;
@@ -50,8 +50,8 @@ function materialize(req: SnapshotRequest): SnapshotRequest {
  */
 export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference): Promise<SnapshotOutcome> {
   const input = materialize(req);
-  const mode = process.env.WMUX_RUST_SNAPSHOT ?? (terminalCoreSelection() === 'rust' ? 'ansi' : undefined);
-  if (mode !== 'ansi' && mode !== 'all') return withSnapshotShadow(input, 'ansi', xterm);
+  const mode = snapshotModeOverride() ?? (terminalCoreSelection() === 'rust' ? 'ansi' : undefined);
+  if (mode !== 'ansi' && mode !== 'all') return xterm(input);
   const modulePath = process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE;
   if (failedModule && failedModule.path !== modulePath) failedModule = undefined;
   const skip = !eligible(input) ? 'limits' : failedModule ? 'circuit-open' : undefined;

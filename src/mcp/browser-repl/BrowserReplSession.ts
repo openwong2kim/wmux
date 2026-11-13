@@ -1,6 +1,8 @@
 /**
  * One `browser_repl` runtime per MCP connection: a worker thread that holds
- * the script's globals between calls, plus the run queue in front of it.
+ * the script's globals between calls, plus the run queue in front of it. The
+ * worker runs in a child process of its own (runnerProcess.ts), started on the
+ * first run.
  *
  * Runs are serialized. Two concurrent `browser_repl` calls on one connection
  * would otherwise interleave their `browser.*` calls on the same page — each
@@ -15,7 +17,6 @@
  * or the dead run's late click would slip between the new run's snapshot and
  * its own click, which is exactly the interleaving the queue exists to stop.
  */
-import { Worker } from 'worker_threads';
 import { OutputBuffer, truncateText, type TruncatedText } from '../repl/truncate';
 import type { BridgeCall } from './bridge';
 import {
@@ -24,7 +25,7 @@ import {
   lateCallRefusal,
   type RunImage,
 } from './runCollect';
-import { BROWSER_REPL_WORKER_SOURCE } from './workerSource';
+import { RunnerProcess } from './runnerProcess';
 
 export const CONSOLE_CAP_BYTES = 32 * 1024;
 export const RESULT_CAP_BYTES = 16 * 1024;
@@ -110,7 +111,7 @@ interface WorkerMessage {
 }
 
 export class BrowserReplSession {
-  private worker: Worker | null = null;
+  private worker: RunnerProcess | null = null;
   private ready: Promise<void> | null = null;
   private previousDeath: string | undefined;
   private tail: Promise<unknown> = Promise.resolve();
@@ -175,24 +176,19 @@ export class BrowserReplSession {
     }
   }
 
-  private ensureWorker(): { worker: Worker; ready: Promise<void>; fresh: boolean } {
+  /** Throws when no runner can be started (the server's cap). */
+  private ensureWorker(): { worker: RunnerProcess; ready: Promise<void>; fresh: boolean } {
     if (this.worker && this.ready) return { worker: this.worker, ready: this.ready, fresh: false };
-    const worker = new Worker(BROWSER_REPL_WORKER_SOURCE, {
-      eval: true,
-      // The worker never touches stdio; captured console travels as messages.
-      stdout: true,
-      stderr: true,
-    });
+    const worker = new RunnerProcess();
     this.worker = worker;
-    // Nothing reads these; an unconsumed pipe just buffers whatever a snippet
-    // writes to process.stdout directly.
-    worker.stdout.resume();
-    worker.stderr.resume();
     // Between runs no run-scoped listener is attached, so a worker that dies
     // then would be found only by the next run's timeout. Notice it now and
     // let that run start a fresh worker instead.
+    // Before it is ready, a death is the start failing: the ready promise
+    // reports that, not as a death between runs.
+    let started = false;
     const onIdleDeath = (reason: string) => {
-      if (this.activeRunId === null && this.worker === worker) this.killWorker(reason);
+      if (started && this.activeRunId === null && this.worker === worker) this.killWorker(reason);
     };
     worker.on('error', (err) => onIdleDeath(
       `crashed between runs: ${workerFailureMessage(err)}`,
@@ -202,6 +198,7 @@ export class BrowserReplSession {
       const timer = setTimeout(() => reject(new Error('browser_repl worker did not start')), READY_TIMEOUT_MS);
       const onMessage = (msg: WorkerMessage) => {
         if (msg?.type === 'ready') {
+          started = true;
           clearTimeout(timer);
           worker.off('message', onMessage);
           resolve();
@@ -211,6 +208,11 @@ export class BrowserReplSession {
       worker.once('error', (err) => {
         clearTimeout(timer);
         reject(err);
+      });
+      // A runner that dies before it is ready says so now, with its code.
+      worker.once('exit', (code: number) => {
+        clearTimeout(timer);
+        reject(new Error(`browser_repl runtime exited during startup (code ${code})`));
       });
       worker.postMessage({ type: 'init', tools: this.tools });
     });
@@ -254,7 +256,17 @@ export class BrowserReplSession {
     const consoleBuf = new OutputBuffer(CONSOLE_CAP_BYTES);
     const previousDeath = this.previousDeath;
     this.previousDeath = undefined;
-    const { worker, ready, fresh } = this.ensureWorker();
+    let runner: { worker: RunnerProcess; ready: Promise<void>; fresh: boolean };
+    try {
+      runner = this.ensureWorker();
+    } catch (error) {
+      this.previousDeath = previousDeath;
+      return {
+        ledger, hints, freshRuntime: false, callCount: 0, ok: false, elapsedMs: Date.now() - started,
+        console: consoleBuf.render(), error: `browser_repl: ${error instanceof Error ? error.message : String(error)}`, timedOut: false,
+      };
+    }
+    const { worker, ready, fresh } = runner;
     const base = { ledger, hints, freshRuntime: fresh, previousDeath: fresh ? previousDeath : undefined };
     const withHintCount = () => ({
       ...base,

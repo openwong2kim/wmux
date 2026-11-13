@@ -122,7 +122,7 @@ import { LanLinkServer } from './lanlink/server';
 import { QUERY_TIMEOUT_MS } from './lanlink/netCategory';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { A2aRemoteController } from './a2aRemote/controller';
+import { A2aRemoteController, a2aRemoteBindHost } from './a2aRemote/controller';
 import { A2aServer, rankedExternalIpv4s } from './a2aRemote/server';
 import { registerNetRpc } from './net/rpc';
 import { FirewallRecordStore } from './net/firewallRecord';
@@ -528,6 +528,8 @@ let sessionLifecycle: WebSessionLifecycle | null = null;
 // session RPCs it wraps live), and each side reaches the other through these.
 let headlessSessionsRef: HeadlessSessionPort | null = null;
 let headlessStarterRef: A2aHeadlessStarter | null = null;
+// Headless mode in effect: the idle timeout does not stop a host other PCs are meant to reach.
+let idleHoldForRemoteStarts: () => boolean = () => false;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
 /** Contract v-next item 1: a Codex turn on a daemon-owned relay failed (set at boot). */
@@ -4202,7 +4204,8 @@ function registerRpcHandlers(
       const f = a2aServerRef?.firewallFacts();
       return {
         listener,
-        applicable: f?.listening === true,
+        // Bound to loopback, no other PC reaches it.
+        applicable: f?.listening === true && !(f.address !== null && isLoopbackHost(f.address)),
         port: f?.port ?? null,
         ips: f?.ips ?? [],
         inboundSeenAt: a2aServerRef?.status().inboundSeenAt ?? null,
@@ -4225,7 +4228,9 @@ function registerRpcHandlers(
     failure: (listener) => {
       if (listener === 'a2a') {
         const st = a2aServerRef?.status();
-        return st?.enabled && st.lastErrorCode ? { code: st.lastErrorCode, port: st.lastErrorPort ?? st.port, address: null } : null;
+        return st?.enabled && st.lastErrorCode
+          ? { code: st.lastErrorCode, port: st.lastErrorPort ?? st.port, address: a2aServerRef?.boundAddress() ?? null }
+          : null;
       }
       if (listener === 'web') {
         return webListenError && !webServer.status().running ? { code: webListenError.code, port: webListenError.port, address: webListenError.host } : null;
@@ -10586,6 +10591,11 @@ async function main(): Promise<void> {
       // file an earlier identify wrote, or a reconciled pane snapshot (only the app publishes one).
       appSeen: () => pipeServer.appAttached() || fs.existsSync(path.join(wmuxDir, APP_ATTACHED_FILE)) || a2aExposedPanes.isReconciled(),
     });
+    // In effect: opted in, the app never seen here, and the starter built this run (below).
+    const headlessInEffect = (): boolean => headlessMode.active() && a2aHeadless !== null;
+    // A host in headless mode waits for other PCs, with no client and no session of its own:
+    // the idle timeout does not stop it. Off for good once the app is seen here (a desktop install).
+    idleHoldForRemoteStarts = headlessInEffect;
     // Read-only, for `wmux daemon headless status|on` (not an a2a.* method, so
     // also answered on a host without the app): what this daemon decides from.
     // Registered before anything else of the a2a stack can fail, so the app
@@ -10593,7 +10603,7 @@ async function main(): Promise<void> {
     pipeServer.onRpc('daemon.headless.status', async () => ({
       appAttached: !headlessMode.appStillAbsent(),
       optedIn: headlessMode.optedIn(),
-      inEffect: headlessMode.active() && a2aHeadless !== null,
+      inEffect: headlessInEffect(),
     }));
     const a2aLinks = new LinkStore({
       dir: a2aDir,
@@ -10817,8 +10827,12 @@ async function main(): Promise<void> {
         },
         log: a2aLog,
       });
+    // `a2aRemote.bindHost` in config.json: unset binds every interface; a value
+    // that cannot be used keeps the listener down.
+    const a2aBind = a2aRemoteBindHost(a2aRemoteController.current(), a2aLog);
     const a2aServer = new A2aServer({
       controller: a2aRemoteController,
+      ...('error' in a2aBind ? { bindError: a2aBind.error } : { bindAddress: a2aBind.host }),
       identityDir: a2aDir,
       peers: a2aPeers,
       onPeerRevoked: a2aCascade,
@@ -11384,6 +11398,7 @@ async function main(): Promise<void> {
       ),
       pendingApprovals: approvalRegistry?.pendingCount() ?? 0,
       automations: automationEngine?.holdsDaemon() ? 1 : 0,
+      remoteStarts: idleHoldForRemoteStarts() ? 1 : 0,
     }),
     // Idle self-terminate. Routes through the same shutdown() path used
     // by SIGTERM / SIGINT / daemon.shutdown RPC — the `shuttingDown`

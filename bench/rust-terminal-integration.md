@@ -181,8 +181,9 @@ beside the bundle (the server runtime, and the `dist/wmux-native` that
 `core/wmux-term/dist/native-core` build is used only when named. The older
 `WMUX_RUST_SNAPSHOT_MODULE` remains available for snapshot-only experiments.
 
-`WMUX_RUST_SNAPSHOT` independently overrides snapshot selection: `text`, `shadow`,
-`off`, and the separately experimental `ansi`/`all` modes. The combined Rust flag
+`WMUX_RUST_SNAPSHOT` independently overrides snapshot selection: `text`, `off`,
+and the separately experimental `ansi`/`all` modes. The removed `shadow` value
+reads as unset. The combined Rust flag
 alone selects eligible immutable text requests; ANSI and live tee requests keep
 xterm. ANSI delivery refuses known unsupported state: overline, OSC, saved
 cursors, character-set/tab configuration, clipped wide-character edges and margins.
@@ -227,7 +228,7 @@ including structurally incomplete invalid prefixes and final EOF. The remaining
 u16 cell flag now retains SGR 5 blink (SGR 6 is ignored, matching xterm), without
 increasing the 24-byte cell layout. ANSI requests require the optional `ansi-v2`
 capability; older serializers fall back before replay. Blink now passes delivery
-and shadow parity. The eligibility scan distinguishes color operands from SGR
+and the parity checks. The eligibility scan distinguishes color operands from SGR
 commands, so RGB/palette values 53 and 55 no longer cause false overline refusals. ANSI remains separately opt-in; live drains and unqualified
 state retain the reference backend.
 

@@ -53,7 +53,7 @@ PTY sessions and the existing `daemon.createSession`, `daemon.readSessionText`,
 
 The historical measurement above used an esbuild hook to substitute **only text
 snapshot generation** in a benchmark bundle. The Rust candidate replaced the xterm call; it did
-not run both engines as shadow mode does. Production files and backend defaults
+not run both engines side by side (the later shadow mode did; it has since been removed). Production files and backend defaults
 are not changed by the runner. PTY transport, ring buffers, ANSI reconnect
 snapshots and the daemon's other services remain the existing implementation.
 
