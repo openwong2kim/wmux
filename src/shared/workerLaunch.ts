@@ -148,9 +148,11 @@ export function reattachModelEnvMarker(
 // permission mode, bypass included, so the deny list is what holds even when
 // the operator picks bypassPermissions.
 
-/** The operator's choice for fan-out workers. `manual` is wmux's word for
- *  "add no permission flag" — deliberately NOT a PermissionMode value, which
- *  describes what a transcript recorded rather than what wmux launches. */
+/** The operator's choice for fan-out workers, and for the agents this PC
+ *  starts for another PC. `manual` means the agent asks before each action
+ *  (Claude's `--permission-mode manual`); an agent with no flag wmux knows for
+ *  that is not started in it (workerModeRefusal). Not a PermissionMode value,
+ *  which describes what a transcript recorded rather than what wmux launches. */
 export type FanoutWorkerPermissionMode = 'auto' | 'acceptEdits' | 'bypassPermissions' | 'manual';
 
 export const FANOUT_WORKER_PERMISSION_MODES: readonly FanoutWorkerPermissionMode[] = [
@@ -218,7 +220,7 @@ const PERMISSION_FLAG_FOR_WORKER: Readonly<Record<FanoutWorkerPermissionMode, st
   auto: '--permission-mode auto',
   acceptEdits: '--permission-mode acceptEdits',
   bypassPermissions: '--dangerously-skip-permissions',
-  manual: '',
+  manual: '--permission-mode manual',
 };
 
 /** The flags wmux appends for `mode`, as they appear on the line. */
@@ -294,6 +296,24 @@ const LIST_FLAGS = new Set(['--allowedTools', '--allowed-tools', '--disallowedTo
  *  `mcp__x__y`, `Edit,Read`). The prompt argument never looks like one. */
 const TOOL_RULE = /^[A-Za-z_][\w*-]*(\(.*\))?(,[A-Za-z_][\w*-]*(\(.*\))?)*$/;
 
+/** The launcher of a line: its first word's file name, lower case, without a Windows extension. */
+function launcherStemOf(words: readonly Span[]): string {
+  return (words[0]?.value.split(/[\\/]/).pop() ?? '').replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+}
+
+/**
+ * Why a launch line may not start in `mode`, or null when it may. `manual`
+ * must make the agent ask before each action, and only a `claude` launch has
+ * a flag wmux knows for that: any other agent (or a wrapper wmux cannot see
+ * through) would run on its own settings, so it is refused instead.
+ */
+export function workerModeRefusal(command: string, mode: FanoutWorkerPermissionMode): string | null {
+  if (mode !== 'manual') return null;
+  const stem = launcherStemOf(spans(command));
+  if (stem === 'claude') return null;
+  return `the manual worker mode makes the agent ask before each action, and wmux knows no flag that does that for ${stem ? `\`${stem}\`` : 'this launch line'}; it was not started. Choose another worker mode, or Claude`;
+}
+
 /**
  * Append the worker's permission flag and tool lists to a launch line.
  *
@@ -310,8 +330,7 @@ const TOOL_RULE = /^[A-Za-z_][\w*-]*(\(.*\))?(,[A-Za-z_][\w*-]*(\(.*\))?)*$/;
  * a typed agentCmd) is removed first so the setting is the one that applies.
  * Removal is word-based: a flag spelled inside a quoted argument (a prompt, an
  * --append-system-prompt value) is part of that word and is never matched.
- * `manual` keeps the line's own permission flag and adds none of its own; the
- * tool lists are applied in every mode. `extraDisallowed` adds deny rules to
+ * The tool lists are applied in every mode. `extraDisallowed` adds deny rules to
  * the same list (the goal worker profile); a non-claude line gets none of
  * this, which is why a goal refuses non-claude workers outright.
  */
@@ -321,18 +340,16 @@ export function applyWorkerPermissionFlags(
   extraDisallowed: readonly string[] = [],
 ): string {
   const words = spans(command);
-  const stem = (words[0]?.value.split(/[\\/]/).pop() ?? '').replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
-  if (stem !== 'claude') return command;
+  if (launcherStemOf(words) !== 'claude') return command;
 
-  const replacePermission = mode !== 'manual';
   const cut: Span[] = [];
   for (let k = 1; k < words.length; k++) {
     const v = words[k].value;
     const flag = v.includes('=') ? v.slice(0, v.indexOf('=')) : v;
     const hasValue = v.includes('=');
-    if (replacePermission && BARE_PERMISSION_FLAGS.has(v)) {
+    if (BARE_PERMISSION_FLAGS.has(v)) {
       cut.push(words[k]);
-    } else if (replacePermission && VALUE_FLAGS.has(flag)) {
+    } else if (VALUE_FLAGS.has(flag)) {
       cut.push(words[k]);
       if (!hasValue && k + 1 < words.length) cut.push(words[++k]);
     } else if (LIST_FLAGS.has(flag)) {

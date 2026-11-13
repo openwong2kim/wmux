@@ -43,6 +43,7 @@ import {
   isFanoutWorkerPermissionMode,
   reattachModelEnvMarker,
   splitModelEnvMarker,
+  workerModeRefusal,
 } from '../../shared/workerLaunch';
 import { t } from '../i18n';
 import { parseRemoteSpawnedBy, remoteSpawnToastMessage } from '../utils/remoteSpawnedBy';
@@ -1950,6 +1951,14 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       workerMode && roleBound.initialCommand
         ? { ...roleBound, initialCommand: applyWorkerPermissionFlags(roleBound.initialCommand, workerMode) }
         : roleBound;
+    // A mode the final launcher cannot be held to (manual on an agent with no ask flag) starts nothing.
+    const modeRefusal = workerMode && roleBound.initialCommand ? workerModeRefusal(roleBound.initialCommand, workerMode) : null;
+    if (modeRefusal) {
+      const rollback = useStore.getState();
+      rollback.removeWorkspace(newWsId);
+      rollback.setActiveWorkspace(previousActiveId);
+      return { error: `fanout.spawnWorkspace: ${modeRefusal}` };
+    }
     // `bound.initialCommand` stays undefined for the "environment only" launch,
     // and it has to: withWorkspaceProfile fills a MISSING command from the
     // profile's defaultPaneCommand, and an empty string is not missing.

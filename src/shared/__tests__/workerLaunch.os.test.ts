@@ -16,7 +16,10 @@ import {
   reattachModelEnvMarker,
   shellSupportsModelEnvMarker,
   splitModelEnvMarker,
+  workerModeRefusal,
+  FANOUT_WORKER_PERMISSION_MODES,
 } from '../workerLaunch';
+import { FANOUT_AGENTS } from '../fanoutPreset';
 
 describe('MODEL_ENV_MARKER', () => {
   it('unsets the model in the SAME shell, so an aliased launcher still resolves', () => {
@@ -168,9 +171,35 @@ describe('applyWorkerPermissionFlags', () => {
     expect(applyWorkerPermissionFlags(spaced, 'auto').startsWith(spaced + ' ')).toBe(true);
   });
 
-  it("manual adds no permission flag and keeps the line's own, but still applies the tool lists", () => {
-    const line = `claude --permission-mode plan ${PROMPT}`;
-    expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`${line} ${LISTS}`);
+  it("manual makes claude ask: the line's own permission flag is replaced, as for every mode, and the tool lists still apply", () => {
+    for (const own of ['--permission-mode plan', '--permission-mode auto', '--dangerously-skip-permissions']) {
+      expect(applyWorkerPermissionFlags(`claude ${own} ${PROMPT}`, 'manual')).toBe(`claude ${PROMPT} --permission-mode manual ${LISTS}`);
+    }
+  });
+
+  it('each mode gives claude its own permission flag', () => {
+    const flags = {
+      auto: '--permission-mode auto',
+      acceptEdits: '--permission-mode acceptEdits',
+      bypassPermissions: '--dangerously-skip-permissions',
+      manual: '--permission-mode manual',
+    } as const;
+    expect(Object.keys(flags).sort()).toEqual([...FANOUT_WORKER_PERMISSION_MODES].sort());
+    for (const mode of FANOUT_WORKER_PERMISSION_MODES) {
+      expect(applyWorkerPermissionFlags(`claude ${PROMPT}`, mode)).toBe(`claude ${PROMPT} ${flags[mode]} ${LISTS}`);
+      expect(workerModeRefusal(`claude ${PROMPT}`, mode)).toBeNull();
+    }
+  });
+
+  it('manual is refused for every agent but claude, and for a wrapped line; the other modes are never refused', () => {
+    const agents = FANOUT_AGENTS.map((a) => a.stem);
+    expect(agents).toContain('claude');
+    for (const stem of agents.filter((a) => a !== 'claude')) {
+      expect(workerModeRefusal(`${stem} ${PROMPT}`, 'manual')).toContain(`\`${stem}\``);
+      for (const mode of FANOUT_WORKER_PERMISSION_MODES.filter((m) => m !== 'manual')) expect(workerModeRefusal(`${stem} ${PROMPT}`, mode)).toBeNull();
+    }
+    for (const line of [`env FOO=1 claude ${PROMPT}`, `sh -c 'claude hi'`]) expect(workerModeRefusal(line, 'manual')).not.toBeNull();
+    expect(workerModeRefusal(`C:\\tools\\claude.exe ${PROMPT}`, 'manual')).toBeNull();
   });
 
   it('does not touch a non-claude launch or a wrapped one', () => {
