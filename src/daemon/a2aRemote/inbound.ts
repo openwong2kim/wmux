@@ -52,6 +52,10 @@ export interface InboundDeps {
   linkStore: Pick<LinkStore, 'get' | 'checkMessage' | 'applyRemoteAccept' | 'revoke' | 'markBroken'>;
   taskService: Pick<A2aTaskService, 'getTask' | 'createTask' | 'appendRemoteMessage' | 'applyRemoteState' | 'markRemote'>;
   broadcast: (event: A2aRemoteInboundEvent) => void;
+  /** Queue what the peer is owed for one task (its state, after a reopen here). */
+  syncTask?: (taskId: string) => Promise<void>;
+  /** Whether `hostId` follows a task again after it ended `completed` (A2A_FEATURE_REOPEN). */
+  peerReopens?: (hostId: HostId) => boolean;
   /** Display alias of a link's remote pane (`linkAlias`). */
   aliasFor: (link: A2aLinkRecordV1) => string;
   /** Display name of a local workspace, when the daemon knows it. */
@@ -334,8 +338,13 @@ async function applyInbound(
       linkId: link.linkId,
       actorWorkspaceId: remoteWs,
       message: { kind: 'message', messageId: env.messageId, role, parts: parts.parts },
+      // The sender asking to follow the task again (`reopen`), from a PC that takes the `working` it is then told:
+      // a task that ended `completed` here is reopened for the agent (A2aTaskService checks the rest).
+      reopenCompleted: env.reopen === true && deps.peerReopens?.(peer.hostId) === true,
     });
     if (!res.ok) return fail('conflict' in res ? 'conflict' : 'unavailable', res.error);
+    // Reopened: the sender is told `working` now, as for a move the agent makes.
+    if (res.reopened) await deps.syncTask?.(taskId);
     return { ok: true, taskId, duplicate: res.duplicate };
   }
 
@@ -344,6 +353,7 @@ async function applyInbound(
     linkId: link.linkId,
     messageId: env.messageId,
     to: env.state as NonNullable<A2aRemoteEnvelope['state']>,
+    peerReopens: deps.peerReopens?.(peer.hostId) === true,
     ...(env.text ? { summary: env.text } : {}),
     ...(env.message ? { message: env.message } : {}),
     ...(env.evidence ? { evidence: env.evidence } : {}),

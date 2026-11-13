@@ -146,6 +146,13 @@ export const A2A_FEATURE_CONTINUE = 'continue.1';
  */
 export const A2A_FEATURE_BUNDLE = 'bundle.1';
 /**
+ * The PC follows a task again after it ended `completed`, when its sender
+ * writes to it: the receiver sets it `working` again, and the sender takes
+ * that `working` for the follow-up it sent. Each side does so only with a
+ * peer that advertises it.
+ */
+export const A2A_FEATURE_REOPEN = 'reopen.1';
+/**
  * Stream liveness both ways. A joiner with it acks its stream cursor every
  * `A2A_STREAM_PING_MS` while the stream is up (to a server whose hello lists
  * it); a server whose joiner advertised it ends that stream after
@@ -928,6 +935,13 @@ export interface A2aRemoteEnvelope {
   kind: A2aRemoteMessageKind;
   /** For 'reply' / 'state': the task this belongs to (the deterministic remote task id). */
   taskId?: string;
+  /**
+   * For 'reply', from the task's sender, only to a peer that advertises
+   * `reopen.1`: asks the receiver to follow the task again if it ended
+   * `completed` there. A request: the receiver decides, and ignores it
+   * anywhere else.
+   */
+  reopen?: true;
   /** For 'task' / 'reply'. */
   text?: string;
   /** For 'state'. */

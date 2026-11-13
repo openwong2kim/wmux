@@ -88,7 +88,11 @@ export interface A2aTaskTransitionPayload {
    * (`reopenTask`). Like `forced`, this bypasses VALID_TRANSITIONS on purpose;
    * the regular transition API never carries it. Also set when the sender's
    * message hands a reported company task back (`input-required` ->
-   * `working`, an edge VALID_TRANSITIONS has).
+   * `working`, an edge VALID_TRANSITIONS has), and when the sender on
+   * another PC writes again to an inbound task that ended `completed`: it
+   * goes back to `working`, committed by that remote sender
+   * (`appendRemoteMessage` with `reopenCompleted`; the next state is then
+   * told to the peer even if it was told before).
    */
   reopened?: 'sender_message';
 }
@@ -114,6 +118,11 @@ export interface A2aTaskMessagePayload {
   timestamp: string;
   /** The peer host wrote it: it is owed a delivery to our local pane. */
   remoteInbound?: true;
+  /**
+   * Ours, on a task this PC sent that ended `completed`: a follow-up, for
+   * which the peer's next `working` is taken (once) as the task followed again.
+   */
+  followUp?: true;
 }
 
 /**

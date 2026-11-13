@@ -19,6 +19,7 @@ import {
   type A2aRemoteEnvelope,
   type A2aRemoteTaskMarkerV1,
 } from '../../shared/a2aRemote';
+import { isCompanyTask } from '../../shared/company';
 import { redactSecrets } from '../../shared/redactSecrets';
 import {
   heldNoticeText,
@@ -86,6 +87,8 @@ export interface OutboundDeps {
   images?: OutboundImages;
   /** What the other PC takes (`A2aRemoteDelivery.peerFeatures`); undefined when it was never seen. */
   peerFeatures?: (hostId: string) => ReadonlySet<string> | undefined;
+  /** This build and `hostId` both follow a task again after it ended (`reopen.1`). */
+  peerReopens?: (hostId: string) => boolean;
   now?: () => number;
   /** Test seam for envelope messageIds (defaults to a random UUID). */
   mintId?: () => string;
@@ -238,7 +241,7 @@ export async function sendRemoteReply(deps: OutboundDeps, input: A2aRemoteReplyI
 }
 
 /** What the outbound sync needs: the ledger (read + bookkeeping), the link gate and the outbox. */
-export type StateDeps = Pick<OutboundDeps, 'linkStore' | 'outbox' | 'now' | 'mintId' | 'images' | 'spawnLink'> & {
+export type StateDeps = Pick<OutboundDeps, 'linkStore' | 'outbox' | 'now' | 'mintId' | 'images' | 'spawnLink' | 'peerReopens'> & {
   taskService: Pick<A2aTaskService, 'getTask' | 'markRemote'>;
   log?: (level: 'info' | 'warn' | 'error', msg: string) => void;
 };
@@ -370,6 +373,11 @@ export async function syncRemoteTask(
   const check = deps.linkStore.checkMessage(link.linkId, link.version, link.remote.hostId, 'outbound', 'reply', undefined, { onThisLink: true });
   if (!check.ok) return { ok: false, error: check.error };
   const ours: Message['role'] = isRemoteWorkspaceId(task.metadata.from.workspaceId) ? 'agent' : 'user';
+  // Our follow-up on a task we sent that ended there (completed here after it, or a fan-out report held here) asks
+  // that PC to follow it again, when both builds do so. Never for a company task: its seat's working slots are that
+  // PC's to give.
+  const followAgain = marker.direction === 'outbound' && deps.peerReopens?.(link.remote.hostId) === true && !isCompanyTask(task.history)
+    && ((task.status.state === 'completed' && marker.followUpOpen === true) || (marker.fanout === true && marker.reported !== undefined));
   let queued = 0;
   try {
     for (const m of task.history) {
@@ -378,7 +386,9 @@ export async function syncRemoteTask(
       const body = await replyBody(deps, m);
       // A reply may be images only; one with neither is not sent.
       if (!body.text && body.images.length === 0) continue;
-      deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, m.messageId, { kind: 'reply', taskId: task.id, text: body.text, ...imagesField(body.images) }));
+      deps.outbox.enqueue(link.remote.hostId, envelope(deps, link, m.messageId, {
+        kind: 'reply', taskId: task.id, text: body.text, ...imagesField(body.images), ...(followAgain ? { reopen: true as const } : {}),
+      }));
       // eslint-disable-next-line no-await-in-loop -- recorded in order
       await deps.taskService.markRemote({ taskId: task.id, sent: m.messageId });
       queued += 1;

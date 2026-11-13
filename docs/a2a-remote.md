@@ -173,6 +173,12 @@ is the one that will accept connections, and PC A is the one that joins it.
    pane on PC A. If the link allows it, PC B's agent can send to PC A the
    same way. Progress and replies are visible with `a2a_task_query`.
 
+   A follow-up from PC A on a task that ended `completed` on PC B opens it
+   there again (`working`), so PC B's agent can answer on the same task. Both
+   PCs need a build that knows it (feature `reopen.1`); with an older build on
+   either side the follow-up still reaches the agent and the task stays
+   completed. A company task is not opened again from another PC.
+
 The two PCs do not need to be paired both ways. One pairing carries traffic
 in both directions over the joiner's connection.
 
@@ -322,9 +328,11 @@ PCs and the folder ids (`root`) each one allows.
   - an agent gone (below).
 
   A report comes only from a PC running the app (a headless box answers with
-  `input-required` and its reply instead). A follow-up after a report reaches
-  the agent, but its answer cannot come back on that task yet, and the row
-  stays `review_requested`. An
+  `input-required` and its reply instead). A follow-up after a report opens
+  the task there again (`working`), so the row moves on as above, and the
+  agent's answer comes back as a new report. With an older build on either
+  PC (no `reopen.1`) the follow-up reaches the agent, its answer cannot come
+  back on that task, and the row stays `review_requested`. An
   agent that PC reports gone, or a task this PC no longer lists, fails the row
   after a minute if nothing ended the task meanwhile, and it stays failed.
   Tasks on a headless box end when its daemon stops; they are not resumed.
@@ -333,10 +341,9 @@ PCs and the folder ids (`root`) each one allows.
   nudge when a row needs input or fails. The report itself arrives there as
   the agent's reply.
 - **Following up.** `send_message task_id=<the row's A2A task>` reaches the
-  agent; the poll shows this as `followUp`. From a headless box its replies
-  come back to your pane. From a PC running the app, after its report, the
-  follow-up reaches the agent, but its answer cannot come back on that task
-  yet. A question on the agent's screen is the exception: a reply on
+  agent, and its replies come back to your pane (from a PC running the app,
+  after its report, only when both PCs know `reopen.1`); the poll shows this
+  as `followUp`. A question on the agent's screen is the exception: a reply on
   the task is never typed into it, so it is answered only in that PC's pane
   (a headless box ends the task if the question is still there after 10
   minutes). A post in the task's mission channel is kept, but nobody on the

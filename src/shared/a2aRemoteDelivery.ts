@@ -341,6 +341,11 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
    * copy ends too. The outbound sync sends it (and records it in `stateSync`), also after a restart.
    */
   cancelOwed?: true;
+  /**
+   * Outbound task that ended `completed`, after a follow-up of ours: the peer's next `working` is taken as the task
+   * followed again (once; that `working` clears it). Only from a peer that advertises `reopen.1`.
+   */
+  followUpOpen?: true;
   /** Our own replies on this task already queued for the peer (messageIds). */
   sent?: string[];
   /** When each of `sent` was queued (a notice about one of them names this time, never one the peer gives). */

@@ -93,7 +93,7 @@ type ClientHook = (opts: PinnedClientOptions) => SessionClient;
 
 async function makePc(
   name: string,
-  opts: { dir?: string; port?: number; client?: ClientHook; render?: (method: string) => Promise<unknown>; features?: string[]; images?: boolean } = {},
+  opts: { dir?: string; port?: number; client?: ClientHook; render?: (method: string) => Promise<unknown>; features?: string[]; images?: boolean; reopen?: false } = {},
 ): Promise<Pc> {
   const dir = opts.dir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-deliv-'));
   if (!opts.dir) dirs.push(dir);
@@ -158,6 +158,7 @@ async function makePc(
     syncMs: 50,
     ...(opts.client ? { client: opts.client } : {}),
     ...(opts.features ? { features: opts.features } : {}),
+    ...(opts.reopen === false ? { reopen: false as const } : {}),
     ...(opts.images ? { uploadsRoot: path.join(dir, 'uploads'), features: ['link-offer.1', 'images.1'] } : {}),
     // One terminal, `pty-a`, of workspace `ws-a`, spawned in `<dir>/proj`.
     spawnCwdOf: (ptyId: string, workspaceId: string) => (ptyId === 'pty-a' && workspaceId === 'ws-a' ? path.join(dir, 'proj') : undefined),
@@ -384,7 +385,7 @@ describe('cross-host delivery, end to end', () => {
     // A joined B: B's stream hello tells A; A's stream header tells B.
     await until(() => a.delivery.liveFeatures(b.hostId)?.has('images.1') === true);
     await until(() => b.delivery.liveFeatures(a.hostId)?.has('link-offer.1') === true);
-    expect(a.delivery.status()).toMatchObject([{ hostId: b.hostId, role: 'joiner', features: ['link-offer.1', 'images.1'] }]);
+    expect(a.delivery.status()).toMatchObject([{ hostId: b.hostId, role: 'joiner', features: ['link-offer.1', 'images.1', 'reopen.1'] }]);
     expect(b.delivery.peerFeatures(a.hostId)?.has('images.1')).toBe(false);
     // A new daemon on A, before B's stream is back: the last seen answer.
     const restarted = new A2aRemoteDelivery({
@@ -398,7 +399,7 @@ describe('cross-host delivery, end to end', () => {
       log: () => undefined,
     });
     expect(restarted.liveFeatures(b.hostId)).toBeUndefined();
-    expect([...(restarted.peerFeatures(b.hostId) ?? [])].sort()).toEqual(['images.1', 'link-offer.1']);
+    expect([...(restarted.peerFeatures(b.hostId) ?? [])].sort()).toEqual(['images.1', 'link-offer.1', 'reopen.1']);
   });
 
   it('images both ways: A stages and sends (uploaded to B), B replies with one (A fetches it)', async () => {
@@ -497,7 +498,7 @@ describe('cross-host delivery, end to end', () => {
     const a = await makePc('PC-A', { images: true });
     await pair(a, b);
     await until(() => a.delivery.liveFeatures(b.hostId) !== undefined);
-    expect([...(a.delivery.liveFeatures(b.hostId) ?? [])]).toEqual(['link-offer.1']);
+    expect([...(a.delivery.liveFeatures(b.hostId) ?? [])]).toEqual(['link-offer.1', 'reopen.1']);
   });
 
   it('an older PC (no images.1) gets the text with a note instead of refs it would drop', async () => {
@@ -1168,5 +1169,109 @@ describe('a state the other PC refuses, end to end', () => {
     await moveB(b, taskId, 'working');
     await until(() => b.tasks.getTask(taskId)?.status.state === 'failed');
     expect(refusedOn(b, taskId)).toBeUndefined();
+  });
+});
+
+describe('a follow-up on a task that ended completed, end to end', () => {
+  /** A link whose receiving PC (B) joined the sending one (A), so each side's refusals are read. */
+  async function linkedB(a: Pc, b: Pc): Promise<string> {
+    await pair(b, a);
+    await a.rpc('a2a.remote.exposure.publish', { panes: [A_PANE] });
+    await a.rpc('a2a.remote.exposure.set', { hostId: b.hostId, workspaceIds: ['ws-a'], paneIds: { 'ws-a': ['pane-a'] } });
+    const proposed = (await b.rpc('a2a.remote.links.propose', {
+      hostId: a.hostId,
+      local: B_PANE,
+      remote: { kind: 'pane', workspaceId: 'ws-a', paneId: 'pane-a', label: 'claude', workspaceName: 'Web' },
+      allow: { outbound: true, inbound: true },
+    })) as { ok: boolean; link: A2aLinkRecordV1 };
+    expect(proposed).toMatchObject({ ok: true });
+    expect(await a.rpc('a2a.remote.links.accept', { linkId: proposed.link.linkId })).toMatchObject({ ok: true });
+    await until(() => a.links.get(proposed.link.linkId)?.state === 'active' && b.links.get(proposed.link.linkId)?.state === 'active');
+    return proposed.link.linkId;
+  }
+
+  async function moveB(b: Pc, taskId: string, to: 'working' | 'completed'): Promise<void> {
+    const evidence = { summary: 'done', items: [{ kind: 'inspection' as const, status: 'verified' as const, summary: 'read' }] };
+    expect((await b.tasks.transition({ taskId, to, callerWorkspaceId: 'ws-b', ...(to === 'completed' ? { evidence } : {}) })).ok).toBe(true);
+    expect(await b.rpc(A2A_REMOTE_RPC.state, { taskId, state: to })).toMatchObject({ ok: true });
+  }
+
+  /** A task A sent, worked and completed on B, with both copies completed. */
+  async function completedTask(a: Pc, b: Pc): Promise<string> {
+    const linkId = await linkedB(a, b);
+    const taskId = await sendTask(a, linkId, 'one job');
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+    await moveB(b, taskId, 'working');
+    await moveB(b, taskId, 'completed');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'completed');
+    // Both sides have seen each other's features by now.
+    await until(() => a.delivery.peerFeatures(b.hostId) !== undefined && b.delivery.peerFeatures(a.hostId) !== undefined);
+    return taskId;
+  }
+
+  const followUp = async (a: Pc, taskId: string, text: string): Promise<void> => {
+    expect(await a.rpc(A2A_REMOTE_RPC.reply, { taskId, workspaceId: 'ws-a', text })).toMatchObject({ ok: true });
+  };
+
+  it('both PCs new: the follow-up sets the task working on both, and its answer completes it again on both', async () => {
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B');
+    const taskId = await completedTask(a, b);
+    await followUp(a, taskId, 'one more thing');
+    await until(() => b.tasks.getTask(taskId)?.status.state === 'working');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+    expect(a.delivery.outbox.settled().filter((r) => r.envelope.kind === 'reply' && r.envelope.taskId === taskId).map((r) => r.envelope.reopen)).toEqual([true]);
+    await moveB(b, taskId, 'completed');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'completed');
+    expect(b.tasks.getTask(taskId)!.history.some((m) => (m.parts[0] as { text?: string }).text === 'one more thing')).toBe(true);
+  });
+
+  for (const [name, aOld, bOld] of [['the sender older', true, false], ['the receiver older', false, true], ['both older', true, true]] as const) {
+    it(`${name}: the follow-up reaches B, the task stays completed on both, and nothing fails`, async () => {
+      const a = await makePc('PC-A', aOld ? { reopen: false } : {});
+      const b = await makePc('PC-B', bOld ? { reopen: false } : {});
+      const taskId = await completedTask(a, b);
+      await followUp(a, taskId, 'one more thing');
+      await until(() => b.tasks.getTask(taskId)!.history.some((m) => (m.parts[0] as { text?: string }).text === 'one more thing'));
+      await until(() => a.delivery.outbox.pending(b.hostId).length === 0 && b.delivery.outbox.pending(a.hostId).length === 0);
+      await deliberateSleep(300, 'negative: no reopen and no failure follows');
+      expect(b.tasks.getTask(taskId)!.status.state).toBe('completed');
+      expect(a.tasks.getTask(taskId)!.status.state).toBe('completed');
+      // Not asked: the request goes only from and to a build that follows a task again.
+      expect(a.delivery.outbox.settled().filter((r) => r.envelope.kind === 'reply' && r.envelope.taskId === taskId).map((r) => r.envelope.reopen)).toEqual([undefined]);
+    });
+  }
+
+  it('a receiver that does not follow a task again, handed the request anyway, takes the reply and ignores the request', async () => {
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B', { reopen: false });
+    const taskId = await completedTask(a, b);
+    const first = a.delivery.outbox.settled().find((r) => r.envelope.kind === 'task')!;
+    a.delivery.outbox.enqueue(b.hostId, {
+      ...first.envelope, kind: 'reply', taskId, text: 'one more thing', reopen: true, messageId: `rp-${crypto.randomBytes(16).toString('hex')}`,
+    });
+    await until(() => b.tasks.getTask(taskId)!.history.some((m) => (m.parts[0] as { text?: string }).text === 'one more thing'));
+    await until(() => a.delivery.outbox.pending(b.hostId).length === 0 && b.delivery.outbox.pending(a.hostId).length === 0);
+    await deliberateSleep(300, 'negative: no reopen and no failure follows');
+    expect(b.tasks.getTask(taskId)!.status.state).toBe('completed');
+    expect(a.tasks.getTask(taskId)!.status.state).toBe('completed');
+    expect(a.delivery.outbox.settled().find((r) => r.envelope.kind === 'reply' && r.envelope.taskId === taskId)).toMatchObject({ state: 'acked' });
+  });
+
+  it('one reopen per follow-up: once the task completed again, a stray working is refused (recorded, not failed)', async () => {
+    const a = await makePc('PC-A');
+    const b = await makePc('PC-B');
+    const taskId = await completedTask(a, b);
+    await followUp(a, taskId, 'one more thing');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+    await moveB(b, taskId, 'completed');
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'completed');
+    expect(a.tasks.getTask(taskId)!.metadata.remote).not.toHaveProperty('followUpOpen');
+    // B tells A working again with no new follow-up: A does not take it.
+    const last = [...b.delivery.outbox.settled()].reverse().find((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId);
+    b.delivery.outbox.enqueue(a.hostId, { ...last!.envelope, messageId: `st-${crypto.randomBytes(16).toString('hex')}`, state: 'working' });
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { stateRefused?: { state: string } }).stateRefused?.state === 'working');
+    expect(a.tasks.getTask(taskId)!.status.state).toBe('completed');
+    expect(b.tasks.getTask(taskId)!.status.state).toBe('completed');
   });
 });
