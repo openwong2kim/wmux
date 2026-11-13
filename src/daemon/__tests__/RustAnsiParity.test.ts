@@ -210,6 +210,9 @@ const refused: Case[] = [
   synthetic('alt-1047-leaves-1049', 'n\x1b[?1049ha\x1b[?1047lb', 'xterm'),
   synthetic('alt-47-round-trip-text', 'n\x1b[?47ha\x1b[?47lb', 'xterm'),
   synthetic('alt-47-round-trip-open', 'n\x1b[?47h\x1b[<99u', 'xterm'),
+  // xterm reads the mode before a colon; the feed's tracker reads none.
+  synthetic('alt-47-subparam', 'a\x1b[?47:0hXYZ', 'xterm'),
+  synthetic('alt-1049-subparam', 'a\x1b[?1049:0hXYZ\x1b[?1049l', 'xterm'),
   synthetic('save-1048', 'ab\x1b[?1048hcd\r\n\x1b[?1048lX', 'xterm'),
   // Refused by the serializer: xterm drops a saved pending wrap.
   synthetic('decsc-wrap-pending', 'abcdefgh\x1b7\x1b[H\x1b8X', 'xterm', 8),

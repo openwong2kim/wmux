@@ -907,14 +907,7 @@ impl XtermFeed {
                     // disagree on whether a leave happened.
                     parser.advance(term, &data[from..at + len]);
                     from = at + len;
-                    let synchronized = parser.sync_timeout().pending_timeout();
-                    if synchronized {
-                        parser.stop_sync(term);
-                    }
-                    self.alt_reflow = term.mode().contains(TermMode::ALT_SCREEN);
-                    if synchronized {
-                        parser.advance(term, b"\x1b[?2026h");
-                    }
+                    self.alt_reflow = alternate_shown(parser, term);
                 }
             }
             printed = false;
@@ -1007,55 +1000,75 @@ fn index_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, seque
     }
 }
 
-/// Alacritty shows its alternate screen, with every byte the parser holds in
-/// a synchronized update applied first.
-fn alternate_shown(parser: &mut Processor, term: &mut Term<VoidListener>) -> bool {
+/// Run `f` on Alacritty with every byte the parser holds in a synchronized
+/// update applied first, then re-enter the update.
+fn with_sync_flushed<R>(
+    parser: &mut Processor,
+    term: &mut Term<VoidListener>,
+    f: impl FnOnce(&mut Term<VoidListener>) -> R,
+) -> R {
     let synchronized = parser.sync_timeout().pending_timeout();
     if synchronized {
         parser.stop_sync(term);
     }
-    let alt = term.mode().contains(TermMode::ALT_SCREEN);
+    let result = f(term);
     if synchronized {
         parser.advance(term, b"\x1b[?2026h");
     }
-    alt
+    result
+}
+
+/// Alacritty shows its alternate screen.
+fn alternate_shown(parser: &mut Processor, term: &mut Term<VoidListener>) -> bool {
+    with_sync_flushed(parser, term, |term| {
+        term.mode().contains(TermMode::ALT_SCREEN)
+    })
 }
 
 /// xterm's restoreCursor (DECRC) on Alacritty, once the parser has taken
-/// the control that runs it.
+/// the control that runs it. xterm puts back the colours, not the open
+/// hyperlink (`extended.urlId` stays), and clamps the cursor into the last
+/// column, which drops a pending wrap.
 fn restore_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>) {
-    let synchronized = parser.sync_timeout().pending_timeout();
-    if synchronized {
-        parser.stop_sync(term);
-    }
-    term.restore_cursor_position();
-    if synchronized {
-        parser.advance(term, b"\x1b[?2026h");
-    }
+    with_sync_flushed(parser, term, |term| {
+        let link = term.grid().cursor.template.hyperlink();
+        term.restore_cursor_position();
+        let cursor = &mut term.grid_mut().cursor;
+        cursor.template.set_hyperlink(link);
+        cursor.input_needs_wrap = false;
+    });
 }
 
-/// A DECRST that resets 1049: `Some(true)` with 1049 as its only mode in
-/// plain digits (the form `track` checks as a restore), `Some(false)` in a
-/// list or with a sub-parameter (both parsers read the mode before a colon).
-/// No C0 inside.
+/// A DECRST that resets 1049, read as `track` reads it (C0 controls inside
+/// run and are not part of it): `Some(true)` with 1049 as its only mode in
+/// plain digits, `Some(false)` in a list (`divergent` refuses a sub-parameter
+/// or a list past 32 parameters before this runs).
 fn resets_1049(sequence: &[u8]) -> Option<bool> {
-    let params = sequence.strip_prefix(b"\x1b[?")?.strip_suffix(b"l")?;
-    if params.is_empty()
-        || !params
+    let filtered: Vec<u8>;
+    let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
+        filtered = sequence[..1]
             .iter()
-            .all(|&b| b.is_ascii_digit() || b == b';' || b == b':')
-    {
+            .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
+            .copied()
+            .collect();
+        &filtered[..]
+    } else {
+        sequence
+    };
+    let params = sequence.strip_prefix(b"\x1b[?")?.strip_suffix(b"l")?;
+    if params.is_empty() || !params.iter().all(|&b| b.is_ascii_digit() || b == b';') {
         return None;
     }
-    let modes: Vec<Option<u16>> = params
-        .split(|&b| b == b';')
-        .map(|p| {
-            let top = p.split(|&b| b == b':').next().unwrap_or(p);
-            std::str::from_utf8(top).ok()?.parse::<u16>().ok()
-        })
-        .collect();
-    let plain = modes.len() == 1 && !params.contains(&b':');
-    modes.contains(&Some(1049)).then_some(plain)
+    let mut count = 0;
+    let mut found = false;
+    for mode in params.split(|&b| b == b';') {
+        count += 1;
+        let value = mode.iter().fold(0u32, |n, &d| {
+            n.saturating_mul(10).saturating_add(u32::from(d - b'0'))
+        });
+        found |= value == 1049 && !mode.is_empty();
+    }
+    found.then_some(count == 1)
 }
 
 /// A control vte ignores (native_serialize::XtermControl), run as xterm.js
@@ -2314,6 +2327,29 @@ mod tests {
         // In a list, or with a sub-parameter: refused.
         assert!(first_cell(&["a\x1b[?1049;25l"]).0.is_some());
         assert!(first_cell(&["a\x1b[?1049:0l"]).0.is_some());
+        assert!(first_cell(&["\x1b[?1049:0hx"]).0.is_some());
+        // A C0 inside runs and is not part of it: still the restore.
+        assert_eq!(
+            first_cell(&["\x1b(B\x1b7\x1b(0\x1b[?10\r49l\x1b[Hq"]),
+            (None, 'q')
+        );
+        // xterm keeps the open hyperlink (urlId) and puts back the colours.
+        let link = |chunks: &[&str]| {
+            feed_with(chunks)
+                .0
+                .grid()
+                .cursor
+                .template
+                .hyperlink()
+                .is_some()
+        };
+        assert!(link(&["\x1b]8;;http://e.com\x1b\\a\x1b[?1049l"]));
+        assert!(!link(&[
+            "\x1b]8;;http://e.com\x1b\\\x1b7\x1b]8;;\x1b\\a\x1b[?1049l"
+        ]));
+        // xterm clamps a cursor saved with a pending wrap into the last column.
+        let (term, _, _) = feed_with(&["0123456789\x1b7\x1b[H\x1b[?1049l"]);
+        assert!(!term.grid().cursor.input_needs_wrap);
         // Leaving the alternate screen stays as it was.
         assert_eq!(first_cell(&["q\x1b[?1049hx\x1b[?1049l"]), (None, 'q'));
     }
