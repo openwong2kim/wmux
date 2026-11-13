@@ -196,7 +196,7 @@ export function remoteCodeText(code: string | undefined, pc: string, promptBytes
     case 'agent-not-installed': return `Claude is not installed on ${pc} (agent-not-installed)`;
     case 'folder-not-allowed': return `${pc} does not let this PC use that folder (folder-not-allowed)`;
     case 'expired': return `${pc} did not start it within ${REMOTE_FANOUT_EXPIRES_HOURS} hour (expired)`;
-    case 'rate-limited': return `${pc} is at a limit it sets (agents running, or starts per hour or day), or holds too many requests from this PC (rate-limited)`;
+    case 'rate-limited': return `${pc} is at a limit it sets (agents running, or starts per hour or day), holds too many requests from this PC, or its request store is full (rate-limited)`;
     case 'declined': return `${pc}'s owner declined it (declined)`;
     case 'app-not-ready': return `${pc} could not take it: its wmux was not ready (app-not-ready)`;
     default: return `${pc} could not start the agent (${code ?? 'failed'})`;
@@ -545,7 +545,11 @@ async function followTask(id: string, view: RemoteTaskView | null, deps: RemoteF
     entry = (await deps.ledger.updateRemote(entry!.id, p)) ?? entry;
   };
   const move = async (status: LedgerStatus, summary: string): Promise<void> => {
-    if (entry!.status === status) return;
+    if (entry!.status === status) {
+      // Still waiting, for another reason (a question answered, then a reply asked for): only the row's text changes.
+      if (status === 'input_required') entry = (await deps.ledger.updateRemote(entry!.id, {}, summary)) ?? entry;
+      return;
+    }
     const res = await deps.ledger.update({ id: entry!.id, status, actor: SYSTEM_ACTOR, expectedRev: entry!.rev, summary });
     if (res.ok) entry = res.entry;
   };

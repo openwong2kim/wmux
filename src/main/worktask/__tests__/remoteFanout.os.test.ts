@@ -134,6 +134,8 @@ describe('remote fan-out keys and names', () => {
     expect(remoteCodeText('not-supported', 'box')).toMatch(/starts only Claude without an app/);
     expect(remoteCodeText('not-allowed', 'box', 5000)).toContain("the prompt (4.9 KiB, wmux's footer included) is longer than it accepts (not-allowed)");
     expect(remoteCodeText('expired', 'box')).toMatch(/expired/);
+    // Also when other PCs' requests filled that PC's store.
+    expect(remoteCodeText('rate-limited', 'box')).toBe('box is at a limit it sets (agents running, or starts per hour or day), holds too many requests from this PC, or its request store is full (rate-limited)');
   });
 });
 
@@ -532,6 +534,21 @@ describe('a started task follows its A2A task', () => {
     await reconcileRemoteTasks(s.deps);
     expect(s.row(0).status).toBe('working');
     expect(s.row(0).remote?.waiting).toBeUndefined();
+  });
+
+  it('while the row stays input_required, its text follows why it waits; the same reason writes nothing', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'working', status: { kind: 'question', since: at, question: 'permission' } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).summary).toContain('waits on a permission question');
+    // Answered in that PC's pane; the agent then asks the caller.
+    s.view(0, { state: 'input-required' });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: `the agent on box waits for your reply on A2A task ${s.a2a[0]}` });
+    expect(s.row(0).remote?.waiting).toBeUndefined();
+    const rev = s.row(0).rev;
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0).rev).toBe(rev);
   });
 
   it('a dialog question with no menu id (a picker as the real service reports it) is a question like any other', async () => {

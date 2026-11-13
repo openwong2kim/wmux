@@ -787,17 +787,23 @@ export class TaskLedger {
   }
 
   /** What this PC learned of a task another PC runs: its request's state,
-   *  link, or that it was withdrawn here. SYSTEM write; bumps the
-   *  rev; no status change, no transition event. Resolves with the row as it
-   *  is afterwards, or null for a row that is not remote. */
-  updateRemote(id: string, patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>): Promise<LedgerEntry | null> {
+   *  link, or that it was withdrawn here, and with `summary` why the row
+   *  waits, when only that changed. SYSTEM write; bumps the rev; no status
+   *  change, no transition event. Resolves with the row as it is afterwards,
+   *  or null for a row that is not remote. */
+  updateRemote(id: string, patch: Partial<Omit<LedgerRemote, 'hostId' | 'spawnId'>>, summary?: string): Promise<LedgerEntry | null> {
     return this.serialize(async () => {
       const entry = this.entries.get(id);
       if (!entry?.remote) return null;
       const remote = copyRemote({ ...entry.remote, ...patch });
       if (!remote) throw new Error(`ledger: the remote record of task ${id} would not be valid`);
-      if (JSON.stringify(remote) === JSON.stringify(entry.remote)) return entry;
-      const updated: LedgerEntry = this.redact({ ...entry, remote, rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR() });
+      const text = summary !== undefined && summary.trim().length > 0
+        ? truncateHead(this.redact(summary.trim()), LEDGER_SUMMARY_MAX_BYTES)
+        : entry.summary;
+      if (JSON.stringify(remote) === JSON.stringify(entry.remote) && text === entry.summary) return entry;
+      const updated: LedgerEntry = this.redact({
+        ...entry, remote, ...(text !== undefined ? { summary: text } : {}), rev: entry.rev + 1, updatedAt: this.now(), updatedBy: SYSTEM_ACTOR(),
+      });
       await this.append({ op: 'entry', entry: updated });
       this.entries.set(id, updated);
       return updated;

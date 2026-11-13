@@ -107,6 +107,17 @@ describe('a remote task row', () => {
     expect(await a.updateRemote(local.id, { withdrawn: true })).toBeNull();
   });
 
+  it('takes a new text for the row alone, with no status change and no transition; the same text writes nothing', async () => {
+    const a = open();
+    const entry = await registerRemote(a);
+    const moves: unknown[] = [];
+    a.onTransition((t) => moves.push(t));
+    const told = await a.updateRemote(entry.id, {}, 'the agent on box waits for your reply');
+    expect(told).toMatchObject({ rev: entry.rev + 1, status: entry.status, summary: 'the agent on box waits for your reply', remote: REMOTE });
+    expect((await a.updateRemote(entry.id, {}, 'the agent on box waits for your reply'))?.rev).toBe(entry.rev + 1);
+    expect(moves).toEqual([]);
+  });
+
   it('copyRemote keeps only the fields it knows, each checked', () => {
     expect(copyRemote({ ...REMOTE, extra: 1, withdrawn: 'yes', revoked: 1, branchOnPc: 'main' })).toEqual(REMOTE);
     expect(copyRemote({ ...REMOTE, spawnId: 'sp-x' })).toBeNull();
