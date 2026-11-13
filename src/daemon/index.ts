@@ -3266,6 +3266,14 @@ function registerRpcHandlers(
         orphanTimer.unref();
       };
 
+      // Main fell behind reading this pipe and has drained: ask it to re-flush.
+      pipe.onResyncNeeded = () => {
+        if (sessionPipes.get(p.id) !== pipe) return;
+        log('info', `[resync] session=${p.id} pipe fell behind: asking main to re-flush`);
+        const event: DaemonEvent = { type: 'session.resyncNeeded', sessionId: p.id, data: null };
+        pipeServer.broadcast(event);
+      };
+
       // Forward PTY output to session pipe
       const onData = (data: Buffer) => {
         pipe.writeToClient(data);

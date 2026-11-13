@@ -100,3 +100,30 @@ export function createSessionResync(client: SessionResyncClient): SessionResync 
   };
   return resync;
 }
+
+/**
+ * main's answer to a daemon session pipe that fell behind (the daemon's
+ * `session.resyncNeeded`, repeated while the pipe stays behind): tell the
+ * renderer first, so it holds the replay as for its own resync, then run the
+ * re-flush. A re-flush already in flight (the renderer's own, or an earlier
+ * request) repaints everything the pipe did not write, so it is left alone.
+ */
+export function createResyncNeededHandler(deps: {
+  resync: () => SessionResync;
+  /** Send this session's batched output to the renderer ahead of the notice. */
+  flushBatch: (sessionId: string) => void;
+  notify: (notice: 'starting' | 'failed', sessionId: string, code?: string) => void;
+  log?: (line: string) => void;
+}): (sessionId: string) => void {
+  return (sessionId) => {
+    const resync = deps.resync();
+    if (resync.inFlight(sessionId)) return;
+    deps.flushBatch(sessionId);
+    deps.notify('starting', sessionId);
+    void resync(sessionId).then((res) => {
+      if (res.success) return;
+      deps.log?.(`[pty] ${sessionId}: re-flush after the session pipe fell behind failed (${res.code})`);
+      deps.notify('failed', sessionId, res.code);
+    });
+  };
+}

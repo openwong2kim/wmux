@@ -277,6 +277,13 @@ const ptyFlushDispatcher = createPtyDispatcher<number>((cb) =>
 interface PtyRestartedPayload { ptyId: string; restartCount: number; exitCode: number | null }
 const ptyRestartedDispatcher = createPtyDispatcher<PtyRestartedPayload>((cb) =>
   window.electronAPI.pty.onRestarted((payload) => cb(payload.ptyId, payload)));
+// Optional: the browser terminal's bridge (renderer/web) and a stale preload
+// have no main to re-flush on its own.
+const NO_SUBSCRIPTION = (): void => undefined;
+const ptyResyncStartingDispatcher = createPtyDispatcher<null>((cb) =>
+  window.electronAPI.pty.onResyncStarting?.((ptyId) => cb(ptyId, null)) ?? NO_SUBSCRIPTION);
+const ptyResyncFailedDispatcher = createPtyDispatcher<string>((cb) =>
+  window.electronAPI.pty.onResyncFailed?.((ptyId, code) => cb(ptyId, code)) ?? NO_SUBSCRIPTION);
 // `daemon:connected` carries no ptyId: every terminal registers under one key,
 // so the renderer holds ONE IPC listener for it however many panes are open
 // (a listener per terminal tripped MaxListenersExceededWarning past ten).
@@ -294,6 +301,8 @@ export function __resetPtyDispatchersForTests(): void {
   ptyExitDispatcher.reset();
   ptyFlushDispatcher.reset();
   ptyRestartedDispatcher.reset();
+  ptyResyncStartingDispatcher.reset();
+  ptyResyncFailedDispatcher.reset();
   daemonConnectedDispatcher.reset();
 }
 
@@ -625,6 +634,9 @@ interface ResyncState {
   mode: string;
   /** How the last resync settled, for the engine-swap log. */
   lastMechanism: string;
+  /** Main started the resync in flight (armResync), not this terminal: only
+   *  then does main's failure notice settle it. */
+  byMain: boolean;
 }
 
 /** Cooldown between resync retries after a degrade. Long enough to ride out a
@@ -1224,7 +1236,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // the visibility effect (dirty reveal) and the hydrate registry entry.
   const resyncRef = useRef<ResyncState>({
     pending: false, buffer: [], bufferedChars: 0, resolvers: [], timer: null,
-    degradedUntil: 0, viaRawFallback: false, mode: 'snapshot', lastMechanism: '',
+    degradedUntil: 0, viaRawFallback: false, mode: 'snapshot', lastMechanism: '', byMain: false,
   });
 
   /**
@@ -1424,6 +1436,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       return done;
     }
     st.pending = true;
+    st.byMain = false;
     st.buffer.length = 0;
     st.bufferedChars = 0;
     st.viaRawFallback = false;
@@ -1500,6 +1513,28 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     });
     return done;
   }, [abortResync, paintDeadSnapshot, scrollbackLines]);
+
+  /** A resync main started (its daemon session pipe fell behind): hold the
+   *  replay that is on its way exactly as for startResync, without asking for
+   *  one. The flush-complete settles it; main's failure notice aborts it. One
+   *  already pending (this terminal's own) takes main's replay as its own. */
+  const armResync = useCallback((reason: string) => {
+    const id = ptyIdRef.current;
+    const st = resyncRef.current;
+    if (!terminalRef.current || !id || st.pending) return;
+    st.pending = true;
+    st.byMain = true;
+    st.buffer.length = 0;
+    st.bufferedChars = 0;
+    st.viaRawFallback = false;
+    st.mode = 'snapshot';
+    setPaneSyncUi(id, 'syncing');
+    console.log(`[useTerminal] resync ptyId=${id} (${reason}, started by main)`);
+    // Main's re-flush may wait behind the daemon's snapshot slot like our own
+    // (startResync re-arms up to four windows); this bound covers a notice
+    // that never came.
+    st.timer = setTimeout(() => abortResync('timeout'), RESYNC_TIMEOUT_MS * 4);
+  }, [abortResync]);
 
   const fit = useCallback(() => {
     const container = containerRef.current;
@@ -4894,6 +4929,25 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       offRestarted();
     };
   }, [ptyId]);
+
+  // Main re-flushes this pane on its own when the daemon's session pipe fell
+  // behind (main stopped reading it): arm for the replay as for our own
+  // resync, so it lands held (DEC 2026) and keeps the scroll position.
+  useEffect(() => {
+    const id = ptyId;
+    if (!id) return;
+    const offStarting = ptyResyncStartingDispatcher.register(id, () => {
+      if (ptyIdRef.current === id) armResync('session-pipe-behind');
+    });
+    const offFailed = ptyResyncFailedDispatcher.register(id, (code) => {
+      const st = resyncRef.current;
+      if (ptyIdRef.current === id && st.pending && st.byMain) abortResync(`main-resync-failed:${code}`);
+    });
+    return () => {
+      offStarting();
+      offFailed();
+    };
+  }, [ptyId, armResync, abortResync]);
 
   // #2398 — the first show of a pane whose suspended session was left
   // suspended while hidden promotes it: the reattach effect above is keyed on

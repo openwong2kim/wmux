@@ -1519,6 +1519,10 @@ export class DaemonClient extends EventEmitter {
           });
           break;
         }
+        case 'session.resyncNeeded':
+          // The session pipe fell behind (SessionPipe) and drained: re-flush it.
+          this.emit('session:resyncNeeded', { sessionId: event.sessionId });
+          break;
         case 'session.destroyed':
           // pty:dispose path — distinct from session.died (natural exit).
           // Notification router treats both the same: clear agentStatus.
