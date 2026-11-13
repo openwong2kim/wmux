@@ -135,6 +135,74 @@ function remoteStatusView(status: Rec): Rec {
   };
 }
 
+/** How long a reason on a summary row may be (characters). */
+const REASON_MAX_CHARS = 300;
+/** How many held or dropped messages a summary row lists. */
+const HELD_UNITS_MAX = 20;
+
+/**
+ * Why a task failed or was canceled (`status.evidence.summary`): one line,
+ * bounded. Often written by the other PC or an agent, so it stands under
+ * `untrusted`, never as this side's own words.
+ */
+function reasonOf(status: Rec): string | undefined {
+  if (status.state !== 'failed' && status.state !== 'canceled') return undefined;
+  const raw = isRec(status.evidence) ? str(status.evidence.summary) : undefined;
+  if (!raw) return undefined;
+  const line = raw.replace(/\p{Cf}/gu, '').replace(/[\p{Cc}\s]+/gu, ' ').trim();
+  if (!line) return undefined;
+  const chars = [...line];
+  return chars.length <= REASON_MAX_CHARS ? line : `${chars.slice(0, REASON_MAX_CHARS).join('')}…`;
+}
+
+/**
+ * A failed or canceled remote task in full: its reason (`status.evidence.summary`,
+ * often the other PC's words) moved apart under `untrusted.reason`, never left
+ * where this side's own words are read. The text is kept as stored (a summary
+ * row has it as one bounded line); a work link and the fleet view read it from
+ * there. Any other task is returned as it is.
+ */
+export function separateRemoteReason(task: Rec): Rec {
+  const meta = isRec(task.metadata) ? task.metadata : undefined;
+  const status = isRec(task.status) ? task.status : undefined;
+  if (!meta || !isRec(meta.remote) || !status || !isRec(status.evidence)) return task;
+  if (status.state !== 'failed' && status.state !== 'canceled') return task;
+  const reason = str(status.evidence.summary);
+  const evidence = Object.fromEntries(Object.entries(status.evidence).filter(([key]) => key !== 'summary'));
+  return {
+    ...task,
+    status: { ...status, evidence },
+    ...(reason ? { untrusted: { ...(isRec(task.untrusted) ? task.untrusted : {}), reason } } : {}),
+  };
+}
+
+/**
+ * A remote task's messages held here for a person or dropped after their
+ * hold expired: which, why, since when (the text stays in the task's history).
+ */
+function heldUnitsOf(remote: Rec): Rec[] {
+  const out: Rec[] = [];
+  if (str(remote.held)) out.push({ messageId: remote.messageId, held: remote.held, ...(str(remote.heldAt) ? { heldAt: remote.heldAt } : {}) });
+  for (const item of Array.isArray(remote.inbox) ? remote.inbox : []) {
+    if (!isRec(item) || (!str(item.held) && !isRec(item.rejected))) continue;
+    out.push({
+      messageId: item.messageId,
+      ...(str(item.held) ? { held: item.held } : {}),
+      ...(str(item.heldAt) ? { heldAt: item.heldAt } : {}),
+      ...(isRec(item.rejected) ? {
+        rejected: {
+          reason: item.rejected.reason,
+          at: item.rejected.at,
+          notice: item.rejected.notice,
+          // The hold it had: `delivery-unconfirmed` means it may have reached the pane.
+          ...(str(item.rejected.held) ? { held: item.rejected.held } : {}),
+        },
+      } : {}),
+    });
+  }
+  return out.slice(-HELD_UNITS_MAX);
+}
+
 export function summarizeTask(task: Rec): Rec {
   const meta = isRec(task.metadata) ? task.metadata : {};
   const status = isRec(task.status) ? task.status : {};
@@ -167,6 +235,10 @@ export function summarizeTask(task: Rec): Rec {
     ...(isRec(meta.remote) && str(meta.remote.replyDeliveredAt) ? { replyDeliveredAt: meta.remote.replyDeliveredAt } : {}),
     // A company task held on its blockers: what it waits on, or why it waits for a person.
     ...companyHoldFields(task),
+    // A remote task: its messages held here, or dropped after their hold expired.
+    ...(isRec(meta.remote) && heldUnitsOf(meta.remote).length > 0 ? { heldUnits: heldUnitsOf(meta.remote) } : {}),
+    // Why it failed or was canceled, apart from this side's own words.
+    ...(reasonOf(status) ? { untrusted: { reason: reasonOf(status) } } : {}),
     ...(last !== undefined && {
       lastMessage: {
         ...(isRec(last) && str(last.role) !== undefined && { role: last.role }),
@@ -227,7 +299,7 @@ function detailView(envelope: Rec, task: Rec, cursor: string | undefined, capByt
     return {
       ...envelope,
       task: {
-        ...task,
+        ...separateRemoteReason(task),
         history: history.slice(start, end),
         ...(summarizeArtifacts && {
           artifacts: artifacts.map((artifact) => ({
@@ -375,12 +447,12 @@ export function applyTaskQueryView<T extends object>(tasks: readonly T[], params
     });
   }
   if (isAnchorTaskQuery(params)) return taskAnchorRows(tasks);
-  if (!isPagedTaskQuery(params)) return [...tasks];
+  if (!isPagedTaskQuery(params)) return tasks.map((task) => separateRemoteReason(task as Rec));
   const taskId = pagedTaskId(params);
   if (taskId) {
     return tasks
       .filter((task) => (task as Rec).id === taskId)
-      .map((task) => flagOrphanedTask(task as Rec, task as Rec, params));
+      .map((task) => flagOrphanedTask(separateRemoteReason(task as Rec), task as Rec, params));
   }
   return tasks.map((task) => flagOrphanedTask(summarizeTask(task as Rec), task as Rec, params));
 }
@@ -400,7 +472,11 @@ export function shapeTaskQueryResult(result: unknown, options: TaskQueryViewOpti
 
   if (options.taskId) {
     const task = tasks.find((candidate) => candidate.id === options.taskId);
-    if (!task) return { error: `a2a_task_query: task ${options.taskId} not found (or filtered out by status/role/updated_since)` };
+    if (!task) {
+      const collected = isRec(result.collected) && result.collected.taskId === options.taskId && str(result.collected.at) ? result.collected.at : undefined;
+      if (collected) return { error: `a2a_task_query: task ${options.taskId} ended and is no longer kept (it ended at ${collected})` };
+      return { error: `a2a_task_query: task ${options.taskId} not found (or filtered out by status/role/updated_since)` };
+    }
     if (!options.messageId) return detailView(envelope, task, options.cursor, capBytes);
     const history = Array.isArray(task.history) ? task.history : [];
     const message = [...history, isRec(task.status) ? task.status.message : undefined].find(

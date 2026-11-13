@@ -141,6 +141,12 @@ export interface A2aRemoteMarkPayload {
   remoteReceipt?: A2aRemoteReceipt;
   /** Task-level: the peer acked every reply / state of ours queued on this task. */
   replyAcked?: true;
+  /** Item-level: dropped undelivered (its hold expired); the task stays open. Its notice starts `pending`. */
+  rejected?: 'held-expired';
+  /** Item-level, after `rejected`: whether the PC that sent it was told. */
+  notice?: 'sent' | 'not-sent';
+  /** With `attempted: true` on a held item: it is being offered again; the hold and its time stay. */
+  reoffer?: true;
   timestamp: string;
 }
 
