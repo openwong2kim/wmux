@@ -116,11 +116,11 @@ describe.skipIf(!posix)('the headless task delivery, for real', () => {
       v: 1, hostId: '22222222-2222-4222-8222-222222222222', spawnId: 'sp-0123abcd-4567-89ab-cdef-0123456789ab', agent: 'claude', repoPath: '/repo',
       sessionId, workspaceId, agentSessionId: uuid, lineage: 'remote-spawn:x', runId: 'run-1', phase: 'started', startedAt: new Date().toISOString(),
     };
-    const marker: A2aRemoteTaskMarkerV1 = { v: 1, linkId: '11111111-1111-4111-8111-111111111111', hostId: rec.hostId, messageId: 'm1', direction: 'inbound', delivered: false };
+    const marker: A2aRemoteTaskMarkerV1 = { v: 1, linkId: '11111111-1111-4111-8111-111111111111', hostId: rec.hostId, messageId: 'first_11111111-1111-4111-8111-111111111111', direction: 'inbound', delivered: false };
     const task = {
       kind: 'task', id: `rt-${'7'.padStart(32, '0')}`,
       status: { state: 'submitted', timestamp: new Date().toISOString() },
-      history: [{ kind: 'message', messageId: 'm1', role: 'user', parts: [{ kind: 'text', text: PROMPT }] }],
+      history: [{ kind: 'message', messageId: 'first_11111111-1111-4111-8111-111111111111', role: 'user', parts: [{ kind: 'text', text: PROMPT }] }],
       artifacts: [],
       metadata: { title: 't', from: { workspaceId: 'remote:11111111-1111-4111-8111-111111111111', name: 'a' }, to: { workspaceId, name: 'b', paneId: sessionId }, createdAt: '', updatedAt: '', remote: marker },
     } as unknown as Task;

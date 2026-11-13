@@ -207,8 +207,8 @@ With headless mode on:
   (its session ends, its link ends, headless mode is turned off, or the
   daemon restarts). A usage-limit pause is waited out. Limits in this
   version:
-  - only the first task is typed in; messages the asking PC sends afterwards
-    are not yet;
+  - only the first task is typed in; a later task the asking PC sends to
+    the same agent is not, and stays open until the agent ends;
   - an answer larger than 32 KiB fails the task;
   - images sent with the task are not passed to the agent;
   - an agent that stops on a question (a permission prompt, say) waits there,

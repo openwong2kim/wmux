@@ -18,6 +18,8 @@ const HOST = '22222222-2222-4222-8222-222222222222';
 const SESSION = 'hl-11111111-2222-4333-8444-555555555555';
 const WS = 'hl-0123abcd-4567-4abc-8def-0123456789ab';
 const TASK = `rt-${'1'.padStart(32, '0')}`;
+/** The first task of a remote start carries this message id (spawnFirstMessageId). */
+const FIRST = `first_${LINK}`;
 const PROMPT = 'Reply with PONG and the output of uname -s';
 
 let dir: string;
@@ -44,13 +46,13 @@ function startRecord(over: Partial<HeadlessStartRecordV1> = {}): HeadlessStartRe
   };
 }
 
-function inboundTask(text = PROMPT): Task {
-  const marker: A2aRemoteTaskMarkerV1 = { v: 1, linkId: LINK, hostId: HOST, messageId: 'm1', direction: 'inbound', delivered: false };
+function inboundTask(text = PROMPT, messageId = FIRST): Task {
+  const marker: A2aRemoteTaskMarkerV1 = { v: 1, linkId: LINK, hostId: HOST, messageId, direction: 'inbound', delivered: false };
   return {
     kind: 'task',
     id: TASK,
     status: { state: 'submitted', timestamp: '2026-11-13T00:00:00.000Z' },
-    history: [{ kind: 'message', messageId: 'm1', role: 'user', parts: [{ kind: 'text', text }] }],
+    history: [{ kind: 'message', messageId, role: 'user', parts: [{ kind: 'text', text }] }],
     artifacts: [],
     metadata: {
       title: 'remote',
@@ -318,17 +320,19 @@ describe('typing the task in', () => {
     expect(typed).toBe(1);
   });
 
-  it('one task at a time per agent: the next waits until the open one ended', async () => {
+  it('only the start\'s first task is typed in: a later task on its link (a follow-up) is left as it is', async () => {
+    const first = task;
+    task = inboundTask('a follow-up', 'm2');
+    task.id = `rt-${'2'.padStart(32, '0')}`;
     const d = new HeadlessDelivery(deps());
     await d.tick();
-    expect(delivered).toHaveLength(1);
-    // A second owed task for the same agent.
-    const first = task;
-    task = inboundTask('second');
-    task.id = `rt-${'2'.padStart(32, '0')}`;
+    expect(delivered).toHaveLength(0);
+    expect(marks).toEqual([]);
+    expect(task.status.state).toBe('submitted');
+    // The first task still is.
+    task = first;
     await d.tick();
     expect(delivered).toHaveLength(1);
-    task = first;
   });
 });
 

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { SessionPromptScheduleResult } from '../../shared/sessionPromptSchedule';
 import { sanitizeBracketedPastePayload } from '../../shared/ptyMessageDelivery';
 import { localSideOf, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
+import { spawnFirstMessageId, type SpawnLinkId } from '../../shared/a2aSpawn';
 import { TERMINAL_STATES, type Task } from '../../shared/types';
 import type { TurnEvent } from '../../shared/transcript/turnEvents';
 import { isClaudeUsageLimitText, USAGE_LIMIT_CONTINUE_PROMPT } from '../../shared/usageLimit';
@@ -323,6 +324,8 @@ export class HeadlessDelivery {
     }
     const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
     if (!marker || marker.direction !== 'inbound' || marker.delivered === true || marker.held) return;
+    // Only the start's first task is typed in for now: a later task on its link (a follow-up) is left as it is.
+    if (marker.messageId !== spawnFirstMessageId(marker.linkId as SpawnLinkId)) return;
     if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return;
     const rec = this.ownerOf(task, starts);
     if (!rec || this.episodes.has(rec.sessionId)) return;
