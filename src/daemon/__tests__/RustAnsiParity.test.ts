@@ -225,16 +225,24 @@ const leftAlt: Case[] = [
 ];
 
 // A recovered pane's ring: what the dead process left, the restore seam the
-// daemon writes (the real one, at the pane's rows), then the fresh shell.
-const recovered = (name: string, dump: string | Buffer, after = 'PS> ', cols = 20, rows = 6): Case =>
-  ({ name: `seam/${name}`, backend: 'rust', req: { cols, rows, scrollback: 100,
+// daemon writes (the real one, at the pane's rows), then the fresh shell. Its
+// prompt holds lowercase letters, which DEC line drawing would turn into
+// glyphs: a charset or shift the seam leaves differently shows there.
+const recovered = (name: string, dump: string | Buffer, after = 'PS> ls -la', cols = 20, rows = 6,
+  backend: 'rust' | 'xterm' = 'rust'): Case =>
+  ({ name: `seam/${name}`, backend, req: { cols, rows, scrollback: 100,
     initial: Buffer.concat([Buffer.from(dump), Buffer.from(restoreSeam(rows) + after)]) } });
 const seams: Case[] = [
   recovered('plain', 'old> ls\r\nfile\r\nold> '),
-  // xterm's ?1049l restores the main screen's cursor even on the main
-  // screen; Alacritty's only when it leaves the alternate one.
+  // xterm's ?1049l restores the main screen's saved cursor even on the main
+  // screen (position, G0-G3 as saved, the GL shift); Alacritty's does only
+  // when it leaves the alternate one, so the feed runs that restore there.
   recovered('cursor-away-unsaved', 'a\r\nb\r\nc\x1b[3;9H'),
   recovered('cursor-away-saved', 'a\x1b[2;5H\x1b7\x1b[5;12Hb'),
+  recovered('main-saved-g0', '\x1b(B\x1b7\x1b(0q'),
+  recovered('main-shifted-dec-g1', '\x1b)0\x0eq'),
+  // A slot designated since the save to another set stays on xterm only.
+  recovered('main-later-g0-dec', '\x1b7\x1b(0q', 'PS> ls -la', 20, 6, 'xterm'),
   recovered('cursor-pending-wrap', 'x'.repeat(20)),
   // An agent that died on its alternate screen with input reporting on.
   recovered('died-on-alt', 'sh\r\n\x1b[>1u\x1b[?1049h\x1b[>3u\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?1004h\x1b[?1h\x1b=\x1b[?25l\x1b[3;3Hui'),
@@ -510,10 +518,17 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
   // The seam's ?47 round trip and ?1047l rely on this (ContextRule in
   // native_core.rs): xterm swaps the kitty flags there and Alacritty does
   // not, which is safe only while neither payload carries them.
-  it('writes no kitty keyboard flags into the native payload', async () => {
-    const native = await generateRustSnapshot({ cols: 20, rows: 6, scrollback: 100, initial: Buffer.from('a\x1b[>1u\x1b[?1049h\x1b[>5ub') }, 'ansi');
+  it('writes no kitty keyboard flags into either payload', async () => {
+    const req: SnapshotRequest = { cols: 20, rows: 6, scrollback: 100, initial: Buffer.from('a\x1b[>1u\x1b[?1049h\x1b[>5ub') };
+    const native = await generateRustSnapshot(req, 'ansi');
     if (!native.ok) throw new Error(`refused: ${native.detail}`);
-    expect(native.payload.toString('latin1')).not.toMatch(/\x1b\[[<>=?][\d;]*u/);
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
+    const reference = await generateSnapshotUnqueued(req);
+    if (!reference.ok) throw new Error('xterm snapshot failed');
+    for (const payload of [native.payload as Buffer, reference.payload]) {
+      // ESC shown as `^`: no control character in the pattern.
+      expect(payload.toString('latin1').replaceAll('\x1b', '^')).not.toMatch(/\^\[[<>=?][\d;]*u/);
+    }
   });
 
   // Evidence for each refusal: without it the Rust payload would diverge.
