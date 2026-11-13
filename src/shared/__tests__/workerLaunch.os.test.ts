@@ -18,10 +18,12 @@ import {
   splitModelEnvMarker,
   workerModeRefusal,
   FANOUT_WORKER_PERMISSION_MODES,
-  CODEX_MANUAL_FLAGS,
-  GROK_MANUAL_FLAGS,
 } from '../workerLaunch';
 import { FANOUT_AGENTS } from '../fanoutPreset';
+import { AGENT_ROWS, agentRow } from '../agentIdentity';
+
+const CODEX_MANUAL_FLAGS = '-a on-request -s read-only';
+const GROK_MANUAL_FLAGS = '--permission-mode default';
 
 describe('MODEL_ENV_MARKER', () => {
   it('unsets the model in the SAME shell, so an aliased launcher still resolves', () => {
@@ -194,7 +196,7 @@ describe('applyWorkerPermissionFlags', () => {
   });
 
   it('manual makes codex ask: every permission choice on its line goes, and its ask flags go before the prompt', () => {
-    expect(CODEX_MANUAL_FLAGS).toBe('-a on-request -s read-only');
+    expect(agentRow('codex')?.askMode?.flags).toBe(CODEX_MANUAL_FLAGS);
     const trust = `-c 'projects={"/w"={trust_level="trusted"}}'`;
     for (const own of ['-a never -s workspace-write', '--ask-for-approval=never --sandbox danger-full-access', '--yolo', '--dangerously-bypass-approvals-and-sandbox', '-c approval_policy=never -c sandbox_mode=workspace-write', '--approve-for-me', '']) {
       const line = `codex ${trust} ${own} ${PROMPT}`.replace(/  +/g, ' ');
@@ -206,13 +208,22 @@ describe('applyWorkerPermissionFlags', () => {
   });
 
   it('manual makes grok ask: its permission mode and always-approve go, and its ask mode goes before the prompt', () => {
-    expect(GROK_MANUAL_FLAGS).toBe('--permission-mode default');
+    expect(agentRow('grok')?.askMode?.flags).toBe(GROK_MANUAL_FLAGS);
     for (const own of ['--permission-mode bypassPermissions', '--permission-mode=auto', '--always-approve', '--permission-mode dontAsk --always-approve', '']) {
       const line = `grok ${own} ${PROMPT}`.replace(/  +/g, ' ');
       expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`grok ${GROK_MANUAL_FLAGS} ${PROMPT}`);
       expect(workerModeRefusal(line, 'manual')).toBeNull();
     }
     expect(applyWorkerPermissionFlags(`grok --always-approve ${PROMPT}`, 'auto')).toBe(`grok --always-approve ${PROMPT}`);
+  });
+
+  it('manual is taken exactly for the agents whose row declares how to make them ask (claude, codex, grok)', () => {
+    const asks = AGENT_ROWS.filter((r) => r.permissions === 'permission-mode' || r.askMode).map((r) => r.slug).sort();
+    expect(asks).toEqual(['claude', 'codex', 'grok']);
+    for (const row of AGENT_ROWS) {
+      const stem = row.launcher ?? row.slug;
+      expect(workerModeRefusal(`${stem} ${PROMPT}`, 'manual') === null).toBe(asks.includes(row.slug));
+    }
   });
 
   it('manual is refused for every agent but claude, codex and grok (agy included), and for a wrapped line; the other modes are never refused', () => {
@@ -224,7 +235,8 @@ describe('applyWorkerPermissionFlags', () => {
       for (const mode of FANOUT_WORKER_PERMISSION_MODES.filter((m) => m !== 'manual')) expect(workerModeRefusal(`${stem} ${PROMPT}`, mode)).toBeNull();
     }
     for (const line of [`env FOO=1 claude ${PROMPT}`, `sh -c 'claude hi'`]) expect(workerModeRefusal(line, 'manual')).not.toBeNull();
-    expect(workerModeRefusal(`C:\\tools\\claude.exe ${PROMPT}`, 'manual')).toBeNull();
+    // A quoted Windows path keeps its backslashes, and its extension is dropped.
+    expect(workerModeRefusal(`'C:\\tools\\claude.exe' ${PROMPT}`, 'manual')).toBeNull();
   });
 
   it('does not touch a non-claude launch or a wrapped one', () => {
