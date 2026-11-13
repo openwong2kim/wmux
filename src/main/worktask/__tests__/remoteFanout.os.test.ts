@@ -526,6 +526,17 @@ describe('a started task follows its A2A task', () => {
     expect(s.row(0).remote?.waiting).toBeUndefined();
   });
 
+  it('a dialog question with no menu id (a picker as the real service reports it) is a question like any other', async () => {
+    const s = await started(1);
+    s.view(0, { state: 'working', reported: false, status: { kind: 'question', since: at, question: 'dialog' } });
+    await reconcileRemoteTasks(s.deps);
+    expect(s.row(0)).toMatchObject({ status: 'input_required', summary: `the agent on box waits on a dialog question: answer it in that PC's pane or on A2A task ${s.a2a[0]}` });
+    expect(s.row(0).remote?.waiting).toEqual({ on: 'question', question: 'dialog', since: at });
+    const poll = await startRemoteFanout(request(1), s.deps);
+    if ('error' in poll) throw new Error(poll.error);
+    expect(poll.tasks[0]).toMatchObject({ pending: { waitingOn: 'question', question: 'dialog' }, followUp: expect.stringContaining('dialog question') });
+  });
+
   it('a usage limit keeps the row working, with what it waits on and until when', async () => {
     const s = await started(1);
     s.view(0, { state: 'working', reported: false, status: { kind: 'usage-limit', since: at, resetsAt: '2026-11-13T12:00:00.000Z' } });
