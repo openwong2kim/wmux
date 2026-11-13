@@ -300,6 +300,9 @@ struct XtermFeed {
     /// How many charset slots (G0 up) xterm designated since its charsets
     /// were last reset: its DECSC saves only those.
     charset_slots: u8,
+    /// Which charset slots (G0 up) hold DEC line drawing, on both terminals
+    /// alike: every other set is refused (native_serialize::divergent).
+    dec_slots: [bool; 4],
     /// xterm's saved cursor on the main and the alternate screen.
     saved: [SavedCursor; 2],
 }
@@ -313,9 +316,10 @@ struct SavedCursor {
     saved: bool,
     /// The charset slots xterm saved; it restores only those, Alacritty all.
     charset_slots: u8,
-    /// A slot past them was designated since the save: xterm keeps it on a
-    /// restore, Alacritty puts back what that slot held at the save.
-    later_slot: bool,
+    /// What each slot held at the save. A slot past `charset_slots` that
+    /// holds another set by the restore keeps it on xterm, where Alacritty
+    /// puts this one back; designated again to the same set, both agree.
+    dec_slots: [bool; 4],
     no_wraparound: bool,
     origin: bool,
 }
@@ -509,6 +513,7 @@ impl XtermFeed {
                 self.no_wraparound = false;
                 self.origin = false;
                 self.charset_slots = 0;
+                self.dec_slots = [false; 4];
                 self.saved = Default::default();
             }
             // xterm's softReset resets the charsets and the modes, not the
@@ -517,33 +522,35 @@ impl XtermFeed {
                 self.no_wraparound = false;
                 self.origin = false;
                 self.charset_slots = 0;
+                self.dec_slots = [false; 4];
             }
-            b"\x1b%@" | b"\x1b%G" => self.designate(0),
-            [0x1b, slot @ (b'(' | b')' | b'*' | b'+' | b'-' | b'.'), b'B' | b'0'] => self
-                .designate(match slot {
-                    b'(' => 0,
-                    b')' | b'-' => 1,
-                    b'*' | b'.' => 2,
-                    _ => 3,
-                }),
+            b"\x1b%@" | b"\x1b%G" => self.designate(0, false),
+            [0x1b, slot @ (b'(' | b')' | b'*' | b'+' | b'-' | b'.'), set @ (b'B' | b'0')] => self
+                .designate(
+                    match slot {
+                        b'(' => 0,
+                        b')' | b'-' => 1,
+                        b'*' | b'.' => 2,
+                        _ => 3,
+                    },
+                    *set == b'0',
+                ),
             _ if plain_csi(b's') => self.save_cursor(screen),
             _ if plain_csi(b'u') => self.restore_cursor(screen),
             _ => {}
         }
     }
 
-    fn designate(&mut self, slot: u8) {
+    fn designate(&mut self, slot: u8, dec: bool) {
         self.charset_slots = self.charset_slots.max(slot + 1);
-        for saved in &mut self.saved {
-            saved.later_slot |= saved.saved && slot >= saved.charset_slots;
-        }
+        self.dec_slots[usize::from(slot)] = dec;
     }
 
     fn save_cursor(&mut self, screen: usize) {
         self.saved[screen] = SavedCursor {
             saved: true,
             charset_slots: self.charset_slots,
-            later_slot: false,
+            dec_slots: self.dec_slots,
             no_wraparound: self.no_wraparound,
             origin: self.origin,
         };
@@ -551,14 +558,18 @@ impl XtermFeed {
 
     /// xterm restores DECAWM and DECOM (their defaults when nothing was
     /// saved) and only the charset slots it saved; Alacritty restores no mode
-    /// and every slot.
+    /// and every slot. The GL shift needs no check: both save it with the
+    /// cursor (xterm's savedGlevel, Alacritty's `Cursor::active_charset`).
     fn restore_cursor(&mut self, screen: usize) {
         let saved = self.saved[screen];
+        let later_slot = saved.saved
+            && (usize::from(saved.charset_slots)..4)
+                .any(|slot| self.dec_slots[slot] != saved.dec_slots[slot]);
         self.refuse(
-            saved.later_slot
+            later_slot
                 || saved.no_wraparound != self.no_wraparound
                 || saved.origin != self.origin,
-            "unsupported-state-decrc: a cursor restore xterm runs differently (DECAWM, DECOM, or a charset slot designated since the save)",
+            "unsupported-state-decrc: a cursor restore xterm runs differently (DECAWM, DECOM, or a charset slot designated since the save to another set)",
         );
     }
 
@@ -2032,6 +2043,23 @@ mod tests {
             "unsupported-state-alt-margins"
         );
         assert!(feed_with(&["\x1b*0\x1bn\x1b[!pok"]).2.refused.is_none());
+    }
+
+    #[test]
+    fn a_restore_refuses_only_a_later_slot_that_holds_another_set() {
+        let refused = |chunks: &[&str]| feed_with(chunks).2.refused.is_some();
+        // Designated again to the set it held at the save (sgr0's `ESC ( B`
+        // on an alternate screen): both restore alike.
+        assert!(!refused(&["\x1b7\x1b(B\x1b8"]));
+        assert!(!refused(&["\x1b[?1049h\x1b(Bx\x1b[?1049l"]));
+        assert!(!refused(&["\x1b7\x1b*0\x1b*B\x1b8"]));
+        // Another set: xterm keeps it, Alacritty puts back the saved one.
+        assert!(refused(&["\x1b7\x1b*0\x1b8"]));
+        assert!(refused(&["\x1b[?1049h\x1b(0x\x1b[?1049l"]));
+        // A slot the save held is restored by both.
+        assert!(!refused(&["\x1b(B\x1b7\x1b(0\x1b8"]));
+        // So are they after a soft reset, which keeps the save.
+        assert!(!refused(&["\x1b*0\x1b7\x1b[!p\x1b*0\x1b8"]));
     }
 
     #[test]

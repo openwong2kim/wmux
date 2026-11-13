@@ -68,6 +68,15 @@ const accepted: Case[] = [
   // savedCharsets); with nothing saved both keep every slot.
   synthetic('decrc-saved-g2', '\x1b*0\x1b7\x1b(B\x1b*B\x1b8\x1bnq'),
   synthetic('decrc-unsaved-g2', '\x1b*0\x1b8\x1bnq'),
+  // A slot designated since the save restores alike when it holds the set it
+  // held at the save: designated again to it (sgr0's `ESC ( B` on Claude
+  // Code's alternate screen), or changed and changed back. The GL shift is
+  // saved with the cursor on both (xterm's savedGlevel, Alacritty's
+  // active_charset), so a shift between save and restore is restored alike.
+  synthetic('alt-1049-redesignate-ascii', '\x1b[?1049h\x1b(Bq\x1b[?1049lq'),
+  synthetic('decrc-redesignate-same-g2', '\x1b7\x1b*B\x1b8\x1bnq'),
+  synthetic('decrc-redesignate-g2-and-back', '\x1b7\x1b*0\x1b*B\x1b8\x1bnq'),
+  synthetic('decrc-redesignate-shifted', '\x1b)0\x1b7\x0e\x1b)0\x1b8q\x0eq'),
   synthetic('decsc-ls2', '\x1b*0\x1bn\x1b7\x0fq\x1b8q'),
   synthetic('alt-1049-ls2', '\x1b*0\x1bn\x1b[?1049h\x0fq\x1b[?1049lq'),
   synthetic('ls2-in-update', '\x1b*0\x1b[?2026h\x1bnq\x1b[?2026l'),
@@ -174,6 +183,7 @@ const refused: Case[] = [
   // xterm restores only the slots it saved, and DECAWM/DECOM from the save.
   synthetic('decrc-later-g2', '\x1b7\x1b*0\x1b8\x1bnq', 'xterm'),
   synthetic('alt-1049-later-g2', '\x1b(0\x1b[?1049h\x1b*0\x1b[?1049l\x1bnq', 'xterm'),
+  synthetic('alt-1049-later-g0-dec', '\x1b[?1049h\x1b(0q\x1b[?1049lq', 'xterm'),
   synthetic('decstr-decrc-nowrap', `\x1b[?7l\x1b7\x1b[!p\x1b8${'x'.repeat(25)}`, 'xterm'),
   synthetic('decrc-unsaved-nowrap', `\x1b[?7l\x1b8${'x'.repeat(25)}`, 'xterm'),
   synthetic('decstr-cut-by-del', 'ab\x1b[4h\x1b[!\x7fpcd', 'xterm'),
